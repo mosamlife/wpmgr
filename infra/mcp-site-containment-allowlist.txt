@@ -75,6 +75,35 @@ PARAM TouchActivity.tenantID                            # tenant of the resolved
 PARAM TouchActivity.grantID                             # grant row id, from the authenticated grant
 PARAM TouchActivity.tokenID                             # token row id, from the authenticated token
 PARAM RevokeGrantWithTokens.grantID                     # operator-facing revoke, dashboard principal, not the MCP surface
+# grantID here IS request-supplied -- it is the :connectionId path parameter of
+# GET /api/v1/mcp/connections/:connectionId/status (handler.go:184). It is
+# allowlisted because it can only ever be INTERPRETED as a grant id: it binds
+# to mcp_grants.id in GetMCPGrant (db/query/mcp_connections.sql:326-327), and in
+# the audit half it is compared in Go against audit_log.actor_id with
+# actor_type='assistant', never pushed into SQL -- that query's site filter is
+# hard-wired off with the uuid.Nil sentinel (connection_status.go:649). A
+# foreign uuid therefore misses and 404s. The read runs under RunTenantTx, and
+# mcp_grants carries a RESTRICTIVE _site_scope SELECT policy (schema.sql:5851)
+# that returns zero rows to any site-constrained principal, so this endpoint is
+# org-scoped principals only, refused three independent ways.
+PARAM ConnectionStatusSnapshot.grantID                  # :connectionId path param; only ever bound to mcp_grants.id, never to a site column
 
 # ---- Tool argument surface -------------------------------------------------
-# Intentionally empty. See TOOLARGS above.
+# Intentionally empty, and still the Phase 1 state: registry.go's one tool
+# discards its arguments (`_ json.RawMessage`).
+#
+# It was briefly NOT empty by accident. Rule C used to key on the parameter
+# name `auth` followed by a named json.RawMessage, and matched
+# transport.go:1045 -- writeProtocolRefusal, where that json.RawMessage is the
+# JSON-RPC envelope id being echoed back into an error response. Adding
+# `TOOLARGS internal/mcp/transport.go` here would have been the obvious way to
+# make CI quiet, and because Rule C's granularity is the FILE it would have
+# switched the rule off for the one file that actually dispatches tools. The
+# rule now matches the toolInvoker type sequence instead, so no entry is needed
+# and none should be added to silence a hit without reading it first.
+
+# ---- Second database paths in package mcp (Rule D) -------------------------
+# Rule D is default-closed on every file of package mcp except repo.go. This is
+# the reviewed-exception list, and an entry is a promise that the file is part
+# of the Store implementation rather than a path around it.
+DBPATH internal/mcp/connection_status.go                # Repo split across files: getGrantTx (:601) and findFirstToolCallTx (:634) are unexported, take a pgx.Tx they do not open, and are reached ONLY from Repo.ConnectionStatusSnapshot (:573,:578,:585) inside r.pool.RunTenantTx (:571) -- the same audited boundary Rule B watches

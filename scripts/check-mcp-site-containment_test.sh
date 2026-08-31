@@ -65,11 +65,20 @@ make_tree() {
   rm -rf "$root"
   mkdir -p "$mcp"
 
+  # repo.go must actually reach the database. Rule D's control asserts that the
+  # one file whose job that is still matches its patterns -- a fixture repo.go
+  # that touched nothing would let stale patterns pass the control, which is
+  # the failure the control exists to catch.
   printf '%s\n' \
     'package mcp' \
     '' \
+    'import (' \
+    '	"github.com/jackc/pgx/v5"' \
+    '	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"' \
+    ')' \
+    '' \
     'func (r *Repo) ResolveScopeSites(ctx context.Context, tenantID uuid.UUID, mode string, tagIDs, siteIDs []uuid.UUID) ([]uuid.UUID, error) {' \
-    '	return nil, nil' \
+    '	return sqlc.New(tx).ResolveScope(ctx, tenantID)' \
     '}' \
     >"$mcp/repo.go"
 
@@ -371,6 +380,86 @@ printf '%s\n' 'package mcp' \
 run_case "bypass-second-database-path-in-package" 1 "builds its own sqlc.Queries" - -- \
   --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$DOC"
 rm -f "$TREE/apps/api/internal/mcp/shortcut.go"
+
+# ---- Rule D: the three ways round the old import-plus-literal test ----------
+
+# Executes SQL with no sqlc.New anywhere. The old inner test required that
+# literal, so this file passed and Rule D printed "no second database path"
+# over a second database path.
+printf '%s\n' 'package mcp' \
+  'import "github.com/jackc/pgx/v5"' \
+  'func (s *Service) rawRead(ctx context.Context, tx pgx.Tx, siteID uuid.UUID) error {' \
+  '	_, err := tx.Query(ctx, "SELECT id FROM sites WHERE id = $1", siteID)' \
+  '	return err' \
+  '}' >"$TREE/apps/api/internal/mcp/rawsql.go"
+run_case "bypass-direct-pgx-query-without-sqlc-new" 1 "executes SQL directly" - -- \
+  --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$DOC"
+rm -f "$TREE/apps/api/internal/mcp/rawsql.go"
+
+# sqlc.New takes a DBTX. Handed a *pgxpool.Pool, the file never imports the
+# root pgx package, and the old OUTER grep skipped the constructor check
+# entirely.
+printf '%s\n' 'package mcp' \
+  'import "github.com/jackc/pgx/v5/pgxpool"' \
+  'func (s *Service) poolPath(pool *pgxpool.Pool) {' \
+  '	_ = sqlc.New(pool)' \
+  '}' >"$TREE/apps/api/internal/mcp/poolpath.go"
+run_case "bypass-sqlc-new-with-pgxpool-dbtx" 1 "builds its own sqlc.Queries" - -- \
+  --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$DOC"
+rm -f "$TREE/apps/api/internal/mcp/poolpath.go"
+
+# The same constructor reached through an import alias. Keying on the literal
+# string "sqlc.New(" made renaming the import a way round the rule.
+printf '%s\n' 'package mcp' \
+  'import (' \
+  '	"github.com/jackc/pgx/v5"' \
+  '	q "github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"' \
+  ')' \
+  'func (s *Service) aliased(tx pgx.Tx) { _ = q.New(tx) }' \
+  >"$TREE/apps/api/internal/mcp/aliased.go"
+run_case "bypass-sqlc-new-via-import-alias" 1 "builds its own q.Queries" - -- \
+  --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$DOC"
+rm -f "$TREE/apps/api/internal/mcp/aliased.go"
+
+# A reviewed exception. The Store implementation is allowed to be split across
+# more than one file, and before DBPATH existed that was unrepresentable: the
+# only exception was the hard-coded name repo.go.
+printf '%s\n' 'package mcp' \
+  'import "github.com/jackc/pgx/v5"' \
+  'func getGrantTx(ctx context.Context, tx pgx.Tx, grantID uuid.UUID) error {' \
+  '	_ = sqlc.New(tx)' \
+  '	return nil' \
+  '}' >"$TREE/apps/api/internal/mcp/repo_status.go"
+make_allow "$ALLOW" 'DBPATH internal/mcp/repo_status.go   # Repo split across files; reached only from Repo.Snapshot inside RunTenantTx'
+run_case "ok-dbpath-reviewed-repo-split" 0 "check-mcp-site-containment: OK" "VIOLATION" -- \
+  --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$DOC"
+rm -f "$TREE/apps/api/internal/mcp/repo_status.go"
+
+# Both directions, as for every other kind. A DBPATH entry whose file stopped
+# touching the database means the guard is holding a door open on a room that
+# has moved.
+run_case "bypass-stale-allowlist-dbpath-entry" 1 "stale allowlist entry: DBPATH internal/mcp/repo_status.go" - -- \
+  --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$DOC"
+make_allow "$ALLOW"
+
+# Rule D's own control. If repo.go -- the one file whose job database access is
+# -- stops matching, the patterns are stale and Rule D would report a clean
+# package whatever the package contained.
+cp "$TREE/apps/api/internal/mcp/repo.go" "$WORK/repo.orig"
+printf '%s\n' 'package mcp' \
+  'func (r *Repo) ResolveScopeSites(ctx context.Context, tenantID uuid.UUID, mode string, tagIDs, siteIDs []uuid.UUID) ([]uuid.UUID, error) {' \
+  '	return nil, nil' \
+  '}' >"$TREE/apps/api/internal/mcp/repo.go"
+run_case "broken-rule-d-patterns-match-nothing-in-repo" 2 "Rule D's database-access patterns match nothing" "containment: OK" -- \
+  --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$DOC"
+cp "$WORK/repo.orig" "$TREE/apps/api/internal/mcp/repo.go"
+
+# A DBPATH entry is a real allowlist kind, not a typo that silently drops a
+# record from the comparison.
+make_allow "$ALLOW" 'DBPTH internal/mcp/typo.go   # misspelled kind'
+run_case "broken-allowlist-dbpath-kind-typo" 2 "unrecognised allowlist kind" "containment: OK" -- \
+  --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$DOC"
+make_allow "$ALLOW"
 
 # Both directions. An entry that matches nothing means the guard is watching a
 # surface that has moved, which is indistinguishable from watching nothing.

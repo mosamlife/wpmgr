@@ -71,6 +71,20 @@
 #      That is the exact moment A11's sentence becomes possible to violate, so
 #      it is the moment a reviewer is made to look.
 #
+#      The subject is the toolInvoker TYPE SEQUENCE, not any parameter NAME.
+#      Names are the tool author's choice, so a rule keyed on one is a rule
+#      that renaming defeats -- and, on this tree, one that collided with an
+#      unrelated function whose json.RawMessage was a JSON-RPC envelope id.
+#
+#   D. SECOND DATABASE PATHS. Rules A to C all assume the database is reached
+#      through mcp.Store. Rule D is the backstop for a file that goes round it,
+#      and its subject is EXECUTING SQL -- an sqlc Queries built through
+#      whatever local name the file's import block binds, a direct pgx
+#      Query/QueryRow/Exec/SendBatch/CopyFrom, or a held pgxpool. repo.go is
+#      exempt because that is its job; any other file needs a DBPATH entry,
+#      which is how a Store implementation legitimately split across files is
+#      recorded. Checked in both directions, like every other kind.
+#
 # WHAT THIS CANNOT CATCH -- read this before trusting it. See the block at the
 # bottom of this header.
 #
@@ -103,25 +117,42 @@
 # ---------------------------------------------------------------------------
 # WHAT THIS GUARD CANNOT CATCH
 #
+# THIS BLOCK IS THE POINT OF THE GUARD AS MUCH AS THE RULES ARE. It is what
+# stops the next person trusting it further than it goes, so it is kept
+# accurate: when a rule gets stronger, the corresponding entry here shrinks,
+# and when a fix leaves a residue, the residue is written down. Everything
+# below has been checked against the implementation as it stands, not inherited
+# from an earlier version of it.
+#
 #   1. It is a STRUCTURAL guard, not a taint analysis. It proves that every
 #      channel by which a site id could reach the database has been looked at
 #      by a human, and that no new one appeared unnoticed. It does not prove the
 #      human looked correctly. An allowlist entry with a wrong reason passes.
+#      This is the big one and no amount of parsing fixes it.
 #
 #   2. Rule B's subject is the mcp.Store interface. A handler that reaches the
-#      database WITHOUT going through Store -- a second interface, a *db.Pool
-#      held directly, an sqlc.Queries built in a handler -- is outside its
-#      reach. Rule D below is a partial backstop: it refuses a direct sqlc or
-#      pgx import in any file of package mcp other than repo.go, which is where
-#      such a second path would have to start. It is a backstop and not a proof:
-#      a new Repo method wired through a NEW interface declared elsewhere in the
-#      package would satisfy both rules.
+#      database WITHOUT going through Store is outside its reach. Rule D is the
+#      backstop and now covers all three mechanisms available in this package
+#      -- an sqlc Queries built through any local name for the package, a
+#      direct pgx Query/QueryRow/Exec/SendBatch/CopyFrom, and a held pgxpool --
+#      in every file except repo.go and the reviewed DBPATH exceptions.
+#      WHAT STILL GETS THROUGH: a file that executes no SQL itself but calls a
+#      helper in ANOTHER package that holds the pool; and `database/sql` or a
+#      query builder, neither of which this repo uses. A new Repo method wired
+#      through a NEW interface declared inside the package no longer passes
+#      silently -- Rule D catches the file that executes the SQL -- but it is
+#      caught as an unreviewed DBPATH, not as an unreviewed interface, so the
+#      reviewer is pointed at the file rather than at the interface.
 #
 #   3. Rule C's granularity is the FILE, not the tool. Once one file is
 #      allowlisted for reading tool arguments, a second tool added to that same
 #      file inherits the allowance. The allowlist reason is therefore a promise
 #      about the file, and a reviewer adding a tool to an allowlisted file gets
-#      no signal from this guard.
+#      no signal from this guard. Rule C also matches the toolInvoker TYPE
+#      SEQUENCE exactly; a tool reached through an adapter with a different
+#      signature, a method value, or a generic wrapper is not that shape and is
+#      not seen. The control grep against registry.go is what catches the
+#      whole shape going stale, not a change of shape in one handler.
 #
 #   4. It checks the mcp package only, because A11 is about this surface. A site
 #      id taken from a request by some OTHER package and handed to mcp is not in
@@ -130,6 +161,25 @@
 #   5. It is a compile-time, source-level check. It says nothing about whether
 #      the chokepoint's own SQL is correct; that is the integration proof's job
 #      (A11 item 6), and this guard is not a substitute for it.
+#
+#   6. RULE A'S WINDOW IS TWO LINES. `s.store.` then a newline then
+#      `ResolveScopeSites(` is caught; a call broken across THREE or more lines,
+#      or with a comment line interposed between the receiver and the method
+#      name, is not. gofmt does not produce either, so this catches every
+#      layout the formatter will leave in the tree, and not a layout chosen
+#      specifically to evade it.
+#
+#   7. RULES A, C AND D READ TEXT WITH COMMENTS AND STRING LITERALS INTACT.
+#      The chokepoint's name inside a comment or a string produces a phantom
+#      call site. That is the safe direction -- it over-reports, and an
+#      unreviewed entry is visible -- but it is noise a reviewer may be tempted
+#      to allowlist, and an allowlist entry written to quiet noise is an
+#      allowlist entry with a wrong reason. See 1.
+#
+#   8. Rule D's mechanisms are matched per file, so a file that both executes
+#      SQL legitimately (a reviewed DBPATH) and grows a second, illegitimate
+#      query later gets no new signal -- the same file-granularity limit as
+#      Rule C in 3.
 # ---------------------------------------------------------------------------
 
 set -uo pipefail
@@ -212,10 +262,11 @@ trap 'rm -rf "$TMPDIR_RUN"' EXIT INT TERM
 ALLOW_CALL="$TMPDIR_RUN/allow.call"
 ALLOW_PARAM="$TMPDIR_RUN/allow.param"
 ALLOW_TOOLARGS="$TMPDIR_RUN/allow.toolargs"
+ALLOW_DBPATH="$TMPDIR_RUN/allow.dbpath"
 FOUND_CALL="$TMPDIR_RUN/found.call"
 FOUND_PARAM="$TMPDIR_RUN/found.param"
 FOUND_TOOLARGS="$TMPDIR_RUN/found.toolargs"
-: >"$ALLOW_CALL"; : >"$ALLOW_PARAM"; : >"$ALLOW_TOOLARGS"
+: >"$ALLOW_CALL"; : >"$ALLOW_PARAM"; : >"$ALLOW_TOOLARGS"; : >"$ALLOW_DBPATH"
 : >"$FOUND_CALL"; : >"$FOUND_PARAM"; : >"$FOUND_TOOLARGS"
 
 # ---------------------------------------------------------------------------
@@ -252,6 +303,9 @@ while IFS= read -r line || [ -n "$line" ]; do
     TOOLARGS)
       printf '%s\n' "$(printf '%s' "$rec" | awk '{print $2}')" >>"$ALLOW_TOOLARGS"
       ;;
+    DBPATH)
+      printf '%s\n' "$(printf '%s' "$rec" | awk '{print $2}')" >>"$ALLOW_DBPATH"
+      ;;
     *)
       broken "unrecognised allowlist kind '$kind' in $ALLOWLIST: $line"
       ;;
@@ -266,6 +320,7 @@ done <"$ALLOWLIST"
 sort -u "$ALLOW_CALL"     -o "$ALLOW_CALL"
 sort -u "$ALLOW_PARAM"    -o "$ALLOW_PARAM"
 sort -u "$ALLOW_TOOLARGS" -o "$ALLOW_TOOLARGS"
+sort -u "$ALLOW_DBPATH"   -o "$ALLOW_DBPATH"
 
 # ---------------------------------------------------------------------------
 # RULE A. Chokepoint and SiteSet call sites.
@@ -630,24 +685,98 @@ done <"$ALLOW_TOOLARGS"
 # without going through Store at all, which is where a second, unwatched path
 # would begin. repo.go is the one file whose job that is.
 # ---------------------------------------------------------------------------
+# THE OLD FORM GATED EVERYTHING ON ONE IMPORT AND ONE LITERAL, and both halves
+# leaked:
+#
+#   The outer test required the exact root import "github.com/jackc/pgx/v5".
+#   sqlc.New takes a DBTX, so `sqlc.New(pool)` with a *pgxpool.Pool -- a
+#   different import path -- built a second Queries and the outer grep never
+#   ran the inner one.
+#
+#   The inner test required the literal `sqlc.New(`. A file that imports pgx
+#   and runs tx.Query / tx.Exec directly executes SQL without ever calling it,
+#   and Rule D then printed "no second database path in package mcp" over a
+#   second database path.
+#
+# So the subject is now EXECUTING SQL, by any of the three mechanisms available
+# in this package, and the import gate is gone. The sqlc constructor is
+# resolved through the file's own import block so an alias
+# (`q "…/internal/db/sqlc"` then `q.New(tx)`) is not a way round it.
+#
+# Rule D is a BACKSTOP and it has reviewed exceptions -- the Store
+# implementation is allowed to be split across more than one file -- so it
+# reads DBPATH entries from the allowlist and is checked in both directions
+# like every other rule. Before this, its only exception was the hard-coded
+# name repo.go, and a reviewed second file was unrepresentable.
+DBPATH_HITS="$TMPDIR_RUN/found.dbpath"
+: >"$DBPATH_HITS"
+
+# Every way this package can execute SQL. The shape of the first argument --
+# an identifier followed by a comma -- is what separates a pgx call from an
+# unrelated .Exec on some other value: pgx takes a context first on all five.
+# It deliberately does NOT require that identifier to be spelled `ctx`, because
+# the parameter name is the author's choice and keying on it would make
+# `tx.Query(reqCtx, ...)` a way round the rule -- the same mistake Rule C made
+# with `auth`. Measured against the real tree: this matches no non-test file in
+# package mcp outside repo.go, so the broader form costs no false positives.
+PGX_OPS_RE='\.(Query|QueryRow|Exec|SendBatch|CopyFrom)[ ]*\([ ]*[A-Za-z_][A-Za-z0-9_]*[ ]*,'
+PGXPOOL_RE='"github\.com/jackc/pgx/v5/pgxpool"'
+
+dbpath_mechanism() {
+  # Prints the mechanism this file uses to execute SQL, or nothing.
+  _f="$1"
+  # The local name bound to the sqlc package in THIS file, alias or not.
+  _sqlc="$(sed -nE 's|^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)?[[:space:]]*"github\.com/mosamlife/wpmgr/apps/api/internal/db/sqlc".*|\1|p' "$_f" 2>/dev/null | head -1)"
+  [ -n "$_sqlc" ] || _sqlc="sqlc"
+  if grep -qE "(^|[^A-Za-z0-9_.])${_sqlc}\.New[ ]*\(" "$_f" 2>/dev/null; then
+    printf 'builds its own %s.Queries via %s.New(\n' "$_sqlc" "$_sqlc"
+    return 0
+  fi
+  if grep -qE "$PGX_OPS_RE" "$_f" 2>/dev/null; then
+    printf 'executes SQL directly (pgx Query/Exec/SendBatch/CopyFrom)\n'
+    return 0
+  fi
+  if grep -qE "$PGXPOOL_RE" "$_f" 2>/dev/null; then
+    printf 'holds a pgxpool connection pool\n'
+    return 0
+  fi
+  return 1
+}
+
+# CONTROL. repo.go is the file whose job this is, so it MUST match at least one
+# mechanism. If it does not, the patterns are stale and Rule D would report a
+# clean package whatever the package contained -- the failure mode this whole
+# guard exists to refuse.
+dbpath_mechanism "$MCP_DIR/repo.go" >/dev/null \
+  || broken "Rule D's database-access patterns match nothing in $MCP_PKG_REL/repo.go, the one file whose job that is. The patterns are stale and Rule D would report 'no second database path' on any tree."
+
 while IFS= read -r f; do
   rel="${f#"$API_ROOT"/}"
   case "$rel" in
     "$MCP_PKG_REL/repo.go") continue ;;
   esac
-  if grep -qE '"github\.com/jackc/pgx/v5"' "$f" 2>/dev/null; then
-    # pgx types appear in callback signatures the Store interface hands out
-    # (onCreated func(tx pgx.Tx, ...)), so an import alone is not a finding
-    # unless the file also builds its own queries.
-    if grep -qE 'sqlc\.New\(' "$f" 2>/dev/null; then
-      violation "$rel builds its own sqlc.Queries.
+  mech="$(dbpath_mechanism "$f")" || continue
+  printf '%s\n' "$rel" >>"$DBPATH_HITS"
+  if ! grep -qxF "$rel" "$ALLOW_DBPATH"; then
+    violation "$rel $mech
     Rule D (backstop for ADR-061 A11.4): package mcp reaches the database
     through the Store interface, which is what Rule B watches. A second path
     built here is outside that watch, and a site id could travel it. Move the
-    query behind a Store method so it is covered."
-    fi
+    query behind a Store method so it is covered -- or, if this file IS part of
+    the Store implementation (Repo split across files), record that in $ALLOWLIST:
+        DBPATH $rel   # which Repo method reaches this, and why it is on the audited boundary"
   fi
 done <"$TMPDIR_RUN/mcpfiles"
+
+sort -u "$DBPATH_HITS" -o "$DBPATH_HITS"
+
+while IFS= read -r entry; do
+  [ -n "$entry" ] || continue
+  if ! grep -qxF "$entry" "$DBPATH_HITS"; then
+    violation "stale allowlist entry: DBPATH $entry no longer touches the database.
+    Delete the entry so the file goes back to being default-closed under Rule D."
+  fi
+done <"$ALLOW_DBPATH"
 
 # ---------------------------------------------------------------------------
 # Report.
