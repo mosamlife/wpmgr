@@ -464,14 +464,21 @@ RETURNING *;
 -- ===========================================================================
 
 -- name: CreateMCPConnectionToken :one
--- Runs InTenantTx from RedeemAuthorizationCode's token exchange, and inside a
--- tenant transaction chosen by the principal's scope, via db.Pool.RunTenantTx,
--- from CreateGrantWithCode and CreateGrantWithToken -- NOT a fixed InTenantTx
--- on those two paths. mcp_connection_tokens carries a RESTRICTIVE
--- `_site_scope_insert` policy keyed on app.site_scope; only the scoped
--- dispatch, via InScopedTenantTx, sets that GUC, so a caller minting a token
--- alongside a grant must go through RunTenantTx or the policy sits inert for a
--- site-constrained principal. token_hash is lower-case hex SHA-256 (Decision 4, the
+-- Has two callers, on two different dispatches. RedeemAuthorizationCode runs
+-- it under literal InTenantTx -- the tenant is already known, from the code
+-- just consumed, and no principal is in scope at that point to dispatch on.
+-- CreateGrantWithToken runs it inside a tenant transaction chosen by the
+-- principal's scope, via db.Pool.RunTenantTx, NOT a fixed InTenantTx, because
+-- this is the path that mints the FIRST token alongside a new grant.
+-- CreateGrantWithCode is NOT a caller of this query -- it mints a code, via
+-- CreateMCPAuthorizationCode, and never a token.
+--
+-- mcp_connection_tokens carries a RESTRICTIVE `_site_scope_insert` policy
+-- keyed on app.site_scope; only the scoped dispatch, via InScopedTenantTx,
+-- sets that GUC, so CreateGrantWithToken minting a token for a site-scoped
+-- principal must go through RunTenantTx or the policy sits inert.
+--
+-- token_hash is lower-case hex SHA-256 (Decision 4, the
 -- internal/apikey/apikey.go:102 construction); the plaintext is returned to
 -- the operator once, here, and there is no column to read it back from.
 --
