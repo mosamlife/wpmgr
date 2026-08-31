@@ -71,23 +71,37 @@ const (
 	// inline, so the model corrects in one round trip.
 	codeInvalidToolArguments = -32003
 
-	// codeToolNotAvailable is the single code for the TWO reasons a named tool
-	// is not reachable that a caller must not be able to tell apart: no such
-	// tool exists, or this connection's capabilities do not cover it. One code
-	// for two reasons is deliberate and is the whole disclosure decision -- see
-	// the note on AuthorizeTool. A client branching on the number learns "ask
-	// tools/list", which is the only correct action in both cases.
+	// codeToolNotAvailable means THE NAME IS NOT IN THE REGISTRY. The model
+	// guessed. A client branching on the number learns "ask tools/list", which
+	// is the only correct action.
+	//
+	// IT NO LONGER DOUBLES AS THE CAPABILITY REFUSAL. It used to answer both
+	// "no such tool" and "your capabilities do not cover it" identically, so a
+	// wordlist could not tell them apart; the D1 ruling replaced that blur with
+	// codeCapabilityNotGranted below. See the disclosure note on AuthorizeTool.
 	//
 	// AN EMPTY SITE SCOPE IS NOT ONE OF THEM and does not answer -32004. It
-	// answers codeScopeEmpty (-32002) above, by name, because a connection
-	// whose capability set already covers the tool is entitled to know the tool
-	// exists -- see the asymmetry note on visible(). An earlier version of this
-	// comment claimed -32004 covered the scope-empty case too. It never did:
-	// TestToolsCall_EmptyScopeIsRefusedNotAnEmptyList asserts -32002.
+	// answers codeScopeEmpty (-32002) above, by name. An earlier version of
+	// this comment claimed -32004 covered the scope-empty case too. It never
+	// did: TestToolsCall_EmptyScopeIsRefusedNotAnEmptyList asserts -32002.
 	codeToolNotAvailable = -32004
 
+	// codeCapabilityNotGranted is the D1 refusal: the tool EXISTS, it was
+	// listed to this connection, and this connection's grant does not hold the
+	// capability it requires.
+	//
+	// A CLIENT MUST READ IT AS PERMANENT. The error data carries
+	// retryable:false and required_capability alongside, and the message says
+	// so in words, because the failure mode being designed against is a client
+	// that treats a refusal as transient: the empty-capability path once
+	// answered 401 and clients re-ran an entire OAuth handshake that could not
+	// change the outcome. Nothing the client can do on its own changes this
+	// answer -- an operator must widen the grant.
+	codeCapabilityNotGranted = -32005
+
 	// codeRateLimited is the tool-call budget refusing (1A-11). It is a
-	// SEPARATE code from every refusal above because it is the only one that is
+	// SEPARATE code from every refusal above -- including codeCapabilityNotGranted,
+	// which claimed -32005 first -- because it is the only one that is
 	// TRANSIENT-BUT-NOT-IMMEDIATELY: the request was well-formed, the
 	// credential is valid, the capability is held, and the same call will
 	// succeed later without anything being reconfigured.
@@ -100,7 +114,7 @@ const (
 	// object carries the interval as a number. This is the same failure the
 	// empty-capability refusal was moved off 401 to avoid -- there the client
 	// looped re-running OAuth, here it would loop re-calling the tool.
-	codeRateLimited = -32005
+	codeRateLimited = -32006
 )
 
 // TransportHandler serves the single MCP endpoint. It is separate from Handler
@@ -597,21 +611,41 @@ func (h *TransportHandler) dispatch(
 		if resp, refused := h.stampActivity(ctx, auth, req); refused {
 			return resp, http.StatusOK, true
 		}
-		// VisibleTools, NOT Tools. Tools() is the whole registry and is not a
-		// request-path value; VisibleTools filters by this connection's
-		// capability set and site scope through the SAME predicate tools/call
-		// applies. An empty list here is a truthful answer for a connection
-		// that reaches nothing, not an error.
+		// VisibleTools, NOT Tools. Tools() is the raw registry and is not a
+		// request-path value; VisibleTools filters against the ORG CEILING --
+		// the widest capability set any connection in this org may hold -- and
+		// annotates what is left.
+		//
+		// The two boundaries answer differently and that is the D1 ruling. A
+		// capability inside the ceiling that THIS grant does not hold is still
+		// listed, annotated, and refuses at tools/call by name: unticking a
+		// permission must produce an explicable refusal, because a vanished
+		// tool is indistinguishable from a tool that was never built. A
+		// capability the ORG has switched off is omitted entirely, so a token
+		// holder cannot enumerate what their organisation declined to enable.
+		//
+		// An empty list is a truthful answer for a connection whose org ceiling
+		// reaches nothing, not an error.
+
 		return newResponse(req.ID, map[string]any{"tools": VisibleTools(auth)}), http.StatusOK, true
 
 	case "tools/call":
+		// AUTHORIZATION RUNS BEFORE THE BUDGET GATE for this method, unlike
+		// tools/list above. See the ordering note on authorizeCall: a
+		// capability refusal must never be preempted by a rate-limit refusal,
+		// because the rate-limit response's own text promises the capability
+		// is held.
+		entry, p, resp, refused := h.authorizeCall(ctx, auth, req)
+		if refused {
+			return resp, http.StatusOK, true
+		}
 		if resp, refused := h.rateLimit(c, auth, req); refused {
 			return resp, http.StatusTooManyRequests, true
 		}
 		if resp, refused := h.stampActivity(ctx, auth, req); refused {
 			return resp, http.StatusOK, true
 		}
-		return h.callTool(ctx, auth, req), http.StatusOK, true
+		return h.callTool(ctx, auth, req, entry, p), http.StatusOK, true
 
 	// Resources and prompts are OUT OF SCOPE for Phase 1 and are refused by
 	// name rather than answered with an empty list. An empty list would claim
@@ -848,6 +882,33 @@ func (h *TransportHandler) stampActivity(ctx context.Context, auth AuthorizedReq
 	return jsonrpcResponse{}, false
 }
 
+// authorizeCall resolves and authorizes the named tool for tools/call. It runs
+// BEFORE the rate limiter and before any write (1A-11 merge, see the ordering
+// note on codeRateLimited).
+//
+// THAT ORDERING IS DELIBERATE AND NOT INCIDENTAL. codeRateLimited's own text
+// promises "the capability is held ... the same call will work after the
+// wait" -- a promise that is false for a caller who does not hold the
+// capability. If the budget gate ran first, an out-of-budget caller who also
+// lacks the capability would be told to wait and retry a call that can never
+// succeed: a permanent refusal dressed as a transient one, which is exactly
+// the model-facing failure this whole refusal design exists to prevent (see
+// the note on codeCapabilityNotGranted and the OAuth-retry-loop precedent).
+// Resolving authorization first makes that promise true whenever it is sent.
+//
+// This is safe to do ahead of the budget gate because AuthorizeTool is a pure
+// in-memory check against auth's already-resolved capability set and the
+// static registry -- no DB round trip -- so it does not reintroduce the
+// problem stampActivity's ordering guards against ("a refused request must
+// not write"). The one write on this path, RecordToolDenied, already ran
+// unconditionally on every refusal before this split; moving it earlier only
+// means an unauthorized caller who is ALSO over budget still gets an accurate
+// denial reason instead of a misleading rate-limit one, at the cost of that
+// caller's unauthorized attempts no longer being charged against the same
+// budget as authorized calls -- acceptable, since nothing on this path is
+// expensive enough for that specific caller to need throttling by this
+// limiter.
+//
 // callTool is S7's EXIT GATE, and the gate is the absence of a `default` arm.
 //
 // This function used to switch on the tool name with a `default` that answered
@@ -868,10 +929,10 @@ func (h *TransportHandler) stampActivity(ctx context.Context, auth AuthorizedReq
 // tools/list applies, and the implementation hangs off the registry entry that
 // resolution returned. A name that AuthorizeTool did not authorize has no
 // invoke function to reach.
-func (h *TransportHandler) callTool(ctx context.Context, auth AuthorizedRequest, req jsonrpcRequest) jsonrpcResponse {
+func (h *TransportHandler) authorizeCall(ctx context.Context, auth AuthorizedRequest, req jsonrpcRequest) (ToolPolicy, toolCallParams, jsonrpcResponse, bool) {
 	var p toolCallParams
 	if err := json.Unmarshal(req.Params, &p); err != nil {
-		return newErrorResponse(req.ID, codeInvalidParams, "tools/call params could not be parsed", nil)
+		return ToolPolicy{}, p, newErrorResponse(req.ID, codeInvalidParams, "tools/call params could not be parsed", nil), true
 	}
 
 	entry, reason, err := AuthorizeTool(p.Name, auth)
@@ -926,22 +987,29 @@ func (h *TransportHandler) callTool(ctx context.Context, auth AuthorizedRequest,
 		if de, ok := domain.AsDomain(err); ok && de.Code == ErrCodeToolNotAvailable {
 			// available_tools is this connection's OWN tools/list answer, so it
 			// discloses nothing it was not already shown, and it lets a model
-			// that mistyped a name it legitimately holds correct in one round
-			// trip.
+			// that mistyped a real name correct in one round trip.
 			data, _ := json.Marshal(map[string]any{
 				"argument":        "name",
 				"supplied":        p.Name,
 				"available_tools": visibleToolNames(auth),
 			})
-			return newErrorResponse(req.ID, codeToolNotAvailable, de.Message, data)
+			return ToolPolicy{}, p, newErrorResponse(req.ID, codeToolNotAvailable, de.Message, data), true
 		}
-		// Everything else keeps its own named answer: mcp_scope_empty becomes
-		// -32002 through toolError, and a non-domain error (a registry entry
-		// with no implementation) becomes the internal code. Neither is
-		// reported as a permission refusal.
-		return h.toolError(req.ID, err)
+		// Everything else keeps its own named answer: mcp_capability_not_granted
+		// becomes -32005 and mcp_scope_empty becomes -32002, both through
+		// toolError, and a non-domain error (a registry entry with no
+		// implementation) becomes the internal code rather than a permission
+		// refusal.
+		return ToolPolicy{}, p, h.toolError(req.ID, err), true
 	}
 
+	return entry, p, jsonrpcResponse{}, false
+}
+
+// callTool invokes an ALREADY-AUTHORIZED tool. entry and p are the values
+// authorizeCall resolved; callTool trusts them without re-checking, since
+// re-deriving them here would just be authorizeCall's work done twice.
+func (h *TransportHandler) callTool(ctx context.Context, auth AuthorizedRequest, req jsonrpcRequest, entry ToolPolicy, p toolCallParams) jsonrpcResponse {
 	h.log.InfoContext(ctx, "mcp tool call",
 		slog.String("tenant_id", auth.TenantID.String()),
 		slog.String("grant_id", auth.GrantID.String()),
@@ -986,6 +1054,27 @@ func (h *TransportHandler) toolError(id json.RawMessage, err error) jsonrpcRespo
 		if de.Code == ErrCodeScopeEmpty {
 			data, _ := json.Marshal(map[string]any{"code": de.Code})
 			return newErrorResponse(id, codeScopeEmpty, de.Message, data)
+		}
+		if de.Code == ErrCodeCapabilityNotGranted {
+			// The details AuthorizeTool attached are the machine-readable half
+			// of the refusal: which capability is required, which ones this
+			// grant holds, and that retrying will not help. They are copied
+			// onto the wire rather than summarised, so a client branches on a
+			// field instead of parsing English.
+			//
+			// retryable is written HERE as well as carried in the details, so
+			// a details map that ever arrives incomplete still answers false.
+			// Defaulting a missing "is this worth retrying" to true is how a
+			// permanent refusal becomes a retry loop.
+			payload := map[string]any{"code": de.Code, "retryable": false}
+			for k, v := range de.Details {
+				if k == "retryable" {
+					continue
+				}
+				payload[k] = v
+			}
+			data, _ := json.Marshal(payload)
+			return newErrorResponse(id, codeCapabilityNotGranted, de.Message, data)
 		}
 		return newErrorResponse(id, codeInvalidParams, de.Message, nil)
 	}

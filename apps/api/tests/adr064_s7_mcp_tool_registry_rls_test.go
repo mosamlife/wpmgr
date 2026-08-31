@@ -38,6 +38,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"strings"
 	"testing"
 	"time"
 
@@ -261,6 +262,133 @@ func TestS7GuessedToolNameIsRefusedForARealConnectionAsAppRole(t *testing.T) {
 	t.Logf("all guessed names refused for a real, fully-capable connection")
 }
 
+// TestS7UntickedCapabilityRefusesByNameAsAppRole is the D1 ruling, executed
+// against the real schema as wpmgr_app: an unticked capability REFUSES, it does
+// not hide.
+//
+// HOW THE CAPABILITY-LESS CONNECTION IS BUILT, AND WHY IT IS NOT A LITERAL.
+// Everything about this connection comes from the database: the tenant, the
+// site, the grant, the connection token, and the SiteSet, all resolved by
+// mcp.Service.Authenticate inside InTenantTx under the sites RLS policy as
+// wpmgr_app. Exactly ONE field is then overwritten -- Capabilities -- and it
+// has to be, because the capability axis is not stored per-grant yet: m124
+// DECISION 1 declines to mint a capabilities column, so grantScopes() is a
+// constant and every bearer that can authenticate resolves to mcp.sites.read.
+// There is no bearer in this schema that lacks it.
+//
+// What that costs is stated plainly: this proves the GATE, not the resolution.
+// TestS7CapabilitiesAreResolvedByAuthenticateAsAppRole above proves the
+// resolution half -- that Authenticate really populates the set rather than
+// handing back the zero value -- and the two together cover the path. The
+// moment a capabilities column exists, this test replaces the one assignment
+// with a narrower grant and proves both halves at once.
+func TestS7UntickedCapabilityRefusesByNameAsAppRole(t *testing.T) {
+	ctx := context.Background()
+	pool := startPostgres(t)
+	mcpRepo := mcp.NewRepo(pool)
+	siteRepo := site.NewRepo(pool)
+	svc := mcp.NewService(mcpRepo)
+
+	tenant := seedTenant(t, pool, "mcp-s7-cap-"+uuid.NewString()[:8])
+
+	// The role is asserted and printed INSIDE the transaction the resolution
+	// uses. Either privilege would make the site half of this pass vacuously.
+	if err := pool.InTenantTx(ctx, tenant, func(tx pgx.Tx) error {
+		mcpAssertAndReportRole(t, tx, "InTenantTx (capability-refusal proof)")
+		return nil
+	}); err != nil {
+		t.Fatalf("open tenant tx: %v", err)
+	}
+
+	s1, err := siteRepo.Create(ctx, site.CreateInput{
+		TenantID: tenant, URL: "https://s7cap.example.com", Name: "s7-cap"})
+	if err != nil {
+		t.Fatalf("create site: %v", err)
+	}
+
+	_, bearer := s7GrantWithBearer(t, mcpRepo, tenant, "list", []uuid.UUID{s1.ID})
+
+	auth, err := svc.Authenticate(ctx, bearer)
+	if err != nil {
+		t.Fatalf("Authenticate with a live bearer: %v", err)
+	}
+
+	// POSITIVE CONTROL FIRST. The real connection reaches the tool, so every
+	// refusal below is the capability gate rather than a broken fixture.
+	if _, _, err := mcp.AuthorizeTool(mcp.ToolListSites, auth); err != nil {
+		t.Fatalf("the real, fully-granted connection was refused: %v", err)
+	}
+	if _, err := svc.ListSitesForModel(ctx, auth); err != nil {
+		t.Fatalf("list_sites failed for the real connection: %v", err)
+	}
+
+	// Now the same connection with the capability withheld. Note what is NOT
+	// touched: the site scope stays as the database resolved it, so nothing
+	// below can be attributed to the site axis.
+	denied := auth
+	denied.Capabilities = mcp.NewCapabilitySet(nil)
+	if denied.Sites.IsEmpty() || !denied.Sites.Allows(s1.ID) {
+		t.Fatalf("the DB-resolved site scope did not survive: %d sites, Allows(%s)=%v",
+			denied.Sites.Len(), s1.ID, denied.Sites.Allows(s1.ID))
+	}
+	t.Logf("capability-less connection carries the DB-resolved scope: %d site(s), tenant %s",
+		denied.Sites.Len(), denied.TenantID)
+
+	// (1) IT DOES NOT HIDE. The tool is still listed, and the descriptor says
+	// why it cannot be called.
+	visible := mcp.VisibleTools(denied)
+	if len(visible) != 1 || visible[0].Name != mcp.ToolListSites {
+		t.Fatalf("an unticked capability HID the tool from tools/list: %+v", visible)
+	}
+	if !strings.Contains(visible[0].Description, string(mcp.CapSitesRead)) {
+		t.Fatalf("the listed descriptor does not name the missing capability:\n%s",
+			visible[0].Description)
+	}
+
+	// (2) IT REFUSES, BY NAME. Asserted by VALUE on the code and the kind: an
+	// "err != nil" here would pass under the site-scope refusal, under the
+	// uniform not-available refusal, and under a 401 -- three different bugs,
+	// two of which this change exists to rule out.
+	_, _, err = mcp.AuthorizeTool(mcp.ToolListSites, denied)
+	if err == nil {
+		t.Fatal("a tool was authorized for a connection that does not hold its capability")
+	}
+	de, ok := domain.AsDomain(err)
+	if !ok {
+		t.Fatalf("err = %v, want a domain error", err)
+	}
+	if de.Code != mcp.ErrCodeCapabilityNotGranted {
+		t.Fatalf("code = %q, want %q", de.Code, mcp.ErrCodeCapabilityNotGranted)
+	}
+	if de.Code == mcp.ErrCodeScopeEmpty {
+		t.Fatal("the capability refusal answered on the SITE axis")
+	}
+	if de.Kind != domain.KindForbidden {
+		t.Fatalf("kind = %v, want KindForbidden; a 401 makes clients re-run an OAuth "+
+			"handshake that cannot change the answer", de.Kind)
+	}
+	if !strings.Contains(de.Message, string(mcp.CapSitesRead)) {
+		t.Fatalf("the refusal does not name the capability: %s", de.Message)
+	}
+	if !strings.Contains(de.Message, "permanent") {
+		t.Fatalf("the refusal does not tell the model it is permanent: %s", de.Message)
+	}
+	if got := de.Details["retryable"]; got != false {
+		t.Fatalf("details[retryable] = %v, want false", got)
+	}
+	if got := de.Details["required_capability"]; got != string(mcp.CapSitesRead) {
+		t.Fatalf("details[required_capability] = %v, want %q", got, mcp.CapSitesRead)
+	}
+
+	// (3) IT DOES NOT OVER-FIRE. The untouched connection still works, after
+	// the refusal, against the same live database.
+	if _, _, err := mcp.AuthorizeTool(mcp.ToolListSites, auth); err != nil {
+		t.Fatalf("the granted connection was refused after the denied one: %v", err)
+	}
+	t.Logf("capability refusal: code=%s retryable=%v; granted connection unaffected",
+		de.Code, de.Details["retryable"])
+}
+
 // TestS7EmptySiteScopeRefusesByNameAsAppRole is the site axis, executed.
 //
 // The grant names a site belonging to ANOTHER organisation. The column accepts
@@ -331,4 +459,177 @@ func TestS7EmptySiteScopeRefusesByNameAsAppRole(t *testing.T) {
 	if _, err := svc.ListSitesForModel(ctx, auth); err == nil {
 		t.Fatal("ListSitesForModel returned a result for an empty site scope")
 	}
+}
+
+// TestS7CapabilityOutsideTheOrgCeilingIsNotListedAsAppRole is the THIRD case of
+// the ruling, and the only one that hides.
+//
+// The other two are above: a held capability is listed and callable, and a
+// capability the ORG allows but this GRANT lacks is still listed and refuses by
+// name. This one is the organisation boundary: a capability the org's ceiling
+// does not contain is absent from tools/list entirely, and calling it answers
+// exactly as an unregistered name does -- because a distinguishable refusal
+// would hand back the enumeration the listing withheld.
+//
+// HOW THE NARROW CEILING IS CONSTRUCTED, AND WHETHER IT IS REACHABLE.
+//
+// It is set directly on the AuthorizedRequest that the real Authenticate
+// returned, and the value is the EMPTY set. That is not a shortcut, it is the
+// only narrower ceiling that exists today: capabilityVocabulary holds exactly
+// one capability, so the sole proper subset of it is the empty set.
+//
+// THIS STATE IS NOT REACHABLE THROUGH Authenticate TODAY, and saying so is part
+// of the proof rather than an apology for it. OrgDefaultCapabilities derives
+// the ceiling from the closed scope registry and REFUSES to return an empty
+// set -- all three of its error paths raise mcp_capability_unmapped rather than
+// yield one. So no live connection can currently carry a ceiling narrower than
+// the vocabulary, every tool is inside every real ceiling, and the hiding arm
+// cannot fire in production. It becomes reachable when the vocabulary grows a
+// second capability and org policy can select within it; the structure is
+// proven now so that it is already correct then.
+//
+// The connection is otherwise REAL: a live bearer, resolved by the real
+// Authenticate against the real schema as wpmgr_app, carrying the site scope
+// the database resolved. Only the ceiling is substituted.
+func TestS7CapabilityOutsideTheOrgCeilingIsNotListedAsAppRole(t *testing.T) {
+	ctx := context.Background()
+	pool := startPostgres(t)
+	mcpRepo := mcp.NewRepo(pool)
+	siteRepo := site.NewRepo(pool)
+	svc := mcp.NewService(mcpRepo)
+
+	tenant := seedTenant(t, pool, "mcp-s7-ceil-"+uuid.NewString()[:8])
+
+	// The role is asserted and printed INSIDE the transaction the resolution
+	// uses. Either privilege would make the site half of this pass vacuously.
+	if err := pool.InTenantTx(ctx, tenant, func(tx pgx.Tx) error {
+		mcpAssertAndReportRole(t, tx, "InTenantTx (org-ceiling proof)")
+		return nil
+	}); err != nil {
+		t.Fatalf("open tenant tx: %v", err)
+	}
+
+	s1, err := siteRepo.Create(ctx, site.CreateInput{
+		TenantID: tenant, URL: "https://s7ceil.example.com", Name: "s7-ceil"})
+	if err != nil {
+		t.Fatalf("create site: %v", err)
+	}
+
+	_, bearer := s7GrantWithBearer(t, mcpRepo, tenant, "ceiling", []uuid.UUID{s1.ID})
+
+	auth, err := svc.Authenticate(ctx, bearer)
+	if err != nil {
+		t.Fatalf("Authenticate with a live bearer: %v", err)
+	}
+
+	// POSITIVE CONTROL. The real connection -- real ceiling, real grant -- sees
+	// the tool and can call it, so an absence below is the ceiling and not a
+	// broken fixture.
+	if got := mcp.VisibleTools(auth); len(got) != 1 || got[0].Name != mcp.ToolListSites {
+		t.Fatalf("the real connection did not see the tool: %+v", got)
+	}
+	if _, _, err := mcp.AuthorizeTool(mcp.ToolListSites, auth); err != nil {
+		t.Fatalf("the real, fully-granted connection was refused: %v", err)
+	}
+
+	// THE CEILING RESOLVED BY Authenticate CONTAINS THE CAPABILITY. Asserted
+	// rather than assumed: if it did not, the omission below would prove
+	// nothing, because the tool would be missing for the reason the test is
+	// trying to create rather than the one it is trying to observe.
+	if !auth.OrgCeiling.Allows(mcp.CapSitesRead) {
+		t.Fatalf("Authenticate resolved a ceiling WITHOUT %s, so this test cannot "+
+			"distinguish the ceiling arm from a broken fixture: %v",
+			mcp.CapSitesRead, auth.OrgCeiling.Sorted())
+	}
+
+	// Now the same connection with a ceiling that excludes the capability.
+	// Capabilities and Sites are untouched -- the grant still HOLDS the
+	// capability -- so nothing below can be attributed to the grant axis or the
+	// site axis. This is the org axis alone.
+	outside := auth
+	outside.OrgCeiling = mcp.NewCapabilitySet(nil)
+	if !outside.Capabilities.Allows(mcp.CapSitesRead) {
+		t.Fatalf("the grant lost the capability, so this would prove the GRANT arm, "+
+			"not the ceiling arm: %v", outside.Capabilities.Sorted())
+	}
+	if outside.Sites.IsEmpty() || !outside.Sites.Allows(s1.ID) {
+		t.Fatalf("the DB-resolved site scope did not survive: %d sites, Allows(%s)=%v",
+			outside.Sites.Len(), s1.ID, outside.Sites.Allows(s1.ID))
+	}
+
+	// (1) IT IS NOT LISTED. By value: the list is empty, and specifically does
+	// not contain the tool under any description.
+	visible := mcp.VisibleTools(outside)
+	if len(visible) != 0 {
+		t.Fatalf("a capability outside the org ceiling was LISTED: %+v", visible)
+	}
+	for _, d := range visible {
+		if d.Name == mcp.ToolListSites {
+			t.Fatalf("the tool outside the ceiling appeared in tools/list: %+v", d)
+		}
+	}
+
+	// (2) INVOKING IT ANSWERS AS AN UNREGISTERED NAME. Asserted by VALUE on the
+	// code, and explicitly against the code it must NOT be: answering
+	// mcp_capability_not_granted here would name a capability the organisation
+	// switched off, which is the enumeration the omission above exists to
+	// prevent.
+	_, _, err = mcp.AuthorizeTool(mcp.ToolListSites, outside)
+	if err == nil {
+		t.Fatal("a tool outside the org ceiling was AUTHORIZED")
+	}
+	de, ok := domain.AsDomain(err)
+	if !ok {
+		t.Fatalf("err = %v, want a domain error", err)
+	}
+	if de.Code != mcp.ErrCodeToolNotAvailable {
+		t.Fatalf("code = %q, want %q", de.Code, mcp.ErrCodeToolNotAvailable)
+	}
+	if de.Code == mcp.ErrCodeCapabilityNotGranted {
+		t.Fatal("the ceiling refusal disclosed the capability the organisation disabled")
+	}
+	if de.Kind != domain.KindForbidden {
+		t.Fatalf("kind = %v, want KindForbidden", de.Kind)
+	}
+	if strings.Contains(de.Message, string(mcp.CapSitesRead)) {
+		t.Fatalf("the ceiling refusal NAMES the disabled capability: %s", de.Message)
+	}
+
+	// (3) IT IS INDISTINGUISHABLE FROM A NAME THAT WAS NEVER REGISTERED. Same
+	// code, same message. If these ever diverge, the refusal becomes an oracle
+	// for what the organisation switched off.
+	//
+	// The comparison is on the TEMPLATE, not the literal string: both messages
+	// echo the name the caller asked for, and that difference is the caller's
+	// own input rather than a disclosure. Substituting it back is what isolates
+	// the property -- everything OTHER than the echoed name must match.
+	const guessed = "sites_restart_everything"
+	_, _, guessErr := mcp.AuthorizeTool(guessed, outside)
+	gde, ok := domain.AsDomain(guessErr)
+	if !ok {
+		t.Fatalf("guessed name err = %v, want a domain error", guessErr)
+	}
+	if gde.Code != de.Code {
+		t.Fatalf("a disabled capability answers %q and a guessed name answers %q; "+
+			"the difference tells a caller which capabilities exist", de.Code, gde.Code)
+	}
+	if want := strings.ReplaceAll(gde.Message, guessed, mcp.ToolListSites); de.Message != want {
+		t.Fatalf("the two refusals differ beyond the echoed name, which is the same oracle:\n"+
+			"disabled: %s\nexpected: %s", de.Message, want)
+	}
+
+	// (4) IT DOES NOT OVER-FIRE. The untouched connection still lists and still
+	// calls the tool, after the refusals, against the same live database.
+	if got := mcp.VisibleTools(auth); len(got) != 1 || got[0].Name != mcp.ToolListSites {
+		t.Fatalf("the real connection lost the tool after the ceiling refusal: %+v", got)
+	}
+	if _, _, err := mcp.AuthorizeTool(mcp.ToolListSites, auth); err != nil {
+		t.Fatalf("the granted connection was refused after the ceiling one: %v", err)
+	}
+	if _, err := svc.ListSitesForModel(ctx, auth); err != nil {
+		t.Fatalf("list_sites failed for the real connection: %v", err)
+	}
+
+	t.Logf("org-ceiling omission: listed=%d refusal=%s (identical to an unregistered "+
+		"name); the real connection is unaffected", len(visible), de.Code)
 }

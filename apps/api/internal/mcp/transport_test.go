@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -752,6 +753,136 @@ func TestToolsCall_EmptyScopeIsRefusedNotAnEmptyList(t *testing.T) {
 		if c == "ListSitesForRead" {
 			t.Error("an empty-scope request still read the sites table")
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PROOF 6b -- AN UNTICKED CAPABILITY REFUSES ON THE WIRE, WITH ITS OWN CODE.
+//
+// The D1 ruling in one wire assertion: the tool is listed, calling it answers
+// -32005 and not -32004, and the data says which capability is missing and that
+// retrying will not help.
+//
+// IT GOES THROUGH h.authorizeCall, the same function the router now calls
+// before the rate-limit gate on the tools/call path (1A-11 merge): the
+// capability check runs first specifically so it cannot be preempted by a
+// rate-limit refusal, and that is what this test exercises. The
+// AuthorizedRequest is built here rather than authenticated, because the
+// capability axis is not stored per-grant yet (m124 DECISION 1) and every
+// bearer the fake store mints therefore holds mcp.sites.read. The DB-side
+// proof of the same refusal lives in
+// apps/api/tests/adr064_s7_mcp_tool_registry_rls_test.go, as wpmgr_app.
+// ---------------------------------------------------------------------------
+
+func TestToolsCall_UntickedCapabilityRefusesWithItsOwnCode(t *testing.T) {
+	// A REAL Service, not nil. authorizeCall now records the refusal
+	// (RecordToolDenied), which dereferences the service; its audit recorder is
+	// nil in unit configuration and records nothing, which is what this test
+	// wants. A nil *Service panics on the refusal path -- the path this test
+	// exists to walk.
+	h := NewTransportHandler(NewService(&fakeStore{}),
+		slog.New(slog.NewTextHandler(io.Discard, nil)), "test")
+
+	// Holds NO capability, but a non-empty site scope -- so nothing below can
+	// be attributed to the site axis, which this change did not touch.
+	//
+	// The ORG CEILING is the production one (authWith resolves
+	// OrgDefaultCapabilities), so this is the middle case of the ruling: the
+	// organisation has this capability enabled and THIS GRANT does not hold it.
+	// That is the case that must still be listed. A connection whose ceiling
+	// excluded the capability is a different case and is proven separately in
+	// registry_test.go.
+	auth := authWith(CapabilitySet{}, uuid.New())
+
+	// The tool is LISTED to this connection: the refusal below is a refusal,
+	// not a consequence of an empty surface.
+	if got := VisibleTools(auth); len(got) != 1 || got[0].Name != ToolListSites {
+		t.Fatalf("tools/list hid the tool from a connection lacking its capability: %+v", got)
+	}
+
+	_, _, resp, refused := h.authorizeCall(context.Background(), auth, jsonrpcRequest{
+		ID:     json.RawMessage(`61`),
+		Method: "tools/call",
+		Params: json.RawMessage(`{"name":"list_sites","arguments":{}}`),
+	})
+
+	if !refused {
+		t.Fatal("a connection holding no capability was not refused")
+	}
+	if resp.Error == nil {
+		t.Fatalf("a connection holding no capability got a SUCCESS: %+v", resp)
+	}
+	// BY VALUE, and against the code it must NOT be: -32004 tells a model to
+	// ask tools/list for a tool tools/list already showed it, which is the
+	// contradiction that produces another call rather than a report to the user.
+	if resp.Error.Code != codeCapabilityNotGranted {
+		t.Fatalf("error code = %d, want %d (%s)",
+			resp.Error.Code, codeCapabilityNotGranted, ErrCodeCapabilityNotGranted)
+	}
+	if resp.Error.Code == codeToolNotAvailable {
+		t.Fatal("the capability refusal answered the uniform not-available code")
+	}
+	if !strings.Contains(resp.Error.Message, string(CapSitesRead)) {
+		t.Fatalf("the wire message does not name the missing capability: %q", resp.Error.Message)
+	}
+
+	var data struct {
+		Code               string   `json:"code"`
+		Tool               string   `json:"tool"`
+		RequiredCapability string   `json:"required_capability"`
+		HeldCapabilities   []string `json:"held_capabilities"`
+		Retryable          *bool    `json:"retryable"`
+	}
+	if err := json.Unmarshal(resp.Error.Data, &data); err != nil {
+		t.Fatalf("decode error data %s: %v", resp.Error.Data, err)
+	}
+	if data.Code != ErrCodeCapabilityNotGranted {
+		t.Errorf("data.code = %q, want %q", data.Code, ErrCodeCapabilityNotGranted)
+	}
+	if data.Tool != ToolListSites {
+		t.Errorf("data.tool = %q, want %q", data.Tool, ToolListSites)
+	}
+	if data.RequiredCapability != string(CapSitesRead) {
+		t.Errorf("data.required_capability = %q, want %q", data.RequiredCapability, CapSitesRead)
+	}
+	if len(data.HeldCapabilities) != 0 {
+		t.Errorf("data.held_capabilities = %v for a connection holding none", data.HeldCapabilities)
+	}
+	// A MISSING retryable IS A FAILURE, not a pass. A client that has to infer
+	// retryability infers "try again", which is the loop this refusal exists to
+	// prevent.
+	if data.Retryable == nil {
+		t.Fatal("the error data carries no retryable field")
+	}
+	if *data.Retryable {
+		t.Error("data.retryable = true on a permanent refusal")
+	}
+}
+
+// TestToolsCall_HeldCapabilityIsUnaffected is the over-fire control. The SAME
+// call, from a connection that holds the capability and a site, must reach the
+// tool -- so the refusal above is the capability gate and not a broken fixture.
+func TestToolsCall_HeldCapabilityIsUnaffected(t *testing.T) {
+	store := liveGrantStore(uuid.New())
+	r := newTransportRouter(t, store)
+
+	w := post(t, r, `{"jsonrpc":"2.0","id":62,"method":"tools/call","params":{"name":"list_sites","arguments":{}}}`, nil)
+
+	resp := decodeRPC(t, w)
+	if resp.Error != nil {
+		t.Fatalf("a connection HOLDING the capability was refused %d: %s",
+			resp.Error.Code, w.Body.String())
+	}
+	// The sites payload is JSON nested inside the JSON-RPC text content, so it
+	// arrives escaped. Matching the unescaped form would never fire.
+	if !strings.Contains(w.Body.String(), `\"sites\":`) {
+		t.Fatalf("the granted call returned no sites payload: %s", w.Body.String())
+	}
+	// And its tools/list descriptor carries no capability notice.
+	w = post(t, r, `{"jsonrpc":"2.0","id":63,"method":"tools/list","params":{}}`, nil)
+	if strings.Contains(w.Body.String(), "NOT AVAILABLE TO THIS CONNECTION") {
+		t.Fatalf("a connection holding the capability was told the tool is unavailable: %s",
+			w.Body.String())
 	}
 }
 

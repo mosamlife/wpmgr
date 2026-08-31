@@ -1070,6 +1070,31 @@ type AuthorizedRequest struct {
 	// reaches NO tool rather than every tool. That is why it is a CapabilitySet
 	// and not a []string.
 	Capabilities CapabilitySet
+
+	// OrgCeiling is the ORGANISATION's widest capability set -- what
+	// OrgDefaultCapabilities resolved for this grant's scopes, BEFORE the
+	// per-connection narrowing that produced Capabilities. Capabilities is
+	// always a subset of it.
+	//
+	// IT IS CARRIED, NOT RECOMPUTED. Authenticate already resolves the ceiling
+	// to intersect it with the stored set, and a second OrgDefaultCapabilities
+	// call inside the registry would be a second source of truth that can
+	// disagree with this one -- and would have to discard the error that
+	// function returns for exactly the misconfiguration it exists to catch.
+	//
+	// IT EXISTS BECAUSE THE TWO BOUNDARIES DISCLOSE DIFFERENTLY. A tool inside
+	// the ceiling that this grant does not hold is LISTED and refuses by name,
+	// so that unticking a permission produces an explicable refusal rather than
+	// a tool that silently vanishes. A tool outside the ceiling is omitted from
+	// tools/list and refuses as unregistered, so a token holder cannot
+	// enumerate the capabilities their organisation deliberately switched off.
+	// Without this field the registry can only see Capabilities and cannot tell
+	// the two apart.
+	//
+	// Zero value allows nothing, and that is the same fail-closed choice
+	// Capabilities makes for the same reason: a literal that forgets it lists
+	// NO tool rather than every tool.
+	OrgCeiling CapabilitySet
 }
 
 // Authenticate resolves a bearer token and re-checks its grant against CURRENT
@@ -1207,6 +1232,11 @@ func (s *Service) Authenticate(ctx context.Context, bearer string) (AuthorizedRe
 		TokenID:      chk.TokenID,
 		Sites:        NewSiteSet(ids),
 		Capabilities: caps,
+		// The ceiling resolved above, carried rather than recomputed. caps is
+		// ceiling.NarrowTo(stored), so this is always a superset of
+		// Capabilities and the registry can tell "your grant lacks it" from
+		// "your organisation switched it off". See AuthorizedRequest.OrgCeiling.
+		OrgCeiling: ceiling,
 	}, nil
 }
 

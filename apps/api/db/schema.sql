@@ -179,6 +179,31 @@ CREATE TABLE tenants (
     cancel_at_period_end     boolean     NOT NULL DEFAULT false,
     deleted_at               timestamptz,
     purge_started_at         timestamptz,
+    -- M130 — the assistant / MCP surface's per-tenant enablement flag and kill
+    -- switch. Two columns, not one tri-state, because releasing the kill
+    -- switch after an incident must not enable a surface that was deliberately
+    -- off. NULL means a DIFFERENT thing on each: assistant_enabled_at IS NULL
+    -- means never enabled (off), assistant_paused_at IS NULL means not paused
+    -- (running).
+    --
+    -- ONLY assistant_paused_at IS IN THE `authorized` VERDICT in
+    -- ReCheckMCPRequestAuthorizationInTenantTx, so the kill switch stops
+    -- in-flight requests on the next request rather than only blocking new
+    -- grants. assistant_enabled_at is NOT in the verdict and nothing reads it
+    -- yet: a tenant created after m130 has it NULL, so gating on it would
+    -- refuse every new signup. See m130 DECISION 5 before wiring it.
+    --
+    -- These live on tenants, and NOT in a settings table, because tenants has
+    -- no RLS: a kill switch read on the authentication path from behind a
+    -- policy can be filtered to NULL and read as "not paused", which is an
+    -- inert kill switch. See m130 DECISION 1.
+    assistant_enabled_at     timestamptz,
+    assistant_paused_at      timestamptz,
+    assistant_paused_reason  text
+        CHECK (assistant_paused_reason IS NULL
+               OR (assistant_paused_at IS NOT NULL
+                   AND length(btrim(assistant_paused_reason)) > 0
+                   AND length(assistant_paused_reason) <= 500)),
     created_at               timestamptz NOT NULL DEFAULT now(),
     updated_at               timestamptz NOT NULL DEFAULT now()
 );
@@ -5665,13 +5690,44 @@ CREATE TABLE mcp_grants (
     -- exit gate -- discovery never grants what the registry does not hold --
     -- pushed into the one place a call site cannot forget.
     --
-    -- Keep in lockstep with capabilityVocabulary in internal/mcp/policy.go,
-    -- which holds exactly this one entry today. EXTENDING IT IS A MIGRATION,
-    -- and that coupling is the review gate m124 DECISION 1 asked for: a write
-    -- capability cannot reach this table until someone writes a migration
-    -- naming it. Adding a Capability to policy.go alone fails 23514 on INSERT.
+    -- Keep in lockstep with capabilityVocabulary in internal/mcp/policy.go.
+    -- EXTENDING IT IS A MIGRATION, and that coupling is the review gate m124
+    -- DECISION 1 asked for: a write capability cannot reach this table until
+    -- someone writes a migration naming it. Adding a Capability to policy.go
+    -- alone fails 23514 on INSERT.
+    --
+    -- m131 widened this from the single member m127 seated to the WHOLE v1 READ
+    -- vocabulary, so that the registry can widen freely inside a set the
+    -- database already accepts instead of paying a migration per capability
+    -- group. m131's DECISION 1 gives the reasoning for each name; in short, the
+    -- middle segment is the OUTCOME an operator ticks on Step 4 and never the
+    -- mechanism that serves it.
+    --
+    -- EVERY MEMBER ENDS IN '.read', and that is checkable by pattern rather
+    -- than by trust. No write capability is seated: the write side uses
+    -- '.propose' and '.write', and the first migration to add a member not
+    -- ending in '.read' is the one that owes the write review.
+    --
+    -- 'mcp.content.read' is seated DELIBERATELY AND UNREACHABLE -- there is no
+    -- post or page table here and no agent command returns post content, and
+    -- ADR-062 holds the content work behind ship blockers. The CHECK is a
+    -- ceiling on what a grant MAY hold, not a floor and not a default, so a
+    -- member no code writes affects no row. See m131 DECISION 3.
+    --
+    -- This constraint's array is READ AT RUNTIME by the parity test that holds
+    -- it identical to capabilityVocabulary, via pg_get_constraintdef on this
+    -- constraint NAME -- which is why the name did not change in m131.
     CONSTRAINT mcp_grants_capabilities_vocabulary_check
-        CHECK (capabilities <@ ARRAY['mcp.sites.read']::text[]),
+        CHECK (capabilities <@ ARRAY[
+            'mcp.activity.read',
+            'mcp.backups.read',
+            'mcp.content.read',
+            'mcp.diagnostics.read',
+            'mcp.performance.read',
+            'mcp.security.read',
+            'mcp.sites.read',
+            'mcp.uptime.read'
+        ]::text[]),
     -- The registered OAuth client, or NULL on the headless token path. No
     -- foreign key: neither ON DELETE action is right for a recorded fact.
     client_id text NULL,
@@ -6028,3 +6084,434 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON mcp_grants              TO wpmgr_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON mcp_connection_tokens   TO wpmgr_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON mcp_oauth_clients       TO wpmgr_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON mcp_authorization_codes TO wpmgr_app;
+
+-- ---------------------------------------------------------------------------
+-- m132 (ADR-061 A11, Wave 1.2): RESTRICTIVE app.site_scope policies on the
+-- tables the assistant reads.
+--
+-- Mirrors apps/api/migrations/20260903000000_m132_assistant_read_site_scope_rls.sql.
+-- That file is authoritative; this one is sqlc's input. Read its DECISION 2
+-- before touching the predicate: the nullif is the fail-closed property, not
+-- defensive noise. An empty allowlist denies via NULL, not via FALSE.
+--
+-- These are inert on every path that does not set app.site_scope, which today
+-- is every path except InScopedTenantTx (internal/db/db.go:582).
+-- ---------------------------------------------------------------------------
+
+CREATE POLICY cache_purge_audit_site_scope ON cache_purge_audit
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE POLICY font_results_site_scope ON font_results
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE POLICY font_transcode_results_site_scope ON font_transcode_results
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE POLICY rucss_jobs_site_scope ON rucss_jobs
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE POLICY rucss_results_site_scope ON rucss_results
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE POLICY rum_events_raw_site_scope ON rum_events_raw
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE POLICY rum_rollup_daily_site_scope ON rum_rollup_daily
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE POLICY rum_rollup_hourly_site_scope ON rum_rollup_hourly
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE POLICY site_app_alert_state_site_scope ON site_app_alert_state
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE POLICY site_cache_hit_ratio_history_site_scope ON site_cache_hit_ratio_history
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE POLICY site_cache_stats_site_scope ON site_cache_stats
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE POLICY site_connection_history_site_scope ON site_connection_history
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE POLICY site_db_clean_results_site_scope ON site_db_clean_results
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE POLICY site_db_scan_results_site_scope ON site_db_scan_results
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE POLICY site_db_size_history_site_scope ON site_db_size_history
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE POLICY site_events_site_scope ON site_events
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE POLICY site_object_cache_config_site_scope ON site_object_cache_config
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE POLICY site_object_cache_stats_history_site_scope ON site_object_cache_stats_history
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE POLICY site_perf_config_site_scope ON site_perf_config
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE POLICY site_security_policy_site_scope ON site_security_policy
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE POLICY site_security_policy_groups_site_scope ON site_security_policy_groups
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE POLICY site_vulnerabilities_site_scope ON site_vulnerabilities
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );

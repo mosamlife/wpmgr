@@ -30,7 +30,7 @@ import (
 // reads exactly like that test's own assertion failed. The SETUP FAILURE
 // prefix plus the named stage let the next reader classify it in one glance
 // instead of re-running the investigation that produced this comment.
-func setupFatalf(t *testing.T, err error, stage string) {
+func setupFatalf(t testing.TB, err error, stage string) {
 	t.Helper()
 	t.Fatalf("SETUP FAILURE (infrastructure, not the test's own assertion) at stage=%q: %v", stage, err)
 }
@@ -39,7 +39,7 @@ func setupFatalf(t *testing.T, err error, stage string) {
 // available on this machine at all" — the one setup failure that is not a
 // mid-run flake and that every other test in the package would hit
 // identically, so skipping (rather than failing) is the honest signal.
-func setupSkipf(t *testing.T, err error, stage string) {
+func setupSkipf(t testing.TB, err error, stage string) {
 	t.Helper()
 	t.Skipf("SETUP SKIP (infrastructure, not the test's own assertion) at stage=%q: %v", stage, err)
 }
@@ -63,7 +63,7 @@ func setupSkipf(t *testing.T, err error, stage string) {
 // still only skips on a second, independent positive Health() probe — never
 // by inspecting the start error's text — so it cannot reclassify an ordinary
 // start failure as unavailability.
-func skipIfDockerUnavailable(t *testing.T, ctx context.Context, stage string) {
+func skipIfDockerUnavailable(t testing.TB, ctx context.Context, stage string) {
 	t.Helper()
 	provider, err := testcontainers.ProviderDocker.GetProvider()
 	if err != nil {
@@ -91,7 +91,7 @@ func skipIfDockerUnavailable(t *testing.T, ctx context.Context, stage string) {
 // a SECOND positive Health() probe, the same mechanism skipIfDockerUnavailable
 // already trusts — never by pattern-matching startErr's text. An ordinary
 // start failure re-probes healthy and falls straight through to setupFatalf.
-func setupFatalfOrSkipIfDaemonDied(t *testing.T, ctx context.Context, startErr error, stage string) {
+func setupFatalfOrSkipIfDaemonDied(t testing.TB, ctx context.Context, startErr error, stage string) {
 	t.Helper()
 	provider, provErr := testcontainers.ProviderDocker.GetProvider()
 	if provErr == nil {
@@ -112,7 +112,7 @@ func setupFatalfOrSkipIfDaemonDied(t *testing.T, ctx context.Context, startErr e
 // BYPASSRLS) ignore RLS policies entirely, so the application MUST connect as a
 // plain, non-superuser role for the sites_tenant_isolation policy to take
 // effect. The default container user is a superuser, hence the extra role.
-func startPostgres(t *testing.T) *db.Pool {
+func startPostgres(t testing.TB) *db.Pool {
 	t.Helper()
 	ctx := context.Background()
 
@@ -239,7 +239,7 @@ func connectAdmin(t *testing.T, app *db.Pool) *db.Pool {
 }
 
 // seedTenant inserts a tenant row directly (tenants are not RLS-scoped).
-func seedTenant(t *testing.T, pool *db.Pool, slug string) uuid.UUID {
+func seedTenant(t testing.TB, pool *db.Pool, slug string) uuid.UUID {
 	t.Helper()
 	var id uuid.UUID
 	err := pool.QueryRow(context.Background(),
