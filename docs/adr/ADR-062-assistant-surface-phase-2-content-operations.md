@@ -1,12 +1,30 @@
 # ADR-062 — Assistant surface, Phase 2: governed fleet content operations
 
-**Status:** Proposed · **Date:** 2026-08-27
+**Status:** Accepted (2026-08-31), amended the same day by [A1](#amendments-2026-08-31); checklist items 3, 4, 9 and 10 stay open and are now ship blockers · **Date:** 2026-08-27
 **Supersedes/relates:** Revisits ADR-061 Decision 7 (site generation conceded) directly, and its acceptance supersedes that decision's concession framing for the content-editing and page-generation capabilities scoped below — see [Consequences](#consequences). Relates to ADR-061 as Accepted (Decision 1's siting and signed-command channel, Decision 2's out-of-band approval state machine, Decision 3's control-plane-derived approval facts and quarantined-note contract, Decision 4's application-layer site scoping with database-level scoping named as its own deferred decision, Decision 5's capability-by-registry-absence model, Decision 6's flat tool set and its roughly-25-entry facade threshold) and ADR-060 (this work sits at position 5, Differentiation, in that ADR's precedence order, and does not outbid open earlier-position work for engineering time).
 
-**This ADR is Proposed and it blocks Phase 2.** No content-write code ships in
-`apps/agent` or in the control plane until it is Accepted. The items in
-[The acceptance checklist](#the-acceptance-checklist) are what has to close
-first.
+**Amended 2026-08-31. Read [Amendments](#amendments-2026-08-31) before
+concluding that anything below has been lifted.** The status above changed;
+no decision text in this document is rewritten. One amendment, A1, records
+that this ADR is Accepted with four checklist items still open, and converts
+those four from acceptance criteria into ship blockers.
+
+*The paragraph immediately below is the gate as this ADR originally set it
+for itself. Its wording is unchanged, and it is quoted here rather than
+deleted because the record of what was originally required matters. What it
+means now is defined in A1, not here.*
+
+> **This ADR is Proposed and it blocks Phase 2.** No content-write code ships in
+> `apps/agent` or in the control plane until it is Accepted. The items in
+> [The acceptance checklist](#the-acceptance-checklist) are what has to close
+> first.
+
+**As amended, the operative rule is this.** No content-write code ships in
+`apps/agent` or in the control plane until checklist items 3, 4, 9 and 10 each
+close on their own terms. The gate moved from document approval to code
+shipping. It was not removed, it was not lifted, and it is not weaker: the
+same four items block the same code, and the only thing that changed is which
+event they block. **Item 4 in particular is unconditional**, and A1 says why.
 
 ---
 
@@ -211,6 +229,14 @@ recorded where the affected method lives rather than here in the abstract:
 Elementor.
 
 ## The acceptance checklist
+
+*Amended 2026-08-31. This list is unchanged and no box has been ticked. The
+sentence below, that every `[ ]` is a reason this ADR is still Proposed,
+recorded the acceptance procedure this document set for itself. The ADR is
+now Accepted with items 3, 4, 9 and 10 open, and those four are ship blockers
+under [A1](#amendments-2026-08-31). The boxes stay `[ ]` because the items are
+genuinely open; ticking them to match the status would be a lie, and an
+Accepted ADR with four visibly open items is the honest record.*
 
 `[x]` means the decision is recorded in this ADR; `[ ]` means it is not, and
 every `[ ]` is a reason this ADR is still Proposed. The count below is never
@@ -1106,6 +1132,13 @@ handler is written, not discovered after a double-apply incident.
 
 ## Why this is still Proposed
 
+*Amended 2026-08-31. This section is kept as written, including its heading,
+and the five reasons below are not withdrawn: each names something that is
+still open. What changed is what they block, per
+[A1](#amendments-2026-08-31). Point 1 is the one the amendment answers
+directly, and A1 records why its reasoning did not survive contact with the
+work it was gating.*
+
 1. **Its own gate is what would lift.** Accepting this ADR releases the
    sentence at the top — *no content-write code ships until it is
    Accepted*. That sentence should be released when the work is ready to
@@ -1247,3 +1280,104 @@ permanent open marks.
   changed timestamp does not trigger a rollback.
 - `make test-integration` run locally before merge, since content proposals
   carry site scoping and `ci.yml` does not run that package.
+
+---
+
+## Amendments (2026-08-31)
+
+This ADR set itself an acceptance procedure: every `[ ]` on
+[The acceptance checklist](#the-acceptance-checklist) was a reason it stayed
+Proposed, and it would become Accepted when they closed. Four did not close,
+and on 2026-08-31 the owner accepted the ADR anyway, deliberately and on the
+record, by moving those four rather than by waiting for them or ticking them.
+
+**This is a departure from this document's own procedure, and it is recorded
+as one rather than smoothed over.** No decision text above is rewritten, no
+box is ticked, and the gating paragraph near the top keeps its original
+wording so the record of what was originally required survives.
+
+### A1: Accepted with items 3, 4, 9 and 10 open, and those four become ship blockers
+
+**The decision.** ADR-062 is Accepted as of 2026-08-31 by explicit owner
+decision, with checklist items 3, 4, 9 and 10 open. They stay open, marked
+`[ ]`, and they are quoted here as the checklist states them, not paraphrased
+into something easier:
+
+- **Item 3.** "Own or delegate, per integration, with verify-and-rollback as
+  a shared platform primitive rather than a per-integration one." The rule is
+  recorded; the per-integration table that applies it is not fully written,
+  and cannot be for the builders behind the first two until the first-wave
+  machinery is proved once.
+- **Item 4.** "Snapshot before every destructive write, mandatory,
+  fail-closed, at the platform layer." Open because no fail-closed snapshot
+  mechanism for content rows exists. The file-write staging precedent is
+  fail-open by its own documentation, so it cannot be extended unchanged.
+- **Item 9.** "Dynamic-data binding as the primary write-reduction strategy."
+  Recorded as a design goal; the binding operation itself is unscoped and
+  lands with the first builder, so it cannot close ahead of that work.
+- **Item 10.** "How the tool surface accommodates content", bounded by
+  ADR-061 Decision 6's roughly-25-entry facade-revisit threshold rather than
+  a number invented here. The checklist calls this one **open by
+  construction**: the threshold is measured against a live `tools/list`,
+  which does not exist until the Phase 1 surface is serving traffic.
+
+**What the four items now are.** They convert from acceptance criteria into
+**ship blockers**. No content-write code ships in `apps/agent` or in the
+control plane until each of the four closes on its own terms. The gate has
+moved from document approval to code shipping. It has not been removed, it
+has not been lifted, and it is not weaker: the same four items block the same
+code, and the only thing that changed is which event they stand in front of.
+Accepting this ADR buys the right to design Phase 2, not the right to ship
+any part of it.
+
+**Item 4 is unconditional, and it is the one to read twice.** A mandatory,
+fail-closed, platform-layer snapshot taken before every destructive write
+**does not exist in this system today, in any form**. Nothing partial
+substitutes for it, the fail-open file-write staging mechanism least of all.
+No content-write capability ships without it, not behind a flag, not for one
+builder, not as a pilot on a single site, and not with the snapshot taken by
+an integration instead of by the platform. This is the safety net under
+everything Phase 2 does, and an acceptance that left it ambiguous would be
+worse than no acceptance at all.
+
+**Why the change was made.** The previous shape was circular. Items 3, 9 and
+10 each close only by doing design, scoping or measurement work that the
+gating paragraph forbade starting, because that paragraph blocked Phase 2
+work while the items were open, and the items could not close without it.
+Item 10 is the sharpest case and is why this could not be waited out: it is
+open by construction, measured against a live `tools/list` that does not
+exist yet, and it may never close on its own terms at all. **An acceptance
+criterion that cannot be satisfied is not a gate, it is a stall**, and a
+document held Proposed by one stops functioning as a decision record while
+the work it governs gets planned somewhere else, unrecorded. Moving the four
+to the shipping boundary keeps every one of them binding while letting the
+work that closes them begin.
+
+**What this unblocks.** Design, scoping and schema work for Phase 2: the
+per-integration own/delegate table, the fail-closed snapshot mechanism's
+design and its planted-failure proof, the binding operation's scoping, the
+proposal and staging schema, and the pre-development tasks under
+[The fleet-inventory query gates order](#the-fleet-inventory-query-gates-order-never-the-framework).
+
+**What this does not unblock.** Shipping any content write. Every entry under
+[What has to exist before any Phase 2 content code is written](#consequences)
+stands unchanged, including the service-principal attack-test suite, the
+`verify()` primitive with its planted-failure proof, the injection-fencing
+sanitizers, and the `security-reviewer` and `database-engineer` passes.
+
+**What this amendment does not touch.** It is scoped to this ADR's own
+acceptance procedure and nothing else.
+
+- **ADR-060's freeze clause is untouched.** This amendment does not close it,
+  weaken it, comment on it, or claim anything about whether Phase 2 trips it.
+  That clause remains ADR-060's one absolute prohibition, and it is read
+  through ADR-060's own Amendment A1, which this document does not amend.
+- **ADR-061's A10 (audit is fail-closed for this surface) and A11 (site
+  scoping is in v1, as an application-layer chokepoint, and it must be built
+  rather than assumed) are separate and still open.** Accepting ADR-062 does
+  not close either, does not weaken either, and says nothing about either.
+  Both remain exactly as ADR-061 leaves them.
+
+If this amendment is ever read as having touched any of those three, that
+reading is wrong: the only thing moved here is the boundary that four of
+this document's own checklist items stand at.

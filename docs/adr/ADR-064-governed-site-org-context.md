@@ -1,6 +1,6 @@
 # ADR-064 — Governed per-site and organisation context
 
-**Status:** Proposed · **Date:** 2026-08-27
+**Status:** Accepted (2026-08-31) · **Date:** 2026-08-27
 **Supersedes/relates:** ADR-060 (argued, under an interpretation of its
 undefined term "surface" rather than a settled reading, as not gated by its
 freeze clause — see Relationship, below, including the flag that this
@@ -20,6 +20,25 @@ its accepted design and five of which this ADR is the first record of. (As
 Decision 7 and Decision 11 below note, "ADR-061 specified it" and "it is
 running today" are different claims — the two inherited layers are decided,
 not deployed.)
+
+**Accepted 2026-08-31 by owner decision.** This ADR set itself no acceptance
+checklist, and carries none: `grep -cE '^\s*-?\s*\[ \]'` against this file
+returns zero. That is the honest reason its acceptance is clean rather than
+conditional, and it is worth stating plainly, because the companion decision
+taken on the same day (ADR-062, accepted with four items open, see its
+[Amendment A1](./ADR-062-assistant-surface-phase-2-content-operations.md#amendments-2026-08-31))
+is not clean in that way and should not be read as the same kind of event.
+
+Acceptance here makes the record match reality rather than authorising new
+work: the governed-context subsystem specified below is already built, wired
+and shipped. Its tables land in migrations `m122_governed_context` and
+`m123_org_context_write_scope`; its handler is mounted as `GovContextH` in
+`apps/api/internal/server/server.go`; its screens live under
+`apps/web/src/features/context/`; and `CHANGELOG.md` records the whole of it
+shipping in 0.61.147. What was missing was the decision record, not the
+implementation. **This does not extend to the two layers inherited from
+ADR-061**, which remain decided rather than deployed exactly as the paragraph
+above says.
 
 ---
 
