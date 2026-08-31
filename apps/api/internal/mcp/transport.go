@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -83,6 +85,22 @@ const (
 	// comment claimed -32004 covered the scope-empty case too. It never did:
 	// TestToolsCall_EmptyScopeIsRefusedNotAnEmptyList asserts -32002.
 	codeToolNotAvailable = -32004
+
+	// codeRateLimited is the tool-call budget refusing (1A-11). It is a
+	// SEPARATE code from every refusal above because it is the only one that is
+	// TRANSIENT-BUT-NOT-IMMEDIATELY: the request was well-formed, the
+	// credential is valid, the capability is held, and the same call will
+	// succeed later without anything being reconfigured.
+	//
+	// THAT DISTINCTION IS THE WHOLE POINT AND IT IS AIMED AT A MODEL, NOT AT A
+	// HUMAN. A model that reads a refusal as transient retries at once, and a
+	// model that reads it as permanent gives up and tells the user something
+	// false. Neither is right here; the correct behaviour is to wait the stated
+	// interval and then retry, so the message says so in words and the data
+	// object carries the interval as a number. This is the same failure the
+	// empty-capability refusal was moved off 401 to avoid -- there the client
+	// looped re-running OAuth, here it would loop re-calling the tool.
+	codeRateLimited = -32005
 )
 
 // TransportHandler serves the single MCP endpoint. It is separate from Handler
@@ -93,12 +111,30 @@ type TransportHandler struct {
 	svc     *Service
 	log     *slog.Logger
 	version string
+
+	// toolLimit bounds the tools/* methods (1A-11). It lives on the HANDLER
+	// rather than the Service because it gates a transport-level decision --
+	// the request is refused before any service method runs, so no activity
+	// stamp is written and no tool executes for a call that was never admitted.
+	//
+	// Never nil after NewTransportHandler. toolCallLimiter.allow refuses on a
+	// nil receiver anyway, so a handler built by a struct literal that skipped
+	// it serves NOTHING rather than serving unlimited.
+	toolLimit *toolCallLimiter
 }
 
 // NewTransportHandler builds the MCP transport handler. version is reported in
 // initialize's serverInfo.
 func NewTransportHandler(svc *Service, log *slog.Logger, version string) *TransportHandler {
-	return &TransportHandler{svc: svc, log: log, version: version}
+	return &TransportHandler{
+		svc:     svc,
+		log:     log,
+		version: version,
+		// Armed HERE rather than injected with a nil default, for the reason
+		// NewService gives about its own limiter: an unarmed limiter would be a
+		// wiring failure that presents as a perfectly working endpoint.
+		toolLimit: newToolCallLimiter(ToolCallTenantPerMin, ToolCallGrantPerMin),
+	}
 }
 
 // Register mounts the ONE endpoint on the given group.
@@ -540,6 +576,11 @@ func (h *TransportHandler) dispatch(
 		return newResponse(req.ID, map[string]any{}), http.StatusOK, true
 
 	case "tools/list":
+		// THE BUDGET IS CHECKED BEFORE THE STAMP, which is before the answer.
+		// A refused request must not write.
+		if resp, refused := h.rateLimit(c, auth, req); refused {
+			return resp, http.StatusTooManyRequests, true
+		}
 		// THE ACTIVITY STAMP IS BEFORE THE ANSWER, NOT AFTER IT. See
 		// stampActivity.
 		if resp, refused := h.stampActivity(ctx, auth, req); refused {
@@ -553,6 +594,9 @@ func (h *TransportHandler) dispatch(
 		return newResponse(req.ID, map[string]any{"tools": VisibleTools(auth)}), http.StatusOK, true
 
 	case "tools/call":
+		if resp, refused := h.rateLimit(c, auth, req); refused {
+			return resp, http.StatusTooManyRequests, true
+		}
 		if resp, refused := h.stampActivity(ctx, auth, req); refused {
 			return resp, http.StatusOK, true
 		}
@@ -683,6 +727,91 @@ type toolCallParams struct {
 // tool-availability code: nothing is wrong with the caller's token or its
 // capability set, and telling it otherwise would send an operator rotating a
 // credential that was never the problem.
+// rateLimit applies the tool-call budget (1A-11). The bool is true when the
+// request was REFUSED, matching stampActivity's shape.
+//
+// BOTH KEYS COME FROM auth, WHICH IS SERVER-RESOLVED. AuthorizedRequest was
+// built by Service.Authenticate from the hashed bearer credential and re-checked
+// under the resolved tenant, so no header this caller sent participates in
+// choosing a bucket. Varying X-Forwarded-For, X-Real-IP or anything else cannot
+// obtain a fresh budget, which is the property two other limiters in this tree
+// were recently found to be missing.
+//
+// THE REFUSAL IS WRITTEN FOR TWO READERS AT ONCE, and that is why it is not
+// simply a 429.
+//
+//   - The HTTP layer gets 429 with Retry-After in whole seconds, which is what
+//     a conforming HTTP client already knows how to back off on.
+//   - The MODEL gets the JSON-RPC error body, because an MCP client typically
+//     surfaces the error content to the model and not the status line. The
+//     message therefore states IN WORDS that retrying immediately will not
+//     help and names the wait, rather than leaving the model to infer urgency
+//     from a bare "rate limited" -- an inference it reliably gets wrong by
+//     retrying at once.
+//
+// The data object carries the numbers so a client can act without parsing
+// prose, and names the scope so an operator learns whether one connection or
+// the whole organisation is affected.
+func (h *TransportHandler) rateLimit(c *gin.Context, auth AuthorizedRequest, req jsonrpcRequest) (jsonrpcResponse, bool) {
+	d := h.toolLimit.allow(auth.TenantID, auth.GrantID)
+	if d.Allowed {
+		return jsonrpcResponse{}, false
+	}
+
+	secs := int(math.Ceil(d.RetryAfter.Seconds()))
+	if secs < 1 {
+		secs = 1
+	}
+	c.Header("Retry-After", strconv.Itoa(secs))
+
+	h.log.WarnContext(c.Request.Context(), "mcp tool call rate limited",
+		slog.String("tenant_id", auth.TenantID.String()),
+		slog.String("grant_id", auth.GrantID.String()),
+		slog.String("method", req.Method),
+		slog.String("limit_scope", string(d.Scope)),
+		slog.Int("retry_after_seconds", secs),
+	)
+
+	var msg string
+	switch d.Scope {
+	case scopeConnection:
+		msg = fmt.Sprintf(
+			"This connection has reached its tool-call rate limit of %d calls per minute. "+
+				"Wait %d seconds before calling this tool again -- retrying immediately will not "+
+				"succeed and will not shorten the wait. Nothing is misconfigured and no credential "+
+				"needs to be changed; the same call will work after the wait.",
+			ToolCallGrantPerMin, secs)
+	default:
+		msg = fmt.Sprintf(
+			"This organisation has reached its tool-call rate limit of %d calls per minute across "+
+				"all of its connections. Wait %d seconds before calling this tool again -- retrying "+
+				"immediately will not succeed and will not shorten the wait. Nothing is "+
+				"misconfigured and no credential needs to be changed; the same call will work "+
+				"after the wait.",
+			ToolCallTenantPerMin, secs)
+	}
+
+	data, _ := json.Marshal(map[string]any{
+		"retry_after_seconds": secs,
+		"limit_scope":         string(d.Scope),
+		"limit_per_minute":    limitForScope(d.Scope),
+		// Stated as a field and not only in the prose, so a client that
+		// branches on structure rather than reading the message reaches the
+		// same conclusion.
+		"retry_immediately_will_fail": true,
+	})
+	return newErrorResponse(req.ID, codeRateLimited, msg, data), true
+}
+
+// limitForScope reports the per-minute budget that refused, so the data object
+// and the message can never disagree about which number applies.
+func limitForScope(s limitScope) int {
+	if s == scopeConnection {
+		return ToolCallGrantPerMin
+	}
+	return ToolCallTenantPerMin
+}
+
 func (h *TransportHandler) stampActivity(ctx context.Context, auth AuthorizedRequest, req jsonrpcRequest) (jsonrpcResponse, bool) {
 	if err := h.svc.RecordActivity(ctx, auth); err != nil {
 		h.log.ErrorContext(ctx, "mcp activity stamp failed",
