@@ -1012,6 +1012,69 @@ func (h *TransportHandler) writeUnauthorized(c *gin.Context, err error) {
 
 	msg := "a valid bearer token is required"
 	code := ErrCodeInvalidGrant
+
+	// A CONFIGURATION REFUSAL IS 403 AND IT LEAVES THIS FUNCTION HERE.
+	//
+	// Service.Authenticate argues at length that an unresolvable capability set
+	// must be 403 rather than 401, and it returns exactly that. Without this
+	// arm the verdict was DISCARDED: a KindForbidden matched neither the
+	// KindUnauthorized branch below nor the not-a-domain-error branch, so it
+	// fell through to the 401 at the bottom of this function carrying the
+	// DEFAULT msg and code -- "a valid bearer token is required" and
+	// mcp_invalid_grant. The service's own code and message never reached the
+	// client, and the status said "your credential is bad" about a state where
+	// the credential is fine.
+	//
+	// That is not a cosmetic status-code error. It manufactures the precise
+	// loop the service comment exists to prevent: an MCP client that receives
+	// 401 re-runs the OAuth handshake, a handshake cannot change a stored
+	// capability set, so the client re-authenticates forever and the operator
+	// is sent to rotate a credential that was never the problem. The
+	// mcp.content.read refusal and the empty-capabilities refusal both land
+	// here.
+	//
+	// IT IS EVERY DOMAIN KIND EXCEPT KindUnauthorized, NOT KindForbidden ALONE,
+	// AND THAT IS THE WHOLE DIFFERENCE BETWEEN CATCHING THIS BUG AND HALF
+	// CATCHING IT. Authenticate produces the two capability refusals by
+	// DIFFERENT constructors: the empty-set refusal is domain.Forbidden, but
+	// the NarrowTo refusal -- the mcp.content.read arm -- is domain.Validation,
+	// %w-wrapped as "resolve grant capabilities: %w". A KindForbidden-only test
+	// would fix the first and leave the second falling through to the same 401
+	// with the same discarded code.
+	//
+	// So the split is by what the caller can DO about it, which is the only
+	// thing the status code is for. KindUnauthorized means "your credential is
+	// the problem", and re-authenticating is the remedy: 401. Every other
+	// domain kind reaching this function is a fact about the GRANT that a new
+	// credential cannot change: 403. Writing it as "not Unauthorized" rather
+	// than as a list of kinds also means a domain kind added later cannot
+	// silently inherit the wrong default, which is exactly how this defect
+	// existed.
+	//
+	// Matched on the UNWRAPPED chain: domain.AsDomain unwraps, so the %w above
+	// does not hide the kind.
+	//
+	// WWW-AUTHENTICATE IS CLEARED ON THIS PATH, DELIBERATELY, AND IT IS THE
+	// HALF THAT ACTUALLY STOPS THE LOOP. It is a CHALLENGE header: it tells the
+	// client which scheme to authenticate with and is an invitation to try
+	// again with a credential. RFC 7235 defines it as the 401 companion, and
+	// sending it alongside 403 is telling a client whose credential is valid to
+	// go and get another one -- which is the retry this arm exists to stop,
+	// re-invited by a header. So the status and the headers have to agree:
+	// nothing here says "authenticate again", because authenticating again
+	// cannot help. Gin's c.Header with an empty value deletes the header rather
+	// than writing a blank one, which is the same mechanism the 500 arm below
+	// already relies on.
+	if de, ok := domain.AsDomain(err); ok && de.Kind != domain.KindUnauthorized {
+		h.log.Warn("mcp connection refused by configuration, not by credential",
+			slog.String("code", de.Code), slog.Any("kind", de.Kind))
+		c.Header("WWW-Authenticate", "")
+		data, _ := json.Marshal(map[string]any{"code": de.Code})
+		c.JSON(http.StatusForbidden,
+			newErrorResponse(nil, codeInvalidRequest, de.Message, data))
+		return
+	}
+
 	if de, ok := domain.AsDomain(err); ok && de.Kind == domain.KindUnauthorized {
 		msg = de.Message
 		code = de.Code

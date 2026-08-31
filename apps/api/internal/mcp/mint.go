@@ -242,12 +242,22 @@ type MintConnectionRequest struct {
 	// do, is VERIFY the ids server-side -- see ErrCodeUnknownScopeTag.
 	SiteScope SiteScopeRequest
 
-	// Capabilities is the tool axis. EMPTY MEANS "the organisation default",
-	// not "none": an empty stored capability set is a connection that
-	// authenticates and then reaches no tool, which Authenticate refuses by
-	// name, so writing one here would mint a credential that can never work.
-	// A non-empty list is NARROWED against the org ceiling, never widened past
-	// it -- CapabilitySet.NarrowTo refuses rather than intersects.
+	// Capabilities is the tool axis. EMPTY MEANS THE DEFAULT PRESET --
+	// DefaultGrantCapabilities(), which is {mcp.sites.read} -- and it is
+	// neither "none" nor "the organisation ceiling".
+	//
+	// BOTH OF THOSE READINGS ARE WRONG AND THEY ARE WRONG IN OPPOSITE
+	// DIRECTIONS. "None" would store an empty set, and an empty stored
+	// capability set is a connection that authenticates and then reaches no
+	// tool, which Authenticate refuses by name -- a credential that can never
+	// work. "The organisation default" was this comment's own wording until the
+	// vocabulary widened, and it is the name of OrgDefaultCapabilities, the
+	// SEVEN-member ceiling; reading it that way now hands the widest available
+	// set to a caller who asked for nothing.
+	//
+	// A non-empty list is NARROWED against that ceiling, never widened past it
+	// -- CapabilitySet.NarrowTo refuses rather than intersects. So the ceiling
+	// is reachable BY ASKING, and only by asking.
 	Capabilities []Capability
 
 	// SetupClient is the operator's step-2 choice, OPTIONAL, and nil means the
@@ -537,8 +547,8 @@ func (s *Service) MintConnection(ctx context.Context, req MintConnectionRequest)
 // resolveMintCapabilities turns the operator's requested capability list into
 // the set that will be stored.
 //
-// AN EMPTY REQUEST MEANS THE ORGANISATION DEFAULT, NOT AN EMPTY SET, and the
-// difference is the whole function. mcp_grants.capabilities admits '{}' -- the
+// AN EMPTY REQUEST MEANS THE DEFAULT PRESET, NOT AN EMPTY SET AND NOT THE
+// CEILING, and the difference is the whole function. mcp_grants.capabilities admits '{}' -- the
 // shape CHECK passes it, because '{}' is the RESTRICTIVE value -- so an empty
 // set is perfectly storable, and Authenticate then refuses the connection by
 // name on every request ("this connection holds no capability, so it can reach
@@ -552,13 +562,29 @@ func (s *Service) MintConnection(ctx context.Context, req MintConnectionRequest)
 // tomorrow), whereas an empty capability set is a connection that cannot
 // function at all. The two axes are not symmetric because their empty values
 // mean different things.
+//
+// THE ABSENT REQUEST TAKES DefaultGrantCapabilities(), NOT THE CEILING, AND THE
+// TWO STOPPED BEING THE SAME THING WHEN THE VOCABULARY WIDENED. `return
+// ceiling, nil` here was correct and safe for exactly as long as the ceiling
+// held one member; against a seven-member ceiling it is the SECOND COPY of the
+// widening m131's note warns about, one function over from
+// DefaultGrantCapabilities and reached by the mint endpoint rather than by the
+// consent screen. An operator who POSTs no capability list has chosen nothing,
+// and the answer to "nobody asked" is the preset, never the widest set
+// available. An operator who wants more asks for it on the line below, and
+// asking is choosing.
 func (s *Service) resolveMintCapabilities(requested []Capability) (CapabilitySet, error) {
 	ceiling, err := OrgDefaultCapabilities(grantScopes())
 	if err != nil {
 		return CapabilitySet{}, fmt.Errorf("resolve organisation capabilities: %w", err)
 	}
 	if len(requested) == 0 {
-		return ceiling, nil
+		// Still routed through NarrowTo rather than returned directly, so the
+		// preset is subject to the same ceiling every explicit request is. A
+		// preset that named a capability no scope confers would be a refusal
+		// here, loudly, rather than a stored set Authenticate refuses later on
+		// every request of a credential the operator is already holding.
+		return ceiling.NarrowTo(DefaultGrantCapabilities())
 	}
 	// NarrowTo REFUSES anything the ceiling does not hold rather than dropping
 	// it. Dropping would be fail-closed and still wrong: the operator would be
