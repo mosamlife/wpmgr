@@ -344,7 +344,11 @@ func (s *Service) ConnectionStatus(ctx context.Context, p domain.Principal, gran
 		return ConnectionStatus{}, domain.NotFound("connection_not_found", "connection not found")
 	}
 
-	grant, err := s.store.GetGrant(ctx, p, grantID)
+	// ONE call, because the two facts must come from ONE ordered read. See
+	// Store.ConnectionStatusSnapshot: the service is deliberately given no way
+	// to fetch the handshake and the first call separately, because doing so is
+	// what made the impossible pair representable.
+	snap, err := s.store.ConnectionStatusSnapshot(ctx, p, grantID, firstCallScanLimit)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			// Absent, another organisation's, or refused by RLS. All three are
@@ -353,25 +357,21 @@ func (s *Service) ConnectionStatus(ctx context.Context, p domain.Principal, gran
 			// which is the cross-tenant leak this surface must not have.
 			return ConnectionStatus{}, domain.NotFound("connection_not_found", "connection not found")
 		}
-		return ConnectionStatus{}, fmt.Errorf("mcp connection status: %w", err)
-	}
-
-	call, err := s.store.FindFirstToolCall(ctx, p, grantID, firstCallScanLimit)
-	if err != nil {
 		// NOT swallowed into FirstCallAwaiting. A failed audit read that
 		// rendered as "no call yet" would send the operator to the wireframe's
 		// troubleshooting frame for a connection that may well be working --
 		// an infrastructure failure reported as a fact about the client.
-		return ConnectionStatus{}, fmt.Errorf("mcp connection status first call: %w", err)
+		return ConnectionStatus{}, fmt.Errorf("mcp connection status: %w", err)
 	}
 
+	grant := snap.Grant
 	return ConnectionStatus{
 		ID:          grant.ID,
 		Status:      GrantStatus(grant.Status),
 		CreatedAt:   grant.CreatedAt,
 		ExpiresAt:   grant.ExpiresAt,
 		Handshake:   handshakeFromGrant(grant),
-		FirstCall:   firstCallFrom(call, timestamptzTimeOrNil(grant.LastUsedAt)),
+		FirstCall:   firstCallFrom(snap.FirstCall, timestamptzTimeOrNil(grant.LastUsedAt)),
 		ObservedAt:  s.now().UTC(),
 		PollAfterMs: statusPollAfterMs,
 	}, nil
@@ -475,39 +475,138 @@ type FirstToolCall struct {
 	ToolName string
 }
 
-// GetGrant reads ONE grant through RunTenantTx.
+// ConnectionSnapshot is the pair of reads Steps 8 and 9 are derived from.
+//
+// It exists so the two CANNOT be fetched independently. See
+// Repo.ConnectionStatusSnapshot for the ordering that makes the pair
+// consistent, and Store.ConnectionStatusSnapshot for why this replaced two
+// separately-callable reads rather than sitting alongside them.
+type ConnectionSnapshot struct {
+	Grant     sqlc.McpGrant
+	FirstCall FirstToolCall
+}
+
+// ConnectionStatusSnapshot reads the grant and the first tool call for Steps 8
+// and 9 in ONE transaction and, more importantly, in ONE ORDER.
+//
+// ============================================================================
+// THE ORDER IS THE FIX. THE SHARED TRANSACTION ALONE IS NOT.
+// ============================================================================
+//
+// The defect this replaces ran GetGrant and FindFirstToolCall as two separate
+// transactions. An initialize and a tool call committing between them produced
+// handshake=awaiting_client together with first_call=succeeded -- the exact
+// contradiction this endpoint was made a SINGLE endpoint to prevent. The
+// contradiction had simply moved inside the handler.
+//
+// Wrapping both reads in one transaction does NOT by itself fix it, and
+// believing it does is the trap here. Every helper in internal/db begins with
+// p.Begin, which is READ COMMITTED, and under READ COMMITTED each STATEMENT
+// takes its own snapshot -- so two statements in one transaction still straddle
+// a concurrent commit exactly as two transactions did. A true transaction-wide
+// snapshot needs REPEATABLE READ, which must be set at BEGIN; the tx helpers
+// set the RLS GUCs with SELECT set_config before fn runs, so by the time this
+// function has a tx the isolation level can no longer be changed. Raising it
+// would mean a new BeginTx-based helper in internal/db, which is the tenancy
+// boundary and a change of its own.
+//
+// So consistency is bought with ORDERING instead, which needs no isolation
+// change and no new helper:
+//
+//	   THE INVARIANT: mcp_grants.client_identity_recorded_at is stamped by
+//	   RecordClientIdentity (db/query/mcp_connections.sql, "client_identity_
+//	   recorded_at = now()") and is NEVER written back to NULL. A tool call's
+//	   audit row is written strictly after the initialize that recorded the
+//	   client. The handshake fact is therefore MONOTONIC and always at least as
+//	   old as the first-call fact.
+//
+//	   THE CONSEQUENCE: read the LATER fact first and the EARLIER fact last.
+//	   Anything that commits between the two reads can then only make the
+//	   handshake MORE advanced, never less. The reachable pairs become
+//	   awaiting_client+awaiting_call, connected+awaiting_call and
+//	   connected+succeeded -- all three real states. awaiting_client+succeeded
+//	   is unreachable by racing, which is the whole finding.
+//
+// Reversing steps 2 and 3 below reintroduces the defect, which is what the
+// regression test pins.
+//
+// WHY THE GRANT IS READ TWICE. Step 1 is an existence-and-RLS gate whose only
+// product is the 404: without it a poll for an absent or another tenant's grant
+// id would run the bounded audit scan -- up to firstCallScanLimit+1 rows --
+// before discovering it had nothing to answer about, turning a cheap 404 into
+// an audit-log scan any authenticated org principal could trigger by guessing
+// ids. Its returned row is DELIBERATELY DISCARDED: it is older than the scan
+// and using it would be the original bug. Step 3 re-reads the same primary key
+// inside the same open transaction -- an indexed single-row read -- and that
+// row is the one the handshake is derived from.
+//
+// THE AUDIT SCAN'S COST INSIDE THE TRANSACTION. findFirstToolCallTx reads at
+// most firstCallScanLimit+1 rows from one index and holds no locks; it is a
+// read-only transaction, so nothing here blocks a writer or pins a row. What
+// the longer transaction does cost is a pooled connection held for the scan's
+// duration rather than for two short reads, and one xmin held back for that
+// window. At a two-second poll per open wizard tab that is not a vacuum
+// concern, and it is strictly less connection churn than the two transactions
+// it replaces.
 //
 // RunTenantTx and not InTenantTx, for the reason ListGrants gives: mcp_grants
 // carries a RESTRICTIVE mcp_grants_site_scope_select policy as well as the
 // tenant-isolation one, and InTenantTx does not set app.site_scope or
 // app.allowed_site_ids, so the restrictive policy would be INERT and a
 // site-constrained principal would read an organisation-wide credential with a
-// 200 and no trace. Service.ConnectionStatus refuses such a principal before
+// 200 and no trace. Combining the reads did NOT force the plain helper: both
+// reads were already on RunTenantTx and they still are, now on ONE dispatch
+// instead of two. Service.ConnectionStatus refuses such a principal before
 // reaching here; this is the second lock on the same door, in the layer that
 // still holds if somebody later mounts this read behind a different gate.
 //
 // pgx.ErrNoRows is returned VERBATIM so the caller can 404 on it.
-func (r *Repo) GetGrant(ctx context.Context, principal domain.Principal, grantID uuid.UUID) (sqlc.McpGrant, error) {
-	var out sqlc.McpGrant
+func (r *Repo) ConnectionStatusSnapshot(
+	ctx context.Context,
+	principal domain.Principal,
+	grantID uuid.UUID,
+	limit int,
+) (ConnectionSnapshot, error) {
+	var out ConnectionSnapshot
 	err := r.pool.RunTenantTx(ctx, principal, func(tx pgx.Tx) error {
-		row, err := sqlc.New(tx).GetMCPGrant(ctx, sqlc.GetMCPGrantParams{
-			TenantID: principal.TenantID,
-			ID:       grantID,
-		})
+		// 1. Gate. Existence and RLS only; the row itself is thrown away.
+		if _, err := getGrantTx(ctx, tx, principal.TenantID, grantID); err != nil {
+			return err
+		}
+
+		// 2. The LATER fact.
+		call, err := findFirstToolCallTx(ctx, tx, principal.TenantID, grantID, limit)
 		if err != nil {
 			return err
 		}
-		out = row
+
+		// 3. The EARLIER fact, read last so it can only be fresher than the
+		//    scan. This is the row the handshake state comes from.
+		grant, err := getGrantTx(ctx, tx, principal.TenantID, grantID)
+		if err != nil {
+			return err
+		}
+
+		out = ConnectionSnapshot{Grant: grant, FirstCall: call}
 		return nil
 	})
 	if err != nil {
-		return sqlc.McpGrant{}, err
+		return ConnectionSnapshot{}, err
 	}
 	return out, nil
 }
 
-// FindFirstToolCall looks for the OLDEST mcp.tool.called audit row belonging to
-// this grant.
+// getGrantTx is the single-row grant read, on an already-open transaction so
+// the caller owns the ordering. pgx.ErrNoRows passes through untouched.
+func getGrantTx(ctx context.Context, tx pgx.Tx, tenantID, grantID uuid.UUID) (sqlc.McpGrant, error) {
+	return sqlc.New(tx).GetMCPGrant(ctx, sqlc.GetMCPGrantParams{
+		TenantID: tenantID,
+		ID:       grantID,
+	})
+}
+
+// findFirstToolCallTx looks for the OLDEST mcp.tool.called audit row belonging
+// to this grant.
 //
 // THE OLDEST, because Step 9 asks "did the first read happen", and the wizard
 // renders that one call. ListAuditEntriesFiltered orders newest-first, so the
@@ -528,63 +627,62 @@ func (r *Repo) GetGrant(ctx context.Context, principal domain.Principal, grantID
 // window without matching returns Found=false AND Truncated=true, and the
 // service turns that pair into FirstCallIndeterminate rather than into a
 // not-yet.
-func (r *Repo) FindFirstToolCall(
+//
+// It runs on an ALREADY-OPEN transaction rather than opening its own, so that
+// ConnectionStatusSnapshot owns the order in which this read and the grant read
+// happen. That ordering is load-bearing; see ConnectionStatusSnapshot.
+func findFirstToolCallTx(
 	ctx context.Context,
-	principal domain.Principal,
+	tx pgx.Tx,
+	tenantID uuid.UUID,
 	grantID uuid.UUID,
 	limit int,
 ) (FirstToolCall, error) {
 	var out FirstToolCall
 	want := grantID.String()
 
-	err := r.pool.RunTenantTx(ctx, principal, func(tx pgx.Tx) error {
-		rows, err := sqlc.New(tx).ListAuditEntriesFiltered(ctx, sqlc.ListAuditEntriesFilteredParams{
-			TenantID:     principal.TenantID,
-			ActionPrefix: audit.ActionMCPToolCalled,
-			// The disabled-filter sentinels this query documents: the zero uuid
-			// turns the site filter off, and the zero Timestamptz values are
-			// not Valid, which is the NULL that turns the time window off.
-			SiteID:    uuid.Nil.String(),
-			RowOffset: 0,
-			RowLimit:  int32(limit) + 1,
-		})
-		if err != nil {
-			return fmt.Errorf("scan mcp tool calls: %w", err)
-		}
-
-		out.Truncated = len(rows) > limit
-		if out.Truncated {
-			rows = rows[:limit]
-		}
-
-		// Newest-first, so walking BACKWARDS reaches the oldest row first and
-		// the first hit is the one Step 9 wants.
-		for i := len(rows) - 1; i >= 0; i-- {
-			row := rows[i]
-			// actor_type is checked as well as actor_id. actor_id is a free
-			// text column shared by every actor kind, so a uuid match alone
-			// would also accept a row written by a user or an api_key that
-			// happened to carry this id -- and the grant id and the user id
-			// live in the same column space. Both halves, or the attribution
-			// is a coincidence.
-			if row.ActorType != audit.ActorAssistant || row.ActorID != want {
-				continue
-			}
-			out.Found = true
-			// A found row ends the search, so Truncated stops being
-			// meaningful and is cleared rather than left set for the service
-			// to have to ignore.
-			out.Truncated = false
-			out.EventID = row.ID
-			out.At = row.CreatedAt
-			// target_id is the tool name -- RecordToolCall stores it there.
-			out.ToolName = row.TargetID
-			return nil
-		}
-		return nil
+	rows, err := sqlc.New(tx).ListAuditEntriesFiltered(ctx, sqlc.ListAuditEntriesFilteredParams{
+		TenantID:     tenantID,
+		ActionPrefix: audit.ActionMCPToolCalled,
+		// The disabled-filter sentinels this query documents: the zero uuid
+		// turns the site filter off, and the zero Timestamptz values are
+		// not Valid, which is the NULL that turns the time window off.
+		SiteID:    uuid.Nil.String(),
+		RowOffset: 0,
+		RowLimit:  int32(limit) + 1,
 	})
 	if err != nil {
-		return FirstToolCall{}, err
+		return FirstToolCall{}, fmt.Errorf("scan mcp tool calls: %w", err)
+	}
+
+	out.Truncated = len(rows) > limit
+	if out.Truncated {
+		rows = rows[:limit]
+	}
+
+	// Newest-first, so walking BACKWARDS reaches the oldest row first and
+	// the first hit is the one Step 9 wants.
+	for i := len(rows) - 1; i >= 0; i-- {
+		row := rows[i]
+		// actor_type is checked as well as actor_id. actor_id is a free
+		// text column shared by every actor kind, so a uuid match alone
+		// would also accept a row written by a user or an api_key that
+		// happened to carry this id -- and the grant id and the user id
+		// live in the same column space. Both halves, or the attribution
+		// is a coincidence.
+		if row.ActorType != audit.ActorAssistant || row.ActorID != want {
+			continue
+		}
+		out.Found = true
+		// A found row ends the search, so Truncated stops being
+		// meaningful and is cleared rather than left set for the service
+		// to have to ignore.
+		out.Truncated = false
+		out.EventID = row.ID
+		out.At = row.CreatedAt
+		// target_id is the tool name -- RecordToolCall stores it there.
+		out.ToolName = row.TargetID
+		return out, nil
 	}
 	return out, nil
 }

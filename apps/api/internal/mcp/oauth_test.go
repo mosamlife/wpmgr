@@ -480,14 +480,41 @@ func (f *fakeStore) ListGrants(_ context.Context, p domain.Principal) ([]sqlc.Mc
 	return f.grants, nil
 }
 
-// GetGrant models Repo.GetGrant, INCLUDING its pgx.ErrNoRows contract: getErr
+// ConnectionStatusSnapshot models Repo.ConnectionStatusSnapshot: the ONE read
+// the status service is allowed to make, returning both halves together.
+//
+// It composes the two unexported fixture halves below so that every existing
+// fixture field -- getErr, grants, firstCall, firstCallErr -- keeps driving the
+// branch it always drove. The GATE ORDER IS MODELLED TOO: the grant lookup runs
+// first and its error wins, because the real repo 404s on a missing grant
+// without running the audit scan, and a fake that scanned first would let a
+// service reordering slip through green.
+//
+// It does NOT model the intra-transaction ordering that makes the pair
+// consistent. That is a property of two statements against a live database and
+// no in-process fake can express it; it is pinned by the integration test.
+func (f *fakeStore) ConnectionStatusSnapshot(
+	ctx context.Context, p domain.Principal, id uuid.UUID, limit int,
+) (ConnectionSnapshot, error) {
+	grant, err := f.getGrant(ctx, p, id)
+	if err != nil {
+		return ConnectionSnapshot{}, err
+	}
+	call, err := f.findFirstToolCall(ctx, p, id, limit)
+	if err != nil {
+		return ConnectionSnapshot{}, err
+	}
+	return ConnectionSnapshot{Grant: grant, FirstCall: call}, nil
+}
+
+// getGrant models the grant half, INCLUDING its pgx.ErrNoRows contract: getErr
 // is returned VERBATIM so a test can set pgx.ErrNoRows and drive the
 // "grant not visible" branch through errors.Is exactly as the real repo does.
 //
 // It records the principal for the same reason ListGrants does -- the
 // signature takes a principal precisely so the RESTRICTIVE _site_scope policy
 // is reachable, and a test asserting that gate needs to see what was passed.
-func (f *fakeStore) GetGrant(_ context.Context, p domain.Principal, id uuid.UUID) (sqlc.McpGrant, error) {
+func (f *fakeStore) getGrant(_ context.Context, p domain.Principal, id uuid.UUID) (sqlc.McpGrant, error) {
 	f.note("GetGrant")
 	f.mu.Lock()
 	f.getPrincipals = append(f.getPrincipals, p)
@@ -508,11 +535,11 @@ func (f *fakeStore) GetGrant(_ context.Context, p domain.Principal, id uuid.UUID
 	return sqlc.McpGrant{}, pgx.ErrNoRows
 }
 
-// FindFirstToolCall models Repo.FindFirstToolCall. firstCall is returned as
-// given so a test can assert every one of the three Step 9 states, INCLUDING
-// the Found=false/Truncated=true pair that must become indeterminate rather
-// than a not-yet.
-func (f *fakeStore) FindFirstToolCall(_ context.Context, p domain.Principal, _ uuid.UUID, _ int) (FirstToolCall, error) {
+// findFirstToolCall models the audit half. firstCall is returned as given so a
+// test can assert every one of the three Step 9 states, INCLUDING the
+// Found=false/Truncated=true pair that must become indeterminate rather than a
+// not-yet.
+func (f *fakeStore) findFirstToolCall(_ context.Context, p domain.Principal, _ uuid.UUID, _ int) (FirstToolCall, error) {
 	f.note("FindFirstToolCall")
 	f.mu.Lock()
 	f.getPrincipals = append(f.getPrincipals, p)

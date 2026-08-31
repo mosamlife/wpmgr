@@ -120,20 +120,25 @@ type Store interface {
 	// db.dispatchTenantTx's hands instead of this package's memory.
 	ListGrants(ctx context.Context, principal domain.Principal) ([]sqlc.McpGrant, error)
 
-	// GetGrant and FindFirstToolCall are the wizard's Step 8 / Step 9 pair
-	// (S29). GetGrant TAKES THE PRINCIPAL for exactly the reason ListGrants
-	// does, above: it reads mcp_grants, so a tenantID-only signature could
-	// only reach InTenantTx and would leave the RESTRICTIVE _site_scope
-	// SELECT policy inert on a single-row read of an organisation-wide
-	// credential.
+	// ConnectionStatusSnapshot is the wizard's Step 8 / Step 9 pair (S29), and
+	// it is ONE METHOD RETURNING BOTH FACTS RATHER THAN TWO METHODS.
 	//
-	// FindFirstToolCall takes it too, and that is NOT copy-paste. It reads
-	// audit_log rather than mcp_grants, but it is called in the same request
-	// as GetGrant and about the same grant; giving it the weaker signature
-	// would put the two reads of one answer on two different dispatch paths,
-	// which is how one of them later gets the GUCs and the other does not.
-	FindFirstToolCall(ctx context.Context, principal domain.Principal, grantID uuid.UUID, limit int) (FirstToolCall, error)
-	GetGrant(ctx context.Context, principal domain.Principal, grantID uuid.UUID) (sqlc.McpGrant, error)
+	// It replaced a GetGrant/FindFirstToolCall pair, and the pair is gone from
+	// this interface rather than kept alongside it. Two separately-callable
+	// reads are what let the service answer from two different instants, which
+	// produced handshake=awaiting_client together with first_call=succeeded --
+	// a state that cannot occur in reality and the exact contradiction this
+	// endpoint was made a single endpoint to prevent. Leaving the two methods
+	// reachable would leave that recombination one refactor away, so the
+	// interface no longer offers it.
+	//
+	// IT TAKES THE PRINCIPAL for exactly the reason ListGrants does, above: it
+	// reads mcp_grants, so a tenantID-only signature could only reach
+	// InTenantTx and would leave the RESTRICTIVE _site_scope SELECT policy
+	// inert on a single-row read of an organisation-wide credential. The audit
+	// half of the snapshot rides the same dispatch, which is the point: one
+	// principal, one RunTenantTx, one set of GUCs for both reads.
+	ConnectionStatusSnapshot(ctx context.Context, principal domain.Principal, grantID uuid.UUID, limit int) (ConnectionSnapshot, error)
 
 	// RevokeGrantWithTokens flips the grant AND every active token in ONE
 	// statement. There is deliberately no grant-only revoke on this interface:
