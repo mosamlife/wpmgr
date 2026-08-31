@@ -419,6 +419,53 @@ run_case "bypass-tool-args-comment-between-parameters" 1 "internal/mcp/tool_comm
   --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$DOC"
 rm -f "$TREE/apps/api/internal/mcp/tool_commented.go"
 
+# EACH COMMENT FORM CAN CONTAIN THE OTHER'"'"'S DELIMITER, so a two-pass strip is
+# unsound in EITHER order. Stripping line comments first truncated this at the
+# `//` inside the URL and left an unclosed `/*` that the block pass could not
+# match; the residue stopped TOOLARGS_SIG matching and Rule C reported
+# containment. Stripping block comments first fails symmetrically on
+# `// /* text`. Only a single left-to-right scan is correct.
+printf '%s\n' 'package mcp' \
+  'var slashed = toolEntry{' \
+  '	invoke: func(ctx context.Context, svc *Service, auth AuthorizedRequest, /* https://example */ args json.RawMessage) (string, error) {' \
+  '		return svc.Something(ctx, auth, args)' \
+  '	},' \
+  '}' >"$TREE/apps/api/internal/mcp/tool_slashed.go"
+run_case "bypass-tool-args-block-comment-containing-slashes" 1 "internal/mcp/tool_slashed.go binds toolInvoker" - -- \
+  --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$DOC"
+rm -f "$TREE/apps/api/internal/mcp/tool_slashed.go"
+
+# The mirror image: a line comment containing a block-comment opener. Stripping
+# block comments first would swallow from here to the next `*/` anywhere in the
+# file, silently eating real code.
+printf '%s\n' 'package mcp' \
+  '// a note about /* nested markers */ in this package' \
+  'var lineFirst = toolEntry{' \
+  '	invoke: func(ctx context.Context, svc *Service, auth AuthorizedRequest, args json.RawMessage) (string, error) {' \
+  '		return svc.Something(ctx, auth, args)' \
+  '	},' \
+  '}' >"$TREE/apps/api/internal/mcp/tool_linefirst.go"
+run_case "bypass-tool-args-line-comment-containing-block-opener" 1 "internal/mcp/tool_linefirst.go binds toolInvoker" - -- \
+  --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$DOC"
+rm -f "$TREE/apps/api/internal/mcp/tool_linefirst.go"
+
+# MUST NOT REDDEN. A URL in an ordinary line comment, and a URL inside a STRING
+# LITERAL -- which is not a comment at all and must survive stripping intact.
+# The tool here uses the compliant discard, so the file must stay out of
+# FOUND_TOOLARGS and the tree must stay clean.
+printf '%s\n' 'package mcp' \
+  '// see https://example.com/docs for the protocol' \
+  'const endpoint = "https://example.com/mcp"' \
+  '/* a block comment mentioning https://example.com too */' \
+  'var discards = toolEntry{' \
+  '	invoke: func(ctx context.Context, svc *Service, auth AuthorizedRequest, _ json.RawMessage) (string, error) {' \
+  '		return endpoint, nil' \
+  '	},' \
+  '}' >"$TREE/apps/api/internal/mcp/tool_urls.go"
+run_case "ok-urls-in-comments-and-strings" 0 "Rule C  0 file(s)" "tool_urls.go binds" -- \
+  --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$DOC"
+rm -f "$TREE/apps/api/internal/mcp/tool_urls.go"
+
 # A DOT IMPORT puts New into the file's own scope, so the constructor is
 # spelled with no qualifier at all and no amount of looking for a dot finds it.
 printf '%s\n' 'package mcp' \

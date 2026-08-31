@@ -128,12 +128,22 @@
 #      Rules A, C and D match REGULAR EXPRESSIONS against a CONTEXT-FREE
 #      GRAMMAR. That is not a bug in any one pattern; it is a category error
 #      that no pattern can fix, and the evidence is the changelog of this file.
-#      Eight distinct bypasses have been found and closed here, every one of
-#      them a Go spelling a pattern did not know:
+#      Ten distinct bypasses have been found and closed here, every one of them
+#      a Go spelling a pattern did not know:
 #
 #        a space before a paren; a call split across a line break; a renamed
 #        parameter; a gofmt-wrapped signature; named results; a line-oriented
-#        pgx match; a comment between two parameters; a dot-imported New.
+#        pgx match; a comment between two parameters; a dot-imported New; a
+#        non-identifier first argument to a pgx method; and a block comment
+#        containing `//`, which defeated the two-pass comment stripper.
+#
+#      The last of those is the clearest evidence that the METHOD is the
+#      problem rather than any pattern: the bug was not in a regex at all but
+#      in the ORDER of two text passes, and no ordering was correct. An
+#      eleventh was introduced here while fixing the ninth -- a sed whose `|`
+#      was both delimiter and alternation, which returned empty and read as
+#      "no sqlc import", silently disabling a whole mechanism. The suite caught
+#      it. That is what this approach costs to maintain.
 #
 #      Each fix teaches the pattern one more spelling. Go always has another --
 #      a type alias for json.RawMessage, a method value registered instead of a
@@ -272,21 +282,63 @@ broken() { printf 'check-mcp-site-containment: GUARD BROKEN: %s\n' "$1" >&2; exi
 
 # Flatten a Go file to ONE whitespace-collapsed line with comments removed.
 #
-# Comments are stripped because they are legal between any two tokens, so a
-# block comment sitting between two parameters survives flattening and defeats
-# a pattern that admits only whitespace there. Line comments go first, per
-# line, before the join -- afterwards a `//` would swallow the rest of the file.
+# Comments are stripped because they are legal between any two Go tokens, so a
+# comment sitting between two parameters survives flattening and defeats a
+# pattern that admits only whitespace there.
 #
-# THIS IS AN APPROXIMATION AND IT IS DOCUMENTED AS ONE: `//` inside a string
-# literal (a URL) is stripped as though it were a comment. That direction loses
-# text rather than inventing it, so it can only ever hide a call, never fabricate
-# one -- and see the blind-spot block: this whole layer is approximate by
-# construction.
+# THIS IS ONE LEFT-TO-RIGHT SCAN, NOT TWO STRIPPING PASSES, and that is the
+# whole point. Two passes are unsound in EITHER order, because each comment
+# form may legally contain the other's delimiter:
+#
+#   line-comments first:  `/* https://example */` is truncated at the `//`,
+#                         leaving an unclosed `/*` the block pass cannot match.
+#   block-comments first: `// a note about /* this */` opens a block comment
+#                         that swallows to the next `*/` anywhere in the file.
+#
+# There is no ordering that fixes both, so ordering is removed as a concept: a
+# single scan takes whichever delimiter it reaches first and is in exactly one
+# state at a time. That also lets it recognise STRING LITERALS, so a `//` or a
+# `/*` inside a string is data and survives -- which the two-pass version got
+# wrong and this file previously documented as an accepted approximation.
+#
+# Handles: line comments, block comments, interpreted strings with escapes, raw
+# backtick strings, and rune literals. State persists across lines, so
+# multi-line block comments and raw strings are handled too.
 flatten_go() {
-  sed 's|//.*$||' "$1" 2>/dev/null \
+  awk '
+    BEGIN { st = "code" }
+    {
+      line = $0; out = ""; i = 1; n = length(line)
+      while (i <= n) {
+        c = substr(line, i, 1); two = substr(line, i, 2)
+        if (st == "code") {
+          if (two == "//") { break }                      # rest of the line is comment
+          if (two == "/*") { st = "block"; out = out " "; i += 2; continue }
+          if (c == "\"")   { st = "str";  out = out c; i++; continue }
+          if (c == "`")    { st = "raw";  out = out c; i++; continue }
+          if (c == "\x27") { st = "rune"; out = out c; i++; continue }
+          out = out c; i++
+        } else if (st == "block") {
+          if (two == "*/") { st = "code"; i += 2; continue }
+          i++
+        } else if (st == "str") {
+          if (c == "\\") { out = out substr(line, i, 2); i += 2; continue }
+          if (c == "\"") { st = "code" }
+          out = out c; i++
+        } else if (st == "raw") {
+          if (c == "`") { st = "code" }
+          out = out c; i++
+        } else {                                          # rune
+          if (c == "\\") { out = out substr(line, i, 2); i += 2; continue }
+          if (c == "\x27") { st = "code" }
+          out = out c; i++
+        }
+      }
+      print out
+    }
+  ' "$1" 2>/dev/null \
     | tr '\n' ' ' \
-    | tr -s ' \t' ' ' \
-    | sed -E 's|/\*[^*]*\*+([^/*][^*]*\*+)*/| |g'
+    | tr -s ' \t' ' '
 }
 
 VIOLATIONS=0
