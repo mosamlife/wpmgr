@@ -407,6 +407,56 @@ run_case "bypass-tool-args-named-results-wrapped" 1 "internal/mcp/tool_named_wra
   --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$DOC"
 rm -f "$TREE/apps/api/internal/mcp/tool_named_wrapped.go"
 
+# A comment is legal between any two tokens, so it survives flattening and a
+# pattern admitting only whitespace between parameters stops matching.
+printf '%s\n' 'package mcp' \
+  'var commented = toolEntry{' \
+  '	invoke: func(ctx context.Context, svc *Service, auth AuthorizedRequest, /* the tool args */ args json.RawMessage) (string, error) {' \
+  '		return svc.Something(ctx, auth, args)' \
+  '	},' \
+  '}' >"$TREE/apps/api/internal/mcp/tool_commented.go"
+run_case "bypass-tool-args-comment-between-parameters" 1 "internal/mcp/tool_commented.go binds toolInvoker" - -- \
+  --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$DOC"
+rm -f "$TREE/apps/api/internal/mcp/tool_commented.go"
+
+# A DOT IMPORT puts New into the file's own scope, so the constructor is
+# spelled with no qualifier at all and no amount of looking for a dot finds it.
+printf '%s\n' 'package mcp' \
+  'import (' \
+  '	"github.com/jackc/pgx/v5"' \
+  '	. "github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"' \
+  ')' \
+  'func (s *Service) dotted(tx pgx.Tx) { _ = New(tx) }' \
+  >"$TREE/apps/api/internal/mcp/dotted.go"
+run_case "bypass-sqlc-new-via-dot-import" 1 "DOT-IMPORTED New(" - -- \
+  --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$DOC"
+rm -f "$TREE/apps/api/internal/mcp/dotted.go"
+
+# A pgx call whose first argument is an expression rather than a bare
+# identifier. The old pattern required an identifier and missed it.
+printf '%s\n' 'package mcp' \
+  'import "github.com/jackc/pgx/v5"' \
+  'func (s *Service) exprCtx(tx pgx.Tx, siteID uuid.UUID) error {' \
+  '	_, err := tx.Query(context.Background(), "SELECT id FROM sites WHERE id = $1", siteID)' \
+  '	return err' \
+  '}' >"$TREE/apps/api/internal/mcp/exprctx.go"
+run_case "bypass-direct-pgx-query-expression-context" 1 "executes SQL directly" - -- \
+  --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$DOC"
+rm -f "$TREE/apps/api/internal/mcp/exprctx.go"
+
+# MUST NOT REDDEN: gin's c.Query("name") is all over internal/mcp/handler.go and
+# shares the method name with pgx. A single string-literal argument is what
+# separates them, and Rule D must keep telling them apart.
+printf '%s\n' 'package mcp' \
+  'import "github.com/gin-gonic/gin"' \
+  'func (h *Handler) readParams(c *gin.Context) {' \
+  '	_ = c.Query("response_type")' \
+  '	_ = c.Query("client_id")' \
+  '}' >"$TREE/apps/api/internal/mcp/ginquery.go"
+run_case "ok-gin-context-query-is-not-a-database-path" 0 "check-mcp-site-containment: OK" "VIOLATION" -- \
+  --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$DOC"
+rm -f "$TREE/apps/api/internal/mcp/ginquery.go"
+
 # A second database path inside package mcp, outside repo.go, is outside the
 # reach of Rule B. Rule D is the backstop.
 printf '%s\n' 'package mcp' \

@@ -245,6 +245,25 @@ MCP_DIR="$API_ROOT/$MCP_PKG_REL"
 # log can tell "the boundary is violated" from "this check no longer works".
 broken() { printf 'check-mcp-site-containment: GUARD BROKEN: %s\n' "$1" >&2; exit 2; }
 
+# Flatten a Go file to ONE whitespace-collapsed line with comments removed.
+#
+# Comments are stripped because they are legal between any two tokens, so a
+# block comment sitting between two parameters survives flattening and defeats
+# a pattern that admits only whitespace there. Line comments go first, per
+# line, before the join -- afterwards a `//` would swallow the rest of the file.
+#
+# THIS IS AN APPROXIMATION AND IT IS DOCUMENTED AS ONE: `//` inside a string
+# literal (a URL) is stripped as though it were a comment. That direction loses
+# text rather than inventing it, so it can only ever hide a call, never fabricate
+# one -- and see the blind-spot block: this whole layer is approximate by
+# construction.
+flatten_go() {
+  sed 's|//.*$||' "$1" 2>/dev/null \
+    | tr '\n' ' ' \
+    | tr -s ' \t' ' ' \
+    | sed -E 's|/\*[^*]*\*+([^/*][^*]*\*+)*/| |g'
+}
+
 VIOLATIONS=0
 violation() {
   VIOLATIONS=$((VIOLATIONS + 1))
@@ -640,7 +659,7 @@ TOOLARGS_SIG='\([ ]*[A-Za-z_][A-Za-z0-9_]*[ ]+context\.Context[ ]*,[ ]*[A-Za-z_]
 # declaration itself in registry.go. If it does not, the shape changed and the
 # rule is matching nothing -- which would report the compliant state.
 FLAT_REGISTRY="$TMPDIR_RUN/flat.registry"
-tr '\n' ' ' <"$MCP_DIR/registry.go" 2>/dev/null | tr -s ' \t' ' ' >"$FLAT_REGISTRY"
+flatten_go "$MCP_DIR/registry.go" >"$FLAT_REGISTRY"
 grep -qE "$TOOLARGS_SIG" "$FLAT_REGISTRY" 2>/dev/null \
   || broken "the toolInvoker signature shape no longer matches $MCP_PKG_REL/registry.go. Rule C's pattern is stale and would report zero tool-argument surfaces on any tree."
 
@@ -652,7 +671,7 @@ while IFS= read -r f; do
   # stream rather than compared against, because a conforming handler is
   # textually identical to the declaration once both are flattened, so any
   # equality test would discard the handler along with the type.
-  tr '\n' ' ' <"$f" 2>/dev/null | tr -s ' \t' ' ' \
+  flatten_go "$f" \
     | sed -E "s/type[ ]+toolInvoker[ ]+func[ ]*$TOOLARGS_SIG//g" >"$flat"
 
   # Every remaining occurrence of the shape, one per line. `_ json.RawMessage`
@@ -737,7 +756,18 @@ DBPATH_HITS="$TMPDIR_RUN/found.dbpath"
 # `tx.Query(reqCtx, ...)` a way round the rule -- the same mistake Rule C made
 # with `auth`. Measured against the real tree: this matches no non-test file in
 # package mcp outside repo.go, so the broader form costs no false positives.
-PGX_OPS_RE='\.(Query|QueryRow|Exec|SendBatch|CopyFrom)[ ]*\([ ]*[A-Za-z_][A-Za-z0-9_]*[ ]*,'
+# The first argument is matched as "not a string literal, and followed by a
+# comma", rather than as a bare identifier. `tx.Query(context.Background(), sql)`
+# is an ordinary pgx call whose first argument is a call expression, and the old
+# identifier-only form did not match it.
+#
+# It cannot simply drop the first-argument test: gin's `c.Query("response_type")`
+# is all over internal/mcp/handler.go and matches the bare method name. What
+# separates them is that a pgx call takes a context expression and then at least
+# one more argument, while the gin reader takes a single string literal -- so
+# "first argument does not start with a quote, and a comma follows it" admits
+# every pgx form and excludes the gin one. Measured on this tree.
+PGX_OPS_RE='\.(Query|QueryRow|Exec|SendBatch|CopyFrom)[ ]*\([ ]*[^",][^,]*,'
 PGXPOOL_RE='"github\.com/jackc/pgx/v5/pgxpool"'
 
 dbpath_mechanism() {
@@ -748,11 +778,23 @@ dbpath_mechanism() {
   # line-oriented grep does not match it -- which would drop the file from
   # DBPATH_HITS and report successful containment over a live database path.
   _flat="$TMPDIR_RUN/flat.dbpath"
-  tr '\n' ' ' <"$_f" 2>/dev/null | tr -s ' \t' ' ' >"$_flat"
+  flatten_go "$_f" >"$_flat"
   # The local name bound to the sqlc package in THIS file, alias or not.
-  _sqlc="$(sed -nE 's|^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)?[[:space:]]*"github\.com/mosamlife/wpmgr/apps/api/internal/db/sqlc".*|\1|p' "$_f" 2>/dev/null | head -1)"
+  # The local name bound to the sqlc package in THIS file: an alias, nothing
+  # (the package name), or `.` for a dot import -- which puts New into the
+  # file's own scope, so the call is spelled `New(tx)` with no qualifier at all
+  # and no amount of looking for a dot will find it.
+  # NOTE the `#` delimiter: the alternation below contains `|`, which silently
+  # terminates an `s|...|...|` expression and leaves this returning nothing --
+  # which read as "no sqlc import" and turned the whole mechanism off.
+  _sqlc="$(sed -nE 's#^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*|\.)?[[:space:]]*"github\.com/mosamlife/wpmgr/apps/api/internal/db/sqlc".*#\1#p' "$_f" 2>/dev/null | head -1)"
   [ -n "$_sqlc" ] || _sqlc="sqlc"
-  if grep -qE "(^|[^A-Za-z0-9_.])${_sqlc}\.New[ ]*\(" "$_f" 2>/dev/null; then
+  if [ "$_sqlc" = "." ]; then
+    if grep -qE "(^|[^A-Za-z0-9_.])New[ ]*\(" "$_flat" 2>/dev/null; then
+      printf 'builds its own sqlc.Queries via a DOT-IMPORTED New(\n'
+      return 0
+    fi
+  elif grep -qE "(^|[^A-Za-z0-9_.])${_sqlc}\.New[ ]*\(" "$_flat" 2>/dev/null; then
     printf 'builds its own %s.Queries via %s.New(\n' "$_sqlc" "$_sqlc"
     return 0
   fi
