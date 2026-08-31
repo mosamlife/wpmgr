@@ -124,6 +124,31 @@
 # below has been checked against the implementation as it stands, not inherited
 # from an earlier version of it.
 #
+#   0. THE BIGGEST GAP IS THE METHOD, AND IT IS NOT CLOSED BY THE LIST BELOW.
+#      Rules A, C and D match REGULAR EXPRESSIONS against a CONTEXT-FREE
+#      GRAMMAR. That is not a bug in any one pattern; it is a category error
+#      that no pattern can fix, and the evidence is the changelog of this file.
+#      Eight distinct bypasses have been found and closed here, every one of
+#      them a Go spelling a pattern did not know:
+#
+#        a space before a paren; a call split across a line break; a renamed
+#        parameter; a gofmt-wrapped signature; named results; a line-oriented
+#        pgx match; a comment between two parameters; a dot-imported New.
+#
+#      Each fix teaches the pattern one more spelling. Go always has another --
+#      a type alias for json.RawMessage, a method value registered instead of a
+#      function literal, a parenthesised type, a semicolon-separated parameter
+#      list, generics. DO NOT READ A GREEN FROM RULES A, C OR D AS PROOF OF
+#      CONTAINMENT. Read it as "no surface matching the shapes this file
+#      currently knows was found unreviewed".
+#
+#      The sound version is go/parser: comments, names, line breaks, dot
+#      imports and argument shapes all disappear into the AST, and every one of
+#      the eight becomes unrepresentable rather than fixed. That is a separate
+#      job, deliberately not grown inside this one. Rule B is already there --
+#      it reads the interface through `go doc`, i.e. Go's own parser, which is
+#      exactly why Rule B is not on the list above.
+#
 #   1. It is a STRUCTURAL guard, not a taint analysis. It proves that every
 #      channel by which a site id could reach the database has been looked at
 #      by a human, and that no new one appeared unnoticed. It does not prove the
