@@ -67,17 +67,73 @@ const ErrCodeCapabilityWiderThanDefault = "mcp_capability_wider_than_default"
 // something this path enforces. See ToolPolicy.OperatorPermission.
 type Capability string
 
-// CapSitesRead is the only capability the Phase 1 surface has: read the fleet
-// inventory. The vocabulary is closed (capabilityVocabulary below) for the same
-// reason recognisedScopes is closed -- an unrecognised capability must be a
-// refusal, never a token quietly dropped from a set that is then honoured.
-const CapSitesRead Capability = "mcp.sites.read"
+// The v1 READ vocabulary, one constant per outcome group. m131 seated these
+// eight in mcp_grants_capabilities_vocabulary_check and its DECISION 1 is the
+// argument for each name and each boundary; it is not restated here, because a
+// second copy of that argument is a second thing that can drift.
+//
+// Three properties of the set that this file DOES have to hold:
+//
+//   - The `mcp.` prefix is FROZEN by CapSitesRead, not chosen. The wireframes
+//     render the operator-facing form as `site.*`; those are the SCREEN's
+//     labels and the picker may render whatever label it likes above these
+//     strings.
+//   - EVERY MEMBER ENDS IN `.read`, which is what makes "no write capability is
+//     reachable from this build" checkable by pattern rather than by claim.
+//     TestEveryCapabilityIsARead pins it.
+//   - The set is CLOSED, for the same reason recognisedScopes is closed: an
+//     unrecognised capability must be a refusal, never a token quietly dropped
+//     from a set that is then honoured.
+const (
+	// CapSitesRead is the fleet inventory, and the ONLY member any grant minted
+	// before this commit holds. It is also the only member the tool registry
+	// currently requires (registry.go).
+	CapSitesRead Capability = "mcp.sites.read"
+
+	CapUptimeRead      Capability = "mcp.uptime.read"
+	CapBackupsRead     Capability = "mcp.backups.read"
+	CapSecurityRead    Capability = "mcp.security.read"
+	CapActivityRead    Capability = "mcp.activity.read"
+	CapPerformanceRead Capability = "mcp.performance.read"
+	CapDiagnosticsRead Capability = "mcp.diagnostics.read"
+
+	// CapContentRead is SEATED AND DELIBERATELY UNREACHABLE. It is in the
+	// vocabulary because the database's CHECK holds it and the two sets must
+	// agree exactly (m131 DECISION 5), and it is in NO scope's capability list
+	// so no grant can be minted holding it. See scopeCapabilities.
+	CapContentRead Capability = "mcp.content.read"
+)
 
 // capabilityVocabulary is the CLOSED set of capabilities this surface knows.
 // A Capability outside it is not a weaker grant, it is an unknown one, and an
 // unknown grant is refused.
+//
+// IT IS THE GO HALF OF A SET THAT IS CLOSED IN TWO PLACES. The other half is
+// mcp_grants_capabilities_vocabulary_check, and the two must hold the same
+// eight names: a name the database accepts and this map does not is refused at
+// a different layer with a different error, and a name this map accepts and the
+// database does not is a 23514 at INSERT on a path an operator reached through
+// a wizard. TestCapabilityVocabularyMatchesTheDatabaseCheckAsAppRole (in
+// apps/api/tests) reads the live constraint and asserts both directions.
+//
+// KNOWING a capability is not CONFERRING it and is not DEFAULTING to it. Those
+// are three separate sets and this is the widest of them:
+//
+//	capabilityVocabulary   -- what may be spelled at all           (8)
+//	scopeCapabilities      -- what a scope confers, the CEILING    (7)
+//	DefaultGrantCapabilities -- what an unasked grant receives     (1)
+//
+// Widening this map alone widens NOTHING a grant receives, and that separation
+// is the whole point of this commit. See DefaultGrantCapabilities.
 var capabilityVocabulary = map[Capability]struct{}{
-	CapSitesRead: {},
+	CapActivityRead:    {},
+	CapBackupsRead:     {},
+	CapContentRead:     {},
+	CapDiagnosticsRead: {},
+	CapPerformanceRead: {},
+	CapSecurityRead:    {},
+	CapSitesRead:       {},
+	CapUptimeRead:      {},
 }
 
 // KnownCapability reports whether c is in the vocabulary.
@@ -109,8 +165,37 @@ func AllCapabilities() []Capability {
 // nothing for it, and neither party is told. That is the same shape as a scope
 // token silently dropped from an otherwise-honoured request, which scope.go
 // already refuses. An unmapped scope is a misconfiguration and it says so.
+//
+// IT IS THE CEILING, AND IT IS WRITTEN OUT RATHER THAN DERIVED. `ScopeRead:
+// AllCapabilities()` would read as the obvious spelling and would rebuild, one
+// function over, exactly the coupling this commit exists to break: the first
+// `.propose` or `.write` capability seated in the vocabulary would become
+// conferred by the READ scope, silently, as a consequence of a map edit. The
+// rule this literal encodes is instead stated and checkable -- the read scope
+// confers the READ capabilities, and a member that does not end in `.read` is
+// not conferred by it until someone writes that line and defends it.
+//
+// CapContentRead IS ABSENT, AND THE ABSENCE IS THE DECISION. m131 DECISION 3
+// seats it in the database while nothing can grant it: no post or page table
+// exists, no agent command returns post content, and ADR-062 holds the content
+// work behind ship blockers including a plugin privacy disclosure. Go's
+// equivalent of the database's "nothing writes it" is "no scope confers it",
+// and this is that. Listing it here instead would let an operator mint a
+// connection holding a capability that reaches nothing today and then reaches
+// real post content the day those tools land -- a widening with no second
+// consent, arriving as a side effect of a registry edit. Adding it to this list
+// is a one-line change at the moment the content tools ship, in that diff,
+// under that review. TestContentReadIsKnownButConferredByNoScope pins it.
 var scopeCapabilities = map[Scope][]Capability{
-	ScopeRead: {CapSitesRead},
+	ScopeRead: {
+		CapActivityRead,
+		CapBackupsRead,
+		CapDiagnosticsRead,
+		CapPerformanceRead,
+		CapSecurityRead,
+		CapSitesRead,
+		CapUptimeRead,
+	},
 }
 
 // grantScopes returns the OAuth scopes a live grant holds.
@@ -134,20 +219,60 @@ func grantScopes() []Scope {
 }
 
 // DefaultGrantCapabilities is the capability set stamped onto mcp_grants.
-// capabilities when a NEW grant is created and the consent screen offered no
-// narrowing control.
+// capabilities when a NEW grant is created and NOBODY ASKED FOR A PARTICULAR
+// ONE -- the OAuth consent screen, which offers no narrowing control, and the
+// mint endpoint called with an empty Capabilities list.
 //
-// It is the vocabulary, which is also the org default while exactly one scope
-// is recognised. It is a FUNCTION and not a constant slice because a package
-// variable would be shared, mutable, and one append away from widening every
-// grant this surface has ever minted.
+// IT USED TO RETURN AllCapabilities() AND THAT IS THE TRAP m131 LEFT A WARNING
+// ABOUT. The identity was true and safe while the vocabulary held exactly one
+// member. The moment the map above widened to eight, that one line would have
+// stamped all eight onto every newly minted grant -- including groups whose
+// tools do not exist and a content group that is behind ADR-062's ship blockers
+// -- as a silent consequence of a map edit that nothing would have failed on.
+// A credential nobody chose the terms of is the precise failure m127 DECISION 1
+// and m124 DECISION 1 built the NOT NULL column and the closed CHECK to
+// prevent, and it would have arrived through the one door neither of them
+// watches.
+//
+// SO THE DEFAULT IS NOW AN EXPLICIT PRESET AND IT IS DELIBERATELY THE
+// NARROWEST ONE: the fleet inventory read, and nothing else.
+//
+// The argument for that value, rather than for the seven-member ceiling:
+//
+//  1. IT IS THE ONLY CAPABILITY THAT REACHES A TOOL. registry.go registers one
+//     tool and it requires CapSitesRead. Every other member of the ceiling
+//     names a group whose tools are not built, so defaulting to them would
+//     stamp authority that resolves to nothing -- and would then silently
+//     become real authority as each group's tools land, on grants whose
+//     operators consented before those tools existed.
+//  2. IT IS WHAT THE CONSENT SCREEN SAYS. Phase 1's screen describes reading
+//     the fleet inventory; a default wider than the screen's own words is a
+//     grant the operator did not read the terms of, whatever the terms were.
+//  3. IT MOVES NO EXISTING GRANT AND NO FUTURE ONE. Every grant this surface
+//     has ever minted holds exactly {mcp.sites.read}, and every grant minted
+//     after this commit without an explicit request holds exactly the same
+//     thing. This commit raises two ceilings and moves no floor, which is the
+//     same stance m131 DECISION 4 takes on the database side by refusing a
+//     backfill.
+//
+// THE CEILING IS STILL THE SEVEN. An operator who asks for a wider set gets it
+// (Service.MintConnection -> resolveMintCapabilities -> NarrowTo), because
+// asking is choosing. The default is what happens when nobody asked, and the
+// answer to "nobody asked" is never "everything".
+//
+// It is a FUNCTION and not a package-level slice because a package variable
+// would be shared, mutable, and one append away from widening every grant this
+// surface has ever minted. The literal is rebuilt on each call for the same
+// reason.
 //
 // This is where a chosen value replaces a defaulted one when Step 5's
 // capability control ships: the operator's selection arrives on
 // ApprovalRequest and is passed instead. It is deliberately NOT a database
 // DEFAULT -- see the column's NOT NULL and m127's reasoning about a credential
 // nobody chose the terms of.
-func DefaultGrantCapabilities() []Capability { return AllCapabilities() }
+func DefaultGrantCapabilities() []Capability {
+	return []Capability{CapSitesRead}
+}
 
 // capabilityNames renders capabilities for the text[] column.
 func capabilityNames(caps []Capability) []string {

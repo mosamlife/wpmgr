@@ -214,7 +214,7 @@ func TestMCPScopeResolutionDropsForeignSiteIDsAsAppRole(t *testing.T) {
 	// A grant for org A whose scope list names org A's site AND org B's, plus
 	// a uuid that never existed. The database cannot refuse any of them.
 	neverExisted := uuid.New()
-	resolved, err := mcpRepo.ResolveScopeSites(ctx, tenantA, "list", nil,
+	resolved, err := mcpRepo.ResolveScopeSites(ctx, orgPrincipal(tenantA), "list", nil,
 		[]uuid.UUID{siteA1.ID, siteB1.ID, neverExisted})
 	if err != nil {
 		t.Fatalf("ResolveScopeSites as wpmgr_app: %v", err)
@@ -242,7 +242,7 @@ func TestMCPScopeResolutionDropsForeignSiteIDsAsAppRole(t *testing.T) {
 	// Asserted because 'all' is the mode that kept working while 'list' and
 	// 'tags' were silently resolving to nothing, so it is the one that would
 	// have masked the swap in any smoke test.
-	all, err := mcpRepo.ResolveScopeSites(ctx, tenantA, "all", nil, nil)
+	all, err := mcpRepo.ResolveScopeSites(ctx, orgPrincipal(tenantA), "all", nil, nil)
 	if err != nil {
 		t.Fatalf("ResolveScopeSites mode all: %v", err)
 	}
@@ -252,7 +252,7 @@ func TestMCPScopeResolutionDropsForeignSiteIDsAsAppRole(t *testing.T) {
 
 	// AN UNRECOGNISED MODE RESOLVES TO NO SITES, never to every site. This is
 	// the query's `ELSE false` and it is the fail-closed direction.
-	none, err := mcpRepo.ResolveScopeSites(ctx, tenantA, "not-a-mode", nil,
+	none, err := mcpRepo.ResolveScopeSites(ctx, orgPrincipal(tenantA), "not-a-mode", nil,
 		[]uuid.UUID{siteA1.ID})
 	if err != nil {
 		t.Fatalf("ResolveScopeSites unknown mode: %v", err)
@@ -297,7 +297,7 @@ func TestMCPScopeResolutionListModeSelectsTheNamedSites(t *testing.T) {
 	}
 
 	// A grant naming TWO of the three. The third must not appear.
-	resolved, err := mcpRepo.ResolveScopeSites(ctx, tenantA, "list", nil,
+	resolved, err := mcpRepo.ResolveScopeSites(ctx, orgPrincipal(tenantA), "list", nil,
 		[]uuid.UUID{one.ID, two.ID})
 	if err != nil {
 		t.Fatalf("ResolveScopeSites mode list: %v", err)

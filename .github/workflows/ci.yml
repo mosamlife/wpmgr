@@ -72,16 +72,19 @@ jobs:
           CGO_ENABLED: "0"
         # Also exclude apps/api/tests here: those are container-based integration
         # tests (testcontainers: postgres, redis, minio, clickhouse) that belong
-        # in a separate lane, not the fast unit CI. 344 test functions live
-        # there, 343 of which run under CGO_ENABLED=0 (one is //go:build cgo),
-        # and most stand up their own ephemeral Postgres, so the cost, not any
-        # missing Docker daemon, is why they sit out this lane.
+        # in a separate lane, not the fast unit CI. Nearly all of that package's
+        # test functions run under CGO_ENABLED=0 (one is excluded by a
+        # //go:build cgo tag), and most stand up their own ephemeral Postgres,
+        # so the cost, not any missing Docker daemon, is why they sit out this
+        # lane.
         #
         # THE SEPARATE LANE IS .github/workflows/api-integration.yml, and it is
         # MANUAL ONLY. It runs the package for real, but only when somebody
         # dispatches it: about 18 minutes on a standard runner is too long to
-        # wait on every PR until a faster one is available. Its triggers are
-        # written and commented out, ready to uncomment.
+        # wait on every PR until a faster one is available. Its "Count
+        # integration test functions" step prints the live total on every run;
+        # this file does not restate it. Its triggers are written and commented
+        # out, ready to uncomment.
         #
         # SO NOTHING IN CI EXECUTES THESE TESTS TODAY. That includes the m112
         # site-scope RLS proofs, the ones that stop a collaborator invited to a

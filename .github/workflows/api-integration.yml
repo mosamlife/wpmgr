@@ -6,8 +6,8 @@ name: api-integration
 #
 # ci.yml's Go job excludes `/apps/api/tests` from `go test` and its comment said
 # those tests "belong in a separate lane". That lane did not exist. From the day
-# the exclusion landed until this file, 343 tests were compile-checked by Vet
-# and never executed by anything. (Vet, not Build: ci.yml's Build step excludes
+# the exclusion landed until this file, every test in this package was
+# compile-checked by Vet and never executed by anything. (Vet, not Build: ci.yml's Build step excludes
 # this package too, because every file in it is a _test.go file and `go build`
 # errors on a package with no buildable non-test files. Vet compiles the test
 # files, so it is the only thing standing between this package and bit rot.)
@@ -27,8 +27,10 @@ name: api-integration
 # schema as a non-superuser. Both halves are needed. Neither is redundant: the
 # repo half fails when the dispatch stops setting app.site_scope, the policy
 # half fails when the policy stops refusing. This lane covers the policy half,
-# plus the other ~320 container tests in the package (billing, backups, audit
-# chain, uptime, tenant isolation, social identity).
+# plus the rest of the package's container tests (billing, backups, audit
+# chain, uptime, tenant isolation, social identity) — see the "Count
+# integration test functions" step below for the live total, not a number
+# frozen in this comment.
 #
 # COST AND RISK, stated so the next person can revisit this knowingly.
 # Cost: one ubuntu-latest runner for the wall time reported in the PR that added
@@ -43,8 +45,11 @@ name: api-integration
 on:
   # MANUAL ONLY, and that is a deliberate cost decision, not an oversight.
   #
-  # This lane takes about 18 minutes on a GitHub runner: 344 tests, most of
-  # which stand up their own ephemeral Postgres. On a PR that is 18 minutes of
+  # This lane takes about 18 minutes on a GitHub runner, most of the package's
+  # tests standing up their own ephemeral Postgres (the "Count integration test
+  # functions" step and the Summary step below print the live test total and
+  # the actual wall time on every run — this estimate is only for why the lane
+  # is manual, not a claim to keep re-counting). On a PR that is 18 minutes of
   # waiting before anyone can merge anything, which is too high a toll to pay on
   # every change while the project runs on the standard runners. The tests are
   # run locally instead (`make test-integration`), which is how they have always
@@ -222,13 +227,38 @@ jobs:
             docker pull --quiet "$img"
           done
 
+      # The workflow comments used to hard-code this package's test count, and
+      # that literal drifted twice (see the "TWO GENERATIONS" comment below)
+      # without anyone noticing, because nothing recomputed it. Print it
+      # instead, every run, so a stale literal in a comment can never again be
+      # mistaken for a current fact. `set -euo pipefail` means a moved or
+      # emptied tests/ directory fails this step loudly rather than printing 0.
+      - name: Count integration test functions
+        run: |
+          set -euo pipefail
+          total=$(grep -rhoE '^func Test[A-Za-z0-9_]+' tests/*.go | wc -l | tr -d '[:space:]')
+          cgo_files=$(grep -l 'go:build cgo' tests/*.go || true)
+          if [ -n "$cgo_files" ]; then
+            cgo_only=$(grep -hoE '^func Test[A-Za-z0-9_]+' $cgo_files | wc -l | tr -d '[:space:]')
+            cgo_names=$(grep -hoE '^func Test[A-Za-z0-9_]+' $cgo_files | sed 's/^func //' | paste -sd, -)
+          else
+            cgo_only=0
+            cgo_names="(none)"
+          fi
+          runnable=$(( total - cgo_only ))
+          echo "apps/api/tests: $total test functions total"
+          echo "apps/api/tests: $runnable run in this lane under CGO_ENABLED=0"
+          echo "apps/api/tests: $cgo_only excluded by a //go:build cgo tag: $cgo_names"
+
       # GOWORK=off and CGO_ENABLED=0 mirror ci.yml's Go job and the production
       # main-API image. One honest consequence: tests/media_encode_integration_test.go
       # carries a `//go:build cgo` tag, so it is excluded here exactly as it is
-      # excluded everywhere else today. 343 of the package's 344 test functions
-      # run. Covering that last one means building lilliput's CGO codecs, which
-      # is what infra/Dockerfile.media-encoder exists for, and dragging that
-      # toolchain in here would trade a real flake risk for one test.
+      # excluded everywhere else today. Every test function in the package runs
+      # except that file's TestMediaEncodeWorker_EndToEnd (see the "Count
+      # integration test functions" step above for the live totals). Covering
+      # that one means building lilliput's CGO codecs, which is what
+      # infra/Dockerfile.media-encoder exists for, and dragging that toolchain
+      # in here would trade a real flake risk for one test.
       #
       # -count=1 defeats the build cache so a green tick always means the tests
       # ran, never that Go replayed a cached result.
@@ -256,13 +286,18 @@ jobs:
       # as a sign of trouble; read its elapsed number against the ceiling.
       #
       # THAT RANGE IS A HISTORICAL SAMPLE, not a live maximum, and it is stated
-      # without a run count on purpose. The whole reason this file exists is
-      # that ci.yml carried a hand-counted "262" that had drifted to 344 while
-      # nobody noticed, so a comment here that has to be re-counted after every
-      # run would repeat the same mistake. A later run landing outside this
-      # range falsifies nothing. Every run prints its own wall time (see the
-      # Summary step): read that for anything current, and treat this range as
-      # the reason the ceiling is 45m rather than as a live measurement.
+      # without a run count on purpose. TWO GENERATIONS OF THE SAME MISTAKE:
+      # ci.yml once carried a hand-counted test total that drifted silently for
+      # a long time before anyone noticed, and the comment that replaced it
+      # with a fresh hand-count drifted again, by even more, before the next
+      # person noticed. The lesson is not "recount it" — a fixed literal in a
+      # comment is never re-checked, so any hard-coded count here would repeat
+      # the same mistake a third time. That is why the count is now a step
+      # ("Count integration test functions" above) instead of a sentence. A
+      # later run landing outside this timing range falsifies nothing. Every
+      # run prints its own wall time (see the Summary step): read that for
+      # anything current, and treat this range as the reason the ceiling is
+      # 45m rather than as a live measurement.
       #
       # TWO DIFFERENT NUMBERS, AND THEY DO NOT CONTRADICT EACH OTHER. The
       # figures above are what `go test` reports for the package, which is
@@ -310,9 +345,9 @@ jobs:
       # t.Skipf("skipping: cannot start ... container (docker unavailable?)")
       # when it cannot reach a daemon. It SKIPS, it does not fail. So a runner
       # image that one day ships without Docker, or a daemon that dies mid-job,
-      # produces 343 skips, `ok`, exit 0 and a green tick, and this lane would go
-      # on protecting nothing while looking like it protects everything. Green
-      # has to mean the tests ran.
+      # produces an all-skip `ok`, exit 0 and a green tick, and this lane would
+      # go on protecting nothing while looking like it protects everything.
+      # Green has to mean the tests ran.
       #
       # Three layers, weakest to strongest:
       #   1. no test may have skipped for the docker-unavailable reason (today
@@ -336,9 +371,11 @@ jobs:
 
           passed=$(grep -cE '^--- PASS: ' "$log" || true)
           echo "passing tests: $passed"
-          # 343 run today. The floor leaves headroom for tests being renamed or
-          # retired without becoming a maintenance tax, while still being far
-          # above anything a mass-skip could produce.
+          # The floor sits well below the live total (see the "Count
+          # integration test functions" step earlier in this job for today's
+          # number), so tests can be renamed or retired without this becoming
+          # a maintenance tax, while still landing far above anything a
+          # mass-skip could produce.
           if [ "$passed" -lt 320 ]; then
             echo "::error::only $passed tests passed, expected at least 320; the package did not really run"
             exit 1
