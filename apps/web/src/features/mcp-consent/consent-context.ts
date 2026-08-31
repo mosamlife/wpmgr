@@ -80,6 +80,23 @@ export const consentWireSchema = z.object({
   state: z.string().optional(),
   code_challenge: z.string().optional(),
   code_challenge_method: z.string().optional(),
+
+  // REQUIRED, for the same reason redirect_host is.
+  //
+  // The screen has to tell the user how long they are authorising this for.
+  // The term is a server constant (grantAbsoluteTTL in
+  // apps/api/internal/mcp/service.go), stamped onto mcp_grants.expires_at at
+  // approval and enforced on every later request by the `g.expires_at > now()`
+  // arm of the authentication lookup (apps/api/db/query/mcp_connections.sql:561).
+  // The dashboard cannot derive it and must not assume it: hard-coding 90 here
+  // would restate a number only the server owns, and it would go quietly wrong
+  // the day the server's value changes.
+  //
+  // So an absent term is an unrenderable screen, not a screen with a default.
+  // A positive integer of days is the only parseable value: 0 would describe a
+  // grant that expires the moment it is created, which the schema refuses
+  // outright (mcp_grants_expires_at_after_created_check).
+  grant_lifetime_days: z.number().int().positive(),
 });
 
 export type ConsentWire = z.infer<typeof consentWireSchema>;
@@ -153,6 +170,15 @@ export interface ConsentContext {
   readonly state: string | null;
   readonly codeChallenge: string | null;
   readonly codeChallengeMethod: string | null;
+
+  /**
+   * Whole days from approval to automatic expiry, supplied by the server.
+   *
+   * Not nullable and not optional: every grant this screen can create expires,
+   * so there is no "no expiry" case for a caller to render. See the wire
+   * schema's note for why the dashboard is told this rather than computing it.
+   */
+  readonly grantLifetimeDays: number;
 }
 
 function orNull(raw: string | undefined): string | null {
@@ -180,6 +206,7 @@ export function parseConsentContext(raw: unknown): ConsentContext {
     state: orNull(wire.state),
     codeChallenge: orNull(wire.code_challenge),
     codeChallengeMethod: orNull(wire.code_challenge_method),
+    grantLifetimeDays: wire.grant_lifetime_days,
   };
 }
 
