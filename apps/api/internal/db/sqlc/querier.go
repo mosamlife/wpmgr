@@ -578,7 +578,14 @@ type Querier interface {
 	// ===========================================================================
 	// mcp_connection_tokens -- the headless bearer path, and rotation
 	// ===========================================================================
-	// Runs InTenantTx. token_hash is lower-case hex SHA-256 (Decision 4, the
+	// Runs InTenantTx from RedeemAuthorizationCode's token exchange, and inside a
+	// tenant transaction chosen by the principal's scope, via db.Pool.RunTenantTx,
+	// from CreateGrantWithCode and CreateGrantWithToken -- NOT a fixed InTenantTx
+	// on those two paths. mcp_connection_tokens carries a RESTRICTIVE
+	// `_site_scope_insert` policy keyed on app.site_scope; only the scoped
+	// dispatch, via InScopedTenantTx, sets that GUC, so a caller minting a token
+	// alongside a grant must go through RunTenantTx or the policy sits inert for a
+	// site-constrained principal. token_hash is lower-case hex SHA-256 (Decision 4, the
 	// internal/apikey/apikey.go:102 construction); the plaintext is returned to
 	// the operator once, here, and there is no column to read it back from.
 	//
@@ -1447,9 +1454,14 @@ type Querier interface {
 	// than a *bool -- see the note on GetMCPAuthorizationCodeByHashForLookup. A
 	// nil-pointer liveness verdict is the fail-open shape this column closes.
 	GetMCPConnectionTokenByHashForLookup(ctx context.Context, tokenHash string) (GetMCPConnectionTokenByHashForLookupRow, error)
-	// Runs InTenantTx. tenant_id is in the WHERE as well as in the RLS policy --
-	// the house convention, defense in depth -- so a grant id from another
-	// organisation returns no rows rather than a row.
+	// Runs inside a tenant transaction chosen by the principal's scope: its one
+	// caller, ConnectionStatusSnapshot, dispatches through db.Pool.RunTenantTx,
+	// not a fixed InTenantTx. mcp_grants carries RESTRICTIVE `_site_scope`
+	// policies keyed on app.site_scope, and only the scoped dispatch -- via
+	// InScopedTenantTx -- sets that GUC; a caller that picked InTenantTx directly
+	// would read this row with those policies inert. tenant_id is in the WHERE as
+	// well as in the RLS policy -- the house convention, defense in depth -- so a
+	// grant id from another organisation returns no rows rather than a row.
 	GetMCPGrant(ctx context.Context, arg GetMCPGrantParams) (McpGrant, error)
 	// REQUIRES app.mcp_client_lookup = 'on'. Serves both the authorize endpoint
 	// (resolve the client before rendering consent) and the token endpoint
@@ -2456,7 +2468,10 @@ type Querier interface {
 	// are -- last_used_at and revoked_at are the record. Never selects token_hash
 	// for display; it is returned because the row is, and must not be rendered.
 	ListMCPConnectionTokensForGrant(ctx context.Context, arg ListMCPConnectionTokensForGrantParams) ([]McpConnectionToken, error)
-	// Runs InTenantTx. Refused outright for a site-scoped session by
+	// Runs inside a tenant transaction chosen by the principal's scope: its
+	// caller, ListGrants, dispatches through db.Pool.RunTenantTx, not a fixed
+	// InTenantTx, precisely so that dispatch can reach InScopedTenantTx and set
+	// app.site_scope. Refused outright for a site-scoped session by
 	// mcp_grants_site_scope_select (PR #569 finding F1): scope_site_ids enumerates
 	// every site the organisation has granted MCP access to, and RLS filters rows,
 	// not columns, so total refusal is the only shape that closes it.
@@ -3386,15 +3401,24 @@ type Querier interface {
 	// ===========================================================================
 	// Site-scope resolution -- "WHAT S6b MUST DO" item 2
 	// ===========================================================================
-	// MUST RUN INSIDE InTenantTx, AND THAT IS A CORRECTNESS REQUIREMENT RATHER
-	// THAN A CONVENTION. scope_site_ids is a uuid[] and PostgreSQL has no foreign
-	// key over array elements, so the column ACCEPTS ANY UUID -- including a site
-	// id belonging to another organisation, or one that never existed. No CHECK
-	// can refuse that; the constraint needed is a cross-table membership test.
-	// This query IS that test: joining through `sites` under tenant isolation
-	// silently drops every id that is not this tenant's. Resolve outside a tenant
-	// transaction, or against a cached site list, and a foreign UUID survives all
-	// the way to the read.
+	// MUST RUN INSIDE A TENANT TRANSACTION CHOSEN BY THE PRINCIPAL'S SCOPE, AND
+	// THAT IS A CORRECTNESS REQUIREMENT RATHER THAN A CONVENTION. Since #649
+	// (ADR-061 A11 item 2) the caller is db.Pool.RunTenantTx, which dispatches on
+	// db.ScopedPrincipal to InScopedTenantTx, InTenantTxAsUser or InTenantTx --
+	// NOT a fixed InTenantTx call. The dispatch is not incidental: InScopedTenantTx
+	// is the only one of the three that sets app.site_scope, and sites_site_scope
+	// (m19) -- the RESTRICTIVE policy this query's join through `sites` passes
+	// through -- is inert without it. A caller that ran plain InTenantTx here would
+	// leave a site-constrained principal's scope unenforced.
+	//
+	// Separately, and for the reason below: scope_site_ids is a uuid[] and
+	// PostgreSQL has no foreign key over array elements, so the column ACCEPTS ANY
+	// UUID -- including a site id belonging to another organisation, or one that
+	// never existed. No CHECK can refuse that; the constraint needed is a
+	// cross-table membership test. This query IS that test: joining through
+	// `sites` under tenant isolation silently drops every id that is not this
+	// tenant's. Resolve outside a tenant transaction, or against a cached site
+	// list, and a foreign UUID survives all the way to the read.
 	//
 	// ONE QUERY, BECAUSE ITEM 2 SAYS ONE AUDITED CHOKEPOINT. Three per-mode
 	// queries would be three places for the empty-set mistake to be made.
@@ -3451,8 +3475,12 @@ type Querier interface {
 	// revoked_at is set with status to satisfy
 	// mcp_connection_tokens_revoked_at_matches_status_check.
 	RevokeMCPConnectionTokenInTenantTx(ctx context.Context, arg RevokeMCPConnectionTokenInTenantTxParams) (McpConnectionToken, error)
-	// Runs InTenantTx. ONE STATEMENT, BOTH TABLES, BECAUSE A GRANT AND ITS TOKENS
-	// MUST NOT BE REVOKED SEPARATELY.
+	// Runs inside a tenant transaction chosen by the principal's scope: its
+	// caller, RevokeGrantWithTokens, dispatches through db.Pool.RunTenantTx, not a
+	// fixed InTenantTx, so that a site-constrained principal reaches
+	// InScopedTenantTx and mcp_grants' RESTRICTIVE `_site_scope` policies engage
+	// rather than sitting inert. ONE STATEMENT, BOTH TABLES, BECAUSE A GRANT AND
+	// ITS TOKENS MUST NOT BE REVOKED SEPARATELY.
 	//
 	// A security review of this stack proved the two are currently independent --
 	// it observed `grant_status revoked / token_status active` -- and a live token
