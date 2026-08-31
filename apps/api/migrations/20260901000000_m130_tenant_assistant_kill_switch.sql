@@ -1,0 +1,414 @@
+-- m130 - ADR-061 pre-v1 checklist: the PER-TENANT ENABLEMENT FLAG and the
+-- PER-TENANT KILL SWITCH for the assistant / MCP surface. Roadmap task 1A-11,
+-- slice 1A Gate, data-phase Phase 1.
+--
+-- This migration CORRECTS NOTHING. It edits no applied migration, it re-runs no
+-- earlier backfill, and no database needs converging onto it beyond the
+-- one-time backfill in step (1), which is described in DECISION 6. There is no
+-- m114/m115-shaped follow-up owed.
+--
+-- WHY IT EXISTS. The MCP transport is LIVE IN PRODUCTION and has no off
+-- switch. ADR-061's pre-v1 checklist requires two separate things that this
+-- schema cannot express today:
+--
+--     "Off by default at the tenant level, and a connection whose site
+--      allowlist starts empty [...]"
+--     "A per-tenant kill switch reachable in one click [...]"
+--
+-- A backend agent built the tool-call rate limiter (the checklist's third item)
+-- and correctly stopped at these two, because both need persistent per-tenant
+-- state that does not exist:
+--
+--     grep -nE "CREATE TABLE.*tenant_settings|CREATE TABLE.*org_settings" \
+--         apps/api/db/schema.sql
+--       -> no matches
+--
+-- and the tenants table carries no enablement, assistant, mcp, kill or paused
+-- column. This file adds that state and joins it to the verdict that already
+-- runs on every request.
+--
+-- ===========================================================================
+-- DECISION 1: THE STATE LIVES ON `tenants`, NOT IN A NEW TABLE, AND THE
+--             REASON IS THAT `tenants` HAS NO ROW LEVEL SECURITY
+-- ===========================================================================
+--
+-- This is the load-bearing decision in the file and it is a security decision,
+-- not an ergonomic one.
+--
+-- 184 tables in this schema are under RLS:
+--
+--     grep -rhoE 'ALTER TABLE [^ ]+ ENABLE ROW LEVEL SECURITY' \
+--         apps/api/migrations/*.sql apps/api/db/schema.sql | sort -u | grep -c .
+--       -> 184
+--
+-- `tenants` IS NOT ONE OF THEM:
+--
+--     grep -rniE 'ALTER TABLE.*tenants.* (ENABLE|FORCE) ROW LEVEL SECURITY' \
+--         apps/api/migrations/*.sql apps/api/db/schema.sql
+--       -> no matches
+--
+-- THAT ABSENCE IS WHY THE KILL SWITCH BELONGS HERE. A kill switch is read on
+-- the authentication path, inside a tenant transaction, and it must be read
+-- correctly there under every dispatch helper. Put it in a new RLS-protected
+-- table and it acquires a failure mode it cannot have on `tenants`: if a
+-- policy filters the settings row out of the join -- because a call site chose
+-- InTenantTx over RunTenantTx and never set app.site_scope, or because a
+-- RESTRICTIVE policy is added later without this read in mind -- the LEFT JOIN
+-- yields NULL, NULL reads as "not paused", AND THE KILL SWITCH IS SILENTLY
+-- INERT. That is precisely the shape m127 DECISION 5 records as a live
+-- privilege escalation fixed on 2026-08-30: a policy that tests a GUC is inert
+-- on any path that does not set it.
+--
+-- An inert kill switch is worse than no kill switch, because an operator at
+-- 3am believes the surface is stopped. On `tenants` the row is reachable by
+-- primary key with no policy able to hide it, so the switch cannot be made
+-- inert by anything short of deleting the tenant.
+--
+-- THREE FURTHER REASONS, ALL SECONDARY TO THAT ONE:
+--
+--   a. `tenants` IS ALREADY THE HOME OF PER-TENANT OPERATOR STATE OF EXACTLY
+--      THIS KIND. It carries suspended_at, suspended_reason, plan_status
+--      (whose vocabulary already includes a paused value) and grace_until.
+--      The columns below are the same fact-shape as suspended_at/
+--      suspended_reason and are deliberately named and typed to match, so an
+--      operator reading the row sees one consistent idiom and not two.
+--
+--   b. NO EXTRA ROUND TRIP AND NO NEW INDEX. The verdict query joins
+--      tenants on its PRIMARY KEY, which is an index probe on a row the
+--      planner reaches once. See DECISION 3.
+--
+--   c. ONE CLICK IS ONE UPDATE ON ONE ROW. The brief requires the shape to
+--      allow a one-click control later. Engaging the switch is a single
+--      UPDATE tenants SET assistant_paused_at = now(), assistant_paused_reason
+--      = $2 WHERE id = $1. Releasing it is the mirror image. No row has to be
+--      created first, which is the trap a settings table sets: a one-click
+--      control whose first click is an INSERT is a control that can fail with
+--      a unique violation during an incident.
+--
+-- A SETTINGS TABLE IS THE RIGHT ANSWER LATER AND IS NOT REFUSED FOREVER. When
+-- the assistant grows a dozen per-tenant knobs that are NOT read on the
+-- authentication path, they belong in their own table. These two are read on
+-- the authentication path, which is the whole reason they are here.
+--
+-- ===========================================================================
+-- DECISION 2: TWO COLUMNS, NOT ONE COLUMN WITH THREE STATES, BECAUSE THEY ARE
+--             TWO DIFFERENT FACTS WITH TWO DIFFERENT LIFECYCLES
+-- ===========================================================================
+--
+-- A single tri-state column (off / on / paused) was considered and REJECTED.
+-- It collapses a CONFIGURATION fact and an INCIDENT fact into one cell, and
+-- the collapse has a concrete failure:
+--
+--   AN OPERATOR RELEASING THE KILL SWITCH AFTER AN INCIDENT WOULD HAVE TO
+--   CHOOSE WHAT TO WRITE BACK. With one column, "un-pause" means "write on",
+--   and if the tenant had deliberately never enabled the surface, un-pausing
+--   TURNS IT ON. The incident response silently reverses a configuration
+--   decision nobody revisited. With two columns, releasing the switch clears
+--   assistant_paused_at and touches nothing else; a tenant that was off stays
+--   off, and that is not a thing the operator has to remember.
+--
+-- The audit story differs the same way and that is the second reason. Enabling
+-- the surface is a configuration change made deliberately, in daylight, by an
+-- owner. Engaging the kill switch is an incident action taken at speed, and it
+-- wants a reason string attached to it. One of those facts wants a reason
+-- column and the other does not, which is itself evidence they are two facts.
+--
+-- BOTH ARE `timestamptz NULL`, NOT `boolean`, MATCHING suspended_at.
+--     A timestamp carries WHEN, which is exactly the audit information the two
+--     lifecycles above are asking for, and it costs nothing over a boolean. A
+--     boolean answers "is it off" and destroys "since when", which is the
+--     first question asked about an incident action and the second question
+--     asked about a configuration one. suspended_at on this same table already
+--     made this choice.
+--
+--     NULL is a real, meaningful value on BOTH columns and means a DIFFERENT
+--     thing on each -- the m127 DECISION 2 property, restated because it is
+--     the thing a reader gets backwards:
+--
+--       assistant_enabled_at  NULL  =>  NEVER ENABLED. The surface is off.
+--       assistant_paused_at   NULL  =>  NOT PAUSED. The switch is released.
+--
+--     One NULL is restrictive and one NULL is permissive. They are NOT
+--     symmetric and must not be refactored into a shared helper that treats
+--     them as the same predicate.
+--
+-- ===========================================================================
+-- DECISION 3: BOTH FACTS JOIN THE EXISTING `authorized` VERDICT. NO SECOND
+--             QUERY, NO CACHE.
+-- ===========================================================================
+--
+-- ReCheckMCPRequestAuthorizationInTenantTx already runs on EVERY REQUEST and
+-- already returns `authorized` as the whole verdict in one column, "computed
+-- here so that no caller reassembles it". m127 DECISION 3 folded both grant
+-- expiries into that same predicate rather than adding a read a caller could
+-- forget. This migration does the same with both tenant facts, in its
+-- companion change to db/query/mcp_connections.sql.
+--
+-- THE KILL SWITCH THEREFORE STOPS IN-FLIGHT REQUESTS, WHICH IS THE ENTIRE
+-- POINT AND IS THE PART A NAIVE IMPLEMENTATION GETS WRONG. A switch that only
+-- blocks the creation of new grants leaves every already-issued connection
+-- token reading data for as long as it lives. The brief states the standard
+-- plainly: a switch that blocks new connections while existing tokens keep
+-- reading is not the control anyone wants at 3am. Because the verdict is
+-- recomputed per request, engaging the switch refuses THE VERY NEXT REQUEST on
+-- an existing, otherwise perfectly valid connection.
+--
+-- A CACHED KILL SWITCH IS NOT A KILL SWITCH, AND NO CACHE IS PROPOSED HERE.
+-- The cost of not caching is one join to `tenants` on its primary key, on a
+-- query that already does two primary-key probes. There is no new index
+-- because there is no new scan: the tenant row is reached by
+-- tenants.id = t.tenant_id, and t.tenant_id is already a bound parameter of
+-- this query, so the planner has a single-row lookup and nothing to search.
+-- The per-request cost is zero extra round trips.
+--
+-- THE JOIN IS AN INNER JOIN AND THAT IS SAFE HERE ONLY BECAUSE OF DECISION 1.
+-- An inner join that matches no row returns no row at all, and the Go caller
+-- reads a no-row result as a refusal. On a table with RLS that would be a
+-- latent fleet outage waiting for a policy change. On `tenants`, which has no
+-- RLS, the only way the join matches nothing is that the tenant does not
+-- exist -- in which case refusing is correct. The foreign key from
+-- mcp_connection_tokens.tenant_id guarantees the row is there.
+--
+-- ===========================================================================
+-- DECISION 4: ENABLEMENT EARNS AN EXPLICIT COLUMN EVEN THOUGH GRANT EXISTENCE
+--             ALREADY IMPLIES IT. THE ARGUMENT, SINCE IT WAS CHALLENGED.
+-- ===========================================================================
+--
+-- A previous agent established, correctly, that a tenant which has never
+-- turned the assistant on already serves nothing: authentication requires a
+-- bearer resolving to a connection token joined to a grant, so with no grant
+-- there is no token and the request is 401. A plain boolean would therefore
+-- DUPLICATE a fact the data already carries. That objection is right about the
+-- boolean and wrong about the column, for three reasons.
+--
+--   a. IT COLLAPSES TWO AXES ADR-061 KEEPS SEPARATE. The checklist asks for
+--      "off by default at the tenant level" AND "a connection whose site
+--      allowlist starts empty" as two distinct requirements. Deriving tenant
+--      enablement from grant existence means the tenant-level gate IS the
+--      connection-level gate: there is no tenant gate at all. Creating a
+--      connection would both enable the org and configure the connection, in
+--      one action, by whoever can create connections. An owner cannot say
+--      "this organisation does not use the assistant" in a way that survives
+--      a member opening the wizard.
+--
+--   b. THE TWO CAN NOW DIVERGE IN BOTH DIRECTIONS, WHICH IS THE TEST OF
+--      WHETHER A COLUMN IS REDUNDANT. Off-while-grants-exist is the case the
+--      brief names and it is real: an owner offboarding the surface without
+--      destroying the connection history that documents what it did. The
+--      mirror case is real too: enabling an organisation BEFORE any grant
+--      exists, so the wizard's first run is a configuration step and not
+--      simultaneously an authorisation decision. Neither is expressible by
+--      counting grants.
+--
+--   c. REVOCATION AND DISABLEMENT ARE DIFFERENT RECORDS. Deriving enablement
+--      from grants means turning the org off requires revoking every grant,
+--      which destroys the operator's ability to turn it back on unchanged.
+--      This is the same reasoning m127 used to keep revocation distinct from a
+--      backdated expiry: two mechanisms, kept distinct, so each stays honest.
+--
+-- WHAT IT IS NOT. It is not a kill switch, and DECISION 2 is why. It is not a
+-- licence tier and carries no plan semantics; plan and plan_status on this
+-- same table answer that question and this column must never be read as a
+-- billing signal.
+--
+-- ===========================================================================
+-- DECISION 5: THE ORDERING CONSTRAINT THIS PLACES ON backend-architect, WHICH
+--             IS HARD, AND WHICH IS THE MOST DANGEROUS THING IN THIS FILE
+-- ===========================================================================
+--
+-- WRITTEN DOWN RATHER THAN LEFT TO BE DISCOVERED, in the manner of m127
+-- DECISION 4.
+--
+-- After this migration, assistant_enabled_at IS PART OF THE VERDICT. Existing
+-- tenants are backfilled (DECISION 6) and are unaffected. But A TENANT CREATED
+-- AFTER THIS FILE APPLIES HAS assistant_enabled_at IS NULL, therefore IS OFF,
+-- and every request on any connection it creates will be refused until
+-- something writes that column.
+--
+-- THAT IS THE CORRECT AND INTENDED DIRECTION -- it is literally what "off by
+-- default at the tenant level" means, and the surface is a pre-v1 pilot with
+-- agreed kill criteria, not a generally available feature. A new tenant unable
+-- to use an unlaunched pilot surface is not an outage. A new tenant silently
+-- opted INTO it would be the defect.
+--
+-- BUT IT MEANS THE ENABLE CONTROL IS A PREREQUISITE OF ONBOARDING, NOT A
+-- FOLLOW-UP TO IT. Until backend-architect ships a path that sets
+-- assistant_enabled_at, the connection wizard will complete successfully for a
+-- new tenant and then every subsequent request will 401, with the cause
+-- visible only in the tenant_assistant_disabled diagnostic column added below.
+-- The diagnostic exists so that failure names itself instead of presenting as
+-- a mysterious auth error.
+--
+-- NO SWEEP JOB IS REQUIRED FOR ENFORCEMENT, on either column. Both are
+-- evaluated at read time against the row, so the switch takes effect at the
+-- instant it is written whether or not any background worker ran, and a worker
+-- that fails to run can never extend a credential or un-pause a surface.
+--
+-- ===========================================================================
+-- DECISION 6: THE BACKFILL PRESERVES TODAY'S EFFECTIVE AUTHORITY EXACTLY AND
+--             IS NOT A PERMISSIVE DEFAULT
+-- ===========================================================================
+--
+-- The brief's hardest constraint: this ships to a live surface, and a
+-- migration that silently switches every tenant off is an outage. m127
+-- DECISION 6 is the pattern and this follows it exactly.
+--
+-- NEITHER COLUMN CARRIES A DEFAULT CLAUSE. A DEFAULT and a one-time backfill
+-- are not the same thing. Step (1) sets a value on rows that already exist;
+-- every future INSERT is unaffected because both columns are NULLABLE. That is
+-- what makes constraint 1 -- every existing insert and read path keeps working
+-- -- true by construction rather than by assertion: m127's NOT NULL columns
+-- reddened ten integration tests, and NOTHING HERE IS NOT NULL.
+--
+--   assistant_enabled_at -> now(), FOR EVERY TENANT THAT HAS ANY mcp_grants
+--     ROW AT ALL.
+--
+--     THIS GRANTS NOTHING NEW. A tenant with a grant is a tenant already
+--     serving the assistant surface today; writing the column down records
+--     what the running system already permits. A tenant with no grant serves
+--     nothing today and is left NULL, so it loses nothing either. Every live
+--     connection in the fleet keeps working with precisely the authority it
+--     has now.
+--
+--     `EXISTS (SELECT 1 FROM mcp_grants ...)` WITH NO STATUS FILTER, AND THAT
+--     BREADTH IS DELIBERATE. Filtering to status = 'active' would leave a
+--     tenant whose only grant is currently revoked marked as never-enabled,
+--     and the next connection it creates would be refused -- an org that used
+--     the surface last week discovering it is off, caused by a migration
+--     rather than by a decision. Any tenant that has ever created a connection
+--     has demonstrably opted in.
+--
+--     ROLLING BACK IS AN OPERATOR ACTION, NOT A MIGRATION. If an org should
+--     not have been enabled, an operator sets the column to NULL. The backfill
+--     deliberately errs toward preserving service.
+--
+--   assistant_paused_at -> LEFT NULL ON EVERY ROW. Nothing to backfill. The
+--     kill switch starts released everywhere, which is today's behaviour
+--     exactly. THIS IS THE COLUMN THAT COULD CAUSE THE FLEET-WIDE OUTAGE IF IT
+--     WERE BACKFILLED OR DEFAULTED TO ANYTHING NON-NULL, and it is neither.
+--
+--   assistant_paused_reason -> LEFT NULL. Meaningless without a pause.
+--
+-- EVERY STATEMENT BELOW IS IDEMPOTENT AND THE FILE IS RE-RUNNABLE. The
+-- backfill is guarded by IS NULL, so a second application updates zero rows
+-- and cannot re-enable an organisation an operator has since turned off. That
+-- guard is the m110/m111 lesson: a backfill that can overwrite an operator
+-- decision is the thing that needs the repair migration.
+--
+-- ===========================================================================
+-- DECISION 7: RLS, POLICIES, AND WHAT IS DELIBERATELY NOT ADDED
+-- ===========================================================================
+--
+-- THIS MIGRATION CREATES NO TABLE AND NO POLICY, AND ADDS NO RLS.
+--
+-- WHICH POLICIES WERE ADDED: none.
+-- WHICH POLICIES WERE DELIBERATELY NOT ADDED, AND WHY:
+--
+--   NO tenants_tenant_isolation, NO tenants_agent, NO RESTRICTIVE
+--   tenants_site_scope. The standing rule that a new SITE-KEYED table gets the
+--   full site-scope policy set does not reach this migration, for two
+--   independent reasons: this migration creates no table, and `tenants` is not
+--   site-keyed -- it has no site_id and is the tenant axis itself, the table
+--   every other table's tenant_id points AT. Adding RLS to `tenants` would be
+--   a schema-wide change to the tenancy substrate, would break every join that
+--   currently reads it outside a tenant transaction (billing sweeps, the purge
+--   worker, the cross-tenant reconcilers), and is emphatically not a thing to
+--   do inside a kill-switch migration. It is also, per DECISION 1, the exact
+--   property that makes the switch reliable.
+--
+--   RLS filters ROWS, not columns, so on a table with no RLS a new column
+--   inherits no policy because there is none to inherit. Stated rather than
+--   left silent.
+--
+-- NO ROW IS OWED IN db/rls-cross-tenant-policies.txt. That ledger records
+-- policies that grant access ACROSS tenants. This migration adds no policy of
+-- any kind, so the ledger is unchanged and check-rls-cross-tenant.sh must stay
+-- green without an edit.
+--
+-- ===========================================================================
+-- DECISION 8: GRANTS
+-- ===========================================================================
+--
+-- Nothing to add. m1's ALTER DEFAULT PRIVILEGES is table-level and covers
+-- columns added later; PostgreSQL has no per-column grant in force on
+-- `tenants` that a new column could fall outside of. Stated rather than left
+-- silent, because "the new column is invisible to wpmgr_app" is the kind of
+-- failure that looks like an RLS bug for a day -- and on this table, where
+-- there is no RLS to blame, for longer.
+
+-- ---------------------------------------------------------------------------
+-- (0) Columns. All three NULLABLE with NO DEFAULT, so every existing INSERT
+--     that does not mention them keeps working unchanged. See DECISION 6.
+-- ---------------------------------------------------------------------------
+
+ALTER TABLE "public"."tenants"
+    ADD COLUMN IF NOT EXISTS "assistant_enabled_at" timestamptz;
+
+ALTER TABLE "public"."tenants"
+    ADD COLUMN IF NOT EXISTS "assistant_paused_at" timestamptz;
+
+ALTER TABLE "public"."tenants"
+    ADD COLUMN IF NOT EXISTS "assistant_paused_reason" text;
+
+-- ---------------------------------------------------------------------------
+-- (1) Backfill. WHERE ... IS NULL makes this a no-op on a second run and
+--     protects a decision an operator has already made. See DECISION 6.
+--
+--     Only assistant_enabled_at is backfilled. The kill switch and its reason
+--     stay NULL on every row, which is today's behaviour exactly.
+-- ---------------------------------------------------------------------------
+
+UPDATE "public"."tenants" AS tn
+   SET "assistant_enabled_at" = now()
+ WHERE tn."assistant_enabled_at" IS NULL
+   AND EXISTS (
+        SELECT 1
+          FROM "public"."mcp_grants" g
+         WHERE g."tenant_id" = tn."id"
+   );
+
+-- ---------------------------------------------------------------------------
+-- (2) Constraints. Each guarded by a pg_constraint probe so the file re-runs.
+--     No NOT NULL is armed anywhere in this file, by design.
+-- ---------------------------------------------------------------------------
+
+-- A pause reason cannot exist without a pause. The reason is part of the
+-- incident action, so releasing the switch clears both in one UPDATE and a
+-- stale reason cannot outlive the pause it described. The reason is also
+-- refused when it is a string of zero length: a control that records why the
+-- surface was stopped and stores nothing is worse than one that stores NULL,
+-- because NULL is honestly absent and a string of zero length reads as an
+-- answer. (Written in words rather than as a quoted literal: issue #597 -- a
+-- doubled single quote inside a comment is rewritten by sqlc into a non-ASCII
+-- character in one generated file and not the other.)
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'public.tenants'::regclass
+          AND conname  = 'tenants_assistant_paused_reason_check'
+    ) THEN
+        ALTER TABLE "public"."tenants"
+            ADD CONSTRAINT "tenants_assistant_paused_reason_check"
+            CHECK (
+                "assistant_paused_reason" IS NULL
+                OR ("assistant_paused_at" IS NOT NULL
+                    AND length(btrim("assistant_paused_reason")) > 0
+                    AND length("assistant_paused_reason") <= 500)
+            );
+    END IF;
+END;
+$$;
+
+-- ---------------------------------------------------------------------------
+-- (3) Indexes.
+--
+-- NONE, AND THAT IS CHECKED RATHER THAN ASSUMED. The verdict query reaches
+-- this row by tenants.id, which is the PRIMARY KEY, from a value that is
+-- already a bound parameter of that query. There is no scan to accelerate.
+--
+-- An index on assistant_paused_at was considered for an operator dashboard
+-- listing paused tenants; that is a rare, small, admin-side query over a table
+-- with one row per organisation, and an index that earns nothing on the hot
+-- path and little off it is a thing to keep in sync for no return.
+-- ---------------------------------------------------------------------------

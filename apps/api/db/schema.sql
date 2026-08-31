@@ -179,6 +179,26 @@ CREATE TABLE tenants (
     cancel_at_period_end     boolean     NOT NULL DEFAULT false,
     deleted_at               timestamptz,
     purge_started_at         timestamptz,
+    -- M130 — the assistant / MCP surface's per-tenant enablement flag and kill
+    -- switch. Two columns, not one tri-state, because releasing the kill
+    -- switch after an incident must not enable a surface that was deliberately
+    -- off. NULL means a DIFFERENT thing on each: assistant_enabled_at IS NULL
+    -- means never enabled (off), assistant_paused_at IS NULL means not paused
+    -- (running). Both join the `authorized` verdict in
+    -- ReCheckMCPRequestAuthorizationInTenantTx, so the switch stops in-flight
+    -- requests on the next request rather than only blocking new grants.
+    --
+    -- These live on tenants, and NOT in a settings table, because tenants has
+    -- no RLS: a kill switch read on the authentication path from behind a
+    -- policy can be filtered to NULL and read as "not paused", which is an
+    -- inert kill switch. See m130 DECISION 1.
+    assistant_enabled_at     timestamptz,
+    assistant_paused_at      timestamptz,
+    assistant_paused_reason  text
+        CHECK (assistant_paused_reason IS NULL
+               OR (assistant_paused_at IS NOT NULL
+                   AND length(btrim(assistant_paused_reason)) > 0
+                   AND length(assistant_paused_reason) <= 500)),
     created_at               timestamptz NOT NULL DEFAULT now(),
     updated_at               timestamptz NOT NULL DEFAULT now()
 );
