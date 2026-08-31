@@ -1276,6 +1276,9 @@ type Tenant struct {
 	CancelAtPeriodEnd      bool               `json:"cancel_at_period_end"`
 	DeletedAt              pgtype.Timestamptz `json:"deleted_at"`
 	PurgeStartedAt         pgtype.Timestamptz `json:"purge_started_at"`
+	AssistantEnabledAt     pgtype.Timestamptz `json:"assistant_enabled_at"`
+	AssistantPausedAt      pgtype.Timestamptz `json:"assistant_paused_at"`
+	AssistantPausedReason  *string            `json:"assistant_paused_reason"`
 	CreatedAt              time.Time          `json:"created_at"`
 	UpdatedAt              time.Time          `json:"updated_at"`
 }
