@@ -515,7 +515,7 @@ func TestS7CapabilityOutsideTheOrgCeilingIsNotListedAsAppRole(t *testing.T) {
 		t.Fatalf("create site: %v", err)
 	}
 
-	_, bearer := s7GrantWithBearer(t, mcpRepo, tenant, "ceiling", []uuid.UUID{s1.ID})
+	_, bearer := s7GrantWithBearer(t, mcpRepo, tenant, "list", []uuid.UUID{s1.ID})
 
 	auth, err := svc.Authenticate(ctx, bearer)
 	if err != nil {
