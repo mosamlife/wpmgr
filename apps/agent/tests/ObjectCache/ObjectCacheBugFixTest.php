@@ -336,13 +336,22 @@ final class ObjectCacheBugFixTest extends TestCase
 			}
 
 			/**
-			 * Mirrors the native phpredis signature (key-or-array first arg)
-			 * so the override stays compatible when ext-redis is loaded.
+			 * Mirrors the native phpredis signature (key-or-array first arg).
+			 *
+			 * The real Redis::del() parameter types differ by phpredis build:
+			 * some ship `array|string $key, string ...$other_keys`, others ship
+			 * both parameters fully untyped. PHP's override-compatibility check
+			 * is contravariant on parameter types, so this override must be no
+			 * narrower than the loosest real signature — i.e. untyped here —
+			 * or the class fatals to load under whichever phpredis build has
+			 * the untyped form. Untyped is compatible with both. The intended,
+			 * narrower types live in the @param tags below instead of the
+			 * signature.
 			 *
 			 * @param array<string>|string $key        First key or array of keys.
 			 * @param string               ...$other_keys Additional keys.
 			 */
-			public function del( array|string $key, string ...$other_keys ): int
+			public function del( $key, ...$other_keys ): int
 			{
 				$keys          = array_merge( is_array( $key ) ? array_values( $key ) : [ $key ], array_values( $other_keys ) );
 				$this->deleted = array_merge( $this->deleted, $keys );
@@ -350,10 +359,13 @@ final class ObjectCacheBugFixTest extends TestCase
 			}
 
 			/**
+			 * Same parameter-typing rationale as del() above: untyped so the
+			 * override stays compatible with every real phpredis build.
+			 *
 			 * @param array<string>|string $key        First key or array of keys.
 			 * @param string               ...$other_keys Additional keys.
 			 */
-			public function unlink( array|string $key, string ...$other_keys ): int
+			public function unlink( $key, ...$other_keys ): int
 			{
 				$keys          = array_merge( is_array( $key ) ? array_values( $key ) : [ $key ], array_values( $other_keys ) );
 				$this->deleted = array_merge( $this->deleted, $keys );
@@ -372,6 +384,37 @@ final class ObjectCacheBugFixTest extends TestCase
 				return true;
 			}
 		};
+	}
+
+	/**
+	 * buildFakeRedis() returns an anonymous class extending \Redis. Whether
+	 * \Redis is the C-implemented ext-redis class or the constants-only
+	 * userland stub in tests/wp-stubs.php is an environment fact this suite
+	 * does not control, and the two give this file different meaning: only
+	 * the real extension's method signatures can prove the override is
+	 * actually compatible with what a production site loads. Report which
+	 * case ran instead of letting it pass silently either way.
+	 */
+	public function test_fake_redis_extends_the_real_extension_class(): void
+	{
+		if ( ! extension_loaded( 'redis' ) ) {
+			$this->markTestSkipped(
+				'ext-redis is not loaded in this environment, so the FakeRedis override ' .
+				'in buildFakeRedis() was only checked against the constants-only stub in ' .
+				'tests/wp-stubs.php, not against the real Redis class signatures.'
+			);
+		}
+
+		$this->assertTrue(
+			( new \ReflectionClass( \Redis::class ) )->isInternal(),
+			'\\Redis resolved to a userland class, not the internal ext-redis one, ' .
+			'even though extension_loaded(\'redis\') reported true.'
+		);
+		$this->assertInstanceOf(
+			\Redis::class,
+			$this->buildFakeRedis(),
+			'FakeRedis must actually extend the real, internal Redis class here.'
+		);
 	}
 
 	/**
