@@ -13,8 +13,14 @@ import (
 // This file answers "WHICH TOOLS may this connection reach". registry.go
 // answers "WHICH TOOLS EXIST, and what does each require". The two are
 // deliberately separate types so that neither can be read as the other, and
-// deliberately joined at exactly one place (AuthorizeTool) that both tools/list
-// and tools/call go through.
+// deliberately joined at exactly one place: AuthorizeTool, which every
+// tools/call goes through.
+//
+// tools/list DOES NOT consult this file any more. Under the D1 ruling an
+// unticked capability refuses rather than hides, so the listing is unfiltered
+// and the capability is enforced on the invocation path alone. That is a
+// disclosure change and not an authority change -- see the D1 note in
+// registry.go.
 //
 // SiteSet in model.go is the shape this copies. Its zero value allows nothing
 // and it has no method answering "does this mean everything", because the
@@ -23,10 +29,27 @@ import (
 // axis.
 // ---------------------------------------------------------------------------
 
-// ErrCodeToolNotAvailable is the SINGLE domain code for every reason a tool is
-// not reachable by this connection. See the disclosure note on AuthorizeTool
-// for why there is one code and not three.
+// ErrCodeToolNotAvailable is the refusal for a name that IS NOT IN THE REGISTRY
+// AT ALL -- the model guessed. It no longer doubles as the capability refusal:
+// that is ErrCodeCapabilityNotGranted below, and the D1 note in registry.go
+// records why the two were merged and why they are now separate.
 const ErrCodeToolNotAvailable = "mcp_tool_not_available"
+
+// ErrCodeCapabilityNotGranted is the TYPED, TERMINAL refusal for a registered
+// tool whose capability this connection's grant does not hold. It is the D1
+// ruling's wire vocabulary: an unticked capability refuses under this code, it
+// does not vanish from tools/list.
+//
+// IT IS A THIRD CODE AND NOT ONE OF THE TWO ABOVE, and the distinction is the
+// whole reason it exists. ErrCodeCapabilityUnmapped means THE SERVER is
+// misconfigured -- a scope it recognises confers nothing -- and telling a
+// caller that when the truth is "your grant is narrower than you thought"
+// sends an operator hunting a server fault they do not have.
+// ErrCodeCapabilityWiderThanDefault is the OPERATOR-facing refusal on the
+// narrowing path, raised while a connection is being configured, and it is
+// never seen by a model calling a tool. This code is the model-facing one, and
+// a client branching on it must read it as permanent: see AuthorizeTool.
+const ErrCodeCapabilityNotGranted = "mcp_capability_not_granted"
 
 // ErrCodeCapabilityUnmapped is the fail-closed refusal for a recognised OAuth
 // scope that no capability mapping covers. It is an internal misconfiguration,
