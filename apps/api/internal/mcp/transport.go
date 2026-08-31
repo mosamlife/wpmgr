@@ -12,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
 
@@ -386,7 +387,7 @@ func (h *TransportHandler) serve(c *gin.Context) {
 	)
 
 	if neg.Refused() {
-		h.writeProtocolRefusal(c, nil, neg)
+		h.writeProtocolRefusal(c, auth, nil, neg, "header")
 		return
 	}
 
@@ -589,7 +590,7 @@ func (h *TransportHandler) initialize(
 	// the header rule was written to accept.
 	paramNeg := NegotiateProtocol(p.ProtocolVersion)
 	if paramNeg.Refused() {
-		h.writeProtocolRefusal(c, req.ID, paramNeg)
+		h.writeProtocolRefusal(c, auth, req.ID, paramNeg, "initialize_params")
 		return jsonrpcResponse{}, false
 	}
 
@@ -731,6 +732,25 @@ func (h *TransportHandler) callTool(ctx context.Context, auth AuthorizedRequest,
 				slog.Int("held_capabilities", auth.Capabilities.Len()),
 				slog.Int("scoped_sites", auth.Sites.Len()),
 			)
+
+			// AND THE DURABLE ROW, on the same condition as the log line and
+			// for the same reason. ADR-061 A10: "the surface's own record of
+			// who was denied what is not reliable, which is the boundary's
+			// evidence." The WarnContext above is an operator convenience with
+			// no retention guarantee and no tenant scoping; this is the record
+			// a customer's auditor can read back.
+			//
+			// The condition is `reason != ""` and not `err != nil`
+			// DELIBERATELY. The one refusal with an empty reason is the
+			// registry-entry-with-no-implementation branch of AuthorizeTool,
+			// which is a BUILD DEFECT and not a denial: writing mcp.tool.denied
+			// for it would tell an auditor the boundary refused this connection
+			// when the truth is that the server is broken, and they would go
+			// looking at a grant that was never the problem. It is already
+			// reported at ERROR by toolError.
+			if aerr := h.svc.RecordToolDenied(ctx, auth, p.Name, reason); aerr != nil {
+				h.auditGap(ctx, auth, audit.ActionMCPToolDenied, p.Name, string(reason), aerr)
+			}
 		}
 
 		if de, ok := domain.AsDomain(err); ok && de.Code == ErrCodeToolNotAvailable {
@@ -765,9 +785,12 @@ func (h *TransportHandler) callTool(ctx context.Context, auth AuthorizedRequest,
 		return h.toolError(req.ID, err)
 	}
 
-	// The operator-facing audit row (ActionMCPToolCalled), for this call and
-	// no other outcome: a refusal above never reached a tenant's data and is
-	// already covered by the WarnContext log at the refusal site. BEST-EFFORT
+	// The operator-facing audit row (ActionMCPToolCalled), for this call and no
+	// other outcome. A refusal above writes ActionMCPToolDenied instead, on its
+	// own branch, so the two outcomes are separate actions rather than one
+	// action with a status field: a query for "what did this connection do"
+	// and a query for "what was this connection refused" are different
+	// questions and neither should have to filter the other out. BEST-EFFORT
 	// like RecordConnect's client-identity write is not -- a failure here is
 	// logged, never returned to the caller, because withholding a successful
 	// read's answer over a failure to record having answered it would make an
@@ -804,8 +827,85 @@ func (h *TransportHandler) toolError(id json.RawMessage, err error) jsonrpcRespo
 // Refusals
 // ---------------------------------------------------------------------------
 
+// auditGap is what happens when a REFUSAL's audit append fails, and it is the
+// one place the failure posture for this surface's denial records is decided.
+//
+// THE DECISION: the caller's refusal is unchanged, and the failure is escalated
+// on the operator side instead. This is a deliberate divergence from the
+// fail-closed language in ADR-061 A10, and the reasoning is:
+//
+//  1. "FAIL CLOSED" IS NOT DEFINED FOR AN OPERATION THAT IS ALREADY A DENIAL.
+//     A10's rule is "no AI action is ever performed whose record was lost", and
+//     it works because there is always a second option: don't perform it. Here
+//     the action has already not been performed. There is nothing to withhold,
+//     nothing to roll back, and no companion write to bind the append to -- the
+//     approve path's RecordInTx shape has no analogue because a refusal touches
+//     no row.
+//
+//  2. THE ONLY AVAILABLE IMPLEMENTATION OF "FAIL CLOSED" HERE MAKES THE SURFACE
+//     WORSE AND RESTORES NOTHING. The single lever left is the wire answer:
+//     degrade the typed refusal (-32004 "call tools/list", -32002 "your site
+//     scope is empty") into -32603 internal error. That destroys the actionable
+//     half of the refusal for a legitimate client who is now told nothing they
+//     can act on, makes a transient database blip indistinguishable from a
+//     server bug, and DOES NOT WRITE THE ROW. The evidence gap is identical
+//     either way; only the client's experience differs, and only for the worse.
+//
+//  3. CHANGING THE WIRE ANSWER LEAKS AUDIT-SYSTEM LIVENESS TO THE PARTY BEING
+//     DENIED. This is the decisive one. The caller on this branch is by
+//     definition someone who just asked for something they may not have,
+//     including the wordlist-probing case AuthorizeTool's whole disclosure
+//     decision exists to defeat. A distinguishable answer when and only when
+//     the audit log is unwritable is a "the camera is off" oracle: probe until
+//     the response shape changes, then do the thing you actually came for. A
+//     surface that tells attackers when it has stopped recording is worse than
+//     one that quietly keeps answering.
+//
+// So the honest failure mode is not a different refusal, it is a LOUDER
+// OPERATOR SIGNAL, and that is what this writes. Two properties matter:
+//
+//   - THE LOST ROW'S CONTENT IS EMITTED HERE, not just the error. The hash
+//     chain has a hole that cannot be repaired, but the facts -- tenant, grant,
+//     what was asked for, why it was refused -- survive somewhere an operator
+//     can reach. It is strictly weaker evidence than the chained row (not
+//     tamper-evident, log retention, no audit endpoint) and it is named as
+//     such rather than presented as equivalent.
+//   - audit_gap=true is a single, greppable, alertable field. The requirement
+//     A10 is really making is that an operator FINDS OUT their evidence has a
+//     hole; an ERROR line indistinguishable from every other ERROR line does
+//     not satisfy that, and an alert keyed on this field does.
+//
+// WHAT THIS DOES NOT CLAIM. This is not A10's fail-closed helper. That helper
+// would have to bind the append to the operation, and for a denial there is no
+// operation to bind it to. If a WRITE tool ever lands on this surface and its
+// refusal has an effect to roll back, that refusal is a different case and must
+// not reuse this path by analogy.
+func (h *TransportHandler) auditGap(
+	ctx context.Context, auth AuthorizedRequest, action, target, reason string, err error,
+) {
+	h.log.ErrorContext(ctx, "mcp refusal audit write failed",
+		slog.Bool("audit_gap", true),
+		slog.String("action", action),
+		slog.String("tenant_id", auth.TenantID.String()),
+		slog.String("grant_id", auth.GrantID.String()),
+		slog.String("target", target),
+		slog.String("refusal_reason", reason),
+		slog.String("error", err.Error()),
+	)
+}
+
 // writeUnauthorized answers 401 -- NEVER 404 -- and names the scheme so a
 // client knows how to authenticate.
+//
+// NO AUDIT ROW IS WRITTEN HERE, and the omission is structural rather than a
+// gap left open by choice. Authenticate has just FAILED, so there is no tenant
+// id -- audit_log.tenant_id is NOT NULL and every RLS policy on the table keys
+// on it, so there is literally no tenant whose ledger this row could join. The
+// residual is real and is named in the report rather than papered over: an
+// invalid-token probe against this endpoint is visible in the operator log and
+// nowhere in any customer-readable record. Closing it needs somewhere for
+// unattributable refusals to go, which is a schema question and therefore
+// database-engineer's, not something to fake with a nil uuid.
 func (h *TransportHandler) writeUnauthorized(c *gin.Context, err error) {
 	c.Header("WWW-Authenticate", `Bearer realm="wpmgr-mcp"`)
 
@@ -836,7 +936,17 @@ func (h *TransportHandler) writeUnauthorized(c *gin.Context, err error) {
 // quietly reduced surface. Both are the silent-coercion failure this codebase
 // is governed by -- an unsupported revision answered with a working response is
 // a claim that the client's revision is spoken here.
-func (h *TransportHandler) writeProtocolRefusal(c *gin.Context, id json.RawMessage, neg Negotiation) {
+//
+// It also writes the ActionMCPProtocolDenied row for BOTH sites, because it is
+// the one function both go through. auth is threaded in for that: every caller
+// runs after Authenticate, so a tenant and a grant always exist here.
+func (h *TransportHandler) writeProtocolRefusal(
+	c *gin.Context, auth AuthorizedRequest, id json.RawMessage, neg Negotiation, phase string,
+) {
+	if err := h.svc.RecordProtocolDenied(c.Request.Context(), auth, neg, phase); err != nil {
+		h.auditGap(c.Request.Context(), auth, audit.ActionMCPProtocolDenied, neg.Raw, phase, err)
+	}
+
 	var msg string
 	switch neg.Outcome {
 	case NegotiationBelowFloor:

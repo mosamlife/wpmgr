@@ -1273,10 +1273,12 @@ func (s *Service) RecordActivity(ctx context.Context, auth AuthorizedRequest) er
 
 // RecordToolCall appends the ActionMCPToolCalled audit row for one
 // successfully executed tool call. The caller (TransportHandler.callTool)
-// invokes this AFTER entry.invoke returns without error -- a refused call
-// never reaches a tenant's data, and is already visible in the operator log
-// TransportHandler writes at refusal time (h.log.WarnContext), so it earns no
-// row here.
+// invokes this AFTER entry.invoke returns without error. A REFUSED call is
+// recorded separately, by RecordToolDenied, under ActionMCPToolDenied: until
+// ADR-061 A10 was addressed this comment claimed a refusal earned no row
+// because it "never reaches a tenant's data and is already in the operator
+// log", and both halves of that were true while the conclusion was not -- see
+// the argument on RecordToolDenied.
 //
 // ActorType is ActorAssistant, the one actor kind in this whole log that
 // attributes the row to the MODEL rather than to the human who granted it
@@ -1308,6 +1310,111 @@ func (s *Service) RecordToolCall(ctx context.Context, auth AuthorizedRequest, to
 		Metadata: map[string]any{
 			"grant_name":          auth.GrantName,
 			"operator_permission": operatorPermission,
+		},
+	})
+	return err
+}
+
+// RecordToolDenied appends the ActionMCPToolDenied audit row for one REFUSED
+// tools/call. The caller (TransportHandler.callTool) invokes it on the
+// AuthorizeTool refusal branch, alongside the operator log line and before the
+// wire answer is chosen.
+//
+// WHY A REFUSAL EARNS A ROW WHEN THE OLD COMMENT ON RecordToolCall SAID IT DID
+// NOT. That comment argued a refusal "never reached a tenant's data, and is
+// already covered by the WarnContext log at the refusal site", and both halves
+// are true and neither is sufficient. Never reaching the data is exactly what
+// has to be PROVEN rather than assumed -- it is the boundary's own claim about
+// itself -- and an slog line is not the artifact that proves it: it is not
+// hash-chained, not tenant-scoped, not readable through the audit endpoint a
+// customer's auditor is given, and it is subject to a retention the log
+// pipeline chooses. "Who was denied what" was therefore answerable only by an
+// operator with production log access, which is the wrong audience and the
+// wrong durability for the record that a security boundary functioned.
+//
+// The actor pair is ActorAssistant over auth.GrantID, identical to
+// RecordToolCall's, so a single query on actor_id returns everything one
+// connection did AND everything it was refused -- which is the shape an
+// investigation actually wants, and it is why this is not modelled as a
+// separate actor kind.
+//
+// reason is the OPERATOR-FACING refusalReason, deliberately the value the wire
+// blurs: the whole disclosure decision on AuthorizeTool is that "no such tool"
+// and "not yours" are indistinguishable to the CALLER, and it holds only
+// because the operator gets the precise reason somewhere else. This row is now
+// that somewhere else. Taking the typed refusalReason rather than a string is
+// what stops a caller composing a reason by hand and drifting from the log line
+// two lines above it.
+//
+// BEST-EFFORT, and that is a deliberate divergence from ADR-061 A10's
+// fail-closed language rather than an oversight. See TransportHandler.auditGap.
+func (s *Service) RecordToolDenied(ctx context.Context, auth AuthorizedRequest, toolName string, reason refusalReason) error {
+	// NOTE: a Service with no recorder records NOTHING and reports no error,
+	// the same as RecordToolCall. That is the unit-test configuration (see the
+	// audit field doc); in production WithAudit has always been called, and a
+	// request path reached without it is a wiring bug whose finding is "this
+	// deploy is unattributable", not "make this quieter".
+	if s.audit == nil {
+		return nil
+	}
+	_, err := s.audit.Record(ctx, audit.Event{
+		TenantID:  auth.TenantID,
+		ActorType: audit.ActorAssistant,
+		ActorID:   auth.GrantID.String(),
+		Action:    audit.ActionMCPToolDenied,
+		// The name AS SPELLED BY THE CALLER, not a registry name: on the
+		// unregistered branch there is no registry entry, and the string the
+		// caller guessed is the entire content of the evidence.
+		TargetType: "mcp_tool",
+		TargetID:   toolName,
+		Metadata: map[string]any{
+			"grant_name":        auth.GrantName,
+			"refusal_reason":    string(reason),
+			"held_capabilities": auth.Capabilities.Len(),
+			"scoped_sites":      auth.Sites.Len(),
+		},
+	})
+	return err
+}
+
+// RecordProtocolDenied appends the ActionMCPProtocolDenied audit row for an
+// authenticated request refused at revision negotiation.
+//
+// It is called from TransportHandler.writeProtocolRefusal, which is the ONE
+// function both refusal sites go through (the per-request header in serve, and
+// the initialize params). Putting the append there rather than at the two call
+// sites is what makes "every protocol refusal is recorded" structurally true
+// instead of true by convention -- a third refusal site added later inherits it.
+//
+// phase names which of the two negotiations refused, because they mean
+// different things operationally: a params refusal is a client that cannot
+// connect at all, a header refusal is a client that connected and then sent
+// something else, and only the second can indicate a proxy rewriting headers.
+func (s *Service) RecordProtocolDenied(ctx context.Context, auth AuthorizedRequest, neg Negotiation, phase string) error {
+	if s.audit == nil {
+		return nil
+	}
+	reason := "unsupported"
+	if neg.Outcome == NegotiationBelowFloor {
+		reason = "below_floor"
+	}
+	_, err := s.audit.Record(ctx, audit.Event{
+		TenantID:   auth.TenantID,
+		ActorType:  audit.ActorAssistant,
+		ActorID:    auth.GrantID.String(),
+		Action:     audit.ActionMCPProtocolDenied,
+		TargetType: "mcp_protocol",
+		TargetID:   neg.Raw,
+		Metadata: map[string]any{
+			"grant_name":     auth.GrantName,
+			"refusal_reason": reason,
+			"phase":          phase,
+			// Recorded per row rather than left to be looked up: these are
+			// compile-time constants that WILL move, and a row that says only
+			// "2024-11-05 was refused" stops being interpretable the moment
+			// they do.
+			"floor":  ProtocolFloor,
+			"target": ProtocolTarget,
 		},
 	})
 	return err
