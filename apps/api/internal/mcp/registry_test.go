@@ -38,124 +38,385 @@ func nonEmptyRegistry(t *testing.T) []ToolPolicy {
 }
 
 // authWith builds an AuthorizedRequest directly, which is how a test reaches
-// the registry gate with a chosen capability set. Both fields are set
+// the registry gate with a chosen capability set. Every field is set
 // explicitly: the zero value of each allows nothing, so a test that forgot one
 // would prove the gate works for a reason it did not intend.
+//
+// THE CEILING IS THE PRODUCTION CEILING, not the grant. authWith models the
+// ordinary connection -- one whose organisation has everything the surface
+// offers enabled and whose own grant may be narrower. That is what
+// Authenticate builds today, because OrgDefaultCapabilities over grantScopes()
+// resolves to the whole vocabulary while exactly one scope is recognised.
+//
+// A test that needs a NARROWER ceiling than the vocabulary -- the org-switched-
+// off case -- must say so, and authWithCeiling is how.
 func authWith(caps CapabilitySet, siteIDs ...uuid.UUID) AuthorizedRequest {
+	ceiling, err := OrgDefaultCapabilities(grantScopes())
+	if err != nil {
+		// Not t.Fatal: authWith has no *testing.T and this is unreachable while
+		// scopeCapabilities is total over recognisedScopes, which
+		// TestEveryRecognisedScopeHasACapabilityMapping pins. Panicking beats
+		// returning a zero ceiling, which would silently list nothing and make
+		// every visibility test pass for the wrong reason.
+		panic("authWith: org ceiling did not resolve: " + err.Error())
+	}
+	return authWithCeiling(ceiling, caps, siteIDs...)
+}
+
+// authWithCeiling builds an AuthorizedRequest with an EXPLICIT org ceiling, so
+// a test can construct the case where the organisation's ceiling is narrower
+// than the capability vocabulary.
+//
+// That case is not reachable through Authenticate today: the ceiling is derived
+// from the closed scope registry, recognisedScopes holds one entry, and
+// scopeCapabilities maps it to the whole vocabulary -- so the production
+// ceiling and the vocabulary coincide and every tool is inside every ceiling.
+// It becomes reachable when the vocabulary widens and org policy can select
+// within it. The structure is proven now so it is correct then.
+func authWithCeiling(ceiling, caps CapabilitySet, siteIDs ...uuid.UUID) AuthorizedRequest {
 	return AuthorizedRequest{
 		TenantID:     uuid.New(),
 		GrantID:      uuid.New(),
 		TokenID:      uuid.New(),
 		Sites:        NewSiteSet(siteIDs),
 		Capabilities: caps,
+		OrgCeiling:   ceiling,
 	}
 }
 
 // TestExitGate_GuessedToolNameIsUnreachable is THE proof for this slice.
 //
-// A connection holds NO capability. tools/list therefore shows it nothing. It
-// then names a tool anyway -- the registered name, and a set of plausible
-// guesses a model would produce from the product's vocabulary. Every one must
-// refuse.
+// A connection holds NO capability. It names a tool anyway -- the registered
+// name, and a set of plausible guesses a model would produce from the product's
+// vocabulary. Every one must refuse, and the two KINDS of refusal must be the
+// two the D1 ruling defines.
 //
 // The registered name is in the table on purpose and it is the load-bearing
 // case. A gate that only refuses names it has never heard of is not a gate: it
 // is a typo checker. The failure this test exists to catch is a tools/call path
 // that resolves a REAL registry entry and dispatches on it without asking
 // whether this connection may reach it, which is exactly what the pre-S7 switch
-// statement did.
+// statement did -- and which listing the tool unconditionally would make easier
+// to reach, not harder.
 func TestExitGate_GuessedToolNameIsUnreachable(t *testing.T) {
 	// No capability, but a non-empty site scope -- so nothing about this
 	// refusal can be attributed to the site axis.
 	auth := authWith(CapabilitySet{}, uuid.New())
 
-	if got := VisibleTools(auth); len(got) != 0 {
-		t.Fatalf("a connection holding no capability was shown %d tools: %+v", len(got), got)
+	// The tool is LISTED. That is the ruling, and it is asserted here rather
+	// than only in its own test so that this proof cannot be read as "nothing
+	// was reachable because nothing was shown".
+	if got := VisibleTools(auth); len(got) != 1 || got[0].Name != ToolListSites {
+		t.Fatalf("a connection holding no capability was shown %d tools, want the whole "+
+			"registry listed and annotated: %+v", len(got), got)
 	}
 
-	for _, name := range []string{
-		ToolListSites, // REGISTERED, and still unreachable. See above.
-		"list_sites_all",
-		"sites.restart",
-		"restart_site",
-		"update_plugin",
-		"run_backup",
-		"delete_site",
-		"", // the empty name, which must not match a zero-value entry
-	} {
-		t.Run(name, func(t *testing.T) {
-			entry, reason, err := AuthorizeTool(name, auth)
+	cases := []struct {
+		name string
+		want string
+	}{
+		// REGISTERED, and still unreachable. See above.
+		{ToolListSites, ErrCodeCapabilityNotGranted},
+		{"list_sites_all", ErrCodeToolNotAvailable},
+		{"sites.restart", ErrCodeToolNotAvailable},
+		{"restart_site", ErrCodeToolNotAvailable},
+		{"update_plugin", ErrCodeToolNotAvailable},
+		{"run_backup", ErrCodeToolNotAvailable},
+		{"delete_site", ErrCodeToolNotAvailable},
+		// The empty name, which must not match a zero-value entry.
+		{"", ErrCodeToolNotAvailable},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			entry, reason, err := AuthorizeTool(tc.name, auth)
 			if err == nil {
-				t.Fatalf("AuthorizeTool(%q) GRANTED: entry=%+v", name, entry)
+				t.Fatalf("AuthorizeTool(%q) GRANTED: entry=%+v", tc.name, entry)
 			}
 			if entry.invoke != nil {
-				t.Fatalf("AuthorizeTool(%q) returned an invocable entry alongside its error", name)
+				t.Fatalf("AuthorizeTool(%q) returned an invocable entry alongside its error", tc.name)
 			}
 			de, ok := domain.AsDomain(err)
-			if !ok || de.Code != ErrCodeToolNotAvailable {
-				t.Fatalf("AuthorizeTool(%q) err = %v, want a %s domain error", name, err, ErrCodeToolNotAvailable)
+			if !ok {
+				t.Fatalf("AuthorizeTool(%q) err = %v, want a domain error", tc.name, err)
+			}
+			// ASSERTED BY VALUE. "err != nil" would pass here even if the
+			// capability case had been answered by the site axis, or by the
+			// unregistered arm, which are different bugs with different fixes.
+			if de.Code != tc.want {
+				t.Fatalf("AuthorizeTool(%q) code = %q, want %q", tc.name, de.Code, tc.want)
+			}
+			if de.Kind != domain.KindForbidden {
+				t.Fatalf("AuthorizeTool(%q) kind = %v, want KindForbidden -- a 401 here is the "+
+					"shape that makes clients re-run an OAuth flow that cannot help",
+					tc.name, de.Kind)
 			}
 			if reason == "" {
-				t.Fatalf("AuthorizeTool(%q) produced no operator-facing reason", name)
+				t.Fatalf("AuthorizeTool(%q) produced no operator-facing reason", tc.name)
 			}
 		})
 	}
 }
 
-// TestExitGate_RefusalIsNotAnExistenceOracle is the disclosure half.
+// TestCapabilityRefusalIsTypedTerminalAndNamesTheCapability is the D1 ruling
+// stated as a test.
 //
-// The registered name and a name that has never existed must be
-// INDISTINGUISHABLE on the wire: same code, same message, same data. If they
-// diverge, a caller enumerates the product's tool surface with a wordlist.
+// It replaces TestExitGate_RefusalIsNotAnExistenceOracle, which asserted the
+// OPPOSITE -- that a registered name and a never-existed name must be
+// indistinguishable. That property was deliberately given up: the owner ruled
+// that an unticked capability refuses rather than hides, and once tools/list
+// stops filtering there is no surface left for the blur to protect.
 //
-// The operator-facing reason must diverge, because that is where the typed
-// refusal actually lives.
-func TestExitGate_RefusalIsNotAnExistenceOracle(t *testing.T) {
+// Every assertion here is by VALUE. A refusal that merely errors, or that
+// errors with the uniform code, or that errors without naming the capability,
+// is the behaviour this change exists to remove.
+func TestCapabilityRefusalIsTypedTerminalAndNamesTheCapability(t *testing.T) {
 	auth := authWith(CapabilitySet{}, uuid.New())
 
-	_, realReason, realErr := AuthorizeTool(ToolListSites, auth)
-	_, fakeReason, fakeErr := AuthorizeTool("definitely_not_a_tool_xyzzy", auth)
-
-	realDE, ok1 := domain.AsDomain(realErr)
-	fakeDE, ok2 := domain.AsDomain(fakeErr)
-	if !ok1 || !ok2 {
-		t.Fatalf("both refusals must be domain errors; got %v and %v", realErr, fakeErr)
+	_, reason, err := AuthorizeTool(ToolListSites, auth)
+	if err == nil {
+		t.Fatal("a connection holding no capability was granted the tool")
 	}
-	if realDE.Code != fakeDE.Code {
-		t.Fatalf("caller-visible code differs: registered=%q unregistered=%q -- this is an existence oracle",
-			realDE.Code, fakeDE.Code)
+	de, ok := domain.AsDomain(err)
+	if !ok {
+		t.Fatalf("err = %v, want a domain error", err)
 	}
-
-	// The only permitted difference in the message is the echoed name, which is
-	// the caller's own input. Strip it and the two must be identical.
-	realMsg := strings.Replace(realDE.Message, ToolListSites, "NAME", 1)
-	fakeMsg := strings.Replace(fakeDE.Message, "definitely_not_a_tool_xyzzy", "NAME", 1)
-	if realMsg != fakeMsg {
-		t.Fatalf("caller-visible message differs beyond the echoed name -- this is an existence oracle:\n"+
-			"registered:   %s\nunregistered: %s", realMsg, fakeMsg)
+	if de.Code != ErrCodeCapabilityNotGranted {
+		t.Fatalf("code = %q, want %q -- the capability refusal must not share the uniform "+
+			"not-available code, which tells the model to ask tools/list for a tool "+
+			"tools/list already showed it", de.Code, ErrCodeCapabilityNotGranted)
+	}
+	if reason != reasonCapabilityNotHeld {
+		t.Fatalf("operator reason = %q, want %q", reason, reasonCapabilityNotHeld)
 	}
 
-	if realReason == fakeReason {
-		t.Fatalf("the OPERATOR-facing reason must distinguish the two cases; both were %q", realReason)
+	// It NAMES the capability, in the message, where a model reads it.
+	if !strings.Contains(de.Message, string(CapSitesRead)) {
+		t.Fatalf("the refusal does not name the missing capability %q: %s",
+			CapSitesRead, de.Message)
 	}
-	if realReason != reasonCapabilityNotHeld {
-		t.Fatalf("registered-but-not-held reason = %q, want %q", realReason, reasonCapabilityNotHeld)
+
+	// It says the refusal is PERMANENT. A model that reads a refusal as
+	// transient retries; the empty-capability 401 made clients re-run an OAuth
+	// handshake that could not change the answer.
+	if !strings.Contains(de.Message, "permanent") {
+		t.Fatalf("the refusal does not tell the model it is permanent: %s", de.Message)
 	}
-	if fakeReason != reasonUnregistered {
-		t.Fatalf("unregistered reason = %q, want %q", fakeReason, reasonUnregistered)
+	if de.Details == nil {
+		t.Fatal("the refusal carries no details, so a client has to parse English to " +
+			"learn whether retrying could help")
+	}
+	if got := de.Details["retryable"]; got != false {
+		t.Fatalf("details[retryable] = %v, want false", got)
+	}
+	if got := de.Details["required_capability"]; got != string(CapSitesRead) {
+		t.Fatalf("details[required_capability] = %v, want %q", got, CapSitesRead)
+	}
+	// The held set is a fact about the caller's own grant, and it is what lets
+	// a model tell its user what this connection CAN do.
+	held, ok := de.Details["held_capabilities"].([]string)
+	if !ok {
+		t.Fatalf("details[held_capabilities] = %#v, want []string", de.Details["held_capabilities"])
+	}
+	if len(held) != 0 {
+		t.Fatalf("held_capabilities = %v for a connection holding none", held)
 	}
 }
 
-// TestExitGate_VisibilityAndCallabilityAgree walks the whole registry against
-// a connection holding each capability in turn and asserts the two paths never
-// disagree: everything visible is callable, and everything callable was
-// visible.
+// TestCapabilityRefusalIsListedNotHidden is the "does not hide" half, on the
+// discovery path.
 //
-// This is the invariant that made the pre-S7 arrangement unsafe. It held then
-// only for a client that called tools/list and believed the answer; here it is
-// a property of the code, because both paths call visible().
-func TestExitGate_VisibilityAndCallabilityAgree(t *testing.T) {
+// A connection holding nothing must still be SHOWN the tool, and the descriptor
+// it is shown must say -- in the description, the one field every MCP client
+// puts in front of the model -- that the tool is not available, why, and that
+// retrying will not help.
+func TestCapabilityRefusalIsListedNotHidden(t *testing.T) {
+	auth := authWith(CapabilitySet{}, uuid.New())
+
+	// Asserted against the registry rather than against a literal 1, so that
+	// adding a second tool does not quietly narrow what this proves.
+	want := len(nonEmptyRegistry(t))
+	got := VisibleTools(auth)
+	if len(got) != want {
+		t.Fatalf("tools/list showed %d of %d tools to a connection holding no capability; "+
+			"an unticked capability must refuse, not hide", len(got), want)
+	}
+
+	d := got[0]
+	if d.Name != ToolListSites {
+		t.Fatalf("listed tool = %q, want %q", d.Name, ToolListSites)
+	}
+	for _, must := range []string{
+		"NOT AVAILABLE TO THIS CONNECTION",
+		string(CapSitesRead),
+		ErrCodeCapabilityNotGranted,
+		"permanent",
+	} {
+		if !strings.Contains(d.Description, must) {
+			t.Fatalf("the listed descriptor does not mention %q, so a model reading tools/list "+
+				"cannot tell this tool from a callable one:\n%s", must, d.Description)
+		}
+	}
+
+	// AND IT DOES NOT OVER-FIRE. A connection that HOLDS the capability is
+	// shown the plain description, with no notice at all -- a guard that
+	// annotates correct work is a guard that gets switched off.
+	full := authWith(NewCapabilitySet(AllCapabilities()), uuid.New())
+	fd := VisibleTools(full)
+	if len(fd) != want {
+		t.Fatalf("a fully-capable connection saw %d of %d tools", len(fd), want)
+	}
+	if strings.Contains(fd[0].Description, "NOT AVAILABLE TO THIS CONNECTION") {
+		t.Fatalf("a connection that HOLDS %q was told the tool is unavailable:\n%s",
+			CapSitesRead, fd[0].Description)
+	}
+	if _, _, err := AuthorizeTool(ToolListSites, authWith(
+		NewCapabilitySet(AllCapabilities()), uuid.New())); err != nil {
+		t.Fatalf("a connection holding every capability and a site was refused: %v", err)
+	}
+}
+
+// TestOrgCeilingHidesWhileTheGrantRefuses is the ruling's asymmetry, in one
+// test, so that collapsing the two predicates into one cannot pass.
+//
+// The same registry, the same tool, two different connections:
+//
+//	ceiling holds it, grant does not -> LISTED, annotated, refuses by name
+//	ceiling does not hold it         -> ABSENT, refuses as unregistered
+//
+// CI does not run the integration package, so this is the fast guard for the
+// ceiling arm; the wpmgr_app proof is
+// TestS7CapabilityOutsideTheOrgCeilingIsNotListedAsAppRole in
+// apps/api/tests/adr064_s7_mcp_tool_registry_rls_test.go.
+//
+// The narrow ceiling is the EMPTY set because that is the only proper subset of
+// a one-entry vocabulary, and it is not reachable through Authenticate today.
+// See authWithCeiling.
+func TestOrgCeilingHidesWhileTheGrantRefuses(t *testing.T) {
+	want := len(nonEmptyRegistry(t))
 	site := uuid.New()
+
+	// INSIDE the ceiling, NOT held by the grant: listed and annotated.
+	inside := authWith(CapabilitySet{}, site)
+	got := VisibleTools(inside)
+	if len(got) != want {
+		t.Fatalf("a capability the ORG allows but the grant lacks was hidden: showed %d "+
+			"of %d; that boundary must refuse visibly, not vanish", len(got), want)
+	}
+	if !strings.Contains(got[0].Description, "NOT AVAILABLE TO THIS CONNECTION") {
+		t.Fatalf("the listed tool is not annotated:\n%s", got[0].Description)
+	}
+	_, _, err := AuthorizeTool(ToolListSites, inside)
+	ide, ok := domain.AsDomain(err)
+	if !ok || ide.Code != ErrCodeCapabilityNotGranted {
+		t.Fatalf("in-ceiling refusal = %v, want code %q", err, ErrCodeCapabilityNotGranted)
+	}
+
+	// OUTSIDE the ceiling, and the grant DOES hold it -- so an absence can only
+	// be the ceiling. Nothing here is attributable to the grant axis.
+	outside := authWithCeiling(NewCapabilitySet(nil), NewCapabilitySet(AllCapabilities()), site)
+	if !outside.Capabilities.Allows(CapSitesRead) {
+		t.Fatalf("the grant does not hold %q, so this would prove the GRANT arm", CapSitesRead)
+	}
+	if hidden := VisibleTools(outside); len(hidden) != 0 {
+		t.Fatalf("a capability OUTSIDE the org ceiling was listed: %+v; a token holder must "+
+			"not be able to enumerate what the organisation switched off", hidden)
+	}
+
+	// And the gate agrees with the listing, by value and by prose.
+	_, _, err = AuthorizeTool(ToolListSites, outside)
+	ode, ok := domain.AsDomain(err)
+	if !ok {
+		t.Fatalf("out-of-ceiling refusal = %v, want a domain error", err)
+	}
+	if ode.Code != ErrCodeToolNotAvailable {
+		t.Fatalf("out-of-ceiling code = %q, want %q", ode.Code, ErrCodeToolNotAvailable)
+	}
+	if ode.Code == ErrCodeCapabilityNotGranted {
+		t.Fatal("the ceiling refusal named the capability the organisation disabled")
+	}
+	if strings.Contains(ode.Message, string(CapSitesRead)) {
+		t.Fatalf("the ceiling refusal names the disabled capability: %s", ode.Message)
+	}
+
+	// Identical to a name that was never registered. A divergence here is an
+	// oracle for the org's disabled capabilities.
+	//
+	// The comparison is on the TEMPLATE, not the literal string: both messages
+	// echo the name the caller asked for, and that difference is the caller's
+	// own input rather than a disclosure. Substituting it back is what isolates
+	// the property -- everything OTHER than the echoed name must match.
+	const guessed = "sites_restart_everything"
+	_, _, guess := AuthorizeTool(guessed, outside)
+	gde, ok := domain.AsDomain(guess)
+	if !ok {
+		t.Fatalf("guessed name err = %v, want a domain error", guess)
+	}
+	if gde.Code != ode.Code {
+		t.Fatalf("a disabled capability answers %q and a guessed name answers %q; "+
+			"the difference tells a caller which capabilities exist", ode.Code, gde.Code)
+	}
+	if want := strings.ReplaceAll(gde.Message, guessed, ToolListSites); ode.Message != want {
+		t.Fatalf("the two refusals differ beyond the echoed name, which is an oracle:\n"+
+			"disabled: %s\nexpected: %s", ode.Message, want)
+	}
+
+	// AND IT DOES NOT OVER-FIRE. The ordinary connection -- real ceiling, full
+	// grant -- still sees every tool and still calls it.
+	full := authWith(NewCapabilitySet(AllCapabilities()), site)
+	if fd := VisibleTools(full); len(fd) != want {
+		t.Fatalf("an ordinary fully-granted connection saw %d of %d tools", len(fd), want)
+	}
+	if _, _, err := AuthorizeTool(ToolListSites, full); err != nil {
+		t.Fatalf("an ordinary fully-granted connection was refused: %v", err)
+	}
+}
+
+// TestUnregisteredNameIsNotACapabilityRefusal keeps the two answers apart in
+// the other direction.
+//
+// A guessed name must NOT be reported as a capability problem: that would send
+// an operator to widen a grant for a tool that does not exist, and it would
+// hand a wordlist a "this name is real" signal that the registry does not have.
+func TestUnregisteredNameIsNotACapabilityRefusal(t *testing.T) {
+	// A FULLY capable connection, so nothing here can be attributed to a
+	// missing capability.
+	auth := authWith(NewCapabilitySet(AllCapabilities()), uuid.New())
+
+	_, reason, err := AuthorizeTool("definitely_not_a_tool_xyzzy", auth)
+	de, ok := domain.AsDomain(err)
+	if !ok {
+		t.Fatalf("err = %v, want a domain error", err)
+	}
+	if de.Code != ErrCodeToolNotAvailable {
+		t.Fatalf("code = %q, want %q", de.Code, ErrCodeToolNotAvailable)
+	}
+	if reason != reasonUnregistered {
+		t.Fatalf("operator reason = %q, want %q", reason, reasonUnregistered)
+	}
+	if strings.Contains(de.Message, string(CapSitesRead)) {
+		t.Fatalf("a guessed name was refused with a capability the caller never lacked: %s",
+			de.Message)
+	}
+}
+
+// TestExitGate_ListedIsNotCallable walks the whole registry against a
+// connection holding each capability in turn and asserts the ONE-DIRECTIONAL
+// invariant the D1 ruling leaves standing:
+//
+//	NOTHING IS CALLABLE THAT WAS NOT LISTED.
+//
+// The converse -- everything listed is callable -- is deliberately gone. That
+// identity is what made an unticked capability HIDE a tool, and restoring it is
+// the mutation this test exists to catch: a connection holding no capability
+// must be shown the tool AND refused it.
+//
+// The direction kept is the one that matters. It held before S7 only for a
+// client that called tools/list and believed the answer; here it is a property
+// of the code, because AuthorizeTool derives the capability answer itself
+// rather than trusting the listing.
+func TestExitGate_ListedIsNotCallable(t *testing.T) {
+	site := uuid.New()
+	registry := nonEmptyRegistry(t)
 
 	// Every subset of the vocabulary that a single capability can produce, plus
 	// the empty set and the full set.
@@ -167,18 +428,33 @@ func TestExitGate_VisibilityAndCallabilityAgree(t *testing.T) {
 	for _, caps := range sets {
 		auth := authWith(caps, site)
 
-		seen := map[string]bool{}
+		// Everything is listed, whatever the capability set. This is the
+		// "does not hide" invariant, asserted for every subset rather than
+		// only for the empty one.
+		listed := map[string]bool{}
 		for _, d := range VisibleTools(auth) {
-			seen[d.Name] = true
-			if _, _, err := AuthorizeTool(d.Name, auth); err != nil {
-				t.Fatalf("caps=%v: %q was VISIBLE but not callable: %v", caps.Sorted(), d.Name, err)
-			}
+			listed[d.Name] = true
+		}
+		if len(listed) != len(registry) {
+			t.Fatalf("caps=%v: tools/list showed %d of %d tools; an unticked capability "+
+				"must refuse, not hide", caps.Sorted(), len(listed), len(registry))
 		}
 
-		for _, e := range nonEmptyRegistry(t) {
+		for _, e := range registry {
 			_, _, err := AuthorizeTool(e.Name, auth)
-			if err == nil && !seen[e.Name] {
-				t.Fatalf("caps=%v: %q was CALLABLE but never shown by tools/list", caps.Sorted(), e.Name)
+			if err == nil && !listed[e.Name] {
+				t.Fatalf("caps=%v: %q was CALLABLE but never shown by tools/list",
+					caps.Sorted(), e.Name)
+			}
+			// And the capability really gates the call, whatever the listing
+			// said. Asserted by value: an entry callable without its capability
+			// is the pre-S7 defect returning.
+			if !caps.Allows(e.Capability) {
+				de, ok := domain.AsDomain(err)
+				if !ok || de.Code != ErrCodeCapabilityNotGranted {
+					t.Fatalf("caps=%v: %q (requires %q) refused with %v, want %s",
+						caps.Sorted(), e.Name, e.Capability, err, ErrCodeCapabilityNotGranted)
+				}
 			}
 		}
 	}
@@ -195,14 +471,33 @@ func TestExitGate_VisibilityAndCallabilityAgree(t *testing.T) {
 func TestSiteScopeIsRefusedByName(t *testing.T) {
 	auth := authWith(NewCapabilitySet([]Capability{CapSitesRead})) // no sites
 
-	if got := VisibleTools(auth); len(got) != 1 || got[0].Name != ToolListSites {
+	// SITE-SCOPE VISIBILITY IS OUT OF SCOPE FOR THE D1 RULING AND MUST NOT HAVE
+	// MOVED. The tool is listed, exactly as before, and the descriptor carries
+	// NO capability notice -- this connection holds the capability, and telling
+	// it otherwise would send an operator hunting the wrong axis.
+	got := VisibleTools(auth)
+	if len(got) != 1 || got[0].Name != ToolListSites {
 		t.Fatalf("an empty site scope hid the tool from tools/list: %+v", got)
 	}
+	if strings.Contains(got[0].Description, "NOT AVAILABLE TO THIS CONNECTION") {
+		t.Fatalf("an empty SITE scope produced a CAPABILITY notice:\n%s", got[0].Description)
+	}
 
-	_, _, err := AuthorizeTool(ToolListSites, auth)
+	_, reason, err := AuthorizeTool(ToolListSites, auth)
 	de, ok := domain.AsDomain(err)
-	if !ok || de.Code != ErrCodeScopeEmpty {
-		t.Fatalf("err = %v, want a %s domain error", err, ErrCodeScopeEmpty)
+	if !ok {
+		t.Fatalf("err = %v, want a domain error", err)
+	}
+	// By value, and by BOTH codes: this assertion stayed green under the
+	// capability refusal too until it named the code it does not want.
+	if de.Code != ErrCodeScopeEmpty {
+		t.Fatalf("code = %q, want %q", de.Code, ErrCodeScopeEmpty)
+	}
+	if de.Code == ErrCodeCapabilityNotGranted {
+		t.Fatalf("the site axis answered with the CAPABILITY refusal: %s", de.Message)
+	}
+	if reason != reasonSiteScopeEmpty {
+		t.Fatalf("operator reason = %q, want %q", reason, reasonSiteScopeEmpty)
 	}
 }
 
@@ -375,22 +670,33 @@ func TestNoRegisteredToolIsWriteShaped(t *testing.T) {
 	}
 }
 
-// TestVisibleToolNamesDiscloseOnlyTheConnectionsOwnSurface guards the error
-// body. It carries a tool list, and that list must be the connection's own
-// tools/list answer -- never the full registry, which is what the pre-S7
-// "unknown tool" error returned.
-func TestVisibleToolNamesDiscloseOnlyTheConnectionsOwnSurface(t *testing.T) {
-	auth := authWith(CapabilitySet{}, uuid.New())
-	if got := visibleToolNames(auth); len(got) != 0 {
-		t.Fatalf("a connection holding no capability was told about %v", got)
-	}
-
+// TestVisibleToolNamesMatchTheListing guards the error body. It carries a tool
+// list, and that list must be exactly what this connection's tools/list
+// returned -- so a model that mistyped a name can correct from it in one round
+// trip, and so the body never claims a surface the listing did not.
+//
+// Under the D1 ruling the listing is the whole registry, so this is now an
+// AGREEMENT check rather than a filtering one. It is still worth asserting: the
+// two are separate functions, and an error body that diverges from tools/list
+// tells the model two different stories about the same server.
+func TestVisibleToolNamesMatchTheListing(t *testing.T) {
 	// len(got) == len(registry) is satisfied by 0 == 0, so the registry is
 	// asserted non-empty first: otherwise this guard reports PASS on a server
 	// with no tools at all.
 	want := len(nonEmptyRegistry(t))
-	full := authWith(NewCapabilitySet(AllCapabilities()), uuid.New())
-	if got := visibleToolNames(full); len(got) != want {
-		t.Fatalf("a fully-capable connection saw %d of %d tools", len(got), want)
+
+	for _, caps := range []CapabilitySet{{}, NewCapabilitySet(AllCapabilities())} {
+		auth := authWith(caps, uuid.New())
+		names := visibleToolNames(auth)
+		if len(names) != want {
+			t.Fatalf("caps=%v: the error body named %d of %d tools", caps.Sorted(), len(names), want)
+		}
+		listed := VisibleTools(auth)
+		for i, d := range listed {
+			if names[i] != d.Name {
+				t.Fatalf("caps=%v: error body names %v, tools/list showed %q at %d",
+					caps.Sorted(), names, d.Name, i)
+			}
+		}
 	}
 }
