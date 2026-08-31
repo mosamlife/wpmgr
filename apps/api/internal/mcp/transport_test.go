@@ -1117,13 +1117,19 @@ func TestTransport_PreflightIsAnsweredNot405(t *testing.T) {
 			"credentialed CORS on a bearer endpoint is a hole", got)
 	}
 
-	// Every method the transport specifies for this endpoint, by value. GET
-	// and DELETE are included ON PURPOSE even though both answer 405: omitting
-	// them makes the browser block the request before our honest 405 can be
-	// read, turning a clear refusal into an opaque network error.
+	// Every method the transport specifies for this endpoint, by value, DERIVED
+	// from the routed list rather than written out. The 405 verbs are included
+	// ON PURPOSE even though none of them succeeds: omitting one makes the
+	// browser block the request before our honest 405 can be read, turning a
+	// clear refusal into an opaque network error. A written-out list here would
+	// drift from the routing exactly as the production copy did.
+	//
+	// TestTransport_PreflightAdvertisesEveryRoutedVerb covers this properly,
+	// including the converse; this is the same claim kept local to the test
+	// that already reads the whole preflight response.
 	methods := w.Header().Get("Access-Control-Allow-Methods")
-	for _, m := range []string{http.MethodPost, http.MethodGet, http.MethodDelete} {
-		if !strings.Contains(methods, m) {
+	for _, m := range append([]string{http.MethodPost}, methodNotAllowedVerbs...) {
+		if !allowedPreflightMethods(t, methods)[m] {
 			t.Errorf("Access-Control-Allow-Methods = %q, missing %s", methods, m)
 		}
 	}

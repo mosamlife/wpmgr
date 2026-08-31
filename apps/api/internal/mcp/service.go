@@ -204,6 +204,15 @@ func validateTokenEndpointAuthMethod(method string) error {
 // Clock is injectable so expiry behaviour is testable without sleeping.
 type Clock func() time.Time
 
+// auditRecorder is the slice of *audit.Recorder this package actually uses. It
+// exists to make the append-FAILED branch testable without a broken database;
+// production passes the concrete recorder through WithAudit and nothing else
+// implements it outside tests.
+type auditRecorder interface {
+	Record(ctx context.Context, e audit.Event) (audit.Entry, error)
+	RecordInTx(ctx context.Context, tx pgx.Tx, e audit.Event) (audit.Entry, error)
+}
+
 // Service carries the OAuth surface. It holds no plaintext credential beyond
 // the response it is building: m124 obligation 6 says the plaintext is returned
 // once at creation and never read back, and there is no cache here.
@@ -219,7 +228,13 @@ type Service struct {
 	// wiring bug, not a supported configuration, and the finding to raise if
 	// one is ever found is "this deploy path is unattributable", not "make the
 	// nil check quieter".
-	audit *audit.Recorder
+	//
+	// The type is the two-method auditRecorder rather than *audit.Recorder so
+	// that the FAILURE path is reachable from a unit test. What happens when
+	// an append fails is a decision this package makes deliberately (see
+	// TransportHandler.auditGap), and a decision whose only implementation is
+	// unreachable without a broken Postgres is a decision nothing checks.
+	audit auditRecorder
 
 	// mintLimit bounds POST /api/v1/mcp/connections. It lives on the SERVICE
 	// and not on the Handler, unlike Handler.regLimit, and the placement is
@@ -259,7 +274,26 @@ func (s *Service) WithClock(c Clock) *Service {
 // Service the process constructs; a Service left without it (as most of this
 // package's unit tests are, deliberately, since they drive a fakeStore with no
 // backing Postgres pool) simply does not audit -- see the field doc on audit.
+// It keeps the CONCRETE parameter type on purpose even though the field is an
+// interface: a nil *audit.Recorder stored straight into an interface is a
+// non-nil interface holding a nil pointer, which would sail past every
+// `s.audit == nil` guard in this file and panic on the first append instead of
+// skipping it. The explicit nil check below is what keeps "unaudited" meaning
+// unaudited.
 func (s *Service) WithAudit(rec *audit.Recorder) *Service {
+	cp := *s
+	if rec == nil {
+		cp.audit = nil
+		return &cp
+	}
+	cp.audit = rec
+	return &cp
+}
+
+// withAuditRecorder is the test-only door onto the same field, so a fake can
+// drive the append-failed path. Unexported: production wiring goes through
+// WithAudit.
+func (s *Service) withAuditRecorder(rec auditRecorder) *Service {
 	cp := *s
 	cp.audit = rec
 	return &cp
