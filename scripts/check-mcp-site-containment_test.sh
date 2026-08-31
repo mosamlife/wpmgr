@@ -240,6 +240,25 @@ run_case "ok-jsonrpc-envelope-id-is-not-tool-args" 0 "Rule C  0 file(s)" "transp
   --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$DOC"
 rm -f "$TREE/apps/api/internal/mcp/transport.go"
 
+# THE OVER-FIRE THAT REDDENED main. Rule A reads a two-line window so it can
+# catch a call split after the receiver dot. English prose ends sentences with
+# a full stop, so a doc comment whose last line ends in "." sitting immediately
+# above a declaration beginning with the chokepoint name is
+# character-for-character the same shape -- and Rule A reported the declaration
+# on the Store interface as an unreviewed call site at "(file scope)". Rule A
+# now reads comment-stripped input. Over-firing is worse than missing: a guard
+# that reddens correct work gets switched off, and then it guards nothing.
+printf '%s\n' 'package mcp' \
+  'type Store interface {' \
+  '	// ResolveScopeSites takes a ScopedPrincipal rather than a tenant uuid so' \
+  '	// that the chokepoint can route on scope; see the method on Repo. A caller' \
+  '	// passing a deliberately org-scoped principal must justify it there.' \
+  '	ResolveScopeSites(ctx context.Context, principal db.ScopedPrincipal) ([]uuid.UUID, error)' \
+  '}' >"$TREE/apps/api/internal/mcp/iface.go"
+run_case "ok-doc-comment-period-is-not-a-split-call" 0 "check-mcp-site-containment: OK" "iface.go" -- \
+  --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$DOC"
+rm -f "$TREE/apps/api/internal/mcp/iface.go"
+
 run_case "ok-doc-comments-are-not-methods" 0 "Rule B  6 uuid parameter(s)" "VIOLATION" -- \
   --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$DOC"
 

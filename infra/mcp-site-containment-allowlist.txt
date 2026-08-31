@@ -66,7 +66,13 @@ PARAM ListTagIDs.tenantID                               # tenant of the resolved
 PARAM ListSitesForRead.tenantID                         # tenant of the resolved principal; the list_sites tool then filters the rows through SiteSet.Allows
 PARAM ReCheckAuthorization.tenantID                     # tenant of the resolved principal
 PARAM ReCheckAuthorization.tokenID                      # token row id, from the token lookup
-PARAM ResolveScopeSites.tenantID                        # the chokepoint itself; tenant of the resolved principal
+# ResolveScopeSites.tenantID is GONE, deliberately not replaced. #649 changed
+# the chokepoint to take `principal db.ScopedPrincipal` instead of a bare
+# tenant uuid, so the chokepoint can route on scope rather than be handed a
+# tenant with no scope attached. ScopedPrincipal is not a uuid type, so Rule B
+# does not extract it and it needs no entry -- the parameter this line used to
+# describe does not exist, and an entry naming it would be exactly the stale
+# allowlist the both-directions check exists to catch.
 PARAM ResolveScopeSites.tagIDs                          # THE CHOKEPOINT'S OWN INPUT: stored grant scope, resolved under RLS
 PARAM ResolveScopeSites.siteIDs                         # THE CHOKEPOINT'S OWN INPUT: stored grant scope, resolved under RLS
 PARAM RecordClientIdentity.tenantID                     # tenant of the resolved principal

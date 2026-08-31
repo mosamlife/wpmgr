@@ -304,7 +304,7 @@ broken() { printf 'check-mcp-site-containment: GUARD BROKEN: %s\n' "$1" >&2; exi
 # Handles: line comments, block comments, interpreted strings with escapes, raw
 # backtick strings, and rune literals. State persists across lines, so
 # multi-line block comments and raw strings are handled too.
-flatten_go() {
+strip_comments_go() {
   awk '
     BEGIN { st = "code" }
     {
@@ -336,9 +336,18 @@ flatten_go() {
       }
       print out
     }
-  ' "$1" 2>/dev/null \
-    | tr '\n' ' ' \
-    | tr -s ' \t' ' '
+  ' "$1" 2>/dev/null
+}
+
+# Flatten = strip comments, then join to one line.
+#
+# The two are SEPARATE because Rule A needs the stripped-but-still-line-
+# structured form: it attributes every call to its enclosing function by
+# walking lines and watching for `^func `, so it cannot use a flattened file.
+# It also cannot use the RAW file, which is what made it read English prose as
+# Go. See the note on Rule A's window.
+flatten_go() {
+  strip_comments_go "$1" | tr '\n' ' ' | tr -s ' \t' ' '
 }
 
 VIOLATIONS=0
@@ -450,7 +459,7 @@ fi
 
 while IFS= read -r f; do
   rel="${f#"$API_ROOT"/}"
-  awk -v rel="$rel" -v chk="$CHOKEPOINT" -v ctor="$SITESET_CTOR" '
+  strip_comments_go "$f" | awk -v rel="$rel" -v chk="$CHOKEPOINT" -v ctor="$SITESET_CTOR" '
     # THE MATCH IS WHITESPACE-INSENSITIVE AND SPANS A LINE BREAK, because both
     # are ordinary Go that the old index() form did not see:
     #
@@ -464,6 +473,21 @@ while IFS= read -r f; do
     # property is unenforced. So the test runs over a two-line window with
     # whitespace runs collapsed, which is the smallest normalisation that makes
     # every valid layout of a single call look the same.
+    #
+    # THE INPUT IS COMMENT-STRIPPED, AND THAT IS NOT OPTIONAL. English prose
+    # ends sentences with a full stop, so a doc comment reading
+    #
+    #     // ... must justify it there.
+    #     ResolveScopeSites(ctx context.Context, ...)
+    #
+    # puts a period at the end of one line and the chokepoint name at the
+    # start of the next -- which is character-for-character the receiver-dot
+    # split this window exists to catch. It fired on exactly that in repo.go
+    # and reported the declaration on the Store interface as an unreviewed
+    # call site at "(file scope)". Over-firing is worse than missing: a guard
+    # that reddens correct work gets switched off, and then it guards nothing.
+    # NOTE: no apostrophes in this block -- it is inside a single-quoted awk
+    # program, and one would end it.
     BEGIN {
       callre = "\\.[ ]*" chk "[ ]*\\("
       ctorre = "(^|[^A-Za-z0-9_.])" ctor "[ ]*\\("
@@ -489,7 +513,7 @@ while IFS= read -r f; do
       }
       prev = $0
     }
-  ' "$f" >>"$FOUND_CALL"
+  ' >>"$FOUND_CALL"
 done <"$GO_FILES"
 
 sort -u "$FOUND_CALL" -o "$FOUND_CALL"
