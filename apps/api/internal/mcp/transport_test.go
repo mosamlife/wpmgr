@@ -326,9 +326,15 @@ func TestTransport_UnauthenticatedIs401Not404(t *testing.T) {
 func TestTransport_NonPostVerbsAre405Not404(t *testing.T) {
 	r := newTransportRouter(t, liveGrantStore(uuid.New()))
 
+	// OPTIONS IS DELIBERATELY ABSENT from this list. It used to be here, and
+	// having it here was the defect: OPTIONS is the CORS preflight, and
+	// answering it 405 made this endpoint unreachable from every
+	// browser-hosted MCP client. Its behaviour is asserted by
+	// TestTransport_PreflightIsAnsweredNot405 instead. Every verb below is
+	// genuinely unsupported and 405 is genuinely the right answer for it.
 	for _, verb := range []string{
 		http.MethodGet, http.MethodHead, http.MethodPut,
-		http.MethodPatch, http.MethodDelete, http.MethodOptions,
+		http.MethodPatch, http.MethodDelete,
 	} {
 		t.Run(verb, func(t *testing.T) {
 			req := httptest.NewRequest(verb, TransportPath, nil)
@@ -1065,3 +1071,216 @@ func jsonPart(t *testing.T, text string) string {
 }
 
 var _ = io.Discard
+
+// ---------------------------------------------------------------------------
+// CORS preflight
+// ---------------------------------------------------------------------------
+
+// TestTransport_PreflightIsAnsweredNot405 is the regression for the defect this
+// file's 405 list used to contain.
+//
+// The failure it guards is not cosmetic. Our discovery documents set
+// Access-Control-Allow-Origin: * so that a browser-hosted MCP client may read
+// them, and they advertise this endpoint's URL. If the preflight is refused,
+// that client reads the invitation and then cannot open the door: the browser
+// never issues the POST, and the user sees an opaque network error.
+//
+// A preflight is not avoidable. Authorization alone forces one, and so does
+// Content-Type: application/json.
+func TestTransport_PreflightIsAnsweredNot405(t *testing.T) {
+	r := newTransportRouter(t, liveGrantStore(uuid.New()))
+
+	// A REALISTIC browser preflight: no Authorization (the browser strips it),
+	// and the two Access-Control-Request-* headers a browser actually sends.
+	req := httptest.NewRequest(http.MethodOptions, TransportPath, nil)
+	req.Header.Set("Origin", "https://some-mcp-client.example")
+	req.Header.Set("Access-Control-Request-Method", http.MethodPost)
+	req.Header.Set("Access-Control-Request-Headers", "authorization,content-type,mcp-protocol-version")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code == http.StatusMethodNotAllowed {
+		t.Fatalf("preflight answered 405; the endpoint is unreachable from any browser client")
+	}
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("preflight answered %d, want 204\nbody: %s", w.Code, w.Body.String())
+	}
+
+	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want %q", got, "*")
+	}
+
+	// Allow-Credentials must be ABSENT. Setting it true is the change that
+	// would turn "*" into a real hole, and it is also incompatible with "*".
+	if got := w.Header().Get("Access-Control-Allow-Credentials"); got != "" {
+		t.Errorf("Access-Control-Allow-Credentials = %q, want it absent — "+
+			"credentialed CORS on a bearer endpoint is a hole", got)
+	}
+
+	// Every method the transport specifies for this endpoint, by value. GET
+	// and DELETE are included ON PURPOSE even though both answer 405: omitting
+	// them makes the browser block the request before our honest 405 can be
+	// read, turning a clear refusal into an opaque network error.
+	methods := w.Header().Get("Access-Control-Allow-Methods")
+	for _, m := range []string{http.MethodPost, http.MethodGet, http.MethodDelete} {
+		if !strings.Contains(methods, m) {
+			t.Errorf("Access-Control-Allow-Methods = %q, missing %s", methods, m)
+		}
+	}
+
+	// Every header the specification says a client may send. Missing any one
+	// of these fails the whole real request, not just that header.
+	allowed := strings.ToLower(w.Header().Get("Access-Control-Allow-Headers"))
+	for _, hdr := range []string{
+		"authorization",
+		"content-type",
+		"accept",
+		strings.ToLower(ProtocolHeader),
+		"mcp-session-id",
+		"last-event-id",
+	} {
+		if !strings.Contains(allowed, hdr) {
+			t.Errorf("Access-Control-Allow-Headers = %q, missing %q", allowed, hdr)
+		}
+	}
+}
+
+// TestTransport_PreflightDoesNotWeakenTheBearerRequirement is the OVER-FIRE
+// check, and it is the one that matters.
+//
+// A preflight that succeeds buys the caller exactly one thing: the right to
+// SEND the real request. It must buy nothing else. If answering OPTIONS had
+// made any currently-refused request start succeeding, that is a hole, and
+// this test is what would catch it.
+//
+// Every assertion is BY VALUE -- the HTTP status and the JSON-RPC code -- never
+// "an error occurred". Two tests in this package were caught passing for the
+// wrong reason, one because a different policy was doing the refusing.
+func TestTransport_PreflightDoesNotWeakenTheBearerRequirement(t *testing.T) {
+	r := newTransportRouter(t, &fakeStore{}) // tokenOK false: nothing resolves
+
+	// Send the preflight first, exactly as a browser would, so the sequence
+	// under test is the real one and not a POST in isolation.
+	pre := httptest.NewRequest(http.MethodOptions, TransportPath, nil)
+	pre.Header.Set("Origin", "https://some-mcp-client.example")
+	pre.Header.Set("Access-Control-Request-Method", http.MethodPost)
+	pw := httptest.NewRecorder()
+	r.ServeHTTP(pw, pre)
+	if pw.Code != http.StatusNoContent {
+		t.Fatalf("preflight answered %d, want 204 — the rest of this test is vacuous", pw.Code)
+	}
+
+	t.Run("unauthenticated POST is still 401 by value", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, TransportPath,
+			strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+		req.Header.Set("Origin", "https://some-mcp-client.example")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("HTTP %d, want 401 — the preflight let an unauthenticated POST through\nbody: %s",
+				w.Code, w.Body.String())
+		}
+		resp := decodeRPC(t, w)
+		if resp.Error == nil {
+			t.Fatal("401 carried no JSON-RPC error object")
+		}
+		if resp.Error.Code != codeInvalidRequest {
+			t.Errorf("JSON-RPC code = %d, want %d", resp.Error.Code, codeInvalidRequest)
+		}
+		if got := w.Header().Get("WWW-Authenticate"); !strings.Contains(got, "Bearer") {
+			t.Errorf("401 does not name the scheme: WWW-Authenticate = %q", got)
+		}
+	})
+
+	t.Run("a bad token after a preflight is still 401 by value", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, TransportPath,
+			strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+		req.Header.Set("Origin", "https://some-mcp-client.example")
+		req.Header.Set("Authorization", "Bearer not-a-real-token")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("HTTP %d, want 401\nbody: %s", w.Code, w.Body.String())
+		}
+		resp := decodeRPC(t, w)
+		if resp.Error == nil || resp.Error.Code != codeInvalidRequest {
+			t.Fatalf("want JSON-RPC code %d, got %+v", codeInvalidRequest, resp.Error)
+		}
+	})
+
+	t.Run("GET is still 405 by value", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, TransportPath, nil)
+		req.Header.Set("Origin", "https://some-mcp-client.example")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("GET answered %d, want 405 — the preflight change opened a stream", w.Code)
+		}
+		if got := w.Header().Get("Allow"); got != http.MethodPost {
+			t.Errorf("Allow = %q, want %q", got, http.MethodPost)
+		}
+	})
+
+	t.Run("DELETE is still 405 by value", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodDelete, TransportPath, nil)
+		req.Header.Set("Origin", "https://some-mcp-client.example")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("DELETE answered %d, want 405 — the preflight change made sessions terminable", w.Code)
+		}
+	})
+}
+
+// TestTransport_ActualResponsesAreReadableCrossOrigin covers the half of this
+// fix that a preflight-only change would have missed.
+//
+// The preflight only authorises the request to be SENT. Without
+// Access-Control-Allow-Origin on the ACTUAL response the browser still refuses
+// to hand it to the client, and the client sees a network error rather than
+// our answer. An unreadable 401 sends the caller hunting for an outage instead
+// of at their token.
+func TestTransport_ActualResponsesAreReadableCrossOrigin(t *testing.T) {
+	r := newTransportRouter(t, &fakeStore{})
+
+	t.Run("the 401 is readable", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, TransportPath,
+			strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+		req.Header.Set("Origin", "https://some-mcp-client.example")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("HTTP %d, want 401", w.Code)
+		}
+		if got := w.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+			t.Errorf("Access-Control-Allow-Origin on the 401 = %q, want %q — "+
+				"the browser will not expose this refusal to the client", got, "*")
+		}
+		// WWW-Authenticate is useless to a browser client unless exposed.
+		exposed := strings.ToLower(w.Header().Get("Access-Control-Expose-Headers"))
+		if !strings.Contains(exposed, "www-authenticate") {
+			t.Errorf("Access-Control-Expose-Headers = %q, missing www-authenticate — "+
+				"the client can see 401 but not how to authenticate", exposed)
+		}
+	})
+
+	t.Run("the 405 is readable", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, TransportPath, nil)
+		req.Header.Set("Origin", "https://some-mcp-client.example")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("HTTP %d, want 405", w.Code)
+		}
+		if got := w.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+			t.Errorf("Access-Control-Allow-Origin on the 405 = %q, want %q — "+
+				"the client sees an opaque CORS error instead of the refusal", got, "*")
+		}
+	})
+}
