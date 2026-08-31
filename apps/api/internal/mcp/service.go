@@ -1135,7 +1135,12 @@ func (s *Service) Authenticate(ctx context.Context, bearer string) (AuthorizedRe
 
 	// Resolve the site scope at the one audited chokepoint, inside a tenant
 	// transaction so `sites` RLS drops any foreign UUID.
-	ids, err := s.store.ResolveScopeSites(ctx, tok.TenantID,
+	//
+	// THIS CALL SITE IS DELIBERATELY TENANT-SCOPED AND NOT SITE-SCOPED, AND IT
+	// IS THE ONE EXCEPTION TO ADR-061 A11 ITEM 2. Read bootstrapTenantPrincipal
+	// before changing it. In one line: this call is what PRODUCES the allowlist,
+	// so there is no allowlist to scope it by.
+	ids, err := s.store.ResolveScopeSites(ctx, bootstrapTenantPrincipal(tok.TenantID),
 		chk.SiteScopeMode, chk.ScopeTagIds, chk.ScopeSiteIds)
 	if err != nil {
 		return AuthorizedRequest{}, fmt.Errorf("resolve grant scope: %w", err)
@@ -1617,6 +1622,62 @@ func orEmpty(ids []uuid.UUID) []uuid.UUID {
 // ---------------------------------------------------------------------------
 // Operator-facing connection management (S16 -- design Step 10, list + revoke)
 // ---------------------------------------------------------------------------
+
+// bootstrapTenantPrincipal builds the org-scoped principal that Authenticate
+// hands the scope-resolution chokepoint. It exists so that the ONE place on
+// this surface that must not run under app.site_scope says so by name, in code,
+// instead of being indistinguishable from a call site that forgot.
+//
+// WHY THIS IS NOT A SITE-SCOPED PRINCIPAL. Authenticate has no domain.Principal
+// at all -- it is authenticating a bearer token, and the only identity in hand
+// is the grant's own stored SiteScopeMode / ScopeTagIds / ScopeSiteIds.
+// Resolving those three columns into concrete site ids is the step that
+// COMPUTES this connection's allowlist. Scoping that step by the allowlist it
+// is computing is circular, and it breaks differently in each of the three
+// modes:
+//
+//   - 'tags'  -- the site set is not known until this query runs. There is no
+//     allowlist to supply. Passing the empty one resolves to ZERO SITES, and
+//     because an empty result correctly means "no sites" and never "no filter",
+//     every tag-scoped connection would authenticate to nothing. That is
+//     fail-closed and still a total outage of the mode.
+//   - 'all'   -- names no ids. Org-wide IS the intended meaning; a site-scoped
+//     principal here contradicts the stored grant.
+//   - 'list'  -- the allowlist would be exactly the requested ids, so the
+//     policy would intersect the set with itself and could refuse nothing the
+//     query does not already refuse. Zero security gain, and a second copy of
+//     the filter to keep in step.
+//
+//     THAT ARM IS A CONDITION AND NOT A STANDING FACT, so read it as one before
+//     relying on it. It holds only while sites_site_scope's predicate
+//     (`sites.id = ANY(<app.allowed_site_ids>)`, m19) and this query's own
+//     predicate (`s.id = ANY($3::uuid[])`, ResolveMCPGrantScopeSitesInTenantTx)
+//     range over THE SAME RELATION AND THE SAME COLUMN. Nothing binds them
+//     together. If either grows a second term, or 'list' starts resolving
+//     through a join rather than off `sites.id`, the intersection stops being
+//     the identity and this arm needs deciding again from scratch.
+//
+// The boundary that IS load-bearing here is tenant isolation, and it holds:
+// RunTenantTx dispatches this principal to InTenantTx, the join through `sites`
+// runs under the tenant policies, and every foreign or nonexistent UUID in the
+// uuid[] column is dropped. What the caller does with the resolved set is where
+// the site boundary lives -- see NewSiteSet, whose zero value allows nothing.
+//
+// It returns a domain.Principal with Scope and UserID unset ON PURPOSE. That is
+// the org-scoped, no-user shape, and it is what the dispatch reads.
+//
+// THE NAME AND THIS COMMENT ARE THE ONLY STRUCTURAL BARRIER, AND THAT IS WORTH
+// SAYING OUT LOUD. dispatchTenantTx reads exactly three fields -- Scope, UserID,
+// AllowedSiteIDs -- so the value returned here is INDISTINGUISHABLE at the
+// dispatch from any other org-scoped, no-user principal. Nothing in the type
+// system marks this one as the deliberate exception. What guards it is executed
+// rather than structural: TestAuthenticateHandsTheChokepointAnUnscopedPrincipal
+// asserts that the principal Authenticate hands the chokepoint is NOT
+// site-constrained, and it is what goes red, at unit speed, if someone applies
+// ADR-061 A11 item 2 literally here.
+func bootstrapTenantPrincipal(tenantID uuid.UUID) domain.Principal {
+	return domain.Principal{TenantID: tenantID}
+}
 
 // requireOrgScopedPrincipal is the site-scope refusal, and it is the SECOND of
 // three independent layers rather than the only one.
