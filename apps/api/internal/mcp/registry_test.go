@@ -275,6 +275,102 @@ func TestCapabilityRefusalIsListedNotHidden(t *testing.T) {
 	}
 }
 
+// TestOrgCeilingHidesWhileTheGrantRefuses is the ruling's asymmetry, in one
+// test, so that collapsing the two predicates into one cannot pass.
+//
+// The same registry, the same tool, two different connections:
+//
+//	ceiling holds it, grant does not -> LISTED, annotated, refuses by name
+//	ceiling does not hold it         -> ABSENT, refuses as unregistered
+//
+// CI does not run the integration package, so this is the fast guard for the
+// ceiling arm; the wpmgr_app proof is
+// TestS7CapabilityOutsideTheOrgCeilingIsNotListedAsAppRole in
+// apps/api/tests/adr064_s7_mcp_tool_registry_rls_test.go.
+//
+// The narrow ceiling is the EMPTY set because that is the only proper subset of
+// a one-entry vocabulary, and it is not reachable through Authenticate today.
+// See authWithCeiling.
+func TestOrgCeilingHidesWhileTheGrantRefuses(t *testing.T) {
+	want := len(nonEmptyRegistry(t))
+	site := uuid.New()
+
+	// INSIDE the ceiling, NOT held by the grant: listed and annotated.
+	inside := authWith(CapabilitySet{}, site)
+	got := VisibleTools(inside)
+	if len(got) != want {
+		t.Fatalf("a capability the ORG allows but the grant lacks was hidden: showed %d "+
+			"of %d; that boundary must refuse visibly, not vanish", len(got), want)
+	}
+	if !strings.Contains(got[0].Description, "NOT AVAILABLE TO THIS CONNECTION") {
+		t.Fatalf("the listed tool is not annotated:\n%s", got[0].Description)
+	}
+	_, _, err := AuthorizeTool(ToolListSites, inside)
+	ide, ok := domain.AsDomain(err)
+	if !ok || ide.Code != ErrCodeCapabilityNotGranted {
+		t.Fatalf("in-ceiling refusal = %v, want code %q", err, ErrCodeCapabilityNotGranted)
+	}
+
+	// OUTSIDE the ceiling, and the grant DOES hold it -- so an absence can only
+	// be the ceiling. Nothing here is attributable to the grant axis.
+	outside := authWithCeiling(NewCapabilitySet(nil), NewCapabilitySet(AllCapabilities()), site)
+	if !outside.Capabilities.Allows(CapSitesRead) {
+		t.Fatalf("the grant does not hold %q, so this would prove the GRANT arm", CapSitesRead)
+	}
+	if hidden := VisibleTools(outside); len(hidden) != 0 {
+		t.Fatalf("a capability OUTSIDE the org ceiling was listed: %+v; a token holder must "+
+			"not be able to enumerate what the organisation switched off", hidden)
+	}
+
+	// And the gate agrees with the listing, by value and by prose.
+	_, _, err = AuthorizeTool(ToolListSites, outside)
+	ode, ok := domain.AsDomain(err)
+	if !ok {
+		t.Fatalf("out-of-ceiling refusal = %v, want a domain error", err)
+	}
+	if ode.Code != ErrCodeToolNotAvailable {
+		t.Fatalf("out-of-ceiling code = %q, want %q", ode.Code, ErrCodeToolNotAvailable)
+	}
+	if ode.Code == ErrCodeCapabilityNotGranted {
+		t.Fatal("the ceiling refusal named the capability the organisation disabled")
+	}
+	if strings.Contains(ode.Message, string(CapSitesRead)) {
+		t.Fatalf("the ceiling refusal names the disabled capability: %s", ode.Message)
+	}
+
+	// Identical to a name that was never registered. A divergence here is an
+	// oracle for the org's disabled capabilities.
+	//
+	// The comparison is on the TEMPLATE, not the literal string: both messages
+	// echo the name the caller asked for, and that difference is the caller's
+	// own input rather than a disclosure. Substituting it back is what isolates
+	// the property -- everything OTHER than the echoed name must match.
+	const guessed = "sites_restart_everything"
+	_, _, guess := AuthorizeTool(guessed, outside)
+	gde, ok := domain.AsDomain(guess)
+	if !ok {
+		t.Fatalf("guessed name err = %v, want a domain error", guess)
+	}
+	if gde.Code != ode.Code {
+		t.Fatalf("a disabled capability answers %q and a guessed name answers %q; "+
+			"the difference tells a caller which capabilities exist", ode.Code, gde.Code)
+	}
+	if want := strings.ReplaceAll(gde.Message, guessed, ToolListSites); ode.Message != want {
+		t.Fatalf("the two refusals differ beyond the echoed name, which is an oracle:\n"+
+			"disabled: %s\nexpected: %s", ode.Message, want)
+	}
+
+	// AND IT DOES NOT OVER-FIRE. The ordinary connection -- real ceiling, full
+	// grant -- still sees every tool and still calls it.
+	full := authWith(NewCapabilitySet(AllCapabilities()), site)
+	if fd := VisibleTools(full); len(fd) != want {
+		t.Fatalf("an ordinary fully-granted connection saw %d of %d tools", len(fd), want)
+	}
+	if _, _, err := AuthorizeTool(ToolListSites, full); err != nil {
+		t.Fatalf("an ordinary fully-granted connection was refused: %v", err)
+	}
+}
+
 // TestUnregisteredNameIsNotACapabilityRefusal keeps the two answers apart in
 // the other direction.
 //

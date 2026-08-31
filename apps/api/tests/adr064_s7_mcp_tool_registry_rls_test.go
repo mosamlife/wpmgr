@@ -598,7 +598,13 @@ func TestS7CapabilityOutsideTheOrgCeilingIsNotListedAsAppRole(t *testing.T) {
 	// (3) IT IS INDISTINGUISHABLE FROM A NAME THAT WAS NEVER REGISTERED. Same
 	// code, same message. If these ever diverge, the refusal becomes an oracle
 	// for what the organisation switched off.
-	_, _, guessErr := mcp.AuthorizeTool("sites_restart_everything", outside)
+	//
+	// The comparison is on the TEMPLATE, not the literal string: both messages
+	// echo the name the caller asked for, and that difference is the caller's
+	// own input rather than a disclosure. Substituting it back is what isolates
+	// the property -- everything OTHER than the echoed name must match.
+	const guessed = "sites_restart_everything"
+	_, _, guessErr := mcp.AuthorizeTool(guessed, outside)
 	gde, ok := domain.AsDomain(guessErr)
 	if !ok {
 		t.Fatalf("guessed name err = %v, want a domain error", guessErr)
@@ -607,9 +613,9 @@ func TestS7CapabilityOutsideTheOrgCeilingIsNotListedAsAppRole(t *testing.T) {
 		t.Fatalf("a disabled capability answers %q and a guessed name answers %q; "+
 			"the difference tells a caller which capabilities exist", de.Code, gde.Code)
 	}
-	if gde.Message != de.Message {
-		t.Fatalf("the two refusals differ in prose, which is the same oracle:\n"+
-			"disabled: %s\nguessed:  %s", de.Message, gde.Message)
+	if want := strings.ReplaceAll(gde.Message, guessed, mcp.ToolListSites); de.Message != want {
+		t.Fatalf("the two refusals differ beyond the echoed name, which is the same oracle:\n"+
+			"disabled: %s\nexpected: %s", de.Message, want)
 	}
 
 	// (4) IT DOES NOT OVER-FIRE. The untouched connection still lists and still
