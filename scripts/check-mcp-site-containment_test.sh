@@ -211,6 +211,26 @@ rm -f "$TREE/apps/api/internal/mcp/scope_test.go"
 
 # A doc comment inside the interface must not be parsed as a method. The
 # fixture carries one; this asserts it produced no phantom parameter.
+# THE OVER-FIRE THAT WAS LIVE ON main. Rule C used to key on the literal
+# `auth AuthorizedRequest,` followed by a named json.RawMessage, and matched
+# transport.go's writeProtocolRefusal(c *gin.Context, auth AuthorizedRequest,
+# id json.RawMessage, neg Negotiation, phase string) -- where the RawMessage is
+# the JSON-RPC ENVELOPE ID being echoed back into an error response, not tool
+# arguments. The only convenient way to quiet that would have been
+# `TOOLARGS internal/mcp/transport.go`, and Rule C's granularity is the FILE,
+# so that entry would have switched the rule off for the one file that
+# actually dispatches tools. The rule now keys on the toolInvoker type
+# sequence, which this signature does not have.
+printf '%s\n' 'package mcp' \
+  'func (h *TransportHandler) writeProtocolRefusal(' \
+  '	c *gin.Context, auth AuthorizedRequest, id json.RawMessage, neg Negotiation, phase string,' \
+  ') {' \
+  '	_ = newErrorResponse(id, codeProtocolUnsupported, "", nil)' \
+  '}' >"$TREE/apps/api/internal/mcp/transport.go"
+run_case "ok-jsonrpc-envelope-id-is-not-tool-args" 0 "Rule C  0 file(s)" "transport.go binds" -- \
+  --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$DOC"
+rm -f "$TREE/apps/api/internal/mcp/transport.go"
+
 run_case "ok-doc-comments-are-not-methods" 0 "Rule B  6 uuid parameter(s)" "VIOLATION" -- \
   --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$DOC"
 
@@ -269,6 +289,78 @@ printf '%s\n' 'package mcp' \
 run_case "bypass-siteset-from-unresolved-ids" 1 "CALL internal/mcp/fastpath.go authFast" - -- \
   --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$DOC"
 rm -f "$TREE/apps/api/internal/mcp/fastpath.go"
+
+# ---- Rules A and C must not be defeated by ordinary Go formatting ----------
+#
+# Every case below is VALID Go that gofmt is happy to leave alone, and every
+# one of them slipped past the first version of these rules. A containment
+# guard that a space defeats reports green while the property is unenforced,
+# which is worse than having no guard at all.
+
+# A space between the method name and its paren. Legal Go, and the old
+# `index($0, ".ResolveScopeSites(")` test saw nothing.
+printf '%s\n' 'package mcp' \
+  'func (s *Service) spacedCall(ctx context.Context, req Req) error {' \
+  '	ids, _ := s.store.ResolveScopeSites (ctx, req.TenantID, "list", nil, req.SiteIDs)' \
+  '	_ = ids' \
+  '	return nil' \
+  '}' >"$TREE/apps/api/internal/mcp/spaced.go"
+run_case "bypass-chokepoint-call-space-before-paren" 1 "CALL internal/mcp/spaced.go spacedCall" - -- \
+  --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$DOC"
+rm -f "$TREE/apps/api/internal/mcp/spaced.go"
+
+printf '%s\n' 'package mcp' \
+  'func (s *Service) spacedCtor(req Req) AuthorizedRequest {' \
+  '	return AuthorizedRequest{Sites: NewSiteSet (req.SiteIDs)}' \
+  '}' >"$TREE/apps/api/internal/mcp/spacedctor.go"
+run_case "bypass-siteset-ctor-space-before-paren" 1 "CALL internal/mcp/spacedctor.go spacedCtor" - -- \
+  --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$DOC"
+rm -f "$TREE/apps/api/internal/mcp/spacedctor.go"
+
+# The receiver dot at the end of one line, the call on the next. No single
+# line contains ".ResolveScopeSites(" -- the old line-oriented matcher was
+# blind to it, and the canonical calls elsewhere kept the extraction nonempty
+# so it never even reached GUARD BROKEN.
+printf '%s\n' 'package mcp' \
+  'func (s *Service) splitCall(ctx context.Context, req Req) error {' \
+  '	ids, _ := s.store.' \
+  '		ResolveScopeSites(ctx, req.TenantID, "list", nil, req.SiteIDs)' \
+  '	_ = ids' \
+  '	return nil' \
+  '}' >"$TREE/apps/api/internal/mcp/split.go"
+run_case "bypass-chokepoint-call-split-across-lines" 1 "CALL internal/mcp/split.go splitCall" - -- \
+  --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$DOC"
+rm -f "$TREE/apps/api/internal/mcp/split.go"
+
+# Rule C keyed on the parameter NAME `auth`. The name is the tool author's
+# choice, so renaming it produced a conforming toolInvoker that reads its
+# request arguments and was invisible to the guard.
+printf '%s\n' 'package mcp' \
+  'var renamed = toolEntry{' \
+  '	invoke: func(ctx context.Context, svc *Service, req AuthorizedRequest, args json.RawMessage) (string, error) {' \
+  '		return svc.Something(ctx, req, args)' \
+  '	},' \
+  '}' >"$TREE/apps/api/internal/mcp/tool_renamed.go"
+run_case "bypass-tool-args-renamed-auth-parameter" 1 "internal/mcp/tool_renamed.go binds toolInvoker" - -- \
+  --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$DOC"
+rm -f "$TREE/apps/api/internal/mcp/tool_renamed.go"
+
+# The same handler with the signature wrapped across lines, which is what
+# gofmt does to a long one.
+printf '%s\n' 'package mcp' \
+  'var wrapped = toolEntry{' \
+  '	invoke: func(' \
+  '		ctx context.Context,' \
+  '		svc *Service,' \
+  '		auth AuthorizedRequest,' \
+  '		args json.RawMessage,' \
+  '	) (string, error) {' \
+  '		return svc.Something(ctx, auth, args)' \
+  '	},' \
+  '}' >"$TREE/apps/api/internal/mcp/tool_wrapped.go"
+run_case "bypass-tool-args-signature-wrapped" 1 "internal/mcp/tool_wrapped.go binds toolInvoker" - -- \
+  --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$DOC"
+rm -f "$TREE/apps/api/internal/mcp/tool_wrapped.go"
 
 # A second database path inside package mcp, outside repo.go, is outside the
 # reach of Rule B. Rule D is the backstop.

@@ -300,24 +300,43 @@ fi
 while IFS= read -r f; do
   rel="${f#"$API_ROOT"/}"
   awk -v rel="$rel" -v chk="$CHOKEPOINT" -v ctor="$SITESET_CTOR" '
+    # THE MATCH IS WHITESPACE-INSENSITIVE AND SPANS A LINE BREAK, because both
+    # are ordinary Go that the old index() form did not see:
+    #
+    #     s.store.ResolveScopeSites (ctx, ...)     <- a space before the paren
+    #     s.store.                                 <- receiver dot, then a
+    #         ResolveScopeSites(ctx, ...)             newline
+    #
+    # Both compile, both are what gofmt leaves alone, and neither contains the
+    # substring ".ResolveScopeSites(". A containment guard that ordinary
+    # formatting defeats is worse than none: it reports green while the
+    # property is unenforced. So the test runs over a two-line window with
+    # whitespace runs collapsed, which is the smallest normalisation that makes
+    # every valid layout of a single call look the same.
+    BEGIN {
+      callre = "\\.[ ]*" chk "[ ]*\\("
+      ctorre = "(^|[^A-Za-z0-9_.])" ctor "[ ]*\\("
+    }
     /^func / {
       fn = $0
       sub(/^func +/, "", fn)
       sub(/^\([^)]*\) */, "", fn)     # strip the receiver
       sub(/[ (].*$/, "", fn)          # keep the identifier
       cur = fn
+      # The declaration line is not a call site, and clearing the window is
+      # what keeps `func NewSiteSet(` from being matched as a bare constructor
+      # call by the NEXT line`s window.
+      prev = ""
       next
     }
     {
-      # The call forms. `.Chokepoint(` is the method-call form and excludes the
-      # declaration and the interface line, exactly as ADR-061 Decision 4
-      # spells out for InScopedTenantTx. The constructor has no receiver, so it
-      # is matched bare and its own `func NewSiteSet(` declaration is excluded
-      # by the /^func / branch above having already consumed that line.
-      if (index($0, "." chk "(") > 0 || index($0, ctor "(") > 0) {
+      win = prev " " $0
+      gsub(/[ \t]+/, " ", win)
+      if (win ~ callre || win ~ ctorre) {
         if (cur == "") cur = "(file scope)"
         print rel " " cur
       }
+      prev = $0
     }
   ' "$f" >>"$FOUND_CALL"
 done <"$GO_FILES"
@@ -510,15 +529,69 @@ grep -qF "$INVOKER_DECL" "$MCP_DIR/registry.go" 2>/dev/null \
 find "$MCP_DIR" -name '*.go' -type f 2>/dev/null | grep -v '_test\.go$' | sort >"$TMPDIR_RUN/mcpfiles"
 [ -s "$TMPDIR_RUN/mcpfiles" ] || broken "no non-test .go files in $MCP_DIR -- the package moved, which is not 'no tool arguments'"
 
+# THE SUBJECT IS THE SIGNATURE SHAPE, NOT A PARAMETER NAME.
+#
+# The first form of this rule keyed on the literal text `auth AuthorizedRequest,`
+# followed by a named json.RawMessage. That was wrong in both directions, and
+# both were measured on this tree rather than imagined:
+#
+#   IT UNDER-FIRED. The name `auth` is the tool author's choice. A handler
+#   written `func(ctx context.Context, svc *Service, req AuthorizedRequest,
+#   args json.RawMessage)` is a conforming toolInvoker that reads its
+#   arguments, and the old pattern did not see it. So did a signature wrapped
+#   across lines, which is what gofmt does to a long one.
+#
+#   IT OVER-FIRED, which is worse. On this tree it matched
+#   internal/mcp/transport.go:1045, `writeProtocolRefusal(c *gin.Context, auth
+#   AuthorizedRequest, id json.RawMessage, neg Negotiation, phase string)`,
+#   where the json.RawMessage is the JSON-RPC ENVELOPE ID being echoed back
+#   into an error response -- not tool arguments at all. The obvious way to
+#   quiet that is `TOOLARGS internal/mcp/transport.go`, and Rule C's
+#   granularity is the file, so that entry would have switched Rule C off for
+#   the one file that actually dispatches tools. A guard that reddens correct
+#   work gets made quiet, and a guard that has been made quiet is off.
+#
+# So the match is the toolInvoker TYPE SEQUENCE, with every parameter name
+# free: context.Context, *Service, AuthorizedRequest, json.RawMessage, closing
+# to (string, error). That shape is what makes a function assignable to
+# toolInvoker, it is what a reviewer means by "a tool", and it cannot be
+# renamed out of. The file is flattened to one whitespace-collapsed stream
+# first, so a signature broken across lines reads the same as one on a line.
+# The trailing `,?` before the closing paren is not cosmetic: gofmt puts a
+# trailing comma on the last parameter of every signature it wraps across
+# lines, so without it the rule would see the one-line form and miss the
+# wrapped one -- which is the formatting a long signature actually gets.
+TOOLARGS_SIG='\([ ]*[A-Za-z_][A-Za-z0-9_]*[ ]+context\.Context[ ]*,[ ]*[A-Za-z_][A-Za-z0-9_]*[ ]+\*[ ]*Service[ ]*,[ ]*[A-Za-z_][A-Za-z0-9_]*[ ]+AuthorizedRequest[ ]*,[ ]*[A-Za-z_][A-Za-z0-9_]*[ ]+json\.RawMessage[ ]*,?[ ]*\)[ ]*\([ ]*string[ ]*,[ ]*error[ ]*\)'
+
+# Control. The flattening plus this pattern must still find the toolInvoker
+# declaration itself in registry.go. If it does not, the shape changed and the
+# rule is matching nothing -- which would report the compliant state.
+FLAT_REGISTRY="$TMPDIR_RUN/flat.registry"
+tr '\n' ' ' <"$MCP_DIR/registry.go" 2>/dev/null | tr -s ' \t' ' ' >"$FLAT_REGISTRY"
+grep -qE "$TOOLARGS_SIG" "$FLAT_REGISTRY" 2>/dev/null \
+  || broken "the toolInvoker signature shape no longer matches $MCP_PKG_REL/registry.go. Rule C's pattern is stale and would report zero tool-argument surfaces on any tree."
+
 while IFS= read -r f; do
   rel="${f#"$API_ROOT"/}"
-  # `_ json.RawMessage` is the compliant discard and must NOT match. A single
-  # underscore is a legal Go identifier, so `[A-Za-z_][A-Za-z0-9_]*` matched it
-  # and reported the one compliant tool in HEAD as a violation. The alternation
-  # below admits `_foo` (a real, if unusual, binding) and excludes bare `_`.
-  grep -nE 'auth AuthorizedRequest,[ ]*(_[A-Za-z0-9_]+|[A-Za-z][A-Za-z0-9_]*)[ ]+json\.RawMessage' "$f" 2>/dev/null \
-    | grep -v '^[0-9]*:type ' \
-    | while IFS= read -r hit; do
+  flat="$TMPDIR_RUN/flat.one"
+  # The `type toolInvoker func(...)` declaration has the shape by definition --
+  # it IS the shape -- and a type is not a handler. It is DELETED from the
+  # stream rather than compared against, because a conforming handler is
+  # textually identical to the declaration once both are flattened, so any
+  # equality test would discard the handler along with the type.
+  tr '\n' ' ' <"$f" 2>/dev/null | tr -s ' \t' ' ' \
+    | sed -E "s/type[ ]+toolInvoker[ ]+func[ ]*$TOOLARGS_SIG//g" >"$flat"
+
+  # Every remaining occurrence of the shape, one per line. `_ json.RawMessage`
+  # is the compliant discard: a bare underscore binds nothing, so the tool
+  # cannot name a site at all. `_foo` IS a real binding and must match, which is
+  # why the discard is excluded by an exact test on the parameter name rather
+  # than by an alternation that a leading underscore slips through.
+  grep -oE "$TOOLARGS_SIG" "$flat" 2>/dev/null \
+    | while IFS= read -r sig; do
+        # The args parameter name: the token before `json.RawMessage`.
+        argname="$(printf '%s' "$sig" | sed 's/.*,[ ]*\([A-Za-z_][A-Za-z0-9_]*\)[ ]*json\.RawMessage.*/\1/')"
+        [ "$argname" = "_" ] && continue
         printf '%s\n' "$rel"
       done
 done <"$TMPDIR_RUN/mcpfiles" | sort -u >"$FOUND_TOOLARGS"
