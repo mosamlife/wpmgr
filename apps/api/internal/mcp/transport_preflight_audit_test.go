@@ -329,6 +329,41 @@ func TestTransport_AuditGapLogsReasonAndPhaseSeparately(t *testing.T) {
 	}
 }
 
+// TestTransport_AuditGapBoundsItsTarget stops the fallback from becoming the
+// abuse channel the durable row was just closed against.
+//
+// auditGap runs precisely when the bounded row could NOT be written, so if it
+// emitted the raw target it would move a 256 KiB attacker-chosen value out of a
+// bounded column and into the operator log, which has no bound at all. The
+// fallback has to be as safe as the row it stands in for.
+func TestTransport_AuditGapBoundsItsTarget(t *testing.T) {
+	const oversized = 64 * 1024
+
+	r, buf := gapRouter(t)
+
+	req := httptest.NewRequest(http.MethodPost, TransportPath,
+		strings.NewReader(initBody(strings.Repeat("a", oversized))))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testBearer)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	rec := findGapLine(t, buf)
+
+	got, _ := rec["target"].(string)
+	if len(got) > audit.MaxTargetIDLen {
+		t.Errorf("gap log target is %d bytes, want <= %d — the fallback emits unbounded "+
+			"attacker input into the operator log", len(got), audit.MaxTargetIDLen)
+	}
+	if truncated, _ := rec["target_truncated"].(bool); !truncated {
+		t.Errorf("gap log target_truncated = %v, want true — the line does not say it is a prefix",
+			rec["target_truncated"])
+	}
+	if n, _ := rec["target_original_len"].(float64); int(n) != oversized {
+		t.Errorf("gap log target_original_len = %v, want %d", rec["target_original_len"], oversized)
+	}
+}
+
 // TestTransport_AuditGapOmitsAnEmptyPhase keeps the tool-denial call site
 // honest: a refusal with no phase must not log phase="", because an alert or a
 // query keyed on the field would then match a blank and report a phase that

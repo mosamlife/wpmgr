@@ -1397,7 +1397,7 @@ func (s *Service) RecordToolDenied(ctx context.Context, auth AuthorizedRequest, 
 	// of it through the per-tenant audit advisory lock. Being denied is not a
 	// barrier to writing, so a caller who can use nothing on this surface could
 	// still drive the serialised ledger writer.
-	target, truncated, origLen := audit.TruncateTargetID(toolName)
+	target, truncated, sanitized, origLen := audit.SafeTargetID(toolName)
 
 	meta := map[string]any{
 		"grant_name":        auth.GrantName,
@@ -1412,6 +1412,12 @@ func (s *Service) RecordToolDenied(ctx context.Context, auth AuthorizedRequest, 
 		// becomes indistinguishable from an ordinary typo.
 		meta["target_truncated"] = true
 		meta["target_original_len"] = origLen
+	}
+	if sanitized {
+		// Invalid UTF-8 in a tool name is not something a working client
+		// produces, so this flag is the signal that someone was probing the
+		// encoding boundary rather than mistyping.
+		meta["target_sanitized"] = true
 	}
 
 	_, err := s.audit.Record(ctx, audit.Event{
@@ -1452,7 +1458,7 @@ func (s *Service) RecordProtocolDenied(ctx context.Context, auth AuthorizedReque
 	// way: on the initialize_params phase neg.Raw is a JSON string from the
 	// body, not a header, so it is bounded only by maxRequestBytes. An
 	// unsupported revision is refused, and the refusal writes the row.
-	target, truncated, origLen := audit.TruncateTargetID(neg.Raw)
+	target, truncated, sanitized, origLen := audit.SafeTargetID(neg.Raw)
 
 	meta := map[string]any{
 		"grant_name":     auth.GrantName,
@@ -1468,6 +1474,12 @@ func (s *Service) RecordProtocolDenied(ctx context.Context, auth AuthorizedReque
 	if truncated {
 		meta["target_truncated"] = true
 		meta["target_original_len"] = origLen
+	}
+	if sanitized {
+		// Worth its own field: invalid UTF-8 in a tool name or a revision
+		// string is not something a working client produces, so this flag is
+		// the signal that someone was probing the encoding boundary.
+		meta["target_sanitized"] = true
 	}
 
 	_, err := s.audit.Record(ctx, audit.Event{

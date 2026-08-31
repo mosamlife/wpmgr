@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -560,7 +561,29 @@ type Event struct {
 // attacker chooses the bytes, and being refused is not a barrier to writing.
 const MaxTargetIDLen = 256
 
-// TruncateTargetID bounds an untrusted target_id and reports whether it had to.
+// SafeTargetID makes an untrusted target_id safe to append, and reports every
+// way it had to change the value.
+//
+// TWO HAZARDS, AND THE SECOND IS NOT A SUBSET OF THE FIRST.
+//
+//  1. LENGTH, per MaxTargetIDLen above.
+//  2. ENCODING. Postgres rejects an invalid byte sequence for encoding "UTF8"
+//     outright, so an invalid target_id does not produce a bounded row -- it
+//     produces a FAILED append, on the refusal path, whose whole purpose is
+//     that the row gets written. That converts "you sent something we refuse"
+//     into a 500 and an evidence gap, which is a strictly better outcome for
+//     the caller than being recorded.
+//
+// The encoding hazard is reachable and is NOT fixed by truncating. A JSON body
+// string is valid UTF-8 by the time encoding/json is done with it, but an HTTP
+// HEADER value is raw bytes: net/http does not validate it, so
+// `MCP-Protocol-Version: <0xff 0xfe>` arrives intact, is refused by
+// NegotiateProtocol, and is recorded verbatim. Being three bytes long it never
+// reaches the length bound at all -- which is exactly why sanitising has to
+// happen on BOTH return paths and not only after a truncation.
+//
+// Order matters: sanitise FIRST, then bound. Replacement runes are 3 bytes
+// each, so sanitising a bounded string can push it back over the bound.
 //
 // THIS IS NOT APPLIED INSIDE Record, DELIBERATELY. Every existing caller passes
 // a server-chosen identifier that cannot approach the bound, and silently
@@ -583,9 +606,21 @@ const MaxTargetIDLen = 256
 // was actually sent. A truncated row that does not say it is truncated reads
 // back as though the caller sent exactly the shortened value, which is a record
 // that misdescribes the event it exists to evidence.
-func TruncateTargetID(s string) (out string, truncated bool, originalLen int) {
+func SafeTargetID(s string) (out string, truncated, sanitized bool, originalLen int) {
+	originalLen = len(s)
+
+	// U+FFFD is the standard lossy replacement. It is deliberately not a
+	// lossless escape: target_id is read by humans in an audit UI, and encoding
+	// a legitimate name into \xff sequences to preserve bytes nobody can act on
+	// would make every ordinary row harder to read to keep evidence of a probe
+	// that the sanitized flag already records.
+	if !utf8.ValidString(s) {
+		s = strings.ToValidUTF8(s, "�")
+		sanitized = true
+	}
+
 	if len(s) <= MaxTargetIDLen {
-		return s, false, len(s)
+		return s, false, sanitized, originalLen
 	}
 	b := s[:MaxTargetIDLen]
 	// Drop a trailing partial rune. DecodeLastRuneInString returns
@@ -598,7 +633,7 @@ func TruncateTargetID(s string) (out string, truncated bool, originalLen int) {
 		}
 		break
 	}
-	return b, true, len(s)
+	return b, true, sanitized, originalLen
 }
 
 // Recorder appends hash-chained audit entries.

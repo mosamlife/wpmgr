@@ -154,6 +154,51 @@ func TestRefusalAudit_BoundsAnAttackerChosenTarget(t *testing.T) {
 	}
 }
 
+// TestRefusalAudit_SanitizesInvalidUTF8FromTheHeader covers the hazard the
+// length bound does NOT.
+//
+// The header path is the reachable one and it is not the body path: a JSON
+// string is valid UTF-8 once encoding/json is done with it, but net/http does
+// not validate a header VALUE, so `MCP-Protocol-Version: <0xff 0xfe>` arrives
+// intact. It is refused by NegotiateProtocol and recorded verbatim -- and at
+// three bytes it never reaches the length bound, so truncation cannot save it.
+// Postgres then rejects the row for invalid byte sequence for encoding "UTF8",
+// which turns a refusal into a failed audit append: an evidence gap the caller
+// chose, which is a better outcome for them than being recorded.
+func TestRefusalAudit_SanitizesInvalidUTF8FromTheHeader(t *testing.T) {
+	r, rec := capturingRouter(t)
+
+	bad := string([]byte{0xff, 0xfe, 'A'})
+
+	req := httptest.NewRequest(http.MethodPost, TransportPath,
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testBearer)
+	req.Header.Set(ProtocolHeader, bad)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("HTTP %d, want 400 — the invalid revision was not refused", w.Code)
+	}
+
+	e := rec.only(t, audit.ActionMCPProtocolDenied)
+
+	if !utf8.ValidString(e.TargetID) {
+		t.Errorf("target_id is invalid UTF-8 (%v) — Postgres rejects this row, so the refusal "+
+			"would not be recorded at all", []byte(e.TargetID))
+	}
+	if got, _ := e.Metadata["target_sanitized"].(bool); !got {
+		t.Errorf("metadata.target_sanitized = %v, want true — the row does not say its target "+
+			"was rewritten", e.Metadata["target_sanitized"])
+	}
+	// Not truncated: this is the short-invalid case, which is precisely the one
+	// the length bound cannot catch.
+	if _, ok := e.Metadata["target_truncated"]; ok {
+		t.Error("metadata.target_truncated is set on a 3-byte target")
+	}
+}
+
 // TestRefusalAudit_DoesNotTruncateAnOrdinaryTarget is the OVER-FIRE proof.
 //
 // The bound must be invisible to every real refusal. A normal mistyped tool

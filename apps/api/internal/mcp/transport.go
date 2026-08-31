@@ -917,13 +917,30 @@ func (h *TransportHandler) toolError(id json.RawMessage, err error) jsonrpcRespo
 func (h *TransportHandler) auditGap(
 	ctx context.Context, auth AuthorizedRequest, action, target, reason, phase string, err error,
 ) {
+	// BOUNDED AND SANITISED THE SAME WAY THE DURABLE ROW IS. This line stands
+	// in for that row, so it inherits the row's input problem too: target is
+	// caller-chosen and can be 256 KiB of anything. Emitting it raw would move
+	// the abuse from the audit table to the operator log -- which has no length
+	// bound at all -- and would put invalid UTF-8 into a JSON log line. It also
+	// keeps the fallback comparable to the row it replaces: the same value,
+	// bounded the same way.
+	safeTarget, truncated, sanitized, origLen := audit.SafeTargetID(target)
+
 	attrs := []any{
 		slog.Bool("audit_gap", true),
 		slog.String("action", action),
 		slog.String("tenant_id", auth.TenantID.String()),
 		slog.String("grant_id", auth.GrantID.String()),
-		slog.String("target", target),
+		slog.String("target", safeTarget),
 		slog.String("refusal_reason", reason),
+	}
+	if truncated {
+		attrs = append(attrs,
+			slog.Bool("target_truncated", true),
+			slog.Int("target_original_len", origLen))
+	}
+	if sanitized {
+		attrs = append(attrs, slog.Bool("target_sanitized", true))
 	}
 	if phase != "" {
 		attrs = append(attrs, slog.String("phase", phase))
