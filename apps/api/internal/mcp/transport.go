@@ -109,6 +109,23 @@ func NewTransportHandler(svc *Service, log *slog.Logger, version string) *Transp
 func (h *TransportHandler) Register(r gin.IRouter) {
 	r.POST(TransportPath, h.serve)
 
+	// OPTIONS IS THE CORS PREFLIGHT AND IS ANSWERED, NOT REFUSED.
+	//
+	// It was in the 405 list below, and that combination made this endpoint
+	// UNREACHABLE from any browser-hosted MCP client. The sequence is: the
+	// client reads our discovery documents, which set
+	// Access-Control-Allow-Origin: * specifically so a browser may read them
+	// (discovery.go), learns this endpoint's URL, and then cannot call it,
+	// because its preflight is answered 405 and the browser never issues the
+	// POST. We published an invitation to a door we had locked.
+	//
+	// A preflight is not avoidable by a conforming client. Authorization,
+	// MCP-Protocol-Version, MCP-Session-Id and Last-Event-ID are all
+	// non-safelisted request headers, and so is Content-Type: application/json
+	// (the safelist covers only form and text/plain bodies) -- so essentially
+	// every real MCP request forces one.
+	r.OPTIONS(TransportPath, h.preflight)
+
 	// EVERY OTHER VERB ON THIS PATH ANSWERS 405, NOT 404.
 	//
 	// This is the same rule as the 401-not-404 one below, on the other axis,
@@ -124,6 +141,12 @@ func (h *TransportHandler) Register(r gin.IRouter) {
 	// and the transport's own answer for a server that does not offer them is
 	// 405 -- so a conforming client that opens the GET stream first learns
 	// "this server does not do that" instead of "there is no server here".
+	// The specification names 405 for both by name, for the GET stream
+	// ("or else return HTTP 405 Method Not Allowed, indicating that the server
+	// does not offer an SSE stream at this endpoint") and for DELETE ("the
+	// server MAY respond to this request with HTTP 405 Method Not Allowed,
+	// indicating that the server does not allow clients to terminate
+	// sessions"). Neither is a placeholder for unfinished work.
 	//
 	// Registered explicitly per verb rather than via HandleMethodNotAllowed,
 	// because that flag is engine-global and would change the response of
@@ -134,10 +157,129 @@ func (h *TransportHandler) Register(r gin.IRouter) {
 		http.MethodPut,
 		http.MethodPatch,
 		http.MethodDelete,
-		http.MethodOptions,
 	} {
 		r.Handle(verb, TransportPath, h.methodNotAllowed)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// CORS
+// ---------------------------------------------------------------------------
+
+// corsAllowMethods is what a browser may ATTEMPT, which is deliberately not the
+// same set as the Allow header's "what will succeed".
+//
+// GET and DELETE are listed even though both answer 405. Omitting them would
+// make the browser block the request before our 405 could be read, and the
+// client would surface an opaque CORS network error -- indistinguishable from
+// "the server is down". That is precisely the confusion the 405-not-404 rule
+// above exists to prevent, so the same reasoning applies one layer out: let the
+// request through so it can receive an honest refusal.
+var corsAllowMethods = strings.Join([]string{
+	http.MethodPost, http.MethodGet, http.MethodDelete,
+}, ", ")
+
+// corsAllowHeaders is every header the Streamable HTTP transport specifies a
+// client may send, plus the Authorization header the authorization spec adds.
+//
+// Header names are case-insensitive both in HTTP and in the CORS matching
+// algorithm, which matters here: the session header is spelled Mcp-Session-Id
+// in revision 2025-06-18 and MCP-Session-Id in 2025-11-25. One spelling covers
+// both revisions, and neither has to be tracked as the window moves.
+//
+// Last-Event-ID and the session header are listed even though Phase 1 issues no
+// session id and offers no resumable stream: a client that sends them anyway is
+// conforming, and a preflight that omitted them would fail the whole request
+// rather than let it through to the answer it should get.
+var corsAllowHeaders = strings.Join([]string{
+	"Authorization",
+	"Content-Type",
+	"Accept",
+	ProtocolHeader,
+	"Mcp-Session-Id",
+	"Last-Event-ID",
+}, ", ")
+
+// corsExposeHeaders is what browser JavaScript may READ off our responses.
+// Without this the client can see the status code and nothing else.
+//
+// WWW-Authenticate is the load-bearing one: writeUnauthorized sets it to name
+// the scheme, and a browser client that cannot read it learns only "401" with
+// no indication of how to authenticate.
+var corsExposeHeaders = strings.Join([]string{
+	"WWW-Authenticate", "Mcp-Session-Id", "Allow",
+}, ", ")
+
+// writeCORS sets the headers that must appear on an ACTUAL response, as opposed
+// to a preflight. It runs on every verb and BEFORE authentication, because a
+// response the browser refuses to hand to the client is not a refusal the
+// client can act on -- an unreadable 401 is indistinguishable from a network
+// failure.
+//
+// THE ORIGIN IS "*" AND THERE IS DELIBERATELY NO Access-Control-Allow-Credentials.
+//
+// "*" is safe HERE for a reason specific to this endpoint, and the reason is
+// not that discovery.go does the same thing one file over -- that surface
+// publishes public metadata, this one carries a credential, and they do not
+// automatically share a policy. It is safe because this endpoint has NO ambient
+// authentication to steal. It is mounted on the root engine and never on the
+// session-auth group, so no cookie authenticates it; the only credential it
+// accepts is a bearer token that the calling page's own JavaScript must already
+// hold and set explicitly. A hostile page therefore gains nothing from being
+// allowed to send a request it could only authenticate with a token it would
+// have to have stolen first.
+//
+// Allow-Credentials: true is the setting that WOULD be a hole -- it would make
+// the browser attach ambient credentials to cross-origin requests -- and it is
+// also incompatible with "*". It is not set, and must not be.
+//
+// Narrowing "*" to an allowlist would buy nothing today and cost real
+// interoperability: browser-hosted MCP clients are served from origins we
+// cannot enumerate, which is the entire reason this surface offers dynamic
+// client registration. It would also not constrain a non-browser client at all,
+// since CORS is enforced by the browser and not by us.
+//
+// COUPLING WITH ORIGIN VALIDATION, WHICH IS NOT YET BUILT. Revision 2025-11-25
+// hardened the transport's Origin rule to a MUST ("Servers MUST validate the
+// Origin header on all incoming connections ... If the Origin header is present
+// and invalid, servers MUST respond with HTTP 403 Forbidden"), and this server
+// does not validate Origin at all. That is tracked separately. The two
+// mechanisms are NOT the same thing and do not conflict, but they do constrain
+// each other: if Origin validation lands as an ALLOWLIST, then this "*" must
+// become a reflection of the single allowed origin plus a "Vary: Origin"
+// response header, and the 403 must be applied to the preflight as well as to
+// the real request, or a browser client gets a preflight that succeeds followed
+// by a POST that is forbidden. Whoever builds that half changes this function
+// in the same commit.
+func writeCORS(c *gin.Context) {
+	c.Header("Access-Control-Allow-Origin", "*")
+	c.Header("Access-Control-Expose-Headers", corsExposeHeaders)
+}
+
+// preflight answers the CORS preflight for the MCP endpoint.
+//
+// IT DOES NOT AUTHENTICATE, AND THAT IS NOT A HOLE.
+//
+// A browser strips Authorization from a preflight by construction -- the whole
+// purpose of the OPTIONS round trip is to ask permission BEFORE attaching the
+// credential -- so requiring a bearer here would refuse every preflight ever
+// sent and restore exactly the lockout this handler exists to fix. Nothing is
+// served in response: the body is empty and the only thing disclosed is which
+// methods and headers this endpoint accepts, which is already public in the
+// discovery documents and in this file's published path.
+//
+// The bearer requirement is untouched. A successful preflight buys the caller
+// the right to SEND the real request, and that real request meets exactly the
+// same 401 it does today.
+func (h *TransportHandler) preflight(c *gin.Context) {
+	writeCORS(c)
+	c.Header("Access-Control-Allow-Methods", corsAllowMethods)
+	c.Header("Access-Control-Allow-Headers", corsAllowHeaders)
+	// Ten minutes. Chrome caps preflight caching at 7200s and the value only
+	// trades a round trip against how long a policy change takes to reach a
+	// client that has already cached it; short is the safer side of that.
+	c.Header("Access-Control-Max-Age", "600")
+	c.Status(http.StatusNoContent)
 }
 
 // methodNotAllowed answers a non-POST verb on the published path with a JSON
@@ -147,6 +289,10 @@ func (h *TransportHandler) Register(r gin.IRouter) {
 // who is asking, and answering 401 to an unauthenticated GET would send an
 // operator to rotate a credential when the actual fix is to send a POST.
 func (h *TransportHandler) methodNotAllowed(c *gin.Context) {
+	// The 405 is only useful if the browser lets the client read it. Without
+	// this, a browser-hosted client probing the GET stream sees an opaque CORS
+	// failure instead of the honest "we do not offer that here".
+	writeCORS(c)
 	c.Header("Allow", http.MethodPost)
 	c.JSON(http.StatusMethodNotAllowed, newErrorResponse(nil, codeInvalidRequest,
 		fmt.Sprintf("%s is not supported on %s. This is a Streamable HTTP MCP endpoint and "+
@@ -205,6 +351,12 @@ func nullID(id json.RawMessage) json.RawMessage {
 // ---------------------------------------------------------------------------
 
 func (h *TransportHandler) serve(c *gin.Context) {
+	// 0. CORS HEADERS BEFORE AUTHENTICATION, so that the 401 below is readable
+	// by a browser-hosted client. A response the browser refuses to expose is
+	// not a refusal anyone can act on: it surfaces as a network error, which
+	// sends the caller looking for an outage rather than at their token.
+	writeCORS(c)
+
 	// 1. AUTHENTICATE FIRST, AND ANSWER 401 -- NEVER 404.
 	//
 	// A 404 hides a routing failure behind something that looks like a
@@ -266,9 +418,35 @@ func (h *TransportHandler) serve(c *gin.Context) {
 
 	trimmed := strings.TrimSpace(string(body))
 	if strings.HasPrefix(trimmed, "[") {
-		// Batching was removed in revision 2025-11-25 and is not implemented
-		// for the older revisions in the window either. Refusing by name is
-		// better than half-answering a batch.
+		// BATCHING IS REFUSED ON EVERY REVISION IN THE WINDOW, AND ON THE FLOOR
+		// THAT IS A DELIBERATE DIVERGENCE FROM THE SPECIFICATION.
+		//
+		// JSON-RPC batching was removed in revision 2025-06-18, whose changelog
+		// opens with "Remove support for JSON-RPC batching" -- NOT in 2025-11-25,
+		// as this comment claimed until it was checked against the changelog.
+		//
+		// So the window is not uniform. 2025-06-18 and 2025-11-25 forbid
+		// batching and refusing it is conformant. 2025-03-26 -- our floor, and
+		// the revision NegotiateProtocol assumes for the header-less client we
+		// expect to be the common case -- PERMITS it, and we refuse it anyway.
+		//
+		// What a floor client actually experiences: it POSTs a JSON array, and
+		// gets HTTP 400 carrying a JSON-RPC error with code -32600 and a null
+		// id, whose message tells it to send one request per POST. It is not
+		// downgraded, not partially served, and not silently given the first
+		// element of its batch. The refusal is total and it says why.
+		//
+		// This is a product decision and not an unfinished edge: implementing
+		// batching would mean implementing partial failure across a batch --
+		// per-element authorization, per-element audit rows, and an answer for
+		// "three succeeded and one was refused" -- to serve a shape that the
+		// two newer revisions have already deleted and that no surveyed client
+		// emits. Half-answering a batch would be worse than refusing it.
+		//
+		// DO NOT "FIX" THIS BY IMPLEMENTING BATCHING because the floor allows
+		// it. If it is ever revisited, the question to answer first is whether
+		// any real 2025-03-26 client sends batches, and the request log added
+		// in serve() is what answers it.
 		c.JSON(http.StatusBadRequest, newErrorResponse(nil, codeInvalidRequest,
 			"JSON-RPC batching is not supported; send one request per POST", nil))
 		return
