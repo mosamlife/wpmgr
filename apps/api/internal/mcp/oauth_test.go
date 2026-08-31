@@ -125,6 +125,18 @@ type fakeStore struct {
 	grants    []sqlc.McpGrant
 	grantsErr error
 
+	// getErr forces GetGrant to fail; getPrincipals records what was passed to
+	// the two principal-taking status reads.
+	getErr        error
+	getPrincipals []domain.Principal
+	// firstCall is what FindFirstToolCall returns and firstCallErr forces it
+	// to fail. The zero FirstToolCall is Found=false/Truncated=false, which is
+	// the DEFINITIVE not-yet -- the correct default for a fixture, since a
+	// test that forgets to set it gets "nothing has happened" rather than a
+	// spurious success.
+	firstCall    FirstToolCall
+	firstCallErr error
+
 	// revokeRow is what RevokeGrantWithTokens returns and revokeErr is the
 	// error it returns instead. revokeErr set to pgx.ErrNoRows models THE
 	// GRANT NOT BEING VISIBLE -- the only outcome that means "not there" --
@@ -466,6 +478,49 @@ func (f *fakeStore) ListGrants(_ context.Context, p domain.Principal) ([]sqlc.Mc
 		return nil, f.grantsErr
 	}
 	return f.grants, nil
+}
+
+// GetGrant models Repo.GetGrant, INCLUDING its pgx.ErrNoRows contract: getErr
+// is returned VERBATIM so a test can set pgx.ErrNoRows and drive the
+// "grant not visible" branch through errors.Is exactly as the real repo does.
+//
+// It records the principal for the same reason ListGrants does -- the
+// signature takes a principal precisely so the RESTRICTIVE _site_scope policy
+// is reachable, and a test asserting that gate needs to see what was passed.
+func (f *fakeStore) GetGrant(_ context.Context, p domain.Principal, id uuid.UUID) (sqlc.McpGrant, error) {
+	f.note("GetGrant")
+	f.mu.Lock()
+	f.getPrincipals = append(f.getPrincipals, p)
+	f.mu.Unlock()
+	if f.getErr != nil {
+		return sqlc.McpGrant{}, f.getErr
+	}
+	for _, g := range f.grants {
+		if g.ID == id {
+			return g, nil
+		}
+	}
+	// pgx.ErrNoRows and NOT a zero struct with a nil error. A fake that
+	// returned (sqlc.McpGrant{}, nil) for an absent id would let a service
+	// that never checks the error render a grant with a zero uuid and a zero
+	// timestamp as though it were real -- the absence-as-fact defect,
+	// manufactured in the fixture.
+	return sqlc.McpGrant{}, pgx.ErrNoRows
+}
+
+// FindFirstToolCall models Repo.FindFirstToolCall. firstCall is returned as
+// given so a test can assert every one of the three Step 9 states, INCLUDING
+// the Found=false/Truncated=true pair that must become indeterminate rather
+// than a not-yet.
+func (f *fakeStore) FindFirstToolCall(_ context.Context, p domain.Principal, _ uuid.UUID, _ int) (FirstToolCall, error) {
+	f.note("FindFirstToolCall")
+	f.mu.Lock()
+	f.getPrincipals = append(f.getPrincipals, p)
+	f.mu.Unlock()
+	if f.firstCallErr != nil {
+		return FirstToolCall{}, f.firstCallErr
+	}
+	return f.firstCall, nil
 }
 
 // RevokeGrantWithTokens models the four-outcome contract of

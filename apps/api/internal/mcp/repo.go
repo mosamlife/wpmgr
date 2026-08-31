@@ -120,6 +120,21 @@ type Store interface {
 	// db.dispatchTenantTx's hands instead of this package's memory.
 	ListGrants(ctx context.Context, principal domain.Principal) ([]sqlc.McpGrant, error)
 
+	// GetGrant and FindFirstToolCall are the wizard's Step 8 / Step 9 pair
+	// (S29). GetGrant TAKES THE PRINCIPAL for exactly the reason ListGrants
+	// does, above: it reads mcp_grants, so a tenantID-only signature could
+	// only reach InTenantTx and would leave the RESTRICTIVE _site_scope
+	// SELECT policy inert on a single-row read of an organisation-wide
+	// credential.
+	//
+	// FindFirstToolCall takes it too, and that is NOT copy-paste. It reads
+	// audit_log rather than mcp_grants, but it is called in the same request
+	// as GetGrant and about the same grant; giving it the weaker signature
+	// would put the two reads of one answer on two different dispatch paths,
+	// which is how one of them later gets the GUCs and the other does not.
+	FindFirstToolCall(ctx context.Context, principal domain.Principal, grantID uuid.UUID, limit int) (FirstToolCall, error)
+	GetGrant(ctx context.Context, principal domain.Principal, grantID uuid.UUID) (sqlc.McpGrant, error)
+
 	// RevokeGrantWithTokens flips the grant AND every active token in ONE
 	// statement. There is deliberately no grant-only revoke on this interface:
 	// a security review of this stack observed `grant_status revoked /
