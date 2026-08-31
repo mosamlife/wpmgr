@@ -152,15 +152,28 @@ func (h *TransportHandler) Register(r gin.IRouter) {
 	// Registered explicitly per verb rather than via HandleMethodNotAllowed,
 	// because that flag is engine-global and would change the response of
 	// every other route in the API as a side effect of this slice.
-	for _, verb := range []string{
-		http.MethodGet,
-		http.MethodHead,
-		http.MethodPut,
-		http.MethodPatch,
-		http.MethodDelete,
-	} {
+	for _, verb := range methodNotAllowedVerbs {
 		r.Handle(verb, TransportPath, h.methodNotAllowed)
 	}
+}
+
+// methodNotAllowedVerbs is every verb this path ROUTES to an honest 405, and it
+// is the single list corsAllowMethods is derived from.
+//
+// It is a package var rather than a literal inside Register because the two
+// lists had already drifted once, in the direction that is invisible from the
+// server side: the preflight advertised POST, GET and DELETE while HEAD, PUT
+// and PATCH were routed to methodNotAllowed. A browser sending any of those
+// three was blocked by its OWN preflight and never reached the 405 this loop
+// exists to give it, so the operator saw an opaque network error and the
+// carefully worded refusal was never read. Deriving the advertisement from the
+// routing makes that drift unspellable rather than merely caught in review.
+var methodNotAllowedVerbs = []string{
+	http.MethodGet,
+	http.MethodHead,
+	http.MethodPut,
+	http.MethodPatch,
+	http.MethodDelete,
 }
 
 // ---------------------------------------------------------------------------
@@ -170,15 +183,20 @@ func (h *TransportHandler) Register(r gin.IRouter) {
 // corsAllowMethods is what a browser may ATTEMPT, which is deliberately not the
 // same set as the Allow header's "what will succeed".
 //
-// GET and DELETE are listed even though both answer 405. Omitting them would
-// make the browser block the request before our 405 could be read, and the
-// client would surface an opaque CORS network error -- indistinguishable from
-// "the server is down". That is precisely the confusion the 405-not-404 rule
-// above exists to prevent, so the same reasoning applies one layer out: let the
-// request through so it can receive an honest refusal.
-var corsAllowMethods = strings.Join([]string{
-	http.MethodPost, http.MethodGet, http.MethodDelete,
-}, ", ")
+// EVERY ROUTED VERB IS LISTED even though all of them except POST answer 405.
+// Omitting one would make the browser block the request before our 405 could be
+// read, and the client would surface an opaque CORS network error --
+// indistinguishable from "the server is down". That is precisely the confusion
+// the 405-not-404 rule above exists to prevent, so the same reasoning applies
+// one layer out: let the request through so it can receive an honest refusal.
+//
+// It is DERIVED from methodNotAllowedVerbs rather than written out, because a
+// hand-maintained copy is exactly what drifted: HEAD, PUT and PATCH were routed
+// to a readable 405 that no browser could ever reach. A verb added to the
+// routing now appears here by construction, and a verb removed disappears from
+// here too -- the two cannot disagree.
+var corsAllowMethods = strings.Join(
+	append([]string{http.MethodPost}, methodNotAllowedVerbs...), ", ")
 
 // corsAllowHeaders is every header the Streamable HTTP transport specifies a
 // client may send, plus the Authorization header the authorization spec adds.
@@ -749,7 +767,9 @@ func (h *TransportHandler) callTool(ctx context.Context, auth AuthorizedRequest,
 			// looking at a grant that was never the problem. It is already
 			// reported at ERROR by toolError.
 			if aerr := h.svc.RecordToolDenied(ctx, auth, p.Name, reason); aerr != nil {
-				h.auditGap(ctx, auth, audit.ActionMCPToolDenied, p.Name, string(reason), aerr)
+				// No phase: a tool denial happens at one place in the request,
+				// so there is no second axis to record and "" is omitted.
+				h.auditGap(ctx, auth, audit.ActionMCPToolDenied, p.Name, string(reason), "", aerr)
 			}
 		}
 
@@ -880,18 +900,37 @@ func (h *TransportHandler) toolError(id json.RawMessage, err error) jsonrpcRespo
 // operation to bind it to. If a WRITE tool ever lands on this surface and its
 // refusal has an effect to roll back, that refusal is a different case and must
 // not reuse this path by analogy.
+// THE FIELDS ARE THE LOST ROW'S FIELDS, UNDER THE LOST ROW'S KEYS. reason and
+// phase are separate arguments and separate log keys because they answer
+// different questions and the row records them separately: refusal_reason is
+// WHY (below_floor, unsupported, a tool-denial reason), phase is WHERE in the
+// request the refusal happened (header, initialize_params). Passing the phase
+// as the reason -- which this did -- makes the fallback claim a connection was
+// refused for "header", loses below_floor entirely, and records the phase
+// nowhere. That is not a mislabelled field: this line is the WHOLE remaining
+// evidence when the append fails, so a wrong half is a fabricated record of a
+// refusal that did not happen for that reason.
+//
+// phase is empty for refusals that have no phase (tool denials), and is then
+// omitted rather than logged as "", so an alert keyed on it never matches a
+// blank.
 func (h *TransportHandler) auditGap(
-	ctx context.Context, auth AuthorizedRequest, action, target, reason string, err error,
+	ctx context.Context, auth AuthorizedRequest, action, target, reason, phase string, err error,
 ) {
-	h.log.ErrorContext(ctx, "mcp refusal audit write failed",
+	attrs := []any{
 		slog.Bool("audit_gap", true),
 		slog.String("action", action),
 		slog.String("tenant_id", auth.TenantID.String()),
 		slog.String("grant_id", auth.GrantID.String()),
 		slog.String("target", target),
 		slog.String("refusal_reason", reason),
-		slog.String("error", err.Error()),
-	)
+	}
+	if phase != "" {
+		attrs = append(attrs, slog.String("phase", phase))
+	}
+	attrs = append(attrs, slog.String("error", err.Error()))
+
+	h.log.ErrorContext(ctx, "mcp refusal audit write failed", attrs...)
 }
 
 // writeUnauthorized answers 401 -- NEVER 404 -- and names the scheme so a
@@ -944,7 +983,8 @@ func (h *TransportHandler) writeProtocolRefusal(
 	c *gin.Context, auth AuthorizedRequest, id json.RawMessage, neg Negotiation, phase string,
 ) {
 	if err := h.svc.RecordProtocolDenied(c.Request.Context(), auth, neg, phase); err != nil {
-		h.auditGap(c.Request.Context(), auth, audit.ActionMCPProtocolDenied, neg.Raw, phase, err)
+		h.auditGap(c.Request.Context(), auth, audit.ActionMCPProtocolDenied,
+			neg.Raw, neg.RefusalReason(), phase, err)
 	}
 
 	var msg string

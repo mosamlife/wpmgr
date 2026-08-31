@@ -1394,10 +1394,7 @@ func (s *Service) RecordProtocolDenied(ctx context.Context, auth AuthorizedReque
 	if s.audit == nil {
 		return nil
 	}
-	reason := "unsupported"
-	if neg.Outcome == NegotiationBelowFloor {
-		reason = "below_floor"
-	}
+	reason := neg.RefusalReason()
 	_, err := s.audit.Record(ctx, audit.Event{
 		TenantID:   auth.TenantID,
 		ActorType:  audit.ActorAssistant,
