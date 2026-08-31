@@ -174,6 +174,16 @@ func (h *Handler) RegisterConnections(r *gin.RouterGroup) {
 	g.POST("/:"+connectionIDParam+"/revoke",
 		authz.RequirePermission(authz.PermAPIKeyManage), h.revokeConnection)
 
+	// GET /:connectionId/status -- the add-connection wizard's Step 8 and
+	// Step 9 poll (S29). PermAPIKeyRead, the SAME permission as the list
+	// above, because it reads the same object: a caller who may list the
+	// organisation's connections may read the handshake state of one of them,
+	// and a caller who may not must not learn it a row at a time. Both are
+	// org-level perms, so a site-constrained principal is refused here for the
+	// same reason it is refused on the list.
+	g.GET("/:"+connectionIDParam+"/status",
+		authz.RequirePermission(authz.PermAPIKeyRead), h.connectionStatus)
+
 	// 405 rather than gin's bare 404 on a wrong verb, for the reason
 	// RegisterPublic gives: a 404 reads as "not deployed", which is exactly how
 	// the S6b-2 blocker presented and cost a debugging session. These carry NO
@@ -182,6 +192,7 @@ func (h *Handler) RegisterConnections(r *gin.RouterGroup) {
 	// when the fix is to send a POST.
 	houseMethodNotAllowedExcept(g, "", http.MethodGet, http.MethodPost)
 	houseMethodNotAllowedExcept(g, "/:"+connectionIDParam+"/revoke", http.MethodPost)
+	houseMethodNotAllowedExcept(g, "/:"+connectionIDParam+"/status", http.MethodGet)
 }
 
 // listConnections answers GET /api/v1/mcp/connections.
@@ -272,6 +283,12 @@ func (h *Handler) mintConnection(c *gin.Context) {
 		Name:         body.Name,
 		SiteScope:    SiteScopeRequest{Mode: SiteScopeMode(body.SiteScopeMode), TagIDs: tagIDs, SiteIDs: siteIDs},
 		Capabilities: caps,
+		// Forwarded as the pointer it arrived as, so "omitted" survives the
+		// handler as nil rather than being flattened to "". The service
+		// validates its shape and refuses a malformed one; the handler does not
+		// second-guess it, for the same reason it does no authorization of its
+		// own -- a fourth opinion is a fourth thing that can drift.
+		SetupClient: body.SetupClient,
 	})
 	if err != nil {
 		httpx.Error(c, err)

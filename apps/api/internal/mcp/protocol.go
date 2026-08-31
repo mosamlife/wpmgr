@@ -107,6 +107,26 @@ func (n Negotiation) Refused() bool {
 	return n.Outcome == NegotiationBelowFloor || n.Outcome == NegotiationUnsupported
 }
 
+// RefusalReason is the audit reason string for a refused negotiation: WHY the
+// revision was refused, as distinct from the PHASE that refused it.
+//
+// It lives here, on the value it classifies, because two places need the same
+// answer and they must not derive it independently: the durable audit row
+// (Service.RecordProtocolDenied) and the operator log line that is the ONLY
+// surviving record when that row cannot be written
+// (TransportHandler.auditGap). A second copy of this two-line derivation is
+// how the fallback comes to describe a different refusal from the row it is
+// standing in for.
+//
+// It is meaningful only when Refused() is true; a served negotiation has no
+// refusal reason, and callers must not record one for it.
+func (n Negotiation) RefusalReason() string {
+	if n.Outcome == NegotiationBelowFloor {
+		return "below_floor"
+	}
+	return "unsupported"
+}
+
 // NegotiateProtocol classifies one client-supplied revision string into
 // exactly one of the three cases.
 //

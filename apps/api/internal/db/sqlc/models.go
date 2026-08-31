@@ -492,6 +492,7 @@ type McpGrant struct {
 	ClientVersion            *string            `json:"client_version"`
 	ProtocolVersion          *string            `json:"protocol_version"`
 	ClientIdentityRecordedAt pgtype.Timestamptz `json:"client_identity_recorded_at"`
+	SetupClient              *string            `json:"setup_client"`
 	CreatedByUserID          pgtype.UUID        `json:"created_by_user_id"`
 	CreatedAt                time.Time          `json:"created_at"`
 	LastUsedAt               pgtype.Timestamptz `json:"last_used_at"`

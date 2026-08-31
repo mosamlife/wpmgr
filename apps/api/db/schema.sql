@@ -5665,13 +5665,44 @@ CREATE TABLE mcp_grants (
     -- exit gate -- discovery never grants what the registry does not hold --
     -- pushed into the one place a call site cannot forget.
     --
-    -- Keep in lockstep with capabilityVocabulary in internal/mcp/policy.go,
-    -- which holds exactly this one entry today. EXTENDING IT IS A MIGRATION,
-    -- and that coupling is the review gate m124 DECISION 1 asked for: a write
-    -- capability cannot reach this table until someone writes a migration
-    -- naming it. Adding a Capability to policy.go alone fails 23514 on INSERT.
+    -- Keep in lockstep with capabilityVocabulary in internal/mcp/policy.go.
+    -- EXTENDING IT IS A MIGRATION, and that coupling is the review gate m124
+    -- DECISION 1 asked for: a write capability cannot reach this table until
+    -- someone writes a migration naming it. Adding a Capability to policy.go
+    -- alone fails 23514 on INSERT.
+    --
+    -- m131 widened this from the single member m127 seated to the WHOLE v1 READ
+    -- vocabulary, so that the registry can widen freely inside a set the
+    -- database already accepts instead of paying a migration per capability
+    -- group. m131's DECISION 1 gives the reasoning for each name; in short, the
+    -- middle segment is the OUTCOME an operator ticks on Step 4 and never the
+    -- mechanism that serves it.
+    --
+    -- EVERY MEMBER ENDS IN '.read', and that is checkable by pattern rather
+    -- than by trust. No write capability is seated: the write side uses
+    -- '.propose' and '.write', and the first migration to add a member not
+    -- ending in '.read' is the one that owes the write review.
+    --
+    -- 'mcp.content.read' is seated DELIBERATELY AND UNREACHABLE -- there is no
+    -- post or page table here and no agent command returns post content, and
+    -- ADR-062 holds the content work behind ship blockers. The CHECK is a
+    -- ceiling on what a grant MAY hold, not a floor and not a default, so a
+    -- member no code writes affects no row. See m131 DECISION 3.
+    --
+    -- This constraint's array is READ AT RUNTIME by the parity test that holds
+    -- it identical to capabilityVocabulary, via pg_get_constraintdef on this
+    -- constraint NAME -- which is why the name did not change in m131.
     CONSTRAINT mcp_grants_capabilities_vocabulary_check
-        CHECK (capabilities <@ ARRAY['mcp.sites.read']::text[]),
+        CHECK (capabilities <@ ARRAY[
+            'mcp.activity.read',
+            'mcp.backups.read',
+            'mcp.content.read',
+            'mcp.diagnostics.read',
+            'mcp.performance.read',
+            'mcp.security.read',
+            'mcp.sites.read',
+            'mcp.uptime.read'
+        ]::text[]),
     -- The registered OAuth client, or NULL on the headless token path. No
     -- foreign key: neither ON DELETE action is right for a recorded fact.
     client_id text NULL,
@@ -5682,6 +5713,36 @@ CREATE TABLE mcp_grants (
     client_version              text        NULL,
     protocol_version            text        NULL,
     client_identity_recorded_at timestamptz NULL,
+    -- m128. THE OPERATOR'S CHOICE at S29 step 2, as a client-table.ts slug.
+    -- A FOURTH client fact, not a replacement for the three above: those are
+    -- self-reported by the client at `initialize`, this one is what a human
+    -- said the connection was for. They disagree legitimately and permanently
+    -- (set up for Claude Desktop, URL pasted into Cursor), so neither
+    -- overwrites the other and RecordConnect must never write this column.
+    --
+    -- NULL MEANS "NO OPERATOR CHOICE WAS RECORDED", and is NOT 'generic'.
+    -- 'generic' means an operator saw nine cards and chose "Other MCP client",
+    -- which the wireframe calls "a complete path, not a placeholder". S29 step
+    -- 9's never-connected state needs both facts and needs them apart.
+    --
+    -- NULLABLE WITH NO DEFAULT, deliberately unlike m127's capabilities and
+    -- expires_at: this column carries NO AUTHORITY, so there is no fail-open
+    -- for a NOT NULL to close, and a DEFAULT 'generic' would make every row
+    -- ever created assert a choice nobody made.
+    --
+    -- The CHECK pins SPELLING, not MEMBERSHIP. It does not enumerate the nine
+    -- clients: a new MCP client arrives on a vendor's cadence and should cost
+    -- one row in client-table.ts, not a migration applied inside main() at
+    -- boot. What it does buy is S31's filter -- `client is windsurf` then
+    -- "None of them was set up for Windsurf" is only true if equality is
+    -- trustworthy, so 'Windsurf' and 'windsurf ' are unrepresentable. An
+    -- unrecognised slug degrades at the render layer to the generic panel.
+    -- See m128 DECISION 3 for the full argument.
+    setup_client                text        NULL
+        CONSTRAINT mcp_grants_setup_client_shape_check
+        CHECK (setup_client IS NULL
+               OR (setup_client ~ '^[a-z0-9]+(-[a-z0-9]+)*$'
+                   AND length(setup_client) <= 64)),
     created_by_user_id          uuid        NULL,
     created_at   timestamptz NOT NULL DEFAULT now(),
     last_used_at timestamptz NULL,
@@ -5701,6 +5762,32 @@ CREATE TABLE mcp_grants (
     -- mechanisms distinct is what keeps revoked_at honest.
     CONSTRAINT mcp_grants_expires_at_after_created_check
         CHECK (expires_at > created_at),
+    -- ...and it cannot be effectively immortal either (m129). The owner's
+    -- ruling is a ONE YEAR cap, which is also the largest option Step 5 offers,
+    -- so the ceiling sits exactly at the control's own maximum and is
+    -- INCLUSIVE: exactly one year INSERTs, one year plus a day is refused.
+    --
+    -- Before m129 this column was bounded only BELOW, and a security review
+    -- inserted expires_at = year 9999 as wpmgr_app with a nil error -- a
+    -- never-expiring credential in the column whose stated purpose is that a
+    -- never-expiring connection is not a thing the schema can hold. The other
+    -- expiry axis was bounded on both ends from the start
+    -- (idle_expire_after_days, 1..3650, "so a fat-fingered value cannot become
+    -- an effectively-absent control"); this is that same sentence applied to
+    -- the axis that was missing it.
+    --
+    -- interval '1 year' AND NOT 365 days: a calendar year spanning 29 February
+    -- is 366 days, and Go's AddDate(1, 0, 0) returns the calendar year, so a
+    -- 365-day ceiling would refuse the UI's own "1 year" option for grants
+    -- created in the run-up to a leap year. Normalised to UTC on both sides
+    -- because timestamptz + interval is STABLE (it resolves year units in the
+    -- session TimeZone, so a DST-straddling boundary would shift by an hour and
+    -- the bound would disagree with itself between sessions); timezone('UTC',
+    -- ts) and timestamp + interval are both IMMUTABLE, and UTC is the frame Go
+    -- computes the value in.
+    CONSTRAINT mcp_grants_expires_at_max_one_year_check
+        CHECK (timezone('UTC', expires_at)
+               <= timezone('UTC', created_at) + interval '1 year'),
 
     -- IDLE EXPIRY (m127 DECISION 2), a WINDOW LENGTH IN DAYS and not an
     -- instant. NULL MEANS NEVER IDLE-EXPIRE, and only that -- Step 5's second

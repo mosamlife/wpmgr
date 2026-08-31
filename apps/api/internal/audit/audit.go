@@ -12,7 +12,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -406,6 +408,53 @@ const (
 	// operator_permission (the dashboard authority the tool call mirrors) and
 	// tool.
 	ActionMCPToolCalled = "mcp.tool.called"
+	// ActionMCPToolDenied is the REFUSAL counterpart of ActionMCPToolCalled,
+	// under the same <action>.denied convention as
+	// ActionSiteFilesSensitiveDenied. It is recorded by
+	// internal/mcp.Service.RecordToolDenied whenever the tools/call gate
+	// (mcp.AuthorizeTool) refuses a named tool, and it is the surface's own
+	// evidence that the boundary held.
+	//
+	// THIS ROW IS NOT A RECORD OF AN ACTION; IT IS THE RECORD THAT NO ACTION
+	// HAPPENED, which is a different and stronger claim. ActionMCPToolCalled
+	// can be reconstructed after the fact from the effect it describes -- the
+	// data was read, something changed, there is a second trace. A refusal
+	// leaves NO other trace anywhere in the system by construction, so if this
+	// row is missing there is nothing to fall back on and "the boundary was
+	// never tested" is indistinguishable from "the boundary was tested and we
+	// lost the record".
+	//
+	// Actor kinds match ActionMCPToolCalled exactly and for the same reason:
+	// ActorAssistant over the mcp_grants id, never the human who granted
+	// access, because the fact an operator wants is WHICH CONNECTION was
+	// refused. TargetType is "mcp_tool" and TargetID is the name AS THE CALLER
+	// SPELLED IT -- an unregistered name is the whole content of a probe, and
+	// normalising it away would erase the evidence. Metadata carries
+	// refusal_reason (the operator-facing classification the wire deliberately
+	// blurs), grant_name, held_capabilities and scoped_sites.
+	//
+	// ON FAILURE THE APPEND IS LOGGED, NOT PROPAGATED, and the caller's refusal
+	// is unchanged. See TransportHandler.auditGap for the full argument; the
+	// short form is that "fail closed" has no meaning for an operation that is
+	// already a denial, and its only available implementation would tell the
+	// denied caller when this log is down.
+	ActionMCPToolDenied = "mcp.tool.denied"
+	// ActionMCPProtocolDenied is recorded when an AUTHENTICATED MCP request is
+	// refused at protocol negotiation -- a revision below the compatibility
+	// floor, or one this server does not speak. Same actor kinds as
+	// ActionMCPToolDenied. TargetType is "mcp_protocol" and TargetID is the
+	// revision string the client asked for.
+	//
+	// It earns a row separate from ActionMCPToolDenied because it answers a
+	// different question. A run of these from one grant is a client that cannot
+	// talk to this server at all, which looks identical to an idle connection
+	// in every other record the surface keeps: no tool is named, so
+	// ActionMCPToolDenied never fires, and last_used_at moves, so the grant
+	// does not look abandoned either. Metadata carries refusal_reason
+	// (below_floor / unsupported), the phase it was caught in (header or
+	// initialize_params), and the floor and target it was measured against, so
+	// a row stays interpretable after those constants move.
+	ActionMCPProtocolDenied = "mcp.protocol.denied"
 )
 
 // ActorFor resolves the (ActorType, ActorID) pair for whichever credential
@@ -493,6 +542,98 @@ type Event struct {
 	TargetType string
 	TargetID   string
 	Metadata   map[string]any
+}
+
+// MaxTargetIDLen bounds a target_id that came from UNTRUSTED input, in bytes.
+//
+// audit_log.target_id is unbounded `text`, which is correct for the values this
+// package was built for: they are identifiers the SERVER chose -- a uuid (36
+// bytes), a slug, a plugin name. 256 is an order of magnitude above the longest
+// of those, so nothing legitimate is anywhere near it.
+//
+// It matters because of what an append COSTS. Every Record takes a per-tenant
+// pg_advisory_xact_lock (see lockChain) and hashes the row into the chain, so
+// appends for one tenant are strictly serialised. A caller who can put arbitrary
+// bytes in target_id can therefore push unbounded data through the one
+// serialised write path on that tenant's ledger, and the throughput ceiling of
+// that path is not a measured quantity. A refusal audit row is the case that
+// makes this reachable: it records the string the caller GUESSED, so the
+// attacker chooses the bytes, and being refused is not a barrier to writing.
+const MaxTargetIDLen = 256
+
+// SafeTargetID makes an untrusted target_id safe to append, and reports every
+// way it had to change the value.
+//
+// TWO HAZARDS, AND THE SECOND IS NOT A SUBSET OF THE FIRST.
+//
+//  1. LENGTH, per MaxTargetIDLen above.
+//  2. ENCODING. Postgres rejects an invalid byte sequence for encoding "UTF8"
+//     outright, so an invalid target_id does not produce a bounded row -- it
+//     produces a FAILED append, on the refusal path, whose whole purpose is
+//     that the row gets written. That converts "you sent something we refuse"
+//     into a 500 and an evidence gap, which is a strictly better outcome for
+//     the caller than being recorded.
+//
+// The encoding hazard is reachable and is NOT fixed by truncating. A JSON body
+// string is valid UTF-8 by the time encoding/json is done with it, but an HTTP
+// HEADER value is raw bytes: net/http does not validate it, so
+// `MCP-Protocol-Version: <0xff 0xfe>` arrives intact, is refused by
+// NegotiateProtocol, and is recorded verbatim. Being three bytes long it never
+// reaches the length bound at all -- which is exactly why sanitising has to
+// happen on BOTH return paths and not only after a truncation.
+//
+// Order matters: sanitise FIRST, then bound. Replacement runes are 3 bytes
+// each, so sanitising a bounded string can push it back over the bound.
+//
+// THIS IS NOT APPLIED INSIDE Record, DELIBERATELY. Every existing caller passes
+// a server-chosen identifier that cannot approach the bound, and silently
+// rewriting target_id for all of them would change values that other code looks
+// up by (site lifecycle rows join on target_id, and Verify re-hashes the stored
+// value) to defend against an input none of them accept. The bound belongs to
+// the CALLER that handles untrusted bytes; this helper is here, next to the
+// field it bounds, so that every such caller applies the SAME bound instead of
+// inventing one. If a future audit of the writers finds others taking untrusted
+// target_ids, promoting this into Record is the right move and this comment is
+// the argument for it -- but it is a decision with blast radius beyond one
+// surface, and it is not made here.
+//
+// Truncation is on a RUNE boundary. A byte-slice of UTF-8 text can split a
+// multi-byte rune, and Postgres rejects an invalid byte sequence for encoding
+// "UTF8" outright -- so the naive bound would convert a large-input abuse into a
+// 500 on the refusal path, which is a worse bug than the one being fixed.
+//
+// The returned length is the ORIGINAL byte length, so the caller can record what
+// was actually sent. A truncated row that does not say it is truncated reads
+// back as though the caller sent exactly the shortened value, which is a record
+// that misdescribes the event it exists to evidence.
+func SafeTargetID(s string) (out string, truncated, sanitized bool, originalLen int) {
+	originalLen = len(s)
+
+	// U+FFFD is the standard lossy replacement. It is deliberately not a
+	// lossless escape: target_id is read by humans in an audit UI, and encoding
+	// a legitimate name into \xff sequences to preserve bytes nobody can act on
+	// would make every ordinary row harder to read to keep evidence of a probe
+	// that the sanitized flag already records.
+	if !utf8.ValidString(s) {
+		s = strings.ToValidUTF8(s, "�")
+		sanitized = true
+	}
+
+	if len(s) <= MaxTargetIDLen {
+		return s, false, sanitized, originalLen
+	}
+	b := s[:MaxTargetIDLen]
+	// Drop a trailing partial rune. DecodeLastRuneInString returns
+	// (RuneError, 1) for an incomplete sequence; a genuine U+FFFD in the input
+	// decodes with size 3 and is correctly kept.
+	for len(b) > 0 {
+		if r, size := utf8.DecodeLastRuneInString(b); r == utf8.RuneError && size <= 1 {
+			b = b[:len(b)-1]
+			continue
+		}
+		break
+	}
+	return b, true, sanitized, originalLen
 }
 
 // Recorder appends hash-chained audit entries.
