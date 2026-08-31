@@ -6059,3 +6059,434 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON mcp_grants              TO wpmgr_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON mcp_connection_tokens   TO wpmgr_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON mcp_oauth_clients       TO wpmgr_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON mcp_authorization_codes TO wpmgr_app;
+
+-- ---------------------------------------------------------------------------
+-- m132 (ADR-061 A11, Wave 1.2): RESTRICTIVE app.site_scope policies on the
+-- tables the assistant reads.
+--
+-- Mirrors apps/api/migrations/20260903000000_m132_assistant_read_site_scope_rls.sql.
+-- That file is authoritative; this one is sqlc's input. Read its DECISION 2
+-- before touching the predicate: the nullif is the fail-closed property, not
+-- defensive noise. An empty allowlist denies via NULL, not via FALSE.
+--
+-- These are inert on every path that does not set app.site_scope, which today
+-- is every path except InScopedTenantTx (internal/db/db.go:582).
+-- ---------------------------------------------------------------------------
+
+CREATE POLICY cache_purge_audit_site_scope ON cache_purge_audit
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE POLICY font_results_site_scope ON font_results
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE POLICY font_transcode_results_site_scope ON font_transcode_results
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE POLICY rucss_jobs_site_scope ON rucss_jobs
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE POLICY rucss_results_site_scope ON rucss_results
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE POLICY rum_events_raw_site_scope ON rum_events_raw
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE POLICY rum_rollup_daily_site_scope ON rum_rollup_daily
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE POLICY rum_rollup_hourly_site_scope ON rum_rollup_hourly
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE POLICY site_app_alert_state_site_scope ON site_app_alert_state
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE POLICY site_cache_hit_ratio_history_site_scope ON site_cache_hit_ratio_history
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE POLICY site_cache_stats_site_scope ON site_cache_stats
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE POLICY site_connection_history_site_scope ON site_connection_history
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE POLICY site_db_clean_results_site_scope ON site_db_clean_results
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE POLICY site_db_scan_results_site_scope ON site_db_scan_results
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE POLICY site_db_size_history_site_scope ON site_db_size_history
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE POLICY site_events_site_scope ON site_events
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE POLICY site_object_cache_config_site_scope ON site_object_cache_config
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE POLICY site_object_cache_stats_history_site_scope ON site_object_cache_stats_history
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE POLICY site_perf_config_site_scope ON site_perf_config
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE POLICY site_security_policy_site_scope ON site_security_policy
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE POLICY site_security_policy_groups_site_scope ON site_security_policy_groups
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE POLICY site_vulnerabilities_site_scope ON site_vulnerabilities
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
