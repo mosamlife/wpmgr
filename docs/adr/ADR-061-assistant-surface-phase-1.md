@@ -1,6 +1,6 @@
 # ADR-061 — Assistant surface, Phase 1: control-plane server and out-of-band approval
 
-**Status:** Accepted (amended 2026-08-23 and 2026-08-24) · **Date:** 2026-08-22
+**Status:** Accepted (amended 2026-08-23, 2026-08-24 and 2026-09-01) · **Date:** 2026-08-22
 **Supersedes/relates:** ADR-060 (this work sits in its "constrained automation" phase, ahead of differentiation — and its freeze clause fixes the ordering *inside* this phase, per amendment A9, corroborated by ADR-060's own Amendment A1 defining "externally-reachable surface" for that clause), ADR-057 (unaffected; the capability model here is a separate axis from per-site security policy), ADR-062 (Proposed — revisits Decision 7 below and will supersede it once Accepted, per amendment A7), ADR-063 (licensing and third-party reuse — its conclusion independently supports Decision 1's siting).
 
 This ADR records the locked Phase 1 design for the assistant surface: an
@@ -28,6 +28,16 @@ fail-closed for this surface, put site scoping in v1 as named work, settle three
 protocol-header cases the code must not conflate, and state the rule that skill
 and prompt content is data and never permission. No decision text below is
 rewritten by any of them.
+
+**Amended again 2026-09-01 — read [Amendments](#amendments-2026-09-01) before
+routing a caller through the chokepoint's scoped helper by default.** One
+correction, A11 item 2, which had told a future implementer to make the scoped
+transaction helper the unconditional default. Applied literally at the
+chokepoint's bootstrap call site — the one that computes a connection's own
+site allowlist rather than consuming an already-known one — that took every
+tag-scoped MCP connection offline, proven by executing the literal reading
+against the assistant surface's end-to-end suite. Item 2's text is not
+rewritten; A14 records what it got right, what it missed, and what ships now.
 
 ---
 
@@ -1104,6 +1114,14 @@ Storage is not a boundary. Six things:
    helper has a handful of call sites; Decision 4 gives the commands for counting
    them and they are the commands to re-run, not the figures to quote. This
    surface making it the default is also the honest way to prove it works.
+
+   *Amended 2026-09-01 by amendment A14. The text above is correct for a caller
+   that already holds a principal, and that is the case it was written against.
+   It is wrong applied to the chokepoint's other call site — the one that
+   computes the allowlist this text assumes already exists — and applying it
+   there literally was shown to take every tag-scoped connection offline. See
+   A14 for which call site is which and what the chokepoint does instead.*
+
 3. **A scope of "site" with an empty allowlist resolves to zero sites, not all
    sites.** The scope column exists precisely so that "restricted to nothing" is
    expressible, and a test proves it fails closed. This is the single most likely
@@ -1195,3 +1213,59 @@ The ship gate is a **planted hostile site name**: a site whose name is an inject
 payload must produce an approval surface that still renders correctly and a set of
 permitted actions that is unchanged. A fence nobody has watched fail is not known
 to fence anything.
+
+---
+
+## Amendments (2026-09-01)
+
+One correction, prompted by building A11 item 2 rather than by re-reading it.
+The earlier text is not rewritten; the correction is recorded next to it, as
+before.
+
+### A14 — A11 item 2 held for a caller with a principal, and broke the chokepoint's other call site
+
+A11 item 2 said the chokepoint should use the scoped transaction helper rather
+than the plain tenant one, as the default, so the restrictive site-scope
+policies engage. That was the right call for the case A11 was written against.
+The chokepoint has a caller that already holds an operator's principal and
+needs the restrictive policies to bind to *that* principal's own allowlist
+instead of quietly running unscoped — minting a connection is that caller —
+and for it, making the scoped helper the default is exactly correct: it is
+what closes the gap A11 exists to close, and it is what shipped.
+
+It is wrong for the chokepoint's other call site, and wrong structurally rather
+than by oversight. That caller is not resolving a known principal's access
+against sites the principal may see; it is the bootstrap that turns a grant's
+own stored `site_scope_mode` / `scope_tag_ids` / `scope_site_ids` columns
+*into* the site allowlist in the first place. There is no allowlist to scope
+that resolution by — the resolution is what produces the allowlist, so scoping
+it by the allowlist is circular. Mode `'tags'` makes the circularity concrete
+rather than theoretical: the site set is not knowable until the query runs, so
+the only allowlist item 2's literal reading has to supply is the empty one.
+The `sites_site_scope` policy (m19) is declared `AS RESTRICTIVE`, and a
+restrictive policy AND-combines with every other policy on the relation rather
+than substituting for it, so an empty `app.allowed_site_ids` makes its
+predicate evaluate `id = ANY(NULL)` — `NULL`, not `false` — which keeps no row.
+Every tag-scoped connection would resolve to zero sites, indistinguishable at
+the surface from a fleet that holds nothing. Applying "make the scoped helper
+the default" without exception does not make this call site safer; it removes
+the mode's ability to see anything at all, which is the whole surface the
+connection exists to serve.
+
+**What ships now.** The chokepoint takes the caller's principal and runs it
+through the tenant-transaction dispatcher, exactly as item 2 asked, and the
+dispatcher — not a per-call-site choice — decides from that principal whether
+the restrictive policies engage. Where a caller holds a real principal, the
+scoped path engages and item 2's original reasoning holds without
+qualification. The bootstrap caller instead builds and passes an explicitly
+org-scoped, no-user principal, through a helper named for exactly this
+purpose, whose own comment states the circularity above as the reason it
+exists — so the exception is a named line at the call site, not a bare tenant
+id indistinguishable from a caller that simply forgot to scope it.
+
+This was proven rather than argued: item 2's literal reading, applied at the
+bootstrap call site, was run against the assistant surface's MCP OAuth
+end-to-end suite before the fix landed, and it failed exactly where the
+reasoning above predicts a tag-scoped connection must fail. It does not fail
+at the chokepoint's other call site, which is the confirmation that the two
+are different problems and not one problem stated twice.
