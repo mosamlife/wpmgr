@@ -261,8 +261,18 @@ var corsAllowHeaders = strings.Join([]string{
 // WWW-Authenticate is the load-bearing one: writeUnauthorized sets it to name
 // the scheme, and a browser client that cannot read it learns only "401" with
 // no indication of how to authenticate.
+//
+// Retry-After is load-bearing for the same reason on the other refusal:
+// rateLimit sets it on every 429, and a browser-hosted client that cannot read
+// it knows it was refused but not for how long -- so it either gives up or
+// retries immediately, which is the loop that refusal exists to break. THE RULE
+// THIS LIST FOLLOWS IS "EVERY HEADER THIS FILE SETS THAT A CLIENT MUST ACT ON",
+// and the three it sets are Allow (405), WWW-Authenticate (401) and Retry-After
+// (429), all three now present. Mcp-Session-Id is listed ahead of need, matching
+// corsAllowHeaders above. A new response header that a client is expected to
+// branch on belongs here in the same commit that introduces it.
 var corsExposeHeaders = strings.Join([]string{
-	"WWW-Authenticate", "Mcp-Session-Id", "Allow",
+	"WWW-Authenticate", "Mcp-Session-Id", "Allow", "Retry-After",
 }, ", ")
 
 // writeCORS sets the headers that must appear on an ACTUAL response, as opposed

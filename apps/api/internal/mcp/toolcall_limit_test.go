@@ -594,3 +594,173 @@ func TestToolCall_NilLimiterRefuses(t *testing.T) {
 		t.Errorf("nil-limiter RetryAfter = %v, want positive", d.RetryAfter)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// PROOF 10 -- A NEW TENANT'S ARRIVAL DOES NOT GIVE A SATURATED TENANT ITS
+// BUDGET BACK.
+//
+// This is the assertion whose ABSENCE was the real finding. Both key maps were
+// originally swept by one function copied in shape from registrationLimiter,
+// which clears its map under pressure. That is safe there because an unswept
+// global bucket sits behind it; this limiter has no global bucket by design, so
+// clearing the tenant map surrendered the bound outright -- and the whole suite
+// stayed green when that sweep was made to clear unconditionally, because
+// nothing ever re-checked a saturated tenant after a new one appeared.
+//
+// Driven at the limiter rather than over HTTP because the claim is about the
+// map's eviction behaviour and needs thousands of distinct organisations to
+// reach it. PROOFS 1-6 already establish that the transport reaches this code.
+// ---------------------------------------------------------------------------
+
+func TestToolCall_NewTenantsDoNotResetASaturatedTenantsBound(t *testing.T) {
+	l := newToolCallLimiter(ToolCallTenantPerMin, ToolCallGrantPerMin)
+	victim := uuid.New()
+
+	// Saturate the victim's TENANT bucket. The grant id is rotated so the
+	// fairness layer never binds first -- otherwise this would saturate the
+	// wrong bucket and the proof would be about the wrong map.
+	var last toolCallDecision
+	for i := 0; i < ToolCallTenantPerMin+1; i++ {
+		last = l.allow(victim, uuid.New())
+	}
+	if last.Allowed {
+		t.Fatalf("victim was still admitted after %d calls; its tenant bound was never reached",
+			ToolCallTenantPerMin+1)
+	}
+	if last.Scope != scopeOrganisation {
+		t.Fatalf("victim refused at scope %q, want %q; the wrong bucket is saturated and this "+
+			"proof would be about the fairness layer", last.Scope, scopeOrganisation)
+	}
+
+	// Now flood the process with distinct organisations, well past the map cap,
+	// which is the condition that used to trigger the clearing sweep.
+	//
+	// THE FLOOD TAKES REAL TIME AND THE BUCKET REFILLS WHILE IT RUNS, so the
+	// assertion below cannot be "the victim is still refused outright". allow()
+	// reads time.Now(), and at ToolCallTenantPerMin per minute the victim
+	// legitimately earns back a token every few hundred milliseconds. Asserting
+	// a flat refusal would be asserting that a token bucket does not refill,
+	// which would be a false property and a flaky test.
+	//
+	// What IS asserted is the thing that actually distinguishes the two
+	// behaviours, and the gap between them is enormous: a preserved bucket
+	// yields only what elapsed time paid for (a token or two), while a cleared
+	// one yields a whole fresh burst of ToolCallTenantPerMin. The ceiling is
+	// computed from the measured elapsed time rather than hard-coded, so the
+	// test stays exact on a slow machine instead of being given slack.
+	start := time.Now()
+	for i := 0; i < toolCallKeyCap*2; i++ {
+		l.allow(uuid.New(), uuid.New())
+	}
+	elapsed := time.Since(start)
+
+	// Tokens the victim is ENTITLED to have earned back, plus one to absorb the
+	// boundary between the last measurement and the first call below.
+	earned := int(elapsed.Seconds()*float64(ToolCallTenantPerMin)/60.0) + 1
+
+	admitted := 0
+	for i := 0; i < ToolCallTenantPerMin; i++ {
+		if !l.allow(victim, uuid.New()).Allowed {
+			break
+		}
+		admitted++
+	}
+
+	if admitted > earned {
+		t.Errorf("the victim tenant was admitted %d times after %d other organisations "+
+			"authenticated, but only %d token(s) were earned in the %v the flood took; "+
+			"its exhausted budget was handed back by the sweep, so the bound resets under load",
+			admitted, toolCallKeyCap*2, earned, elapsed)
+	}
+	// The refusal that ends the loop must still come from the TENANT layer. If
+	// it came from the grant layer the bound could have been reset and this
+	// proof would not notice.
+	if d := l.allow(victim, uuid.New()); d.Allowed || d.Scope != scopeOrganisation {
+		t.Errorf("victim decision after the flood = {allowed:%v scope:%q}, want {false %q}",
+			d.Allowed, d.Scope, scopeOrganisation)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PROOF 11 -- sweepFullOnly STILL RECLAIMS, SO THE MAP IS NOT A LEAK.
+//
+// The over-fire half of PROOF 10. "Never surrender the bound" must not degrade
+// into "never reclaim anything". A bucket at its burst ceiling is
+// indistinguishable from a fresh one, so dropping it is lossless and is exactly
+// what this must still do -- while a bucket with tokens still spent has to
+// survive, because that is the one carrying the bound.
+// ---------------------------------------------------------------------------
+
+func TestToolCall_SweepFullOnlyReclaimsRefilledButKeepsIndebtedBuckets(t *testing.T) {
+	now := time.Now()
+	m := map[uuid.UUID]*keyBucket{}
+
+	full := uuid.New()
+	m[full] = &keyBucket{lim: perMinuteLimiter(ToolCallTenantPerMin), seen: now}
+
+	indebt := uuid.New()
+	spent := perMinuteLimiter(ToolCallTenantPerMin)
+	for i := 0; i < ToolCallTenantPerMin; i++ {
+		spent.AllowN(now, 1)
+	}
+	m[indebt] = &keyBucket{lim: spent, seen: now}
+
+	// A cap of 1 forces the sweep to run over this two-entry map.
+	sweepFullOnly(m, 1, now)
+
+	if _, still := m[full]; still {
+		t.Error("a fully refilled bucket survived the sweep; nothing is ever reclaimed and the map leaks")
+	}
+	if _, still := m[indebt]; !still {
+		t.Error("a bucket with tokens still spent was evicted; that hands a saturated tenant its budget back")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PROOF 12 -- A BROWSER-HOSTED CLIENT CAN READ Retry-After.
+//
+// The header is useless to browser JavaScript unless it is named in
+// Access-Control-Expose-Headers: a fetch response exposes the status and
+// nothing else. A client that sees 429 but cannot read the interval either
+// gives up or retries at once, which is the loop the refusal exists to break.
+// ---------------------------------------------------------------------------
+
+func TestToolCall_RetryAfterIsExposedToBrowserClients(t *testing.T) {
+	r, _ := limiterRouter(t, liveGrantStore(uuid.New()))
+
+	w := drain(t, r, testBearer, gatedMethods[1], ToolCallGrantPerMin+1)
+	if w == nil {
+		t.Fatal("nothing was refused; cannot assert the exposed header")
+	}
+	if got := w.Header().Get("Retry-After"); got == "" {
+		t.Fatal("Retry-After is not set on the 429 at all")
+	}
+
+	exposed := w.Header().Get("Access-Control-Expose-Headers")
+	if exposed == "" {
+		t.Fatal("Access-Control-Expose-Headers is absent; browser JS can read no header at all")
+	}
+	if !exposesHeader(exposed, "Retry-After") {
+		t.Errorf("Access-Control-Expose-Headers = %q, which does not name Retry-After; "+
+			"a browser-hosted client is refused and cannot learn for how long", exposed)
+	}
+	// The other refusal headers this file sets must stay exposed: a fix that
+	// swapped one for another would otherwise pass.
+	for _, want := range []string{"WWW-Authenticate", "Allow"} {
+		if !exposesHeader(exposed, want) {
+			t.Errorf("Access-Control-Expose-Headers = %q no longer names %s", exposed, want)
+		}
+	}
+}
+
+// exposesHeader reports whether an Access-Control-Expose-Headers value names
+// the given header. Comparison is case-insensitive because HTTP header names
+// are, so a correct list spelled differently must not read as a failure.
+func exposesHeader(list, name string) bool {
+	for _, part := range strings.Split(list, ",") {
+		if strings.EqualFold(strings.TrimSpace(part), name) {
+			return true
+		}
+	}
+	return false
+}

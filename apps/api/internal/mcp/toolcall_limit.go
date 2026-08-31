@@ -189,12 +189,12 @@ func (l *toolCallLimiter) allow(tenantID, grantID uuid.UUID) toolCallDecision {
 
 	// ---- QUERY ONLY. Nothing below this line is charged until both pass. ----
 
-	tb := l.bucketLocked(l.tenants, tenantID, l.tenantPerMin, now)
+	tb := l.tenantBucketLocked(tenantID, now)
 	if wait := shortfall(tb.lim, now); wait > 0 {
 		return toolCallDecision{Allowed: false, RetryAfter: atLeastASecond(wait), Scope: scopeOrganisation}
 	}
 
-	gb := l.bucketLocked(l.grants, grantID, l.grantPerMin, now)
+	gb := l.grantBucketLocked(grantID, now)
 	if wait := shortfall(gb.lim, now); wait > 0 {
 		return toolCallDecision{Allowed: false, RetryAfter: atLeastASecond(wait), Scope: scopeConnection}
 	}
@@ -205,40 +205,115 @@ func (l *toolCallLimiter) allow(tenantID, grantID uuid.UUID) toolCallDecision {
 	return toolCallDecision{Allowed: true}
 }
 
-// bucketLocked fetches or creates the bucket for one key, sweeping the map
-// first when a new key would push it past the cap. The bucket is touched on
-// REFUSAL as well as admission -- deliberately, so a flooding key's bucket
-// stays alive rather than being swept and handed back empty, which would reset
-// the very limit it is hitting. Caller holds l.mu.
-func (l *toolCallLimiter) bucketLocked(
-	m map[uuid.UUID]*keyBucket, key uuid.UUID, perMin int, now time.Time,
-) *keyBucket {
-	b, ok := m[key]
+// tenantBucketLocked fetches or creates one tenant's bucket -- THE BOUND.
+//
+// It sweeps with sweepFullOnly, which can only ever evict a bucket that has
+// already refilled. There is deliberately no way to reach the clearing sweep
+// from here: the two accessors exist as separate functions, rather than one
+// taking the map as a parameter, precisely so a later edit cannot hand the
+// bound map the fairness map's sweeper by passing the wrong argument.
+//
+// The bucket is touched on REFUSAL as well as admission, so a flooding key's
+// bucket stays alive rather than being swept and handed back empty, which would
+// reset the very limit it is hitting. Caller holds l.mu.
+func (l *toolCallLimiter) tenantBucketLocked(key uuid.UUID, now time.Time) *keyBucket {
+	b, ok := l.tenants[key]
 	if !ok {
-		sweepLocked(m, l.cap, l.idle, now)
-		b = &keyBucket{lim: perMinuteLimiter(perMin)}
-		m[key] = b
+		sweepFullOnly(l.tenants, l.cap, now)
+		b = &keyBucket{lim: perMinuteLimiter(l.tenantPerMin)}
+		l.tenants[key] = b
 	}
 	b.seen = now
 	return b
 }
 
-// sweepLocked bounds one key map. Idle buckets go first; if that is not enough
-// the map is emptied outright.
+// grantBucketLocked fetches or creates one connection's bucket -- FAIRNESS.
 //
-// Emptying hands every key a fresh bucket, so this layer is fail-open under
-// memory pressure -- the same accepted consequence as its sibling, but the
-// exposure here is much smaller and it is worth saying why rather than assuming
-// it transfers. registrationLimiter's peer keys are IP addresses, which an
-// attacker supplies for free, so filling that map is a cheap deliberate act.
-// The keys here are tenant and grant UUIDs that only Service.Authenticate
-// mints, so filling either map requires authenticating that many distinct real
-// credentials, each of which had to pass the mint limiter to exist. The cap is
-// memory hygiene against a genuinely large fleet, not a defence against a
-// cheap attack.
+// It sweeps with sweep, which may clear the map outright. That is safe here and
+// only here: the tenant bucket behind this layer is swept losslessly and still
+// refuses, so the ceiling survives any eviction of this map. Caller holds l.mu.
+func (l *toolCallLimiter) grantBucketLocked(key uuid.UUID, now time.Time) *keyBucket {
+	b, ok := l.grants[key]
+	if !ok {
+		sweep(l.grants, l.cap, l.idle, now)
+		b = &keyBucket{lim: perMinuteLimiter(l.grantPerMin)}
+		l.grants[key] = b
+	}
+	b.seen = now
+	return b
+}
+
+// THE TWO MAPS ARE SWEPT BY DIFFERENT RULES, BECAUSE THEY HAVE DIFFERENT JOBS.
+//
+// This is the correction to a real defect. Both maps were originally swept by
+// one function copied in shape from registrationLimiter.sweepLocked, which
+// clears its map outright under pressure. That file justifies clearing in one
+// sentence -- it is "safe ONLY because the global bucket above is not swept and
+// still refuses" -- and this limiter deliberately HAS NO GLOBAL BUCKET, for the
+// starvation reason argued at the top of this file. So the shape was inherited
+// without the property that made it safe: clearing the tenant map resets the
+// bound itself, and a saturated tenant's budget came back the moment enough
+// distinct organisations were active on one process.
+//
+// The consequence was scale degradation of a denial-of-service control rather
+// than an isolation break -- it needs thousands of real authenticated
+// organisations, not something one caller can mint -- but a bound that resets
+// under load is not a bound, and the argument for clearing was never true here.
+//
+// THE RULE THAT REPLACES IT RESTS ON ONE OBSERVATION: A FULL BUCKET CARRIES NO
+// STATE. A limiter at its burst ceiling is indistinguishable from a freshly
+// constructed one, so deleting it and rebuilding it on the next request yields
+// exactly the same object. Evicting full buckets is therefore LOSSLESS, and
+// evicting anything below full is precisely what loses the bound.
+//
+// sweepFullOnly is what the tenant map gets: it can only ever drop buckets that
+// have already refilled, so no tenant's budget is ever handed back early, at
+// any cap and under any load. A bucket refills in at most one window (60s for a
+// per-minute budget), so in steady state this evicts everything an idle sweep
+// would have, and it does it with a proof instead of a hope.
+//
+// WHAT HAPPENS WHEN NOTHING IS EVICTABLE is the other half of the decision, and
+// the map is allowed to GROW PAST THE CAP rather than take either alternative.
+// Clearing would reset the bound, which is fail-open on a DoS control. Refusing
+// the new tenant would fail closed on legitimate work and would be a
+// cross-tenant denial of service -- one busy organisation locking new ones out
+// -- which is the same defect the "no global layer" decision exists to avoid.
+// Growth is the only option that is wrong in neither direction, and its cost is
+// bounded by something real: a key is minted only by Service.Authenticate, so
+// every entry cost an attacker a genuine authenticated credential that had to
+// pass the mint limiter to exist. The cap is memory hygiene against a large
+// fleet, not a defence against a cheap attack, and a soft cap is the honest
+// shape for that.
 //
 // Caller holds the owning limiter's mutex.
-func sweepLocked(m map[uuid.UUID]*keyBucket, cap int, idle time.Duration, now time.Time) {
+func sweepFullOnly(m map[uuid.UUID]*keyBucket, cap int, now time.Time) {
+	if len(m) < cap {
+		return
+	}
+	for k, b := range m {
+		// Burst is the ceiling, so tokens >= burst means fully refilled. Read
+		// with TokensAt, which is a pure query and does not advance the bucket.
+		if b.lim.TokensAt(now) >= float64(b.lim.Burst()) {
+			delete(m, k)
+		}
+	}
+	// Deliberately NO clear() fallback. See above: a map that cannot be swept
+	// losslessly grows instead of surrendering the bound.
+}
+
+// sweep is what the GRANT map gets, and clearing is still correct there.
+//
+// The grant map is the FAIRNESS layer, not the bound. Handing a connection a
+// fresh share early is a loss of fairness only: the tenant bucket behind it is
+// swept losslessly and still refuses, so the ceiling holds however this map is
+// evicted. That is the same argument registrationLimiter makes for its per-peer
+// map, and here -- unlike in the tenant case above -- the property it depends
+// on is actually present.
+//
+// Idle buckets go first; if that is not enough the map is emptied outright.
+//
+// Caller holds the owning limiter's mutex.
+func sweep(m map[uuid.UUID]*keyBucket, cap int, idle time.Duration, now time.Time) {
 	if len(m) < cap {
 		return
 	}
