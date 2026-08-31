@@ -204,6 +204,15 @@ func validateTokenEndpointAuthMethod(method string) error {
 // Clock is injectable so expiry behaviour is testable without sleeping.
 type Clock func() time.Time
 
+// auditRecorder is the slice of *audit.Recorder this package actually uses. It
+// exists to make the append-FAILED branch testable without a broken database;
+// production passes the concrete recorder through WithAudit and nothing else
+// implements it outside tests.
+type auditRecorder interface {
+	Record(ctx context.Context, e audit.Event) (audit.Entry, error)
+	RecordInTx(ctx context.Context, tx pgx.Tx, e audit.Event) (audit.Entry, error)
+}
+
 // Service carries the OAuth surface. It holds no plaintext credential beyond
 // the response it is building: m124 obligation 6 says the plaintext is returned
 // once at creation and never read back, and there is no cache here.
@@ -219,7 +228,13 @@ type Service struct {
 	// wiring bug, not a supported configuration, and the finding to raise if
 	// one is ever found is "this deploy path is unattributable", not "make the
 	// nil check quieter".
-	audit *audit.Recorder
+	//
+	// The type is the two-method auditRecorder rather than *audit.Recorder so
+	// that the FAILURE path is reachable from a unit test. What happens when
+	// an append fails is a decision this package makes deliberately (see
+	// TransportHandler.auditGap), and a decision whose only implementation is
+	// unreachable without a broken Postgres is a decision nothing checks.
+	audit auditRecorder
 
 	// mintLimit bounds POST /api/v1/mcp/connections. It lives on the SERVICE
 	// and not on the Handler, unlike Handler.regLimit, and the placement is
@@ -259,7 +274,26 @@ func (s *Service) WithClock(c Clock) *Service {
 // Service the process constructs; a Service left without it (as most of this
 // package's unit tests are, deliberately, since they drive a fakeStore with no
 // backing Postgres pool) simply does not audit -- see the field doc on audit.
+// It keeps the CONCRETE parameter type on purpose even though the field is an
+// interface: a nil *audit.Recorder stored straight into an interface is a
+// non-nil interface holding a nil pointer, which would sail past every
+// `s.audit == nil` guard in this file and panic on the first append instead of
+// skipping it. The explicit nil check below is what keeps "unaudited" meaning
+// unaudited.
 func (s *Service) WithAudit(rec *audit.Recorder) *Service {
+	cp := *s
+	if rec == nil {
+		cp.audit = nil
+		return &cp
+	}
+	cp.audit = rec
+	return &cp
+}
+
+// withAuditRecorder is the test-only door onto the same field, so a fake can
+// drive the append-failed path. Unexported: production wiring goes through
+// WithAudit.
+func (s *Service) withAuditRecorder(rec auditRecorder) *Service {
 	cp := *s
 	cp.audit = rec
 	return &cp
@@ -1273,10 +1307,12 @@ func (s *Service) RecordActivity(ctx context.Context, auth AuthorizedRequest) er
 
 // RecordToolCall appends the ActionMCPToolCalled audit row for one
 // successfully executed tool call. The caller (TransportHandler.callTool)
-// invokes this AFTER entry.invoke returns without error -- a refused call
-// never reaches a tenant's data, and is already visible in the operator log
-// TransportHandler writes at refusal time (h.log.WarnContext), so it earns no
-// row here.
+// invokes this AFTER entry.invoke returns without error. A REFUSED call is
+// recorded separately, by RecordToolDenied, under ActionMCPToolDenied: until
+// ADR-061 A10 was addressed this comment claimed a refusal earned no row
+// because it "never reaches a tenant's data and is already in the operator
+// log", and both halves of that were true while the conclusion was not -- see
+// the argument on RecordToolDenied.
 //
 // ActorType is ActorAssistant, the one actor kind in this whole log that
 // attributes the row to the MODEL rather than to the human who granted it
@@ -1309,6 +1345,151 @@ func (s *Service) RecordToolCall(ctx context.Context, auth AuthorizedRequest, to
 			"grant_name":          auth.GrantName,
 			"operator_permission": operatorPermission,
 		},
+	})
+	return err
+}
+
+// RecordToolDenied appends the ActionMCPToolDenied audit row for one REFUSED
+// tools/call. The caller (TransportHandler.callTool) invokes it on the
+// AuthorizeTool refusal branch, alongside the operator log line and before the
+// wire answer is chosen.
+//
+// WHY A REFUSAL EARNS A ROW WHEN THE OLD COMMENT ON RecordToolCall SAID IT DID
+// NOT. That comment argued a refusal "never reached a tenant's data, and is
+// already covered by the WarnContext log at the refusal site", and both halves
+// are true and neither is sufficient. Never reaching the data is exactly what
+// has to be PROVEN rather than assumed -- it is the boundary's own claim about
+// itself -- and an slog line is not the artifact that proves it: it is not
+// hash-chained, not tenant-scoped, not readable through the audit endpoint a
+// customer's auditor is given, and it is subject to a retention the log
+// pipeline chooses. "Who was denied what" was therefore answerable only by an
+// operator with production log access, which is the wrong audience and the
+// wrong durability for the record that a security boundary functioned.
+//
+// The actor pair is ActorAssistant over auth.GrantID, identical to
+// RecordToolCall's, so a single query on actor_id returns everything one
+// connection did AND everything it was refused -- which is the shape an
+// investigation actually wants, and it is why this is not modelled as a
+// separate actor kind.
+//
+// reason is the OPERATOR-FACING refusalReason, deliberately the value the wire
+// blurs: the whole disclosure decision on AuthorizeTool is that "no such tool"
+// and "not yours" are indistinguishable to the CALLER, and it holds only
+// because the operator gets the precise reason somewhere else. This row is now
+// that somewhere else. Taking the typed refusalReason rather than a string is
+// what stops a caller composing a reason by hand and drifting from the log line
+// two lines above it.
+//
+// BEST-EFFORT, and that is a deliberate divergence from ADR-061 A10's
+// fail-closed language rather than an oversight. See TransportHandler.auditGap.
+func (s *Service) RecordToolDenied(ctx context.Context, auth AuthorizedRequest, toolName string, reason refusalReason) error {
+	// NOTE: a Service with no recorder records NOTHING and reports no error,
+	// the same as RecordToolCall. That is the unit-test configuration (see the
+	// audit field doc); in production WithAudit has always been called, and a
+	// request path reached without it is a wiring bug whose finding is "this
+	// deploy is unattributable", not "make this quieter".
+	if s.audit == nil {
+		return nil
+	}
+	// BOUNDED, because this is attacker-chosen input on a path the attacker can
+	// reach WITHOUT holding the tool. toolName is whatever arrived in params,
+	// up to maxRequestBytes (256 KiB), and every refusal would otherwise put all
+	// of it through the per-tenant audit advisory lock. Being denied is not a
+	// barrier to writing, so a caller who can use nothing on this surface could
+	// still drive the serialised ledger writer.
+	target, truncated, sanitized, origLen := audit.SafeTargetID(toolName)
+
+	meta := map[string]any{
+		"grant_name":        auth.GrantName,
+		"refusal_reason":    string(reason),
+		"held_capabilities": auth.Capabilities.Len(),
+		"scoped_sites":      auth.Sites.Len(),
+	}
+	if truncated {
+		// The row SAYS it is a prefix. Without this an auditor reads the
+		// shortened value as the name the caller actually sent, and an
+		// oversized-input probe -- which is itself the signal worth seeing --
+		// becomes indistinguishable from an ordinary typo.
+		meta["target_truncated"] = true
+		meta["target_original_len"] = origLen
+	}
+	if sanitized {
+		// Invalid UTF-8 in a tool name is not something a working client
+		// produces, so this flag is the signal that someone was probing the
+		// encoding boundary rather than mistyping.
+		meta["target_sanitized"] = true
+	}
+
+	_, err := s.audit.Record(ctx, audit.Event{
+		TenantID:  auth.TenantID,
+		ActorType: audit.ActorAssistant,
+		ActorID:   auth.GrantID.String(),
+		Action:    audit.ActionMCPToolDenied,
+		// The name AS SPELLED BY THE CALLER, not a registry name: on the
+		// unregistered branch there is no registry entry, and the string the
+		// caller guessed is the entire content of the evidence.
+		TargetType: "mcp_tool",
+		TargetID:   target,
+		Metadata:   meta,
+	})
+	return err
+}
+
+// RecordProtocolDenied appends the ActionMCPProtocolDenied audit row for an
+// authenticated request refused at revision negotiation.
+//
+// It is called from TransportHandler.writeProtocolRefusal, which is the ONE
+// function both refusal sites go through (the per-request header in serve, and
+// the initialize params). Putting the append there rather than at the two call
+// sites is what makes "every protocol refusal is recorded" structurally true
+// instead of true by convention -- a third refusal site added later inherits it.
+//
+// phase names which of the two negotiations refused, because they mean
+// different things operationally: a params refusal is a client that cannot
+// connect at all, a header refusal is a client that connected and then sent
+// something else, and only the second can indicate a proxy rewriting headers.
+func (s *Service) RecordProtocolDenied(ctx context.Context, auth AuthorizedRequest, neg Negotiation, phase string) error {
+	if s.audit == nil {
+		return nil
+	}
+	reason := neg.RefusalReason()
+
+	// BOUNDED for the same reason as RecordToolDenied, and reachable the same
+	// way: on the initialize_params phase neg.Raw is a JSON string from the
+	// body, not a header, so it is bounded only by maxRequestBytes. An
+	// unsupported revision is refused, and the refusal writes the row.
+	target, truncated, sanitized, origLen := audit.SafeTargetID(neg.Raw)
+
+	meta := map[string]any{
+		"grant_name":     auth.GrantName,
+		"refusal_reason": reason,
+		"phase":          phase,
+		// Recorded per row rather than left to be looked up: these are
+		// compile-time constants that WILL move, and a row that says only
+		// "2024-11-05 was refused" stops being interpretable the moment
+		// they do.
+		"floor":  ProtocolFloor,
+		"target": ProtocolTarget,
+	}
+	if truncated {
+		meta["target_truncated"] = true
+		meta["target_original_len"] = origLen
+	}
+	if sanitized {
+		// Worth its own field: invalid UTF-8 in a tool name or a revision
+		// string is not something a working client produces, so this flag is
+		// the signal that someone was probing the encoding boundary.
+		meta["target_sanitized"] = true
+	}
+
+	_, err := s.audit.Record(ctx, audit.Event{
+		TenantID:   auth.TenantID,
+		ActorType:  audit.ActorAssistant,
+		ActorID:    auth.GrantID.String(),
+		Action:     audit.ActionMCPProtocolDenied,
+		TargetType: "mcp_protocol",
+		TargetID:   target,
+		Metadata:   meta,
 	})
 	return err
 }
