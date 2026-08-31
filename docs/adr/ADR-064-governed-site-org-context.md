@@ -845,9 +845,19 @@ ad hoc, document by document, by whichever ADR needs the exemption next.
 This document proceeds on the reading above for its own purposes, but does
 not treat that reading as binding on any future ADR; a later document
 claiming the same exemption should point at an ADR-060 amendment, not at
-this paragraph. **That amendment does not exist yet, and until it does this
-document can be merged and read as Proposed but cannot move to Accepted**
-— see Open questions, below.
+this paragraph. **That amendment now exists.** [ADR-060's Amendments
+(2026-08-27)](./ADR-060-phase-order-safety-before-capability.md#amendments-2026-08-27),
+its A1, "Defining 'externally-reachable surface' for the freeze clause,"
+defines the term this section had to interpret on its own, and ADR-060's own
+status line now reads "Accepted (amended 2026-08-27)." A1 reaches the same
+conclusion independently, naming this document by name: a dozen routes added
+for a caller class an existing, already-authenticated perimeter already
+admits, under an authentication requirement this ADR adds no new mechanism
+for, is not a new surface (ADR-060's Amendments section, "Contrast ADR-064").
+This section's reading was therefore correct, and is no longer this
+document's own unbound interpretation — it is what a superseding ADR-060
+amendment settles. **The gate is met.** This ADR moves to Accepted on that
+basis, not on a restatement of the argument above.
 
 This ADR's vocabulary leans on ADR-061 Decision 3, correctly attributed:
 that decision draws the line between control-plane-derived facts, which
@@ -994,20 +1004,23 @@ explicitly rather than drift into it unannounced.
 ## Open questions
 
 Named and owned, rather than answered with an invented mechanism this
-document has not earned the right to assert. None of the questions below
-blocks merging this ADR as Proposed; all of them block it moving to
-**Accepted**.
+document has not earned the right to assert. This ADR is accepted with
+questions 2 through 4 below still open, the same posture ADR-062 took the
+same day with its own four open items — acceptance records the decisions
+made, not a claim that every question this document raised has an answer.
 
-1. **What "surface" means for ADR-060's freeze clause.** Relationship,
-   above, argues Decision 13's routes are not gated by ADR-060's freeze
-   clause, but states plainly that this is this document's interpretation
-   of a term ADR-060 leaves undefined, not a settled reading, and that a
-   reading meant to bind later ADRs belongs in a superseding ADR-060
-   amendment, not in this one. That amendment does not exist yet.
-   **Owner:** whoever holds ADR-060 next (its author or a designated
-   successor). **Resolution:** a change to ADR-060, not to this document —
-   this ADR does not re-argue the point further and is not the place to
-   settle it.
+1. **Resolved. What "surface" means for ADR-060's freeze clause.**
+   Relationship, above, argued Decision 13's routes are not gated by
+   ADR-060's freeze clause, but stated plainly that this was this document's
+   own interpretation of a term ADR-060 left undefined, not a settled
+   reading, and that a reading meant to bind later ADRs belonged in a
+   superseding ADR-060 amendment, not in this one. **That amendment now
+   exists** — [ADR-060 Amendment A1](./ADR-060-phase-order-safety-before-capability.md#amendments-2026-08-27),
+   accepted 2026-08-27, defines "externally-reachable surface" for the
+   freeze clause and reaches, independently and by name, the same
+   conclusion this section argued. **Owner:** closed; ADR-060 held this
+   question. **Resolution:** landed in ADR-060 Amendment A1, cited above and
+   in Relationship.
 2. **Concurrency control on `PATCH` (Decision 13).** `PATCH` applies a
    partial field set onto the latest version's snapshot. Two concurrent
    `PATCH` calls touching disjoint fields can both read version N and both
