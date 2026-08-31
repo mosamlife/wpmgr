@@ -38,16 +38,49 @@ func nonEmptyRegistry(t *testing.T) []ToolPolicy {
 }
 
 // authWith builds an AuthorizedRequest directly, which is how a test reaches
-// the registry gate with a chosen capability set. Both fields are set
+// the registry gate with a chosen capability set. Every field is set
 // explicitly: the zero value of each allows nothing, so a test that forgot one
 // would prove the gate works for a reason it did not intend.
+//
+// THE CEILING IS THE PRODUCTION CEILING, not the grant. authWith models the
+// ordinary connection -- one whose organisation has everything the surface
+// offers enabled and whose own grant may be narrower. That is what
+// Authenticate builds today, because OrgDefaultCapabilities over grantScopes()
+// resolves to the whole vocabulary while exactly one scope is recognised.
+//
+// A test that needs a NARROWER ceiling than the vocabulary -- the org-switched-
+// off case -- must say so, and authWithCeiling is how.
 func authWith(caps CapabilitySet, siteIDs ...uuid.UUID) AuthorizedRequest {
+	ceiling, err := OrgDefaultCapabilities(grantScopes())
+	if err != nil {
+		// Not t.Fatal: authWith has no *testing.T and this is unreachable while
+		// scopeCapabilities is total over recognisedScopes, which
+		// TestEveryRecognisedScopeHasACapabilityMapping pins. Panicking beats
+		// returning a zero ceiling, which would silently list nothing and make
+		// every visibility test pass for the wrong reason.
+		panic("authWith: org ceiling did not resolve: " + err.Error())
+	}
+	return authWithCeiling(ceiling, caps, siteIDs...)
+}
+
+// authWithCeiling builds an AuthorizedRequest with an EXPLICIT org ceiling, so
+// a test can construct the case where the organisation's ceiling is narrower
+// than the capability vocabulary.
+//
+// That case is not reachable through Authenticate today: the ceiling is derived
+// from the closed scope registry, recognisedScopes holds one entry, and
+// scopeCapabilities maps it to the whole vocabulary -- so the production
+// ceiling and the vocabulary coincide and every tool is inside every ceiling.
+// It becomes reachable when the vocabulary widens and org policy can select
+// within it. The structure is proven now so it is correct then.
+func authWithCeiling(ceiling, caps CapabilitySet, siteIDs ...uuid.UUID) AuthorizedRequest {
 	return AuthorizedRequest{
 		TenantID:     uuid.New(),
 		GrantID:      uuid.New(),
 		TokenID:      uuid.New(),
 		Sites:        NewSiteSet(siteIDs),
 		Capabilities: caps,
+		OrgCeiling:   ceiling,
 	}
 }
 

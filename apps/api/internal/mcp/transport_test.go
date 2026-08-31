@@ -772,17 +772,24 @@ func TestToolsCall_EmptyScopeIsRefusedNotAnEmptyList(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestToolsCall_UntickedCapabilityRefusesWithItsOwnCode(t *testing.T) {
-	h := NewTransportHandler(nil, slog.New(slog.NewTextHandler(io.Discard, nil)), "test")
+	// A REAL Service, not nil. callTool now records the refusal
+	// (RecordToolDenied), which dereferences the service; its audit recorder is
+	// nil in unit configuration and records nothing, which is what this test
+	// wants. A nil *Service panics on the refusal path -- the path this test
+	// exists to walk.
+	h := NewTransportHandler(NewService(&fakeStore{}),
+		slog.New(slog.NewTextHandler(io.Discard, nil)), "test")
 
 	// Holds NO capability, but a non-empty site scope -- so nothing below can
 	// be attributed to the site axis, which this change did not touch.
-	auth := AuthorizedRequest{
-		TenantID:     uuid.New(),
-		GrantID:      uuid.New(),
-		TokenID:      uuid.New(),
-		Sites:        NewSiteSet([]uuid.UUID{uuid.New()}),
-		Capabilities: CapabilitySet{},
-	}
+	//
+	// The ORG CEILING is the production one (authWith resolves
+	// OrgDefaultCapabilities), so this is the middle case of the ruling: the
+	// organisation has this capability enabled and THIS GRANT does not hold it.
+	// That is the case that must still be listed. A connection whose ceiling
+	// excluded the capability is a different case and is proven separately in
+	// registry_test.go.
+	auth := authWith(CapabilitySet{}, uuid.New())
 
 	// The tool is LISTED to this connection: the refusal below is a refusal,
 	// not a consequence of an empty surface.

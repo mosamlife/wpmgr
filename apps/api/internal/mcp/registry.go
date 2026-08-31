@@ -227,15 +227,42 @@ const (
 // refuses at invocation with mcp_scope_empty.
 // ---------------------------------------------------------------------------
 
-// capabilityHeld reports whether auth's capability set covers what entry
-// requires.
+// capabilityHeld reports whether auth's GRANT covers what entry requires.
 //
 // It is consulted by AuthorizeTool for the refusal decision and by VisibleTools
 // only to decide whether to ANNOTATE a descriptor -- never to drop one. A
 // future edit that turns its false answer back into a `continue` in
-// VisibleTools is the thing the D1 ruling forbids.
+// VisibleTools is the thing the D1 ruling forbids: that is the boundary whose
+// whole point is that it refuses visibly. Dropping is withinOrgCeiling's job
+// and only withinOrgCeiling's.
 func capabilityHeld(entry ToolPolicy, auth AuthorizedRequest) bool {
 	return auth.Capabilities.Allows(entry.Capability)
+}
+
+// withinOrgCeiling reports whether entry's capability is inside the
+// ORGANISATION's ceiling -- the widest set any connection in this org may hold.
+//
+// THIS IS THE BOUNDARY THAT HIDES, and it is the only one. The distinction from
+// capabilityHeld is the entire ruling:
+//
+//	inside the ceiling, held by the grant     -> listed, callable
+//	inside the ceiling, NOT held by the grant -> listed, refuses by name
+//	outside the ceiling                       -> not listed, refuses as unknown
+//
+// The middle row is why unticking a permission is explicable: an operator who
+// removes a capability gets a tool that says what happened and who can fix it,
+// instead of one that disappears -- and a vanished tool is indistinguishable
+// from a tool that was never built, so the model's only reading is "wpmgr
+// cannot do this" and nobody ever hears that something was refused.
+//
+// The last row is why the org boundary is different: a token holder should not
+// be able to enumerate capabilities their organisation deliberately switched
+// off. Listing them, even annotated, is exactly that enumeration.
+//
+// A ZERO-VALUE CEILING ADMITS NOTHING, which is fail-closed and deliberate.
+// See AuthorizedRequest.OrgCeiling.
+func withinOrgCeiling(entry ToolPolicy, auth AuthorizedRequest) bool {
+	return auth.OrgCeiling.Allows(entry.Capability)
 }
 
 // capabilityNotice is the LISTING half of the ruling. The descriptor for a tool
@@ -260,25 +287,36 @@ func capabilityNotice(entry ToolPolicy) string {
 		entry.Capability, ErrCodeCapabilityNotGranted)
 }
 
-// VisibleTools is the tools/list answer: EVERY tool this server has, with the
-// ones this connection cannot currently call marked as such in their
-// description. Nothing is dropped. That is the D1 ruling, and the note above
-// says why a dropped tool was the worse of the two answers.
+// VisibleTools is the tools/list answer: every tool INSIDE THIS
+// ORGANISATION'S CEILING, with the ones this connection's own grant cannot call
+// marked as such in their description.
 //
-// IT IS STILL A PER-CONNECTION VALUE AND IT IS STILL NOT Tools(). The
-// descriptions differ by connection, and handing a caller the unannotated
-// registry would give the model a tool that looks callable and is not -- the
-// silent half of exactly the problem this change fixes. transport.go calls this
-// one; the drift tests call Tools().
+// TWO BOUNDARIES, TWO ANSWERS, and which one excludes a tool decides whether it
+// is hidden or explained. withinOrgCeiling drops; capabilityHeld only
+// annotates. The reasoning for the asymmetry is on withinOrgCeiling and it is
+// the whole ruling -- do not collapse the two predicates into one.
 //
-// It returns a fresh slice, non-empty while the registry is non-empty. An empty
-// tools/list is now a SYMPTOM rather than an answer: before this, a connection
-// whose grant was missing a capability got an empty list, which is
-// indistinguishable from a server that has no tools.
+// IT IS STILL A PER-CONNECTION VALUE AND IT IS STILL NOT Tools(). Both the
+// membership and the descriptions differ by connection, and handing a caller
+// the unannotated registry would give the model a tool that looks callable and
+// is not -- the silent half of exactly the problem this change fixes.
+// transport.go calls this one; the drift tests call Tools().
+//
+// It returns a fresh slice. An empty result is a truthful answer for a
+// connection whose org ceiling admits nothing, not an error -- but a tool the
+// GRANT merely lacks never produces one, which is the point: that case is
+// listed and annotated.
+//
+// SITE SCOPE IS NOT CONSULTED HERE. A site-keyed tool with an empty resolved
+// scope is still listed and still refuses at invocation with mcp_scope_empty.
+// That half was ruled on separately and is deliberately untouched.
 func VisibleTools(auth AuthorizedRequest) []ToolDescriptor {
 	entries := registryTools()
 	out := make([]ToolDescriptor, 0, len(entries))
 	for _, e := range entries {
+		if !withinOrgCeiling(e, auth) {
+			continue
+		}
 		d := ToolDescriptor{
 			Name:        e.Name,
 			Description: e.Description,
@@ -378,6 +416,31 @@ func AuthorizeTool(name string, auth AuthorizedRequest) (ToolPolicy, refusalReas
 	if !found {
 		// The model guessed a name. This is now the ONLY use of the uniform
 		// answer, and there is no longer a second reason hiding behind it.
+		return ToolPolicy{}, reasonUnregistered, domain.Forbidden(ErrCodeToolNotAvailable,
+			fmt.Sprintf("no tool named %q exists on this server. Call tools/list for the "+
+				"tools this server has; every one of them appears there, so a name absent "+
+				"from that list will never resolve however it is spelled.", name))
+	}
+
+	if !withinOrgCeiling(entry, auth) {
+		// OUTSIDE THE ORG CEILING ANSWERS EXACTLY AS AN UNREGISTERED NAME DOES,
+		// and the sameness is the point rather than laziness.
+		//
+		// VisibleTools omitted this tool so the caller could not enumerate what
+		// their organisation switched off. A distinguishable refusal here would
+		// hand back precisely that enumeration -- guess the name, read the
+		// code, learn which capabilities exist and that yours is not one of
+		// them. The listing and the gate have to tell the same story or the
+		// quieter one is decorative.
+		//
+		// This is NOT the capability refusal above. That one names the
+		// capability on purpose, because the org HAS enabled it and an operator
+		// can act. Here no operator in this organisation has anything to tick,
+		// so there is nothing actionable to disclose.
+		//
+		// The operator log still gets the precise reason: refusalReason is
+		// returned to the transport and logged with the tenant, the grant and
+		// the attempted name.
 		return ToolPolicy{}, reasonUnregistered, domain.Forbidden(ErrCodeToolNotAvailable,
 			fmt.Sprintf("no tool named %q exists on this server. Call tools/list for the "+
 				"tools this server has; every one of them appears there, so a name absent "+
