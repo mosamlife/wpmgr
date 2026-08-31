@@ -242,10 +242,25 @@ type mintConnectionRequestDTO struct {
 	ScopeTagIDs   []string `json:"scope_tag_ids"`
 	ScopeSiteIDs  []string `json:"scope_site_ids"`
 
-	// Capabilities is OPTIONAL and an omitted list means the organisation
-	// default, never an empty set. See Service.resolveMintCapabilities: an
-	// empty stored capability set is a connection that authenticates and can
-	// then reach no tool at all.
+	// Capabilities is OPTIONAL, and THIS IS THE WIRE CONTRACT A CLIENT
+	// INTEGRATOR READS, so it states the answer rather than naming a function.
+	//
+	// AN OMITTED LIST MEANS THE DEFAULT PRESET: exactly ["mcp.sites.read"].
+	//
+	// IT DOES NOT MEAN AN EMPTY SET. An empty stored capability set is a
+	// connection that authenticates and can then reach no tool at all, which
+	// Authenticate refuses by name on every request.
+	//
+	// AND IT DOES NOT MEAN THE ORGANISATION CEILING, which is the wider
+	// seven-member set OrgDefaultCapabilities resolves. This comment said "the
+	// organisation default" until the capability vocabulary widened from one
+	// member to eight; the two were the same list then and are not now. A
+	// client that omits the field and expects the ceiling gets one capability,
+	// and must send the list explicitly to get more.
+	//
+	// See Service.resolveMintCapabilities. A non-empty list is narrowed against
+	// the ceiling and a capability the ceiling does not hold refuses the whole
+	// request rather than being dropped from it.
 	Capabilities []string `json:"capabilities"`
 
 	// SetupClient is the operator's step-2 choice, and it is a *string SO THAT
