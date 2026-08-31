@@ -314,8 +314,20 @@ func TestMCPSetupClientRefusesShapeButAcceptsUnknownClientAsAppRole(t *testing.T
 	userID := seedUserRow(t, pool, "mcp-m128-shape-"+suffix+"@example.test")
 	eng := mountConnectionsLikeProduction(t, svc, adminPrincipal(tenantID, userID))
 
-	// (a) MALFORMED IS A 400, not a 500 from a 23514 at the INSERT. The wizard
+	// (a) MALFORMED IS A 422, not a 5xx from a 23514 at the INSERT. The wizard
 	// must be able to point at the field.
+	//
+	// 422 AND NOT 400 BECAUSE THAT IS THE HOUSE MAPPING, not a choice this
+	// endpoint made: domain.HTTPStatus sends every KindValidation to
+	// StatusUnprocessableEntity (internal/domain/errors.go), which is what the
+	// blank-name and malformed-site-scope refusals on this same route already
+	// answer. Asserting 400 here would have pinned this one field to a status
+	// no other refusal on the endpoint uses -- the first draft did exactly
+	// that and this run is what corrected it.
+	//
+	// The status is asserted rather than "any 4xx" because 4xx-in-general
+	// includes 401 and 403, and a refusal that turned out to be an auth failure
+	// would satisfy a looser check while proving nothing about validation.
 	for _, bad := range []string{"Windsurf", "windsurf ", "windsurf_beta", "", "-lead", "trail-"} {
 		var ignored map[string]any
 		code := mcpDoJSON(t, eng, http.MethodPost, mcp.ConnectionsPath, map[string]any{
@@ -323,8 +335,8 @@ func TestMCPSetupClientRefusesShapeButAcceptsUnknownClientAsAppRole(t *testing.T
 			"site_scope_mode": "all",
 			"setup_client":    bad,
 		}, nil, &ignored)
-		if code != http.StatusBadRequest {
-			t.Errorf("setup_client=%q answered %d, want 400. Anything else means "+
+		if code != http.StatusUnprocessableEntity {
+			t.Errorf("setup_client=%q answered %d, want 422. Anything else means "+
 				"either a malformed slug was STORED -- and S31's equality filter "+
 				"can no longer be trusted -- or the database CHECK surfaced as a "+
 				"5xx instead of a field-level refusal.", bad, code)
