@@ -399,7 +399,7 @@ func (s *Service) MintConnection(ctx context.Context, req MintConnectionRequest)
 	// verifyScopeReferents -- and read its comment before adding any
 	// "resolves to no sites" refusal here, because that would be a defect
 	// rather than a hardening.
-	if err := s.verifyScopeReferents(ctx, req.Principal.TenantID, req.SiteScope); err != nil {
+	if err := s.verifyScopeReferents(ctx, req.Principal, req.SiteScope); err != nil {
 		return MintedConnection{}, err
 	}
 
@@ -614,7 +614,37 @@ func (s *Service) resolveMintCapabilities(requested []Capability) (CapabilitySet
 // Distinguishing them is what makes the empty-scope acceptance safe. Without
 // this check, "accept empty" would also silently accept a typo.
 //
-func (s *Service) verifyScopeReferents(ctx context.Context, tenantID uuid.UUID, req SiteScopeRequest) error {
+// IT TAKES THE WHOLE PRINCIPAL AND NOT A tenantID (ADR-061 A11 item 2). The
+// site-id arm below resolves ids through the audited chokepoint, and the
+// chokepoint routes on the principal's scope: a site-constrained operator must
+// not be able to name a site outside their own allowlist and have it verify,
+// because verifying is what lets the mint store it. That would be an operator
+// minting a credential wider than themselves.
+//
+// TODAY THE ESCALATION IS UNREACHABLE, AND THIS IS STILL NOT REDUNDANT.
+// MintConnection's step 1 calls requireOrgScopedPrincipal, which refuses a
+// site-constrained principal outright, so every principal arriving here is
+// org-scoped and never reaches InScopedTenantTx. It is the fail-closed backstop
+// for the day that guard moves or a site-scoped mint becomes a product
+// decision -- the same reason IsSiteConstrained carries its second disjunct,
+// and the same reason ADR-061 A11 lists three independent gates on this path
+// and says none of them is redundant.
+//
+// IT IS NOT, HOWEVER, A NO-OP, AND THE EARLIER CLAIM THAT IT CHANGED "NO
+// BEHAVIOUR BY ONE BIT" WAS WRONG. The operator principal forwarded from the
+// handler carries a non-nil UserID, so dispatchTenantTx routes it to
+// InTenantTxAsUser and NOT to InTenantTx -- one extra
+// set_config('app.user_id', ...) per resolution. See
+// TestDispatchTenantTxRoutes's "org scope, no allowlist, with user" case, which
+// pins that branch.
+//
+// The CONSEQUENCE is nil, and that is a checked claim rather than an assumed
+// one: the only app.user_id-keyed policy on `sites` is sites_shared_read (m22),
+// which is PERMISSIVE FOR SELECT and can only add rows shared with that user in
+// OTHER tenants. This query's own `WHERE s.tenant_id = $1` excludes those, so
+// the resolved set cannot widen by a single row.
+func (s *Service) verifyScopeReferents(ctx context.Context, principal domain.Principal, req SiteScopeRequest) error {
+	tenantID := principal.TenantID
 	switch req.Mode {
 	case SiteScopeModeTags:
 		// The tenant's tag registry, read under tenant RLS. Tags are a small,
@@ -641,14 +671,15 @@ func (s *Service) verifyScopeReferents(ctx context.Context, tenantID uuid.UUID, 
 
 	case SiteScopeModeList:
 		// Site ids are verified through the AUDITED CHOKEPOINT rather than a
-		// second query: ResolveScopeSites runs InTenantTx and joins through
-		// `sites`, so tenant RLS drops every foreign or non-existent id. Under
+		// second query: ResolveScopeSites runs a tenant transaction chosen by
+		// the principal's scope (RunTenantTx) and joins through `sites`, so
+		// tenant RLS drops every foreign or non-existent id. Under
 		// mode 'list' the resolution is exactly the subset of the requested ids
 		// that exist here, so anything missing from the result names nothing.
 		//
 		// This arm has no empty-scope ambiguity to preserve: a site either
 		// exists in this tenant or it does not.
-		resolved, err := s.store.ResolveScopeSites(ctx, tenantID,
+		resolved, err := s.store.ResolveScopeSites(ctx, principal,
 			string(SiteScopeModeList), nil, req.SiteIDs)
 		if err != nil {
 			return fmt.Errorf("resolve site scope for verification: %w", err)

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -89,6 +90,8 @@ type fakeStore struct {
 	tokenOK bool
 
 	scopeSites []uuid.UUID
+	// scopeSitesScoped is set by ResolveScopeSites; see its comment.
+	scopeSitesScoped bool
 
 	// S6b transport surface.
 	//
@@ -402,8 +405,25 @@ func (f *fakeStore) ReCheckAuthorization(_ context.Context, _, _ uuid.UUID) (sql
 	return f.recheck, nil
 }
 
-func (f *fakeStore) ResolveScopeSites(_ context.Context, _ uuid.UUID, _ string, _, _ []uuid.UUID) ([]uuid.UUID, error) {
+// scopeSitesScoped records whether the LAST ResolveScopeSites call arrived with
+// a site-constrained principal. It is captured rather than ignored because the
+// whole of ADR-061 A11 item 2 is about WHICH transaction helper the chokepoint
+// reaches, and a fake that drops the principal cannot tell a scoped call from a
+// tenant-wide one -- which is exactly the blindness that let the bare-uuid
+// signature survive.
+//
+// IT IS READ BY TestAuthenticateHandsTheChokepointAnUnscopedPrincipal AND MUST
+// STAY READ. A recorder nothing asserts on is a negative control that cannot
+// fail; if that assertion is ever deleted, delete this field with it rather
+// than leaving it standing where it looks like coverage.
+//
+// It is written under f.mu because every other field on this fake is, and the
+// concurrency proofs in this package drive it from several goroutines.
+func (f *fakeStore) ResolveScopeSites(_ context.Context, principal db.ScopedPrincipal, _ string, _, _ []uuid.UUID) ([]uuid.UUID, error) {
 	f.note("ResolveScopeSites")
+	f.mu.Lock()
+	f.scopeSitesScoped = domain.IsSiteConstrained(principal.GetScope(), principal.GetAllowedSiteIDs())
+	f.mu.Unlock()
 	return f.scopeSites, nil
 }
 
@@ -951,6 +971,67 @@ func liveToken(tenantID uuid.UUID) sqlc.GetMCPConnectionTokenByHashForLookupRow 
 		Status:    "active",
 		ExpiresAt: pgtype.Timestamptz{Time: time.Now().Add(90 * 24 * time.Hour), Valid: true},
 		IsLive:    true,
+	}
+}
+
+// TestAuthenticateHandsTheChokepointAnUnscopedPrincipal is the executed guard on
+// bootstrapTenantPrincipal, and it is the ONLY thing standing between that
+// function and a literal reading of ADR-061 A11 item 2.
+//
+// WHY IT IS NEEDED AT ALL. dispatchTenantTx reads exactly three fields of a
+// principal, so the value bootstrapTenantPrincipal returns is
+// INDISTINGUISHABLE at the dispatch from any other org-scoped, no-user
+// principal. Its name and its comment are the whole barrier. This turns that
+// barrier into something that goes red: swap the literal for a site-constrained
+// one and the assertion below fails at unit speed, with no container.
+//
+// THE CONSEQUENCE OF GETTING IT WRONG IS NOT A LEAK, IT IS AN OUTAGE, and it is
+// fail-closed in the direction that hides itself. Authenticate is what COMPUTES
+// this connection's allowlist; scoping it by the allowlist it is computing
+// resolves 'tags' and 'all' grants to zero sites, and every live MCP connection
+// starts answering "your scope resolves to no sites" for a perfectly valid
+// grant. The end-to-end proof of that lives in the integration suite; this is
+// the cheap sentinel that catches it long before anyone gets there.
+func TestAuthenticateHandsTheChokepointAnUnscopedPrincipal(t *testing.T) {
+	tenantID := uuid.New()
+	siteID := uuid.New()
+	tok := liveToken(tenantID)
+
+	// MODE 'all' ON PURPOSE. It is the mode that names no ids at all, so it is
+	// where a site-scoped bootstrap principal would carry an EMPTY allowlist
+	// and the resolution would collapse to nothing.
+	store := &fakeStore{
+		tokenOK: true, token: tok,
+		recheckOK: true,
+		recheck: sqlc.ReCheckMCPRequestAuthorizationInTenantTxRow{
+			GrantID: tok.GrantID, GrantStatus: "active",
+			SiteScopeMode: "all", TokenID: tok.ID, TokenStatus: "active",
+			TokenExpiresAt:    tok.ExpiresAt,
+			GrantCapabilities: []string{string(CapSitesRead)},
+			GrantExpiresAt:    time.Now().UTC().Add(90 * 24 * time.Hour),
+			Authorized:        true,
+		},
+		scopeSites: []uuid.UUID{siteID},
+	}
+	svc := NewService(store)
+
+	if _, err := svc.Authenticate(context.Background(), "the-bearer-token"); err != nil {
+		t.Fatalf("a live connection was refused: %v", err)
+	}
+
+	// The recorder means nothing unless the call actually happened. Assert that
+	// first: a false reading from a chokepoint that was never reached is
+	// precisely the vacuous pass this test exists to avoid.
+	if !slices.Contains(store.callLog(), "ResolveScopeSites") {
+		t.Fatal("Authenticate never reached the scope chokepoint, so the " +
+			"principal assertion below would pass vacuously")
+	}
+	if store.scopeSitesScoped {
+		t.Fatal("Authenticate handed the scope chokepoint a SITE-CONSTRAINED " +
+			"principal. That resolution is what PRODUCES the allowlist, so " +
+			"scoping it by the allowlist it is computing is circular: under " +
+			"'tags' and 'all' the allowlist is empty and every live connection " +
+			"resolves to zero sites. See bootstrapTenantPrincipal.")
 	}
 }
 
