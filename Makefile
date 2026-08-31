@@ -270,9 +270,11 @@ check-rls-cross-tenant-test: ## Run the RLS cross-tenant guard's regression suit
 # stopped the next handler going round it, and ADR-060's freeze clause calls
 # that an open auth-boundary item. This is what closes it.
 #
-# It reads the mcp.Store interface through `go doc`, i.e. Go's own parser after
-# the package type-checks, so it needs the Go toolchain but NO database and NO
-# cloud credentials — which is why it runs on every PR. The reviewed surface is
+# It reads the mcp.Store interface through `go doc`, i.e. Go's own parser
+# rather than a grep over repo.go, so it needs the Go toolchain but NO database
+# and NO cloud credentials — which is why it runs on every PR. `go doc` parses
+# and does not type-check, so the guard fires on a bypass in progress before
+# the branch compiles. The reviewed surface is
 # infra/mcp-site-containment-allowlist.txt and it is checked in both
 # directions: an unreviewed call site, uuid parameter or tool-argument binding
 # is a violation, and so is an allowlist entry that no longer matches anything.

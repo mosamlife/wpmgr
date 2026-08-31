@@ -48,11 +48,20 @@
 #      someone who is not trying to be caught, and, more to the point, by
 #      someone who has never read this file.
 #
-#      The interface is read with `go doc -u`, i.e. through Go's own parser
-#      after type-checking the package, NOT by grepping repo.go. A signature
-#      reformatted across lines, a method moved to another file in the package,
-#      or a package that no longer compiles all behave correctly: the first two
-#      are invisible to this guard by construction, and the third is loud.
+#      The interface is read with `go doc -u`, i.e. through Go's own parser,
+#      NOT by grepping repo.go. A signature reformatted across lines and a
+#      method moved to another file in the package are both invisible to this
+#      guard by construction, which a grep over one file cannot manage.
+#
+#      `go doc` PARSES; IT DOES NOT TYPE-CHECK, and that was measured rather
+#      than assumed. With a bypass planted in this tree -- a Store method with
+#      no implementation on Repo, a handler calling a Service method that does
+#      not exist -- `go build ./internal/mcp` exits 1 with three errors and
+#      `go doc -u ./internal/mcp Store` exits 0 and prints the interface. That
+#      is the behaviour this guard wants: it fires on a bypass IN PROGRESS,
+#      before the branch compiles, rather than waiting for it to be finished.
+#      It also means a non-compiling package is not by itself an exit-2 state
+#      here; only a `go doc` that fails or prints something unrecognisable is.
 #
 #   C. THE TOOL ARGUMENT SURFACE. mcp.toolInvoker's last parameter is the
 #      request-supplied tool arguments (`args json.RawMessage`). Phase 1's one

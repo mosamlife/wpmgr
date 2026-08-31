@@ -175,12 +175,15 @@ jobs:
       # look at the diff that needs looking at.
       #
       # It lives in this job for the same reason the url-map guard above does:
-      # it reads the mcp.Store interface through `go doc`, i.e. Go's own parser
-      # after the package type-checks, rather than by grepping repo.go — so a
-      # wrapped signature or a method moved to another file in the package
-      # cannot make it quietly match less. That needs the Go toolchain, and
-      # this is the job that already has it set up and cached. It needs no
-      # database and no cloud credentials, so it runs on fork PRs too.
+      # it reads the mcp.Store interface through `go doc`, i.e. Go's own parser,
+      # rather than by grepping repo.go — so a wrapped signature or a method
+      # moved to another file in the package cannot make it quietly match less.
+      # That needs the Go toolchain, and this is the job that already has it set
+      # up and cached. It needs no database and no cloud credentials, so it runs
+      # on fork PRs too. `go doc` parses rather than type-checks (measured: with
+      # a bypass planted, `go build ./internal/mcp` exits 1 and `go doc -u
+      # ./internal/mcp Store` exits 0), so the guard fires on a bypass in
+      # progress rather than waiting for the branch to compile.
       #
       # THE GUARD'S THREE EXIT CODES ARE DISTINCT AND THAT IS THE POINT: 0 all
       # reviewed, 1 a containment violation or a stale allowlist entry, 2 GUARD
