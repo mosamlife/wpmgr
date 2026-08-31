@@ -75,17 +75,30 @@ PARAM TouchActivity.tenantID                            # tenant of the resolved
 PARAM TouchActivity.grantID                             # grant row id, from the authenticated grant
 PARAM TouchActivity.tokenID                             # token row id, from the authenticated token
 PARAM RevokeGrantWithTokens.grantID                     # operator-facing revoke, dashboard principal, not the MCP surface
-# grantID here IS request-supplied -- it is the :connectionId path parameter of
-# GET /api/v1/mcp/connections/:connectionId/status (handler.go:184). It is
-# allowlisted because it can only ever be INTERPRETED as a grant id: it binds
-# to mcp_grants.id in GetMCPGrant (db/query/mcp_connections.sql:326-327), and in
-# the audit half it is compared in Go against audit_log.actor_id with
-# actor_type='assistant', never pushed into SQL -- that query's site filter is
-# hard-wired off with the uuid.Nil sentinel (connection_status.go:649). A
-# foreign uuid therefore misses and 404s. The read runs under RunTenantTx, and
-# mcp_grants carries a RESTRICTIVE _site_scope SELECT policy (schema.sql:5851)
-# that returns zero rows to any site-constrained principal, so this endpoint is
-# org-scoped principals only, refused three independent ways.
+# grantID here IS request-supplied -- the :connectionId path parameter of
+# GET /api/v1/mcp/connections/:connectionId/status (handler.go:184). Allowlisted
+# because it can only ever be INTERPRETED as a grant id: it binds to
+# mcp_grants.id in GetMCPGrant (db/query/mcp_connections.sql:326-327), and the
+# audit half compares it in Go, never in SQL.
+#
+# THREE LAYERS, AND THEY ARE NOT INDEPENDENT OF EACH OTHER. Route middleware,
+# the service guard, and the RESTRICTIVE _site_scope SELECT policy on
+# mcp_grants (schema.sql:5851) each refuse a site-constrained principal on
+# their own, so they hold independently against three real regressions: a route
+# mounted without middleware, a refactor that drops the service guard, and a
+# handler swapping RunTenantTx for InTenantTx. They all read the SAME
+# predicate, domain.IsSiteConstrained (internal/domain/principal.go:163), and
+# all three fall together if it -- or whatever populates Principal.Scope and
+# AllowedSiteIDs -- is wrong. Do not read "three layers" as three independent
+# probabilities. That is the accepted tenancy architecture, not a defect of
+# this endpoint; tracked in #646.
+#
+# THIS ENTRY IS FALSIFIED IF ANY OF THESE CHANGES:
+#   - connection_status.go:650 stops being the literal SiteID: uuid.Nil.String()
+#     (the sentinel that holds the audit query's site filter off)
+#   - findFirstToolCallTx uses grantID for anything but the Go-side comparison
+#     at connection_status.go:642
+#   - connection_status.go:571 stops being RunTenantTx
 PARAM ConnectionStatusSnapshot.grantID                  # :connectionId path param; only ever bound to mcp_grants.id, never to a site column
 
 # ---- Tool argument surface -------------------------------------------------

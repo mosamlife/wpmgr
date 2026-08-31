@@ -725,6 +725,12 @@ PGXPOOL_RE='"github\.com/jackc/pgx/v5/pgxpool"'
 dbpath_mechanism() {
   # Prints the mechanism this file uses to execute SQL, or nothing.
   _f="$1"
+  # FLATTENED FIRST, for the same reason Rule C is: `tx.QueryRow(` with its
+  # context argument on the next line is ordinary gofmt output, and a
+  # line-oriented grep does not match it -- which would drop the file from
+  # DBPATH_HITS and report successful containment over a live database path.
+  _flat="$TMPDIR_RUN/flat.dbpath"
+  tr '\n' ' ' <"$_f" 2>/dev/null | tr -s ' \t' ' ' >"$_flat"
   # The local name bound to the sqlc package in THIS file, alias or not.
   _sqlc="$(sed -nE 's|^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)?[[:space:]]*"github\.com/mosamlife/wpmgr/apps/api/internal/db/sqlc".*|\1|p' "$_f" 2>/dev/null | head -1)"
   [ -n "$_sqlc" ] || _sqlc="sqlc"
@@ -732,7 +738,7 @@ dbpath_mechanism() {
     printf 'builds its own %s.Queries via %s.New(\n' "$_sqlc" "$_sqlc"
     return 0
   fi
-  if grep -qE "$PGX_OPS_RE" "$_f" 2>/dev/null; then
+  if grep -qE "$PGX_OPS_RE" "$_flat" 2>/dev/null; then
     printf 'executes SQL directly (pgx Query/Exec/SendBatch/CopyFrom)\n'
     return 0
   fi

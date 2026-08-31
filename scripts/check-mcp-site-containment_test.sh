@@ -396,6 +396,24 @@ run_case "bypass-direct-pgx-query-without-sqlc-new" 1 "executes SQL directly" - 
   --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$DOC"
 rm -f "$TREE/apps/api/internal/mcp/rawsql.go"
 
+# The same direct pgx call with the context argument on the next line -- what
+# gofmt does to a long one. A line-oriented PGX_OPS_RE did not match it, the
+# file was dropped from DBPATH_HITS, and the guard reported successful
+# containment over a live database path.
+printf '%s\n' 'package mcp' \
+  'import "github.com/jackc/pgx/v5"' \
+  'func (s *Service) rawSplit(ctx context.Context, tx pgx.Tx, siteID uuid.UUID) error {' \
+  '	row := tx.QueryRow(' \
+  '		ctx,' \
+  '		"SELECT id FROM sites WHERE id = $1",' \
+  '		siteID,' \
+  '	)' \
+  '	return row.Scan(&siteID)' \
+  '}' >"$TREE/apps/api/internal/mcp/rawsplit.go"
+run_case "bypass-direct-pgx-query-split-across-lines" 1 "executes SQL directly" - -- \
+  --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$DOC"
+rm -f "$TREE/apps/api/internal/mcp/rawsplit.go"
+
 # sqlc.New takes a DBTX. Handed a *pgxpool.Pool, the file never imports the
 # root pgx package, and the old OUTER grep skipped the constructor check
 # entirely.
