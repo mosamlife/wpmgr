@@ -606,17 +606,35 @@ find "$MCP_DIR" -name '*.go' -type f 2>/dev/null | grep -v '_test\.go$' | sort >
 #   the one file that actually dispatches tools. A guard that reddens correct
 #   work gets made quiet, and a guard that has been made quiet is off.
 #
-# So the match is the toolInvoker TYPE SEQUENCE, with every parameter name
-# free: context.Context, *Service, AuthorizedRequest, json.RawMessage, closing
-# to (string, error). That shape is what makes a function assignable to
-# toolInvoker, it is what a reviewer means by "a tool", and it cannot be
-# renamed out of. The file is flattened to one whitespace-collapsed stream
-# first, so a signature broken across lines reads the same as one on a line.
-# The trailing `,?` before the closing paren is not cosmetic: gofmt puts a
-# trailing comma on the last parameter of every signature it wraps across
-# lines, so without it the rule would see the one-line form and miss the
-# wrapped one -- which is the formatting a long signature actually gets.
-TOOLARGS_SIG='\([ ]*[A-Za-z_][A-Za-z0-9_]*[ ]+context\.Context[ ]*,[ ]*[A-Za-z_][A-Za-z0-9_]*[ ]+\*[ ]*Service[ ]*,[ ]*[A-Za-z_][A-Za-z0-9_]*[ ]+AuthorizedRequest[ ]*,[ ]*[A-Za-z_][A-Za-z0-9_]*[ ]+json\.RawMessage[ ]*,?[ ]*\)[ ]*\([ ]*string[ ]*,[ ]*error[ ]*\)'
+# So the match is the toolInvoker TYPE SEQUENCE, with every identifier free on
+# BOTH halves: context.Context, *Service, AuthorizedRequest, json.RawMessage,
+# closing to string, error. That shape is what makes a function assignable to
+# toolInvoker, and it is what a reviewer means by "a tool".
+#
+# NAME-TOLERANCE IS A PROPERTY OF THE PATTERN, NOT OF THE SHAPE, and it has to
+# be maintained on every half. An earlier version of this comment claimed the
+# shape "cannot be renamed out of"; that was wrong for the RESULT half, which
+# demanded a literal `(string, error)` while the parameter half already
+# admitted names. `(out string, err error)` is the same Go type, and a handler
+# written that way passed unseen. The rule is: wherever Go permits an
+# identifier, this pattern must permit one too.
+#
+# The file is flattened to one whitespace-collapsed stream first, so a
+# signature broken across lines reads the same as one on a line.
+# NAMES ARE OPTIONAL ON BOTH HALVES, and the second half is why: this pattern
+# used to admit a name on every PARAMETER and none on either RESULT. Go does
+# not care -- `(out string, err error)` is the same type as `(string, error)`
+# and just as assignable to toolInvoker -- so a handler declaring named results
+# was omitted from FOUND_TOOLARGS and the guard reported successful containment
+# over a live request-input channel. Same asymmetry, same failure, as the
+# parameter half before it: any half of a signature where the rule demands a
+# literal is a half that ordinary Go can be written round.
+#
+# The trailing `,?` on each list is not cosmetic: gofmt puts a trailing comma
+# on the last entry of every parameter AND result list it wraps across lines,
+# so without it the rule would see the one-line form and miss the wrapped one
+# -- which is the formatting a long signature actually gets.
+TOOLARGS_SIG='\([ ]*[A-Za-z_][A-Za-z0-9_]*[ ]+context\.Context[ ]*,[ ]*[A-Za-z_][A-Za-z0-9_]*[ ]+\*[ ]*Service[ ]*,[ ]*[A-Za-z_][A-Za-z0-9_]*[ ]+AuthorizedRequest[ ]*,[ ]*[A-Za-z_][A-Za-z0-9_]*[ ]+json\.RawMessage[ ]*,?[ ]*\)[ ]*\([ ]*([A-Za-z_][A-Za-z0-9_]*[ ]+)?string[ ]*,[ ]*([A-Za-z_][A-Za-z0-9_]*[ ]+)?error[ ]*,?[ ]*\)'
 
 # Control. The flattening plus this pattern must still find the toolInvoker
 # declaration itself in registry.go. If it does not, the shape changed and the

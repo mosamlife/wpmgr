@@ -371,6 +371,42 @@ run_case "bypass-tool-args-signature-wrapped" 1 "internal/mcp/tool_wrapped.go bi
   --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$DOC"
 rm -f "$TREE/apps/api/internal/mcp/tool_wrapped.go"
 
+# NAMED RESULTS. `(out string, err error)` is the same Go type as
+# `(string, error)` and is assignable to toolInvoker, but the pattern admitted
+# a name on every PARAMETER and none on either RESULT. The handler was omitted
+# from FOUND_TOOLARGS and the guard reported successful containment over a live
+# request-input channel.
+printf '%s\n' 'package mcp' \
+  'var namedResults = toolEntry{' \
+  '	invoke: func(ctx context.Context, svc *Service, auth AuthorizedRequest, args json.RawMessage) (out string, err error) {' \
+  '		out, err = svc.Something(ctx, auth, args)' \
+  '		return out, err' \
+  '	},' \
+  '}' >"$TREE/apps/api/internal/mcp/tool_named_results.go"
+run_case "bypass-tool-args-named-results" 1 "internal/mcp/tool_named_results.go binds toolInvoker" - -- \
+  --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$DOC"
+rm -f "$TREE/apps/api/internal/mcp/tool_named_results.go"
+
+# The same handler with named results AND the signature wrapped, so the result
+# list picks up gofmt's trailing comma on both halves at once.
+printf '%s\n' 'package mcp' \
+  'var namedWrapped = toolEntry{' \
+  '	invoke: func(' \
+  '		ctx context.Context,' \
+  '		svc *Service,' \
+  '		auth AuthorizedRequest,' \
+  '		args json.RawMessage,' \
+  '	) (' \
+  '		out string,' \
+  '		err error,' \
+  '	) {' \
+  '		return out, err' \
+  '	},' \
+  '}' >"$TREE/apps/api/internal/mcp/tool_named_wrapped.go"
+run_case "bypass-tool-args-named-results-wrapped" 1 "internal/mcp/tool_named_wrapped.go binds toolInvoker" - -- \
+  --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$DOC"
+rm -f "$TREE/apps/api/internal/mcp/tool_named_wrapped.go"
+
 # A second database path inside package mcp, outside repo.go, is outside the
 # reach of Rule B. Rule D is the backstop.
 printf '%s\n' 'package mcp' \
