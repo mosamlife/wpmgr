@@ -189,11 +189,11 @@ const createMCPGrant = `-- name: CreateMCPGrant :one
 INSERT INTO mcp_grants (
     tenant_id, name, status, site_scope_mode, scope_tag_ids, scope_site_ids,
     client_id, created_by_user_id, capabilities, expires_at,
-    idle_expire_after_days
+    idle_expire_after_days, setup_client
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
 )
-RETURNING id, tenant_id, name, status, site_scope_mode, scope_tag_ids, scope_site_ids, capabilities, client_id, client_name, client_version, protocol_version, client_identity_recorded_at, created_by_user_id, created_at, last_used_at, revoked_at, expires_at, idle_expire_after_days
+RETURNING id, tenant_id, name, status, site_scope_mode, scope_tag_ids, scope_site_ids, capabilities, client_id, client_name, client_version, protocol_version, client_identity_recorded_at, setup_client, created_by_user_id, created_at, last_used_at, revoked_at, expires_at, idle_expire_after_days
 `
 
 type CreateMCPGrantParams struct {
@@ -208,6 +208,7 @@ type CreateMCPGrantParams struct {
 	Capabilities        []string    `json:"capabilities"`
 	ExpiresAt           time.Time   `json:"expires_at"`
 	IdleExpireAfterDays *int32      `json:"idle_expire_after_days"`
+	SetupClient         *string     `json:"setup_client"`
 }
 
 // ===========================================================================
@@ -258,6 +259,25 @@ type CreateMCPGrantParams struct {
 // NOTHING ASKS THE OPERATOR FOR A WINDOW YET -- not because the stamp is
 // missing. Read that distinction before removing the NULL: the guard is waiting
 // on an input, not on a fix.
+//
+// setup_client (m128) IS THE OPERATOR'S CHOICE AT S29 STEP 2 and is passed
+// explicitly, like status, rather than being left to the schema. It is NULLABLE
+// with NO DEFAULT precisely so a caller that never asked -- any path that is
+// not the step-2 wizard -- can pass NULL and mean "no operator choice was
+// recorded". PASS NULL RATHER THAN 'generic' ON SUCH A PATH: 'generic' asserts
+// the operator saw nine cards and chose "Other MCP client", which is a
+// different fact and the one S29 step 9 distinguishes.
+//
+// Do NOT derive it from client_name. That column is self-reported at
+// `initialize`, is NULL until the client first connects, and inferring a
+// choice from it manufactures a fact the operator never stated.
+//
+// m127 AND m128 ARE INDEPENDENT ON THIS INSERT AND THE MERGE MUST KEEP THEM SO.
+// The three m127 columns carry AUTHORITY and are refused when absent (two are
+// NOT NULL); setup_client carries NONE and is legally absent. Omitting
+// setup_client from this list would silently discard the operator's step-2
+// choice on every create; omitting any m127 column would mint a credential
+// nobody chose the terms of. Both failures compile and generate cleanly.
 func (q *Queries) CreateMCPGrant(ctx context.Context, arg CreateMCPGrantParams) (McpGrant, error) {
 	row := q.db.QueryRow(ctx, createMCPGrant,
 		arg.TenantID,
@@ -271,6 +291,7 @@ func (q *Queries) CreateMCPGrant(ctx context.Context, arg CreateMCPGrantParams) 
 		arg.Capabilities,
 		arg.ExpiresAt,
 		arg.IdleExpireAfterDays,
+		arg.SetupClient,
 	)
 	var i McpGrant
 	err := row.Scan(
@@ -287,6 +308,7 @@ func (q *Queries) CreateMCPGrant(ctx context.Context, arg CreateMCPGrantParams) 
 		&i.ClientVersion,
 		&i.ProtocolVersion,
 		&i.ClientIdentityRecordedAt,
+		&i.SetupClient,
 		&i.CreatedByUserID,
 		&i.CreatedAt,
 		&i.LastUsedAt,
@@ -446,7 +468,7 @@ func (q *Queries) GetMCPConnectionTokenByHashForLookup(ctx context.Context, toke
 }
 
 const getMCPGrant = `-- name: GetMCPGrant :one
-SELECT id, tenant_id, name, status, site_scope_mode, scope_tag_ids, scope_site_ids, capabilities, client_id, client_name, client_version, protocol_version, client_identity_recorded_at, created_by_user_id, created_at, last_used_at, revoked_at, expires_at, idle_expire_after_days FROM mcp_grants
+SELECT id, tenant_id, name, status, site_scope_mode, scope_tag_ids, scope_site_ids, capabilities, client_id, client_name, client_version, protocol_version, client_identity_recorded_at, setup_client, created_by_user_id, created_at, last_used_at, revoked_at, expires_at, idle_expire_after_days FROM mcp_grants
 WHERE tenant_id = $1 AND id = $2
 `
 
@@ -475,6 +497,7 @@ func (q *Queries) GetMCPGrant(ctx context.Context, arg GetMCPGrantParams) (McpGr
 		&i.ClientVersion,
 		&i.ProtocolVersion,
 		&i.ClientIdentityRecordedAt,
+		&i.SetupClient,
 		&i.CreatedByUserID,
 		&i.CreatedAt,
 		&i.LastUsedAt,
@@ -567,7 +590,7 @@ func (q *Queries) ListMCPConnectionTokensForGrant(ctx context.Context, arg ListM
 }
 
 const listMCPGrantsForOrg = `-- name: ListMCPGrantsForOrg :many
-SELECT id, tenant_id, name, status, site_scope_mode, scope_tag_ids, scope_site_ids, capabilities, client_id, client_name, client_version, protocol_version, client_identity_recorded_at, created_by_user_id, created_at, last_used_at, revoked_at, expires_at, idle_expire_after_days FROM mcp_grants
+SELECT id, tenant_id, name, status, site_scope_mode, scope_tag_ids, scope_site_ids, capabilities, client_id, client_name, client_version, protocol_version, client_identity_recorded_at, setup_client, created_by_user_id, created_at, last_used_at, revoked_at, expires_at, idle_expire_after_days FROM mcp_grants
 WHERE tenant_id = $1
 ORDER BY created_at DESC, id DESC
 `
@@ -605,6 +628,7 @@ func (q *Queries) ListMCPGrantsForOrg(ctx context.Context, tenantID uuid.UUID) (
 			&i.ClientVersion,
 			&i.ProtocolVersion,
 			&i.ClientIdentityRecordedAt,
+			&i.SetupClient,
 			&i.CreatedByUserID,
 			&i.CreatedAt,
 			&i.LastUsedAt,
@@ -777,7 +801,7 @@ SET client_name                 = $3,
     protocol_version            = $5,
     client_identity_recorded_at = now()
 WHERE tenant_id = $1 AND id = $2
-RETURNING id, tenant_id, name, status, site_scope_mode, scope_tag_ids, scope_site_ids, capabilities, client_id, client_name, client_version, protocol_version, client_identity_recorded_at, created_by_user_id, created_at, last_used_at, revoked_at, expires_at, idle_expire_after_days
+RETURNING id, tenant_id, name, status, site_scope_mode, scope_tag_ids, scope_site_ids, capabilities, client_id, client_name, client_version, protocol_version, client_identity_recorded_at, setup_client, created_by_user_id, created_at, last_used_at, revoked_at, expires_at, idle_expire_after_days
 `
 
 type RecordMCPGrantClientIdentityInTenantTxParams struct {
@@ -821,6 +845,7 @@ func (q *Queries) RecordMCPGrantClientIdentityInTenantTx(ctx context.Context, ar
 		&i.ClientVersion,
 		&i.ProtocolVersion,
 		&i.ClientIdentityRecordedAt,
+		&i.SetupClient,
 		&i.CreatedByUserID,
 		&i.CreatedAt,
 		&i.LastUsedAt,
