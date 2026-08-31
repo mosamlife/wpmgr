@@ -382,6 +382,69 @@ run_case "broken-no-non-test-go-files" 2 "no non-test .go files" "containment: O
 run_case "broken-unknown-argument" 2 "unknown argument" "containment: OK" -- \
   --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$DOC" --wat
 
+# An option given no value used to make `shift 2` fail, leaving the same option
+# in $1 and spinning the while loop forever: a CI job that never finishes and
+# never reports.
+#
+# THE CASE FOR A HANG MUST NOT ITSELF HANG. run_case waits for the guard to
+# exit, so using it here would wedge the suite on a regression instead of
+# reporting one. This variant backgrounds the guard, polls a FIXED number of
+# times, and calls a still-running guard a failure -- the bounded form the
+# project rule asks for, and the only shape that can assert termination.
+run_case_bounded() {
+  name="$1"; want="$2"; needle="$3"; limit="$4"; shift 5
+  case "$name" in
+    *"$FILTER"*) : ;;
+    *) return 0 ;;
+  esac
+
+  out="$WORK/out.bounded.$$"
+  "$GUARD" "$@" >"$out" 2>&1 &
+  pid=$!
+  waited=0
+  while [ "$waited" -lt "$limit" ]; do
+    sleep 1
+    waited=$((waited + 1))
+    kill -0 "$pid" 2>/dev/null || break
+  done
+
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -9 "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+    FAIL=$((FAIL + 1))
+    printf 'FAIL %-46s DID NOT TERMINATE within %ss\n' "$name" "$limit"
+    printf '       the argument loop is spinning: `shift 2` with no value left\n'
+    rm -f "$out"
+    return 0
+  fi
+
+  wait "$pid" 2>/dev/null
+  got=$?
+  ok=1
+  [ "$got" = "$want" ] || ok=0
+  if [ "$needle" != "-" ] && ! grep -qF -- "$needle" "$out"; then ok=0; fi
+
+  if [ "$ok" = 1 ]; then
+    PASS=$((PASS + 1))
+    printf 'ok   %-46s exit %s\n' "$name" "$got"
+  else
+    FAIL=$((FAIL + 1))
+    printf 'FAIL %-46s exit %s (want %s)\n' "$name" "$got" "$want"
+    [ "$needle" = "-" ] || printf '       wanted output containing: %s\n' "$needle"
+    sed 's/^/       | /' "$out"
+  fi
+  rm -f "$out"
+}
+
+run_case_bounded "broken-api-root-without-value" 2 "--api-root requires a value" 8 -- \
+  --api-root
+
+run_case_bounded "broken-allowlist-without-value" 2 "--allowlist requires a value" 8 -- \
+  --api-root "$TREE/apps/api" --allowlist
+
+run_case_bounded "broken-store-doc-without-value" 2 "--store-doc requires a value" 8 -- \
+  --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc
+
 # ============================================================================
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"

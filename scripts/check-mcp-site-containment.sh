@@ -165,11 +165,25 @@ usage() {
     'exit 2 = GUARD BROKEN (missing input, empty extraction, control pattern gone)'
 }
 
+# An option with no value is exit 2, not a hang. `shift 2` with one argument
+# left FAILS and shifts nothing, so `$1` is still the option and the loop
+# spins forever -- a CI job that never finishes and never reports, which is the
+# worst of the three outcomes because it looks like a slow runner rather than a
+# broken guard. Checked before the assignment, so the arity error is reported
+# rather than a default being silently substituted for the missing value.
+need_value() {
+  [ "$2" -ge 2 ] || {
+    printf 'check-mcp-site-containment: %s requires a value\n' "$1" >&2
+    usage >&2
+    exit 2
+  }
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
-    --api-root)   API_ROOT="${2:-}";   shift 2 ;;
-    --allowlist)  ALLOWLIST="${2:-}";  shift 2 ;;
-    --store-doc)  STORE_DOC="${2:-}";  shift 2 ;;
+    --api-root)   need_value --api-root  $#; API_ROOT="$2";  shift 2 ;;
+    --allowlist)  need_value --allowlist $#; ALLOWLIST="$2"; shift 2 ;;
+    --store-doc)  need_value --store-doc $#; STORE_DOC="$2"; shift 2 ;;
     -h|--help)    usage; exit 0 ;;
     *) printf 'check-mcp-site-containment: unknown argument: %s\n' "$1" >&2; usage >&2; exit 2 ;;
   esac
