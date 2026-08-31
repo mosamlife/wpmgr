@@ -42,15 +42,22 @@ shipping in 0.61.147; and, checked directly this session, an unauthenticated
 `GET` against the deployed `/api/v1/sites/{siteId}/context` and
 `/api/v1/sites/{siteId}/context/effective` routes returns `401`
 `application/json` rather than the `404 text/plain` an absent route would
-give, confirming both are mounted and live. **What remains open is not the
-implementation but three of this ADR's own decisions: Decision 7's
-fail-closed audit append does not exist yet, Decision 11's per-response-nonce
-injection fencing does not exist yet, and Decision 12's site-transfer
-mechanism does not exist anywhere in this codebase.** Acceptance records the
-decisions, including those three still-open ones, not a claim that every
-mechanism they describe is built. This also does not extend to the two
-layers inherited from ADR-061, which remain decided rather than deployed
-exactly as the paragraph above says.
+give, confirming both are mounted and live. **Decision 7's fail-closed audit
+append is also built and wired, not open**: `RecordInTx`
+(`apps/api/internal/audit/audit.go:653`) is called from inside the same
+transaction as the version write at
+`apps/api/internal/govcontext/service.go:152,207,350,416` (org patch, org
+restore, site patch, site restore), and its error is returned up through
+`CreateOrgVersion`/`CreateSiteVersion`'s transaction callback
+(`apps/api/internal/govcontext/repo.go:287,466`), which aborts the whole
+transaction, so a failed append takes the version row with it exactly as
+Decision 7 requires. **What remains open is two of this ADR's own
+decisions: Decision 11's per-response-nonce injection fencing does not exist
+yet, and Decision 12's site-transfer mechanism does not exist anywhere in
+this codebase.** Acceptance records the decisions, including those two
+still-open ones, not a claim that every mechanism they describe is built.
+This also does not extend to the two layers inherited from ADR-061, which
+remain decided rather than deployed exactly as the paragraph above says.
 
 ---
 
@@ -624,10 +631,13 @@ routes — called directly, before the transfer completes, while
 export tool the Export paragraph above names as conditional on ever being
 built, because pointing at that tool specifically would overclaim a
 mechanism this codebase does not confirm exists. Decision 13's routes are
-at least a real, specified part of this ADR's own build — they do not exist
-yet because nothing in this Proposed ADR does, but "what has to exist
-before this ships" below already requires them for reasons independent of
-transfer.
+built and mounted, not merely specified: `GET .../context/versions`, the
+item and diff routes, and `POST .../restore` are registered on the same
+router group as `/context` and `/context/effective`
+(`apps/api/internal/govcontext/handler.go:49-55`), the two routes the
+acceptance note above confirms are live in production. What has no route to
+call it, because it does not exist, is the transfer mechanism itself,
+covered next.
 
 **The harder truth checked directly rather than assumed: no mechanism for
 moving a site to a different organisation exists anywhere in this
@@ -939,65 +949,77 @@ explicitly rather than drift into it unannounced.
   layer with the least standing to complain about it — an accepted
   trade-off, not an oversight.
 
-**What has to exist before this ships.**
+**What this ADR requires, checked against the codebase this session, item by
+item, rather than assumed shipped or assumed missing.**
 
-- One resolution function that both the model-facing context assembly and
-  the effective-context preview call — not two implementations of the same
-  seven-layer walk.
-- Version, author, and provenance columns on both context tables, with
-  `UPDATE`/`DELETE` revoked from the application role at the privilege
-  level, the same way the audit log already enforces append-only.
-- The `context.*` capabilities added to the existing registry, with a
-  registry test asserting no assistant-kind principal can ever be granted a
-  context-write capability — the same test shape ADR-061 Decision 5 already
-  uses for capabilities an assistant must never reach.
-- Planted-failure proofs, each pasted with its command and its before/after
-  output: a save shaped like a credential is rejected, and the rejection is
-  asserted not to contain the matched text; a site-level edit that would
-  remove an organisation-set restriction is rejected, and the prior version
-  is asserted unchanged; a forced audit-append failure is asserted to leave
-  no new context version committed; a tool call that a resolved restriction
-  forbids is refused at dispatch even when the fenced context the model was
-  handed contained no hint of the restriction's wording (Decision 4); after
-  a simulated site transfer, a principal in the destination organisation can
-  list only post-transfer versions, the first post-transfer version's
-  `diff` renders as a baseline rather than a computed comparison against
-  its sealed, source-stamped predecessor, and any restore of a
-  pre-transfer version id is refused for every caller, source organisation
-  included (Decision 12); two concurrent runs against the same site,
-  supplied with different layer-6 session inputs, resolve to different
-  effective context and neither run's session content appears in the
-  other's result or in the cached layers either one reads (Decision 2 and
-  Decision 8).
-- `make test-integration` coverage of tenant scoping on both new tables,
-  run before merge — context is exactly the shape of tenant-scoped data
-  ADR-061 Decision 4 already found this codebase gets wrong by default when
-  it is not checked.
-- **A restrictive site-scope policy on both context tables, not only tenant
-  isolation**, delivered as part of the deferred migration ADR-061 Decision
-  4 named and this ADR extends to include them (see Relationship, above).
-  Tenant isolation alone would let any principal scoped to the tenant read
-  or resolve another site's context; the restrictive policy is what confines
-  a read to the sites a principal can actually see.
-- **The injection-fencing mechanism itself**, per Decision 11 — the two
-  sanitizers ADR-061 lists under its own "What has to exist before v1 ships"
-  (ADR-061:544,548-550). This ADR's quarantine in Decision 11 has nothing to
-  run against until that mechanism is built.
-- **A fail-closed audit-append path**, per Decision 7 — `Record()` in
-  `apps/api/internal/audit/audit.go` is best-effort today
-  (`apps/api/internal/audit/audit.go:498-500`), and no fail-closed variant
-  exists for this ADR's transaction or for ADR-061's approval path either.
-- **A site-to-organisation transfer mechanism, which this ADR depends on
-  but does not build.** Verified this pass: no query in
-  `apps/api/db/query/sites.sql` reassigns a site's organisation, no file
-  under `apps/api/internal/site/` or `apps/api/internal/org/` implements
-  one, and no other ADR or `CHANGELOG.md` entry describes one. Decision
-  12's transfer rules (clear the site layer, stamp and seal history, treat
-  a stamp-boundary version as a diff baseline per Decision 5, refuse a
-  cross-boundary `restore`) are a contract for whatever eventually calls
-  them, not a hook into something already running — they have nothing to
-  run against, and are untestable end to end, until a real transfer
-  mechanism exists and invokes them.
+- **Built.** One resolution function, not two implementations of the same
+  seven-layer walk: `Resolver.Resolve` (`apps/api/internal/govcontext/resolver.go:70`)
+  is the only caller of the seven-layer walk in this codebase. The
+  effective-context preview calls it directly with `session=nil`
+  (`apps/api/internal/govcontext/service.go:471`). Nothing yet calls it with
+  a live session, because the model-facing assembly path that would supply
+  one does not exist; that is the ADR-061-deployment gap the acceptance note
+  above already names, not a second implementation of this walk.
+- **Built.** Version, author, and provenance columns exist on both context
+  tables, and `UPDATE`, `DELETE`, and `TRUNCATE` are revoked from the
+  application role on both
+  (`apps/api/migrations/20260824000000_m122_governed_context.sql:836,837`).
+- **Partly built.** `context.org.write` and `context.site.write` are
+  registered permissions, mapped only to `RoleAdmin` and `RoleOperator`
+  respectively (`apps/api/internal/authz/role.go:214,224,287,289`). No test
+  in the codebase references either permission constant (checked this
+  session, no hit under `apps/api/internal/**/*_test.go`), so the registry
+  test this item asks for, asserting no assistant-kind principal can ever be
+  granted a context-write capability, does not exist yet.
+- **Partly built.** Of the five planted-failure proofs, three exist and
+  pass: the widen rejection
+  (`TestADR064S4_PatchSiteContext_WideningOrgPolicy_RefusedAndNothingCommitted`,
+  `apps/api/tests/adr064_s4_govcontext_integration_test.go:64`), the
+  credential-shaped rejection with no echo
+  (`TestDetectSecret_NeverEchoesTheMatch`,
+  `apps/api/internal/govcontext/secretscan_test.go:65`), and the forced
+  audit-append failure, for both org and site
+  (`TestADR064S4_CreateOrgVersion_AuditFailureAbortsTheWholeWrite` and
+  `TestADR064S4_CreateSiteVersion_AuditFailureAbortsTheWholeWrite`, same
+  file, lines 169 and 471). Two do not exist, and cannot yet, because each
+  needs a mechanism this list already records as missing: a
+  tool-call-refusal-at-dispatch proof (Decision 4) has no live dispatch path
+  to run against, and a site-transfer simulation proof (Decision 12) has no
+  transfer mechanism to run against. A concurrent-session-isolation proof
+  was not found either; the nearest test,
+  `TestEffectiveContextPreview_NoSessionContent`
+  (`apps/api/internal/govcontext/preview_test.go:98`), proves the preview
+  carries no session content, which is a different claim from two live
+  sessions staying isolated from each other.
+- **Built.** `make test-integration` coverage of tenant scoping exists for
+  both tables in `apps/api/tests/adr064_governed_context_rls_integration_test.go`,
+  for example `TestADR064_TenantIsolation_AnotherOrgSeesNoContext` (line 273)
+  and `TestADR064_TenantIsolation_AnotherOrgCannotAuthorContext` (line 299).
+- **Built.** A restrictive site-scope policy, not only tenant isolation,
+  exists on both tables:
+  `org_context_versions_site_scope_insert` is `AS RESTRICTIVE FOR INSERT`
+  (`apps/api/migrations/20260824000000_m122_governed_context.sql:656`), and
+  the site table carries an `AS RESTRICTIVE FOR ALL` policy on `site_id`
+  (same file, line 805).
+- **Not built.** The injection-fencing mechanism itself, per Decision 11.
+  Unchanged since this ADR was written: the per-response-nonce sanitizers
+  ADR-061 lists under its own "What has to exist before v1 ships"
+  (ADR-061:544,548-550) do not exist, so this ADR's quarantine in Decision
+  11 has nothing to run against.
+- **Built.** A fail-closed audit-append path, per Decision 7. See the
+  acceptance note above for the file:line evidence. This bullet stays only
+  so the list reads complete, not because the mechanism is missing.
+- **Not built.** A site-to-organisation transfer mechanism, which this ADR
+  depends on but does not build. Re-checked this session: no query in
+  `apps/api/db/query/sites.sql` reassigns a site's organisation (zero hits
+  for an organisation-id column in that file), no file under
+  `apps/api/internal/site/` or `apps/api/internal/org/` implements one, and
+  no other ADR or `CHANGELOG.md` entry describes one. Decision 12's transfer
+  rules (clear the site layer, stamp and seal history, treat a
+  stamp-boundary version as a diff baseline per Decision 5, refuse a
+  cross-boundary `restore`) remain a contract for whatever eventually calls
+  them, not a hook into something already running, and are untestable end
+  to end until a real transfer mechanism exists and invokes them.
 
 ---
 
@@ -1052,8 +1074,9 @@ made, not a claim that every question this document raised has an answer.
    whether that mechanism should block on, prompt for, or simply document
    the loss of ordinary access to pre-transfer history. **Owner:**
    whoever eventually builds site-to-organisation transfer, unassigned
-   today; that build is itself a prerequisite this ADR depends on and
-   does not provide (see "What has to exist before this ships").
+   today; that build is itself a prerequisite this ADR depends on and does
+   not provide (see "What this ADR requires," in Consequences, above, which
+   confirms this one is still not built).
 4. **Nothing bounds the size of a stored context row.** Decision 9 caps
    each layer's contribution and the resolved whole in bytes, but
    specifies *truncation at resolution* — at a field or record boundary,
