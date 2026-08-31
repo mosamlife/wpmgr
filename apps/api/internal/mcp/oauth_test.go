@@ -89,6 +89,8 @@ type fakeStore struct {
 	tokenOK bool
 
 	scopeSites []uuid.UUID
+	// scopeSitesScoped is set by ResolveScopeSites; see its comment.
+	scopeSitesScoped bool
 
 	// S6b transport surface.
 	//
@@ -402,8 +404,15 @@ func (f *fakeStore) ReCheckAuthorization(_ context.Context, _, _ uuid.UUID) (sql
 	return f.recheck, nil
 }
 
-func (f *fakeStore) ResolveScopeSites(_ context.Context, _ uuid.UUID, _ string, _, _ []uuid.UUID) ([]uuid.UUID, error) {
+// scopeSitesScoped records whether the LAST ResolveScopeSites call arrived with
+// a site-constrained principal. It is captured rather than ignored because the
+// whole of ADR-061 A11 item 2 is about WHICH transaction helper the chokepoint
+// reaches, and a fake that drops the principal cannot tell a scoped call from a
+// tenant-wide one -- which is exactly the blindness that let the bare-uuid
+// signature survive.
+func (f *fakeStore) ResolveScopeSites(_ context.Context, principal db.ScopedPrincipal, _ string, _, _ []uuid.UUID) ([]uuid.UUID, error) {
 	f.note("ResolveScopeSites")
+	f.scopeSitesScoped = domain.IsSiteConstrained(principal.GetScope(), principal.GetAllowedSiteIDs())
 	return f.scopeSites, nil
 }
 

@@ -389,7 +389,7 @@ func (s *Service) MintConnection(ctx context.Context, req MintConnectionRequest)
 	// verifyScopeReferents -- and read its comment before adding any
 	// "resolves to no sites" refusal here, because that would be a defect
 	// rather than a hardening.
-	if err := s.verifyScopeReferents(ctx, req.Principal.TenantID, req.SiteScope); err != nil {
+	if err := s.verifyScopeReferents(ctx, req.Principal, req.SiteScope); err != nil {
 		return MintedConnection{}, err
 	}
 
@@ -588,7 +588,24 @@ func (s *Service) resolveMintCapabilities(requested []Capability) (CapabilitySet
 // Distinguishing them is what makes the empty-scope acceptance safe. Without
 // this check, "accept empty" would also silently accept a typo.
 //
-func (s *Service) verifyScopeReferents(ctx context.Context, tenantID uuid.UUID, req SiteScopeRequest) error {
+// IT TAKES THE WHOLE PRINCIPAL AND NOT A tenantID (ADR-061 A11 item 2). The
+// site-id arm below resolves ids through the audited chokepoint, and the
+// chokepoint routes on the principal's scope: a site-constrained operator must
+// not be able to name a site outside their own allowlist and have it verify,
+// because verifying is what lets the mint store it. That would be an operator
+// minting a credential wider than themselves.
+//
+// TODAY THAT PATH IS UNREACHABLE, AND THIS IS STILL NOT REDUNDANT.
+// MintConnection's step 1 calls requireOrgScopedPrincipal, which refuses a
+// site-constrained principal outright, so every principal arriving here is
+// org-scoped and RunTenantTx dispatches it exactly as InTenantTx did. Passing
+// the principal changes no behaviour by one bit today. It is the fail-closed
+// backstop for the day that guard moves or a site-scoped mint becomes a
+// product decision -- the same reason IsSiteConstrained carries its second
+// disjunct, and the same reason ADR-061 A11 lists three independent gates on
+// this path and says none of them is redundant.
+func (s *Service) verifyScopeReferents(ctx context.Context, principal domain.Principal, req SiteScopeRequest) error {
+	tenantID := principal.TenantID
 	switch req.Mode {
 	case SiteScopeModeTags:
 		// The tenant's tag registry, read under tenant RLS. Tags are a small,
@@ -622,7 +639,7 @@ func (s *Service) verifyScopeReferents(ctx context.Context, tenantID uuid.UUID, 
 		//
 		// This arm has no empty-scope ambiguity to preserve: a site either
 		// exists in this tenant or it does not.
-		resolved, err := s.store.ResolveScopeSites(ctx, tenantID,
+		resolved, err := s.store.ResolveScopeSites(ctx, principal,
 			string(SiteScopeModeList), nil, req.SiteIDs)
 		if err != nil {
 			return fmt.Errorf("resolve site scope for verification: %w", err)

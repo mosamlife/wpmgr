@@ -79,7 +79,10 @@ type Store interface {
 
 	LookupConnectionToken(ctx context.Context, tokenHash string) (sqlc.GetMCPConnectionTokenByHashForLookupRow, error)
 	ReCheckAuthorization(ctx context.Context, tenantID, tokenID uuid.UUID) (sqlc.ReCheckMCPRequestAuthorizationInTenantTxRow, error)
-	ResolveScopeSites(ctx context.Context, tenantID uuid.UUID, mode string, tagIDs, siteIDs []uuid.UUID) ([]uuid.UUID, error)
+	// ResolveScopeSites takes a ScopedPrincipal rather than a tenant uuid so
+	// that the chokepoint can route on scope; see the method on Repo. A caller
+	// passing a deliberately org-scoped principal must justify it there.
+	ResolveScopeSites(ctx context.Context, principal db.ScopedPrincipal, mode string, tagIDs, siteIDs []uuid.UUID) ([]uuid.UUID, error)
 
 	// RecordClientIdentity stamps the connecting client's self-reported
 	// identity on the grant. protocolVersion is a *string and NOT a string so
@@ -485,15 +488,33 @@ func (r *Repo) ReCheckAuthorization(ctx context.Context, tenantID, tokenID uuid.
 }
 
 // ResolveScopeSites is the ONE audited chokepoint of m124 obligation 2. It runs
-// inside InTenantTx so that joining through `sites` under tenant isolation
-// drops every foreign UUID -- scope_site_ids is a uuid[] and PostgreSQL has no
-// foreign key over array elements, so the column accepts any UUID at all.
+// inside a tenant transaction so that joining through `sites` under tenant
+// isolation drops every foreign UUID -- scope_site_ids is a uuid[] and
+// PostgreSQL has no foreign key over array elements, so the column accepts any
+// UUID at all.
 //
 // An empty result means NO SITES. The caller enforces that; the database
 // cannot. See NewSiteSet, whose zero value allows nothing.
-func (r *Repo) ResolveScopeSites(ctx context.Context, tenantID uuid.UUID, mode string, tagIDs, siteIDs []uuid.UUID) ([]uuid.UUID, error) {
+//
+// IT TAKES A ScopedPrincipal AND NOT A BARE tenantID, AND THAT IS THE POINT OF
+// ADR-061 A11 ITEM 2. With a uuid parameter this function could not route on
+// scope even in principle: every caller got InTenantTx, app.site_scope stayed
+// unset, and the RESTRICTIVE `_site_scope` policies -- sites_site_scope (m19)
+// above all, which is the one this query joins through -- were switched off at
+// the chokepoint that exists to enforce scope. RunTenantTx is what dispatches a
+// site-constrained principal to InScopedTenantTx, the only helper that sets the
+// GUC those policies key on.
+//
+// The signature change is also the audit surface. A caller that WANTS the
+// tenant-wide read must now name a principal that is org-scoped and say why, in
+// code, at its own call site -- see bootstrapTenantPrincipal in service.go,
+// whose whole reason for existing is that ONE call site is genuinely a
+// bootstrap and must not be scoped by the allowlist it is computing. A bare
+// uuid made that choice invisible and indistinguishable from an oversight.
+func (r *Repo) ResolveScopeSites(ctx context.Context, principal db.ScopedPrincipal, mode string, tagIDs, siteIDs []uuid.UUID) ([]uuid.UUID, error) {
+	tenantID := principal.GetTenantID()
 	var out []uuid.UUID
-	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+	err := r.pool.RunTenantTx(ctx, principal, func(tx pgx.Tx) error {
 		rows, err := sqlc.New(tx).ResolveMCPGrantScopeSitesInTenantTx(ctx,
 			// COLUMN3 IS THE SITE ARRAY AND COLUMN4 IS THE TAG ARRAY, in that
 			// order. The query reads `WHEN 'list' THEN s.id = ANY($3)` and
