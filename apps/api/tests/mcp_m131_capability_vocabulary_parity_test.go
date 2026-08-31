@@ -40,6 +40,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 	"github.com/mosamlife/wpmgr/apps/api/internal/mcp"
@@ -267,6 +268,44 @@ func m131GrantWithBearer(
 	return bearer
 }
 
+// m131AssertRoleOnBothDispatches asserts, INSIDE the transactions the request
+// path actually opens, that this connection is wpmgr_app with neither SUPERUSER
+// nor BYPASSRLS -- and prints what it found, so the proof carries its own
+// evidence rather than asking the reader to trust it.
+//
+// TWO HELPERS BECAUSE THE THREE TESTS BELOW USE TWO DISPATCHES. The grant and
+// its token are inserted through RunTenantTx (repo.CreateGrantWithCode), and
+// Authenticate resolves the bearer through InMCPTokenLookupTx. Asserting only
+// one would leave the other unevidenced, and they are different helpers setting
+// different GUCs.
+//
+// WHY THIS IS NOT A FRESH CONNECTION. Both calls go through the SAME db.Pool
+// the test hands to mcp.NewRepo, using the SAME dispatch functions the path
+// under test uses, so current_user is read on a connection from the pool that
+// runs the INSERT and the lookup. Opening a connection of its own would prove
+// something about a database rather than about the transactions these tests
+// run in -- which is the mistake that left the m112 RLS policies inert while
+// every proof passed.
+func m131AssertRoleOnBothDispatches(t *testing.T, pool *db.Pool, tenantID uuid.UUID) {
+	t.Helper()
+	ctx := context.Background()
+
+	principal := domain.Principal{TenantID: tenantID, Scope: domain.ScopeOrg}
+	if err := pool.RunTenantTx(ctx, principal, func(tx pgx.Tx) error {
+		mcpAssertAndReportRole(t, tx, "RunTenantTx (the grant insert dispatch)")
+		return nil
+	}); err != nil {
+		t.Fatalf("open the grant-insert dispatch: %v", err)
+	}
+
+	if err := pool.InMCPTokenLookupTx(ctx, func(tx pgx.Tx) error {
+		mcpAssertAndReportRole(t, tx, "InMCPTokenLookupTx (the Authenticate dispatch)")
+		return nil
+	}); err != nil {
+		t.Fatalf("open the token-lookup dispatch: %v", err)
+	}
+}
+
 // TestExistingSitesReadGrantStillAuthenticatesAsAppRole is the no-regression
 // half, and it is the one that matters most: every grant this surface has ever
 // minted holds exactly {mcp.sites.read}. Widening a containment CHECK is
@@ -279,6 +318,10 @@ func TestExistingSitesReadGrantStillAuthenticatesAsAppRole(t *testing.T) {
 	tenant := seedTenant(t, pool, "m131-legacy-"+uuid.NewString()[:8])
 	repo := mcp.NewRepo(pool)
 	svc := mcp.NewService(repo)
+
+	// The role is load-bearing HERE: this test INSERTS a grant and
+	// AUTHENTICATES a bearer, and either privilege makes both vacuous.
+	m131AssertRoleOnBothDispatches(t, pool, tenant)
 
 	bearer := m131GrantWithBearer(t, repo, tenant, []string{"mcp.sites.read"})
 
@@ -315,6 +358,10 @@ func TestNewlySeatedCapabilityInsertsAndAuthenticatesAsAppRole(t *testing.T) {
 	tenant := seedTenant(t, pool, "m131-new-"+uuid.NewString()[:8])
 	repo := mcp.NewRepo(pool)
 	svc := mcp.NewService(repo)
+
+	// The role is load-bearing HERE: this test INSERTS a grant and
+	// AUTHENTICATES a bearer, and either privilege makes both vacuous.
+	m131AssertRoleOnBothDispatches(t, pool, tenant)
 
 	want := []string{"mcp.sites.read", "mcp.uptime.read"}
 	bearer := m131GrantWithBearer(t, repo, tenant, want)
@@ -357,6 +404,10 @@ func TestContentReadInsertsButDoesNotAuthenticateAsAppRole(t *testing.T) {
 	tenant := seedTenant(t, pool, "m131-content-"+uuid.NewString()[:8])
 	repo := mcp.NewRepo(pool)
 	svc := mcp.NewService(repo)
+
+	// The role is load-bearing HERE: this test INSERTS a grant and
+	// AUTHENTICATES a bearer, and either privilege makes both vacuous.
+	m131AssertRoleOnBothDispatches(t, pool, tenant)
 
 	// It INSERTS: the CHECK holds it, which is what m131 seated.
 	bearer := m131GrantWithBearer(t, repo, tenant,
