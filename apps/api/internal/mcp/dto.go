@@ -178,6 +178,26 @@ type connectionDTO struct {
 	ReportedClientName    *string `json:"reported_client_name"`
 	ReportedClientVersion *string `json:"reported_client_version"`
 
+	// THE OPERATOR'S choice at step 2 -- a different fact from the two above,
+	// which is why it does not share their `reported_` prefix. Follows this
+	// struct's rule: pointer, no `omitempty`, so `"setup_client": null` is said
+	// out loud rather than becoming a missing key the consumer has to guess at.
+	//
+	// null MEANS "NO OPERATOR CHOICE WAS RECORDED", NOT "generic". S31's filter
+	// must not gather null rows under the "Other MCP client" chip: the sentence
+	// it renders is "None of them was set up for Windsurf", and coercing an
+	// absence into a stated choice is the falsehood that filter exists to
+	// avoid.
+	//
+	// AN UNRECOGNISED SLUG IS A LEGITIMATE VALUE HERE, not an error and not a
+	// server bug. The server pins spelling only; the vocabulary lives in
+	// apps/web/src/features/ai-connections/client-table.ts, so a client added
+	// there after this row was written arrives as a string the frontend of the
+	// day may not know. Render an unknown id as the generic panel -- which the
+	// wireframes call "a complete path, not a placeholder" -- never as an
+	// error.
+	SetupClient *string `json:"setup_client"`
+
 	Protocol protocolReportDTO `json:"protocol"`
 
 	// null means NEVER USED. It is not omitted and it is never a zero date.
@@ -227,6 +247,21 @@ type mintConnectionRequestDTO struct {
 	// empty stored capability set is a connection that authenticates and can
 	// then reach no tool at all.
 	Capabilities []string `json:"capabilities"`
+
+	// SetupClient is the operator's step-2 choice, and it is a *string SO THAT
+	// OMITTED AND EMPTY STAY DIFFERENT ON THE WIRE.
+	//
+	// A plain string would decode both `{}` and `{"setup_client":""}` to "",
+	// collapsing "the caller never asked" into "the caller asked and got
+	// nothing" -- and the service would then have to guess which. As a pointer,
+	// omitted is nil (stored NULL, nobody asked) and "" is a present-but-empty
+	// value, which validateSetupClient REFUSES rather than quietly storing as
+	// NULL. A caller that sends the key has made a claim and gets an answer
+	// about it.
+	//
+	// OPTIONAL, and omitting it is a legitimate request, not a degraded one:
+	// the consent path never asks and neither need any other non-wizard caller.
+	SetupClient *string `json:"setup_client"`
 }
 
 // mintConnectionResponseDTO carries the plaintext EXACTLY ONCE.
@@ -322,7 +357,12 @@ func toConnectionDTO(c Connection) connectionDTO {
 		CreatedAt:             c.CreatedAt.UTC().Format(time.RFC3339Nano),
 		ReportedClientName:    c.ReportedClientName,
 		ReportedClientVersion: c.ReportedClientVersion,
-		Protocol:              proto,
+		// Passed through as-is, nil and all. No fallback to
+		// ReportedClientName: that would answer "what was this set up for" with
+		// the client's own self-report, which is the substitution m128
+		// DECISION 1 exists to refuse.
+		SetupClient: c.SetupClient,
+		Protocol:    proto,
 		LastUsedAt:            isoOrNil(c.LastUsedAt),
 		RevokedAt:             isoOrNil(c.RevokedAt),
 	}

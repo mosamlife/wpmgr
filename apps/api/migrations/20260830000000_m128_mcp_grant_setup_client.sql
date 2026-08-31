@@ -1,0 +1,341 @@
+-- m128 - S29 step 2: record WHICH CLIENT THE OPERATOR SAID THIS CONNECTION WAS
+-- FOR, as a durable fact on the grant row.
+--
+-- This migration CORRECTS NOTHING. It edits no applied migration, it re-runs no
+-- earlier backfill, and there is NO CONVERGE PATH OWED: no database in any
+-- state needs a follow-up to reach the end state this file describes. A
+-- database that has not applied it has one fewer nullable column and every
+-- statement in the codebase still works, because the column is nullable with no
+-- default and nothing reads it yet. That is the whole of the m114/m115 question
+-- for this file, answered: no m129-shaped repair is owed.
+--
+-- ORDINAL. This is 20260830000000, above m127's 20260829000000, which was
+-- unmerged and in flight on branch worktree-agent-a354e37ca74442255 when this
+-- was written. Ordinal is APPLY order, not commit order (the m113/m114 lesson),
+-- and the two files are independent: m127 adds capabilities and two expiries,
+-- this one adds one client column, neither reads the other's columns and
+-- neither's backfill touches the other's rows. They commute. Applying this
+-- against a base without m127 is correct, and so is the reverse.
+--
+-- WHY IT EXISTS. The 2026-08-24 wireframes (Screen S29, step 2) make the client
+-- choice THE FORK of the whole wizard -- "steps 5, 6, 7 and 9 are computed from
+-- it" -- and say twice, in the frame captions, that it is "stored server-side,
+-- on the connection row [...] which is the whole reason the column exists".
+-- mcp_grants has nowhere to put it. It stores three client-ish things and NOT
+-- ONE OF THEM IS THE OPERATOR'S CHOICE:
+--
+--   client_id       - the OAuth registration id. NULL on the token path.
+--   client_name     - SELF-REPORTED by the client at `initialize`.
+--   client_version  - SELF-REPORTED, same source.
+--
+-- m124 DECISION 10 already labelled client_name and client_version
+-- "WHAT THE CLIENT REPORTED ABOUT ITSELF [...] observations". An observation is
+-- not a decision, and the two screens below need the decision specifically.
+--
+-- ===========================================================================
+-- DECISION 1: THIS IS A FOURTH CLIENT FACT, NOT A REPLACEMENT FOR THE OTHER
+--             THREE, AND THE SELF-REPORTED COLUMNS CANNOT STAND IN FOR IT
+-- ===========================================================================
+--
+-- The obvious cheap answer -- "read client_name, it already says Claude Code"
+-- -- is wrong on both screens that need this, and it is wrong in the exact case
+-- each screen exists to handle.
+--
+--   S29 STEP 9, STATE X: "Nothing has reached us from this connection." The
+--   frame's own hint says "The checks know this connection was set up for
+--   Claude Code, because that was stored on the connection row at step 2
+--   rather than in the browser you happened to use." That state is BY
+--   DEFINITION the state in which no `initialize` has ever arrived, so
+--   client_name IS NULL and client_identity_recorded_at IS NULL. The only
+--   surviving answer to "what was this set up for" is the operator's choice.
+--   A screen whose whole purpose is the never-connected case cannot be served
+--   by a column that is only written on connect.
+--
+--   S31, FILTER STATE E: "You have 4 connections. None of them was set up for
+--   Windsurf." Note the tense and the voice -- "was set up for", not "last
+--   connected as". The filter is over the operator's intent. Filtering on
+--   client_name would silently drop every connection that has not yet
+--   connected, and the screen would state a falsehood ("none of them") while a
+--   Windsurf connection sat in the list, unconnected. That is this project's
+--   signature defect -- an absence coerced into a confident answer -- rendered
+--   as reassuring copy.
+--
+-- The two facts also DISAGREE legitimately and permanently. An operator sets a
+-- connection up for Claude Desktop and pastes the URL into Cursor; both facts
+-- are then true and they differ. Neither is the other's stale copy, so neither
+-- may overwrite the other, and RecordConnect must NOT be extended to write this
+-- column. It is written once, at creation, by the wizard.
+--
+-- ===========================================================================
+-- DECISION 2: NULLABLE, NO DEFAULT, AND NOT BACKFILLED
+-- ===========================================================================
+--
+-- NULL MEANS "NO OPERATOR CHOICE WAS RECORDED". It means only that.
+--
+--   a. NULLABLE, DELIBERATELY THE OPPOSITE OF m127. m127 made capabilities and
+--      expires_at NOT NULL with no default and was right to: a caller that
+--      omits a capability set must get 23502 rather than an unrestricted
+--      connection, because THAT column carries AUTHORITY and its absence would
+--      be read as permission. THIS COLUMN CARRIES NO AUTHORITY AT ALL. It
+--      grants nothing, widens nothing, and is read by a setup panel and a
+--      filter. There is no fail-open to protect against, so there is nothing
+--      for a NOT NULL to buy -- and a great deal for it to cost: four branches
+--      open at the time of writing insert into mcp_grants, and a NOT NULL
+--      column with no default breaks every one of them at 23502 the moment
+--      this applies inside main() at boot, which is precisely what m127 had to
+--      manage with a backfill. Adding that hazard for a labelling column would
+--      be paying m127's price for none of m127's protection.
+--
+--   b. NO DEFAULT, AND THE ABSENCE OF THE DEFAULT IS LOAD-BEARING. A
+--      DEFAULT 'generic' would be the single worst value here. It would make
+--      every row ever created by a path that never asked -- and every row that
+--      exists today -- assert that an operator looked at nine cards and chose
+--      "Other MCP client". S31 would then report those connections under a
+--      filter the operator never selected, and step 9 would offer the generic
+--      setup panel while claiming the operator picked it. The default must be
+--      absent so that NULL survives to mean "nobody asked".
+--
+--   c. NOT BACKFILLED, AND NOT INFERRED FROM client_name. Every existing row
+--      keeps NULL. Deriving 'claude-code' from a self-reported client_name of
+--      "Claude Code" would MANUFACTURE A FACT THE OPERATOR NEVER STATED and
+--      write it into the column whose entire job is to hold what the operator
+--      stated. It would also destroy DECISION 1's distinction at the exact
+--      moment step 9 needs it: a row backfilled from client_name is
+--      indistinguishable from a row the operator chose, and step 9 exists to
+--      tell those apart. A grant whose operator choice is unknown stays
+--      unknown. This is not caution about a hard problem; the honest value is
+--      known and it is NULL.
+--
+-- Because there is no backfill and no NOT NULL to arm, this file has no step
+-- (0)/(1)/(2) shape at all. It is one ADD COLUMN and one CHECK.
+--
+-- ===========================================================================
+-- DECISION 3: THE VOCABULARY IS **OPEN**. THE SHAPE IS CLOSED.
+--             THIS IS DELIBERATELY NOT WHAT m127 DID, AND HERE IS WHY.
+-- ===========================================================================
+--
+-- THIS IS THE DECISION THIS MIGRATION EXISTS TO ARGUE, so it is argued rather
+-- than asserted. The precedent genuinely cuts both ways and the wrong read of
+-- it is the easy one: m127 closed its vocabulary by CHECK, m127 was right, so
+-- close this one too. That reasoning copies the mechanism and drops the reason.
+--
+-- WHAT m127'S CLOSED CHECK ACTUALLY BUYS. Its own DECISION 1(c) says it plainly:
+-- the CHECK exists so that "a write capability cannot reach this table until
+-- someone writes a migration naming it, which is a reviewed artefact", and
+-- m124 DECISION 1 had refused a capabilities column precisely because it
+-- "would create the place a write capability could appear without a migration
+-- and without a review". THE COUPLING TO A MIGRATION *IS* THE PRODUCT THERE.
+-- The toll is the point: it converts "add a string" into "pass a review".
+--
+-- THAT ARGUMENT DOES NOT TRANSFER, BECAUSE THERE IS NO PRIVILEGE HERE TO GATE.
+-- Ask what a maximally hostile value in each column does:
+--
+--   capabilities = 'mcp.sites.write'  ->  the connection gains an authority no
+--                                         operator granted. A security event.
+--   setup_client = 'wndsurf'          ->  a settings page renders the generic
+--                                         setup panel instead of the Windsurf
+--                                         one, and one filter chip misses one
+--                                         row. A cosmetic defect, fixable by
+--                                         editing the row.
+--
+-- A review gate is priced for the first row. Charging that price for the second
+-- buys no security whatsoever and bills a migration -- which applies inside
+-- main() at boot, on every install at once -- for a vendor's product launch.
+--
+-- AND THE CADENCES ARE GENUINELY DIFFERENT, WHICH IS THE OTHER HALF. A new
+-- capability is OUR decision: it exists only once we build a tool, so a
+-- migration is already being written and the CHECK edit is free. A new MCP
+-- client is SOMEBODY ELSE'S decision, announced on their schedule, and the
+-- work to support one is a row in
+-- apps/web/src/features/ai-connections/client-table.ts -- a frontend data
+-- table whose header comment already states the intended cost: "when a client
+-- changes, one row changes". A closed CHECK would silently amend that to "one
+-- row changes, and a control-plane migration ships, and every install runs it
+-- at boot". That is the wrong toll on the wrong lever.
+--
+-- WHAT HAPPENS WHEN A CLIENT THE VOCABULARY DOES NOT KNOW IS CHOSEN -- the
+-- question the brief requires this file to answer, and the one that decides it.
+-- Under a closed CHECK the INSERT fails 23514 and THE WIZARD BREAKS at step 2
+-- for a client the UI is offering. The failure lands on an operator, at the end
+-- of a ten-step flow, for a condition that is nobody's error. Under this
+-- migration the value stores, and an unrecognised slug DEGRADES AT THE RENDER
+-- LAYER to the generic panel -- which is not a fallback but, in the wireframe's
+-- own words for the "Other MCP client" card, "a complete path, not a
+-- placeholder", carrying "Fully supported" and drawn as one of "nine cards, one
+-- weight". The design already owns a first-class home for a client we do not
+-- have a row for. The schema does not need to invent a second, worse one out of
+-- an error code.
+--
+-- SO WHY A CHECK AT ALL. Because the two screens need ONE guarantee, and it is
+-- about FORM, not MEMBERSHIP. S31 renders `filter: client is windsurf` and then
+-- asserts "None of them was set up for Windsurf." That sentence is only true if
+-- equality is trustworthy. Free text lets 'Windsurf', 'windsurf ' and
+-- 'Windsurf (Devin Desktop)' all land in the column, and then the filter
+-- reports "none" while a matching connection sits in the list -- the same
+-- falsehood DECISION 1 rejected client_name for, reintroduced by the other
+-- door. So the constraint below pins the value to ONE CANONICAL SPELLING SHAPE
+-- -- lowercase, digits, single interior hyphens, non-empty, bounded -- and says
+-- nothing about which slugs exist.
+--
+-- THE RESULT IS THE ASYMMETRY THE PRODUCT ACTUALLY WANTS: a new client needs NO
+-- migration, and a MISSPELLED or MIS-CASED client is still unrepresentable.
+-- Membership is validated where the list lives (client-table.ts, which has a
+-- test) and where a bad value is a correctable form error rather than a 23514
+-- from the bottom of the stack.
+--
+-- THE PATTERN IS `^[a-z0-9]+(-[a-z0-9]+)*$`, VERIFIED AGAINST THE WHOLE LIST.
+-- All nine ids in client-table.ts match it and none fails:
+--
+--   printf '%s\n' claude-code claude-desktop chatgpt codex-cli cursor vscode \
+--     windsurf gemini-cli generic | grep -cE '^[a-z0-9]+(-[a-z0-9]+)*$'
+--     -> 9
+--   ...same list piped to grep -vE '<pattern>'  -> no output, exit 1
+--
+-- The ceiling is 64, the figure m120 and m127 both chose for a bounded text
+-- axis, and it is a property of the identifier rather than of any client.
+--
+-- WHAT WOULD CHANGE THIS DECISION. If a future capability, expiry or refusal is
+-- ever computed FROM setup_client -- if the client choice starts granting or
+-- withholding something rather than labelling it -- then it has become an
+-- authority column and m127's argument applies to it in full. It should then
+-- get a closed CHECK by a new migration. Written down here so that change is a
+-- decision someone makes, not a line someone crosses without noticing.
+--
+-- ===========================================================================
+-- DECISION 4: 'generic' IS A STORED VALUE AND IS NOT THE SAME AS NULL
+-- ===========================================================================
+--
+-- These are two different facts and the schema keeps them two:
+--
+--   setup_client IS NULL     - nobody asked. No operator ever saw step 2 for
+--                              this grant. Every row that exists today.
+--   setup_client = 'generic' - an operator SAW nine cards and CHOSE "Other MCP
+--                              client". A decision, as deliberate as choosing
+--                              Cursor.
+--
+-- Collapsing them would be tidier and it would break step 9 exactly as
+-- DECISION 2(b) describes. The distinction is why NULL is available at all
+-- despite 'generic' existing, and why 'generic' is required despite NULL
+-- existing. A reader tempted to remove one of the two states should read
+-- S29 step 9 state X first.
+--
+-- ===========================================================================
+-- DECISION 5: NAMED setup_client, BECAUSE THREE client_* COLUMNS ALREADY MEAN
+--             SOMETHING ELSE
+-- ===========================================================================
+--
+-- mcp_grants already has client_id, client_name and client_version, and every
+-- one of them is a fact about what connected rather than about what was chosen.
+-- A fourth column called client_choice or chosen_client_id would sit in that
+-- family and be misread as a variant of it -- and chosen_client_id in
+-- particular is one glance from client_id, which is an OAuth registration id
+-- and would be a genuinely dangerous confusion in a WHERE clause.
+--
+-- `setup_client` is lifted verbatim from the copy on both screens that read it:
+-- "this connection was set up for Claude Desktop" (S29 step 2) and "None of
+-- them was set up for Windsurf" (S31). The column is named after the sentence
+-- it exists to make true.
+--
+-- ===========================================================================
+-- DECISION 6: RLS IS INHERITED. NO POLICY. THE CROSS-TENANT LEDGER IS UNCHANGED
+-- ===========================================================================
+--
+-- THIS MIGRATION CREATES NO TABLE AND NO POLICY, so rule 2's site-scope
+-- checklist has nothing to attach to. m124 already put mcp_grants under ENABLE
+-- plus FORCE ROW LEVEL SECURITY with five policies -- the permissive
+-- mcp_grants_tenant_isolation and the four RESTRICTIVE
+-- mcp_grants_site_scope_{select,insert,update,delete}. RLS FILTERS ROWS, NOT
+-- COLUMNS, so a column added to a protected table is protected by the existing
+-- policies with no further statement, and a redundant policy here would be a
+-- second thing to keep in sync. This is m127 DECISION 5 for the same table and
+-- the same reason.
+--
+-- NO ROW IS OWED IN db/rls-cross-tenant-policies.txt. That ledger records
+-- policies granting access ACROSS tenants. This file adds no policy of any
+-- kind, and every existing policy on mcp_grants is tenant-isolated rather than
+-- cross-tenant, so the ledger gains no row and
+-- scripts/check-rls-cross-tenant.sh must stay green WITHOUT AN EDIT. A ledger
+-- diff accompanying this migration would be a defect, not a completion.
+--
+-- WHICH DISPATCH HELPER A CALLER MUST USE: db.RunTenantTx, unchanged and for
+-- m127 DECISION 5's reason. The four site_scope policies are RESTRICTIVE and
+-- each tests coalesce(current_setting('app.site_scope', true), '') <> 'on';
+-- RunTenantTx is the only thing that sets that GUC, and a call site choosing
+-- InTenantTx, InTenantTxAsUser or InScopedTenantTx leaves it unset, whereupon
+-- the coalesced empty string is not 'on', the RESTRICTIVE check passes, and the
+-- write proceeds with no error raised anywhere. A live privilege escalation of
+-- exactly that shape was fixed in this area on 2026-08-30. This column changes
+-- none of that and inherits all of it.
+--
+-- ===========================================================================
+-- DECISION 7: NO INDEX
+-- ===========================================================================
+--
+-- S31's filter is the only read that selects on this column, and it runs inside
+-- one organisation's connection list -- the wireframe's own example is "You
+-- have 4 connections". mcp_grants_tenant_idx already narrows to the tenant and
+-- the residual filter is applied to a handful of already-fetched rows. An index
+-- on setup_client would earn nothing on that path and would cost a write on
+-- every grant insert. Stated rather than left silent, so the absence reads as a
+-- decision.
+--
+-- ===========================================================================
+-- DECISION 8: GRANTS
+-- ===========================================================================
+--
+-- Nothing to add. m1's ALTER DEFAULT PRIVILEGES and m124's explicit
+-- GRANT SELECT, INSERT, UPDATE, DELETE ON mcp_grants TO wpmgr_app are
+-- table-level and cover columns added later; there is no per-column grant in
+-- force on this table that a new column could fall outside of. Stated because
+-- "the new column is invisible to wpmgr_app" is a failure that looks like an
+-- RLS bug for a day.
+--
+-- EVERY STATEMENT BELOW IS IDEMPOTENT AND THE FILE IS RE-RUNNABLE.
+
+-- ---------------------------------------------------------------------------
+-- (1) The column. NULLABLE, NO DEFAULT. See DECISION 2 -- both properties are
+--     load-bearing and neither is an oversight.
+-- ---------------------------------------------------------------------------
+
+ALTER TABLE "public"."mcp_grants"
+    ADD COLUMN IF NOT EXISTS "setup_client" text NULL;
+
+COMMENT ON COLUMN "public"."mcp_grants"."setup_client" IS
+    'The AI client the operator chose at S29 step 2, as a client-table.ts slug. '
+    'NULL means no operator choice was recorded -- NOT "generic", which is the '
+    'distinct case of an operator actively choosing "Other MCP client". '
+    'Distinct from client_name/client_version, which are self-reported by the '
+    'client at initialize, and from client_id, which is an OAuth registration '
+    'id. Never written by RecordConnect. See m128 DECISIONS 1, 2 and 4.';
+
+-- ---------------------------------------------------------------------------
+-- (2) Shape, not vocabulary. See DECISION 3.
+--
+--     This CHECK deliberately does NOT enumerate the nine clients. It pins the
+--     spelling so S31's equality filter is trustworthy, and stays silent on
+--     which slugs exist so a new MCP client costs one row in client-table.ts
+--     rather than a migration applied inside main() at boot.
+--
+--     NULL passes: an unconstrained CHECK result of NULL is not a violation,
+--     and NULL is a legal value here. Stated explicitly because a reader
+--     checking that DECISION 2 survives this constraint should not have to
+--     recall PostgreSQL's three-valued CHECK semantics to be sure.
+-- ---------------------------------------------------------------------------
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'public.mcp_grants'::regclass
+          AND conname  = 'mcp_grants_setup_client_shape_check'
+    ) THEN
+        ALTER TABLE "public"."mcp_grants"
+            ADD CONSTRAINT "mcp_grants_setup_client_shape_check"
+            CHECK (
+                "setup_client" IS NULL
+                OR ("setup_client" ~ '^[a-z0-9]+(-[a-z0-9]+)*$'
+                    AND length("setup_client") <= 64)
+            );
+    END IF;
+END;
+$$;

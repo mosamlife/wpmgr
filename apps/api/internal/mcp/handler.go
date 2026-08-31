@@ -272,6 +272,12 @@ func (h *Handler) mintConnection(c *gin.Context) {
 		Name:         body.Name,
 		SiteScope:    SiteScopeRequest{Mode: SiteScopeMode(body.SiteScopeMode), TagIDs: tagIDs, SiteIDs: siteIDs},
 		Capabilities: caps,
+		// Forwarded as the pointer it arrived as, so "omitted" survives the
+		// handler as nil rather than being flattened to "". The service
+		// validates its shape and refuses a malformed one; the handler does not
+		// second-guess it, for the same reason it does no authorization of its
+		// own -- a fourth opinion is a fourth thing that can drift.
+		SetupClient: body.SetupClient,
 	})
 	if err != nil {
 		httpx.Error(c, err)
