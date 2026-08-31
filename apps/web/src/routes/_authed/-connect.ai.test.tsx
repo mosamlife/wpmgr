@@ -135,6 +135,7 @@ const CONSENT = parseConsentContext({
   redirect_uri: "https://client.example/cb",
   redirect_host: "client.example",
   scopes: [SCOPE_READ],
+  grant_lifetime_days: 90,
   state: "opaque-csrf-token",
 });
 

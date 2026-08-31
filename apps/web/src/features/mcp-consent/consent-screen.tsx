@@ -452,14 +452,30 @@ function SiteScopeBlock({
 /**
  * Duration and revocation.
  *
- * NO DATE IS SHOWN, because there is no expiry to show. mcp_grants (m124, lines
- * 608-648) has a `status` of 'active' or 'revoked' and NO expires_at column,
- * and consentResponseDTO carries no lifetime field. Rendering a date here would
- * be inventing one, and rendering the word "never" as a lifetime would be
- * dressing an absent field as a decision. The truthful statement is the one
- * below: it lasts until it is revoked.
+ * A TERM IN DAYS, FROM THE SERVER, AND NOT A DATE THIS FILE COMPUTES.
+ * `grantLifetimeDays` is `grantAbsoluteTTL` (apps/api/internal/mcp/service.go)
+ * carried on the consent payload. Every grant is stamped with
+ * `mcp_grants.expires_at` at approval, the column is NOT NULL with no default
+ * (m127 decision 2), and the authentication lookup gates on
+ * `g.expires_at > now()` (apps/api/db/query/mcp_connections.sql:561), so
+ * expiry is a fact about the connection and not a background intention.
+ *
+ * Two things are deliberately absent. The first is a calendar date: no grant
+ * exists while this screen is open, the stamp happens at approval, and a date
+ * rendered here would be earlier than the one the row actually gets. The
+ * second is idle expiry: `mcp_grants.idle_expire_after_days` exists but
+ * CreateGrant writes NULL and NULL means never idle-expire, so no unused
+ * connection is closed for being unused today. Describing a control that is
+ * not running would be its own untrue sentence.
+ *
+ * Until 2026-08-31 this block said the connection "does not expire on its own",
+ * over a comment asserting mcp_grants had no expires_at column. The column
+ * landed in m127 and the sentence did not follow it, so the screen spent that
+ * window telling people a 90 day authorisation was open-ended at the moment
+ * they decided to grant it. The regression test asserts the replacement by
+ * value.
  */
-function DurationBlock() {
+function DurationBlock({ lifetimeDays }: { readonly lifetimeDays: number }) {
   return (
     <section
       aria-labelledby="consent-duration-heading"
@@ -468,15 +484,18 @@ function DurationBlock() {
       <h2 id="consent-duration-heading" className="text-sm font-medium">
         How long this lasts, and how to stop it
       </h2>
-      <p className="mt-2 text-sm text-[var(--color-muted-foreground)]">
-        This connection does not expire on its own. It lasts until you revoke it. The key the
-        client holds is short-lived and renews itself, so the connection keeps working until
-        you end it.
+      <p
+        data-testid="consent-duration-expiry"
+        className="mt-2 text-sm text-[var(--color-muted-foreground)]"
+      >
+        This connection expires on its own {lifetimeDays} days after you approve it. Once it
+        expires the client is refused at its next request and reads nothing further. Getting it
+        working again means coming back to this screen and approving a new connection.
       </p>
       <p className="mt-2 text-sm text-[var(--color-muted-foreground)]">
-        You end it in {REVOKE_LOCATION}. Every request this connection makes is checked against
-        that setting, so revoking stops it at its next request rather than whenever its current
-        key would have expired.
+        You can end it sooner in {REVOKE_LOCATION}, and that takes effect immediately. Every
+        request this connection makes is checked against that setting, so revoking stops it at
+        its next request rather than waiting for the {lifetimeDays} days to run out.
       </p>
     </section>
   );
@@ -648,7 +667,7 @@ export function ConsentScreen({
           )
         }
       />
-      <DurationBlock />
+      <DurationBlock lifetimeDays={consent.grantLifetimeDays} />
 
       <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-4">
         <Label htmlFor="consent-name">Name this connection</Label>
