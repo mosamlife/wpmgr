@@ -849,6 +849,44 @@ type Querier interface {
 	DeleteWebAuthnCredential(ctx context.Context, arg DeleteWebAuthnCredentialParams) (int64, error)
 	// Remove the registration session after FinishRegistration (or on failure).
 	DeleteWebAuthnRegistrationSession(ctx context.Context, id uuid.UUID) error
+	// DisableTenantAssistant turns the surface off. Also a configuration change.
+	// It is NOT the kill switch and must not be offered as one in the UI: it is
+	// the durable "this organisation does not use the assistant" decision, whereas
+	// the kill switch is the incident action. Both refuse requests through the
+	// same verdict, so the effect on traffic is immediate either way; the
+	// difference is what the record says afterwards and what the release action
+	// restores.
+	//
+	// Grants are left untouched on purpose (m130 DECISION 4c): disabling must not
+	// destroy the connection history that documents what the surface did, and an
+	// owner re-enabling later must get their connections back unchanged.
+	DisableTenantAssistant(ctx context.Context, tenantID uuid.UUID) (int64, error)
+	// EnableTenantAssistant turns the surface on for an organisation. This is a
+	// CONFIGURATION change, made in daylight by an owner, and it is not the kill
+	// switch's inverse — it deliberately does NOT touch assistant_paused_at, so
+	// enabling a paused organisation leaves it paused and the operator must
+	// release the switch as a separate, visible act.
+	//
+	// assistant_enabled_at IS NULL in the WHERE clause makes this idempotent and
+	// preserves the ORIGINAL enablement timestamp: re-enabling an already-enabled
+	// org affects 0 rows rather than rewriting when the decision was made.
+	// :execrows so the caller can tell "already enabled" from "no such tenant".
+	EnableTenantAssistant(ctx context.Context, tenantID uuid.UUID) (int64, error)
+	// EngageTenantAssistantKillSwitch is the 3am control. ONE UPDATE, ONE ROW, no
+	// INSERT and no row that has to exist first — that is what makes a one-click
+	// control possible and is a reason the state lives on tenants (m130 DECISION
+	// 1c). Every in-flight connection for this organisation is refused on its NEXT
+	// request, because the verdict is recomputed per request.
+	//
+	// No assistant_paused_at IS NULL guard: re-engaging an already-paused
+	// organisation refreshes the timestamp and the reason, which is what an
+	// operator escalating an ongoing incident wants. Idempotent in effect.
+	//
+	// The reason is required to be present and non-blank by
+	// tenants_assistant_paused_reason_check when it is not NULL; pass NULL for
+	// "no reason given" rather than a string of zero length, which the constraint
+	// refuses.
+	EngageTenantAssistantKillSwitch(ctx context.Context, arg EngageTenantAssistantKillSwitchParams) (int64, error)
 	// site_object_reclaim (m113 / GH #402): the durable record of object-storage
 	// work that outlives a site delete.
 	//
@@ -1717,6 +1755,26 @@ type Querier interface {
 	// of sites the operator asked to hear about, so a "3/8 -> 1/6" step reads
 	// correctly to a human even though no site's health moved.
 	GetTenantAppAlertRatio(ctx context.Context, tenantID uuid.UUID) (GetTenantAppAlertRatioRow, error)
+	// ===========================================================================
+	// M130 — the assistant / MCP surface's per-tenant enablement flag and kill
+	// switch. Four statements, deliberately NOT two: enabling and pausing are
+	// different facts with different lifecycles (m130 DECISION 2), so releasing
+	// the kill switch after an incident cannot accidentally enable a surface an
+	// owner had deliberately turned off.
+	//
+	// ENFORCEMENT DOES NOT LIVE HERE. All four of these are WRITE paths for the
+	// operator console. The read that matters runs on every request inside
+	// ReCheckMCPRequestAuthorizationInTenantTx, which joins tenants and folds both
+	// columns into the single `authorized` verdict. Do not add a second read of
+	// these columns on the request path and do not cache them: a cached kill
+	// switch is not a kill switch.
+	// ===========================================================================
+	// GetTenantAssistantState is the operator console's read. NOT the request
+	// path — the request path reads these columns through the verdict, never here.
+	// :one and no RLS on tenants, so the tenant_id filter in the WHERE clause is
+	// the ONLY thing scoping this row; a caller that drops it reads another
+	// organisation's state.
+	GetTenantAssistantState(ctx context.Context, tenantID uuid.UUID) (GetTenantAssistantStateRow, error)
 	// Returns the M16 Phase A billing/plan fields used by internal/billing's
 	// entitlement resolution. tenants carries no RLS (see schema.sql); every
 	// caller already holds a tenant_id it is entitled to query — either the
@@ -3123,6 +3181,10 @@ type Querier interface {
 	// and the SAME transaction as the verdict it was authorized under (S7's exit
 	// gate: discovery never grants what the registry does not hold, and it cannot
 	// hold what this row does not carry).
+	// INNER JOIN, and it is safe as an inner join ONLY because tenants has no RLS
+	// (m130 DECISION 1/3). No policy can filter this row away, the foreign key on
+	// t.tenant_id guarantees it exists, and t.tenant_id is already a bound
+	// parameter, so this is a primary-key probe and costs no extra round trip.
 	ReCheckMCPRequestAuthorizationInTenantTx(ctx context.Context, arg ReCheckMCPRequestAuthorizationInTenantTxParams) (ReCheckMCPRequestAuthorizationInTenantTxRow, error)
 	RecolorTag(ctx context.Context, arg RecolorTagParams) (SiteTag, error)
 	// Runs InTenantTx. Decision 10: there are TWO distinguishable absences in the
@@ -3272,6 +3334,19 @@ type Querier interface {
 	// carrying a secret and a confidential client without one both fail here with
 	// 23514 rather than reaching a Go comparison against NULL (Decision 11).
 	RegisterMCPOAuthClient(ctx context.Context, arg RegisterMCPOAuthClientParams) (int64, error)
+	// ReleaseTenantAssistantKillSwitch clears the pause after an incident.
+	//
+	// IT CLEARS THE REASON IN THE SAME STATEMENT, and it must: the reason is part
+	// of the pause, tenants_assistant_paused_reason_check refuses a reason without
+	// a pause, and clearing only assistant_paused_at would violate that constraint
+	// and fail — loudly, which is the correct direction, but the caller should
+	// never have to discover it.
+	//
+	// IT DOES NOT TOUCH assistant_enabled_at. That is the whole point of two
+	// columns (m130 DECISION 2): an organisation that was deliberately off before
+	// the incident is still off after it, and releasing the switch never enables
+	// a surface nobody chose to enable.
+	ReleaseTenantAssistantKillSwitch(ctx context.Context, tenantID uuid.UUID) (int64, error)
 	RemovePairingCodeTagName(ctx context.Context, arg RemovePairingCodeTagNameParams) error
 	RemoveSiteTagName(ctx context.Context, arg RemoveSiteTagNameParams) error
 	// May fail with unique_violation (23505) when @name collides with another
