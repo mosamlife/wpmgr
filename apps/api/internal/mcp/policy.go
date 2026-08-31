@@ -133,6 +133,52 @@ func grantScopes() []Scope {
 	return []Scope{ScopeRead}
 }
 
+// DefaultGrantCapabilities is the capability set stamped onto mcp_grants.
+// capabilities when a NEW grant is created and the consent screen offered no
+// narrowing control.
+//
+// It is the vocabulary, which is also the org default while exactly one scope
+// is recognised. It is a FUNCTION and not a constant slice because a package
+// variable would be shared, mutable, and one append away from widening every
+// grant this surface has ever minted.
+//
+// This is where a chosen value replaces a defaulted one when Step 5's
+// capability control ships: the operator's selection arrives on
+// ApprovalRequest and is passed instead. It is deliberately NOT a database
+// DEFAULT -- see the column's NOT NULL and m127's reasoning about a credential
+// nobody chose the terms of.
+func DefaultGrantCapabilities() []Capability { return AllCapabilities() }
+
+// capabilityNames renders capabilities for the text[] column.
+func capabilityNames(caps []Capability) []string {
+	out := make([]string, 0, len(caps))
+	for _, c := range caps {
+		out = append(out, string(c))
+	}
+	return out
+}
+
+// capabilitiesFromColumn reads mcp_grants.capabilities back into the domain
+// type.
+//
+// IT DOES NOT FILTER, and that omission is deliberate. Dropping an unknown name
+// here would hand NarrowTo a set that had already been quietly reduced, so a
+// row carrying a capability outside this build's vocabulary would authenticate
+// as though it carried only the known ones. The refusal belongs at NarrowTo,
+// where an unheld capability rejects the whole set instead of being trimmed out
+// of it -- the same reasoning ParseRequestedScopes gives for refusing an
+// unrecognised scope rather than ignoring it.
+//
+// A nil or empty column yields an empty slice, which the caller must treat as
+// "no capability" and never as "unrestricted".
+func capabilitiesFromColumn(names []string) []Capability {
+	out := make([]Capability, 0, len(names))
+	for _, n := range names {
+		out = append(out, Capability(n))
+	}
+	return out
+}
+
 // CapabilitySet is a RESOLVED set of capabilities.
 //
 // It is a struct and not a []Capability on purpose, and the reasoning is
@@ -192,13 +238,17 @@ func (s CapabilitySet) Sorted() []Capability {
 // OrgDefaultCapabilities is the WIDEST capability set any connection in this
 // organisation may hold, derived from the scopes the surface granted it.
 //
-// There is no capabilities column on mcp_grants and that is m124 DECISION 1:
-// minting one would create the place a write capability could appear without a
-// migration and without a review. So the org default is DERIVED from the closed
-// scope registry rather than stored, and it cannot exceed what
-// scopeCapabilities maps. When a differentiated-read column does arrive it
-// arrives NOT NULL with no default and a closed CHECK, and it narrows this --
-// it never replaces it as the ceiling.
+// IT IS THE CEILING, NOT THE ANSWER. m127 added mcp_grants.capabilities -- NOT
+// NULL, no default, closed CHECK, exactly as m124 DECISION 1 required of any
+// such column -- so a live connection's capability set is now READ FROM THAT
+// ROW and then narrowed against this ceiling (Service.Authenticate). This
+// function is no longer what a request path may use on its own: doing so
+// answers from the scope registry rather than from the grant, which agrees with
+// the row only while the vocabulary holds one name.
+//
+// It stays derived rather than stored because a ceiling that could be raised by
+// writing a row is not a ceiling. scopeCapabilities is the only thing that can
+// widen it, and widening that map is a code change under review.
 //
 // An empty or nil scope list yields an EMPTY set and an error, never a
 // permissive one. Absence is refusal here exactly as it is in

@@ -317,6 +317,11 @@ func TestMCPCreateGrantWithCodeRefusesASiteScopedPrincipalAsAppRole(t *testing.T
 		ScopeTagIds:   []uuid.UUID{},
 		ScopeSiteIds:  []uuid.UUID{},
 		ClientID:      &clientID,
+		// m127: both NOT NULL with no default. Supplied so this proof fails on
+		// the RLS refusal it is actually about, not on a 23502.
+		Capabilities:        []string{"mcp.sites.read"},
+		ExpiresAt:           time.Now().UTC().Add(90 * 24 * time.Hour),
+		IdleExpireAfterDays: nil,
 	}, func(grantID uuid.UUID) sqlc.CreateMCPAuthorizationCodeParams {
 		return sqlc.CreateMCPAuthorizationCodeParams{
 			TenantID:            tenantID,
@@ -328,7 +333,7 @@ func TestMCPCreateGrantWithCodeRefusesASiteScopedPrincipalAsAppRole(t *testing.T
 			RedirectUri:         "https://claude.ai/api/mcp/auth_callback",
 			ExpiresAt:           time.Now().UTC().Add(5 * time.Minute),
 		}
-	})
+	}, nil)
 	if err == nil {
 		t.Fatal("CreateGrantWithCode accepted a site-scoped principal. The write " +
 			"reached mcp_grants with app.site_scope unset, so the RESTRICTIVE " +

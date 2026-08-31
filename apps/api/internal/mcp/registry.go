@@ -260,18 +260,6 @@ func capabilityNotice(entry ToolPolicy) string {
 		entry.Capability, ErrCodeCapabilityNotGranted)
 }
 
-// capabilityNames renders a capability set for an error body. It is the
-// caller's OWN grant, so returning it discloses nothing new and it lets a
-// model tell the user exactly what the connection can and cannot do.
-func capabilityNames(set CapabilitySet) []string {
-	held := set.Sorted()
-	out := make([]string, 0, len(held))
-	for _, c := range held {
-		out = append(out, string(c))
-	}
-	return out
-}
-
 // VisibleTools is the tools/list answer: EVERY tool this server has, with the
 // ones this connection cannot currently call marked as such in their
 // description. Nothing is dropped. That is the D1 ruling, and the note above
@@ -410,7 +398,10 @@ func AuthorizeTool(name string, auth AuthorizedRequest) (ToolPolicy, refusalReas
 			WithDetails(map[string]any{
 				"tool":                name,
 				"required_capability": string(entry.Capability),
-				"held_capabilities":   capabilityNames(auth.Capabilities),
+				// Sorted() renders the caller's OWN grant. Returning it
+				// discloses nothing new and lets a model tell the user exactly
+				// what this connection can and cannot do.
+				"held_capabilities":   capabilityNames(auth.Capabilities.Sorted()),
 				"retryable":           false,
 			})
 	}

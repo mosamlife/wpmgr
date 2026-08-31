@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
@@ -28,7 +29,39 @@ const (
 	authorizationCodeTTL = 5 * time.Minute
 	connectionTokenTTL   = 90 * 24 * time.Hour
 	tokenPrefixLen       = 12
+
+	// grantAbsoluteTTL is the absolute lifetime stamped onto a new grant's
+	// mcp_grants.expires_at.
+	//
+	// IT IS A GO CONSTANT AND NOT A COLUMN DEFAULT, AND THE DIFFERENCE IS THE
+	// WHOLE OF m127 DECISION 2. The column is NOT NULL with no default, so this
+	// call site cannot omit the term and get one silently -- it gets 23502. The
+	// value is chosen here, once, where it is reviewable, rather than in the
+	// schema where it would apply to every future writer including one that
+	// meant to ask the operator.
+	//
+	// 90 days matches the consent wireframe's pre-selected option and the value
+	// m127 backfilled existing rows with. When Step 5's control ships, the
+	// operator's choice arrives on ApprovalRequest and REPLACES this default at
+	// this line; it does not become a second default anywhere else.
+	grantAbsoluteTTL = 90 * 24 * time.Hour
 )
+
+// grantLifetimeDays is grantAbsoluteTTL in whole days, and it is the ONLY
+// lifetime figure the consent screen is given.
+//
+// A TERM AND NOT A DATE, because at consent time no grant exists. expires_at is
+// stamped at approval from s.now(), which is later than the moment this
+// response was built by however long the human spends reading the screen, so a
+// timestamp computed here would be a date the row never holds. The term is
+// exact at both moments: approve it and it expires this many days later.
+//
+// DERIVED, NEVER RETYPED. The screen's sentence and the column's value now have
+// one source, so a change to grantAbsoluteTTL cannot leave the consent copy
+// stating the old term.
+func grantLifetimeDays() int {
+	return int(grantAbsoluteTTL / (24 * time.Hour))
+}
 
 // Error codes. These are domain codes; the OAuth wire errors are mapped from
 // them in dto.go so that RFC 6749 section 5.2 naming lives at the edge.
@@ -171,22 +204,98 @@ func validateTokenEndpointAuthMethod(method string) error {
 // Clock is injectable so expiry behaviour is testable without sleeping.
 type Clock func() time.Time
 
+// auditRecorder is the slice of *audit.Recorder this package actually uses. It
+// exists to make the append-FAILED branch testable without a broken database;
+// production passes the concrete recorder through WithAudit and nothing else
+// implements it outside tests.
+type auditRecorder interface {
+	Record(ctx context.Context, e audit.Event) (audit.Entry, error)
+	RecordInTx(ctx context.Context, tx pgx.Tx, e audit.Event) (audit.Entry, error)
+}
+
 // Service carries the OAuth surface. It holds no plaintext credential beyond
 // the response it is building: m124 obligation 6 says the plaintext is returned
 // once at creation and never read back, and there is no cache here.
 type Service struct {
 	store Store
 	now   Clock
+	// audit is nil unless WithAudit is called. Every audit write in this
+	// package guards on it being nil first -- see Approve, RevokeConnection,
+	// and RecordToolCall -- so a Service built by the many unit tests in this
+	// package (fakeStore, no real Postgres pool to back an audit.Recorder)
+	// keeps working unaudited. Production wiring (cmd/wpmgr/main.go) always
+	// calls WithAudit; a Service that reaches a request path without it is a
+	// wiring bug, not a supported configuration, and the finding to raise if
+	// one is ever found is "this deploy path is unattributable", not "make the
+	// nil check quieter".
+	//
+	// The type is the two-method auditRecorder rather than *audit.Recorder so
+	// that the FAILURE path is reachable from a unit test. What happens when
+	// an append fails is a decision this package makes deliberately (see
+	// TransportHandler.auditGap), and a decision whose only implementation is
+	// unreachable without a broken Postgres is a decision nothing checks.
+	audit auditRecorder
+
+	// mintLimit bounds POST /api/v1/mcp/connections. It lives on the SERVICE
+	// and not on the Handler, unlike Handler.regLimit, and the placement is
+	// deliberate: /register is unauthenticated so its limiter can only key on
+	// the transport (RemoteIP), which only the handler can see, whereas this
+	// one keys on the authenticated operator and is therefore expressible at
+	// the service layer -- where every mount of MintConnection is covered,
+	// including a test harness that forgot the middleware.
+	//
+	// Never nil after NewService. registrationLimiter.allow refuses on a nil
+	// receiver anyway, so a Service built by a struct literal that skipped it
+	// mints NOTHING rather than minting unlimited.
+	mintLimit *registrationLimiter
 }
 
 func NewService(store Store) *Service {
-	return &Service{store: store, now: time.Now}
+	return &Service{
+		store: store,
+		now:   time.Now,
+		// Armed HERE rather than injected with a nil default, for the reason
+		// NewHandler gives about its own limiter: an unarmed limiter would be a
+		// wiring failure that presents as a working endpoint.
+		mintLimit: newMintLimiter(),
+	}
 }
 
 // WithClock returns a copy using the supplied clock. Test-only in practice.
 func (s *Service) WithClock(c Clock) *Service {
 	cp := *s
 	cp.now = c
+	return &cp
+}
+
+// WithAudit returns a copy that appends ActionMCPGrantCreated,
+// ActionMCPGrantRevoked and ActionMCPToolCalled through rec. Mirrors
+// WithClock's copy-and-return shape. cmd/wpmgr/main.go calls this on the one
+// Service the process constructs; a Service left without it (as most of this
+// package's unit tests are, deliberately, since they drive a fakeStore with no
+// backing Postgres pool) simply does not audit -- see the field doc on audit.
+// It keeps the CONCRETE parameter type on purpose even though the field is an
+// interface: a nil *audit.Recorder stored straight into an interface is a
+// non-nil interface holding a nil pointer, which would sail past every
+// `s.audit == nil` guard in this file and panic on the first append instead of
+// skipping it. The explicit nil check below is what keeps "unaudited" meaning
+// unaudited.
+func (s *Service) WithAudit(rec *audit.Recorder) *Service {
+	cp := *s
+	if rec == nil {
+		cp.audit = nil
+		return &cp
+	}
+	cp.audit = rec
+	return &cp
+}
+
+// withAuditRecorder is the test-only door onto the same field, so a fake can
+// drive the append-failed path. Unexported: production wiring goes through
+// WithAudit.
+func (s *Service) withAuditRecorder(rec auditRecorder) *Service {
+	cp := *s
+	cp.audit = rec
 	return &cp
 }
 
@@ -577,6 +686,61 @@ func (s *Service) Approve(ctx context.Context, req ApprovalRequest) (Approval, e
 			// The RESOLVED client id, not the body's copy of it.
 			ClientID:        nullableText(client.ClientID),
 			CreatedByUserID: uuidToPG(req.Principal.UserID),
+
+			// m127's three columns, ALL SUPPLIED EXPLICITLY. Two of them are
+			// NOT NULL with no default precisely so that this literal cannot
+			// forget one: a missing field is the zero value, which is
+			// nil/invalid, which is NULL, which is 23502 at the INSERT rather
+			// than an unrestricted or never-expiring connection.
+			//
+			// Capabilities is the STORED per-connection capability set, and
+			// from here on it is the authority Authenticate reads -- not a
+			// value recomputed from the scope registry at request time. It is
+			// written as the org default because Phase 1's consent screen
+			// offers no narrowing control; the moment it does, the operator's
+			// choice arrives here and NarrowTo is what applies it.
+			Capabilities: capabilityNames(DefaultGrantCapabilities()),
+			ExpiresAt:    s.now().UTC().Add(grantAbsoluteTTL),
+
+			// IDLE EXPIRY IS WRITTEN NULL, AND NULL IS THE ANSWER, NOT A
+			// PLACEHOLDER. NULL means "never idle-expire" (m127 DECISION 4).
+			//
+			// A non-NULL value here is only safe once mcp_grants.last_used_at
+			// is actually written, because the deadline is
+			// coalesce(last_used_at, created_at) + N days: with the stamp
+			// unwired that collapses to created_at + N and every connection
+			// dies N days after creation however heavily it is used. The stamp
+			// IS wired now (RecordActivity, called from the transport's
+			// tools/list and tools/call arms), so a non-NULL window has become
+			// REPRESENTABLE -- but nothing yet asks the operator for one, and
+			// inventing a window nobody chose is exactly the "credential nobody
+			// chose the terms of" this column refuses to default.
+			//
+			// So: NULL until Step 5's second control ships and supplies a
+			// chosen value. The prerequisite is now met; the input is not.
+			IdleExpireAfterDays: nil,
+
+			// m128. NULL, AND NULL IS THE ANSWER RATHER THAN 'generic'.
+			//
+			// THE CONSENT PATH NEVER ASKS. An OAuth grant is authorised by a
+			// consent screen that shows the client's own unverified claim about
+			// itself; it never puts the nine-card chooser in front of the
+			// operator, so no operator choice exists to record. NULL is the
+			// column's word for "nobody asked" and it is the truth here.
+			//
+			// 'generic' WOULD BE A LIE, not a harmless default. It asserts the
+			// operator saw nine cards and picked "Other MCP client", and S31's
+			// filter and S29 step 9 both read that as a stated choice: every
+			// OAuth connection would then answer a filter chip no operator ever
+			// selected. m128 DECISION 2(b) refuses the schema default for this
+			// reason, and a Go-side default would reintroduce it one layer up.
+			//
+			// Do NOT derive it from client.ClientName either. That is the
+			// client's self-report, m128 DECISION 2(c), and inferring a choice
+			// from it manufactures a fact the operator never stated -- and
+			// makes an inferred row indistinguishable from a chosen one at
+			// exactly the screen that exists to tell them apart.
+			SetupClient: nil,
 		},
 		func(grantID uuid.UUID) sqlc.CreateMCPAuthorizationCodeParams {
 			return sqlc.CreateMCPAuthorizationCodeParams{
@@ -589,6 +753,45 @@ func (s *Service) Approve(ctx context.Context, req ApprovalRequest) (Approval, e
 				RedirectUri:         req.Consent.RedirectURI,
 				ExpiresAt:           expiresAt,
 			}
+		},
+		// ActionMCPGrantCreated, in the SAME transaction as both inserts above.
+		// This is "the row written to the audit log" the operator-facing
+		// consent flow promises: if the grant or the code fails to insert, or
+		// this append fails, the whole approval rolls back and there is no
+		// mcp.grant.created row for a grant that does not exist.
+		func(tx pgx.Tx, gr sqlc.McpGrant) error {
+			if s.audit == nil {
+				return nil
+			}
+			// THE ACTOR IS WHICHEVER CREDENTIAL AUTHENTICATED, resolved by
+			// audit.ActorFor rather than hardcoded.
+			//
+			// "CONSENT IS BROWSER-ONLY" IS A CONVENTION, NOT A CONSTRAINT, and
+			// an audit row may not rest on one. /consent is mounted on v1
+			// (server.go's Register(v1), where v1 derives from
+			// sessionAuthGroup and therefore carries Auth.Authenticate()) --
+			// the same Bearer-accepting group as the mint and the revoke. An
+			// API-key holder can drive the OAuth flow headlessly, and then
+			// ActorUser over req.Principal.UserID recorded uuid.Nil against a
+			// grant that really was created.
+			//
+			// CreatedByUserID above stays as it is and stays NULL for a key:
+			// that column means "the human who created it", and "none" is the
+			// honest answer where this pair is the complete one.
+			actorType, actorID := audit.ActorFor(req.Principal)
+			_, aerr := s.audit.RecordInTx(ctx, tx, audit.Event{
+				TenantID:   req.Principal.TenantID,
+				ActorType:  actorType,
+				ActorID:    actorID,
+				Action:     audit.ActionMCPGrantCreated,
+				TargetType: "mcp_grant",
+				TargetID:   gr.ID.String(),
+				Metadata: map[string]any{
+					"grant_name":      gr.Name,
+					"site_scope_mode": gr.SiteScopeMode,
+				},
+			})
+			return aerr
 		})
 	if err != nil {
 		return Approval{}, fmt.Errorf("create grant and code: %w", err)
@@ -848,6 +1051,14 @@ type AuthorizedRequest struct {
 	TenantID uuid.UUID
 	GrantID  uuid.UUID
 	TokenID  uuid.UUID
+	// GrantName is the grant's operator-assigned name (mcp_grants.name), read
+	// at the same ReCheckAuthorization call that resolves GrantID -- no extra
+	// query. It exists so RecordToolCall can stamp a human-readable label onto
+	// an ActionMCPToolCalled event without a database join: ActorName
+	// resolution (ListAuditEntries) has no arm for ActorAssistant today, so
+	// this is how the label travels until it does. Never used for
+	// authorization, only for display.
+	GrantName string
 
 	// Sites is the resolved site scope: the PER-CONNECTION narrowing on the
 	// site axis. Zero value allows nothing.
@@ -909,38 +1120,42 @@ func (s *Service) Authenticate(ctx context.Context, bearer string) (AuthorizedRe
 	// they are independent: the site axis above says WHICH SITES, this one says
 	// WHICH TOOLS.
 	//
-	// THE ORG DEFAULT IS DERIVED, NOT STORED, AND THAT IS m124 DECISION 1. There
-	// is deliberately no capabilities column on mcp_grants, because minting one
-	// would create the place a write capability could appear without a
-	// migration and without a review. So the ceiling is computed from the closed
-	// scope registry, and every live grant on this surface holds ScopeRead by
-	// construction -- ParseRequestedScopes refuses anything else and
-	// recognisedScopes holds exactly that one entry.
+	// THE STORED COLUMN IS THE AUTHORITY, AND THAT IS WHAT m127 CHANGED.
+	// mcp_grants.capabilities now exists -- NOT NULL, no default, CHECKed
+	// against the same closed vocabulary this package holds -- and it is read
+	// off chk.GrantCapabilities, THE SAME ROW AND THE SAME TRANSACTION as the
+	// `authorized` verdict this request was admitted under.
 	//
-	// WHAT IS NOT WIRED YET, SAID PLAINLY RATHER THAN IMPLIED. Two gaps, and
-	// the second is a LATENT WIDENING rather than a missing narrowing:
+	// Recomputing the set from the scope registry instead, as this line did
+	// before m127, is a GUESS: it agrees with the row today only because the
+	// vocabulary holds one name, and it diverges the instant a grant is created
+	// holding anything else. It also answers "full capabilities" for a grant
+	// whose stored set is EMPTY, which is the case where the two disagree by
+	// everything.
 	//
-	//  1. There is no stored per-connection capability narrowing, so this value
-	//     IS the org default. CapabilitySet.NarrowTo is the mechanism that
-	//     applies one, and it refuses a request wider than the default rather
-	//     than granting it; the COLUMN it would read from arrives with its own
-	//     migration, NOT NULL, no default, closed CHECK, as DECISION 1
-	//     requires.
+	// THE ORG DEFAULT REMAINS THE CEILING; the stored value NARROWS it and
+	// never replaces it. That ordering is the only thing standing between a row
+	// and a capability the organisation's scopes do not confer, so a capability
+	// in the column that the default does not hold is REFUSED here -- not
+	// honoured, and not quietly dropped. Dropping would be fail-closed and
+	// still wrong, for the reason written on NarrowTo.
 	//
-	//  2. THE SCOPE LIST BELOW IS A CONSTANT, NOT THE GRANT'S OWN SCOPES.
-	//     mcp_grants has no scopes column, so there is nothing per-grant to
-	//     read; grantScopes() returns the one scope every live grant holds by
-	//     construction. That is exact TODAY and only because recognisedScopes
-	//     holds exactly one entry. The day a second scope joins it, a
-	//     connection granted ONLY that scope would still be handed ScopeRead's
-	//     capabilities here -- a widening, and one no existing test catches,
-	//     because TestEveryRecognisedScopeHasACapabilityMapping pins the map's
-	//     totality and not this function's input.
+	// ONE GAP SURVIVES m127, AND IT IS A LATENT WIDENING RATHER THAN A MISSING
+	// NARROWING: the scope list below is a CONSTANT, not the grant's own
+	// scopes. mcp_grants still has no scopes column, so there is nothing
+	// per-grant to read; grantScopes() returns the one scope every live grant
+	// holds by construction. That is exact TODAY and only because
+	// recognisedScopes holds exactly one entry. The day a second scope joins
+	// it, a connection granted ONLY that scope would still be handed
+	// ScopeRead's capabilities as its CEILING here -- a widening, and one no
+	// existing test catches, because
+	// TestEveryRecognisedScopeHasACapabilityMapping pins the map's totality and
+	// not this function's input.
 	//
-	//     TestGrantScopesIsExactOnlyWhileOneScopeExists goes red the moment
-	//     recognisedScopes grows, so whoever adds the second scope is forced to
-	//     come here and read a grant's scopes instead of a constant.
-	caps, err := OrgDefaultCapabilities(grantScopes())
+	// TestGrantScopesIsExactOnlyWhileOneScopeExists goes red the moment
+	// recognisedScopes grows, so whoever adds the second scope is forced to
+	// come here and read a grant's scopes instead of a constant.
+	ceiling, err := OrgDefaultCapabilities(grantScopes())
 	if err != nil {
 		// A capability set that cannot be resolved is a REFUSAL, never an
 		// empty-but-proceeding one. An AuthorizedRequest with a zero-value
@@ -950,11 +1165,45 @@ func (s *Service) Authenticate(ctx context.Context, bearer string) (AuthorizedRe
 		return AuthorizedRequest{}, fmt.Errorf("resolve grant capabilities: %w", err)
 	}
 
+	// AN EMPTY STORED SET IS REFUSED BY NAME, not carried forward as an empty
+	// CapabilitySet. The column's shape CHECK admits '{}' -- the restrictive
+	// value passes the vocabulary containment test -- so the state is
+	// representable in the database even though no write path in this package
+	// mints it. Carrying it forward would authenticate a connection that then
+	// answers every tools/call with "not available" and every tools/list with
+	// nothing, which is precisely the half-working connection m127 DECISION 3
+	// says this boundary must not be able to produce.
+	//
+	// IT IS 403, NOT 401, and the distinction is the client's control flow
+	// rather than a matter of taste. Authenticate's refusals reach
+	// TransportHandler.writeUnauthorized, and an MCP client that receives 401
+	// re-runs the OAuth handshake -- which cannot change a stored capability
+	// set, so the client loops and the operator is sent to rotate a credential
+	// that was never the problem. An empty capabilities column is a
+	// CONFIGURATION state: the credential is valid and the grant is not
+	// permitted. That is what 403 says, and it is what every other producer of
+	// ErrCodeCapabilityUnmapped already returns (all three in
+	// OrgDefaultCapabilities).
+	stored := capabilitiesFromColumn(chk.GrantCapabilities)
+	if len(stored) == 0 {
+		return AuthorizedRequest{}, domain.Forbidden(ErrCodeCapabilityUnmapped,
+			"this connection holds no capability, so it can reach no tool")
+	}
+
+	caps, err := ceiling.NarrowTo(stored)
+	if err != nil {
+		// Same refusal, same reason: a stored set that cannot be reconciled
+		// with the organisation's ceiling is not silently reduced to the
+		// intersection. See NarrowTo.
+		return AuthorizedRequest{}, fmt.Errorf("resolve grant capabilities: %w", err)
+	}
+
 	// An empty resolved set means NO SITES. NewSiteSet's zero value allows
 	// nothing, so there is no widening path here even if ids is nil.
 	return AuthorizedRequest{
 		TenantID:     tok.TenantID,
 		GrantID:      chk.GrantID,
+		GrantName:    chk.GrantName,
 		TokenID:      chk.TokenID,
 		Sites:        NewSiteSet(ids),
 		Capabilities: caps,
@@ -976,11 +1225,273 @@ func (s *Service) Authenticate(ctx context.Context, bearer string) (AuthorizedRe
 // The error is RETURNED, not logged and dropped. The caller refuses the
 // session on failure -- a connection the control plane could not attribute is
 // worse than a refused one.
+//
+// ============================================================================
+// IT MUST NEVER WRITE mcp_grants.setup_client. THIS IS LOAD-BEARING (m128).
+// ============================================================================
+//
+// The tidy-looking change is to notice that this function already writes the
+// client's name and to "keep setup_client in sync" from it. That destroys the
+// column. setup_client is THE OPERATOR'S CHOICE at wizard step 2; name and
+// version are THE CLIENT'S SELF-REPORT at initialize. They are different facts
+// about different actors and they DISAGREE LEGITIMATELY AND PERMANENTLY -- set
+// up for Claude Desktop, URL pasted into Cursor. Neither is the other's stale
+// copy, so neither may overwrite the other.
+//
+// The damage is not hypothetical and it is silent. S29 step 9's failure state
+// reads setup_client precisely when NOTHING HAS EVER CONNECTED, which is by
+// definition the state in which this function has never run and both reported
+// columns are NULL; and S31 filters on "was set up for", not "last connected
+// as". A sync here would overwrite the operator's stated choice with an
+// observation on first connect, and every screen would keep rendering, wrong.
+//
+// The write path for that column is CreateGrant/MintConnection, once, at
+// creation. There is no second one. TestRecordConnectLeavesSetupClientAlone
+// and the integration proof of the same name are what make removing this
+// paragraph go red rather than green.
 func (s *Service) RecordConnect(ctx context.Context, auth AuthorizedRequest, name, version string, protocolHeader *string) error {
 	if err := s.store.RecordClientIdentity(ctx, auth.TenantID, auth.GrantID, name, version, protocolHeader); err != nil {
 		return fmt.Errorf("record mcp connect: %w", err)
 	}
 	return nil
+}
+
+// RecordActivity stamps mcp_grants.last_used_at (and the token's) for one
+// request that used this connection. GH #605.
+//
+// ============================================================================
+// WHAT COUNTS AS "USED", DECIDED EXPLICITLY: EVERY TOOL CALL, NOT CONNECT.
+// ============================================================================
+//
+// The caller is TransportHandler.dispatch, from the tools/list and tools/call
+// arms only. initialize, ping and notifications/initialized do NOT stamp.
+//
+// STAMPING ONCE PER SESSION AT CONNECT WAS THE ALTERNATIVE AND IT IS REJECTED,
+// for two reasons and not one:
+//
+//  1. IT WOULD MAKE THE COLUMN MEAN "last connected", which is a weaker claim
+//     than its name and than the connections list's "Last used" label. Renaming
+//     either to match would then be part of the change.
+//
+//  2. MORE IMPORTANTLY IT WOULD NOT BE SAFE TO IDLE-EXPIRE AGAINST. Streamable
+//     HTTP sessions are long-lived and initialize happens once at the start of
+//     one. A client that initialized in January and has called tools every day
+//     since would carry a January stamp, so a 30-day idle window would kill a
+//     demonstrably active connection in February. That is a smaller, quieter
+//     version of exactly the fleet outage m127 DECISION 4 describes, and the
+//     whole point of wiring this stamp is to make that outage impossible rather
+//     than rare.
+//
+// ping and notifications/initialized are excluded for the opposite reason: they
+// are transport keepalives that a stuck background process emits forever
+// without anyone using anything. Letting them refresh the deadline would make
+// "unused for 30 days" unfalsifiable and the feature decorative. Connecting is
+// still recorded -- RecordConnect stamps client_identity_recorded_at, which is
+// the separate fact "this client has connected at least once".
+//
+// THE ERROR IS RETURNED AND THE CALLER REFUSES THE REQUEST, deliberately unlike
+// RecordToolCall's best-effort audit append one function below. last_used_at is
+// an INPUT TO AN AUTHORIZATION DEADLINE, not an observation of one: a stamp
+// that silently fails leaves the connection's idle clock running while it is
+// being used, and the cost lands N days later as an expiry nobody can explain.
+// Refusing is loud, immediate, and local to the request that could not be
+// recorded -- and it costs nothing in practice, because a database that cannot
+// take this write also could not have served the two reads Authenticate just
+// made.
+func (s *Service) RecordActivity(ctx context.Context, auth AuthorizedRequest) error {
+	if _, err := s.store.TouchActivity(ctx, auth.TenantID, auth.GrantID, auth.TokenID); err != nil {
+		return fmt.Errorf("record mcp activity: %w", err)
+	}
+	return nil
+}
+
+// RecordToolCall appends the ActionMCPToolCalled audit row for one
+// successfully executed tool call. The caller (TransportHandler.callTool)
+// invokes this AFTER entry.invoke returns without error. A REFUSED call is
+// recorded separately, by RecordToolDenied, under ActionMCPToolDenied: until
+// ADR-061 A10 was addressed this comment claimed a refusal earned no row
+// because it "never reaches a tenant's data and is already in the operator
+// log", and both halves of that were true while the conclusion was not -- see
+// the argument on RecordToolDenied.
+//
+// ActorType is ActorAssistant, the one actor kind in this whole log that
+// attributes the row to the MODEL rather than to the human who granted it
+// access: auth.GrantID identifies WHICH connection acted, which is the fact an
+// operator reviewing "what did this MCP client touch" actually wants, and it
+// is a fact ActorUser (the approving human, possibly long gone from the
+// account) cannot carry. operatorPermission and toolName both come from the
+// registry entry AuthorizeTool already resolved -- see the OperatorPermission
+// doc on ToolPolicy for why that field lands here.
+//
+// BEST-EFFORT, deliberately unlike Approve/RevokeConnection's RecordInTx:
+// there is no companion write in the same transaction to roll back alongside a
+// failed append (a tool call in this phase is a read), so failing the whole
+// tool call because its own audit trail could not be appended would let a
+// purely observational feature take down the read path it exists to observe.
+// The error is returned so the caller can log it, never to be treated as a
+// reason to withhold the tool's answer.
+func (s *Service) RecordToolCall(ctx context.Context, auth AuthorizedRequest, toolName string, operatorPermission string) error {
+	if s.audit == nil {
+		return nil
+	}
+	_, err := s.audit.Record(ctx, audit.Event{
+		TenantID:   auth.TenantID,
+		ActorType:  audit.ActorAssistant,
+		ActorID:    auth.GrantID.String(),
+		Action:     audit.ActionMCPToolCalled,
+		TargetType: "mcp_tool",
+		TargetID:   toolName,
+		Metadata: map[string]any{
+			"grant_name":          auth.GrantName,
+			"operator_permission": operatorPermission,
+		},
+	})
+	return err
+}
+
+// RecordToolDenied appends the ActionMCPToolDenied audit row for one REFUSED
+// tools/call. The caller (TransportHandler.callTool) invokes it on the
+// AuthorizeTool refusal branch, alongside the operator log line and before the
+// wire answer is chosen.
+//
+// WHY A REFUSAL EARNS A ROW WHEN THE OLD COMMENT ON RecordToolCall SAID IT DID
+// NOT. That comment argued a refusal "never reached a tenant's data, and is
+// already covered by the WarnContext log at the refusal site", and both halves
+// are true and neither is sufficient. Never reaching the data is exactly what
+// has to be PROVEN rather than assumed -- it is the boundary's own claim about
+// itself -- and an slog line is not the artifact that proves it: it is not
+// hash-chained, not tenant-scoped, not readable through the audit endpoint a
+// customer's auditor is given, and it is subject to a retention the log
+// pipeline chooses. "Who was denied what" was therefore answerable only by an
+// operator with production log access, which is the wrong audience and the
+// wrong durability for the record that a security boundary functioned.
+//
+// The actor pair is ActorAssistant over auth.GrantID, identical to
+// RecordToolCall's, so a single query on actor_id returns everything one
+// connection did AND everything it was refused -- which is the shape an
+// investigation actually wants, and it is why this is not modelled as a
+// separate actor kind.
+//
+// reason is the OPERATOR-FACING refusalReason, deliberately the value the wire
+// blurs: the whole disclosure decision on AuthorizeTool is that "no such tool"
+// and "not yours" are indistinguishable to the CALLER, and it holds only
+// because the operator gets the precise reason somewhere else. This row is now
+// that somewhere else. Taking the typed refusalReason rather than a string is
+// what stops a caller composing a reason by hand and drifting from the log line
+// two lines above it.
+//
+// BEST-EFFORT, and that is a deliberate divergence from ADR-061 A10's
+// fail-closed language rather than an oversight. See TransportHandler.auditGap.
+func (s *Service) RecordToolDenied(ctx context.Context, auth AuthorizedRequest, toolName string, reason refusalReason) error {
+	// NOTE: a Service with no recorder records NOTHING and reports no error,
+	// the same as RecordToolCall. That is the unit-test configuration (see the
+	// audit field doc); in production WithAudit has always been called, and a
+	// request path reached without it is a wiring bug whose finding is "this
+	// deploy is unattributable", not "make this quieter".
+	if s.audit == nil {
+		return nil
+	}
+	// BOUNDED, because this is attacker-chosen input on a path the attacker can
+	// reach WITHOUT holding the tool. toolName is whatever arrived in params,
+	// up to maxRequestBytes (256 KiB), and every refusal would otherwise put all
+	// of it through the per-tenant audit advisory lock. Being denied is not a
+	// barrier to writing, so a caller who can use nothing on this surface could
+	// still drive the serialised ledger writer.
+	target, truncated, sanitized, origLen := audit.SafeTargetID(toolName)
+
+	meta := map[string]any{
+		"grant_name":        auth.GrantName,
+		"refusal_reason":    string(reason),
+		"held_capabilities": auth.Capabilities.Len(),
+		"scoped_sites":      auth.Sites.Len(),
+	}
+	if truncated {
+		// The row SAYS it is a prefix. Without this an auditor reads the
+		// shortened value as the name the caller actually sent, and an
+		// oversized-input probe -- which is itself the signal worth seeing --
+		// becomes indistinguishable from an ordinary typo.
+		meta["target_truncated"] = true
+		meta["target_original_len"] = origLen
+	}
+	if sanitized {
+		// Invalid UTF-8 in a tool name is not something a working client
+		// produces, so this flag is the signal that someone was probing the
+		// encoding boundary rather than mistyping.
+		meta["target_sanitized"] = true
+	}
+
+	_, err := s.audit.Record(ctx, audit.Event{
+		TenantID:  auth.TenantID,
+		ActorType: audit.ActorAssistant,
+		ActorID:   auth.GrantID.String(),
+		Action:    audit.ActionMCPToolDenied,
+		// The name AS SPELLED BY THE CALLER, not a registry name: on the
+		// unregistered branch there is no registry entry, and the string the
+		// caller guessed is the entire content of the evidence.
+		TargetType: "mcp_tool",
+		TargetID:   target,
+		Metadata:   meta,
+	})
+	return err
+}
+
+// RecordProtocolDenied appends the ActionMCPProtocolDenied audit row for an
+// authenticated request refused at revision negotiation.
+//
+// It is called from TransportHandler.writeProtocolRefusal, which is the ONE
+// function both refusal sites go through (the per-request header in serve, and
+// the initialize params). Putting the append there rather than at the two call
+// sites is what makes "every protocol refusal is recorded" structurally true
+// instead of true by convention -- a third refusal site added later inherits it.
+//
+// phase names which of the two negotiations refused, because they mean
+// different things operationally: a params refusal is a client that cannot
+// connect at all, a header refusal is a client that connected and then sent
+// something else, and only the second can indicate a proxy rewriting headers.
+func (s *Service) RecordProtocolDenied(ctx context.Context, auth AuthorizedRequest, neg Negotiation, phase string) error {
+	if s.audit == nil {
+		return nil
+	}
+	reason := neg.RefusalReason()
+
+	// BOUNDED for the same reason as RecordToolDenied, and reachable the same
+	// way: on the initialize_params phase neg.Raw is a JSON string from the
+	// body, not a header, so it is bounded only by maxRequestBytes. An
+	// unsupported revision is refused, and the refusal writes the row.
+	target, truncated, sanitized, origLen := audit.SafeTargetID(neg.Raw)
+
+	meta := map[string]any{
+		"grant_name":     auth.GrantName,
+		"refusal_reason": reason,
+		"phase":          phase,
+		// Recorded per row rather than left to be looked up: these are
+		// compile-time constants that WILL move, and a row that says only
+		// "2024-11-05 was refused" stops being interpretable the moment
+		// they do.
+		"floor":  ProtocolFloor,
+		"target": ProtocolTarget,
+	}
+	if truncated {
+		meta["target_truncated"] = true
+		meta["target_original_len"] = origLen
+	}
+	if sanitized {
+		// Worth its own field: invalid UTF-8 in a tool name or a revision
+		// string is not something a working client produces, so this flag is
+		// the signal that someone was probing the encoding boundary.
+		meta["target_sanitized"] = true
+	}
+
+	_, err := s.audit.Record(ctx, audit.Event{
+		TenantID:   auth.TenantID,
+		ActorType:  audit.ActorAssistant,
+		ActorID:    auth.GrantID.String(),
+		Action:     audit.ActionMCPProtocolDenied,
+		TargetType: "mcp_protocol",
+		TargetID:   target,
+		Metadata:   meta,
+	})
+	return err
 }
 
 // ListSitesForModel is the one Phase 1 read tool. It returns the rendered tool
@@ -1196,7 +1707,46 @@ func (s *Service) RevokeConnection(ctx context.Context, p domain.Principal, gran
 			"a connection id is required")
 	}
 
-	row, err := s.store.RevokeGrantWithTokens(ctx, p, grantID)
+	row, err := s.store.RevokeGrantWithTokens(ctx, p, grantID,
+		// ActionMCPGrantRevoked, in the SAME transaction as the revoke
+		// statement. Runs on all three non-error outcomes (freshly revoked,
+		// half-revoked repair, idempotent no-op): the operator explicitly
+		// asked for this credential to be revoked and the request is what is
+		// being attributed, not merely a state transition. It never runs
+		// alongside pgx.ErrNoRows -- see onRevoked's doc on the interface.
+		func(tx pgx.Tx, row sqlc.RevokeMCPGrantWithTokensInTenantTxRow) error {
+			if s.audit == nil {
+				return nil
+			}
+			// THE ACTOR IS WHICHEVER CREDENTIAL AUTHENTICATED, resolved by
+			// audit.ActorFor rather than hardcoded.
+			//
+			// THIS ROUTE IS MOUNTED BY THE SAME CALL AS THE HEADLESS MINT --
+			// server.go's RegisterConnections(v1), one nil check below
+			// Register(v1) -- so an API key that can mint a connection can
+			// revoke one, today, with nothing in between. ActorUser over
+			// p.UserID therefore wrote uuid.Nil for exactly the caller class
+			// this surface was built for, and it wrote it on THE ROW AN
+			// AUDITOR REACHES FOR AFTER AN INCIDENT: "who killed this
+			// credential, and when" answered with a user id that resolves to
+			// no user and, because the name join is gated on actor_type, to no
+			// name either.
+			actorType, actorID := audit.ActorFor(p)
+			_, aerr := s.audit.RecordInTx(ctx, tx, audit.Event{
+				TenantID:   p.TenantID,
+				ActorType:  actorType,
+				ActorID:    actorID,
+				Action:     audit.ActionMCPGrantRevoked,
+				TargetType: "mcp_grant",
+				TargetID:   grantID.String(),
+				Metadata: map[string]any{
+					"grants_revoked":  row.GrantsRevoked,
+					"tokens_revoked":  row.TokensRevoked,
+					"already_revoked": row.GrantsRevoked == 0,
+				},
+			})
+			return aerr
+		})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return RevokeOutcome{}, domain.NotFound(ErrCodeConnectionNotFound,
@@ -1240,6 +1790,11 @@ func connectionFromGrant(g sqlc.McpGrant) Connection {
 		CreatedAt:             g.CreatedAt,
 		ReportedClientName:    g.ClientName,
 		ReportedClientVersion: g.ClientVersion,
+		// The OPERATOR's choice, read straight off the row and never
+		// substituted from ClientName above. The two fields sit adjacent here
+		// on purpose: they answer different questions and either may be nil
+		// while the other is set. See Connection.SetupClient.
+		SetupClient: g.SetupClient,
 		Protocol: ClassifyStoredProtocol(
 			timestamptzTimeOrNil(g.ClientIdentityRecordedAt), g.ProtocolVersion),
 		LastUsedAt: timestamptzTimeOrNil(g.LastUsedAt),

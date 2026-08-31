@@ -614,6 +614,48 @@ type Querier interface {
 	// either gets 23502 rather than a live organisation-wide grant (Decision 1).
 	// The caller passes status explicitly -- 'active' -- rather than relying on the
 	// schema to assume it.
+	//
+	// m127 EXTENDS THAT RULE TO EXPIRY AND CAPABILITIES, and the two new NOT NULL
+	// columns behave the same way: a caller that omits capabilities or expires_at
+	// gets 23502, NOT an unrestricted or never-expiring connection.
+	//
+	// THAT 23502 IS THE DESIGNED BEHAVIOUR AND IT IS CURRENTLY REACHABLE.
+	// CreateMCPGrantParams is a named-field struct literal at
+	// internal/mcp/service.go:570 and in three integration fixtures, so adding
+	// fields does NOT break the build -- it leaves them zero, which is nil/invalid,
+	// which is NULL, which is refused at the INSERT. backend-architect must supply
+	// all three. A loud 23502 at creation is the correct failure and is strictly
+	// better than the alternative of a DEFAULT that quietly mints a credential
+	// nobody chose the terms of.
+	//
+	// idle_expire_after_days is passed explicitly and MAY be NULL: NULL is a real,
+	// meaningful value there ("never idle-expire"). m127 DECISION 4 made a non-NULL
+	// value conditional on the activity stamp being wired, and IT NOW IS:
+	// TouchMCPGrantInTenantTx is reached through Repo.TouchActivity, via
+	// Service.RecordActivity, from the transport's tools/list and tools/call arms.
+	// A non-NULL window is therefore representable. Callers still pass NULL because
+	// NOTHING ASKS THE OPERATOR FOR A WINDOW YET -- not because the stamp is
+	// missing. Read that distinction before removing the NULL: the guard is waiting
+	// on an input, not on a fix.
+	//
+	// setup_client (m128) IS THE OPERATOR'S CHOICE AT S29 STEP 2 and is passed
+	// explicitly, like status, rather than being left to the schema. It is NULLABLE
+	// with NO DEFAULT precisely so a caller that never asked -- any path that is
+	// not the step-2 wizard -- can pass NULL and mean "no operator choice was
+	// recorded". PASS NULL RATHER THAN 'generic' ON SUCH A PATH: 'generic' asserts
+	// the operator saw nine cards and chose "Other MCP client", which is a
+	// different fact and the one S29 step 9 distinguishes.
+	//
+	// Do NOT derive it from client_name. That column is self-reported at
+	// `initialize`, is NULL until the client first connects, and inferring a
+	// choice from it manufactures a fact the operator never stated.
+	//
+	// m127 AND m128 ARE INDEPENDENT ON THIS INSERT AND THE MERGE MUST KEEP THEM SO.
+	// The three m127 columns carry AUTHORITY and are refused when absent (two are
+	// NOT NULL); setup_client carries NONE and is legally absent. Omitting
+	// setup_client from this list would silently discard the operator's step-2
+	// choice on every create; omitting any m127 column would mint a credential
+	// nobody chose the terms of. Both failures compile and generate cleanly.
 	CreateMCPGrant(ctx context.Context, arg CreateMCPGrantParams) (McpGrant, error)
 	// ---------------------------------------------------------------------------
 	// backup_manifest_entries
@@ -3066,6 +3108,21 @@ type Querier interface {
 	// The grant is joined on tenant_id as well as id: the token and its grant must
 	// belong to the same organisation, checked in the join rather than assumed
 	// from the foreign key.
+	// m127 DECISION 3 ADDS BOTH GRANT EXPIRIES TO THIS SAME VERDICT, rather than to
+	// a second read the caller might forget. A grant past its absolute expiry, or
+	// past its idle deadline, now fails THE SAME PREDICATE a revoked grant fails.
+	// Both are evaluated on the already-fetched grant row, so neither costs a round
+	// trip and neither needs an index.
+	//
+	// The wireframe's "there is no silent read-only period" is a consequence of
+	// this shape: expiry flips one boolean to false outright and cannot degrade a
+	// connection to a reduced capability set, because there is one boolean here and
+	// not a tier.
+	//
+	// g.capabilities is returned so the capability set is read from the SAME ROW
+	// and the SAME transaction as the verdict it was authorized under (S7's exit
+	// gate: discovery never grants what the registry does not hold, and it cannot
+	// hold what this row does not carry).
 	ReCheckMCPRequestAuthorizationInTenantTx(ctx context.Context, arg ReCheckMCPRequestAuthorizationInTenantTxParams) (ReCheckMCPRequestAuthorizationInTenantTxRow, error)
 	RecolorTag(ctx context.Context, arg RecolorTagParams) (SiteTag, error)
 	// Runs InTenantTx. Decision 10: there are TWO distinguishable absences in the

@@ -540,7 +540,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// would make POST /mcp answer 404, which is indistinguishable from a
 	// routing failure. Self-host reaches it too; the grant is what authorizes,
 	// and an installation with no grants simply has no valid bearer token.
-	mcpSvc := mcp.NewService(mcp.NewRepo(pool)).WithClock(clock.Now)
+	mcpSvc := mcp.NewService(mcp.NewRepo(pool)).WithClock(clock.Now).WithAudit(auditRec)
 	mcpTransportH := mcp.NewTransportHandler(mcpSvc, logger, version)
 	// The OAuth half, wired unconditionally for the same reason. Without it the
 	// transport above is mounted and correct and refuses every request forever,

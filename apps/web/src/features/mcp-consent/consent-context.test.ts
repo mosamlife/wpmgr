@@ -21,6 +21,7 @@ const VALID = {
   redirect_uri: "https://attacker.example/oauth/callback",
   redirect_host: "attacker.example",
   scopes: [SCOPE_READ],
+  grant_lifetime_days: 90,
   state: "xyz",
   code_challenge: "abc",
   code_challenge_method: "S256",
@@ -77,6 +78,28 @@ describe("parseConsentContext — unverified identity", () => {
       .toEqual({ stated: false });
     const { client_name_unverified: _omitted, ...noName } = VALID;
     expect(parseConsentContext(noName).clientNameUnverified).toEqual({ stated: false });
+  });
+
+  it("refuses a payload with no grant lifetime rather than assuming one", () => {
+    // The screen has to say how long the authorisation lasts. A missing term
+    // is an unrenderable screen, not a screen that quietly falls back to the
+    // term this file last knew about. Same fail-closed direction as
+    // redirect_host above.
+    const { grant_lifetime_days: _omitted, ...noTerm } = VALID;
+    expect(() => parseConsentContext(noTerm)).toThrow();
+  });
+
+  it("refuses a grant lifetime that is not a positive whole number of days", () => {
+    expect(() => parseConsentContext({ ...VALID, grant_lifetime_days: 0 })).toThrow();
+    expect(() => parseConsentContext({ ...VALID, grant_lifetime_days: -30 })).toThrow();
+    expect(() => parseConsentContext({ ...VALID, grant_lifetime_days: 90.5 })).toThrow();
+    expect(() => parseConsentContext({ ...VALID, grant_lifetime_days: "90" })).toThrow();
+  });
+
+  it("carries the server's term through unchanged", () => {
+    expect(parseConsentContext({ ...VALID, grant_lifetime_days: 365 }).grantLifetimeDays).toBe(
+      365,
+    );
   });
 
   it("never coerces an absent optional into a plausible value", () => {

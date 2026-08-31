@@ -93,6 +93,10 @@ func s7GrantWithBearer(
 		ScopeTagIds:   []uuid.UUID{},
 		ScopeSiteIds:  siteIDs,
 		ClientID:      &clientID,
+		// m127: both NOT NULL with no default. See the s6b2 fixture.
+		Capabilities:        []string{"mcp.sites.read"},
+		ExpiresAt:           time.Now().UTC().Add(90 * 24 * time.Hour),
+		IdleExpireAfterDays: nil,
 	}, func(grantID uuid.UUID) sqlc.CreateMCPAuthorizationCodeParams {
 		return sqlc.CreateMCPAuthorizationCodeParams{
 			TenantID:            tenantID,
@@ -104,7 +108,7 @@ func s7GrantWithBearer(
 			RedirectUri:         "https://claude.ai/api/mcp/auth_callback",
 			ExpiresAt:           time.Now().UTC().Add(5 * time.Minute),
 		}
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("create grant for tenant %s: %v", tenantID, err)
 	}

@@ -240,9 +240,13 @@ export function describeSiteScope(scope: ResolvedSiteScope): string {
       return `${siteCount(scope.sites.length)} ${verb} these tags today, listed below. ${future}`;
     }
     case "none":
+      // 2026-08-23 revision (wireframes.html:3559): an empty allowlist "is a
+      // working state, not an error -- it is how you mint a credential now and
+      // decide its reach later." Both branches say that consequence plainly
+      // rather than treating the choice as incomplete.
       return scope.because === "no-selection"
-        ? "No sites are selected yet. Choose what this client may read before approving."
-        : "This selection matches no sites, so this connection would be able to read nothing. That is not the same as covering every site.";
+        ? "No sites are selected. That is a working state, not an error: this connection will read nothing and propose nothing until you give it sites to cover, now or later."
+        : "This selection matches no sites, so this connection will read nothing and propose nothing right now. That is a working state, not an error: you can widen its scope later.";
     case "unresolved":
       return scope.because === "loading"
         ? "Working out which sites this covers."
@@ -253,11 +257,19 @@ export function describeSiteScope(scope: ResolvedSiteScope): string {
 /**
  * Whether a scope may be approved.
  *
- * `none` is refusable rather than blocked-with-a-warning: server-side, an empty
- * payload is unstorable for mode 'list' and a tag matching nothing resolves to
- * an empty set, so approving it creates a grant that reads nothing. Better to
- * say that on this screen than to mint a credential that silently does nothing.
- * `unresolved` is blocked because consenting to an unread set is not consent.
+ * 2026-08-23 revision (wireframes.html:3559): "A connection with an empty
+ * allowlist can read nothing and propose nothing. That is a working state, not
+ * an error -- it is how you mint a credential now and decide its reach later."
+ * `none` is therefore approvable, on equal footing with `all` and `sites`.
+ * Narrowing to nothing is not refused here because it is enforced where it
+ * actually matters: by which tools are registered for the connection
+ * (wireframes.html:1743, "narrowing is applied by unregistering the tool, not
+ * by denying it at call time"), not by a client-side gate on this screen. The
+ * older rule that blocked an empty allowlist (wireframes.html:1293) is
+ * superseded.
+ *
+ * `unresolved` is the only kind that still blocks. Consenting to a scope
+ * nobody has read is not consent, whether the read is pending or failed.
  *
  * A TRUNCATED LIST DOES NOT BLOCK. It is disclosed instead. Blocking would
  * refuse every organisation past the page size, and the operator choosing "every
@@ -265,5 +277,52 @@ export function describeSiteScope(scope: ResolvedSiteScope): string {
  * is a false count or a list that poses as the whole fleet.
  */
 export function isScopeApprovable(scope: ResolvedSiteScope): boolean {
-  return scope.kind === "all" || scope.kind === "sites";
+  return scope.kind !== "unresolved";
+}
+
+/**
+ * Resolve selected tag NAMES to the ids a mint or approval request must carry.
+ *
+ * SHARED BETWEEN THE CONSENT SCREEN AND THE WIZARD, because both hold tag
+ * choices as names (what the operator clicked) and both wire endpoints
+ * (approvalRequestDTO, mintConnectionRequestDTO) want `scope_tag_ids` as
+ * UUIDs. A tag id survives a rename; a name does not, so translating late and
+ * once, here, is what keeps a renamed tag from silently changing which sites a
+ * stored grant covers.
+ *
+ * NULL, NOT A SHORTER ARRAY, when a selected name no longer resolves. The
+ * registry can go null after a name is ticked (still loading, or reloaded
+ * without that tag), and `(tags ?? []).filter(...)` would silently produce an
+ * array missing exactly the tag the operator chose -- narrowing the request
+ * without telling anyone. Null is "cannot build this payload" and every caller
+ * must refuse to submit on it, loudly, rather than sending the smaller set.
+ *
+ * PARTIAL RESOLUTION IS THE SAME ABSENCE. Filtering the registry down to the
+ * ticked names returns whatever survived, so a selection of two tags where one
+ * was deleted resolved to the ONE that remained and the request went out
+ * covering half of what was chosen. Narrowing is not the safer direction when
+ * nobody is told it happened: the operator reads the scope line, sees both
+ * tags they ticked, and deploys a credential that carries one. Every selected
+ * name must resolve or the whole payload is null.
+ *
+ * EMPTY IN, EMPTY OUT. No ticked names resolves to `[]`, not null: there is
+ * nothing unresolved about choosing nothing. It is NOT a mintable payload --
+ * ValidateSiteScopeRequest (apps/api/internal/mcp/scope.go:177-182) refuses
+ * mode 'tags' with an empty list, and mint.go:264 runs the same check -- but
+ * that refusal belongs to the callers' gates, stated in their own words, not
+ * smuggled in here as a null that every caller then reports as a registry
+ * failure the operator cannot act on.
+ */
+export function resolveTagIds(
+  selectedTagNames: readonly string[],
+  tags: readonly { readonly id: string; readonly name: string }[] | null,
+): readonly string[] | null {
+  if (tags === null) return null;
+  const ids: string[] = [];
+  for (const name of selectedTagNames) {
+    const tag = tags.find((candidate) => candidate.name === name);
+    if (tag === undefined) return null;
+    if (!ids.includes(tag.id)) ids.push(tag.id);
+  }
+  return ids;
 }

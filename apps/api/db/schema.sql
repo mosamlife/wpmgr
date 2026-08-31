@@ -5641,6 +5641,37 @@ CREATE TABLE mcp_grants (
             AND cardinality(scope_site_ids) > 0
             AND cardinality(scope_tag_ids) = 0)
     ),
+    -- WHICH TOOLS this grant may reach (m127 DECISION 1). NOT NULL, NO
+    -- DEFAULT: a nullable capabilities column read as "no narrowing applied,
+    -- therefore everything" is the defect this surface exists to prevent. '{}'
+    -- is legal and means zero capabilities, which reaches no tool.
+    --
+    -- Deliberately the OPPOSITE of api_keys.capabilities, which is nullable --
+    -- that column had a `role` fallback and a live fleet to avoid stripping at
+    -- boot; this one has no second source of authority, so NULL would only
+    -- mean "unknown", and an unknown grant is refused.
+    capabilities text[] NOT NULL,
+    -- Shape, exactly as m120 checks api_keys.capabilities: one dimension (a
+    -- nested literal would be flattened by unnest() into capabilities nobody
+    -- granted), no NULL element, no empty string, and the 64 ceiling the
+    -- wireframe states as a property of the credential.
+    CONSTRAINT mcp_grants_capabilities_shape_check CHECK (
+        coalesce(array_ndims(capabilities), 1) = 1
+        AND cardinality(capabilities) <= 64
+        AND array_position(capabilities, NULL) IS NULL
+        AND NOT ('' = ANY (capabilities))
+    ),
+    -- CLOSED VOCABULARY, checked against the registry by name. This is S7's
+    -- exit gate -- discovery never grants what the registry does not hold --
+    -- pushed into the one place a call site cannot forget.
+    --
+    -- Keep in lockstep with capabilityVocabulary in internal/mcp/policy.go,
+    -- which holds exactly this one entry today. EXTENDING IT IS A MIGRATION,
+    -- and that coupling is the review gate m124 DECISION 1 asked for: a write
+    -- capability cannot reach this table until someone writes a migration
+    -- naming it. Adding a Capability to policy.go alone fails 23514 on INSERT.
+    CONSTRAINT mcp_grants_capabilities_vocabulary_check
+        CHECK (capabilities <@ ARRAY['mcp.sites.read']::text[]),
     -- The registered OAuth client, or NULL on the headless token path. No
     -- foreign key: neither ON DELETE action is right for a recorded fact.
     client_id text NULL,
@@ -5651,12 +5682,113 @@ CREATE TABLE mcp_grants (
     client_version              text        NULL,
     protocol_version            text        NULL,
     client_identity_recorded_at timestamptz NULL,
+    -- m128. THE OPERATOR'S CHOICE at S29 step 2, as a client-table.ts slug.
+    -- A FOURTH client fact, not a replacement for the three above: those are
+    -- self-reported by the client at `initialize`, this one is what a human
+    -- said the connection was for. They disagree legitimately and permanently
+    -- (set up for Claude Desktop, URL pasted into Cursor), so neither
+    -- overwrites the other and RecordConnect must never write this column.
+    --
+    -- NULL MEANS "NO OPERATOR CHOICE WAS RECORDED", and is NOT 'generic'.
+    -- 'generic' means an operator saw nine cards and chose "Other MCP client",
+    -- which the wireframe calls "a complete path, not a placeholder". S29 step
+    -- 9's never-connected state needs both facts and needs them apart.
+    --
+    -- NULLABLE WITH NO DEFAULT, deliberately unlike m127's capabilities and
+    -- expires_at: this column carries NO AUTHORITY, so there is no fail-open
+    -- for a NOT NULL to close, and a DEFAULT 'generic' would make every row
+    -- ever created assert a choice nobody made.
+    --
+    -- The CHECK pins SPELLING, not MEMBERSHIP. It does not enumerate the nine
+    -- clients: a new MCP client arrives on a vendor's cadence and should cost
+    -- one row in client-table.ts, not a migration applied inside main() at
+    -- boot. What it does buy is S31's filter -- `client is windsurf` then
+    -- "None of them was set up for Windsurf" is only true if equality is
+    -- trustworthy, so 'Windsurf' and 'windsurf ' are unrepresentable. An
+    -- unrecognised slug degrades at the render layer to the generic panel.
+    -- See m128 DECISION 3 for the full argument.
+    setup_client                text        NULL
+        CONSTRAINT mcp_grants_setup_client_shape_check
+        CHECK (setup_client IS NULL
+               OR (setup_client ~ '^[a-z0-9]+(-[a-z0-9]+)*$'
+                   AND length(setup_client) <= 64)),
     created_by_user_id          uuid        NULL,
     created_at   timestamptz NOT NULL DEFAULT now(),
     last_used_at timestamptz NULL,
     revoked_at   timestamptz NULL,
     CONSTRAINT mcp_grants_revoked_at_matches_status_check
-        CHECK ((status = 'revoked') = (revoked_at IS NOT NULL))
+        CHECK ((status = 'revoked') = (revoked_at IS NOT NULL)),
+
+    -- ABSOLUTE EXPIRY (m127 DECISION 2). NOT NULL, NO DEFAULT. NULL IS
+    -- UNREPRESENTABLE -- not "NULL means never". Step 5 of the wireframe offers
+    -- 30 days / 90 days / 1 year / on a date and NO "never" option, so a
+    -- never-expiring connection is not a thing the product offers and not a
+    -- thing the schema can hold. The point of NOT NULL here is that the
+    -- read-time predicate has NO NULL BRANCH for a caller to get backwards.
+    expires_at timestamptz NOT NULL,
+    -- A grant cannot be born already expired. Immediate termination is
+    -- REVOCATION (status = 'revoked'), not a backdated expiry; keeping the two
+    -- mechanisms distinct is what keeps revoked_at honest.
+    CONSTRAINT mcp_grants_expires_at_after_created_check
+        CHECK (expires_at > created_at),
+    -- ...and it cannot be effectively immortal either (m129). The owner's
+    -- ruling is a ONE YEAR cap, which is also the largest option Step 5 offers,
+    -- so the ceiling sits exactly at the control's own maximum and is
+    -- INCLUSIVE: exactly one year INSERTs, one year plus a day is refused.
+    --
+    -- Before m129 this column was bounded only BELOW, and a security review
+    -- inserted expires_at = year 9999 as wpmgr_app with a nil error -- a
+    -- never-expiring credential in the column whose stated purpose is that a
+    -- never-expiring connection is not a thing the schema can hold. The other
+    -- expiry axis was bounded on both ends from the start
+    -- (idle_expire_after_days, 1..3650, "so a fat-fingered value cannot become
+    -- an effectively-absent control"); this is that same sentence applied to
+    -- the axis that was missing it.
+    --
+    -- interval '1 year' AND NOT 365 days: a calendar year spanning 29 February
+    -- is 366 days, and Go's AddDate(1, 0, 0) returns the calendar year, so a
+    -- 365-day ceiling would refuse the UI's own "1 year" option for grants
+    -- created in the run-up to a leap year. Normalised to UTC on both sides
+    -- because timestamptz + interval is STABLE (it resolves year units in the
+    -- session TimeZone, so a DST-straddling boundary would shift by an hour and
+    -- the bound would disagree with itself between sessions); timezone('UTC',
+    -- ts) and timestamp + interval are both IMMUTABLE, and UTC is the frame Go
+    -- computes the value in.
+    CONSTRAINT mcp_grants_expires_at_max_one_year_check
+        CHECK (timezone('UTC', expires_at)
+               <= timezone('UTC', created_at) + interval '1 year'),
+
+    -- IDLE EXPIRY (m127 DECISION 2), a WINDOW LENGTH IN DAYS and not an
+    -- instant. NULL MEANS NEVER IDLE-EXPIRE, and only that -- Step 5's second
+    -- control does offer "Never" beside 30 and 90 days, so this axis has three
+    -- states and the third is representable. The deadline is computed at read
+    -- time from coalesce(last_used_at, created_at) so it moves whenever the
+    -- connection is used, which is what "expire it if unused for N days" means.
+    --
+    -- m127 DECISION 4 MADE A NON-NULL VALUE HERE CONDITIONAL ON THE ACTIVITY
+    -- STAMP BEING WIRED, AND IT NOW IS. TouchMCPGrantInTenantTx is reached
+    -- through Repo.TouchActivity, via Service.RecordActivity, from the
+    -- transport's tools/list and tools/call arms, so last_used_at advances with
+    -- real use and coalesce(last_used_at, created_at) advances with it.
+    --
+    -- THE HAZARD THAT PREREQUISITE GUARDED IS STILL REAL AND STILL WORTH
+    -- KNOWING: with the stamp unwired, coalesce(last_used_at, created_at)
+    -- collapses to created_at permanently, and a non-NULL value here would kill
+    -- every affected connection N days after CREATION however active it is. An
+    -- actively used connection must never idle-expire. That is why the stamp
+    -- had to land first, and it is why nothing may unwire it while this column
+    -- can hold a value.
+    --
+    -- THE COLUMN IS NEVERTHELESS NULL ON EVERY ROW TODAY, FOR A DIFFERENT
+    -- REASON: nothing asks the operator for a window yet. NULL with no default
+    -- is what keeps a window nobody chose unrepresentable. Do not read the
+    -- wiring above as permission to write a default -- what is missing now is
+    -- the operator input, not the stamp.
+    idle_expire_after_days integer NULL,
+    CONSTRAINT mcp_grants_idle_expire_after_days_check CHECK (
+        idle_expire_after_days IS NULL
+        OR (idle_expire_after_days >= 1 AND idle_expire_after_days <= 3650)
+    )
 );
 
 -- "Is this grant live right now" in one indexed read.

@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -41,7 +42,40 @@ type Store interface {
 	// the RESTRICTIVE insert policy on mcp_grants is live. A tenant id alone
 	// cannot express that, which is how the site-scope GUC came to be unset on
 	// this path. See the method on Repo.
-	CreateGrantWithCode(ctx context.Context, principal db.ScopedPrincipal, g sqlc.CreateMCPGrantParams, mkCode func(grantID uuid.UUID) sqlc.CreateMCPAuthorizationCodeParams) (sqlc.McpGrant, sqlc.McpAuthorizationCode, error)
+	//
+	// onCreated runs INSIDE the same transaction as both inserts, after both
+	// succeed, so the caller (Service.Approve) can append the
+	// ActionMCPGrantCreated audit row via audit.Recorder.RecordInTx over the
+	// SAME tx -- a rolled-back grant then leaves no audit row claiming one
+	// exists, because an error from onCreated rolls the whole transaction back
+	// exactly as an error from either insert would. May be nil.
+	CreateGrantWithCode(ctx context.Context, principal db.ScopedPrincipal, g sqlc.CreateMCPGrantParams, mkCode func(grantID uuid.UUID) sqlc.CreateMCPAuthorizationCodeParams, onCreated func(tx pgx.Tx, grant sqlc.McpGrant) error) (sqlc.McpGrant, sqlc.McpAuthorizationCode, error)
+
+	// CreateGrantWithToken is CreateGrantWithCode's headless sibling: it mints
+	// the grant and its FIRST CONNECTION TOKEN in one transaction, for the
+	// non-OAuth path where no authorization code ever exists.
+	//
+	// It takes the principal for the identical reason, and the reason is the
+	// whole security boundary: only db.Pool.RunTenantTx sets app.site_scope,
+	// and mcp_grants_site_scope_insert is a RESTRICTIVE policy keyed on that
+	// GUC. A method taking a bare tenant id could only reach InTenantTx, which
+	// leaves the policy inert -- and this path writes a LONG-LIVED BEARER
+	// CREDENTIAL, so an inert insert policy here is strictly worse than on the
+	// consent path.
+	//
+	// onCreated runs INSIDE the same transaction, after both inserts, so
+	// Service.MintConnection can append ActionMCPGrantCreated over the SAME tx.
+	// An error from it rolls both inserts back, so there is never a live token
+	// whose grant has no audit row. May be nil.
+	CreateGrantWithToken(ctx context.Context, principal db.ScopedPrincipal, g sqlc.CreateMCPGrantParams, mkToken func(grantID uuid.UUID) sqlc.CreateMCPConnectionTokenParams, onCreated func(tx pgx.Tx, grant sqlc.McpGrant) error) (sqlc.McpGrant, sqlc.McpConnectionToken, error)
+
+	// ListTagIDs returns every tag id in the tenant's registry.
+	//
+	// It exists so the mint path can REFUSE a scope tag id that names nothing,
+	// which no CHECK can do: scope_tag_ids is a uuid[] and PostgreSQL has no
+	// foreign key over array elements. See verifyScopeReferents for why this
+	// question is not the same as "does the scope resolve to any sites".
+	ListTagIDs(ctx context.Context, tenantID uuid.UUID) ([]uuid.UUID, error)
 
 	LookupConnectionToken(ctx context.Context, tokenHash string) (sqlc.GetMCPConnectionTokenByHashForLookupRow, error)
 	ReCheckAuthorization(ctx context.Context, tenantID, tokenID uuid.UUID) (sqlc.ReCheckMCPRequestAuthorizationInTenantTxRow, error)
@@ -51,6 +85,23 @@ type Store interface {
 	// identity on the grant. protocolVersion is a *string and NOT a string so
 	// that "sent no header" survives as NULL -- see the method on Repo.
 	RecordClientIdentity(ctx context.Context, tenantID, grantID uuid.UUID, name, version string, protocolVersion *string) error
+
+	// TouchActivity stamps last_used_at on the grant AND on the token that
+	// carried the request, in ONE transaction.
+	//
+	// IT TAKES BOTH IDS AND WRITES BOTH ROWS BECAUSE THEY ANSWER DIFFERENT
+	// QUESTIONS AND MUST NOT DISAGREE. mcp_grants.last_used_at is what the
+	// connections list renders and what the idle-expiry predicate reads;
+	// mcp_connection_tokens.last_used_at is what tells an operator mid-rotation
+	// which of two live tokens is still in use. A grant stamped without its
+	// token would make the rotation UI claim a token nobody has retired is
+	// dead.
+	//
+	// It returns the stamped instant rather than nothing, so a caller can
+	// assert the write happened instead of trusting a nil error over a query
+	// that matched no row -- both underlying statements are :one for that
+	// reason, and pgx.ErrNoRows here means the row was not visible.
+	TouchActivity(ctx context.Context, tenantID, grantID, tokenID uuid.UUID) (time.Time, error)
 
 	// ListSitesForRead reads one bounded page of the tenant's sites for the
 	// list_sites tool. It returns the rows AND whether the bound was reached
@@ -69,6 +120,26 @@ type Store interface {
 	// db.dispatchTenantTx's hands instead of this package's memory.
 	ListGrants(ctx context.Context, principal domain.Principal) ([]sqlc.McpGrant, error)
 
+	// ConnectionStatusSnapshot is the wizard's Step 8 / Step 9 pair (S29), and
+	// it is ONE METHOD RETURNING BOTH FACTS RATHER THAN TWO METHODS.
+	//
+	// It replaced a GetGrant/FindFirstToolCall pair, and the pair is gone from
+	// this interface rather than kept alongside it. Two separately-callable
+	// reads are what let the service answer from two different instants, which
+	// produced handshake=awaiting_client together with first_call=succeeded --
+	// a state that cannot occur in reality and the exact contradiction this
+	// endpoint was made a single endpoint to prevent. Leaving the two methods
+	// reachable would leave that recombination one refactor away, so the
+	// interface no longer offers it.
+	//
+	// IT TAKES THE PRINCIPAL for exactly the reason ListGrants does, above: it
+	// reads mcp_grants, so a tenantID-only signature could only reach
+	// InTenantTx and would leave the RESTRICTIVE _site_scope SELECT policy
+	// inert on a single-row read of an organisation-wide credential. The audit
+	// half of the snapshot rides the same dispatch, which is the point: one
+	// principal, one RunTenantTx, one set of GUCs for both reads.
+	ConnectionStatusSnapshot(ctx context.Context, principal domain.Principal, grantID uuid.UUID, limit int) (ConnectionSnapshot, error)
+
 	// RevokeGrantWithTokens flips the grant AND every active token in ONE
 	// statement. There is deliberately no grant-only revoke on this interface:
 	// a security review of this stack observed `grant_status revoked /
@@ -79,7 +150,14 @@ type Store interface {
 	// organisation's, or refused by RLS. It is the ONLY outcome meaning "not
 	// there"; a returned row of two zeroes is an idempotent success. See the
 	// query's four-outcome comment.
-	RevokeGrantWithTokens(ctx context.Context, principal domain.Principal, grantID uuid.UUID) (sqlc.RevokeMCPGrantWithTokensInTenantTxRow, error)
+	//
+	// onRevoked runs INSIDE the same transaction as the revoke statement,
+	// after it succeeds (any of the three non-error outcomes), so the caller
+	// (Service.RevokeConnection) can append the ActionMCPGrantRevoked audit
+	// row via audit.Recorder.RecordInTx over the SAME tx. It does NOT run on
+	// pgx.ErrNoRows -- nothing was written, so nothing should be attributed.
+	// May be nil.
+	RevokeGrantWithTokens(ctx context.Context, principal domain.Principal, grantID uuid.UUID, onRevoked func(tx pgx.Tx, row sqlc.RevokeMCPGrantWithTokensInTenantTxRow) error) (sqlc.RevokeMCPGrantWithTokensInTenantTxRow, error)
 }
 
 // Repo is the live Store. Every method names the tx helper it runs under, and
@@ -239,6 +317,7 @@ func (r *Repo) CreateGrantWithCode(
 	principal db.ScopedPrincipal,
 	g sqlc.CreateMCPGrantParams,
 	mkCode func(grantID uuid.UUID) sqlc.CreateMCPAuthorizationCodeParams,
+	onCreated func(tx pgx.Tx, grant sqlc.McpGrant) error,
 ) (sqlc.McpGrant, sqlc.McpAuthorizationCode, error) {
 	var (
 		grant sqlc.McpGrant
@@ -263,10 +342,107 @@ func (r *Repo) CreateGrantWithCode(
 		if err != nil {
 			return fmt.Errorf("create mcp authorization code: %w", err)
 		}
+		// Inside the same tx, after both inserts. An error here rolls both of
+		// them back with it -- see the interface doc on onCreated.
+		if onCreated != nil {
+			if err := onCreated(tx, gr); err != nil {
+				return err
+			}
+		}
 		grant, code = gr, cd
 		return nil
 	})
 	return grant, code, err
+}
+
+// CreateGrantWithToken mints the grant and its first connection token in ONE
+// transaction, through RunTenantTx.
+//
+// RunTenantTx, NOT InTenantTx, for exactly the reason CreateGrantWithCode gives
+// above it: InScopedTenantTx is the only helper that sets app.site_scope, and
+// the RESTRICTIVE mcp_grants_site_scope_insert policy keys on that GUC. Picking
+// a helper here instead of dispatching on the principal is how a call site
+// silently falls outside the site-scope RLS -- and this one writes a bearer
+// credential that outlives the session that asked for it.
+//
+// THE TWO WRITES ARE ONE TRANSACTION and there is deliberately no way to
+// express half. A grant with no token is a connection an operator sees in the
+// list and can never use; a token with no grant is a credential
+// ReCheckAuthorization refuses on every request with nothing to explain it.
+// Both are states a two-commit version can leave behind after a crash, which is
+// the same argument RedeemAuthorizationCode makes for its own single
+// transaction.
+func (r *Repo) CreateGrantWithToken(
+	ctx context.Context,
+	principal db.ScopedPrincipal,
+	g sqlc.CreateMCPGrantParams,
+	mkToken func(grantID uuid.UUID) sqlc.CreateMCPConnectionTokenParams,
+	onCreated func(tx pgx.Tx, grant sqlc.McpGrant) error,
+) (sqlc.McpGrant, sqlc.McpConnectionToken, error) {
+	var (
+		grant sqlc.McpGrant
+		token sqlc.McpConnectionToken
+	)
+	// Same guard as CreateGrantWithCode: a transaction scoped to one tenant
+	// while the INSERT names another is a row belonging to neither, and RLS
+	// would refuse it as a 42501 three frames down. Saying so here is one line.
+	if principal.GetTenantID() != g.TenantID {
+		return grant, token, fmt.Errorf(
+			"create mcp grant: principal tenant %s does not match grant tenant %s",
+			principal.GetTenantID(), g.TenantID)
+	}
+	err := r.pool.RunTenantTx(ctx, principal, func(tx pgx.Tx) error {
+		q := sqlc.New(tx)
+		gr, err := q.CreateMCPGrant(ctx, g)
+		if err != nil {
+			return fmt.Errorf("create mcp grant: %w", err)
+		}
+		tk, err := q.CreateMCPConnectionToken(ctx, mkToken(gr.ID))
+		if err != nil {
+			// Rolls the grant insert back with it, so a failed mint leaves no
+			// half-built connection behind.
+			return fmt.Errorf("create mcp connection token: %w", err)
+		}
+		if onCreated != nil {
+			if err := onCreated(tx, gr); err != nil {
+				return err
+			}
+		}
+		grant, token = gr, tk
+		return nil
+	})
+	return grant, token, err
+}
+
+// ListTagIDs reads the tenant's tag registry inside InTenantTx, so `site_tags`
+// RLS scopes it to this organisation and a foreign tag can never appear in the
+// result a scope id is checked against.
+//
+// It returns ONLY the ids. The mint path asks one question of this registry --
+// "does this id name a tag here" -- and returning the whole row would invite a
+// caller to answer some other question from data it did not scope for.
+//
+// nil on error, never an empty slice: an empty registry and a failed read must
+// not be confusable, because the caller compares scope ids against this list
+// and an empty list would make every tag look unknown.
+func (r *Repo) ListTagIDs(ctx context.Context, tenantID uuid.UUID) ([]uuid.UUID, error) {
+	var out []uuid.UUID
+	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		rows, err := sqlc.New(tx).ListTagsWithUsage(ctx, tenantID)
+		if err != nil {
+			return fmt.Errorf("list tag registry: %w", err)
+		}
+		ids := make([]uuid.UUID, 0, len(rows))
+		for _, row := range rows {
+			ids = append(ids, row.ID)
+		}
+		out = ids
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // LookupConnectionToken resolves a bearer token by hash under
@@ -384,6 +560,52 @@ func (r *Repo) RecordClientIdentity(
 	})
 }
 
+// TouchActivity stamps last_used_at on the grant and on its token.
+//
+// IT RUNS InTenantTx, NEVER THE TOKEN-LOOKUP TRANSACTION THAT JUST RESOLVED
+// THIS TOKEN. mcp_connection_tokens_lookup is FOR SELECT, so an UPDATE inside
+// that scope matches zero rows and reports success -- the same silent zero-row
+// write both queries' own comments warn about. That is also why both are :one:
+// a stamp that hit nothing is pgx.ErrNoRows here rather than a nil error over a
+// column that never moved.
+//
+// BOTH WRITES ARE IN ONE TRANSACTION so the two stamps cannot disagree about
+// whether this request happened.
+//
+// The returned instant comes from the GRANT's RETURNING clause, not from the Go
+// clock: now() is evaluated by the database, and reading it back is what makes
+// "the row moved" provable rather than assumed. LastUsedAt is checked for
+// validity because a NULL returned by an UPDATE that sets the column to now()
+// would mean the write did not land, and reporting that as a zero time.Time
+// would hand the caller a stamp from year 1 that reads as success.
+func (r *Repo) TouchActivity(ctx context.Context, tenantID, grantID, tokenID uuid.UUID) (time.Time, error) {
+	var stamped time.Time
+	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		q := sqlc.New(tx)
+
+		grantRow, err := q.TouchMCPGrantInTenantTx(ctx,
+			sqlc.TouchMCPGrantInTenantTxParams{TenantID: tenantID, ID: grantID})
+		if err != nil {
+			return fmt.Errorf("touch mcp grant: %w", err)
+		}
+		if !grantRow.LastUsedAt.Valid {
+			return fmt.Errorf("touch mcp grant: last_used_at came back NULL from an UPDATE that sets it to now()")
+		}
+
+		if _, err := q.TouchMCPConnectionTokenInTenantTx(ctx,
+			sqlc.TouchMCPConnectionTokenInTenantTxParams{TenantID: tenantID, ID: tokenID}); err != nil {
+			return fmt.Errorf("touch mcp connection token: %w", err)
+		}
+
+		stamped = grantRow.LastUsedAt.Time
+		return nil
+	})
+	if err != nil {
+		return time.Time{}, err
+	}
+	return stamped, nil
+}
+
 // ListSitesForRead reads one bounded page of the tenant's sites inside
 // InTenantTx, so `sites` RLS scopes the read to this tenant regardless of what
 // the grant claims.
@@ -481,6 +703,7 @@ func (r *Repo) RevokeGrantWithTokens(
 	ctx context.Context,
 	principal domain.Principal,
 	grantID uuid.UUID,
+	onRevoked func(tx pgx.Tx, row sqlc.RevokeMCPGrantWithTokensInTenantTxRow) error,
 ) (sqlc.RevokeMCPGrantWithTokensInTenantTxRow, error) {
 	var out sqlc.RevokeMCPGrantWithTokensInTenantTxRow
 	err := r.pool.RunTenantTx(ctx, principal, func(tx pgx.Tx) error {
@@ -492,10 +715,16 @@ func (r *Repo) RevokeGrantWithTokens(
 		if err != nil {
 			// pgx.ErrNoRows is meaningful to the caller and is NOT wrapped in a
 			// message that would make errors.Is harder to reach for. Every
-			// other error is an infra failure.
+			// other error is an infra failure. Neither reaches onRevoked --
+			// nothing was written, so nothing should be attributed.
 			return err
 		}
 		out = row
+		if onRevoked != nil {
+			if err := onRevoked(tx, row); err != nil {
+				return err
+			}
+		}
 		return nil
 	})
 	if err != nil {
@@ -510,6 +739,17 @@ func nullableText(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+// timestamptzAt wraps a time as a VALID pgtype.Timestamptz.
+//
+// It exists so a mint cannot pass a zero-value Timestamptz by omission: that
+// value has Valid=false, which is SQL NULL, and expires_at is the column that
+// decides when a bearer credential dies. A NULL there is a never-expiring
+// token, so the conversion is written once, named, rather than open-coded at
+// each call site where the Valid flag can be forgotten.
+func timestamptzAt(t time.Time) pgtype.Timestamptz {
+	return pgtype.Timestamptz{Time: t, Valid: true}
 }
 
 // uuidToPG converts a uuid to the pgtype form CreateMCPGrantParams wants,

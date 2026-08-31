@@ -310,6 +310,27 @@ assert_backend GET  /.well-known/oauth-protected-resource/mcp   "RFC 9728 path-i
 # nginx proxied the verb instead of serving index.html.
 assert_backend GET  /mcp                                        "MCP endpoint, GET (Go answers 405 'is deployed')"
 assert_backend OPTIONS /.well-known/oauth-protected-resource    "discovery CORS preflight"
+# The /mcp PREFLIGHT, which is the verb a browser-hosted client sends FIRST and
+# the one this suite was missing: the OPTIONS probe above covers a discovery
+# path, not the endpoint. Authorization, Content-Type: application/json and
+# MCP-Protocol-Version are all non-safelisted, so essentially every real MCP
+# request forces a preflight, and a browser that cannot get an answer to it
+# never sends the POST at all.
+#
+# Judged by BODY for the GH #589 reason, and the failure mode here is the same
+# one POST /mcp actually shipped with: no rule at the edge, the SPA answers 200
+# text/html, and nothing looks broken. It also catches nginx answering the
+# preflight ITSELF (an `if ($request_method = OPTIONS) return 204` added at the
+# edge would produce a 204 with no "backend " marker), which would strip the
+# Go handler's headers while still looking like a working preflight.
+#
+# NOTE ON SCOPE: this proves the preflight REACHES the Go handler. It cannot
+# assert the Access-Control-* values, because the stub upstream above is an
+# nginx `return`, not the API — it does not set them and never will. Those
+# headers are asserted by value against the real handler in the Gin-level tests
+# (apps/api/internal/mcp/transport_preflight_audit_test.go). The two together
+# cover the route: reachable here, correct there.
+assert_backend OPTIONS /mcp                                     "MCP endpoint, OPTIONS (browser CORS preflight)"
 
 echo
 echo "---- forwarded-header handling: a caller-supplied X-Forwarded-For must not survive ----"

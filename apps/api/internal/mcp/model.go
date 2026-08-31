@@ -24,11 +24,19 @@ import (
 type Scope string
 
 // ScopeRead is the only scope this surface grants, and the surface is
-// read-only by construction rather than by configuration (m124 DECISION 1:
-// there is deliberately no capability column, because it would be the place a
-// write capability could later appear without a migration and without a
-// review). A write scope does not belong here; it belongs in its own migration
-// with its own review.
+// read-only by construction rather than by configuration.
+//
+// m127 DID MINT mcp_grants.capabilities, so the older statement here -- that
+// there is deliberately no capability column -- is no longer true and has been
+// removed rather than left to be believed. What it was protecting survives, and
+// survives in a stronger form: the column is NOT NULL with no default and
+// carries a CHECK closed over the same one-name vocabulary this package holds
+// (capabilityVocabulary), so a write capability STILL cannot appear in a row
+// without a migration and without a review. The column narrows what a
+// connection may do; it cannot widen it past what scopeCapabilities maps.
+//
+// A write scope does not belong here; it belongs in its own migration with its
+// own review.
 const ScopeRead Scope = "mcp:read"
 
 // SiteScopeMode says which sites a grant may read. It mirrors
@@ -234,6 +242,26 @@ type Connection struct {
 	// is worth seeing.
 	ReportedClientName    *string
 	ReportedClientVersion *string
+
+	// SetupClient is THE OPERATOR'S CHOICE at the wizard's step 2, written once
+	// at creation and never again. It is a fourth client fact, not a tidier
+	// spelling of the two above, and the distinction is the whole reason the
+	// column exists (m128 DECISION 1).
+	//
+	// nil MEANS "NO OPERATOR CHOICE WAS RECORDED" AND NOTHING ELSE. It does not
+	// mean "generic": "generic" is the operator actively choosing "Other MCP
+	// client" from the nine cards, which is a stated choice, and step 9 renders
+	// the two differently. Never substitute one for the other in either
+	// direction.
+	//
+	// IT MAY DISAGREE WITH ReportedClientName PERMANENTLY AND LEGITIMATELY --
+	// set up for Claude Desktop, URL pasted into Cursor -- and neither is the
+	// other's stale copy, so neither may overwrite the other. In particular
+	// RecordConnect writes the reported pair and MUST NOT write this. It is
+	// also the only one of the three that survives the never-connected case,
+	// where both reported columns are nil by definition and step 9 still has to
+	// say what the connection was set up for.
+	SetupClient *string
 
 	// Protocol is the four-state classification of the stored header.
 	Protocol ClientProtocol

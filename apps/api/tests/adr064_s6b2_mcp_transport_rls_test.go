@@ -85,6 +85,13 @@ func mcpSeedGrant(t *testing.T, repo *mcp.Repo, tenantID uuid.UUID, mode string,
 		ScopeTagIds:   []uuid.UUID{},
 		ScopeSiteIds:  siteIDs,
 		ClientID:      &clientID,
+		// m127's three columns. capabilities and expires_at are NOT NULL with
+		// no default, so omitting either is a 23502 and not a permissive
+		// fixture. idle_expire_after_days is left NULL -- "never idle-expire" --
+		// which is what Service.Approve writes.
+		Capabilities:        []string{"mcp.sites.read"},
+		ExpiresAt:           time.Now().UTC().Add(90 * 24 * time.Hour),
+		IdleExpireAfterDays: nil,
 	}, func(grantID uuid.UUID) sqlc.CreateMCPAuthorizationCodeParams {
 		return sqlc.CreateMCPAuthorizationCodeParams{
 			TenantID:            tenantID,
@@ -96,7 +103,7 @@ func mcpSeedGrant(t *testing.T, repo *mcp.Repo, tenantID uuid.UUID, mode string,
 			RedirectUri:         "https://claude.ai/api/mcp/auth_callback",
 			ExpiresAt:           time.Now().UTC().Add(5 * time.Minute),
 		}
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("seed grant for tenant %s: %v", tenantID, err)
 	}
