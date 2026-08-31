@@ -61,6 +61,18 @@ type consentResponseDTO struct {
 	State                string   `json:"state"`
 	CodeChallenge        string   `json:"code_challenge"`
 	CodeChallengeMethod  string   `json:"code_challenge_method"`
+
+	// GrantLifetimeDays is how long the grant this screen consents to will
+	// live, and it is here because the screen cannot state a lifetime it is
+	// not given.
+	//
+	// Until this field existed the consent screen told the user the connection
+	// "does not expire on its own", which stopped being true when m127 made
+	// mcp_grants.expires_at NOT NULL and CreateGrant began stamping every row
+	// with grantAbsoluteTTL. The dashboard had no way to say otherwise: adding
+	// 90 days client-side would have been the same falsehood with a shorter
+	// shelf life, since the term is a server constant the dashboard cannot see.
+	GrantLifetimeDays int `json:"grant_lifetime_days"`
 }
 
 func toConsentResponse(c ConsentContext) consentResponseDTO {
@@ -83,6 +95,9 @@ func toConsentResponse(c ConsentContext) consentResponseDTO {
 		State:               c.State,
 		CodeChallenge:       c.CodeChallenge,
 		CodeChallengeMethod: c.CodeChallengeMethod,
+		// Read from the same constant CreateGrant stamps expires_at from, not
+		// from a second copy of the number. See grantLifetimeDays.
+		GrantLifetimeDays: grantLifetimeDays(),
 	}
 }
 
