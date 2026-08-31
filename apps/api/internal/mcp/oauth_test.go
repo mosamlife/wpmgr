@@ -125,6 +125,18 @@ type fakeStore struct {
 	grants    []sqlc.McpGrant
 	grantsErr error
 
+	// getErr forces GetGrant to fail; getPrincipals records what was passed to
+	// the two principal-taking status reads.
+	getErr        error
+	getPrincipals []domain.Principal
+	// firstCall is what FindFirstToolCall returns and firstCallErr forces it
+	// to fail. The zero FirstToolCall is Found=false/Truncated=false, which is
+	// the DEFINITIVE not-yet -- the correct default for a fixture, since a
+	// test that forgets to set it gets "nothing has happened" rather than a
+	// spurious success.
+	firstCall    FirstToolCall
+	firstCallErr error
+
 	// revokeRow is what RevokeGrantWithTokens returns and revokeErr is the
 	// error it returns instead. revokeErr set to pgx.ErrNoRows models THE
 	// GRANT NOT BEING VISIBLE -- the only outcome that means "not there" --
@@ -466,6 +478,76 @@ func (f *fakeStore) ListGrants(_ context.Context, p domain.Principal) ([]sqlc.Mc
 		return nil, f.grantsErr
 	}
 	return f.grants, nil
+}
+
+// ConnectionStatusSnapshot models Repo.ConnectionStatusSnapshot: the ONE read
+// the status service is allowed to make, returning both halves together.
+//
+// It composes the two unexported fixture halves below so that every existing
+// fixture field -- getErr, grants, firstCall, firstCallErr -- keeps driving the
+// branch it always drove. The GATE ORDER IS MODELLED TOO: the grant lookup runs
+// first and its error wins, because the real repo 404s on a missing grant
+// without running the audit scan, and a fake that scanned first would let a
+// service reordering slip through green.
+//
+// It does NOT model the intra-transaction ordering that makes the pair
+// consistent. That is a property of two statements against a live database and
+// no in-process fake can express it; it is pinned by the integration test.
+func (f *fakeStore) ConnectionStatusSnapshot(
+	ctx context.Context, p domain.Principal, id uuid.UUID, limit int,
+) (ConnectionSnapshot, error) {
+	grant, err := f.getGrant(ctx, p, id)
+	if err != nil {
+		return ConnectionSnapshot{}, err
+	}
+	call, err := f.findFirstToolCall(ctx, p, id, limit)
+	if err != nil {
+		return ConnectionSnapshot{}, err
+	}
+	return ConnectionSnapshot{Grant: grant, FirstCall: call}, nil
+}
+
+// getGrant models the grant half, INCLUDING its pgx.ErrNoRows contract: getErr
+// is returned VERBATIM so a test can set pgx.ErrNoRows and drive the
+// "grant not visible" branch through errors.Is exactly as the real repo does.
+//
+// It records the principal for the same reason ListGrants does -- the
+// signature takes a principal precisely so the RESTRICTIVE _site_scope policy
+// is reachable, and a test asserting that gate needs to see what was passed.
+func (f *fakeStore) getGrant(_ context.Context, p domain.Principal, id uuid.UUID) (sqlc.McpGrant, error) {
+	f.note("GetGrant")
+	f.mu.Lock()
+	f.getPrincipals = append(f.getPrincipals, p)
+	f.mu.Unlock()
+	if f.getErr != nil {
+		return sqlc.McpGrant{}, f.getErr
+	}
+	for _, g := range f.grants {
+		if g.ID == id {
+			return g, nil
+		}
+	}
+	// pgx.ErrNoRows and NOT a zero struct with a nil error. A fake that
+	// returned (sqlc.McpGrant{}, nil) for an absent id would let a service
+	// that never checks the error render a grant with a zero uuid and a zero
+	// timestamp as though it were real -- the absence-as-fact defect,
+	// manufactured in the fixture.
+	return sqlc.McpGrant{}, pgx.ErrNoRows
+}
+
+// findFirstToolCall models the audit half. firstCall is returned as given so a
+// test can assert every one of the three Step 9 states, INCLUDING the
+// Found=false/Truncated=true pair that must become indeterminate rather than a
+// not-yet.
+func (f *fakeStore) findFirstToolCall(_ context.Context, p domain.Principal, _ uuid.UUID, _ int) (FirstToolCall, error) {
+	f.note("FindFirstToolCall")
+	f.mu.Lock()
+	f.getPrincipals = append(f.getPrincipals, p)
+	f.mu.Unlock()
+	if f.firstCallErr != nil {
+		return FirstToolCall{}, f.firstCallErr
+	}
+	return f.firstCall, nil
 }
 
 // RevokeGrantWithTokens models the four-outcome contract of
