@@ -242,12 +242,22 @@ type MintConnectionRequest struct {
 	// do, is VERIFY the ids server-side -- see ErrCodeUnknownScopeTag.
 	SiteScope SiteScopeRequest
 
-	// Capabilities is the tool axis. EMPTY MEANS "the organisation default",
-	// not "none": an empty stored capability set is a connection that
-	// authenticates and then reaches no tool, which Authenticate refuses by
-	// name, so writing one here would mint a credential that can never work.
-	// A non-empty list is NARROWED against the org ceiling, never widened past
-	// it -- CapabilitySet.NarrowTo refuses rather than intersects.
+	// Capabilities is the tool axis. EMPTY MEANS THE DEFAULT PRESET --
+	// DefaultGrantCapabilities(), which is {mcp.sites.read} -- and it is
+	// neither "none" nor "the organisation ceiling".
+	//
+	// BOTH OF THOSE READINGS ARE WRONG AND THEY ARE WRONG IN OPPOSITE
+	// DIRECTIONS. "None" would store an empty set, and an empty stored
+	// capability set is a connection that authenticates and then reaches no
+	// tool, which Authenticate refuses by name -- a credential that can never
+	// work. "The organisation default" was this comment's own wording until the
+	// vocabulary widened, and it is the name of OrgDefaultCapabilities, the
+	// SEVEN-member ceiling; reading it that way now hands the widest available
+	// set to a caller who asked for nothing.
+	//
+	// A non-empty list is NARROWED against that ceiling, never widened past it
+	// -- CapabilitySet.NarrowTo refuses rather than intersects. So the ceiling
+	// is reachable BY ASKING, and only by asking.
 	Capabilities []Capability
 
 	// SetupClient is the operator's step-2 choice, OPTIONAL, and nil means the
