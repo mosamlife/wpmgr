@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -540,6 +541,64 @@ type Event struct {
 	TargetType string
 	TargetID   string
 	Metadata   map[string]any
+}
+
+// MaxTargetIDLen bounds a target_id that came from UNTRUSTED input, in bytes.
+//
+// audit_log.target_id is unbounded `text`, which is correct for the values this
+// package was built for: they are identifiers the SERVER chose -- a uuid (36
+// bytes), a slug, a plugin name. 256 is an order of magnitude above the longest
+// of those, so nothing legitimate is anywhere near it.
+//
+// It matters because of what an append COSTS. Every Record takes a per-tenant
+// pg_advisory_xact_lock (see lockChain) and hashes the row into the chain, so
+// appends for one tenant are strictly serialised. A caller who can put arbitrary
+// bytes in target_id can therefore push unbounded data through the one
+// serialised write path on that tenant's ledger, and the throughput ceiling of
+// that path is not a measured quantity. A refusal audit row is the case that
+// makes this reachable: it records the string the caller GUESSED, so the
+// attacker chooses the bytes, and being refused is not a barrier to writing.
+const MaxTargetIDLen = 256
+
+// TruncateTargetID bounds an untrusted target_id and reports whether it had to.
+//
+// THIS IS NOT APPLIED INSIDE Record, DELIBERATELY. Every existing caller passes
+// a server-chosen identifier that cannot approach the bound, and silently
+// rewriting target_id for all of them would change values that other code looks
+// up by (site lifecycle rows join on target_id, and Verify re-hashes the stored
+// value) to defend against an input none of them accept. The bound belongs to
+// the CALLER that handles untrusted bytes; this helper is here, next to the
+// field it bounds, so that every such caller applies the SAME bound instead of
+// inventing one. If a future audit of the writers finds others taking untrusted
+// target_ids, promoting this into Record is the right move and this comment is
+// the argument for it -- but it is a decision with blast radius beyond one
+// surface, and it is not made here.
+//
+// Truncation is on a RUNE boundary. A byte-slice of UTF-8 text can split a
+// multi-byte rune, and Postgres rejects an invalid byte sequence for encoding
+// "UTF8" outright -- so the naive bound would convert a large-input abuse into a
+// 500 on the refusal path, which is a worse bug than the one being fixed.
+//
+// The returned length is the ORIGINAL byte length, so the caller can record what
+// was actually sent. A truncated row that does not say it is truncated reads
+// back as though the caller sent exactly the shortened value, which is a record
+// that misdescribes the event it exists to evidence.
+func TruncateTargetID(s string) (out string, truncated bool, originalLen int) {
+	if len(s) <= MaxTargetIDLen {
+		return s, false, len(s)
+	}
+	b := s[:MaxTargetIDLen]
+	// Drop a trailing partial rune. DecodeLastRuneInString returns
+	// (RuneError, 1) for an incomplete sequence; a genuine U+FFFD in the input
+	// decodes with size 3 and is correctly kept.
+	for len(b) > 0 {
+		if r, size := utf8.DecodeLastRuneInString(b); r == utf8.RuneError && size <= 1 {
+			b = b[:len(b)-1]
+			continue
+		}
+		break
+	}
+	return b, true, len(s)
 }
 
 // Recorder appends hash-chained audit entries.

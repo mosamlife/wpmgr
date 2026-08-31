@@ -1391,6 +1391,29 @@ func (s *Service) RecordToolDenied(ctx context.Context, auth AuthorizedRequest, 
 	if s.audit == nil {
 		return nil
 	}
+	// BOUNDED, because this is attacker-chosen input on a path the attacker can
+	// reach WITHOUT holding the tool. toolName is whatever arrived in params,
+	// up to maxRequestBytes (256 KiB), and every refusal would otherwise put all
+	// of it through the per-tenant audit advisory lock. Being denied is not a
+	// barrier to writing, so a caller who can use nothing on this surface could
+	// still drive the serialised ledger writer.
+	target, truncated, origLen := audit.TruncateTargetID(toolName)
+
+	meta := map[string]any{
+		"grant_name":        auth.GrantName,
+		"refusal_reason":    string(reason),
+		"held_capabilities": auth.Capabilities.Len(),
+		"scoped_sites":      auth.Sites.Len(),
+	}
+	if truncated {
+		// The row SAYS it is a prefix. Without this an auditor reads the
+		// shortened value as the name the caller actually sent, and an
+		// oversized-input probe -- which is itself the signal worth seeing --
+		// becomes indistinguishable from an ordinary typo.
+		meta["target_truncated"] = true
+		meta["target_original_len"] = origLen
+	}
+
 	_, err := s.audit.Record(ctx, audit.Event{
 		TenantID:  auth.TenantID,
 		ActorType: audit.ActorAssistant,
@@ -1400,13 +1423,8 @@ func (s *Service) RecordToolDenied(ctx context.Context, auth AuthorizedRequest, 
 		// unregistered branch there is no registry entry, and the string the
 		// caller guessed is the entire content of the evidence.
 		TargetType: "mcp_tool",
-		TargetID:   toolName,
-		Metadata: map[string]any{
-			"grant_name":        auth.GrantName,
-			"refusal_reason":    string(reason),
-			"held_capabilities": auth.Capabilities.Len(),
-			"scoped_sites":      auth.Sites.Len(),
-		},
+		TargetID:   target,
+		Metadata:   meta,
 	})
 	return err
 }
@@ -1429,24 +1447,37 @@ func (s *Service) RecordProtocolDenied(ctx context.Context, auth AuthorizedReque
 		return nil
 	}
 	reason := neg.RefusalReason()
+
+	// BOUNDED for the same reason as RecordToolDenied, and reachable the same
+	// way: on the initialize_params phase neg.Raw is a JSON string from the
+	// body, not a header, so it is bounded only by maxRequestBytes. An
+	// unsupported revision is refused, and the refusal writes the row.
+	target, truncated, origLen := audit.TruncateTargetID(neg.Raw)
+
+	meta := map[string]any{
+		"grant_name":     auth.GrantName,
+		"refusal_reason": reason,
+		"phase":          phase,
+		// Recorded per row rather than left to be looked up: these are
+		// compile-time constants that WILL move, and a row that says only
+		// "2024-11-05 was refused" stops being interpretable the moment
+		// they do.
+		"floor":  ProtocolFloor,
+		"target": ProtocolTarget,
+	}
+	if truncated {
+		meta["target_truncated"] = true
+		meta["target_original_len"] = origLen
+	}
+
 	_, err := s.audit.Record(ctx, audit.Event{
 		TenantID:   auth.TenantID,
 		ActorType:  audit.ActorAssistant,
 		ActorID:    auth.GrantID.String(),
 		Action:     audit.ActionMCPProtocolDenied,
 		TargetType: "mcp_protocol",
-		TargetID:   neg.Raw,
-		Metadata: map[string]any{
-			"grant_name":     auth.GrantName,
-			"refusal_reason": reason,
-			"phase":          phase,
-			// Recorded per row rather than left to be looked up: these are
-			// compile-time constants that WILL move, and a row that says only
-			// "2024-11-05 was refused" stops being interpretable the moment
-			// they do.
-			"floor":  ProtocolFloor,
-			"target": ProtocolTarget,
-		},
+		TargetID:   target,
+		Metadata:   meta,
 	})
 	return err
 }
