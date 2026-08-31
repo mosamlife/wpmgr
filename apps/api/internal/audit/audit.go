@@ -406,6 +406,53 @@ const (
 	// operator_permission (the dashboard authority the tool call mirrors) and
 	// tool.
 	ActionMCPToolCalled = "mcp.tool.called"
+	// ActionMCPToolDenied is the REFUSAL counterpart of ActionMCPToolCalled,
+	// under the same <action>.denied convention as
+	// ActionSiteFilesSensitiveDenied. It is recorded by
+	// internal/mcp.Service.RecordToolDenied whenever the tools/call gate
+	// (mcp.AuthorizeTool) refuses a named tool, and it is the surface's own
+	// evidence that the boundary held.
+	//
+	// THIS ROW IS NOT A RECORD OF AN ACTION; IT IS THE RECORD THAT NO ACTION
+	// HAPPENED, which is a different and stronger claim. ActionMCPToolCalled
+	// can be reconstructed after the fact from the effect it describes -- the
+	// data was read, something changed, there is a second trace. A refusal
+	// leaves NO other trace anywhere in the system by construction, so if this
+	// row is missing there is nothing to fall back on and "the boundary was
+	// never tested" is indistinguishable from "the boundary was tested and we
+	// lost the record".
+	//
+	// Actor kinds match ActionMCPToolCalled exactly and for the same reason:
+	// ActorAssistant over the mcp_grants id, never the human who granted
+	// access, because the fact an operator wants is WHICH CONNECTION was
+	// refused. TargetType is "mcp_tool" and TargetID is the name AS THE CALLER
+	// SPELLED IT -- an unregistered name is the whole content of a probe, and
+	// normalising it away would erase the evidence. Metadata carries
+	// refusal_reason (the operator-facing classification the wire deliberately
+	// blurs), grant_name, held_capabilities and scoped_sites.
+	//
+	// ON FAILURE THE APPEND IS LOGGED, NOT PROPAGATED, and the caller's refusal
+	// is unchanged. See TransportHandler.auditGap for the full argument; the
+	// short form is that "fail closed" has no meaning for an operation that is
+	// already a denial, and its only available implementation would tell the
+	// denied caller when this log is down.
+	ActionMCPToolDenied = "mcp.tool.denied"
+	// ActionMCPProtocolDenied is recorded when an AUTHENTICATED MCP request is
+	// refused at protocol negotiation -- a revision below the compatibility
+	// floor, or one this server does not speak. Same actor kinds as
+	// ActionMCPToolDenied. TargetType is "mcp_protocol" and TargetID is the
+	// revision string the client asked for.
+	//
+	// It earns a row separate from ActionMCPToolDenied because it answers a
+	// different question. A run of these from one grant is a client that cannot
+	// talk to this server at all, which looks identical to an idle connection
+	// in every other record the surface keeps: no tool is named, so
+	// ActionMCPToolDenied never fires, and last_used_at moves, so the grant
+	// does not look abandoned either. Metadata carries refusal_reason
+	// (below_floor / unsupported), the phase it was caught in (header or
+	// initialize_params), and the floor and target it was measured against, so
+	// a row stays interpretable after those constants move.
+	ActionMCPProtocolDenied = "mcp.protocol.denied"
 )
 
 // ActorFor resolves the (ActorType, ActorID) pair for whichever credential
