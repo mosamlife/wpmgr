@@ -503,6 +503,44 @@ func TestMCPConnectionStatus_StepsEightAndNine_AsAppRole(t *testing.T) {
 	t.Logf("PROOF 7 ok: site-scoped principal refused 403 by RequirePermission(%s)",
 		authz.PermAPIKeyRead)
 
+	// ==================================================================
+	// PROOF 8 -- THE ROUTE'S TIER, NOT JUST THE SERVICE'S SCOPE GATE.
+	//
+	// PROOF 7 ALONE DOES NOT PROVE THE ROUTE PERMISSION IS RIGHT, and a
+	// mutation sweep is what showed it: downgrading this route from
+	// PermAPIKeyRead to PermSiteRead left PROOF 7 green, because
+	// Service.ConnectionStatus's own requireOrgScopedPrincipal refuses a
+	// site-scoped principal on its own and returns the same 403. The
+	// route gate could therefore be wrong and nothing would notice.
+	//
+	// An ORG-SCOPED VIEWER separates the two layers. It passes
+	// requireOrgScopedPrincipal (its scope IS org), so the only thing
+	// left to refuse it is the route permission -- and the two candidate
+	// permissions disagree about it: minRoleFor(PermAPIKeyRead) is admin
+	// and minRoleFor(PermSiteRead) is viewer. Under the correct
+	// permission this is 403; under the downgrade it would be 200.
+	//
+	// An MCP grant is a long-lived organisation-wide bearer credential,
+	// the same class of object as an API key, so reading its state is an
+	// admin-tier fact and not a viewer-tier one.
+	// ==================================================================
+	orgViewer := domain.Principal{
+		UserID:   userID,
+		TenantID: tenantID,
+		Role:     "viewer",
+		Scope:    domain.ScopeOrg,
+	}
+	viewerEng := mountStatusLikeProduction(t, svc, orgViewer)
+	if code, _ = getStatus(t, viewerEng, freshID); code != http.StatusForbidden {
+		t.Errorf("org-scoped VIEWER reading a connection status answered %d, want 403. "+
+			"This principal clears the service's org-scope gate, so only the route's "+
+			"RequirePermission(%s) -- an admin-tier, org-level permission -- can refuse "+
+			"it. A 200 here means the route is gated at the viewer tier",
+			code, authz.PermAPIKeyRead)
+	}
+	t.Logf("PROOF 8 ok: org-scoped viewer refused 403 by the route's admin tier, "+
+		"which PROOF 7 alone could not distinguish from the service's scope gate")
+
 	// A closing role print, so the file states its precondition at the end as
 	// well as the start: nothing above ran as a superuser.
 	if err := pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
