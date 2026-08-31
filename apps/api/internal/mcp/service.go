@@ -47,6 +47,22 @@ const (
 	grantAbsoluteTTL = 90 * 24 * time.Hour
 )
 
+// grantLifetimeDays is grantAbsoluteTTL in whole days, and it is the ONLY
+// lifetime figure the consent screen is given.
+//
+// A TERM AND NOT A DATE, because at consent time no grant exists. expires_at is
+// stamped at approval from s.now(), which is later than the moment this
+// response was built by however long the human spends reading the screen, so a
+// timestamp computed here would be a date the row never holds. The term is
+// exact at both moments: approve it and it expires this many days later.
+//
+// DERIVED, NEVER RETYPED. The screen's sentence and the column's value now have
+// one source, so a change to grantAbsoluteTTL cannot leave the consent copy
+// stating the old term.
+func grantLifetimeDays() int {
+	return int(grantAbsoluteTTL / (24 * time.Hour))
+}
+
 // Error codes. These are domain codes; the OAuth wire errors are mapped from
 // them in dto.go so that RFC 6749 section 5.2 naming lives at the edge.
 const (
