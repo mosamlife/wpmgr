@@ -264,6 +264,30 @@ check-rls-cross-tenant: ## Audit cross-tenant RLS policies against the ledger (D
 check-rls-cross-tenant-test: ## Run the RLS cross-tenant guard's regression suite (hermetic, no DB)
 	scripts/check-rls-cross-tenant_test.sh
 
+# ADR-061 A11 item 4: the containment test. No handler on the assistant surface
+# may take a site id from a request and pass it anywhere but the ONE audited
+# chokepoint, mcp.Repo.ResolveScopeSites. The chokepoint shipped; nothing
+# stopped the next handler going round it, and ADR-060's freeze clause calls
+# that an open auth-boundary item. This is what closes it.
+#
+# It reads the mcp.Store interface through `go doc`, i.e. Go's own parser
+# rather than a grep over repo.go, so it needs the Go toolchain but NO database
+# and NO cloud credentials — which is why it runs on every PR. `go doc` parses
+# and does not type-check, so the guard fires on a bypass in progress before
+# the branch compiles. The reviewed surface is
+# infra/mcp-site-containment-allowlist.txt and it is checked in both
+# directions: an unreviewed call site, uuid parameter or tool-argument binding
+# is a violation, and so is an allowlist entry that no longer matches anything.
+# check-mcp-containment-test is the guard's own regression suite (hermetic, no
+# Go toolchain needed); run it after editing the guard itself.
+.PHONY: check-mcp-containment
+check-mcp-containment: ## Check no MCP handler can pass a request site id round the chokepoint (ADR-061 A11)
+	scripts/check-mcp-site-containment.sh
+
+.PHONY: check-mcp-containment-test
+check-mcp-containment-test: ## Run the MCP site-containment guard's regression suite (hermetic)
+	scripts/check-mcp-site-containment_test.sh
+
 # ---- Agent harness (.claude) ------------------------------------------------
 # The shell guards that used to live in scripts/claude/ are gone: deciding what
 # a shell command will write by parsing its text is undecidable (eval, bash -c,
