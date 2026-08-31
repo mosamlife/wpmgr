@@ -22,23 +22,35 @@ running today" are different claims — the two inherited layers are decided,
 not deployed.)
 
 **Accepted 2026-08-31 by owner decision.** This ADR set itself no acceptance
-checklist, and carries none: `grep -cE '^\s*-?\s*\[ \]'` against this file
-returns zero. That is the honest reason its acceptance is clean rather than
-conditional, and it is worth stating plainly, because the companion decision
+checklist, and carries none: `grep -cE '^[[:space:]]*-?[[:space:]]*\[[ xX]\]'`
+against this file, which matches a checkbox in any state rather than only an
+unchecked one, still returns zero. That is the honest reason its acceptance
+is clean rather than conditional, and it is worth stating plainly, because
+the companion decision
 taken on the same day (ADR-062, accepted with four items open, see its
 [Amendment A1](./ADR-062-assistant-surface-phase-2-content-operations.md#amendments-2026-08-31))
 is not clean in that way and should not be read as the same kind of event.
 
 Acceptance here makes the record match reality rather than authorising new
-work: the governed-context subsystem specified below is already built, wired
-and shipped. Its tables land in migrations `m122_governed_context` and
+work: the governed-context subsystem specified below is built, wired, and
+reachable in production, not merely inferred from a CHANGELOG entry. Its
+tables land in migrations `m122_governed_context` and
 `m123_org_context_write_scope`; its handler is mounted as `GovContextH` in
 `apps/api/internal/server/server.go`; its screens live under
-`apps/web/src/features/context/`; and `CHANGELOG.md` records the whole of it
-shipping in 0.61.147. What was missing was the decision record, not the
-implementation. **This does not extend to the two layers inherited from
-ADR-061**, which remain decided rather than deployed exactly as the paragraph
-above says.
+`apps/web/src/features/context/`; `CHANGELOG.md` records the whole of it
+shipping in 0.61.147; and, checked directly this session, an unauthenticated
+`GET` against the deployed `/api/v1/sites/{siteId}/context` and
+`/api/v1/sites/{siteId}/context/effective` routes returns `401`
+`application/json` rather than the `404 text/plain` an absent route would
+give, confirming both are mounted and live. **What remains open is not the
+implementation but three of this ADR's own decisions: Decision 7's
+fail-closed audit append does not exist yet, Decision 11's per-response-nonce
+injection fencing does not exist yet, and Decision 12's site-transfer
+mechanism does not exist anywhere in this codebase.** Acceptance records the
+decisions, including those three still-open ones, not a claim that every
+mechanism they describe is built. This also does not extend to the two
+layers inherited from ADR-061, which remain decided rather than deployed
+exactly as the paragraph above says.
 
 ---
 
