@@ -68,6 +68,7 @@ const ROW = {
   protocol: { state: "recognised", version: "2025-11-25" },
   last_used_at: "2026-08-29T10:00:00Z",
   revoked_at: null,
+  capabilities: ["mcp.sites.read"],
 };
 
 beforeEach(() => vi.clearAllMocks());

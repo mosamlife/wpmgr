@@ -14,6 +14,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 
+import { capabilityLabel } from "./capabilities";
 import { PROTOCOL_FLOOR_VERSION } from "./client-table";
 import {
   lastUsedLabel,
@@ -144,6 +145,7 @@ export function ConnectionsList({
             <TableHead>Protocol</TableHead>
             <TableHead>Last used</TableHead>
             <TableHead>Scopes</TableHead>
+            <TableHead>Capabilities</TableHead>
             <TableHead className="text-right">Actions</TableHead>
           </TableRow>
         </TableHeader>
@@ -224,6 +226,32 @@ export function ConnectionsList({
                   <span className="text-[var(--color-muted-foreground)]">No scopes granted</span>
                 ) : (
                   <span className="font-mono text-xs">{c.scopes.join(" ")}</span>
+                )}
+              </TableCell>
+
+              <TableCell>
+                {/* AN EMPTY SET IS INERT, NOT UNKNOWN. Authenticate refuses a
+                    connection holding no capability outright, so this reads as
+                    a live, meaningful condition -- and it is given MORE visual
+                    weight than a populated set, not a quieter placeholder that
+                    could be misread as "we didn't load this". Every entry
+                    renders even when this build's label map does not
+                    recognise it (capabilityLabel falls back to the raw wire
+                    string), so an unmapped capability the server actually
+                    stored is still visible here rather than silently dropped
+                    -- the exact defect #652 was filed over, one layer up. */}
+                {c.capabilities.length === 0 ? (
+                  <Badge variant="destructive" data-testid="capabilities-none">
+                    No capabilities - inert
+                  </Badge>
+                ) : (
+                  <div className="flex flex-wrap gap-1" data-testid="capabilities-list">
+                    {c.capabilities.map((cap) => (
+                      <Badge key={cap} variant="secondary">
+                        {capabilityLabel(cap)}
+                      </Badge>
+                    ))}
+                  </div>
                 )}
               </TableCell>
 
