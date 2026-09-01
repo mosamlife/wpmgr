@@ -103,6 +103,66 @@ ORDER BY
     s.id DESC
 LIMIT $2 OFFSET $3;
 
+-- name: ListSitesForMCPScope :many
+-- The assistant surface's site read (internal/mcp). It exists so that the row
+-- bound is taken over THE CALLER'S OWN SCOPE and never over the tenant.
+--
+-- What it replaces: internal/mcp read ListSites over the whole tenant with
+-- Limit = bound+1 and Sort = 'name', then applied the connection's site scope
+-- in Go AFTERWARDS. An in-scope site whose name sorted past the tenant's first
+-- page was therefore never in the rows the filter ran over. The order is
+-- deterministic, so no number of retries could ever produce it, and the caller
+-- was told to retry. Worse, the shortfall could only arise once the TENANT held
+-- more rows than the bound, so its arrival was a fact about sites the caller is
+-- not entitled to know exist.
+--
+-- WHY THIS IS A SEPARATE QUERY AND NOT A NULLABLE ARM ON ListSites.
+-- The alternative was sqlc.narg('site_ids') on ListSites, read as "NULL means
+-- no scope filter" so the dashboard's callers keep working untouched. Reject it,
+-- and the reason is specific rather than stylistic: for an ARRAY parameter sqlc
+-- emits the same Go type, []uuid.UUID, for sqlc.arg and sqlc.narg alike, because
+-- a Go slice is already nullable. The two options are therefore INDISTINGUISHABLE
+-- AT THE CALL SITE and differ only in what a nil slice means. On the narg arm nil
+-- means the whole tenant; here nil means zero rows, because `id = ANY(NULL::uuid[])`
+-- evaluates to NULL and `id = ANY('{}'::uuid[])` evaluates to false, and WHERE
+-- keeps neither. One identical mistake -- a scope set lost on an error path, a
+-- struct field left unassigned -- returns the fleet in one design and nothing in
+-- the other. That asymmetry is the whole justification for a second query over
+-- this table.
+--
+-- It is not a copy of ListSites and must not become one. This surface has one
+-- order and no filters, so there is deliberately no state/client_id/any_tags/
+-- all_tags/q arm here to drift out of step with the dashboard's. ListSites is
+-- unchanged by this addition.
+--
+-- No LEFT JOINs. ListSites carries site_perf_config and site_object_cache_config
+-- for the dashboard's cache badges; internal/mcp's toSiteRecord reads neither
+-- column, so joining them here would buy two index lookups per row, across the
+-- whole page, to produce two values nobody reads. `SELECT s.*` also means sqlc
+-- returns the shared `Site` model rather than a bespoke row struct.
+--
+-- The scope predicate is defense in depth and NOT the only gate, but it is the
+-- one that cannot be forgotten. `sites` carries the RESTRICTIVE sites_site_scope
+-- policy (m19, 20260531050000_m19_orgs_sharing.sql:330), whose USING clause is
+-- `app.site_scope <> 'on' OR id = ANY(app.allowed_site_ids)`. That is permissive
+-- whenever the GUC is unset -- correct, because the dashboard's org-scoped
+-- callers must not be filtered -- which also means the policy is inert for any
+-- caller that opens its transaction with InTenantTx rather than RunTenantTx.
+-- This predicate holds under either helper.
+--
+-- ORDER BY reproduces ListSites' 'name' sort exactly: lower(s.name) so "acme"
+-- and "Acme" sit together whatever the server's collation, then s.id DESC as the
+-- total-order tiebreak, without which two sites sharing a name are free to swap
+-- places between calls. Archived sites are excluded to match ListSites' default
+-- (ADR-041), which is what this surface was getting before.
+SELECT s.*
+FROM sites s
+WHERE s.tenant_id = @tenant_id
+  AND s.id = ANY(@site_ids::uuid[])
+  AND s.connection_state <> 'archived'
+ORDER BY lower(s.name) ASC, s.id DESC
+LIMIT @row_limit;
+
 -- name: ListSitesAgentVersions :many
 -- Tenant-scoped site_id/name/agent_version rollup for the read-only agent
 -- fleet-version dashboard (internal/agentrelease): "how many of my sites are
