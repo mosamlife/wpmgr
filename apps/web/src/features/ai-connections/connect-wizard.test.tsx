@@ -376,6 +376,72 @@ describe("the step rail names all ten specified steps and marks the right one cu
       expect(el).not.toHaveAttribute("aria-current", "step");
     }
   });
+
+  // ---------------------------------------------------------------------------
+  // Greptile P1 on connect-wizard.tsx:589 (pre-fix). Completion here used to be
+  // pure position: once client and method were picked, site selection read
+  // completed and setup read current REGARDLESS of whether the fleet/tag read
+  // that step depends on had actually come back. Loading and failed are
+  // covered separately -- collapsing them into one appearance is the same
+  // defect shape the finding names, one level down.
+  // ---------------------------------------------------------------------------
+
+  it("does not mark site selection completed or setup current while the fleet read is still loading", async () => {
+    mockedSites.mockReturnValue(mockQueryResult<Site[]>({ data: undefined, isPending: true }));
+    renderWizard();
+    await pickClient("Cursor");
+    fireEvent.click(authCard("oauth"));
+
+    const siteStep = document.querySelector('[data-step-n="3"]');
+    const setupStep = document.querySelector('[data-step-n="6"]');
+    // NOT "completed": the read behind this step has not resolved, whatever
+    // position the operator has otherwise reached.
+    expect(siteStep).toHaveAttribute("data-step-state", "loading");
+    expect(siteStep).toHaveTextContent(/\(loading\)/i);
+    // NOT "current" either -- setup is not the furthest ACTUAL step while the
+    // step behind it is unresolved, and the assistive-tech state has to agree:
+    // aria-current stays off setup and lands on the step still in progress.
+    expect(setupStep).not.toHaveAttribute("data-step-state", "current");
+    expect(setupStep).not.toHaveAttribute("aria-current", "step");
+    expect(siteStep).toHaveAttribute("aria-current", "step");
+  });
+
+  it("shows the fleet read as failed, distinctly from loading, and still refuses completion", async () => {
+    mockedSites.mockReturnValue(
+      mockQueryResult<Site[]>({ data: undefined, isPending: false, isError: true }),
+    );
+    renderWizard();
+    await pickClient("Cursor");
+    fireEvent.click(authCard("oauth"));
+
+    const siteStep = document.querySelector('[data-step-n="3"]');
+    const setupStep = document.querySelector('[data-step-n="6"]');
+    // A DIFFERENT STATE FROM LOADING, NOT THE SAME ONE RELABELLED. An operator
+    // told "loading" for a read that already failed keeps waiting for a state
+    // that will never arrive.
+    expect(siteStep).toHaveAttribute("data-step-state", "failed");
+    expect(siteStep).toHaveTextContent(/\(failed to load\)/i);
+    expect(siteStep).not.toHaveTextContent(/\(loading\)/i);
+    expect(setupStep).not.toHaveAttribute("data-step-state", "current");
+    expect(setupStep).not.toHaveAttribute("aria-current", "step");
+  });
+
+  it("still marks site selection completed and setup current once the read actually resolves", async () => {
+    // THE OVER-FIRE CASE. The fix must not hold the rail behind a resolved
+    // read out of over-caution -- that would just move the false state from
+    // "prematurely done" to "permanently stuck."
+    loadedFleet(3);
+    renderWizard();
+    await pickClient("Cursor");
+    fireEvent.click(authCard("oauth"));
+    await screen.findByTestId("site-step-count");
+
+    expect(document.querySelector('[data-step-n="3"]')).toHaveAttribute(
+      "data-step-state",
+      "completed",
+    );
+    expect(currentRailStep()).toHaveTextContent(/^6\. Get the setup artefact$/);
+  });
 });
 
 describe("the method step is computed from the client, with the reason on the card", () => {

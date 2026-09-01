@@ -152,6 +152,19 @@ const SPEC_STEPS: readonly SpecStepDef[] = [
   { n: 10, label: "Done: tool list and first prompt", built: false },
 ];
 
+/**
+ * Whether the site/tag read the site-scope step depends on has actually come
+ * back. Three states, not two: `loading` and `failed` are different facts an
+ * operator needs told apart -- "still working" against "it did not work, and
+ * an indefinite wait is not coming" -- so collapsing them into one appearance
+ * is its own defect, distinct from and in addition to marking either one
+ * "resolved" before it is.
+ */
+type SiteScopeResolution = "loading" | "failed" | "resolved";
+
+/** The specified step number (design S29) that answers "which sites." */
+const SITE_SCOPE_SPEC_N = 3;
+
 export interface ConnectWizardProps {
   /** Absolute MCP endpoint for this deployment. Passed in, never assembled here. */
   endpointUrl: string;
@@ -241,6 +254,18 @@ export function ConnectWizard({
       }),
     [selection, fleet, tagsBySiteId, sitesLoading],
   );
+
+  // THE RAIL'S SITE-SCOPE STATE, FROM THE SAME VALUE THAT GATES MINTING,
+  // NEVER RE-DERIVED. A P1 shipped from the rail computing "has this step's
+  // data resolved" by POSITION (has the operator picked a client and method
+  // yet) rather than by asking the read itself: once client and method were
+  // picked, the rail marked site selection completed and setup current even
+  // while `scope` above was still `unresolved` -- loading, or failed
+  // outright -- and minting was in fact blocked. Reading `scope.kind` here
+  // is the same fix in spirit as scopeRequest below: one computation feeds
+  // both the gate and everything that describes it, so they cannot disagree.
+  const siteScopeResolution: SiteScopeResolution =
+    scope.kind === "unresolved" ? scope.because : "resolved";
 
   // NULL means a selected tag name no longer resolves to an id -- see
   // resolveTagIds. The mint panel refuses to submit on null rather than
@@ -348,7 +373,7 @@ export function ConnectWizard({
 
   return (
     <div className={cn("space-y-6", className)}>
-      <StepRail current={step} />
+      <StepRail current={step} siteScopeResolution={siteScopeResolution} />
 
       {/* THE ONE AND ONLY PLACE A REVEAL IS RENDERED, and it is deliberately
           outside every step. A second render site inside step 4 would restore
@@ -574,19 +599,69 @@ export function ConnectWizard({
   );
 }
 
-function StepRail({ current }: { current: Step }) {
+function StepRail({
+  current,
+  siteScopeResolution,
+}: {
+  current: Step;
+  /**
+   * From the SAME `scope` computation that gates the mint button, never
+   * re-derived here. THE P1 THIS PARAMETER FIXES: the rail used to decide
+   * "is site selection done" from POSITION alone -- has the operator picked
+   * a client and method -- which says nothing about whether the fleet/tag
+   * read that step actually depends on came back. Once client and method
+   * were picked, the rail marked site selection completed and setup current
+   * even while the read was still loading, or had failed outright, so the
+   * screen and a screen reader both told the operator they had finished
+   * something, and that minting was reachable, when neither was true.
+   */
+  siteScopeResolution: SiteScopeResolution;
+}) {
   const currentSpec = specStepFor(current);
   const currentPos = BUILT_ORDER.findIndex(([, spec]) => spec === currentSpec);
+  const siteScopeBuiltPos = BUILT_ORDER.findIndex(([, spec]) => spec === SITE_SCOPE_SPEC_N);
+  // BLOCKING, NOT MERELY "NOT YET RESOLVED". The positional walk has to have
+  // actually passed through the site-scope step for its resolution to be
+  // relevant: while the operator is still on "how it authenticates," step 3
+  // is correctly "upcoming" no matter what the fleet/tag read is doing in
+  // the background, because the operator has not been told otherwise yet.
+  const siteScopeBlocking =
+    siteScopeResolution !== "resolved" &&
+    siteScopeBuiltPos !== -1 &&
+    siteScopeBuiltPos <= currentPos;
+  // THE OVERRIDE ITSELF. While site scope has not resolved, IT is where the
+  // operator's process actually stands, not whatever position the local step
+  // has otherwise reached -- so aria-current moves back to it instead of
+  // sitting on a "setup" step whose mint button it, in fact, still blocks.
+  const effectiveCurrentSpec = siteScopeBlocking ? SITE_SCOPE_SPEC_N : currentSpec;
+  const effectiveCurrentPos = siteScopeBlocking ? siteScopeBuiltPos : currentPos;
   return (
     <div className="space-y-1">
       <ol className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[var(--color-muted-foreground)]">
         {SPEC_STEPS.map((s, i) => {
-          const isCurrent = s.n === currentSpec;
+          const isCurrent = s.n === effectiveCurrentSpec;
           // Completed means "earlier in the order this wizard actually
           // visits built steps in," never "a smaller specified number" --
           // see the comment on BUILT_ORDER above for why those disagree here.
           const builtPos = BUILT_ORDER.findIndex(([, spec]) => spec === s.n);
-          const isCompleted = builtPos !== -1 && builtPos < currentPos;
+          const isCompleted = builtPos !== -1 && builtPos < effectiveCurrentPos;
+          // SITE SCOPE'S OWN THREE STATES, CHECKED BEFORE THE GENERIC ONES
+          // BELOW AND OVERRIDING THEM. "completed" here would be the exact P1:
+          // a step reading as finished while the read behind it has not come
+          // back. `loading` and `failed` are kept apart rather than both
+          // reading as one muted "not done yet" -- an operator told nothing
+          // when a read has actually failed keeps waiting for a state that is
+          // never coming.
+          const state: "not-built" | "current" | "completed" | "upcoming" | SiteScopeResolution =
+            !s.built
+              ? "not-built"
+              : s.n === SITE_SCOPE_SPEC_N && siteScopeBlocking
+                ? siteScopeResolution
+                : isCurrent
+                  ? "current"
+                  : isCompleted
+                    ? "completed"
+                    : "upcoming";
           return (
             <li key={s.n} className="flex items-center gap-2">
               {i > 0 ? <span aria-hidden="true">/</span> : null}
@@ -596,20 +671,23 @@ function StepRail({ current }: { current: Step }) {
                 // can assert the state this rail believes it is in without
                 // coupling to Tailwind class names.
                 data-step-n={s.n}
-                data-step-state={!s.built ? "not-built" : isCurrent ? "current" : isCompleted ? "completed" : "upcoming"}
-                // NOT FAKED PROGRESS. An unbuilt step gets none of the
-                // "current" or "completed" styling below, whatever its
-                // number is relative to the current one -- it is muted and
-                // marked not-yet-available instead, because it has no
-                // section behind it to have completed.
+                data-step-state={state}
+                // NOT FAKED PROGRESS, IN EITHER DIRECTION. An unbuilt step
+                // gets none of the "current" or "completed" styling below,
+                // because it has no section behind it to have completed; a
+                // built step whose own data has not resolved gets neither
+                // "current" nor "completed" either, for the same reason.
                 className={cn(
                   !s.built && "italic opacity-70",
-                  s.built && isCurrent && "font-medium text-[var(--color-foreground)]",
-                  s.built && isCompleted && "text-[var(--color-foreground)]",
+                  state === "current" && "font-medium text-[var(--color-foreground)]",
+                  state === "completed" && "text-[var(--color-foreground)]",
+                  state === "failed" && "text-[var(--color-destructive)]",
                 )}
               >
                 {s.n}. {s.label}
                 {!s.built ? <span className="sr-only"> (not yet available)</span> : null}
+                {state === "loading" ? " (loading)" : null}
+                {state === "failed" ? " (failed to load)" : null}
               </span>
             </li>
           );
