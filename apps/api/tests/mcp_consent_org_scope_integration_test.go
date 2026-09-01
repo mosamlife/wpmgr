@@ -364,8 +364,13 @@ func TestMCPConsentAdmitsAnOrgMemberAsAppRole(t *testing.T) {
 	userID := seedUserRow(t, pool, "mcp-orgmember-"+uuid.NewString()[:8]+"@example.test")
 	seedSite(t, pool, tenantID, "https://member-"+uuid.NewString()[:8]+".example.test")
 
-	// An ordinary org member: Scope "org", no allowlist.
-	member := domain.Principal{UserID: userID, TenantID: tenantID, Scope: domain.ScopeOrg}
+	// An ordinary org member: Scope "org", no allowlist. The role is admin
+	// because /consent and POST /api/v1/mcp/connections require the same
+	// permission to create a connection (authz.PermAPIKeyManage, admin+ in
+	// authz.minRoleFor); the over-fire this case guards against is the SITE
+	// gate refusing an unconstrained principal, which is what the assertions
+	// below read.
+	member := domain.Principal{UserID: userID, TenantID: tenantID, Role: "admin", Scope: domain.ScopeOrg}
 	if member.IsSiteConstrained() {
 		t.Fatal("the org member under test reports as site-constrained; the " +
 			"over-fire half would pass for the wrong reason")

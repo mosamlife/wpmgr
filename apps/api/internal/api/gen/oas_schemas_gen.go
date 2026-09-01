@@ -22995,6 +22995,14 @@ type GetSmtpSettingsUnauthorized Error
 
 func (*GetSmtpSettingsUnauthorized) getSmtpSettingsRes() {}
 
+type GetTenantAssistantStateForbidden Error
+
+func (*GetTenantAssistantStateForbidden) getTenantAssistantStateRes() {}
+
+type GetTenantAssistantStateNotFound Error
+
+func (*GetTenantAssistantStateNotFound) getTenantAssistantStateRes() {}
+
 // Ref: #/components/schemas/GovContext
 type GovContext struct {
 	// 0 means no context has ever been authored for this subject (a legitimate empty state, not a 404).
@@ -37017,6 +37025,52 @@ func (o OptString) Or(d string) string {
 	return d
 }
 
+// NewOptTenantAssistantPause returns new OptTenantAssistantPause with value set to v.
+func NewOptTenantAssistantPause(v TenantAssistantPause) OptTenantAssistantPause {
+	return OptTenantAssistantPause{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptTenantAssistantPause is optional TenantAssistantPause.
+type OptTenantAssistantPause struct {
+	Value TenantAssistantPause
+	Set   bool
+}
+
+// IsSet returns true if OptTenantAssistantPause was set.
+func (o OptTenantAssistantPause) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptTenantAssistantPause) Reset() {
+	var v TenantAssistantPause
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptTenantAssistantPause) SetTo(v TenantAssistantPause) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptTenantAssistantPause) Get() (v TenantAssistantPause, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptTenantAssistantPause) Or(d TenantAssistantPause) TenantAssistantPause {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptTestObjectCacheReq returns new OptTestObjectCacheReq with value set to v.
 func NewOptTestObjectCacheReq(v TestObjectCacheReq) OptTestObjectCacheReq {
 	return OptTestObjectCacheReq{
@@ -37861,6 +37915,18 @@ func (s *PauseMonitoringRequest) SetReason(val OptString) {
 func (s *PauseMonitoringRequest) SetResumeAt(val OptNilDateTime) {
 	s.ResumeAt = val
 }
+
+type PauseTenantAssistantForbidden Error
+
+func (*PauseTenantAssistantForbidden) pauseTenantAssistantRes() {}
+
+type PauseTenantAssistantNotFound Error
+
+func (*PauseTenantAssistantNotFound) pauseTenantAssistantRes() {}
+
+type PauseTenantAssistantUnprocessableEntity Error
+
+func (*PauseTenantAssistantUnprocessableEntity) pauseTenantAssistantRes() {}
 
 // The `{ok, detail}` acknowledgement returned by the cache action endpoints (purge / preload / enable
 // / disable). `ok` is false when the agent rejected the action (still HTTP 200).
@@ -42997,6 +43063,14 @@ func (s *ResumeMonitoringRequest) GetSiteIds() []uuid.UUID {
 func (s *ResumeMonitoringRequest) SetSiteIds(val []uuid.UUID) {
 	s.SiteIds = val
 }
+
+type ResumeTenantAssistantForbidden Error
+
+func (*ResumeTenantAssistantForbidden) resumeTenantAssistantRes() {}
+
+type ResumeTenantAssistantNotFound Error
+
+func (*ResumeTenantAssistantNotFound) resumeTenantAssistantRes() {}
 
 type RetryUpdateRunConflict Error
 
@@ -52669,6 +52743,110 @@ func (s *Tenant) SetUpdatedAt(val time.Time) {
 
 func (*Tenant) createTenantRes() {}
 func (*Tenant) getTenantRes()    {}
+
+// The optional body of a pause. Every field is optional: an empty or absent body engages the kill
+// switch with no reason recorded.
+// Ref: #/components/schemas/TenantAssistantPause
+type TenantAssistantPause struct {
+	// Why the surface is being stopped, recorded on the tenant row and in the audit entry. A blank or
+	// whitespace-only value is normalised to null rather than stored as an empty string.
+	Reason OptString `json:"reason"`
+}
+
+// GetReason returns the value of Reason.
+func (s *TenantAssistantPause) GetReason() OptString {
+	return s.Reason
+}
+
+// SetReason sets the value of Reason.
+func (s *TenantAssistantPause) SetReason(val OptString) {
+	s.Reason = val
+}
+
+// M130's per-tenant assistant state. `enabled` and `paused` are computed from two DIFFERENT columns
+// whose nulls mean DIFFERENT things, and they are not derived from one another: `enabled_at` null
+// means the surface was never enabled, `paused_at` null means the kill switch is released. A consumer
+// must not fold them into one predicate.
+// Ref: #/components/schemas/TenantAssistantState
+type TenantAssistantState struct {
+	TenantID uuid.UUID `json:"tenant_id"`
+	// Whether the organisation has ever enabled the assistant surface. NOTHING ENFORCES THIS YET — it is
+	// a record of intent that gates no request today (m130 DECISION 5 holds it out of the authorization
+	// verdict until a follow-up migration wires it together with its backfill). Display it; do not treat
+	// it as an access decision.
+	Enabled   bool           `json:"enabled"`
+	EnabledAt OptNilDateTime `json:"enabled_at"`
+	// Whether the kill switch is engaged. THIS ONE IS ENFORCED, on every assistant request, from the
+	// moment it is written.
+	Paused   bool           `json:"paused"`
+	PausedAt OptNilDateTime `json:"paused_at"`
+	// Why the surface was stopped. Null when no reason was given.
+	PausedReason OptNilString `json:"paused_reason"`
+}
+
+// GetTenantID returns the value of TenantID.
+func (s *TenantAssistantState) GetTenantID() uuid.UUID {
+	return s.TenantID
+}
+
+// GetEnabled returns the value of Enabled.
+func (s *TenantAssistantState) GetEnabled() bool {
+	return s.Enabled
+}
+
+// GetEnabledAt returns the value of EnabledAt.
+func (s *TenantAssistantState) GetEnabledAt() OptNilDateTime {
+	return s.EnabledAt
+}
+
+// GetPaused returns the value of Paused.
+func (s *TenantAssistantState) GetPaused() bool {
+	return s.Paused
+}
+
+// GetPausedAt returns the value of PausedAt.
+func (s *TenantAssistantState) GetPausedAt() OptNilDateTime {
+	return s.PausedAt
+}
+
+// GetPausedReason returns the value of PausedReason.
+func (s *TenantAssistantState) GetPausedReason() OptNilString {
+	return s.PausedReason
+}
+
+// SetTenantID sets the value of TenantID.
+func (s *TenantAssistantState) SetTenantID(val uuid.UUID) {
+	s.TenantID = val
+}
+
+// SetEnabled sets the value of Enabled.
+func (s *TenantAssistantState) SetEnabled(val bool) {
+	s.Enabled = val
+}
+
+// SetEnabledAt sets the value of EnabledAt.
+func (s *TenantAssistantState) SetEnabledAt(val OptNilDateTime) {
+	s.EnabledAt = val
+}
+
+// SetPaused sets the value of Paused.
+func (s *TenantAssistantState) SetPaused(val bool) {
+	s.Paused = val
+}
+
+// SetPausedAt sets the value of PausedAt.
+func (s *TenantAssistantState) SetPausedAt(val OptNilDateTime) {
+	s.PausedAt = val
+}
+
+// SetPausedReason sets the value of PausedReason.
+func (s *TenantAssistantState) SetPausedReason(val OptNilString) {
+	s.PausedReason = val
+}
+
+func (*TenantAssistantState) getTenantAssistantStateRes() {}
+func (*TenantAssistantState) pauseTenantAssistantRes()    {}
+func (*TenantAssistantState) resumeTenantAssistantRes()   {}
 
 // Ref: #/components/schemas/TenantCreate
 type TenantCreate struct {

@@ -11,6 +11,7 @@ import { CopyableMono } from "@/components/shared/copyable-mono";
 import { cn } from "@/lib/utils";
 
 import {
+  CLIENT_TABLE_VERIFIED_AT,
   MCP_CLIENTS,
   PROTOCOL_FLOOR_VERSION,
   PROTOCOL_TARGET_VERSION,
@@ -361,8 +362,22 @@ export function ConnectWizard({
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <AuthCard
               method="oauth"
-              title="Sign in through the browser"
-              body="You approve the connection here, and the client stores its own key. Nothing to copy or keep secret."
+              title="Sign in through your browser"
+              // NO REFRESH IS PROMISED, BECAUSE NO REFRESH EXISTS. The design
+              // frame says "the client stores a token it refreshes itself";
+              // apps/api/internal/mcp/service.go:140 says the opposite in as
+              // many words -- "There is no refresh_token grant: the connection
+              // token's lifetime is the connection's, and nothing here mints a
+              // refresh token" -- and discovery_test.go:256 drives the
+              // validator with "refresh_token" to prove the discovery document
+              // refuses it. A card promising a self-maintaining connection on
+              // the screen where the operator picks their auth method is the
+              // same defect this branch removed from the connections screen:
+              // the deck is wrong here and the server is right. The expiry is
+              // stated instead, because that is the thing that will actually
+              // happen to them.
+              body="You approve the connection on a WPMgr page and the client stores the token it is issued. Nothing secret is ever shown to you or pasted anywhere. That token does not refresh itself, so the connection stops working when it expires."
+              recommendation={recommendationFor("oauth", client.name, methods)}
               availability={client.auth.oauth}
               selected={method === "oauth"}
               locked={mintInFlight}
@@ -370,8 +385,9 @@ export function ConnectWizard({
             />
             <AuthCard
               method="token"
-              title="Connection token"
-              body="The documented path for CI, containers and SSH sessions, where no browser can open."
+              title="Use a connection token"
+              body="We show a token once. You put it in your environment, and the client sends it as a header. This is the documented path for CI, containers and SSH, not a fallback for when sign-in fails."
+              recommendation={recommendationFor("token", client.name, methods)}
               availability={client.auth.token}
               selected={method === "token"}
               locked={mintInFlight}
@@ -387,6 +403,24 @@ export function ConnectWizard({
               we would rather say so than send you down a path we have never seen finish.
             </p>
           ) : null}
+
+          {/* WHY THERE IS NO THIRD CARD. Without this, a reader who knows the
+              OAuth device-code flow reads a disabled browser card on a headless
+              client as an oversight, and the connection token as our fallback.
+              It is neither. The date is rendered from the client table's own
+              verified-at constant rather than written here, so this paragraph
+              goes stale visibly instead of quietly. */}
+          <div className="mt-3 rounded-md border border-[var(--color-border)] bg-[var(--color-muted)]/40 p-3">
+            <p className="text-xs font-medium text-[var(--color-foreground)]">
+              Why there is no “enter this code on another device” option
+            </p>
+            <p className="mt-1 text-xs text-[var(--color-muted-foreground)]">
+              A device-code flow would solve this cleanly, and no MCP client implements one. We
+              checked every client on this list on {CLIENT_TABLE_VERIFIED_AT}. A grant nothing can
+              initiate is a grant nobody can use, so we have not built one. A scoped, revocable
+              connection token does the same job today.
+            </p>
+          </div>
         </Section>
       ) : null}
 
@@ -517,6 +551,37 @@ function StepRail({ current }: { current: Step }) {
   );
 }
 
+/**
+ * Which recommendation badge, if any, belongs on one auth card.
+ *
+ * COMPUTED FROM THE CLIENT TABLE, NEVER WRITTEN PER CLIENT. The wireframe
+ * writes three different badges on three different frames; all three are the
+ * same fact stated for a different row, so they are derived from
+ * availableAuthMethods rather than copied out client by client, where the
+ * fourteenth client to be added would silently get none.
+ *
+ * A card whose method is not available gets no badge at all: it already carries
+ * the client's own reason for being disabled, and a recommendation on a control
+ * nobody can press is noise.
+ */
+export function recommendationFor(
+  method: AuthMethod,
+  clientName: string,
+  available: readonly AuthMethod[],
+): string | null {
+  if (!available.includes(method)) return null;
+  // One route means there is nothing to recommend BETWEEN. Saying so is more
+  // useful than a recommendation, because it tells the operator the other card
+  // is not a road they are declining to take.
+  if (available.length === 1) return "The only route for this client";
+  // Both available. Browser sign-in is the recommendation because nothing
+  // secret is ever shown; the token path is not second best, it is the path CI
+  // and SSH document, so it says that rather than nothing.
+  return method === "oauth"
+    ? `Recommended for ${clientName}`
+    : "The documented headless path";
+}
+
 function Section({
   n,
   title,
@@ -591,6 +656,7 @@ function AuthCard({
   method,
   title,
   body,
+  recommendation,
   availability,
   selected,
   locked,
@@ -599,6 +665,8 @@ function AuthCard({
   method: AuthMethod;
   title: string;
   body: string;
+  /** From recommendationFor. Null on a card nobody can press. */
+  recommendation: string | null;
   availability: AuthAvailability;
   selected: boolean;
   /**
@@ -637,6 +705,18 @@ function AuthCard({
           <AlertTriangle aria-hidden="true" className="size-4 text-[var(--color-muted-foreground)]" />
         ) : null}
       </span>
+
+      {/* THE BADGE SAYS WHICH CARD IS THE ANSWER, and the disabled card says it
+          is not possible here rather than leaving "greyed out" to be read as
+          "we would rather you did not". Two different facts, two different
+          words. */}
+      {recommendation !== null ? (
+        <Badge variant="secondary">{recommendation}</Badge>
+      ) : null}
+      {availability.state === "unavailable" ? (
+        <Badge variant="muted">not possible here</Badge>
+      ) : null}
+
       <span className="text-xs text-[var(--color-muted-foreground)]">{body}</span>
 
       {availability.state === "available" ? (

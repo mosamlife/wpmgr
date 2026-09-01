@@ -738,6 +738,11 @@ type GetTenantParams struct {
 	TenantId uuid.UUID
 }
 
+// GetTenantAssistantStateParams is parameters of getTenantAssistantState operation.
+type GetTenantAssistantStateParams struct {
+	TenantId uuid.UUID
+}
+
 // GetUpdateRunParams is parameters of getUpdateRun operation.
 type GetUpdateRunParams struct {
 	RunId uuid.UUID
@@ -1207,6 +1212,11 @@ type PatchSiteErrorConfigParams struct {
 	SiteId uuid.UUID
 }
 
+// PauseTenantAssistantParams is parameters of pauseTenantAssistant operation.
+type PauseTenantAssistantParams struct {
+	TenantId uuid.UUID
+}
+
 // PreloadCacheParams is parameters of preloadCache operation.
 type PreloadCacheParams struct {
 	SiteId uuid.UUID
@@ -1437,6 +1447,11 @@ type RestoreSiteFileVersionParams struct {
 type RestoreSiteVulnerabilityParams struct {
 	SiteId uuid.UUID
 	ID     uuid.UUID
+}
+
+// ResumeTenantAssistantParams is parameters of resumeTenantAssistant operation.
+type ResumeTenantAssistantParams struct {
+	TenantId uuid.UUID
 }
 
 // RetryUpdateRunParams is parameters of retryUpdateRun operation.

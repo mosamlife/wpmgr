@@ -584,6 +584,9 @@ import type {
   GetSmtpSettingsData,
   GetSmtpSettingsErrors,
   GetSmtpSettingsResponses,
+  GetTenantAssistantStateData,
+  GetTenantAssistantStateErrors,
+  GetTenantAssistantStateResponses,
   GetTenantData,
   GetTenantErrors,
   GetTenantResponses,
@@ -798,6 +801,9 @@ import type {
   PauseSiteMonitoringData,
   PauseSiteMonitoringErrors,
   PauseSiteMonitoringResponses,
+  PauseTenantAssistantData,
+  PauseTenantAssistantErrors,
+  PauseTenantAssistantResponses,
   PreloadCacheData,
   PreloadCacheResponses,
   PrepareSiteFileDownloadData,
@@ -953,6 +959,9 @@ import type {
   ResumeSiteMonitoringData,
   ResumeSiteMonitoringErrors,
   ResumeSiteMonitoringResponses,
+  ResumeTenantAssistantData,
+  ResumeTenantAssistantErrors,
+  ResumeTenantAssistantResponses,
   RetryUpdateRunData,
   RetryUpdateRunErrors,
   RetryUpdateRunResponses,
@@ -3043,6 +3052,97 @@ export const getTenant = <ThrowOnError extends boolean = false>(
     GetTenantErrors,
     ThrowOnError
   >({ url: "/api/v1/tenants/{tenantId}", ...options });
+
+/**
+ * Read the organisation's assistant enablement and kill-switch state
+ *
+ * m130 / ADR-061. The operator console's read of the per-tenant assistant
+ * state. This is NOT the request path: an assistant request reads the
+ * pause through the `authorized` verdict in
+ * ReCheckMCPRequestAuthorizationInTenantTx, never here.
+ *
+ * `enabled` and `paused` come from two different columns with two
+ * different null meanings and are deliberately not derived from one
+ * another — an organisation can be enabled and paused, or disabled and
+ * paused. Owner-only (`tenant:manage`), and refused outright for any
+ * site-scoped principal regardless of the role it holds on a site.
+ *
+ */
+export const getTenantAssistantState = <ThrowOnError extends boolean = false>(
+  options: Options<GetTenantAssistantStateData, ThrowOnError>,
+) =>
+  (options.client ?? client).get<
+    GetTenantAssistantStateResponses,
+    GetTenantAssistantStateErrors,
+    ThrowOnError
+  >({ url: "/api/v1/tenants/{tenantId}/assistant", ...options });
+
+/**
+ * Engage the assistant kill switch for an organisation
+ *
+ * m130 / ADR-061's "per-tenant kill switch reachable in one click". ONE
+ * UPDATE on ONE row that already exists, so it cannot fail with a unique
+ * violation during an incident.
+ *
+ * TAKES EFFECT ON THE NEXT REQUEST. The assistant request path recomputes
+ * its whole authorization verdict per request and that verdict carries
+ * `assistant_paused_at IS NULL`, so every in-flight connection for this
+ * organisation — including already-issued, otherwise perfectly valid
+ * tokens — is refused the moment this call commits. No sweep, no cache
+ * invalidation and no token refresh is involved.
+ *
+ * THIS IS NOT A TOGGLE. Releasing the switch is a separate, deliberate
+ * call to /assistant/resume; a repeated pause re-engages and refreshes
+ * the reason (which is what an escalating incident wants) and can never
+ * restart the surface.
+ *
+ * The body is optional: "stop it now, explain later" is the 3am case, and
+ * a control that demands a justification before it will fire costs
+ * seconds it does not have. An omitted or blank reason is stored as null
+ * rather than an empty string, which would read as an answer.
+ *
+ */
+export const pauseTenantAssistant = <ThrowOnError extends boolean = false>(
+  options: Options<PauseTenantAssistantData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    PauseTenantAssistantResponses,
+    PauseTenantAssistantErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/tenants/{tenantId}/assistant/pause",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Release the assistant kill switch for an organisation
+ *
+ * m130 / ADR-061. Clears `assistant_paused_at` and the pause reason in
+ * one statement — the reason is part of the pause, so a stale reason
+ * cannot outlive it.
+ *
+ * IT DOES NOT ENABLE THE SURFACE. Releasing the switch never touches
+ * `assistant_enabled_at`, so an organisation that was deliberately off
+ * before the incident is still off after it. That is the whole reason the
+ * state is two columns rather than one tri-state.
+ *
+ * Resuming an organisation that is not paused is a successful no-op and
+ * records no audit entry: a release that released nothing must not leave
+ * a false incident-end marker in the chain.
+ *
+ */
+export const resumeTenantAssistant = <ThrowOnError extends boolean = false>(
+  options: Options<ResumeTenantAssistantData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    ResumeTenantAssistantResponses,
+    ResumeTenantAssistantErrors,
+    ThrowOnError
+  >({ url: "/api/v1/tenants/{tenantId}/assistant/resume", ...options });
 
 /**
  * List sites for the current tenant
