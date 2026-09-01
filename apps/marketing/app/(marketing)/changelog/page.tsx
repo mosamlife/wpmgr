@@ -50,6 +50,30 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.153",
+    date: "2026-09-01",
+    summary:
+      "A connection scoped to a subset of a tenant's sites could learn the tenant held more sites than it was allowed to see; the assistant's site read is now bounded over the connection's own scope and enforced again at the database. Fleet-wide assistant questions get a typed partial-result format, and the site-listing tool is renamed to match the published catalogue.",
+    items: [
+      {
+        tag: "Security",
+        text: "A connection scoped to a subset of a tenant's sites could learn that the tenant held more sites than the connection was allowed to see. The assistant's site list read a fixed-size page across the whole tenant and then filtered it, so a caller receiving every site it was entitled to could still be told that sites had been withheld. The read is now bounded over the connection's own scope, so the page it receives can never carry a fact about the wider tenant. This was live in 0.61.151 and 0.61.152.",
+      },
+      {
+        tag: "Security",
+        text: "The same read now also runs under the database's own site-scope policy, rather than relying solely on the application-level filter above. This is one boundary enforced twice against different implementation mistakes, not two independent protections.",
+      },
+      {
+        tag: "Added",
+        text: "A typed partial-result format for fleet-wide assistant questions: a response can now say that some sites could not be answered and why, with a stated reason per site and a timestamp on any answer drawn from stale data. A site outside a connection's scope is left out of the result entirely rather than named in a refusal, because naming it would itself disclose that it exists.",
+      },
+      {
+        tag: "Changed",
+        text: "The fleet site-listing tool is renamed from list_sites to fleet_sites_list to match the published tool catalogue. A client re-reads the tool list when it reconnects, so this is picked up automatically; a client that has cached the old name will get an ordinary \"no such tool\" refusal rather than a silent alias.",
+      },
+    ],
+  },
+  {
     version: "0.61.152",
     date: "2026-09-01",
     summary:
