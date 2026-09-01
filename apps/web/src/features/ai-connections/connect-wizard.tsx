@@ -290,7 +290,7 @@ export function ConnectWizard({
   // selection the operator had not made yet. One function, read by both the
   // button and the rail, is what makes a fourth door impossible rather than
   // merely unlikely.
-  const siteScopeState: SiteScopeReadiness = siteScopeReadiness(scope, scopeRequest);
+  const siteScopeState: SiteScopeReadiness = siteScopeReadiness(scope, scopeRequest, method);
 
   // A mint is a network round trip, and every control above is live during it.
   // Disabling them is the FIRST half of the fix (the operator is not offered a
@@ -1088,26 +1088,74 @@ function mintScopeRequest(
 }
 
 /**
- * Whether step 3 is actually done, for every reason mint can refuse it.
+ * Whether step 3 is actually done, for every reason mint can refuse it, ON
+ * THE PATH WHERE MINT IS THE THING BEING REFUSED.
  *
- * THE ONE PLACE THIS IS DECIDED. `mintBlockedReason` below and the step rail's
- * `siteScopeState` (ConnectWizard) both call this and nothing else, so
+ * THE FULL MATRIX THIS FUNCTION ANSWERS -- auth method x site-scope state,
+ * ten cells, derived from what actually gates the setup step on each path,
+ * not from what feels right:
+ *
+ *   TOKEN.    TokenMintPanel is the only caller of `mintBlockedReason`, so on
+ *   this path "is step 3 done" and "will mint accept this" are the same
+ *   question, and every unresolved state genuinely blocks:
+ *     unselected      -> mint blocked (mintScopeRequest: "names-nothing")
+ *     loading         -> mint blocked (scope.kind === "unresolved")
+ *     failed          -> mint blocked (scope.kind === "unresolved")
+ *     tags-unresolved -> mint blocked (mintScopeRequest: "tags-unresolved")
+ *     resolved        -> mint NOT blocked by scope (the name field is a
+ *                         separate, later gate -- see the note on that below)
+ *
+ *   OAUTH.    There is no mint button on this path at all -- step 4 renders
+ *   NextSteps, not TokenMintPanel, for `method === 'oauth'` -- and the scope
+ *   chosen in THIS wizard is rehearsal for it: SiteScopeStep's own copy says
+ *   "nothing carries this selection to the approval screen... deciding it
+ *   here is how you get there with the answer ready." Nothing downstream
+ *   reads it, so nothing here can be "blocked" by it, for any of the five
+ *   states:
+ *     unselected / loading / failed / tags-unresolved / resolved
+ *       -> mint N/A; NextSteps is unconditionally actionable the moment
+ *          client and method are picked, so step 3 reads by POSITION alone
+ *          (the ordinary completed/upcoming logic) and step 6 stays current.
+ *   Getting this wrong the other way was Greptile's P1 on :639: dragging
+ *   `aria-current` back to step 3 while an OAuth operator sits in an
+ *   already-actionable step 6, because the predicate could not tell "no
+ *   button exists here" from "the button here is disabled."
+ *
+ * THE ONE PLACE THIS IS DECIDED. `mintBlockedReason` below and the step
+ * rail's `siteScopeState` (ConnectWizard) both call this and nothing else, so
  * "minting is blocked" and "the rail says step 3 is done" cannot disagree --
- * they read the same value rather than two derivations of the same two inputs
- * that could drift the way `scope.kind` alone already did once.
+ * they read the same value, now including the method that changes what
+ * "blocked" even means, rather than two derivations that could drift the way
+ * `scope.kind` alone already did once, and the way a method-blind version of
+ * this very function did a second time.
  *
- * THE ORDER IS LOAD-BEARING, copied from `mintBlockedReason`'s own comment
- * because this function replaces that logic rather than duplicating it. An
- * unresolved tag registry is reported first, because a selection that cannot
- * be translated is not the same complaint as a selection that is empty. A
- * fleet still loading is reported before "you have picked nothing," because
- * telling an operator to pick a site out of a list that has not arrived is a
- * remedy they cannot follow.
+ * THE ORDER ON THE TOKEN PATH IS LOAD-BEARING, copied from
+ * `mintBlockedReason`'s own comment because this function replaces that logic
+ * rather than duplicating it. An unresolved tag registry is reported first,
+ * because a selection that cannot be translated is not the same complaint as
+ * a selection that is empty. A fleet still loading is reported before "you
+ * have picked nothing," because telling an operator to pick a site out of a
+ * list that has not arrived is a remedy they cannot follow.
+ *
+ * A NAMED NON-GOAL, NOT AN OVERSIGHT. The connection-name field (inside step
+ * 6 itself) can be empty while this returns `resolved` and the rail marks
+ * step 6 current -- mint is still blocked then, by `mintBlockedReason`'s own
+ * `!nameOk` branch, which this function does not see. That is correct rather
+ * than a fifth gap to close: the rail reports POSITION -- which section is
+ * the operator working in -- not "is the submit button enabled right now."
+ * An empty name field is the operator genuinely inside step 6, working on
+ * step 6's own control, not the rail lying about where they are the way the
+ * site-scope cases above did.
  */
 function siteScopeReadiness(
   scope: ResolvedSiteScope,
   scopeRequest: MintScopeRequest,
+  method: AuthMethod | null,
 ): SiteScopeReadiness {
+  // OAUTH (AND NO METHOD CHOSEN YET) NEVER GATES ON THIS. See the matrix
+  // above: no mint button exists to refuse on this path, so nothing here can
+  // be "unresolved" in a sense that blocks anything.
+  if (method !== "token") return "resolved";
   if (!scopeRequest.ok && scopeRequest.because === "tags-unresolved") return "tags-unresolved";
   if (scope.kind === "unresolved") return scope.because;
   if (!scopeRequest.ok) return "unselected";
@@ -1126,7 +1174,10 @@ function mintBlockedReason(
   scopeRequest: MintScopeRequest,
 ): string | null {
   if (!nameOk) return "Name this connection before minting a token.";
-  const readiness = siteScopeReadiness(scope, scopeRequest);
+  // Literally "token", not threaded through as a parameter: this function is
+  // only ever called from TokenMintPanel, which method === 'oauth' never
+  // renders, so the context is a fact about the caller, not a value to plumb.
+  const readiness = siteScopeReadiness(scope, scopeRequest, "token");
   if (readiness === "loading") {
     return "Still reading this organisation's sites for step 3. Wait for that to finish before minting.";
   }

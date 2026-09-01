@@ -397,10 +397,13 @@ describe("the step rail names all ten specified steps and marks the right one cu
   // ---------------------------------------------------------------------------
 
   it("does not mark site selection completed or setup current while the fleet read is still loading", async () => {
+    // THE TOKEN COLUMN: a mint button exists here for the unresolved read to
+    // block. OAuth's mirror image ("does not drag the rail back for OAuth...
+    // loading") is below, and deliberately asserts the opposite.
     mockedSites.mockReturnValue(mockQueryResult<Site[]>({ data: undefined, isPending: true }));
     renderWizard();
     await pickClient("Cursor");
-    fireEvent.click(authCard("oauth"));
+    fireEvent.click(authCard("token"));
 
     const siteStep = document.querySelector('[data-step-n="3"]');
     const setupStep = document.querySelector('[data-step-n="6"]');
@@ -417,12 +420,13 @@ describe("the step rail names all ten specified steps and marks the right one cu
   });
 
   it("shows the fleet read as failed, distinctly from loading, and still refuses completion", async () => {
+    // THE TOKEN COLUMN, see the comment on the loading test above.
     mockedSites.mockReturnValue(
       mockQueryResult<Site[]>({ data: undefined, isPending: false, isError: true }),
     );
     renderWizard();
     await pickClient("Cursor");
-    fireEvent.click(authCard("oauth"));
+    fireEvent.click(authCard("token"));
 
     const siteStep = document.querySelector('[data-step-n="3"]');
     const setupStep = document.querySelector('[data-step-n="6"]');
@@ -486,6 +490,100 @@ describe("the step rail names all ten specified steps and marks the right one cu
     expect(siteStep).toHaveTextContent(/\(tags still loading\)/i);
     expect(setupStep).not.toHaveAttribute("data-step-state", "current");
     expect(setupStep).not.toHaveAttribute("aria-current", "step");
+  });
+
+  it("holds the rail back on the token path when nothing has been selected yet", async () => {
+    // THE UNSELECTED CELL, TOKEN COLUMN. The wizard opens on mode 'list' with
+    // no sites picked -- reachable by doing nothing at all -- and
+    // mintScopeRequest refuses to mint on it ("names-nothing").
+    loadedFleet(3);
+    renderWizard();
+    await pickClient("Cursor");
+    fireEvent.click(authCard("token"));
+    await screen.findByTestId("site-step-count");
+
+    expect(screen.getByRole("button", { name: /generate connection token/i })).toBeDisabled();
+    const siteStep = document.querySelector('[data-step-n="3"]');
+    const setupStep = document.querySelector('[data-step-n="6"]');
+    expect(siteStep).toHaveAttribute("data-step-state", "unselected");
+    expect(siteStep).toHaveTextContent(/\(not chosen yet\)/i);
+    expect(setupStep).not.toHaveAttribute("data-step-state", "current");
+    expect(setupStep).not.toHaveAttribute("aria-current", "step");
+  });
+
+  // ---------------------------------------------------------------------------
+  // Greptile P1 on connect-wizard.tsx:639, the OVER-FIRE ARM OF THE FIX ABOVE.
+  // On the OAuth path there is no mint button to block -- step 4 renders
+  // NextSteps, never TokenMintPanel -- and the scope chosen in this wizard is
+  // rehearsal for OAuth (SiteScopeStep's own copy: "nothing carries this
+  // selection to the approval screen"). Every one of the four unresolved
+  // states must therefore leave step 6 current and step 3 completed, the same
+  // as the resolved case, because nothing downstream is actually blocked.
+  // ---------------------------------------------------------------------------
+
+  it.each([
+    [
+      "loading",
+      () => mockedSites.mockReturnValue(mockQueryResult<Site[]>({ data: undefined, isPending: true })),
+    ],
+    [
+      "failed",
+      () =>
+        mockedSites.mockReturnValue(
+          mockQueryResult<Site[]>({ data: undefined, isPending: false, isError: true }),
+        ),
+    ],
+  ] as const)(
+    "does not drag the rail back for OAuth while the fleet read is %s",
+    async (_label, mockRead) => {
+      mockRead();
+      renderWizard();
+      await pickClient("Cursor");
+      fireEvent.click(authCard("oauth"));
+
+      expect(currentRailStep()).toHaveTextContent(/^6\. Get the setup artefact$/);
+      expect(document.querySelector('[data-step-n="3"]')).toHaveAttribute(
+        "data-step-state",
+        "completed",
+      );
+    },
+  );
+
+  it("does not drag the rail back for OAuth while the tag registry is unresolved", async () => {
+    loadedFleet(3);
+    mockedTags.mockReturnValue(mockQueryResult<SiteTag[]>({ data: undefined, isPending: true }));
+    renderWizard();
+    await pickClient("Cursor");
+    fireEvent.click(authCard("oauth"));
+    await screen.findByTestId("site-step-count");
+    fireEvent.click(screen.getByRole("radio", { name: /by tag/i }));
+    // No TokenMintPanel exists on this path to show its own "could not be
+    // resolved" copy -- the radiogroup's own selected state is the only
+    // thing to wait for before the rail is asserted against.
+    expect(screen.getByRole("radio", { name: /by tag/i })).toBeChecked();
+
+    expect(currentRailStep()).toHaveTextContent(/^6\. Get the setup artefact$/);
+    expect(document.querySelector('[data-step-n="3"]')).toHaveAttribute(
+      "data-step-state",
+      "completed",
+    );
+  });
+
+  it("does not drag the rail back for OAuth when nothing has been selected yet", async () => {
+    // The wizard's opening state (mode 'list', nothing picked) is
+    // "unselected" on the token path; on OAuth it must not read as anything
+    // other than complete, because there is no button here for it to block.
+    loadedFleet(3);
+    renderWizard();
+    await pickClient("Cursor");
+    fireEvent.click(authCard("oauth"));
+    await screen.findByTestId("site-step-count");
+
+    expect(currentRailStep()).toHaveTextContent(/^6\. Get the setup artefact$/);
+    expect(document.querySelector('[data-step-n="3"]')).toHaveAttribute(
+      "data-step-state",
+      "completed",
+    );
   });
 });
 
