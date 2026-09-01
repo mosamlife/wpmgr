@@ -50,6 +50,30 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.152",
+    date: "2026-09-01",
+    summary:
+      "Sites stop reporting a phantom WordPress core update with no target version, AI connection capabilities are now visible on the connections list, and assistant-surface audit failures fail closed instead of silently answering.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "A site no longer reports a WordPress core update with no version to update to. A blank target version was being read as \"an update is available,\" which left the site detail page's core row showing an empty target and inflated the fleet's pending-update count.",
+      },
+      {
+        tag: "Fixed",
+        text: "An audit failure on the assistant surface no longer comes back as an invalid params error blaming the caller. A genuine server-side fault writing the audit record is now reported as a server fault, not a client mistake.",
+      },
+      {
+        tag: "Added",
+        text: "An operator can now see which capabilities each AI connection holds, directly on the connections list. That set was already stored on every grant but never rendered, so there was no way to audit what a connection could actually do without querying the database.",
+      },
+      {
+        tag: "Security",
+        text: "Audit on the assistant surface is now fail-closed, reads included: when the record of what the assistant read cannot be written, the read itself is refused rather than answered silently. This is a deliberate posture change for this surface, taken by owner decision.",
+      },
+    ],
+  },
+  {
     version: "0.61.151",
     date: "2026-09-01",
     summary:
