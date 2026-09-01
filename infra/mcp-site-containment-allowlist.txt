@@ -63,7 +63,25 @@ PARAM RedeemAuthorizationCode.codeID                    # authorization code row
 PARAM CreateGrantWithCode.grantID                       # callback parameter: the id of the row just inserted
 PARAM CreateGrantWithToken.grantID                      # callback parameter: the id of the row just inserted
 PARAM ListTagIDs.tenantID                               # tenant of the resolved principal
-PARAM ListSitesForRead.tenantID                         # tenant of the resolved principal; the list_sites tool then filters the rows through SiteSet.Allows
+# ListSitesForRead.tenantID is GONE, deliberately not replaced, for the same
+# reason ResolveScopeSites.tenantID is (see below). #671 changed the assistant's
+# site read to take `principal domain.Principal` instead of a bare tenant uuid,
+# so the read can route on scope: RunTenantTx dispatches a site-constrained
+# principal to InScopedTenantTx, the only helper that sets app.site_scope, which
+# the RESTRICTIVE sites_site_scope policy (m19) keys on. Under the old bare-uuid
+# signature the method could only reach InTenantTx and that policy was inert.
+#
+# domain.Principal is not a uuid type, so Rule B does not extract it and NO
+# entry is owed. The method now has no uuid parameter at all -- the site ids it
+# reads are principal.AllowedSiteIDs, which is the chokepoint's OWN OUTPUT
+# carried on the principal, not a request-supplied id. That is the question A11
+# asks, and the answer is that a site id cannot reach the database through this
+# method without having passed ResolveScopeSites first: Service.ListSitesForModel
+# builds the principal from auth.Sites, which Authenticate resolved.
+#
+# Re-derived rather than edited. The old reason described a bare tenant uuid
+# whose scope the caller then applied in Go; that sentence is not true of a
+# principal and could not have been repaired by changing the parameter name.
 PARAM ReCheckAuthorization.tenantID                     # tenant of the resolved principal
 PARAM ReCheckAuthorization.tokenID                      # token row id, from the token lookup
 # ResolveScopeSites.tenantID is GONE, deliberately not replaced. #649 changed

@@ -1738,19 +1738,24 @@ func (s *Service) ListSitesForModel(ctx context.Context, auth AuthorizedRequest)
 	// THE SECOND RETURN OF ListSitesForRead IS DELIBERATELY DISCARDED, AND
 	// DISCARDING IT IS A FIX RATHER THAN AN OVERSIGHT.
 	//
-	// That value is `more`: "the bounded page was filled and this TENANT has
-	// further site rows". It was previously passed straight through into the
-	// rendered result, which reported it to the caller as a truncation notice.
-	// For a connection scoped to two sites in a six-hundred-site tenant that
-	// notice was both false and disclosing -- the caller received every site
-	// it may read, was told further sites had been withheld, and could infer
-	// from a flag it had no business seeing that the tenant holds more than
-	// sitesPageBound sites.
+	// That value is `more`: "the bounded page was filled and further rows were
+	// left unread". It was once passed straight through into the rendered
+	// result as a truncation notice, and at that time it was a fact about THE
+	// TENANT: the read was tenant-wide and the bound was applied before the
+	// site scope. For a connection scoped to two sites in a six-hundred-site
+	// tenant the notice was both false and disclosing -- the caller received
+	// every site it may read, was told further sites had been withheld, and
+	// could infer from a flag it had no business seeing that the tenant holds
+	// more than sitesPageBound sites.
 	//
-	// A count taken over the TENANT can never be reported to a SITE-SCOPED
-	// caller, however harmless it looks as a completeness flag. Completeness
-	// is recomputed below over the caller's own scope instead, where both
-	// terms are numbers the caller already knows.
+	// The read is now bounded over the caller's own scope, so `more` is no
+	// longer a tenant fact and could be reported without disclosing anything.
+	// It is still discarded, because it is now REDUNDANT: every site it would
+	// account for is already enumerated below as an explicit site_unread
+	// refusal against auth.Sites, which is the stronger report -- it names the
+	// sites rather than raising a flag, and it keeps ok+refused balanced
+	// against asked. Two completeness signals computed from different values
+	// is how the pair comes to disagree.
 	bound := s.pageBound
 	if bound <= 0 {
 		// A Service built by a struct literal rather than NewService. Read a
@@ -1758,21 +1763,26 @@ func (s *Service) ListSitesForModel(ctx context.Context, auth AuthorizedRequest)
 		// present as an organisation owning no sites.
 		bound = sitesPageBound
 	}
-	rows, _, err := s.store.ListSitesForRead(ctx, auth.TenantID, bound)
+	rows, _, err := s.store.ListSitesForRead(ctx, connectionScopedPrincipal(auth), bound)
 	if err != nil {
 		return "", fmt.Errorf("list sites for mcp read: %w", err)
 	}
 
-	// Filter to the grant's resolved set. The query is tenant-scoped by RLS;
-	// this narrows it further to the sites THIS GRANT may read. SiteSet.Allows
-	// returns false for every id on an empty or zero-value set, so there is no
-	// widening path even if the set were somehow lost between here and there.
+	// Filter to the grant's resolved set. The read is now scoped on the site
+	// axis twice before it reaches here -- by the query's own site_ids
+	// predicate and by the RESTRICTIVE sites_site_scope policy the scoped
+	// transaction switches on -- so in a correct system this loop drops
+	// nothing. IT STAYS ANYWAY, and not as ceremony: it is the only one of the
+	// three layers that cannot be switched off by a mistake in the other two,
+	// and SiteSet.Allows returns false for every id on an empty or zero-value
+	// set, so there is no widening path even if the set were lost between here
+	// and there.
 	//
 	// THIS IS LAYER 3, AND LAYER 3 HIDES. A row dropped here is not refused,
 	// not counted and not mentioned: it leaves no trace in the envelope built
 	// below, because `asked` is closed over auth.Sites and an out-of-scope row
 	// was never in auth.Sites to begin with.
-	allowed := make([]sqlc.ListSitesRow, 0, len(rows))
+	allowed := make([]sqlc.Site, 0, len(rows))
 	seen := make(map[uuid.UUID]struct{}, len(rows))
 	for _, r := range rows {
 		if auth.Sites.Allows(r.ID) {
@@ -1787,6 +1797,23 @@ func (s *Service) ListSitesForModel(ctx context.Context, auth AuthorizedRequest)
 	// is reported as an explicit site_unread refusal rather than being left
 	// silently absent, so ok+refused balances against asked and the caller is
 	// never handed a short list that reads as a complete fleet.
+	//
+	// THIS BRANCH IS MUCH NARROWER THAN IT WAS, AND ITS ADVICE CHANGED WITH IT.
+	// While the page was bounded over the TENANT, any in-scope site sorting
+	// past the tenant's first page landed here, and the detail told the caller
+	// to "retry" -- advice that could never work, because the order is
+	// deterministic and the same page comes back every time. The page is now
+	// bounded over the caller's own scope, which removes that cause entirely.
+	//
+	// Two causes remain, and neither is a transient. A connection whose scope
+	// holds more sites than one page will always be short by the same
+	// overflow; and a site that is in scope but ARCHIVED is resolved into
+	// auth.Sites (ResolveMCPGrantScopeSitesInTenantTx has no archived
+	// predicate) while ListSitesForMCPScope excludes it, matching the
+	// dashboard's default (ADR-041). Both are stable facts about this
+	// connection, so the detail says what is true and does not invite a retry
+	// that cannot help. Naming them discloses nothing: every site named here
+	// is already in the caller's own scope.
 	refusals := make([]Refusal, 0)
 	for _, id := range auth.Sites.Sorted() {
 		if _, found := seen[id]; !found {
@@ -1794,7 +1821,10 @@ func (s *Service) ListSitesForModel(ctx context.Context, auth AuthorizedRequest)
 				SiteID: id.String(),
 				Code:   RefusalSiteUnread,
 				Detail: "this site is in scope for this connection but was not returned by the " +
-					"bounded page this call reads; retry, and report it if it persists",
+					"page this call reads. The page is bounded over this connection's own scope " +
+					"in a fixed order, so retrying returns the same page and will not reach it: " +
+					"either this connection's scope holds more sites than one page, or the site " +
+					"is archived. Ask an operator to narrow the scope or restore the site.",
 			})
 		}
 	}
@@ -1926,6 +1956,47 @@ func orEmpty(ids []uuid.UUID) []uuid.UUID {
 // ADR-061 A11 item 2 literally here.
 func bootstrapTenantPrincipal(tenantID uuid.UUID) domain.Principal {
 	return domain.Principal{TenantID: tenantID}
+}
+
+// connectionScopedPrincipal builds the SITE-CONSTRAINED principal the
+// assistant's site read runs under. It is the counterpart of
+// bootstrapTenantPrincipal directly above, and the two exist as a named pair
+// because the difference between them is the whole of ADR-061 A11 item 2 on
+// this surface: one call site is genuinely the exception and one is not, and
+// nothing in the type system tells them apart.
+//
+// WHY THIS ONE IS SCOPED, WHERE THE BOOTSTRAP IS NOT. bootstrapTenantPrincipal
+// exists because ResolveScopeSites COMPUTES this connection's allowlist, so
+// scoping that query by the allowlist it is producing is circular -- read A14
+// there before touching it. ListSitesForModel runs strictly afterwards. By the
+// time it calls this, Authenticate has already resolved the scope through the
+// audited chokepoint and auth.Sites holds the answer. The allowlist is in hand,
+// so there is nothing circular to avoid and the exception simply does not
+// apply here.
+//
+// DO NOT "FIX" THIS BACK TO bootstrapTenantPrincipal BY ANALOGY WITH A14. That
+// substitution compiles, every unit test passes, and the observable behaviour
+// is identical, because the Go filter in ListSitesForModel still hides
+// out-of-scope rows. What it silently removes is the DATABASE layer:
+// RunTenantTx would dispatch an org-scoped principal to InTenantTx,
+// app.site_scope would go unset, and the RESTRICTIVE sites_site_scope policy
+// (m19) would be inert -- leaving the Go loop as the only gate on the site
+// axis, which is the state this change exists to end. Repo.ListSitesForRead
+// refuses an unconstrained principal rather than reading tenant-wide, so the
+// substitution fails loudly instead; that refusal is the executed guard.
+//
+// Scope is set explicitly as well as AllowedSiteIDs even though
+// domain.IsSiteConstrained accepts either. The empty-scope case never reaches
+// here -- ListSitesForModel refuses auth.Sites.IsEmpty() first -- but a
+// principal that depended on a non-empty slice for its constraint would become
+// tenant-wide the moment that refusal moved, and "the caller checks first" is
+// not a property this value should rest on.
+func connectionScopedPrincipal(auth AuthorizedRequest) domain.Principal {
+	return domain.Principal{
+		TenantID:       auth.TenantID,
+		Scope:          domain.ScopeSite,
+		AllowedSiteIDs: auth.Sites.Sorted(),
+	}
 }
 
 // requireOrgScopedPrincipal is the site-scope refusal, and it is the SECOND of

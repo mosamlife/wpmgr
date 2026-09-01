@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
+	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
 
 // ---------------------------------------------------------------------------
@@ -433,8 +434,8 @@ func TestTransport_OversizedBodyIsRefused(t *testing.T) {
 // updated_at without touching components.
 // ---------------------------------------------------------------------------
 
-func siteRow(name string, componentsAt *time.Time) sqlc.ListSitesRow {
-	row := sqlc.ListSitesRow{
+func siteRow(name string, componentsAt *time.Time) sqlc.Site {
+	row := sqlc.Site{
 		ID:              uuid.New(),
 		Name:            name,
 		Url:             "https://" + name + ".example",
@@ -456,7 +457,7 @@ func siteRow(name string, componentsAt *time.Time) sqlc.ListSitesRow {
 
 func TestListSites_NullComponentsUpdatedAtRendersNeverCollected(t *testing.T) {
 	collected := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
-	rows := []sqlc.ListSitesRow{
+	rows := []sqlc.Site{
 		siteRow("never", nil),
 		siteRow("collected", &collected),
 	}
@@ -527,7 +528,7 @@ func TestListSites_TruncationCutsAtRecordBoundaryWithAMarker(t *testing.T) {
 
 	// Build enough records to overrun recordByteBudget several times over, so
 	// the budget is certain to run out mid-list.
-	var rows []sqlc.ListSitesRow
+	var rows []sqlc.Site
 	for i := 0; i < 400; i++ {
 		rows = append(rows, siteRow(fmt.Sprintf("site-%03d-with-a-deliberately-long-name-to-consume-budget", i), &collected))
 	}
@@ -602,7 +603,7 @@ func TestListSites_TruncationCutsAtRecordBoundaryWithAMarker(t *testing.T) {
 // NOT carry the marker.
 func TestListSites_UntruncatedResultIsNotMarked(t *testing.T) {
 	collected := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
-	rows := []sqlc.ListSitesRow{siteRow("one", &collected), siteRow("two", nil)}
+	rows := []sqlc.Site{siteRow("one", &collected), siteRow("two", nil)}
 
 	text, err := buildListSitesResult(rows, envFor(t, rows), time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC))
 	if err != nil {
@@ -630,7 +631,7 @@ func TestListSites_UntruncatedResultIsNotMarked(t *testing.T) {
 // caller may see answered, nothing refused. It is the shape almost every
 // renderer test wants, and building it through NewEnvelope rather than as a
 // struct literal means these tests also exercise the balance check.
-func envFor(t *testing.T, rows []sqlc.ListSitesRow) Envelope {
+func envFor(t *testing.T, rows []sqlc.Site) Envelope {
 	t.Helper()
 	env, err := NewEnvelope(len(rows), len(rows), nil)
 	if err != nil {
@@ -655,7 +656,7 @@ func envFor(t *testing.T, rows []sqlc.ListSitesRow) Envelope {
 // asserts that, and asserts that the numbers balance without a residual.
 func TestListSites_UnreadInScopeSiteIsReportedAsPartial(t *testing.T) {
 	collected := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
-	rows := []sqlc.ListSitesRow{siteRow("one", &collected)}
+	rows := []sqlc.Site{siteRow("one", &collected)}
 
 	// The caller may read two sites; only one came back.
 	unread := uuid.New()
@@ -712,7 +713,7 @@ func TestListSites_UnreadInScopeSiteIsReportedAsPartial(t *testing.T) {
 // past the budget must not silently reintroduce the bug.
 func TestListSites_BannerSurvivesInstructionClamp(t *testing.T) {
 	collected := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
-	var rows []sqlc.ListSitesRow
+	var rows []sqlc.Site
 	for i := 0; i < 400; i++ {
 		rows = append(rows, siteRow(fmt.Sprintf("site-%03d-with-a-deliberately-long-name-to-consume-budget", i), &collected))
 	}
@@ -754,7 +755,7 @@ func TestListSites_OneOversizedRecordDoesNotBlockTheRest(t *testing.T) {
 	// "a..." sorts first by name, and on its own exceeds the whole budget.
 	oversized := siteRow("a"+strings.Repeat("x", recordByteBudget+512), &collected)
 	small := siteRow("b-small-site", &collected)
-	rows := []sqlc.ListSitesRow{oversized, small}
+	rows := []sqlc.Site{oversized, small}
 
 	text, err := buildListSitesResult(rows, envFor(t, rows), time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC))
 	if err != nil {
@@ -1077,7 +1078,7 @@ func TestToolsCall_ReadPathReturnsStampedSites(t *testing.T) {
 	inScope := siteRow("in-scope", &collected)
 	inScope.ID = allowed
 	outOfScope := siteRow("out-of-scope", &collected) // a different, unscoped id
-	store.sites = []sqlc.ListSitesRow{inScope, outOfScope}
+	store.sites = []sqlc.Site{inScope, outOfScope}
 
 	r := newTransportRouter(t, store)
 	w := post(t, r, `{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"fleet_sites_list","arguments":{}}}`, nil)
@@ -1093,6 +1094,70 @@ func TestToolsCall_ReadPathReturnsStampedSites(t *testing.T) {
 	// must not appear even though the tenant read returned it.
 	if strings.Contains(body, "out-of-scope") {
 		t.Error("a site outside the grant's resolved site set was returned")
+	}
+}
+
+// TestToolsCall_SiteReadIsDispatchedSiteConstrained is the unit-speed guard on
+// the SECOND RLS layer, and it is the counterpart of
+// TestAuthenticateHandsTheChokepointAnUnscopedPrincipal in oauth_test.go: that
+// one asserts the bootstrap read is NOT site-constrained, this one asserts the
+// site read IS.
+//
+// WHY IT IS NEEDED AT ALL, when the layer-3 test above already passes. Swapping
+// connectionScopedPrincipal for bootstrapTenantPrincipal at the call site
+// compiles, changes no rendered output, and leaves every other test in this
+// package green -- because the Go filter in ListSitesForModel still hides
+// out-of-scope rows. What it silently removes is the database layer:
+// db.RunTenantTx routes an org-scoped principal to InTenantTx, app.site_scope
+// is never set, and the RESTRICTIVE sites_site_scope policy (m19) evaluates its
+// first disjunct to true for every row. Nothing observable at this layer
+// changes. This test is what goes red.
+func TestToolsCall_SiteReadIsDispatchedSiteConstrained(t *testing.T) {
+	allowed := uuid.New()
+	store := liveGrantStore(allowed)
+
+	collected := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
+	inScope := siteRow("in-scope", &collected)
+	inScope.ID = allowed
+	store.sites = []sqlc.Site{inScope}
+
+	r := newTransportRouter(t, store)
+	w := post(t, r, `{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"fleet_sites_list","arguments":{}}}`, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("HTTP %d: %s", w.Code, w.Body.String())
+	}
+
+	store.mu.Lock()
+	principals := append([]domain.Principal(nil), store.sitePrincipals...)
+	store.mu.Unlock()
+
+	if len(principals) != 1 {
+		t.Fatalf("ListSitesForRead was called %d times, want exactly 1", len(principals))
+	}
+	p := principals[0]
+
+	// THE ASSERTION THAT NAMES THE LEAK, FIRST. An unconstrained principal here
+	// means the site read ran with app.site_scope unset and the m19 policy
+	// inert, leaving the Go filter as the only gate on the site axis.
+	if !p.IsSiteConstrained() {
+		t.Fatalf("RLS LAYER LOST: the assistant's site read was dispatched with an "+
+			"UNCONSTRAINED principal (scope=%q, %d allowed site ids). RunTenantTx routes that "+
+			"to InTenantTx, app.site_scope is never set, and the RESTRICTIVE sites_site_scope "+
+			"policy is inert -- the database enforces nothing and the Go filter is the only "+
+			"gate. Build the principal with connectionScopedPrincipal, not "+
+			"bootstrapTenantPrincipal: the ADR-061 A14 exception is the scope BOOTSTRAP and "+
+			"does not reach this call site, which runs after the allowlist is resolved",
+			p.Scope, len(p.AllowedSiteIDs))
+	}
+
+	// The allowlist must be the connection's resolved scope, not something
+	// wider that merely happens to be non-empty.
+	if len(p.AllowedSiteIDs) != 1 || p.AllowedSiteIDs[0] != allowed {
+		t.Fatalf("the site read's allowlist = %v, want exactly the resolved scope [%s]",
+			p.AllowedSiteIDs, allowed)
+	}
+	if p.TenantID != store.token.TenantID {
+		t.Fatalf("the site read ran under tenant %s, want %s", p.TenantID, store.token.TenantID)
 	}
 }
 
@@ -1113,7 +1178,7 @@ func TestNotification_ToolsCallWithNoIdDoesNotExecuteTheTool(t *testing.T) {
 	store := liveGrantStore(allowed)
 	row := siteRow("should-never-be-read", nil)
 	row.ID = allowed
-	store.sites = []sqlc.ListSitesRow{row}
+	store.sites = []sqlc.Site{row}
 
 	r := newTransportRouter(t, store)
 	w := post(t, r, `{"jsonrpc":"2.0","method":"tools/call","params":{"name":"fleet_sites_list","arguments":{}}}`, nil)
