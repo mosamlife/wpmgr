@@ -6,6 +6,21 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ## [Unreleased]
 
+## [0.61.153] - 2026-09-01
+
+### Security
+
+- A connection scoped to a subset of a tenant's sites could learn that the tenant held more sites than the connection was allowed to see. The assistant's site list read a fixed-size page across the whole tenant and then filtered it, so a caller receiving every site it was entitled to could still be told that sites had been withheld. The read is now bounded over the connection's own scope, so the page it receives can never carry a fact about the wider tenant. **This was live in 0.61.151 and 0.61.152.**
+- The same read now also runs under the database's own site-scope policy, rather than relying solely on the application-level filter above. This is one boundary enforced twice against different implementation mistakes, not two independent protections.
+
+### Added
+
+- A typed partial-result format for fleet-wide assistant questions: a response can now say that some sites could not be answered and why, with a stated reason per site and a timestamp on any answer drawn from stale data. A site outside a connection's scope is left out of the result entirely rather than named in a refusal, because naming it would itself disclose that it exists.
+
+### Changed
+
+- **Client-visible.** The fleet site-listing tool is renamed from `list_sites` to `fleet_sites_list` to match the published tool catalogue. A client re-reads the tool list when it reconnects, so this is picked up automatically; a client that has cached the old name will get an ordinary "no such tool" refusal rather than a silent alias.
+
 ## [0.61.152] - 2026-09-01
 
 ### Added
