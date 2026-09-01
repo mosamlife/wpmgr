@@ -12,13 +12,11 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
-	"github.com/mosamlife/wpmgr/apps/api/internal/agentplugin"
 	"github.com/mosamlife/wpmgr/apps/api/internal/api/gen"
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/authz"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 	"github.com/mosamlife/wpmgr/apps/api/internal/server/httpx"
-	"github.com/mosamlife/wpmgr/apps/api/internal/wpversion"
 )
 
 // RefreshEnqueuer schedules an immediate CP->agent inventory-refresh job for a
@@ -508,30 +506,15 @@ func (h *Handler) getAvailableUpdates(c *gin.Context) {
 	c.JSON(http.StatusOK, &out)
 }
 
-// actionableUpdate reports whether a component carries an update advisory the
-// operator can actually act on. It is the single read-side predicate shared by
-// the available-updates projection, the updates_available count, and the full
-// components inventory, so an already-persisted advisory self-heals on the next
-// read (no re-sync required) in all three at once:
+// actionableUpdate is the read-side update predicate. IT NOW LIVES IN model.go
+// AS site.ActionableUpdate and this is a one-line alias, kept so the several
+// call sites below read unchanged.
 //
-//   - no advisory, or an advisory with an empty new_version: nothing to action.
-//   - GH #211: a same-version phantom (new_version == the component's own
-//     installed Version). wpversion.SameVersion fails open (false) when either
-//     side is empty, so an unknown installed version keeps its advisory.
-//   - the agent's own plugin: the control plane must never offer it as a
-//     selectable update (see agentplugin). Its component row still surfaces
-//     with its installed version; only this advisory is withheld. The
-//     component's plugin-header name is passed alongside its slug so an agent
-//     installed under an unexpected directory name is still recognized.
-func actionableUpdate(c Component) bool {
-	if c.AvailableUpdate == nil || c.AvailableUpdate.NewVersion == "" {
-		return false
-	}
-	if wpversion.SameVersion(c.Version, c.AvailableUpdate.NewVersion) {
-		return false
-	}
-	return !agentplugin.IsComponent(c.Slug, c.Name)
-}
+// It moved because the MCP read surface consumes it: an assistant answering
+// "which of my sites need updates?" must count exactly what the dashboard
+// counts, and a second copy of this rule is how the two start disagreeing.
+// See ActionableUpdate for the three cases it excludes and why.
+func actionableUpdate(c Component) bool { return ActionableUpdate(c) }
 
 // buildAvailableUpdates projects a Site's JSONB inventory into the OpenAPI
 // SiteAvailableUpdates response: filters to components with an AvailableUpdate,
@@ -570,7 +553,13 @@ func buildAvailableUpdates(s Site) gen.SiteAvailableUpdates {
 		return items[i].Slug < items[j].Slug
 	})
 	out := gen.SiteAvailableUpdates{SiteID: s.ID, Items: items}
-	if core != nil && !wpversion.SameVersion(core.CurrentVersion, core.NewVersion) {
+	// ActionableCoreUpdate, not an inline SameVersion compare. The inline form
+	// this replaces also emitted a core row for an advisory whose new_version
+	// was EMPTY: SameVersion fails open (false) when either side is blank, so
+	// `{"current_version":"6.5","new_version":""}` read as "an update to
+	// nothing is available" and the dashboard offered a core update with no
+	// target. The named predicate requires a non-empty new_version.
+	if ActionableCoreUpdate(core) {
 		out.CoreUpdate = gen.NewOptNilSiteAvailableUpdatesCoreUpdate(gen.SiteAvailableUpdatesCoreUpdate{
 			NewVersion:     core.NewVersion,
 			CurrentVersion: core.CurrentVersion,
@@ -797,7 +786,10 @@ func toAPI(s Site) gen.Site {
 					updates++
 				}
 			}
-			hasCoreUpdate := comp.CoreUpdate != nil && !wpversion.SameVersion(comp.CoreUpdate.CurrentVersion, comp.CoreUpdate.NewVersion)
+			// Same predicate as buildAvailableUpdates uses for the core row, by
+			// name rather than by a repeated inline compare, so the count and
+			// the list can no longer disagree about whether core is countable.
+			hasCoreUpdate := ActionableCoreUpdate(comp.CoreUpdate)
 			if hasCoreUpdate {
 				updates++
 			}
