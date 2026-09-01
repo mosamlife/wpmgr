@@ -1324,10 +1324,9 @@ describe("choosing what a token may do (step 4, token path only)", () => {
     // or React state -- a hook-level assertion could pass while a stray `?? []`
     // still reached the network.
     loadedFleet(3);
-    let capturedBody: Record<string, unknown> | null = null;
+    let capturedBody: unknown = null;
     stubMintFetch((init) => {
-      capturedBody =
-        typeof init?.body === "string" ? (JSON.parse(init.body) as Record<string, unknown>) : null;
+      capturedBody = typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : null;
       return jsonResponse(MINTED, 201);
     });
 
@@ -1343,10 +1342,9 @@ describe("choosing what a token may do (step 4, token path only)", () => {
 
   it("sends every capability actually checked, not only the default", async () => {
     loadedFleet(3);
-    let capturedBody: Record<string, unknown> | null = null;
+    let capturedBody: unknown = null;
     stubMintFetch((init) => {
-      capturedBody =
-        typeof init?.body === "string" ? (JSON.parse(init.body) as Record<string, unknown>) : null;
+      capturedBody = typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : null;
       return jsonResponse(MINTED, 201);
     });
 
