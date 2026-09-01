@@ -107,6 +107,7 @@ type updatesPayloadForTest struct {
 		InventoryStatus      string  `json:"inventory_status"`
 		InventoryCollectedAt *string `json:"inventory_collected_at"`
 		PendingTotal         int     `json:"pending_total"`
+		Summary              string  `json:"summary"`
 		Core                 *struct {
 			CurrentVersion string `json:"current_version"`
 			NewVersion     string `json:"new_version"`
@@ -543,5 +544,130 @@ func TestFleetUpdateTotalsCoverOnlyTheKeptRecords(t *testing.T) {
 	}
 	if !strings.Contains(text, "INCOMPLETE RESULT") {
 		t.Error("a truncated result carried no banner, so it reads as complete")
+	}
+}
+
+// TestFleetUpdatesPending_SummaryCarriesTheAgeInProse closes the gap the
+// structured age leaves open: inventory_age_seconds is a field a model may
+// simply not read, and a pending_total read without it looks like a current
+// fact. The age has to travel in the same string as the count.
+func TestFleetUpdatesPending_SummaryCarriesTheAgeInProse(t *testing.T) {
+	old := uuid.New()
+	recent := uuid.New()
+	now := time.Now().UTC()
+	eightMonths := now.Add(-243 * 24 * time.Hour)
+	twoHours := now.Add(-2 * time.Hour)
+
+	store := liveGrantStore(old, recent)
+	store.sites = []sqlc.Site{
+		updatesFixture{
+			id: old, name: "forgotten.example", url: "https://forgotten.example",
+			collected: &eightMonths,
+			components: `{"plugins":[{"slug":"woocommerce","name":"WooCommerce","version":"8.1.0",` +
+				`"active":true,"available_update":{"new_version":"8.4.0"}}]}`,
+		}.row(),
+		updatesFixture{
+			id: recent, name: "current.example", url: "https://current.example",
+			collected:  &twoHours,
+			components: `{"plugins":[{"slug":"akismet","name":"Akismet","version":"5.3","active":true}]}`,
+		}.row(),
+	}
+
+	text := callUpdatesPending(t, store)
+	p := parseUpdatesPayload(t, text)
+
+	byName := map[string]string{}
+	for _, s := range p.Sites {
+		byName[s.Name] = s.Summary
+	}
+
+	oldSummary := byName["forgotten.example"]
+	// THE AGE IS IN THE SENTENCE, not only in a neighbouring key.
+	if !strings.Contains(oldSummary, "months ago") {
+		t.Errorf("the summary for an eight-month-old inventory does not carry its age in prose: %q",
+			oldSummary)
+	}
+	// And the count is in the SAME string, so a reader cannot take one without
+	// the other.
+	if !strings.Contains(oldSummary, "1 update outstanding") {
+		t.Errorf("the summary does not carry the count alongside the age: %q", oldSummary)
+	}
+
+	recentSummary := byName["current.example"]
+	if !strings.Contains(recentSummary, "2 hours ago") {
+		t.Errorf("the summary for a two-hour-old inventory does not carry its age: %q", recentSummary)
+	}
+	if !strings.Contains(recentSummary, "no updates outstanding") {
+		t.Errorf("an up-to-date site's summary does not say so: %q", recentSummary)
+	}
+
+	// THE NO-JUDGEMENT RULE, PINNED. Rendering any of these would be choosing a
+	// freshness window by the back door -- the owner ruled that the age is
+	// reported and the reader judges it.
+	for _, verdict := range []string{"stale", "outdated", "out of date", "too old", "fresh", "needs refresh"} {
+		if strings.Contains(strings.ToLower(text), verdict) {
+			t.Errorf("the result renders the verdict %q. Reporting an age is the ruling; judging "+
+				"it picks a freshness window nobody chose. Full text:\n%s", verdict, text)
+		}
+	}
+}
+
+// TestFleetUpdatesPending_NeverCollectedSaysWeHaveNotLookedInWords: the absence
+// must read as a finding, because a reader filling in an absence fills it in
+// with the reassuring assumption.
+func TestFleetUpdatesPending_NeverCollectedSaysWeHaveNotLookedInWords(t *testing.T) {
+	never := uuid.New()
+	store := liveGrantStore(never)
+	store.sites = []sqlc.Site{
+		updatesFixture{id: never, name: "unknown.example", url: "https://unknown.example",
+			components: `{}`}.row(),
+	}
+
+	p := parseUpdatesPayload(t, callUpdatesPending(t, store))
+	if len(p.Sites) != 1 {
+		t.Fatalf("want 1 site, got %d", len(p.Sites))
+	}
+	s := p.Sites[0].Summary
+	for _, want := range []string{"has ever been collected", "we do not know", "have not looked"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("the never_collected summary does not say %q in words: %q", want, s)
+		}
+	}
+	// It must NOT read as a clean bill of health.
+	if strings.Contains(s, "no updates outstanding") {
+		t.Errorf("a site we have never looked at is described as having no updates outstanding: %q", s)
+	}
+}
+
+// TestHumanAgeSelectsAUnitAndJudgesNothing is the unit half. Each case pins the
+// spelling; the loop after it pins the property that matters.
+func TestHumanAgeSelectsAUnitAndJudgesNothing(t *testing.T) {
+	cases := []struct {
+		seconds int64
+		want    string
+	}{
+		{30, "less than a minute ago"},
+		{60, "1 minute ago"},
+		{600, "10 minutes ago"},
+		{3600, "1 hour ago"},
+		{7200, "2 hours ago"},
+		{86400, "1 day ago"},
+		{86400 * 9, "9 days ago"},
+		{86400 * 243, "8 months ago"},
+		{86400 * 800, "2 years ago"},
+	}
+	for _, c := range cases {
+		if got := humanAge(c.seconds); got != c.want {
+			t.Errorf("humanAge(%d) = %q, want %q", c.seconds, got, c.want)
+		}
+	}
+	for _, c := range cases {
+		got := strings.ToLower(humanAge(c.seconds))
+		for _, verdict := range []string{"stale", "old", "recent", "fresh"} {
+			if strings.Contains(got, verdict) {
+				t.Errorf("humanAge(%d) = %q, which judges the age instead of stating it",
+					c.seconds, got)
+			}
+		}
 	}
 }

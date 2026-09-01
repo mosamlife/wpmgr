@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
@@ -127,6 +128,23 @@ type siteUpdatesRecord struct {
 	// three lists and get it wrong.
 	PendingTotal int `json:"pending_total"`
 
+	// Summary IS THE AGE, IN PROSE, and it exists because the structured age
+	// beside it is a field a model may simply not read.
+	//
+	// inventory_age_seconds is precise and skippable. A reader that skips it
+	// has a pending_total that looks like a current fact, and the failure is
+	// silent and confident -- an assistant reporting a year-old count as
+	// today's. A sentence carrying the age inside the same string as the count
+	// cannot be dropped without dropping the count too, which is the property
+	// being bought here.
+	//
+	// IT DESCRIBES THE AGE AND NEVER JUDGES IT. There is no "stale", no
+	// "outdated", no "needs refresh": rendering any of those would be choosing
+	// a freshness window by the back door, which is the thing the owner ruled
+	// against. It says when the inventory was collected and lets the reader
+	// decide what that is worth.
+	Summary string `json:"summary"`
+
 	Core    *coreUpdateRecord `json:"core_update"`
 	Plugins []pendingItem     `json:"plugins"`
 	Themes  []pendingItem     `json:"themes"`
@@ -188,7 +206,98 @@ func toSiteUpdatesRecord(row sqlc.Site, now time.Time) siteUpdatesRecord {
 	if rec.Core != nil {
 		rec.PendingTotal++
 	}
+	rec.Summary = updatesSummary(rec)
 	return rec
+}
+
+// updatesSummary writes the one sentence a model cannot skim past: what is
+// outstanding, and how old the inventory saying so is, in the same string.
+//
+// THE NEVER-COLLECTED ARM SAYS "WE HAVE NOT LOOKED" IN WORDS. Left to the
+// structured fields alone, never_collected is an ABSENCE, and a reader filling
+// an absence in fills it in with an assumption -- almost always the reassuring
+// one, that a site with no updates listed has no updates. The sentence removes
+// the room for that by stating the ignorance as the finding.
+func updatesSummary(rec siteUpdatesRecord) string {
+	if rec.InventoryStatus == inventoryNeverCollected {
+		return fmt.Sprintf(
+			"%s: no plugin or theme inventory has ever been collected for this site, so we do not "+
+				"know whether it needs updates. The zero counts below mean we have not looked, "+
+				"NOT that it is up to date.", rec.Name)
+	}
+
+	// A collected inventory with no age is the future-stamp case toSiteRecord
+	// withholds an age for: report the instant and say the age is not
+	// computable, rather than printing a negative or implying freshness.
+	age := "at an unknown age (its collection stamp is in the future, which is a clock problem)"
+	if rec.InventoryAgeSeconds != nil {
+		age = humanAge(*rec.InventoryAgeSeconds)
+	}
+	when := ""
+	if rec.InventoryCollectedAt != nil {
+		when = ", " + *rec.InventoryCollectedAt
+	}
+
+	if rec.PendingTotal == 0 {
+		return fmt.Sprintf(
+			"%s: no updates outstanding, according to an inventory collected %s%s.",
+			rec.Name, age, when)
+	}
+	parts := make([]string, 0, 3)
+	if n := len(rec.Plugins); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d %s", n, plural(n, "plugin", "plugins")))
+	}
+	if n := len(rec.Themes); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d %s", n, plural(n, "theme", "themes")))
+	}
+	if rec.Core != nil {
+		parts = append(parts, "WordPress core")
+	}
+	return fmt.Sprintf(
+		"%s: %d %s outstanding (%s), according to an inventory collected %s%s.",
+		rec.Name, rec.PendingTotal, plural(rec.PendingTotal, "update", "updates"),
+		strings.Join(parts, ", "), age, when)
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
+}
+
+// humanAge renders an age in the largest unit that keeps the number small.
+//
+// IT SELECTS A UNIT AND MAKES NO JUDGEMENT, which is the whole constraint. It
+// never returns "stale", "old", "recent" or "fresh": every one of those words
+// would be a freshness window chosen by the back door, decided by whoever wrote
+// this function rather than by an operator. "collected 8 months ago" tells a
+// reader everything "stale" would have, and leaves the verdict where it
+// belongs.
+//
+// The unit boundaries are FORMATTING and not thresholds: nothing downstream
+// branches on them, no field changes meaning at one, and moving one changes how
+// a duration is spelled and nothing else.
+func humanAge(seconds int64) string {
+	switch {
+	case seconds < 60:
+		return "less than a minute ago"
+	case seconds < 3600:
+		n := seconds / 60
+		return fmt.Sprintf("%d %s ago", n, plural(int(n), "minute", "minutes"))
+	case seconds < 86400:
+		n := seconds / 3600
+		return fmt.Sprintf("%d %s ago", n, plural(int(n), "hour", "hours"))
+	case seconds < 86400*61:
+		n := seconds / 86400
+		return fmt.Sprintf("%d %s ago", n, plural(int(n), "day", "days"))
+	case seconds < 86400*730:
+		n := seconds / (86400 * 30)
+		return fmt.Sprintf("%d %s ago", n, plural(int(n), "month", "months"))
+	default:
+		n := seconds / (86400 * 365)
+		return fmt.Sprintf("%d %s ago", n, plural(int(n), "year", "years"))
+	}
 }
 
 func toPendingItem(c site.Component) pendingItem {
@@ -344,8 +453,10 @@ func fleetUpdateTotals(recs []siteUpdatesRecord) fleetTotals {
 const updatesPendingInstructions = "Outstanding plugin, theme and WordPress core updates, per site. " +
 	"Read-only: this connection cannot apply any of them.\n" +
 	"Only sites this connection is scoped to are listed; an absent site is out of scope, not absent from the fleet.\n" +
+	"EVERY SITE CARRIES A \"summary\" SENTENCE STATING ITS COUNT AND HOW OLD THE INVENTORY BEHIND IT IS. Quote or " +
+	"paraphrase that age whenever you report a site's update state; a count without its age is a claim we cannot support.\n" +
 	"pending_total 0 means no update is outstanding IN THE INVENTORY WE HOLD, which is only as current as " +
-	"inventory_collected_at. Quote that date when you report a site as up to date.\n" +
+	"inventory_collected_at.\n" +
 	"inventory_status \"never_collected\" means no inventory has EVER been collected for that site: its counts are 0 " +
 	"because we have not looked, NOT because it is up to date. Report those sites separately -- totals.sites_never_collected " +
 	"counts them -- and never merge them with the up-to-date ones.\n" +
