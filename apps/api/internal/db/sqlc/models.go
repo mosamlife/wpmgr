@@ -73,6 +73,25 @@ type AppAlertRollout struct {
 	DecidedAt    time.Time `json:"decided_at"`
 }
 
+type AssistantUpdateProposal struct {
+	ID                    uuid.UUID          `json:"id"`
+	TenantID              uuid.UUID          `json:"tenant_id"`
+	SiteID                uuid.UUID          `json:"site_id"`
+	ProposedByGrantID     uuid.UUID          `json:"proposed_by_grant_id"`
+	ComponentType         string             `json:"component_type"`
+	ComponentSlug         string             `json:"component_slug"`
+	FromVersion           string             `json:"from_version"`
+	ToVersion             string             `json:"to_version"`
+	PresentedDigest       string             `json:"presented_digest"`
+	Note                  *string            `json:"note"`
+	State                 string             `json:"state"`
+	CreatedAt             time.Time          `json:"created_at"`
+	ExpiresAt             time.Time          `json:"expires_at"`
+	DecidedAt             pgtype.Timestamptz `json:"decided_at"`
+	DecidedByUserID       pgtype.UUID        `json:"decided_by_user_id"`
+	DispatchedUpdateRunID pgtype.UUID        `json:"dispatched_update_run_id"`
+}
+
 type AuditIntegrityBaseline struct {
 	TenantID          uuid.UUID   `json:"tenant_id"`
 	BaselineCreatedAt time.Time   `json:"baseline_created_at"`

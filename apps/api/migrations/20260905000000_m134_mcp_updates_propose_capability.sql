@@ -1,0 +1,236 @@
+-- m134 - seat 'mcp.updates.propose': the first capability in this vocabulary
+-- that is not a read.
+--
+-- THIS IS THE REVIEWED MOMENT m124 DECISION 1 BUILT THE CLOSED CHECK TO FORCE.
+-- m131 named it in advance and told whoever arrived here what they owed:
+--
+--     "Every member of this vocabulary ends in '.read'. The next migration that
+--      adds a member not ending in '.read' is the one that needs the write
+--      review."
+--
+-- This is that migration. It is on its own diff, with nothing else in it, which
+-- is the entire point of the toll.
+--
+-- ===========================================================================
+-- m131 IS NOW HISTORICAL IN ONE SENTENCE, AND THAT IS SAID HERE ON PURPOSE
+-- ===========================================================================
+--
+-- m131's DECISION 1(c) reads:
+--
+--     "The write side of the design uses '.propose' and '.write'; NEITHER
+--      APPEARS IN THIS FILE."
+--
+-- That sentence was true of m131 and remains true OF M131 -- it edits no
+-- applied migration and that file's text is untouched. It is no longer true of
+-- the vocabulary. As of this migration '.propose' appears, once, and '.write'
+-- still does not.
+--
+-- Saying so here rather than editing m131 is not a stylistic preference. An
+-- applied migration is immutable: migrate.go sorts the embedded versions
+-- lexically, tracks what it ran in schema_migrations, and skips anything
+-- already present, so a database that has run m131 will never read m131 again
+-- however the file is edited. Editing it would be a silent no-op that looks
+-- like a fix, and it would also destroy the record of what was true when that
+-- review happened.
+--
+-- The pattern check m131 offered survives in a WEAKENED but still useful form,
+-- and the weakening is stated rather than left to be discovered:
+--
+--   BEFORE: "this vocabulary seats no write capability" was checkable by
+--           pattern -- every member ends in '.read'.
+--   AFTER:  "this vocabulary seats no capability that can CHANGE anything" is
+--           checkable by pattern -- no member ends in '.write'. The suffix set
+--           is now {'.read', '.propose'}, and '.propose' confers the power to
+--           ASK, never to change.
+--
+-- ===========================================================================
+-- CONVERGE PATH
+-- ===========================================================================
+--
+-- Every database in every state converges by applying this file and nothing
+-- else. There is no separate converge migration owed and no operator step, for
+-- the reason m131 gives: the only object this migration changes is a CHECK
+-- constraint whose definition is a literal, so its post-state is a function of
+-- this file alone and not of what the database held before. Step (1) drops the
+-- constraint by name whatever its current definition; step (2) re-adds the
+-- definition written here. An m127-era database, an m131-era database and a
+-- database created after this file all end with the identical constraint.
+--
+-- The NAME is kept, again for m131's reason: the parity test looks the
+-- constraint up by name and one stable name means one lookup that works against
+-- a database in any of those three states.
+--
+-- ===========================================================================
+-- DECISION 1: WHY 'mcp.updates.propose' IS THE NAME
+-- ===========================================================================
+--
+-- Three segments, exactly as m131 specified them.
+--
+--   a. `mcp.` PREFIX -- FROZEN, NOT CHOSEN. m131 settled this: every live grant
+--      holds 'mcp.sites.read' and renaming would strand them, so the vocabulary
+--      carries one prefix and the live member sets it. The wireframes render
+--      the operator-facing form as 'site.content.propose'; that is the SCREEN's
+--      label, and the picker renders whatever label it likes above this string.
+--
+--   b. `updates` -- THE OUTCOME DOMAIN, grouped by outcome and never by
+--      mechanism, which m131 makes a rule of this vocabulary. An operator
+--      reading a grant row sees "updates", which is the thing they are being
+--      asked about. It is deliberately NOT 'plugins': the proposal record m133
+--      creates is restricted to plugins TODAY, but the outcome domain an
+--      operator consents to is "keeping this site up to date", and themes and
+--      core are the same conversation. Naming the capability after the current
+--      contents of one CHECK constraint would force a second capability, and a
+--      second consent, for what an operator already thought they had said yes
+--      to. It is also NOT 'sites', which is taken and means the inventory read.
+--
+--   c. `.propose` -- LOAD-BEARING, AND THE WHOLE SAFETY MODEL IN ONE SUFFIX.
+--      It confers the power to ASK. It does not confer the power to change
+--      anything, and it never will: '.propose' and '.write' are different
+--      strings and a grant holding this one cannot reach a write path. Someone
+--      reading a grant row must be able to tell those apart at a glance without
+--      opening the code, which is why the verb is in the name rather than in a
+--      separate boolean column.
+--
+-- Nine members against the 64-element ceiling mcp_grants_capabilities_shape_
+-- check imposes, so the ceiling is not in play and the shape check is untouched.
+--
+-- ===========================================================================
+-- DECISION 2: PROPOSE-ONLY. NO '.write' IS SEATED, AND NONE IS IMPLIED
+-- ===========================================================================
+--
+-- 'mcp.updates.write' does not appear in this file and no capability here
+-- confers it. The safety model this vocabulary encodes is:
+--
+--     THE ASSISTANT ASKS. A HUMAN DECIDES. A SEPARATE WORKER ACTS.
+--
+-- 'mcp.updates.propose' buys exactly the first of those three. A grant holding
+-- it can write a row to assistant_update_proposals in state 'pending' and can
+-- do nothing else. It cannot approve, because ADR-061 puts approval on a
+-- surface the model cannot reach and there is no approve tool for it to call --
+-- the safety there is an ABSENCE, not a check, which is stronger than any
+-- permission someone can misconfigure.
+--
+-- WHAT THIS MIGRATION DELIBERATELY DOES NOT ADD, each forbidden by ADR-061 by
+-- name: no auto-approve tier, no policy engine that can approve, no "trusted
+-- automation may approve" flag, no approve button in a notification email, no
+-- "remember this choice for this session". None of these exists as a column, a
+-- capability, or a value anywhere in this schema, and adding any of them would
+-- take a migration that has to argue for it in front of this comment.
+--
+-- Nor does it add an approve capability under any name. There is deliberately
+-- no 'mcp.updates.approve': a capability an operator could grant to a machine
+-- credential is a capability an operator could grant to the assistant, and the
+-- product is that they cannot.
+--
+-- ===========================================================================
+-- DECISION 3: WIDENING A CONTAINMENT CHECK CANNOT INVALIDATE AN EXISTING ROW
+-- ===========================================================================
+--
+-- Unchanged from m131 DECISION 4 and repeated because it is the reason this
+-- file is safe to apply to a live fleet. The constraint is `capabilities <@
+-- ARRAY[...]`, array containment, and widening the right-hand array is
+-- MONOTONE: a row satisfying containment in the smaller array satisfies it in
+-- every superset. Every existing grant still passes, and '{}' -- zero
+-- capabilities, the restrictive value -- still passes as m127 intended.
+--
+-- Step (2) re-adds the constraint WITHOUT `NOT VALID`, so PostgreSQL scans the
+-- table and would refuse this migration outright rather than leave an unchecked
+-- row behind. The migration does not rely on the monotonicity argument.
+--
+-- NO GRANT IS WIDENED BY THIS FILE. There is no backfill here and none is
+-- wanted. The CHECK is a CEILING on what a grant MAY hold, not a floor and not
+-- a default; raising a ceiling moves nothing that was under it. Every grant
+-- that held '{mcp.sites.read}' before this file holds exactly '{mcp.sites.read}'
+-- after it, and nothing can propose anything until an operator deliberately
+-- puts this string on a grant.
+--
+-- ===========================================================================
+-- DECISION 4: WHAT GOES RED, AND WHY IT IS LEFT RED FOR THE NEXT SESSION
+-- ===========================================================================
+--
+-- m131 DECISION 5 closed this vocabulary in two places -- here and
+-- capabilityVocabulary in apps/api/internal/mcp/policy.go -- and built a parity
+-- test to prove the two agree. This migration widens one of the two, so the
+-- parity test FAILS BY DESIGN until the Go half lands. That red is the system
+-- working, not an incidental break.
+--
+-- Exactly one test goes red on this migration alone:
+--
+--   TestCapabilityVocabularyMatchesTheDatabaseCheckAsAppRole
+--     apps/api/tests/mcp_m131_capability_vocabulary_parity_test.go:174
+--     The dbOnly arm fires with [mcp.updates.propose]. It reads the constraint
+--     through pg_get_constraintdef, so it sees what the DATABASE holds and
+--     cannot be fooled by a comment.
+--
+-- Three further tests are Go-side pins that this migration does NOT move and
+-- that go red in the SAME commit that widens policy.go. They are named here so
+-- whoever writes that commit is not surprised by them:
+--
+--   TestEveryCapabilityIsARead
+--     apps/api/internal/mcp/capability_default_test.go:188 -- asserts every
+--     member of AllCapabilities() ends in '.read'. It is the loudest signal
+--     this project has that a write-shaped capability arrived, and its own
+--     failure text points at the m124 review gate. It must be rewritten to
+--     assert the new invariant -- no member ends in '.write' -- and NOT simply
+--     deleted.
+--   TestVocabularyIsM131sEight
+--     apps/api/internal/mcp/capability_default_test.go:165 -- pins the 8-member
+--     list by value.
+--   TestDefaultGrantCapabilitiesIsThePresetNotTheVocabulary
+--     apps/api/internal/mcp/capability_default_test.go:80.
+--
+-- THE HAZARD IN THAT COMMIT, which is the one this file most wants read:
+-- m131 DECISION 3 warned that DefaultGrantCapabilities() once returned
+-- AllCapabilities(), so widening the map would stamp every newly minted grant
+-- with every capability. TestDefaultGrantCapabilitiesIsThePresetNotTheVocabulary
+-- exists because that identity was already broken deliberately. It must STAY
+-- broken. 'mcp.updates.propose' must never enter the default preset, must never
+-- be conferred by a read scope, and must reach a grant only because an operator
+-- chose it.
+--
+-- THE WINDOW THIS FILE OPENS, stated rather than glossed: between this
+-- migration and the Go change, the database accepts a name NewCapabilitySet
+-- drops as unknown, so a row written with it would authenticate holding less
+-- than its column says. Nothing in the current mint path can write that name --
+-- resolveMintCapabilities narrows against a ceiling that lacks it -- so the
+-- window is theoretical rather than reachable. It closes in Session B.
+
+-- ===========================================================================
+-- (1) DROP THE EIGHT-MEMBER CONSTRAINT
+-- ===========================================================================
+--
+-- By name, unconditionally, whatever definition it currently carries. A CHECK
+-- constraint's expression cannot be altered in place, so widening is a drop and
+-- a re-add; there is no window in which the column is unconstrained, because
+-- both statements run in the one transaction the runner wraps this file in.
+
+ALTER TABLE "public"."mcp_grants"
+    DROP CONSTRAINT IF EXISTS "mcp_grants_capabilities_vocabulary_check";
+
+-- ===========================================================================
+-- (2) RE-ADD IT WITH THE PROPOSE CAPABILITY SEATED
+-- ===========================================================================
+--
+-- Validated on add, not NOT VALID. See DECISION 3.
+--
+-- Alphabetical, which is also the order AllCapabilities() sorts into, so the
+-- two lists can be read side by side without either being re-sorted first.
+--
+-- KEEP IN LOCKSTEP with capabilityVocabulary in apps/api/internal/mcp/policy.go.
+-- Extending this list is still a migration. The next one that adds a member
+-- ending in '.write' is the one that needs a review this file did not have to
+-- give: the power to change a live site without asking.
+
+ALTER TABLE "public"."mcp_grants"
+    ADD CONSTRAINT "mcp_grants_capabilities_vocabulary_check"
+    CHECK ("capabilities" <@ ARRAY[
+        'mcp.activity.read',
+        'mcp.backups.read',
+        'mcp.content.read',
+        'mcp.diagnostics.read',
+        'mcp.performance.read',
+        'mcp.security.read',
+        'mcp.sites.read',
+        'mcp.updates.propose',
+        'mcp.uptime.read'
+    ]::text[]);
