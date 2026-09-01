@@ -1092,6 +1092,134 @@ func (q *Queries) ListSitesAgentVersions(ctx context.Context, tenantID uuid.UUID
 	return items, nil
 }
 
+const listSitesForMCPScope = `-- name: ListSitesForMCPScope :many
+SELECT s.id, s.tenant_id, s.url, s.name, s.status, s.wp_version, s.php_version, s.agent_version, s.agent_public_key, s.enrolled_at, s.last_seen_at, s.health_status, s.server_info, s.multisite, s.active_theme, s.components, s.components_updated_at, s.tags, s.age_recipient, s.wp_timezone, s.wp_gmt_offset, s.host_provider, s.host_provider_org, s.host_provider_ip, s.host_provider_checked_at, s.connection_state, s.connection_generation, s.disconnected_at, s.disconnected_reason, s.archived_at, s.missed_heartbeats, s.client_id, s.app_probe_path, s.app_alerts_disabled, s.monitoring_paused_at, s.monitoring_paused_by, s.monitoring_paused_reason, s.monitoring_resume_at, s.created_at, s.updated_at
+FROM sites s
+WHERE s.tenant_id = $1
+  AND s.id = ANY($2::uuid[])
+  AND s.connection_state <> 'archived'
+ORDER BY lower(s.name) ASC, s.id DESC
+LIMIT $3
+`
+
+type ListSitesForMCPScopeParams struct {
+	TenantID uuid.UUID   `json:"tenant_id"`
+	SiteIds  []uuid.UUID `json:"site_ids"`
+	RowLimit int32       `json:"row_limit"`
+}
+
+// The assistant surface's site read (internal/mcp). It exists so that the row
+// bound is taken over THE CALLER'S OWN SCOPE and never over the tenant.
+//
+// What it replaces: internal/mcp read ListSites over the whole tenant with
+// Limit = bound+1 and Sort = 'name', then applied the connection's site scope
+// in Go AFTERWARDS. An in-scope site whose name sorted past the tenant's first
+// page was therefore never in the rows the filter ran over. The order is
+// deterministic, so no number of retries could ever produce it, and the caller
+// was told to retry. Worse, the shortfall could only arise once the TENANT held
+// more rows than the bound, so its arrival was a fact about sites the caller is
+// not entitled to know exist.
+//
+// WHY THIS IS A SEPARATE QUERY AND NOT A NULLABLE ARM ON ListSites.
+// The alternative was sqlc.narg('site_ids') on ListSites, read as "NULL means
+// no scope filter" so the dashboard's callers keep working untouched. Reject it,
+// and the reason is specific rather than stylistic: for an ARRAY parameter sqlc
+// emits the same Go type, []uuid.UUID, for sqlc.arg and sqlc.narg alike, because
+// a Go slice is already nullable. The two options are therefore INDISTINGUISHABLE
+// AT THE CALL SITE and differ only in what a nil slice means. On the narg arm nil
+// means the whole tenant; here nil means zero rows, because `id = ANY(NULL::uuid[])`
+// evaluates to NULL and `id = ANY('{}'::uuid[])` evaluates to false, and WHERE
+// keeps neither. One identical mistake -- a scope set lost on an error path, a
+// struct field left unassigned -- returns the fleet in one design and nothing in
+// the other. That asymmetry is the whole justification for a second query over
+// this table.
+//
+// It is not a copy of ListSites and must not become one. This surface has one
+// order and no filters, so there is deliberately no state/client_id/any_tags/
+// all_tags/q arm here to drift out of step with the dashboard's. ListSites is
+// unchanged by this addition.
+//
+// No LEFT JOINs. ListSites carries site_perf_config and site_object_cache_config
+// for the dashboard's cache badges; internal/mcp's toSiteRecord reads neither
+// column, so joining them here would buy two index lookups per row, across the
+// whole page, to produce two values nobody reads. `SELECT s.*` also means sqlc
+// returns the shared `Site` model rather than a bespoke row struct.
+//
+// The scope predicate is defense in depth and NOT the only gate, but it is the
+// one that cannot be forgotten. `sites` carries the RESTRICTIVE sites_site_scope
+// policy (m19, 20260531050000_m19_orgs_sharing.sql:330), whose USING clause is
+// `app.site_scope <> 'on' OR id = ANY(app.allowed_site_ids)`. That is permissive
+// whenever the GUC is unset -- correct, because the dashboard's org-scoped
+// callers must not be filtered -- which also means the policy is inert for any
+// caller that opens its transaction with InTenantTx rather than RunTenantTx.
+// This predicate holds under either helper.
+//
+// ORDER BY reproduces ListSites' 'name' sort exactly: lower(s.name) so "acme"
+// and "Acme" sit together whatever the server's collation, then s.id DESC as the
+// total-order tiebreak, without which two sites sharing a name are free to swap
+// places between calls. Archived sites are excluded to match ListSites' default
+// (ADR-041), which is what this surface was getting before.
+func (q *Queries) ListSitesForMCPScope(ctx context.Context, arg ListSitesForMCPScopeParams) ([]Site, error) {
+	rows, err := q.db.Query(ctx, listSitesForMCPScope, arg.TenantID, arg.SiteIds, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Site
+	for rows.Next() {
+		var i Site
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.Url,
+			&i.Name,
+			&i.Status,
+			&i.WpVersion,
+			&i.PhpVersion,
+			&i.AgentVersion,
+			&i.AgentPublicKey,
+			&i.EnrolledAt,
+			&i.LastSeenAt,
+			&i.HealthStatus,
+			&i.ServerInfo,
+			&i.Multisite,
+			&i.ActiveTheme,
+			&i.Components,
+			&i.ComponentsUpdatedAt,
+			&i.Tags,
+			&i.AgeRecipient,
+			&i.WpTimezone,
+			&i.WpGmtOffset,
+			&i.HostProvider,
+			&i.HostProviderOrg,
+			&i.HostProviderIp,
+			&i.HostProviderCheckedAt,
+			&i.ConnectionState,
+			&i.ConnectionGeneration,
+			&i.DisconnectedAt,
+			&i.DisconnectedReason,
+			&i.ArchivedAt,
+			&i.MissedHeartbeats,
+			&i.ClientID,
+			&i.AppProbePath,
+			&i.AppAlertsDisabled,
+			&i.MonitoringPausedAt,
+			&i.MonitoringPausedBy,
+			&i.MonitoringPausedReason,
+			&i.MonitoringResumeAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markSiteUnreachable = `-- name: MarkSiteUnreachable :execrows
 UPDATE sites
 SET health_status = 'unreachable', updated_at = now()
