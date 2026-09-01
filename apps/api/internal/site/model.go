@@ -14,7 +14,9 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/agentplugin"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
+	"github.com/mosamlife/wpmgr/apps/api/internal/wpversion"
 )
 
 // Site is a managed WordPress site.
@@ -341,14 +343,31 @@ type CoreUpdate struct {
 // and themes. A malformed/empty inventory yields empty slices (never an error)
 // — callers use it only to seed best-effort from-versions.
 func (s Site) ParsedComponents() (plugins, themes []Component) {
-	if len(s.Components) == 0 {
+	return ParseInventoryComponents(s.Components)
+}
+
+// ParseInventoryComponents is ParsedComponents over the RAW inventory document,
+// for callers holding the JSONB bytes without a Site around them — the MCP read
+// tools read sqlc rows, not domain Sites.
+//
+// IT IS THE SAME DECODE AND THAT IS THE POINT. A second decoder over the same
+// document is a second answer to "what is installed on this site", and the two
+// drift the moment either grows a key. The Site method delegates here rather
+// than the other way round so there is exactly one implementation.
+//
+// A malformed or empty document yields nil slices, never an error. The caller's
+// question is "what is installed", and the honest answer for an unreadable
+// inventory is nothing — paired, at every call site, with the staleness stamp
+// that says when or whether it was ever collected.
+func ParseInventoryComponents(raw []byte) (plugins, themes []Component) {
+	if len(raw) == 0 {
 		return nil, nil
 	}
 	var comp struct {
 		Plugins []Component `json:"plugins"`
 		Themes  []Component `json:"themes"`
 	}
-	if json.Unmarshal(s.Components, &comp) != nil {
+	if json.Unmarshal(raw, &comp) != nil {
 		return nil, nil
 	}
 	return comp.Plugins, comp.Themes
@@ -358,16 +377,71 @@ func (s Site) ParsedComponents() (plugins, themes []Component) {
 // core update advisory (nil when there is none, or the inventory is
 // empty/malformed).
 func (s Site) ParsedCoreUpdate() *CoreUpdate {
-	if len(s.Components) == 0 {
+	return ParseInventoryCoreUpdate(s.Components)
+}
+
+// ParseInventoryCoreUpdate is ParsedCoreUpdate over the RAW inventory document.
+// See ParseInventoryComponents for why the method delegates here.
+func ParseInventoryCoreUpdate(raw []byte) *CoreUpdate {
+	if len(raw) == 0 {
 		return nil
 	}
 	var comp struct {
 		CoreUpdate *CoreUpdate `json:"core_update,omitempty"`
 	}
-	if json.Unmarshal(s.Components, &comp) != nil {
+	if json.Unmarshal(raw, &comp) != nil {
 		return nil
 	}
 	return comp.CoreUpdate
+}
+
+// ActionableUpdate reports whether a component carries an update advisory the
+// operator can actually act on. It is the single read-side predicate shared by
+// the available-updates projection, the updates_available count, the full
+// components inventory and the MCP read tools, so an already-persisted advisory
+// self-heals on the next read (no re-sync required) in all of them at once:
+//
+//   - no advisory, or an advisory with an empty new_version: nothing to action.
+//   - GH #211: a same-version phantom (new_version == the component's own
+//     installed Version). wpversion.SameVersion fails open (false) when either
+//     side is empty, so an unknown installed version keeps its advisory.
+//   - the agent's own plugin: the control plane must never offer it as a
+//     selectable update (see agentplugin). Its component row still surfaces
+//     with its installed version; only this advisory is withheld. The
+//     component's plugin-header name is passed alongside its slug so an agent
+//     installed under an unexpected directory name is still recognized.
+//
+// IT IS EXPORTED BECAUSE THE MCP READ SURFACE CONSUMES IT, and it moved here
+// from handler.go for that reason: it is a domain predicate, not an HTTP one.
+// An assistant answering "which of my sites need updates?" from its own copy of
+// this rule would disagree with the dashboard the operator is looking at — it
+// would count the phantom advisories and the agent's own plugin that the
+// dashboard drops. The assistant contradicting the screen is worse than the
+// assistant saying nothing, because only one of those gets noticed.
+func ActionableUpdate(c Component) bool {
+	if c.AvailableUpdate == nil || c.AvailableUpdate.NewVersion == "" {
+		return false
+	}
+	if wpversion.SameVersion(c.Version, c.AvailableUpdate.NewVersion) {
+		return false
+	}
+	return !agentplugin.IsComponent(c.Slug, c.Name)
+}
+
+// ActionableCoreUpdate reports whether a core advisory names a version the site
+// is not already on. A core_update whose new_version equals current_version is
+// a phantom in exactly the way a component's is, and buildAvailableUpdates has
+// always dropped it; naming the predicate keeps the MCP surface and the
+// dashboard agreeing on the core row as well as on the component rows.
+//
+// A nil advisory is NOT actionable, and that is a different fact from
+// "inventory never collected" — which no caller may infer from this function,
+// because it is carried separately by the staleness stamp.
+func ActionableCoreUpdate(cu *CoreUpdate) bool {
+	if cu == nil || cu.NewVersion == "" {
+		return false
+	}
+	return !wpversion.SameVersion(cu.CurrentVersion, cu.NewVersion)
 }
 
 // ParsedAgentSelfUpdate decodes the site's JSONB inventory and returns the
