@@ -698,6 +698,45 @@ func (r *Repo) ListSitesForRead(ctx context.Context, principal domain.Principal,
 	}
 	var rows []sqlc.Site
 	err := r.pool.RunTenantTx(ctx, principal, func(tx pgx.Tx) error {
+		// THE SECOND LAYER IS ASSERTED FROM INSIDE THE TRANSACTION THAT
+		// CARRIES IT, AND THAT PLACEMENT IS THE WHOLE VALUE OF THESE FOUR
+		// LINES.
+		//
+		// A test cannot ask this question from outside. app.site_scope is
+		// transaction-local, so a proof that opens its own RunTenantTx and
+		// reads the GUC there hard-codes the answer it is checking: it reports
+		// 'on' however this method opens its transaction. That is exactly the
+		// m112 shape -- a proof that goes around the code path it claims to
+		// test -- and it left this method's dispatch unguarded until a review
+		// planted the mutation and watched the whole suite stay green.
+		//
+		// Swapping RunTenantTx for InTenantTx here produces an identical
+		// RESULT SET, because the query's own site_ids predicate returns the
+		// same rows either way. There is therefore NO query whose output can
+		// distinguish the two, and no behavioural test can be written. The
+		// only thing that can observe it is the transaction itself.
+		//
+		// WHAT THE POLICY BUYS, said here because the redundancy invites
+		// deleting one of the two layers: the site_ids predicate scopes THIS
+		// query and nothing else, while the GUC scopes the TRANSACTION -- so
+		// any query added inside this fn later inherits the boundary without
+		// its author doing anything. That is the layer that covers queries
+		// which do not exist yet, and it is worth an assertion.
+		var siteScope string
+		if err := tx.QueryRow(ctx,
+			"SELECT coalesce(current_setting('app.site_scope', true), '')").Scan(&siteScope); err != nil {
+			return fmt.Errorf("read app.site_scope: %w", err)
+		}
+		if siteScope != "on" {
+			return fmt.Errorf(
+				"list sites for mcp read: app.site_scope is %q inside this read's own "+
+					"transaction, want \"on\". The RESTRICTIVE sites_site_scope policy (m19) is "+
+					"INERT at any other value, so the database is enforcing nothing on the site "+
+					"axis. Only InScopedTenantTx sets this GUC, and only RunTenantTx with a "+
+					"site-constrained principal reaches it",
+				siteScope)
+		}
+
 		out, err := sqlc.New(tx).ListSitesForMCPScope(ctx, sqlc.ListSitesForMCPScopeParams{
 			TenantID: principal.TenantID,
 			SiteIds:  principal.AllowedSiteIDs,

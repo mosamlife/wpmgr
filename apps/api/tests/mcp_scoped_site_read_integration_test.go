@@ -243,9 +243,17 @@ func TestMCPSitesSiteScopePolicyIsLiveNotJustTheGoFilterAsAppRole(t *testing.T) 
 			"comparison below has no baseline", unscopedCount, fleet)
 	}
 
-	// ---- GUC SET: through db.Pool.RunTenantTx with the principal
-	// mcp.connectionScopedPrincipal builds, which is the identical dispatch
-	// Repo.ListSitesForRead takes. ----
+	// ---- GUC SET: through db.Pool.RunTenantTx with a principal of the shape
+	// mcp.connectionScopedPrincipal builds. ----
+	//
+	// THIS TRANSACTION IS OPENED BY THE TEST, SO IT PROVES THE POLICY AND NOT
+	// THE REPO'S DISPATCH. It hard-codes RunTenantTx, so it would report "on"
+	// however Repo.ListSitesForRead opens its own transaction; reading it as
+	// evidence about the repo is the mistake that let a planted
+	// RunTenantTx -> InTenantTx survive a green suite. The repo's dispatch is
+	// asserted by the repo itself, from inside the transaction it opens.
+	// What is genuinely in question HERE is whether the m19 policy does
+	// anything at all, and that needs a statement carrying no scope predicate.
 	principal := domain.Principal{
 		TenantID:       tenant,
 		Scope:          domain.ScopeSite,

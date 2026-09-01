@@ -153,27 +153,27 @@ func TestMCPListSitesForReadIsTenantIsolatedAsAppRole(t *testing.T) {
 		AllowedSiteIDs: []uuid.UUID{siteA1.ID, siteA2.ID, siteB1.ID},
 	}
 
-	// Confirm the role inside the very transaction the read uses, and confirm
-	// the scoped helper genuinely engaged: RunTenantTx routes a site-
-	// constrained principal to InScopedTenantTx, and app.site_scope='on' is
-	// what makes the RESTRICTIVE m19 policy live. Reading the GUC back here is
-	// what separates "the helper ran" from "the helper was named".
-	if err := pool.RunTenantTx(ctx, principalA, func(tx pgx.Tx) error {
-		mcpAssertAndReportRole(t, tx, "RunTenantTx (ListSitesForRead path)")
-		var scope string
-		if err := tx.QueryRow(ctx,
-			"SELECT current_setting('app.site_scope', true)").Scan(&scope); err != nil {
-			return err
-		}
-		if scope != "on" {
-			t.Fatalf("app.site_scope = %q inside the site read's transaction, want \"on\"; "+
-				"the RESTRICTIVE sites_site_scope policy is INERT at any other value",
-				scope)
-		}
-		t.Logf("app.site_scope=%q inside the read's own transaction", scope)
+	// Confirm the ROLE, and nothing more, in a SIBLING transaction. The role is
+	// a property of the pool's connections rather than of any one transaction,
+	// so a sibling is a truthful place to read it.
+	//
+	// THIS BLOCK DELIBERATELY NO LONGER ASSERTS app.site_scope, AND THE REASON
+	// IS A DEFECT THIS TEST ONCE HAD. It opened its own pool.RunTenantTx, read
+	// the GUC there, found "on", and reported that as evidence about
+	// ListSitesForRead's dispatch. It is not: this transaction hard-codes
+	// RunTenantTx, so it answers "on" no matter which helper the repo picks. A
+	// review planted RunTenantTx -> InTenantTx in the repo and the whole suite
+	// stayed green -- the m112 shape exactly, a proof that goes around the code
+	// path it claims to cover.
+	//
+	// The GUC is now asserted by Repo.ListSitesForRead from INSIDE the
+	// transaction it opens itself, which is the only place that can observe it,
+	// and the read below fails with that message if the dispatch is wrong.
+	if err := pool.InTenantTx(ctx, tenantA, func(tx pgx.Tx) error {
+		mcpAssertAndReportRole(t, tx, "sibling tx (role only; the GUC is asserted by the repo)")
 		return nil
 	}); err != nil {
-		t.Fatalf("open scoped tenant tx: %v", err)
+		t.Fatalf("open tenant tx: %v", err)
 	}
 
 	rows, more, err := mcpRepo.ListSitesForRead(ctx, principalA, 500)
