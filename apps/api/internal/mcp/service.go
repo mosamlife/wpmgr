@@ -301,6 +301,22 @@ type Service struct {
 	// receiver anyway, so a Service built by a struct literal that skipped it
 	// mints NOTHING rather than minting unlimited.
 	mintLimit *registrationLimiter
+
+	// pageBound is the per-request site page bound ListSitesForModel reads
+	// with. It is a FIELD rather than a direct reference to the
+	// sitesPageBound constant for one reason: a proof that the bound is not
+	// disclosed to a scoped caller has to actually CROSS the bound on the
+	// path under test.
+	//
+	// The first version of that proof did not. It established the bound was
+	// exceeded by calling the repo directly with a small limit, then invoked
+	// the tool -- which used the 500 constant, never reached it, and so
+	// passed identically with the disclosure restored. A regression test that
+	// cannot fail is worse than none, because it reads as protection.
+	//
+	// Zero is not a valid bound and is normalised in ListSitesForModel, so a
+	// Service built by a struct literal reads a full page rather than none.
+	pageBound int32
 }
 
 func NewService(store Store) *Service {
@@ -311,7 +327,24 @@ func NewService(store Store) *Service {
 		// NewHandler gives about its own limiter: an unarmed limiter would be a
 		// wiring failure that presents as a working endpoint.
 		mintLimit: newMintLimiter(),
+		pageBound: sitesPageBound,
 	}
+}
+
+// WithPageBound returns a copy reading sites with the supplied per-request
+// page bound. TEST-ONLY, and it exists so a proof can cross the bound on the
+// production path instead of asserting about a bound the code never reaches.
+//
+// It refuses a non-positive bound rather than normalising it silently: a
+// harness that passes 0 wants a small page, and giving it the full 500 would
+// hand it the vacuous pass this option was added to prevent.
+func (s *Service) WithPageBound(n int32) *Service {
+	if n <= 0 {
+		panic("mcp: WithPageBound requires a positive bound")
+	}
+	cp := *s
+	cp.pageBound = n
+	return &cp
 }
 
 // WithClock returns a copy using the supplied clock. Test-only in practice.
@@ -1718,7 +1751,14 @@ func (s *Service) ListSitesForModel(ctx context.Context, auth AuthorizedRequest)
 	// caller, however harmless it looks as a completeness flag. Completeness
 	// is recomputed below over the caller's own scope instead, where both
 	// terms are numbers the caller already knows.
-	rows, _, err := s.store.ListSitesForRead(ctx, auth.TenantID, sitesPageBound)
+	bound := s.pageBound
+	if bound <= 0 {
+		// A Service built by a struct literal rather than NewService. Read a
+		// full page rather than none: a zero limit would return nothing and
+		// present as an organisation owning no sites.
+		bound = sitesPageBound
+	}
+	rows, _, err := s.store.ListSitesForRead(ctx, auth.TenantID, bound)
 	if err != nil {
 		return "", fmt.Errorf("list sites for mcp read: %w", err)
 	}

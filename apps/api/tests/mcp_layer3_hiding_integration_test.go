@@ -25,7 +25,11 @@
 //
 // THE ROLE IS LOAD-BEARING. wpmgr_app is NOSUPERUSER NOBYPASSRLS; either
 // privilege would make the scope resolution pass vacuously. It is asserted and
-// printed from INSIDE the transaction the read uses.
+// printed from inside an InTenantTx on the SAME POOL the read uses -- not from
+// inside the read's own transaction, which this comment previously claimed. The
+// two are equivalent in effect because the pool and the helper are the same,
+// but the weaker claim is the true one and the stronger one invited nobody to
+// check.
 package tests
 
 import (
@@ -250,17 +254,30 @@ func TestMCPLayer3OutOfScopeSiteIsAbsentAndNotInferableAsAppRole(t *testing.T) {
 // that caller, and enough to infer that the tenant holds more sites than the
 // page bound.
 //
-// THE BOUND IS PASSED EXPLICITLY HERE rather than by seeding 501 sites. The
-// production bound is 500 and seeding past it would make this test minutes
-// long, which is how a slow proof gets skipped and then deleted. The bound
-// being small is not a weakening: the code path is identical, and the defect
-// was that a bound-was-hit fact reached the caller at all.
+// THE BOUND IS INJECTED INTO THE SERVICE, NOT JUST INTO A PRE-CHECK, AND THE
+// DIFFERENCE IS THE WHOLE VALUE OF THIS TEST.
+//
+// The first version of this proof seeded six sites, called
+// mcpRepo.ListSitesForRead(ctx, tenant, 3) to "establish the bound is
+// exceeded", and then invoked the tool. That standalone call fed nothing: the
+// tool used the hard-coded sitesPageBound of 500, six sites never came near
+// it, and every assertion below passed identically with the disclosure fully
+// restored in production code. It read as protection and was vacuous.
+//
+// svc.WithPageBound(3) puts the small bound on the path under test, so the
+// production read genuinely crosses its own bound and `more` is true inside
+// ListSitesForModel -- which is the only state in which the defect can
+// reappear. Seeding 501 sites would reach the same state and make the test
+// minutes long, which is how a slow proof gets skipped and then deleted.
 func TestMCPPageBoundDoesNotDiscloseTenantSizeAsAppRole(t *testing.T) {
 	ctx := context.Background()
 	pool := startPostgres(t)
 	mcpRepo := mcp.NewRepo(pool)
 	siteRepo := site.NewRepo(pool)
-	svc := mcp.NewService(mcpRepo).WithAudit(audit.NewRecorder(pool, domain.SystemClock{}))
+	// WithPageBound(3) is what makes this proof non-vacuous. See the note above.
+	svc := mcp.NewService(mcpRepo).
+		WithAudit(audit.NewRecorder(pool, domain.SystemClock{})).
+		WithPageBound(3)
 
 	tenant := seedTenant(t, pool, "mcp-pb-"+uuid.NewString()[:8])
 
@@ -278,9 +295,10 @@ func TestMCPPageBoundDoesNotDiscloseTenantSizeAsAppRole(t *testing.T) {
 		ids = append(ids, s.ID)
 	}
 
-	// Confirm the bound really is exceeded for this tenant, through the same
-	// repo method the tool uses. Without this the test could pass because the
-	// bound was never hit.
+	// Confirm the bound really is exceeded, at the SAME value the service was
+	// given above. This is a corroboration of the injected bound, not a
+	// substitute for injecting it: on its own it proves nothing about the tool,
+	// which is exactly how the first version of this test came to be vacuous.
 	bounded, more, err := mcpRepo.ListSitesForRead(ctx, tenant, 3)
 	if err != nil {
 		t.Fatalf("ListSitesForRead bounded: %v", err)
