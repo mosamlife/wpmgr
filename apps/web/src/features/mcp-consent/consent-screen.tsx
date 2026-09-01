@@ -208,8 +208,8 @@ function PermissionsBlock({ consent }: { consent: ConsentContext }) {
             <span className="font-medium text-[var(--color-foreground)]">
               It cannot approve anything.
             </span>{" "}
-            Everything that changes a site is done by a person, here in this dashboard. There is
-            no setting or mode that lets this connection do it instead.
+            Site changes are made elsewhere in wpmgr, never by this connection. There is no
+            setting or mode that lets this connection do it instead.
           </li>
           <li>
             <span className="font-medium text-[var(--color-foreground)]">

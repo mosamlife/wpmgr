@@ -128,12 +128,26 @@ describe("ConsentScreen — what it can do and what it cannot", () => {
     // Anything that changes a site is approved by a person, in this
     // dashboard, on a screen this connection cannot reach" -- both a false
     // capability claim and a pointer at a screen that does not exist.
+    //
+    // The first rewrite, "Everything that changes a site is done by a
+    // person, here in this dashboard," went too far the other way: it is a
+    // categorical claim the product falsifies twice over --
+    // update_runs.scheduled_at (apps/api/db/schema.sql:1185) fires a run
+    // later from DispatchWorker with nobody present, and POST /updates is
+    // reachable by an API-key principal with no dashboard and no person
+    // (apps/api/internal/update/handler.go:44, RequireOrgScope +
+    // PermSiteWrite only; middleware/auth.go:56 gives API-key principals org
+    // scope; schema.sql:1147-1148 documents created_by as NULL for them). The
+    // sentence below claims only what is categorically true: never THIS
+    // connection, without asserting who or what else does it.
     renderWithProviders(<ConsentScreen {...props()} />);
     // The bold lead-in stays exactly as it was.
     expect(screen.getByText(/It cannot approve anything\./i)).toBeTruthy();
     const bullet = screen.getByText(/It cannot approve anything\./i).closest("li")!;
-    expect(bullet).toHaveTextContent(/everything that changes a site is done by a person/i);
+    expect(bullet).toHaveTextContent(/site changes are made elsewhere in wpmgr/i);
+    expect(bullet).toHaveTextContent(/never by this connection/i);
     expect(bullet).not.toHaveTextContent(/propose/i);
+    expect(bullet).not.toHaveTextContent(/done by a person/i);
     expect(bullet).not.toHaveTextContent(/screen this connection cannot reach/i);
   });
 
