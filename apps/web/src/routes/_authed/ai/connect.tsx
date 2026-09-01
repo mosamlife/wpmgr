@@ -64,8 +64,12 @@ function ConnectAiClientPage() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Connect an AI client"
-        subline="Pick your client first. Everything after that is computed from it, because the setup differs per client in ways that fail quietly."
+        // ONE NAME PER THING. "AI connections" is the settings screen, "New
+        // connection" is the button that arrives here, and this is the
+        // wizard's own heading. It used to repeat the button's old wording,
+        // which made the button and the page it opened look like two features.
+        title="Add an AI connection"
+        subline="Nothing is created yet. This is a wizard, not a draft row. Pick your client first: everything after that is computed from it, because the setup differs per client in ways that fail quietly."
         backTo={{ to: "/ai", label: "AI connections" }}
       />
       <ConnectWizard

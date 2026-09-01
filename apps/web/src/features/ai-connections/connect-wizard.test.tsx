@@ -14,7 +14,7 @@ import { formatAbsolute } from "@/features/updates/schedule";
 import { mockQueryResult } from "@/test/query-mocks";
 
 import { Route } from "@/routes/_authed/ai/connect";
-import { MCP_CLIENTS } from "./client-table";
+import { CLIENT_TABLE_VERIFIED_AT, MCP_CLIENTS } from "./client-table";
 import { useSites, DEFAULT_SITES_LIMIT } from "@/features/sites/use-sites";
 import { useTags } from "@/features/tags/use-tags";
 import { snapshotFromPage } from "@/features/mcp-consent/site-scope";
@@ -110,6 +110,77 @@ describe("the wizard asks for the client first", () => {
     renderWizard();
     await screen.findByRole("button", { name: /claude code/i });
     expect(document.querySelector('button[data-method="oauth"]')).toBeNull();
+  });
+});
+
+// STEP "HOW IT SIGNS IN", BROUGHT TO ITS SPECIFIED COPY.
+//
+// Every assertion is on the exact sentence. The two cards used to carry
+// one-line summaries ("Connection token", "Nothing to copy or keep secret"),
+// which are true but leave the two decisions this screen actually asks an
+// operator to make -- what is shown to me, and where does the secret live --
+// to be inferred. The words are the deliverable, so the words are pinned.
+describe("the auth cards say what each method actually does", () => {
+  it("states, on the browser card, that nothing secret is ever shown", async () => {
+    renderWizard();
+    await pickClient("Claude Code");
+    const oauth = authCard("oauth");
+    expect(within(oauth).getByText("Sign in through your browser")).toBeInTheDocument();
+    expect(
+      within(oauth).getByText(
+        "You approve the connection on a WPMgr page. The client stores a token it refreshes itself, and nothing secret is ever shown to you or pasted anywhere.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("states, on the token card, that it is documented and not a fallback", async () => {
+    renderWizard();
+    await pickClient("Claude Code");
+    const token = authCard("token");
+    expect(within(token).getByText("Use a connection token")).toBeInTheDocument();
+    expect(
+      within(token).getByText(
+        "We show a token once. You put it in your environment, and the client sends it as a header. This is the documented path for CI, containers and SSH, not a fallback for when sign-in fails.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("marks which card is the answer when both methods are open", async () => {
+    // Claude Code offers both, so there is a recommendation to make.
+    renderWizard();
+    await pickClient("Claude Code");
+    expect(within(authCard("oauth")).getByText("Recommended for Claude Code")).toBeInTheDocument();
+    expect(
+      within(authCard("token")).getByText("The documented headless path"),
+    ).toBeInTheDocument();
+  });
+
+  it("says 'the only route' rather than recommending, when there is one route", async () => {
+    // Claude Desktop's add-connector dialog has no header field, so the token
+    // card is disabled and the browser card is not a preference.
+    renderWizard();
+    await pickClient("Claude Desktop");
+    expect(
+      within(authCard("oauth")).getByText("The only route for this client"),
+    ).toBeInTheDocument();
+    // A recommendation on a control nobody can press is noise.
+    expect(within(authCard("token")).queryByText(/recommended|only route|documented headless/i))
+      .toBeNull();
+    expect(within(authCard("token")).getByText("not possible here")).toBeInTheDocument();
+  });
+
+  it("says why there is no device-code option, with the date it was checked", async () => {
+    // Without this, a disabled browser card on a headless client reads as an
+    // oversight and the token reads as our fallback. It is neither.
+    renderWizard();
+    await pickClient("Claude Code");
+    expect(
+      await screen.findByText("Why there is no “enter this code on another device” option"),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/no MCP client implements one/i)).toBeInTheDocument();
+    // The date is rendered from the client table's own constant, so it goes
+    // stale visibly. A literal here would pass while the table moved on.
+    expect(screen.getByText(new RegExp(CLIENT_TABLE_VERIFIED_AT))).toBeInTheDocument();
   });
 });
 
