@@ -50,6 +50,46 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.151",
+    date: "2026-09-01",
+    summary:
+      "Every table the assistant surface can read now carries a database-level site-scope policy, a capability refusal answers 403 instead of falling back to a generic 401, and a per-tenant kill switch and a tool-call rate limit round out the release.",
+    items: [
+      {
+        tag: "Security",
+        text: "Every table the assistant surface can read now carries the same restrictive site-scope policy already enforced elsewhere in the schema: 22 policies added across 22 tables that previously had no database-level opinion of their own about which site a scoped grant could reach. These protect every path that runs with a site-constrained principal, which is the ordinary way a site-scoped collaborator reaches this data.",
+      },
+      {
+        tag: "Security",
+        text: "The chokepoint the assistant surface uses to resolve which sites a connection may reach now takes the caller's authenticated principal rather than a bare tenant id, so it is capable of engaging the site-scope policies above wherever that principal is site-constrained. On the assistant's own read path it is not: resolving a grant's site allowlist is deliberately done with a tenant-scoped principal, because the allowlist cannot be used to scope the query that produces it. The assistant surface's site scoping there is enforced by the resolved allowlist in application code, not by this database policy.",
+      },
+      {
+        tag: "Fixed",
+        text: "A capability refusal on the assistant surface now answers 403 with its own error code, naming the capability that was required and the ones the grant actually holds, instead of falling through to a generic 401 that told the client to re-authenticate. Client-visible behaviour change: anything integrating against the assistant surface that treated 401 as \"renew and retry\" needs to treat 403 as terminal instead.",
+      },
+      {
+        tag: "Added",
+        text: "A per-tenant switch that turns the assistant surface off entirely, independent of any single connection's grant.",
+      },
+      {
+        tag: "Added",
+        text: "The read capability vocabulary a grant can hold widened from one member to the full v1 set. The default a newly created grant receives is unchanged, so nothing already issued gains a capability it was not explicitly given.",
+      },
+      {
+        tag: "Added",
+        text: "Tool calls on the live MCP endpoint now carry a per-connection and a per-tenant rate limit. A refusal names both the sustained rate and the burst allowance it is enforcing, rather than leaving a client to find the ceiling by trial and error.",
+      },
+      {
+        tag: "Added",
+        text: "Connections now record the client the operator said they were setting the connection up for, distinct from the client name and version the connection later negotiates on its own, and return it alongside the grant.",
+      },
+      {
+        tag: "Added",
+        text: "A grant's expiry can no longer be set more than one year past its creation, closing an open-ended bound ahead of the caller that will need it.",
+      },
+    ],
+  },
+  {
     version: "0.61.150",
     date: "2026-08-31",
     summary:
