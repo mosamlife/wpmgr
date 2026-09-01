@@ -106,7 +106,13 @@ func TestExitGate_GuessedToolNameIsUnreachable(t *testing.T) {
 	// The tool is LISTED. That is the ruling, and it is asserted here rather
 	// than only in its own test so that this proof cannot be read as "nothing
 	// was reachable because nothing was shown".
-	if got := VisibleTools(auth); len(got) != 1 || got[0].Name != ToolFleetSitesList {
+	// ASSERTED AS "THE WHOLE REGISTRY IS LISTED", not as "exactly one tool
+	// exists". The earlier form pinned len(got) == 1, which made a correct
+	// second read tool fail a proof about the CAPABILITY axis -- a guard
+	// reddening on work it was never meant to police is a guard that gets
+	// switched off. What the ruling actually claims is that no entry is hidden
+	// by a capability the grant lacks, so that is what is compared.
+	if got := VisibleTools(auth); !sameToolNames(got, registryToolNames()) {
 		t.Fatalf("a connection holding no capability was shown %d tools, want the whole "+
 			"registry listed and annotated: %+v", len(got), got)
 	}
@@ -486,11 +492,17 @@ func TestSiteScopeIsRefusedByName(t *testing.T) {
 	// NO capability notice -- this connection holds the capability, and telling
 	// it otherwise would send an operator hunting the wrong axis.
 	got := VisibleTools(auth)
-	if len(got) != 1 || got[0].Name != ToolFleetSitesList {
-		t.Fatalf("an empty site scope hid the tool from tools/list: %+v", got)
+	if !sameToolNames(got, registryToolNames()) {
+		t.Fatalf("an empty site scope hid a tool from tools/list: %+v", got)
 	}
-	if strings.Contains(got[0].Description, "NOT AVAILABLE TO THIS CONNECTION") {
-		t.Fatalf("an empty SITE scope produced a CAPABILITY notice:\n%s", got[0].Description)
+	// EVERY descriptor is checked, not got[0]. Checking only the first left the
+	// assertion silently covering less of the surface as the registry grew,
+	// which is the shape where a guard keeps passing while what it guards
+	// shrinks underneath it.
+	for _, d := range got {
+		if strings.Contains(d.Description, "NOT AVAILABLE TO THIS CONNECTION") {
+			t.Fatalf("an empty SITE scope produced a CAPABILITY notice on %q:\n%s", d.Name, d.Description)
+		}
 	}
 
 	_, reason, err := AuthorizeTool(ToolFleetSitesList, auth)
@@ -658,21 +670,53 @@ func TestSchemaBytesAreNotSharedAcrossCallers(t *testing.T) {
 // can only refuse verbs a read tool has no business declaring. That is enough
 // to make a write tool arrive as a visible, deliberate act -- someone has to
 // delete a case from this list, in a diff, with a reason.
+// MATCHING IS PER UNDERSCORE-SEPARATED SEGMENT AND NO LONGER BY SUBSTRING, and
+// the change was forced by a true negative rather than chosen for elegance.
+//
+// The substring form failed fleet_updates_pending -- a read tool whose name is
+// the wireframe catalogue's own ("Plugin, theme and core updates outstanding,
+// per site") -- because the plural NOUN "updates" contains the verb "update".
+// The available responses were to rename the tool away from the catalogue, to
+// delete "update" from the list, or to make the match mean what the comment
+// already claimed it meant. The first two are both worse: one puts the wire
+// name out of step with the screen the operator reads, and the other stops
+// propose_update being caught, which is the exact tool this guard exists for.
+//
+// Segment matching keeps every real catch. A write tool's name carries the verb
+// AS A SEGMENT -- propose_update, site_delete, fleet_restore, run_exec -- because
+// that is how a verb is spelled when it is the action rather than the object.
+// "updates" as a plural noun is a segment of its own and is not the verb.
+//
+// THE CAPABILITY ASSERTION BELOW IS THE PART THAT DOES NOT DEPEND ON SPELLING,
+// and it is new. A name heuristic can always be evaded by naming a tool well;
+// a write tool cannot avoid requiring a capability that is not a read, because
+// the capability is what the operator ticked and what the grant stores. Every
+// capability this surface has is `mcp.<group>.read` (policy.go), so requiring
+// the suffix catches a write tool however it is spelled -- including one added
+// with a name this list has never heard of.
 func TestNoRegisteredToolIsWriteShaped(t *testing.T) {
-	forbidden := []string{
+	forbidden := map[string]struct{}{}
+	for _, v := range []string{
 		"create", "update", "delete", "remove", "restart", "reboot",
 		"install", "uninstall", "activate", "deactivate", "write",
-		"set_", "purge", "restore", "rollback", "run_", "exec",
+		"set", "purge", "restore", "rollback", "run", "exec",
+		"apply", "propose", "approve",
+	} {
+		forbidden[v] = struct{}{}
 	}
 	for _, e := range nonEmptyRegistry(t) {
-		lower := strings.ToLower(e.Name)
-		for _, verb := range forbidden {
-			if strings.Contains(lower, verb) {
-				t.Errorf("tool %q contains the write-shaped verb %q. The MCP surface is read-only "+
-					"BY CONSTRUCTION (m124 DECISION 1) -- a write tool arrives with its own "+
-					"capability, its own migration and its own security review, never by being "+
-					"appended to registryTools.", e.Name, verb)
+		for _, seg := range strings.Split(strings.ToLower(e.Name), "_") {
+			if _, bad := forbidden[seg]; bad {
+				t.Errorf("tool %q carries the write-shaped verb %q as a name segment. The MCP "+
+					"surface is read-only BY CONSTRUCTION (m124 DECISION 1) -- a write tool "+
+					"arrives with its own capability, its own migration and its own security "+
+					"review, never by being appended to registryTools.", e.Name, seg)
 			}
+		}
+		if !strings.HasSuffix(string(e.Capability), ".read") {
+			t.Errorf("tool %q requires capability %q, which is not a .read capability. Every tool "+
+				"on this surface reads; a capability that is not a read is how a write tool "+
+				"would have to arrive, whatever it is named.", e.Name, e.Capability)
 		}
 		if e.OperatorPermission == authz.PermSiteWrite {
 			t.Errorf("tool %q declares the site:write operator permission on a read-only surface", e.Name)
@@ -709,4 +753,38 @@ func TestVisibleToolNamesMatchTheListing(t *testing.T) {
 			}
 		}
 	}
+}
+
+// registryToolNames is what the WHOLE registry holds, and sameToolNames
+// compares a listing against it order-insensitively.
+//
+// THEY EXIST SO A PROOF ABOUT ONE AXIS SAYS "NOTHING WAS HIDDEN" INSTEAD OF
+// PINNING A COUNT. Several proofs about the capability axis and the site axis
+// asserted len(tools) == 1, which is a fact about how many tools had been built
+// on the day they were written and not about the boundary under test. Every one
+// of them went red on a correct second read tool, and a guard that reddens on
+// correct work is a guard that gets deleted rather than read.
+func registryToolNames() []string {
+	out := []string{}
+	for _, e := range registryTools() {
+		out = append(out, e.Name)
+	}
+	return out
+}
+
+func sameToolNames(got []ToolDescriptor, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	seen := map[string]int{}
+	for _, d := range got {
+		seen[d.Name]++
+	}
+	for _, n := range want {
+		seen[n]--
+		if seen[n] < 0 {
+			return false
+		}
+	}
+	return true
 }

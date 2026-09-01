@@ -1840,6 +1840,91 @@ func (s *Service) ListSitesForModel(ctx context.Context, auth AuthorizedRequest)
 	return buildListSitesResult(allowed, env, s.now())
 }
 
+// ListPendingUpdatesForModel is fleet_updates_pending: outstanding plugin,
+// theme and core updates across the connection's resolved scope.
+//
+// IT SHARES THE SCOPED READ WITH ListSitesForModel RATHER THAN REPEATING IT.
+// scopedSiteRead is the layer-3 filter, the site_unread accounting and the
+// envelope balance in one place, and the reason it is one place is that those
+// three are the tenancy boundary of every fleet-wide tool. A second tool with
+// its own copy of that loop is a second chance to get the hiding rule wrong,
+// and the copy that is wrong is the one nobody re-reads. The two tools now
+// differ only in how they RENDER rows they were both handed identically.
+func (s *Service) ListPendingUpdatesForModel(ctx context.Context, auth AuthorizedRequest) (string, error) {
+	allowed, env, err := s.scopedSiteRead(ctx, auth, ToolFleetUpdatesPending)
+	if err != nil {
+		return "", err
+	}
+	return buildUpdatesPendingResult(allowed, env, s.now())
+}
+
+// scopedSiteRead reads one bounded page of the caller's own sites and returns
+// the rows it may see together with the envelope accounting for the ones it
+// may see and this call did not return.
+//
+// Every comment on ListSitesForModel's body applies here verbatim and is not
+// duplicated: the discarded `more`, why the in-Go SiteSet filter stays as the
+// third layer, why an unreturned in-scope site is site_unread rather than
+// silently absent, and why `asked` is auth.Sites.Len() and never a tenant
+// count.
+//
+// toolName is used ONLY in the error text, so an unbalanced envelope names the
+// tool that produced it.
+func (s *Service) scopedSiteRead(
+	ctx context.Context, auth AuthorizedRequest, toolName string,
+) ([]sqlc.Site, Envelope, error) {
+	if auth.Sites.IsEmpty() {
+		// THE EMPTY-SCOPE BRANCH IS A REFUSAL, NOT AN EMPTY LIST, for every
+		// tool that reads through here and not just the first one. An empty
+		// resolved scope means NO SITES, never every site, and `{"sites": []}`
+		// is indistinguishable from a healthy organisation that owns nothing.
+		return nil, Envelope{}, domain.Forbidden(ErrCodeScopeEmpty,
+			"this connection's site scope resolves to no sites, so there is nothing it may read. "+
+				"This is a refusal, not an empty fleet: check the grant's site scope.")
+	}
+
+	bound := s.pageBound
+	if bound <= 0 {
+		bound = sitesPageBound
+	}
+	rows, _, err := s.store.ListSitesForRead(ctx, connectionScopedPrincipal(auth), bound)
+	if err != nil {
+		return nil, Envelope{}, fmt.Errorf("list sites for mcp read: %w", err)
+	}
+
+	// LAYER 3, AND LAYER 3 HIDES. A row dropped here is not refused, not
+	// counted and not mentioned.
+	allowed := make([]sqlc.Site, 0, len(rows))
+	seen := make(map[uuid.UUID]struct{}, len(rows))
+	for _, r := range rows {
+		if auth.Sites.Allows(r.ID) {
+			allowed = append(allowed, r)
+			seen[r.ID] = struct{}{}
+		}
+	}
+
+	refusals := make([]Refusal, 0)
+	for _, id := range auth.Sites.Sorted() {
+		if _, found := seen[id]; !found {
+			refusals = append(refusals, Refusal{
+				SiteID: id.String(),
+				Code:   RefusalSiteUnread,
+				Detail: "this site is in scope for this connection but was not returned by the " +
+					"page this call reads. The page is bounded over this connection's own scope " +
+					"in a fixed order, so retrying returns the same page and will not reach it: " +
+					"either this connection's scope holds more sites than one page, or the site " +
+					"is archived. Ask an operator to narrow the scope or restore the site.",
+			})
+		}
+	}
+
+	env, err := NewEnvelope(auth.Sites.Len(), len(allowed), refusals)
+	if err != nil {
+		return nil, Envelope{}, fmt.Errorf("build %s envelope: %w", toolName, err)
+	}
+	return allowed, env, nil
+}
+
 // ---------------------------------------------------------------------------
 // Credential helpers
 // ---------------------------------------------------------------------------

@@ -864,8 +864,8 @@ func TestToolsCall_UntickedCapabilityRefusesWithItsOwnCode(t *testing.T) {
 
 	// The tool is LISTED to this connection: the refusal below is a refusal,
 	// not a consequence of an empty surface.
-	if got := VisibleTools(auth); len(got) != 1 || got[0].Name != ToolFleetSitesList {
-		t.Fatalf("tools/list hid the tool from a connection lacking its capability: %+v", got)
+	if got := VisibleTools(auth); !sameToolNames(got, registryToolNames()) {
+		t.Fatalf("tools/list hid a tool from a connection lacking its capability: %+v", got)
 	}
 
 	_, _, resp, refused := h.authorizeCall(context.Background(), auth, jsonrpcRequest{
@@ -1044,11 +1044,19 @@ func TestToolsList_IsToolsOnlyAndReadOnly(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("tools/list is not JSON: %v", err)
 	}
-	if len(resp.Result.Tools) != 1 || resp.Result.Tools[0].Name != ToolFleetSitesList {
-		t.Fatalf("tools = %#v, want exactly [%s]", resp.Result.Tools, ToolFleetSitesList)
+	// THE LISTING IS COMPARED AGAINST THE REGISTRY, not against a hard-coded
+	// count. The point of this assertion is that tools/list over the real
+	// mounted transport returns the server's whole tool surface and nothing
+	// else -- an extra name here would be a tool reachable over HTTP that the
+	// closed literal never declared.
+	if !sameToolNames(resp.Result.Tools, registryToolNames()) {
+		t.Fatalf("tools = %#v, want exactly %v", resp.Result.Tools, registryToolNames())
 	}
-	if len(resp.Result.Tools[0].InputSchema) == 0 {
-		t.Error("the tool carries no inputSchema, so a model cannot call it without guessing")
+	// EVERY tool must carry a schema, not just the first.
+	for _, d := range resp.Result.Tools {
+		if len(d.InputSchema) == 0 {
+			t.Errorf("tool %q carries no inputSchema, so a model cannot call it without guessing", d.Name)
+		}
 	}
 
 	// Resources and prompts are refused BY NAME, not answered with an empty
