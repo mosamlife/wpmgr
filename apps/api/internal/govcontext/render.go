@@ -157,9 +157,17 @@ func (rc ResolvedContext) ModelInstructions() (string, error) {
 	}
 	text := rc.InstructionText()
 	if len(text) > MaxDeliverableInstructionBytes {
-		return "", domain.ServiceUnavailable(ErrCodeContextTooLarge,
-			"operator context could not be delivered: it renders to more than the assistant surface can carry, "+
-				"and it is never clipped. Shorten this organisation's context in WPMgr and retry").
+		// THE NUMBERS ARE IN THE MESSAGE, not only in the details. This
+		// message reaches a model-facing client (internal/mcp's toolError
+		// forwards it, uniquely among the refusals on that path), and it is
+		// the operator's own content measured against a constant we publish,
+		// so it crosses no trust boundary. A refusal an operator can act on
+		// has to say what the size was and what the limit is; "too large" on
+		// its own sends them back to guess.
+		return "", domain.ServiceUnavailable(ErrCodeContextTooLarge, fmt.Sprintf(
+			"operator context could not be delivered: it renders to %d bytes and the assistant surface "+
+				"can carry %d. It is never clipped, so none of it was sent. Shorten this organisation's "+
+				"context in WPMgr and retry", len(text), MaxDeliverableInstructionBytes)).
 			WithDetails(map[string]any{
 				"instruction_bytes": len(text),
 				"budget_bytes":      MaxDeliverableInstructionBytes,

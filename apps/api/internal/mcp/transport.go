@@ -16,6 +16,7 @@ import (
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
+	"github.com/mosamlife/wpmgr/apps/api/internal/govcontext"
 )
 
 // ---------------------------------------------------------------------------
@@ -1088,6 +1089,41 @@ func (h *TransportHandler) callTool(ctx context.Context, auth AuthorizedRequest,
 	})
 }
 
+// callerCausedToolErrors enumerates the domain codes on the tools/call path
+// that a CLIENT can fix by changing its next request, and which therefore
+// answer -32602 (invalid params) carrying their own message. Everything not
+// listed here is treated as a server-side fault: see the default at the bottom
+// of toolError for why the enumeration runs in this direction.
+//
+// WHAT WAS ENUMERATED TO MAKE THE INVERSION SAFE. Every domain error that can
+// reach toolError comes from one of its four call sites — AuthorizeTool
+// (registry.go), the two audit appends, and entry.invoke — which between them
+// raise exactly: mcp_tool_not_available (registry.go:453,478), listed below;
+// mcp_scope_empty and mcp_capability_not_granted, both handled by their own
+// typed branches above and never reaching this map; mcp_capability_unmapped
+// (policy.go:383,392,404), which its own doc comment calls an internal
+// misconfiguration; mcp_audit_unavailable; and the two governed-context codes.
+// mcp_capability_wider_than_default is raised only on the operator-facing
+// narrowing path and, per its own doc comment, is never seen by a model
+// calling a tool. Malformed params never reach here at all — the transport
+// answers those directly, before dispatch.
+//
+// A code omitted from this map by mistake degrades to a generic message; a
+// code wrongly added to it leaks. So this map is the one to justify per entry,
+// and the default needs no justification.
+var callerCausedToolErrors = map[string]struct{}{
+	// The model guessed a tool name that is not in the registry. That is
+	// exactly a bad parameter, it is the caller's to correct, and the message
+	// names the tool and points at tools/list so it can correct in one round
+	// trip.
+	ErrCodeToolNotAvailable: {},
+}
+
+// genericToolFailure is the ONE message every internal failure answers with,
+// whatever failed. It is a constant so the branches that must be byte-identical
+// cannot drift into being distinguishable.
+const genericToolFailure = "the tool call failed"
+
 // toolError maps a domain refusal onto a named JSON-RPC code, and an infra
 // failure onto the internal code WITHOUT leaking its message.
 func (h *TransportHandler) toolError(id json.RawMessage, err error) jsonrpcResponse {
@@ -1117,27 +1153,55 @@ func (h *TransportHandler) toolError(id json.RawMessage, err error) jsonrpcRespo
 			data, _ := json.Marshal(payload)
 			return newErrorResponse(id, codeCapabilityNotGranted, de.Message, data)
 		}
-		if de.Code == ErrCodeAuditUnavailable {
-			// AN UNRECORDABLE CALL IS AN INTERNAL ERROR ON THE WIRE, and this
-			// branch exists because the fallthrough below would have made it
-			// something much worse: codeInvalidParams, carrying de.Message
-			// verbatim. That is wrong twice. It blames the caller's parameters
-			// for a server-side failure, so a legitimate client retries with a
-			// different tool name forever; and it puts "its audit trail cannot
-			// be written" on the wire, handing any caller a direct, polled read
-			// on whether this surface is currently recording -- the precise
-			// oracle auditGap's third argument is about, but spelled out in
-			// English instead of merely inferable from a code.
+		if de.Code == govcontext.ErrCodeContextTooLarge {
+			// THE FORK THIS BRANCH SITS ON IS NOT "HOW BAD IS IT" BUT WHOSE
+			// INFORMATION THE MESSAGE CARRIES. This code's content is the
+			// OPERATOR'S OWN text, measured against a constant we publish
+			// anyway, so naming the size and the limit crosses no trust
+			// boundary and is the whole value of the refusal: an operator told
+			// 2049 against 2048 fixes it in one edit. Its sibling
+			// context_unavailable carries OUR internal state instead, so it
+			// takes the generic default below and says nothing.
 			//
-			// The generic message matches the non-domain branch below exactly,
-			// so an audit failure and any other internal failure are the same
-			// bytes.
-			return newErrorResponse(id, codeInternalError, "the tool call failed", nil)
+			// The CODE is still the internal one: an over-large stored context
+			// is not something the caller's parameters caused or can change.
+			payload := map[string]any{"code": de.Code}
+			for k, v := range de.Details {
+				payload[k] = v
+			}
+			data, _ := json.Marshal(payload)
+			return newErrorResponse(id, codeInternalError, de.Message, data)
 		}
-		return newErrorResponse(id, codeInvalidParams, de.Message, nil)
+		if _, callerCaused := callerCausedToolErrors[de.Code]; callerCaused {
+			return newErrorResponse(id, codeInvalidParams, de.Message, nil)
+		}
+		// THE DEFAULT IS THE INTERNAL ERROR, AND THAT DIRECTION IS THE FIX.
+		//
+		// This used to fall through to codeInvalidParams carrying de.Message
+		// verbatim, which is wrong twice for anything server-side: it blames
+		// the caller's parameters for a fault its parameters cannot reach, so
+		// a legitimate client retries with different arguments forever; and it
+		// puts our internal state on the wire in English, handing any token
+		// holder a polled read on it -- the precise oracle auditGap's third
+		// argument is about, spelled out rather than merely inferable.
+		//
+		// That was fixed once, by adding a dedicated branch for
+		// mcp_audit_unavailable. The defect then recurred for
+		// mcp_capability_unmapped (documented at its own definition as "an
+		// internal misconfiguration, not a caller error") and again for both
+		// governed-context codes, because each new code silently inherited the
+		// unsafe default. Enumerating the SERVER faults can only ever be a list
+		// someone forgets to extend; enumerating the CALLER faults fails
+		// closed, because the cost of forgetting one is a generic message
+		// instead of a specific one -- never a wrong code, never a leak.
+		//
+		// The dedicated audit branch is gone with this change: it now IS the
+		// default, and audit_fail_closed_test.go pins that an unrecordable
+		// call still answers -32603 with these exact bytes.
+		return newErrorResponse(id, codeInternalError, genericToolFailure, nil)
 	}
 	h.log.Error("mcp tool call failed", slog.String("error", err.Error()))
-	return newErrorResponse(id, codeInternalError, "the tool call failed", nil)
+	return newErrorResponse(id, codeInternalError, genericToolFailure, nil)
 }
 
 // ---------------------------------------------------------------------------
