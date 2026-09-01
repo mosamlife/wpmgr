@@ -66,18 +66,18 @@ export type TenantAssistantState = {
    *
    */
   enabled: boolean;
-  enabled_at?: string;
+  enabled_at?: string | null;
   /**
    * Whether the kill switch is engaged. THIS ONE IS ENFORCED, on every
    * assistant request, from the moment it is written.
    *
    */
   paused: boolean;
-  paused_at?: string;
+  paused_at?: string | null;
   /**
    * Why the surface was stopped. Null when no reason was given.
    */
-  paused_reason?: string;
+  paused_reason?: string | null;
 };
 
 /**

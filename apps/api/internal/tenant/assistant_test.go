@@ -2,7 +2,9 @@ package tenant
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -430,6 +432,46 @@ func TestNoAssistantControlWritesEnablement(t *testing.T) {
 	}
 	if repo.state[org].EnabledAt != nil {
 		t.Fatal("ResumeAssistant wrote assistant_enabled_at; enablement needs its own migration first (m130 DECISION 5)")
+	}
+}
+
+// --- 4b. THE WIRE SHAPE ACTUALLY SENDS null, NOT A MISSING KEY ---------------
+//
+// The spec declares enabled_at/paused_at/paused_reason as `type: [string,
+// "null"]` and the generated TypeScript reads `string | null`. ogen's Opt*
+// types are OMITTED from the encoding when Set is false, so a mapper that
+// simply left them at their zero value would drop the keys entirely and the
+// dashboard could not tell "never paused" from "the server did not say".
+// toAssistantAPI calls SetToNull for exactly this reason; this is the
+// assertion that makes that claim checkable instead of a comment.
+func TestAssistantResponseSendsExplicitNullsNotMissingKeys(t *testing.T) {
+	out := toAssistantAPI(uuid.New(), AssistantState{}) // never enabled, never paused
+	b, err := json.Marshal(&out)                        // pointer: ogen's MarshalJSON
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got := string(b)
+	for _, key := range []string{`"enabled_at":null`, `"paused_at":null`, `"paused_reason":null`} {
+		if !strings.Contains(got, key) {
+			t.Fatalf("the wire shape is missing %s — a consumer typed `string | null` would "+
+				"receive an ABSENT key instead of null.\nfull body: %s", key, got)
+		}
+	}
+
+	// The other arm: a populated state must send real values, so the fix cannot
+	// be "always null".
+	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	reason := "prompt-injection incident"
+	out2 := toAssistantAPI(uuid.New(), AssistantState{EnabledAt: &now, PausedAt: &now, PausedReason: &reason})
+	b2, err := json.Marshal(&out2)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(b2), `"paused_reason":null`) {
+		t.Fatalf("a populated reason serialised as null: %s", b2)
+	}
+	if !strings.Contains(string(b2), reason) {
+		t.Fatalf("the reason did not reach the wire: %s", b2)
 	}
 }
 

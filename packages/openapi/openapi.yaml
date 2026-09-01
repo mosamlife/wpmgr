@@ -13805,21 +13805,18 @@ components:
             verdict until a follow-up migration wires it together with its
             backfill). Display it; do not treat it as an access decision.
         enabled_at:
-          type: string
+          type: [string, "null"]
           format: date-time
-          nullable: true
         paused:
           type: boolean
           description: |
             Whether the kill switch is engaged. THIS ONE IS ENFORCED, on every
             assistant request, from the moment it is written.
         paused_at:
-          type: string
+          type: [string, "null"]
           format: date-time
-          nullable: true
         paused_reason:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Why the surface was stopped. Null when no reason was given.
     TenantAssistantPause:
       type: object

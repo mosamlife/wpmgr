@@ -5,7 +5,6 @@ import (
 	"io"
 	"net/http"
 	"strconv"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -66,35 +65,44 @@ func (h *Handler) Register(r *gin.RouterGroup) {
 		authz.RequirePermission(authz.PermTenantManage), h.resumeAssistant)
 }
 
-// assistantResponse is the wire shape for all three assistant routes.
+// toAssistantAPI maps to the GENERATED contract type, not a hand-written twin.
 //
-// HAND-WRITTEN, NOT ogen. These three routes are not in
-// packages/openapi/openapi.yaml yet; adding them there is a contract change
-// that must regenerate both consumers in the same commit. This struct is the
-// honest interim shape and the field names are the ones the contract should
-// take.
-type assistantResponse struct {
-	TenantID     uuid.UUID  `json:"tenant_id"`
-	Enabled      bool       `json:"enabled"`
-	EnabledAt    *time.Time `json:"enabled_at"`
-	Paused       bool       `json:"paused"`
-	PausedAt     *time.Time `json:"paused_at"`
-	PausedReason *string    `json:"paused_reason"`
-}
-
-func toAssistantAPI(id uuid.UUID, s AssistantState) assistantResponse {
-	return assistantResponse{
+// The three routes are now in packages/openapi/openapi.yaml, so gen.
+// TenantAssistantState is the contract and a parallel struct here could only
+// drift from it — silently, because nothing compares the two.
+//
+// EVERY NULLABLE FIELD IS EXPLICITLY SET, INCLUDING TO NULL. ogen's Opt* types
+// are omitted from the encoding when Set is false, so leaving one at its zero
+// value would DROP the key instead of sending null. The spec declares these
+// `type: [string, "null"]`, the generated TS reads `string | null`, and the
+// dashboard distinguishes "never paused" from "not sent" — so SetToNull is
+// load-bearing, not ceremony.
+func toAssistantAPI(id uuid.UUID, s AssistantState) gen.TenantAssistantState {
+	out := gen.TenantAssistantState{
 		TenantID: id,
 		// Enabled and Paused are computed from DIFFERENT columns with
 		// DIFFERENT null meanings (m130 DECISION 2) and are deliberately not
 		// derived from one another. A tenant can be enabled and paused, or
 		// disabled and paused, and the console must be able to show that.
-		Enabled:      s.EnabledAt != nil,
-		EnabledAt:    s.EnabledAt,
-		Paused:       s.Paused(),
-		PausedAt:     s.PausedAt,
-		PausedReason: s.PausedReason,
+		Enabled: s.EnabledAt != nil,
+		Paused:  s.Paused(),
 	}
+	if s.EnabledAt != nil {
+		out.EnabledAt = gen.NewOptNilDateTime(*s.EnabledAt)
+	} else {
+		out.EnabledAt.SetToNull()
+	}
+	if s.PausedAt != nil {
+		out.PausedAt = gen.NewOptNilDateTime(*s.PausedAt)
+	} else {
+		out.PausedAt.SetToNull()
+	}
+	if s.PausedReason != nil {
+		out.PausedReason = gen.NewOptNilString(*s.PausedReason)
+	} else {
+		out.PausedReason.SetToNull()
+	}
+	return out
 }
 
 type pauseAssistantRequest struct {
@@ -111,7 +119,9 @@ func (h *Handler) assistantState(c *gin.Context) {
 		httpx.Error(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, toAssistantAPI(id, st))
+	// Pointer so ogen's MarshalJSON is used (the convention h.get/h.list follow).
+	out := toAssistantAPI(id, st)
+	c.JSON(http.StatusOK, &out)
 }
 
 // pauseAssistant is the emergency stop.
@@ -156,7 +166,9 @@ func (h *Handler) pauseAssistant(c *gin.Context) {
 		httpx.Error(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, toAssistantAPI(id, st))
+	// Pointer so ogen's MarshalJSON is used (the convention h.get/h.list follow).
+	out := toAssistantAPI(id, st)
+	c.JSON(http.StatusOK, &out)
 }
 
 func (h *Handler) resumeAssistant(c *gin.Context) {
@@ -169,7 +181,9 @@ func (h *Handler) resumeAssistant(c *gin.Context) {
 		httpx.Error(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, toAssistantAPI(id, st))
+	// Pointer so ogen's MarshalJSON is used (the convention h.get/h.list follow).
+	out := toAssistantAPI(id, st)
+	c.JSON(http.StatusOK, &out)
 }
 
 // assistantTarget pulls the principal and the path tenant id, or writes the

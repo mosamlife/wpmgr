@@ -122,9 +122,8 @@ export const TenantAssistantStateSchema = {
         "Whether the organisation has ever enabled the assistant surface.\nNOTHING ENFORCES THIS YET — it is a record of intent that gates no\nrequest today (m130 DECISION 5 holds it out of the authorization\nverdict until a follow-up migration wires it together with its\nbackfill). Display it; do not treat it as an access decision.\n",
     },
     enabled_at: {
-      type: "string",
+      type: ["string", "null"],
       format: "date-time",
-      nullable: true,
     },
     paused: {
       type: "boolean",
@@ -132,13 +131,11 @@ export const TenantAssistantStateSchema = {
         "Whether the kill switch is engaged. THIS ONE IS ENFORCED, on every\nassistant request, from the moment it is written.\n",
     },
     paused_at: {
-      type: "string",
+      type: ["string", "null"],
       format: "date-time",
-      nullable: true,
     },
     paused_reason: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
       description:
         "Why the surface was stopped. Null when no reason was given.",
     },
