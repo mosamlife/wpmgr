@@ -33,7 +33,6 @@ import {
 import { formatAbsolute } from "@/features/updates/schedule";
 import {
   describeSiteScope,
-  isScopeApprovable,
   resolveSiteScope,
   resolveTagIds,
   type FleetSnapshot,
@@ -153,14 +152,23 @@ const SPEC_STEPS: readonly SpecStepDef[] = [
 ];
 
 /**
- * Whether the site/tag read the site-scope step depends on has actually come
- * back. Three states, not two: `loading` and `failed` are different facts an
- * operator needs told apart -- "still working" against "it did not work, and
- * an indefinite wait is not coming" -- so collapsing them into one appearance
- * is its own defect, distinct from and in addition to marking either one
- * "resolved" before it is.
+ * Whether the site-scope step is actually done, for every reason
+ * `mintBlockedReason` below can refuse to mint on it -- READ BY BOTH THE
+ * BUTTON AND THE RAIL FROM ONE FUNCTION, `siteScopeReadiness`, rather than
+ * each asking a narrower question of its own.
+ *
+ * THIS TYPE EXISTS BECAUSE A NARROWER ONE WAS FOUND WRONG THREE TIMES, THROUGH
+ * THREE DIFFERENT DOORS, IN ONE REVIEW PASS. The rail first asked only
+ * `scope.kind`, which answers "did the fleet read resolve" and says nothing
+ * about `mintScopeRequest`'s OWN refusals: `tags-unresolved` (the tag
+ * registry, a different read from the fleet) and `unselected` (the operator
+ * has not picked anything under 'tags' or 'list' mode yet). Both left minting
+ * blocked while the rail called step 3 done and put `aria-current` on step 6.
+ * Patching the rail's own condition a second time would have been a fourth
+ * door on the same room; this widens the ONE predicate both consumers read
+ * instead.
  */
-type SiteScopeResolution = "loading" | "failed" | "resolved";
+type SiteScopeReadiness = "loading" | "failed" | "tags-unresolved" | "unselected" | "resolved";
 
 /** The specified step number (design S29) that answers "which sites." */
 const SITE_SCOPE_SPEC_N = 3;
@@ -255,18 +263,6 @@ export function ConnectWizard({
     [selection, fleet, tagsBySiteId, sitesLoading],
   );
 
-  // THE RAIL'S SITE-SCOPE STATE, FROM THE SAME VALUE THAT GATES MINTING,
-  // NEVER RE-DERIVED. A P1 shipped from the rail computing "has this step's
-  // data resolved" by POSITION (has the operator picked a client and method
-  // yet) rather than by asking the read itself: once client and method were
-  // picked, the rail marked site selection completed and setup current even
-  // while `scope` above was still `unresolved` -- loading, or failed
-  // outright -- and minting was in fact blocked. Reading `scope.kind` here
-  // is the same fix in spirit as scopeRequest below: one computation feeds
-  // both the gate and everything that describes it, so they cannot disagree.
-  const siteScopeResolution: SiteScopeResolution =
-    scope.kind === "unresolved" ? scope.because : "resolved";
-
   // NULL means a selected tag name no longer resolves to an id -- see
   // resolveTagIds. The mint panel refuses to submit on null rather than
   // sending the smaller array that survives, because that would narrow the
@@ -284,6 +280,17 @@ export function ConnectWizard({
     () => mintScopeRequest(selection.mode, scopeTagIds, selection.siteIds),
     [selection.mode, scopeTagIds, selection.siteIds],
   );
+
+  // THE RAIL'S SITE-SCOPE STATE, FROM `siteScopeReadiness` -- THE SAME
+  // FUNCTION `mintBlockedReason` CALLS BELOW, NEVER A NARROWER RE-DERIVATION.
+  // This found the same defect a second time: reading only `scope.kind` fixed
+  // the case where the FLEET read hadn't resolved, and left the rail calling
+  // step 3 done while `mintScopeRequest` was still refusing to mint on
+  // `tags-unresolved` (the TAG registry, a different read) or on an empty
+  // selection the operator had not made yet. One function, read by both the
+  // button and the rail, is what makes a fourth door impossible rather than
+  // merely unlikely.
+  const siteScopeState: SiteScopeReadiness = siteScopeReadiness(scope, scopeRequest);
 
   // A mint is a network round trip, and every control above is live during it.
   // Disabling them is the FIRST half of the fix (the operator is not offered a
@@ -373,7 +380,7 @@ export function ConnectWizard({
 
   return (
     <div className={cn("space-y-6", className)}>
-      <StepRail current={step} siteScopeResolution={siteScopeResolution} />
+      <StepRail current={step} siteScopeState={siteScopeState} />
 
       {/* THE ONE AND ONLY PLACE A REVEAL IS RENDERED, and it is deliberately
           outside every step. A second render site inside step 4 would restore
@@ -601,38 +608,33 @@ export function ConnectWizard({
 
 function StepRail({
   current,
-  siteScopeResolution,
+  siteScopeState,
 }: {
   current: Step;
   /**
-   * From the SAME `scope` computation that gates the mint button, never
-   * re-derived here. THE P1 THIS PARAMETER FIXES: the rail used to decide
-   * "is site selection done" from POSITION alone -- has the operator picked
-   * a client and method -- which says nothing about whether the fleet/tag
-   * read that step actually depends on came back. Once client and method
-   * were picked, the rail marked site selection completed and setup current
-   * even while the read was still loading, or had failed outright, so the
-   * screen and a screen reader both told the operator they had finished
-   * something, and that minting was reachable, when neither was true.
+   * From `siteScopeReadiness`, the SAME function `mintBlockedReason` calls
+   * for its own scope-related refusals -- never a narrower re-derivation
+   * here. See that function's doc for why: reading only whether the fleet
+   * read resolved fixed one door minting could be blocked through and left
+   * two open (`tags-unresolved`, `unselected`), each reachable while the rail
+   * still called step 3 done and put `aria-current` on step 6.
    */
-  siteScopeResolution: SiteScopeResolution;
+  siteScopeState: SiteScopeReadiness;
 }) {
   const currentSpec = specStepFor(current);
   const currentPos = BUILT_ORDER.findIndex(([, spec]) => spec === currentSpec);
   const siteScopeBuiltPos = BUILT_ORDER.findIndex(([, spec]) => spec === SITE_SCOPE_SPEC_N);
   // BLOCKING, NOT MERELY "NOT YET RESOLVED". The positional walk has to have
-  // actually passed through the site-scope step for its resolution to be
+  // actually passed through the site-scope step for its state to be
   // relevant: while the operator is still on "how it authenticates," step 3
-  // is correctly "upcoming" no matter what the fleet/tag read is doing in
-  // the background, because the operator has not been told otherwise yet.
+  // is correctly "upcoming" no matter what siteScopeState says, because the
+  // operator has not been told otherwise yet.
   const siteScopeBlocking =
-    siteScopeResolution !== "resolved" &&
-    siteScopeBuiltPos !== -1 &&
-    siteScopeBuiltPos <= currentPos;
-  // THE OVERRIDE ITSELF. While site scope has not resolved, IT is where the
-  // operator's process actually stands, not whatever position the local step
-  // has otherwise reached -- so aria-current moves back to it instead of
-  // sitting on a "setup" step whose mint button it, in fact, still blocks.
+    siteScopeState !== "resolved" && siteScopeBuiltPos !== -1 && siteScopeBuiltPos <= currentPos;
+  // THE OVERRIDE ITSELF. While step 3 is not done, IT is where the operator's
+  // process actually stands, not whatever position the local step has
+  // otherwise reached -- so aria-current moves back to it instead of sitting
+  // on a "setup" step whose mint button it, in fact, still blocks.
   const effectiveCurrentSpec = siteScopeBlocking ? SITE_SCOPE_SPEC_N : currentSpec;
   const effectiveCurrentPos = siteScopeBlocking ? siteScopeBuiltPos : currentPos;
   return (
@@ -645,18 +647,19 @@ function StepRail({
           // see the comment on BUILT_ORDER above for why those disagree here.
           const builtPos = BUILT_ORDER.findIndex(([, spec]) => spec === s.n);
           const isCompleted = builtPos !== -1 && builtPos < effectiveCurrentPos;
-          // SITE SCOPE'S OWN THREE STATES, CHECKED BEFORE THE GENERIC ONES
-          // BELOW AND OVERRIDING THEM. "completed" here would be the exact P1:
-          // a step reading as finished while the read behind it has not come
-          // back. `loading` and `failed` are kept apart rather than both
-          // reading as one muted "not done yet" -- an operator told nothing
-          // when a read has actually failed keeps waiting for a state that is
-          // never coming.
-          const state: "not-built" | "current" | "completed" | "upcoming" | SiteScopeResolution =
+          // SITE SCOPE'S OWN STATES, CHECKED BEFORE THE GENERIC ONES BELOW AND
+          // OVERRIDING THEM. "completed" here would be the exact defect this
+          // whole rework exists for: a step reading as finished while mint
+          // would still refuse it. Each reason is kept distinct rather than
+          // collapsing into one muted "not done yet" -- an operator told
+          // nothing when a read has actually failed keeps waiting for a state
+          // that is never coming, and one told "loading" for their own
+          // unmade selection is told something false about themselves.
+          const state: "not-built" | "current" | "completed" | "upcoming" | SiteScopeReadiness =
             !s.built
               ? "not-built"
               : s.n === SITE_SCOPE_SPEC_N && siteScopeBlocking
-                ? siteScopeResolution
+                ? siteScopeState
                 : isCurrent
                   ? "current"
                   : isCompleted
@@ -675,8 +678,8 @@ function StepRail({
                 // NOT FAKED PROGRESS, IN EITHER DIRECTION. An unbuilt step
                 // gets none of the "current" or "completed" styling below,
                 // because it has no section behind it to have completed; a
-                // built step whose own data has not resolved gets neither
-                // "current" nor "completed" either, for the same reason.
+                // built step mint would still refuse gets neither "current"
+                // nor "completed" either, for the same reason.
                 className={cn(
                   !s.built && "italic opacity-70",
                   state === "current" && "font-medium text-[var(--color-foreground)]",
@@ -688,6 +691,8 @@ function StepRail({
                 {!s.built ? <span className="sr-only"> (not yet available)</span> : null}
                 {state === "loading" ? " (loading)" : null}
                 {state === "failed" ? " (failed to load)" : null}
+                {state === "tags-unresolved" ? " (tags still loading)" : null}
+                {state === "unselected" ? " (not chosen yet)" : null}
               </span>
             </li>
           );
@@ -1083,16 +1088,37 @@ function mintScopeRequest(
 }
 
 /**
+ * Whether step 3 is actually done, for every reason mint can refuse it.
+ *
+ * THE ONE PLACE THIS IS DECIDED. `mintBlockedReason` below and the step rail's
+ * `siteScopeState` (ConnectWizard) both call this and nothing else, so
+ * "minting is blocked" and "the rail says step 3 is done" cannot disagree --
+ * they read the same value rather than two derivations of the same two inputs
+ * that could drift the way `scope.kind` alone already did once.
+ *
+ * THE ORDER IS LOAD-BEARING, copied from `mintBlockedReason`'s own comment
+ * because this function replaces that logic rather than duplicating it. An
+ * unresolved tag registry is reported first, because a selection that cannot
+ * be translated is not the same complaint as a selection that is empty. A
+ * fleet still loading is reported before "you have picked nothing," because
+ * telling an operator to pick a site out of a list that has not arrived is a
+ * remedy they cannot follow.
+ */
+function siteScopeReadiness(
+  scope: ResolvedSiteScope,
+  scopeRequest: MintScopeRequest,
+): SiteScopeReadiness {
+  if (!scopeRequest.ok && scopeRequest.because === "tags-unresolved") return "tags-unresolved";
+  if (scope.kind === "unresolved") return scope.because;
+  if (!scopeRequest.ok) return "unselected";
+  return "resolved";
+}
+
+/**
  * The reason minting is refused, or null when it is not.
  *
  * Every branch here is a FAILURE, rendered with a remedy, never a silently
  * disabled button.
- *
- * THE ORDER IS LOAD-BEARING. An unresolved tag registry is reported first,
- * because a selection that cannot be translated is not the same complaint as a
- * selection that is empty. A fleet still loading is reported before "you have
- * picked nothing", because telling an operator to pick a site out of a list
- * that has not arrived is a remedy they cannot follow.
  */
 function mintBlockedReason(
   nameOk: boolean,
@@ -1100,12 +1126,17 @@ function mintBlockedReason(
   scopeRequest: MintScopeRequest,
 ): string | null {
   if (!nameOk) return "Name this connection before minting a token.";
-  if (!scopeRequest.ok && scopeRequest.because === "tags-unresolved") return scopeRequest.refusal;
-  if (!isScopeApprovable(scope)) {
-    return scope.kind === "unresolved" && scope.because === "loading"
-      ? "Still reading this organisation's sites for step 3. Wait for that to finish before minting."
-      : "This organisation's sites could not be read for step 3, so we cannot tell what this connection would cover. Fix that above before minting.";
+  const readiness = siteScopeReadiness(scope, scopeRequest);
+  if (readiness === "loading") {
+    return "Still reading this organisation's sites for step 3. Wait for that to finish before minting.";
   }
+  if (readiness === "failed") {
+    return "This organisation's sites could not be read for step 3, so we cannot tell what this connection would cover. Fix that above before minting.";
+  }
+  // "tags-unresolved" and "unselected" both mean scopeRequest itself refused,
+  // which already carries its own remedy -- reusing it here, rather than a
+  // second copy of the sentence, is what keeps this and the refusal text from
+  // drifting apart.
   if (!scopeRequest.ok) return scopeRequest.refusal;
   return null;
 }

@@ -159,12 +159,23 @@ export function buildSnippet(input: SnippetInput): Snippet {
       throw new UnsupportedAuthMethodError(client, authMethod);
     }
     const lines = [
-      // A LEADING SPACE, ON PURPOSE, NOT A STRAY CHARACTER. Under
-      // `HISTCONTROL=ignorespace` (bash) or `setopt HIST_IGNORE_SPACE` (zsh),
-      // a line starting with whitespace is never written to shell history at
-      // all -- this is what keeps the read itself, not only the token, out of
-      // a history file an operator may not think to check.
-      ` read -rs -p "Paste your connection token, then press Enter: " WPMGR_CONNECTION_TOKEN`,
+      // NOT `read -p`. In bash `-p` prints the prompt string; in zsh `-p`
+      // means something else entirely -- it reads from a coprocess -- so
+      // `read -rs -p "..." VAR` fails outright on zsh (`-p: no coprocess`)
+      // and leaves the variable empty. Verified directly, not assumed:
+      //   printf 'x\n' | zsh -c 'read -rs -p "..." T; echo "[$T]"'
+      //   -> zsh:read:1: -p: no coprocess
+      //      []
+      // zsh is the default shell on macOS, which is most of the audience
+      // this snippet is for, so the prompt is printed separately instead --
+      // identical behaviour in both bash and zsh, verified the same way.
+      `printf '%s' "Paste your connection token, then press Enter: "`,
+      // A LEADING SPACE, ON PURPOSE, NOT A STRAY CHARACTER, ON THIS LINE.
+      // Under `HISTCONTROL=ignorespace` (bash) or `setopt HIST_IGNORE_SPACE`
+      // (zsh), a line starting with whitespace is never written to shell
+      // history at all -- this is what keeps the read itself, not only the
+      // token, out of a history file an operator may not think to check.
+      ` read -rs WPMGR_CONNECTION_TOKEN`,
       `export WPMGR_CONNECTION_TOKEN`,
       // Referenced from the environment, never interpolated: the token text
       // itself never becomes part of this string, at any point, for any

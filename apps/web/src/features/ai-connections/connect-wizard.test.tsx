@@ -341,6 +341,11 @@ describe("the step rail names all ten specified steps and marks the right one cu
     renderWizard();
     await pickClient("Cursor");
     fireEvent.click(authCard("oauth"));
+    await screen.findByTestId("site-step-count");
+    // A scope has to actually be chosen for step 3 to be done -- see the
+    // "unselected" tests below for why the wizard's opening state (nothing
+    // picked yet) must not itself read as complete.
+    fireEvent.click(within(screen.getByRole("radiogroup", { name: /site scope/i })).getByText("All sites"));
     expect(currentRailStep()).toHaveTextContent(/^6\. Get the setup artefact$/);
   });
 
@@ -354,6 +359,11 @@ describe("the step rail names all ten specified steps and marks the right one cu
     await pickClient("Cursor");
     fireEvent.click(authCard("oauth"));
     await screen.findByTestId("site-step-count");
+    // A SCOPE IS ACTUALLY CHOSEN HERE, not left at the wizard's opening
+    // 'list'-with-nothing state -- see "does not mark site selection
+    // completed... unselected" below for why an unmade choice must not
+    // read as done either.
+    fireEvent.click(within(screen.getByRole("radiogroup", { name: /site scope/i })).getByText("All sites"));
     expect(document.querySelector('[data-step-n="3"]')).toHaveAttribute(
       "data-step-state",
       "completed",
@@ -426,21 +436,56 @@ describe("the step rail names all ten specified steps and marks the right one cu
     expect(setupStep).not.toHaveAttribute("aria-current", "step");
   });
 
-  it("still marks site selection completed and setup current once the read actually resolves", async () => {
+  it("still marks site selection completed and setup current once the read AND the selection are actually resolved", async () => {
     // THE OVER-FIRE CASE. The fix must not hold the rail behind a resolved
-    // read out of over-caution -- that would just move the false state from
-    // "prematurely done" to "permanently stuck."
+    // read, or a made selection, out of over-caution -- that would just move
+    // the false state from "prematurely done" to "permanently stuck."
     loadedFleet(3);
     renderWizard();
     await pickClient("Cursor");
     fireEvent.click(authCard("oauth"));
     await screen.findByTestId("site-step-count");
+    fireEvent.click(within(screen.getByRole("radiogroup", { name: /site scope/i })).getByText("All sites"));
 
     expect(document.querySelector('[data-step-n="3"]')).toHaveAttribute(
       "data-step-state",
       "completed",
     );
     expect(currentRailStep()).toHaveTextContent(/^6\. Get the setup artefact$/);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Greptile P1 / CodeRabbit Major on connect-wizard.tsx:268 (pre-fix), found
+  // a third time through a third door: the fleet resolves fine, but the TAG
+  // registry has not, under mode 'tags'. `scope.kind` alone read this as
+  // "resolved" -- it only ever asks about the fleet read -- while
+  // `mintScopeRequest` was refusing to mint with `tags-unresolved`. This is
+  // the SAME scenario "refuses to mint on an unresolved tag scope..." above
+  // already proves blocks the button, so the state asserted here is the real
+  // blocked-mint state, not a fixture built to merely look like it.
+  // ---------------------------------------------------------------------------
+
+  it("does not mark site selection completed while the tag registry is unresolved and mint is actually blocked", async () => {
+    loadedFleet(3);
+    mockedTags.mockReturnValue(mockQueryResult<SiteTag[]>({ data: undefined, isPending: true }));
+    renderWizard();
+    await pickClient("Cursor");
+    fireEvent.click(authCard("token"));
+    await screen.findByTestId("site-step-count");
+    fireEvent.click(screen.getByRole("radio", { name: /by tag/i }));
+
+    // PROVE THE BLOCK IS REAL FIRST. Everything below is vacuous if the
+    // button was never actually disabled.
+    expect(await screen.findByText(/tag scope could not be resolved/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /generate connection token/i })).toBeDisabled();
+
+    const siteStep = document.querySelector('[data-step-n="3"]');
+    const setupStep = document.querySelector('[data-step-n="6"]');
+    expect(siteStep).toHaveAttribute("data-step-state", "tags-unresolved");
+    expect(siteStep).not.toHaveAttribute("data-step-state", "completed");
+    expect(siteStep).toHaveTextContent(/\(tags still loading\)/i);
+    expect(setupStep).not.toHaveAttribute("data-step-state", "current");
+    expect(setupStep).not.toHaveAttribute("aria-current", "step");
   });
 });
 

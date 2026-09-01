@@ -415,6 +415,26 @@ describe("the shell setup shape never puts the token in the generated text", () 
     expect(readLine.startsWith(" ")).toBe(true);
   });
 
+  it("never prompts with read -p -- bash and zsh disagree on what -p means", () => {
+    // In bash, `-p` prints the prompt string. In zsh, `-p` reads from a
+    // coprocess instead, so `read -rs -p "..." VAR` fails outright on zsh
+    // ("-p: no coprocess") and leaves the variable empty -- verified by
+    // actually running both shells, not assumed:
+    //   printf 'x\n' | bash -c 'read -rs -p "..." T; echo "[$T]"'  -> [x]
+    //   printf 'x\n' | zsh  -c 'read -rs -p "..." T; echo "[$T]"'  -> [] (errors)
+    // zsh is the default shell on macOS, so a snippet that only works on
+    // bash fails silently confusingly for most of the audience it is for.
+    const text = shellSnippet().text;
+    expect(text).not.toMatch(/read\s+[^\n]*-p\b/);
+    // The prompt still has to reach the terminal somehow: printed on its own
+    // line, before the read, is the form that behaves identically in both.
+    const lines = text.split("\n");
+    const promptLineIndex = lines.findIndex((l) => l.includes("Paste your connection token"));
+    const readLineIndex = lines.findIndex((l) => l.includes("read -rs"));
+    expect(promptLineIndex).toBeGreaterThanOrEqual(0);
+    expect(readLineIndex).toBeGreaterThan(promptLineIndex);
+  });
+
   it("refuses a shell snippet for a method the row does not offer", () => {
     expect(() =>
       buildSnippet({
