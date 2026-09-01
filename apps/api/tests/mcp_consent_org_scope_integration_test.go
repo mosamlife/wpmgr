@@ -142,7 +142,7 @@ func TestMCPConsentRefusesASiteScopedCollaboratorAsAppRole(t *testing.T) {
 			"prove nothing")
 	}
 
-	svc := mcp.NewService(mcp.NewRepo(pool))
+	svc := auditedMCPService(pool, mcp.NewRepo(pool))
 	eng := mountLikeProduction(t, svc, collaborator)
 
 	const redirectURI = "https://claude.ai/api/mcp/auth_callback"
@@ -371,7 +371,7 @@ func TestMCPConsentAdmitsAnOrgMemberAsAppRole(t *testing.T) {
 			"over-fire half would pass for the wrong reason")
 	}
 
-	svc := mcp.NewService(mcp.NewRepo(pool))
+	svc := auditedMCPService(pool, mcp.NewRepo(pool))
 	eng := mountLikeProduction(t, svc, member)
 
 	const redirectURI = "https://claude.ai/api/mcp/auth_callback"

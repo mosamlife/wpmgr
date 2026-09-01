@@ -496,8 +496,14 @@ func (s *Service) MintConnection(ctx context.Context, req MintConnectionRequest)
 		// there is no audit row for a grant that does not exist -- and,
 		// equally, no grant without the row that explains it.
 		func(tx pgx.Tx, gr sqlc.McpGrant) error {
-			if s.audit == nil {
-				return nil
+			// A10 names approval, and a headless mint IS the approval on this
+			// route: it hands out fleet access with no browser step in front of
+			// it. An unaudited Service therefore mints nothing. The error
+			// propagates into the caller's transaction and rolls back both
+			// inserts, so there is never a live credential whose creation is
+			// unrecorded. See Service.requireRecorder.
+			if err := s.requireRecorder(); err != nil {
+				return err
 			}
 			// THE ACTOR IS WHICHEVER CREDENTIAL AUTHENTICATED, resolved by
 			// audit.ActorFor rather than hardcoded. This is the headless path,

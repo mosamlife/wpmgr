@@ -72,7 +72,7 @@ func TestMCPOAuthEndToEndThroughMountedRoutesAsAppRole(t *testing.T) {
 	siteURL := "https://" + uuid.NewString()[:8] + ".example.test"
 	siteID := seedSite(t, pool, tenantID, siteURL)
 
-	svc := mcp.NewService(mcp.NewRepo(pool))
+	svc := auditedMCPService(pool, mcp.NewRepo(pool))
 	// An ORG-scoped operator: the only scope /consent admits.
 	eng := mountLikeProduction(t, svc, domain.Principal{
 		UserID: userID, TenantID: tenantID, Scope: domain.ScopeOrg,

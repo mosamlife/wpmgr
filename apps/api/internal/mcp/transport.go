@@ -980,7 +980,29 @@ func (h *TransportHandler) authorizeCall(ctx context.Context, auth AuthorizedReq
 			if aerr := h.svc.RecordToolDenied(ctx, auth, p.Name, reason); aerr != nil {
 				// No phase: a tool denial happens at one place in the request,
 				// so there is no second axis to record and "" is omitted.
+				//
+				// The gap line still fires, and it is now evidence of LAST
+				// RESORT rather than the whole response to the failure: the
+				// refusal itself is withheld below. Keeping it matters because
+				// the facts of the lost row -- tenant, grant, what was asked
+				// for, why it was refused -- still have to survive somewhere an
+				// operator can reach, and the internal error the caller gets
+				// carries none of them.
 				h.auditGap(ctx, auth, audit.ActionMCPToolDenied, p.Name, string(reason), "", aerr)
+				// FAIL-CLOSED: the typed refusal is withheld and the caller
+				// gets the internal code instead. auditGap's doc argues at
+				// length that this is the wrong trade for a denial -- that
+				// there is nothing to withhold, that degrading -32004 into
+				// -32603 destroys the actionable half of the refusal, and that
+				// a distinguishable answer exactly when the audit log is
+				// unwritable is a "the camera is off" oracle for the probing
+				// client. The third point survives the reversal and is the real
+				// cost here; it is named in auditGap's doc and it goes to
+				// security review with this change. What outweighed it is that
+				// a refusal nothing records is a boundary with no evidence it
+				// functioned, and A10 makes no exception for denials: "every
+				// AI-originated read, proposal, approval, denial and execution".
+				return ToolPolicy{}, p, h.toolError(req.ID, aerr), true
 			}
 		}
 
@@ -1028,18 +1050,37 @@ func (h *TransportHandler) callTool(ctx context.Context, auth AuthorizedRequest,
 	// own branch, so the two outcomes are separate actions rather than one
 	// action with a status field: a query for "what did this connection do"
 	// and a query for "what was this connection refused" are different
-	// questions and neither should have to filter the other out. BEST-EFFORT
-	// like RecordConnect's client-identity write is not -- a failure here is
-	// logged, never returned to the caller, because withholding a successful
-	// read's answer over a failure to record having answered it would make an
-	// observational feature take down the read path it observes.
+	// questions and neither should have to filter the other out.
+	//
+	// THIS IS THE FAIL-CLOSED GATE, and `text` is deliberately still a local
+	// variable at this point. The read has run; nothing it returned has left
+	// this process. If the row cannot be committed, the answer is discarded and
+	// the caller gets an error instead -- ADR-061 A10, and an owner ruling of
+	// 2026-09-01 that reads are included in it. The old code logged this error
+	// and answered anyway, on the argument that an observational feature should
+	// not take down the path it observes; that argument is retired on
+	// RecordToolCall, along with the throughput claim underneath it.
+	//
+	// THE ORDER OF THESE TWO STATEMENTS IS THE WHOLE PROPERTY. Serialising the
+	// response before the append, or moving the append into a goroutine, or
+	// returning the response and recording in a defer, each restores the
+	// fail-open behaviour while leaving every comment above it looking correct.
+	// The regression test that pins this drives a recorder that always fails
+	// and asserts the tool text appears NOWHERE in the response body.
 	if err := h.svc.RecordToolCall(ctx, auth, entry.Name, string(entry.OperatorPermission)); err != nil {
-		h.log.ErrorContext(ctx, "mcp tool call audit write failed",
+		h.log.ErrorContext(ctx, "mcp tool call audit write failed, answer withheld",
+			slog.Bool("audit_gap", true),
+			slog.String("action", audit.ActionMCPToolCalled),
 			slog.String("tenant_id", auth.TenantID.String()),
 			slog.String("grant_id", auth.GrantID.String()),
 			slog.String("tool", entry.Name),
+			slog.Bool("answer_withheld", true),
 			slog.String("error", err.Error()),
 		)
+		// toolError maps ErrCodeAuditUnavailable onto the internal code without
+		// echoing the message, so the caller learns that the call failed and
+		// not that the audit log is what failed.
+		return h.toolError(req.ID, err)
 	}
 
 	return newResponse(req.ID, map[string]any{
@@ -1076,6 +1117,23 @@ func (h *TransportHandler) toolError(id json.RawMessage, err error) jsonrpcRespo
 			data, _ := json.Marshal(payload)
 			return newErrorResponse(id, codeCapabilityNotGranted, de.Message, data)
 		}
+		if de.Code == ErrCodeAuditUnavailable {
+			// AN UNRECORDABLE CALL IS AN INTERNAL ERROR ON THE WIRE, and this
+			// branch exists because the fallthrough below would have made it
+			// something much worse: codeInvalidParams, carrying de.Message
+			// verbatim. That is wrong twice. It blames the caller's parameters
+			// for a server-side failure, so a legitimate client retries with a
+			// different tool name forever; and it puts "its audit trail cannot
+			// be written" on the wire, handing any caller a direct, polled read
+			// on whether this surface is currently recording -- the precise
+			// oracle auditGap's third argument is about, but spelled out in
+			// English instead of merely inferable from a code.
+			//
+			// The generic message matches the non-domain branch below exactly,
+			// so an audit failure and any other internal failure are the same
+			// bytes.
+			return newErrorResponse(id, codeInternalError, "the tool call failed", nil)
+		}
 		return newErrorResponse(id, codeInvalidParams, de.Message, nil)
 	}
 	h.log.Error("mcp tool call failed", slog.String("error", err.Error()))
@@ -1086,59 +1144,69 @@ func (h *TransportHandler) toolError(id json.RawMessage, err error) jsonrpcRespo
 // Refusals
 // ---------------------------------------------------------------------------
 
-// auditGap is what happens when a REFUSAL's audit append fails, and it is the
-// one place the failure posture for this surface's denial records is decided.
+// auditGap emits the LAST-RESORT copy of a refusal row that could not be
+// written. It is no longer the failure posture for this surface -- the callers
+// withhold the refusal too -- and what it now does is make sure the facts of
+// the lost row survive somewhere an operator can reach.
 //
-// THE DECISION: the caller's refusal is unchanged, and the failure is escalated
-// on the operator side instead. This is a deliberate divergence from the
-// fail-closed language in ADR-061 A10, and the reasoning is:
+// WHAT CHANGED, AND WHICH HALF OF THE OLD ARGUMENT SURVIVED. This function used
+// to be the whole answer: the caller's refusal was served unchanged and only
+// the operator was told. That was a deliberate divergence from ADR-061 A10,
+// argued on three points, and an owner ruling of 2026-09-01 settled it the
+// other way. The three, and what became of each:
 //
-//  1. "FAIL CLOSED" IS NOT DEFINED FOR AN OPERATION THAT IS ALREADY A DENIAL.
-//     A10's rule is "no AI action is ever performed whose record was lost", and
-//     it works because there is always a second option: don't perform it. Here
-//     the action has already not been performed. There is nothing to withhold,
-//     nothing to roll back, and no companion write to bind the append to -- the
-//     approve path's RecordInTx shape has no analogue because a refusal touches
-//     no row.
+//  1. RETIRED: "'fail closed' is not defined for an operation that is already a
+//     denial". A10 lists denials explicitly -- "every AI-originated read,
+//     proposal, approval, denial and execution" -- and the thing to withhold is
+//     not the denial's effect but its ANSWER. A boundary whose refusals leave
+//     no evidence has no way to show it functioned, which is the whole reason
+//     the denial is recorded at all.
 //
-//  2. THE ONLY AVAILABLE IMPLEMENTATION OF "FAIL CLOSED" HERE MAKES THE SURFACE
-//     WORSE AND RESTORES NOTHING. The single lever left is the wire answer:
-//     degrade the typed refusal (-32004 "call tools/list", -32002 "your site
-//     scope is empty") into -32603 internal error. That destroys the actionable
-//     half of the refusal for a legitimate client who is now told nothing they
-//     can act on, makes a transient database blip indistinguishable from a
-//     server bug, and DOES NOT WRITE THE ROW. The evidence gap is identical
-//     either way; only the client's experience differs, and only for the worse.
+//  2. RETIRED: "the only available implementation makes the surface worse and
+//     restores nothing". True that it restores nothing -- the row is lost
+//     either way -- and that is not the objective. The objective is that the
+//     surface never behaves as though a record exists when it does not, so that
+//     the number of unrecorded interactions is bounded by the outage rather
+//     than by traffic.
 //
-//  3. CHANGING THE WIRE ANSWER LEAKS AUDIT-SYSTEM LIVENESS TO THE PARTY BEING
-//     DENIED. This is the decisive one. The caller on this branch is by
-//     definition someone who just asked for something they may not have,
-//     including the wordlist-probing case AuthorizeTool's whole disclosure
-//     decision exists to defeat. A distinguishable answer when and only when
-//     the audit log is unwritable is a "the camera is off" oracle: probe until
-//     the response shape changes, then do the thing you actually came for. A
-//     surface that tells attackers when it has stopped recording is worse than
-//     one that quietly keeps answering.
+//  3. STANDS, AND IS THE RESIDUAL THIS CHANGE ACCEPTS: changing the wire answer
+//     leaks audit-system liveness to the party being denied. The caller here is
+//     by definition someone who just asked for something they may not have,
+//     including the wordlist-probing case AuthorizeTool's disclosure decision
+//     exists to defeat, and an answer that changes shape exactly when the audit
+//     log is unwritable is a "the camera is off" oracle: probe until the shape
+//     changes, then do what you came for. This is REAL and it is not mitigated
+//     away below -- it is narrowed (toolError emits byte-identical internal
+//     errors for an audit failure and any other server-side failure, so the
+//     oracle requires distinguishing "internal error" from "typed refusal", not
+//     reading a message) and then accepted, because the alternative it buys is
+//     a surface that keeps answering while recording nothing, which is the
+//     state the ruling was made to eliminate. It is flagged for security
+//     review with this change rather than settled here.
 //
-// So the honest failure mode is not a different refusal, it is a LOUDER
-// OPERATOR SIGNAL, and that is what this writes. Two properties matter:
+// Two properties of the line itself still matter, and both are why this
+// function was kept rather than deleted along with its old posture:
 //
 //   - THE LOST ROW'S CONTENT IS EMITTED HERE, not just the error. The hash
 //     chain has a hole that cannot be repaired, but the facts -- tenant, grant,
 //     what was asked for, why it was refused -- survive somewhere an operator
 //     can reach. It is strictly weaker evidence than the chained row (not
 //     tamper-evident, log retention, no audit endpoint) and it is named as
-//     such rather than presented as equivalent.
+//     such rather than presented as equivalent. The caller now gets an internal
+//     error carrying none of these facts, so this line is the ONLY place they
+//     exist.
 //   - audit_gap=true is a single, greppable, alertable field. The requirement
 //     A10 is really making is that an operator FINDS OUT their evidence has a
 //     hole; an ERROR line indistinguishable from every other ERROR line does
-//     not satisfy that, and an alert keyed on this field does.
+//     not satisfy that, and an alert keyed on this field does. callTool's
+//     withheld-answer line carries the same field for the same reason.
 //
-// WHAT THIS DOES NOT CLAIM. This is not A10's fail-closed helper. That helper
-// would have to bind the append to the operation, and for a denial there is no
-// operation to bind it to. If a WRITE tool ever lands on this surface and its
-// refusal has an effect to roll back, that refusal is a different case and must
-// not reuse this path by analogy.
+// WHAT THIS STILL DOES NOT CLAIM. This is not the fail-closed helper and does
+// not stand in for one; audit.Recorder.RecordOrFail is, and the withholding at
+// the call sites is what makes it fail-closed. If a WRITE tool ever lands on
+// this surface, its append belongs in the write's own transaction via
+// RecordInTx, and neither this function nor RecordOrFail may be reused there by
+// analogy.
 // THE FIELDS ARE THE LOST ROW'S FIELDS, UNDER THE LOST ROW'S KEYS. reason and
 // phase are separate arguments and separate log keys because they answer
 // different questions and the row records them separately: refusal_reason is
@@ -1301,9 +1369,36 @@ func (h *TransportHandler) writeUnauthorized(c *gin.Context, err error) {
 func (h *TransportHandler) writeProtocolRefusal(
 	c *gin.Context, auth AuthorizedRequest, id json.RawMessage, neg Negotiation, phase string,
 ) {
+	// FAIL-CLOSED, on the same terms as the tool-call and tool-denial paths: a
+	// negotiation this surface could not record is a negotiation it does not
+	// answer. The gap line still fires first, as the last-resort copy of the
+	// lost row's facts, and then the typed 400 -- which names the floor, the
+	// target and the supported revisions -- is withheld in favour of a 500 that
+	// names nothing. A client that cannot connect learns only that the server
+	// failed, which is the same residual auditGap's doc weighs for tool
+	// denials.
+	//
+	// AND ON THIS PATH THE RESIDUAL IS WIDER THAN ON THE TOOL PATH -- stated
+	// plainly because the narrowing claimed elsewhere does not hold here. The
+	// message below ("the request could not be completed") is distinct from
+	// every other 500 this transport emits, so an audit failure during protocol
+	// negotiation is a UNIQUE SIGNATURE rather than being indistinguishable
+	// from an ordinary server fault. The tool path earns its narrowing by
+	// emitting bytes identical to the generic internal error; this path does
+	// not, and pretending otherwise would be the kind of comment that makes a
+	// reviewer stop looking.
+	//
+	// It is accepted rather than closed: reaching this line requires having
+	// already authenticated, so the caller is a holder of a valid credential
+	// rather than an anonymous prober, and the residual was weighed on that
+	// basis. If this path ever becomes reachable pre-authentication, this
+	// message must collapse into the generic one first.
 	if err := h.svc.RecordProtocolDenied(c.Request.Context(), auth, neg, phase); err != nil {
 		h.auditGap(c.Request.Context(), auth, audit.ActionMCPProtocolDenied,
 			neg.Raw, neg.RefusalReason(), phase, err)
+		c.JSON(http.StatusInternalServerError,
+			newErrorResponse(id, codeInternalError, "the request could not be completed", nil))
+		return
 	}
 
 	var msg string

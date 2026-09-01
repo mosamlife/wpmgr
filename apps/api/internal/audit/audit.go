@@ -769,6 +769,34 @@ func (r *Recorder) Record(ctx context.Context, e Event) (Entry, error) {
 	return out, err
 }
 
+// RecordOrFail appends an audit entry in its own transaction and returns only
+// once that entry is COMMITTED. Mechanically it is Record; the difference is
+// the contract, and the contract is the point.
+//
+// Record's doc tells its callers to log and continue. That instruction is
+// correct for the rest of the product and fatal for the assistant surface, and
+// a posture that exists only as a sentence in a doc comment is not a posture --
+// it is a suggestion the next caller reads as optional. RecordOrFail carries
+// the opposite instruction, and exists so that a package which must never fail
+// open can hold a field type whose method set DOES NOT CONTAIN Record. See
+// internal/mcp's auditRecorder: reaching the fail-open helper from there is a
+// compile error, not a review comment.
+//
+// THE CALLER MUST PROPAGATE THE ERROR, and "propagate" means the operation the
+// entry describes does not reach the client. A caller that logs this error and
+// answers anyway has the fail-open behaviour back with a fail-closed name on
+// it, which is worse than Record because the name now vouches for it.
+//
+// USE RecordInTx INSTEAD WHENEVER THERE IS A COMPANION WRITE. This helper
+// commits its own transaction, so it cannot roll anything back; it is the right
+// shape only where the effect being recorded is a DISCLOSURE rather than a row
+// (a read answered to a client, a refusal returned to a caller), and the caller
+// withholds that disclosure when this returns non-nil. The moment the recorded
+// operation writes a row, the append belongs in that row's transaction.
+func (r *Recorder) RecordOrFail(ctx context.Context, e Event) (Entry, error) {
+	return r.Record(ctx, e)
+}
+
 // RecordInTx appends an audit entry inside the CALLER's already-open
 // transaction, instead of opening its own. It is the fail-closed counterpart
 // to Record, required by ADR-064 Decision 7 (and, on paper, ADR-061 Decision
