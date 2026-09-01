@@ -317,8 +317,8 @@ hold for a whole session, it belongs here.
 ends.** The destination is not a free choice: this file takes guidance,
 rules, pointers, working agreements, whatever is true forever and fit to be
 public. `~/.wpmgr/worklog/` takes everything else that must survive, under
-the rule above. If it would not be fine to see this file public forever, it
-belongs in the worklog, never here.
+the rule above. If what you are about to write would not be fine to see
+public forever, it belongs in the worklog, never here.
 
 Reviews: `review.md`, read in full before reviewing anything.
 
