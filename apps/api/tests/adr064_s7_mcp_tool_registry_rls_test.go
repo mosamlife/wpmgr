@@ -251,9 +251,26 @@ func TestS7GuessedToolNameIsRefusedForARealConnectionAsAppRole(t *testing.T) {
 		t.Fatalf("the registered tool was refused for a fully-scoped connection: %v", err)
 	}
 
+	// THE NEAR MISSES MUST BE MISSES OF THE LIVE NAME.
+	//
+	// This list previously spelled variants of list_sites, the name this tool
+	// had before the rename to fleet_sites_list. Those strings stayed valid
+	// negatives -- they are unregistered, so refusing them is correct -- but
+	// they had quietly stopped testing what the test's name claims: that a
+	// near miss of a REAL name is not normalised into it. Every variant below
+	// is a near miss of the name the registry actually carries today.
+	//
+	// The old name is kept in the list on purpose, as its own case: after a
+	// rename, the retired name is the single most likely string a client or a
+	// model will send, and it must refuse rather than resolve.
 	for _, guess := range []string{
 		"restart_site", "update_plugin", "run_backup", "delete_site",
-		"list_sites_all", "listSites", "LIST_SITES", "list_sites ",
+		// Near misses of the LIVE name.
+		"fleet_sites_list_all", "fleetSitesList", "FLEET_SITES_LIST",
+		"fleet_sites_list ", " fleet_sites_list", "fleet-sites-list",
+		"fleet_site_list", "fleet_sites_lists", "sites_list",
+		// The RETIRED name, which must not be aliased back into service.
+		"list_sites", "list_sites_all", "listSites", "LIST_SITES",
 	} {
 		if _, _, err := mcp.AuthorizeTool(guess, auth); err == nil {
 			t.Fatalf("GUESSED NAME %q WAS GRANTED to a real connection", guess)

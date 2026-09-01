@@ -117,6 +117,16 @@ func TestExitGate_GuessedToolNameIsUnreachable(t *testing.T) {
 	}{
 		// REGISTERED, and still unreachable. See above.
 		{ToolFleetSitesList, ErrCodeCapabilityNotGranted},
+		// Near misses of the LIVE name. These were variants of list_sites
+		// until the rename, at which point they stopped probing the name the
+		// registry carries and became ordinary unregistered strings.
+		{"fleet_sites_list_all", ErrCodeToolNotAvailable},
+		{"fleetSitesList", ErrCodeToolNotAvailable},
+		{"FLEET_SITES_LIST", ErrCodeToolNotAvailable},
+		{"fleet-sites-list", ErrCodeToolNotAvailable},
+		{"fleet_site_list", ErrCodeToolNotAvailable},
+		// The retired name must refuse, not alias.
+		{"list_sites", ErrCodeToolNotAvailable},
 		{"list_sites_all", ErrCodeToolNotAvailable},
 		{"sites.restart", ErrCodeToolNotAvailable},
 		{"restart_site", ErrCodeToolNotAvailable},

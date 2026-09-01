@@ -152,7 +152,7 @@ func TestMCPAuditFailClosed_NoAnswerIsServedWhenTheAppendCannotCommit(t *testing
 
 	call := map[string]any{
 		"jsonrpc": "2.0", "id": 7, "method": "tools/call",
-		"params": map[string]any{"name": mcp.ToolListSites, "arguments": map[string]any{}},
+		"params": map[string]any{"name": mcp.ToolFleetSitesList, "arguments": map[string]any{}},
 	}
 
 	// ------------------------------------------------------------------
@@ -212,8 +212,8 @@ func TestMCPAuditFailClosed_NoAnswerIsServedWhenTheAppendCannotCommit(t *testing
 	if called[0].actorType != audit.ActorAssistant {
 		t.Errorf("actor_type = %q, want %q", called[0].actorType, audit.ActorAssistant)
 	}
-	if called[0].targetID != mcp.ToolListSites {
-		t.Errorf("target_id = %q, want %q", called[0].targetID, mcp.ToolListSites)
+	if called[0].targetID != mcp.ToolFleetSitesList {
+		t.Errorf("target_id = %q, want %q", called[0].targetID, mcp.ToolFleetSitesList)
 	}
 	t.Logf("GREEN: answer served, exactly %d mcp.tool.called row, actor=%s/%s",
 		len(called), called[0].actorType, called[0].actorID)
@@ -272,7 +272,7 @@ func TestMCPAuditFailClosed_RefusalAndInternalErrorAreByteIdentical(t *testing.T
 
 	call := map[string]any{
 		"jsonrpc": "2.0", "id": 7, "method": "tools/call",
-		"params": map[string]any{"name": mcp.ToolListSites, "arguments": map[string]any{}},
+		"params": map[string]any{"name": mcp.ToolFleetSitesList, "arguments": map[string]any{}},
 	}
 
 	// (a) unrecordable: INSERT revoked, the read itself is fine.
