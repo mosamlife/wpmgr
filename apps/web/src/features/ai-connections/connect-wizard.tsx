@@ -15,7 +15,6 @@ import {
   CONFERRABLE_CAPABILITIES,
   KNOWN_CAPABILITIES,
   capabilityLabel,
-  type Capability,
 } from "./capabilities";
 
 import {
@@ -651,7 +650,7 @@ export function ConnectWizard({
                           {capabilityLabel(cap)}
                         </span>
                         <span className="block text-xs text-[var(--color-muted-foreground)]">
-                          {CAPABILITY_DESCRIPTIONS[cap as Capability]}
+                          {CAPABILITY_DESCRIPTIONS[cap]}
                         </span>
                         {!conferrable ? (
                           <span className="block text-xs text-[var(--color-muted-foreground)]">
