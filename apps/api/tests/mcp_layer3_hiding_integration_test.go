@@ -260,11 +260,38 @@ func TestMCPLayer3OutOfScopeSiteIsAbsentAndNotInferableAsAppRole(t *testing.T) {
 	// byte_cap is excluded by name because it is a compile-time constant that
 	// has nothing to do with the fleet, and would otherwise collide by
 	// coincidence for any tenant holding 30720 sites.
+	//
+	// IT COMPARES AGAINST tenantSiteCount AND NOT len(rows), AND THE
+	// DIFFERENCE IS WHETHER THIS GUARD CAN FIRE AT ALL. It read `len(rows)`
+	// while `rows` was the TENANT-WIDE read; scoping that read (#671) made
+	// len(rows) the CALLER'S count, which is payload.Envelope.Asked. The two
+	// conditions then became mutually exclusive -- `n == len(rows) && n !=
+	// Asked` is unsatisfiable when len(rows) == Asked -- and the guard could
+	// not fire on any input. It was not written wrong; a correct change
+	// elsewhere silently emptied it, which is why it is now proven to fire by
+	// planting a field rather than by being read.
+	//
+	// tenantSiteCount is counted at the top of this test through InTenantTx and
+	// is the value the guard was always about: what the TENANT holds, which
+	// this caller must not be able to learn.
+	// THE GUARD REFUSES TO BE DEAD. Its two conditions are `n == tenantSiteCount`
+	// and `n != Asked`, which are mutually exclusive -- and the loop therefore
+	// unsatisfiable on every input -- whenever the fixture makes those two
+	// numbers equal. That is precisely how this guard spent a period being
+	// green on everything, so the precondition is asserted rather than assumed.
+	// A fixture that drifts into tenantSiteCount == Asked now fails loudly
+	// instead of quietly guarding nothing.
+	if tenantSiteCount == payload.Envelope.Asked {
+		t.Fatalf("this guard cannot fire: the tenant holds %d sites and the caller's scope is "+
+			"also %d, so `n == tenantSiteCount && n != Asked` is unsatisfiable. The fixture must "+
+			"keep the tenant strictly larger than the caller's scope for the sweep below to "+
+			"distinguish anything", tenantSiteCount, payload.Envelope.Asked)
+	}
 	for field, n := range numericFields(t, text) {
 		if field == "byte_cap" {
 			continue
 		}
-		if n == len(rows) && n != payload.Envelope.Asked {
+		if n == tenantSiteCount && n != payload.Envelope.Asked {
 			t.Errorf("INFERENCE LEAK: field %q = %d, which is the TENANT's site count while the "+
 				"caller's scope is %d. A count field carrying tenant cardinality discloses that "+
 				"sites exist which the caller may not see:\n%s",
