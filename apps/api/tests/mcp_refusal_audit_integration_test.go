@@ -187,7 +187,7 @@ func TestMCPRefusalAudit_EveryRefusalWritesItsRow_AsAppRole(t *testing.T) {
 	// ------------------------------------------------------------------
 	got = mcpRefusalRPC(t, transportEng, emptyToken, "", map[string]any{
 		"jsonrpc": "2.0", "id": 2, "method": "tools/call",
-		"params": map[string]any{"name": mcp.ToolListSites, "arguments": map[string]any{}},
+		"params": map[string]any{"name": mcp.ToolFleetSitesList, "arguments": map[string]any{}},
 	})
 	if got.status != http.StatusOK {
 		t.Fatalf("empty-scope tools/call answered HTTP %d, want 200: %s", got.status, got.body)
@@ -213,8 +213,8 @@ func TestMCPRefusalAudit_EveryRefusalWritesItsRow_AsAppRole(t *testing.T) {
 	if scopeRow.actorType != audit.ActorAssistant {
 		t.Errorf("empty-scope row actor_type = %q, want %q", scopeRow.actorType, audit.ActorAssistant)
 	}
-	if scopeRow.targetID != mcp.ToolListSites {
-		t.Errorf("empty-scope row target_id = %q, want %q", scopeRow.targetID, mcp.ToolListSites)
+	if scopeRow.targetID != mcp.ToolFleetSitesList {
+		t.Errorf("empty-scope row target_id = %q, want %q", scopeRow.targetID, mcp.ToolFleetSitesList)
 	}
 	if r, _ := scopeRow.metadata["refusal_reason"].(string); r != "site_scope_empty" {
 		t.Errorf("empty-scope row metadata.refusal_reason = %q, want %q", r, "site_scope_empty")
@@ -301,7 +301,7 @@ func TestMCPRefusalAudit_EveryRefusalWritesItsRow_AsAppRole(t *testing.T) {
 	deniedBefore := len(queryMCPAuditRowsAsAppRole(t, pool, tenantID, audit.ActionMCPToolDenied))
 	got = mcpRefusalRPC(t, transportEng, wideToken, "", map[string]any{
 		"jsonrpc": "2.0", "id": 5, "method": "tools/call",
-		"params": map[string]any{"name": mcp.ToolListSites, "arguments": map[string]any{}},
+		"params": map[string]any{"name": mcp.ToolFleetSitesList, "arguments": map[string]any{}},
 	})
 	if got.status != http.StatusOK || strings.Contains(got.body, `"error"`) {
 		t.Fatalf("the success-path call did not succeed, so the over-fire check proves nothing: HTTP %d %s",
@@ -311,9 +311,9 @@ func TestMCPRefusalAudit_EveryRefusalWritesItsRow_AsAppRole(t *testing.T) {
 	if len(called) != 1 {
 		t.Fatalf("mcp.tool.called rows = %d, want exactly 1", len(called))
 	}
-	if called[0].actorID != wideGrantID || called[0].targetID != mcp.ToolListSites {
+	if called[0].actorID != wideGrantID || called[0].targetID != mcp.ToolFleetSitesList {
 		t.Errorf("mcp.tool.called actor_id/target_id = %q/%q, want %q/%q",
-			called[0].actorID, called[0].targetID, wideGrantID, mcp.ToolListSites)
+			called[0].actorID, called[0].targetID, wideGrantID, mcp.ToolFleetSitesList)
 	}
 	deniedAfter := len(queryMCPAuditRowsAsAppRole(t, pool, tenantID, audit.ActionMCPToolDenied))
 	if deniedAfter != deniedBefore {

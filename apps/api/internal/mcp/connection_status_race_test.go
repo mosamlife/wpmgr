@@ -435,7 +435,7 @@ func TestConnectionStatusSnapshot_ConcurrentInitializeCannotProduceTheImpossible
 			injectErr = fmt.Errorf("record connect: %w", err)
 			return
 		}
-		if err := svc.RecordToolCall(ctx, auth, "list_sites", "read"); err != nil {
+		if err := svc.RecordToolCall(ctx, auth, "fleet_sites_list", "read"); err != nil {
 			injectErr = fmt.Errorf("record tool call: %w", err)
 		}
 	}
@@ -671,7 +671,7 @@ func TestConnectionStatusSnapshot_ExistingStatesSurviveTheReordering(t *testing.
 			if !tc.connect {
 				return
 			}
-			if err := svc.RecordToolCall(ctx, auth, "list_sites", "read"); err != nil {
+			if err := svc.RecordToolCall(ctx, auth, "fleet_sites_list", "read"); err != nil {
 				t.Fatalf("record tool call: %v", err)
 			}
 			snap, err = repo.ConnectionStatusSnapshot(ctx, admin, grantID, firstCallScanLimit)
@@ -684,8 +684,8 @@ func TestConnectionStatusSnapshot_ExistingStatesSurviveTheReordering(t *testing.
 				t.Fatalf("after a tool call, pair = (%q, %q), want (%q, %q)",
 					gotHandshake, gotFirstCall, tc.wantHandshake, FirstCallSucceeded)
 			}
-			if snap.FirstCall.ToolName != "list_sites" {
-				t.Errorf("first call tool_name = %q, want %q", snap.FirstCall.ToolName, "list_sites")
+			if snap.FirstCall.ToolName != "fleet_sites_list" {
+				t.Errorf("first call tool_name = %q, want %q", snap.FirstCall.ToolName, "fleet_sites_list")
 			}
 		})
 	}

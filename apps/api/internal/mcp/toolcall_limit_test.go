@@ -122,7 +122,7 @@ func (s *twoTenantStore) ReCheckAuthorization(
 // noticed. A limiter with two call sites needs both asserted, separately.
 var gatedMethods = []string{
 	`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`,
-	`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_sites","arguments":{}}}`,
+	`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"fleet_sites_list","arguments":{}}}`,
 }
 
 func methodName(body string) string {

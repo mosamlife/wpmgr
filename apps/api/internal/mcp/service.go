@@ -301,6 +301,22 @@ type Service struct {
 	// receiver anyway, so a Service built by a struct literal that skipped it
 	// mints NOTHING rather than minting unlimited.
 	mintLimit *registrationLimiter
+
+	// pageBound is the per-request site page bound ListSitesForModel reads
+	// with. It is a FIELD rather than a direct reference to the
+	// sitesPageBound constant for one reason: a proof that the bound is not
+	// disclosed to a scoped caller has to actually CROSS the bound on the
+	// path under test.
+	//
+	// The first version of that proof did not. It established the bound was
+	// exceeded by calling the repo directly with a small limit, then invoked
+	// the tool -- which used the 500 constant, never reached it, and so
+	// passed identically with the disclosure restored. A regression test that
+	// cannot fail is worse than none, because it reads as protection.
+	//
+	// Zero is not a valid bound and is normalised in ListSitesForModel, so a
+	// Service built by a struct literal reads a full page rather than none.
+	pageBound int32
 }
 
 func NewService(store Store) *Service {
@@ -311,7 +327,24 @@ func NewService(store Store) *Service {
 		// NewHandler gives about its own limiter: an unarmed limiter would be a
 		// wiring failure that presents as a working endpoint.
 		mintLimit: newMintLimiter(),
+		pageBound: sitesPageBound,
 	}
+}
+
+// WithPageBound returns a copy reading sites with the supplied per-request
+// page bound. TEST-ONLY, and it exists so a proof can cross the bound on the
+// production path instead of asserting about a bound the code never reaches.
+//
+// It refuses a non-positive bound rather than normalising it silently: a
+// harness that passes 0 wants a small page, and giving it the full 500 would
+// hand it the vacuous pass this option was added to prevent.
+func (s *Service) WithPageBound(n int32) *Service {
+	if n <= 0 {
+		panic("mcp: WithPageBound requires a positive bound")
+	}
+	cp := *s
+	cp.pageBound = n
+	return &cp
 }
 
 // WithClock returns a copy using the supplied clock. Test-only in practice.
@@ -1702,7 +1735,30 @@ func (s *Service) ListSitesForModel(ctx context.Context, auth AuthorizedRequest)
 				"This is a refusal, not an empty fleet: check the grant's site scope.")
 	}
 
-	rows, more, err := s.store.ListSitesForRead(ctx, auth.TenantID, sitesPageBound)
+	// THE SECOND RETURN OF ListSitesForRead IS DELIBERATELY DISCARDED, AND
+	// DISCARDING IT IS A FIX RATHER THAN AN OVERSIGHT.
+	//
+	// That value is `more`: "the bounded page was filled and this TENANT has
+	// further site rows". It was previously passed straight through into the
+	// rendered result, which reported it to the caller as a truncation notice.
+	// For a connection scoped to two sites in a six-hundred-site tenant that
+	// notice was both false and disclosing -- the caller received every site
+	// it may read, was told further sites had been withheld, and could infer
+	// from a flag it had no business seeing that the tenant holds more than
+	// sitesPageBound sites.
+	//
+	// A count taken over the TENANT can never be reported to a SITE-SCOPED
+	// caller, however harmless it looks as a completeness flag. Completeness
+	// is recomputed below over the caller's own scope instead, where both
+	// terms are numbers the caller already knows.
+	bound := s.pageBound
+	if bound <= 0 {
+		// A Service built by a struct literal rather than NewService. Read a
+		// full page rather than none: a zero limit would return nothing and
+		// present as an organisation owning no sites.
+		bound = sitesPageBound
+	}
+	rows, _, err := s.store.ListSitesForRead(ctx, auth.TenantID, bound)
 	if err != nil {
 		return "", fmt.Errorf("list sites for mcp read: %w", err)
 	}
@@ -1711,14 +1767,47 @@ func (s *Service) ListSitesForModel(ctx context.Context, auth AuthorizedRequest)
 	// this narrows it further to the sites THIS GRANT may read. SiteSet.Allows
 	// returns false for every id on an empty or zero-value set, so there is no
 	// widening path even if the set were somehow lost between here and there.
+	//
+	// THIS IS LAYER 3, AND LAYER 3 HIDES. A row dropped here is not refused,
+	// not counted and not mentioned: it leaves no trace in the envelope built
+	// below, because `asked` is closed over auth.Sites and an out-of-scope row
+	// was never in auth.Sites to begin with.
 	allowed := make([]sqlc.ListSitesRow, 0, len(rows))
+	seen := make(map[uuid.UUID]struct{}, len(rows))
 	for _, r := range rows {
 		if auth.Sites.Allows(r.ID) {
 			allowed = append(allowed, r)
+			seen[r.ID] = struct{}{}
 		}
 	}
 
-	return buildListSitesResult(allowed, more, s.now())
+	// SCOPE-RELATIVE COMPLETENESS. `asked` is the caller's own scope
+	// cardinality and nothing else; every site it counts is one the caller
+	// already knows it has. An in-scope site the bounded page did not contain
+	// is reported as an explicit site_unread refusal rather than being left
+	// silently absent, so ok+refused balances against asked and the caller is
+	// never handed a short list that reads as a complete fleet.
+	refusals := make([]Refusal, 0)
+	for _, id := range auth.Sites.Sorted() {
+		if _, found := seen[id]; !found {
+			refusals = append(refusals, Refusal{
+				SiteID: id.String(),
+				Code:   RefusalSiteUnread,
+				Detail: "this site is in scope for this connection but was not returned by the " +
+					"bounded page this call reads; retry, and report it if it persists",
+			})
+		}
+	}
+
+	env, err := NewEnvelope(auth.Sites.Len(), len(allowed), refusals)
+	if err != nil {
+		// An unbalanced envelope means a site was counted in scope and then
+		// lost without being accounted for. That is the leak shape, so it
+		// fails the call rather than rendering a result with a residual in it.
+		return "", fmt.Errorf("build fleet_sites_list envelope: %w", err)
+	}
+
+	return buildListSitesResult(allowed, env, s.now())
 }
 
 // ---------------------------------------------------------------------------
