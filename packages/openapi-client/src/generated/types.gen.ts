@@ -47,6 +47,54 @@ export type TenantList = {
   items: Array<Tenant>;
 };
 
+/**
+ * m130's per-tenant assistant state. `enabled` and `paused` are computed
+ * from two DIFFERENT columns whose nulls mean DIFFERENT things, and they
+ * are not derived from one another: `enabled_at` null means the surface
+ * was never enabled, `paused_at` null means the kill switch is released.
+ * A consumer must not fold them into one predicate.
+ *
+ */
+export type TenantAssistantState = {
+  tenant_id: string;
+  /**
+   * Whether the organisation has ever enabled the assistant surface.
+   * NOTHING ENFORCES THIS YET — it is a record of intent that gates no
+   * request today (m130 DECISION 5 holds it out of the authorization
+   * verdict until a follow-up migration wires it together with its
+   * backfill). Display it; do not treat it as an access decision.
+   *
+   */
+  enabled: boolean;
+  enabled_at?: string;
+  /**
+   * Whether the kill switch is engaged. THIS ONE IS ENFORCED, on every
+   * assistant request, from the moment it is written.
+   *
+   */
+  paused: boolean;
+  paused_at?: string;
+  /**
+   * Why the surface was stopped. Null when no reason was given.
+   */
+  paused_reason?: string;
+};
+
+/**
+ * The optional body of a pause. Every field is optional: an empty or
+ * absent body engages the kill switch with no reason recorded.
+ *
+ */
+export type TenantAssistantPause = {
+  /**
+   * Why the surface is being stopped, recorded on the tenant row and in
+   * the audit entry. A blank or whitespace-only value is normalised to
+   * null rather than stored as an empty string.
+   *
+   */
+  reason?: string;
+};
+
 export type Site = {
   id: string;
   tenant_id: string;
@@ -12031,6 +12079,109 @@ export type GetTenantResponses = {
 };
 
 export type GetTenantResponse = GetTenantResponses[keyof GetTenantResponses];
+
+export type GetTenantAssistantStateData = {
+  body?: never;
+  path: {
+    tenantId: string;
+  };
+  query?: never;
+  url: "/api/v1/tenants/{tenantId}/assistant";
+};
+
+export type GetTenantAssistantStateErrors = {
+  /**
+   * Not an owner, or a site-scoped principal
+   */
+  403: Error;
+  /**
+   * Tenant not found, or not the caller's own organisation
+   */
+  404: Error;
+};
+
+export type GetTenantAssistantStateError =
+  GetTenantAssistantStateErrors[keyof GetTenantAssistantStateErrors];
+
+export type GetTenantAssistantStateResponses = {
+  /**
+   * The organisation's assistant state
+   */
+  200: TenantAssistantState;
+};
+
+export type GetTenantAssistantStateResponse =
+  GetTenantAssistantStateResponses[keyof GetTenantAssistantStateResponses];
+
+export type PauseTenantAssistantData = {
+  body?: TenantAssistantPause;
+  path: {
+    tenantId: string;
+  };
+  query?: never;
+  url: "/api/v1/tenants/{tenantId}/assistant/pause";
+};
+
+export type PauseTenantAssistantErrors = {
+  /**
+   * Not an owner, or a site-scoped principal
+   */
+  403: Error;
+  /**
+   * Tenant not found, or not the caller's own organisation
+   */
+  404: Error;
+  /**
+   * Validation failed (reason longer than 500 characters)
+   */
+  422: Error;
+};
+
+export type PauseTenantAssistantError =
+  PauseTenantAssistantErrors[keyof PauseTenantAssistantErrors];
+
+export type PauseTenantAssistantResponses = {
+  /**
+   * The kill switch is engaged; the resulting state
+   */
+  200: TenantAssistantState;
+};
+
+export type PauseTenantAssistantResponse =
+  PauseTenantAssistantResponses[keyof PauseTenantAssistantResponses];
+
+export type ResumeTenantAssistantData = {
+  body?: never;
+  path: {
+    tenantId: string;
+  };
+  query?: never;
+  url: "/api/v1/tenants/{tenantId}/assistant/resume";
+};
+
+export type ResumeTenantAssistantErrors = {
+  /**
+   * Not an owner, or a site-scoped principal
+   */
+  403: Error;
+  /**
+   * Tenant not found, or not the caller's own organisation
+   */
+  404: Error;
+};
+
+export type ResumeTenantAssistantError =
+  ResumeTenantAssistantErrors[keyof ResumeTenantAssistantErrors];
+
+export type ResumeTenantAssistantResponses = {
+  /**
+   * The kill switch is released; the resulting state
+   */
+  200: TenantAssistantState;
+};
+
+export type ResumeTenantAssistantResponse =
+  ResumeTenantAssistantResponses[keyof ResumeTenantAssistantResponses];
 
 export type ListSitesData = {
   body?: never;

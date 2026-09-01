@@ -1,6 +1,8 @@
 package tenant
 
 import (
+	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"time"
@@ -135,12 +137,19 @@ func (h *Handler) pauseAssistant(c *gin.Context) {
 	// An absent body is legitimate: "stop it now, I will explain later" is the
 	// 3am case, and a control that demands a justification field before it will
 	// fire is a control that costs seconds it does not have.
+	//
+	// BIND UNCONDITIONALLY AND TREAT EOF AS "NO BODY". Gating this on
+	// ContentLength > 0 silently DISCARDED the operator's reason on any request
+	// that does not set the header: a chunked upload and most HTTP/2 clients
+	// carry ContentLength -1, so the pause still fired but the incident's
+	// stated cause was lost and the audit entry recorded reason_given=false.
+	// io.EOF is the only error that means "there was no body at all"; anything
+	// else is a body we could not parse and must be refused rather than
+	// silently treated as empty.
 	var req pauseAssistantRequest
-	if c.Request.ContentLength > 0 {
-		if err := c.ShouldBindJSON(&req); err != nil {
-			httpx.Error(c, domain.Validation("invalid_body", "request body is not valid JSON"))
-			return
-		}
+	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+		httpx.Error(c, domain.Validation("invalid_body", "request body is not valid JSON"))
+		return
 	}
 	st, err := h.svc.PauseAssistant(c.Request.Context(), p, id, PauseInput{Reason: req.Reason}, h.audit)
 	if err != nil {
