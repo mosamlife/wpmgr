@@ -2004,6 +2004,19 @@ type Invoker interface {
 	//
 	// GET /api/v1/tenants/{tenantId}
 	GetTenant(ctx context.Context, params GetTenantParams) (GetTenantRes, error)
+	// GetTenantAssistantState invokes getTenantAssistantState operation.
+	//
+	// M130 / ADR-061. The operator console's read of the per-tenant assistant state. This is NOT the
+	// request path: an assistant request reads the pause through the `authorized` verdict in
+	// ReCheckMCPRequestAuthorizationInTenantTx, never here.
+	//
+	// `enabled` and `paused` come from two different columns with two different null meanings and are
+	// deliberately not derived from one another — an organisation can be enabled and paused, or disabled
+	// and paused. Owner-only (`tenant:manage`), and refused outright for any site-scoped principal
+	// regardless of the role it holds on a site.
+	//
+	// GET /api/v1/tenants/{tenantId}/assistant
+	GetTenantAssistantState(ctx context.Context, params GetTenantAssistantStateParams) (GetTenantAssistantStateRes, error)
 	// GetTwoFactorStatus invokes getTwoFactorStatus operation.
 	//
 	// Current 2FA configuration summary for the authenticated user.
@@ -2641,6 +2654,27 @@ type Invoker interface {
 	//
 	// POST /api/v1/sites/monitoring/pause
 	PauseSiteMonitoring(ctx context.Context, request *PauseMonitoringRequest) (PauseSiteMonitoringRes, error)
+	// PauseTenantAssistant invokes pauseTenantAssistant operation.
+	//
+	// M130 / ADR-061's "per-tenant kill switch reachable in one click". ONE UPDATE on ONE row that already
+	// exists, so it cannot fail with a unique violation during an incident.
+	//
+	// TAKES EFFECT ON THE NEXT REQUEST. The assistant request path recomputes its whole authorization
+	// verdict per request and that verdict carries `assistant_paused_at IS NULL`, so every in-flight
+	// connection for this organisation — including already-issued, otherwise perfectly valid tokens —
+	// is refused the moment this call commits. No sweep, no cache invalidation and no token refresh is
+	// involved.
+	//
+	// THIS IS NOT A TOGGLE. Releasing the switch is a separate, deliberate call to /assistant/resume; a
+	// repeated pause re-engages and refreshes the reason (which is what an escalating incident wants) and
+	// can never restart the surface.
+	//
+	// The body is optional: "stop it now, explain later" is the 3am case, and a control that demands a
+	// justification before it will fire costs seconds it does not have. An omitted or blank reason is
+	// stored as null rather than an empty string, which would read as an answer.
+	//
+	// POST /api/v1/tenants/{tenantId}/assistant/pause
+	PauseTenantAssistant(ctx context.Context, request OptTenantAssistantPause, params PauseTenantAssistantParams) (PauseTenantAssistantRes, error)
 	// PreloadCache invokes preloadCache operation.
 	//
 	// Triggers the agent to begin warming the page cache. Returns an `{ok, detail}` ack; preload progress
@@ -3185,6 +3219,20 @@ type Invoker interface {
 	//
 	// POST /api/v1/sites/monitoring/resume
 	ResumeSiteMonitoring(ctx context.Context, request *ResumeMonitoringRequest) (ResumeSiteMonitoringRes, error)
+	// ResumeTenantAssistant invokes resumeTenantAssistant operation.
+	//
+	// M130 / ADR-061. Clears `assistant_paused_at` and the pause reason in one statement — the reason is
+	// part of the pause, so a stale reason cannot outlive it.
+	//
+	// IT DOES NOT ENABLE THE SURFACE. Releasing the switch never touches `assistant_enabled_at`, so an
+	// organisation that was deliberately off before the incident is still off after it. That is the whole
+	// reason the state is two columns rather than one tri-state.
+	//
+	// Resuming an organisation that is not paused is a successful no-op and records no audit entry: a
+	// release that released nothing must not leave a false incident-end marker in the chain.
+	//
+	// POST /api/v1/tenants/{tenantId}/assistant/resume
+	ResumeTenantAssistant(ctx context.Context, params ResumeTenantAssistantParams) (ResumeTenantAssistantRes, error)
 	// RetryUpdateRun invokes retryUpdateRun operation.
 	//
 	// Creates a NEW update run repeating the named tasks of an existing one. The source run is never
@@ -25100,6 +25148,112 @@ func (c *Client) sendGetTenant(ctx context.Context, params GetTenantParams) (res
 	return result, nil
 }
 
+// GetTenantAssistantState invokes getTenantAssistantState operation.
+//
+// M130 / ADR-061. The operator console's read of the per-tenant assistant state. This is NOT the
+// request path: an assistant request reads the pause through the `authorized` verdict in
+// ReCheckMCPRequestAuthorizationInTenantTx, never here.
+//
+// `enabled` and `paused` come from two different columns with two different null meanings and are
+// deliberately not derived from one another — an organisation can be enabled and paused, or disabled
+// and paused. Owner-only (`tenant:manage`), and refused outright for any site-scoped principal
+// regardless of the role it holds on a site.
+//
+// GET /api/v1/tenants/{tenantId}/assistant
+func (c *Client) GetTenantAssistantState(ctx context.Context, params GetTenantAssistantStateParams) (GetTenantAssistantStateRes, error) {
+	res, err := c.sendGetTenantAssistantState(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendGetTenantAssistantState(ctx context.Context, params GetTenantAssistantStateParams) (res GetTenantAssistantStateRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("getTenantAssistantState"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/tenants/{tenantId}/assistant"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, GetTenantAssistantStateOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/tenants/"
+	{
+		// Encode "tenantId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "tenantId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.TenantId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/assistant"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeGetTenantAssistantStateResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // GetTwoFactorStatus invokes getTwoFactorStatus operation.
 //
 // Current 2FA configuration summary for the authenticated user.
@@ -34399,6 +34553,123 @@ func (c *Client) sendPauseSiteMonitoring(ctx context.Context, request *PauseMoni
 	return result, nil
 }
 
+// PauseTenantAssistant invokes pauseTenantAssistant operation.
+//
+// M130 / ADR-061's "per-tenant kill switch reachable in one click". ONE UPDATE on ONE row that already
+// exists, so it cannot fail with a unique violation during an incident.
+//
+// TAKES EFFECT ON THE NEXT REQUEST. The assistant request path recomputes its whole authorization
+// verdict per request and that verdict carries `assistant_paused_at IS NULL`, so every in-flight
+// connection for this organisation — including already-issued, otherwise perfectly valid tokens —
+// is refused the moment this call commits. No sweep, no cache invalidation and no token refresh is
+// involved.
+//
+// THIS IS NOT A TOGGLE. Releasing the switch is a separate, deliberate call to /assistant/resume; a
+// repeated pause re-engages and refreshes the reason (which is what an escalating incident wants) and
+// can never restart the surface.
+//
+// The body is optional: "stop it now, explain later" is the 3am case, and a control that demands a
+// justification before it will fire costs seconds it does not have. An omitted or blank reason is
+// stored as null rather than an empty string, which would read as an answer.
+//
+// POST /api/v1/tenants/{tenantId}/assistant/pause
+func (c *Client) PauseTenantAssistant(ctx context.Context, request OptTenantAssistantPause, params PauseTenantAssistantParams) (PauseTenantAssistantRes, error) {
+	res, err := c.sendPauseTenantAssistant(ctx, request, params)
+	return res, err
+}
+
+func (c *Client) sendPauseTenantAssistant(ctx context.Context, request OptTenantAssistantPause, params PauseTenantAssistantParams) (res PauseTenantAssistantRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("pauseTenantAssistant"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/api/v1/tenants/{tenantId}/assistant/pause"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, PauseTenantAssistantOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/tenants/"
+	{
+		// Encode "tenantId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "tenantId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.TenantId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/assistant/pause"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodePauseTenantAssistantRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodePauseTenantAssistantResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // PreloadCache invokes preloadCache operation.
 //
 // Triggers the agent to begin warming the page cache. Returns an `{ok, detail}` ack; preload progress
@@ -40001,6 +40272,113 @@ func (c *Client) sendResumeSiteMonitoring(ctx context.Context, request *ResumeMo
 
 	stage = "DecodeResponse"
 	result, err := decodeResumeSiteMonitoringResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// ResumeTenantAssistant invokes resumeTenantAssistant operation.
+//
+// M130 / ADR-061. Clears `assistant_paused_at` and the pause reason in one statement — the reason is
+// part of the pause, so a stale reason cannot outlive it.
+//
+// IT DOES NOT ENABLE THE SURFACE. Releasing the switch never touches `assistant_enabled_at`, so an
+// organisation that was deliberately off before the incident is still off after it. That is the whole
+// reason the state is two columns rather than one tri-state.
+//
+// Resuming an organisation that is not paused is a successful no-op and records no audit entry: a
+// release that released nothing must not leave a false incident-end marker in the chain.
+//
+// POST /api/v1/tenants/{tenantId}/assistant/resume
+func (c *Client) ResumeTenantAssistant(ctx context.Context, params ResumeTenantAssistantParams) (ResumeTenantAssistantRes, error) {
+	res, err := c.sendResumeTenantAssistant(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendResumeTenantAssistant(ctx context.Context, params ResumeTenantAssistantParams) (res ResumeTenantAssistantRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("resumeTenantAssistant"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/api/v1/tenants/{tenantId}/assistant/resume"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, ResumeTenantAssistantOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/tenants/"
+	{
+		// Encode "tenantId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "tenantId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.TenantId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/assistant/resume"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeResumeTenantAssistantResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}
