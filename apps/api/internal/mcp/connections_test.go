@@ -77,7 +77,7 @@ func TestListConnectionsFailureIsNeverAnEmptyList(t *testing.T) {
 	tenantID := uuid.New()
 	boom := errors.New("connection refused: the database is down")
 	store := &fakeStore{grantsErr: boom}
-	svc := NewService(store)
+	svc := auditedService(store)
 
 	got, err := svc.ListConnections(context.Background(), orgPrincipal(tenantID))
 	if err == nil {
@@ -151,7 +151,7 @@ func TestSiteScopedPrincipalIsRefusedAndNeverReachesTheStore(t *testing.T) {
 
 	t.Run("list", func(t *testing.T) {
 		store := &fakeStore{}
-		svc := NewService(store)
+		svc := auditedService(store)
 
 		got, err := svc.ListConnections(context.Background(), siteScopedPrincipal(tenantID))
 		if err == nil {
@@ -179,7 +179,7 @@ func TestSiteScopedPrincipalIsRefusedAndNeverReachesTheStore(t *testing.T) {
 
 	t.Run("revoke", func(t *testing.T) {
 		store := &fakeStore{}
-		svc := NewService(store)
+		svc := auditedService(store)
 
 		_, err := svc.RevokeConnection(context.Background(),
 			siteScopedPrincipal(tenantID), uuid.New())
@@ -204,7 +204,7 @@ func TestStoreReceivesThePrincipalSoRunTenantTxCanDispatch(t *testing.T) {
 	tenantID := uuid.New()
 	p := orgPrincipal(tenantID)
 	store := &fakeStore{}
-	svc := NewService(store)
+	svc := auditedService(store)
 
 	if _, err := svc.ListConnections(context.Background(), p); err != nil {
 		t.Fatalf("list: %v", err)
@@ -554,7 +554,7 @@ func TestListIncludesRevokedGrantsAndReportsStoredStatus(t *testing.T) {
 			RevokedAt: tsAt(revokedAt), LastUsedAt: tsAt(revokedAt),
 		},
 	}}
-	svc := NewService(store)
+	svc := auditedService(store)
 
 	got, err := svc.ListConnections(context.Background(), orgPrincipal(uuid.New()))
 	if err != nil {
@@ -667,6 +667,6 @@ func newConnectionsRouter(t *testing.T, store Store, p domain.Principal) *gin.En
 		c.Request = c.Request.WithContext(domain.WithPrincipal(c.Request.Context(), p))
 		c.Next()
 	})
-	NewHandler(NewService(store)).RegisterConnections(g)
+	NewHandler(auditedService(store)).RegisterConnections(g)
 	return eng
 }

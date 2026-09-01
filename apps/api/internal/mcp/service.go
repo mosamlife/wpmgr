@@ -837,8 +837,17 @@ func (s *Service) Approve(ctx context.Context, req ApprovalRequest) (Approval, e
 		// this append fails, the whole approval rolls back and there is no
 		// mcp.grant.created row for a grant that does not exist.
 		func(tx pgx.Tx, gr sqlc.McpGrant) error {
-			if s.audit == nil {
-				return nil
+			// A10 NAMES APPROVAL, so an unaudited Service may not approve. The
+			// error propagates out of this callback into the caller's
+			// transaction, which rolls the grant and the code back with it:
+			// there is no half-state where the credential exists and the row
+			// explaining it does not. This used to `return nil`, which created
+			// the fleet-access grant and skipped its record -- the most
+			// consequential row this system writes, dropped on a wiring
+			// mistake nobody would notice until an auditor asked who let the
+			// assistant in.
+			if err := s.requireRecorder(); err != nil {
+				return err
 			}
 			// THE ACTOR IS WHICHEVER CREDENTIAL AUTHENTICATED, resolved by
 			// audit.ActorFor rather than hardcoded.
@@ -1925,8 +1934,18 @@ func (s *Service) RevokeConnection(ctx context.Context, p domain.Principal, gran
 		// being attributed, not merely a state transition. It never runs
 		// alongside pgx.ErrNoRows -- see onRevoked's doc on the interface.
 		func(tx pgx.Tx, row sqlc.RevokeMCPGrantWithTokensInTenantTxRow) error {
-			if s.audit == nil {
-				return nil
+			// Closed for the same reason as Approve and the headless mint, and
+			// closed DELIBERATELY even though A10's list does not spell out
+			// "revocation": leaving the one sibling open is how the whole
+			// posture gets read as an inconsistency and tidied back to `return
+			// nil` later. A revocation is also the row an operator most needs
+			// after an incident -- "when did we cut this connection off" -- and
+			// it is the one place where failing closed leaves the credential
+			// live, so the refusal must be loud rather than quiet. It is: the
+			// rollback keeps the grant active and the request errors, instead
+			// of reporting a revocation that did not happen.
+			if err := s.requireRecorder(); err != nil {
+				return err
 			}
 			// THE ACTOR IS WHICHEVER CREDENTIAL AUTHENTICATED, resolved by
 			// audit.ActorFor rather than hardcoded.

@@ -130,7 +130,7 @@ func TestApprove_RefusesAClientThatWasNeverRegistered(t *testing.T) {
 // path, so the fix cannot regress into comparing the body against itself.
 func TestApprove_ResolvesTheClientBeforeMinting(t *testing.T) {
 	store := approvalStore()
-	if _, err := NewService(store).Approve(context.Background(), validApproval()); err != nil {
+	if _, err := auditedService(store).Approve(context.Background(), validApproval()); err != nil {
 		t.Fatalf("a legitimate approval was refused: %v", err)
 	}
 
@@ -246,7 +246,7 @@ func TestApprove_RefusesAnIncoherentOrEmptySiteScope(t *testing.T) {
 // RESOLVED client id rather than the body's copy.
 func TestApprove_ValidApprovalMintsAndRecordsTheResolvedClient(t *testing.T) {
 	store := approvalStore()
-	got, err := NewService(store).Approve(context.Background(), validApproval())
+	got, err := auditedService(store).Approve(context.Background(), validApproval())
 	if err != nil {
 		t.Fatalf("a legitimate approval was refused: %v", err)
 	}
@@ -384,7 +384,7 @@ func TestApprove_RefusesASiteScopedApprover(t *testing.T) {
 // policy; it can prove the principal arrived.
 func TestApprove_HandsTheWholePrincipalToTheStore(t *testing.T) {
 	store := approvalStore()
-	svc := NewService(store)
+	svc := auditedService(store)
 
 	req := validApproval()
 	if _, err := svc.Approve(context.Background(), req); err != nil {

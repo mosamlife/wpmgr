@@ -53,6 +53,16 @@ func failClosedStore(t *testing.T) (*fakeStore, uuid.UUID) {
 // check rather than one that trips over the envelope.
 const failClosedSiteName = "zzz-canary-site"
 
+// auditedService is NewService plus the recorder production always wires. It
+// exists because "no recorder" stopped being a supported configuration: an
+// unaudited Service refuses to approve, mint, revoke or serve a tool call, so a
+// test that builds one is testing a shape that never ships. Tests which are
+// ABOUT the unaudited case call NewService directly and assert the refusal --
+// see TestToolCall_ARecorderlessServiceRefusesRatherThanServing.
+func auditedService(store Store) *Service {
+	return NewService(store).withAuditRecorder(&capturingRecorder{})
+}
+
 // routerWithRecorder mounts the real route over a store with the given
 // recorder, so a test can swap a failing recorder for a working one without
 // changing anything else about the request.
