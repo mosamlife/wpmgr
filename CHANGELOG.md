@@ -22,8 +22,8 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ### Security
 
-- Every table the assistant surface can read now carries the same restrictive site-scope policy already enforced elsewhere in the schema: 22 policies added across 22 tables that previously had no database-level opinion of their own about which site a scoped grant could reach (m132).
-- The chokepoint the assistant surface uses to resolve which sites a connection may reach now routes on the caller's authenticated principal rather than a bare tenant id, so the site-scope policies above actually engage instead of being satisfied by any grant in the tenant.
+- Every table the assistant surface can read now carries the same restrictive site-scope policy already enforced elsewhere in the schema: 22 policies added across 22 tables that previously had no database-level opinion of their own about which site a scoped grant could reach (m132). These protect every path that runs with a site-constrained principal, which is the ordinary way a site-scoped collaborator reaches this data.
+- The chokepoint the assistant surface uses to resolve which sites a connection may reach now takes the caller's authenticated principal rather than a bare tenant id, so it is capable of engaging the site-scope policies above wherever that principal is site-constrained. On the assistant's own read path it is not: resolving a grant's site allowlist is deliberately done with a tenant-scoped principal, because the allowlist cannot be used to scope the query that produces it. The assistant surface's site scoping there is enforced by the resolved allowlist in application code, not by this database policy.
 
 ## [0.61.150] - 2026-08-31
 
