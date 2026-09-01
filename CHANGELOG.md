@@ -6,6 +6,21 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ## [Unreleased]
 
+## [0.61.152] - 2026-09-01
+
+### Added
+
+- An operator can now see which capabilities each AI connection holds, directly on the connections list. That set was already stored on every grant but never rendered, so there was no way to audit what a connection could actually do without querying the database.
+
+### Fixed
+
+- A site no longer reports a WordPress core update with no version to update to. A blank target version was being read as "an update is available," which left the site detail page's core row showing an empty target and inflated the fleet's pending-update count.
+- An audit failure on the assistant surface no longer comes back as an invalid params error blaming the caller. A genuine server-side fault writing the audit record is now reported as a server fault, not a client mistake.
+
+### Security
+
+- Audit on the assistant surface is now fail-closed, reads included: when the record of what the assistant read cannot be written, the read itself is refused rather than answered silently. This is a deliberate posture change for this surface, taken by owner decision.
+
 ## [0.61.151] - 2026-09-01
 
 ### Added
