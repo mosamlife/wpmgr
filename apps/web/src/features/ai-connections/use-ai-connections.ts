@@ -247,6 +247,20 @@ export interface MintConnectionInput {
   readonly siteScopeMode: string;
   readonly scopeTagIds: readonly string[];
   readonly scopeSiteIds: readonly string[];
+  /**
+   * The capability list this request confers, wire key `capabilities`
+   * (dto.go's mintConnectionRequestDTO, ~line 264). NEVER `[]` ON THE WIRE.
+   * dto.go treats an omitted field as the default preset `["mcp.sites.read"]`,
+   * but an explicitly empty array is a different thing entirely: it stores a
+   * connection that authenticates and can reach no tool at all, because
+   * Authenticate refuses by name on every request. A request naming no
+   * capabilities and a request naming none-on-purpose are not the same wire
+   * value, so this mutation never sends the latter -- the caller
+   * (connect-wizard.tsx's mintCapabilitiesRequest) refuses to build a request
+   * at all when the operator has deselected every row, rather than letting an
+   * empty array reach this function.
+   */
+  readonly capabilities: readonly string[];
 }
 
 /**
@@ -315,6 +329,10 @@ export function useMintConnection(): UseMutationResult<
           site_scope_mode: input.siteScopeMode,
           scope_tag_ids: [...input.scopeTagIds],
           scope_site_ids: [...input.scopeSiteIds],
+          // NEVER `[]` HERE -- see MintConnectionInput's own doc. This spreads
+          // whatever the caller resolved, and the caller's contract is to have
+          // already refused to reach this call with zero entries.
+          capabilities: [...input.capabilities],
         }),
       });
       if (!res.ok) throw await readHouseError(res);
