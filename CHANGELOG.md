@@ -6,6 +6,23 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ## [Unreleased]
 
+## [0.61.154] - 2026-09-02
+
+### Security
+
+- Two routes that create an AI connection required different permissions to do so; both now require the same one. **This was live in 0.61.153.**
+
+### Added
+
+- A new assistant tool, `fleet_updates_pending`, answers "which of my sites need updates?" across your whole fleet. It states plainly when a site's inventory is stale or was never collected, rather than guessing.
+- AI connections now have a status panel: whether a connection has ever been used, whether it has read your fleet, and when it was last active. This is backed by a connection-verification endpoint that already existed but had no screen.
+- The AI connections screen now states plainly what a connection can and cannot do, and shows the reason instead of a create button when your role does not allow making one. The sign-in step now explains the choice between browser sign-in and a connection token.
+- An organisation owner can now pause and resume the AI assistant for the whole account over the API. This is not yet exposed in the dashboard.
+
+### Fixed
+
+- Removed a false claim from the AI connections screens that a connection could propose changes to a site. No connection can; every one is read-only.
+
 ## [0.61.153] - 2026-09-01
 
 ### Security
