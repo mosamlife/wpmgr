@@ -384,7 +384,7 @@ func TestMCPConnectionListsANonDefaultCapabilitySetExactlyAsAppRole(t *testing.T
 	tenantID := seedTenant(t, pool, "mcp-s16-cap-"+suffix)
 	userID := seedUserRow(t, pool, "mcp-s16-cap-"+suffix+"@example.test")
 
-	svc := mcp.NewService(mcp.NewRepo(pool))
+	svc := auditedMCPService(pool, mcp.NewRepo(pool))
 	eng := mountConnectionsLikeProduction(t, svc, adminPrincipal(tenantID, userID))
 
 	// A deliberately non-default, non-alphabetical, more-than-one-member set:
