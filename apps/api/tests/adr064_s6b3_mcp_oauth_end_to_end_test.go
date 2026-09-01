@@ -73,9 +73,13 @@ func TestMCPOAuthEndToEndThroughMountedRoutesAsAppRole(t *testing.T) {
 	siteID := seedSite(t, pool, tenantID, siteURL)
 
 	svc := auditedMCPService(pool, mcp.NewRepo(pool))
-	// An ORG-scoped operator: the only scope /consent admits.
+	// An ORG-scoped operator: the only scope /consent admits. The role is
+	// load-bearing too, and not decoration -- /consent and POST
+	// /api/v1/mcp/connections require the same permission to create a
+	// connection (authz.PermAPIKeyManage, admin+ in authz.minRoleFor), so a
+	// principal carrying no role at all cannot drive this flow.
 	eng := mountLikeProduction(t, svc, domain.Principal{
-		UserID: userID, TenantID: tenantID, Scope: domain.ScopeOrg,
+		UserID: userID, TenantID: tenantID, Role: "admin", Scope: domain.ScopeOrg,
 	})
 
 	const redirectURI = "https://claude.ai/api/mcp/auth_callback"

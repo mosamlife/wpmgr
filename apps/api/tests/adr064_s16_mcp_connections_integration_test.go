@@ -677,8 +677,14 @@ func mountOAuthLikeProduction(t *testing.T, svc *mcp.Service, tenantID, userID u
 
 	authed := eng.Group(mcp.APIV1Prefix)
 	authed.Use(func(c *gin.Context) {
+		// adminPrincipal, the same fixture the connections routes use, and for
+		// the same reason: /authorize and /consent create the same object as
+		// POST /api/v1/mcp/connections, so both require authz.PermAPIKeyManage
+		// (admin+ in authz.minRoleFor). A principal carrying no role cannot
+		// drive this flow, and the middleware here stands in for RequireAuth +
+		// RequireTenant only -- it must never stand in for the gate.
 		c.Request = c.Request.WithContext(domain.WithPrincipal(c.Request.Context(),
-			domain.Principal{UserID: userID, TenantID: tenantID}))
+			adminPrincipal(tenantID, userID)))
 		c.Next()
 	})
 	h.Register(authed)
