@@ -302,7 +302,7 @@ function currentRailStep(): HTMLElement {
 }
 
 describe("the step rail names all ten specified steps and marks the right one current", () => {
-  it("renders all ten specified steps, in specified order, with only four built", async () => {
+  it("renders all ten specified steps, in specified order, with only five built", async () => {
     renderWizard();
     await screen.findByRole("button", { name: /claude code/i });
 
@@ -311,8 +311,11 @@ describe("the step rail names all ten specified steps and marks the right one cu
       Array.from({ length: 10 }, (_, i) => String(i + 1)),
     );
     const builtNs = segments.filter((s) => s.dataset.stepState !== "not-built").map((s) => s.dataset.stepN);
-    // The four shipped sections, and no others, are ever built.
-    expect(builtNs.sort()).toEqual(["2", "3", "5", "6"]);
+    // The five shipped sections, and no others, are ever built. Step 4 (the
+    // capability picker) is built on the token path only, but `built: true`
+    // is a static property of SPEC_STEPS, not conditioned on the method
+    // chosen -- the same standard step 3 and step 6 already meet.
+    expect(builtNs.sort()).toEqual(["2", "3", "4", "5", "6"]);
   });
 
   it("marks specified step 2 current before any client is picked", async () => {
@@ -380,11 +383,22 @@ describe("the step rail names all ten specified steps and marks the right one cu
     fireEvent.click(authCard("oauth"));
     await screen.findByTestId("site-step-count");
 
-    for (const n of ["1", "4", "7", "8", "9", "10"]) {
+    // Step 4 (the capability picker) is excluded from this list -- it is
+    // `built: true` in SPEC_STEPS (it renders on the token path), so on this
+    // OAuth walk it is a real built-but-position-completed step, the same as
+    // step 3, and asserted separately below.
+    for (const n of ["1", "7", "8", "9", "10"]) {
       const el = document.querySelector(`[data-step-n="${n}"]`);
       expect(el).toHaveAttribute("data-step-state", "not-built");
       expect(el).not.toHaveAttribute("aria-current", "step");
     }
+    // Step 4 IS built, and on this OAuth walk is completed by position, same
+    // as step 3 -- neither is "faked": both really are earlier, in
+    // BUILT_ORDER, than the setup step this walk has actually reached.
+    expect(document.querySelector('[data-step-n="4"]')).toHaveAttribute(
+      "data-step-state",
+      "completed",
+    );
   });
 
   // ---------------------------------------------------------------------------
@@ -775,23 +789,20 @@ describe("step 3 exists at all, and sits before capabilities", () => {
 
   it("numbers the setup artefact after it, so the rail and the page agree", async () => {
     await reachSiteStep();
-    expect(screen.getByRole("heading", { name: /^4\. Set it up$/ })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /^5\. Set it up$/ })).toBeInTheDocument();
     // And the rail no longer claims sites are chosen somewhere else.
     expect(screen.queryByText(/4\. Choose sites and permissions/i)).not.toBeInTheDocument();
   });
 
-  it("does not invent a numbered step for capabilities, which no completion path lets an operator choose today", async () => {
+  it("still renders no capability heading on the OAuth path, which has no channel for the answer", async () => {
     // reachSiteStep exercises the OAuth path (it clicks the oauth auth card),
     // where "this wizard never creates the grant" is true: Approve
     // (apps/api/internal/mcp/service.go:607) takes no capability field. The
-    // token path differs -- the mint endpoint already accepts one
-    // (dto.go:264) and only MintConnectionInput lacks the field
-    // (use-ai-connections.ts:228-233) -- but neither path has a picker in
-    // this frontend, so the assertion below holds for both. Not a claim
-    // about the backend either way: the vocabulary and both endpoints exist.
-    // See GH #660 for where a picker should live.
+    // TOKEN path now DOES have a picker (Section n=4, "Choose what it may
+    // do" -- see the describe block below), so this assertion is scoped to
+    // OAuth specifically rather than claiming neither path has one.
     await reachSiteStep();
-    expect(screen.queryByRole("heading", { name: /what this connection may do/i })).toBeNull();
+    expect(screen.queryByRole("heading", { name: /choose what it may do/i })).toBeNull();
     expect(screen.getByText(/permissions are chosen on the approval screen/i)).toBeInTheDocument();
   });
 });
@@ -864,7 +875,7 @@ describe("an empty scope is a working state, not an error", () => {
     // The setup artefact is reachable with nothing selected. An earlier
     // revision of this surface disabled Continue here; that is the behaviour
     // being corrected.
-    expect(screen.getByRole("heading", { name: /^4\. Set it up$/ })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /^5\. Set it up$/ })).toBeInTheDocument();
     expect(await screen.findByText(/"mcpServers"/)).toBeInTheDocument();
   });
 });
@@ -1198,6 +1209,156 @@ function heldMint(body: unknown = MINTED, status = 201) {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+// ---------------------------------------------------------------------------
+// Step 4 -- "Choose what it may do" (spec S29 step 4), TOKEN PATH ONLY.
+// ---------------------------------------------------------------------------
+
+/** Client and token method picked, sitting at the capability picker. */
+async function reachCapabilityStep() {
+  renderWizard();
+  await pickClient("Cursor");
+  fireEvent.click(authCard("token"));
+  await screen.findByTestId("site-step-count");
+  return screen.findByRole("heading", { name: /choose what it may do/i });
+}
+
+describe("choosing what a token may do (step 4, token path only)", () => {
+  it("renders no capability heading at all on the OAuth path", async () => {
+    renderWizard();
+    await pickClient("Cursor");
+    fireEvent.click(authCard("oauth"));
+    await screen.findByTestId("site-step-count");
+    expect(screen.queryByRole("heading", { name: /choose what it may do/i })).toBeNull();
+  });
+
+  it("renders every conferrable capability with a real description, and Content disabled with its reason", async () => {
+    await reachCapabilityStep();
+
+    // The seven conferrable rows, each carrying label AND description --
+    // never a bare label, which would leave "what it permits" to be guessed.
+    // findAllByRole rather than a singular query: a still-loading render could
+    // otherwise let this pass against a skeleton.
+    const boxes = await screen.findAllByRole("checkbox", { name: /.+/ });
+    expect(boxes.length).toBe(8); // seven conferrable + the disabled Content row
+
+    expect(screen.getByRole("checkbox", { name: /^Sites/i })).toBeInTheDocument();
+    expect(
+      screen.getByText(/see the fleet inventory: site names, urls and tags/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/see uptime checks and outage history/i)).toBeInTheDocument();
+    expect(screen.getByText(/see backup runs, their status/i)).toBeInTheDocument();
+
+    // Content: seated in the vocabulary, never conferrable -- disabled, with
+    // the reason stated in an operator's words, not "coming soon".
+    const content = screen.getByRole("checkbox", { name: /^Content/i });
+    expect(content).toBeDisabled();
+    expect(
+      screen.getByText(/not available yet.*no content tools.*for a connection to call/i),
+    ).toBeInTheDocument();
+  });
+
+  it("states the negative space once: nothing here can change WordPress content or configuration", async () => {
+    await reachCapabilityStep();
+    expect(
+      screen.getByText(/no capability on this screen can change wordpress content or configuration/i),
+    ).toBeInTheDocument();
+  });
+
+  it("opens with only sites-read checked -- the server's own default for an omitted field, never empty and never all seven", async () => {
+    await reachCapabilityStep();
+    expect(screen.getByRole("checkbox", { name: /^Sites/i })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: /^Uptime/i })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: /^Backups/i })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: /^Security/i })).not.toBeChecked();
+  });
+
+  it("refuses to mint when every capability is deselected, rather than defaulting or sending nothing", async () => {
+    // THE GUARD UNDER MUTATION TEST. See the PR description for the red/green
+    // proof: temporarily changing mintCapabilitiesRequest's `selected.length
+    // === 0` to `selected.length === -1` turns this red, and restoring it
+    // turns it green again.
+    loadedFleet(3);
+    renderWizard();
+    await pickClient("Cursor");
+    fireEvent.click(authCard("token"));
+    await screen.findByTestId("site-step-count");
+    // A valid site scope, so the ONLY thing left blocking the button is the
+    // capability deselection this test is actually about.
+    fireEvent.click(screen.getByRole("button", { name: /\+ add sites/i }));
+    fireEvent.click(pickerBoxes()[0]!);
+    await screen.findByRole("heading", { name: /choose what it may do/i });
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Sites/i }));
+
+    // Rendered TWICE by design -- once beside the picker (an operator working
+    // the checkboxes sees it immediately) and once inside the mint panel
+    // (an operator who scrolled straight to the button sees it there) -- so
+    // this asserts on the plural.
+    expect((await screen.findAllByText(/no capability is selected/i)).length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: /generate connection token/i })).toBeDisabled();
+  });
+
+  it("re-enables minting the moment a capability is checked again -- the over-fire arm of the guard above", async () => {
+    loadedFleet(3);
+    renderWizard();
+    await pickClient("Cursor");
+    fireEvent.click(authCard("token"));
+    await screen.findByTestId("site-step-count");
+    fireEvent.click(screen.getByRole("button", { name: /\+ add sites/i }));
+    fireEvent.click(pickerBoxes()[0]!);
+    await screen.findByRole("heading", { name: /choose what it may do/i });
+
+    const sites = screen.getByRole("checkbox", { name: /^Sites/i });
+    fireEvent.click(sites);
+    expect(screen.getByRole("button", { name: /generate connection token/i })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Uptime/i }));
+    expect(screen.queryByText(/no capability is selected/i)).toBeNull();
+    expect(screen.getByRole("button", { name: /generate connection token/i })).toBeEnabled();
+  });
+
+  it("never sends `capabilities: []` on the wire, and sends exactly the selected set", async () => {
+    // Asserted on the ACTUAL SERIALIZED FETCH BODY, not on hook-internal state
+    // or React state -- a hook-level assertion could pass while a stray `?? []`
+    // still reached the network.
+    loadedFleet(3);
+    let capturedBody: Record<string, unknown> | null = null;
+    stubMintFetch((init) => {
+      capturedBody =
+        typeof init?.body === "string" ? (JSON.parse(init.body) as Record<string, unknown>) : null;
+      return jsonResponse(MINTED, 201);
+    });
+
+    fireEvent.click(await reachMintButton());
+    await screen.findByText(/this is the only time this token is shown/i);
+
+    expect(capturedBody).not.toBeNull();
+    const body = capturedBody as Record<string, unknown>;
+    expect(Array.isArray(body.capabilities)).toBe(true);
+    expect(body.capabilities).toEqual(["mcp.sites.read"]);
+    expect(body.capabilities).not.toEqual([]);
+  });
+
+  it("sends every capability actually checked, not only the default", async () => {
+    loadedFleet(3);
+    let capturedBody: Record<string, unknown> | null = null;
+    stubMintFetch((init) => {
+      capturedBody =
+        typeof init?.body === "string" ? (JSON.parse(init.body) as Record<string, unknown>) : null;
+      return jsonResponse(MINTED, 201);
+    });
+
+    const mintButton = await reachMintButton();
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Uptime/i }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Backups/i }));
+    fireEvent.click(mintButton);
+    await screen.findByText(/this is the only time this token is shown/i);
+
+    const body = capturedBody as Record<string, unknown>;
+    expect(body.capabilities).toEqual(["mcp.sites.read", "mcp.uptime.read", "mcp.backups.read"]);
+  });
 });
 
 describe("minting a connection token", () => {
