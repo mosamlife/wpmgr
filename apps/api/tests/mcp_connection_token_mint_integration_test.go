@@ -79,7 +79,7 @@ func TestMCPMintedTokenAuthenticatesAndIsTenantBoundAsAppRole(t *testing.T) {
 	seedSite(t, pool, tenantB, siteBURL)
 
 	rec := audit.NewRecorder(pool, domain.SystemClock{})
-	svc := mcp.NewService(mcp.NewRepo(pool)).WithAudit(rec)
+	svc := auditedMCPService(pool, mcp.NewRepo(pool)).WithAudit(rec)
 
 	adminA := domain.Principal{
 		Type: domain.PrincipalUser, UserID: userA, TenantID: tenantA,
@@ -249,7 +249,7 @@ func TestMCPMintRefusesASiteScopedCollaboratorAsAppRole(t *testing.T) {
 	userID := seedUserRow(t, pool, "mint-scope-"+suffix+"@example.test")
 	siteID := seedSite(t, pool, tenantID, "https://s-"+suffix+".example.test")
 
-	svc := mcp.NewService(mcp.NewRepo(pool))
+	svc := auditedMCPService(pool, mcp.NewRepo(pool))
 
 	// An outside collaborator shared onto ONE site, holding admin ON THAT SITE.
 	// Still refused: a grant is an organisation-wide credential.
@@ -314,7 +314,7 @@ func TestMCPMintScopeReferentsAsAppRole(t *testing.T) {
 		t.Fatalf("create tag: %v", err)
 	}
 
-	svc := mcp.NewService(mcp.NewRepo(pool))
+	svc := auditedMCPService(pool, mcp.NewRepo(pool))
 	admin := domain.Principal{
 		Type: domain.PrincipalUser, UserID: userID, TenantID: tenantID,
 		Role: "admin", Scope: domain.ScopeOrg,

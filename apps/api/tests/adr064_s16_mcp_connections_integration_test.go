@@ -86,7 +86,7 @@ func TestMCPRevokeCascadesToTokensAsAppRole(t *testing.T) {
 		t.Fatalf("open token lookup tx: %v", err)
 	}
 
-	svc := mcp.NewService(mcp.NewRepo(pool))
+	svc := auditedMCPService(pool, mcp.NewRepo(pool))
 	g := connectRealGrant(t, pool, svc)
 	eng := mountConnectionsLikeProduction(t, svc, adminPrincipal(g.tenantID, g.userID))
 
@@ -244,7 +244,7 @@ func TestMCPConnectionsListThroughMountedRouteAsAppRole(t *testing.T) {
 		t.Fatalf("open tenant tx: %v", err)
 	}
 
-	svc := mcp.NewService(mcp.NewRepo(pool))
+	svc := auditedMCPService(pool, mcp.NewRepo(pool))
 	g := connectRealGrant(t, pool, svc)
 	eng := mountConnectionsLikeProduction(t, svc, adminPrincipal(g.tenantID, g.userID))
 
@@ -368,7 +368,7 @@ func TestMCPGrantsSiteScopePolicyIsLiveAndTheServiceRefusesOutLoud(t *testing.T)
 	ctx := context.Background()
 	pool := startPostgres(t)
 
-	svc := mcp.NewService(mcp.NewRepo(pool))
+	svc := auditedMCPService(pool, mcp.NewRepo(pool))
 	repo := mcp.NewRepo(pool)
 	g := connectRealGrant(t, pool, svc)
 

@@ -45,6 +45,31 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/mcp"
 )
 
+// auditedMCPService is the ONE way this package builds an mcp.Service, and it
+// exists because thirteen integration tests were building one without a
+// recorder and exercising consent, mint and revoke against it.
+//
+// THOSE THIRTEEN FAILURES WERE THE GATE WORKING. Under ADR-061 A10 and the
+// owner's ruling, a Service with no recorder may not approve, mint or revoke:
+// an unaudited assistant surface presenting as a working one is the state the
+// ruling exists to eliminate. The fixtures had been silently in that state, and
+// making it loud is what surfaced them. The fix is therefore to wire the
+// recorder production always wires -- cmd/wpmgr/main.go has never not called
+// WithAudit -- and NOT to soften Service.requireRecorder.
+//
+// One helper, deliberately, rather than a second one alongside internal/mcp's
+// auditedService: two helpers that must agree is a shape this repo has produced
+// repeatedly, and they drift on the day one of them gains an argument. This is
+// the integration-side equivalent and the only one in package tests.
+//
+// The store is passed rather than derived because callers already hold one --
+// several assert against the same repo they hand in -- and re-deriving it here
+// would give them a Service talking to a different object than the one they
+// then inspect.
+func auditedMCPService(pool *db.Pool, store mcp.Store) *mcp.Service {
+	return mcp.NewService(store).WithAudit(audit.NewRecorder(pool, domain.SystemClock{}))
+}
+
 // auditInsertGrant flips INSERT on audit_log for the application role, through
 // the superuser pool. It returns nothing and fails loudly: a REVOKE that
 // silently did not apply would make the fail-closed half of this test pass for

@@ -129,7 +129,7 @@ func TestMCPApproveSuppliesM127ColumnsAsAppRole(t *testing.T) {
 	ctx := context.Background()
 	pool := startPostgres(t)
 	repo := mcp.NewRepo(pool)
-	svc := mcp.NewService(repo)
+	svc := auditedMCPService(pool, repo)
 
 	tenant := seedTenant(t, pool, "mcp-m127-approve-"+uuid.NewString()[:8])
 
@@ -230,7 +230,7 @@ func TestMCPActivityStampLandsAsAppRole(t *testing.T) {
 	pool := startPostgres(t)
 	repo := mcp.NewRepo(pool)
 	siteRepo := site.NewRepo(pool)
-	svc := mcp.NewService(repo)
+	svc := auditedMCPService(pool, repo)
 
 	tenant := seedTenant(t, pool, "mcp-605-stamp-"+uuid.NewString()[:8])
 
@@ -319,7 +319,7 @@ func TestMCPActiveConnectionDoesNotIdleExpireAsAppRole(t *testing.T) {
 	pool := startPostgres(t)
 	repo := mcp.NewRepo(pool)
 	siteRepo := site.NewRepo(pool)
-	svc := mcp.NewService(repo)
+	svc := auditedMCPService(pool, repo)
 
 	tenant := seedTenant(t, pool, "mcp-127-idle-"+uuid.NewString()[:8])
 
@@ -413,7 +413,7 @@ func TestMCPAbsoluteExpiryRefusesAndActivityCannotRescueItAsAppRole(t *testing.T
 	pool := startPostgres(t)
 	repo := mcp.NewRepo(pool)
 	siteRepo := site.NewRepo(pool)
-	svc := mcp.NewService(repo)
+	svc := auditedMCPService(pool, repo)
 
 	tenant := seedTenant(t, pool, "mcp-127-abs-"+uuid.NewString()[:8])
 
@@ -510,7 +510,7 @@ func TestMCPStoredCapabilitiesAreTheAuthorityAsAppRole(t *testing.T) {
 	pool := startPostgres(t)
 	repo := mcp.NewRepo(pool)
 	siteRepo := site.NewRepo(pool)
-	svc := mcp.NewService(repo)
+	svc := auditedMCPService(pool, repo)
 
 	tenant := seedTenant(t, pool, "mcp-127-caps-"+uuid.NewString()[:8])
 
