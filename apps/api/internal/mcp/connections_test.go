@@ -670,3 +670,74 @@ func newConnectionsRouter(t *testing.T, store Store, p domain.Principal) *gin.En
 	NewHandler(auditedService(store)).RegisterConnections(g)
 	return eng
 }
+
+// ---------------------------------------------------------------------------
+// PROOF 8 -- GH #652. THE LISTED CAPABILITY SET IS THE STORED ONE, EXACTLY,
+// FOR A GRANT HOLDING MORE THAN THE DEFAULT.
+//
+// Until the capability vocabulary widened to eight strings every grant held
+// exactly {mcp.sites.read}, so an omitted field here was indistinguishable
+// from a correct one -- there was only ever one answer. This grant carries
+// three, in a deliberately non-alphabetical, non-insertion-order column value,
+// so a test that happened to pass on a coincidental ordering would not be
+// mistaken for one that reads the column.
+//
+// This runs through the MOUNTED HANDLER, not connectionFromGrant directly, so
+// it also proves toConnectionDTO does not drop the field on the way to JSON.
+// ---------------------------------------------------------------------------
+
+func TestListedCapabilitiesAreTheStoredSetExactlyForANonDefaultGrant(t *testing.T) {
+	tenantID := uuid.New()
+	stored := []string{
+		string(CapPerformanceRead),
+		string(CapSitesRead),
+		string(CapUptimeRead),
+	}
+	store := &fakeStore{grants: []sqlc.McpGrant{
+		{
+			ID:            uuid.New(),
+			Name:          "ci runner",
+			Status:        string(GrantStatusActive),
+			SiteScopeMode: string(SiteScopeModeAll),
+			Capabilities:  stored,
+		},
+	}}
+	eng := newConnectionsRouter(t, store, orgPrincipal(tenantID))
+
+	w := httptest.NewRecorder()
+	eng.ServeHTTP(w, httptest.NewRequest(http.MethodGet, ConnectionsPath, nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("list answered %d, want 200. body: %s", w.Code, w.Body.String())
+	}
+
+	var got connectionListDTO
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("list body did not decode: %v. body: %s", err, w.Body.String())
+	}
+	if len(got.Connections) != 1 {
+		t.Fatalf("got %d connections, want 1", len(got.Connections))
+	}
+
+	gotCaps := got.Connections[0].Capabilities
+	if len(gotCaps) != len(stored) {
+		t.Fatalf("listed %d capabilities %v, want the %d stored ones %v",
+			len(gotCaps), gotCaps, len(stored), stored)
+	}
+	want := map[string]bool{}
+	for _, c := range stored {
+		want[c] = true
+	}
+	for _, c := range gotCaps {
+		if !want[c] {
+			t.Errorf("listed capability %q was never in the stored set %v", c, stored)
+		}
+		delete(want, c)
+	}
+	if len(want) != 0 {
+		remaining := make([]string, 0, len(want))
+		for c := range want {
+			remaining = append(remaining, c)
+		}
+		t.Errorf("stored capabilities %v never made it to the wire", remaining)
+	}
+}

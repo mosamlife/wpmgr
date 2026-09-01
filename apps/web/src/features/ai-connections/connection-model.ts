@@ -75,6 +75,17 @@ export interface AiConnection {
   readonly siteScopeMode: string;
   /** null means not revoked. Never inferred from status, and never a zero date. */
   readonly revokedAt: string | null;
+  /**
+   * The raw `mcp.<noun>.read` wire strings this grant holds (#652 / #663).
+   *
+   * ALWAYS AN ARRAY, NEVER ABSENT OR NULL. dto.go's capabilityNames always
+   * builds with `make([]string, 0, ...)`, so a grant holding none produces
+   * `[]`, not a missing key -- and `[]` here is a live, meaningful fact: the
+   * connection can reach no tool at all, not "we don't know what it can do".
+   * See capabilityLabel in ./capabilities for why an entry outside this
+   * build's label map is still rendered rather than dropped.
+   */
+  readonly capabilities: readonly string[];
 }
 
 /**

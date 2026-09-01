@@ -306,7 +306,16 @@ describe("step 3 exists at all, and sits before capabilities", () => {
     expect(screen.queryByText(/4\. Choose sites and permissions/i)).not.toBeInTheDocument();
   });
 
-  it("does not invent a numbered step for capabilities, which has no backend", async () => {
+  it("does not invent a numbered step for capabilities, which no completion path lets an operator choose today", async () => {
+    // reachSiteStep exercises the OAuth path (it clicks the oauth auth card),
+    // where "this wizard never creates the grant" is true: Approve
+    // (apps/api/internal/mcp/service.go:607) takes no capability field. The
+    // token path differs -- the mint endpoint already accepts one
+    // (dto.go:264) and only MintConnectionInput lacks the field
+    // (use-ai-connections.ts:228-233) -- but neither path has a picker in
+    // this frontend, so the assertion below holds for both. Not a claim
+    // about the backend either way: the vocabulary and both endpoints exist.
+    // See GH #660 for where a picker should live.
     await reachSiteStep();
     expect(screen.queryByRole("heading", { name: /what this connection may do/i })).toBeNull();
     expect(screen.getByText(/permissions are chosen on the approval screen/i)).toBeInTheDocument();

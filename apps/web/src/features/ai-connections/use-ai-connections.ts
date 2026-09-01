@@ -70,6 +70,13 @@ const connectionSchema = z.object({
   protocol: protocolSchema,
   last_used_at: z.string().nullable(),
   revoked_at: z.string().nullable(),
+  // dto.go's connectionDTO.Capabilities: ALWAYS PRESENT, ALWAYS AN ARRAY.
+  // capabilityNames builds with make([]string, 0, len(...)), so a grant
+  // holding none serialises as `[]`, never `null` and never an absent key.
+  // Requiring the key here (not `.optional()`) means a server that ever
+  // omitted it fails the parse loudly instead of this list quietly treating
+  // "the field is missing" the same as "the grant holds nothing".
+  capabilities: z.array(z.string()),
 });
 
 // An OBJECT, not a bare array. dto.go says why: an error body and a bare `[]`
@@ -131,6 +138,12 @@ export function toAiConnection(raw: z.infer<typeof connectionSchema>): AiConnect
     createdAt: raw.created_at,
     siteScopeMode: raw.site_scope_mode,
     revokedAt: raw.revoked_at,
+    // NOT FILTERED AGAINST A KNOWN VOCABULARY HERE. policy.go's
+    // capabilitiesFromColumn does not drop an unrecognised name either, and
+    // for the same reason: this is what the server actually stored for this
+    // grant, and a UI-side allowlist deciding otherwise is the defect #652
+    // was filed over, one layer up.
+    capabilities: raw.capabilities,
   };
 }
 

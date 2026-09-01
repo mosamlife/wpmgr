@@ -31,6 +31,7 @@ const CONNECTED: AiConnection = {
   createdAt: "2026-08-01T00:00:00.000Z",
   siteScopeMode: "all",
   revokedAt: null,
+  capabilities: ["mcp.sites.read"],
 };
 
 /** The copy that must never appear over a failure. */
@@ -323,5 +324,56 @@ describe("a field the client did not send is rendered as absent", () => {
     });
     expect(await screen.findByText(/unreadable timestamp/i)).toBeInTheDocument();
     expect(screen.queryByText(/invalid date/i)).not.toBeInTheDocument();
+  });
+});
+
+describe("capabilities render exactly what the grant holds (#652)", () => {
+  it("renders the exact capability set, not the org default and not a guess", async () => {
+    // Asserted on the exact set. A non-emptiness check would pass a
+    // wrong-but-plausible value -- e.g. the whole seven-member org default
+    // rendered in place of the two capabilities this grant actually holds.
+    renderList({
+      status: "ready",
+      connections: [
+        { ...CONNECTED, capabilities: ["mcp.uptime.read", "mcp.backups.read"] },
+      ],
+    });
+    const list = await screen.findByTestId("capabilities-list");
+    expect(list.textContent).toContain("Uptime");
+    expect(list.textContent).toContain("Backups");
+    // Not the full org default set (§ policy.go scopeCapabilities[ScopeRead]):
+    // any member outside the two granted must not appear.
+    for (const label of ["Sites", "Security", "Activity", "Performance", "Diagnostics"]) {
+      expect(list.textContent).not.toContain(label);
+    }
+  });
+
+  it("renders an empty capability set as inert, not as missing data", async () => {
+    renderList({
+      status: "ready",
+      connections: [{ ...CONNECTED, capabilities: [] }],
+    });
+    expect(await screen.findByTestId("capabilities-none")).toBeInTheDocument();
+    // The uncommon-but-real branch must not also render, and vice versa.
+    expect(screen.queryByTestId("capabilities-list")).not.toBeInTheDocument();
+  });
+
+  it("still renders a populated set, so the empty-set guard above does not over-fire", async () => {
+    renderList({ status: "ready", connections: [CONNECTED] });
+    expect(await screen.findByTestId("capabilities-list")).toBeInTheDocument();
+    expect(screen.queryByTestId("capabilities-none")).not.toBeInTheDocument();
+  });
+
+  it("renders a capability this build's label map does not recognise, as itself", async () => {
+    // The server does not filter unknown names out of what it returns
+    // (capabilitiesFromColumn in policy.go), so a UI label map dropping one
+    // would re-create the exact defect #652 was filed over, one layer up.
+    renderList({
+      status: "ready",
+      connections: [{ ...CONNECTED, capabilities: ["mcp.sites.read", "mcp.made.up.read"] }],
+    });
+    const list = await screen.findByTestId("capabilities-list");
+    expect(list.textContent).toContain("mcp.made.up.read");
+    expect(list.textContent).toContain("Sites");
   });
 });

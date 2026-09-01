@@ -170,7 +170,21 @@ type connectionDTO struct {
 	Status        string   `json:"status"`
 	SiteScopeMode string   `json:"site_scope_mode"`
 	Scopes        []string `json:"scopes"`
-	CreatedAt     string   `json:"created_at"`
+
+	// Capabilities is the RAW STORED VOCABULARY -- "mcp.sites.read" and its
+	// seven siblings, not a human label. GH #652: the consent screen and the
+	// connect wizard already treat this vocabulary as opaque wire strings the
+	// FRONTEND labels (apps/web/src/features/ai-connections/connect-wizard.tsx
+	// joins token.capabilities verbatim; use-ai-connections.ts's zod schema
+	// already types the mint response's own capabilities as z.array(z.string())).
+	// No label mapping exists on either side of this wire today, so returning
+	// prose here would be a new, undocumented contract, not a reuse of an
+	// existing one -- and a server that returns prose is a server that has to
+	// be redeployed to fix a typo. Non-nil even when empty, matching this
+	// struct's other slice fields: [] on the wire, never null.
+	Capabilities []string `json:"capabilities"`
+
+	CreatedAt string `json:"created_at"`
 
 	// The client's OWN unverified claims. Never defaulted to Name: one is the
 	// client's assertion and the other is the operator's, and the `reported_`
@@ -369,6 +383,7 @@ func toConnectionDTO(c Connection) connectionDTO {
 		Status:                string(c.Status),
 		SiteScopeMode:         string(c.SiteScopeMode),
 		Scopes:                scopes,
+		Capabilities:          capabilityNames(c.Capabilities),
 		CreatedAt:             c.CreatedAt.UTC().Format(time.RFC3339Nano),
 		ReportedClientName:    c.ReportedClientName,
 		ReportedClientVersion: c.ReportedClientVersion,
@@ -378,8 +393,8 @@ func toConnectionDTO(c Connection) connectionDTO {
 		// DECISION 1 exists to refuse.
 		SetupClient: c.SetupClient,
 		Protocol:    proto,
-		LastUsedAt:            isoOrNil(c.LastUsedAt),
-		RevokedAt:             isoOrNil(c.RevokedAt),
+		LastUsedAt:  isoOrNil(c.LastUsedAt),
+		RevokedAt:   isoOrNil(c.RevokedAt),
 	}
 }
 

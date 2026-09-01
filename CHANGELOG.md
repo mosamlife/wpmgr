@@ -6,6 +6,25 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ## [Unreleased]
 
+## [0.61.151] - 2026-09-01
+
+### Added
+
+- A per-tenant switch that turns the assistant surface off entirely, independent of any single connection's grant (m130).
+- The read capability vocabulary a grant can hold widened from one member to the full v1 set (m131). The default a newly created grant receives is unchanged, so nothing already issued gains a capability it was not explicitly given.
+- Tool calls on the live MCP endpoint now carry a per-connection and a per-tenant rate limit. A refusal names both the sustained rate and the burst allowance it is enforcing, rather than leaving a client to find the ceiling by trial and error.
+- Connections now record the client the operator said they were setting the connection up for, distinct from the client name and version the connection later negotiates on its own, and return it alongside the grant.
+- A grant's expiry can no longer be set more than one year past its creation. Nothing today asks for more than 90 days, so this closes an open-ended bound ahead of the caller that will.
+
+### Fixed
+
+- A capability refusal on the assistant surface now answers 403 with its own error code, naming the capability that was required and the ones the grant actually holds, instead of falling through to a generic 401 that told the client to re-authenticate. Re-authenticating could never have changed the answer, because the refusal was about the grant and not the credential. **Client-visible behaviour change**: anything integrating against the assistant surface that treated 401 as "renew and retry" needs to treat 403 as terminal instead.
+
+### Security
+
+- Every table the assistant surface can read now carries the same restrictive site-scope policy already enforced elsewhere in the schema: 22 policies added across 22 tables that previously had no database-level opinion of their own about which site a scoped grant could reach (m132). These protect every path that runs with a site-constrained principal, which is the ordinary way a site-scoped collaborator reaches this data.
+- The chokepoint the assistant surface uses to resolve which sites a connection may reach now takes the caller's authenticated principal rather than a bare tenant id, so it is capable of engaging the site-scope policies above wherever that principal is site-constrained. On the assistant's own read path it is not: resolving a grant's site allowlist is deliberately done with a tenant-scoped principal, because the allowlist cannot be used to scope the query that produces it. The assistant surface's site scoping there is enforced by the resolved allowlist in application code, not by this database policy.
+
 ## [0.61.150] - 2026-08-31
 
 ### Fixed

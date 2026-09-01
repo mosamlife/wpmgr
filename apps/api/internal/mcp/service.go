@@ -1799,8 +1799,10 @@ func orEmpty(ids []uuid.UUID) []uuid.UUID {
 //     because an empty result correctly means "no sites" and never "no filter",
 //     every tag-scoped connection would authenticate to nothing. That is
 //     fail-closed and still a total outage of the mode.
+//
 //   - 'all'   -- names no ids. Org-wide IS the intended meaning; a site-scoped
 //     principal here contradicts the stored grant.
+//
 //   - 'list'  -- the allowlist would be exactly the requested ids, so the
 //     policy would intersect the set with itself and could refuse nothing the
 //     query does not already refuse. Zero security gain, and a second copy of
@@ -2041,11 +2043,15 @@ func (s *Service) RevokeConnection(ctx context.Context, p domain.Principal, gran
 // grant instead of a constant.
 func connectionFromGrant(g sqlc.McpGrant) Connection {
 	return Connection{
-		ID:                    g.ID,
-		Name:                  g.Name,
-		Status:                GrantStatus(g.Status),
-		SiteScopeMode:         SiteScopeMode(g.SiteScopeMode),
-		Scopes:                grantScopes(),
+		ID:            g.ID,
+		Name:          g.Name,
+		Status:        GrantStatus(g.Status),
+		SiteScopeMode: SiteScopeMode(g.SiteScopeMode),
+		Scopes:        grantScopes(),
+		// Read straight off the row via capabilitiesFromColumn -- the same
+		// reader Authenticate uses on chk.GrantCapabilities -- and never
+		// recomputed. See Connection.Capabilities.
+		Capabilities:          capabilitiesFromColumn(g.Capabilities),
 		CreatedAt:             g.CreatedAt,
 		ReportedClientName:    g.ClientName,
 		ReportedClientVersion: g.ClientVersion,

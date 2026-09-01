@@ -26,6 +26,7 @@ function row(over: Record<string, unknown> = {}): Record<string, unknown> {
     protocol: { state: "recognised", version: "2025-11-25" },
     last_used_at: "2026-08-29T10:00:00Z",
     revoked_at: null,
+    capabilities: ["mcp.sites.read"],
     ...over,
   };
 }
@@ -169,5 +170,43 @@ describe("status matches what the server can actually emit", () => {
     expect(() =>
       parseConnectionList({ connections: [row({ status: "paused" })] }),
     ).toThrow();
+  });
+});
+
+describe("capabilities survive the wire exactly (#652)", () => {
+  // dto.go's connectionDTO.Capabilities is ALWAYS present and ALWAYS an
+  // array (capabilityNames builds with make([]string, 0, len(...))), so the
+  // field is required in connectionSchema, not `.optional()`. This is the
+  // MUTATION PAIR for that: removing `capabilities` from the schema must turn
+  // this test red, naming the field, before it is restored.
+  it("keeps the exact capability set the server sent, not a default or a subset", () => {
+    // Asserted on the exact array, not on non-emptiness: a schema bug that
+    // substituted the org default (all seven) or dropped down to the one
+    // DefaultGrantCapabilities name would still be "non-empty" and this must
+    // still catch it.
+    const c = one({ capabilities: ["mcp.uptime.read", "mcp.backups.read"] });
+    expect(c.capabilities).toEqual(["mcp.uptime.read", "mcp.backups.read"]);
+  });
+
+  it("keeps an empty capability array as [], never as undefined or the default", () => {
+    // A grant holding no capability is a real, live state (Authenticate
+    // refuses it outright) and must parse as [], not be coerced into
+    // something else or dropped.
+    const c = one({ capabilities: [] });
+    expect(c.capabilities).toEqual([]);
+  });
+
+  it("keeps a capability string this build's vocabulary does not recognise", () => {
+    // policy.go's capabilitiesFromColumn does not filter the column read
+    // back, on purpose, so an unrecognised name the server actually stored
+    // must survive parsing rather than being dropped as "unknown".
+    const c = one({ capabilities: ["mcp.sites.read", "mcp.not.a.real.capability"] });
+    expect(c.capabilities).toEqual(["mcp.sites.read", "mcp.not.a.real.capability"]);
+  });
+
+  it("refuses a payload missing the capabilities field rather than defaulting it", () => {
+    const badRow = row();
+    delete badRow.capabilities;
+    expect(() => parseConnectionList({ connections: [badRow] })).toThrow();
   });
 });
