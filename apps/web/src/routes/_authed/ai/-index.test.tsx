@@ -161,6 +161,20 @@ describe("/ai's static surfaces", () => {
     ).toBeInTheDocument();
   });
 
+  it("tells the truth about what a connection can do: read, scoped to sites, nothing else", async () => {
+    // Nothing in the product can propose anything (no proposal table, no
+    // approval queue, no approval screen anywhere in the route tree). The
+    // subline used to say "It can propose changes; it can never approve
+    // them." -- a false capability claim. It must now say only what is true.
+    renderPage();
+    const subline = await screen.findByText(
+      /let an ai client read your fleet through one endpoint/i,
+    );
+    expect(subline).toHaveTextContent(/limited to the sites you scope it to/i);
+    expect(subline).toHaveTextContent(/it cannot change anything/i);
+    expect(subline).not.toHaveTextContent(/propose/i);
+  });
+
   it("offers a route into the wizard, which is how that page is reached at all", async () => {
     renderPage();
     await screen.findByTestId("connections-empty");

@@ -126,8 +126,8 @@ export function ConnectionsList({
             No AI clients are connected
           </p>
           <p className="text-sm text-[var(--color-muted-foreground)]">
-            Connect one and it can read your fleet. It can propose changes, and it can never approve
-            them.
+            Connect one and it can read your fleet, limited to the sites you scope it to. It cannot
+            change anything.
           </p>
         </div>
         {connectAction}

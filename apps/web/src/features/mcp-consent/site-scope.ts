@@ -244,9 +244,16 @@ export function describeSiteScope(scope: ResolvedSiteScope): string {
       // working state, not an error -- it is how you mint a credential now and
       // decide its reach later." Both branches say that consequence plainly
       // rather than treating the choice as incomplete.
+      //
+      // The wireframe's own phrase pairs "read nothing" with "propose
+      // nothing"; the propose half is dropped here on purpose. Nothing in the
+      // shipped product proposes anything -- the capability CHECK constraint
+      // admits only members ending `.read` (see migration m131) -- so saying
+      // it would be a false capability claim, not a description of what this
+      // scope withholds.
       return scope.because === "no-selection"
-        ? "No sites are selected. That is a working state, not an error: this connection will read nothing and propose nothing until you give it sites to cover, now or later."
-        : "This selection matches no sites, so this connection will read nothing and propose nothing right now. That is a working state, not an error: you can widen its scope later.";
+        ? "No sites are selected. That is a working state, not an error: this connection will read nothing until you give it sites to cover, now or later."
+        : "This selection matches no sites, so this connection will read nothing right now. That is a working state, not an error: you can widen its scope later.";
     case "unresolved":
       return scope.because === "loading"
         ? "Working out which sites this covers."
