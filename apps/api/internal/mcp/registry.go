@@ -537,6 +537,30 @@ func AuthorizeTool(name string, auth AuthorizedRequest) (ToolPolicy, refusalReas
 	return entry, "", nil
 }
 
+// RegistryPolicies returns the closed registry as POLICIES -- each tool with the
+// capability reaching it requires.
+//
+// IT EXISTS BECAUSE A DRIFT TEST OUTSIDE THIS PACKAGE CANNOT OTHERWISE ASK
+// "WHICH TOOLS SHOULD THIS CONNECTION SEE?". Tools() returns descriptors, which
+// carry no capability, so a proof in apps/api/tests comparing a
+// ceiling-filtered VisibleTools answer against the whole registry can only be
+// right while every tool happens to require the same capability. The moment one
+// does not -- a propose tool outside the read ceiling -- those proofs go red on
+// correct work, which is the over-firing the helpers were written to prevent.
+//
+// It is READ-ONLY and it grants nothing: same fresh slice, same cloned schema
+// bytes, same closed literal as Tools(). No request path uses it; VisibleTools
+// remains the only tools/list answer and AuthorizeTool the only gate.
+func RegistryPolicies() []ToolPolicy {
+	entries := registryTools()
+	out := make([]ToolPolicy, 0, len(entries))
+	for _, e := range entries {
+		e.invoke = nil // an invoker is not a fact about the surface
+		out = append(out, e)
+	}
+	return out
+}
+
 // Tools returns the FULL registry surface as descriptors, unfiltered by any
 // connection.
 //

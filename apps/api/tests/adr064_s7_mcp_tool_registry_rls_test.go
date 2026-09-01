@@ -199,7 +199,7 @@ func TestS7CapabilitiesAreResolvedByAuthenticateAsAppRole(t *testing.T) {
 	// (3) The registry admits the tool for this real connection, and tools/list
 	// shows it.
 	visible := mcp.VisibleTools(auth)
-	if !listsWholeRegistry(visible) {
+	if !listsWholeRegistry(visible, auth) {
 		t.Fatalf("tools/list for a fully-scoped connection returned %+v", visible)
 	}
 
@@ -354,7 +354,11 @@ func TestS7UntickedCapabilityRefusesByNameAsAppRole(t *testing.T) {
 	// (1) IT DOES NOT HIDE. The tool is still listed, and the descriptor says
 	// why it cannot be called.
 	visible := mcp.VisibleTools(denied)
-	if !listsWholeRegistry(visible) {
+	// COMPARED AGAINST denied's OWN CEILING, not auth's. They are different
+	// connections; measuring one request's listing against another's ceiling
+	// would pass or fail for reasons unrelated to the capability axis under
+	// test here.
+	if !listsWholeRegistry(visible, denied) {
 		t.Fatalf("an unticked capability HID the tool from tools/list: %+v", visible)
 	}
 	// FOUND BY NAME, not by index. visible[0] happened to be the right tool
@@ -460,7 +464,7 @@ func TestS7EmptySiteScopeRefusesByNameAsAppRole(t *testing.T) {
 	// exists. Hiding it here would send the operator hunting a capability
 	// problem they do not have.
 	visible := mcp.VisibleTools(auth)
-	if !listsWholeRegistry(visible) {
+	if !listsWholeRegistry(visible, auth) {
 		t.Fatalf("an empty site scope hid the tool from tools/list: %+v", visible)
 	}
 
@@ -546,7 +550,7 @@ func TestS7CapabilityOutsideTheOrgCeilingIsNotListedAsAppRole(t *testing.T) {
 	// POSITIVE CONTROL. The real connection -- real ceiling, real grant -- sees
 	// the tool and can call it, so an absence below is the ceiling and not a
 	// broken fixture.
-	if got := mcp.VisibleTools(auth); !listsWholeRegistry(got) {
+	if got := mcp.VisibleTools(auth); !listsWholeRegistry(got, auth) {
 		t.Fatalf("the real connection did not see the tool: %+v", got)
 	}
 	if _, _, err := mcp.AuthorizeTool(mcp.ToolFleetSitesList, auth); err != nil {
@@ -641,7 +645,7 @@ func TestS7CapabilityOutsideTheOrgCeilingIsNotListedAsAppRole(t *testing.T) {
 
 	// (4) IT DOES NOT OVER-FIRE. The untouched connection still lists and still
 	// calls the tool, after the refusals, against the same live database.
-	if got := mcp.VisibleTools(auth); !listsWholeRegistry(got) {
+	if got := mcp.VisibleTools(auth); !listsWholeRegistry(got, auth) {
 		t.Fatalf("the real connection lost the tool after the ceiling refusal: %+v", got)
 	}
 	if _, _, err := mcp.AuthorizeTool(mcp.ToolFleetSitesList, auth); err != nil {
@@ -669,18 +673,39 @@ func TestS7CapabilityOutsideTheOrgCeilingIsNotListedAsAppRole(t *testing.T) {
 // It compares against mcp.Tools(), the server's whole surface, so it still
 // fails if a tool is genuinely hidden -- which is the thing each proof is
 // actually asserting.
-func listsWholeRegistry(got []mcp.ToolDescriptor) bool {
-	all := mcp.Tools()
-	if len(got) != len(all) {
+func listsWholeRegistry(got []mcp.ToolDescriptor, auth mcp.AuthorizedRequest) bool {
+	// FILTERED BY THE ORG CEILING. VisibleTools HIDES a tool outside the
+	// ceiling and only ANNOTATES one the grant merely lacks, so the set it
+	// returns is the ceiling-admitted subset -- not the whole registry.
+	// Comparing against the whole registry is correct only while every tool
+	// requires the same capability, and stops being correct the moment one does
+	// not: a propose tool outside the read ceiling would turn all five proofs
+	// below red on a listing that was right. That is precisely the over-firing
+	// this helper replaced a hard-coded len() == 1 to avoid, so it has to know
+	// about the ceiling too.
+	//
+	// The predicate is re-derived here rather than borrowed, which does mean a
+	// bug in withinOrgCeiling would be invisible to these five. That is
+	// deliberate: they are positive controls for OTHER axes, and the ceiling
+	// itself has its own dedicated proof
+	// (TestS7CapabilityOutsideTheOrgCeilingIsNotListedAsAppRole) which asserts
+	// the omission directly.
+	want := []string{}
+	for _, p := range mcp.RegistryPolicies() {
+		if auth.OrgCeiling.Allows(p.Capability) {
+			want = append(want, p.Name)
+		}
+	}
+	if len(got) != len(want) {
 		return false
 	}
 	seen := map[string]int{}
 	for _, d := range got {
 		seen[d.Name]++
 	}
-	for _, d := range all {
-		seen[d.Name]--
-		if seen[d.Name] < 0 {
+	for _, n := range want {
+		seen[n]--
+		if seen[n] < 0 {
 			return false
 		}
 	}

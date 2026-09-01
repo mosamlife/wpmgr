@@ -864,7 +864,7 @@ func TestToolsCall_UntickedCapabilityRefusesWithItsOwnCode(t *testing.T) {
 
 	// The tool is LISTED to this connection: the refusal below is a refusal,
 	// not a consequence of an empty surface.
-	if got := VisibleTools(auth); !sameToolNames(got, registryToolNames()) {
+	if got := VisibleTools(auth); !sameToolNames(got, registryToolNames(auth)) {
 		t.Fatalf("tools/list hid a tool from a connection lacking its capability: %+v", got)
 	}
 
@@ -1046,11 +1046,33 @@ func TestToolsList_IsToolsOnlyAndReadOnly(t *testing.T) {
 	}
 	// THE LISTING IS COMPARED AGAINST THE REGISTRY, not against a hard-coded
 	// count. The point of this assertion is that tools/list over the real
-	// mounted transport returns the server's whole tool surface and nothing
-	// else -- an extra name here would be a tool reachable over HTTP that the
-	// closed literal never declared.
-	if !sameToolNames(resp.Result.Tools, registryToolNames()) {
-		t.Fatalf("tools = %#v, want exactly %v", resp.Result.Tools, registryToolNames())
+	// mounted transport returns nothing the closed literal never declared --
+	// an extra name here is a tool reachable over HTTP that no reviewed diff
+	// added.
+	//
+	// IT ASSERTS CONTAINMENT, NOT EQUALITY, AND THE ASYMMETRY IS DELIBERATE.
+	// This test drives HTTP and so holds no AuthorizedRequest, which means it
+	// cannot know this fixture's org ceiling -- and the ceiling is what decides
+	// how many tools SHOULD be listed. Demanding equality against the whole
+	// registry would therefore go red the day a tool outside the read ceiling
+	// lands, on a listing that was correct. Containment cannot over-fire that
+	// way and still catches the thing this test exists for. The ceiling-aware
+	// equality check lives in the proofs that do hold an auth.
+	registered := map[string]bool{}
+	for _, d := range Tools() {
+		registered[d.Name] = true
+	}
+	for _, d := range resp.Result.Tools {
+		if !registered[d.Name] {
+			t.Fatalf("tools/list offered %q, which is not in the closed registry", d.Name)
+		}
+	}
+	if len(resp.Result.Tools) == 0 {
+		t.Fatal("tools/list returned nothing, so every assertion here is vacuous")
+	}
+	if !sameToolNames(resp.Result.Tools, []string{ToolFleetSitesList, ToolFleetUpdatesPending}) {
+		t.Fatalf("tools = %#v, want both Tier 0 fleet reads for a default-ceiling connection",
+			resp.Result.Tools)
 	}
 	// EVERY tool must carry a schema, not just the first.
 	for _, d := range resp.Result.Tools {

@@ -112,7 +112,7 @@ func TestExitGate_GuessedToolNameIsUnreachable(t *testing.T) {
 	// reddening on work it was never meant to police is a guard that gets
 	// switched off. What the ruling actually claims is that no entry is hidden
 	// by a capability the grant lacks, so that is what is compared.
-	if got := VisibleTools(auth); !sameToolNames(got, registryToolNames()) {
+	if got := VisibleTools(auth); !sameToolNames(got, registryToolNames(auth)) {
 		t.Fatalf("a connection holding no capability was shown %d tools, want the whole "+
 			"registry listed and annotated: %+v", len(got), got)
 	}
@@ -492,7 +492,7 @@ func TestSiteScopeIsRefusedByName(t *testing.T) {
 	// NO capability notice -- this connection holds the capability, and telling
 	// it otherwise would send an operator hunting the wrong axis.
 	got := VisibleTools(auth)
-	if !sameToolNames(got, registryToolNames()) {
+	if !sameToolNames(got, registryToolNames(auth)) {
 		t.Fatalf("an empty site scope hid a tool from tools/list: %+v", got)
 	}
 	// EVERY descriptor is checked, not got[0]. Checking only the first left the
@@ -764,9 +764,21 @@ func TestVisibleToolNamesMatchTheListing(t *testing.T) {
 // on the day they were written and not about the boundary under test. Every one
 // of them went red on a correct second read tool, and a guard that reddens on
 // correct work is a guard that gets deleted rather than read.
-func registryToolNames() []string {
+func registryToolNames(auth AuthorizedRequest) []string {
 	out := []string{}
 	for _, e := range registryTools() {
+		// FILTERED BY THE ORG CEILING, because that is the one boundary
+		// VisibleTools HIDES behind (withinOrgCeiling drops; capabilityHeld
+		// only annotates). Comparing a ceiling-filtered answer against the
+		// UNFILTERED registry is correct only while every tool requires the
+		// same capability, and stops being correct the moment one does not --
+		// a propose tool outside the read ceiling makes every proof using this
+		// helper go red on work that crossed no boundary at all. That is the
+		// exact over-firing these helpers were written to prevent, so the
+		// helper has to know about the ceiling too.
+		if !auth.OrgCeiling.Allows(e.Capability) {
+			continue
+		}
 		out = append(out, e.Name)
 	}
 	return out
