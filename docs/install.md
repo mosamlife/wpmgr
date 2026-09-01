@@ -305,7 +305,7 @@ quickstart or a clone), bring up the stack with the pull-only overlay:
 <!-- wpmgr-install-pins:start (required pin; scripts/check-version-surfaces.sh keeps it current) -->
 
 ```bash
-export WPMGR_VERSION=v0.61.151   # omit to track :latest
+export WPMGR_VERSION=v0.61.152   # omit to track :latest
 docker compose -f infra/docker-compose.yml -f infra/docker-compose.prod.yml up -d
 ```
 
