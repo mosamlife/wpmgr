@@ -142,6 +142,18 @@ func newSvc(t *testing.T) (*Service, *fakeRepo, *capturingRecorder) {
 	return NewService(repo, domain.NewValidator(), domain.SystemClock{}), repo, rec
 }
 
+// apiKeyOwnerOf is a TENANT API KEY holding tenant:manage — a machine, not a
+// person. That principal type can reach authz.PermTenantManage, so it can
+// engage and release the kill switch.
+func apiKeyOwnerOf(tenantID uuid.UUID) domain.Principal {
+	return domain.Principal{
+		Type:     domain.PrincipalAPIKey,
+		TenantID: tenantID,
+		APIKeyID: uuid.New(),
+		Role:     "owner",
+	}
+}
+
 func ownerOf(tenantID uuid.UUID) domain.Principal {
 	return domain.Principal{
 		Type:     domain.PrincipalUser,
@@ -418,5 +430,85 @@ func TestNoAssistantControlWritesEnablement(t *testing.T) {
 	}
 	if repo.state[org].EnabledAt != nil {
 		t.Fatal("ResumeAssistant wrote assistant_enabled_at; enablement needs its own migration first (m130 DECISION 5)")
+	}
+}
+
+// --- 5. THE AUDIT ROW MUST NOT SAY A PERSON WHEN A MACHINE ACTED -------------
+//
+// A tenant API key holding tenant:manage can pause and resume.
+// domain.Principal.ActorID returns APIKeyID for that principal type, so pairing
+// it with a hard-coded audit.ActorUser writes a row whose actor resolves to
+// NEITHER a user NOR an api key. The incident trail then answers "who stopped
+// the assistant, and with what credential" with a shrug, at exactly the moment
+// someone is asking it.
+//
+// audit.ActorFor is this codebase's existing answer and both events go through
+// it. These assertions exist so an edit back to a literal audit.ActorUser
+// cannot pass — which is precisely how the line got written the first time.
+func TestPauseAttributesAnAPIKeyToTheAPIKeyActorType(t *testing.T) {
+	svc, repo, rec := newSvc(t)
+	org := uuid.New()
+	repo.state[org] = &AssistantState{}
+	p := apiKeyOwnerOf(org)
+
+	if _, err := svc.PauseAssistant(context.Background(), p, org, PauseInput{Reason: "automated stop"}, rec); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+
+	ev := rec.only(t, "tenant.assistant.paused")
+	if ev.ActorType != audit.ActorAPIKey {
+		t.Fatalf("THE AUDIT ROW SAYS A PERSON ACTED: actor_type=%q for an API-key principal, want %q. "+
+			"An incident reader cannot tell which credential stopped the assistant.",
+			ev.ActorType, audit.ActorAPIKey)
+	}
+	// The id must be the KEY's id, so actor resolution has something to match.
+	if ev.ActorID != p.APIKeyID.String() {
+		t.Fatalf("actor_id=%q, want the api key id %q", ev.ActorID, p.APIKeyID)
+	}
+}
+
+func TestResumeAttributesAnAPIKeyToTheAPIKeyActorType(t *testing.T) {
+	svc, repo, rec := newSvc(t)
+	org := uuid.New()
+	pausedAt := time.Now().UTC()
+	reason := "incident"
+	repo.state[org] = &AssistantState{PausedAt: &pausedAt, PausedReason: &reason}
+	p := apiKeyOwnerOf(org)
+
+	if _, err := svc.ResumeAssistant(context.Background(), p, org, rec); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+
+	ev := rec.only(t, "tenant.assistant.resumed")
+	if ev.ActorType != audit.ActorAPIKey {
+		t.Fatalf("THE AUDIT ROW SAYS A PERSON ACTED: actor_type=%q for an API-key principal, want %q. "+
+			"Releasing an incident stop is as much a which-credential question as engaging one.",
+			ev.ActorType, audit.ActorAPIKey)
+	}
+	if ev.ActorID != p.APIKeyID.String() {
+		t.Fatalf("actor_id=%q, want the api key id %q", ev.ActorID, p.APIKeyID)
+	}
+}
+
+// The other arm, so the fix cannot be "always api_key". A human owner must
+// still record as a user: an assertion that passes for every principal type is
+// not an assertion.
+func TestPauseAndResumeStillAttributeAUserToTheUserActorType(t *testing.T) {
+	svc, repo, rec := newSvc(t)
+	org := uuid.New()
+	repo.state[org] = &AssistantState{}
+	p := ownerOf(org)
+
+	if _, err := svc.PauseAssistant(context.Background(), p, org, PauseInput{Reason: "human stop"}, rec); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+	if ev := rec.only(t, "tenant.assistant.paused"); ev.ActorType != audit.ActorUser {
+		t.Fatalf("a human owner recorded as actor_type=%q, want %q", ev.ActorType, audit.ActorUser)
+	}
+	if _, err := svc.ResumeAssistant(context.Background(), p, org, rec); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if ev := rec.only(t, "tenant.assistant.resumed"); ev.ActorType != audit.ActorUser {
+		t.Fatalf("a human owner recorded as actor_type=%q, want %q", ev.ActorType, audit.ActorUser)
 	}
 }

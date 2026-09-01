@@ -161,10 +161,17 @@ func (s *Service) PauseAssistant(ctx context.Context, p domain.Principal, id uui
 		if reason != nil {
 			meta["reason"] = *reason
 		}
+		// audit.ActorFor, NOT a hard-coded audit.ActorUser. A tenant API key
+		// holding tenant:manage can reach this route, and pairing ActorUser
+		// with an API-key id yields a row that resolves to neither a user nor a
+		// key — the incident trail answering "who stopped the assistant, with
+		// what credential" with a shrug, at the moment it is being asked. The
+		// record must not say a person when a machine acted.
+		actorType, actorID := audit.ActorFor(p)
 		_, aerr := rec.RecordInTx(ctx, tx, audit.Event{
 			TenantID:   id,
-			ActorType:  audit.ActorUser,
-			ActorID:    p.ActorID(),
+			ActorType:  actorType,
+			ActorID:    actorID,
 			Action:     actionAssistantPaused,
 			TargetType: "tenant",
 			TargetID:   id.String(),
@@ -193,10 +200,14 @@ func (s *Service) ResumeAssistant(ctx context.Context, p domain.Principal, id uu
 	}
 
 	st, err := s.repo.ResumeAssistant(ctx, id, p.UserID, func(tx pgx.Tx) error {
+		// audit.ActorFor for the same reason as the pause: releasing an
+		// incident stop is as much a "which credential did this" question as
+		// engaging one.
+		actorType, actorID := audit.ActorFor(p)
 		_, aerr := rec.RecordInTx(ctx, tx, audit.Event{
 			TenantID:   id,
-			ActorType:  audit.ActorUser,
-			ActorID:    p.ActorID(),
+			ActorType:  actorType,
+			ActorID:    actorID,
 			Action:     actionAssistantResumed,
 			TargetType: "tenant",
 			TargetID:   id.String(),
