@@ -1,3 +1,5 @@
+import { useEffect, useState } from "react";
+
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { PageError } from "@/components/feedback/page-error";
@@ -316,16 +318,55 @@ export function ConnectionVerifyBody({
   wire: ConnectionStatusWire;
   now?: Date;
 }) {
-  // The SERVER's instant by default, not the browser's: observed_at exists so
-  // "4 seconds ago" is not computed against a clock that may be minutes out.
+  // The SERVER's instant, not the browser's: observed_at exists so "4 seconds
+  // ago" is not computed against a clock that may be minutes out.
   const observed = now ?? new Date(wire.observed_at);
-  const instant = Number.isNaN(observed.getTime()) ? new Date() : observed;
+  if (Number.isNaN(observed.getTime())) {
+    // AN UNREADABLE INSTANT IS REPORTED, NEVER SUBSTITUTED.
+    //
+    // This branch used to fall back to `new Date()`, and that was this
+    // codebase's signature defect verbatim: a failure quietly coerced into a
+    // plausible value. Every age-derived verdict below is measured FROM this
+    // instant, so a browser clock standing in for an unreadable server one
+    // produces a confident "waiting", "nothing has arrived" or "unused for 40
+    // days" with nothing behind it -- and the operator cannot tell which. The
+    // three read identically to a correct answer, which is what makes the
+    // substitution worse than the gap.
+    return (
+      <div data-testid="verify-root">
+        <div data-testid="verify-unreadable-instant">
+          <p className="text-sm font-medium text-[var(--color-foreground)]">
+            We cannot place this check in time
+          </p>
+          <p className={cn("mt-2 text-sm", NOT_KNOWN_CLASS)}>
+            The server did not give us a readable observation time, so anything we said
+            about how long this connection has been waiting would be a guess. Try the check
+            again. If it keeps happening, the status endpoint is returning a malformed
+            timestamp.
+          </p>
+        </div>
+      </div>
+    );
+  }
   return (
     <div data-testid="verify-root">
-      <VerdictBody v={verifyVerdict(wire, instant)} />
+      <VerdictBody v={verifyVerdict(wire, observed)} />
     </div>
   );
 }
+
+/**
+ * How long a mounted panel may keep polling before it stops and says so.
+ *
+ * TEN MINUTES, AND A BOUND RATHER THAN NO BOUND IS THE POINT. The repository's
+ * rule -- "Never wait on a process with an unbounded loop" -- was written about
+ * shell loops, and a browser tab left open on this panel is the same shape: an
+ * operator who walks away mid-setup should not leave a tab hitting the status
+ * endpoint until the laptop sleeps. Ten minutes is comfortably longer than the
+ * five-minute mark at which the screen already says nothing has arrived, so the
+ * budget can only expire on a screen that has already given its answer.
+ */
+export const POLL_BUDGET_MS = 10 * 60 * 1000;
 
 export interface ConnectionVerifyProps {
   connectionId: string;
@@ -342,18 +383,48 @@ export interface ConnectionVerifyProps {
  * own broken request as a fact about the operator's client.
  */
 export function ConnectionVerify({ connectionId, className }: ConnectionVerifyProps) {
-  // Two-pass polling: read once to learn the verdict, and use the verdict to
-  // decide whether to keep asking. `enabled` cannot depend on data that does
-  // not exist yet, so the first pass always runs.
-  const first = useConnectionStatus(connectionId);
-  const wire = first.data;
-  const keepPolling =
-    wire === undefined
-      ? true
-      : shouldKeepPolling(verifyVerdict(wire, new Date(wire.observed_at)));
-  // Re-registering with the same key does not open a second request; it swaps
-  // the interval on the one cache entry.
-  const q = useConnectionStatus(connectionId, { enabled: keepPolling });
+  // The budget's start, and whether it has run out. `budgetFrom` is state and
+  // not a ref because "Check again" resets it and the reset has to re-run the
+  // timer effect below.
+  // ONE PIECE OF STATE, NOT TWO. `from` and `spent` always change together, and
+  // splitting them forced a synchronous `setSpent(false)` at the top of the
+  // effect to undo the previous budget -- a cascading render, and a lint error.
+  // Resetting both in the same update makes the effect's only setState the one
+  // inside the timer, where it belongs.
+  const [budget, setBudget] = useState(() => ({ from: Date.now(), spent: false }));
+
+  useEffect(() => {
+    // `from` is always stamped at Date.now(), so the remaining budget is always
+    // positive here and there is no already-expired branch to write.
+    const startedAt = budget.from;
+    const t = setTimeout(
+      () => {
+        // Guarded on `from` so a timer left over from a superseded budget
+        // cannot mark a freshly reset one as spent.
+        setBudget((b) => (b.from === startedAt ? { ...b, spent: true } : b));
+      },
+      POLL_BUDGET_MS - (Date.now() - startedAt),
+    );
+    return () => {
+      clearTimeout(t);
+    };
+  }, [budget.from]);
+
+  // ONE OBSERVER. The terminal decision goes inside the hook via `stopWhen`,
+  // because a second observer on the same key kept the interval alive no matter
+  // what the first one's `enabled` said.
+  const q = useConnectionStatus(connectionId, {
+    enabled: !budget.spent,
+    stopWhen: (data) => !shouldKeepPolling(verifyVerdict(data, new Date(data.observed_at))),
+  });
+  const wire = q.data;
+
+  function checkAgain() {
+    // Resetting the budget FIRST, so a click during a spent budget resumes
+    // polling rather than firing one shot into a stopped panel.
+    setBudget({ from: Date.now(), spent: false });
+    void q.refetch();
+  }
 
   if (q.error !== null) {
     return (
@@ -364,7 +435,7 @@ export function ConnectionVerify({ connectionId, className }: ConnectionVerifyPr
         <PageError
           what="We could not check this connection"
           why={q.error.message}
-          onRetry={() => void q.refetch()}
+          onRetry={checkAgain}
           isRetrying={q.isFetching}
         />
       </div>
@@ -379,15 +450,24 @@ export function ConnectionVerify({ connectionId, className }: ConnectionVerifyPr
     );
   }
 
+  // Whether this verdict is one the panel is still waiting on. A spent budget
+  // is only worth mentioning while something was still expected to change.
+  const stillWaiting = shouldKeepPolling(verifyVerdict(wire, new Date(wire.observed_at)));
+
   return (
     <div className={cn("space-y-4", className)} data-testid="verify-panel">
       <ConnectionVerifyBody wire={wire} />
-      <Button
-        variant="outline"
-        size="sm"
-        onClick={() => void q.refetch()}
-        disabled={q.isFetching}
-      >
+      {budget.spent && stillWaiting ? (
+        // THE BUDGET RUNNING OUT IS SAID, NOT HIDDEN. A panel that silently
+        // stopped polling looks identical to one that is still watching, and
+        // an operator waiting on a screen that stopped watching waits forever.
+        <p className={cn("text-sm", NOT_KNOWN_CLASS)} data-testid="verify-budget-spent">
+          We have stopped checking automatically. Nothing has changed for a while, and
+          nothing is wrong with the connection because of it. Check again when you have
+          started your client.
+        </p>
+      ) : null}
+      <Button variant="outline" size="sm" onClick={checkAgain} disabled={q.isFetching}>
         {q.isFetching ? "Checking..." : "Check again"}
       </Button>
     </div>

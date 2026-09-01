@@ -10,7 +10,12 @@ import {
   shouldKeepPolling,
   verifyVerdict,
 } from "./connection-status-model";
-import { parseConnectionStatus, type ConnectionStatusWire } from "./use-connection-status";
+import {
+  nextPollInterval,
+  parseConnectionStatus,
+  POLL_FLOOR_MS,
+  type ConnectionStatusWire,
+} from "./use-connection-status";
 
 // THE THREE STATES THIS SCREEN EXISTS TO KEEP APART, AND THE FOURTH IT MUST NOT
 // INVENT.
@@ -303,10 +308,14 @@ describe("connected and healthy", () => {
   });
 
   it("stops polling once the first call has succeeded", () => {
+    // THIS TEST USED TO ASSERT THE VERDICT SHAPE ONLY, which made it vacuous
+    // for the thing it is named after: `shouldKeepPolling` could have returned
+    // true for a succeeded call and this would still have passed. The
+    // behaviour, not the shape, is what the panel depends on.
     const w = healthy();
-    expect(verifyVerdict(w, new Date(w.observed_at))).toMatchObject({
-      firstCall: { kind: "succeeded" },
-    });
+    const v = verifyVerdict(w, new Date(w.observed_at));
+    expect(v).toMatchObject({ firstCall: { kind: "succeeded" } });
+    expect(shouldKeepPolling(v)).toBe(false);
   });
 
   it("says 'no header sent, treated as the floor' without printing a header the client never sent", async () => {
@@ -440,6 +449,81 @@ describe("connected, and something is wrong", () => {
       }),
     );
     expect(screen.getByTestId("firstcall-unknown")).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The polling stops. All three ways it must.
+// ---------------------------------------------------------------------------
+
+describe("nextPollInterval", () => {
+  const stopWhen = (d: ConnectionStatusWire) =>
+    !shouldKeepPolling(verifyVerdict(d, new Date(d.observed_at)));
+
+  it("stops on a terminal verdict rather than polling a settled panel forever", () => {
+    // The defect this replaced: the terminal decision lived on a SECOND query
+    // observer's `enabled`, and one enabled observer is all TanStack needs to
+    // keep the interval alive, so a revoked connection polled for as long as
+    // the panel stayed open.
+    const revoked = wire({ status: "revoked" });
+    expect(nextPollInterval(revoked, { enabled: true, stopWhen })).toBe(false);
+  });
+
+  it("stops when the caller's budget is spent", () => {
+    expect(nextPollInterval(wire(), { enabled: false, stopWhen })).toBe(false);
+  });
+
+  it("stops when the server names a cadence of zero", () => {
+    // Zero is the server asking us to stop, and it is a DIFFERENT answer from
+    // a missing field. `ms || 2000` would fold the two together.
+    expect(nextPollInterval(wire({ poll_after_ms: 0 }), { enabled: true })).toBe(false);
+  });
+
+  it("keeps polling a connection that has not answered yet", () => {
+    // THE OVER-FIRE HALF. A screen that stopped watching the one state it
+    // exists to watch would be worse than one that polls too long.
+    expect(nextPollInterval(wire(), { enabled: true, stopWhen })).toBe(2000);
+  });
+
+  it("honours a cadence the server actually names", () => {
+    expect(nextPollInterval(wire({ poll_after_ms: 5000 }), { enabled: true })).toBe(5000);
+  });
+
+  it("falls back to the floor on a negative cadence, never to a tight loop", () => {
+    expect(nextPollInterval(wire({ poll_after_ms: -1 }), { enabled: true })).toBe(
+      POLL_FLOOR_MS,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// An unreadable observation time is reported, never substituted.
+// ---------------------------------------------------------------------------
+
+describe("an unreadable observed_at", () => {
+  it("renders as not knowing, never as a verdict from the browser clock", async () => {
+    // Every age-derived verdict is measured FROM this instant. Substituting
+    // the local clock produces a confident "waiting" / "nothing arrived" /
+    // "unused for 40 days" with nothing behind it, and all three read exactly
+    // like a correct answer.
+    await renderBody(wire({ observed_at: "not-a-timestamp" }));
+    expect(screen.getByTestId("verify-unreadable-instant")).toBeInTheDocument();
+    expect(screen.getByText(/We cannot place this check in time/i)).toBeInTheDocument();
+  });
+
+  it("renders no verdict at all in that state", async () => {
+    await renderBody(wire({ observed_at: "not-a-timestamp" }));
+    // None of the three age phases may appear: each would be a guess.
+    expect(screen.queryByTestId("handshake-waiting")).toBeNull();
+    expect(screen.queryByTestId("handshake-silent")).toBeNull();
+    expect(screen.queryByTestId("handshake-connected")).toBeNull();
+  });
+
+  it("still renders the normal verdict when the time IS readable", async () => {
+    // The over-fire half: the guard must not swallow every good response.
+    await renderBody(wire(), new Date(Date.parse(CREATED) + 30_000));
+    expect(screen.queryByTestId("verify-unreadable-instant")).toBeNull();
+    expect(screen.getByTestId("handshake-waiting")).toBeInTheDocument();
   });
 });
 
