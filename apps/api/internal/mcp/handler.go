@@ -418,14 +418,20 @@ func (h *Handler) requireOrgScope() gin.HandlerFunc {
 			return
 		}
 		if p.IsSiteConstrained() {
-			status, dto := oauthError(domain.Forbidden(ErrCodeAccessDenied,
-				"site-scoped access cannot authorize an organisation-level connection"))
+			status, dto := oauthError(domain.Forbidden(ErrCodeAccessDenied, siteScopedRefusal))
 			c.AbortWithStatusJSON(status, dto)
 			return
 		}
 		c.Next()
 	}
 }
+
+// siteScopedRefusal is what a site-constrained principal is told on these two
+// routes, and it is a constant because BOTH middlewares below emit it. Two
+// copies of the same sentence would let one be reworded and turn "which
+// middleware ran first" -- an implementation detail -- into something a caller
+// could observe.
+const siteScopedRefusal = "site-scoped access cannot authorize an organisation-level connection"
 
 // requireGrantPermission is authz.RequirePermission(authz.PermAPIKeyManage) in
 // THIS package's error envelope.
@@ -453,13 +459,17 @@ func (h *Handler) requireOrgScope() gin.HandlerFunc {
 // route together. Reading Role off the principal and comparing it here would be
 // a second opinion, and a second opinion is a thing that drifts.
 //
-// THE SITE-SCOPE HALF IS requireOrgScope'S, mounted immediately before this.
-// PermAPIKeyManage is an authz.orgLevelPerms member, so authz.RequirePermission
-// would refuse a site-constrained principal regardless of role; requireOrgScope
-// already refuses exactly that set, by the same domain.IsSiteConstrained
-// predicate. Keeping them as two middlewares keeps each refusal's description
-// true to its own reason instead of collapsing both into one message that is
-// only half accurate.
+// THE SITE-SCOPE HALF IS CARRIED HERE TOO, and not only by requireOrgScope
+// which is mounted immediately before this. PermAPIKeyManage is an
+// authz.orgLevelPerms member, so authz.RequirePermission refuses a
+// site-constrained principal REGARDLESS of role, in the same middleware that
+// checks the permission; this mirrors that rather than depending on mount
+// order, because the alternative is a boundary that a reorder silently opens.
+// It is not a second opinion: it asks domain.IsSiteConstrained, the one
+// predicate requireOrgScope, authz.RequireSiteAccess, authz.RequireOrgScope and
+// the RLS dispatch in db.RunTenantTx all ask. The refusal it emits is
+// byte-identical to requireOrgScope's, so which of the two fires first is not
+// observable to any caller.
 //
 // 403 AND NOT 401, via ErrCodeAccessDenied and oauthError's mapping: the
 // credential is valid and re-presenting it cannot help, so inviting a retry
@@ -484,6 +494,17 @@ func (h *Handler) requireGrantPermission() gin.HandlerFunc {
 		if p.TenantID == uuid.Nil {
 			status, dto := oauthError(domain.Forbidden(ErrCodeAccessDenied,
 				"no active organisation for this principal"))
+			c.AbortWithStatusJSON(status, dto)
+			return
+		}
+		// The org-level half of authz.RequirePermission's guard, in the order
+		// that middleware runs it: BEFORE the permission, and independent of
+		// the role, because PermAPIKeyManage is an authz.orgLevelPerms member.
+		// requireOrgScope refuses the same set with the same words one
+		// middleware earlier; this is here so the refusal does not depend on
+		// that one being mounted first.
+		if p.IsSiteConstrained() {
+			status, dto := oauthError(domain.Forbidden(ErrCodeAccessDenied, siteScopedRefusal))
 			c.AbortWithStatusJSON(status, dto)
 			return
 		}

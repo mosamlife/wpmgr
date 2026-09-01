@@ -267,3 +267,69 @@ func TestConsentPermissionGateResolvesTheRoleTheSameWay(t *testing.T) {
 		}
 	}
 }
+
+// TestGrantPermissionGateRefusesSiteScopedAccessOnItsOwn drives
+// requireGrantPermission ALONE, with requireOrgScope not mounted at all.
+//
+// Through the real pair this case is unreachable: requireOrgScope refuses it
+// one middleware earlier. That is exactly why it is exercised here rather than
+// through the mount. A branch whose only evidence is another middleware's
+// behaviour is a branch a reorder deletes silently, and authz.RequirePermission
+// -- which the minting route runs -- carries both halves in ONE middleware, so
+// this is what makes the two routes equivalent under any mount order.
+//
+// It also pins the equivalence itself, by comparing the two refusals rather
+// than comparing one of them against a copied string.
+func TestGrantPermissionGateRefusesSiteScopedAccessOnItsOwn(t *testing.T) {
+	// Admin on the one site it can see. The ROLE holds PermAPIKeyManage, so
+	// the permission check would admit this principal: the site-scope half is
+	// the only thing that can refuse it, which is what keeps this test honest.
+	p := domain.Principal{
+		Type:           domain.PrincipalUser,
+		UserID:         uuid.New(),
+		TenantID:       uuid.New(),
+		Scope:          domain.ScopeSite,
+		AllowedSiteIDs: []uuid.UUID{uuid.New()},
+		Role:           "admin",
+	}
+	if !p.IsSiteConstrained() {
+		t.Fatal("the fixture is not site-constrained; it cannot exercise the branch")
+	}
+	if !authz.PrincipalAllows(p, authz.PermAPIKeyManage) {
+		t.Fatal("the fixture's role does not hold PermAPIKeyManage; the permission " +
+			"check would refuse it and the site-scope branch would go unproven")
+	}
+
+	// One middleware, mounted alone, in front of a handler that answers 200.
+	// Anything other than 403 means the middleware admitted the principal.
+	run := func(mw gin.HandlerFunc) *httptest.ResponseRecorder {
+		gin.SetMode(gin.TestMode)
+		r := gin.New()
+		r.Use(func(c *gin.Context) {
+			c.Request = c.Request.WithContext(domain.WithPrincipal(c.Request.Context(), p))
+			c.Next()
+		})
+		r.POST("/consent", mw, func(c *gin.Context) {
+			c.JSON(http.StatusOK, gin.H{"admitted": true})
+		})
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/consent", strings.NewReader("{}")))
+		return w
+	}
+
+	h := NewHandler(auditedService(approvalStore()))
+
+	alone := run(h.requireGrantPermission())
+	if alone.Code != http.StatusForbidden {
+		t.Fatalf("requireGrantPermission alone = %d, want 403; body = %s\n"+
+			"the permission gate is relying on requireOrgScope being mounted first",
+			alone.Code, alone.Body.String())
+	}
+
+	orgScope := run(h.requireOrgScope())
+	if alone.Code != orgScope.Code || alone.Body.String() != orgScope.Body.String() {
+		t.Fatalf("the two middlewares answer one principal differently: %d %s vs %d %s\n"+
+			"which of them runs first would then be observable to a caller",
+			alone.Code, alone.Body.String(), orgScope.Code, orgScope.Body.String())
+	}
+}
