@@ -313,12 +313,12 @@ This file is re-injected from disk after compaction. Path-scoped
 `.claude/rules/` are not, until a matching file is read again. If a rule must
 hold for a whole session, it belongs here.
 
-**When a session compacts, put durable project state into a file before the
-turn ends**, into this file, or into the private worklog, whichever it is.
-Compaction summarises the conversation away, and this file is the only thing
-guaranteed to come back; a decision or a plan that lives only in the
-conversation does not survive it. Anything that must survive belongs in a
-file, not in a turn.
+**When a session compacts, write durable state to a file before the turn
+ends.** The destination is not a free choice: this file takes guidance,
+rules, pointers, working agreements, whatever is true forever and fit to be
+public. `~/.wpmgr/worklog/` takes everything else that must survive, under
+the rule above. If it would not be fine to see this file public forever, it
+belongs in the worklog, never here.
 
 Reviews: `review.md`, read in full before reviewing anything.
 
