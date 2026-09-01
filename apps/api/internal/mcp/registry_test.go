@@ -106,7 +106,7 @@ func TestExitGate_GuessedToolNameIsUnreachable(t *testing.T) {
 	// The tool is LISTED. That is the ruling, and it is asserted here rather
 	// than only in its own test so that this proof cannot be read as "nothing
 	// was reachable because nothing was shown".
-	if got := VisibleTools(auth); len(got) != 1 || got[0].Name != ToolListSites {
+	if got := VisibleTools(auth); len(got) != 1 || got[0].Name != ToolFleetSitesList {
 		t.Fatalf("a connection holding no capability was shown %d tools, want the whole "+
 			"registry listed and annotated: %+v", len(got), got)
 	}
@@ -116,7 +116,7 @@ func TestExitGate_GuessedToolNameIsUnreachable(t *testing.T) {
 		want string
 	}{
 		// REGISTERED, and still unreachable. See above.
-		{ToolListSites, ErrCodeCapabilityNotGranted},
+		{ToolFleetSitesList, ErrCodeCapabilityNotGranted},
 		{"list_sites_all", ErrCodeToolNotAvailable},
 		{"sites.restart", ErrCodeToolNotAvailable},
 		{"restart_site", ErrCodeToolNotAvailable},
@@ -172,7 +172,7 @@ func TestExitGate_GuessedToolNameIsUnreachable(t *testing.T) {
 func TestCapabilityRefusalIsTypedTerminalAndNamesTheCapability(t *testing.T) {
 	auth := authWith(CapabilitySet{}, uuid.New())
 
-	_, reason, err := AuthorizeTool(ToolListSites, auth)
+	_, reason, err := AuthorizeTool(ToolFleetSitesList, auth)
 	if err == nil {
 		t.Fatal("a connection holding no capability was granted the tool")
 	}
@@ -242,8 +242,8 @@ func TestCapabilityRefusalIsListedNotHidden(t *testing.T) {
 	}
 
 	d := got[0]
-	if d.Name != ToolListSites {
-		t.Fatalf("listed tool = %q, want %q", d.Name, ToolListSites)
+	if d.Name != ToolFleetSitesList {
+		t.Fatalf("listed tool = %q, want %q", d.Name, ToolFleetSitesList)
 	}
 	for _, must := range []string{
 		"NOT AVAILABLE TO THIS CONNECTION",
@@ -269,7 +269,7 @@ func TestCapabilityRefusalIsListedNotHidden(t *testing.T) {
 		t.Fatalf("a connection that HOLDS %q was told the tool is unavailable:\n%s",
 			CapSitesRead, fd[0].Description)
 	}
-	if _, _, err := AuthorizeTool(ToolListSites, authWith(
+	if _, _, err := AuthorizeTool(ToolFleetSitesList, authWith(
 		NewCapabilitySet(AllCapabilities()), uuid.New())); err != nil {
 		t.Fatalf("a connection holding every capability and a site was refused: %v", err)
 	}
@@ -305,7 +305,7 @@ func TestOrgCeilingHidesWhileTheGrantRefuses(t *testing.T) {
 	if !strings.Contains(got[0].Description, "NOT AVAILABLE TO THIS CONNECTION") {
 		t.Fatalf("the listed tool is not annotated:\n%s", got[0].Description)
 	}
-	_, _, err := AuthorizeTool(ToolListSites, inside)
+	_, _, err := AuthorizeTool(ToolFleetSitesList, inside)
 	ide, ok := domain.AsDomain(err)
 	if !ok || ide.Code != ErrCodeCapabilityNotGranted {
 		t.Fatalf("in-ceiling refusal = %v, want code %q", err, ErrCodeCapabilityNotGranted)
@@ -323,7 +323,7 @@ func TestOrgCeilingHidesWhileTheGrantRefuses(t *testing.T) {
 	}
 
 	// And the gate agrees with the listing, by value and by prose.
-	_, _, err = AuthorizeTool(ToolListSites, outside)
+	_, _, err = AuthorizeTool(ToolFleetSitesList, outside)
 	ode, ok := domain.AsDomain(err)
 	if !ok {
 		t.Fatalf("out-of-ceiling refusal = %v, want a domain error", err)
@@ -355,7 +355,7 @@ func TestOrgCeilingHidesWhileTheGrantRefuses(t *testing.T) {
 		t.Fatalf("a disabled capability answers %q and a guessed name answers %q; "+
 			"the difference tells a caller which capabilities exist", ode.Code, gde.Code)
 	}
-	if want := strings.ReplaceAll(gde.Message, guessed, ToolListSites); ode.Message != want {
+	if want := strings.ReplaceAll(gde.Message, guessed, ToolFleetSitesList); ode.Message != want {
 		t.Fatalf("the two refusals differ beyond the echoed name, which is an oracle:\n"+
 			"disabled: %s\nexpected: %s", ode.Message, want)
 	}
@@ -366,7 +366,7 @@ func TestOrgCeilingHidesWhileTheGrantRefuses(t *testing.T) {
 	if fd := VisibleTools(full); len(fd) != want {
 		t.Fatalf("an ordinary fully-granted connection saw %d of %d tools", len(fd), want)
 	}
-	if _, _, err := AuthorizeTool(ToolListSites, full); err != nil {
+	if _, _, err := AuthorizeTool(ToolFleetSitesList, full); err != nil {
 		t.Fatalf("an ordinary fully-granted connection was refused: %v", err)
 	}
 }
@@ -476,14 +476,14 @@ func TestSiteScopeIsRefusedByName(t *testing.T) {
 	// NO capability notice -- this connection holds the capability, and telling
 	// it otherwise would send an operator hunting the wrong axis.
 	got := VisibleTools(auth)
-	if len(got) != 1 || got[0].Name != ToolListSites {
+	if len(got) != 1 || got[0].Name != ToolFleetSitesList {
 		t.Fatalf("an empty site scope hid the tool from tools/list: %+v", got)
 	}
 	if strings.Contains(got[0].Description, "NOT AVAILABLE TO THIS CONNECTION") {
 		t.Fatalf("an empty SITE scope produced a CAPABILITY notice:\n%s", got[0].Description)
 	}
 
-	_, reason, err := AuthorizeTool(ToolListSites, auth)
+	_, reason, err := AuthorizeTool(ToolFleetSitesList, auth)
 	de, ok := domain.AsDomain(err)
 	if !ok {
 		t.Fatalf("err = %v, want a domain error", err)
@@ -628,7 +628,7 @@ func TestSchemaBytesAreNotSharedAcrossCallers(t *testing.T) {
 		t.Fatalf("VisibleTools shares schema bytes across callers:\n got  %s\n want %s", got, original)
 	}
 
-	entry, _, err := AuthorizeTool(ToolListSites, auth)
+	entry, _, err := AuthorizeTool(ToolFleetSitesList, auth)
 	if err != nil {
 		t.Fatalf("AuthorizeTool: %v", err)
 	}

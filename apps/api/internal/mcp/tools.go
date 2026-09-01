@@ -27,8 +27,17 @@ import (
 // 2025-11-25 would be unreachable for the clients we expect most of.
 // ---------------------------------------------------------------------------
 
-// ToolListSites is the one Phase 1 read tool: the fleet and its state.
-const ToolListSites = "list_sites"
+// ToolFleetSitesList is the one Phase 1 read tool: the fleet and its state.
+//
+// THE WIRE NAME IS fleet_sites_list, adopting the wireframe catalogue's naming
+// so every fleet-wide tool shares one prefix and one word order. It is a
+// BREAKING RENAME of list_sites and is deliberately not aliased: AuthorizeTool
+// matches exactly and case-sensitively, so the old name now answers with the
+// registry's ordinary "no tool named %q exists" refusal, which names
+// tools/list. An alias would have been kinder to a client that hard-coded the
+// old name and worse for every model afterwards, because two names for one
+// tool is exactly the ambiguity the closed registry exists to prevent.
+const ToolFleetSitesList = "fleet_sites_list"
 
 // ---------------------------------------------------------------------------
 // Byte caps (design §6, "Byte caps")
@@ -188,10 +197,17 @@ type truncationInfo struct {
 	Explanation string `json:"explanation,omitempty"`
 }
 
-// sitesPayload is the JSON body of a list_sites result.
+// sitesPayload is the JSON body of a fleet_sites_list result.
 type sitesPayload struct {
-	Sites      []json.RawMessage `json:"sites"`
-	Truncation truncationInfo    `json:"truncation"`
+	Sites []json.RawMessage `json:"sites"`
+
+	// Envelope is the typed partial-failure answer: how many of THIS
+	// CONNECTION'S sites were asked, how many answered, and one entry per
+	// refusal with its evidence. Every number in it is closed over the
+	// caller's own scope -- see the counting rule in envelope.go.
+	Envelope Envelope `json:"envelope"`
+
+	Truncation truncationInfo `json:"truncation"`
 }
 
 // buildListSitesResult renders rows into the tool result text.
@@ -209,7 +225,7 @@ type sitesPayload struct {
 //     the payload is in the exact position that a downstream context-window
 //     trim removes, which would turn a visibly-truncated result back into a
 //     silently-truncated one.
-func buildListSitesResult(rows []sqlc.ListSitesRow, more bool, now time.Time) (string, error) {
+func buildListSitesResult(rows []sqlc.ListSitesRow, env Envelope, now time.Time) (string, error) {
 	available := len(rows)
 
 	kept := make([]json.RawMessage, 0, len(rows))
@@ -247,24 +263,26 @@ func buildListSitesResult(rows []sqlc.ListSitesRow, more bool, now time.Time) (s
 		used += cost
 	}
 
-	// `more` is truncation the QUERY imposed (the page bound was reached with
-	// rows still unread); truncatedByBytes is truncation the BYTE CAP imposed.
-	// Both are truncation and both must be reported -- reporting only the byte
-	// cap would let a page-bounded result read as the whole fleet.
-	truncated := truncatedByBytes || more
+	// TRUNCATION HERE IS THE BYTE CAP AND ONLY THE BYTE CAP.
+	//
+	// This function used to also receive `more` -- the page bound the QUERY
+	// hit -- and fold it into `truncated`. That value was a fact about the
+	// TENANT's row count, computed before the caller's site scope was applied,
+	// and reporting it to a site-scoped caller both misstated that caller's
+	// result and disclosed the tenant's size. It is no longer passed in.
+	//
+	// The completeness question it was trying to answer is now answered by the
+	// envelope, over the caller's own scope: an in-scope site that went unread
+	// is an explicit site_unread refusal, counted in env.Refused. `rows` here
+	// is already the in-scope set, so `available` counts only sites this
+	// caller may see and never needs to be nulled out.
+	truncated := truncatedByBytes
 
 	info := truncationInfo{
 		Truncated: truncated,
 		Returned:  len(kept),
 		ByteCap:   recordByteBudget,
 		Available: &available,
-	}
-	if more {
-		// `available` counts only what this page read, so it would understate
-		// the fleet. Report it as JSON null -- an unknown total is
-		// self-describing as null, where a sentinel number has to be known
-		// about to be read correctly.
-		info.Available = nil
 	}
 
 	// THE BANNER IS PREPENDED TO THE INSTRUCTIONS, AND THE CLAMP IS APPLIED TO
@@ -276,17 +294,28 @@ func buildListSitesResult(rows []sqlc.ListSitesRow, more bool, now time.Time) (s
 	// the same mistake as putting safety text in the tail, one level down.
 	header := clampInstructions(listSitesInstructions)
 	if truncated {
-		info.Explanation = truncationExplanation(len(kept), available, more, truncatedByBytes)
+		info.Explanation = truncationExplanation(len(kept), available)
 		header = truncationBanner(info.Explanation) + "\n\n" + header
+	}
+
+	// A REFUSAL IS ALSO AN INCOMPLETE RESULT, AND IT GETS THE SAME BANNER.
+	// The byte cap and an unread site are different causes with the same
+	// consequence for a model: the list in front of it is not the whole of
+	// what it asked for. Only the byte-cap case previously said so.
+	if env.Refused > 0 {
+		header = truncationBanner(fmt.Sprintf(
+			"PARTIAL RESULT: %d of your %d sites answered, %d refused. See envelope.refusals "+
+				"for the reason and evidence for each. Do not present this as a complete answer.",
+			env.OK, env.Asked, env.Refused)) + "\n\n" + header
 	}
 
 	// COMPACT, not indented. The budget above is measured on compact record
 	// encodings, so indenting here would emit substantially more bytes than
 	// the cap accounted for -- a byte cap that does not govern the bytes
 	// actually sent is not a cap.
-	payload, err := json.Marshal(sitesPayload{Sites: kept, Truncation: info})
+	payload, err := json.Marshal(sitesPayload{Sites: kept, Envelope: env, Truncation: info})
 	if err != nil {
-		return "", fmt.Errorf("marshal list_sites payload: %w", err)
+		return "", fmt.Errorf("marshal fleet_sites_list payload: %w", err)
 	}
 
 	return header + "\n\n" + string(payload), nil
@@ -294,32 +323,21 @@ func buildListSitesResult(rows []sqlc.ListSitesRow, more bool, now time.Time) (s
 
 // truncationExplanation states, in words the model will act on, exactly which
 // bound was hit and that the view is incomplete.
-func truncationExplanation(returned, available int, more, byBytes bool) string {
-	switch {
-	case more && byBytes:
-		return fmt.Sprintf(
-			"INCOMPLETE RESULT: %d sites returned. Both the %d-byte result cap and the "+
-				"per-request page bound were reached, so an unknown number of further "+
-				"sites were not returned. Do not treat this list as the whole fleet.",
-			returned, recordByteBudget)
-	case more:
-		return fmt.Sprintf(
-			"INCOMPLETE RESULT: %d sites returned. The per-request page bound was reached, "+
-				"so an unknown number of further sites were not returned. Do not treat this "+
-				"list as the whole fleet.",
-			returned)
-	default:
-		// "omitted", never "cut at": records are skipped individually when
-		// they do not fit the remaining budget, so the result is a SUBSET of
-		// the fleet and not a prefix of it. Saying "cut at" would imply the
-		// missing sites are all the ones sorting after the last one shown.
-		return fmt.Sprintf(
-			"INCOMPLETE RESULT: %d of %d sites returned. The %d-byte result cap was reached, so "+
-				"%d whole records were omitted. Records are omitted individually, so this is a "+
-				"SUBSET of the fleet and not the first %d sites. Do not treat this list as the "+
-				"whole fleet.",
-			returned, available, recordByteBudget, available-returned, returned)
-	}
+// The page-bound arms are gone with the `more` parameter. Both of them
+// described a bound measured over the TENANT and reported it to a site-scoped
+// caller, which is the disclosure this change removes; the completeness
+// question they answered badly is answered by the envelope instead.
+func truncationExplanation(returned, available int) string {
+	// "omitted", never "cut at": records are skipped individually when they do
+	// not fit the remaining budget, so the result is a SUBSET of the sites this
+	// connection may read and not a prefix of them. Saying "cut at" would imply
+	// the missing sites are all the ones sorting after the last one shown.
+	return fmt.Sprintf(
+		"INCOMPLETE RESULT: %d of %d sites returned. The %d-byte result cap was reached, so "+
+			"%d whole records were omitted. Records are omitted individually, so this is a "+
+			"SUBSET of the sites you may read and not the first %d of them. Do not treat this "+
+			"list as complete.",
+		returned, available, recordByteBudget, available-returned, returned)
 }
 
 // truncationBanner makes the marker impossible to skim past.

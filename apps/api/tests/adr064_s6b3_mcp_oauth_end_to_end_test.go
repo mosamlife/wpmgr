@@ -255,7 +255,7 @@ func TestMCPOAuthEndToEndThroughMountedRoutesAsAppRole(t *testing.T) {
 	// that a success below is the token's doing and not an open endpoint.
 	anon := mcpRPC(t, eng, "", map[string]any{
 		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-		"params": map[string]any{"name": mcp.ToolListSites, "arguments": map[string]any{}},
+		"params": map[string]any{"name": mcp.ToolFleetSitesList, "arguments": map[string]any{}},
 	})
 	if anon.status == http.StatusOK {
 		t.Fatalf("POST /mcp with NO bearer token answered 200; every result below "+
@@ -270,12 +270,12 @@ func TestMCPOAuthEndToEndThroughMountedRoutesAsAppRole(t *testing.T) {
 	// Now with the minted token.
 	got := mcpRPC(t, eng, tok.AccessToken, map[string]any{
 		"jsonrpc": "2.0", "id": 2, "method": "tools/call",
-		"params": map[string]any{"name": mcp.ToolListSites, "arguments": map[string]any{}},
+		"params": map[string]any{"name": mcp.ToolFleetSitesList, "arguments": map[string]any{}},
 	})
 	if got.status != http.StatusOK {
 		t.Fatalf("STEP 5 tools/call %s with the minted token answered %d; the whole "+
 			"OAuth flow completed and the token it produced does not work. body: %s",
-			mcp.ToolListSites, got.status, got.body)
+			mcp.ToolFleetSitesList, got.status, got.body)
 	}
 	if strings.Contains(got.body, `"error"`) {
 		t.Fatalf("STEP 5 tools/call returned a JSON-RPC error: %s", got.body)
@@ -288,7 +288,7 @@ func TestMCPOAuthEndToEndThroughMountedRoutesAsAppRole(t *testing.T) {
 	if !strings.Contains(got.body, siteURL) {
 		t.Fatalf("STEP 5 tools/call %s returned 200 but the tenant's only site "+
 			"(%s, id=%s) is absent. An empty read is not a successful read.\nbody: %s",
-			mcp.ToolListSites, siteURL, siteID, got.body)
+			mcp.ToolFleetSitesList, siteURL, siteID, got.body)
 	}
 	t.Logf("STEP 5 ok: read site %s over MCP with the OAuth-minted bearer token", siteURL)
 	t.Log("END TO END: register -> authorize -> consent -> exchange -> read, " +

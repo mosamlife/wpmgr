@@ -13,6 +13,7 @@
 package mcp
 
 import (
+	"sort"
 	"strings"
 	"time"
 
@@ -114,6 +115,27 @@ func (s SiteSet) Len() int { return len(s.ids) }
 // matches nothing, or a list whose every id was dropped by RLS. The caller
 // must handle it as "reads nothing", and must never widen it.
 func (s SiteSet) IsEmpty() bool { return len(s.ids) == 0 }
+
+// Sorted returns the resolved ids in a stable order.
+//
+// IT RETURNS ONLY THE CALLER'S OWN SCOPE, which is what makes it safe to
+// enumerate: every id here is a site this grant already resolved through
+// `sites` under tenant RLS, so handing the list back to that same grant
+// discloses nothing it was not already given. It exists so a fleet envelope
+// can account for an in-scope site that went unread, rather than dropping it
+// and returning a short list that reads as a complete fleet.
+//
+// The order is by id and not by name: this is used for accounting, and a
+// stable order that does not depend on tenant-controlled strings keeps the
+// output deterministic across calls.
+func (s SiteSet) Sorted() []uuid.UUID {
+	out := make([]uuid.UUID, 0, len(s.ids))
+	for id := range s.ids {
+		out = append(out, id)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
+	return out
+}
 
 // ---------------------------------------------------------------------------
 // The operator-facing view of a grant: what the connections list renders and

@@ -442,7 +442,7 @@ func TestListSites_NullComponentsUpdatedAtRendersNeverCollected(t *testing.T) {
 	}
 
 	now := time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC)
-	text, err := buildListSitesResult(rows, false, now)
+	text, err := buildListSitesResult(rows, envFor(t, rows), now)
 	if err != nil {
 		t.Fatalf("buildListSitesResult: %v", err)
 	}
@@ -513,7 +513,7 @@ func TestListSites_TruncationCutsAtRecordBoundaryWithAMarker(t *testing.T) {
 	}
 
 	now := time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC)
-	text, err := buildListSitesResult(rows, false, now)
+	text, err := buildListSitesResult(rows, envFor(t, rows), now)
 	if err != nil {
 		t.Fatalf("buildListSitesResult: %v", err)
 	}
@@ -584,7 +584,7 @@ func TestListSites_UntruncatedResultIsNotMarked(t *testing.T) {
 	collected := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
 	rows := []sqlc.ListSitesRow{siteRow("one", &collected), siteRow("two", nil)}
 
-	text, err := buildListSitesResult(rows, false, time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC))
+	text, err := buildListSitesResult(rows, envFor(t, rows), time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatalf("buildListSitesResult: %v", err)
 	}
@@ -606,33 +606,79 @@ func TestListSites_UntruncatedResultIsNotMarked(t *testing.T) {
 	}
 }
 
-// TestListSites_PageBoundIsReportedAsTruncation proves the OTHER truncation
-// source is not silent: rows the query never read are still missing rows.
-func TestListSites_PageBoundIsReportedAsTruncation(t *testing.T) {
+// envFor builds the envelope for a COMPLETE read of rows: every site the
+// caller may see answered, nothing refused. It is the shape almost every
+// renderer test wants, and building it through NewEnvelope rather than as a
+// struct literal means these tests also exercise the balance check.
+func envFor(t *testing.T, rows []sqlc.ListSitesRow) Envelope {
+	t.Helper()
+	env, err := NewEnvelope(len(rows), len(rows), nil)
+	if err != nil {
+		t.Fatalf("NewEnvelope for %d complete rows: %v", len(rows), err)
+	}
+	return env
+}
+
+// TestListSites_UnreadInScopeSiteIsReportedAsPartial replaces the old
+// TestListSites_PageBoundIsReportedAsTruncation, which asserted the behaviour
+// that turned out to be the leak.
+//
+// THE OLD TEST PINNED A TENANT-CARDINALITY DISCLOSURE. It passed `more=true`
+// — "this TENANT has rows beyond the page bound" — and required the rendered
+// result to tell the caller so. For a connection scoped to a subset of the
+// tenant that notice was false (the caller had received every site it may
+// read) and disclosing (it revealed that the tenant holds more sites than the
+// page bound). The value is no longer plumbed to the renderer at all.
+//
+// Incompleteness is now measured against the CALLER'S OWN SCOPE: an in-scope
+// site that went unread is an explicit refusal, counted, with a banner. This
+// asserts that, and asserts that the numbers balance without a residual.
+func TestListSites_UnreadInScopeSiteIsReportedAsPartial(t *testing.T) {
 	collected := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
 	rows := []sqlc.ListSitesRow{siteRow("one", &collected)}
 
-	text, err := buildListSitesResult(rows, true /* more */, time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC))
+	// The caller may read two sites; only one came back.
+	unread := uuid.New()
+	env, err := NewEnvelope(2, 1, []Refusal{{
+		SiteID: unread.String(),
+		Code:   RefusalSiteUnread,
+		Detail: "in scope but not returned by the bounded page",
+	}})
+	if err != nil {
+		t.Fatalf("NewEnvelope: %v", err)
+	}
+
+	text, err := buildListSitesResult(rows, env, time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatalf("buildListSitesResult: %v", err)
 	}
+
 	var payload struct {
+		Envelope   Envelope       `json:"envelope"`
 		Truncation truncationInfo `json:"truncation"`
 	}
 	if err := json.Unmarshal([]byte(jsonPart(t, text)), &payload); err != nil {
 		t.Fatalf("payload is not JSON: %v", err)
 	}
-	if !payload.Truncation.Truncated {
-		t.Fatal("a page-bounded result reports truncated=false — it reads as the whole fleet")
+
+	if payload.Envelope.Asked != 2 || payload.Envelope.OK != 1 || payload.Envelope.Refused != 1 {
+		t.Errorf("envelope asked/ok/refused = %d/%d/%d, want 2/1/1",
+			payload.Envelope.Asked, payload.Envelope.OK, payload.Envelope.Refused)
 	}
-	// available must NOT claim a total it cannot know, and must say so as
-	// null rather than as a sentinel a reader has to be told about.
-	if payload.Truncation.Available != nil {
-		t.Errorf("truncation.available = %d; a page-bounded read cannot know the total and "+
-			"must report null", *payload.Truncation.Available)
+	if payload.Envelope.OK+payload.Envelope.Refused != payload.Envelope.Asked {
+		t.Error("envelope does not balance: a residual here is a site the caller cannot account for")
 	}
-	if !strings.Contains(jsonPart(t, text), `"available":null`) {
-		t.Error("a page-bounded result does not serialise available as an explicit null")
+	if len(payload.Envelope.Refusals) != 1 || payload.Envelope.Refusals[0].Code != RefusalSiteUnread {
+		t.Errorf("refusals = %+v, want one site_unread", payload.Envelope.Refusals)
+	}
+	if !strings.Contains(text, "PARTIAL RESULT") {
+		t.Error("a partial result does not carry the partial banner — it reads as complete")
+	}
+	// The byte cap was not hit, so the BYTE-CAP truncation flag must stay
+	// false. A refusal is not a truncation and conflating them would make
+	// each one unreadable.
+	if payload.Truncation.Truncated {
+		t.Error("truncation.truncated is set by a refusal; it must report the byte cap only")
 	}
 }
 
@@ -651,7 +697,7 @@ func TestListSites_BannerSurvivesInstructionClamp(t *testing.T) {
 		rows = append(rows, siteRow(fmt.Sprintf("site-%03d-with-a-deliberately-long-name-to-consume-budget", i), &collected))
 	}
 
-	text, err := buildListSitesResult(rows, false, time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC))
+	text, err := buildListSitesResult(rows, envFor(t, rows), time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatalf("buildListSitesResult: %v", err)
 	}
@@ -690,7 +736,7 @@ func TestListSites_OneOversizedRecordDoesNotBlockTheRest(t *testing.T) {
 	small := siteRow("b-small-site", &collected)
 	rows := []sqlc.ListSitesRow{oversized, small}
 
-	text, err := buildListSitesResult(rows, false, time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC))
+	text, err := buildListSitesResult(rows, envFor(t, rows), time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatalf("buildListSitesResult: %v", err)
 	}
@@ -735,7 +781,7 @@ func TestToolsCall_EmptyScopeIsRefusedNotAnEmptyList(t *testing.T) {
 	store := liveGrantStore() // scopeSites nil: the tag matched no site
 	r := newTransportRouter(t, store)
 
-	w := post(t, r, `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"list_sites","arguments":{}}}`, nil)
+	w := post(t, r, `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"fleet_sites_list","arguments":{}}}`, nil)
 
 	resp := decodeRPC(t, w)
 	if resp.Error == nil {
@@ -796,14 +842,14 @@ func TestToolsCall_UntickedCapabilityRefusesWithItsOwnCode(t *testing.T) {
 
 	// The tool is LISTED to this connection: the refusal below is a refusal,
 	// not a consequence of an empty surface.
-	if got := VisibleTools(auth); len(got) != 1 || got[0].Name != ToolListSites {
+	if got := VisibleTools(auth); len(got) != 1 || got[0].Name != ToolFleetSitesList {
 		t.Fatalf("tools/list hid the tool from a connection lacking its capability: %+v", got)
 	}
 
 	_, _, resp, refused := h.authorizeCall(context.Background(), auth, jsonrpcRequest{
 		ID:     json.RawMessage(`61`),
 		Method: "tools/call",
-		Params: json.RawMessage(`{"name":"list_sites","arguments":{}}`),
+		Params: json.RawMessage(`{"name":"fleet_sites_list","arguments":{}}`),
 	})
 
 	if !refused {
@@ -839,8 +885,8 @@ func TestToolsCall_UntickedCapabilityRefusesWithItsOwnCode(t *testing.T) {
 	if data.Code != ErrCodeCapabilityNotGranted {
 		t.Errorf("data.code = %q, want %q", data.Code, ErrCodeCapabilityNotGranted)
 	}
-	if data.Tool != ToolListSites {
-		t.Errorf("data.tool = %q, want %q", data.Tool, ToolListSites)
+	if data.Tool != ToolFleetSitesList {
+		t.Errorf("data.tool = %q, want %q", data.Tool, ToolFleetSitesList)
 	}
 	if data.RequiredCapability != string(CapSitesRead) {
 		t.Errorf("data.required_capability = %q, want %q", data.RequiredCapability, CapSitesRead)
@@ -866,7 +912,7 @@ func TestToolsCall_HeldCapabilityIsUnaffected(t *testing.T) {
 	store := liveGrantStore(uuid.New())
 	r := newTransportRouter(t, store)
 
-	w := post(t, r, `{"jsonrpc":"2.0","id":62,"method":"tools/call","params":{"name":"list_sites","arguments":{}}}`, nil)
+	w := post(t, r, `{"jsonrpc":"2.0","id":62,"method":"tools/call","params":{"name":"fleet_sites_list","arguments":{}}}`, nil)
 
 	resp := decodeRPC(t, w)
 	if resp.Error != nil {
@@ -976,8 +1022,8 @@ func TestToolsList_IsToolsOnlyAndReadOnly(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("tools/list is not JSON: %v", err)
 	}
-	if len(resp.Result.Tools) != 1 || resp.Result.Tools[0].Name != ToolListSites {
-		t.Fatalf("tools = %#v, want exactly [%s]", resp.Result.Tools, ToolListSites)
+	if len(resp.Result.Tools) != 1 || resp.Result.Tools[0].Name != ToolFleetSitesList {
+		t.Fatalf("tools = %#v, want exactly [%s]", resp.Result.Tools, ToolFleetSitesList)
 	}
 	if len(resp.Result.Tools[0].InputSchema) == 0 {
 		t.Error("the tool carries no inputSchema, so a model cannot call it without guessing")
@@ -1013,7 +1059,7 @@ func TestToolsCall_ReadPathReturnsStampedSites(t *testing.T) {
 	store.sites = []sqlc.ListSitesRow{inScope, outOfScope}
 
 	r := newTransportRouter(t, store)
-	w := post(t, r, `{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"list_sites","arguments":{}}}`, nil)
+	w := post(t, r, `{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"fleet_sites_list","arguments":{}}}`, nil)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("HTTP %d: %s", w.Code, w.Body.String())
@@ -1049,7 +1095,7 @@ func TestNotification_ToolsCallWithNoIdDoesNotExecuteTheTool(t *testing.T) {
 	store.sites = []sqlc.ListSitesRow{row}
 
 	r := newTransportRouter(t, store)
-	w := post(t, r, `{"jsonrpc":"2.0","method":"tools/call","params":{"name":"list_sites","arguments":{}}}`, nil)
+	w := post(t, r, `{"jsonrpc":"2.0","method":"tools/call","params":{"name":"fleet_sites_list","arguments":{}}}`, nil)
 
 	if w.Code != http.StatusAccepted {
 		t.Fatalf("HTTP %d, want 202: %s", w.Code, w.Body.String())
@@ -1067,7 +1113,7 @@ func TestNotification_ToolsCallWithNoIdDoesNotExecuteTheTool(t *testing.T) {
 
 	// Positive control: the same call WITH an id does execute, so the proof
 	// above is the notification rule and not a broken fixture.
-	w2 := post(t, r, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_sites","arguments":{}}}`, nil)
+	w2 := post(t, r, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"fleet_sites_list","arguments":{}}}`, nil)
 	if w2.Code != http.StatusOK {
 		t.Fatalf("the id-carrying control got HTTP %d: %s", w2.Code, w2.Body.String())
 	}
@@ -1106,7 +1152,7 @@ func TestActivityStamp_OnEveryToolCallAndNotOnKeepalives(t *testing.T) {
 	}{
 		{"tools/list stamps", `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`, true},
 		{"tools/call stamps",
-			`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_sites","arguments":{}}}`, true},
+			`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"fleet_sites_list","arguments":{}}}`, true},
 		{"ping does not stamp", `{"jsonrpc":"2.0","id":1,"method":"ping"}`, false},
 		{"initialize does not stamp",
 			`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"c","version":"1"}}}`, false},
@@ -1160,7 +1206,7 @@ func TestActivityStamp_FailureRefusesTheRequestAndDoesNotRunTheTool(t *testing.T
 	r := newTransportRouter(t, store)
 
 	w := post(t, r,
-		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_sites","arguments":{}}}`, nil)
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"fleet_sites_list","arguments":{}}}`, nil)
 
 	var resp struct {
 		Error struct {

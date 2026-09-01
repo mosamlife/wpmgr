@@ -1544,7 +1544,23 @@ func (s *Service) ListSitesForModel(ctx context.Context, auth AuthorizedRequest)
 				"This is a refusal, not an empty fleet: check the grant's site scope.")
 	}
 
-	rows, more, err := s.store.ListSitesForRead(ctx, auth.TenantID, sitesPageBound)
+	// THE SECOND RETURN OF ListSitesForRead IS DELIBERATELY DISCARDED, AND
+	// DISCARDING IT IS A FIX RATHER THAN AN OVERSIGHT.
+	//
+	// That value is `more`: "the bounded page was filled and this TENANT has
+	// further site rows". It was previously passed straight through into the
+	// rendered result, which reported it to the caller as a truncation notice.
+	// For a connection scoped to two sites in a six-hundred-site tenant that
+	// notice was both false and disclosing -- the caller received every site
+	// it may read, was told further sites had been withheld, and could infer
+	// from a flag it had no business seeing that the tenant holds more than
+	// sitesPageBound sites.
+	//
+	// A count taken over the TENANT can never be reported to a SITE-SCOPED
+	// caller, however harmless it looks as a completeness flag. Completeness
+	// is recomputed below over the caller's own scope instead, where both
+	// terms are numbers the caller already knows.
+	rows, _, err := s.store.ListSitesForRead(ctx, auth.TenantID, sitesPageBound)
 	if err != nil {
 		return "", fmt.Errorf("list sites for mcp read: %w", err)
 	}
@@ -1553,14 +1569,47 @@ func (s *Service) ListSitesForModel(ctx context.Context, auth AuthorizedRequest)
 	// this narrows it further to the sites THIS GRANT may read. SiteSet.Allows
 	// returns false for every id on an empty or zero-value set, so there is no
 	// widening path even if the set were somehow lost between here and there.
+	//
+	// THIS IS LAYER 3, AND LAYER 3 HIDES. A row dropped here is not refused,
+	// not counted and not mentioned: it leaves no trace in the envelope built
+	// below, because `asked` is closed over auth.Sites and an out-of-scope row
+	// was never in auth.Sites to begin with.
 	allowed := make([]sqlc.ListSitesRow, 0, len(rows))
+	seen := make(map[uuid.UUID]struct{}, len(rows))
 	for _, r := range rows {
 		if auth.Sites.Allows(r.ID) {
 			allowed = append(allowed, r)
+			seen[r.ID] = struct{}{}
 		}
 	}
 
-	return buildListSitesResult(allowed, more, s.now())
+	// SCOPE-RELATIVE COMPLETENESS. `asked` is the caller's own scope
+	// cardinality and nothing else; every site it counts is one the caller
+	// already knows it has. An in-scope site the bounded page did not contain
+	// is reported as an explicit site_unread refusal rather than being left
+	// silently absent, so ok+refused balances against asked and the caller is
+	// never handed a short list that reads as a complete fleet.
+	refusals := make([]Refusal, 0)
+	for _, id := range auth.Sites.Sorted() {
+		if _, found := seen[id]; !found {
+			refusals = append(refusals, Refusal{
+				SiteID: id.String(),
+				Code:   RefusalSiteUnread,
+				Detail: "this site is in scope for this connection but was not returned by the " +
+					"bounded page this call reads; retry, and report it if it persists",
+			})
+		}
+	}
+
+	env, err := NewEnvelope(auth.Sites.Len(), len(allowed), refusals)
+	if err != nil {
+		// An unbalanced envelope means a site was counted in scope and then
+		// lost without being accounted for. That is the leak shape, so it
+		// fails the call rather than rendering a result with a residual in it.
+		return "", fmt.Errorf("build fleet_sites_list envelope: %w", err)
+	}
+
+	return buildListSitesResult(allowed, env, s.now())
 }
 
 // ---------------------------------------------------------------------------

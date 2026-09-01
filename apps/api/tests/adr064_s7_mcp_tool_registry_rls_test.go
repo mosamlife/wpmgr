@@ -199,7 +199,7 @@ func TestS7CapabilitiesAreResolvedByAuthenticateAsAppRole(t *testing.T) {
 	// (3) The registry admits the tool for this real connection, and tools/list
 	// shows it.
 	visible := mcp.VisibleTools(auth)
-	if len(visible) != 1 || visible[0].Name != mcp.ToolListSites {
+	if len(visible) != 1 || visible[0].Name != mcp.ToolFleetSitesList {
 		t.Fatalf("tools/list for a fully-scoped connection returned %+v", visible)
 	}
 
@@ -247,7 +247,7 @@ func TestS7GuessedToolNameIsRefusedForARealConnectionAsAppRole(t *testing.T) {
 
 	// The registered tool IS reachable for this connection -- so a refusal
 	// below is the gate, not a broken fixture.
-	if _, _, err := mcp.AuthorizeTool(mcp.ToolListSites, auth); err != nil {
+	if _, _, err := mcp.AuthorizeTool(mcp.ToolFleetSitesList, auth); err != nil {
 		t.Fatalf("the registered tool was refused for a fully-scoped connection: %v", err)
 	}
 
@@ -315,7 +315,7 @@ func TestS7UntickedCapabilityRefusesByNameAsAppRole(t *testing.T) {
 
 	// POSITIVE CONTROL FIRST. The real connection reaches the tool, so every
 	// refusal below is the capability gate rather than a broken fixture.
-	if _, _, err := mcp.AuthorizeTool(mcp.ToolListSites, auth); err != nil {
+	if _, _, err := mcp.AuthorizeTool(mcp.ToolFleetSitesList, auth); err != nil {
 		t.Fatalf("the real, fully-granted connection was refused: %v", err)
 	}
 	if _, err := svc.ListSitesForModel(ctx, auth); err != nil {
@@ -337,7 +337,7 @@ func TestS7UntickedCapabilityRefusesByNameAsAppRole(t *testing.T) {
 	// (1) IT DOES NOT HIDE. The tool is still listed, and the descriptor says
 	// why it cannot be called.
 	visible := mcp.VisibleTools(denied)
-	if len(visible) != 1 || visible[0].Name != mcp.ToolListSites {
+	if len(visible) != 1 || visible[0].Name != mcp.ToolFleetSitesList {
 		t.Fatalf("an unticked capability HID the tool from tools/list: %+v", visible)
 	}
 	if !strings.Contains(visible[0].Description, string(mcp.CapSitesRead)) {
@@ -349,7 +349,7 @@ func TestS7UntickedCapabilityRefusesByNameAsAppRole(t *testing.T) {
 	// "err != nil" here would pass under the site-scope refusal, under the
 	// uniform not-available refusal, and under a 401 -- three different bugs,
 	// two of which this change exists to rule out.
-	_, _, err = mcp.AuthorizeTool(mcp.ToolListSites, denied)
+	_, _, err = mcp.AuthorizeTool(mcp.ToolFleetSitesList, denied)
 	if err == nil {
 		t.Fatal("a tool was authorized for a connection that does not hold its capability")
 	}
@@ -382,7 +382,7 @@ func TestS7UntickedCapabilityRefusesByNameAsAppRole(t *testing.T) {
 
 	// (3) IT DOES NOT OVER-FIRE. The untouched connection still works, after
 	// the refusal, against the same live database.
-	if _, _, err := mcp.AuthorizeTool(mcp.ToolListSites, auth); err != nil {
+	if _, _, err := mcp.AuthorizeTool(mcp.ToolFleetSitesList, auth); err != nil {
 		t.Fatalf("the granted connection was refused after the denied one: %v", err)
 	}
 	t.Logf("capability refusal: code=%s retryable=%v; granted connection unaffected",
@@ -439,13 +439,13 @@ func TestS7EmptySiteScopeRefusesByNameAsAppRole(t *testing.T) {
 	// exists. Hiding it here would send the operator hunting a capability
 	// problem they do not have.
 	visible := mcp.VisibleTools(auth)
-	if len(visible) != 1 || visible[0].Name != mcp.ToolListSites {
+	if len(visible) != 1 || visible[0].Name != mcp.ToolFleetSitesList {
 		t.Fatalf("an empty site scope hid the tool from tools/list: %+v", visible)
 	}
 
 	// And calling it refuses BY NAME, with the code that says "site scope",
 	// not the uniform not-available one.
-	_, _, err = mcp.AuthorizeTool(mcp.ToolListSites, auth)
+	_, _, err = mcp.AuthorizeTool(mcp.ToolFleetSitesList, auth)
 	if err == nil {
 		t.Fatal("a site-keyed tool was authorized for a connection whose site scope is empty")
 	}
@@ -525,10 +525,10 @@ func TestS7CapabilityOutsideTheOrgCeilingIsNotListedAsAppRole(t *testing.T) {
 	// POSITIVE CONTROL. The real connection -- real ceiling, real grant -- sees
 	// the tool and can call it, so an absence below is the ceiling and not a
 	// broken fixture.
-	if got := mcp.VisibleTools(auth); len(got) != 1 || got[0].Name != mcp.ToolListSites {
+	if got := mcp.VisibleTools(auth); len(got) != 1 || got[0].Name != mcp.ToolFleetSitesList {
 		t.Fatalf("the real connection did not see the tool: %+v", got)
 	}
-	if _, _, err := mcp.AuthorizeTool(mcp.ToolListSites, auth); err != nil {
+	if _, _, err := mcp.AuthorizeTool(mcp.ToolFleetSitesList, auth); err != nil {
 		t.Fatalf("the real, fully-granted connection was refused: %v", err)
 	}
 
@@ -564,7 +564,7 @@ func TestS7CapabilityOutsideTheOrgCeilingIsNotListedAsAppRole(t *testing.T) {
 		t.Fatalf("a capability outside the org ceiling was LISTED: %+v", visible)
 	}
 	for _, d := range visible {
-		if d.Name == mcp.ToolListSites {
+		if d.Name == mcp.ToolFleetSitesList {
 			t.Fatalf("the tool outside the ceiling appeared in tools/list: %+v", d)
 		}
 	}
@@ -574,7 +574,7 @@ func TestS7CapabilityOutsideTheOrgCeilingIsNotListedAsAppRole(t *testing.T) {
 	// mcp_capability_not_granted here would name a capability the organisation
 	// switched off, which is the enumeration the omission above exists to
 	// prevent.
-	_, _, err = mcp.AuthorizeTool(mcp.ToolListSites, outside)
+	_, _, err = mcp.AuthorizeTool(mcp.ToolFleetSitesList, outside)
 	if err == nil {
 		t.Fatal("a tool outside the org ceiling was AUTHORIZED")
 	}
@@ -613,17 +613,17 @@ func TestS7CapabilityOutsideTheOrgCeilingIsNotListedAsAppRole(t *testing.T) {
 		t.Fatalf("a disabled capability answers %q and a guessed name answers %q; "+
 			"the difference tells a caller which capabilities exist", de.Code, gde.Code)
 	}
-	if want := strings.ReplaceAll(gde.Message, guessed, mcp.ToolListSites); de.Message != want {
+	if want := strings.ReplaceAll(gde.Message, guessed, mcp.ToolFleetSitesList); de.Message != want {
 		t.Fatalf("the two refusals differ beyond the echoed name, which is the same oracle:\n"+
 			"disabled: %s\nexpected: %s", de.Message, want)
 	}
 
 	// (4) IT DOES NOT OVER-FIRE. The untouched connection still lists and still
 	// calls the tool, after the refusals, against the same live database.
-	if got := mcp.VisibleTools(auth); len(got) != 1 || got[0].Name != mcp.ToolListSites {
+	if got := mcp.VisibleTools(auth); len(got) != 1 || got[0].Name != mcp.ToolFleetSitesList {
 		t.Fatalf("the real connection lost the tool after the ceiling refusal: %+v", got)
 	}
-	if _, _, err := mcp.AuthorizeTool(mcp.ToolListSites, auth); err != nil {
+	if _, _, err := mcp.AuthorizeTool(mcp.ToolFleetSitesList, auth); err != nil {
 		t.Fatalf("the granted connection was refused after the ceiling one: %v", err)
 	}
 	if _, err := svc.ListSitesForModel(ctx, auth); err != nil {
