@@ -109,10 +109,13 @@ Every brief states, or it is not ready to send:
    its budget on judgement, not on search.
 3. **What counts as done, and what would count as a finding.**
 4. **The budget, and what to do at it**: report what you have and stop.
-5. **This clause, verbatim:** *Commit and push as soon as the fast checks pass.
-   Do not hold the commit while the slow suite runs. Commit first, then run the
-   slow suite, then report. If you are interrupted after the commit, the work
-   survives.*
+5. **This clause, verbatim:** *Commit at the first increment that compiles,
+   before any checks, and push. Open the draft PR on that first commit. Do not
+   hold the commit for checks, fast or slow: commit first, then check, then
+   report. If you are interrupted after the commit, the work survives.*
+   A clause that waits for checks leaves the whole build window unprotected: on
+   2026-09-01 an agent ran twenty-one minutes uncommitted and lost every line
+   when interrupted, no branch, no remote ref, no PR.
 
 A dead or interrupted agent is **resumed**, not re-run from zero. Its transcript
 and its worktree both survive. Re-brief only when resuming is impossible, and
