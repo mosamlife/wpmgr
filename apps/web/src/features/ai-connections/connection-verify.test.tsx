@@ -252,6 +252,34 @@ describe("never connected", () => {
     expect(screen.queryByTestId("handshake-contradicted")).toBeNull();
   });
 
+  it("does not claim nothing arrived when the wire records a succeeded call with no timestamp", async () => {
+    // THE SAME INVERSION, ONE FIELD ACROSS, AND THE CASE THE OTHER FIXTURES
+    // MISSED. `firstCallVerdict` rightly degrades a `succeeded` carrying no
+    // `called_at` to `unknown`. The contradiction flag then read that degraded
+    // verdict rather than the wire, so with last_used_at also null it printed
+    // "Nothing has reached us" over a response that records a call.
+    //
+    // Degrade the verdict, never the evidence.
+    await renderBody(
+      wire({
+        first_call: {
+          state: "succeeded",
+          called_at: null,
+          tool_name: null,
+          audit_event_id: null,
+          last_used_at: null,
+          partial: null,
+        },
+      }),
+      new Date(Date.parse(CREATED) + NOTHING_ARRIVED_AFTER_MS),
+    );
+    expect(screen.getByTestId("handshake-contradicted")).toBeInTheDocument();
+    expect(screen.queryByTestId("handshake-silent")).toBeNull();
+    // The first-call half still degrades honestly: a success with no timestamp
+    // is not renderable as a success.
+    expect(screen.getByTestId("firstcall-unknown")).toBeInTheDocument();
+  });
+
   it("does not become fresh again when created_at is unreadable", async () => {
     // An unparseable date must not floor the age to zero and pin the screen in
     // "any second now" forever.

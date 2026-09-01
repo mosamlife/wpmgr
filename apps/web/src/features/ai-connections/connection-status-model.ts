@@ -220,11 +220,29 @@ export function verifyVerdict(wire: ConnectionStatusWire, now: Date): VerifyVerd
         : ageMs >= NOTHING_ARRIVED_AFTER_MS
           ? "silent"
           : "fresh";
+    // DEGRADE THE VERDICT, NEVER THE EVIDENCE.
+    //
+    // This reads the WIRE and not `firstCall`, and the difference is a defect
+    // that shipped here for one commit. `firstCallVerdict` correctly degrades a
+    // `succeeded` carrying no `called_at` to `unknown` -- a success without its
+    // timestamp is a response we cannot read, and rendering it as a success
+    // would put a blank where the proof goes. But a flag whose entire job is to
+    // notice a contradiction must consult the raw claim, not the conclusion
+    // already drawn from it. Reading `firstCall.kind === "succeeded"` meant that
+    // a wire saying "a call succeeded", with the timestamp missing and
+    // last_used_at null, produced contradictedByUse === false and printed
+    // "Nothing has reached us from this connection" -- over a response that
+    // records a call.
+    //
+    // That is the GH #636 shape one field across: the same absence-beats-
+    // evidence inversion this branch was added to prevent, reintroduced by
+    // sourcing it from a degraded value.
+    //
     // Either half is evidence of use. last_used_at is too weak to prove a READ
     // (tools/list stamps it), but it is plenty to disprove "nothing has ever
     // reached us" -- something set it.
     const contradictedByUse =
-      firstCall.kind === "succeeded" || wire.first_call.last_used_at !== null;
+      wire.first_call.state === "succeeded" || wire.first_call.last_used_at !== null;
     return {
       kind: "live",
       handshake: { kind: "never_arrived", phase, ageMs, contradictedByUse },
