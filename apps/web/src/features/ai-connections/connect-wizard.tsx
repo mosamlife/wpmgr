@@ -5,10 +5,17 @@ import { AlertTriangle, Check, ExternalLink, Lock } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { CopyableMono } from "@/components/shared/copyable-mono";
 import { cn } from "@/lib/utils";
+import {
+  CAPABILITY_DESCRIPTIONS,
+  CONFERRABLE_CAPABILITIES,
+  KNOWN_CAPABILITIES,
+  capabilityLabel,
+} from "./capabilities";
 
 import {
   CLIENT_TABLE_VERIFIED_AT,
@@ -60,37 +67,35 @@ import {
 // answer being written. The same is already true of the connection name two
 // sections down, and it is stated the same way rather than implied.
 //
-// THERE IS NO CAPABILITIES STEP HERE, AND NOT BECAUSE THE BACKEND IS MISSING.
-// The vocabulary is seated (policy.go: eight capability strings, seven of
-// them conferrable via the read scope), and one of this wizard's two
-// completion paths already puts it on the wire: TokenMintPanel below calls
-// useMintConnection(), which POSTs to CONNECTIONS_PATH and already accepts a
-// `capabilities` list on the request (dto.go:264) and returns one on the
-// response (dto.go:305). A picker on THAT path would need only a frontend
-// field -- MintConnectionInput (use-ai-connections.ts:228-233) has name,
-// siteScopeMode, scopeTagIds and scopeSiteIds, and no capabilities -- so the
-// gap there is this file, not the server.
+// THERE IS NOW A CAPABILITIES STEP HERE, ON THE TOKEN PATH ONLY. The
+// vocabulary is seated (policy.go: eight capability strings, seven of them
+// conferrable via the read scope), and TokenMintPanel calls useMintConnection(),
+// which POSTs to CONNECTIONS_PATH and accepts a `capabilities` list on the
+// request (dto.go:264) and returns one on the response (dto.go:305).
+// MintConnectionInput (use-ai-connections.ts) now carries that field, and the
+// new Section n=4 below ("Choose what it may do") is the picker that fills it.
 //
-// THE OAUTH PATH IS THE OTHER ONE, AND IS WHERE "THIS WIZARD NEVER CREATES
-// THE GRANT" (WHAT STEP 3 STILL CANNOT DO, above) IS ACTUALLY TRUE. The
-// client redirects into the approval screen at /connect/ai, which calls
-// Approve (service.go:607); ApprovalRequest carries Principal, Consent,
-// GrantName and SiteScope and nothing else, so that path genuinely has no
-// channel for a capability answer today.
+// THE OAUTH PATH IS THE ONE WHERE "THIS WIZARD NEVER CREATES THE GRANT" (WHAT
+// STEP 3 STILL CANNOT DO, above) IS ACTUALLY TRUE, AND STILL HAS NO
+// CAPABILITIES STEP. The client redirects into the approval screen at
+// /connect/ai, which calls Approve (service.go:607); ApprovalRequest carries
+// Principal, Consent, GrantName and SiteScope and nothing else, so that path
+// genuinely has no channel for a capability answer today. Section n=4 below
+// is therefore rendered only for `method === "token"`; for OAuth, NextSteps
+// still says permissions are chosen on the approval screen, because that
+// remains true there and only there.
 //
-// So a picker built only against the mint call would work for token
-// connections and do nothing for OAuth ones, and a permission model that
-// varies by how the connection was made is worse than one that stays
-// uniformly narrow -- which is why neither path has one, rather than one
-// path having one and the other not. The choice among the three real options
-// is open, tracked in GH #660, and this file does not make it. Cited by
-// file:line above rather than restated from memory: summarising this split
-// instead of pointing at it is exactly what went stale here before.
+// A permission model that varies by how the connection was made is a real
+// asymmetry, not a bug: the token path can put an answer on the wire today,
+// and the OAuth path genuinely cannot until the approval screen grows a
+// channel for one (tracked in GH #660). Cited by file:line above rather than
+// restated from memory: summarising this split instead of pointing at it is
+// exactly what went stale here before.
 //
 // NO SNIPPET IS WRITTEN IN THIS FILE. Every block comes from buildSnippet, and
 // snippet.test.ts fails the build if a config literal appears here.
 
-type Step = 1 | 2 | 3 | 4;
+type Step = 1 | 2 | 3 | 4 | 5;
 
 /**
  * The rail this page renders is the design's own numbering (S29, "ADD MCP
@@ -100,7 +105,7 @@ type Step = 1 | 2 | 3 | 4;
  * steps and the operator is entitled to see all ten before starting.
  *
  * THE MAP FROM A BUILT SECTION TO ITS SPECIFIED NUMBER IS NOT MONOTONIC ON
- * SCREEN. The four built sections answer specified steps 2, 5, 3 and 6, IN
+ * SCREEN. The five built sections answer specified steps 2, 5, 3, 4 and 6, IN
  * THAT ORDER: this wizard reaches specified step 3 ("which sites") AFTER
  * specified step 5 ("how it authenticates"), because the site-scope section
  * was inserted after the auth-method section by design (see the file-top
@@ -109,12 +114,18 @@ type Step = 1 | 2 | 3 | 4;
  * specified number -- comparing raw numbers would call specified step 5
  * incomplete the moment the operator reached specified step 3, which is
  * backwards.
+ *
+ * SPECIFIED STEP 4 ("CHOOSE WHAT IT MAY DO") IS NEW HERE, TOKEN PATH ONLY. It
+ * sits between site scope (spec 3) and the setup artefact (spec 6), matching
+ * the specified order, so the local step numbers below shift: the setup
+ * section that used to be local step 4 is now local step 5.
  */
-const BUILT_ORDER: readonly [1 | 2 | 3 | 4, number][] = [
+const BUILT_ORDER: readonly [1 | 2 | 3 | 4 | 5, number][] = [
   [1, 2],
   [2, 5],
   [3, 3],
-  [4, 6],
+  [4, 4],
+  [5, 6],
 ];
 
 /** The specified step number a locally-built step answers. */
@@ -136,13 +147,17 @@ interface SpecStepDef {
 }
 
 // All ten, in specified order, so the operator sees the whole path before
-// starting. Only four are `built: true`; the rest render as not-yet-available
+// starting. Only five are `built: true`; the rest render as not-yet-available
 // rather than being omitted or, worse, made to look done.
 const SPEC_STEPS: readonly SpecStepDef[] = [
   { n: 1, label: "Start a connection", built: false },
   { n: 2, label: "Name it, pick the AI client", built: true },
   { n: 3, label: "Choose which sites", built: true },
-  { n: 4, label: "Choose what it may do", built: false },
+  // Built on the TOKEN path only -- see the file-top comment on the OAuth
+  // split. `built: true` still means "reachable on at least one path", the
+  // same standard site-scope and setup already meet even though the sites
+  // page's copy names its own limits per method.
+  { n: 4, label: "Choose what it may do", built: true },
   { n: 5, label: "Choose how it authenticates", built: true },
   { n: 6, label: "Get the setup artefact", built: true },
   { n: 7, label: "Connect and authorize", built: false },
@@ -172,6 +187,22 @@ type SiteScopeReadiness = "loading" | "failed" | "tags-unresolved" | "unselected
 
 /** The specified step number (design S29) that answers "which sites." */
 const SITE_SCOPE_SPEC_N = 3;
+
+/**
+ * Whether the capability picker is actually done, for the one reason mint can
+ * refuse it on the token path: nobody has been left checked. Deliberately a
+ * NARROWER union than SiteScopeReadiness -- there is no fleet read behind this
+ * step, so there is no "loading" or "failed" state for it to be in, only
+ * "an operator has not settled on an answer" or "they have."
+ *
+ * `"unselected"` is a member of SiteScopeReadiness too, so the rail's
+ * per-segment rendering below (which already prints "(not chosen yet)" for
+ * that string) needs no new branch to cover this step as well.
+ */
+type CapabilityReadiness = "unselected" | "resolved";
+
+/** The specified step number (design S29) that answers "what it may do." */
+const CAPABILITY_SPEC_N = 4;
 
 export interface ConnectWizardProps {
   /** Absolute MCP endpoint for this deployment. Passed in, never assembled here. */
@@ -224,6 +255,16 @@ export function ConnectWizard({
     tagNames: [],
     siteIds: [],
   });
+  // DEFAULTS TO `["mcp.sites.read"]`, NOT `[]` AND NOT ALL SEVEN. Empty would
+  // silently mint a token that can reach nothing the moment an operator
+  // skipped this step without reading it -- the same defect this project's
+  // signature bug takes elsewhere, one layer up: a state nobody chose read as
+  // a deliberate answer. All seven would defeat the point of asking at all,
+  // the same reasoning the site-scope step's "no default 'all'" comment above
+  // already gives. Sites-read matches dto.go's own default for an OMITTED
+  // field, so an operator who changes nothing here ends up with exactly what
+  // they would have gotten by not answering.
+  const [capabilities, setCapabilities] = useState<readonly string[]>(["mcp.sites.read"]);
 
   const client = useMemo(
     () => MCP_CLIENTS.find((c) => c.id === clientId) ?? null,
@@ -236,15 +277,17 @@ export function ConnectWizard({
   // answers. Picking a different client with an incompatible method drops the
   // method rather than carrying a stale one into step 3.
   //
-  // THE LAST BRANCH IS 4, NOT 3. Section 3 ("Sites this connection may
-  // reach") and Section 4 ("Set it up") share the exact same reveal
+  // THE LAST BRANCH IS 5, NOT 3 OR 4. Section 3 ("Sites this connection may
+  // reach") and Section 5 ("Set it up") share the exact same reveal
   // condition below (`client !== null && method !== null`) -- they always
   // appear together, so there is no state in which section 3 is on screen
-  // and section 4 is not. Once that condition holds, 4 is the furthest
+  // and section 5 is not. Once that condition holds, 5 is the furthest
   // section actually revealed, and aria-current has to say so; stopping at 3
   // told a screen-reader user they were in a section behind the one they
-  // were actually working in.
-  const step: Step = client === null ? 1 : method === null ? 2 : 4;
+  // were actually working in. (Section 4, the capability picker, renders only
+  // for `method === "token"`, but its BUILT_ORDER position is still crossed
+  // the moment client and method are both picked, same as section 3.)
+  const step: Step = client === null ? 1 : method === null ? 2 : 5;
 
   // Resolved once here rather than inside the mint panel, so the SAME answer
   // gates the mint button and is described back in the one-time reveal -- a
@@ -291,6 +334,21 @@ export function ConnectWizard({
   // button and the rail, is what makes a fourth door impossible rather than
   // merely unlikely.
   const siteScopeState: SiteScopeReadiness = siteScopeReadiness(scope, scopeRequest, method);
+
+  // THE CAPABILITY PAYLOAD, OR THE REASON THERE IS NONE -- built once, here,
+  // the same pattern as `scopeRequest` two blocks up and for the same reason:
+  // the gate and the mint call must read one value, never two derivations of
+  // the same selection that could disagree.
+  const capabilitiesRequest = useMemo(
+    () => mintCapabilitiesRequest(capabilities),
+    [capabilities],
+  );
+
+  // THE RAIL'S CAPABILITY STATE, mirroring siteScopeState immediately above:
+  // one function, read by both the rail and `mintBlockedReason` below, so
+  // "step 4 reads done" and "mint will actually accept this" cannot drift
+  // apart the way `scope.kind` alone once did for site scope.
+  const capabilityState: CapabilityReadiness = capabilityReadiness(capabilitiesRequest, method);
 
   // A mint is a network round trip, and every control above is live during it.
   // Disabling them is the FIRST half of the fix (the operator is not offered a
@@ -380,7 +438,11 @@ export function ConnectWizard({
 
   return (
     <div className={cn("space-y-6", className)}>
-      <StepRail current={step} siteScopeState={siteScopeState} />
+      <StepRail
+        current={step}
+        siteScopeState={siteScopeState}
+        capabilityState={capabilityState}
+      />
 
       {/* THE ONE AND ONLY PLACE A REVEAL IS RENDERED, and it is deliberately
           outside every step. A second render site inside step 4 would restore
@@ -539,9 +601,88 @@ export function ConnectWizard({
         </Section>
       ) : null}
 
-      {client !== null && method !== null ? (
+      {/* TOKEN PATH ONLY. On OAuth there is no channel to carry an answer
+          anywhere -- see the file-top comment -- so rendering a picker here
+          would look like a decision that does something when it does
+          nothing, the same defect this whole file elsewhere refuses to
+          commit. NextSteps below already tells the OAuth operator where this
+          choice is actually made. */}
+      {client !== null && method === "token" ? (
         <Section
           n={4}
+          title="Choose what it may do"
+          hint="Every capability here is read-only. Nothing on this list can change WordPress content or configuration."
+        >
+          <div className="space-y-3">
+            <p className="text-xs text-[var(--color-muted-foreground)]">
+              {describeSiteScope(scope)} This decides what it may see there -- how many sites
+              it reaches is step 3's answer, already given.
+            </p>
+            <ul className="space-y-2">
+              {KNOWN_CAPABILITIES.map((cap) => {
+                const conferrable = (CONFERRABLE_CAPABILITIES as readonly string[]).includes(cap);
+                const checked = capabilities.includes(cap);
+                return (
+                  <li key={cap}>
+                    <label
+                      className={cn(
+                        "flex items-start gap-2 rounded-md border border-[var(--color-border)] p-2 text-sm",
+                        !conferrable && "cursor-not-allowed opacity-70",
+                      )}
+                    >
+                      <Checkbox
+                        className="mt-0.5"
+                        checked={checked}
+                        disabled={!conferrable || mintInFlight}
+                        onChange={(e) => {
+                          const next = e.target.checked;
+                          setCapabilities((current) =>
+                            next
+                              ? current.includes(cap)
+                                ? current
+                                : [...current, cap]
+                              : current.filter((c) => c !== cap),
+                          );
+                        }}
+                      />
+                      <span>
+                        <span className="block font-medium text-[var(--color-foreground)]">
+                          {capabilityLabel(cap)}
+                        </span>
+                        <span className="block text-xs text-[var(--color-muted-foreground)]">
+                          {CAPABILITY_DESCRIPTIONS[cap]}
+                        </span>
+                        {!conferrable ? (
+                          <span className="block text-xs text-[var(--color-muted-foreground)]">
+                            Not available yet -- there are no content tools for a connection to
+                            call, so there is nothing this permission could reach.
+                          </span>
+                        ) : null}
+                      </span>
+                    </label>
+                  </li>
+                );
+              })}
+            </ul>
+            <p className="text-xs text-[var(--color-muted-foreground)]">
+              These are all read-only. No capability on this screen can change WordPress
+              content or configuration, whichever ones you pick.
+            </p>
+            {!capabilitiesRequest.ok ? (
+              <p
+                role="alert"
+                className="rounded-md border border-[var(--color-border)] bg-[var(--color-muted)]/40 p-3 text-sm text-[var(--color-foreground)]"
+              >
+                {capabilitiesRequest.refusal}
+              </p>
+            ) : null}
+          </div>
+        </Section>
+      ) : null}
+
+      {client !== null && method !== null ? (
+        <Section
+          n={5}
           title="Set it up"
           hint="Generated for this client. Every difference below is a real difference between clients."
         >
@@ -592,6 +733,7 @@ export function ConnectWizard({
                 name={name}
                 scope={scope}
                 scopeRequest={scopeRequest}
+                capabilitiesRequest={capabilitiesRequest}
               />
             )}
           </div>
@@ -609,6 +751,7 @@ export function ConnectWizard({
 function StepRail({
   current,
   siteScopeState,
+  capabilityState,
 }: {
   current: Step;
   /**
@@ -620,6 +763,12 @@ function StepRail({
    * still called step 3 done and put `aria-current` on step 6.
    */
   siteScopeState: SiteScopeReadiness;
+  /**
+   * From `capabilityReadiness`, the same pattern one step later: the rail and
+   * `mintBlockedReason` read one value for "has the operator settled a
+   * capability answer," never two.
+   */
+  capabilityState: CapabilityReadiness;
 }) {
   const currentSpec = specStepFor(current);
   const currentPos = BUILT_ORDER.findIndex(([, spec]) => spec === currentSpec);
@@ -631,12 +780,29 @@ function StepRail({
   // operator has not been told otherwise yet.
   const siteScopeBlocking =
     siteScopeState !== "resolved" && siteScopeBuiltPos !== -1 && siteScopeBuiltPos <= currentPos;
-  // THE OVERRIDE ITSELF. While step 3 is not done, IT is where the operator's
-  // process actually stands, not whatever position the local step has
-  // otherwise reached -- so aria-current moves back to it instead of sitting
-  // on a "setup" step whose mint button it, in fact, still blocks.
-  const effectiveCurrentSpec = siteScopeBlocking ? SITE_SCOPE_SPEC_N : currentSpec;
-  const effectiveCurrentPos = siteScopeBlocking ? siteScopeBuiltPos : currentPos;
+  const capabilityBuiltPos = BUILT_ORDER.findIndex(([, spec]) => spec === CAPABILITY_SPEC_N);
+  // SAME BLOCKING TEST, ONE STEP LATER. Not relevant until the walk has
+  // actually reached the capability picker's position.
+  const capabilityBlocking =
+    capabilityState !== "resolved" &&
+    capabilityBuiltPos !== -1 &&
+    capabilityBuiltPos <= currentPos;
+  // THE OVERRIDE ITSELF, AND WHICH ONE WINS WHEN BOTH BLOCK. Site scope (built
+  // position 2) sits before the capability picker (built position 3) in
+  // BUILT_ORDER, so an operator who has resolved neither is, in fact, still
+  // working on the earlier one -- reporting the capability picker instead
+  // would tell them they are stuck on a step they have not been let reach in
+  // any meaningful sense yet.
+  const effectiveCurrentSpec = siteScopeBlocking
+    ? SITE_SCOPE_SPEC_N
+    : capabilityBlocking
+      ? CAPABILITY_SPEC_N
+      : currentSpec;
+  const effectiveCurrentPos = siteScopeBlocking
+    ? siteScopeBuiltPos
+    : capabilityBlocking
+      ? capabilityBuiltPos
+      : currentPos;
   return (
     <div className="space-y-1">
       <ol className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[var(--color-muted-foreground)]">
@@ -647,19 +813,27 @@ function StepRail({
           // see the comment on BUILT_ORDER above for why those disagree here.
           const builtPos = BUILT_ORDER.findIndex(([, spec]) => spec === s.n);
           const isCompleted = builtPos !== -1 && builtPos < effectiveCurrentPos;
-          // SITE SCOPE'S OWN STATES, CHECKED BEFORE THE GENERIC ONES BELOW AND
-          // OVERRIDING THEM. "completed" here would be the exact defect this
-          // whole rework exists for: a step reading as finished while mint
-          // would still refuse it. Each reason is kept distinct rather than
-          // collapsing into one muted "not done yet" -- an operator told
-          // nothing when a read has actually failed keeps waiting for a state
-          // that is never coming, and one told "loading" for their own
-          // unmade selection is told something false about themselves.
-          const state: "not-built" | "current" | "completed" | "upcoming" | SiteScopeReadiness =
-            !s.built
-              ? "not-built"
-              : s.n === SITE_SCOPE_SPEC_N && siteScopeBlocking
-                ? siteScopeState
+          // SITE SCOPE'S AND THE CAPABILITY PICKER'S OWN STATES, CHECKED
+          // BEFORE THE GENERIC ONES BELOW AND OVERRIDING THEM. "completed"
+          // here would be the exact defect this whole rework exists for: a
+          // step reading as finished while mint would still refuse it. Each
+          // reason is kept distinct rather than collapsing into one muted
+          // "not done yet" -- an operator told nothing when a read has
+          // actually failed keeps waiting for a state that is never coming,
+          // and one told "loading" for their own unmade selection is told
+          // something false about themselves.
+          const state:
+            | "not-built"
+            | "current"
+            | "completed"
+            | "upcoming"
+            | SiteScopeReadiness
+            | CapabilityReadiness = !s.built
+            ? "not-built"
+            : s.n === SITE_SCOPE_SPEC_N && siteScopeBlocking
+              ? siteScopeState
+              : s.n === CAPABILITY_SPEC_N && capabilityBlocking
+                ? capabilityState
                 : isCurrent
                   ? "current"
                   : isCompleted
@@ -698,13 +872,16 @@ function StepRail({
           );
         })}
       </ol>
-      {/* Step 4 in the rail above ("Choose what it may do") has no section on
-          this page: neither completion path this wizard ends in lets an
-          operator choose a capability today -- see the file-top comment on
-          the OAuth/token split. Naming where that choice IS made today keeps
-          the gap from reading as an oversight. */}
+      {/* Step 4 in the rail above ("Choose what it may do") now has a section
+          on this page, on the TOKEN path only -- see the file-top comment on
+          the OAuth/token split. The OAuth path still has no channel for this
+          choice, so the second sentence below remains true only there; it is
+          kept rather than dropped, because an OAuth operator reading this
+          rail must not be led to look for a step 4 that will not appear for
+          them. */}
       <p className="text-xs text-[var(--color-muted-foreground)]">
-        Permissions are chosen on the approval screen.
+        Chosen here for a connection token. The browser sign-in path has no channel for it yet,
+        so for that path permissions are chosen on the approval screen.
       </p>
     </div>
   );
@@ -1162,6 +1339,52 @@ function siteScopeReadiness(
   return "resolved";
 }
 
+/** The capability payload a mint would send, or the reason there is none. */
+type MintCapabilitiesRequest =
+  | { readonly ok: true; readonly capabilities: readonly string[] }
+  | { readonly ok: false; readonly refusal: string };
+
+/**
+ * The capability payload for the CURRENT selection, or the reason there is
+ * none -- the same shape and the same reason `mintScopeRequest` above returns
+ * one, so the gate (`mintBlockedReason`) and the wire payload
+ * (`TokenMintPanel`'s mint call) read one value rather than two derivations
+ * of the same checkbox state.
+ *
+ * THE ONLY REFUSAL: NOTHING IS CHECKED. dto.go's mintConnectionRequestDTO
+ * treats an OMITTED `capabilities` field as the default preset
+ * `["mcp.sites.read"]`, but an explicitly empty array is a different wire
+ * value entirely -- it mints a connection that authenticates and can reach no
+ * tool at all, because Authenticate refuses by name on every request. A
+ * request naming no capabilities and a request naming none-on-purpose are not
+ * the same thing, so this is refused client-side rather than silently
+ * becoming the default or being sent as `[]`.
+ */
+function mintCapabilitiesRequest(selected: readonly string[]): MintCapabilitiesRequest {
+  if (selected.length === 0) {
+    return {
+      ok: false,
+      refusal:
+        "No capability is selected, so this token would authenticate and be able to reach nothing. Pick at least one capability above, or leave Sites checked. An empty selection is refused rather than becoming the default.",
+    };
+  }
+  return { ok: true, capabilities: selected };
+}
+
+/**
+ * Whether the capability picker is actually done, mirroring
+ * `siteScopeReadiness` immediately above -- OAuth (and no method chosen yet)
+ * never gates on this, for the same reason: NextSteps is unconditionally
+ * actionable on that path, and the picker below does not even render there.
+ */
+function capabilityReadiness(
+  capabilitiesRequest: MintCapabilitiesRequest,
+  method: AuthMethod | null,
+): CapabilityReadiness {
+  if (method !== "token") return "resolved";
+  return capabilitiesRequest.ok ? "resolved" : "unselected";
+}
+
 /**
  * The reason minting is refused, or null when it is not.
  *
@@ -1172,6 +1395,7 @@ function mintBlockedReason(
   nameOk: boolean,
   scope: ResolvedSiteScope,
   scopeRequest: MintScopeRequest,
+  capabilitiesRequest: MintCapabilitiesRequest,
 ): string | null {
   if (!nameOk) return "Name this connection before minting a token.";
   // Literally "token", not threaded through as a parameter: this function is
@@ -1189,6 +1413,10 @@ function mintBlockedReason(
   // second copy of the sentence, is what keeps this and the refusal text from
   // drifting apart.
   if (!scopeRequest.ok) return scopeRequest.refusal;
+  // Site scope is checked before capabilities, matching the on-screen order
+  // (step 3, then step 4): an operator missing both should be told about the
+  // earlier gap first, not the later one.
+  if (!capabilitiesRequest.ok) return capabilitiesRequest.refusal;
   return null;
 }
 
@@ -1285,6 +1513,7 @@ function TokenMintPanel({
   name,
   scope,
   scopeRequest,
+  capabilitiesRequest,
 }: {
   /**
    * The mutation, OWNED BY THE WIZARD. This panel drives it and reads it, and
@@ -1300,10 +1529,12 @@ function TokenMintPanel({
   name: string;
   scope: ResolvedSiteScope;
   scopeRequest: MintScopeRequest;
+  /** From `mintCapabilitiesRequest`, built once by the wizard -- see its doc. */
+  capabilitiesRequest: MintCapabilitiesRequest;
 }) {
   const trimmedName = name.trim();
   const nameOk = trimmedName.length > 0;
-  const blocked = mintBlockedReason(nameOk, scope, scopeRequest);
+  const blocked = mintBlockedReason(nameOk, scope, scopeRequest, capabilitiesRequest);
   const canMint = blocked === null && !mint.isPending;
 
   if (revealed) {
@@ -1355,14 +1586,21 @@ function TokenMintPanel({
         onClick={() => {
           // canMint already proved this, and an enabled button with no payload
           // would be the gate and the request disagreeing again. Refusing here
-          // rather than sending `?? []` keeps that impossible instead of quiet.
+          // rather than sending `?? []` / `?? ["mcp.sites.read"]` keeps that
+          // impossible instead of quiet -- see mintCapabilitiesRequest's doc
+          // for why an empty selection must never reach the wire as `[]`.
           if (!scopeRequest.ok) return;
+          if (!capabilitiesRequest.ok) return;
           // Read here, at the moment the request is built, and closed over.
           // Reading them again inside onSuccess is the whole defect: that runs
           // after a round trip the operator can type through.
           const mintedFor = { scope, clientName };
           mint.mutate(
-            { name: trimmedName, ...scopeRequest.scope },
+            {
+              name: trimmedName,
+              ...scopeRequest.scope,
+              capabilities: capabilitiesRequest.capabilities,
+            },
             // onMinted writes state the WIZARD owns, so this callback lands on
             // a mounted component whatever happened to this panel meanwhile.
             { onSuccess: (token) => onMinted({ token, ...mintedFor }) },
