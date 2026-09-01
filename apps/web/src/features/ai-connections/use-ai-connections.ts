@@ -177,7 +177,11 @@ export class ConnectionsRequestError extends Error {
   }
 }
 
-async function readHouseError(res: Response): Promise<ConnectionsRequestError> {
+// Exported so the status poll (use-connection-status.ts) reads failures through
+// the SAME envelope parser as the list. A second copy would drift, and the 403
+// sentence below is the one an operator sees on the one route where a
+// site-constrained principal is genuinely refused.
+export async function readHouseError(res: Response): Promise<ConnectionsRequestError> {
   // A NON-JSON OR UNPARSEABLE BODY IS STILL A FAILURE. The catch returns an
   // error, never a success with empty fields.
   let code = "server_error";
