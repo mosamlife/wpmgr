@@ -46,7 +46,7 @@ func failClosedStore(t *testing.T) (*fakeStore, uuid.UUID) {
 	collected := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
 	row := siteRow(failClosedSiteName, &collected)
 	row.ID = allowed
-	store.sites = []sqlc.ListSitesRow{row}
+	store.sites = []sqlc.Site{row}
 	return store, allowed
 }
 

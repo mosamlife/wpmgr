@@ -121,15 +121,6 @@ func TestMCPListSitesForReadIsTenantIsolatedAsAppRole(t *testing.T) {
 	tenantA := seedTenant(t, pool, "mcp-s6b2-org-a-"+uuid.NewString()[:8])
 	tenantB := seedTenant(t, pool, "mcp-s6b2-org-b-"+uuid.NewString()[:8])
 
-	// Confirm the role inside the very transaction the read uses, not on some
-	// other connection.
-	if err := pool.InTenantTx(ctx, tenantA, func(tx pgx.Tx) error {
-		mcpAssertAndReportRole(t, tx, "InTenantTx (ListSitesForRead path)")
-		return nil
-	}); err != nil {
-		t.Fatalf("open tenant tx: %v", err)
-	}
-
 	siteA1, err := siteRepo.Create(ctx, site.CreateInput{
 		TenantID: tenantA, URL: "https://a1.example.com", Name: "a1-alpha"})
 	if err != nil {
@@ -147,7 +138,45 @@ func TestMCPListSitesForReadIsTenantIsolatedAsAppRole(t *testing.T) {
 	}
 
 	// THE READ, through the method list_sites calls.
-	rows, more, err := mcpRepo.ListSitesForRead(ctx, tenantA, 500)
+	//
+	// THE ALLOWLIST DELIBERATELY NAMES ORG B's SITE. The read is now bounded
+	// over the caller's own scope, so the interesting cross-tenant question
+	// moved with it: not "does a tenant-wide read stay in its tenant" but
+	// "does a foreign id smuggled into the scope reach across". Both the
+	// query's own `tenant_id = $1` and the tenant RLS policy must drop it, and
+	// planting it is the only way to execute that rather than read it.
+	// mcp_grants.scope_site_ids is a uuid[] with no foreign key, so a grant
+	// really can carry this.
+	principalA := domain.Principal{
+		TenantID:       tenantA,
+		Scope:          domain.ScopeSite,
+		AllowedSiteIDs: []uuid.UUID{siteA1.ID, siteA2.ID, siteB1.ID},
+	}
+
+	// Confirm the role inside the very transaction the read uses, and confirm
+	// the scoped helper genuinely engaged: RunTenantTx routes a site-
+	// constrained principal to InScopedTenantTx, and app.site_scope='on' is
+	// what makes the RESTRICTIVE m19 policy live. Reading the GUC back here is
+	// what separates "the helper ran" from "the helper was named".
+	if err := pool.RunTenantTx(ctx, principalA, func(tx pgx.Tx) error {
+		mcpAssertAndReportRole(t, tx, "RunTenantTx (ListSitesForRead path)")
+		var scope string
+		if err := tx.QueryRow(ctx,
+			"SELECT current_setting('app.site_scope', true)").Scan(&scope); err != nil {
+			return err
+		}
+		if scope != "on" {
+			t.Fatalf("app.site_scope = %q inside the site read's transaction, want \"on\"; "+
+				"the RESTRICTIVE sites_site_scope policy is INERT at any other value",
+				scope)
+		}
+		t.Logf("app.site_scope=%q inside the read's own transaction", scope)
+		return nil
+	}); err != nil {
+		t.Fatalf("open scoped tenant tx: %v", err)
+	}
+
+	rows, more, err := mcpRepo.ListSitesForRead(ctx, principalA, 500)
 	if err != nil {
 		t.Fatalf("ListSitesForRead as wpmgr_app: %v", err)
 	}
@@ -159,32 +188,68 @@ func TestMCPListSitesForReadIsTenantIsolatedAsAppRole(t *testing.T) {
 	seen := map[uuid.UUID]bool{}
 	for _, r := range rows {
 		seen[r.ID] = true
-		// Belt and braces: no row may carry another tenant's id.
+	}
+
+	// THE LEAK ASSERTION COMES FIRST, AND THE ORDER IS THE POINT. Behind a
+	// row-count check it would never execute on the run that matters: a read
+	// that returned org B's row instead of one of org A's has a count of 2 and
+	// is a cross-tenant leak, and the count check would have failed the test
+	// for the wrong reason with the leak assertion never reached. A leak check
+	// that only runs when nothing leaked is not a proof of anything.
+	if seen[siteB1.ID] {
+		t.Fatalf("CROSS-TENANT LEAK: org A's list_sites returned org B's site %s, named in "+
+			"org A's own scope allowlist. tenant_id in the query and the tenant RLS policy "+
+			"must both drop it", siteB1.ID)
+	}
+	for _, r := range rows {
 		if r.TenantID != tenantA {
-			t.Errorf("org A's read returned a row owned by tenant %s", r.TenantID)
+			t.Fatalf("CROSS-TENANT LEAK: org A's read returned a row owned by tenant %s",
+				r.TenantID)
 		}
 	}
+
 	if !seen[siteA1.ID] || !seen[siteA2.ID] {
 		t.Errorf("org A cannot see its own sites: got %v", seen)
-	}
-	// THE ASSERTION THAT MATTERS.
-	if seen[siteB1.ID] {
-		t.Fatalf("CROSS-TENANT LEAK: org A's list_sites returned org B's site %s", siteB1.ID)
 	}
 	if len(rows) != 2 {
 		t.Errorf("org A read %d rows, want exactly its own 2", len(rows))
 	}
 
 	// And the mirror, so this is not an artefact of ordering or of A simply
-	// having been created first.
-	rowsB, _, err := mcpRepo.ListSitesForRead(ctx, tenantB, 500)
+	// having been created first. B's scope names A's sites this time.
+	principalB := domain.Principal{
+		TenantID:       tenantB,
+		Scope:          domain.ScopeSite,
+		AllowedSiteIDs: []uuid.UUID{siteB1.ID, siteA1.ID, siteA2.ID},
+	}
+	rowsB, _, err := mcpRepo.ListSitesForRead(ctx, principalB, 500)
 	if err != nil {
 		t.Fatalf("ListSitesForRead for org B: %v", err)
+	}
+	for _, r := range rowsB {
+		if r.TenantID != tenantB {
+			t.Fatalf("CROSS-TENANT LEAK: org B's read returned a row owned by tenant %s",
+				r.TenantID)
+		}
 	}
 	if len(rowsB) != 1 || rowsB[0].ID != siteB1.ID {
 		t.Fatalf("org B read %d rows, want exactly its own 1", len(rowsB))
 	}
 	t.Logf("mirror ok: org B read %d row and it is its own", len(rowsB))
+
+	// AN ORG-SCOPED PRINCIPAL IS REFUSED, NOT SERVED THE TENANT. This is the
+	// executed half of the guard that stops someone "fixing" the call site back
+	// to bootstrapTenantPrincipal by analogy with ADR-061 A14: the substitution
+	// would leave app.site_scope unset and the m19 policy inert, so it fails
+	// here by name rather than succeeding quietly.
+	if _, _, err := mcpRepo.ListSitesForRead(ctx,
+		domain.Principal{TenantID: tenantA, Scope: domain.ScopeOrg}, 500); err == nil {
+		t.Fatal("ListSitesForRead accepted an ORG-SCOPED principal. That principal reaches " +
+			"InTenantTx, app.site_scope is never set, and the RESTRICTIVE sites_site_scope " +
+			"policy is inert -- the read must refuse rather than run unscoped")
+	} else {
+		t.Logf("org-scoped principal refused by name: %v", err)
+	}
 }
 
 // TestMCPScopeResolutionDropsForeignSiteIDsAsAppRole is m124 obligation 2

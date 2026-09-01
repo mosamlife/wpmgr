@@ -106,11 +106,24 @@ type Store interface {
 	// reason, and pgx.ErrNoRows here means the row was not visible.
 	TouchActivity(ctx context.Context, tenantID, grantID, tokenID uuid.UUID) (time.Time, error)
 
-	// ListSitesForRead reads one bounded page of the tenant's sites for the
-	// list_sites tool. It returns the rows AND whether the bound was reached
-	// with rows still unread, because a page-bounded list that reports itself
-	// as complete is a lie about the fleet.
-	ListSitesForRead(ctx context.Context, tenantID uuid.UUID, limit int32) ([]sqlc.ListSitesRow, bool, error)
+	// ListSitesForRead reads one bounded page of THE SITES THIS CONNECTION MAY
+	// READ for the list_sites tool. It returns the rows AND whether the bound
+	// was reached with rows still unread, because a page-bounded list that
+	// reports itself as complete is a lie about the fleet.
+	//
+	// IT TAKES THE PRINCIPAL AND NOT A BARE tenantID, for the reason ListGrants
+	// and ConnectionStatusSnapshot do above -- and here the principal carries a
+	// second job. `sites` carries the RESTRICTIVE sites_site_scope policy (m19),
+	// keyed on the app.site_scope GUC that only InScopedTenantTx sets, so a
+	// tenantID-only signature could reach nothing but InTenantTx and would leave
+	// that policy inert on the one read this surface performs. The principal's
+	// AllowedSiteIDs is ALSO the query's site_ids parameter, so the GUC the
+	// policy reads and the predicate the query carries are the same value rather
+	// than two copies free to drift.
+	//
+	// The principal MUST be site-constrained; an org-scoped one is an error
+	// rather than a tenant-wide read. See the method on Repo.
+	ListSitesForRead(ctx context.Context, principal domain.Principal, limit int32) ([]sqlc.Site, bool, error)
 
 	// ListGrants and RevokeGrantWithTokens are the operator-facing pair (S16).
 	//
@@ -627,25 +640,68 @@ func (r *Repo) TouchActivity(ctx context.Context, tenantID, grantID, tokenID uui
 	return stamped, nil
 }
 
-// ListSitesForRead reads one bounded page of the tenant's sites inside
-// InTenantTx, so `sites` RLS scopes the read to this tenant regardless of what
-// the grant claims.
+// ListSitesForRead reads one bounded page of the sites THIS CONNECTION MAY
+// READ, through RunTenantTx, using ListSitesForMCPScope.
+//
+// THE BOUND IS TAKEN OVER THE CALLER'S OWN SCOPE AND NEVER OVER THE TENANT,
+// AND THAT IS THE FIX THIS METHOD EXISTS TO CARRY. It read ListSites with
+// Limit = bound+1 over the whole tenant and let the service apply the site
+// scope in Go afterwards. An in-scope site whose name sorted past the tenant's
+// first page was therefore never among the rows the filter ran over: the
+// caller received a site_unread refusal for a site that was perfectly healthy,
+// the order is deterministic so no retry could ever produce it, and the
+// shortfall could only arise once the TENANT held more rows than the bound --
+// making its very existence a fact about sites the caller is not entitled to
+// know exist. LIMIT now applies after the scope predicate, so the page is the
+// caller's page.
+//
+// RunTenantTx, NOT InTenantTx, AND THAT IS THE SECOND LAYER RATHER THAN A
+// STYLE CHOICE. m19 carries sites_site_scope as a RESTRICTIVE policy whose
+// USING clause is `app.site_scope <> 'on' OR id = ANY(app.allowed_site_ids)`
+// (20260531050000_m19_orgs_sharing.sql). app.site_scope is set by exactly one
+// helper -- InScopedTenantTx, which RunTenantTx dispatches to for a
+// site-constrained principal -- so under InTenantTx the GUC is unset, the
+// first disjunct is true for every row, and the policy is INERT. That is the
+// state this read was in: the Go filter in ListSitesForModel was the ONLY gate
+// on the site axis, and a bug anywhere between this method and that loop
+// returned the tenant. Now the database refuses independently of Go.
+//
+// THIS IS NOT THE ADR-061 A14 EXCEPTION AND MUST NOT BE "FIXED" BACK INTO IT.
+// ResolveScopeSites above genuinely cannot be scoped: it is the bootstrap that
+// COMPUTES the allowlist, so constraining it by its own output is circular --
+// see bootstrapTenantPrincipal in service.go. This method runs strictly AFTER
+// that resolution has already happened; its caller holds the resolved set in
+// auth.Sites and hands it here as a principal. There is no circularity to
+// avoid, so the exception does not reach this call site.
+//
+// principal.AllowedSiteIDs is BOTH the GUC allowlist and the query's site_ids
+// parameter. Deriving the two from one value is deliberate: they must agree,
+// and passing them separately is an invitation for them to stop agreeing.
+//
+// AN ORG-SCOPED PRINCIPAL IS AN ERROR, NOT A TENANT-WIDE READ. With a nil or
+// empty allowlist the query's `id = ANY($2::uuid[])` matches nothing, so the
+// fail-closed outcome is already zero rows -- but zero rows reaches the caller
+// looking exactly like an organisation that owns no sites, which is this
+// project's signature defect. It is refused by name instead.
 //
 // It asks for limit+1 rows and reports the overflow as `more` rather than
-// silently returning a short list. A page bound that is invisible to the
-// caller is how "these are your sites" becomes false for any org with more
-// sites than one page.
-func (r *Repo) ListSitesForRead(ctx context.Context, tenantID uuid.UUID, limit int32) ([]sqlc.ListSitesRow, bool, error) {
-	var rows []sqlc.ListSitesRow
-	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
-		out, err := sqlc.New(tx).ListSites(ctx, sqlc.ListSitesParams{
-			TenantID: tenantID,
-			Limit:    limit + 1,
-			Offset:   0,
-			// Sort is bound as a parameter and compared against fixed literals
-			// in the query; "name" is one of them and gives the model a stable
-			// order across calls.
-			Sort: "name",
+// silently returning a short list. `more` is now a fact about THE CALLER'S OWN
+// SCOPE ("your scope holds more sites than one page"), not about the tenant,
+// so it discloses nothing; the previous value was a tenant row count and could
+// not be reported to a scoped caller at all.
+func (r *Repo) ListSitesForRead(ctx context.Context, principal domain.Principal, limit int32) ([]sqlc.Site, bool, error) {
+	if !principal.IsSiteConstrained() {
+		return nil, false, fmt.Errorf(
+			"list sites for mcp read: principal is not site-constrained; this read is bounded "+
+				"over the connection's resolved scope and has no tenant-wide form (tenant %s)",
+			principal.TenantID)
+	}
+	var rows []sqlc.Site
+	err := r.pool.RunTenantTx(ctx, principal, func(tx pgx.Tx) error {
+		out, err := sqlc.New(tx).ListSitesForMCPScope(ctx, sqlc.ListSitesForMCPScopeParams{
+			TenantID: principal.TenantID,
+			SiteIds:  principal.AllowedSiteIDs,
+			RowLimit: limit + 1,
 		})
 		if err != nil {
 			return fmt.Errorf("list sites for mcp read: %w", err)

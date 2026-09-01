@@ -133,7 +133,13 @@ type siteRecord struct {
 // because a 60s heartbeat bumps updated_at without touching components, so
 // using it dated an inventory that was never refreshed and reported a stale
 // fleet as fresh.
-func toSiteRecord(row sqlc.ListSitesRow, now time.Time) siteRecord {
+// THE PARAMETER IS sqlc.Site AND NOT sqlc.ListSitesRow, and the swap was a type
+// change rather than a rewrite. ListSitesRow is `sites.*` plus
+// page_cache_enabled and object_cache_enabled, two LEFT JOIN columns for the
+// dashboard's cache badges that this function has never read; sqlc.Site is
+// `sites.*` alone. Every field below is present on both, which is why the body
+// is untouched. ListSitesForMCPScope drops those two joins with the columns.
+func toSiteRecord(row sqlc.Site, now time.Time) siteRecord {
 	rec := siteRecord{
 		ID:              row.ID.String(),
 		Name:            row.Name,
@@ -225,7 +231,7 @@ type sitesPayload struct {
 //     the payload is in the exact position that a downstream context-window
 //     trim removes, which would turn a visibly-truncated result back into a
 //     silently-truncated one.
-func buildListSitesResult(rows []sqlc.ListSitesRow, env Envelope, now time.Time) (string, error) {
+func buildListSitesResult(rows []sqlc.Site, env Envelope, now time.Time) (string, error) {
 	available := len(rows)
 
 	kept := make([]json.RawMessage, 0, len(rows))

@@ -61,6 +61,11 @@ type layer3Envelope struct {
 	Refusals []struct {
 		SiteID string `json:"site_id"`
 		Code   string `json:"code"`
+		// Detail is decoded because it is CUSTOMER-FACING TEXT that a model
+		// acts on. A refusal whose advice cannot work ("retry" against a
+		// deterministic page) is a defect in the same way a wrong number is,
+		// and it is only testable if the wire text is read back.
+		Detail string `json:"detail"`
 	} `json:"refusals"`
 }
 
@@ -139,18 +144,46 @@ func TestMCPLayer3OutOfScopeSiteIsAbsentAndNotInferableAsAppRole(t *testing.T) {
 			auth.Sites.Len(), auth.Sites.Allows(siteA.ID), auth.Sites.Allows(siteB.ID))
 	}
 
-	// The repo genuinely sees BOTH rows in this tenant. Asserting it here is
-	// what makes the rest of the test meaningful: it establishes that hiding B
-	// is work the scope filter must do, not something RLS already did.
-	rows, _, err := mcpRepo.ListSitesForRead(ctx, tenant, 500)
+	// A TENANT TRANSACTION GENUINELY SEES BOTH ROWS. Asserting it here is what
+	// makes the rest of the test meaningful: it establishes that hiding B is
+	// work the scope layers must do, not something tenant RLS already did.
+	//
+	// This is read through pool.InTenantTx rather than through the repo BECAUSE
+	// the repo method is no longer capable of a tenant-wide read -- which is
+	// itself the change under test. It is a fixture assertion about what the
+	// tenant holds, never a substitute for exercising the production path.
+	var tenantSiteCount int
+	if err := pool.InTenantTx(ctx, tenant, func(tx pgx.Tx) error {
+		mcpAssertAndReportRole(t, tx, "InTenantTx (fixture: what the tenant holds)")
+		return tx.QueryRow(ctx,
+			"SELECT count(*) FROM sites WHERE tenant_id = $1", tenant).Scan(&tenantSiteCount)
+	}); err != nil {
+		t.Fatalf("count the tenant's sites: %v", err)
+	}
+	if tenantSiteCount != 2 {
+		t.Fatalf("the tenant holds %d sites; this proof needs both visible to a tenant "+
+			"transaction, otherwise hiding B is not work anything had to do", tenantSiteCount)
+	}
+
+	// AND THE SCOPED READ RETURNS ONLY A. This is the database doing the
+	// hiding, before the Go filter below ever runs: the query's site_ids
+	// predicate and the RESTRICTIVE sites_site_scope policy both drop B.
+	rows, _, err := mcpRepo.ListSitesForRead(ctx,
+		domain.Principal{TenantID: tenant, Scope: domain.ScopeSite,
+			AllowedSiteIDs: []uuid.UUID{siteA.ID}}, 500)
 	if err != nil {
 		t.Fatalf("ListSitesForRead: %v", err)
 	}
-	if len(rows) != 2 {
-		t.Fatalf("the tenant read returned %d rows; this proof needs both sites visible to the "+
-			"transaction, otherwise the scope filter is not what hides B", len(rows))
+	for _, r := range rows {
+		if r.ID == siteB.ID {
+			t.Fatalf("SCOPE LEAK AT THE DATABASE: the scoped read returned out-of-scope site %s",
+				siteB.ID)
+		}
 	}
-	t.Logf("the tenant transaction sees %d sites; the grant is scoped to 1", len(rows))
+	if len(rows) != 1 {
+		t.Fatalf("the scoped read returned %d rows, want exactly the 1 site in scope", len(rows))
+	}
+	t.Logf("the tenant holds %d sites; the scoped read returned %d", tenantSiteCount, len(rows))
 
 	eng := mountLikeProduction(t, svc, domain.Principal{TenantID: tenant, Scope: domain.ScopeOrg})
 	res := mcpRPC(t, eng, bearer, map[string]any{
@@ -265,10 +298,20 @@ func TestMCPLayer3OutOfScopeSiteIsAbsentAndNotInferableAsAppRole(t *testing.T) {
 // restored in production code. It read as protection and was vacuous.
 //
 // svc.WithPageBound(3) puts the small bound on the path under test, so the
-// production read genuinely crosses its own bound and `more` is true inside
-// ListSitesForModel -- which is the only state in which the defect can
-// reappear. Seeding 501 sites would reach the same state and make the test
-// minutes long, which is how a slow proof gets skipped and then deleted.
+// production read genuinely runs against a tenant that exceeds it. Seeding 501
+// sites would reach the same state and make the test minutes long, which is how
+// a slow proof gets skipped and then deleted.
+//
+// WHAT CHANGED UNDER THIS TEST, AND WHY IT IS KEPT ANYWAY. The read is now
+// bounded over the CALLER'S OWN SCOPE (ListSitesForMCPScope), so `more` inside
+// ListSitesForModel is false here and the tenant's row count is no longer
+// measured against the page bound at all. The disclosure this test names is
+// therefore structurally out of reach rather than merely discarded in Go. The
+// test stays because "out of reach" is a property of the current query, and one
+// signature change -- a caller passing the tenant's sites as the allowlist, a
+// helper reverting to ListSites -- puts it back within reach with every other
+// proof in this package still green. The scoped assertion added below is what
+// pins the structural half.
 func TestMCPPageBoundDoesNotDiscloseTenantSizeAsAppRole(t *testing.T) {
 	ctx := context.Background()
 	pool := startPostgres(t)
@@ -295,22 +338,52 @@ func TestMCPPageBoundDoesNotDiscloseTenantSizeAsAppRole(t *testing.T) {
 		ids = append(ids, s.ID)
 	}
 
-	// Confirm the bound really is exceeded, at the SAME value the service was
-	// given above. This is a corroboration of the injected bound, not a
+	// Confirm the TENANT would exceed the bound the service was given, at the
+	// SAME value. This is a corroboration of the injected bound, not a
 	// substitute for injecting it: on its own it proves nothing about the tool,
 	// which is exactly how the first version of this test came to be vacuous.
-	bounded, more, err := mcpRepo.ListSitesForRead(ctx, tenant, 3)
-	if err != nil {
-		t.Fatalf("ListSitesForRead bounded: %v", err)
+	//
+	// It is counted through InTenantTx rather than through the repo because the
+	// repo can no longer take a tenant-wide read at all -- see below.
+	var tenantSiteCount int
+	if err := pool.InTenantTx(ctx, tenant, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx,
+			"SELECT count(*) FROM sites WHERE tenant_id = $1", tenant).Scan(&tenantSiteCount)
+	}); err != nil {
+		t.Fatalf("count the tenant's sites: %v", err)
 	}
-	if !more || len(bounded) != 3 {
-		t.Fatalf("bounded read returned %d rows more=%v; this proof needs the bound exceeded",
-			len(bounded), more)
+	if tenantSiteCount <= 3 {
+		t.Fatalf("the tenant holds %d sites; this proof needs it to exceed the injected bound of 3",
+			tenantSiteCount)
 	}
-	t.Logf("the tenant holds %d sites and a bound of 3 is exceeded (more=%v)", len(ids), more)
 
 	// The grant is scoped to ONE site.
 	_, bearer := s7GrantWithBearer(t, mcpRepo, tenant, "list", []uuid.UUID{ids[0]})
+
+	// AND THE CALLER'S OWN PAGE IS NOT BOUNDED, which is the structural half of
+	// the fix rather than a restatement of the assertions below. The tenant
+	// exceeds the bound; this caller's scope does not, so `more` is false and
+	// there is no page-bound fact about this call in the first place. While the
+	// bound was applied over the tenant, `more` was true here and the only
+	// thing standing between it and the caller was Go code choosing to discard
+	// it.
+	scoped, more, err := mcpRepo.ListSitesForRead(ctx,
+		domain.Principal{TenantID: tenant, Scope: domain.ScopeSite,
+			AllowedSiteIDs: []uuid.UUID{ids[0]}}, 3)
+	if err != nil {
+		t.Fatalf("ListSitesForRead scoped: %v", err)
+	}
+	if more {
+		t.Fatalf("DISCLOSURE REGRESSION: more=true for a caller scoped to 1 site under a bound "+
+			"of 3 in a %d-site tenant. `more` must be a fact about the CALLER'S OWN scope; a "+
+			"true here is the tenant's row count reaching a page bound it should never have "+
+			"been measured against", tenantSiteCount)
+	}
+	if len(scoped) != 1 {
+		t.Fatalf("the scoped read returned %d rows, want exactly the 1 site in scope", len(scoped))
+	}
+	t.Logf("the tenant holds %d sites (bound 3, exceeded); the caller's scoped page holds %d "+
+		"with more=%v", tenantSiteCount, len(scoped), more)
 
 	eng := mountLikeProduction(t, svc, domain.Principal{TenantID: tenant, Scope: domain.ScopeOrg})
 	res := mcpRPC(t, eng, bearer, map[string]any{

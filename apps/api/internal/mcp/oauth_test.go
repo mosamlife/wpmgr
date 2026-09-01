@@ -115,9 +115,16 @@ type fakeStore struct {
 
 	// sites is what ListSitesForRead returns; sitesMore is its page-bound
 	// overflow flag; sitesErr forces the read to fail.
-	sites     []sqlc.ListSitesRow
+	sites     []sqlc.Site
 	sitesMore bool
 	sitesErr  error
+
+	// sitePrincipals records every principal ListSitesForRead was called with,
+	// so a test can assert the site read is dispatched SITE-CONSTRAINED. That
+	// assertion is the unit-speed guard on the second RLS layer: an org-scoped
+	// principal reaches InTenantTx, app.site_scope stays unset and
+	// sites_site_scope is inert, and nothing else in this package would notice.
+	sitePrincipals []domain.Principal
 
 	// S16 connections surface.
 	//
@@ -470,8 +477,21 @@ func (f *fakeStore) TouchActivity(
 	return time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC), nil
 }
 
-func (f *fakeStore) ListSitesForRead(_ context.Context, _ uuid.UUID, limit int32) ([]sqlc.ListSitesRow, bool, error) {
+// ListSitesForRead records the principal and returns f.sites UNFILTERED.
+//
+// NOT FILTERING BY principal.AllowedSiteIDs IS DELIBERATE AND IS NOT AN
+// UNFAITHFUL FAKE. The real query and the real RESTRICTIVE policy both drop
+// out-of-scope rows, and both are proved against a live database in
+// apps/api/tests. What this fake models here is the state in which those two
+// layers have failed or been switched off -- which is the only state in which
+// layer 3, the Go filter in ListSitesForModel, can be observed doing anything.
+// A fake that filtered would make every layer-3 proof in this package pass
+// without layer 3 existing.
+func (f *fakeStore) ListSitesForRead(_ context.Context, p domain.Principal, limit int32) ([]sqlc.Site, bool, error) {
 	f.note("ListSitesForRead")
+	f.mu.Lock()
+	f.sitePrincipals = append(f.sitePrincipals, p)
+	f.mu.Unlock()
 	if f.sitesErr != nil {
 		return nil, false, f.sitesErr
 	}
