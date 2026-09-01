@@ -50,6 +50,38 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.154",
+    date: "2026-09-02",
+    summary:
+      "Two routes that create an AI connection are brought onto the same permission requirement. The assistant can now answer which sites in your fleet need updates, AI connections get a status panel and a plain statement of what a connection can and cannot do, and an organisation owner can pause and resume the assistant over the API.",
+    items: [
+      {
+        tag: "Security",
+        text: "Two routes that create an AI connection required different permissions to do so; both now require the same one. This was live in 0.61.153.",
+      },
+      {
+        tag: "Added",
+        text: "A new assistant tool, fleet_updates_pending, answers \"which of my sites need updates?\" across your whole fleet. It states plainly when a site's inventory is stale or was never collected, rather than guessing.",
+      },
+      {
+        tag: "Added",
+        text: "AI connections now have a status panel: whether a connection has ever been used, whether it has read your fleet, and when it was last active. This is backed by a connection-verification endpoint that already existed but had no screen.",
+      },
+      {
+        tag: "Added",
+        text: "The AI connections screen now states plainly what a connection can and cannot do, and shows the reason instead of a create button when your role does not allow making one. The sign-in step now explains the choice between browser sign-in and a connection token.",
+      },
+      {
+        tag: "Added",
+        text: "An organisation owner can now pause and resume the AI assistant for the whole account over the API. This is not yet exposed in the dashboard.",
+      },
+      {
+        tag: "Fixed",
+        text: "Removed a false claim from the AI connections screens that a connection could propose changes to a site. No connection can; every one is read-only.",
+      },
+    ],
+  },
+  {
     version: "0.61.153",
     date: "2026-09-01",
     summary:
