@@ -48,6 +48,17 @@ export type Snippet =
       readonly reason: string;
       /** The exact header to send, or null when this method needs no header. */
       readonly headerLine: string | null;
+    }
+  | {
+      readonly kind: "shell";
+      /**
+       * The full script, ready to paste as-is. NEVER CONTAINS THE TOKEN VALUE --
+       * see UnsupportedAuthMethodError's sibling guarantee below and
+       * snippet.test.ts's assertion on this exact property. The token is read
+       * interactively by the script itself, not substituted into it.
+       */
+      readonly text: string;
+      readonly reason: string;
     };
 
 export interface SnippetInput {
@@ -138,6 +149,32 @@ export function buildSnippet(input: SnippetInput): Snippet {
         authMethod === "token"
           ? `${AUTH_HEADER_NAME}: ${bearerHeaderValue(input.token)}`
           : null,
+    };
+  }
+
+  if (config.kind === "shell") {
+    // Shell setup exists to protect a token, so it has nothing to say for
+    // OAuth, which mints no token at this step at all.
+    if (authMethod !== "token") {
+      throw new UnsupportedAuthMethodError(client, authMethod);
+    }
+    const lines = [
+      // A LEADING SPACE, ON PURPOSE, NOT A STRAY CHARACTER. Under
+      // `HISTCONTROL=ignorespace` (bash) or `setopt HIST_IGNORE_SPACE` (zsh),
+      // a line starting with whitespace is never written to shell history at
+      // all -- this is what keeps the read itself, not only the token, out of
+      // a history file an operator may not think to check.
+      ` read -rs -p "Paste your connection token, then press Enter: " WPMGR_CONNECTION_TOKEN`,
+      `export WPMGR_CONNECTION_TOKEN`,
+      // Referenced from the environment, never interpolated: the token text
+      // itself never becomes part of this string, at any point, for any
+      // input. That is the property snippet.test.ts asserts directly.
+      `curl -sS -H "${AUTH_HEADER_NAME}: Bearer $WPMGR_CONNECTION_TOKEN" ${endpointUrl}`,
+    ];
+    return {
+      kind: "shell",
+      text: lines.join("\n"),
+      reason: config.reason,
     };
   }
 

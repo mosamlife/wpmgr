@@ -285,6 +285,99 @@ describe("the auth cards say what each method actually does", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// The step rail: aria-current placement (defect 2) and the ten specified
+// steps (defect 3, design S29 "ADD MCP CONNECTION: THE TEN STEPS").
+// ---------------------------------------------------------------------------
+
+/** The single element the rail marks as the operator's current step. */
+function currentRailStep(): HTMLElement {
+  const els = document.querySelectorAll('[data-step-state="current"]');
+  // Never zero, and never more than one: a rail agreeing with itself about
+  // where the operator is is the entire point of aria-current.
+  expect(els).toHaveLength(1);
+  const el = els[0];
+  if (!(el instanceof HTMLElement)) throw new Error("current step element is not an HTMLElement");
+  return el;
+}
+
+describe("the step rail names all ten specified steps and marks the right one current", () => {
+  it("renders all ten specified steps, in specified order, with only four built", async () => {
+    renderWizard();
+    await screen.findByRole("button", { name: /claude code/i });
+
+    const segments = Array.from(document.querySelectorAll<HTMLElement>("[data-step-n]"));
+    expect(segments.map((s) => s.dataset.stepN)).toEqual(
+      Array.from({ length: 10 }, (_, i) => String(i + 1)),
+    );
+    const builtNs = segments.filter((s) => s.dataset.stepState !== "not-built").map((s) => s.dataset.stepN);
+    // The four shipped sections, and no others, are ever built.
+    expect(builtNs.sort()).toEqual(["2", "3", "5", "6"]);
+  });
+
+  it("marks specified step 2 current before any client is picked", async () => {
+    renderWizard();
+    await screen.findByRole("button", { name: /claude code/i });
+    expect(currentRailStep()).toHaveTextContent(/^2\. Name it, pick the AI client$/);
+  });
+
+  it("marks specified step 5 current once a client is picked and no method chosen", async () => {
+    renderWizard();
+    await pickClient("Cursor");
+    expect(currentRailStep()).toHaveTextContent(/^5\. Choose how it authenticates$/);
+    // The rail agrees this is later than step 2, not merely different from it.
+    expect(document.querySelector('[data-step-n="2"]')).toHaveAttribute(
+      "data-step-state",
+      "completed",
+    );
+  });
+
+  it("marks specified step 6 current once client and method are both picked -- THE DEFECT 2 FIX", async () => {
+    // Sections 3 ("Sites this connection may reach") and 4 ("Set it up") in
+    // this file share one reveal condition and always appear together, so by
+    // the time an operator can see either, step 6 (setup) is the furthest one
+    // actually revealed. Before the fix, aria-current stuck at the position
+    // in the shipped array (3), one behind reality.
+    renderWizard();
+    await pickClient("Cursor");
+    fireEvent.click(authCard("oauth"));
+    expect(currentRailStep()).toHaveTextContent(/^6\. Get the setup artefact$/);
+  });
+
+  it("shows specified step 3 as passed, not merely unreached, once step 6 is current", async () => {
+    // THE NON-MONOTONIC CASE. Step 3 (site scope, specified number 3) is
+    // visited on screen AFTER step 5 (auth method, specified number 5) in
+    // this wizard, so a rail that compared raw specified numbers would call
+    // step 5 "incomplete" the moment the operator reached step 3, which is
+    // backwards. Both must read as completed once step 6 is current.
+    renderWizard();
+    await pickClient("Cursor");
+    fireEvent.click(authCard("oauth"));
+    await screen.findByTestId("site-step-count");
+    expect(document.querySelector('[data-step-n="3"]')).toHaveAttribute(
+      "data-step-state",
+      "completed",
+    );
+    expect(document.querySelector('[data-step-n="5"]')).toHaveAttribute(
+      "data-step-state",
+      "completed",
+    );
+  });
+
+  it("never marks an unbuilt step current or completed, at any reachable stage -- NO FAKED PROGRESS", async () => {
+    renderWizard();
+    await pickClient("Cursor");
+    fireEvent.click(authCard("oauth"));
+    await screen.findByTestId("site-step-count");
+
+    for (const n of ["1", "4", "7", "8", "9", "10"]) {
+      const el = document.querySelector(`[data-step-n="${n}"]`);
+      expect(el).toHaveAttribute("data-step-state", "not-built");
+      expect(el).not.toHaveAttribute("aria-current", "step");
+    }
+  });
+});
+
 describe("the method step is computed from the client, with the reason on the card", () => {
   it("disables the token method for Claude Desktop and says exactly why", async () => {
     renderWizard();
