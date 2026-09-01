@@ -81,6 +81,26 @@ function protocolLine(note: ProtocolNote): string {
 
 function HandshakeSection({ h }: { h: HandshakeVerdict }) {
   if (h.kind === "never_arrived") {
+    // THE CONTRADICTION IS RESOLVED TOWARDS THE EVIDENCE. GH #636: a call can be
+    // served without a recorded initialize, so this connection has no session on
+    // record and has still plainly been used. Saying "nothing has reached us"
+    // here would be false, and would sit directly above the first-call section
+    // saying it read the fleet.
+    if (h.contradictedByUse) {
+      return (
+        <div data-testid="handshake-contradicted">
+          <p className="text-sm font-medium text-[var(--color-foreground)]">
+            This connection has been used, but we recorded no session for it
+          </p>
+          <p className={cn("mt-2 text-sm", NOT_KNOWN_CLASS)}>
+            Something has presented this credential, so it is reaching us. We did not
+            record the client identifying itself, so we cannot tell you what it is or
+            which protocol revision it speaks. That is a gap in our recording, not a
+            fault in your client.
+          </p>
+        </div>
+      );
+    }
     if (h.phase === "fresh") {
       return (
         <div data-testid="handshake-waiting">

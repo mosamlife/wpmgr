@@ -194,6 +194,59 @@ describe("never connected", () => {
     expect(container.textContent).not.toMatch(/\d+\.\d+\.\d+\.\d+/);
   });
 
+  it("never says 'nothing has reached us' about a connection that has demonstrably been used", async () => {
+    // GH #636: tools/call is served without a recorded initialize, so a live,
+    // working connection can carry an unrecorded handshake. The naive render
+    // prints "Nothing has reached us from this connection" directly above "It
+    // read your fleet". Both cannot be true, and the false one is the absence.
+    await renderBody(
+      wire({
+        first_call: {
+          state: "succeeded",
+          called_at: "2026-08-15T09:21:04Z",
+          tool_name: "fleet_updates_pending",
+          audit_event_id: null,
+          last_used_at: "2026-08-15T09:21:04Z",
+          partial: null,
+        },
+      }),
+      new Date(Date.parse(CREATED) + NOTHING_ARRIVED_AFTER_MS),
+    );
+    expect(screen.getByTestId("handshake-contradicted")).toBeInTheDocument();
+    expect(screen.queryByTestId("handshake-silent")).toBeNull();
+    // And the success beneath it still stands: the call really did happen.
+    expect(screen.getByTestId("firstcall-succeeded")).toBeInTheDocument();
+  });
+
+  it("treats last_used_at alone as enough to disprove 'nothing has reached us'", async () => {
+    // last_used_at is too weak to prove a READ (tools/list stamps it) and
+    // plenty to disprove an absence -- something set it.
+    await renderBody(
+      wire({
+        first_call: {
+          state: "awaiting_call",
+          called_at: null,
+          tool_name: null,
+          audit_event_id: null,
+          last_used_at: "2026-08-15T09:00:05Z",
+          partial: null,
+        },
+      }),
+      new Date(Date.parse(CREATED) + NOTHING_ARRIVED_AFTER_MS),
+    );
+    expect(screen.getByTestId("handshake-contradicted")).toBeInTheDocument();
+    // ...and it still must NOT be upgraded into a successful first read.
+    expect(screen.getByTestId("firstcall-none")).toBeInTheDocument();
+  });
+
+  it("still says nothing arrived when nothing actually has", async () => {
+    // THE OVER-FIRE HALF. The contradiction branch must not swallow the real
+    // never-used case, which is the state of most connections.
+    await renderBody(wire(), new Date(Date.parse(CREATED) + NOTHING_ARRIVED_AFTER_MS));
+    expect(screen.getByTestId("handshake-silent")).toBeInTheDocument();
+    expect(screen.queryByTestId("handshake-contradicted")).toBeNull();
+  });
+
   it("does not become fresh again when created_at is unreadable", async () => {
     // An unparseable date must not floor the age to zero and pin the screen in
     // "any second now" forever.

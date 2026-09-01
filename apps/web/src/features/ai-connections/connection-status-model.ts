@@ -78,6 +78,24 @@ export type HandshakeVerdict =
        */
       readonly phase: "fresh" | "silent" | "stale";
       readonly ageMs: number;
+      /**
+       * The response contradicted itself: no session was recorded, and yet this
+       * connection has demonstrably been used.
+       *
+       * THIS IS GH #636 ARRIVING ON A SCREEN. "tools/call is served without a
+       * recorded initialize", so a live, working connection can carry
+       * client_identity_recorded_at IS NULL while its tool calls are in the
+       * audit log. Without this flag the panel prints "Nothing has reached us
+       * from this connection" directly above "It read your fleet", which is
+       * both alarming and false, and which sends an operator to debug a
+       * connection that is working.
+       *
+       * The screen resolves it in the direction of the EVIDENCE, not the
+       * absence: a recorded call is a thing that happened, a null column is a
+       * thing that was not written. So the contradiction is reported as a gap
+       * in our own recording, never as a fault in the operator's client.
+       */
+      readonly contradictedByUse: boolean;
     }
   | {
       readonly kind: "connected";
@@ -202,7 +220,16 @@ export function verifyVerdict(wire: ConnectionStatusWire, now: Date): VerifyVerd
         : ageMs >= NOTHING_ARRIVED_AFTER_MS
           ? "silent"
           : "fresh";
-    return { kind: "live", handshake: { kind: "never_arrived", phase, ageMs }, firstCall };
+    // Either half is evidence of use. last_used_at is too weak to prove a READ
+    // (tools/list stamps it), but it is plenty to disprove "nothing has ever
+    // reached us" -- something set it.
+    const contradictedByUse =
+      firstCall.kind === "succeeded" || wire.first_call.last_used_at !== null;
+    return {
+      kind: "live",
+      handshake: { kind: "never_arrived", phase, ageMs, contradictedByUse },
+      firstCall,
+    };
   }
 
   // Every remaining handshake state means a client identified itself, so
