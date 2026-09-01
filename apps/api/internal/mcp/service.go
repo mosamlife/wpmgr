@@ -1976,6 +1976,18 @@ func (s *Service) RevokeConnection(ctx context.Context, p domain.Principal, gran
 			// live, so the refusal must be loud rather than quiet. It is: the
 			// rollback keeps the grant active and the request errors, instead
 			// of reporting a revocation that did not happen.
+			//
+			// "SO A COMPROMISED CONNECTION CANNOT BE CUT OFF DURING A DATABASE
+			// DEGRADATION" IS THE OBVIOUS OBJECTION, AND IT DOES NOT HOLD.
+			// There is no window in which the connection is live and
+			// unrevokeable, because the same unwritable audit log that blocks
+			// this revoke also blocks every tool call the connection could
+			// make: callTool records BEFORE it serialises the answer (see
+			// transport.go) and withholds the answer when the append fails. The
+			// two capabilities fail together and recover together. What an
+			// operator loses is the ability to change the grant's STATE while
+			// the ledger is down; what they do not lose is containment, which
+			// is the thing the revoke was for.
 			if err := s.requireRecorder(); err != nil {
 				return err
 			}

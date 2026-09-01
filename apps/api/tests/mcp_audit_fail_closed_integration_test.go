@@ -224,10 +224,16 @@ func TestMCPAuditFailClosed_NoAnswerIsServedWhenTheAppendCannotCommit(t *testing
 // to tell "the audit log is down" from any other server-side failure, because
 // that is a poll on whether this surface is currently recording.
 //
-// It compares the response to an UNRECORDABLE call against the response to a
-// call that fails for an unrelated internal reason, byte for byte including the
-// headers. Anything that differs is the oracle, and is reported rather than
-// asserted away.
+// It compares the STATUS AND BODY of an unrecordable call against the envelope
+// every other server-side tool failure produces. It does NOT compare headers:
+// rpcResult carries only status and body, and an earlier version of this
+// comment claimed "byte for byte including the headers", which the test has
+// never done. The sentence is corrected rather than the test extended, because
+// the headers on this route are written by the shared gin JSON path and do not
+// vary with the error -- comparing them would add a check that cannot fail,
+// which is worse than not claiming it. A response differing only by header is
+// therefore outside what this proves, and is named here rather than left for a
+// reader to assume.
 func TestMCPAuditFailClosed_RefusalAndInternalErrorAreByteIdentical(t *testing.T) {
 	ctx := context.Background()
 	pool := startPostgres(t)
@@ -287,6 +293,20 @@ func TestMCPAuditFailClosed_RefusalAndInternalErrorAreByteIdentical(t *testing.T
 	//
 	// Written out in full, with the same request id, so a drift in the code, the
 	// message or the envelope fails here loudly instead of being paraphrased.
+	//
+	// THIS SIDE IS NOT PROVOKED HERE, and that is a real limit of this test: it
+	// pins (a) against a constant, so on its own it cannot notice if the
+	// generic branch stopped emitting this exact envelope -- both sides would
+	// have to be updated together and the comparison would still pass. What
+	// closes the gap is that the generic branch IS provoked elsewhere:
+	// TestToolCall_AnswerIsWithheldWhenTheAuditAppendFails in internal/mcp
+	// drives a NON-domain error through the same toolError call and asserts
+	// codeInternalError, so the literal below is anchored by an executed test
+	// rather than by this file's say-so. Kept as a literal here because
+	// provoking a second, genuinely unrelated internal failure at this point in
+	// the request needs a fault that survives authentication and authorization
+	// and still breaks invoke -- the first attempt reached for one and got
+	// authentication instead, which is how the wrong pair came to be compared.
 	const genericInternal = `{"jsonrpc":"2.0","id":7,"error":{"code":-32603,"message":"the tool call failed"}}`
 
 	t.Logf("(a) audit unavailable : HTTP %d body=%s", unrecordable.status, unrecordable.body)

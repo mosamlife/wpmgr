@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
+	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
 
 // ---------------------------------------------------------------------------
@@ -198,5 +200,67 @@ func TestRecordToolCall_RecorderlessIsAnErrorNotASkip(t *testing.T) {
 	auth := authWith(CapabilitySet{}, uuid.New())
 	if err := svc.RecordToolCall(t.Context(), auth, ToolListSites, "read"); err == nil {
 		t.Fatal("a Service with no recorder reported success for a row it did not write")
+	}
+}
+
+// TestMint_RESTWireDoesNotCarryTheAuditMessage answers, by execution, what the
+// REST surface does with an audit append that fails inside RecordInTx.
+//
+// THE THREE RecordInTx SITES DO NOT GO THROUGH auditFailure. Approve
+// (service.go), RevokeConnection (service.go) and MintConnection (mint.go)
+// return the recorder's own error under fmt.Errorf("...%w"), so what reaches
+// httpx.Error is internal/audit's own typed domain error -- audit_insert_failed,
+// audit_lock_failed, and the rest -- not this package's
+// ErrCodeAuditUnavailable. domain.AsDomain uses errors.As, so the %w wrapper is
+// transparent and the audit error IS what the mapping sees.
+//
+// That is the same starting position as the JSON-RPC leak, and this test exists
+// because the two mappings do NOT behave the same way and the difference is the
+// entire answer to the question. httpx.Error suppresses de.Message for
+// domain.KindInternal, which every audit error is; it copies de.Code
+// unconditionally. So the human-readable "failed to append audit entry" cannot
+// reach a REST client, and the machine-readable code can.
+//
+// The assertion is written as "the message must not appear" rather than "the
+// body must equal X" on purpose: the code being visible is a judged, accepted
+// outcome (see the report on finding #4) and pinning the whole envelope would
+// turn a deliberate decision into a tripwire that fires when someone revisits
+// it. The message leaking is not judged -- it is the defect -- so that is what
+// is pinned.
+func TestMint_RESTWireDoesNotCarryTheAuditMessage(t *testing.T) {
+	// The REAL shape internal/audit returns from a refused INSERT: a typed
+	// domain error of Kind internal. errors.New would take a different branch
+	// in httpx.Error and prove nothing about the case that actually happens --
+	// which is precisely how the -32602 defect survived the unit suite.
+	realAppendFailure := domain.Internal("audit_insert_failed", "failed to append audit entry")
+
+	tenant := uuid.New()
+	gin.SetMode(gin.TestMode)
+	eng := gin.New()
+	g := eng.Group(APIV1Prefix)
+	g.Use(func(c *gin.Context) {
+		c.Request = c.Request.WithContext(domain.WithPrincipal(c.Request.Context(), orgPrincipal(tenant)))
+		c.Next()
+	})
+	svc := NewService(&fakeStore{}).withAuditRecorder(&failingRecorder{err: realAppendFailure})
+	NewHandler(svc).RegisterConnections(g)
+
+	var h http.Handler = eng
+	status, body := postMint(t, h, map[string]any{"name": "audit-leak-probe", "site_scope_mode": "all"})
+
+	raw, _ := json.Marshal(body)
+	t.Logf("REST mint with a failing audit append: HTTP %d body=%s", status, raw)
+
+	if status == http.StatusCreated {
+		t.Fatal("the mint SUCCEEDED while its audit append failed; the RecordInTx " +
+			"callback is not propagating and the credential exists unrecorded")
+	}
+	if strings.Contains(string(raw), "failed to append audit entry") {
+		t.Errorf("the audit system's own message reached the REST wire: %s", raw)
+	}
+	if msg, _ := body["message"].(string); msg != "internal server error" {
+		t.Errorf("message = %q, want the generic %q — httpx.Error's KindInternal "+
+			"guard is what suppresses the audit detail, and this pins it",
+			msg, "internal server error")
 	}
 }

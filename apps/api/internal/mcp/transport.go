@@ -1377,6 +1377,22 @@ func (h *TransportHandler) writeProtocolRefusal(
 	// names nothing. A client that cannot connect learns only that the server
 	// failed, which is the same residual auditGap's doc weighs for tool
 	// denials.
+	//
+	// AND ON THIS PATH THE RESIDUAL IS WIDER THAN ON THE TOOL PATH -- stated
+	// plainly because the narrowing claimed elsewhere does not hold here. The
+	// message below ("the request could not be completed") is distinct from
+	// every other 500 this transport emits, so an audit failure during protocol
+	// negotiation is a UNIQUE SIGNATURE rather than being indistinguishable
+	// from an ordinary server fault. The tool path earns its narrowing by
+	// emitting bytes identical to the generic internal error; this path does
+	// not, and pretending otherwise would be the kind of comment that makes a
+	// reviewer stop looking.
+	//
+	// It is accepted rather than closed: reaching this line requires having
+	// already authenticated, so the caller is a holder of a valid credential
+	// rather than an anonymous prober, and the residual was weighed on that
+	// basis. If this path ever becomes reachable pre-authentication, this
+	// message must collapse into the generic one first.
 	if err := h.svc.RecordProtocolDenied(c.Request.Context(), auth, neg, phase); err != nil {
 		h.auditGap(c.Request.Context(), auth, audit.ActionMCPProtocolDenied,
 			neg.Raw, neg.RefusalReason(), phase, err)
