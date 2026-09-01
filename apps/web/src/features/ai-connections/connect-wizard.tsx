@@ -615,8 +615,8 @@ export function ConnectWizard({
         >
           <div className="space-y-3">
             <p className="text-xs text-[var(--color-muted-foreground)]">
-              {describeSiteScope(scope)} This decides what it may see there -- not to how many
-              sites, which stays step 3's answer.
+              {describeSiteScope(scope)} This decides what it may see there -- how many sites
+              it reaches is step 3's answer, already given.
             </p>
             <ul className="space-y-2">
               {KNOWN_CAPABILITIES.map((cap) => {
