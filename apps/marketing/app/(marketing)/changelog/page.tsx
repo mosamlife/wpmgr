@@ -53,7 +53,7 @@ const RELEASES: ChangeEntry[] = [
     version: "0.61.154",
     date: "2026-09-02",
     summary:
-      "Two routes that create an AI connection are brought onto the same permission requirement. The assistant can now answer which sites in your fleet need updates, AI connections get a status panel and a plain statement of what a connection can and cannot do, and an organisation owner can pause and resume the assistant over the API.",
+      "Two routes that create an AI connection are brought onto the same permission requirement. The assistant can now answer which sites in your fleet need updates, AI connections get a status panel and a plain statement of what a connection can and cannot do, an organisation owner can pause and resume the assistant over the API, and the connection wizard's progress rail is more accurate.",
     items: [
       {
         tag: "Security",
@@ -78,6 +78,14 @@ const RELEASES: ChangeEntry[] = [
       {
         tag: "Fixed",
         text: "Removed a false claim from the AI connections screens that a connection could propose changes to a site. No connection can; every one is read-only.",
+      },
+      {
+        tag: "Fixed",
+        text: "The connection wizard's progress rail now shows all ten steps of the approved connection flow, not only the four that are currently built. The other six render as not yet available and are never shown as complete or current.",
+      },
+      {
+        tag: "Fixed",
+        text: "The progress rail no longer marks a step complete, or moves current onto it, while the data that step depends on is still loading, has failed to load, or has not been resolved yet. It previously could tell an operator a step was finished while the action it gates was still blocked.",
       },
     ],
   },
