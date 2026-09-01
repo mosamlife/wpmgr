@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 
 import { PageHeader } from "@/components/shared/page-header";
+import { canManage, useMe } from "@/features/auth/use-auth";
 import { ConnectWizard } from "@/features/ai-connections/connect-wizard";
 import { mcpEndpointUrl } from "@/features/ai-connections/endpoint";
 import {
@@ -28,6 +29,21 @@ export const Route = createFileRoute("/_authed/ai/connect")({
 });
 
 function ConnectAiClientPage() {
+  // THE GATE IS ON THE DESTINATION, NOT ONLY ON THE LINK. /ai hides the "New
+  // connection" button from a principal who cannot mint, and hiding a link is
+  // not a guard: this route has no beforeLoad, so anyone authenticated who
+  // typed the URL, followed a bookmark, or was sent one reached the whole
+  // wizard. They would pick a client, choose an auth method, scope the sites,
+  // press the last button, and collect a 403 from
+  // apps/api/internal/mcp/handler.go:172 -- after doing all of the work. The
+  // refusal has to arrive before the work, which means here.
+  //
+  // THE SAME PREDICATE, NOT A SECOND ONE. canManage is what /ai uses for the
+  // button, and it mirrors authz.minRoleFor's RoleAdmin for PermAPIKeyManage
+  // (apps/api/internal/authz/role.go:241). A second predicate written to match
+  // would drift from the first, and the drift would be silent until one of the
+  // two was the wrong one.
+  const { data: me } = useMe();
   const sitesQuery = useSites({ view: "active" });
   const tagsQuery = useTags();
 
@@ -60,6 +76,29 @@ function ConnectAiClientPage() {
     if (tagsQuery.data === undefined) return null;
     return tagsQuery.data.map((t) => ({ id: t.id, name: t.name }));
   }, [tagsQuery.data]);
+
+  // AFTER EVERY HOOK ABOVE, NEVER BEFORE ONE. An early return placed higher
+  // would make the hooks below it conditional, which React forbids.
+  if (!canManage(me)) {
+    return (
+      <div className="space-y-6">
+        <PageHeader
+          title="Add an AI connection"
+          subline="Creating a connection needs an organisation owner or admin."
+          backTo={{ to: "/ai", label: "AI connections" }}
+        />
+        <p
+          role="status"
+          data-testid="connect-role-refused"
+          className="rounded-lg border border-[var(--color-border)] p-6 text-sm text-[var(--color-foreground)]"
+        >
+          Nothing has been created and nothing was attempted. Saying so here rather than at the
+          last button is the point: the wizard would have taken a client, an authentication method
+          and a list of sites from you before the server refused it.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">

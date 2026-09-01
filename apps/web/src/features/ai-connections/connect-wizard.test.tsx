@@ -14,6 +14,7 @@ import { formatAbsolute } from "@/features/updates/schedule";
 import { mockQueryResult } from "@/test/query-mocks";
 
 import { Route } from "@/routes/_authed/ai/connect";
+import { authKeys } from "@/features/auth/use-auth";
 import { CLIENT_TABLE_VERIFIED_AT, MCP_CLIENTS } from "./client-table";
 import { useSites, DEFAULT_SITES_LIMIT } from "@/features/sites/use-sites";
 import { useTags } from "@/features/tags/use-tags";
@@ -71,10 +72,30 @@ beforeEach(() => {
 
 const ConnectPage = Route.options.component!;
 
+// The role this route's principal holds. The wizard itself is now behind
+// canManage, mirroring PermAPIKeyManage -> RoleAdmin
+// (apps/api/internal/authz/role.go:241), so every test that wants to see the
+// wizard needs a principal who could actually finish it. Seeded into the cache
+// rather than mocked at useMe, so the real canManage runs over a real Me shape.
+let wizardRole: "owner" | "admin" | "operator" | "viewer" = "admin";
+
+const WIZARD_TENANT = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+
 function renderWizard() {
+  const queryClient = createTestQueryClient();
+  queryClient.setQueryData(authKeys.me, {
+    id: "user-1",
+    email: "priya@example.test",
+    name: "Priya",
+    scope: "org",
+    role: wizardRole,
+    active_tenant_id: WIZARD_TENANT,
+    memberships: [{ tenant_id: WIZARD_TENANT, role: wizardRole, tenant_name: "Example" }],
+  });
   return renderWithProviders(<ConnectPage />, {
     withRouter: true,
     initialPath: "/ai/connect",
+    queryClient,
   });
 }
 
@@ -91,6 +112,51 @@ function authCard(method: "oauth" | "token"): HTMLButtonElement {
   if (el === null) throw new Error(`no auth card rendered for "${method}"`);
   return el;
 }
+
+// HIDING THE LINK IS NOT GUARDING THE ROUTE.
+//
+// /ai stops offering "New connection" to a principal who cannot mint, and this
+// route had no beforeLoad, so the URL still rendered the whole wizard. The
+// refusal arrived from the server at the last button, after the operator had
+// picked a client, an auth method and a site scope. These tests are the reason
+// that cannot come back quietly.
+describe("the wizard refuses a principal who could not finish it", () => {
+  afterEach(() => {
+    wizardRole = "admin";
+  });
+
+  it("renders no wizard at all for an operator who types the URL", async () => {
+    wizardRole = "operator";
+    renderWizard();
+    expect(await screen.findByTestId("connect-role-refused")).toBeInTheDocument();
+    // NOT "the first step is hidden". No part of the wizard renders, so there
+    // is no work to lose and no 403 to walk into.
+    expect(screen.queryByRole("button", { name: /claude code/i })).toBeNull();
+    expect(document.querySelector('button[data-method="oauth"]')).toBeNull();
+  });
+
+  it("renders no wizard for a viewer either", async () => {
+    wizardRole = "viewer";
+    renderWizard();
+    expect(await screen.findByTestId("connect-role-refused")).toBeInTheDocument();
+  });
+
+  it("says the refusal arrives before the work, not at the last button", async () => {
+    wizardRole = "viewer";
+    renderWizard();
+    expect(
+      await screen.findByText(/nothing has been created and nothing was attempted/i),
+    ).toBeInTheDocument();
+  });
+
+  it("renders the wizard for an owner, so the guard is not blanket", async () => {
+    // The over-fire half. A guard that refuses correct work gets switched off.
+    wizardRole = "owner";
+    renderWizard();
+    expect(await screen.findByRole("button", { name: /claude code/i })).toBeInTheDocument();
+    expect(screen.queryByTestId("connect-role-refused")).toBeNull();
+  });
+});
 
 describe("the wizard asks for the client first", () => {
   it("renders every row in the table as a picker card, including the generic one", async () => {
@@ -775,8 +841,21 @@ function renderWizardInRouter() {
     routeTree: rootRoute.addChildren([connectRoute, listRoute]),
     history: createMemoryHistory({ initialEntries: ["/ai/connect"] }),
   });
+  // Seeded for the same reason renderWizard is: the route is behind canManage
+  // now, and these tests are about the navigation block around an open mint,
+  // which only a principal who can mint ever reaches.
+  const queryClient = createTestQueryClient();
+  queryClient.setQueryData(authKeys.me, {
+    id: "user-1",
+    email: "priya@example.test",
+    name: "Priya",
+    scope: "org",
+    role: "admin",
+    active_tenant_id: WIZARD_TENANT,
+    memberships: [{ tenant_id: WIZARD_TENANT, role: "admin", tenant_name: "Example" }],
+  });
   render(
-    <QueryClientProvider client={createTestQueryClient()}>
+    <QueryClientProvider client={queryClient}>
       <RouterProvider router={router} />
     </QueryClientProvider>,
   );

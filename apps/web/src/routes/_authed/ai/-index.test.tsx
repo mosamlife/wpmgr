@@ -286,20 +286,25 @@ describe("what a connection can and cannot do", () => {
 describe("who may create a connection", () => {
   beforeEach(() => stubFetch(() => json({ connections: [] })));
 
+  // PLURAL, DELIBERATELY. This page renders TWO "New connection" links once the
+  // list settles: the header action and the empty state's own. A singular
+  // findByRole passed here, but only because it resolves on the first poll --
+  // while the list is still a skeleton and only the header link exists -- and
+  // would start throwing "found multiple elements" the moment anything made the
+  // empty state paint sooner. An assertion that depends on which of two
+  // renders wins is not pinning the thing it names. Caught in review on #681.
   it("offers the button to an owner", async () => {
     meRole = "owner";
     renderPage();
-    expect(
-      await screen.findByRole("link", { name: /new connection/i }),
-    ).toBeInTheDocument();
+    await screen.findByTestId("connections-empty");
+    expect(screen.getAllByRole("link", { name: /new connection/i }).length).toBeGreaterThan(0);
   });
 
   it("offers the button to an admin", async () => {
     meRole = "admin";
     renderPage();
-    expect(
-      await screen.findByRole("link", { name: /new connection/i }),
-    ).toBeInTheDocument();
+    await screen.findByTestId("connections-empty");
+    expect(screen.getAllByRole("link", { name: /new connection/i }).length).toBeGreaterThan(0);
   });
 
   it("shows no create button to an operator, and says why", async () => {
