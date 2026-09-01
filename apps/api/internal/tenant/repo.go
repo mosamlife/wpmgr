@@ -28,6 +28,27 @@ type Repo interface {
 	// for an API-key principal, which is already bound to exactly one tenant by
 	// the auth middleware (so it can only ever be called for that one tenant).
 	GetByID(ctx context.Context, id uuid.UUID) (Tenant, error)
+
+	// GetAssistantState reads m130's three assistant columns for one tenant.
+	// This is the CONSOLE read, never the request path: the request path reads
+	// the pause through the `authorized` verdict in
+	// ReCheckMCPRequestAuthorizationInTenantTx and must not gain a second read
+	// of these columns (db/query/tenants.sql).
+	GetAssistantState(ctx context.Context, tenantID, userID uuid.UUID) (AssistantState, error)
+
+	// PauseAssistant engages the kill switch and appends the audit entry in the
+	// SAME transaction via onCommit. If onCommit returns an error the pause
+	// rolls back with it: a kill switch nobody can prove was thrown is not a
+	// control, and an audit chain missing the incident action is worse than a
+	// failed request.
+	PauseAssistant(ctx context.Context, tenantID, userID uuid.UUID, reason *string, onCommit func(tx pgx.Tx) error) error
+
+	// ResumeAssistant releases the kill switch. Separate method, separate
+	// query, separate audit action — never a toggle (m130 DECISION 2).
+	// rowsAffected 0 means the switch was ALREADY released, which the service
+	// turns into a distinct, non-destructive outcome rather than a silent
+	// success.
+	ResumeAssistant(ctx context.Context, tenantID, userID uuid.UUID, onCommit func(tx pgx.Tx) error) (int64, error)
 }
 
 // pgRepo is a Postgres-backed Repo over the pgx pool. Tenant rows themselves are
@@ -121,6 +142,87 @@ func (r *pgRepo) GetByID(ctx context.Context, id uuid.UUID) (Tenant, error) {
 		return Tenant{}, domain.Internal("tenant_get_failed", "failed to load tenant").WithCause(err)
 	}
 	return toModel(row), nil
+}
+
+// --- m130 assistant kill switch ---------------------------------------------
+//
+// ALL THREE RUN INSIDE InTenantTxAsUser, NOT InTenantTx, AND NOT ON THE BARE
+// POOL. `tenants` has no RLS, so the transaction is not what scopes the row —
+// the explicit tenant_id in every query's WHERE is (m130 DECISION 1). What
+// InTenantTxAsUser buys is app.user_id, which the audit hash chain requires,
+// and one transaction the audit append can share with the write it records.
+// The caller-side scope check that stops one organisation writing another's
+// row lives in the SERVICE (assertOwnTenant), before any of this runs.
+
+func (r *pgRepo) GetAssistantState(ctx context.Context, tenantID, userID uuid.UUID) (AssistantState, error) {
+	var out AssistantState
+	err := r.pool.InTenantTxAsUser(ctx, tenantID, userID, func(tx pgx.Tx) error {
+		row, err := sqlc.New(tx).GetTenantAssistantState(ctx, tenantID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return domain.NotFound("tenant_not_found", "tenant not found")
+			}
+			return domain.Internal("assistant_state_get_failed", "failed to load assistant state").WithCause(err)
+		}
+		out = AssistantState{PausedReason: row.AssistantPausedReason}
+		if row.AssistantEnabledAt.Valid {
+			t := row.AssistantEnabledAt.Time
+			out.EnabledAt = &t
+		}
+		if row.AssistantPausedAt.Valid {
+			t := row.AssistantPausedAt.Time
+			out.PausedAt = &t
+		}
+		return nil
+	})
+	return out, err
+}
+
+func (r *pgRepo) PauseAssistant(ctx context.Context, tenantID, userID uuid.UUID, reason *string, onCommit func(tx pgx.Tx) error) error {
+	return r.pool.InTenantTxAsUser(ctx, tenantID, userID, func(tx pgx.Tx) error {
+		n, err := sqlc.New(tx).EngageTenantAssistantKillSwitch(ctx, sqlc.EngageTenantAssistantKillSwitchParams{
+			TenantID: tenantID,
+			Reason:   reason,
+		})
+		if err != nil {
+			return domain.Internal("assistant_pause_failed", "failed to pause the assistant").WithCause(err)
+		}
+		// 0 rows means no such tenant, or it is soft-deleted. The query carries
+		// `deleted_at IS NULL`, so this is the only way to tell — and it must
+		// NOT be reported as a successful pause.
+		if n == 0 {
+			return domain.NotFound("tenant_not_found", "tenant not found")
+		}
+		// FAIL CLOSED. The audit append shares this transaction, so an audit
+		// failure rolls the pause back rather than leaving an unattributable
+		// kill switch. This is the ADR-064 Decision 7 shape, applied here
+		// because the same argument holds: an incident action nobody can prove
+		// was taken is not a record.
+		return onCommit(tx)
+	})
+}
+
+func (r *pgRepo) ResumeAssistant(ctx context.Context, tenantID, userID uuid.UUID, onCommit func(tx pgx.Tx) error) (int64, error) {
+	var affected int64
+	err := r.pool.InTenantTxAsUser(ctx, tenantID, userID, func(tx pgx.Tx) error {
+		n, err := sqlc.New(tx).ReleaseTenantAssistantKillSwitch(ctx, tenantID)
+		if err != nil {
+			return domain.Internal("assistant_resume_failed", "failed to resume the assistant").WithCause(err)
+		}
+		affected = n
+		// n == 0 here is AMBIGUOUS between "already released" and "no such
+		// tenant" because ReleaseTenantAssistantKillSwitch carries both
+		// `deleted_at IS NULL` and `assistant_paused_at IS NOT NULL`. The
+		// service disambiguates by reading the state; the repo does not guess.
+		// No audit entry is appended for a no-op resume: recording a release
+		// that released nothing would put a false incident-end marker in the
+		// chain.
+		if n == 0 {
+			return nil
+		}
+		return onCommit(tx)
+	})
+	return affected, err
 }
 
 func toModel(t sqlc.Tenant) Tenant {
