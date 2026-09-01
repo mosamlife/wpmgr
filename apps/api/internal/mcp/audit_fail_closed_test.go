@@ -80,7 +80,7 @@ func routerWithRecorder(t *testing.T, store Store, rec auditRecorder) *gin.Engin
 	return r
 }
 
-const toolCallBody = `{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"list_sites","arguments":{}}}`
+const toolCallBody = `{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"fleet_sites_list","arguments":{}}}`
 
 // TestToolCall_AnswerIsWithheldWhenTheAuditAppendFails is the red-first half:
 // the append fails, and the tool's answer must not reach the client.
@@ -140,8 +140,8 @@ func TestToolCall_HealthyAuditStillAnswersAndWritesExactlyOneRow(t *testing.T) {
 	// only() fails loudly when there is no row, so "recorded nothing" cannot
 	// pass as "recorded correctly".
 	e := rec.only(t, audit.ActionMCPToolCalled)
-	if e.TargetID != ToolListSites {
-		t.Errorf("recorded target = %q, want %q", e.TargetID, ToolListSites)
+	if e.TargetID != ToolFleetSitesList {
+		t.Errorf("recorded target = %q, want %q", e.TargetID, ToolFleetSitesList)
 	}
 }
 
@@ -182,7 +182,7 @@ func TestRecordToolCall_PropagatesTheAppendFailure(t *testing.T) {
 	svc := NewService(&fakeStore{}).withAuditRecorder(&failingRecorder{err: boom})
 
 	auth := authWith(CapabilitySet{}, uuid.New())
-	err := svc.RecordToolCall(t.Context(), auth, ToolListSites, "read")
+	err := svc.RecordToolCall(t.Context(), auth, ToolFleetSitesList, "read")
 	if err == nil {
 		t.Fatal("RecordToolCall swallowed a failed append; the fail-closed gate above it " +
 			"can never fire")
@@ -198,7 +198,7 @@ func TestRecordToolCall_RecorderlessIsAnErrorNotASkip(t *testing.T) {
 	svc := NewService(&fakeStore{})
 
 	auth := authWith(CapabilitySet{}, uuid.New())
-	if err := svc.RecordToolCall(t.Context(), auth, ToolListSites, "read"); err == nil {
+	if err := svc.RecordToolCall(t.Context(), auth, ToolFleetSitesList, "read"); err == nil {
 		t.Fatal("a Service with no recorder reported success for a row it did not write")
 	}
 }

@@ -335,7 +335,7 @@ func TestMCPConnectionStatus_StepsEightAndNine_AsAppRole(t *testing.T) {
 	// ==================================================================
 	callRes := mcpRPCWithProtocol(t, transportEng, freshTok, mcp.ProtocolTarget, map[string]any{
 		"jsonrpc": "2.0", "id": 3, "method": "tools/call",
-		"params": map[string]any{"name": mcp.ToolListSites, "arguments": map[string]any{}},
+		"params": map[string]any{"name": mcp.ToolFleetSitesList, "arguments": map[string]any{}},
 	})
 	if callRes.status != http.StatusOK {
 		t.Fatalf("tools/call answered %d, want 200: %s", callRes.status, callRes.body)
@@ -349,8 +349,8 @@ func TestMCPConnectionStatus_StepsEightAndNine_AsAppRole(t *testing.T) {
 		t.Errorf("first_call.state = %q after a real tools/call, want %q",
 			got.FirstCall.State, "succeeded")
 	}
-	if got.FirstCall.ToolName == nil || *got.FirstCall.ToolName != mcp.ToolListSites {
-		t.Errorf("first_call.tool_name = %v, want %q", got.FirstCall.ToolName, mcp.ToolListSites)
+	if got.FirstCall.ToolName == nil || *got.FirstCall.ToolName != mcp.ToolFleetSitesList {
+		t.Errorf("first_call.tool_name = %v, want %q", got.FirstCall.ToolName, mcp.ToolFleetSitesList)
 	}
 	if got.FirstCall.CalledAt == nil {
 		t.Error("first_call.called_at is null on a succeeded call, want the audit row's timestamp")

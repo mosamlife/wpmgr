@@ -227,10 +227,10 @@ func TestMCPAuditEvents_GrantCreatedToolCalledAndRevoked_AsAppRole(t *testing.T)
 
 	got := mcpRPC(t, eng, tok.AccessToken, map[string]any{
 		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-		"params": map[string]any{"name": mcp.ToolListSites, "arguments": map[string]any{}},
+		"params": map[string]any{"name": mcp.ToolFleetSitesList, "arguments": map[string]any{}},
 	})
 	if got.status != http.StatusOK {
-		t.Fatalf("tools/call %s answered %d, want 200: %s", mcp.ToolListSites, got.status, got.body)
+		t.Fatalf("tools/call %s answered %d, want 200: %s", mcp.ToolFleetSitesList, got.status, got.body)
 	}
 
 	// ------------------------------------------------------------------
@@ -247,8 +247,8 @@ func TestMCPAuditEvents_GrantCreatedToolCalledAndRevoked_AsAppRole(t *testing.T)
 	if called[0].actorID != grantID {
 		t.Errorf("mcp.tool.called actor_id = %q, want the grant id %q (NOT the user)", called[0].actorID, grantID)
 	}
-	if called[0].targetID != mcp.ToolListSites {
-		t.Errorf("mcp.tool.called target_id = %q, want the tool name %q", called[0].targetID, mcp.ToolListSites)
+	if called[0].targetID != mcp.ToolFleetSitesList {
+		t.Errorf("mcp.tool.called target_id = %q, want the tool name %q", called[0].targetID, mcp.ToolFleetSitesList)
 	}
 	if got, _ := called[0].metadata["grant_name"].(string); got != grantName {
 		t.Errorf("mcp.tool.called metadata.grant_name = %q, want %q (the actor label)", got, grantName)

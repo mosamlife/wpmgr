@@ -114,7 +114,7 @@ type ToolPolicy struct {
 // stored narrowing, and its own review -- never by being appended here.
 func registryTools() []ToolPolicy {
 	entries := []ToolPolicy{{
-		Name: ToolListSites,
+		Name: ToolFleetSitesList,
 		Description: "List the WordPress sites this connection may read, with their " +
 			"connection state, health, WordPress/PHP/agent versions, and an explicit " +
 			"inventory staleness stamp. Sites whose plugin/theme inventory has never " +
