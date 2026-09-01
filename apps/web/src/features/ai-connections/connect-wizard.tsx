@@ -33,7 +33,6 @@ import {
 import { formatAbsolute } from "@/features/updates/schedule";
 import {
   describeSiteScope,
-  isScopeApprovable,
   resolveSiteScope,
   resolveTagIds,
   type FleetSnapshot,
@@ -93,17 +92,86 @@ import {
 
 type Step = 1 | 2 | 3 | 4;
 
-interface StepDef {
-  readonly n: Step;
-  readonly label: string;
+/**
+ * The rail this page renders is the design's own numbering (S29, "ADD MCP
+ * CONNECTION: THE TEN STEPS"), not the four sections built so far. Showing
+ * only the four built ones would show an operator four-tenths of a path and
+ * let them believe that was the whole of it; the approved wizard has ten
+ * steps and the operator is entitled to see all ten before starting.
+ *
+ * THE MAP FROM A BUILT SECTION TO ITS SPECIFIED NUMBER IS NOT MONOTONIC ON
+ * SCREEN. The four built sections answer specified steps 2, 5, 3 and 6, IN
+ * THAT ORDER: this wizard reaches specified step 3 ("which sites") AFTER
+ * specified step 5 ("how it authenticates"), because the site-scope section
+ * was inserted after the auth-method section by design (see the file-top
+ * comment on ordering). `BUILT_ORDER` below is that on-screen order; a
+ * "completed" segment is one earlier IN THIS ORDER, never one with a smaller
+ * specified number -- comparing raw numbers would call specified step 5
+ * incomplete the moment the operator reached specified step 3, which is
+ * backwards.
+ */
+const BUILT_ORDER: readonly [1 | 2 | 3 | 4, number][] = [
+  [1, 2],
+  [2, 5],
+  [3, 3],
+  [4, 6],
+];
+
+/** The specified step number a locally-built step answers. */
+function specStepFor(step: Step): number {
+  const found = BUILT_ORDER.find(([local]) => local === step);
+  // Unreachable: BUILT_ORDER has one entry per Step value. A throw here
+  // rather than a fallback number, because a fallback would silently mark
+  // the wrong segment current instead of failing loudly.
+  if (found === undefined) throw new Error(`no specified step for local step ${step}`);
+  return found[1];
 }
 
-const STEPS: readonly StepDef[] = [
-  { n: 1, label: "Pick your client" },
-  { n: 2, label: "How it signs in" },
-  { n: 3, label: "Sites it may reach" },
-  { n: 4, label: "Set it up" },
+interface SpecStepDef {
+  /** The specified step number (design S29), 1 through 10. */
+  readonly n: number;
+  readonly label: string;
+  /** True when this specified step has a built, reachable section today. */
+  readonly built: boolean;
+}
+
+// All ten, in specified order, so the operator sees the whole path before
+// starting. Only four are `built: true`; the rest render as not-yet-available
+// rather than being omitted or, worse, made to look done.
+const SPEC_STEPS: readonly SpecStepDef[] = [
+  { n: 1, label: "Start a connection", built: false },
+  { n: 2, label: "Name it, pick the AI client", built: true },
+  { n: 3, label: "Choose which sites", built: true },
+  { n: 4, label: "Choose what it may do", built: false },
+  { n: 5, label: "Choose how it authenticates", built: true },
+  { n: 6, label: "Get the setup artefact", built: true },
+  { n: 7, label: "Connect and authorize", built: false },
+  { n: 8, label: "WPMgr confirms connection is live", built: false },
+  { n: 9, label: "Verify with a first read", built: false },
+  { n: 10, label: "Done: tool list and first prompt", built: false },
 ];
+
+/**
+ * Whether the site-scope step is actually done, for every reason
+ * `mintBlockedReason` below can refuse to mint on it -- READ BY BOTH THE
+ * BUTTON AND THE RAIL FROM ONE FUNCTION, `siteScopeReadiness`, rather than
+ * each asking a narrower question of its own.
+ *
+ * THIS TYPE EXISTS BECAUSE A NARROWER ONE WAS FOUND WRONG THREE TIMES, THROUGH
+ * THREE DIFFERENT DOORS, IN ONE REVIEW PASS. The rail first asked only
+ * `scope.kind`, which answers "did the fleet read resolve" and says nothing
+ * about `mintScopeRequest`'s OWN refusals: `tags-unresolved` (the tag
+ * registry, a different read from the fleet) and `unselected` (the operator
+ * has not picked anything under 'tags' or 'list' mode yet). Both left minting
+ * blocked while the rail called step 3 done and put `aria-current` on step 6.
+ * Patching the rail's own condition a second time would have been a fourth
+ * door on the same room; this widens the ONE predicate both consumers read
+ * instead.
+ */
+type SiteScopeReadiness = "loading" | "failed" | "tags-unresolved" | "unselected" | "resolved";
+
+/** The specified step number (design S29) that answers "which sites." */
+const SITE_SCOPE_SPEC_N = 3;
 
 export interface ConnectWizardProps {
   /** Absolute MCP endpoint for this deployment. Passed in, never assembled here. */
@@ -167,7 +235,16 @@ export function ConnectWizard({
   // The current step is derived, never stored, so it cannot disagree with the
   // answers. Picking a different client with an incompatible method drops the
   // method rather than carrying a stale one into step 3.
-  const step: Step = client === null ? 1 : method === null ? 2 : 3;
+  //
+  // THE LAST BRANCH IS 4, NOT 3. Section 3 ("Sites this connection may
+  // reach") and Section 4 ("Set it up") share the exact same reveal
+  // condition below (`client !== null && method !== null`) -- they always
+  // appear together, so there is no state in which section 3 is on screen
+  // and section 4 is not. Once that condition holds, 4 is the furthest
+  // section actually revealed, and aria-current has to say so; stopping at 3
+  // told a screen-reader user they were in a section behind the one they
+  // were actually working in.
+  const step: Step = client === null ? 1 : method === null ? 2 : 4;
 
   // Resolved once here rather than inside the mint panel, so the SAME answer
   // gates the mint button and is described back in the one-time reveal -- a
@@ -203,6 +280,17 @@ export function ConnectWizard({
     () => mintScopeRequest(selection.mode, scopeTagIds, selection.siteIds),
     [selection.mode, scopeTagIds, selection.siteIds],
   );
+
+  // THE RAIL'S SITE-SCOPE STATE, FROM `siteScopeReadiness` -- THE SAME
+  // FUNCTION `mintBlockedReason` CALLS BELOW, NEVER A NARROWER RE-DERIVATION.
+  // This found the same defect a second time: reading only `scope.kind` fixed
+  // the case where the FLEET read hadn't resolved, and left the rail calling
+  // step 3 done while `mintScopeRequest` was still refusing to mint on
+  // `tags-unresolved` (the TAG registry, a different read) or on an empty
+  // selection the operator had not made yet. One function, read by both the
+  // button and the rail, is what makes a fourth door impossible rather than
+  // merely unlikely.
+  const siteScopeState: SiteScopeReadiness = siteScopeReadiness(scope, scopeRequest, method);
 
   // A mint is a network round trip, and every control above is live during it.
   // Disabling them is the FIRST half of the fix (the operator is not offered a
@@ -292,7 +380,7 @@ export function ConnectWizard({
 
   return (
     <div className={cn("space-y-6", className)}>
-      <StepRail current={step} />
+      <StepRail current={step} siteScopeState={siteScopeState} />
 
       {/* THE ONE AND ONLY PLACE A REVEAL IS RENDERED, and it is deliberately
           outside every step. A second render site inside step 4 would restore
@@ -518,36 +606,107 @@ export function ConnectWizard({
   );
 }
 
-function StepRail({ current }: { current: Step }) {
+function StepRail({
+  current,
+  siteScopeState,
+}: {
+  current: Step;
+  /**
+   * From `siteScopeReadiness`, the SAME function `mintBlockedReason` calls
+   * for its own scope-related refusals -- never a narrower re-derivation
+   * here. See that function's doc for why: reading only whether the fleet
+   * read resolved fixed one door minting could be blocked through and left
+   * two open (`tags-unresolved`, `unselected`), each reachable while the rail
+   * still called step 3 done and put `aria-current` on step 6.
+   */
+  siteScopeState: SiteScopeReadiness;
+}) {
+  const currentSpec = specStepFor(current);
+  const currentPos = BUILT_ORDER.findIndex(([, spec]) => spec === currentSpec);
+  const siteScopeBuiltPos = BUILT_ORDER.findIndex(([, spec]) => spec === SITE_SCOPE_SPEC_N);
+  // BLOCKING, NOT MERELY "NOT YET RESOLVED". The positional walk has to have
+  // actually passed through the site-scope step for its state to be
+  // relevant: while the operator is still on "how it authenticates," step 3
+  // is correctly "upcoming" no matter what siteScopeState says, because the
+  // operator has not been told otherwise yet.
+  const siteScopeBlocking =
+    siteScopeState !== "resolved" && siteScopeBuiltPos !== -1 && siteScopeBuiltPos <= currentPos;
+  // THE OVERRIDE ITSELF. While step 3 is not done, IT is where the operator's
+  // process actually stands, not whatever position the local step has
+  // otherwise reached -- so aria-current moves back to it instead of sitting
+  // on a "setup" step whose mint button it, in fact, still blocks.
+  const effectiveCurrentSpec = siteScopeBlocking ? SITE_SCOPE_SPEC_N : currentSpec;
+  const effectiveCurrentPos = siteScopeBlocking ? siteScopeBuiltPos : currentPos;
   return (
-    <ol className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[var(--color-muted-foreground)]">
-      {STEPS.map((s, i) => (
-        <li key={s.n} className="flex items-center gap-2">
-          {i > 0 ? <span aria-hidden="true">/</span> : null}
-          <span
-            aria-current={s.n === current ? "step" : undefined}
-            className={cn(
-              s.n === current && "font-medium text-[var(--color-foreground)]",
-              s.n < current && "text-[var(--color-foreground)]",
-            )}
-          >
-            {s.n}. {s.label}
-          </span>
-        </li>
-      ))}
-      <li className="flex items-center gap-2">
-        <span aria-hidden="true">/</span>
-        {/* Capabilities are NOT a numbered step in this rail. The vocabulary
-            and the grant column behind them exist now (policy.go,
-            mcp_grants.capabilities in schema.sql), but neither completion
-            path this wizard ends in lets an operator choose one today -- see
-            the comment above the wizard's STEPS export for the token/OAuth
-            split -- so a step number here would be for a choice nobody can
-            make yet. What it names instead is where the OAuth path's consent
-            is actually recorded. */}
-        <span>Permissions are chosen on the approval screen</span>
-      </li>
-    </ol>
+    <div className="space-y-1">
+      <ol className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[var(--color-muted-foreground)]">
+        {SPEC_STEPS.map((s, i) => {
+          const isCurrent = s.n === effectiveCurrentSpec;
+          // Completed means "earlier in the order this wizard actually
+          // visits built steps in," never "a smaller specified number" --
+          // see the comment on BUILT_ORDER above for why those disagree here.
+          const builtPos = BUILT_ORDER.findIndex(([, spec]) => spec === s.n);
+          const isCompleted = builtPos !== -1 && builtPos < effectiveCurrentPos;
+          // SITE SCOPE'S OWN STATES, CHECKED BEFORE THE GENERIC ONES BELOW AND
+          // OVERRIDING THEM. "completed" here would be the exact defect this
+          // whole rework exists for: a step reading as finished while mint
+          // would still refuse it. Each reason is kept distinct rather than
+          // collapsing into one muted "not done yet" -- an operator told
+          // nothing when a read has actually failed keeps waiting for a state
+          // that is never coming, and one told "loading" for their own
+          // unmade selection is told something false about themselves.
+          const state: "not-built" | "current" | "completed" | "upcoming" | SiteScopeReadiness =
+            !s.built
+              ? "not-built"
+              : s.n === SITE_SCOPE_SPEC_N && siteScopeBlocking
+                ? siteScopeState
+                : isCurrent
+                  ? "current"
+                  : isCompleted
+                    ? "completed"
+                    : "upcoming";
+          return (
+            <li key={s.n} className="flex items-center gap-2">
+              {i > 0 ? <span aria-hidden="true">/</span> : null}
+              <span
+                aria-current={isCurrent ? "step" : undefined}
+                // A plain data attribute rather than only a class, so a test
+                // can assert the state this rail believes it is in without
+                // coupling to Tailwind class names.
+                data-step-n={s.n}
+                data-step-state={state}
+                // NOT FAKED PROGRESS, IN EITHER DIRECTION. An unbuilt step
+                // gets none of the "current" or "completed" styling below,
+                // because it has no section behind it to have completed; a
+                // built step mint would still refuse gets neither "current"
+                // nor "completed" either, for the same reason.
+                className={cn(
+                  !s.built && "italic opacity-70",
+                  state === "current" && "font-medium text-[var(--color-foreground)]",
+                  state === "completed" && "text-[var(--color-foreground)]",
+                  state === "failed" && "text-[var(--color-destructive)]",
+                )}
+              >
+                {s.n}. {s.label}
+                {!s.built ? <span className="sr-only"> (not yet available)</span> : null}
+                {state === "loading" ? " (loading)" : null}
+                {state === "failed" ? " (failed to load)" : null}
+                {state === "tags-unresolved" ? " (tags still loading)" : null}
+                {state === "unselected" ? " (not chosen yet)" : null}
+              </span>
+            </li>
+          );
+        })}
+      </ol>
+      {/* Step 4 in the rail above ("Choose what it may do") has no section on
+          this page: neither completion path this wizard ends in lets an
+          operator choose a capability today -- see the file-top comment on
+          the OAuth/token split. Naming where that choice IS made today keeps
+          the gap from reading as an oversight. */}
+      <p className="text-xs text-[var(--color-muted-foreground)]">
+        Permissions are chosen on the approval screen.
+      </p>
+    </div>
   );
 }
 
@@ -790,6 +949,26 @@ function SnippetBlock({ client, snippet }: { client: McpClientRow; snippet: Snip
         </div>
       ) : null}
 
+      {snippet.kind === "shell" ? (
+        <div className="space-y-2">
+          <span className="text-xs font-medium text-[var(--color-foreground)]">
+            Run this in a terminal for {client.name}
+          </span>
+          <p className="text-sm text-[var(--color-muted-foreground)]">{snippet.reason}</p>
+          <pre className="overflow-x-auto rounded-md border border-[var(--color-border)] bg-[var(--color-muted)]/40 p-3 font-mono text-xs text-[var(--color-foreground)]">
+            <code>{snippet.text}</code>
+          </pre>
+          <CopyableMono value={snippet.text} label={`Copy the ${client.name} setup command`} truncate />
+          {/* The mechanic, on screen rather than only in the generator's own
+              comment: a reader has to be able to tell this is safe without
+              reading snippet.ts. */}
+          <p className="text-xs text-[var(--color-muted-foreground)]">
+            Reads the token once, into your shell, and never types it as an argument -- so it is
+            never echoed and never written to your shell history.
+          </p>
+        </div>
+      ) : null}
+
       {/* The endpoint just printed is derived from this origin, which does not
           prove anything forwards it. Said once, beside every artefact. */}
       <p className="text-xs text-[var(--color-muted-foreground)]">
@@ -909,16 +1088,85 @@ function mintScopeRequest(
 }
 
 /**
+ * Whether step 3 is actually done, for every reason mint can refuse it, ON
+ * THE PATH WHERE MINT IS THE THING BEING REFUSED.
+ *
+ * THE FULL MATRIX THIS FUNCTION ANSWERS -- auth method x site-scope state,
+ * ten cells, derived from what actually gates the setup step on each path,
+ * not from what feels right:
+ *
+ *   TOKEN.    TokenMintPanel is the only caller of `mintBlockedReason`, so on
+ *   this path "is step 3 done" and "will mint accept this" are the same
+ *   question, and every unresolved state genuinely blocks:
+ *     unselected      -> mint blocked (mintScopeRequest: "names-nothing")
+ *     loading         -> mint blocked (scope.kind === "unresolved")
+ *     failed          -> mint blocked (scope.kind === "unresolved")
+ *     tags-unresolved -> mint blocked (mintScopeRequest: "tags-unresolved")
+ *     resolved        -> mint NOT blocked by scope (the name field is a
+ *                         separate, later gate -- see the note on that below)
+ *
+ *   OAUTH.    There is no mint button on this path at all -- step 4 renders
+ *   NextSteps, not TokenMintPanel, for `method === 'oauth'` -- and the scope
+ *   chosen in THIS wizard is rehearsal for it: SiteScopeStep's own copy says
+ *   "nothing carries this selection to the approval screen... deciding it
+ *   here is how you get there with the answer ready." Nothing downstream
+ *   reads it, so nothing here can be "blocked" by it, for any of the five
+ *   states:
+ *     unselected / loading / failed / tags-unresolved / resolved
+ *       -> mint N/A; NextSteps is unconditionally actionable the moment
+ *          client and method are picked, so step 3 reads by POSITION alone
+ *          (the ordinary completed/upcoming logic) and step 6 stays current.
+ *   Getting this wrong the other way was Greptile's P1 on :639: dragging
+ *   `aria-current` back to step 3 while an OAuth operator sits in an
+ *   already-actionable step 6, because the predicate could not tell "no
+ *   button exists here" from "the button here is disabled."
+ *
+ * THE ONE PLACE THIS IS DECIDED. `mintBlockedReason` below and the step
+ * rail's `siteScopeState` (ConnectWizard) both call this and nothing else, so
+ * "minting is blocked" and "the rail says step 3 is done" cannot disagree --
+ * they read the same value, now including the method that changes what
+ * "blocked" even means, rather than two derivations that could drift the way
+ * `scope.kind` alone already did once, and the way a method-blind version of
+ * this very function did a second time.
+ *
+ * THE ORDER ON THE TOKEN PATH IS LOAD-BEARING, copied from
+ * `mintBlockedReason`'s own comment because this function replaces that logic
+ * rather than duplicating it. An unresolved tag registry is reported first,
+ * because a selection that cannot be translated is not the same complaint as
+ * a selection that is empty. A fleet still loading is reported before "you
+ * have picked nothing," because telling an operator to pick a site out of a
+ * list that has not arrived is a remedy they cannot follow.
+ *
+ * A NAMED NON-GOAL, NOT AN OVERSIGHT. The connection-name field (inside step
+ * 6 itself) can be empty while this returns `resolved` and the rail marks
+ * step 6 current -- mint is still blocked then, by `mintBlockedReason`'s own
+ * `!nameOk` branch, which this function does not see. That is correct rather
+ * than a fifth gap to close: the rail reports POSITION -- which section is
+ * the operator working in -- not "is the submit button enabled right now."
+ * An empty name field is the operator genuinely inside step 6, working on
+ * step 6's own control, not the rail lying about where they are the way the
+ * site-scope cases above did.
+ */
+function siteScopeReadiness(
+  scope: ResolvedSiteScope,
+  scopeRequest: MintScopeRequest,
+  method: AuthMethod | null,
+): SiteScopeReadiness {
+  // OAUTH (AND NO METHOD CHOSEN YET) NEVER GATES ON THIS. See the matrix
+  // above: no mint button exists to refuse on this path, so nothing here can
+  // be "unresolved" in a sense that blocks anything.
+  if (method !== "token") return "resolved";
+  if (!scopeRequest.ok && scopeRequest.because === "tags-unresolved") return "tags-unresolved";
+  if (scope.kind === "unresolved") return scope.because;
+  if (!scopeRequest.ok) return "unselected";
+  return "resolved";
+}
+
+/**
  * The reason minting is refused, or null when it is not.
  *
  * Every branch here is a FAILURE, rendered with a remedy, never a silently
  * disabled button.
- *
- * THE ORDER IS LOAD-BEARING. An unresolved tag registry is reported first,
- * because a selection that cannot be translated is not the same complaint as a
- * selection that is empty. A fleet still loading is reported before "you have
- * picked nothing", because telling an operator to pick a site out of a list
- * that has not arrived is a remedy they cannot follow.
  */
 function mintBlockedReason(
   nameOk: boolean,
@@ -926,12 +1174,20 @@ function mintBlockedReason(
   scopeRequest: MintScopeRequest,
 ): string | null {
   if (!nameOk) return "Name this connection before minting a token.";
-  if (!scopeRequest.ok && scopeRequest.because === "tags-unresolved") return scopeRequest.refusal;
-  if (!isScopeApprovable(scope)) {
-    return scope.kind === "unresolved" && scope.because === "loading"
-      ? "Still reading this organisation's sites for step 3. Wait for that to finish before minting."
-      : "This organisation's sites could not be read for step 3, so we cannot tell what this connection would cover. Fix that above before minting.";
+  // Literally "token", not threaded through as a parameter: this function is
+  // only ever called from TokenMintPanel, which method === 'oauth' never
+  // renders, so the context is a fact about the caller, not a value to plumb.
+  const readiness = siteScopeReadiness(scope, scopeRequest, "token");
+  if (readiness === "loading") {
+    return "Still reading this organisation's sites for step 3. Wait for that to finish before minting.";
   }
+  if (readiness === "failed") {
+    return "This organisation's sites could not be read for step 3, so we cannot tell what this connection would cover. Fix that above before minting.";
+  }
+  // "tags-unresolved" and "unselected" both mean scopeRequest itself refused,
+  // which already carries its own remedy -- reusing it here, rather than a
+  // second copy of the sentence, is what keeps this and the refusal text from
+  // drifting apart.
   if (!scopeRequest.ok) return scopeRequest.refusal;
   return null;
 }
@@ -1122,13 +1378,6 @@ function TokenMintPanel({
 /**
  * The one-time reveal itself. Rendered exactly once per mint, from state the
  * parent never repopulates -- see TokenMintPanel's own doc.
- *
- * THE SHELL SETUP COMMAND FOR {clientName} IS NOT RENDERED HERE. This client's
- * table entry (client-table.ts) emits a JSON or raw config, not a CLI
- * invocation, so there is no `claude mcp add`-shaped command in this codebase
- * to fill in without inventing a third snippet kind under time pressure. What
- * ships is the reveal itself, matching the wireframe's non-negotiables; the
- * setup-command shape is outstanding.
  */
 function TokenReveal({ reveal, onDismiss }: { reveal: MintedReveal; onDismiss: () => void }) {
   // Destructured from the one snapshot, and there is deliberately no second

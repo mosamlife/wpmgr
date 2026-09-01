@@ -126,7 +126,26 @@ export interface RawConfigShape {
   readonly reason: string;
 }
 
-export type ConfigShape = JsonConfigShape | GuiConfigShape | RawConfigShape;
+/**
+ * A client set up by running a command in a shell, not by editing a file or a
+ * GUI field.
+ *
+ * TOKEN AUTH HERE NEVER PUTS THE TOKEN IN THE COMMAND TEXT. A bearer
+ * credential typed or pasted as a shell argument is written to the shell
+ * history file in plain text and stays there, readable by anything that can
+ * read that file, for as long as the credential is valid. The generator
+ * (snippet.ts) reads the token interactively with `read -rs` -- never an
+ * argument, never echoed -- into `$WPMGR_CONNECTION_TOKEN` and references
+ * that variable rather than the value, so the value itself never appears in
+ * generated text at all.
+ */
+export interface ShellConfigShape {
+  readonly kind: "shell";
+  /** Rendered beside the block: why this client is set up by command rather than by file. */
+  readonly reason: string;
+}
+
+export type ConfigShape = JsonConfigShape | GuiConfigShape | RawConfigShape | ShellConfigShape;
 
 /**
  * A POSIX config file location.
