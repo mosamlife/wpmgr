@@ -56,7 +56,7 @@ func newTransportRouterWithAudit(t *testing.T, store Store) (*gin.Engine, *captu
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	rec := &capturingRecorder{}
-	svc := NewService(store).withAuditRecorder(rec)
+	svc := NewService(store).withAuditRecorder(rec).WithContextResolver(emptyContextResolver())
 	h := NewTransportHandler(svc, slog.New(slog.DiscardHandler), "test-version")
 	h.Register(r)
 	return r, rec
@@ -463,7 +463,7 @@ func TestListSites_NullComponentsUpdatedAtRendersNeverCollected(t *testing.T) {
 	}
 
 	now := time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC)
-	text, err := buildListSitesResult(rows, envFor(t, rows), now)
+	text, err := buildListSitesResult(rows, envFor(t, rows), now, noOperatorContext)
 	if err != nil {
 		t.Fatalf("buildListSitesResult: %v", err)
 	}
@@ -534,7 +534,7 @@ func TestListSites_TruncationCutsAtRecordBoundaryWithAMarker(t *testing.T) {
 	}
 
 	now := time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC)
-	text, err := buildListSitesResult(rows, envFor(t, rows), now)
+	text, err := buildListSitesResult(rows, envFor(t, rows), now, noOperatorContext)
 	if err != nil {
 		t.Fatalf("buildListSitesResult: %v", err)
 	}
@@ -605,7 +605,7 @@ func TestListSites_UntruncatedResultIsNotMarked(t *testing.T) {
 	collected := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
 	rows := []sqlc.Site{siteRow("one", &collected), siteRow("two", nil)}
 
-	text, err := buildListSitesResult(rows, envFor(t, rows), time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC))
+	text, err := buildListSitesResult(rows, envFor(t, rows), time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC), noOperatorContext)
 	if err != nil {
 		t.Fatalf("buildListSitesResult: %v", err)
 	}
@@ -669,7 +669,7 @@ func TestListSites_UnreadInScopeSiteIsReportedAsPartial(t *testing.T) {
 		t.Fatalf("NewEnvelope: %v", err)
 	}
 
-	text, err := buildListSitesResult(rows, env, time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC))
+	text, err := buildListSitesResult(rows, env, time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC), noOperatorContext)
 	if err != nil {
 		t.Fatalf("buildListSitesResult: %v", err)
 	}
@@ -718,7 +718,7 @@ func TestListSites_BannerSurvivesInstructionClamp(t *testing.T) {
 		rows = append(rows, siteRow(fmt.Sprintf("site-%03d-with-a-deliberately-long-name-to-consume-budget", i), &collected))
 	}
 
-	text, err := buildListSitesResult(rows, envFor(t, rows), time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC))
+	text, err := buildListSitesResult(rows, envFor(t, rows), time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC), noOperatorContext)
 	if err != nil {
 		t.Fatalf("buildListSitesResult: %v", err)
 	}
@@ -757,7 +757,7 @@ func TestListSites_OneOversizedRecordDoesNotBlockTheRest(t *testing.T) {
 	small := siteRow("b-small-site", &collected)
 	rows := []sqlc.Site{oversized, small}
 
-	text, err := buildListSitesResult(rows, envFor(t, rows), time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC))
+	text, err := buildListSitesResult(rows, envFor(t, rows), time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC), noOperatorContext)
 	if err != nil {
 		t.Fatalf("buildListSitesResult: %v", err)
 	}

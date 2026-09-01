@@ -47,7 +47,7 @@ func limiterRouter(t *testing.T, store Store) (*gin.Engine, *TransportHandler) {
 	// The recorder is required, not decorative: an unaudited Service refuses
 	// every tool call (Service.requireRecorder), and a limiter test whose calls
 	// are all refused for an unrelated reason proves nothing about the limiter.
-	svc := NewService(store).withAuditRecorder(&capturingRecorder{})
+	svc := NewService(store).withAuditRecorder(&capturingRecorder{}).WithContextResolver(emptyContextResolver())
 	h := NewTransportHandler(svc, slog.New(slog.DiscardHandler), "test-version")
 	h.Register(r)
 	return r, h
