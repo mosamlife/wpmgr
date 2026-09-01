@@ -355,6 +355,99 @@ func TestMCPConnectionsListThroughMountedRouteAsAppRole(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// PROOF 2B -- GH #652. A NON-DEFAULT CAPABILITY SET ROUND-TRIPS EXACTLY,
+// THROUGH THE MOUNTED ROUTE, AS wpmgr_app.
+//
+// TestMCPConnectionsListThroughMountedRouteAsAppRole above only ever produces
+// {mcp.sites.read}: the consent flow it drives has no capability picker yet,
+// so it cannot exercise anything the vocabulary widened to. This proof mints
+// through the SAME headless POST /connections route the wizard's step 2 uses,
+// asking explicitly for three capabilities, and reads them back through the
+// SAME GET the list uses -- as wpmgr_app, inside InTenantTx, never on a
+// connection opened by the test itself. A proof against a hand-rolled
+// connection would pass even if mcp_grants_capabilities_vocabulary_check or
+// the site-scope policy quietly dropped the row this reads.
+// ---------------------------------------------------------------------------
+
+func TestMCPConnectionListsANonDefaultCapabilitySetExactlyAsAppRole(t *testing.T) {
+	ctx := context.Background()
+	pool := startPostgres(t)
+
+	if err := pool.InTenantTx(ctx, uuid.New(), func(tx pgx.Tx) error {
+		mcpAssertAndReportRole(t, tx, "InTenantTx")
+		return nil
+	}); err != nil {
+		t.Fatalf("open tenant tx: %v", err)
+	}
+
+	suffix := uuid.NewString()[:8]
+	tenantID := seedTenant(t, pool, "mcp-s16-cap-"+suffix)
+	userID := seedUserRow(t, pool, "mcp-s16-cap-"+suffix+"@example.test")
+
+	svc := mcp.NewService(mcp.NewRepo(pool))
+	eng := mountConnectionsLikeProduction(t, svc, adminPrincipal(tenantID, userID))
+
+	// A deliberately non-default, non-alphabetical, more-than-one-member set:
+	// the exact case that was indistinguishable from an omitted field before
+	// the vocabulary widened, and is not any more.
+	wantCaps := []string{
+		string(mcp.CapPerformanceRead),
+		string(mcp.CapSitesRead),
+		string(mcp.CapUptimeRead),
+	}
+	var minted struct {
+		GrantID string `json:"grant_id"`
+	}
+	if code := mcpDoJSON(t, eng, http.MethodPost, mcp.ConnectionsPath, map[string]any{
+		"name":            "s16 capability round-trip",
+		"site_scope_mode": string(mcp.SiteScopeModeAll),
+		"capabilities":    wantCaps,
+	}, nil, &minted); code != http.StatusCreated {
+		t.Fatalf("fixture: mint answered %d, want 201", code)
+	}
+	if minted.GrantID == "" {
+		t.Fatal("fixture: mint returned no grant_id")
+	}
+
+	var list struct {
+		Connections []struct {
+			ID           string   `json:"id"`
+			Capabilities []string `json:"capabilities"`
+		} `json:"connections"`
+	}
+	code := mcpDoJSON(t, eng, http.MethodGet, mcp.ConnectionsPath, nil, nil, &list)
+	if code != http.StatusOK {
+		t.Fatalf("list answered %d, want 200", code)
+	}
+	if len(list.Connections) != 1 {
+		t.Fatalf("list returned %d connections, want the 1 just minted", len(list.Connections))
+	}
+	got := list.Connections[0]
+	if got.ID != minted.GrantID {
+		t.Fatalf("listed connection id %q, want the minted %q", got.ID, minted.GrantID)
+	}
+
+	if len(got.Capabilities) != len(wantCaps) {
+		t.Fatalf("listed %d capabilities %v, want the %d requested %v",
+			len(got.Capabilities), got.Capabilities, len(wantCaps), wantCaps)
+	}
+	want := map[string]bool{}
+	for _, c := range wantCaps {
+		want[c] = true
+	}
+	for _, c := range got.Capabilities {
+		if !want[c] {
+			t.Errorf("listed capability %q was never requested (requested %v)", c, wantCaps)
+		}
+		delete(want, c)
+	}
+	for c := range want {
+		t.Errorf("requested capability %q never made it to the list", c)
+	}
+	t.Logf("capability round-trip ok: grant %s, capabilities=%v", got.ID, got.Capabilities)
+}
+
+// ---------------------------------------------------------------------------
 // PROOF 3 -- THE SITE-SCOPE GATE, AT BOTH LAYERS.
 //
 // Constraint 2. mcp_grants_site_scope_select is RESTRICTIVE and refuses by
