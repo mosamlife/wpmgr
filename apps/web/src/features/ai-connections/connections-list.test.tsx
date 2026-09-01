@@ -35,7 +35,7 @@ const CONNECTED: AiConnection = {
 };
 
 /** The copy that must never appear over a failure. */
-const EMPTY_CLAIM = /no ai clients are connected/i;
+const EMPTY_CLAIM = /you have no ai connections/i;
 
 function renderList(state: ConnectionsState) {
   return renderWithProviders(<ConnectionsList state={state} />, { withRouter: true });
@@ -112,16 +112,19 @@ describe("ConnectionsList renders each state as a different thing", () => {
     expect(screen.queryByText(/could not load/i)).not.toBeInTheDocument();
   });
 
-  it("tells the truth in the empty state: read, limited to scoped sites, and nothing more", async () => {
-    // Nothing in the product can propose anything (no proposal table, no
-    // approval queue, no approval screen anywhere in the route tree). This
-    // used to say "It can propose changes, and it can never approve them" --
-    // a false capability claim.
+  it("claims no capability in the empty state, and does not restate the contract", async () => {
+    // Nothing in the product can propose anything: policy.go's vocabulary is
+    // eight capability names and every one ends in `.read`, so there is no
+    // propose capability to claim. This copy used to carry its own short
+    // version of the can/cannot contract; the full contract now renders above
+    // this list (features/ai-connections/connection-contract.tsx), and a
+    // shorter second version underneath it is how the two drift apart.
     renderList({ status: "empty" });
-    const copy = await screen.findByText(/connect one and it can read your fleet/i);
-    expect(copy).toHaveTextContent(/limited to the sites you scope it to/i);
-    expect(copy).toHaveTextContent(/it cannot change anything/i);
-    expect(copy).not.toHaveTextContent(/propose/i);
+    expect(await screen.findByText(EMPTY_CLAIM)).toBeInTheDocument();
+    expect(
+      screen.getByText(/any connection you create is held to the limits stated on this page/i),
+    ).toBeInTheDocument();
+    expect(document.body.textContent ?? "").not.toMatch(/propose/i);
   });
 
   it("renders 'we cannot list these yet' as neither empty nor error", async () => {

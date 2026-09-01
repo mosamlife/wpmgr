@@ -1,7 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { screen, waitFor, fireEvent } from "@testing-library/react";
 
-import { renderWithProviders } from "@/test/render";
+import type { QueryClient } from "@tanstack/react-query";
+
+import { createTestQueryClient, renderWithProviders } from "@/test/render";
+import { authKeys } from "@/features/auth/use-auth";
 
 import { Route } from "./index";
 import { MCP_TRANSPORT_PATH } from "@/features/ai-connections/client-table";
@@ -38,6 +41,34 @@ function urlOf(input: RequestInfo | URL): string {
   return input.url;
 }
 
+// The role this page's principal holds, per test. Owner/admin is the default
+// because it is the principal every pre-existing test here was written against;
+// the role-refused tests set it explicitly.
+//
+// SEEDED INTO THE QUERY CACHE, NOT MOCKED AT THE HOOK. `vi.mock("use-auth")`
+// would stub out canManage itself, and canManage is the thing under test: it
+// does more than read a role string, it also requires the active tenant to
+// appear in me.memberships, which is how a site-scoped collaborator is refused.
+// Seeding authKeys.me runs the real useMe and the real canManage over a real Me
+// shape. It is not stubbed at fetch like the connections list next door because
+// useMe goes through the generated client rather than raw fetch, and the
+// generated client does not read the vi.stubGlobal'd fetch.
+let meRole: "owner" | "admin" | "operator" | "viewer" = "admin";
+
+const TENANT = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+
+function seedMe(queryClient: QueryClient) {
+  queryClient.setQueryData(authKeys.me, {
+    id: "user-1",
+    email: "priya@example.test",
+    name: "Priya",
+    scope: "org",
+    role: meRole,
+    active_tenant_id: TENANT,
+    memberships: [{ tenant_id: TENANT, role: meRole, tenant_name: "Example" }],
+  });
+}
+
 function stubFetch(impl: (url: string) => Response | Promise<Response>) {
   vi.stubGlobal(
     "fetch",
@@ -53,7 +84,13 @@ function json(body: unknown, status = 200): Response {
 }
 
 function renderPage() {
-  return renderWithProviders(<AiPage />, { withRouter: true, initialPath: "/ai" });
+  const queryClient = createTestQueryClient();
+  seedMe(queryClient);
+  return renderWithProviders(<AiPage />, {
+    withRouter: true,
+    initialPath: "/ai",
+    queryClient,
+  });
 }
 
 const ROW = {
@@ -71,7 +108,10 @@ const ROW = {
   capabilities: ["mcp.sites.read"],
 };
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  meRole = "admin";
+});
 afterEach(() => vi.unstubAllGlobals());
 
 describe("/ai reads the real connections endpoint", () => {
@@ -102,7 +142,7 @@ describe("/ai reads the real connections endpoint", () => {
     stubFetch(() => json({ code: "internal", message: "the server said 500" }, 500));
     renderPage();
     expect(await screen.findByText(/could not load your ai connections/i)).toBeInTheDocument();
-    expect(screen.queryByText(/no ai clients are connected/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/you have no ai connections/i)).not.toBeInTheDocument();
     expect(screen.queryByTestId("connections-empty")).not.toBeInTheDocument();
   });
 
@@ -161,26 +201,124 @@ describe("/ai's static surfaces", () => {
     ).toBeInTheDocument();
   });
 
-  it("tells the truth about what a connection can do: read, scoped to sites, nothing else", async () => {
-    // Nothing in the product can propose anything (no proposal table, no
-    // approval queue, no approval screen anywhere in the route tree). The
-    // subline used to say "It can propose changes; it can never approve
-    // them." -- a false capability claim. It must now say only what is true.
-    renderPage();
-    const subline = await screen.findByText(
-      /let an ai client read your fleet through one endpoint/i,
-    );
-    expect(subline).toHaveTextContent(/limited to the sites you scope it to/i);
-    expect(subline).toHaveTextContent(/it cannot change anything/i);
-    expect(subline).not.toHaveTextContent(/propose/i);
-  });
-
   it("offers a route into the wizard, which is how that page is reached at all", async () => {
     renderPage();
     await screen.findByTestId("connections-empty");
-    const links = await screen.findAllByRole("link", { name: /connect an ai client/i });
+    const links = await screen.findAllByRole("link", { name: /new connection/i });
     expect(links.length).toBeGreaterThanOrEqual(1);
     expect(links[0]).toHaveAttribute("href", "/ai/connect");
+  });
+});
+
+// THE CAN/CANNOT CONTRACT.
+//
+// Every assertion below is on the EXACT string, not on "something rendered".
+// The defect this whole block exists over is missing words -- four distinct
+// limits collapsed into "It cannot change anything." -- so the words are what
+// has to be pinned. A getByRole("heading") or a /cannot/i regex would survive
+// the collapse happening again.
+describe("what a connection can and cannot do", () => {
+  beforeEach(() => stubFetch(() => json({ connections: [] })));
+
+  it("states the lead, and states that nothing is implicit", async () => {
+    renderPage();
+    expect(
+      await screen.findByText(
+        "A connection lets one AI client read your fleet, limited to the sites you name. " +
+          "Nothing about it is implicit.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("names what a connection can do, in full", async () => {
+    renderPage();
+    expect(await screen.findByText("What a connection can do")).toBeInTheDocument();
+    expect(screen.getByText("Read the sites you put in its scope")).toBeInTheDocument();
+    expect(screen.getByText("Report what it found, with its sources")).toBeInTheDocument();
+  });
+
+  it("names all four things it can never do, each on its own", async () => {
+    // Four separate limits, four separate assertions. Asserting the block
+    // renders would pass with three of them deleted, which is the state this
+    // page shipped in.
+    renderPage();
+    expect(await screen.findByText("What it can never do")).toBeInTheDocument();
+    expect(screen.getByText("Approve its own change")).toBeInTheDocument();
+    expect(screen.getByText("Reach a site outside its scope")).toBeInTheDocument();
+    expect(
+      screen.getByText("Run PHP, WP-CLI, a shell, or open a file path of its choosing"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Be granted a “skip approval” setting. There isn’t one."),
+    ).toBeInTheDocument();
+  });
+
+  it("renders the contract for a principal who cannot create connections", async () => {
+    // The contract is a statement about the system, not about the reader, so
+    // it does not disappear with the button.
+    meRole = "viewer";
+    renderPage();
+    expect(await screen.findByText("What it can never do")).toBeInTheDocument();
+    expect(screen.getByText("What a connection can do")).toBeInTheDocument();
+  });
+
+  it("claims no capability the server does not have", async () => {
+    // THE GUARD AGAINST A FIDELITY PASS. The design deck draws a "propose
+    // changes" capability and a "Produce a change set for you to review" line.
+    // apps/api/internal/mcp/policy.go's vocabulary is eight names and every one
+    // ends in `.read`; m131's CHECK admits only those eight, so no grant can
+    // hold a propose capability and no screen may imply one. Restoring either
+    // string off the deck turns this red.
+    renderPage();
+    await screen.findByText("What a connection can do");
+    expect(screen.queryByText(/produce a change set/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/propose/i)).not.toBeInTheDocument();
+    expect(document.body.textContent ?? "").not.toMatch(/propose/i);
+  });
+});
+
+// THE ROLE-REFUSED STATE.
+//
+// Gate confirmed against the server before it was written, not assumed:
+// apps/api/internal/mcp/handler.go:172 mounts POST /mcp/connections behind
+// authz.RequirePermission(authz.PermAPIKeyManage), and
+// apps/api/internal/authz/role.go:241 maps PermAPIKeyManage to RoleAdmin.
+describe("who may create a connection", () => {
+  beforeEach(() => stubFetch(() => json({ connections: [] })));
+
+  it("offers the button to an owner", async () => {
+    meRole = "owner";
+    renderPage();
+    expect(
+      await screen.findByRole("link", { name: /new connection/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("offers the button to an admin", async () => {
+    meRole = "admin";
+    renderPage();
+    expect(
+      await screen.findByRole("link", { name: /new connection/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows no create button to an operator, and says why", async () => {
+    // A button that can only ever 403 spends the operator's trust when they
+    // press it. It is absent, with the reason written where it was.
+    meRole = "operator";
+    renderPage();
+    await screen.findByTestId("connections-empty");
+    expect(screen.queryByRole("link", { name: /new connection/i })).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/creating a connection needs an organisation owner or admin/i),
+    ).toBeInTheDocument();
+  });
+
+  it("shows no create button to a viewer", async () => {
+    meRole = "viewer";
+    renderPage();
+    await screen.findByTestId("connections-empty");
+    expect(screen.queryByRole("link", { name: /new connection/i })).not.toBeInTheDocument();
   });
 });
 
