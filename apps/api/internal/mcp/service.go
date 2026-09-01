@@ -367,6 +367,36 @@ func (s *Service) requireRecorder() error {
 	return nil
 }
 
+// auditFailure normalises anything the audit package returns into
+// ErrCodeAuditUnavailable, preserving the original as the cause.
+//
+// THIS EXISTS BECAUSE A REAL APPEND FAILURE DOES NOT LOOK LIKE A FAKE ONE, and
+// the difference was live for one commit. internal/audit returns TYPED domain
+// errors of its own -- audit_insert_failed, audit_prev_failed,
+// audit_marshal_failed, audit_canonical_failed -- so a genuine failure arrived
+// here as a domain error with a code this package's wire mapping had never
+// heard of. TransportHandler.toolError then fell through to its default branch
+// and answered -32602 INVALID PARAMS carrying de.Message verbatim: the caller
+// was told their parameters were wrong, and told "failed to append audit entry"
+// in plain English. That is the liveness oracle stated outright rather than
+// merely inferable, and it is the caller blamed for a server fault.
+//
+// The unit tests could not see it. A fake recorder returns errors.New, which is
+// NOT a domain error, so it took toolError's non-domain branch and produced the
+// correct generic answer. Only a real append failing for a real reason -- INSERT
+// revoked on audit_log for the app role -- produced the defect, which is the
+// whole argument for that proof existing.
+//
+// Every audit call on this surface goes through here, so a new error code added
+// inside internal/audit later cannot reintroduce the fallthrough.
+func auditFailure(err error) error {
+	if err == nil {
+		return nil
+	}
+	return domain.Internal(ErrCodeAuditUnavailable,
+		"this connection cannot be served because its audit trail cannot be written").WithCause(err)
+}
+
 // withAuditRecorder is the test-only door onto the same field, so a fake can
 // drive the append-failed path. Unexported: production wiring goes through
 // WithAudit.
@@ -1504,7 +1534,7 @@ func (s *Service) RecordToolCall(ctx context.Context, auth AuthorizedRequest, to
 			"operator_permission": operatorPermission,
 		},
 	})
-	return err
+	return auditFailure(err)
 }
 
 // RecordToolDenied appends the ActionMCPToolDenied audit row for one REFUSED
@@ -1591,7 +1621,7 @@ func (s *Service) RecordToolDenied(ctx context.Context, auth AuthorizedRequest, 
 		TargetID:   target,
 		Metadata:   meta,
 	})
-	return err
+	return auditFailure(err)
 }
 
 // RecordProtocolDenied appends the ActionMCPProtocolDenied audit row for an
@@ -1654,7 +1684,7 @@ func (s *Service) RecordProtocolDenied(ctx context.Context, auth AuthorizedReque
 		TargetID:   target,
 		Metadata:   meta,
 	})
-	return err
+	return auditFailure(err)
 }
 
 // ListSitesForModel is the one Phase 1 read tool. It returns the rendered tool

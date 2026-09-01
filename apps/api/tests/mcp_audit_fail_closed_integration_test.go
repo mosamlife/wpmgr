@@ -247,31 +247,43 @@ func TestMCPAuditFailClosed_RefusalAndInternalErrorAreByteIdentical(t *testing.T
 	// (a) unrecordable: INSERT revoked, the read itself is fine.
 	auditInsertGrant(t, admin, appRole, false)
 	unrecordable := mcpRefusalRPC(t, transportEng, token, "", call)
-
-	// (b) unrelated internal failure: SELECT revoked on the table the TOOL
-	// reads, so entry.invoke fails before the audit gate is ever reached.
-	// audit_log INSERT is restored first, so this response is produced by a
-	// path where the audit system is entirely healthy.
 	auditInsertGrant(t, admin, appRole, true)
-	if _, err := admin.Exec(ctx, "REVOKE SELECT ON sites FROM "+pgQuoteIdent(appRole)); err != nil {
-		t.Fatalf("SETUP FAILURE: revoke SELECT on sites: %v", err)
-	}
-	otherInternal := mcpRefusalRPC(t, transportEng, token, "", call)
-	if _, err := admin.Exec(ctx, "GRANT SELECT ON sites TO "+pgQuoteIdent(appRole)); err != nil {
-		t.Fatalf("restore SELECT on sites: %v", err)
-	}
 
-	t.Logf("(a) audit unavailable   : HTTP %d body=%q", unrecordable.status, unrecordable.body)
-	t.Logf("(b) unrelated internal  : HTTP %d body=%q", otherInternal.status, otherInternal.body)
+	// (b) the shape ANY other server-side tool failure takes. This is a literal
+	// rather than a second provoked failure, and the choice is deliberate after
+	// the first attempt got it wrong: revoking SELECT on `sites` looked like an
+	// unrelated internal failure but actually broke AUTHENTICATION, which
+	// answers 401/500 from a different handler entirely and compares two things
+	// that were never comparable. The bytes below are what
+	// TransportHandler.toolError emits for an infra failure that is not a
+	// domain error -- the branch every non-audit internal fault lands on -- so
+	// matching them is exactly the claim being made: an audit outage is
+	// indistinguishable from any other server-side failure.
+	//
+	// Written out in full, with the same request id, so a drift in the code, the
+	// message or the envelope fails here loudly instead of being paraphrased.
+	const genericInternal = `{"jsonrpc":"2.0","id":7,"error":{"code":-32603,"message":"the tool call failed"}}`
 
-	if unrecordable.status != otherInternal.status {
-		t.Errorf("HTTP status differs: audit-unavailable %d vs unrelated-internal %d — "+
-			"a caller can poll this to learn when the audit log is down",
-			unrecordable.status, otherInternal.status)
+	t.Logf("(a) audit unavailable : HTTP %d body=%s", unrecordable.status, unrecordable.body)
+	t.Logf("(b) generic internal  : HTTP %d body=%s", http.StatusOK, genericInternal)
+
+	if unrecordable.status != http.StatusOK {
+		t.Errorf("HTTP status = %d, want %d — a JSON-RPC error rides a 200 like every "+
+			"other tool failure; a different status is itself the oracle",
+			unrecordable.status, http.StatusOK)
 	}
-	if unrecordable.body != otherInternal.body {
-		t.Errorf("response body differs, so the two failures are distinguishable:\n"+
-			"  audit unavailable  : %q\n  unrelated internal : %q",
-			unrecordable.body, otherInternal.body)
+	if strings.TrimSpace(unrecordable.body) != genericInternal {
+		t.Errorf("the unrecordable response is distinguishable from an ordinary internal "+
+			"failure, so a caller can poll it to learn when the audit log is down:\n"+
+			"  got  : %s\n  want : %s", unrecordable.body, genericInternal)
+	}
+	// Belt and braces on the specific leak the first run of this test caught:
+	// a real append failure returns a TYPED domain error from internal/audit
+	// (audit_insert_failed), and before auditFailure normalised it the wire
+	// carried "failed to append audit entry" and the -32602 invalid-params code.
+	for _, leak := range []string{"audit", "append", "-32602"} {
+		if strings.Contains(strings.ToLower(unrecordable.body), leak) {
+			t.Errorf("the response leaks %q: %s", leak, unrecordable.body)
+		}
 	}
 }
