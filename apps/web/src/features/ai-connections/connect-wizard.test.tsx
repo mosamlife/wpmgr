@@ -128,8 +128,43 @@ describe("the auth cards say what each method actually does", () => {
     expect(within(oauth).getByText("Sign in through your browser")).toBeInTheDocument();
     expect(
       within(oauth).getByText(
-        "You approve the connection on a WPMgr page. The client stores a token it refreshes itself, and nothing secret is ever shown to you or pasted anywhere.",
+        "You approve the connection on a WPMgr page and the client stores the token it is issued. Nothing secret is ever shown to you or pasted anywhere. That token does not refresh itself, so the connection stops working when it expires.",
       ),
+    ).toBeInTheDocument();
+  });
+
+  it("promises no refresh on any auth card, because the server mints none", async () => {
+    // THE SAME GUARD AS CONTRACT_FORBIDDEN, ON THE OTHER SCREEN THAT CAN MAKE
+    // THIS CLAIM. apps/api/internal/mcp/service.go:140: "There is no
+    // refresh_token grant: the connection token's lifetime is the connection's,
+    // and nothing here mints a refresh token", and discovery_test.go:256 drives
+    // the grant-type validator with "refresh_token" to prove the discovery
+    // document refuses it. The design frame promises a self-refreshing token;
+    // the deck is wrong and the server is right, so a fidelity pass that
+    // restores the frame's wording turns this red.
+    //
+    // The word, not the sentence. "refreshes itself", "auto-refresh" and "will
+    // be refreshed" are the same false claim in three shapes, and pinning one
+    // phrasing would let the next two through.
+    renderWizard();
+    await pickClient("Claude Code");
+
+    // The card is ALLOWED to say "does not refresh itself" and nothing else
+    // about refreshing. Striking the denial and then looking for the word is
+    // what makes this fire on an affirmative claim while passing on the
+    // correction -- a bare /refresh/i assertion would reject the true sentence
+    // along with the false one and get switched off by the next person here.
+    const oauthText = (authCard("oauth").textContent ?? "").replace(
+      /does not refresh itself/gi,
+      "",
+    );
+    expect(oauthText).not.toMatch(/refresh/i);
+    expect(authCard("token").textContent ?? "").not.toMatch(/refresh/i);
+
+    // And it says what DOES happen, so the guard cannot be satisfied by
+    // deleting the sentence rather than correcting it.
+    expect(
+      within(authCard("oauth")).getByText(/stops working when it expires/i),
     ).toBeInTheDocument();
   });
 

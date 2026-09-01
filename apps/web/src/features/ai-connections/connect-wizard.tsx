@@ -363,7 +363,20 @@ export function ConnectWizard({
             <AuthCard
               method="oauth"
               title="Sign in through your browser"
-              body="You approve the connection on a WPMgr page. The client stores a token it refreshes itself, and nothing secret is ever shown to you or pasted anywhere."
+              // NO REFRESH IS PROMISED, BECAUSE NO REFRESH EXISTS. The design
+              // frame says "the client stores a token it refreshes itself";
+              // apps/api/internal/mcp/service.go:140 says the opposite in as
+              // many words -- "There is no refresh_token grant: the connection
+              // token's lifetime is the connection's, and nothing here mints a
+              // refresh token" -- and discovery_test.go:256 drives the
+              // validator with "refresh_token" to prove the discovery document
+              // refuses it. A card promising a self-maintaining connection on
+              // the screen where the operator picks their auth method is the
+              // same defect this branch removed from the connections screen:
+              // the deck is wrong here and the server is right. The expiry is
+              // stated instead, because that is the thing that will actually
+              // happen to them.
+              body="You approve the connection on a WPMgr page and the client stores the token it is issued. Nothing secret is ever shown to you or pasted anywhere. That token does not refresh itself, so the connection stops working when it expires."
               recommendation={recommendationFor("oauth", client.name, methods)}
               availability={client.auth.oauth}
               selected={method === "oauth"}
