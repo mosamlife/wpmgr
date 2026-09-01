@@ -14,7 +14,8 @@ import { formatAbsolute } from "@/features/updates/schedule";
 import { mockQueryResult } from "@/test/query-mocks";
 
 import { Route } from "@/routes/_authed/ai/connect";
-import { MCP_CLIENTS } from "./client-table";
+import { authKeys } from "@/features/auth/use-auth";
+import { CLIENT_TABLE_VERIFIED_AT, MCP_CLIENTS } from "./client-table";
 import { useSites, DEFAULT_SITES_LIMIT } from "@/features/sites/use-sites";
 import { useTags } from "@/features/tags/use-tags";
 import { snapshotFromPage } from "@/features/mcp-consent/site-scope";
@@ -71,10 +72,30 @@ beforeEach(() => {
 
 const ConnectPage = Route.options.component!;
 
+// The role this route's principal holds. The wizard itself is now behind
+// canManage, mirroring PermAPIKeyManage -> RoleAdmin
+// (apps/api/internal/authz/role.go:241), so every test that wants to see the
+// wizard needs a principal who could actually finish it. Seeded into the cache
+// rather than mocked at useMe, so the real canManage runs over a real Me shape.
+let wizardRole: "owner" | "admin" | "operator" | "viewer" = "admin";
+
+const WIZARD_TENANT = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+
 function renderWizard() {
+  const queryClient = createTestQueryClient();
+  queryClient.setQueryData(authKeys.me, {
+    id: "user-1",
+    email: "priya@example.test",
+    name: "Priya",
+    scope: "org",
+    role: wizardRole,
+    active_tenant_id: WIZARD_TENANT,
+    memberships: [{ tenant_id: WIZARD_TENANT, role: wizardRole, tenant_name: "Example" }],
+  });
   return renderWithProviders(<ConnectPage />, {
     withRouter: true,
     initialPath: "/ai/connect",
+    queryClient,
   });
 }
 
@@ -91,6 +112,51 @@ function authCard(method: "oauth" | "token"): HTMLButtonElement {
   if (el === null) throw new Error(`no auth card rendered for "${method}"`);
   return el;
 }
+
+// HIDING THE LINK IS NOT GUARDING THE ROUTE.
+//
+// /ai stops offering "New connection" to a principal who cannot mint, and this
+// route had no beforeLoad, so the URL still rendered the whole wizard. The
+// refusal arrived from the server at the last button, after the operator had
+// picked a client, an auth method and a site scope. These tests are the reason
+// that cannot come back quietly.
+describe("the wizard refuses a principal who could not finish it", () => {
+  afterEach(() => {
+    wizardRole = "admin";
+  });
+
+  it("renders no wizard at all for an operator who types the URL", async () => {
+    wizardRole = "operator";
+    renderWizard();
+    expect(await screen.findByTestId("connect-role-refused")).toBeInTheDocument();
+    // NOT "the first step is hidden". No part of the wizard renders, so there
+    // is no work to lose and no 403 to walk into.
+    expect(screen.queryByRole("button", { name: /claude code/i })).toBeNull();
+    expect(document.querySelector('button[data-method="oauth"]')).toBeNull();
+  });
+
+  it("renders no wizard for a viewer either", async () => {
+    wizardRole = "viewer";
+    renderWizard();
+    expect(await screen.findByTestId("connect-role-refused")).toBeInTheDocument();
+  });
+
+  it("says the refusal arrives before the work, not at the last button", async () => {
+    wizardRole = "viewer";
+    renderWizard();
+    expect(
+      await screen.findByText(/nothing has been created and nothing was attempted/i),
+    ).toBeInTheDocument();
+  });
+
+  it("renders the wizard for an owner, so the guard is not blanket", async () => {
+    // The over-fire half. A guard that refuses correct work gets switched off.
+    wizardRole = "owner";
+    renderWizard();
+    expect(await screen.findByRole("button", { name: /claude code/i })).toBeInTheDocument();
+    expect(screen.queryByTestId("connect-role-refused")).toBeNull();
+  });
+});
 
 describe("the wizard asks for the client first", () => {
   it("renders every row in the table as a picker card, including the generic one", async () => {
@@ -110,6 +176,112 @@ describe("the wizard asks for the client first", () => {
     renderWizard();
     await screen.findByRole("button", { name: /claude code/i });
     expect(document.querySelector('button[data-method="oauth"]')).toBeNull();
+  });
+});
+
+// STEP "HOW IT SIGNS IN", BROUGHT TO ITS SPECIFIED COPY.
+//
+// Every assertion is on the exact sentence. The two cards used to carry
+// one-line summaries ("Connection token", "Nothing to copy or keep secret"),
+// which are true but leave the two decisions this screen actually asks an
+// operator to make -- what is shown to me, and where does the secret live --
+// to be inferred. The words are the deliverable, so the words are pinned.
+describe("the auth cards say what each method actually does", () => {
+  it("states, on the browser card, that nothing secret is ever shown", async () => {
+    renderWizard();
+    await pickClient("Claude Code");
+    const oauth = authCard("oauth");
+    expect(within(oauth).getByText("Sign in through your browser")).toBeInTheDocument();
+    expect(
+      within(oauth).getByText(
+        "You approve the connection on a WPMgr page and the client stores the token it is issued. Nothing secret is ever shown to you or pasted anywhere. That token does not refresh itself, so the connection stops working when it expires.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("promises no refresh on any auth card, because the server mints none", async () => {
+    // THE SAME GUARD AS CONTRACT_FORBIDDEN, ON THE OTHER SCREEN THAT CAN MAKE
+    // THIS CLAIM. apps/api/internal/mcp/service.go:140: "There is no
+    // refresh_token grant: the connection token's lifetime is the connection's,
+    // and nothing here mints a refresh token", and discovery_test.go:256 drives
+    // the grant-type validator with "refresh_token" to prove the discovery
+    // document refuses it. The design frame promises a self-refreshing token;
+    // the deck is wrong and the server is right, so a fidelity pass that
+    // restores the frame's wording turns this red.
+    //
+    // The word, not the sentence. "refreshes itself", "auto-refresh" and "will
+    // be refreshed" are the same false claim in three shapes, and pinning one
+    // phrasing would let the next two through.
+    renderWizard();
+    await pickClient("Claude Code");
+
+    // The card is ALLOWED to say "does not refresh itself" and nothing else
+    // about refreshing. Striking the denial and then looking for the word is
+    // what makes this fire on an affirmative claim while passing on the
+    // correction -- a bare /refresh/i assertion would reject the true sentence
+    // along with the false one and get switched off by the next person here.
+    const oauthText = (authCard("oauth").textContent ?? "").replace(
+      /does not refresh itself/gi,
+      "",
+    );
+    expect(oauthText).not.toMatch(/refresh/i);
+    expect(authCard("token").textContent ?? "").not.toMatch(/refresh/i);
+
+    // And it says what DOES happen, so the guard cannot be satisfied by
+    // deleting the sentence rather than correcting it.
+    expect(
+      within(authCard("oauth")).getByText(/stops working when it expires/i),
+    ).toBeInTheDocument();
+  });
+
+  it("states, on the token card, that it is documented and not a fallback", async () => {
+    renderWizard();
+    await pickClient("Claude Code");
+    const token = authCard("token");
+    expect(within(token).getByText("Use a connection token")).toBeInTheDocument();
+    expect(
+      within(token).getByText(
+        "We show a token once. You put it in your environment, and the client sends it as a header. This is the documented path for CI, containers and SSH, not a fallback for when sign-in fails.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("marks which card is the answer when both methods are open", async () => {
+    // Claude Code offers both, so there is a recommendation to make.
+    renderWizard();
+    await pickClient("Claude Code");
+    expect(within(authCard("oauth")).getByText("Recommended for Claude Code")).toBeInTheDocument();
+    expect(
+      within(authCard("token")).getByText("The documented headless path"),
+    ).toBeInTheDocument();
+  });
+
+  it("says 'the only route' rather than recommending, when there is one route", async () => {
+    // Claude Desktop's add-connector dialog has no header field, so the token
+    // card is disabled and the browser card is not a preference.
+    renderWizard();
+    await pickClient("Claude Desktop");
+    expect(
+      within(authCard("oauth")).getByText("The only route for this client"),
+    ).toBeInTheDocument();
+    // A recommendation on a control nobody can press is noise.
+    expect(within(authCard("token")).queryByText(/recommended|only route|documented headless/i))
+      .toBeNull();
+    expect(within(authCard("token")).getByText("not possible here")).toBeInTheDocument();
+  });
+
+  it("says why there is no device-code option, with the date it was checked", async () => {
+    // Without this, a disabled browser card on a headless client reads as an
+    // oversight and the token reads as our fallback. It is neither.
+    renderWizard();
+    await pickClient("Claude Code");
+    expect(
+      await screen.findByText("Why there is no “enter this code on another device” option"),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/no MCP client implements one/i)).toBeInTheDocument();
+    // The date is rendered from the client table's own constant, so it goes
+    // stale visibly. A literal here would pass while the table moved on.
+    expect(screen.getByText(new RegExp(CLIENT_TABLE_VERIFIED_AT))).toBeInTheDocument();
   });
 });
 
@@ -669,8 +841,21 @@ function renderWizardInRouter() {
     routeTree: rootRoute.addChildren([connectRoute, listRoute]),
     history: createMemoryHistory({ initialEntries: ["/ai/connect"] }),
   });
+  // Seeded for the same reason renderWizard is: the route is behind canManage
+  // now, and these tests are about the navigation block around an open mint,
+  // which only a principal who can mint ever reaches.
+  const queryClient = createTestQueryClient();
+  queryClient.setQueryData(authKeys.me, {
+    id: "user-1",
+    email: "priya@example.test",
+    name: "Priya",
+    scope: "org",
+    role: "admin",
+    active_tenant_id: WIZARD_TENANT,
+    memberships: [{ tenant_id: WIZARD_TENANT, role: "admin", tenant_name: "Example" }],
+  });
   render(
-    <QueryClientProvider client={createTestQueryClient()}>
+    <QueryClientProvider client={queryClient}>
       <RouterProvider router={router} />
     </QueryClientProvider>,
   );

@@ -133,11 +133,13 @@ export function ConnectionsList({
         />
         <div className="space-y-1">
           <p className="text-sm font-medium text-[var(--color-foreground)]">
-            No AI clients are connected
+            You have no AI connections
           </p>
+          {/* WHAT A CONNECTION CAN AND CANNOT DO IS NOT REPEATED HERE. It is
+              stated once, in full, by ConnectionContract above this list, and a
+              shorter second version underneath it is how the two drift apart. */}
           <p className="text-sm text-[var(--color-muted-foreground)]">
-            Connect one and it can read your fleet, limited to the sites you scope it to. It cannot
-            change anything.
+            Any connection you create is held to the limits stated on this page.
           </p>
         </div>
         {connectAction}

@@ -106,6 +106,56 @@ export const TenantListSchema = {
   },
 } as const;
 
+export const TenantAssistantStateSchema = {
+  type: "object",
+  description:
+    "m130's per-tenant assistant state. `enabled` and `paused` are computed\nfrom two DIFFERENT columns whose nulls mean DIFFERENT things, and they\nare not derived from one another: `enabled_at` null means the surface\nwas never enabled, `paused_at` null means the kill switch is released.\nA consumer must not fold them into one predicate.\n",
+  required: ["tenant_id", "enabled", "paused"],
+  properties: {
+    tenant_id: {
+      type: "string",
+      format: "uuid",
+    },
+    enabled: {
+      type: "boolean",
+      description:
+        "Whether the organisation has ever enabled the assistant surface.\nNOTHING ENFORCES THIS YET — it is a record of intent that gates no\nrequest today (m130 DECISION 5 holds it out of the authorization\nverdict until a follow-up migration wires it together with its\nbackfill). Display it; do not treat it as an access decision.\n",
+    },
+    enabled_at: {
+      type: ["string", "null"],
+      format: "date-time",
+    },
+    paused: {
+      type: "boolean",
+      description:
+        "Whether the kill switch is engaged. THIS ONE IS ENFORCED, on every\nassistant request, from the moment it is written.\n",
+    },
+    paused_at: {
+      type: ["string", "null"],
+      format: "date-time",
+    },
+    paused_reason: {
+      type: ["string", "null"],
+      description:
+        "Why the surface was stopped. Null when no reason was given.",
+    },
+  },
+} as const;
+
+export const TenantAssistantPauseSchema = {
+  type: "object",
+  description:
+    "The optional body of a pause. Every field is optional: an empty or\nabsent body engages the kill switch with no reason recorded.\n",
+  properties: {
+    reason: {
+      type: "string",
+      maxLength: 500,
+      description:
+        "Why the surface is being stopped, recorded on the tenant row and in\nthe audit entry. A blank or whitespace-only value is normalised to\nnull rather than stored as an empty string.\n",
+    },
+  },
+} as const;
+
 export const SiteSchema = {
   type: "object",
   required: [
