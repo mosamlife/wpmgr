@@ -1,0 +1,547 @@
+package mcp
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
+)
+
+// ---------------------------------------------------------------------------
+// fleet_updates_pending, proved THROUGH THE MOUNTED TRANSPORT WITH A REAL
+// BEARER, because the claim being made is that an AI client can ask.
+//
+// Every assertion below is on an EXACT VALUE. "A plugin list came back" passes
+// when the list belongs to the wrong site, which is the failure mode this whole
+// file is about.
+// ---------------------------------------------------------------------------
+
+// updatesFixture is one site row with a known inventory document.
+type updatesFixture struct {
+	id         uuid.UUID
+	name       string
+	url        string
+	components string
+	collected  *time.Time
+}
+
+func (f updatesFixture) row() sqlc.Site {
+	r := sqlc.Site{
+		ID:              f.id,
+		Name:            f.name,
+		Url:             f.url,
+		ConnectionState: "connected",
+		HealthStatus:    "healthy",
+		WpVersion:       "6.5.2",
+		Components:      []byte(f.components),
+	}
+	if f.collected != nil {
+		r.ComponentsUpdatedAt = pgtype.Timestamptz{Time: *f.collected, Valid: true}
+	}
+	return r
+}
+
+// callUpdatesPending drives tools/call over the real mount and returns the
+// result text, failing the test on any JSON-RPC error.
+func callUpdatesPending(t *testing.T, store Store) string {
+	t.Helper()
+	r := newTransportRouter(t, store)
+	w := post(t, r, `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":`+
+		`{"name":"fleet_updates_pending","arguments":{}}}`, nil)
+	// DECODED FROM THE RAW BODY, not through the package's own response type.
+	// The claim under test is that a client reading the wire gets this, so the
+	// wire is what is parsed.
+	var envelope struct {
+		Error  json.RawMessage `json:"error"`
+		Result struct {
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+			IsError bool `json:"isError"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("response is not JSON-RPC: %v\nbody: %s", err, w.Body.String())
+	}
+	if len(envelope.Error) > 0 && string(envelope.Error) != "null" {
+		t.Fatalf("tools/call fleet_updates_pending errored: %s", envelope.Error)
+	}
+	if envelope.Result.IsError {
+		t.Fatalf("tool reported isError: %s", w.Body.String())
+	}
+	if len(envelope.Result.Content) != 1 || envelope.Result.Content[0].Type != "text" {
+		t.Fatalf("want exactly one text content block, got %+v", envelope.Result.Content)
+	}
+	return envelope.Result.Content[0].Text
+}
+
+// parseUpdatesPayload pulls the JSON half out of the result text.
+func parseUpdatesPayload(t *testing.T, text string) updatesPayloadForTest {
+	t.Helper()
+	i := strings.Index(text, `{"sites":`)
+	if i < 0 {
+		t.Fatalf("no JSON payload in result text:\n%s", text)
+	}
+	var p updatesPayloadForTest
+	if err := json.Unmarshal([]byte(text[i:]), &p); err != nil {
+		t.Fatalf("payload is not JSON: %v\n%s", err, text[i:])
+	}
+	return p
+}
+
+// updatesPayloadForTest decodes what the wire actually carried, rather than
+// re-using the producer's own struct. Sharing the struct would let a renamed
+// JSON tag pass both halves of every assertion below.
+type updatesPayloadForTest struct {
+	Sites []struct {
+		SiteID               string  `json:"site_id"`
+		Name                 string  `json:"name"`
+		URL                  string  `json:"url"`
+		InventoryStatus      string  `json:"inventory_status"`
+		InventoryCollectedAt *string `json:"inventory_collected_at"`
+		PendingTotal         int     `json:"pending_total"`
+		Core                 *struct {
+			CurrentVersion string `json:"current_version"`
+			NewVersion     string `json:"new_version"`
+		} `json:"core_update"`
+		Plugins []struct {
+			Slug             string `json:"slug"`
+			Name             string `json:"name"`
+			Active           bool   `json:"active"`
+			InstalledVersion string `json:"installed_version"`
+			NewVersion       string `json:"new_version"`
+		} `json:"plugins"`
+		Themes []struct {
+			Slug       string `json:"slug"`
+			NewVersion string `json:"new_version"`
+		} `json:"themes"`
+	} `json:"sites"`
+	Totals struct {
+		SitesWithUpdates    int `json:"sites_with_updates"`
+		SitesNeverCollected int `json:"sites_never_collected"`
+		PendingPlugins      int `json:"pending_plugins"`
+		PendingThemes       int `json:"pending_themes"`
+		PendingCore         int `json:"pending_core"`
+		PendingTotal        int `json:"pending_total"`
+	} `json:"totals"`
+	Envelope struct {
+		Asked    int `json:"asked"`
+		OK       int `json:"ok"`
+		Refused  int `json:"refused"`
+		Refusals []struct {
+			SiteID string `json:"site_id"`
+			Code   string `json:"code"`
+		} `json:"refusals"`
+	} `json:"envelope"`
+}
+
+// ---------------------------------------------------------------------------
+// THE SCOPE PROOF. It is first in the file and its leak assertions run before
+// any count assertion, deliberately: a leak check sitting behind a row-count
+// check is itself unproven, because the count fails first and the leak
+// assertion never executes.
+// ---------------------------------------------------------------------------
+
+func TestFleetUpdatesPending_DoesNotLeakAnUnscopedSite(t *testing.T) {
+	inScope := uuid.New()
+	outOfScope := uuid.New()
+
+	store := liveGrantStore(inScope) // the grant names ONLY inScope
+	store.sites = []sqlc.Site{
+		updatesFixture{
+			id: inScope, name: "acme.com", url: "https://acme.com",
+			components: `{"plugins":[{"slug":"in-scope-plugin","name":"In Scope Plugin",` +
+				`"version":"1.0.0","active":true,"available_update":{"new_version":"1.1.0"}}]}`,
+		}.row(),
+		// THE FAKE STORE RETURNS THIS ROW ANYWAY, and that is the point of the
+		// fixture rather than a flaw in it: the real query's site_ids predicate
+		// and the RESTRICTIVE sites_site_scope policy both drop it, and this
+		// test models the state where both have failed. It is the only state in
+		// which layer 3 -- the in-Go SiteSet filter -- can be observed working.
+		updatesFixture{
+			id: outOfScope, name: "northgate-secret.co.uk", url: "https://northgate-secret.co.uk",
+			components: `{"plugins":[{"slug":"out-of-scope-plugin","name":"Out Of Scope Plugin",` +
+				`"version":"2.0.0","active":true,"available_update":{"new_version":"2.5.0"}}]}`,
+		}.row(),
+	}
+
+	text := callUpdatesPending(t, store)
+
+	// LEAK ASSERTIONS FIRST, over the RAW RESULT TEXT rather than the decoded
+	// payload, so a leak into the instruction header or a truncation banner is
+	// caught as well as one into the records.
+	for _, secret := range []string{
+		outOfScope.String(),
+		"northgate-secret.co.uk",
+		"out-of-scope-plugin",
+		"Out Of Scope Plugin",
+		"2.5.0",
+	} {
+		if strings.Contains(text, secret) {
+			t.Fatalf("fleet_updates_pending disclosed %q, which belongs to a site outside the "+
+				"connection's scope. Full result:\n%s", secret, text)
+		}
+	}
+
+	p := parseUpdatesPayload(t, text)
+
+	// LAYER 3 HIDES: the out-of-scope site is ABSENT, never refused. Naming it
+	// in a refusal would disclose that it exists.
+	if p.Envelope.Asked != 1 {
+		t.Errorf("envelope.asked = %d, want 1 (the CALLER'S OWN scope cardinality, never the "+
+			"tenant's site count)", p.Envelope.Asked)
+	}
+	if p.Envelope.OK != 1 || p.Envelope.Refused != 0 {
+		t.Errorf("envelope ok/refused = %d/%d, want 1/0", p.Envelope.OK, p.Envelope.Refused)
+	}
+	for _, r := range p.Envelope.Refusals {
+		if r.SiteID == outOfScope.String() {
+			t.Fatalf("an out-of-scope site was REFUSED (%s) instead of being absent; a refusal "+
+				"naming it discloses that it exists", r.Code)
+		}
+	}
+
+	// And the in-scope site really did answer, so the absence above is scoping
+	// rather than an empty result.
+	if len(p.Sites) != 1 {
+		t.Fatalf("want exactly 1 site, got %d", len(p.Sites))
+	}
+	if p.Sites[0].SiteID != inScope.String() {
+		t.Errorf("site_id = %s, want the in-scope site %s", p.Sites[0].SiteID, inScope)
+	}
+	if len(p.Sites[0].Plugins) != 1 || p.Sites[0].Plugins[0].Slug != "in-scope-plugin" {
+		t.Errorf("plugins = %+v, want exactly [in-scope-plugin]", p.Sites[0].Plugins)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// EXACT VALUES.
+// ---------------------------------------------------------------------------
+
+func TestFleetUpdatesPending_ReportsExactPendingUpdates(t *testing.T) {
+	siteA := uuid.New()
+	siteB := uuid.New()
+	collected := time.Date(2026, 8, 30, 9, 0, 0, 0, time.UTC)
+
+	store := liveGrantStore(siteA, siteB)
+	store.sites = []sqlc.Site{
+		updatesFixture{
+			id: siteA, name: "acme.com", url: "https://acme.com", collected: &collected,
+			components: `{"plugins":[` +
+				// Inactive, so it must sort AFTER the active one below.
+				`{"slug":"akismet","name":"Akismet","version":"5.1","active":false,` +
+				`"available_update":{"new_version":"5.3"}},` +
+				`{"slug":"woocommerce","name":"WooCommerce","version":"8.1.0","active":true,` +
+				`"available_update":{"new_version":"8.4.0"}},` +
+				// No advisory at all: not pending.
+				`{"slug":"hello-dolly","name":"Hello Dolly","version":"1.7.2","active":true}` +
+				`],"themes":[` +
+				`{"slug":"twentytwentyfour","name":"Twenty Twenty-Four","version":"1.0","active":true,` +
+				`"available_update":{"new_version":"1.2"}}` +
+				`],"core_update":{"current_version":"6.5.2","new_version":"6.6"}}`,
+		}.row(),
+		// Fully up to date: an inventory WAS collected and nothing is pending.
+		updatesFixture{
+			id: siteB, name: "quiet.example", url: "https://quiet.example", collected: &collected,
+			components: `{"plugins":[{"slug":"akismet","name":"Akismet","version":"5.3","active":true}]}`,
+		}.row(),
+	}
+
+	p := parseUpdatesPayload(t, callUpdatesPending(t, store))
+
+	if len(p.Sites) != 2 {
+		t.Fatalf("want 2 sites, got %d", len(p.Sites))
+	}
+	var a, b int
+	for i, s := range p.Sites {
+		switch s.SiteID {
+		case siteA.String():
+			a = i
+		case siteB.String():
+			b = i
+		default:
+			t.Fatalf("unexpected site_id %s", s.SiteID)
+		}
+	}
+
+	// --- site A, exact ---
+	got := p.Sites[a]
+	if got.PendingTotal != 4 {
+		t.Errorf("acme pending_total = %d, want 4 (2 plugins + 1 theme + core)", got.PendingTotal)
+	}
+	if got.InventoryStatus != inventoryCollected {
+		t.Errorf("acme inventory_status = %q, want %q", got.InventoryStatus, inventoryCollected)
+	}
+	if got.InventoryCollectedAt == nil || *got.InventoryCollectedAt != "2026-08-30T09:00:00Z" {
+		t.Errorf("acme inventory_collected_at = %v, want 2026-08-30T09:00:00Z", got.InventoryCollectedAt)
+	}
+	if len(got.Plugins) != 2 {
+		t.Fatalf("acme plugins = %+v, want exactly 2 (hello-dolly has no advisory)", got.Plugins)
+	}
+	// ACTIVE BEFORE INACTIVE, matching the dashboard's own order.
+	if got.Plugins[0].Slug != "woocommerce" || got.Plugins[1].Slug != "akismet" {
+		t.Errorf("plugin order = [%s %s], want [woocommerce akismet] (active before inactive)",
+			got.Plugins[0].Slug, got.Plugins[1].Slug)
+	}
+	if got.Plugins[0].InstalledVersion != "8.1.0" || got.Plugins[0].NewVersion != "8.4.0" {
+		t.Errorf("woocommerce = %s -> %s, want 8.1.0 -> 8.4.0",
+			got.Plugins[0].InstalledVersion, got.Plugins[0].NewVersion)
+	}
+	if got.Plugins[0].Name != "WooCommerce" || !got.Plugins[0].Active {
+		t.Errorf("woocommerce name/active = %q/%v, want WooCommerce/true",
+			got.Plugins[0].Name, got.Plugins[0].Active)
+	}
+	if got.Plugins[1].InstalledVersion != "5.1" || got.Plugins[1].NewVersion != "5.3" {
+		t.Errorf("akismet = %s -> %s, want 5.1 -> 5.3",
+			got.Plugins[1].InstalledVersion, got.Plugins[1].NewVersion)
+	}
+	if len(got.Themes) != 1 || got.Themes[0].Slug != "twentytwentyfour" || got.Themes[0].NewVersion != "1.2" {
+		t.Errorf("themes = %+v, want exactly [twentytwentyfour -> 1.2]", got.Themes)
+	}
+	if got.Core == nil {
+		t.Fatal("acme core_update is null, want 6.5.2 -> 6.6")
+	}
+	if got.Core.CurrentVersion != "6.5.2" || got.Core.NewVersion != "6.6" {
+		t.Errorf("core = %s -> %s, want 6.5.2 -> 6.6", got.Core.CurrentVersion, got.Core.NewVersion)
+	}
+
+	// --- site B: genuinely up to date, and it must say ZERO rather than being
+	// omitted. A site dropped from the list because it has nothing pending is
+	// indistinguishable from a site that was never read.
+	if p.Sites[b].PendingTotal != 0 {
+		t.Errorf("quiet.example pending_total = %d, want 0", p.Sites[b].PendingTotal)
+	}
+	if p.Sites[b].InventoryStatus != inventoryCollected {
+		t.Errorf("quiet.example inventory_status = %q, want %q",
+			p.Sites[b].InventoryStatus, inventoryCollected)
+	}
+
+	// --- fleet totals, exact ---
+	if p.Totals.SitesWithUpdates != 1 {
+		t.Errorf("totals.sites_with_updates = %d, want 1", p.Totals.SitesWithUpdates)
+	}
+	if p.Totals.PendingPlugins != 2 || p.Totals.PendingThemes != 1 || p.Totals.PendingCore != 1 {
+		t.Errorf("totals plugins/themes/core = %d/%d/%d, want 2/1/1",
+			p.Totals.PendingPlugins, p.Totals.PendingThemes, p.Totals.PendingCore)
+	}
+	if p.Totals.PendingTotal != 4 {
+		t.Errorf("totals.pending_total = %d, want 4", p.Totals.PendingTotal)
+	}
+	if p.Totals.SitesNeverCollected != 0 {
+		t.Errorf("totals.sites_never_collected = %d, want 0", p.Totals.SitesNeverCollected)
+	}
+	if p.Envelope.Asked != 2 || p.Envelope.OK != 2 || p.Envelope.Refused != 0 {
+		t.Errorf("envelope = %d/%d/%d, want asked=2 ok=2 refused=0",
+			p.Envelope.Asked, p.Envelope.OK, p.Envelope.Refused)
+	}
+}
+
+// TestFleetUpdatesPending_AgreesWithTheDashboardsPredicates is the proof that
+// the assistant will not contradict the screen.
+//
+// Both fixtures below are advisories the dashboard DROPS. If this tool counted
+// them, an operator would read "2 updates pending" from the assistant and see
+// "up to date" on the site page, and only one of those two gets noticed.
+func TestFleetUpdatesPending_AgreesWithTheDashboardsPredicates(t *testing.T) {
+	siteID := uuid.New()
+	store := liveGrantStore(siteID)
+	store.sites = []sqlc.Site{
+		updatesFixture{
+			id: siteID, name: "acme.com", url: "https://acme.com",
+			components: `{"plugins":[` +
+				// GH #211 phantom: the advisory names the version already installed.
+				`{"slug":"phantom-plugin","name":"Phantom","version":"3.0.0","active":true,` +
+				`"available_update":{"new_version":"3.0.0"}},` +
+				// An advisory with no target version at all.
+				`{"slug":"empty-advisory","name":"Empty","version":"1.0","active":true,` +
+				`"available_update":{"new_version":""}},` +
+				// The agent's own plugin, which is never offered as an update.
+				`{"slug":"fleet-agent-site-manager","name":"Fleet Agent Site Manager",` +
+				`"version":"2.6.1","active":true,"available_update":{"new_version":"2.9.0"}},` +
+				// One real one, so a tool that returned nothing at all cannot pass.
+				`{"slug":"woocommerce","name":"WooCommerce","version":"8.1.0","active":true,` +
+				`"available_update":{"new_version":"8.4.0"}}` +
+				`],"core_update":{"current_version":"6.6","new_version":"6.6"}}`,
+		}.row(),
+	}
+
+	text := callUpdatesPending(t, store)
+	p := parseUpdatesPayload(t, text)
+
+	if len(p.Sites) != 1 {
+		t.Fatalf("want 1 site, got %d", len(p.Sites))
+	}
+	got := p.Sites[0]
+	if got.PendingTotal != 1 {
+		t.Errorf("pending_total = %d, want 1 -- only woocommerce is actionable. Got plugins %+v, "+
+			"core %+v", got.PendingTotal, got.Plugins, got.Core)
+	}
+	if len(got.Plugins) != 1 || got.Plugins[0].Slug != "woocommerce" {
+		t.Fatalf("plugins = %+v, want exactly [woocommerce]", got.Plugins)
+	}
+	// Named, so the failure says WHICH rule broke rather than only that a count
+	// moved.
+	for _, dropped := range []string{"phantom-plugin", "empty-advisory", "fleet-agent-site-manager"} {
+		if strings.Contains(text, dropped) {
+			t.Errorf("%q was offered as a pending update; the dashboard drops it, so the "+
+				"assistant now contradicts the screen", dropped)
+		}
+	}
+	if got.Core != nil {
+		t.Errorf("core_update = %+v, want null: an advisory naming the installed version is a "+
+			"phantom for core exactly as it is for a component", got.Core)
+	}
+}
+
+// TestFleetUpdatesPending_NeverCollectedIsNotZero pins the distinction
+// sites.components_updated_at is nullable-with-no-backfill in order to keep.
+func TestFleetUpdatesPending_NeverCollectedIsNotZero(t *testing.T) {
+	never := uuid.New()
+	store := liveGrantStore(never)
+	store.sites = []sqlc.Site{
+		// No collected stamp, and no inventory document either: we have never
+		// looked at this site.
+		updatesFixture{id: never, name: "unknown.example", url: "https://unknown.example",
+			components: `{}`}.row(),
+	}
+
+	text := callUpdatesPending(t, store)
+	p := parseUpdatesPayload(t, text)
+
+	if len(p.Sites) != 1 {
+		t.Fatalf("want 1 site, got %d", len(p.Sites))
+	}
+	if p.Sites[0].InventoryStatus != inventoryNeverCollected {
+		t.Errorf("inventory_status = %q, want %q", p.Sites[0].InventoryStatus, inventoryNeverCollected)
+	}
+	if p.Sites[0].InventoryCollectedAt != nil {
+		t.Errorf("inventory_collected_at = %v, want JSON null -- a substitute date here reports "+
+			"an observation that was never taken", *p.Sites[0].InventoryCollectedAt)
+	}
+	// THE COUNT THAT MATTERS: never-collected is reported SEPARATELY and is not
+	// folded into the up-to-date sites.
+	if p.Totals.SitesNeverCollected != 1 {
+		t.Errorf("totals.sites_never_collected = %d, want 1", p.Totals.SitesNeverCollected)
+	}
+	if p.Totals.SitesWithUpdates != 0 {
+		t.Errorf("totals.sites_with_updates = %d, want 0", p.Totals.SitesWithUpdates)
+	}
+	// And the model is TOLD, in the prepended text, not left to infer it.
+	if !strings.Contains(text, "never_collected") {
+		t.Error("the instructions never mention never_collected, so a model reading pending_total 0 " +
+			"has nothing telling it we simply have not looked")
+	}
+}
+
+// TestFleetUpdatesPending_EmptyScopeRefuses: an empty resolved scope is a
+// REFUSAL and never an empty list, which would be indistinguishable from a
+// healthy organisation owning nothing.
+func TestFleetUpdatesPending_EmptyScopeRefuses(t *testing.T) {
+	store := liveGrantStore() // no sites in the grant
+	store.sites = []sqlc.Site{
+		updatesFixture{id: uuid.New(), name: "somebody-elses.com", url: "https://somebody-elses.com",
+			components: `{"plugins":[{"slug":"leaky","version":"1.0","active":true,` +
+				`"available_update":{"new_version":"2.0"}}]}`}.row(),
+	}
+
+	r := newTransportRouter(t, store)
+	w := post(t, r, `{"jsonrpc":"2.0","id":9,"method":"tools/call","params":`+
+		`{"name":"fleet_updates_pending","arguments":{}}}`, nil)
+
+	// LEAK FIRST, again: an empty-scope call must not disclose the row the fake
+	// store would have handed back.
+	if strings.Contains(w.Body.String(), "somebody-elses.com") || strings.Contains(w.Body.String(), "leaky") {
+		t.Fatalf("an empty-scope refusal disclosed a site: %s", w.Body.String())
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, ErrCodeScopeEmpty) {
+		t.Fatalf("want a %s refusal, got: %s", ErrCodeScopeEmpty, body)
+	}
+	if strings.Contains(body, `"sites":[]`) {
+		t.Fatalf("an empty scope returned an empty LIST rather than refusing: %s", body)
+	}
+}
+
+// TestFleetUpdatesPending_UnreadInScopeSiteIsRefusedNotDropped: a site the
+// caller may see and the page did not return is accounted for by name, so
+// ok+refused still balances against the caller's own scope.
+func TestFleetUpdatesPending_UnreadInScopeSiteIsRefusedNotDropped(t *testing.T) {
+	present := uuid.New()
+	missing := uuid.New()
+
+	store := liveGrantStore(present, missing)
+	store.sites = []sqlc.Site{
+		updatesFixture{id: present, name: "acme.com", url: "https://acme.com",
+			components: `{}`}.row(),
+		// `missing` is in scope and is deliberately NOT in the store's page.
+	}
+
+	p := parseUpdatesPayload(t, callUpdatesPending(t, store))
+
+	if p.Envelope.Asked != 2 || p.Envelope.OK != 1 || p.Envelope.Refused != 1 {
+		t.Fatalf("envelope = asked %d ok %d refused %d, want 2/1/1",
+			p.Envelope.Asked, p.Envelope.OK, p.Envelope.Refused)
+	}
+	if len(p.Envelope.Refusals) != 1 {
+		t.Fatalf("want exactly 1 refusal, got %+v", p.Envelope.Refusals)
+	}
+	if p.Envelope.Refusals[0].SiteID != missing.String() {
+		t.Errorf("refusal names %s, want the unread in-scope site %s",
+			p.Envelope.Refusals[0].SiteID, missing)
+	}
+	if p.Envelope.Refusals[0].Code != RefusalSiteUnread.String() {
+		t.Errorf("refusal code = %q, want %q", p.Envelope.Refusals[0].Code, RefusalSiteUnread)
+	}
+}
+
+// TestFleetUpdateTotalsCoverOnlyTheKeptRecords is the unit half of the
+// truncation reasoning: a roll-up that counted records the byte cap removed
+// would describe a list the caller cannot see, and the only way to notice would
+// be to re-add the per-site numbers and find they disagree.
+func TestFleetUpdateTotalsCoverOnlyTheKeptRecords(t *testing.T) {
+	now := time.Now().UTC()
+	rows := make([]sqlc.Site, 0, 40)
+	for i := 0; i < 40; i++ {
+		// A long name so each record is large; 40 of them cross recordByteBudget.
+		rows = append(rows, updatesFixture{
+			id:   uuid.New(),
+			name: fmt.Sprintf("site-%02d-%s", i, strings.Repeat("padding", 120)),
+			url:  "https://example.test",
+			components: `{"plugins":[{"slug":"woocommerce","name":"WooCommerce","version":"8.1.0",` +
+				`"active":true,"available_update":{"new_version":"8.4.0"}}]}`,
+		}.row())
+	}
+	env, err := NewEnvelope(len(rows), len(rows), nil)
+	if err != nil {
+		t.Fatalf("NewEnvelope: %v", err)
+	}
+
+	text, err := buildUpdatesPendingResult(rows, env, now)
+	if err != nil {
+		t.Fatalf("buildUpdatesPendingResult: %v", err)
+	}
+	p := parseUpdatesPayload(t, text)
+
+	if len(p.Sites) >= len(rows) {
+		t.Fatalf("the fixture did not cross the byte cap (%d of %d returned), so this proof "+
+			"checks nothing", len(p.Sites), len(rows))
+	}
+	if p.Totals.PendingTotal != len(p.Sites) {
+		t.Errorf("totals.pending_total = %d over a list of %d sites each with 1 pending update: "+
+			"the roll-up covers records the byte cap removed", p.Totals.PendingTotal, len(p.Sites))
+	}
+	if p.Totals.SitesWithUpdates != len(p.Sites) {
+		t.Errorf("totals.sites_with_updates = %d, want %d", p.Totals.SitesWithUpdates, len(p.Sites))
+	}
+	if !strings.Contains(text, "INCOMPLETE RESULT") {
+		t.Error("a truncated result carried no banner, so it reads as complete")
+	}
+}
