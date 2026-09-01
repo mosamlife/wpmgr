@@ -62,19 +62,30 @@ import {
 //
 // THERE IS NO CAPABILITIES STEP HERE, AND NOT BECAUSE THE BACKEND IS MISSING.
 // The vocabulary is seated (policy.go: eight capability strings, seven of
-// them conferrable via the read scope) and the wire already carries it: the
-// mint request takes a `capabilities` list (dto.go:264) and the mint response
-// returns one (dto.go:305). The frontend has nothing generated to bind to
-// either -- packages/openapi-client's only `capabilities` type is the
-// unrelated object-cache one -- because this is a hand-written surface, not a
-// generated one. None of that is why a picker is not rendered here. It is
-// missing because THIS WIZARD NEVER CREATES THE GRANT (see WHAT STEP 3 STILL
-// CANNOT DO, above): the approval screen at /connect/ai does, this file has
-// no channel into it, and a capability picker rendered here would collect an
-// answer with nowhere to send. Where such a picker belongs, with three real
-// candidates, is the open question tracked in GH #660, and this file does not
-// resolve it. A disabled control for a channel this file cannot reach is a
-// promise this file cannot keep, same as the reasoning above it.
+// them conferrable via the read scope), and one of this wizard's two
+// completion paths already puts it on the wire: TokenMintPanel below calls
+// useMintConnection(), which POSTs to CONNECTIONS_PATH and already accepts a
+// `capabilities` list on the request (dto.go:264) and returns one on the
+// response (dto.go:305). A picker on THAT path would need only a frontend
+// field -- MintConnectionInput (use-ai-connections.ts:228-233) has name,
+// siteScopeMode, scopeTagIds and scopeSiteIds, and no capabilities -- so the
+// gap there is this file, not the server.
+//
+// THE OAUTH PATH IS THE OTHER ONE, AND IS WHERE "THIS WIZARD NEVER CREATES
+// THE GRANT" (WHAT STEP 3 STILL CANNOT DO, above) IS ACTUALLY TRUE. The
+// client redirects into the approval screen at /connect/ai, which calls
+// Approve (service.go:607); ApprovalRequest carries Principal, Consent,
+// GrantName and SiteScope and nothing else, so that path genuinely has no
+// channel for a capability answer today.
+//
+// So a picker built only against the mint call would work for token
+// connections and do nothing for OAuth ones, and a permission model that
+// varies by how the connection was made is worse than one that stays
+// uniformly narrow -- which is why neither path has one, rather than one
+// path having one and the other not. The choice among the three real options
+// is open, tracked in GH #660, and this file does not make it. Cited by
+// file:line above rather than restated from memory: summarising this split
+// instead of pointing at it is exactly what went stale here before.
 //
 // NO SNIPPET IS WRITTEN IN THIS FILE. Every block comes from buildSnippet, and
 // snippet.test.ts fails the build if a config literal appears here.
@@ -492,13 +503,14 @@ function StepRail({ current }: { current: Step }) {
       ))}
       <li className="flex items-center gap-2">
         <span aria-hidden="true">/</span>
-        {/* Capabilities are NOT a numbered step in this rail. The grant column
-            behind them exists now (mcp_grants.capabilities, schema.sql) and so
-            does the vocabulary that fills it, but this wizard has no channel
-            to the screen that writes it -- see the comment above the wizard's
-            STEPS export -- and a step number for a screen this file cannot
-            reach is a promise the rail has no way to keep. What it names
-            instead is where that decision is actually made today. */}
+        {/* Capabilities are NOT a numbered step in this rail. The vocabulary
+            and the grant column behind them exist now (policy.go,
+            mcp_grants.capabilities in schema.sql), but neither completion
+            path this wizard ends in lets an operator choose one today -- see
+            the comment above the wizard's STEPS export for the token/OAuth
+            split -- so a step number here would be for a choice nobody can
+            make yet. What it names instead is where the OAuth path's consent
+            is actually recorded. */}
         <span>Permissions are chosen on the approval screen</span>
       </li>
     </ol>
