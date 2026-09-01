@@ -229,7 +229,7 @@ export function SiteScopeStep({
           data-testid="site-step-empty"
           className="text-sm text-[var(--color-muted-foreground)]"
         >
-          A connection with an empty scope can read nothing and propose nothing. That is a
+          A connection with an empty scope can read nothing. That is a
           working state, not an error. It is how you mint a credential now and decide its
           reach later.
         </p>

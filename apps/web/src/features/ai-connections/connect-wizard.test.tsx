@@ -376,7 +376,8 @@ describe("an empty scope is a working state, not an error", () => {
 
     const empty = screen.getByTestId("site-step-empty");
     expect(empty).toHaveTextContent(/working state, not an error/i);
-    expect(empty).toHaveTextContent(/read nothing and propose nothing/i);
+    expect(empty).toHaveTextContent(/can read nothing/i);
+    expect(empty).not.toHaveTextContent(/propose/i);
     // Not an alert, because it is not one. An empty scope announced by a
     // screen reader as an error is the same defect as rendering it in red.
     expect(screen.queryByTestId("site-step-blocked")).toBeNull();

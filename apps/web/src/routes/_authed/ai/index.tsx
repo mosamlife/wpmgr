@@ -66,7 +66,7 @@ function AiConnectionsPage() {
     <div className="space-y-6">
       <PageHeader
         title="AI connections"
-        subline="Let an AI client read your fleet through one endpoint. It can propose changes; it can never approve them."
+        subline="Let an AI client read your fleet through one endpoint, limited to the sites you scope it to. It cannot change anything."
         actions={
           <Button asChild>
             <Link to="/ai/connect">Connect an AI client</Link>

@@ -121,6 +121,36 @@ describe("ConsentScreen — what it can do and what it cannot", () => {
     expect(screen.getByText(/It cannot read your backups' contents\./i)).toBeTruthy();
   });
 
+  it("says who makes a change, without claiming an approval screen this connection cannot reach", () => {
+    // Nothing in the product can propose anything (no proposal table, no
+    // approval queue, no approval screen anywhere in the route tree). This
+    // bullet used to say "It can suggest work to you and nothing more.
+    // Anything that changes a site is approved by a person, in this
+    // dashboard, on a screen this connection cannot reach" -- both a false
+    // capability claim and a pointer at a screen that does not exist.
+    //
+    // The first rewrite, "Everything that changes a site is done by a
+    // person, here in this dashboard," went too far the other way: it is a
+    // categorical claim the product falsifies twice over --
+    // update_runs.scheduled_at (apps/api/db/schema.sql:1185) fires a run
+    // later from DispatchWorker with nobody present, and POST /updates is
+    // reachable by an API-key principal with no dashboard and no person
+    // (apps/api/internal/update/handler.go:44, RequireOrgScope +
+    // PermSiteWrite only; middleware/auth.go:56 gives API-key principals org
+    // scope; schema.sql:1147-1148 documents created_by as NULL for them). The
+    // sentence below claims only what is categorically true: never THIS
+    // connection, without asserting who or what else does it.
+    renderWithProviders(<ConsentScreen {...props()} />);
+    // The bold lead-in stays exactly as it was.
+    expect(screen.getByText(/It cannot approve anything\./i)).toBeTruthy();
+    const bullet = screen.getByText(/It cannot approve anything\./i).closest("li")!;
+    expect(bullet).toHaveTextContent(/site changes are made elsewhere in wpmgr/i);
+    expect(bullet).toHaveTextContent(/never by this connection/i);
+    expect(bullet).not.toHaveTextContent(/propose/i);
+    expect(bullet).not.toHaveTextContent(/done by a person/i);
+    expect(bullet).not.toHaveTextContent(/screen this connection cannot reach/i);
+  });
+
   it("refuses approval when a requested scope is not recognised", () => {
     const odd = parseConsentContext({
       client_id: "c_x",
@@ -227,7 +257,8 @@ describe("ConsentScreen — an empty site scope is a working state, not an error
     renderWithProviders(<ConsentScreen {...props()} />);
     const summary = screen.getByTestId("consent-scope-summary").textContent ?? "";
     expect(summary).toMatch(/No sites are selected/i);
-    expect(summary).toMatch(/read nothing and propose nothing/i);
+    expect(summary).toMatch(/will read nothing/i);
+    expect(summary).not.toMatch(/propose/i);
     expect(summary).toMatch(/working state, not an error/i);
     expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(false);
   });
@@ -254,7 +285,8 @@ describe("ConsentScreen — an empty site scope is a working state, not an error
     fireEvent.click(screen.getByRole("checkbox", { name: /archived/i }));
     const summary = screen.getByTestId("consent-scope-summary");
     expect(summary.textContent).toMatch(/matches no sites/i);
-    expect(summary.textContent).toMatch(/read nothing and propose nothing/i);
+    expect(summary.textContent).toMatch(/will read nothing/i);
+    expect(summary.textContent).not.toMatch(/propose/i);
     expect(summary.textContent).toMatch(/working state, not an error/i);
     expect(screen.queryByTestId("consent-scope-sites")).toBeNull();
     expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(false);
