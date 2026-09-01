@@ -107,6 +107,21 @@ const (
 	// for "the resource owner refused", and 403 rather than 401: re-presenting
 	// the same credential will not help.
 	ErrCodeAccessDenied = "mcp_access_denied"
+
+	// ErrCodeAuditUnavailable is the refusal for a request this surface could
+	// not RECORD -- either the append failed, or the Service was built with no
+	// recorder at all. It is not a permission decision and it is not the
+	// caller's fault; it exists so that "we could not write the record" is a
+	// distinguishable, greppable outcome in the operator log rather than being
+	// folded into a generic internal error nobody can alert on.
+	//
+	// It never reaches the wire with this spelling. TransportHandler.toolError
+	// maps it to the JSON-RPC internal code, deliberately indistinguishable
+	// from any other server-side failure: telling the caller WHICH failure this
+	// was would hand a probing client a direct read on whether the audit system
+	// is currently up. See TransportHandler.auditGap on the residual that
+	// remains even so.
+	ErrCodeAuditUnavailable = "mcp_audit_unavailable"
 )
 
 // The OAuth vocabulary this server implements, named once.
@@ -204,12 +219,28 @@ func validateTokenEndpointAuthMethod(method string) error {
 // Clock is injectable so expiry behaviour is testable without sleeping.
 type Clock func() time.Time
 
-// auditRecorder is the slice of *audit.Recorder this package actually uses. It
-// exists to make the append-FAILED branch testable without a broken database;
-// production passes the concrete recorder through WithAudit and nothing else
-// implements it outside tests.
+// auditRecorder is the slice of *audit.Recorder this package may use, and the
+// omission is the load-bearing part: audit.Recorder.Record -- the FAIL-OPEN
+// helper, whose doc tells callers to log the error and carry on -- is not in
+// this method set, so `s.audit.Record(...)` does not compile anywhere in this
+// package.
+//
+// That is ADR-061 A10's first bullet implemented as a type rather than as a
+// convention: "the fail-closed helper becomes the only audit path this surface
+// may use. A surface that can reach the fail-open helper will eventually reach
+// it." A grep guard would catch the same mistake one CI run later and only for
+// the spellings it anticipated; a method set catches it in the editor, for
+// every spelling, including the one a future refactor invents. The two members
+// below are both fail-closed by contract: RecordOrFail for a disclosure with no
+// companion row (a read answered, a refusal returned), RecordInTx for an append
+// that must live or die with the write beside it.
+//
+// It stays an interface rather than *audit.Recorder for a second reason: it
+// makes the append-FAILED branch reachable from a unit test without a broken
+// database, and what happens when an append fails is now the whole behaviour
+// under test on this surface.
 type auditRecorder interface {
-	Record(ctx context.Context, e audit.Event) (audit.Entry, error)
+	RecordOrFail(ctx context.Context, e audit.Event) (audit.Entry, error)
 	RecordInTx(ctx context.Context, tx pgx.Tx, e audit.Event) (audit.Entry, error)
 }
 
@@ -219,21 +250,43 @@ type auditRecorder interface {
 type Service struct {
 	store Store
 	now   Clock
-	// audit is nil unless WithAudit is called. Every audit write in this
-	// package guards on it being nil first -- see Approve, RevokeConnection,
-	// and RecordToolCall -- so a Service built by the many unit tests in this
-	// package (fakeStore, no real Postgres pool to back an audit.Recorder)
-	// keeps working unaudited. Production wiring (cmd/wpmgr/main.go) always
-	// calls WithAudit; a Service that reaches a request path without it is a
-	// wiring bug, not a supported configuration, and the finding to raise if
-	// one is ever found is "this deploy path is unattributable", not "make the
-	// nil check quieter".
+	// audit is nil unless WithAudit is called, and ON THE LIVE ASSISTANT
+	// SURFACE A NIL RECORDER NOW REFUSES rather than serving unaudited. See
+	// requireRecorder: RecordToolCall, RecordToolDenied and
+	// RecordProtocolDenied return ErrCodeAuditUnavailable when this is nil, and
+	// their callers withhold the answer.
 	//
-	// The type is the two-method auditRecorder rather than *audit.Recorder so
-	// that the FAILURE path is reachable from a unit test. What happens when
-	// an append fails is a decision this package makes deliberately (see
-	// TransportHandler.auditGap), and a decision whose only implementation is
-	// unreachable without a broken Postgres is a decision nothing checks.
+	// This reverses what the old text called a supported configuration. It said
+	// a Service without a recorder "keeps working unaudited", that production
+	// always calls WithAudit, and that a request path reached without one is a
+	// wiring bug whose finding is "this deploy is unattributable". Every clause
+	// of that is still true and the conclusion was still wrong: an unaudited
+	// assistant surface that presents as a working one is precisely the state
+	// ADR-061 A10 exists to make impossible, and leaving it reachable meant the
+	// wiring bug's symptom was a fleet answering questions with no record that
+	// it did. A misconfiguration must fail where it is made, not silently
+	// produce the one outcome the surface promises cannot happen.
+	//
+	// The type is the two-method auditRecorder rather than *audit.Recorder for
+	// two reasons, and the first is now the more important: audit.Recorder's
+	// FAIL-OPEN Record is not in that method set, so this package cannot reach
+	// it (see auditRecorder). The second is that it makes the append-FAILED
+	// branch reachable from a unit test without a broken Postgres, and that
+	// branch is now the behaviour this surface is judged on.
+	//
+	// THE BATCHING RULE, which ADR-061 A10 requires be written down rather than
+	// left to be inferred: READS ON THIS SURFACE ARE NOT BATCHED AND NOT
+	// SAMPLED. One tools/call produces exactly one audit row, synchronously,
+	// before the answer is served. A10 permits batching for volume and requires
+	// that any such rule be stated with a retention; the rule here is that
+	// there is no such rule, and the volume assumption that makes it safe is
+	// ToolCallTenantPerMin (see toolcall_limit.go) -- the per-tenant tool-call
+	// ceiling this endpoint already enforces, which is the upper bound on rows
+	// per tenant per minute this surface can generate. Retention is the
+	// audit_log table's own; this surface neither shortens it nor keeps a
+	// second copy. Sampling would have to be re-argued from scratch if that
+	// ceiling ever rises, because a sampled read log cannot answer "which sites
+	// did this connection read" -- it can only answer "some of them".
 	audit auditRecorder
 
 	// mintLimit bounds POST /api/v1/mcp/connections. It lives on the SERVICE
@@ -288,6 +341,30 @@ func (s *Service) WithAudit(rec *audit.Recorder) *Service {
 	}
 	cp.audit = rec
 	return &cp
+}
+
+// requireRecorder is the guard every live-surface audit write opens with, and
+// the reason it is a shared function rather than three copies of `if s.audit ==
+// nil` is that the three copies previously disagreed with the surface's own
+// promise and each other's comments.
+//
+// A NIL RECORDER IS A REFUSAL, NOT A QUIET SKIP. A Service built without
+// WithAudit cannot record anything, so under ADR-061 A10 it cannot answer
+// anything either: every tools/call it serves would be an AI action with no
+// record, which is the exact outcome the surface promises is impossible. The
+// misconfiguration is loud at the first request instead of silent until an
+// auditor asks a question nobody can answer.
+//
+// It returns an error rather than panicking because this is a request path (a
+// panic here would take the process down on a wiring mistake that only affects
+// one surface), and domain.Internal rather than a Forbidden because the caller
+// did nothing wrong -- the deploy did.
+func (s *Service) requireRecorder() error {
+	if s.audit == nil {
+		return domain.Internal(ErrCodeAuditUnavailable,
+			"this connection cannot be served because its audit trail cannot be written")
+	}
+	return nil
 }
 
 // withAuditRecorder is the test-only door onto the same field, so a fake can
@@ -1358,18 +1435,55 @@ func (s *Service) RecordActivity(ctx context.Context, auth AuthorizedRequest) er
 // registry entry AuthorizeTool already resolved -- see the OperatorPermission
 // doc on ToolPolicy for why that field lands here.
 //
-// BEST-EFFORT, deliberately unlike Approve/RevokeConnection's RecordInTx:
-// there is no companion write in the same transaction to roll back alongside a
-// failed append (a tool call in this phase is a read), so failing the whole
-// tool call because its own audit trail could not be appended would let a
-// purely observational feature take down the read path it exists to observe.
-// The error is returned so the caller can log it, never to be treated as a
-// reason to withhold the tool's answer.
+// FAIL-CLOSED. This comment used to argue the reverse -- that a tool call in
+// this phase is a read, that a read has no companion write to roll back, and
+// that failing the call over its own audit append would let an observational
+// feature take down the path it observes -- and the argument is retired rather
+// than softened. ADR-061 A10 says reads are included, because "which sites a
+// connection read, and when" is the record a customer needs when they ask what
+// the assistant saw, and an owner ruling on 2026-09-01 settled it: completeness
+// over availability, on this surface, deliberately.
+//
+// The throughput half of the old argument was measured and does not hold: the
+// per-tenant chain lock costs nothing detectable next to the transaction it
+// wraps, and one tenant's sustained append rate is orders of magnitude above
+// the ToolCallTenantPerMin ceiling that already bounds this endpoint. The
+// figures are laptop single-sample runs and are deliberately not quoted here or
+// anywhere else; they retire an objection, they are not a published number.
+//
+// The honest residual is AVAILABILITY, not throughput. A Postgres that cannot
+// take this append now fails the read instead of serving it unlogged. That is
+// the trade the ruling made with its eyes open.
+//
+// WHERE THE APPEND SITS RELATIVE TO THE READ, and why not the two alternatives:
+//
+//   - CHOSEN: after entry.invoke, before the answer is serialised. TransportHandler
+//     .callTool propagates a non-nil return by discarding the text it is holding
+//     and answering with an error instead. The property A10 asks for is that no
+//     AI action is performed whose record was lost, and for a read the ACTION IS
+//     THE DISCLOSURE -- data that never leaves the process was never seen. So
+//     binding the record to the disclosure is the faithful reading, and this is
+//     the point where the disclosure has not happened yet.
+//   - REJECTED, record before invoke: would put a mcp.tool.called row in the
+//     ledger for a call that then failed and answered nothing. That is not a
+//     safer direction, it is a ledger that claims reads which did not happen,
+//     and an auditor cannot tell those rows from the real ones.
+//   - REJECTED, one transaction shared by the read and the append: strictly the
+//     strongest shape and the one A10's "same transaction" language describes,
+//     but it buys nothing HERE and costs a pgx.Tx threaded through the Store
+//     interface and every tool implementation. A read writes no row, so there is
+//     nothing for the transaction to roll back; all it would add is that the
+//     append commits before the answer, which the ordering above already gives.
+//     THIS STOPS BEING TRUE THE MOMENT A WRITE TOOL LANDS: a tool that changes
+//     a row must use RecordInTx inside that row's transaction, and must not
+//     reuse this shape by analogy.
+//
+// NOT BATCHED, NOT SAMPLED -- see the batching rule on the Service audit field.
 func (s *Service) RecordToolCall(ctx context.Context, auth AuthorizedRequest, toolName string, operatorPermission string) error {
-	if s.audit == nil {
-		return nil
+	if err := s.requireRecorder(); err != nil {
+		return err
 	}
-	_, err := s.audit.Record(ctx, audit.Event{
+	_, err := s.audit.RecordOrFail(ctx, audit.Event{
 		TenantID:   auth.TenantID,
 		ActorType:  audit.ActorAssistant,
 		ActorID:    auth.GrantID.String(),
@@ -1415,16 +1529,17 @@ func (s *Service) RecordToolCall(ctx context.Context, auth AuthorizedRequest, to
 // what stops a caller composing a reason by hand and drifting from the log line
 // two lines above it.
 //
-// BEST-EFFORT, and that is a deliberate divergence from ADR-061 A10's
-// fail-closed language rather than an oversight. See TransportHandler.auditGap.
+// FAIL-CLOSED, reversing the divergence this comment used to defend. See
+// TransportHandler.auditGap for what the old posture argued, what survived the
+// reversal (the operator-side gap line still fires, as evidence of last resort)
+// and the ONE residual the reversal creates -- a caller being denied can now
+// distinguish "refused" from "refused and unrecordable", which is a liveness
+// oracle on the audit system. That residual is named there, was weighed against
+// a refusal that no ledger records, and is the reason this change goes to
+// security review rather than straight to merge.
 func (s *Service) RecordToolDenied(ctx context.Context, auth AuthorizedRequest, toolName string, reason refusalReason) error {
-	// NOTE: a Service with no recorder records NOTHING and reports no error,
-	// the same as RecordToolCall. That is the unit-test configuration (see the
-	// audit field doc); in production WithAudit has always been called, and a
-	// request path reached without it is a wiring bug whose finding is "this
-	// deploy is unattributable", not "make this quieter".
-	if s.audit == nil {
-		return nil
+	if err := s.requireRecorder(); err != nil {
+		return err
 	}
 	// BOUNDED, because this is attacker-chosen input on a path the attacker can
 	// reach WITHOUT holding the tool. toolName is whatever arrived in params,
@@ -1455,7 +1570,7 @@ func (s *Service) RecordToolDenied(ctx context.Context, auth AuthorizedRequest, 
 		meta["target_sanitized"] = true
 	}
 
-	_, err := s.audit.Record(ctx, audit.Event{
+	_, err := s.audit.RecordOrFail(ctx, audit.Event{
 		TenantID:  auth.TenantID,
 		ActorType: audit.ActorAssistant,
 		ActorID:   auth.GrantID.String(),
@@ -1483,9 +1598,13 @@ func (s *Service) RecordToolDenied(ctx context.Context, auth AuthorizedRequest, 
 // different things operationally: a params refusal is a client that cannot
 // connect at all, a header refusal is a client that connected and then sent
 // something else, and only the second can indicate a proxy rewriting headers.
+// FAIL-CLOSED, like RecordToolCall and RecordToolDenied. writeProtocolRefusal
+// withholds the typed refusal and answers an internal error when this returns
+// non-nil, so a negotiation this surface could not record is a negotiation it
+// does not answer.
 func (s *Service) RecordProtocolDenied(ctx context.Context, auth AuthorizedRequest, neg Negotiation, phase string) error {
-	if s.audit == nil {
-		return nil
+	if err := s.requireRecorder(); err != nil {
+		return err
 	}
 	reason := neg.RefusalReason()
 
@@ -1517,7 +1636,7 @@ func (s *Service) RecordProtocolDenied(ctx context.Context, auth AuthorizedReque
 		meta["target_sanitized"] = true
 	}
 
-	_, err := s.audit.Record(ctx, audit.Event{
+	_, err := s.audit.RecordOrFail(ctx, audit.Event{
 		TenantID:   auth.TenantID,
 		ActorType:  audit.ActorAssistant,
 		ActorID:    auth.GrantID.String(),
