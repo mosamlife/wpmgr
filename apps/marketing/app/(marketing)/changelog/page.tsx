@@ -50,6 +50,18 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.155",
+    date: "2026-09-02",
+    summary:
+      "The AI connection wizard's token path now asks which capabilities a new connection gets, instead of assuming a default.",
+    items: [
+      {
+        tag: "Added",
+        text: "The AI connection wizard's token path now asks which capabilities a new connection gets, instead of assuming a default. Every capability is read-only, one of them (reading site content) renders disabled because nothing in the product can serve it yet, and deselecting everything is refused rather than quietly falling back to a default.",
+      },
+    ],
+  },
+  {
     version: "0.61.154",
     date: "2026-09-02",
     summary:

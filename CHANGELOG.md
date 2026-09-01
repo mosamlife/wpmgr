@@ -6,6 +6,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ## [Unreleased]
 
+## [0.61.155] - 2026-09-02
+
+### Added
+
+- The AI connection wizard's token path now asks which capabilities a new connection gets, instead of assuming a default. Every capability is read-only, one of them (reading site content) renders disabled because nothing in the product can serve it yet, and deselecting everything is refused rather than quietly falling back to a default.
+
 ## [0.61.154] - 2026-09-02
 
 ### Security
