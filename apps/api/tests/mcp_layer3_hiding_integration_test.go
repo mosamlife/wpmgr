@@ -38,6 +38,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 	"github.com/mosamlife/wpmgr/apps/api/internal/mcp"
 	"github.com/mosamlife/wpmgr/apps/api/internal/site"
@@ -96,7 +97,7 @@ func TestMCPLayer3OutOfScopeSiteIsAbsentAndNotInferableAsAppRole(t *testing.T) {
 	pool := startPostgres(t)
 	mcpRepo := mcp.NewRepo(pool)
 	siteRepo := site.NewRepo(pool)
-	svc := mcp.NewService(mcpRepo)
+	svc := mcp.NewService(mcpRepo).WithAudit(audit.NewRecorder(pool, domain.SystemClock{}))
 
 	tenant := seedTenant(t, pool, "mcp-l3-"+uuid.NewString()[:8])
 
@@ -208,15 +209,30 @@ func TestMCPLayer3OutOfScopeSiteIsAbsentAndNotInferableAsAppRole(t *testing.T) {
 			payload.Truncation.Available)
 	}
 
-	// NO NUMBER ANYWHERE IN THE BODY MAY BE THE TENANT'S SITE COUNT.
+	// NO COUNT FIELD ANYWHERE IN THE PAYLOAD MAY EQUAL THE TENANT'S SITE
+	// COUNT. This is the guard against a FOURTH count field arriving later
+	// and quietly carrying tenant cardinality; the three above are only the
+	// ones that exist today.
 	//
-	// The three fields above are the ones that exist today. This is the guard
-	// against a fourth arriving later: with one in-scope site and two in the
-	// tenant, a bare "2" in the payload is the tenant cardinality and there is
-	// no legitimate reason for it to appear.
-	if strings.Contains(text, strconv.Itoa(len(rows))) && len(rows) != payload.Envelope.Asked {
-		t.Errorf("a number equal to the TENANT's site count (%d) appears in the tool result; "+
-			"check it is not a new field disclosing tenant cardinality:\n%s", len(rows), text)
+	// IT WALKS DECODED JSON NUMBERS, NOT THE TEXT. A substring search for the
+	// tenant count was tried first and is wrong: small integers occur inside
+	// uuids and inside byte_cap (30720 contains "2"), so it reddened a
+	// correct result on its first run. A guard that fails on correct work
+	// gets switched off, and then it guards nothing.
+	//
+	// byte_cap is excluded by name because it is a compile-time constant that
+	// has nothing to do with the fleet, and would otherwise collide by
+	// coincidence for any tenant holding 30720 sites.
+	for field, n := range numericFields(t, text) {
+		if field == "byte_cap" {
+			continue
+		}
+		if n == len(rows) && n != payload.Envelope.Asked {
+			t.Errorf("INFERENCE LEAK: field %q = %d, which is the TENANT's site count while the "+
+				"caller's scope is %d. A count field carrying tenant cardinality discloses that "+
+				"sites exist which the caller may not see:\n%s",
+				field, n, payload.Envelope.Asked, text)
+		}
 	}
 
 	t.Logf("layer 3 holds: asked=%d ok=%d refused=%d, and site B is absent from %d bytes of body",
@@ -244,7 +260,7 @@ func TestMCPPageBoundDoesNotDiscloseTenantSizeAsAppRole(t *testing.T) {
 	pool := startPostgres(t)
 	mcpRepo := mcp.NewRepo(pool)
 	siteRepo := site.NewRepo(pool)
-	svc := mcp.NewService(mcpRepo)
+	svc := mcp.NewService(mcpRepo).WithAudit(audit.NewRecorder(pool, domain.SystemClock{}))
 
 	tenant := seedTenant(t, pool, "mcp-pb-"+uuid.NewString()[:8])
 
@@ -369,6 +385,43 @@ func extractToolText(t *testing.T, body string) string {
 		t.Fatalf("tools/call returned isError=true: %s", body)
 	}
 	return env.Result.Content[0].Text
+}
+
+// numericFields walks the decoded payload and returns every integer-valued
+// field by name, at any depth. It exists so the tenant-cardinality guard can
+// be structural rather than a substring search over the rendered text.
+func numericFields(t *testing.T, text string) map[string]int {
+	t.Helper()
+	i := strings.Index(text, `{"sites"`)
+	if i < 0 {
+		t.Fatalf("tool text carries no sites payload:\n%s", text)
+	}
+	var raw any
+	if err := json.Unmarshal([]byte(text[i:]), &raw); err != nil {
+		t.Fatalf("sites payload is not JSON: %v", err)
+	}
+	out := map[string]int{}
+	var walk func(prefix string, v any)
+	walk = func(prefix string, v any) {
+		switch tv := v.(type) {
+		case map[string]any:
+			for k, child := range tv {
+				walk(k, child)
+			}
+		case []any:
+			for _, child := range tv {
+				walk(prefix, child)
+			}
+		case float64:
+			// Only whole numbers are counts. A fractional value is a
+			// measurement (an age, a ratio) and cannot be a site cardinality.
+			if tv == float64(int(tv)) {
+				out[prefix] = int(tv)
+			}
+		}
+	}
+	walk("", raw)
+	return out
 }
 
 // decodeSitesPayload finds the JSON object in the tool text, which is preceded
