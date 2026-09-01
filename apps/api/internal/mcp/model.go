@@ -232,8 +232,20 @@ type Connection struct {
 	SiteScopeMode SiteScopeMode
 	// Scopes is the OAuth scope set. See Service.ListConnections for why this
 	// is currently derived rather than read from the row.
-	Scopes    []Scope
-	CreatedAt time.Time
+	Scopes []Scope
+
+	// Capabilities is READ STRAIGHT OFF mcp_grants.capabilities, the same
+	// column and the same authority Authenticate reads chk.GrantCapabilities
+	// from to decide the `authorized` verdict. It is NOT recomputed from the
+	// scope registry -- that is exactly the mistake m127 DECISION 1 exists to
+	// forbid, because a recomputed set agrees with the stored one only until
+	// they diverge, and a connections list is precisely where an operator goes
+	// to find out whether they have. GH #652: until the capability vocabulary
+	// widened to eight strings, every grant held exactly {mcp.sites.read}, so
+	// an omitted field here was indistinguishable from a correct one. It no
+	// longer is.
+	Capabilities []Capability
+	CreatedAt    time.Time
 
 	// ReportedClientName and ReportedClientVersion are the client's OWN claims,
 	// recorded at connect. They are UNVERIFIED -- registration is
