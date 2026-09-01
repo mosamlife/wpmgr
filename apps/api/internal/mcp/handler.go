@@ -109,8 +109,17 @@ func (h *Handler) RegisterPublic(r *gin.RouterGroup) {
 // screen, no operator interaction, no /authorize call. Gating only the writing
 // route would therefore gate nothing, and gating only /authorize would leave the
 // write open. The pair is the boundary.
+//
+// requireGrantPermission is mounted beside it, and for the same reason.
+// PermAPIKeyManage is what POST /api/v1/mcp/connections has always required to
+// create a connection (see RegisterConnections), and /consent creates the same
+// object by the other route: a grant carrying a capability set and an
+// organisation-wide site scope. BOTH ROUTES THAT CREATE A CONNECTION NOW
+// REQUIRE THE SAME PERMISSION, so the trust tier is a property of the object
+// rather than of the path a caller happened to take to it. It is mounted on the
+// pair, not on /consent alone, for the reason the paragraph above gives.
 func (h *Handler) Register(r *gin.RouterGroup) {
-	g := r.Group(oauthGroupPath, h.requireOrgScope())
+	g := r.Group(oauthGroupPath, h.requireOrgScope(), h.requireGrantPermission())
 	g.GET("/authorize", h.authorize)
 	g.POST("/consent", h.consent)
 }
@@ -411,6 +420,76 @@ func (h *Handler) requireOrgScope() gin.HandlerFunc {
 		if p.IsSiteConstrained() {
 			status, dto := oauthError(domain.Forbidden(ErrCodeAccessDenied,
 				"site-scoped access cannot authorize an organisation-level connection"))
+			c.AbortWithStatusJSON(status, dto)
+			return
+		}
+		c.Next()
+	}
+}
+
+// requireGrantPermission is authz.RequirePermission(authz.PermAPIKeyManage) in
+// THIS package's error envelope.
+//
+// WHY IT EXISTS: the two routes it guards create the same object as POST
+// /api/v1/mcp/connections -- a grant with a capability set and an
+// organisation-wide site scope -- and that route has always required
+// PermAPIKeyManage (RegisterConnections). Two routes that create one object
+// answering to two different permissions is a difference with nothing behind
+// it, and it is the weaker of the two that decides what the object costs.
+//
+// WHY IT IS NOT authz.RequirePermission ITSELF, which would otherwise be the
+// obvious line to write: that middleware refuses through httpx in the house
+// {code, message} envelope, and these two routes answer in the RFC 6749 5.2
+// {error, error_description} shape that the consent screen parses
+// (apps/web/src/features/mcp-consent/use-consent.ts). A correct refusal
+// arriving in the wrong envelope reaches that screen as an unexplained server
+// fault -- see requireOrgScope above, which exists for the same reason and
+// which this mirrors deliberately rather than by coincidence.
+//
+// THE DECISION IS NOT RE-DERIVED HERE. authz.PrincipalAllows is the same
+// resolution authz.RequirePermission performs, so a capability-scoped principal
+// is held to its explicit capability set and never to its role (m120/#510), and
+// a later change to the permission matrix moves this route and the connections
+// route together. Reading Role off the principal and comparing it here would be
+// a second opinion, and a second opinion is a thing that drifts.
+//
+// THE SITE-SCOPE HALF IS requireOrgScope'S, mounted immediately before this.
+// PermAPIKeyManage is an authz.orgLevelPerms member, so authz.RequirePermission
+// would refuse a site-constrained principal regardless of role; requireOrgScope
+// already refuses exactly that set, by the same domain.IsSiteConstrained
+// predicate. Keeping them as two middlewares keeps each refusal's description
+// true to its own reason instead of collapsing both into one message that is
+// only half accurate.
+//
+// 403 AND NOT 401, via ErrCodeAccessDenied and oauthError's mapping: the
+// credential is valid and re-presenting it cannot help, so inviting a retry
+// would invite a pointless one. Same reasoning requireOrgScope records.
+func (h *Handler) requireGrantPermission() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		p, ok := domain.PrincipalFromContext(c.Request.Context())
+		if !ok {
+			// Unreachable behind RequireAuth and behind requireOrgScope, which
+			// runs first and refuses the same case. Refusing anyway, because a
+			// middleware that trusts its mount order is one reorder away from
+			// admitting an anonymous caller.
+			c.AbortWithStatusJSON(http.StatusUnauthorized, oauthErrorDTO{
+				Err: "access_denied", ErrDesc: "sign in to authorize a connection"})
+			return
+		}
+		// authz.RequirePermission reaches this through principalWithTenant,
+		// which refuses a principal with no active tenant before it consults
+		// any permission. Mirrored rather than skipped: a grant is written into
+		// a tenant, so "which organisation" has to be answered before "may
+		// they".
+		if p.TenantID == uuid.Nil {
+			status, dto := oauthError(domain.Forbidden(ErrCodeAccessDenied,
+				"no active organisation for this principal"))
+			c.AbortWithStatusJSON(status, dto)
+			return
+		}
+		if !authz.PrincipalAllows(p, authz.PermAPIKeyManage) {
+			status, dto := oauthError(domain.Forbidden(ErrCodeAccessDenied,
+				"your role does not permit authorizing a connection"))
 			c.AbortWithStatusJSON(status, dto)
 			return
 		}
