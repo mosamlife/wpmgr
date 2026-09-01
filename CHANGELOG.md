@@ -22,6 +22,8 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 ### Fixed
 
 - Removed a false claim from the AI connections screens that a connection could propose changes to a site. No connection can; every one is read-only.
+- The connection wizard's progress rail now shows all ten steps of the approved connection flow, not only the four that are currently built. The other six render as not yet available and are never shown as complete or current.
+- The progress rail no longer marks a step complete, or moves current onto it, while the data that step depends on is still loading, has failed to load, or has not been resolved yet. It previously could tell an operator a step was finished while the action it gates was still blocked.
 
 ## [0.61.153] - 2026-09-01
 
