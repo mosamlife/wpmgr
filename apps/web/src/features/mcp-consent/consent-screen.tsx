@@ -36,7 +36,11 @@ import { SiteEnforcementBox } from "./site-enforcement-box";
 // -- and instructs that every sentence be written fresh from it, because "blunt
 // beats euphemistic here".
 //
-// Each checklist item is marked below with the section that discharges it.
+// Each checklist item is marked below with the section that discharges it. The
+// "propose" item is deliberately left undischarged: no capability in the
+// shipped vocabulary does anything but read (the capability CHECK constraint
+// admits only members ending `.read`; see migration m131), so there is no
+// propose behaviour for this screen to describe.
 
 export const REVOKE_LOCATION = "Settings, under AI connections";
 
@@ -155,6 +159,12 @@ function SelfAssertedSite({ value }: { value: SelfAsserted }) {
 // ---------------------------------------------------------------------------
 // Checklist items 2, 3 and 4: what it may read, what it may propose, and that
 // it cannot approve anything
+//
+// The "may propose" third of that checklist item has no section below: no
+// capability in the shipped vocabulary does anything but read (the capability
+// CHECK constraint admits only members ending `.read`; see migration m131),
+// so there is nothing to disclose here and adding placeholder copy for it
+// would be a false capability claim.
 // ---------------------------------------------------------------------------
 
 function PermissionsBlock({ consent }: { consent: ConsentContext }) {
@@ -198,8 +208,8 @@ function PermissionsBlock({ consent }: { consent: ConsentContext }) {
             <span className="font-medium text-[var(--color-foreground)]">
               It cannot approve anything.
             </span>{" "}
-            It can suggest work to you and nothing more. Anything that changes a site is
-            approved by a person, in this dashboard, on a screen this connection cannot reach.
+            Everything that changes a site is done by a person, here in this dashboard. There is
+            no setting or mode that lets this connection do it instead.
           </li>
           <li>
             <span className="font-medium text-[var(--color-foreground)]">

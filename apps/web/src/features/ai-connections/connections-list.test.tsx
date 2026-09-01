@@ -112,6 +112,18 @@ describe("ConnectionsList renders each state as a different thing", () => {
     expect(screen.queryByText(/could not load/i)).not.toBeInTheDocument();
   });
 
+  it("tells the truth in the empty state: read, limited to scoped sites, and nothing more", async () => {
+    // Nothing in the product can propose anything (no proposal table, no
+    // approval queue, no approval screen anywhere in the route tree). This
+    // used to say "It can propose changes, and it can never approve them" --
+    // a false capability claim.
+    renderList({ status: "empty" });
+    const copy = await screen.findByText(/connect one and it can read your fleet/i);
+    expect(copy).toHaveTextContent(/limited to the sites you scope it to/i);
+    expect(copy).toHaveTextContent(/it cannot change anything/i);
+    expect(copy).not.toHaveTextContent(/propose/i);
+  });
+
   it("renders 'we cannot list these yet' as neither empty nor error", async () => {
     renderList({ status: "unavailable", reason: "no endpoint exists yet" });
     expect(await screen.findByText(/cannot list your connections yet/i)).toBeInTheDocument();
