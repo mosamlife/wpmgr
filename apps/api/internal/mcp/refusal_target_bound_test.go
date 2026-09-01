@@ -40,7 +40,7 @@ type capturingRecorder struct {
 	events []audit.Event
 }
 
-func (c *capturingRecorder) Record(_ context.Context, e audit.Event) (audit.Entry, error) {
+func (c *capturingRecorder) RecordOrFail(_ context.Context, e audit.Event) (audit.Entry, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.events = append(c.events, e)
@@ -48,7 +48,7 @@ func (c *capturingRecorder) Record(_ context.Context, e audit.Event) (audit.Entr
 }
 
 func (c *capturingRecorder) RecordInTx(_ context.Context, _ pgx.Tx, e audit.Event) (audit.Entry, error) {
-	return c.Record(context.Background(), e)
+	return c.RecordOrFail(context.Background(), e)
 }
 
 // only returns the single captured event of the given action, failing loudly

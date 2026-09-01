@@ -74,7 +74,7 @@ func TestMCPSetupClientRoundTripsThroughTheMountedRoutesAsAppRole(t *testing.T) 
 		t.Fatalf("open tenant tx: %v", err)
 	}
 
-	svc := mcp.NewService(mcp.NewRepo(pool))
+	svc := auditedMCPService(pool, mcp.NewRepo(pool))
 	suffix := uuid.NewString()[:8]
 	tenantID := seedTenant(t, pool, "mcp-m128-rt-"+suffix)
 	userID := seedUserRow(t, pool, "mcp-m128-rt-"+suffix+"@example.test")
@@ -116,7 +116,7 @@ func TestMCPSetupClientRoundTripsThroughTheMountedRoutesAsAppRole(t *testing.T) 
 
 func TestMCPSetupClientOmittedStoresNullNotGenericAsAppRole(t *testing.T) {
 	pool := startPostgres(t)
-	svc := mcp.NewService(mcp.NewRepo(pool))
+	svc := auditedMCPService(pool, mcp.NewRepo(pool))
 	suffix := uuid.NewString()[:8]
 	tenantID := seedTenant(t, pool, "mcp-m128-null-"+suffix)
 	userID := seedUserRow(t, pool, "mcp-m128-null-"+suffix+"@example.test")
@@ -180,7 +180,7 @@ func TestMCPSetupClientOmittedStoresNullNotGenericAsAppRole(t *testing.T) {
 func TestMCPRecordConnectLeavesSetupClientAloneAsAppRole(t *testing.T) {
 	ctx := context.Background()
 	pool := startPostgres(t)
-	svc := mcp.NewService(mcp.NewRepo(pool))
+	svc := auditedMCPService(pool, mcp.NewRepo(pool))
 	suffix := uuid.NewString()[:8]
 	tenantID := seedTenant(t, pool, "mcp-m128-rc-"+suffix)
 	userID := seedUserRow(t, pool, "mcp-m128-rc-"+suffix+"@example.test")
@@ -251,7 +251,7 @@ func TestMCPRecordConnectLeavesSetupClientAloneAsAppRole(t *testing.T) {
 
 func TestMCPSetupClientListIsTenantIsolatedAsAppRole(t *testing.T) {
 	pool := startPostgres(t)
-	svc := mcp.NewService(mcp.NewRepo(pool))
+	svc := auditedMCPService(pool, mcp.NewRepo(pool))
 
 	suffixA := uuid.NewString()[:8]
 	tenantA := seedTenant(t, pool, "mcp-m128-a-"+suffixA)
@@ -308,7 +308,7 @@ func TestMCPSetupClientListIsTenantIsolatedAsAppRole(t *testing.T) {
 
 func TestMCPSetupClientRefusesShapeButAcceptsUnknownClientAsAppRole(t *testing.T) {
 	pool := startPostgres(t)
-	svc := mcp.NewService(mcp.NewRepo(pool))
+	svc := auditedMCPService(pool, mcp.NewRepo(pool))
 	suffix := uuid.NewString()[:8]
 	tenantID := seedTenant(t, pool, "mcp-m128-shape-"+suffix)
 	userID := seedUserRow(t, pool, "mcp-m128-shape-"+suffix+"@example.test")

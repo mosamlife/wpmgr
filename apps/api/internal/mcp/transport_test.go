@@ -32,13 +32,33 @@ import (
 
 const testBearer = "connection-token-plaintext"
 
+// newTransportRouter builds the real mount over a store, WITH A WORKING AUDIT
+// RECORDER attached.
+//
+// The recorder is not optional scenery. A Service with no recorder now refuses
+// every tool call and every refusal it cannot record (Service.requireRecorder,
+// ADR-061 A10), so a router built without one answers -32603 to everything and
+// every test below would be asserting against a surface that is refusing for a
+// reason none of them are about. capturingRecorder succeeds and keeps what it
+// was handed, which is also what lets a test assert a row was written rather
+// than merely that the call succeeded.
 func newTransportRouter(t *testing.T, store Store) *gin.Engine {
+	t.Helper()
+	r, _ := newTransportRouterWithAudit(t, store)
+	return r
+}
+
+// newTransportRouterWithAudit is the same mount, handing back the recorder so a
+// test can read the rows the request wrote.
+func newTransportRouterWithAudit(t *testing.T, store Store) (*gin.Engine, *capturingRecorder) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	h := NewTransportHandler(NewService(store), slog.New(slog.DiscardHandler), "test-version")
+	rec := &capturingRecorder{}
+	svc := NewService(store).withAuditRecorder(rec)
+	h := NewTransportHandler(svc, slog.New(slog.DiscardHandler), "test-version")
 	h.Register(r)
-	return r
+	return r, rec
 }
 
 // liveGrantStore is a fakeStore whose credential resolves and whose grant is
@@ -775,12 +795,13 @@ func TestToolsCall_EmptyScopeIsRefusedNotAnEmptyList(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestToolsCall_UntickedCapabilityRefusesWithItsOwnCode(t *testing.T) {
-	// A REAL Service, not nil. authorizeCall now records the refusal
-	// (RecordToolDenied), which dereferences the service; its audit recorder is
-	// nil in unit configuration and records nothing, which is what this test
-	// wants. A nil *Service panics on the refusal path -- the path this test
-	// exists to walk.
-	h := NewTransportHandler(NewService(&fakeStore{}),
+	// A REAL Service, not nil, AND a real recorder. authorizeCall records the
+	// refusal (RecordToolDenied), which dereferences the service; a nil
+	// *Service panics on the refusal path -- the path this test exists to walk.
+	// The recorder used to be omitted, on the since-reversed basis that an
+	// unaudited Service records nothing and carries on: it now refuses, and the
+	// refusal it produces is -32603, not the -32005 this test is about.
+	h := NewTransportHandler(NewService(&fakeStore{}).withAuditRecorder(&capturingRecorder{}),
 		slog.New(slog.NewTextHandler(io.Discard, nil)), "test")
 
 	// Holds NO capability, but a non-empty site scope -- so nothing below can

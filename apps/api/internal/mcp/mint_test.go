@@ -53,7 +53,17 @@ func postMint(t *testing.T, h http.Handler, body map[string]any) (int, map[strin
 	return rec.Code, out
 }
 
-func mintService(store Store) *Service { return NewService(store) }
+// mintService builds the Service the mint tests drive, WITH A RECORDER.
+//
+// The recorder is production wiring, not scenery: a mint is an approval, so an
+// unaudited Service now refuses to mint at all (Service.requireRecorder, the
+// callback in mint.go rolls the whole transaction back). These tests used to
+// rely on the unaudited configuration, which was never a state production could
+// be in -- cmd/wpmgr/main.go has always called WithAudit -- so testing against
+// it was testing a shape nothing shipped.
+func mintService(store Store) *Service {
+	return NewService(store).withAuditRecorder(&capturingRecorder{})
+}
 
 // ---------------------------------------------------------------------------
 // PROOF 1 -- A SITE-SCOPED COLLABORATOR IS REFUSED, AND THE REFUSAL IS SAYABLE.

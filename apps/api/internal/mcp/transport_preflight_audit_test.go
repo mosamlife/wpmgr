@@ -186,7 +186,7 @@ func TestTransport_AdvertisedVerbsStillRefuse(t *testing.T) {
 // Postgres to produce it.
 type failingRecorder struct{ err error }
 
-func (f *failingRecorder) Record(context.Context, audit.Event) (audit.Entry, error) {
+func (f *failingRecorder) RecordOrFail(context.Context, audit.Event) (audit.Entry, error) {
 	return audit.Entry{}, f.err
 }
 
@@ -280,12 +280,25 @@ func TestTransport_AuditGapLogsReasonAndPhaseSeparately(t *testing.T) {
 			w := httptest.NewRecorder()
 			r.ServeHTTP(w, req)
 
-			// The refusal itself is UNCHANGED by the append failing. That is
-			// the documented decision in auditGap, and if it ever stops being
-			// true the rest of this test is measuring the wrong thing.
-			if w.Code != http.StatusBadRequest {
-				t.Fatalf("HTTP %d, want 400 — the refusal changed when the audit append failed\nbody: %s",
+			// THE REFUSAL IS WITHHELD when the append fails: 500, not the
+			// typed 400 that names the floor and the target. This assertion
+			// was the exact inverse until the 2026-09-01 ruling (it read
+			// "the refusal changed when the audit append failed" as the
+			// FAILURE message), and flipping it is the behaviour change --
+			// a protocol refusal this surface could not record is a protocol
+			// refusal it does not answer.
+			if w.Code != http.StatusInternalServerError {
+				t.Fatalf("HTTP %d, want 500 — the typed refusal was served despite an audit append that failed\nbody: %s",
 					w.Code, w.Body.String())
+			}
+			// AND IT LEAKS NEITHER HALF OF THE REFUSAL. The floor, the target
+			// and the supported revisions are what the 400 carries; none of
+			// them may survive into the 500, or the withholding is cosmetic.
+			for _, leak := range []string{ProtocolFloor, ProtocolTarget, "floor", "below"} {
+				if strings.Contains(w.Body.String(), leak) {
+					t.Errorf("the withheld refusal leaked %q into the internal error\nbody: %s",
+						leak, w.Body.String())
+				}
 			}
 
 			rec := findGapLine(t, buf)

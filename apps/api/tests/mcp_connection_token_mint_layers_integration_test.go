@@ -424,7 +424,7 @@ func TestMCPMintRefusesAnotherTenantsTagIDAsAppRole(t *testing.T) {
 			"negative above would then be vacuous", tagB.ID)
 	}
 
-	svc := mcp.NewService(repo)
+	svc := auditedMCPService(pool, repo)
 	eng := mountConnectionsLikeProduction(t, svc, domain.Principal{
 		Type: domain.PrincipalUser, UserID: userA, TenantID: tenantA,
 		Role: "admin", Scope: domain.ScopeOrg,
@@ -466,7 +466,7 @@ func TestMCPMintRefusesAnotherTenantsSiteIDAsAppRole(t *testing.T) {
 	siteA := seedSite(t, pool, tenantA, "https://mintxsa-"+suffix+".example.test")
 	siteB := seedSite(t, pool, tenantB, "https://mintxsb-"+suffix+".example.test")
 
-	svc := mcp.NewService(mcp.NewRepo(pool))
+	svc := auditedMCPService(pool, mcp.NewRepo(pool))
 	eng := mountConnectionsLikeProduction(t, svc, domain.Principal{
 		Type: domain.PrincipalUser, UserID: userA, TenantID: tenantA,
 		Role: "admin", Scope: domain.ScopeOrg,
