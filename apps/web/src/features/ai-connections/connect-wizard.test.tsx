@@ -306,7 +306,11 @@ describe("step 3 exists at all, and sits before capabilities", () => {
     expect(screen.queryByText(/4\. Choose sites and permissions/i)).not.toBeInTheDocument();
   });
 
-  it("does not invent a numbered step for capabilities, which has no backend", async () => {
+  it("does not invent a numbered step for capabilities, which this wizard has no channel to write", async () => {
+    // Not a claim about the backend (the capability vocabulary and the mint
+    // endpoint both exist, GH #660) -- a claim about this file: it never
+    // creates the grant, so a step here would collect an answer with nowhere
+    // to send it, and the rail names where that answer is actually written.
     await reachSiteStep();
     expect(screen.queryByRole("heading", { name: /what this connection may do/i })).toBeNull();
     expect(screen.getByText(/permissions are chosen on the approval screen/i)).toBeInTheDocument();

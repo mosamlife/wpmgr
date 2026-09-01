@@ -60,9 +60,21 @@ import {
 // answer being written. The same is already true of the connection name two
 // sections down, and it is stated the same way rather than implied.
 //
-// Step 4 (capabilities) and the token artefact are NOT stubbed here. Their
-// schema and their endpoint do not exist yet, and a disabled control for a
-// feature with no backend is a promise this file cannot keep.
+// THERE IS NO CAPABILITIES STEP HERE, AND NOT BECAUSE THE BACKEND IS MISSING.
+// The vocabulary is seated (policy.go: eight capability strings, seven of
+// them conferrable via the read scope) and the wire already carries it: the
+// mint request takes a `capabilities` list (dto.go:264) and the mint response
+// returns one (dto.go:305). The frontend has nothing generated to bind to
+// either -- packages/openapi-client's only `capabilities` type is the
+// unrelated object-cache one -- because this is a hand-written surface, not a
+// generated one. None of that is why a picker is not rendered here. It is
+// missing because THIS WIZARD NEVER CREATES THE GRANT (see WHAT STEP 3 STILL
+// CANNOT DO, above): the approval screen at /connect/ai does, this file has
+// no channel into it, and a capability picker rendered here would collect an
+// answer with nowhere to send. Where such a picker belongs, with three real
+// candidates, is the open question tracked in GH #660, and this file does not
+// resolve it. A disabled control for a channel this file cannot reach is a
+// promise this file cannot keep, same as the reasoning above it.
 //
 // NO SNIPPET IS WRITTEN IN THIS FILE. Every block comes from buildSnippet, and
 // snippet.test.ts fails the build if a config literal appears here.
@@ -480,10 +492,13 @@ function StepRail({ current }: { current: Step }) {
       ))}
       <li className="flex items-center gap-2">
         <span aria-hidden="true">/</span>
-        {/* Capabilities are NOT a numbered step in this rail. The grant columns
-            behind them do not exist yet, and a number for a screen that cannot
-            be built is a promise the rail has no way to keep. What it names
-            instead is where that decision is made today. */}
+        {/* Capabilities are NOT a numbered step in this rail. The grant column
+            behind them exists now (mcp_grants.capabilities, schema.sql) and so
+            does the vocabulary that fills it, but this wizard has no channel
+            to the screen that writes it -- see the comment above the wizard's
+            STEPS export -- and a step number for a screen this file cannot
+            reach is a promise the rail has no way to keep. What it names
+            instead is where that decision is actually made today. */}
         <span>Permissions are chosen on the approval screen</span>
       </li>
     </ol>
