@@ -1729,59 +1729,95 @@ func (s *Service) RecordProtocolDenied(ctx context.Context, auth AuthorizedReque
 // from a healthy organisation that owns nothing, which is exactly how a
 // scoping bug stays invisible.
 func (s *Service) ListSitesForModel(ctx context.Context, auth AuthorizedRequest) (string, error) {
+	allowed, env, err := s.scopedSiteRead(ctx, auth, ToolFleetSitesList)
+	if err != nil {
+		return "", err
+	}
+	return buildListSitesResult(allowed, env, s.now())
+}
+
+// ListPendingUpdatesForModel is fleet_updates_pending: outstanding plugin,
+// theme and core updates across the connection's resolved scope.
+//
+// IT SHARES scopedSiteRead WITH ListSitesForModel. That function is the layer-3
+// filter, the site_unread accounting and the envelope balance, and both fleet
+// tools now genuinely call it -- they differ only in how they RENDER rows they
+// were handed identically. A second copy of that loop would be a second chance
+// to get the hiding rule wrong, and the copy that is wrong is the one nobody
+// re-reads.
+func (s *Service) ListPendingUpdatesForModel(ctx context.Context, auth AuthorizedRequest) (string, error) {
+	allowed, env, err := s.scopedSiteRead(ctx, auth, ToolFleetUpdatesPending)
+	if err != nil {
+		return "", err
+	}
+	return buildUpdatesPendingResult(allowed, env, s.now())
+}
+
+// scopedSiteRead reads one bounded page of the caller's own sites and returns
+// the rows it may see together with the envelope accounting for the ones it
+// may see and this call did not return.
+//
+// IT IS THE ONLY COPY OF THE TENANCY BOUNDARY ON THIS SURFACE, and that is now
+// literally true rather than aspirational. This function was introduced
+// alongside fleet_updates_pending with a doc comment claiming both fleet tools
+// shared it, while ListSitesForModel in fact kept a verbatim second copy of the
+// layer-3 filter, the site_unread loop and the envelope balance. Both copies
+// were correct and independently proven, so nothing misbehaved -- but a comment
+// on a tenancy boundary that inverts the true state is its own defect: the next
+// session fixing the hiding rule "in one place" would have fixed one of two
+// tools and had a comment telling it the job was done. ListSitesForModel now
+// calls this and renders; there is one implementation.
+//
+// The three rules it owns, each of which used to be stated twice:
+//
+//   - LAYER 3 HIDES. A row the caller's SiteSet does not allow is dropped, not
+//     refused, not counted, not mentioned. It leaves no trace in the envelope,
+//     because `asked` is closed over auth.Sites and an out-of-scope row was
+//     never in auth.Sites to begin with.
+//   - AN UNREAD IN-SCOPE SITE IS site_unread, not silence. A result quietly
+//     holding fewer sites than the caller's scope reads as a complete answer
+//     about a smaller fleet.
+//   - `asked` IS auth.Sites.Len() AND NEVER A TENANT COUNT. See the counting
+//     rule at the top of envelope.go: a residual between asked and ok+refused
+//     is the number a reader subtracts to discover that hidden sites exist.
+//
+// THE SECOND RETURN OF ListSitesForRead IS DELIBERATELY DISCARDED. That value
+// is `more`: "the bounded page was filled and further rows were left unread".
+// It was once rendered as a truncation notice while the read was TENANT-wide,
+// so a connection scoped to two sites in a six-hundred-site tenant was told
+// further sites had been withheld -- false for that caller, and a disclosure of
+// the tenant's size. The read is now bounded over the caller's own scope, so it
+// discloses nothing; it stays discarded because it is REDUNDANT, every site it
+// would account for being enumerated below as an explicit site_unread refusal.
+// Two completeness signals computed from different values is how the pair comes
+// to disagree.
+//
+// toolName is used ONLY in the error text, so an unbalanced envelope names the
+// tool that produced it.
+func (s *Service) scopedSiteRead(
+	ctx context.Context, auth AuthorizedRequest, toolName string,
+) ([]sqlc.Site, Envelope, error) {
 	if auth.Sites.IsEmpty() {
-		return "", domain.Forbidden(ErrCodeScopeEmpty,
+		// THE EMPTY-SCOPE BRANCH IS A REFUSAL, NOT AN EMPTY LIST, for every
+		// tool that reads through here and not just the first one. An empty
+		// resolved scope means NO SITES, never every site, and `{"sites": []}`
+		// is indistinguishable from a healthy organisation that owns nothing.
+		return nil, Envelope{}, domain.Forbidden(ErrCodeScopeEmpty,
 			"this connection's site scope resolves to no sites, so there is nothing it may read. "+
 				"This is a refusal, not an empty fleet: check the grant's site scope.")
 	}
 
-	// THE SECOND RETURN OF ListSitesForRead IS DELIBERATELY DISCARDED, AND
-	// DISCARDING IT IS A FIX RATHER THAN AN OVERSIGHT.
-	//
-	// That value is `more`: "the bounded page was filled and further rows were
-	// left unread". It was once passed straight through into the rendered
-	// result as a truncation notice, and at that time it was a fact about THE
-	// TENANT: the read was tenant-wide and the bound was applied before the
-	// site scope. For a connection scoped to two sites in a six-hundred-site
-	// tenant the notice was both false and disclosing -- the caller received
-	// every site it may read, was told further sites had been withheld, and
-	// could infer from a flag it had no business seeing that the tenant holds
-	// more than sitesPageBound sites.
-	//
-	// The read is now bounded over the caller's own scope, so `more` is no
-	// longer a tenant fact and could be reported without disclosing anything.
-	// It is still discarded, because it is now REDUNDANT: every site it would
-	// account for is already enumerated below as an explicit site_unread
-	// refusal against auth.Sites, which is the stronger report -- it names the
-	// sites rather than raising a flag, and it keeps ok+refused balanced
-	// against asked. Two completeness signals computed from different values
-	// is how the pair comes to disagree.
 	bound := s.pageBound
 	if bound <= 0 {
-		// A Service built by a struct literal rather than NewService. Read a
-		// full page rather than none: a zero limit would return nothing and
-		// present as an organisation owning no sites.
 		bound = sitesPageBound
 	}
 	rows, _, err := s.store.ListSitesForRead(ctx, connectionScopedPrincipal(auth), bound)
 	if err != nil {
-		return "", fmt.Errorf("list sites for mcp read: %w", err)
+		return nil, Envelope{}, fmt.Errorf("list sites for mcp read: %w", err)
 	}
 
-	// Filter to the grant's resolved set. The read is now scoped on the site
-	// axis twice before it reaches here -- by the query's own site_ids
-	// predicate and by the RESTRICTIVE sites_site_scope policy the scoped
-	// transaction switches on -- so in a correct system this loop drops
-	// nothing. IT STAYS ANYWAY, and not as ceremony: it is the only one of the
-	// three layers that cannot be switched off by a mistake in the other two,
-	// and SiteSet.Allows returns false for every id on an empty or zero-value
-	// set, so there is no widening path even if the set were lost between here
-	// and there.
-	//
-	// THIS IS LAYER 3, AND LAYER 3 HIDES. A row dropped here is not refused,
-	// not counted and not mentioned: it leaves no trace in the envelope built
-	// below, because `asked` is closed over auth.Sites and an out-of-scope row
-	// was never in auth.Sites to begin with.
+	// LAYER 3, AND LAYER 3 HIDES. A row dropped here is not refused, not
+	// counted and not mentioned.
 	allowed := make([]sqlc.Site, 0, len(rows))
 	seen := make(map[uuid.UUID]struct{}, len(rows))
 	for _, r := range rows {
@@ -1791,29 +1827,6 @@ func (s *Service) ListSitesForModel(ctx context.Context, auth AuthorizedRequest)
 		}
 	}
 
-	// SCOPE-RELATIVE COMPLETENESS. `asked` is the caller's own scope
-	// cardinality and nothing else; every site it counts is one the caller
-	// already knows it has. An in-scope site the bounded page did not contain
-	// is reported as an explicit site_unread refusal rather than being left
-	// silently absent, so ok+refused balances against asked and the caller is
-	// never handed a short list that reads as a complete fleet.
-	//
-	// THIS BRANCH IS MUCH NARROWER THAN IT WAS, AND ITS ADVICE CHANGED WITH IT.
-	// While the page was bounded over the TENANT, any in-scope site sorting
-	// past the tenant's first page landed here, and the detail told the caller
-	// to "retry" -- advice that could never work, because the order is
-	// deterministic and the same page comes back every time. The page is now
-	// bounded over the caller's own scope, which removes that cause entirely.
-	//
-	// Two causes remain, and neither is a transient. A connection whose scope
-	// holds more sites than one page will always be short by the same
-	// overflow; and a site that is in scope but ARCHIVED is resolved into
-	// auth.Sites (ResolveMCPGrantScopeSitesInTenantTx has no archived
-	// predicate) while ListSitesForMCPScope excludes it, matching the
-	// dashboard's default (ADR-041). Both are stable facts about this
-	// connection, so the detail says what is true and does not invite a retry
-	// that cannot help. Naming them discloses nothing: every site named here
-	// is already in the caller's own scope.
 	refusals := make([]Refusal, 0)
 	for _, id := range auth.Sites.Sorted() {
 		if _, found := seen[id]; !found {
@@ -1831,13 +1844,9 @@ func (s *Service) ListSitesForModel(ctx context.Context, auth AuthorizedRequest)
 
 	env, err := NewEnvelope(auth.Sites.Len(), len(allowed), refusals)
 	if err != nil {
-		// An unbalanced envelope means a site was counted in scope and then
-		// lost without being accounted for. That is the leak shape, so it
-		// fails the call rather than rendering a result with a residual in it.
-		return "", fmt.Errorf("build fleet_sites_list envelope: %w", err)
+		return nil, Envelope{}, fmt.Errorf("build %s envelope: %w", toolName, err)
 	}
-
-	return buildListSitesResult(allowed, env, s.now())
+	return allowed, env, nil
 }
 
 // ---------------------------------------------------------------------------

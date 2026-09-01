@@ -864,8 +864,8 @@ func TestToolsCall_UntickedCapabilityRefusesWithItsOwnCode(t *testing.T) {
 
 	// The tool is LISTED to this connection: the refusal below is a refusal,
 	// not a consequence of an empty surface.
-	if got := VisibleTools(auth); len(got) != 1 || got[0].Name != ToolFleetSitesList {
-		t.Fatalf("tools/list hid the tool from a connection lacking its capability: %+v", got)
+	if got := VisibleTools(auth); !sameToolNames(got, registryToolNames(auth)) {
+		t.Fatalf("tools/list hid a tool from a connection lacking its capability: %+v", got)
 	}
 
 	_, _, resp, refused := h.authorizeCall(context.Background(), auth, jsonrpcRequest{
@@ -1044,11 +1044,41 @@ func TestToolsList_IsToolsOnlyAndReadOnly(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("tools/list is not JSON: %v", err)
 	}
-	if len(resp.Result.Tools) != 1 || resp.Result.Tools[0].Name != ToolFleetSitesList {
-		t.Fatalf("tools = %#v, want exactly [%s]", resp.Result.Tools, ToolFleetSitesList)
+	// THE LISTING IS COMPARED AGAINST THE REGISTRY, not against a hard-coded
+	// count. The point of this assertion is that tools/list over the real
+	// mounted transport returns nothing the closed literal never declared --
+	// an extra name here is a tool reachable over HTTP that no reviewed diff
+	// added.
+	//
+	// IT ASSERTS CONTAINMENT, NOT EQUALITY, AND THE ASYMMETRY IS DELIBERATE.
+	// This test drives HTTP and so holds no AuthorizedRequest, which means it
+	// cannot know this fixture's org ceiling -- and the ceiling is what decides
+	// how many tools SHOULD be listed. Demanding equality against the whole
+	// registry would therefore go red the day a tool outside the read ceiling
+	// lands, on a listing that was correct. Containment cannot over-fire that
+	// way and still catches the thing this test exists for. The ceiling-aware
+	// equality check lives in the proofs that do hold an auth.
+	registered := map[string]bool{}
+	for _, d := range Tools() {
+		registered[d.Name] = true
 	}
-	if len(resp.Result.Tools[0].InputSchema) == 0 {
-		t.Error("the tool carries no inputSchema, so a model cannot call it without guessing")
+	for _, d := range resp.Result.Tools {
+		if !registered[d.Name] {
+			t.Fatalf("tools/list offered %q, which is not in the closed registry", d.Name)
+		}
+	}
+	if len(resp.Result.Tools) == 0 {
+		t.Fatal("tools/list returned nothing, so every assertion here is vacuous")
+	}
+	if !sameToolNames(resp.Result.Tools, []string{ToolFleetSitesList, ToolFleetUpdatesPending}) {
+		t.Fatalf("tools = %#v, want both Tier 0 fleet reads for a default-ceiling connection",
+			resp.Result.Tools)
+	}
+	// EVERY tool must carry a schema, not just the first.
+	for _, d := range resp.Result.Tools {
+		if len(d.InputSchema) == 0 {
+			t.Errorf("tool %q carries no inputSchema, so a model cannot call it without guessing", d.Name)
+		}
 	}
 
 	// Resources and prompts are refused BY NAME, not answered with an empty

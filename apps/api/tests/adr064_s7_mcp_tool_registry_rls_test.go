@@ -199,7 +199,7 @@ func TestS7CapabilitiesAreResolvedByAuthenticateAsAppRole(t *testing.T) {
 	// (3) The registry admits the tool for this real connection, and tools/list
 	// shows it.
 	visible := mcp.VisibleTools(auth)
-	if len(visible) != 1 || visible[0].Name != mcp.ToolFleetSitesList {
+	if !listsWholeRegistry(visible, auth) {
 		t.Fatalf("tools/list for a fully-scoped connection returned %+v", visible)
 	}
 
@@ -354,12 +354,20 @@ func TestS7UntickedCapabilityRefusesByNameAsAppRole(t *testing.T) {
 	// (1) IT DOES NOT HIDE. The tool is still listed, and the descriptor says
 	// why it cannot be called.
 	visible := mcp.VisibleTools(denied)
-	if len(visible) != 1 || visible[0].Name != mcp.ToolFleetSitesList {
+	// COMPARED AGAINST denied's OWN CEILING, not auth's. They are different
+	// connections; measuring one request's listing against another's ceiling
+	// would pass or fail for reasons unrelated to the capability axis under
+	// test here.
+	if !listsWholeRegistry(visible, denied) {
 		t.Fatalf("an unticked capability HID the tool from tools/list: %+v", visible)
 	}
-	if !strings.Contains(visible[0].Description, string(mcp.CapSitesRead)) {
+	// FOUND BY NAME, not by index. visible[0] happened to be the right tool
+	// while the registry held one entry, and an index into a growing list is a
+	// proof that quietly starts checking a different subject.
+	sitesDesc := descriptionOf(t, visible, mcp.ToolFleetSitesList)
+	if !strings.Contains(sitesDesc, string(mcp.CapSitesRead)) {
 		t.Fatalf("the listed descriptor does not name the missing capability:\n%s",
-			visible[0].Description)
+			sitesDesc)
 	}
 
 	// (2) IT REFUSES, BY NAME. Asserted by VALUE on the code and the kind: an
@@ -456,7 +464,7 @@ func TestS7EmptySiteScopeRefusesByNameAsAppRole(t *testing.T) {
 	// exists. Hiding it here would send the operator hunting a capability
 	// problem they do not have.
 	visible := mcp.VisibleTools(auth)
-	if len(visible) != 1 || visible[0].Name != mcp.ToolFleetSitesList {
+	if !listsWholeRegistry(visible, auth) {
 		t.Fatalf("an empty site scope hid the tool from tools/list: %+v", visible)
 	}
 
@@ -542,7 +550,7 @@ func TestS7CapabilityOutsideTheOrgCeilingIsNotListedAsAppRole(t *testing.T) {
 	// POSITIVE CONTROL. The real connection -- real ceiling, real grant -- sees
 	// the tool and can call it, so an absence below is the ceiling and not a
 	// broken fixture.
-	if got := mcp.VisibleTools(auth); len(got) != 1 || got[0].Name != mcp.ToolFleetSitesList {
+	if got := mcp.VisibleTools(auth); !listsWholeRegistry(got, auth) {
 		t.Fatalf("the real connection did not see the tool: %+v", got)
 	}
 	if _, _, err := mcp.AuthorizeTool(mcp.ToolFleetSitesList, auth); err != nil {
@@ -637,7 +645,7 @@ func TestS7CapabilityOutsideTheOrgCeilingIsNotListedAsAppRole(t *testing.T) {
 
 	// (4) IT DOES NOT OVER-FIRE. The untouched connection still lists and still
 	// calls the tool, after the refusals, against the same live database.
-	if got := mcp.VisibleTools(auth); len(got) != 1 || got[0].Name != mcp.ToolFleetSitesList {
+	if got := mcp.VisibleTools(auth); !listsWholeRegistry(got, auth) {
 		t.Fatalf("the real connection lost the tool after the ceiling refusal: %+v", got)
 	}
 	if _, _, err := mcp.AuthorizeTool(mcp.ToolFleetSitesList, auth); err != nil {
@@ -649,4 +657,71 @@ func TestS7CapabilityOutsideTheOrgCeilingIsNotListedAsAppRole(t *testing.T) {
 
 	t.Logf("org-ceiling omission: listed=%d refusal=%s (identical to an unregistered "+
 		"name); the real connection is unaffected", len(visible), de.Code)
+}
+
+// listsWholeRegistry reports whether a tools/list answer holds every tool the
+// server has, order-insensitively.
+//
+// IT REPLACES `len(visible) != 1 && visible[0].Name != ToolFleetSitesList` IN
+// FIVE PROOFS ABOVE, and the replacement is a correction rather than a tidy-up.
+// Each of those proofs is about a BOUNDARY -- the capability axis, the site
+// axis, the org ceiling -- and none of them is about how many tools had been
+// built on the day it was written. All five went red on a correct second read
+// tool that crossed no boundary at all. A proof that reddens on correct work is
+// one someone eventually deletes, and then the boundary is unguarded.
+//
+// It compares against mcp.Tools(), the server's whole surface, so it still
+// fails if a tool is genuinely hidden -- which is the thing each proof is
+// actually asserting.
+func listsWholeRegistry(got []mcp.ToolDescriptor, auth mcp.AuthorizedRequest) bool {
+	// FILTERED BY THE ORG CEILING. VisibleTools HIDES a tool outside the
+	// ceiling and only ANNOTATES one the grant merely lacks, so the set it
+	// returns is the ceiling-admitted subset -- not the whole registry.
+	// Comparing against the whole registry is correct only while every tool
+	// requires the same capability, and stops being correct the moment one does
+	// not: a propose tool outside the read ceiling would turn all five proofs
+	// below red on a listing that was right. That is precisely the over-firing
+	// this helper replaced a hard-coded len() == 1 to avoid, so it has to know
+	// about the ceiling too.
+	//
+	// The predicate is re-derived here rather than borrowed, which does mean a
+	// bug in withinOrgCeiling would be invisible to these five. That is
+	// deliberate: they are positive controls for OTHER axes, and the ceiling
+	// itself has its own dedicated proof
+	// (TestS7CapabilityOutsideTheOrgCeilingIsNotListedAsAppRole) which asserts
+	// the omission directly.
+	want := []string{}
+	for _, p := range mcp.RegistryPolicies() {
+		if auth.OrgCeiling.Allows(p.Capability) {
+			want = append(want, p.Name)
+		}
+	}
+	if len(got) != len(want) {
+		return false
+	}
+	seen := map[string]int{}
+	for _, d := range got {
+		seen[d.Name]++
+	}
+	for _, n := range want {
+		seen[n]--
+		if seen[n] < 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// descriptionOf finds one tool's description by NAME, failing the test when it
+// is absent rather than returning "" and letting a Contains check pass or fail
+// for the wrong reason.
+func descriptionOf(t *testing.T, got []mcp.ToolDescriptor, name string) string {
+	t.Helper()
+	for _, d := range got {
+		if d.Name == name {
+			return d.Description
+		}
+	}
+	t.Fatalf("tool %q is absent from the listing %+v", name, got)
+	return ""
 }

@@ -127,6 +127,40 @@ func registryTools() []ToolPolicy {
 		invoke: func(ctx context.Context, svc *Service, auth AuthorizedRequest, _ json.RawMessage) (string, error) {
 			return svc.ListSitesForModel(ctx, auth)
 		},
+	}, {
+		// fleet_updates_pending -- S8's second Tier 0 "Fleet read".
+		//
+		// IT REQUIRES CapSitesRead AND NOT A CAPABILITY OF ITS OWN, and that is
+		// the narrow reading rather than a convenient one. It reads exactly the
+		// document fleet_sites_list already reads -- sites.components, on the
+		// same page, over the same scope -- and projects a different view of
+		// it. A connection that may list a site's installed software may
+		// already see every version this tool reports; a separate capability
+		// would suggest it gates something extra, and a capability that gates
+		// nothing new teaches an operator that the ticks do not mean what they
+		// say. The brief's own framing agrees: mcp.sites.read covers site
+		// software.
+		//
+		// It is a READ and it stays one. Nothing here proposes, schedules or
+		// applies an update: propose_update is a Tier 2 tool in the catalogue,
+		// it arrives with its own capability, its own approval floor and its
+		// own review, and never by being appended to this literal.
+		Name: ToolFleetUpdatesPending,
+		Description: "List outstanding WordPress plugin, theme and core updates for every site " +
+			"this connection may read, with each site's inventory freshness stamp and a " +
+			"fleet-wide roll-up. Answers \"which of my sites need updates?\" from the control " +
+			"plane's stored inventory; no site is contacted. Counts match the dashboard: " +
+			"same-version phantom advisories and the WPMgr agent's own plugin are excluded. " +
+			"A site whose inventory has never been collected reports inventory_status " +
+			"never_collected and is counted separately -- its zero means we have not looked, " +
+			"not that it is up to date.",
+		InputSchema:        updatesPendingSchema,
+		Capability:         CapSitesRead,
+		OperatorPermission: authz.PermSiteRead,
+		RequiresSiteScope:  true,
+		invoke: func(ctx context.Context, svc *Service, auth AuthorizedRequest, _ json.RawMessage) (string, error) {
+			return svc.ListPendingUpdatesForModel(ctx, auth)
+		},
 	}}
 
 	// EVERY ENTRY GETS ITS OWN COPY OF ITS SCHEMA BYTES.
@@ -501,6 +535,30 @@ func AuthorizeTool(name string, auth AuthorizedRequest) (ToolPolicy, refusalReas
 				"This is a refusal, not an empty fleet: check the grant's site scope.")
 	}
 	return entry, "", nil
+}
+
+// RegistryPolicies returns the closed registry as POLICIES -- each tool with the
+// capability reaching it requires.
+//
+// IT EXISTS BECAUSE A DRIFT TEST OUTSIDE THIS PACKAGE CANNOT OTHERWISE ASK
+// "WHICH TOOLS SHOULD THIS CONNECTION SEE?". Tools() returns descriptors, which
+// carry no capability, so a proof in apps/api/tests comparing a
+// ceiling-filtered VisibleTools answer against the whole registry can only be
+// right while every tool happens to require the same capability. The moment one
+// does not -- a propose tool outside the read ceiling -- those proofs go red on
+// correct work, which is the over-firing the helpers were written to prevent.
+//
+// It is READ-ONLY and it grants nothing: same fresh slice, same cloned schema
+// bytes, same closed literal as Tools(). No request path uses it; VisibleTools
+// remains the only tools/list answer and AuthorizeTool the only gate.
+func RegistryPolicies() []ToolPolicy {
+	entries := registryTools()
+	out := make([]ToolPolicy, 0, len(entries))
+	for _, e := range entries {
+		e.invoke = nil // an invoker is not a fact about the surface
+		out = append(out, e)
+	}
+	return out
 }
 
 // Tools returns the FULL registry surface as descriptors, unfiltered by any
