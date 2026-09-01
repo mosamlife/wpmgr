@@ -316,4 +316,26 @@ This file is re-injected from disk after compaction. Path-scoped
 `.claude/rules/` are not, until a matching file is read again. If a rule must
 hold for a whole session, it belongs here.
 
+**When a session compacts, write durable state to a file before the turn
+ends.** The destination is not a free choice: this file takes guidance,
+rules, pointers, working agreements, whatever is true forever and fit to be
+public. `~/.wpmgr/worklog/` takes everything else that must survive, under
+the rule above. If what you are about to write would not be fine to see
+public forever, it belongs in the worklog, never here.
+
 Reviews: `review.md`, read in full before reviewing anything.
+
+## AI connection wizard
+
+The plan for the AI connection wizard, its approved steps, the rulings behind
+them, a per-step gap analysis and a build order, lives in
+`~/.wpmgr/worklog/WIZARD-SPEC.md`. That path is outside this repository and
+stays there, same as every other worklog (see Long sessions, above); this file
+only names it, never quotes it. **Read the spec before any wizard work. Never
+reconstruct the plan by reading the code.**
+
+Current status belongs on the GitHub issues tracking each step, not here: a
+status list here is exactly the kind of fact this file already bans
+hard-coding, because it goes stale within days. On 2026-09-01 the session
+rebuilt the wizard roadmap from the code after every compaction instead,
+got it wrong each time, and the owner had to correct it repeatedly.
