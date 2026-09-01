@@ -219,11 +219,45 @@ func toSiteUpdatesRecord(row sqlc.Site, now time.Time) siteUpdatesRecord {
 // one, that a site with no updates listed has no updates. The sentence removes
 // the room for that by stating the ignorance as the finding.
 func updatesSummary(rec siteUpdatesRecord) string {
+	// NEVER-COLLECTED SPLITS ON THE COUNT, AND THE ARM THAT WAS MISSING IS THE
+	// ONE THAT MATTERS MOST.
+	//
+	// This branch used to key on InventoryStatus ALONE, so a site with a NULL
+	// components_updated_at and real advisories was handed the sentence "the
+	// zero counts below mean we have not looked" while pending_total said 3.
+	// A false zero, in the one field whose entire purpose is that the count
+	// cannot be dropped without its caveat.
+	//
+	// IT IS REACHABLE BY CONSTRUCTION, NOT IN THEORY. m121 added
+	// components_updated_at NULL with no backfill and UpdateSiteMetadata is its
+	// only writer, so every site enrolled before 2026-08-23 that has not pushed
+	// metadata since has a POPULATED components document and NO stamp. Those
+	// are disproportionately the neglected and disconnected sites -- the ones
+	// carrying the most outstanding updates -- which is what made under-
+	// reporting here worse than an outright error.
+	//
+	// The two facts are now stated together instead of one overwriting the
+	// other: here is what we hold, and we do not know when it was collected.
 	if rec.InventoryStatus == inventoryNeverCollected {
+		if rec.PendingTotal == 0 {
+			return fmt.Sprintf(
+				"%s: no plugin or theme inventory has ever been collected for this site, so we do not "+
+					"know whether it needs updates. The zero counts below mean we have not looked, "+
+					"NOT that it is up to date.", rec.Name)
+		}
 		return fmt.Sprintf(
-			"%s: no plugin or theme inventory has ever been collected for this site, so we do not "+
-				"know whether it needs updates. The zero counts below mean we have not looked, "+
-				"NOT that it is up to date.", rec.Name)
+			// NO VERDICT WORD, deliberately, and this sentence had to be
+			// reworded once to keep it: an earlier draft said the versions "may
+			// be out of date", which is a phrase the no-judgement assertion
+			// scans for. It describes component versions rather than the
+			// inventory, so it was arguably in bounds -- and rewording cost
+			// nothing, while narrowing the guard to admit it would have cost
+			// the guard.
+			"%s: %d %s outstanding (%s), but we have no record of when this site's inventory was "+
+				"collected, so this count may be incomplete and the versions behind it may have "+
+				"moved on. Treat it as a lower bound and ask for a fresh inventory before acting on it.",
+			rec.Name, rec.PendingTotal, plural(rec.PendingTotal, "update", "updates"),
+			strings.Join(pendingBreakdown(rec), ", "))
 	}
 
 	// A collected inventory with no age is the future-stamp case toSiteRecord
@@ -243,6 +277,16 @@ func updatesSummary(rec siteUpdatesRecord) string {
 			"%s: no updates outstanding, according to an inventory collected %s%s.",
 			rec.Name, age, when)
 	}
+	return fmt.Sprintf(
+		"%s: %d %s outstanding (%s), according to an inventory collected %s%s.",
+		rec.Name, rec.PendingTotal, plural(rec.PendingTotal, "update", "updates"),
+		strings.Join(pendingBreakdown(rec), ", "), age, when)
+}
+
+// pendingBreakdown renders "2 plugins, 1 theme, WordPress core". It is shared by
+// both arms that quote a count so the two cannot describe the same record
+// differently.
+func pendingBreakdown(rec siteUpdatesRecord) []string {
 	parts := make([]string, 0, 3)
 	if n := len(rec.Plugins); n > 0 {
 		parts = append(parts, fmt.Sprintf("%d %s", n, plural(n, "plugin", "plugins")))
@@ -253,10 +297,7 @@ func updatesSummary(rec siteUpdatesRecord) string {
 	if rec.Core != nil {
 		parts = append(parts, "WordPress core")
 	}
-	return fmt.Sprintf(
-		"%s: %d %s outstanding (%s), according to an inventory collected %s%s.",
-		rec.Name, rec.PendingTotal, plural(rec.PendingTotal, "update", "updates"),
-		strings.Join(parts, ", "), age, when)
+	return parts
 }
 
 func plural(n int, one, many string) string {
@@ -340,11 +381,21 @@ type updatesPayload struct {
 type fleetTotals struct {
 	// SitesWithUpdates counts returned sites whose pending_total is above zero.
 	SitesWithUpdates int `json:"sites_with_updates"`
-	// SitesNeverCollected counts returned sites we have never collected an
-	// inventory for. It is reported SEPARATELY and never folded into
-	// sites_with_updates or its complement, because "no updates pending" and
-	// "we have never looked" are the two facts sites.components_updated_at is
-	// nullable-with-no-backfill in order to keep apart.
+	// SitesNeverCollected counts returned sites with no record of when their
+	// inventory was collected.
+	//
+	// IT DELIBERATELY OVERLAPS SitesWithUpdates AND THAT IS NOT A BUG. The two
+	// answer different questions -- "does it need updates" and "do we know when
+	// we last looked" -- and a site can be a yes to both: m121 left every
+	// pre-2026-08-23 site with a populated components document and a NULL
+	// stamp, so advisories of unknown age are an ordinary state, not a corner
+	// case.
+	//
+	// An earlier version of the instruction header called the two mutually
+	// exclusive and told the model never to merge them, which was false for
+	// exactly those sites. Describing the overlap is right; suppressing either
+	// count to manufacture disjointness would throw away a true fact to protect
+	// a sentence.
 	SitesNeverCollected int `json:"sites_never_collected"`
 	PendingPlugins      int `json:"pending_plugins"`
 	PendingThemes       int `json:"pending_themes"`
@@ -457,8 +508,10 @@ const updatesPendingInstructions = "Outstanding plugin, theme and WordPress core
 	"paraphrase that age whenever you report a site's update state; a count without its age is a claim we cannot support.\n" +
 	"pending_total 0 means no update is outstanding IN THE INVENTORY WE HOLD, which is only as current as " +
 	"inventory_collected_at.\n" +
-	"inventory_status \"never_collected\" means no inventory has EVER been collected for that site: its counts are 0 " +
-	"because we have not looked, NOT because it is up to date. Report those sites separately -- totals.sites_never_collected " +
-	"counts them -- and never merge them with the up-to-date ones.\n" +
+	"inventory_status \"never_collected\" means we have NO RECORD of when that site's inventory was collected. " +
+	"If its counts are 0, that is because we have not looked, NOT because it is up to date. If its counts are ABOVE 0, " +
+	"the advisories are real but undated: treat them as a lower bound. totals.sites_never_collected counts these sites and " +
+	"OVERLAPS totals.sites_with_updates on purpose -- a site can both need updates and have no collection date, so do not " +
+	"add the two together.\n" +
 	"This list already excludes advisories the dashboard also drops: an advisory naming the installed version, and the " +
 	"WPMgr agent's own plugin. Counts here match the dashboard's."

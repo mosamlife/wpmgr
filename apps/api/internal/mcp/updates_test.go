@@ -639,6 +639,131 @@ func TestFleetUpdatesPending_NeverCollectedSaysWeHaveNotLookedInWords(t *testing
 	}
 }
 
+// TestFleetUpdatesPending_UndatedInventoryWithAdvisoriesDoesNotClaimZero is the
+// security reviewer's probe A, adopted as a regression test.
+//
+// THE STATE IS REACHABLE BY CONSTRUCTION. m121 added components_updated_at NULL
+// with no backfill and UpdateSiteMetadata is its only writer, so every site
+// enrolled before 2026-08-23 that has not pushed metadata since has a POPULATED
+// components document and no stamp. Those are disproportionately the neglected
+// sites, which carry the most outstanding updates.
+//
+// The defect it caught: updatesSummary branched on InventoryStatus alone, so
+// this site was told "the zero counts below mean we have not looked" while
+// pending_total said 3. A false zero in the one field built so the count cannot
+// be dropped without its caveat.
+//
+// MY OWN never_collected FIXTURE MISSED IT because it used components '{}'.
+// A fixture that cannot reach the state cannot test it.
+func TestFleetUpdatesPending_UndatedInventoryWithAdvisoriesDoesNotClaimZero(t *testing.T) {
+	id := uuid.New()
+	store := liveGrantStore(id)
+	store.sites = []sqlc.Site{
+		updatesFixture{
+			id: id, name: "legacy.example", url: "https://legacy.example",
+			// collected is nil: components_updated_at IS NULL (a pre-m121 row).
+			components: `{"plugins":[` +
+				`{"slug":"woocommerce","name":"WooCommerce","version":"8.1.0","active":true,` +
+				`"available_update":{"new_version":"8.4.0"}},` +
+				`{"slug":"akismet","name":"Akismet","version":"5.1","active":true,` +
+				`"available_update":{"new_version":"5.3"}}` +
+				`],"core_update":{"current_version":"6.5.2","new_version":"6.6"}}`,
+		}.row(),
+	}
+
+	text := callUpdatesPending(t, store)
+	p := parseUpdatesPayload(t, text)
+	if len(p.Sites) != 1 {
+		t.Fatalf("want 1 site, got %d", len(p.Sites))
+	}
+	got := p.Sites[0]
+
+	if got.PendingTotal != 3 {
+		t.Fatalf("pending_total = %d, want 3 (2 plugins + core); the fixture no longer reaches "+
+			"the state under test", got.PendingTotal)
+	}
+	if got.InventoryStatus != inventoryNeverCollected {
+		t.Fatalf("inventory_status = %q, want %q; the fixture no longer reaches the state under test",
+			got.InventoryStatus, inventoryNeverCollected)
+	}
+
+	// THE DEFECT ITSELF: the summary must not assert a zero it does not have.
+	if strings.Contains(got.Summary, "The zero counts below") {
+		t.Errorf("the summary asserts a zero count while pending_total=%d and %d plugins are "+
+			"listed:\n%s", got.PendingTotal, len(got.Plugins), got.Summary)
+	}
+	// And it must carry both facts: the real count, and that its age is unknown.
+	if !strings.Contains(got.Summary, "3 updates outstanding") {
+		t.Errorf("the summary drops the real count: %q", got.Summary)
+	}
+	for _, want := range []string{"no record of when", "lower bound"} {
+		if !strings.Contains(got.Summary, want) {
+			t.Errorf("the summary does not say %q, so the count reads as dated: %q", want, got.Summary)
+		}
+	}
+
+	// THE TOTALS OVERLAP, AND THE HEADER MUST SAY SO.
+	//
+	// The reviewer's probe asserted the two totals could never both be
+	// non-zero, which encoded the instruction header's original claim that they
+	// are mutually exclusive. That claim was FALSE for exactly this site, so the
+	// header was corrected rather than the counts suppressed -- throwing away a
+	// true fact to protect a sentence would be the worse trade. This assertion
+	// pins the replacement contract in both halves.
+	if p.Totals.SitesWithUpdates != 1 || p.Totals.SitesNeverCollected != 1 {
+		t.Errorf("totals sites_with_updates/sites_never_collected = %d/%d, want 1/1: this site "+
+			"genuinely is both", p.Totals.SitesWithUpdates, p.Totals.SitesNeverCollected)
+	}
+	if !strings.Contains(text, "OVERLAPS") {
+		t.Error("the instructions do not tell the model the two totals overlap, so a model that " +
+			"adds them double-counts this site")
+	}
+	if strings.Contains(text, "never merge them with the up-to-date ones") {
+		t.Error("the instructions still claim the two totals are mutually exclusive, which is " +
+			"false for an undated inventory carrying advisories")
+	}
+}
+
+// TestFleetUpdatesPending_FutureDatedStampIsNotRenderedAsFresh is the reviewer's
+// probe B, adopted. The arm existed and behaved correctly but had no committed
+// test, so nothing would have caught its removal.
+func TestFleetUpdatesPending_FutureDatedStampIsNotRenderedAsFresh(t *testing.T) {
+	id := uuid.New()
+	future := time.Now().UTC().Add(48 * time.Hour)
+	store := liveGrantStore(id)
+	store.sites = []sqlc.Site{
+		updatesFixture{
+			id: id, name: "skewed.example", url: "https://skewed.example",
+			collected: &future,
+			components: `{"plugins":[{"slug":"woocommerce","name":"WooCommerce","version":"8.1.0",` +
+				`"active":true,"available_update":{"new_version":"8.4.0"}}]}`,
+		}.row(),
+	}
+
+	text := callUpdatesPending(t, store)
+	p := parseUpdatesPayload(t, text)
+	s := p.Sites[0].Summary
+
+	if !strings.Contains(s, "clock problem") {
+		t.Errorf("the future-stamp arm does not name the cause: %q", s)
+	}
+	// A negative age must never reach the sentence.
+	if strings.Contains(s, "-1 ") || strings.Contains(s, "ago, 2026") && strings.Contains(s, "-") &&
+		strings.Contains(s, "seconds ago") {
+		t.Errorf("a negative age leaked into the sentence: %q", s)
+	}
+	// The INSTANT is still reported: withholding the age is not a reason to
+	// withhold the observation.
+	if p.Sites[0].InventoryCollectedAt == nil {
+		t.Error("the future stamp was withheld entirely; the instant should still be reported")
+	}
+	for _, verdict := range []string{"stale", "outdated", "out of date", "too old", "fresh", "needs refresh"} {
+		if strings.Contains(strings.ToLower(text), verdict) {
+			t.Errorf("the future-stamp result renders the verdict %q", verdict)
+		}
+	}
+}
+
 // TestHumanAgeSelectsAUnitAndJudgesNothing is the unit half. Each case pins the
 // spelling; the loop after it pins the property that matters.
 func TestHumanAgeSelectsAUnitAndJudgesNothing(t *testing.T) {
