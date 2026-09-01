@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { Fragment, useState, type ReactNode } from "react";
 import { PlugZap } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -16,6 +16,7 @@ import {
 
 import { capabilityLabel } from "./capabilities";
 import { PROTOCOL_FLOOR_VERSION } from "./client-table";
+import { ConnectionVerify } from "./connection-verify";
 import {
   lastUsedLabel,
   protocolHeaderLabel,
@@ -66,6 +67,15 @@ export function ConnectionsList({
   onRevoke,
   revokingId,
 }: ConnectionsListProps) {
+  // Which row has its verification panel open. AT THE TOP, BEFORE THE EARLY
+  // RETURNS BELOW, because a hook after a conditional return is a hook that
+  // sometimes does not run.
+  //
+  // ONE AT A TIME, DELIBERATELY. Each open panel polls its own connection, so
+  // an "expand all" would put one request per connection per poll interval on
+  // a fleet that may hold dozens.
+  const [verifyingId, setVerifyingId] = useState<string | null>(null);
+
   if (state.status === "loading") {
     return (
       <div className="space-y-2" data-testid="connections-loading">
@@ -151,7 +161,8 @@ export function ConnectionsList({
         </TableHeader>
         <TableBody>
           {state.connections.map((c) => (
-            <TableRow key={c.id}>
+            <Fragment key={c.id}>
+            <TableRow>
               <TableCell>
                 <span className="font-medium text-[var(--color-foreground)]">{c.name}</span>
                 <span className="ml-2">
@@ -256,11 +267,29 @@ export function ConnectionsList({
               </TableCell>
 
               <TableCell className="text-right">
+                {/* THE ONE QUESTION THIS PAGE COULD NOT ANSWER UNTIL NOW.
+                    "Last used" says whether anything has ever touched the
+                    credential; it does not say whether the client the operator
+                    just configured actually opened a session, and it is
+                    stamped by tools/list as well as tools/call, so it says
+                    "used" for a client that has read nothing. The panel behind
+                    this button asks the endpoint that can tell the two apart.
+                    Offered on a REVOKED connection too: "did anything ever use
+                    this before I killed it" is exactly the question asked
+                    after a leak. */}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  aria-expanded={verifyingId === c.id}
+                  onClick={() => setVerifyingId(verifyingId === c.id ? null : c.id)}
+                >
+                  {verifyingId === c.id ? "Hide check" : "Check connection"}
+                </Button>
                 {/* An ALREADY-REVOKED grant gets no revoke button. The
                     endpoint is idempotent, so pressing it would succeed and
                     teach the operator nothing. */}
                 {c.status === "revoked" ? (
-                  <span className="text-xs text-[var(--color-muted-foreground)]">
+                  <span className="ml-2 text-xs text-[var(--color-muted-foreground)]">
                     Revoked
                   </span>
                 ) : (
@@ -275,6 +304,16 @@ export function ConnectionsList({
                 )}
               </TableCell>
             </TableRow>
+            {verifyingId === c.id ? (
+              <TableRow>
+                {/* colSpan MATCHES THE HEADER above: seven columns. A short
+                    span leaves the panel boxed into one cell. */}
+                <TableCell colSpan={7} className="bg-[var(--color-muted)]/30">
+                  <ConnectionVerify connectionId={c.id} />
+                </TableCell>
+              </TableRow>
+            ) : null}
+            </Fragment>
           ))}
         </TableBody>
       </Table>
