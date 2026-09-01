@@ -41,14 +41,27 @@ type Repo interface {
 	// rolls back with it: a kill switch nobody can prove was thrown is not a
 	// control, and an audit chain missing the incident action is worse than a
 	// failed request.
-	PauseAssistant(ctx context.Context, tenantID, userID uuid.UUID, reason *string, onCommit func(tx pgx.Tx) error) error
+	//
+	// IT RETURNS THE RESULTING STATE READ INSIDE THAT SAME TRANSACTION. An
+	// earlier shape re-read the row in a SECOND transaction after this one
+	// committed, which meant a transient read failure reported an error for a
+	// pause that HAD committed. The operator retry is harmless; the belief is
+	// not. Mid-incident, "the kill switch failed" over an already-stopped
+	// surface is what makes someone reach for something more drastic, and it is
+	// this project's signature defect pointed the other way: reporting failure
+	// over its own success.
+	PauseAssistant(ctx context.Context, tenantID, userID uuid.UUID, reason *string, onCommit func(tx pgx.Tx) error) (AssistantState, error)
 
 	// ResumeAssistant releases the kill switch. Separate method, separate
 	// query, separate audit action — never a toggle (m130 DECISION 2).
-	// rowsAffected 0 means the switch was ALREADY released, which the service
-	// turns into a distinct, non-destructive outcome rather than a silent
-	// success.
-	ResumeAssistant(ctx context.Context, tenantID, userID uuid.UUID, onCommit func(tx pgx.Tx) error) (int64, error)
+	//
+	// It returns the state read inside the write transaction, for the reason
+	// on PauseAssistant. That read also RESOLVES the rows-affected ambiguity
+	// that used to need a second query: 0 rows means the switch was already
+	// released OR the tenant does not exist, and those are told apart by
+	// whether the state row comes back at all — in the same transaction,
+	// against the same snapshot.
+	ResumeAssistant(ctx context.Context, tenantID, userID uuid.UUID, onCommit func(tx pgx.Tx) error) (AssistantState, error)
 }
 
 // pgRepo is a Postgres-backed Repo over the pgx pool. Tenant rows themselves are
@@ -164,23 +177,17 @@ func (r *pgRepo) GetAssistantState(ctx context.Context, tenantID, userID uuid.UU
 			}
 			return domain.Internal("assistant_state_get_failed", "failed to load assistant state").WithCause(err)
 		}
-		out = AssistantState{PausedReason: row.AssistantPausedReason}
-		if row.AssistantEnabledAt.Valid {
-			t := row.AssistantEnabledAt.Time
-			out.EnabledAt = &t
-		}
-		if row.AssistantPausedAt.Valid {
-			t := row.AssistantPausedAt.Time
-			out.PausedAt = &t
-		}
+		out = toAssistantState(row)
 		return nil
 	})
 	return out, err
 }
 
-func (r *pgRepo) PauseAssistant(ctx context.Context, tenantID, userID uuid.UUID, reason *string, onCommit func(tx pgx.Tx) error) error {
-	return r.pool.InTenantTxAsUser(ctx, tenantID, userID, func(tx pgx.Tx) error {
-		n, err := sqlc.New(tx).EngageTenantAssistantKillSwitch(ctx, sqlc.EngageTenantAssistantKillSwitchParams{
+func (r *pgRepo) PauseAssistant(ctx context.Context, tenantID, userID uuid.UUID, reason *string, onCommit func(tx pgx.Tx) error) (AssistantState, error) {
+	var out AssistantState
+	err := r.pool.InTenantTxAsUser(ctx, tenantID, userID, func(tx pgx.Tx) error {
+		q := sqlc.New(tx)
+		n, err := q.EngageTenantAssistantKillSwitch(ctx, sqlc.EngageTenantAssistantKillSwitchParams{
 			TenantID: tenantID,
 			Reason:   reason,
 		})
@@ -198,31 +205,71 @@ func (r *pgRepo) PauseAssistant(ctx context.Context, tenantID, userID uuid.UUID,
 		// kill switch. This is the ADR-064 Decision 7 shape, applied here
 		// because the same argument holds: an incident action nobody can prove
 		// was taken is not a record.
-		return onCommit(tx)
+		if err := onCommit(tx); err != nil {
+			return err
+		}
+		// Read the result back HERE, not after this transaction commits. See
+		// the interface doc comment: a second-transaction read can fail over a
+		// pause that already succeeded, and tell an operator mid-incident that
+		// the switch did not fire when it did.
+		row, err := q.GetTenantAssistantState(ctx, tenantID)
+		if err != nil {
+			return domain.Internal("assistant_pause_failed", "failed to pause the assistant").WithCause(err)
+		}
+		out = toAssistantState(row)
+		return nil
 	})
+	return out, err
 }
 
-func (r *pgRepo) ResumeAssistant(ctx context.Context, tenantID, userID uuid.UUID, onCommit func(tx pgx.Tx) error) (int64, error) {
-	var affected int64
+func (r *pgRepo) ResumeAssistant(ctx context.Context, tenantID, userID uuid.UUID, onCommit func(tx pgx.Tx) error) (AssistantState, error) {
+	var out AssistantState
 	err := r.pool.InTenantTxAsUser(ctx, tenantID, userID, func(tx pgx.Tx) error {
-		n, err := sqlc.New(tx).ReleaseTenantAssistantKillSwitch(ctx, tenantID)
+		q := sqlc.New(tx)
+		n, err := q.ReleaseTenantAssistantKillSwitch(ctx, tenantID)
 		if err != nil {
 			return domain.Internal("assistant_resume_failed", "failed to resume the assistant").WithCause(err)
 		}
-		affected = n
-		// n == 0 here is AMBIGUOUS between "already released" and "no such
-		// tenant" because ReleaseTenantAssistantKillSwitch carries both
-		// `deleted_at IS NULL` and `assistant_paused_at IS NOT NULL`. The
-		// service disambiguates by reading the state; the repo does not guess.
-		// No audit entry is appended for a no-op resume: recording a release
-		// that released nothing would put a false incident-end marker in the
-		// chain.
-		if n == 0 {
-			return nil
+		// No audit entry for a no-op resume: recording a release that released
+		// nothing would put a false incident-end marker in the chain. n == 0 is
+		// ambiguous here between "already released" and "no such tenant"
+		// because the query carries both `deleted_at IS NULL` and
+		// `assistant_paused_at IS NOT NULL` — the state read below tells them
+		// apart, in this same transaction, against this same snapshot.
+		if n > 0 {
+			if err := onCommit(tx); err != nil {
+				return err
+			}
 		}
-		return onCommit(tx)
+		row, err := q.GetTenantAssistantState(ctx, tenantID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				// No row: the tenant does not exist (or is soft-deleted). This
+				// is the arm that used to need a second transaction.
+				return domain.NotFound("tenant_not_found", "tenant not found")
+			}
+			return domain.Internal("assistant_resume_failed", "failed to resume the assistant").WithCause(err)
+		}
+		out = toAssistantState(row)
+		return nil
 	})
-	return affected, err
+	return out, err
+}
+
+// toAssistantState maps the generated row to the domain model. One mapper, so
+// the console read and the two write paths cannot drift in how they read the
+// two non-symmetric NULLs (m130 DECISION 2).
+func toAssistantState(row sqlc.GetTenantAssistantStateRow) AssistantState {
+	out := AssistantState{PausedReason: row.AssistantPausedReason}
+	if row.AssistantEnabledAt.Valid {
+		t := row.AssistantEnabledAt.Time
+		out.EnabledAt = &t
+	}
+	if row.AssistantPausedAt.Valid {
+		t := row.AssistantPausedAt.Time
+		out.PausedAt = &t
+	}
+	return out
 }
 
 func toModel(t sqlc.Tenant) Tenant {

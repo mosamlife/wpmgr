@@ -156,7 +156,7 @@ func (s *Service) PauseAssistant(ctx context.Context, p domain.Principal, id uui
 		reason = &trimmed
 	}
 
-	err := s.repo.PauseAssistant(ctx, id, p.UserID, reason, func(tx pgx.Tx) error {
+	st, err := s.repo.PauseAssistant(ctx, id, p.UserID, reason, func(tx pgx.Tx) error {
 		meta := map[string]any{"reason_given": reason != nil}
 		if reason != nil {
 			meta["reason"] = *reason
@@ -175,7 +175,9 @@ func (s *Service) PauseAssistant(ctx context.Context, p domain.Principal, id uui
 	if err != nil {
 		return AssistantState{}, err
 	}
-	return s.repo.GetAssistantState(ctx, id, p.UserID)
+	// st was read INSIDE the write transaction, so it cannot report a failure
+	// for a pause that committed. See Repo.PauseAssistant.
+	return st, nil
 }
 
 // ResumeAssistant releases the kill switch. It is a SEPARATE, DELIBERATE
@@ -190,7 +192,7 @@ func (s *Service) ResumeAssistant(ctx context.Context, p domain.Principal, id uu
 		return AssistantState{}, err
 	}
 
-	n, err := s.repo.ResumeAssistant(ctx, id, p.UserID, func(tx pgx.Tx) error {
+	st, err := s.repo.ResumeAssistant(ctx, id, p.UserID, func(tx pgx.Tx) error {
 		_, aerr := rec.RecordInTx(ctx, tx, audit.Event{
 			TenantID:   id,
 			ActorType:  audit.ActorUser,
@@ -204,16 +206,8 @@ func (s *Service) ResumeAssistant(ctx context.Context, p domain.Principal, id uu
 	if err != nil {
 		return AssistantState{}, err
 	}
-
-	// n == 0 is ambiguous at the repo (already released vs no such tenant).
-	// Read the state to disambiguate: a row that reads back is a live tenant
-	// that was simply not paused, which is a successful no-op; no row at all is
-	// a tenant that does not exist.
-	st, gerr := s.repo.GetAssistantState(ctx, id, p.UserID)
-	if gerr != nil {
-		return AssistantState{}, gerr
-	}
-	_ = n
+	// Read inside the write transaction, which also resolved the rows-affected
+	// ambiguity the second read used to exist for. See Repo.ResumeAssistant.
 	return st, nil
 }
 

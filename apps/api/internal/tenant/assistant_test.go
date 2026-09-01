@@ -56,43 +56,48 @@ func (f *fakeRepo) GetAssistantState(_ context.Context, tenantID, _ uuid.UUID) (
 	return *st, nil
 }
 
-func (f *fakeRepo) PauseAssistant(_ context.Context, tenantID, userID uuid.UUID, reason *string, onCommit func(tx pgx.Tx) error) error {
+func (f *fakeRepo) PauseAssistant(_ context.Context, tenantID, userID uuid.UUID, reason *string, onCommit func(tx pgx.Tx) error) (AssistantState, error) {
 	f.pauseCalls = append(f.pauseCalls, pauseCall{tenantID: tenantID, userID: userID, reason: reason})
 	st, ok := f.state[tenantID]
 	if !ok {
-		return domain.NotFound("tenant_not_found", "tenant not found")
+		return AssistantState{}, domain.NotFound("tenant_not_found", "tenant not found")
 	}
 	// The real repo runs onCommit INSIDE the transaction and returns its error,
 	// which rolls the UPDATE back. Model that exactly: apply the write only
 	// when the hook succeeds.
 	if f.onCommitErr != nil {
 		_ = onCommit(nil)
-		return f.onCommitErr
+		return AssistantState{}, f.onCommitErr
 	}
 	if err := onCommit(nil); err != nil {
-		return err
+		return AssistantState{}, err
 	}
 	now := time.Now().UTC()
 	st.PausedAt = &now
 	st.PausedReason = reason
-	return nil
+	// The real repo reads the row back in this same transaction and returns it;
+	// the service no longer re-reads. Return the post-write state here too, or
+	// every assertion below would be checking a stale zero value.
+	return *st, nil
 }
 
-func (f *fakeRepo) ResumeAssistant(_ context.Context, tenantID, _ uuid.UUID, onCommit func(tx pgx.Tx) error) (int64, error) {
+func (f *fakeRepo) ResumeAssistant(_ context.Context, tenantID, _ uuid.UUID, onCommit func(tx pgx.Tx) error) (AssistantState, error) {
 	f.resumeCalls = append(f.resumeCalls, tenantID)
 	st, ok := f.state[tenantID]
 	if !ok {
-		return 0, domain.NotFound("tenant_not_found", "tenant not found")
+		return AssistantState{}, domain.NotFound("tenant_not_found", "tenant not found")
 	}
+	// Already released: the real query matches no row, so no audit entry is
+	// appended — but the state read still happens and still returns the row.
 	if st.PausedAt == nil {
-		return 0, nil // already released: the real query matches no row
+		return *st, nil
 	}
 	if err := onCommit(nil); err != nil {
-		return 0, err
+		return AssistantState{}, err
 	}
 	st.PausedAt = nil
 	st.PausedReason = nil
-	return 1, nil
+	return *st, nil
 }
 
 type capturingRecorder struct {
