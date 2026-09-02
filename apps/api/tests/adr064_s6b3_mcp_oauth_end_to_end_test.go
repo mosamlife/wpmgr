@@ -44,6 +44,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
+	"github.com/mosamlife/wpmgr/apps/api/internal/govcontext"
 	"github.com/mosamlife/wpmgr/apps/api/internal/mcp"
 )
 
@@ -72,7 +73,17 @@ func TestMCPOAuthEndToEndThroughMountedRoutesAsAppRole(t *testing.T) {
 	siteURL := "https://" + uuid.NewString()[:8] + ".example.test"
 	siteID := seedSite(t, pool, tenantID, siteURL)
 
-	svc := auditedMCPService(pool, mcp.NewRepo(pool))
+	// THE CONTEXT RESOLVER IS WIRED BECAUSE PRODUCTION WIRES IT: both non-test
+	// call sites of mcp.NewService (cmd/wpmgr/main.go, cmd/dump-routes/routes.go)
+	// chain WithContextResolver, and a Service without one refuses every fleet
+	// tool call rather than serving with the operator's governance silently
+	// absent. Omitting it here would make the tools/call below refuse and this
+	// test would prove nothing about what it is named for. It is the REAL
+	// govcontext.Repo over the same pool, so the organisation-context read runs
+	// through InTenantTx as wpmgr_app under the same RLS policies as every other
+	// read in this file.
+	svc := auditedMCPService(pool, mcp.NewRepo(pool)).
+		WithContextResolver(&govcontext.Resolver{Store: govcontext.NewRepo(pool)})
 	// An ORG-scoped operator: the only scope /consent admits. The role is
 	// load-bearing too, and not decoration -- /consent and POST
 	// /api/v1/mcp/connections require the same permission to create a

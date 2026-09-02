@@ -44,6 +44,7 @@ import (
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
+	"github.com/mosamlife/wpmgr/apps/api/internal/govcontext"
 	"github.com/mosamlife/wpmgr/apps/api/internal/mcp"
 	"github.com/mosamlife/wpmgr/apps/api/internal/site"
 )
@@ -106,7 +107,17 @@ func TestMCPLayer3OutOfScopeSiteIsAbsentAndNotInferableAsAppRole(t *testing.T) {
 	pool := startPostgres(t)
 	mcpRepo := mcp.NewRepo(pool)
 	siteRepo := site.NewRepo(pool)
-	svc := mcp.NewService(mcpRepo).WithAudit(audit.NewRecorder(pool, domain.SystemClock{}))
+	// THE CONTEXT RESOLVER IS WIRED BECAUSE PRODUCTION WIRES IT: both non-test
+	// call sites of mcp.NewService (cmd/wpmgr/main.go, cmd/dump-routes/routes.go)
+	// chain WithContextResolver, and a Service without one refuses every fleet
+	// tool call rather than serving with the operator's governance silently
+	// absent. Omitting it here would make the tools/call below refuse and this
+	// test would prove nothing about what it is named for. It is the REAL
+	// govcontext.Repo over the same pool, so the organisation-context read runs
+	// through InTenantTx as wpmgr_app under the same RLS policies as every other
+	// read in this file.
+	svc := mcp.NewService(mcpRepo).WithAudit(audit.NewRecorder(pool, domain.SystemClock{})).
+		WithContextResolver(&govcontext.Resolver{Store: govcontext.NewRepo(pool)})
 
 	tenant := seedTenant(t, pool, "mcp-l3-"+uuid.NewString()[:8])
 
@@ -345,9 +356,19 @@ func TestMCPPageBoundDoesNotDiscloseTenantSizeAsAppRole(t *testing.T) {
 	mcpRepo := mcp.NewRepo(pool)
 	siteRepo := site.NewRepo(pool)
 	// WithPageBound(3) is what makes this proof non-vacuous. See the note above.
+	// THE CONTEXT RESOLVER IS WIRED BECAUSE PRODUCTION WIRES IT: both non-test
+	// call sites of mcp.NewService (cmd/wpmgr/main.go, cmd/dump-routes/routes.go)
+	// chain WithContextResolver, and a Service without one refuses every fleet
+	// tool call rather than serving with the operator's governance silently
+	// absent. Omitting it here would make the tools/call below refuse and this
+	// test would prove nothing about what it is named for. It is the REAL
+	// govcontext.Repo over the same pool, so the organisation-context read runs
+	// through InTenantTx as wpmgr_app under the same RLS policies as every other
+	// read in this file.
 	svc := mcp.NewService(mcpRepo).
 		WithAudit(audit.NewRecorder(pool, domain.SystemClock{})).
-		WithPageBound(3)
+		WithPageBound(3).
+		WithContextResolver(&govcontext.Resolver{Store: govcontext.NewRepo(pool)})
 
 	tenant := seedTenant(t, pool, "mcp-pb-"+uuid.NewString()[:8])
 
