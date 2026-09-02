@@ -517,13 +517,20 @@ describe("the step rail names all ten specified steps and marks the right one cu
     expect(railNumbers()).toEqual(Array.from({ length: 10 }, (_, i) => String(i + 1)));
   });
 
-  it("names exactly six built steps, and the other four as not yet available", async () => {
+  it("names step 7 as the only one not built, and never marks it current", async () => {
     renderWizard();
     await leaveContractStep();
     await screen.findByRole("button", { name: /claude code/i });
 
-    expect(railStateNs("not-built")).toEqual(["7", "8", "9", "10"]);
-    for (const n of ["7", "8", "9", "10"]) {
+    // ONLY 7. Steps 8, 9 and 10 exist now; they are simply ahead of an operator
+    // who has not minted anything yet, which is "upcoming" and not "not built".
+    // Conflating the two would tell an operator a screen does not exist when it
+    // is one button away.
+    expect(railStateNs("not-built")).toEqual(["7"]);
+    for (const n of ["8", "9", "10"]) {
+      expect(railSegment(n)).toHaveAttribute("data-step-state", "upcoming");
+    }
+    for (const n of ["7"]) {
       expect(railSegment(n)).not.toHaveAttribute("aria-current", "step");
     }
   });
@@ -655,7 +662,10 @@ describe("the step rail names all ten specified steps and marks the right one cu
     expect(visited).toEqual(["1", "2", "3", "4", "5", "6"]);
     // The same sequence as the module's own written statement of the walk, so
     // the two cannot drift into disagreeing about what the wizard does.
-    expect(WALK_SPEC_ORDER).toEqual([1, 2, 3, 4, 5, 6]);
+    // THE WRITTEN WALK INCLUDES THE STEPS A CONNECTION UNLOCKS, and 7 is
+    // absent from it because that screen is not built. The DOM walk above stops
+    // at 6 because this operator has not minted; both are the same order.
+    expect(WALK_SPEC_ORDER).toEqual([1, 2, 3, 4, 5, 6, 8, 9, 10]);
   });
 
   it("marks every step behind the operator complete, in that same order", async () => {
@@ -1853,6 +1863,149 @@ describe("no framing sentence renders twice on one frame", () => {
   });
 });
 
+/**
+ * STEPS 8, 9 AND 10, WHICH ONLY EXIST ONCE A CONNECTION DOES.
+ *
+ * The walk extends when the step 6 mint returns a grant id, and not before:
+ * these three screens are ABOUT one connection -- they poll its status and list
+ * the tools it can see -- so without an id there is nothing for them to be
+ * about. That is a fact already behind the operator, unlike the auth-method
+ * filter this file removed, which keyed a step on an answer not yet given.
+ */
+describe("steps 8 to 10 open once a connection exists", () => {
+  /** The status endpoint, answering that nothing has connected yet. */
+  function stubStatus() {
+    return {
+      status: "active",
+      created_at: new Date().toISOString(),
+      observed_at: new Date().toISOString(),
+      poll_after_ms: 5000,
+      handshake: {
+        state: "awaiting_client",
+        recorded_at: null,
+        reported_client_name: null,
+        reported_client_version: null,
+        refusal: null,
+        protocol: { state: "never_connected", version: null },
+      },
+      first_call: {
+        state: "awaiting_first_call",
+        called_at: null,
+        tool_name: null,
+        audit_event_id: null,
+        last_used_at: null,
+        partial: null,
+      },
+    };
+  }
+
+  /**
+   * Mint, status and tools, each answered on its own path.
+   *
+   * ROUTED BY URL RATHER THAN BY CALL ORDER, so a test cannot pass because the
+   * requests happened to arrive in the sequence it assumed.
+   */
+  function stubAll(tools: unknown) {
+    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      const url = urlOf(input);
+      if (url.endsWith("/tools")) return Promise.resolve(jsonResponse(tools, 200));
+      if (url.includes("/status")) return Promise.resolve(jsonResponse(stubStatus(), 200));
+      if (url === CONNECTIONS_PATH && init?.method === "POST") {
+        return Promise.resolve(jsonResponse(MINTED, 201));
+      }
+      return Promise.resolve(jsonResponse({}, 200));
+    });
+  }
+
+  /**
+   * Mint, then walk to the specified step number.
+   *
+   * IT MOUNTS THE WIZARD ITSELF, via reachMintButton, and callers must not
+   * mount a second one: two mounted wizards put two of every control in the
+   * document and every getByRole in the walk fails on the ambiguity rather than
+   * on anything being wrong.
+   */
+  async function mintAndWalkTo(n: 8 | 9 | 10) {
+    loadedFleet(3);
+    fireEvent.click(await reachMintButton());
+    await screen.findByText(MINTED.token);
+    // The reveal is dismissed deliberately: the connection id must NOT be
+    // sourced from it, and a walk that only worked while the token was still on
+    // screen would hide exactly that defect.
+    fireEvent.click(screen.getByRole("button", { name: /i have saved this token/i }));
+    while (Number(currentRailStep().dataset.stepN) < n) goNext();
+  }
+
+  it("does not offer them before a mint, and they are upcoming rather than unbuilt", async () => {
+    loadedFleet(3);
+    renderWizard();
+    await leaveContractStep();
+    await reachSetupStep("Cursor", "token");
+
+    // The setup step is the terminus until a connection exists, so there is no
+    // Continue leading into a screen with no connection to be about.
+    expect(currentRailStep()).toHaveAttribute("data-step-n", "6");
+    expect(screen.queryByRole("button", { name: /^continue$/i })).toBeNull();
+    expect(railSegment("8")).toHaveAttribute("data-step-state", "upcoming");
+  });
+
+  it("renders exactly the tools the server returned, with no computed badge", async () => {
+    stubAll({
+      tools: [
+        { name: "fleet_sites_list", description: "List the sites in scope." },
+        { name: "fleet_updates_pending", description: "Pending updates. Needs mcp.updates.read." },
+      ],
+    });
+    await mintAndWalkTo(10);
+
+    const list = await screen.findByTestId("tool-list");
+    const names = within(list)
+      .getAllByRole("listitem")
+      .map((li) => li.textContent ?? "");
+    expect(names).toHaveLength(2);
+    expect(names[0]).toContain("fleet_sites_list");
+    expect(names[1]).toContain("fleet_updates_pending");
+    // NO DERIVED AVAILABILITY. The server ships no such flag and the answer
+    // already lives in the description; a computed one could disagree with what
+    // a real call refuses.
+    expect(within(list).queryByText(/^available$/i)).toBeNull();
+    expect(within(list).queryByText(/^unavailable$/i)).toBeNull();
+  });
+
+  it("renders an empty tool list as a real answer, never as a failure", async () => {
+    stubAll({ tools: [] });
+    await mintAndWalkTo(10);
+
+    expect(await screen.findByTestId("tool-list-empty")).toBeInTheDocument();
+    // AND NOT AS AN ERROR. A narrowed grant legitimately sees no tool, and
+    // dressing that as a failure would send an operator hunting a bug that is
+    // their own capability choice.
+    expect(screen.queryByTestId("tool-list-error")).toBeNull();
+  });
+
+  it("calls our own read failing our failure, not a claim about the connection", async () => {
+    stubAll({ tools: null });
+    await mintAndWalkTo(10);
+
+    // A null `tools` fails the zod parse rather than becoming []. The
+    // difference is the whole point: `?? []` would render "this connection can
+    // call nothing" over a response we could not read.
+    expect(await screen.findByTestId("tool-list-error")).toBeInTheDocument();
+    expect(screen.queryByTestId("tool-list-empty")).toBeNull();
+  });
+
+  it("shows one verification prompt on step 9, and the same one on step 10", async () => {
+    stubAll({ tools: [{ name: "fleet_sites_list", description: "List the sites in scope." }] });
+    await mintAndWalkTo(9);
+
+    const prompt = screen.getByLabelText(/verification prompt/i);
+    expect(prompt).toBeInTheDocument();
+    // Step 9's copy must not claim a read from a last-used timestamp, which is
+    // the one trap this screen exists to avoid.
+    expect(screen.getByText(/never from a last-used timestamp/i)).toBeInTheDocument();
+  });
+});
+
 describe("a blocked step's refusal renders exactly once, never twice", () => {
   it("step 1 -- no client chosen", async () => {
     renderWizard();
@@ -2624,16 +2777,16 @@ describe("the rail is a stepper, not a paragraph", () => {
       "bg-[var(--color-primary)]",
     );
 
-    // Step 8 does not exist yet. No fill, no ring: an unbuilt step must never
+    // Step 7 does not exist. No fill, no ring: an unbuilt step must never
     // render as done or current.
-    expect(document.querySelector('[data-step-n="8"]')).toHaveAttribute(
+    expect(document.querySelector('[data-step-n="7"]')).toHaveAttribute(
       "data-step-state",
       "not-built",
     );
-    expect(screen.getByTestId("step-circle-8").className).not.toContain(
+    expect(screen.getByTestId("step-circle-7").className).not.toContain(
       "bg-[var(--color-primary)]",
     );
-    expect(screen.getByTestId("step-circle-8").className).not.toContain("border-2");
+    expect(screen.getByTestId("step-circle-7").className).not.toContain("border-2");
   });
 });
 
