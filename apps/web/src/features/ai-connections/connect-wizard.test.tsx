@@ -545,7 +545,6 @@ describe("the step rail names all ten specified steps and marks the right one cu
 
     backToSiteStep();
     // Take the one selected site back off.
-    fireEvent.click(screen.getByRole("button", { name: /\+ add sites/i }));
     fireEvent.click(pickerBoxes()[0]!);
 
     const current = expectRailIsCoherent();
@@ -1275,12 +1274,30 @@ async function advanceToMintButton(answerScope?: () => void) {
  * would. Answers are kept across the move, which is the property several of
  * these tests are actually about.
  */
+/** Back to the auth-method step, whichever later step the walk is on. */
+function backToMethodStep() {
+  while (document.querySelector('button[data-method="oauth"]') === null) {
+    const button = backButton();
+    expect(button).toBeEnabled();
+    fireEvent.click(button);
+  }
+}
+
+/**
+ * Back to the site-scope step, and re-open its picker.
+ *
+ * The picker is a disclosure that opens on "+ add sites" and closes with the
+ * step, so a walk that returns here finds it shut. Re-opening it is part of
+ * arriving, not part of what any caller is testing.
+ */
 function backToSiteStep() {
   while (screen.queryByTestId("site-step-count") === null) {
     const button = backButton();
     expect(button).toBeEnabled();
     fireEvent.click(button);
   }
+  const reopen = screen.queryByRole("button", { name: /\+ add sites/i });
+  if (reopen !== null) fireEvent.click(reopen);
   return screen.getByTestId("site-step-count");
 }
 
@@ -1650,12 +1667,7 @@ describe("minting a connection token", () => {
     // Walking back to the method step and switching to OAuth unmounts the mint
     // panel completely -- the setup step renders NextSteps instead, and the
     // capability step drops out of the walk altogether.
-    while (screen.queryByRole("button", { name: /how it signs in/i }) === null) {
-      const back = backButton();
-      if (back.disabled) break;
-      fireEvent.click(back);
-      if (document.querySelector('button[data-method="oauth"]') !== null) break;
-    }
+    backToMethodStep();
     fireEvent.click(authCard("oauth"));
     goNext();
     await screen.findByTestId("site-step-count");
