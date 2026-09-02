@@ -174,7 +174,7 @@ describe("EffectiveContextPreview — a truncated layer never reads as the compl
     expect(screen.getByText("shell_exec")).toBeInTheDocument();
     // The gap between those two is exactly what the callout must surface.
     expect(
-      screen.getByText(/this layer's own list may be shorter than what's enforced/i),
+      screen.getByText(/this layer's own list may be shorter than the full union/i),
     ).toBeInTheDocument();
   });
 
@@ -188,8 +188,45 @@ describe("EffectiveContextPreview — a truncated layer never reads as the compl
     // "not next to layer 6" — layers 4-6 never set restrictions, so there is
     // nothing for the callout to be honest about on this fixture.
     expect(
-      screen.queryByText(/this layer's own list may be shorter than what's enforced/i),
+      screen.queryByText(/this layer's own list may be shorter than the full union/i),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("EffectiveContextPreview — the restrictions panel never claims server-side enforcement", () => {
+  // Security review finding: `grep -rn "Restrictions\|ForbiddenTools"
+  // apps/api/internal/mcp/` returns exactly one hit, in govcontext_test.go —
+  // nothing on the tools/call dispatch path consults the restriction set. It
+  // is joined into the tool-result text the model reads and nothing more, so
+  // a model that disregards it still gets the call served. This screen used
+  // to tell the operator the opposite ("enforced at dispatch", "what
+  // actually blocks a tool call"), which is a false claim about a security
+  // control. This test locks in the honest replacement: the panel names what
+  // the set actually is (a deny-list stated to the model) and says plainly
+  // that a disobedient model still gets through.
+  it("never claims the restriction set is enforced or blocks the call, and says a disregarding model still invokes the tool", () => {
+    mockData(buildEffective());
+    renderWithProviders(<EffectiveContextPreview siteId="site-1" />);
+
+    // Regression proof: reinstating the old heading/body text turns this
+    // whole block red; see the PR description for the paste of that run.
+    expect(screen.queryByText(/enforced at dispatch/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/what actually blocks a tool call/i)).not.toBeInTheDocument();
+
+    // The panel still says what it is — a real, useful feature — and is
+    // explicit that a model which ignores it still gets the call served.
+    expect(
+      screen.getByText(/restrictions stated to the model/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/a model that disregards it can still invoke the tool/i),
+    ).toBeInTheDocument();
+
+    // The byte-budget claim is real (see resolver_test.go's
+    // TestResolve_RestrictionsUnionIsNeverTruncated) and must survive.
+    expect(
+      screen.getByText(/never shortened by the byte budget below/i),
+    ).toBeInTheDocument();
   });
 });
 

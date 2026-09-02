@@ -92,12 +92,14 @@ function EffectiveContextBody({ data }: { data: GovContextEffective }) {
 
       <div className="space-y-1">
         <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          Restrictions enforced at dispatch (union of layers 1-3)
+          Restrictions stated to the model (union of layers 1-3)
         </h3>
         <p className="text-xs text-muted-foreground">
-          This set is what actually blocks a tool call — it is never shortened
-          by the byte budget below, even when a layer&apos;s own copy further
-          down this page is.
+          This is a standing deny-list added to what the model is told on
+          every call, not a server-side block: nothing on the dispatch path
+          checks it, so a model that disregards it can still invoke the tool.
+          It is never shortened by the byte budget below, even when a
+          layer&apos;s own copy further down this page is.
         </p>
         <div className="rounded-lg border border-border bg-card p-4">
           <DefinitionList rows={restrictionRows(data.restrictions)} />
@@ -167,7 +169,7 @@ function LayerCard({ layer }: { layer: GovContextLayerContribution }) {
   // For those two, `truncated` can mean this layer's OWN restriction list
   // was shortened to fit the byte budget — a real, expected state (Decision
   // 9), but one that must never read as though this card were the complete
-  // enforced set. The enforced union above is the authoritative number;
+  // stated set. The union above (never truncated) is the authoritative list;
   // this callout is what stops a short list here from being mistaken for it.
   const restrictionsMayBeIncomplete =
     layer.truncated && (layer.layer === 2 || layer.layer === 3);
@@ -190,9 +192,9 @@ function LayerCard({ layer }: { layer: GovContextLayerContribution }) {
         </h5>
         {restrictionsMayBeIncomplete ? (
           <p className="text-xs text-warning-subtle-fg">
-            This layer&apos;s own list may be shorter than what&apos;s enforced
-            — truncated to fit the byte budget. See the enforced union above
-            for the complete, untruncated set.
+            This layer&apos;s own list may be shorter than the full union
+            stated to the model, truncated to fit the byte budget. See the
+            union above for the complete, untruncated set.
           </p>
         ) : null}
         <DefinitionList rows={restrictionRows(layer.restrictions)} />
