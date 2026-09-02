@@ -321,13 +321,17 @@ describe("the step rail names all ten specified steps and marks the right one cu
   it("marks specified step 2 current before any client is picked", async () => {
     renderWizard();
     await screen.findByRole("button", { name: /claude code/i });
-    expect(currentRailStep()).toHaveTextContent(/^2\. Name it, pick the AI client$/);
+    // "2Client" is the numbered circle plus the SHORT rail label, run together
+    // as textContent. Ruling 15 makes the short labels canonical for the rail;
+    // the long frame title belongs on the section heading and is asserted
+    // there, not here.
+    expect(currentRailStep()).toHaveTextContent(/^2Client$/);
   });
 
   it("marks specified step 5 current once a client is picked and no method chosen", async () => {
     renderWizard();
     await pickClient("Cursor");
-    expect(currentRailStep()).toHaveTextContent(/^5\. Choose how it authenticates$/);
+    expect(currentRailStep()).toHaveTextContent(/^5Auth$/);
     // The rail agrees this is later than step 2, not merely different from it.
     expect(document.querySelector('[data-step-n="2"]')).toHaveAttribute(
       "data-step-state",
@@ -349,7 +353,7 @@ describe("the step rail names all ten specified steps and marks the right one cu
     // "unselected" tests below for why the wizard's opening state (nothing
     // picked yet) must not itself read as complete.
     fireEvent.click(within(screen.getByRole("radiogroup", { name: /site scope/i })).getByText("All sites"));
-    expect(currentRailStep()).toHaveTextContent(/^6\. Get the setup artefact$/);
+    expect(currentRailStep()).toHaveTextContent(/^6Setup$/);
   });
 
   it("shows specified step 3 as passed, not merely unreached, once step 6 is current", async () => {
@@ -469,7 +473,7 @@ describe("the step rail names all ten specified steps and marks the right one cu
       "data-step-state",
       "completed",
     );
-    expect(currentRailStep()).toHaveTextContent(/^6\. Get the setup artefact$/);
+    expect(currentRailStep()).toHaveTextContent(/^6Setup$/);
   });
 
   // ---------------------------------------------------------------------------
@@ -555,7 +559,7 @@ describe("the step rail names all ten specified steps and marks the right one cu
       await pickClient("Cursor");
       fireEvent.click(authCard("oauth"));
 
-      expect(currentRailStep()).toHaveTextContent(/^6\. Get the setup artefact$/);
+      expect(currentRailStep()).toHaveTextContent(/^6Setup$/);
       expect(document.querySelector('[data-step-n="3"]')).toHaveAttribute(
         "data-step-state",
         "completed",
@@ -576,7 +580,7 @@ describe("the step rail names all ten specified steps and marks the right one cu
     // thing to wait for before the rail is asserted against.
     expect(screen.getByRole("radio", { name: /by tag/i })).toBeChecked();
 
-    expect(currentRailStep()).toHaveTextContent(/^6\. Get the setup artefact$/);
+    expect(currentRailStep()).toHaveTextContent(/^6Setup$/);
     expect(document.querySelector('[data-step-n="3"]')).toHaveAttribute(
       "data-step-state",
       "completed",
@@ -593,7 +597,7 @@ describe("the step rail names all ten specified steps and marks the right one cu
     fireEvent.click(authCard("oauth"));
     await screen.findByTestId("site-step-count");
 
-    expect(currentRailStep()).toHaveTextContent(/^6\. Get the setup artefact$/);
+    expect(currentRailStep()).toHaveTextContent(/^6Setup$/);
     expect(document.querySelector('[data-step-n="3"]')).toHaveAttribute(
       "data-step-state",
       "completed",
@@ -789,7 +793,7 @@ describe("step 3 exists at all, and sits before capabilities", () => {
 
   it("numbers the setup artefact after it, so the rail and the page agree", async () => {
     await reachSiteStep();
-    expect(screen.getByRole("heading", { name: /^5\. Set it up$/ })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /^6\. Set it up$/ })).toBeInTheDocument();
     // And the rail no longer claims sites are chosen somewhere else.
     expect(screen.queryByText(/4\. Choose sites and permissions/i)).not.toBeInTheDocument();
   });
@@ -875,7 +879,7 @@ describe("an empty scope is a working state, not an error", () => {
     // The setup artefact is reachable with nothing selected. An earlier
     // revision of this surface disabled Continue here; that is the behaviour
     // being corrected.
-    expect(screen.getByRole("heading", { name: /^5\. Set it up$/ })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /^6\. Set it up$/ })).toBeInTheDocument();
     expect(await screen.findByText(/"mcpServers"/)).toBeInTheDocument();
   });
 });
@@ -1898,5 +1902,207 @@ describe("minting a connection token", () => {
     expect(await screen.findByText(/too many connection tokens minted recently/i)).toBeInTheDocument();
     expect(screen.getByText(/wait about 42 seconds/i)).toBeInTheDocument();
     expect(screen.queryByText(/organisation-wide credential/i)).not.toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// THE STEPPER ITSELF. The owner looked at the shipped screen and said it was
+// neither a stepper nor a wizard, and he was right about the rail: it printed
+// the ten LONG frame titles run together with slashes, which is a paragraph in
+// a stepper's place, and it disagreed with the numbers on the sections below
+// it. These tests hold the component the deck actually draws.
+// ---------------------------------------------------------------------------
+
+/** Every rail segment, in the order the DOM has them. */
+function railSegments(): HTMLElement[] {
+  return Array.from(document.querySelectorAll<HTMLElement>("[data-step-n]"));
+}
+
+describe("the rail is a stepper, not a paragraph", () => {
+  it("labels the rail with the deck's SHORT labels and never the long frame titles", async () => {
+    renderWizard();
+    await screen.findByRole("button", { name: /claude code/i });
+
+    // Ruling 15, verbatim in its ordering: "Start, Client, Sites,
+    // Capabilities, Auth, Setup, Authorize, Confirm, Test, Done".
+    // The label's own text node, without the sr-only "(not yet available)"
+    // that an unbuilt step carries for a screen reader -- that suffix is
+    // asserted by the "not-built" tests above and is not part of the label.
+    expect(
+      railSegments().map(
+        (s) => screen.getByTestId(`step-label-${s.dataset.stepN}`).childNodes[0]?.textContent,
+      ),
+    ).toEqual([
+      "Start",
+      "Client",
+      "Sites",
+      "Capabilities",
+      "Auth",
+      "Setup",
+      "Authorize",
+      "Confirm",
+      "Test",
+      "Done",
+    ]);
+
+    // And the long frame titles are gone from the rail specifically. Asserting
+    // their absence from the whole document would be wrong: "Choose what it
+    // may do" is a legitimate SECTION heading, which is exactly where ruling
+    // 15 puts the long form.
+    const railText = railSegments()
+      .map((s) => s.textContent ?? "")
+      .join(" ");
+    for (const long of [
+      "Name it, pick the AI client",
+      "Choose how it authenticates",
+      "Get the setup artefact",
+      "WPMgr confirms connection is live",
+    ]) {
+      expect(railText).not.toContain(long);
+    }
+  });
+
+  it("draws a numbered circle per step and a connector between every pair", async () => {
+    renderWizard();
+    await screen.findByRole("button", { name: /claude code/i });
+
+    // Ten circles, each carrying its own specified number -- the number lives
+    // in the circle now, not in a "6. Get the setup artefact" run of prose.
+    expect(
+      Array.from({ length: 10 }, (_, i) => screen.getByTestId(`step-circle-${i + 1}`).textContent),
+    ).toEqual(["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]);
+
+    // Nine connectors for ten steps: one before every segment except the
+    // first. A connector before step 1 would draw a line coming from nowhere.
+    expect(document.querySelectorAll('[data-testid^="step-line-"]')).toHaveLength(9);
+    expect(screen.queryByTestId("step-line-1")).toBeNull();
+  });
+
+  it("shortens the connector below the deck's 640px breakpoint", async () => {
+    renderWizard();
+    await screen.findByRole("button", { name: /claude code/i });
+
+    // The deck: `.step .line { width: 44px }` with
+    // `@media (max-width: 640px) { .step .line { width: 16px } }`. In this
+    // project that is the unprefixed utility for the narrow case and the `sm:`
+    // variant for the wide one -- w-4 is 16px, w-11 is 44px.
+    const line = screen.getByTestId("step-line-2");
+    expect(line.className).toContain("w-4");
+    expect(line.className).toContain("sm:w-11");
+    expect(line.className).toContain("mx-1.5");
+    expect(line.className).toContain("sm:mx-2.5");
+  });
+
+  it("puts `sm:` at the 640px the deck specifies, so those classes mean what they say", async () => {
+    // THE HALF THAT MAKES THE TEST ABOVE ABOUT BEHAVIOUR RATHER THAN SPELLING.
+    // `sm:w-11` only implements the deck's breakpoint while `sm` IS 640px;
+    // Tailwind's default is 40rem/640px and this app must not have moved it.
+    // Moving it would silently change where the connector shortens, which no
+    // class-name assertion could see.
+    const { readFileSync, existsSync } = await import("node:fs");
+    const { resolve } = await import("node:path");
+    // Resolved from the process, and a MISSING file throws rather than
+    // letting this test pass over nothing -- a check that cannot find its
+    // input has to go red, not green.
+    const candidates = [
+      resolve(process.cwd(), "src/styles/globals.css"),
+      resolve(process.cwd(), "apps/web/src/styles/globals.css"),
+    ];
+    const path = candidates.find((p) => existsSync(p));
+    if (path === undefined) throw new Error(`globals.css not found at ${candidates.join(" or ")}`);
+    const css = readFileSync(path, "utf8");
+    const override = /--breakpoint-sm:\s*([^;]+);/.exec(css);
+    // Either untouched (Tailwind's own 40rem = 640px), or explicitly set to
+    // the same value. Anything else moves the design's boundary.
+    if (override !== null) expect(override[1].trim()).toBe("40rem");
+  });
+
+  it("fills the circle only for a step actually behind the operator, and rings the current one", async () => {
+    renderWizard();
+    await pickClient("Cursor");
+
+    // Step 2 is behind them: filled. The fill is the strongest "done" signal
+    // on the screen and it is drawn from the rail's own state, so it cannot
+    // claim progress the wizard has not made.
+    expect(document.querySelector('[data-step-n="2"]')).toHaveAttribute(
+      "data-step-state",
+      "completed",
+    );
+    expect(screen.getByTestId("step-circle-2").className).toContain("bg-[var(--color-primary)]");
+
+    // Step 5 is where they are: ringed, never filled.
+    expect(screen.getByTestId("step-circle-5").className).toContain("border-2");
+    expect(screen.getByTestId("step-circle-5").className).not.toContain(
+      "bg-[var(--color-primary)]",
+    );
+
+    // Step 8 does not exist yet. No fill, no ring: an unbuilt step must never
+    // render as done or current.
+    expect(document.querySelector('[data-step-n="8"]')).toHaveAttribute(
+      "data-step-state",
+      "not-built",
+    );
+    expect(screen.getByTestId("step-circle-8").className).not.toContain(
+      "bg-[var(--color-primary)]",
+    );
+    expect(screen.getByTestId("step-circle-8").className).not.toContain("border-2");
+  });
+});
+
+describe("the rail and the section heading agree on which step this is", () => {
+  // THE DEFECT THE OWNER REPORTED. Two numbering systems were visible at once
+  // and disagreed: the rail called the setup section step 6 while the heading
+  // over that same section said "4. Set it up". Every heading on this screen
+  // is now numbered with the specified step it answers, so a section and its
+  // rail segment cannot name the same step differently.
+
+  /** Every "N. Title" heading on screen, as its leading number. */
+  function headingNumbers(): string[] {
+    return screen
+      .getAllByRole("heading", { level: 2 })
+      .map((h) => /^(\d+)\./.exec(h.textContent ?? "")?.[1])
+      .filter((n): n is string => n !== undefined);
+  }
+
+  it("numbers the client section 2, the way the rail does, before anything is picked", async () => {
+    renderWizard();
+    await screen.findByRole("button", { name: /claude code/i });
+
+    expect(screen.getByRole("heading", { name: /^2\. Pick your client$/ })).toBeInTheDocument();
+    expect(currentRailStep()).toHaveAttribute("data-step-n", "2");
+    // Nothing on screen is numbered 1: local position numbering is gone.
+    expect(headingNumbers()).toEqual(["2"]);
+  });
+
+  it("numbers every revealed section with a step the rail also names, on the token path", async () => {
+    renderWizard();
+    await pickClient("Claude Code");
+    fireEvent.click(authCard("token"));
+    await screen.findByTestId("site-step-count");
+
+    // The specified numbers for the five built sections, in the order this
+    // page reveals them -- deliberately non-monotonic (ruling: the on-screen
+    // order maps to the deck's numbers, the numbers are never renumbered to
+    // match the page).
+    expect(headingNumbers()).toEqual(["2", "5", "3", "4", "6"]);
+
+    // And every one of those numbers is a step the rail draws, in the rail's
+    // own order, so there is exactly one numbering system on the screen.
+    const railNs = railSegments().map((s) => s.dataset.stepN);
+    for (const n of headingNumbers()) expect(railNs).toContain(n);
+  });
+
+  it("gives the setup section the same number the rail marks current", async () => {
+    renderWizard();
+    await pickClient("Claude Code");
+    fireEvent.click(authCard("oauth"));
+    await screen.findByTestId("site-step-count");
+
+    const current = currentRailStep();
+    expect(current).toHaveAttribute("data-step-n", "6");
+    expect(screen.getByTestId("step-label-6")).toHaveTextContent("Setup");
+    // The heading over the section the operator is looking at carries that
+    // same 6, not the "4" its position on the page would give it.
+    expect(screen.getByRole("heading", { name: /^6\. Set it up$/ })).toBeInTheDocument();
   });
 });
