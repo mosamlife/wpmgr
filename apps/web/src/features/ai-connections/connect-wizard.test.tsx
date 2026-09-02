@@ -1884,12 +1884,13 @@ describe("minting a connection token", () => {
     });
 
     renderWizard();
-    await reachSetupStep("Cursor", "token");
-    await screen.findByTestId("site-step-count");
+    await reachSiteScopeStep("Cursor", "token");
     fireEvent.click(screen.getByRole("radio", { name: /by tag/i }));
     fireEvent.click(screen.getByRole("button", { name: /\+ add tags/i }));
-    fireEvent.click(within(await screen.findByTestId("site-step-picker")).getAllByRole("checkbox")[0]!);
-    fireEvent.click(await screen.findByRole("button", { name: /generate connection token/i }));
+    fireEvent.click(
+      within(await screen.findByTestId("site-step-picker")).getAllByRole("checkbox")[0]!,
+    );
+    fireEvent.click(await forwardToMintButton());
 
     await screen.findByText(/this is the only time this token is shown/i);
     expect(requestBodies).toHaveLength(1);
@@ -1906,12 +1907,17 @@ describe("minting a connection token", () => {
     loadedFleet(3);
     mockedTags.mockReturnValue(mockQueryResult<SiteTag[]>({ data: undefined, isPending: true }));
     renderWizard();
-    await reachSetupStep("Cursor", "token");
-    await screen.findByTestId("site-step-count");
+    await reachSiteScopeStep("Cursor", "token");
     fireEvent.click(screen.getByRole("radio", { name: /by tag/i }));
 
+    // THE REFUSAL MOVED EARLIER, IT DID NOT SOFTEN. One step is on screen at a
+    // time, so this scope is refused at Continue rather than at a mint button
+    // three steps later -- the same predicate, read by the control the operator
+    // is actually standing in front of. The mint button is not merely disabled;
+    // it cannot be reached at all.
     expect(await screen.findByText(/tag scope could not be resolved/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /generate connection token/i })).toBeDisabled();
+    expect(continueButton()).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /generate connection token/i })).toBeNull();
   });
 
   // -------------------------------------------------------------------------
@@ -1929,15 +1935,17 @@ describe("minting a connection token", () => {
     // the button, get a 400.
     loadedFleet(3);
     renderWizard();
-    await reachSetupStep("Cursor", "token");
+    await reachSiteScopeStep("Cursor", "token");
 
-    const button = await screen.findByRole("button", { name: /generate connection token/i });
-    expect(button).toBeDisabled();
+    // Refused at Continue, on the step that owns the answer, rather than at a
+    // mint button the operator would have walked three more steps to find.
+    expect(continueButton()).toBeDisabled();
     expect(screen.getByText(/no site is picked/i)).toHaveTextContent(
       /pick at least one site in step 3, or switch that step to all sites/i,
     );
     // The remedy is the operator's own, not "the server said no".
     expect(screen.queryByText(/the server refused this request/i)).toBeNull();
+    expect(screen.queryByRole("button", { name: /generate connection token/i })).toBeNull();
   });
 
   it("refuses a by-tag scope with no tag picked, distinctly from an unreadable registry", async () => {
@@ -1949,13 +1957,10 @@ describe("minting a connection token", () => {
       mockQueryResult<SiteTag[]>({ data: [{ id: "tag-uuid-1", name: "prod" } as SiteTag] }),
     );
     renderWizard();
-    await reachSetupStep("Cursor", "token");
-    await screen.findByTestId("site-step-count");
+    await reachSiteScopeStep("Cursor", "token");
     fireEvent.click(screen.getByRole("radio", { name: /by tag/i }));
 
-    expect(
-      await screen.findByRole("button", { name: /generate connection token/i }),
-    ).toBeDisabled();
+    expect(continueButton()).toBeDisabled();
     expect(screen.getByText(/no tag is picked/i)).toBeInTheDocument();
     expect(screen.queryByText(/tag scope could not be resolved/i)).toBeNull();
   });
@@ -1972,10 +1977,13 @@ describe("minting a connection token", () => {
       return jsonResponse({ ...MINTED, site_scope_mode: "all" }, 201);
     });
 
-    const button = await reachMintButton();
-    expect(button).toBeEnabled();
+    expect(await reachMintButton()).toBeEnabled();
+    // Back to the step that owns the scope, the way an operator changes an
+    // answer now, and forward again. "Sites were picked first" is exactly what
+    // that walk leaves behind, which is the leak this test is about.
+    backToSiteStep();
     fireEvent.click(screen.getByRole("radio", { name: /all sites/i }));
-    fireEvent.click(await screen.findByRole("button", { name: /generate connection token/i }));
+    fireEvent.click(await forwardToMintButton());
 
     await screen.findByText(MINTED.token);
     expect(requestBodies).toHaveLength(1);
@@ -1998,10 +2006,13 @@ describe("minting a connection token", () => {
     });
 
     await reachMintButton();
+    backToSiteStep();
     fireEvent.click(screen.getByRole("radio", { name: /by tag/i }));
     fireEvent.click(screen.getByRole("button", { name: /\+ add tags/i }));
-    fireEvent.click(within(await screen.findByTestId("site-step-picker")).getAllByRole("checkbox")[0]!);
-    fireEvent.click(await screen.findByRole("button", { name: /generate connection token/i }));
+    fireEvent.click(
+      within(await screen.findByTestId("site-step-picker")).getAllByRole("checkbox")[0]!,
+    );
+    fireEvent.click(await forwardToMintButton());
 
     await screen.findByText(MINTED.token);
     expect(requestBodies).toHaveLength(1);
