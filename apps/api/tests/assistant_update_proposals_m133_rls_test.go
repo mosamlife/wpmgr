@@ -682,7 +682,7 @@ func TestApprovedProposalMustNameAHumanAsAppRole(t *testing.T) {
 	// record. With a foreign key this DELETE either fails (RESTRICT) or blanks
 	// the column (SET NULL); both are the defect DECISION 7 rejects.
 	deleteAdmin := connectAdmin(t, pool)
-	if _, err := deleteAdmin.Pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, approver); err != nil {
+	if _, err := deleteAdmin.Exec(ctx, `DELETE FROM users WHERE id = $1`, approver); err != nil {
 		t.Fatalf("OFFBOARDING BLOCKED: deleting the approving user failed: %v\n"+
 			"A foreign key is still present. Routine account cleanup must not be "+
 			"blocked by the approvals that user gave.", err)
@@ -838,7 +838,7 @@ func TestExpiryWindowCannotBeExtendedAsAppRole(t *testing.T) {
 // cannot disable its own guards.
 func m133DropForMutation(t *testing.T, admin *db.Pool, stmt string) {
 	t.Helper()
-	if _, err := admin.Pool.Exec(context.Background(), stmt); err != nil {
+	if _, err := admin.Exec(context.Background(), stmt); err != nil {
 		t.Fatalf("plant mutation %q: %v", stmt, err)
 	}
 }
@@ -947,7 +947,7 @@ func TestProposalSiteMustBelongToItsTenantAsAppRole(t *testing.T) {
 	// delete. Bound, deleting tenant B's site cannot touch tenant A's rows,
 	// because tenant A's rows can never have named it.
 	deleteAdmin := connectAdmin(t, pool)
-	if _, err := deleteAdmin.Pool.Exec(ctx, `DELETE FROM sites WHERE id = $1`, siteB); err != nil {
+	if _, err := deleteAdmin.Exec(ctx, `DELETE FROM sites WHERE id = $1`, siteB); err != nil {
 		t.Fatalf("deleting the other tenant's site failed: %v", err)
 	}
 	deleteAdmin.Close()
