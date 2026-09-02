@@ -46,6 +46,10 @@ type fakeStore struct {
 	client   sqlc.McpOauthClient
 	clientOK bool
 
+	// approved is every CreateMCPGrantParams the CONSENT path sent to the
+	// store, in order. `minted` is its token-path counterpart.
+	approved []sqlc.CreateMCPGrantParams
+
 	// grantPrincipal is the principal handed to CreateGrantWithCode, recorded
 	// so a test can assert the scope-carrying principal actually reaches the
 	// store rather than being flattened to a tenant id on the way down.
@@ -310,6 +314,11 @@ func (f *fakeStore) RedeemAuthorizationCode(_ context.Context, _, _ uuid.UUID, t
 func (f *fakeStore) CreateGrantWithCode(_ context.Context, principal db.ScopedPrincipal, g sqlc.CreateMCPGrantParams, mk func(uuid.UUID) sqlc.CreateMCPAuthorizationCodeParams, onCreated func(pgx.Tx, sqlc.McpGrant) error) (sqlc.McpGrant, sqlc.McpAuthorizationCode, error) {
 	f.note("CreateGrantWithCode")
 	f.grantPrincipal = principal
+	// The PARAMS, captured whole, for the same reason CreateGrantWithToken
+	// captures them: what the consent path stores on the grant row -- above
+	// all its capability set -- is only assertable if the fixture keeps the
+	// arguments rather than only the fact of the call.
+	f.approved = append(f.approved, g)
 	id := uuid.New()
 	cp := mk(id)
 	grant := sqlc.McpGrant{ID: id, TenantID: g.TenantID, Name: g.Name}
