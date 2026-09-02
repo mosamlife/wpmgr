@@ -51,11 +51,35 @@ import (
 	"testing"
 	"time"
 
+	"errors"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 )
+
+// m133IsPermissionDenied reports whether err is PostgreSQL's insufficient
+// privilege, 42501, read from the SQLSTATE rather than from the message text.
+//
+// The code is the mechanism; the message is a rendering of it, and it is
+// localisable and version-dependent. A test that matches "permission denied"
+// asserts on a string PostgreSQL never promised to keep.
+func m133IsPermissionDenied(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "42501"
+}
+
+// m133IsForeignKeyViolation reports whether err is 23503, and whether it came
+// from the named constraint. The constraint name matters: a proof that only
+// checked for "some FK complained" would pass if a different foreign key on the
+// same statement fired instead.
+func m133IsForeignKeyViolation(err error, constraint string) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23503" &&
+		pgErr.ConstraintName == constraint
+}
 
 // m133ComponentType is the single member component_type admits today. Named
 // once so that widening the CHECK is a one-line change here and not a hunt.
@@ -336,7 +360,14 @@ func TestProposalOutsideTheSiteScopeIsInvisibleAsAppRole(t *testing.T) {
 				"policy itself unproven.", writeErr)
 		}
 		return nil
-	}); err != nil && !strings.Contains(err.Error(), "row-level security") {
+	}); err != nil {
+		// FAIL ON ANY ERROR HERE. This clause used to swallow anything whose
+		// message mentioned "row-level security", on the reasoning that such an
+		// error was the proof succeeding. It is not: every refusal this proof
+		// cares about is asserted INSIDE the closure, which returns nil. An
+		// error reaching this point came from the dispatch itself -- a failed
+		// InScopedTenantTx, a broken GUC, a rolled-back transaction -- and
+		// treating it as success passes the proof on a path that never ran it.
 		t.Fatalf("site-scoped read: %v", err)
 	}
 }
@@ -734,8 +765,9 @@ func TestExpiryWindowCannotBeExtendedAsAppRole(t *testing.T) {
 				"to meet now(). There is supposed to be no 'extend' in this product.",
 				proposal)
 		}
-		if !strings.Contains(strings.ToLower(moved.Error()), "permission denied") {
-			t.Fatalf("moving the window was refused, but not by a column privilege: %v\n"+
+		if !m133IsPermissionDenied(moved) {
+			t.Fatalf("moving the window was refused, but not by a column privilege "+
+				"-- expected 42501: %v\n"+
 				"Section (5) holds this with REVOKE UPDATE / GRANT UPDATE (cols). A "+
 				"refusal from anything else means that privilege is not what is "+
 				"holding, and the harness re-revoke may have been lost.", moved)
@@ -752,6 +784,16 @@ func TestExpiryWindowCannotBeExtendedAsAppRole(t *testing.T) {
 			t.Fatalf("FINGERPRINT REWRITTEN: presented_digest on proposal %s was "+
 				"updated. The column whose entire purpose is to prove what was "+
 				"displayed now proves whatever the last writer wanted.", proposal)
+		}
+		// AND REFUSED BY THE COLUMN PRIVILEGE, not by whatever else happened to
+		// be in the way. Accepting any error here would pass if the REVOKE were
+		// gone and the statement failed for an unrelated reason -- a test that
+		// names one mechanism and asserts another.
+		if !m133IsPermissionDenied(digest) {
+			t.Fatalf("the presented_digest UPDATE was refused, but not by the column "+
+				"privilege that exists to refuse it -- expected 42501: %v\n"+
+				"Section (5)'s REVOKE is what holds this column still; a refusal from "+
+				"anything else means it is not what is holding.", digest)
 		}
 
 		// POSITIVE CONTROL. The workflow columns must still move, or the REVOKE
@@ -798,6 +840,135 @@ func m133DropForMutation(t *testing.T, admin *db.Pool, stmt string) {
 	t.Helper()
 	if _, err := admin.Pool.Exec(context.Background(), stmt); err != nil {
 		t.Fatalf("plant mutation %q: %v", stmt, err)
+	}
+}
+
+// TestProposalSiteMustBelongToItsTenantAsAppRole proves m133 DECISION 10: every
+// proposal names a site belonging to the tenant that owns the proposal.
+//
+// WHY THIS NEEDS ITS OWN PROOF. tenant_id and site_id were each a foreign key
+// to their own table, and each was satisfied by a real row while their
+// COMBINATION was unchecked. Two reviewers raised it independently. Neither
+// tenant isolation nor the site-scope policy covers it: tenant_isolation tests
+// the proposal's own tenant_id against the connection's, and site_scope is
+// RESTRICTIVE on app.site_scope and inert on every path that does not set it.
+// The composite FK is what makes the pair itself the thing checked.
+//
+// THE PAIR IS CHECKED FOR EVERY WRITER, which is why this proof runs as an
+// ORDINARY tenant-scoped connection with no site scope set -- the widest
+// legitimate writer, and the one both policies admit. A foreign key is enforced
+// before any policy or CHECK of ours is consulted, so there is no writer for
+// whom this is optional.
+//
+// Mutation 9, planted and watched. Planting
+//
+//	ALTER TABLE assistant_update_proposals
+//	    DROP CONSTRAINT assistant_update_proposals_site_within_tenant_fkey;
+//
+// makes the first assertion fail with "a proposal was stored naming another
+// tenant's site".
+func TestProposalSiteMustBelongToItsTenantAsAppRole(t *testing.T) {
+	ctx := context.Background()
+	pool := startPostgres(t)
+
+	// Two organisations, each with a site. The second is the one that must
+	// never be nameable from the first.
+	tenantA := seedTenant(t, pool, "m133-pairA-"+uuid.NewString()[:8])
+	siteA := seedSite(t, pool, tenantA, "")
+	tenantB := seedTenant(t, pool, "m133-pairB-"+uuid.NewString()[:8])
+	siteB := seedSite(t, pool, tenantB, "")
+
+	if err := pool.InTenantTx(ctx, tenantA, func(tx pgx.Tx) error {
+		mcpAssertAndReportRole(t, tx, "InTenantTx (the pair must be one fact)")
+
+		// THE LEAK ASSERTION, FIRST. Tenant A's proposal naming tenant B's
+		// site. Both halves exist; the pair does not.
+		crossed := m133ExpectRefused(t, tx, `
+			INSERT INTO assistant_update_proposals
+			    (tenant_id, site_id, proposed_by_grant_id, component_type,
+			     component_slug, from_version, to_version, presented_digest,
+			     state, expires_at)
+			VALUES ($1, $2, $3, $4, 'crossed-pair', '1.0.0', '1.1.0', $5, 'pending',
+			        now() + interval '1 hour')`,
+			tenantA, siteB, uuid.New(), m133ComponentType, m133Digest("crossed-pair"))
+		if crossed == nil {
+			t.Fatalf("A PROPOSAL WAS STORED NAMING ANOTHER TENANT'S SITE: tenant %s "+
+				"holds a proposal about site %s, which belongs to tenant %s. "+
+				"assistant_update_proposals_site_within_tenant_fkey is missing. The "+
+				"whole point of this row is to record that a human decided something "+
+				"about a SPECIFIC SITE; presented_digest fingerprints the screen they "+
+				"were shown, and a digest over the right screen attached to the wrong "+
+				"site_id proves nothing at all.", tenantA, siteB, tenantB)
+		}
+		if !m133IsForeignKeyViolation(crossed,
+			"assistant_update_proposals_site_within_tenant_fkey") {
+			t.Fatalf("the mismatched pair was refused, but not by the composite foreign "+
+				"key that exists to refuse it -- expected 23503 naming "+
+				"assistant_update_proposals_site_within_tenant_fkey: %v", crossed)
+		}
+
+		// THE SAME PAIR MUST NOT BE REACHABLE BY UPDATE EITHER. site_id is
+		// outside section (5)'s column grant, so this is expected to be refused
+		// by the privilege first -- but a proof that only covered INSERT would
+		// leave the door open the day that grant widens.
+		movedSite := m133ExpectRefused(t, tx, `
+			UPDATE assistant_update_proposals SET site_id = $2 WHERE tenant_id = $1`,
+			tenantA, siteB)
+		if movedSite == nil {
+			t.Fatalf("A PROPOSAL WAS REPOINTED AT ANOTHER TENANT'S SITE by UPDATE. "+
+				"Neither the column privilege nor the composite foreign key stopped "+
+				"it, so a decided proposal can be made to name site %s after the fact.",
+				siteB)
+		}
+
+		// POSITIVE CONTROL. The matching pair must still be insertable, or the
+		// constraint refuses correct work and gets switched off.
+		var ok uuid.UUID
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO assistant_update_proposals
+			    (tenant_id, site_id, proposed_by_grant_id, component_type,
+			     component_slug, from_version, to_version, presented_digest,
+			     state, expires_at)
+			VALUES ($1, $2, $3, $4, 'matching-pair', '1.0.0', '1.1.0', $5, 'pending',
+			        now() + interval '1 hour')
+			RETURNING id`,
+			tenantA, siteA, uuid.New(), m133ComponentType, m133Digest("matching-pair")).
+			Scan(&ok); err != nil {
+			t.Fatalf("OVER-FIRING: a proposal naming its own tenant's site %s was "+
+				"refused: %v", siteA, err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("site-must-belong-to-tenant: %v", err)
+	}
+
+	// THE SECOND-ORDER CONSEQUENCE. With the pair unbound, one organisation's
+	// proposal could be reached by a cascade from another organisation's site
+	// delete. Bound, deleting tenant B's site cannot touch tenant A's rows,
+	// because tenant A's rows can never have named it.
+	deleteAdmin := connectAdmin(t, pool)
+	if _, err := deleteAdmin.Pool.Exec(ctx, `DELETE FROM sites WHERE id = $1`, siteB); err != nil {
+		t.Fatalf("deleting the other tenant's site failed: %v", err)
+	}
+	deleteAdmin.Close()
+
+	if err := pool.InTenantTx(ctx, tenantA, func(tx pgx.Tx) error {
+		mcpAssertAndReportRole(t, tx, "InTenantTx (survives the other tenant's site delete)")
+		var n int
+		if err := tx.QueryRow(ctx,
+			`SELECT count(*) FROM assistant_update_proposals WHERE tenant_id = $1`,
+			tenantA).Scan(&n); err != nil {
+			return err
+		}
+		if n != 1 {
+			t.Fatalf("CROSS-TENANT CASCADE: tenant %s has %d proposals after tenant "+
+				"%s deleted site %s, want 1. The lifetime of one organisation's "+
+				"approval record must not be governed by a row in another "+
+				"organisation's account.", tenantA, n, tenantB, siteB)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("read back after the other tenant's site delete: %v", err)
 	}
 }
 
@@ -1097,9 +1268,9 @@ func TestApprovalRecordCannotBeDestroyedAsAppRole(t *testing.T) {
 				"can drop the row instead of editing it: the approval simply stops "+
 				"having happened, and no audit read can tell that it ever did.", approved)
 		}
-		if !strings.Contains(gone.Error(), "permission denied") {
+		if !m133IsPermissionDenied(gone) {
 			t.Fatalf("the DELETE was refused, but not by the privilege that exists to "+
-				"refuse it -- expected 42501 permission denied: %v", gone)
+				"refuse it -- expected 42501: %v", gone)
 		}
 
 		// TRUNCATE is DELETE without a WHERE clause and is revoked with it.
