@@ -117,10 +117,9 @@
 --
 -- "TERMINAL" ABOVE DESCRIBES THE WORKFLOW, NOT AN ENFORCED PROPERTY. The
 -- database has no transition guard: a CHECK sees only the finished row, so the
--- previous state constrains nothing about the next one, and a row CAN be moved
--- out of a state this list calls terminal. Section (6) says which moves remain
--- reachable and why closing them was left to a later decision. Read this list
--- as what the callers do, not as what the schema forbids.
+-- previous state constrains nothing about the next one. Read this list as what
+-- the callers do, not as what the schema forbids. Section (6) states that limit
+-- and why closing it was left to a later decision.
 --
 -- ADR-061 requires 'approved, not yet dispatched' to be a committed state
 -- rather than a moment between two statements, and states why in its own words:
@@ -161,7 +160,7 @@
 -- CONTROL -- no column, no state and no value exists for either, so neither can
 -- be implemented without a migration. The window itself is now immutable after
 -- insert. What the schema does NOT do is prevent a privileged writer from
--- rewriting one human decision into another; see section (6) item 2.
+-- rewriting one human decision into another; see section (6).
 --
 -- The invariant is enforced STRUCTURALLY by assistant_update_proposals_
 -- consent_within_window_check:
@@ -179,9 +178,8 @@
 -- now(), and it cannot: PostgreSQL refuses a non-immutable function in a CHECK,
 -- so there is no version of this constraint that knows what time it is. It
 -- therefore guarantees the row is SELF-CONSISTENT, not that the approval
--- happened while the window was open. A caller that supplies its own decided_at
--- inside the closed window gets an approved row on an expired proposal, and a
--- review reached exactly that state by execution.
+-- happened while the window was open. The distance between those two readings
+-- is entirely the caller's to close, which is what the next paragraph is for.
 --
 -- WHICH IS WHY (7)(c) IS A HARD REQUIREMENT AND NOT A STYLE NOTE. When the
 -- approve statement sets decided_at = now() and lets the database evaluate it,
@@ -465,9 +463,9 @@
 -- would have to guess at. No caller writes 'rejected' today, so nothing is
 -- broken by requiring it now, and requiring it later would need a backfill.
 --
--- WHAT NEITHER ADDITION DOES: replace a transition guard. The decider can
--- still be overwritten with a different human, and states are still not
--- terminal. Section (6) names those in full.
+-- WHAT NEITHER ADDITION DOES: replace a transition guard. Both are properties
+-- of a finished row, so neither says anything about what the row was a moment
+-- earlier. Section (6) states the limit and where the remainder is tracked.
 
 -- ===========================================================================
 -- (1) THE TABLE
@@ -588,11 +586,11 @@ CREATE TABLE IF NOT EXISTS "public"."assistant_update_proposals" (
     -- rejection cannot be anonymous, so there is no decided state a writer can
     -- move an approved row into that drops the name.
     --
-    -- WHAT THIS DOES NOT CLOSE, stated here so the next reader does not read
-    -- more into it than it says: it stops the name being ERASED, not
-    -- REPLACED. Overwriting decided_by_user_id with a different user id is
-    -- still accepted, because a CHECK sees only the finished row and cannot
-    -- tell that the column just changed. Section (6) has the full list.
+    -- WHAT THIS DOES NOT CLOSE, stated so the next reader does not read more
+    -- into it than it says: it guarantees a decided row NAMES someone. It does
+    -- not guarantee the someone it names is the someone who decided -- the same
+    -- limit DECISION 8 already states for approvals, for the same reason. A
+    -- CHECK sees only the finished row.
     CONSTRAINT "assistant_update_proposals_rejection_names_a_human_check"
         CHECK (
             "state" <> 'rejected'
@@ -842,7 +840,7 @@ GRANT UPDATE ("state", "decided_at", "decided_by_user_id",
     ON "public"."assistant_update_proposals" TO "wpmgr_app";
 
 -- ===========================================================================
--- (6) WHAT REMAINS POSSIBLE, NAMED IN FULL RATHER THAN IMPLIED ABSENT
+-- (6) WHAT THIS TABLE GUARANTEES, STATED POSITIVELY AND EXACTLY
 -- ===========================================================================
 --
 -- WHAT THIS TABLE GUARANTEES. Stated positively and completely, so a reader can
@@ -865,36 +863,37 @@ GRANT UPDATE ("state", "decided_at", "decided_by_user_id",
 --      human; expired names nobody and may not name anyone. The approver of an
 --      approved row cannot be erased by moving the row to 'rejected'.
 --
--- THE GUARANTEES ARE PARTIAL, AND WHAT IS MISSING IS ONE THING WITH THREE
--- FACES. Every one of them is the same absence: THERE IS NO TRANSITION GUARD.
--- A CHECK sees the finished row and never the row it replaced, and a column
--- privilege can say whether a column may move but not in which direction. So
--- the PREVIOUS state of a row constrains NOTHING about its next state, and
--- these three consequences follow and have each been reached by execution as
--- wpmgr_app through the production dispatch:
+-- THE GUARANTEES ARE PARTIAL, AND WHAT IS MISSING IS ONE THING: THERE IS NO
+-- TRANSITION GUARD. A CHECK sees the finished row and never the row it
+-- replaced, and a column privilege can say whether a column may move but not in
+-- which direction. So THE PREVIOUS STATE OF A ROW CONSTRAINS NOTHING ABOUT ITS
+-- NEXT STATE, and every remaining gap in this table is a consequence of that
+-- one sentence. Do not read the list above as exhaustive of what holds; read it
+-- as exactly what holds, and assume nothing about transitions.
 --
---   a. STATES ARE NOT TERMINAL. A dispatched row can be moved back to
---      'pending'. Nothing marks a decided row as finished.
---   b. THE DECIDER CAN BE REPLACED, though no longer erased. Guarantee 8 above
---      makes an anonymous decision unrepresentable; it does not stop
---      decided_by_user_id being overwritten with a DIFFERENT user id.
---   c. THE WINDOW CHECK VERIFIES ARITHMETIC, NOT TIME. It compares decided_at
---      to expires_at and never to now(), which a CHECK cannot call. A caller
---      that supplies its own decided_at rather than letting the database
---      evaluate now() can therefore approve a proposal whose window has
---      closed. DECISION 4 and (7)(c) both carry this; it is repeated here
---      because this is the section a reader consults for what is NOT true.
+-- THE RESIDUAL SET IS TRACKED PRIVATELY, WITH ITS SEVERITY ASSESSMENT AND THE
+-- OPTIONS FOR CLOSING IT, and is NOT written here.
 --
--- These are stated because the alternative is worse. This file previously
--- claimed absolutes in this area that a review disproved by execution, and the
--- claims had been repeated onward as fact before that happened. A reader who is
--- told only "the guarantees are partial" builds on whichever absolute they
--- remember. Naming the three costs little: they are all one sentence -- the
--- previous state constrains nothing -- and that sentence was already in this
--- section, in the paragraph below, as the reason a trigger is what would close
--- it. What is NOT written here is the severity assessment and the option
--- analysis, which stay in the maintainers' private notes, because this
--- repository is public and a commit cannot be recalled.
+-- That omission is deliberate and is itself the rule: this repository is public,
+-- and an enumeration of which specific transitions defeat a guard that is not
+-- yet closed is a recipe, not a residual-risk note. A commit cannot be recalled.
+-- An earlier revision of this section enumerated the remainder in full and had
+-- to be removed from history; a later one did it again, was caught in review,
+-- and is why this paragraph now says so twice. If you are about to add it back
+-- because "a reader needs to know", read this paragraph again -- what a
+-- maintainer needs is the sentence above, that the previous state constrains
+-- nothing, which tells them not to rely on any transition property at all and
+-- carries the same information as the roster without publishing it. The
+-- maintainers who need the specifics have them.
+--
+-- WHAT IS NOT COVERED BY THAT OMISSION, because it is the correction of a false
+-- statement rather than a description of a gap: DECISION 4 used to claim
+-- consent_within_window_check guarded the passage of time. It does not, it
+-- cannot, and (7)(c) turns that into the requirement on the caller that makes
+-- the invariant real. Saying less than the truth about what a constraint does
+-- is the failure this file has already had twice; saying more than the truth
+-- about how to get past one is the failure this paragraph prevents. They are
+-- different failures and the fix for one is not the fix for the other.
 --
 -- WHY THE REMAINDER IS NOT SIMPLY CLOSED HERE: what would close it is a
 -- transition guard, and that requires a trigger. This tree has ZERO
