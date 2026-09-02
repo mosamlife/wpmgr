@@ -789,14 +789,13 @@ export function ConnectWizard({
               These are all read-only. No capability on this screen can change WordPress
               content or configuration, whichever ones you pick.
             </p>
-            {!capabilitiesRequest.ok ? (
-              <p
-                role="alert"
-                className="rounded-md border border-[var(--color-border)] bg-[var(--color-muted)]/40 p-3 text-sm text-[var(--color-foreground)]"
-              >
-                {capabilitiesRequest.refusal}
-              </p>
-            ) : null}
+            {/* NO PRIVATE REFUSAL PANEL HERE. `capabilitiesRequest.refusal` is
+                the exact string `stepGate`'s CAPABILITY_LOCAL_STEP branch
+                returns as `gate.refusal`, and WizardNav below already renders
+                that once, next to Continue, for every step that can refuse.
+                A second panel in this section rendered the identical sentence
+                twice on screen; it predates the one-step-at-a-time conversion,
+                from when this step had no Continue to attach a reason to. */}
           </div>
         </Section>
       ) : null}

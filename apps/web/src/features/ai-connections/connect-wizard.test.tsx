@@ -1487,11 +1487,12 @@ describe("choosing what a token may do (step 4, token path only)", () => {
 
     fireEvent.click(screen.getByRole("checkbox", { name: /^Sites/i }));
 
-    // Rendered TWICE by design -- once beside the picker (an operator working
-    // the checkboxes sees it immediately) and once inside the mint panel
-    // (an operator who scrolled straight to the button sees it there) -- so
-    // this asserts on the plural.
-    expect((await screen.findAllByText(/no capability is selected/i)).length).toBeGreaterThan(0);
+    // EXACTLY ONE, not merely present. WizardNav owns the one refusal panel
+    // for every step; a private panel inside this section rendering the same
+    // sentence a second time shipped to production once and a `findAllByText
+    // .length > 0` assertion here did not catch it, because two matches
+    // satisfy "greater than zero" as easily as one does.
+    expect(await screen.findAllByText(/no capability is selected/i)).toHaveLength(1);
     // REFUSED AT CONTINUE NOW, not at a mint button one step further on. The
     // same predicate makes both refusals, so moving the assertion to the
     // control the operator is standing in front of tests the same guard at the
@@ -1559,6 +1560,57 @@ describe("choosing what a token may do (step 4, token path only)", () => {
 
     const body = capturedBody as Record<string, unknown>;
     expect(body.capabilities).toEqual(["mcp.sites.read", "mcp.uptime.read", "mcp.backups.read"]);
+  });
+});
+
+/**
+ * ONE REFUSAL PER BLOCKED STEP, AS A COUNT, FOR EVERY STEP THAT CAN REFUSE.
+ *
+ * WizardNav (`connect-wizard.tsx`) is the one place a step's `gate.refusal`
+ * is rendered. A step section that also renders its own copy of the same
+ * sentence -- reachable because the section reads the same underlying value
+ * the gate does -- puts the identical text on screen twice. A `getAllByText
+ * / findAllByText .length > 0` assertion is blind to that: a second match
+ * satisfies "at least one" exactly as well as one match does, which is how
+ * the capability step's private panel shipped and stayed unnoticed. Every
+ * test below asserts the exact count instead, on every local step whose gate
+ * can carry a refusal (1, 2, 3 and 4 -- the setup artefact step never
+ * refuses, see `stepGate`'s final branch).
+ */
+describe("a blocked step's refusal renders exactly once, never twice", () => {
+  it("step 1 -- no client chosen", async () => {
+    renderWizard();
+    await screen.findByRole("button", { name: /cursor/i });
+    expect(
+      screen.getAllByText(/pick the client that will connect before going on/i),
+    ).toHaveLength(1);
+    expect(continueButton()).toBeDisabled();
+  });
+
+  it("step 2 -- client chosen, no sign-in method chosen", async () => {
+    renderWizard();
+    await pickClient("Cursor");
+    expect(
+      screen.getAllByText(/choose how this client signs in before going on/i),
+    ).toHaveLength(1);
+    expect(continueButton()).toBeDisabled();
+  });
+
+  it("step 3 -- token path, list mode, no site picked", async () => {
+    loadedFleet(3);
+    renderWizard();
+    await reachSiteScopeStep("Cursor", "token");
+    expect(screen.getAllByText(/no site is picked/i)).toHaveLength(1);
+    expect(continueButton()).toBeDisabled();
+  });
+
+  it("step 4 -- token path, every capability deselected", async () => {
+    loadedFleet(3);
+    renderWizard();
+    await advanceToCapabilityStep();
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Sites/i }));
+    expect(await screen.findAllByText(/no capability is selected/i)).toHaveLength(1);
+    expect(continueButton()).toBeDisabled();
   });
 });
 
