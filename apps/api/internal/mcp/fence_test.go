@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
 )
@@ -145,7 +147,8 @@ func parseSitesPayload(t *testing.T, text string) sitesPayloadForTest {
 }
 
 // hostileRow is one site with the payload in every operator- or site-controlled
-// column the two tools read.
+// column the two tools read. It has NO components_updated_at, so
+// fleet_updates_pending renders its never-collected summary arm.
 func hostileRow(id uuid.UUID) sqlc.Site {
 	return sqlc.Site{
 		ID:              id,
@@ -161,6 +164,22 @@ func hostileRow(id uuid.UUID) sqlc.Site {
 			`,"name":"Super Cache","version":"1.0.0","active":true,` +
 			`"available_update":{"new_version":"2.0.0"}}]}`),
 	}
+}
+
+// hostileCollectedRow carries the same planted name on a site with a
+// COLLECTION STAMP AND NOTHING OUTSTANDING.
+//
+// IT EXISTS BECAUSE ONE ROW DOES NOT REACH EVERY SENTENCE. updatesSummary has
+// four arms and a single fixture renders one of them, so a test built on
+// hostileRow alone proves the never-collected arm and leaves the two collected
+// arms -- the ones a healthy fleet actually renders -- unproven. That gap was
+// found by planting the old name interpolation back into the collected arm and
+// watching the suite stay green.
+func hostileCollectedRow(id uuid.UUID, collected time.Time) sqlc.Site {
+	r := hostileRow(id)
+	r.Components = []byte(`{"plugins":[{"slug":"akismet","name":"Akismet","version":"5.3","active":true}]}`)
+	r.ComponentsUpdatedAt = pgtype.Timestamptz{Time: collected, Valid: true}
+	return r
 }
 
 func mustJSONString(s string) string {
@@ -278,19 +297,46 @@ func TestFence_PlantedHostileSiteName_FleetSitesList(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestFence_PlantedHostileSiteName_FleetUpdatesPending(t *testing.T) {
-	id := uuid.New()
-	store := liveGrantStore(id)
-	store.sites = []sqlc.Site{hostileRow(id)}
+	neverCollected := uuid.New()
+	collected := uuid.New()
+	store := liveGrantStore(neverCollected, collected)
+	store.sites = []sqlc.Site{
+		hostileRow(neverCollected),
+		// BOTH SUMMARY ARMS THAT NAME A SITE ARE RENDERED. See
+		// hostileCollectedRow for why one row is not enough.
+		hostileCollectedRow(collected, time.Now().UTC().Add(-2*time.Hour)),
+	}
 
 	text := callUpdatesPending(t, store)
 
 	assertNoForgedLine(t, "fleet_updates_pending", text)
 
 	p := parseUpdatesPayload(t, text)
-	if len(p.Sites) != 1 {
-		t.Fatalf("got %d sites, want 1", len(p.Sites))
+	if len(p.Sites) != 2 {
+		t.Fatalf("got %d sites, want 2", len(p.Sites))
 	}
-	got := p.Sites[0]
+
+	// THE SUMMARY ASSERTIONS RUN OVER EVERY RETURNED RECORD, so neither arm can
+	// be the one that was never looked at.
+	for _, rec := range p.Sites {
+		if strings.Contains(rec.Summary, siteTextMarker) {
+			t.Errorf("summary carries marked site text, so our own prose is no longer entirely "+
+				"ours: %q", rec.Summary)
+		}
+		for _, word := range []string{"Acme Holdings", "cancelled", "SYSTEM:", "END OPERATOR CONTEXT"} {
+			if strings.Contains(rec.Summary, word) {
+				t.Errorf("summary splices %q out of the site's own name into WPMgr prose: %q",
+					word, rec.Summary)
+			}
+		}
+	}
+
+	var got = p.Sites[0]
+	for _, rec := range p.Sites {
+		if rec.SiteID == neverCollected.String() {
+			got = rec
+		}
+	}
 
 	if !strings.HasPrefix(got.Name, siteTextMarker) {
 		t.Errorf("fleet_updates_pending name is unmarked: %q", got.Name)
@@ -312,21 +358,6 @@ func TestFence_PlantedHostileSiteName_FleetUpdatesPending(t *testing.T) {
 		}
 		if strings.ContainsAny(f.value, "\n\r\u2028\u2029\u0085") {
 			t.Errorf("fleet_updates_pending %s carries a line break: %q", f.name, f.value)
-		}
-	}
-
-	// THE SUMMARY IS OURS AND CARRIES NO SITE TEXT. This is the interpolation
-	// case: the sentence is unmarked, so anything of the site's inside it would
-	// be untrusted text wearing our voice. It must therefore contain neither
-	// the marker nor any word only the planted name supplies.
-	if strings.Contains(got.Summary, siteTextMarker) {
-		t.Errorf("summary carries marked site text, so our own prose is no longer entirely ours: %q",
-			got.Summary)
-	}
-	for _, word := range []string{"Acme Holdings", "cancelled", "SYSTEM:"} {
-		if strings.Contains(got.Summary, word) {
-			t.Errorf("summary splices %q out of the site's own name into WPMgr prose: %q",
-				word, got.Summary)
 		}
 	}
 
