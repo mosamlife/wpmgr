@@ -105,43 +105,54 @@ test.describe("the connection wizard stepper", () => {
     await page.goto("/ai/connect");
     await expect(page.getByTestId("step-rail")).toBeVisible();
 
-    // Pick a client so the page grows past a phone screen and the auth cards
-    // are down at the bottom of it, which is where an operator would be
-    // standing when their next click changes the current step.
+    // Walk to the auth step and scroll down it, which is where an operator
+    // stands when their next action changes the current step.
     await page.getByRole("button", { name: /claude code/i }).click();
+    await page.getByRole("button", { name: /^Continue$/ }).click();
     const tokenCard = page.locator('button[data-method="token"]');
     await tokenCard.scrollIntoViewIfNeeded();
     await expect(tokenCard).toBeVisible();
 
-    // MEASURED IN VIEWPORT COORDINATES, NOT window.scrollY. This app scrolls an
-    // inner container rather than the document, so window.scrollY stays 0 no
-    // matter how far down the operator is; asserting on it would pass whatever
-    // happened. What an operator actually notices is the section they are
-    // working in moving, so that is what is measured.
-    const railBox = await page.getByTestId("step-rail").boundingBox();
-    // The operator has genuinely scrolled past the rail: if the rail were still
-    // on screen the assertion below could hold trivially.
-    expect(railBox === null || railBox.y < 0).toBe(true);
-    const cardBefore = await tokenCard.boundingBox();
-    const railBefore = await page
-      .getByTestId("step-rail")
-      .evaluate((el) => el.scrollLeft);
+    // MEASURED ON THE APP'S OWN SCROLL CONTAINER, NOT window.scrollY. This app
+    // scrolls an inner element rather than the document, so window.scrollY
+    // stays 0 no matter how far down the operator is and asserting on it would
+    // pass whatever happened.
+    //
+    // AND NOT ON A SECTION'S BOUNDING BOX EITHER, because one step is on screen
+    // at a time now: the click that changes the current step also replaces the
+    // section, so there is no element whose y-coordinate means anything across
+    // the move. The container's own scrollTop is the thing an operator feels,
+    // and it is what `scrollIntoView` would have thrown away.
+    const scroller = page.locator("main");
+    const scrollTopBefore = await scroller.evaluate((el) => el.scrollTop);
+    // The operator has genuinely scrolled: if they were still at the top the
+    // assertion below could hold trivially.
+    expect(scrollTopBefore).toBeGreaterThan(0);
+    const railBefore = await page.getByTestId("step-rail").evaluate((el) => el.scrollLeft);
 
-    // This click moves the current step (auth -> the blocked site scope), so
-    // the rail's scroll effect runs.
+    // This moves the current step (auth -> site scope), so the rail's scroll
+    // effect runs.
     await tokenCard.click();
+    await page.getByRole("button", { name: /^Continue$/ }).click();
     await expect(page.locator('[data-step-n="3"]')).toHaveAttribute("aria-current", "step");
+
     // The smooth scroll settles; poll rather than sleep so this is not timing
     // dependent.
     await expect
       .poll(async () => page.getByTestId("step-rail").evaluate((el) => Math.round(el.scrollLeft)))
       .not.toBe(Math.round(railBefore));
 
-    // THE ASSERTION THIS TEST EXISTS FOR: the section the operator was using
-    // has not moved. The rail brought its current segment into view on its own
-    // axis and left every other axis alone.
-    const cardAfter = await tokenCard.boundingBox();
-    expect(Math.round(cardAfter?.y ?? -1)).toBe(Math.round(cardBefore?.y ?? -2));
+    // THE ASSERTION THIS TEST EXISTS FOR: the rail did not drag the page to the
+    // top. `scrollIntoView` moves whatever ancestors it must, and the rail sits
+    // at the top of this container, so it would leave scrollTop at exactly 0.
+    // Writing the rail's own scrollLeft cannot touch this axis at all.
+    //
+    // NOT ASSERTED AS AN EXACT EQUALITY, and the reason is a real one rather
+    // than a tolerance: the step being moved to is shorter than the one being
+    // left, so the container's scrollable range shrinks and the browser clamps
+    // scrollTop to fit. That clamp is the page getting shorter, not the rail
+    // scrolling it. Zero is the value only `scrollIntoView` produces.
+    expect(await scroller.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
   });
 
   test("keeps all ten steps on one row at desktop width, with the wide connector", async ({

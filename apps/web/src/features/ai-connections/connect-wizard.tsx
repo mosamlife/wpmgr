@@ -128,15 +128,27 @@ const BUILT_ORDER: readonly [1 | 2 | 3 | 4 | 5, number][] = [
   [5, 6],
 ];
 
-/** The specified step number a locally-built step answers. */
-function specStepFor(step: Step): number {
-  const found = BUILT_ORDER.find(([local]) => local === step);
-  // Unreachable: BUILT_ORDER has one entry per Step value. A throw here
-  // rather than a fallback number, because a fallback would silently mark
-  // the wrong segment current instead of failing loudly.
-  if (found === undefined) throw new Error(`no specified step for local step ${step}`);
-  return found[1];
-}
+/** The local step that asks "which sites", and the one that asks "what it may do". */
+const SITE_SCOPE_LOCAL_STEP: Step = 3;
+const CAPABILITY_LOCAL_STEP: Step = 4;
+
+
+/**
+ * What a rail segment IS, for the operator standing in front of it. THREE
+ * STATES, NOT A BOOLEAN, and the third one is why: a step can be built and on
+ * this operator's path, built but not asked of them because of an answer they
+ * already gave, or not built at all.
+ *
+ *   "built"          -- there is a section for it and this path visits it.
+ *   "not-applicable" -- built, but this path does not ask it. Step 4 on the
+ *                       OAuth path is the only instance: permissions are
+ *                       chosen on the approval screen there. The segment STAYS,
+ *                       with its reason, rather than the rail shortening from
+ *                       ten segments to nine halfway through (ruling 15,
+ *                       "persistent on every step").
+ *   "not-built"      -- no section exists yet, on any path.
+ */
+type SpecStepAvailability = "built" | "not-applicable" | "not-built";
 
 interface SpecStepDef {
   /** The specified step number (design S29), 1 through 10. */
@@ -157,8 +169,85 @@ interface SpecStepDef {
    * reported: the rail called a section step 5 while its own heading said 2.
    */
   readonly heading: string;
-  /** True when this specified step has a built, reachable section today. */
+  /** True when this specified step has a built section on at least one path. */
   readonly built: boolean;
+  /**
+   * Set only where a built step is asked on ONE auth path. The capability
+   * picker is the single case: the OAuth mint carries no capability field
+   * (service.go:842 hard-codes the default), so asking here would be a
+   * decision that does nothing.
+   */
+  readonly onlyOnMethod?: AuthMethod;
+}
+
+/**
+ * Which of the three availability states one specified step is in, for the
+ * auth method chosen so far.
+ *
+ * BEFORE A METHOD IS CHOSEN, A PATH-ONLY STEP IS "built", NOT
+ * "not-applicable". Nothing has ruled it out yet, and telling an operator on
+ * step 2 that step 4 will not be asked of them -- when their next answer
+ * decides exactly that -- would be a claim the wizard cannot yet make.
+ */
+function specStepAvailability(s: SpecStepDef, method: AuthMethod | null): SpecStepAvailability {
+  if (!s.built) return "not-built";
+  if (s.onlyOnMethod !== undefined && method !== null && method !== s.onlyOnMethod) {
+    return "not-applicable";
+  }
+  return "built";
+}
+
+/**
+ * The steps this wizard actually walks, in order, for the auth method chosen
+ * so far -- BUILT_ORDER with the steps this path does not ask removed.
+ *
+ * Navigation reads this and nothing else, so Continue on the OAuth path steps
+ * from site scope (spec 3) straight to the setup artefact (spec 6) without
+ * ever landing the operator on a section that renders nothing. The rail still
+ * draws all ten segments; only the WALK is shortened, and the segment it skips
+ * says why it was skipped.
+ */
+function walkFor(method: AuthMethod | null): readonly [Step, number][] {
+  return BUILT_ORDER.filter(([, spec]) => {
+    const def = SPEC_STEPS.find((s) => s.n === spec);
+    return def === undefined || specStepAvailability(def, method) === "built";
+  });
+}
+
+/**
+ * Where the operator actually stands: the position they asked for, clamped to
+ * the first step in the walk whose gate refuses.
+ *
+ * THE CLAMP IS WHAT MAKES THE RAIL'S INVARIANT STRUCTURAL. The first blocked
+ * step is a wall: an operator may stand on it and never past it, so every
+ * position before the cursor is settled by construction, and "never shows a
+ * step complete while the action it gates is blocked" needs no second
+ * condition anywhere else to hold.
+ *
+ * IT IS EXPORTED, AND TESTED DIRECTLY, BECAUSE ITS SHARPEST CASE CANNOT BE
+ * REACHED THROUGH THE DOM. Requesting a position PAST the wall needs an answer
+ * to go bad behind the operator -- the fleet query refetching into a failure
+ * while they stand on the setup step, which is what a window focus or a
+ * reconnect does in production. Nothing in a mounted test can make the route
+ * re-read a mocked hook without the operator navigating, and navigating is
+ * exactly what resets the request. Removing the clamp therefore leaves every
+ * rendered test green, which would make it look like dead code and invite its
+ * deletion. The unit tests beside this function are what actually hold it.
+ *
+ * A requested step that is not in the walk at all (-1) means the path changed
+ * under it: the operator was on the capability picker and went back to choose
+ * browser sign-in, which does not ask that step. Falling back to the wall
+ * rather than to the start keeps every answer they have already given.
+ */
+export function resolveCursorPos(
+  walk: readonly [Step, number][],
+  gates: readonly StepGate[],
+  requestedStep: Step,
+): number {
+  const firstBlocked = gates.findIndex((g) => g.refusal !== null);
+  const maxPos = firstBlocked === -1 ? walk.length - 1 : firstBlocked;
+  const requestedPos = walk.findIndex(([local]) => local === requestedStep);
+  return Math.min(requestedPos === -1 ? maxPos : requestedPos, maxPos);
 }
 
 // All ten, in specified order, so the operator sees the whole path before
@@ -172,7 +261,7 @@ const SPEC_STEPS: readonly SpecStepDef[] = [
   // split. `built: true` still means "reachable on at least one path", the
   // same standard site-scope and setup already meet even though the sites
   // page's copy names its own limits per method.
-  { n: 4, rail: "Capabilities", heading: "Choose what it may do", built: true },
+  { n: 4, rail: "Capabilities", heading: "Choose what it may do", built: true, onlyOnMethod: "token" },
   { n: 5, rail: "Auth", heading: "Choose how it authenticates", built: true },
   { n: 6, rail: "Setup", heading: "Get the setup artefact", built: true },
   { n: 7, rail: "Authorize", heading: "Connect and authorize", built: false },
@@ -202,8 +291,6 @@ const SPEC_STEPS: readonly SpecStepDef[] = [
  */
 type SiteScopeReadiness = "loading" | "failed" | "tags-unresolved" | "unselected" | "resolved";
 
-/** The specified step number (design S29) that answers "which sites." */
-const SITE_SCOPE_SPEC_N = 3;
 
 /**
  * Whether the capability picker is actually done, for the one reason mint can
@@ -218,8 +305,6 @@ const SITE_SCOPE_SPEC_N = 3;
  */
 type CapabilityReadiness = "unselected" | "resolved";
 
-/** The specified step number (design S29) that answers "what it may do." */
-const CAPABILITY_SPEC_N = 4;
 
 export interface ConnectWizardProps {
   /** Absolute MCP endpoint for this deployment. Passed in, never assembled here. */
@@ -294,17 +379,13 @@ export function ConnectWizard({
   // answers. Picking a different client with an incompatible method drops the
   // method rather than carrying a stale one into step 3.
   //
-  // THE LAST BRANCH IS 5, NOT 3 OR 4. Section 3 ("Sites this connection may
-  // reach") and Section 5 ("Set it up") share the exact same reveal
-  // condition below (`client !== null && method !== null`) -- they always
-  // appear together, so there is no state in which section 3 is on screen
-  // and section 5 is not. Once that condition holds, 5 is the furthest
-  // section actually revealed, and aria-current has to say so; stopping at 3
-  // told a screen-reader user they were in a section behind the one they
-  // were actually working in. (Section 4, the capability picker, renders only
-  // for `method === "token"`, but its BUILT_ORDER position is still crossed
-  // the moment client and method are both picked, same as section 3.)
-  const step: Step = client === null ? 1 : method === null ? 2 : 5;
+  // WHERE THE OPERATOR ASKED TO BE. Stored, because the wizard shows one step
+  // at a time and Continue/Back are the only way through: a derived position
+  // cannot express "I have answered this and moved on" or "I have gone back to
+  // change it", which is the whole interaction. It is a REQUEST, not the
+  // answer -- `resolveCursorPos` clamps it, so this state can never put the
+  // operator past a step that is still blocked.
+  const [requestedStep, setRequestedStep] = useState<Step>(1);
 
   // Resolved once here rather than inside the mint panel, so the SAME answer
   // gates the mint button and is described back in the one-time reveal -- a
@@ -351,6 +432,7 @@ export function ConnectWizard({
   // button and the rail, is what makes a fourth door impossible rather than
   // merely unlikely.
   const siteScopeState: SiteScopeReadiness = siteScopeReadiness(scope, scopeRequest, method);
+  void siteScopeState;
 
   // THE CAPABILITY PAYLOAD, OR THE REASON THERE IS NONE -- built once, here,
   // the same pattern as `scopeRequest` two blocks up and for the same reason:
@@ -366,6 +448,30 @@ export function ConnectWizard({
   // "step 4 reads done" and "mint will actually accept this" cannot drift
   // apart the way `scope.kind` alone once did for site scope.
   const capabilityState: CapabilityReadiness = capabilityReadiness(capabilitiesRequest, method);
+  void capabilityState;
+
+  // ONE CONTEXT, ONE PREDICATE, EVERY CONSUMER. The rail, the Continue button
+  // and the mint button all read `stepGate` over this value and nothing else,
+  // so "the rail says done", "Continue is offered" and "mint will be accepted"
+  // cannot disagree -- they are the same call.
+  const gateContext: StepGateContext = {
+    clientChosen: client !== null,
+    method,
+    methodOffered: methods.length > 0,
+    scope,
+    scopeRequest,
+    capabilitiesRequest,
+  };
+
+  // The steps this path actually walks. On OAuth the capability picker is not
+  // one of them, so Continue steps over it rather than landing the operator on
+  // a section that would render nothing.
+  const walk = walkFor(method);
+  const gates: readonly StepGate[] = walk.map(([local]) => stepGate(local, gateContext));
+  const cursorPos = resolveCursorPos(walk, gates, requestedStep);
+  const currentLocal: Step = walk[cursorPos]![0];
+  const currentGate: StepGate = gates[cursorPos]!;
+  const isLastBuiltStep = cursorPos === walk.length - 1;
 
   // A mint is a network round trip, and every control above is live during it.
   // Disabling them is the FIRST half of the fix (the operator is not offered a
@@ -455,11 +561,7 @@ export function ConnectWizard({
 
   return (
     <div className={cn("space-y-6", className)}>
-      <StepRail
-        current={step}
-        siteScopeState={siteScopeState}
-        capabilityState={capabilityState}
-      />
+      <StepRail walk={walk} cursorPos={cursorPos} currentGate={currentGate} method={method} />
 
       {/* THE ONE AND ONLY PLACE A REVEAL IS RENDERED, and it is deliberately
           outside every step. A second render site inside step 4 would restore
@@ -501,6 +603,7 @@ export function ConnectWizard({
         </p>
       ) : null}
 
+      {currentLocal === 1 ? (
       <Section
         specN={2}
         // The one narrowing, and its reason: this section picks the client and
@@ -521,8 +624,9 @@ export function ConnectWizard({
           ))}
         </ul>
       </Section>
+      ) : null}
 
-      {client !== null ? (
+      {currentLocal === 2 && client !== null ? (
         <Section
           specN={5}
 
@@ -593,7 +697,7 @@ export function ConnectWizard({
         </Section>
       ) : null}
 
-      {client !== null && method !== null ? (
+      {currentLocal === SITE_SCOPE_LOCAL_STEP && client !== null && method !== null ? (
         <Section
           specN={3}
           hint="Chosen before capabilities, on purpose. What a connection may do is only meaningful once you have fixed what it may do it to."
@@ -625,7 +729,7 @@ export function ConnectWizard({
           nothing, the same defect this whole file elsewhere refuses to
           commit. NextSteps below already tells the OAuth operator where this
           choice is actually made. */}
-      {client !== null && method === "token" ? (
+      {currentLocal === CAPABILITY_LOCAL_STEP && client !== null && method === "token" ? (
         <Section
           specN={4}
           hint="Every capability here is read-only. Nothing on this list can change WordPress content or configuration."
@@ -697,7 +801,7 @@ export function ConnectWizard({
         </Section>
       ) : null}
 
-      {client !== null && method !== null ? (
+      {currentLocal === 5 && client !== null && method !== null ? (
         <Section
           specN={6}
           hint="Generated for this client. Every difference below is a real difference between clients."
@@ -756,6 +860,15 @@ export function ConnectWizard({
         </Section>
       ) : null}
 
+      <WizardNav
+        gate={currentGate}
+        isLastBuiltStep={isLastBuiltStep}
+        canGoBack={cursorPos > 0}
+        locked={mintInFlight}
+        onBack={() => setRequestedStep(walk[cursorPos - 1]![0])}
+        onContinue={() => setRequestedStep(walk[cursorPos + 1]![0])}
+      />
+
       <p className="text-xs text-[var(--color-muted-foreground)]">
         We negotiate protocol {PROTOCOL_TARGET_VERSION} and accept nothing below{" "}
         {PROTOCOL_FLOOR_VERSION}.
@@ -771,6 +884,7 @@ export function ConnectWizard({
  */
 type RailSegmentState =
   | "not-built"
+  | "not-applicable"
   | "current"
   | "completed"
   | "upcoming"
@@ -801,6 +915,17 @@ interface RailSegmentStyle {
  */
 const RAIL_SEGMENT_STYLES: Record<RailSegmentState, RailSegmentStyle> = {
   "not-built": { circle: "opacity-70", label: "italic opacity-70", suffix: null },
+  // BUILT, AND NOT ASKED ON THIS PATH. Struck through rather than faded,
+  // because "we have not built this yet" and "your own earlier answer means we
+  // will not ask you this" are two different facts and an operator should not
+  // have to guess which one they are looking at. The segment stays either way:
+  // ruling 15 keeps the stepper ten long on every step, so the rail never
+  // changes length under the operator.
+  "not-applicable": {
+    circle: "opacity-60",
+    label: "line-through opacity-60",
+    suffix: " (not asked on this path)",
+  },
   upcoming: { circle: "", label: "", suffix: null },
   completed: {
     circle:
@@ -835,27 +960,94 @@ const RAIL_SEGMENT_STYLES: Record<RailSegmentState, RailSegmentStyle> = {
   unselected: { circle: "", label: "", suffix: " (not chosen yet)" },
 };
 
-function StepRail({
-  current,
-  siteScopeState,
-  capabilityState,
+/**
+ * Back and Continue, and the reason Continue is refused.
+ *
+ * WHAT BACK DOES TO ANSWERS ALREADY GIVEN: NOTHING. Every answer lives on the
+ * wizard, above every section, so a step that is not on screen still holds
+ * what was typed into it -- Back is a cursor move and nothing else. That is
+ * what makes a confirmation dialog wrong here rather than merely annoying:
+ * there is nothing to confirm. (Changing a CLIENT can still drop an
+ * incompatible auth method, in `chooseClient`. That is a consequence of
+ * changing an answer, which the operator did deliberately, not of navigating.)
+ *
+ * CONTINUE IS DISABLED WITH ITS REASON ON SCREEN, never silently. Same shape
+ * as the mint button below, and the reason comes from the same `stepGate` call
+ * the rail reads, so a refused Continue and a rail segment that is not marked
+ * done are one fact stated twice, never two facts that can disagree.
+ *
+ * ON THE LAST BUILT STEP THERE IS NO CONTINUE AT ALL. Specified steps 7 to 10
+ * are not built, so a Continue here would be a control leading nowhere. The
+ * step's own action is the terminus instead -- the mint button on the token
+ * path, the client instructions on the OAuth path -- and the rail already
+ * shows the four remaining segments as not yet available.
+ */
+function WizardNav({
+  gate,
+  isLastBuiltStep,
+  canGoBack,
+  locked,
+  onBack,
+  onContinue,
 }: {
-  current: Step;
+  gate: StepGate;
+  isLastBuiltStep: boolean;
+  canGoBack: boolean;
+  locked: boolean;
+  onBack: () => void;
+  onContinue: () => void;
+}) {
+  const blocked = gate.refusal !== null;
+  return (
+    <div className="space-y-2 border-t border-[var(--color-border)] pt-4">
+      {!isLastBuiltStep && blocked ? (
+        <p
+          role="status"
+          data-testid="continue-blocked"
+          className="rounded-md border border-[var(--color-border)] bg-[var(--color-muted)]/40 p-3 text-sm text-[var(--color-foreground)]"
+        >
+          {gate.refusal}
+        </p>
+      ) : null}
+      <div className="flex items-center gap-2">
+        <Button type="button" variant="outline" disabled={!canGoBack || locked} onClick={onBack}>
+          Back
+        </Button>
+        {isLastBuiltStep ? null : (
+          <Button type="button" disabled={blocked || locked} onClick={onContinue}>
+            Continue
+          </Button>
+        )}
+      </div>
+      {isLastBuiltStep ? (
+        <p className="text-xs text-[var(--color-muted-foreground)]">
+          This is as far as the wizard goes today. Steps 7 to 10 -- authorizing the client,
+          confirming it reached us, and a first read to prove it works -- are not built yet, so
+          there is no Continue here rather than a button that would lead nowhere.
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function StepRail({
+  walk,
+  cursorPos,
+  currentGate,
+  method,
+}: {
+  /** The steps this path walks, from `walkFor`. */
+  walk: readonly [Step, number][];
+  /** Where the operator is in that walk, already clamped by the wizard. */
+  cursorPos: number;
   /**
-   * From `siteScopeReadiness`, the SAME function `mintBlockedReason` calls
-   * for its own scope-related refusals -- never a narrower re-derivation
-   * here. See that function's doc for why: reading only whether the fleet
-   * read resolved fixed one door minting could be blocked through and left
-   * two open (`tags-unresolved`, `unselected`), each reachable while the rail
-   * still called step 3 done and put `aria-current` on step 6.
+   * The current step's gate, from the one `stepGate` call the wizard made --
+   * never a narrower re-derivation here. It is what turns the segment the
+   * operator is standing on into its blocked appearance, and it is the same
+   * value the Continue button is disabled from.
    */
-  siteScopeState: SiteScopeReadiness;
-  /**
-   * From `capabilityReadiness`, the same pattern one step later: the rail and
-   * `mintBlockedReason` read one value for "has the operator settled a
-   * capability answer," never two.
-   */
-  capabilityState: CapabilityReadiness;
+  currentGate: StepGate;
+  method: AuthMethod | null;
 }) {
   // THE OTHER HALF OF "ONE ROW THAT SCROLLS". Ten segments do not fit on a
   // phone, so on a narrow screen the step the operator is actually on can sit
@@ -872,39 +1064,13 @@ function StepRail({
   // that can move, because it is the only one written.
   const railScroller = useRef<HTMLOListElement | null>(null);
   const currentSegment = useRef<HTMLLIElement | null>(null);
-  const currentSpec = specStepFor(current);
-  const currentPos = BUILT_ORDER.findIndex(([, spec]) => spec === currentSpec);
-  const siteScopeBuiltPos = BUILT_ORDER.findIndex(([, spec]) => spec === SITE_SCOPE_SPEC_N);
-  // BLOCKING, NOT MERELY "NOT YET RESOLVED". The positional walk has to have
-  // actually passed through the site-scope step for its state to be
-  // relevant: while the operator is still on "how it authenticates," step 3
-  // is correctly "upcoming" no matter what siteScopeState says, because the
-  // operator has not been told otherwise yet.
-  const siteScopeBlocking =
-    siteScopeState !== "resolved" && siteScopeBuiltPos !== -1 && siteScopeBuiltPos <= currentPos;
-  const capabilityBuiltPos = BUILT_ORDER.findIndex(([, spec]) => spec === CAPABILITY_SPEC_N);
-  // SAME BLOCKING TEST, ONE STEP LATER. Not relevant until the walk has
-  // actually reached the capability picker's position.
-  const capabilityBlocking =
-    capabilityState !== "resolved" &&
-    capabilityBuiltPos !== -1 &&
-    capabilityBuiltPos <= currentPos;
-  // THE OVERRIDE ITSELF, AND WHICH ONE WINS WHEN BOTH BLOCK. Site scope (built
-  // position 2) sits before the capability picker (built position 3) in
-  // BUILT_ORDER, so an operator who has resolved neither is, in fact, still
-  // working on the earlier one -- reporting the capability picker instead
-  // would tell them they are stuck on a step they have not been let reach in
-  // any meaningful sense yet.
-  const effectiveCurrentSpec = siteScopeBlocking
-    ? SITE_SCOPE_SPEC_N
-    : capabilityBlocking
-      ? CAPABILITY_SPEC_N
-      : currentSpec;
-  const effectiveCurrentPos = siteScopeBlocking
-    ? siteScopeBuiltPos
-    : capabilityBlocking
-      ? capabilityBuiltPos
-      : currentPos;
+  // ONE NUMBER, AND EVERY SEGMENT ASKS "AM I THAT ONE". The wizard has already
+  // clamped the cursor to the first step whose gate refuses, so there is
+  // nothing left for this component to override: the two blocking flags and
+  // the effectiveCurrentSpec computed from them are gone, and with them the
+  // case where both were true at once and two segments claimed the position.
+  // The clamp makes that unconstructible rather than merely guarded against.
+  const effectiveCurrentSpec = walk[cursorPos]![1];
   useEffect(() => {
     const rail = railScroller.current;
     const segment = currentSegment.current;
@@ -967,11 +1133,16 @@ function StepRail({
           // no capabilities blocks on both), and a rail with two current steps
           // has no answer to "where am I".
           const isCurrentStep = s.n === effectiveCurrentSpec;
-          // Completed means "earlier in the order this wizard actually
-          // visits built steps in," never "a smaller specified number" --
-          // see the comment on BUILT_ORDER above for why those disagree here.
-          const builtPos = BUILT_ORDER.findIndex(([, spec]) => spec === s.n);
-          const isCompleted = builtPos !== -1 && builtPos < effectiveCurrentPos;
+          // Completed means "earlier in the WALK this operator is actually
+          // taking," never "a smaller specified number" -- see the comment on
+          // BUILT_ORDER above for why those disagree here. The walk is already
+          // clamped to the first blocked step, so nothing before `cursorPos`
+          // can be blocked: "never complete while the action it gates is
+          // blocked" holds structurally, with no second condition to keep in
+          // step with the first.
+          const walkPos = walk.findIndex(([, spec]) => spec === s.n);
+          const isCompleted = walkPos !== -1 && walkPos < cursorPos;
+          const availability = specStepAvailability(s, method);
           // SITE SCOPE'S AND THE CAPABILITY PICKER'S OWN STATES, CHECKED
           // BEFORE THE GENERIC ONES BELOW AND OVERRIDING THEM. "completed"
           // here would be the exact defect this whole rework exists for: a
@@ -981,14 +1152,24 @@ function StepRail({
           // actually failed keeps waiting for a state that is never coming,
           // and one told "loading" for their own unmade selection is told
           // something false about themselves.
-          const state: RailSegmentState = !s.built
-            ? "not-built"
-            : s.n === SITE_SCOPE_SPEC_N && siteScopeBlocking
-              ? siteScopeState
-              : s.n === CAPABILITY_SPEC_N && capabilityBlocking
-                ? capabilityState
+          // THE CURRENT STEP'S OWN READINESS COMES FROM THE ONE GATE, and it
+          // overrides "current" only when that gate refuses. Each reason stays
+          // distinct rather than collapsing into one muted "not done yet" --
+          // an operator told nothing when a read has actually failed keeps
+          // waiting for a state that is never coming, and one told "loading"
+          // for their own unmade selection is told something false about
+          // themselves. A blocked step still holds `aria-current` below,
+          // because the operator IS standing on it; what it does not get is
+          // the ring or the fill, which is what the style table decides.
+          const state: RailSegmentState =
+            availability === "not-built"
+              ? "not-built"
+              : availability === "not-applicable"
+                ? "not-applicable"
                 : isCurrentStep
-                  ? "current"
+                  ? currentGate.refusal !== null
+                    ? currentGate.readiness
+                    : "current"
                   : isCompleted
                     ? "completed"
                     : "upcoming";
@@ -1046,7 +1227,9 @@ function StepRail({
                 >
                   {s.rail}
                   {style.suffix}
-                  {!s.built ? <span className="sr-only"> (not yet available)</span> : null}
+                  {availability === "not-built" ? (
+                    <span className="sr-only"> (not yet available)</span>
+                  ) : null}
                 </span>
               </span>
             </li>
@@ -1600,33 +1783,117 @@ function capabilityReadiness(
  * Every branch here is a FAILURE, rendered with a remedy, never a silently
  * disabled button.
  */
-function mintBlockedReason(
-  nameOk: boolean,
-  scope: ResolvedSiteScope,
-  scopeRequest: MintScopeRequest,
-  capabilitiesRequest: MintCapabilitiesRequest,
-): string | null {
+/** Everything any step's gate can need. One value, so no caller assembles its own. */
+interface StepGateContext {
+  readonly clientChosen: boolean;
+  readonly method: AuthMethod | null;
+  readonly methodOffered: boolean;
+  readonly scope: ResolvedSiteScope;
+  readonly scopeRequest: MintScopeRequest;
+  readonly capabilitiesRequest: MintCapabilitiesRequest;
+}
+
+/**
+ * Whether one local step is settled, and the reason it is not.
+ *
+ * THE SINGLE PREDICATE. The rail's "is this segment done", the Continue
+ * button's "may the operator advance", and the mint button's "will the server
+ * accept this" are all THE SAME QUESTION and are answered here, once. This
+ * component's history is call sites re-deriving a narrower version of this and
+ * disagreeing with each other. Adding a separate notion of "may I advance" for
+ * Continue would be the next instance, which is why Continue reads this and
+ * there is nothing else for it to read.
+ *
+ * INVARIANT, and the reason the two fields travel together in one return
+ * rather than in two functions: `refusal === null` exactly when
+ * `readiness === "resolved"`. A caller can branch on either and cannot get a
+ * different answer from the other.
+ *
+ * The readiness strings are deliberately the SiteScopeReadiness vocabulary
+ * reused whole, so RAIL_SEGMENT_STYLES already carries a style and a suffix
+ * for every value a step can be blocked on, with no new row for steps 1 and 2:
+ * an operator who has not picked a client is in exactly the same "not chosen
+ * yet" state as one who has not picked a site.
+ */
+interface StepGate {
+  readonly readiness: SiteScopeReadiness;
+  readonly refusal: string | null;
+}
+
+const STEP_SETTLED: StepGate = { readiness: "resolved", refusal: null };
+
+function stepGate(local: Step, ctx: StepGateContext): StepGate {
+  if (local === 1) {
+    return ctx.clientChosen
+      ? STEP_SETTLED
+      : { readiness: "unselected", refusal: "Pick the client that will connect before going on." };
+  }
+  if (local === 2) {
+    if (ctx.method !== null) return STEP_SETTLED;
+    return {
+      readiness: "unselected",
+      refusal: ctx.methodOffered
+        ? "Choose how this client signs in before going on."
+        : "This client has no confirmed way to sign in, so there is nothing to go on to. Pick a different client above.",
+    };
+  }
+  if (local === SITE_SCOPE_LOCAL_STEP) {
+    const readiness = siteScopeReadiness(ctx.scope, ctx.scopeRequest, ctx.method);
+    // RESOLVED IS CHECKED FIRST, AND THAT ORDER IS LOAD-BEARING. On the OAuth
+    // path `siteScopeReadiness` answers "resolved" for every scope, because
+    // nothing downstream reads the scope there and no mint can refuse it --
+    // ruling 4's "an empty scope is a working state" is exactly this case.
+    // `scopeRequest` still says `ok: false` for an empty 'list', so consulting
+    // it before the readiness verdict would block Continue on a step that is
+    // rehearsal, on the one path the readiness function exists to exempt.
+    if (readiness === "resolved") return STEP_SETTLED;
+    if (readiness === "loading") {
+      return {
+        readiness,
+        refusal:
+          "Still reading this organisation's sites for step 3. Wait for that to finish before minting.",
+      };
+    }
+    if (readiness === "failed") {
+      return {
+        readiness,
+        refusal:
+          "This organisation's sites could not be read for step 3, so we cannot tell what this connection would cover. Fix that above before minting.",
+      };
+    }
+    // "tags-unresolved" and "unselected" are the only readiness values left,
+    // and siteScopeReadiness reaches both only through scopeRequest refusing,
+    // so it always carries a remedy here. Reusing that sentence, rather than
+    // writing a second copy, is what keeps the gate and the refusal text from
+    // drifting apart. The `ok` branch is unreachable and is written as a throw
+    // rather than a silent pass, because a silent pass would be the gate
+    // approving a step it has just called unresolved.
+    if (ctx.scopeRequest.ok) {
+      throw new Error(`site scope is "${readiness}" but the request has no refusal`);
+    }
+    return { readiness, refusal: ctx.scopeRequest.refusal };
+  }
+  if (local === CAPABILITY_LOCAL_STEP) {
+    const readiness = capabilityReadiness(ctx.capabilitiesRequest, ctx.method);
+    if (readiness === "resolved") return STEP_SETTLED;
+    return {
+      readiness,
+      refusal: ctx.capabilitiesRequest.ok ? null : ctx.capabilitiesRequest.refusal,
+    };
+  }
+  // The setup artefact. Nothing gates LEAVING it, because nothing after it is
+  // built -- see the terminus panel it renders instead of a Continue.
+  return STEP_SETTLED;
+}
+
+function mintBlockedReason(nameOk: boolean, ctx: StepGateContext): string | null {
   if (!nameOk) return "Name this connection before minting a token.";
-  // Literally "token", not threaded through as a parameter: this function is
-  // only ever called from TokenMintPanel, which method === 'oauth' never
-  // renders, so the context is a fact about the caller, not a value to plumb.
-  const readiness = siteScopeReadiness(scope, scopeRequest, "token");
-  if (readiness === "loading") {
-    return "Still reading this organisation's sites for step 3. Wait for that to finish before minting.";
-  }
-  if (readiness === "failed") {
-    return "This organisation's sites could not be read for step 3, so we cannot tell what this connection would cover. Fix that above before minting.";
-  }
-  // "tags-unresolved" and "unselected" both mean scopeRequest itself refused,
-  // which already carries its own remedy -- reusing it here, rather than a
-  // second copy of the sentence, is what keeps this and the refusal text from
-  // drifting apart.
-  if (!scopeRequest.ok) return scopeRequest.refusal;
   // Site scope is checked before capabilities, matching the on-screen order
   // (step 3, then step 4): an operator missing both should be told about the
   // earlier gap first, not the later one.
-  if (!capabilitiesRequest.ok) return capabilitiesRequest.refusal;
-  return null;
+  const scopeGate = stepGate(SITE_SCOPE_LOCAL_STEP, ctx);
+  if (scopeGate.refusal !== null) return scopeGate.refusal;
+  return stepGate(CAPABILITY_LOCAL_STEP, ctx).refusal;
 }
 
 /** Title and remedy for a failed mint. Every branch is distinct and named. */
@@ -1743,7 +2010,18 @@ function TokenMintPanel({
 }) {
   const trimmedName = name.trim();
   const nameOk = trimmedName.length > 0;
-  const blocked = mintBlockedReason(nameOk, scope, scopeRequest, capabilitiesRequest);
+  // Literally "token", not threaded through as a parameter: this panel is only
+  // rendered for method === 'token', so the context is a fact about the caller
+  // rather than a value to plumb. clientChosen and methodOffered are true for
+  // the same reason -- this panel cannot render otherwise.
+  const blocked = mintBlockedReason(nameOk, {
+    clientChosen: true,
+    method: "token",
+    methodOffered: true,
+    scope,
+    scopeRequest,
+    capabilitiesRequest,
+  });
   const canMint = blocked === null && !mint.isPending;
 
   if (revealed) {
