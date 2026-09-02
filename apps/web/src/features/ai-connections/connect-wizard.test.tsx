@@ -936,8 +936,18 @@ describe("step 3 exists at all, and sits before capabilities", () => {
   });
 
   it("numbers the setup artefact after it, so the rail and the page agree", async () => {
+    // ONE STEP AT A TIME, so the ordering is proved by walking it rather than
+    // by finding two headings on one page: site scope is where the operator
+    // lands, and the setup artefact is the step after it.
     await reachSiteStep();
+    expect(
+      screen.getByRole("heading", { name: /^3\. Choose which sites$/ }),
+    ).toBeInTheDocument();
+    expect(currentRailStep()).toHaveAttribute("data-step-n", "3");
+
+    goNext();
     expect(screen.getByRole("heading", { name: /^6\. Get the setup artefact$/ })).toBeInTheDocument();
+    expect(currentRailStep()).toHaveAttribute("data-step-n", "6");
     // And the rail no longer claims sites are chosen somewhere else.
     expect(screen.queryByText(/4\. Choose sites and permissions/i)).not.toBeInTheDocument();
   });
@@ -1019,10 +1029,13 @@ describe("an empty scope is a working state, not an error", () => {
 
   it("does not block the wizard on it", async () => {
     loadedFleet(60);
+    // reachSiteStep walks the OAUTH path, where an empty scope is a working
+    // state (ruling 4): nothing downstream reads the scope, so Continue stays
+    // enabled and the setup artefact is reachable with nothing selected.
     await reachSiteStep();
-    // The setup artefact is reachable with nothing selected. An earlier
-    // revision of this surface disabled Continue here; that is the behaviour
-    // being corrected.
+    expect(continueButton()).toBeEnabled();
+
+    goNext();
     expect(screen.getByRole("heading", { name: /^6\. Get the setup artefact$/ })).toBeInTheDocument();
     expect(await screen.findByText(/"mcpServers"/)).toBeInTheDocument();
   });
@@ -1178,15 +1191,28 @@ describe("the wizard does not promise to carry the scope it collected", () => {
 
 describe("changing the client recomputes rather than carrying a stale answer", () => {
   it("drops a method the newly chosen client cannot use", async () => {
+    loadedFleet(3);
     renderWizard();
     await reachSetupStep("Cursor", "token");
     expect(await screen.findByText(/"mcpServers"/)).toBeInTheDocument();
 
     // Claude Desktop cannot use a token. The wizard must fall back to asking,
-    // not silently keep a selection that produces no valid artefact.
-    await pickClient("Claude Desktop");
+    // not silently keep a selection that produces no valid artefact. Changing
+    // the client means walking back to the step that owns that answer, which
+    // is also where the operator is told the method has been dropped.
+    while (screen.queryByRole("button", { name: /claude desktop/i }) === null) {
+      fireEvent.click(backButton());
+    }
+    await pickClientOnly("Claude Desktop");
     expect(screen.queryByText(/set this up inside/i)).not.toBeInTheDocument();
+
+    // The dropped method leaves step 2 unanswered, so the walk cannot run past
+    // it: the cursor is held at the method step and the token card is disabled
+    // with the client's own reason.
+    goNext();
+    expect(currentRailStep()).toHaveAttribute("data-step-n", "5");
     expect(authCard("token")).toBeDisabled();
+    expect(continueButton()).toBeDisabled();
   });
 });
 
