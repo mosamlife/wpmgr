@@ -42,6 +42,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/authz"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
+	"github.com/mosamlife/wpmgr/apps/api/internal/govcontext"
 	"github.com/mosamlife/wpmgr/apps/api/internal/mcp"
 )
 
@@ -199,7 +200,17 @@ func TestMCPConnectionStatus_StepsEightAndNine_AsAppRole(t *testing.T) {
 	seedSite(t, pool, tenantID, "https://"+suffix+".example.test")
 
 	rec := audit.NewRecorder(pool, domain.SystemClock{})
-	svc := mcp.NewService(mcp.NewRepo(pool)).WithAudit(rec)
+	// THE CONTEXT RESOLVER IS WIRED BECAUSE PRODUCTION WIRES IT (see
+	// cmd/wpmgr/main.go). A Service without one refuses every fleet tool call
+	// rather than serving with the operator's governance silently absent, so
+	// omitting it here would make the tools/call below refuse and this test
+	// would be proving nothing about connection status.
+	//
+	// It is the REAL govcontext.Repo over the same pool, so the organisation
+	// context read in the tools/call path below runs through InTenantTx as
+	// wpmgr_app, under the same RLS policies as every other read in this file.
+	svc := mcp.NewService(mcp.NewRepo(pool)).WithAudit(rec).
+		WithContextResolver(&govcontext.Resolver{Store: govcontext.NewRepo(pool)})
 
 	admin := domain.Principal{UserID: userID, TenantID: tenantID, Role: "admin", Scope: domain.ScopeOrg}
 	eng := mountStatusLikeProduction(t, svc, admin)

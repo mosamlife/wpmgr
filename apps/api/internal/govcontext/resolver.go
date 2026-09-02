@@ -67,6 +67,27 @@ type Resolver struct {
 // tenant on every real route this package registers) — Resolve does not
 // verify site ownership itself; callers reach it only after
 // authz.RequireSiteAccess has already confirmed the caller may see this site.
+//
+// # siteID == uuid.Nil is ORGANISATION SCOPE, not a missing argument
+//
+// A fleet-wide caller — an assistant asked "which of my sites need updates?"
+// — has no single site to resolve against. Resolving N times and merging N
+// results would be a second, unspecified assembly of the same layers, which
+// ADR-064 Decision 8 exists to forbid; resolving against an arbitrary one of
+// the N would hand the model one site's overrides as though they governed the
+// fleet. So the answer is expressed HERE, in the one resolution function,
+// rather than beside it: uuid.Nil means "organisation scope", and layers 3
+// (site override) and 4 (site facts) are then NOT READ AT ALL — no site row
+// is touched, no facts provider is called. Both layers stay structurally
+// present in Layers, as layer 5 always is, but their Name states plainly that
+// they do not apply at this scope, so nothing downstream can read an empty
+// layer 3 here as the fact "this site has no overrides".
+//
+// This is what "organisation context applies to fleet-wide questions; site
+// context applies when the assistant acts on that site" means mechanically.
+// Every existing caller passes a real site id and is unaffected — the preview
+// route reaches this only after authz.RequireSiteAccess, which no nil uuid can
+// satisfy.
 func (r *Resolver) Resolve(ctx context.Context, tenantID, siteID uuid.UUID, session *SessionInput) (ResolvedContext, error) {
 	if r.Store == nil {
 		// A Resolver built without a store is a wiring bug, not a transient
@@ -81,18 +102,26 @@ func (r *Resolver) Resolve(ctx context.Context, tenantID, siteID uuid.UUID, sess
 	if err != nil {
 		return ResolvedContext{}, refusal("organisation context", err)
 	}
-	siteSnap, _, err := r.Store.LatestSiteSnapshot(ctx, tenantID, siteID)
-	if err != nil {
-		return ResolvedContext{}, refusal("site context", err)
+	orgScope := siteID == uuid.Nil
+
+	var siteSnap Snapshot
+	if !orgScope {
+		siteSnap, _, err = r.Store.LatestSiteSnapshot(ctx, tenantID, siteID)
+		if err != nil {
+			return ResolvedContext{}, refusal("site context", err)
+		}
 	}
 
 	var facts SiteFacts
 	// factsUnavailable defaults true: "no provider wired" and "the provider
 	// call failed" are both "we do not know", never "verified empty" — see
 	// LayerContribution.FactsUnavailable's doc comment. Only a SUCCESSFUL
-	// call, whatever it returns, clears it.
+	// call, whatever it returns, clears it. At organisation scope it stays
+	// true for a third reason of the same kind: there is no site to have
+	// facts about, so "we did not look" is the honest state, and it is the
+	// layer NAME below, not this flag, that says why.
 	factsUnavailable := true
-	if r.Facts != nil {
+	if r.Facts != nil && !orgScope {
 		if f, ferr := r.Facts.GetFacts(ctx, tenantID, siteID); ferr == nil {
 			facts = f
 			factsUnavailable = false
@@ -108,11 +137,23 @@ func (r *Resolver) Resolve(ctx context.Context, tenantID, siteID uuid.UUID, sess
 		sessionText = session.Text
 	}
 
+	// The layer-3 and layer-4 names are the ONLY thing that differs between a
+	// site resolution and an organisation-scope one, and they differ because
+	// an empty contribution has two incompatible meanings that must not share
+	// a label: "this site overrides nothing" (a fact about a site) and "there
+	// is no site here" (no fact about any site at all).
+	siteLayerName := "site override"
+	factsLayerName := "detected site facts"
+	if orgScope {
+		siteLayerName = "site override (not applicable: organisation scope)"
+		factsLayerName = "detected site facts (not applicable: organisation scope)"
+	}
+
 	layers := []LayerContribution{
 		{Layer: 1, Name: "WPMgr security policy", Restrictions: layer1Restrictions},
 		{Layer: 2, Name: "organisation default", Restrictions: orgSnap.Restrictions, Guidance: orgSnap.Guidance},
-		{Layer: 3, Name: "site override", Restrictions: siteSnap.Restrictions, Guidance: siteSnap.Guidance},
-		{Layer: 4, Name: "detected site facts", Facts: &facts, FactsUnavailable: factsUnavailable},
+		{Layer: 3, Name: siteLayerName, Restrictions: siteSnap.Restrictions, Guidance: siteSnap.Guidance},
+		{Layer: 4, Name: factsLayerName, Facts: &facts, FactsUnavailable: factsUnavailable},
 		{Layer: 5, Name: "approved skill instructions"}, // structurally present, always empty: no skill store exists yet
 		{Layer: 6, Name: "session context", Session: sessionText},
 	}

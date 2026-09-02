@@ -525,7 +525,7 @@ func TestFleetUpdateTotalsCoverOnlyTheKeptRecords(t *testing.T) {
 		t.Fatalf("NewEnvelope: %v", err)
 	}
 
-	text, err := buildUpdatesPendingResult(rows, env, now)
+	text, err := buildUpdatesPendingResult(rows, env, now, noOperatorContext)
 	if err != nil {
 		t.Fatalf("buildUpdatesPendingResult: %v", err)
 	}

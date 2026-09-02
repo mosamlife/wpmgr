@@ -540,7 +540,18 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// would make POST /mcp answer 404, which is indistinguishable from a
 	// routing failure. Self-host reaches it too; the grant is what authorizes,
 	// and an installation with no grants simply has no valid bearer token.
-	mcpSvc := mcp.NewService(mcp.NewRepo(pool)).WithClock(clock.Now).WithAudit(auditRec)
+	// ADR-064's resolver is constructed HERE, above the MCP service, and the
+	// SAME pointer is handed to govcontext.NewService further down (search
+	// govContextResolver). One resolver, two callers -- the effective-context
+	// preview and the assistant surface -- which is Decision 8's requirement
+	// stated as wiring rather than as a comment. Constructing a second
+	// Resolver over the same repo would satisfy the compiler and quietly
+	// reintroduce the two-implementations risk the decision exists to remove.
+	govContextRepo := govcontext.NewRepo(pool)
+	govContextResolver := &govcontext.Resolver{Store: govContextRepo}
+
+	mcpSvc := mcp.NewService(mcp.NewRepo(pool)).WithClock(clock.Now).WithAudit(auditRec).
+		WithContextResolver(govContextResolver)
 	mcpTransportH := mcp.NewTransportHandler(mcpSvc, logger, version)
 	// The OAuth half, wired unconditionally for the same reason. Without it the
 	// transport above is mounted and correct and refuses every request forever,
@@ -2514,8 +2525,9 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// as layer 5 (no skill store exists either). Wiring a real facts source
 	// is future work, not a correctness gap: only layers 2/3 (the stored
 	// context tables) can fail resolution outright (Decision 14).
-	govContextRepo := govcontext.NewRepo(pool)
-	govContextResolver := &govcontext.Resolver{Store: govContextRepo}
+	// govContextRepo and govContextResolver are constructed above, next to the
+	// MCP service, because that surface needs the resolver too and must get
+	// THIS ONE.
 	govContextSvc := govcontext.NewService(govContextRepo, auditRec, govContextResolver)
 	govContextH := govcontext.NewHandler(govContextSvc)
 
