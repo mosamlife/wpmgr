@@ -494,11 +494,32 @@ grep_dir 'assistant_update_proposals' "$D_MIGRATIONS" -name '*.sql' ||
   need "create the assistant_update_proposals table with its state CHECK. The proposal state machine has no schema."
 # The table is not the state machine. A machine nobody drives from Go is a
 # schema, and the gate item is about the approve path.
-if [ -d "$D_API/internal" ]; then
-  find "$D_API/internal" -name '*.go' ! -path '*/db/sqlc/*' -print0 2>/dev/null |
-    xargs -0 grep -Eq 'assistant_update_proposals|AssistantUpdateProposal' 2>/dev/null ||
-    need "drive the proposal state machine from Go. assistant_update_proposals is referenced only by the generated sqlc models, so the conditional approve exists as a table and not as a code path."
-fi
+#
+# THIS PROBE WAS WRITTEN TWICE, AND THE FIRST VERSION FAILED OPEN TWO WAYS.
+#
+# It read:
+#
+#     if [ -d "$D_API/internal" ]; then
+#       find ... -print0 | xargs -0 grep -Eq '...' || need "..."
+#     fi
+#
+# 1. The `if` made a MISSING DIRECTORY a pass. Delete or rename
+#    apps/api/internal and this requirement was not scored at all, while item 3
+#    could still report MET off its other checks. The anti-rot probes verify
+#    $D_API and $D_MIGRATIONS only, so nothing else catches the move. That is
+#    this guard's own headline rule -- a guard that finds nothing must go red,
+#    not green -- broken inside the guard.
+# 2. `xargs -0 grep -Eq` is the shape the NOTE above rejects. xargs runs grep
+#    once per batch and `grep -q` exits 1 on a batch with no match, so xargs
+#    exits 123 on a large tree whenever ANY batch misses. That is a false UNMET
+#    even when the reference exists.
+#
+# grep_dir answers both: it returns 1 for an absent directory, which reaches
+# `need` and reddens, and it counts matching FILES with `grep -l` over a single
+# `find -exec ... +`, so no batch can vote against the others.
+grep_dir 'assistant_update_proposals|AssistantUpdateProposal' "$D_API/internal" \
+  -name '*.go' ! -path '*/db/sqlc/*' ||
+  need "drive the proposal state machine from Go. assistant_update_proposals is referenced only by the generated sqlc models, so the conditional approve exists as a table and not as a code path."
 go_test_asserting 'Test.*Self.*Approv' 'Refus|refus|Deni|deni' "$D_API" ||
   need "add the self-approval refusal proof: a test named Test...SelfApprov... asserting the proposer cannot approve its own proposal. ADR-061 asks for the proof to be watched going red and green, not for the refusal to be asserted in prose."
 go_test_asserting 'Test.*Credential.*Class|Test.*WrongCredential|Test.*ActorClass' 'Refus|refus|Deni|deni' "$D_API" ||
@@ -525,7 +546,17 @@ grep_dir '"scope_site_ids" +uuid\[\] +NOT NULL +DEFAULT +.\{\}.' "$D_MIGRATIONS"
   need "give scope_site_ids an empty default in its creating migration, so a connection's site allowlist starts empty and a credential leaked from a half-configured connection reads nothing."
 grep_dir '"scope_tag_ids" +uuid\[\] +NOT NULL +DEFAULT +.\{\}.' "$D_MIGRATIONS" -name '*.sql' ||
   need "give scope_tag_ids an empty default in its creating migration, for the same reason as scope_site_ids."
-go_test_asserting 'Test.*Assistant.*\(Default\|Disabled\|Off\)|Test.*NoAssistantControl' 'enabl|Enabl' "$D_API" ||
+# THE ALTERNATION HERE IS ERE, NOT BRE, AND THE DIFFERENCE IS A DEAD CHECK.
+#
+# This pattern reached `go_test_asserting`, which greps with `grep -lE`, written
+# as `\(Default\|Disabled\|Off\)`. Under an EXTENDED regex `\(`, `\|` and `\)`
+# are the LITERAL characters, so that alternative asked for a test whose name
+# contains the seven-character text "(Default|Disabled|Off)" -- which no Go
+# identifier may contain. It could not match anything, ever. It survived because
+# the second alternative, Test.*NoAssistantControl, is valid ERE and does match,
+# so item 5 read MET and the dead half was invisible. A check that can never
+# fire is indistinguishable from one that always passes.
+go_test_asserting 'Test.*Assistant.*(Default|Disabled|Off)|Test.*NoAssistantControl' 'enabl|Enabl' "$D_API" ||
   need "add the tenant default-off proof: a test asserting the assistant is off for an organisation that has never enabled it, and that reading it writes no enablement."
 report 5 "code" "off by default at the tenant + connection allowlist starts empty"
 
