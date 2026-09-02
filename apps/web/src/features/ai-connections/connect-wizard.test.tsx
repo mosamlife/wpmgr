@@ -1568,7 +1568,11 @@ describe("minting a connection token", () => {
     fireEvent.change(screen.getByLabelText(/name this connection/i), {
       target: { value: "Fleet manager, renamed" },
     });
-    // And the scope too: the other half of what configKey watched.
+    // And the scope too: the other half of what configKey watched. It lives on
+    // an earlier step now, so changing it means walking back to it -- which is
+    // the stronger version of this test, because the reveal has to survive a
+    // step change as well as a keystroke.
+    backToSiteStep();
     fireEvent.click(pickerBoxes()[1]!);
     expect(await screen.findByTestId("site-step-summary")).toHaveTextContent(/2 sites/i);
 
@@ -1610,7 +1614,14 @@ describe("minting a connection token", () => {
     fireEvent.click(await reachMintButton());
     await screen.findByText(MINTED.token);
 
+    // Walking back to the method step and switching to OAuth unmounts the mint
+    // panel completely: the setup step renders NextSteps instead, and the
+    // capability step drops out of the walk altogether.
+    backToMethodStep();
     fireEvent.click(authCard("oauth"));
+    goNext();
+    await screen.findByTestId("site-step-count");
+    goNext();
 
     // The panel is genuinely gone, so this is not passing by nothing happening.
     expect(await screen.findByText(/start the connection in cursor/i)).toBeInTheDocument();
@@ -1634,23 +1645,28 @@ describe("minting a connection token", () => {
     // response has already landed.
     expect(await screen.findByRole("button", { name: /minting/i })).toBeInTheDocument();
 
-    expect(authCard("oauth")).toBeDisabled();
-    expect(authCard("token")).toBeDisabled();
-    expect(screen.getByRole("button", { name: /claude desktop/i })).toBeDisabled();
+    // THE CONTROLS THAT CAN NOW UNMOUNT THE PANEL ARE BACK AND CONTINUE. The
+    // client and auth cards sit on earlier steps and are not on screen at all,
+    // so the navigation controls are what the lock has to hold: walking back
+    // mid-request would unmount the panel exactly as switching the method used
+    // to, with the same outcome -- a live credential whose plaintext nobody saw.
+    expect(backButton()).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /^continue$/i })).toBeNull();
     // Said out loud, not silently greyed out.
     expect(screen.getByRole("status")).toHaveTextContent(/strand a live credential nobody holds/i);
 
     // Clicking anyway changes nothing, which is what "refuses" has to mean.
-    fireEvent.click(authCard("oauth"));
+    fireEvent.click(backButton());
     expect(await screen.findByRole("button", { name: /minting/i })).toBeInTheDocument();
 
     release();
 
     expect(await screen.findByText(MINTED.token)).toBeInTheDocument();
-    // And the controls come back once nothing is outstanding -- the lock is
-    // for the duration of the request, not for the rest of the session.
-    expect(authCard("oauth")).toBeEnabled();
-    expect(screen.getByRole("button", { name: /claude desktop/i })).toBeEnabled();
+    // And the control comes back once nothing is outstanding -- the lock is for
+    // the duration of the request, not for the rest of the session. A block
+    // that outlived its request would strand the operator on a page they cannot
+    // leave, which is worse than the defect it prevents.
+    expect(backButton()).toBeEnabled();
   });
 
   // ---------------------------------------------------------------------------
@@ -1811,61 +1827,50 @@ describe("minting a connection token", () => {
     expect(formatAbsolute(MINTED.expires_at)).not.toContain("T00:00:00Z");
   });
 
-  it("describes the scope the token was minted FOR when the scope changed mid-flight", async () => {
-    // THE RACE, AND THE WORST OUTCOME THIS SCREEN CAN PRODUCE. The mint is a
-    // round trip; the site scope is an input the operator can go on clicking
-    // while it is open. A reveal that reads the scope at RESPONSE time pairs a
-    // real, shown-once credential with a description of access it does not
-    // carry -- on the one screen whose whole job is saying what was just made,
-    // at the only moment the token is ever visible. Nothing downstream can
-    // correct it: the operator reads that line and deploys the token.
+  it("describes the scope the token was minted FOR, not the scope chosen after it", async () => {
+    // THE WORST OUTCOME THIS SCREEN CAN PRODUCE, AND WHY THE TEST NOW REACHES
+    // IT DIFFERENTLY. A reveal that read the site scope at RENDER time would
+    // pair a real, shown-once credential with a description of access it does
+    // not carry -- on the one screen whose whole job is saying what was just
+    // made, at the only moment the token is ever visible.
     //
-    // The response is held open deliberately rather than raced against a
-    // timer. A test that depended on the operator being slower than a stubbed
-    // fetch would pass on a fixed component and on a broken one.
+    // The original construction widened the scope WHILE the mint request was
+    // open. That race is no longer reachable through the UI: the scope controls
+    // are on an earlier step, and Back and Continue are both locked for the
+    // duration of the request (see the in-flight lock test above). Unreachable
+    // is not the same as untrue, so the property is pinned through the route
+    // that IS reachable -- the operator walks back after the mint and changes
+    // the scope -- and MintedReveal must still describe what it was minted for.
+    // Nothing about the reveal is re-derived from live state; that is the whole
+    // point of it carrying its own configuration.
     loadedFleet(3);
-    let release!: () => void;
-    const held = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    stubMintFetch(async () => {
-      await held;
-      return jsonResponse(MINTED, 201);
-    });
+    stubMintFetch(() => jsonResponse(MINTED, 201));
 
     renderWizard();
-    await reachSetupStep("Cursor", "token");
-    await screen.findByTestId("site-step-count");
+    await reachSiteScopeStep("Cursor", "token");
     fireEvent.click(screen.getByRole("button", { name: /\+ add sites/i }));
-
-    const boxes = () =>
-      within(screen.getByTestId("site-step-picker")).getAllByRole("checkbox");
-    fireEvent.click(boxes()[0]!);
+    fireEvent.click(pickerBoxes()[0]!);
     expect(await screen.findByTestId("site-step-summary")).toHaveTextContent(
       /1 site, listed below/i,
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: /generate connection token/i }));
-    // In flight, and provably so: the assertions below mean nothing if the
-    // scope was widened after the response had already landed.
-    expect(await screen.findByRole("button", { name: /minting/i })).toBeInTheDocument();
+    fireEvent.click(await forwardToMintButton());
+    expect(await screen.findByText(MINTED.token)).toBeInTheDocument();
 
-    // The operator widens the scope from one site to three, mid-request.
-    fireEvent.click(boxes()[1]!);
-    fireEvent.click(boxes()[2]!);
+    // The operator walks back and widens the scope from one site to three.
+    backToSiteStep();
+    fireEvent.click(pickerBoxes()[1]!);
+    fireEvent.click(pickerBoxes()[2]!);
     expect(await screen.findByTestId("site-step-summary")).toHaveTextContent(
       /3 sites, listed below/i,
     );
 
-    release();
-
-    expect(await screen.findByText(MINTED.token)).toBeInTheDocument();
     const scopeLine = screen.getByText(/Capabilities:/);
     expect(scopeLine).toHaveTextContent(/1 site, listed below/i);
     expect(scopeLine).not.toHaveTextContent(/3 sites/i);
-    // And the live step still shows the operator's newer, wider selection, so
-    // the reveal is not merely lagging the whole screen -- the two disagree on
-    // purpose, because they are describing two different things.
+    // And the live step shows the operator's newer, wider selection, so the
+    // reveal is not merely lagging the whole screen -- the two disagree on
+    // purpose, because they describe two different things.
     expect(screen.getByTestId("site-step-summary")).toHaveTextContent(/3 sites, listed below/i);
   });
 
