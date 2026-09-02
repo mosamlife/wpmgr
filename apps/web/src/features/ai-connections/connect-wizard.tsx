@@ -503,7 +503,9 @@ export function ConnectWizard({
 
       <Section
         specN={2}
-        title="Pick your client"
+        // The one narrowing, and its reason: this section picks the client and
+        // does not yet ask for the name the deck s step 2 title promises.
+        narrowerTitle="Pick your client"
         hint="Everything after this is computed from your answer, so nothing asks you twice."
       >
         <ul className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
@@ -523,7 +525,7 @@ export function ConnectWizard({
       {client !== null ? (
         <Section
           specN={5}
-          title="How it signs in"
+
           hint={`Computed from ${client.name}. A method it cannot use is disabled with the reason.`}
         >
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -594,7 +596,6 @@ export function ConnectWizard({
       {client !== null && method !== null ? (
         <Section
           specN={3}
-          title="Sites this connection may reach"
           hint="Chosen before capabilities, on purpose. What a connection may do is only meaningful once you have fixed what it may do it to."
         >
           <SiteScopeStep
@@ -627,7 +628,6 @@ export function ConnectWizard({
       {client !== null && method === "token" ? (
         <Section
           specN={4}
-          title="Choose what it may do"
           hint="Every capability here is read-only. Nothing on this list can change WordPress content or configuration."
         >
           <div className="space-y-3">
@@ -700,7 +700,6 @@ export function ConnectWizard({
       {client !== null && method !== null ? (
         <Section
           specN={6}
-          title="Set it up"
           hint="Generated for this client. Every difference below is a real difference between clients."
         >
           <div className="space-y-4">
@@ -764,6 +763,89 @@ export function ConnectWizard({
     </div>
   );
 }
+
+/**
+ * EVERY STATE ONE RAIL SEGMENT CAN BE IN, AS ONE CLOSED UNION. A segment has
+ * exactly one of these, and every visual it renders is looked up from it in
+ * RAIL_SEGMENT_STYLES below.
+ */
+type RailSegmentState =
+  | "not-built"
+  | "current"
+  | "completed"
+  | "upcoming"
+  | SiteScopeReadiness
+  | CapabilityReadiness;
+
+interface RailSegmentStyle {
+  /** Circle styling on top of the base ring. */
+  readonly circle: string;
+  readonly label: string;
+  /**
+   * Whether this segment carries `aria-current="step"`. A BLOCKED step is
+   * still where the operator is standing, so it keeps aria-current and loses
+   * the ring: those are different questions and this table is where they are
+   * answered separately, once each.
+   */
+  readonly ariaCurrent: boolean;
+  /** The visible reason, if the state has one. */
+  readonly suffix: string | null;
+}
+
+/**
+ * THE ONE PLACE A RAIL SEGMENT'S APPEARANCE IS DECIDED.
+ *
+ * This table exists because the same defect has now been found on this
+ * component FIVE times, through five different doors: the rail presenting a
+ * step as fine while the action that step gates is refused. Rounds two, three
+ * and four widened the readiness predicate; round five was the ring, which had
+ * gone on rendering from a positional `isCurrent` boolean that stayed true
+ * while the derived state said "loading", "tags-unresolved" or "unselected".
+ *
+ * Patching the ring's condition would have been a sixth door on the same room.
+ * Instead the styles have exactly ONE input -- the state value -- so a visual
+ * that contradicts the state is not expressible: there is no second boolean
+ * left for it to read. The blocked states below deliberately share the
+ * "upcoming" circle: no fill, no ring, nothing that reads as progress.
+ */
+const RAIL_SEGMENT_STYLES: Record<RailSegmentState, RailSegmentStyle> = {
+  "not-built": { circle: "opacity-70", label: "italic opacity-70", ariaCurrent: false, suffix: null },
+  upcoming: { circle: "", label: "", ariaCurrent: false, suffix: null },
+  completed: {
+    circle:
+      "border-[var(--color-primary)] bg-[var(--color-primary)] text-[var(--color-primary-foreground)]",
+    label: "text-[var(--color-foreground)]",
+    ariaCurrent: false,
+    suffix: null,
+  },
+  current: {
+    circle: "border-2 border-[var(--color-primary)] text-[var(--color-primary)]",
+    label: "font-medium text-[var(--color-foreground)]",
+    ariaCurrent: true,
+    suffix: null,
+  },
+  // THE BLOCKED FOUR. Each keeps its own distinct reason on screen -- an
+  // operator told nothing when a read has actually failed keeps waiting for a
+  // state that is never coming -- and NONE of them gets the ring or the fill,
+  // because the step they name cannot be completed from where the operator is.
+  // UNREACHABLE, AND STILL EXHAUSTIVE. A segment only takes a readiness value
+  // while that step is BLOCKING, and blocking is false exactly when the value
+  // is "resolved" -- so this row is never looked up. It is written as the
+  // no-claim style rather than omitted, because omitting it would mean typing
+  // the table as a partial record, and a partial record is how a future state
+  // gets added with no style and renders as whatever the base class happens to
+  // be. If it is ever reached, it claims nothing.
+  resolved: { circle: "", label: "", ariaCurrent: false, suffix: null },
+  loading: { circle: "", label: "", ariaCurrent: true, suffix: " (loading)" },
+  failed: {
+    circle: "border-[var(--color-destructive)] text-[var(--color-destructive)]",
+    label: "text-[var(--color-destructive)]",
+    ariaCurrent: true,
+    suffix: " (failed to load)",
+  },
+  "tags-unresolved": { circle: "", label: "", ariaCurrent: true, suffix: " (tags still loading)" },
+  unselected: { circle: "", label: "", ariaCurrent: true, suffix: " (not chosen yet)" },
+};
 
 function StepRail({
   current,
@@ -829,12 +911,30 @@ function StepRail({
           job -- and it printed the FRAME HEADING text, which ruling 15 assigns
           to the screen heading, in the one place the short labels are
           canonical. Both halves are corrected here. */}
+      {/* ONE ROW, ALWAYS, SCROLLED RATHER THAN WRAPPED -- and that is the fix
+          for the orphaned connectors, not a styling preference. With
+          `flex-wrap`, a connector travels with the step that follows it, so
+          the first step on every row after the first opened with a line
+          coming out of empty space. CSS gives a flex item no way to know it
+          begins a visual row, so no "hide it at the start of a row" rule is
+          writable; the alternatives are a fixed grid (which would fight the
+          deck's variable-width labels) or drawing the connector as a trailing
+          element (which moves the same orphan to the END of every row and
+          leaves it pointing at nothing). Removing wrapping removes the whole
+          class of defect instead of relocating it: ten segments stay on one
+          line at every width, and the line scrolls when it does not fit.
+          `snap` keeps a partly-scrolled rail landing on a segment rather than
+          mid-label. */}
       <ol
         aria-label="Connection setup steps"
-        className="mb-1 flex flex-wrap items-center gap-y-2"
+        data-testid="step-rail"
+        className="mb-1 flex snap-x snap-mandatory flex-nowrap items-center overflow-x-auto pb-1"
       >
         {SPEC_STEPS.map((s, i) => {
-          const isCurrent = s.n === effectiveCurrentSpec;
+          // POSITION ONLY. This is an input to `state` below and to nothing
+          // else -- see the comment on RAIL_SEGMENT_STYLES for why no visual
+          // may read it directly.
+          const positionallyCurrent = s.n === effectiveCurrentSpec;
           // Completed means "earlier in the order this wizard actually
           // visits built steps in," never "a smaller specified number" --
           // see the comment on BUILT_ORDER above for why those disagree here.
@@ -849,30 +949,26 @@ function StepRail({
           // actually failed keeps waiting for a state that is never coming,
           // and one told "loading" for their own unmade selection is told
           // something false about themselves.
-          const state:
-            | "not-built"
-            | "current"
-            | "completed"
-            | "upcoming"
-            | SiteScopeReadiness
-            | CapabilityReadiness = !s.built
+          const state: RailSegmentState = !s.built
             ? "not-built"
             : s.n === SITE_SCOPE_SPEC_N && siteScopeBlocking
               ? siteScopeState
               : s.n === CAPABILITY_SPEC_N && capabilityBlocking
                 ? capabilityState
-                : isCurrent
+                : positionallyCurrent
                   ? "current"
                   : isCompleted
                     ? "completed"
                     : "upcoming";
-          // NOT FAKED PROGRESS, IN EITHER DIRECTION. A filled circle is the
-          // strongest "this is finished" signal on the screen, so it is drawn
-          // from `state` alone: an unbuilt step has no section behind it to
-          // have completed, and a built step the mint would still refuse gets
-          // neither the filled nor the ringed circle.
-          const isDone = state === "completed";
-          const isFailed = state === "failed";
+          // EVERY VISUAL FROM THE ONE STATE VALUE, VIA THE TABLE. There is no
+          // second boolean here for a style to read, so the ring cannot
+          // appear on a step whose state says it is blocked -- that was the
+          // FIFTH instance of this component's one defect family (the rail
+          // saying a thing is fine while the action it gates is refused), and
+          // it happened because `isCurrent` was positional and the style read
+          // it directly. Position is now an input to `state` and to nothing
+          // else.
+          const style = RAIL_SEGMENT_STYLES[state];
           return (
             <li key={s.n} className="flex items-center">
               {i > 0 ? (
@@ -888,24 +984,19 @@ function StepRail({
                 />
               ) : null}
               <span
-                aria-current={isCurrent ? "step" : undefined}
+                aria-current={style.ariaCurrent ? "step" : undefined}
                 // A plain data attribute rather than only a class, so a test
                 // can assert the state this rail believes it is in without
                 // coupling to Tailwind class names.
                 data-step-n={s.n}
                 data-step-state={state}
-                className="flex items-center gap-2"
+                className="flex snap-start items-center gap-2"
               >
                 <span
                   data-testid={`step-circle-${s.n}`}
                   className={cn(
                     "inline-flex size-[22px] flex-none items-center justify-center rounded-full border-[1.5px] border-[var(--color-border)] font-mono text-[11px] leading-none text-[var(--color-muted-foreground)]",
-                    isDone &&
-                      "border-[var(--color-primary)] bg-[var(--color-primary)] text-[var(--color-primary-foreground)]",
-                    isCurrent &&
-                      "border-2 border-[var(--color-primary)] text-[var(--color-primary)]",
-                    isFailed && "border-[var(--color-destructive)] text-[var(--color-destructive)]",
-                    !s.built && "opacity-70",
+                    style.circle,
                   )}
                 >
                   {s.n}
@@ -913,19 +1004,13 @@ function StepRail({
                 <span
                   data-testid={`step-label-${s.n}`}
                   className={cn(
-                    "text-[12.5px] text-[var(--color-muted-foreground)]",
-                    !s.built && "italic opacity-70",
-                    isCurrent && "font-medium text-[var(--color-foreground)]",
-                    isDone && "text-[var(--color-foreground)]",
-                    isFailed && "text-[var(--color-destructive)]",
+                    "whitespace-nowrap text-[12.5px] text-[var(--color-muted-foreground)]",
+                    style.label,
                   )}
                 >
                   {s.rail}
+                  {style.suffix}
                   {!s.built ? <span className="sr-only"> (not yet available)</span> : null}
-                  {state === "loading" ? " (loading)" : null}
-                  {state === "failed" ? " (failed to load)" : null}
-                  {state === "tags-unresolved" ? " (tags still loading)" : null}
-                  {state === "unselected" ? " (not chosen yet)" : null}
                 </span>
               </span>
             </li>
@@ -987,26 +1072,35 @@ export function recommendationFor(
  * that is not a specified step, so a section cannot be numbered off the spine
  * at all.
  *
- * The heading keeps this section's OWN title rather than the deck's long frame
- * title, where the two differ: the built section for specified step 2 asks for
- * the client and not yet the name (the name field is still down in the setup
- * section), and printing "Name it, pick the AI client" over it would promise a
- * field that is not there. Ruling 15 governs which text is canonical for a
- * heading; it does not license a heading that describes an unbuilt screen.
+ * THE HEADING IS THE SPEC ENTRY'S OWN `heading`, NOT A SECOND STRING PASSED IN
+ * BESIDE IT. A `title` prop next to a canonical `heading` field is two places
+ * one step's name is written with nothing making them agree, which is the
+ * exact shape capabilities.ts documents at length as the reason its vocabulary
+ * is one list -- and drift between them is precisely the defect this component
+ * was reported for.
+ *
+ * `narrowerTitle` is the one deliberate escape, and it is visible at the call
+ * site with its reason. It exists for a built section that does LESS than the
+ * deck's frame title claims: specified step 2 is "Name it, pick the AI client"
+ * and the built section only picks the client (the name field is still down in
+ * the setup section), so printing the deck's title over it would promise a
+ * field that is not on the screen. Ruling 15 says which text is canonical; it
+ * does not license a heading that describes an unbuilt screen.
  */
 function Section({
   specN,
-  title,
+  narrowerTitle,
   hint,
   children,
 }: {
   specN: number;
-  title: string;
+  narrowerTitle?: string;
   hint: string;
   children: ReactNode;
 }) {
   const spec = SPEC_STEPS.find((s) => s.n === specN);
   if (spec === undefined) throw new Error(`section numbered off the spine: ${specN}`);
+  const title = narrowerTitle ?? spec.heading;
   return (
     <section aria-label={title} className="space-y-3">
       <div className="space-y-0.5">
