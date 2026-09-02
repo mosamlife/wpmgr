@@ -97,16 +97,36 @@ const (
 )
 
 // siteRecord is one site as the model sees it.
+//
+// THE FENCED FIELDS ARE MARKED BELOW AND THE MARKING IS THE ENUMERATION.
+// Every field whose bytes originate outside the control plane -- the operator's
+// own site name, the site URL, and the three version strings the agent reports
+// about its install -- carries siteTextMarker. The unmarked fields are ours by
+// construction and are listed here so the next field added has to be classified
+// rather than defaulted:
+//
+//   - id is a uuid we generated;
+//   - connection_state and health_status are written only by control-plane
+//     queries, from string literals in db/query/*.sql, never from agent input;
+//   - last_seen_at, inventory_status, inventory_collected_at and
+//     inventory_age_seconds are formatted here from our own columns and clock.
 type siteRecord struct {
-	ID              string  `json:"id"`
-	Name            string  `json:"name"`
-	URL             string  `json:"url"`
-	ConnectionState string  `json:"connection_state"`
-	HealthStatus    string  `json:"health_status"`
-	WPVersion       string  `json:"wp_version,omitempty"`
-	PHPVersion      string  `json:"php_version,omitempty"`
-	AgentVersion    string  `json:"agent_version,omitempty"`
-	LastSeenAt      *string `json:"last_seen_at"`
+	ID string `json:"id"`
+	// Name and URL are OPERATOR- AND SITE-CONTROLLED. Fenced.
+	Name string `json:"name"`
+	URL  string `json:"url"`
+	// ConnectionState and HealthStatus are control-plane enums. Not fenced,
+	// because fencing them would claim a provenance they do not have.
+	ConnectionState string `json:"connection_state"`
+	HealthStatus    string `json:"health_status"`
+	// The three version strings are AGENT-REPORTED, so they are site-controlled
+	// whatever they usually look like. A version column is a string column, and
+	// nothing between the agent's POST and this line constrains it to look like
+	// a version. Fenced.
+	WPVersion    string  `json:"wp_version,omitempty"`
+	PHPVersion   string  `json:"php_version,omitempty"`
+	AgentVersion string  `json:"agent_version,omitempty"`
+	LastSeenAt   *string `json:"last_seen_at"`
 
 	// InventoryStatus is ALWAYS present and is the field to branch on.
 	InventoryStatus string `json:"inventory_status"`
@@ -140,15 +160,19 @@ type siteRecord struct {
 // `sites.*` alone. Every field below is present on both, which is why the body
 // is untouched. ListSitesForMCPScope drops those two joins with the columns.
 func toSiteRecord(row sqlc.Site, now time.Time) siteRecord {
+	// EVERY SITE-CONTROLLED COLUMN GOES THROUGH fenceSiteText HERE, at the one
+	// projection, so there is no second path from sqlc.Site into a tool result
+	// that could forget. See fence.go for why this is a render-side marker and
+	// not an ingest-side blocklist.
 	rec := siteRecord{
 		ID:              row.ID.String(),
-		Name:            row.Name,
-		URL:             row.Url,
+		Name:            fenceSiteText(row.Name),
+		URL:             fenceSiteText(row.Url),
 		ConnectionState: row.ConnectionState,
 		HealthStatus:    row.HealthStatus,
-		WPVersion:       row.WpVersion,
-		PHPVersion:      row.PhpVersion,
-		AgentVersion:    row.AgentVersion,
+		WPVersion:       fenceSiteText(row.WpVersion),
+		PHPVersion:      fenceSiteText(row.PhpVersion),
+		AgentVersion:    fenceSiteText(row.AgentVersion),
 		LastSeenAt:      timestampOrNil(row.LastSeenAt),
 	}
 
@@ -362,7 +386,8 @@ func truncationBanner(explanation string) string {
 // listSitesInstructions is PREPENDED to every list_sites result. It is short
 // on purpose: it shares a fixed budget with the truncation banner, and the
 // banner must never be the thing that gets dropped.
-const listSitesInstructions = "Fleet inventory, read-only. This connection cannot modify any site.\n" +
+const listSitesInstructions = siteTextNotice +
+	"Fleet inventory, read-only. This connection cannot modify any site.\n" +
 	"Only sites this connection is scoped to are listed; an absent site is out of scope, not absent from the fleet.\n" +
 	"inventory_status is authoritative: \"never_collected\" means no plugin/theme inventory has EVER been collected " +
 	"for that site and inventory_collected_at is null. Do not treat a never_collected site as up to date, and do not " +

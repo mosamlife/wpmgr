@@ -86,6 +86,15 @@ var updatesPendingSchema = json.RawMessage(`{
 }`)
 
 // pendingItem is one plugin or theme with an actionable update advisory.
+// EVERY STRING FIELD ON THIS TYPE IS SITE-CONTROLLED and every one of them is
+// fenced in toPendingItem. Slug and Name come out of the site's own inventory
+// document, which the agent assembles from plugin and theme headers -- text
+// written by third-party authors, not by us and not by the operator.
+// InstalledVersion and NewVersion are version STRINGS from the same document
+// and from the update advisory the site's own WordPress install resolved; a
+// version column is a string column, and nothing between the agent's POST and
+// this record constrains either to look like a version. `active` is the only
+// unfenced field and it is a bool, which carries no text.
 type pendingItem struct {
 	Slug string `json:"slug"`
 	Name string `json:"name,omitempty"`
@@ -104,7 +113,8 @@ type pendingItem struct {
 }
 
 // coreUpdateRecord is the site's own WordPress core advisory, present only when
-// site.ActionableCoreUpdate accepts it.
+// site.ActionableCoreUpdate accepts it. Both versions are site-reported strings
+// and both are fenced where the record is built.
 type coreUpdateRecord struct {
 	CurrentVersion string `json:"current_version"`
 	NewVersion     string `json:"new_version"`
@@ -113,8 +123,10 @@ type coreUpdateRecord struct {
 // siteUpdatesRecord is one site's outstanding update set as the model sees it.
 type siteUpdatesRecord struct {
 	SiteID string `json:"site_id"`
-	Name   string `json:"name"`
-	URL    string `json:"url"`
+	// Name and URL are site-controlled and fenced, exactly as on siteRecord.
+	// SiteID is a uuid we generated and is not.
+	Name string `json:"name"`
+	URL  string `json:"url"`
 
 	// The staleness triplet, from the same helper fleet_sites_list uses, so the
 	// two tools cannot disagree about when a site's inventory was collected.
@@ -143,6 +155,14 @@ type siteUpdatesRecord struct {
 	// a freshness window by the back door, which is the thing the owner ruled
 	// against. It says when the inventory was collected and lets the reader
 	// decide what that is worth.
+	//
+	// IT IS WPMGR PROSE AND CARRIES NO SITE TEXT, so it is deliberately
+	// UNFENCED and must stay that way. It used to open with the site's name,
+	// which put site-controlled bytes inside a server-authored sentence -- the
+	// one shape a per-value fence cannot express, because the prose around the
+	// value is unmarked and the model has no way to see where our words stop
+	// and the site's begin. It says "This site" instead; the name is one field
+	// away, fenced. See updatesSummary and fence.go.
 	Summary string `json:"summary"`
 
 	Core    *coreUpdateRecord `json:"core_update"`
@@ -160,8 +180,8 @@ type siteUpdatesRecord struct {
 func toSiteUpdatesRecord(row sqlc.Site, now time.Time) siteUpdatesRecord {
 	rec := siteUpdatesRecord{
 		SiteID:  row.ID.String(),
-		Name:    row.Name,
-		URL:     row.Url,
+		Name:    fenceSiteText(row.Name),
+		URL:     fenceSiteText(row.Url),
 		Plugins: []pendingItem{},
 		Themes:  []pendingItem{},
 	}
@@ -197,8 +217,8 @@ func toSiteUpdatesRecord(row sqlc.Site, now time.Time) siteUpdatesRecord {
 
 	if core := site.ParseInventoryCoreUpdate(row.Components); site.ActionableCoreUpdate(core) {
 		rec.Core = &coreUpdateRecord{
-			CurrentVersion: core.CurrentVersion,
-			NewVersion:     core.NewVersion,
+			CurrentVersion: fenceSiteText(core.CurrentVersion),
+			NewVersion:     fenceSiteText(core.NewVersion),
 		}
 	}
 
@@ -238,12 +258,19 @@ func updatesSummary(rec siteUpdatesRecord) string {
 	//
 	// The two facts are now stated together instead of one overwriting the
 	// other: here is what we hold, and we do not know when it was collected.
+	//
+	// THE SITE'S NAME IS NO LONGER SPLICED INTO ANY OF THESE FOUR SENTENCES.
+	// Every arm used to open with "%s: " over rec.Name, which placed
+	// site-controlled bytes inside prose the model reads as WPMgr's own -- so a
+	// site could author the opening clause of our own sentence about it. The
+	// record this string lives in already carries the name, fenced, one field
+	// away, so naming the site here was never carrying information; "This site"
+	// reads identically inside the record and forges nothing. See fence.go.
 	if rec.InventoryStatus == inventoryNeverCollected {
 		if rec.PendingTotal == 0 {
-			return fmt.Sprintf(
-				"%s: no plugin or theme inventory has ever been collected for this site, so we do not "+
-					"know whether it needs updates. The zero counts below mean we have not looked, "+
-					"NOT that it is up to date.", rec.Name)
+			return "This site: no plugin or theme inventory has ever been collected for this site, so we do not " +
+				"know whether it needs updates. The zero counts below mean we have not looked, " +
+				"NOT that it is up to date."
 		}
 		return fmt.Sprintf(
 			// NO VERDICT WORD, deliberately, and this sentence had to be
@@ -253,10 +280,10 @@ func updatesSummary(rec siteUpdatesRecord) string {
 			// inventory, so it was arguably in bounds -- and rewording cost
 			// nothing, while narrowing the guard to admit it would have cost
 			// the guard.
-			"%s: %d %s outstanding (%s), but we have no record of when this site's inventory was "+
+			"This site: %d %s outstanding (%s), but we have no record of when this site's inventory was "+
 				"collected, so this count may be incomplete and the versions behind it may have "+
 				"moved on. Treat it as a lower bound and ask for a fresh inventory before acting on it.",
-			rec.Name, rec.PendingTotal, plural(rec.PendingTotal, "update", "updates"),
+			rec.PendingTotal, plural(rec.PendingTotal, "update", "updates"),
 			strings.Join(pendingBreakdown(rec), ", "))
 	}
 
@@ -274,12 +301,12 @@ func updatesSummary(rec siteUpdatesRecord) string {
 
 	if rec.PendingTotal == 0 {
 		return fmt.Sprintf(
-			"%s: no updates outstanding, according to an inventory collected %s%s.",
-			rec.Name, age, when)
+			"This site: no updates outstanding, according to an inventory collected %s%s.",
+			age, when)
 	}
 	return fmt.Sprintf(
-		"%s: %d %s outstanding (%s), according to an inventory collected %s%s.",
-		rec.Name, rec.PendingTotal, plural(rec.PendingTotal, "update", "updates"),
+		"This site: %d %s outstanding (%s), according to an inventory collected %s%s.",
+		rec.PendingTotal, plural(rec.PendingTotal, "update", "updates"),
 		strings.Join(pendingBreakdown(rec), ", "), age, when)
 }
 
@@ -341,13 +368,16 @@ func humanAge(seconds int64) string {
 	}
 }
 
+// toPendingItem fences all four string fields. sortPending orders by Slug after
+// this runs, which is unaffected: the marker is a constant prefix on every slug,
+// and a constant prefix preserves the ordering of what follows it.
 func toPendingItem(c site.Component) pendingItem {
 	return pendingItem{
-		Slug:             c.Slug,
-		Name:             c.Name,
+		Slug:             fenceSiteText(c.Slug),
+		Name:             fenceSiteText(c.Name),
 		Active:           c.Active,
-		InstalledVersion: c.Version,
-		NewVersion:       c.AvailableUpdate.NewVersion,
+		InstalledVersion: fenceSiteText(c.Version),
+		NewVersion:       fenceSiteText(c.AvailableUpdate.NewVersion),
 	}
 }
 
@@ -501,7 +531,8 @@ func fleetUpdateTotals(recs []siteUpdatesRecord) fleetTotals {
 // sentences that earn their bytes are the never_collected one and the staleness
 // one, because both are places a model would otherwise report a confident
 // falsehood.
-const updatesPendingInstructions = "Outstanding plugin, theme and WordPress core updates, per site. " +
+const updatesPendingInstructions = siteTextNotice +
+	"Outstanding plugin, theme and WordPress core updates, per site. " +
 	"Read-only: this connection cannot apply any of them.\n" +
 	"Only sites this connection is scoped to are listed; an absent site is out of scope, not absent from the fleet.\n" +
 	"EVERY SITE CARRIES A \"summary\" SENTENCE STATING ITS COUNT AND HOW OLD THE INVENTORY BEHIND IT IS. Quote or " +
