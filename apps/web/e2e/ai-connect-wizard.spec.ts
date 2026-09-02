@@ -68,7 +68,7 @@ async function reachMethodStep(page: Page) {
   await page.goto("/ai/connect");
   await page.getByRole("button", { name: /cursor/i }).first().click();
   await page.getByRole("button", { name: /^Continue$/ }).click();
-  await expect(page.getByRole("heading", { name: /^5\. How it signs in$/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^5\. Choose how it authenticates$/ })).toBeVisible();
 }
 
 test.describe("the AI connection wizard shows one step at a time", () => {
@@ -87,16 +87,16 @@ test.describe("the AI connection wizard shows one step at a time", () => {
 
     // The rail is persistent and full length from the first frame.
     await expect(page.locator("[data-step-n]")).toHaveCount(10);
-    await expect(page.locator('[data-step-state="current"]')).toHaveCount(1);
+    await expect(page.locator('[aria-current="step"]')).toHaveCount(1);
 
     // Answering does not advance; Continue does.
     await page.getByRole("button", { name: /cursor/i }).first().click();
     await expect(page.getByRole("heading", { name: /^2\. Pick your client$/ })).toBeVisible();
     await page.getByRole("button", { name: /^Continue$/ }).click();
 
-    await expect(page.getByRole("heading", { name: /^5\. How it signs in$/ })).toBeVisible();
+    await expect(page.getByRole("heading", { name: /^5\. Choose how it authenticates$/ })).toBeVisible();
     expect(await visibleStepHeadings(page)).toHaveLength(1);
-    await expect(page.locator('[data-step-state="current"]')).toHaveCount(1);
+    await expect(page.locator('[aria-current="step"]')).toHaveCount(1);
 
     // Back returns, and the client answer survives it.
     await page.getByRole("button", { name: /^Back$/ }).click();
