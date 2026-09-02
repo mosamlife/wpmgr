@@ -111,7 +111,7 @@ import {
 // NO SNIPPET IS WRITTEN IN THIS FILE. Every block comes from buildSnippet, and
 // snippet.test.ts fails the build if a config literal appears here.
 
-type Step = 1 | 2 | 3 | 4 | 5 | 6 | 8 | 9 | 10;
+type Step = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
 
 /**
  * The rail this page renders is the design's own numbering (S29, "ADD MCP
@@ -139,13 +139,12 @@ const BUILT_ORDER: readonly [Step, number][] = [
   [4, 4],
   [5, 5],
   [6, 6],
-  // 7 IS ABSENT, AND ITS ABSENCE IS NOT A REORDER. Specified step 7 is the
-  // consent hand-off and it is not built: the approval screen is an OAuth
-  // redirect target needing a registered client's client_id and redirect_uri,
-  // which this wizard has neither of (see the comment on
-  // routes/_authed/connect.ai.tsx). A step that does not exist is skipped and
-  // the rail draws it as not built; that is a visible gap, not the silent
-  // renumbering this file was reported for.
+  // 7 IS A HAND-OFF SCREEN, NOT A HAND-OFF. This wizard cannot open or
+  // pre-fill the approval screen: that screen is an OAuth redirect target
+  // needing a registered client's client_id and redirect_uri, and the client
+  // -- not this app -- starts the flow. Owner ruling: build the screen that
+  // says so, and do not persist anything to make the hand-off real.
+  [7, 7],
   [8, 8],
   [9, 9],
   [10, 10],
@@ -201,23 +200,41 @@ const SITE_SCOPE_LOCAL_STEP: Step = 3;
 const CAPABILITY_LOCAL_STEP: Step = 4;
 const AUTH_LOCAL_STEP: Step = 5;
 const SETUP_LOCAL_STEP: Step = 6;
+const AUTHORIZE_LOCAL_STEP: Step = 7;
 const CONFIRM_LOCAL_STEP: Step = 8;
 const VERIFY_LOCAL_STEP: Step = 9;
 const DONE_LOCAL_STEP: Step = 10;
 
 
 /**
- * What a rail segment IS, for the operator standing in front of it.
+ * What a rail segment IS, for the operator standing in front of it. THREE
+ * STATES, AND THEY ARE THREE DIFFERENT FACTS an operator must not have to
+ * guess between:
  *
- *   "built"     -- there is a section for it and the walk visits it.
- *   "not-built" -- no section exists yet. Specified steps 7 to 10 today.
+ *   "built"          -- there is a section for it and this path visits it.
+ *   "not-applicable" -- it exists, and this operator will never reach it,
+ *                       because of an answer they have already given.
+ *   "not-built"      -- no section exists yet, on any path.
  *
- * THERE IS NO "NOT ASKED ON THIS PATH" STATE ANY MORE. It existed for one
- * case, the capability picker on the browser sign-in path, and in the
- * specified order that case cannot arise: step 4 is asked before step 5, so no
- * auth answer exists to skip it on. Every operator walks the same six steps.
+ * THE MIDDLE STATE WAS DELETED AND IS BACK, WITH TWO USES INSTEAD OF ONE. It
+ * previously served the capability picker on the browser sign-in path, and the
+ * reorder made that unexpressible -- step 4 is asked BEFORE the auth method, so
+ * there was no answer to skip it on. That was a correct deletion of a use, not
+ * of the idea. The idea now has two uses that are both keyed on an answer
+ * already behind the operator:
+ *
+ *   step 7 is the approval hand-off and exists only on the browser sign-in
+ *   path, so on the token path it is the step that will never be asked;
+ *   steps 8 to 10 verify a connection this wizard minted, so on the browser
+ *   sign-in path -- where the client creates the grant and this wizard never
+ *   sees its id -- they are the steps that will never be asked.
+ *
+ * Owner ruling, made when step 4 was the token-only case: keep all ten
+ * segments and mark the inapplicable one, because a wizard that changes length
+ * halfway through is disorienting while a labelled inapplicable step tells an
+ * operator why something they can see will not be asked of them.
  */
-type SpecStepAvailability = "built" | "not-built";
+type SpecStepAvailability = "built" | "not-applicable" | "not-built";
 
 interface SpecStepDef {
   /** The specified step number (design S29), 1 through 10. */
@@ -240,11 +257,34 @@ interface SpecStepDef {
   readonly heading: string;
   /** True when this specified step has a built section. */
   readonly built: boolean;
+  /**
+   * Set where a built step is asked on ONE auth path only.
+   *
+   * BOTH DIRECTIONS ARE USED NOW, which is what makes this general rather than
+   * a special case for one step: 7 is browser-sign-in only, 8 to 10 are token
+   * only. A field that only ever held one value was a special case wearing a
+   * general name.
+   */
+  readonly onlyOnMethod?: AuthMethod;
 }
 
-/** Which availability state one specified step is in. */
-function specStepAvailability(s: SpecStepDef): SpecStepAvailability {
-  return s.built ? "built" : "not-built";
+/**
+ * Which availability state one specified step is in, for the auth method
+ * chosen so far.
+ *
+ * BEFORE A METHOD IS CHOSEN, A PATH-ONLY STEP IS "built", NOT
+ * "not-applicable". Nothing has ruled it out yet, and telling an operator on
+ * step 2 that step 7 will not be asked of them -- when an answer they have not
+ * given decides exactly that -- would be a claim the wizard cannot yet make.
+ * This is the same rule the deleted version had, and it was never the part that
+ * went wrong.
+ */
+function specStepAvailability(s: SpecStepDef, method: AuthMethod | null): SpecStepAvailability {
+  if (!s.built) return "not-built";
+  if (s.onlyOnMethod !== undefined && method !== null && method !== s.onlyOnMethod) {
+    return "not-applicable";
+  }
+  return "built";
 }
 
 /**
@@ -256,10 +296,13 @@ function specStepAvailability(s: SpecStepDef): SpecStepAvailability {
  * unnecessary and unusable -- the method is answered at step 5, after every
  * step the filter would have removed.
  */
-function walkFor(connectionExists: boolean): readonly [Step, number][] {
+function walkFor(
+  method: AuthMethod | null,
+  connectionExists: boolean,
+): readonly [Step, number][] {
   return BUILT_ORDER.filter(([local, spec]) => {
     const def = SPEC_STEPS.find((s) => s.n === spec);
-    if (def !== undefined && specStepAvailability(def) !== "built") return false;
+    if (def !== undefined && specStepAvailability(def, method) !== "built") return false;
     // STEPS 8 TO 10 NEED A CONNECTION TO EXIST, AND THAT IS A FACT THAT HAS
     // ALREADY HAPPENED, NOT AN ANSWER THAT MIGHT COME. They poll one
     // connection's status by id and list the tools that connection can see, so
@@ -323,12 +366,18 @@ const SPEC_STEPS: readonly SpecStepDef[] = [
   { n: 4, rail: "Capabilities", heading: "Choose what it may do", built: true },
   { n: 5, rail: "Auth", heading: "Choose how it authenticates", built: true },
   { n: 6, rail: "Setup", heading: "Get the setup artefact", built: true },
-  { n: 7, rail: "Authorize", heading: "Connect and authorize", built: false },
-  { n: 8, rail: "Confirm", heading: "WPMgr confirms connection is live", built: true },
+  // BROWSER SIGN-IN ONLY. There is no approval screen on the token path at
+  // all, so this is the step a token operator will never be asked.
+  { n: 7, rail: "Authorize", heading: "Connect and authorize", built: true, onlyOnMethod: "oauth" },
+  // TOKEN PATH ONLY, and for a reason about ids rather than about screens:
+  // these three are ABOUT one connection, and on the browser sign-in path the
+  // client creates the grant through the approval screen, so this wizard never
+  // learns its id and has nothing to poll or list.
+  { n: 8, rail: "Confirm", heading: "WPMgr confirms connection is live", built: true, onlyOnMethod: "token" },
   // "Test" in the rail, "Verify with a first read" as the heading -- ruling 15
   // names this pair explicitly, because the deck uses both words for step 9.
-  { n: 9, rail: "Test", heading: "Verify with a first read", built: true },
-  { n: 10, rail: "Done", heading: "Done: tool list and first prompt", built: true },
+  { n: 9, rail: "Test", heading: "Verify with a first read", built: true, onlyOnMethod: "token" },
+  { n: 10, rail: "Done", heading: "Done: tool list and first prompt", built: true, onlyOnMethod: "token" },
 ];
 
 const UNBUILT_RAIL_NOTE = unbuiltRailNote(SPEC_STEPS);
@@ -531,7 +580,7 @@ export function ConnectWizard({
   };
 
   // The steps this wizard walks, 1 through 6 in order, the same for everyone.
-  const walk = walkFor(connectionId !== null);
+  const walk = walkFor(method, connectionId !== null);
   const gates: readonly StepGate[] = walk.map(([local]) => stepGate(local, gateContext));
   const cursorPos = resolveCursorPos(walk, gates, requestedStep);
   const currentLocal: Step = walk[cursorPos]![0];
@@ -626,7 +675,7 @@ export function ConnectWizard({
 
   return (
     <div className={cn("space-y-6", className)}>
-      <StepRail walk={walk} cursorPos={cursorPos} currentGate={currentGate} />
+      <StepRail walk={walk} cursorPos={cursorPos} currentGate={currentGate} method={method} />
 
       {/* THE ONE AND ONLY PLACE A REVEAL IS RENDERED, and it is deliberately
           outside every step. A second render site inside step 4 would restore
@@ -998,6 +1047,61 @@ export function ConnectWizard({
         </Section>
       ) : null}
 
+      {/* SPECIFIED STEP 7, AND IT IS A SCREEN ABOUT A HAND-OFF RATHER THAN A
+          HAND-OFF. Owner ruling. This wizard cannot open the approval screen
+          and cannot pre-fill it: that screen is an OAuth redirect target which
+          needs a registered client's client_id and redirect_uri, and the client
+          -- not this app -- starts the flow. Nothing is persisted to fake it.
+
+          SO THE SCREEN'S JOB IS TO SAY WHAT TO EXPECT AND WHAT TO CHOOSE. The
+          capability sentence is the one already verified against the server:
+          this app sends no capabilities on the consent path, an omitted field
+          resolves through resolveGrantCapabilities to
+          DefaultGrantCapabilities(), and policy.go:273 defines that as
+          CapSitesRead alone.
+
+          NO WAITING STATE, DELIBERATELY. We do not drive this flow and cannot
+          observe it: a spinner here would be this screen pretending to watch
+          something it has no channel to. The decline outcome is drawn because
+          it is a thing the operator does, not a thing we detect. */}
+      {currentLocal === AUTHORIZE_LOCAL_STEP && client !== null ? (
+        <Section
+          specN={7}
+          hint="Your client opens this screen itself. Nothing here happens in this tab."
+        >
+          <div className="space-y-3">
+            <p className="text-sm text-[var(--color-foreground)]">
+              Start {client.name} and connect to WPMgr. It opens an approval page in your browser,
+              signed in as you, and asks you to approve the connection.
+            </p>
+            <div className="rounded-md border border-[var(--color-border)] p-3">
+              <p className="text-xs font-medium text-[var(--color-foreground)]">
+                What to expect on that page
+              </p>
+              <ul className="mt-2 space-y-1.5 text-xs text-[var(--color-muted-foreground)]">
+                <li>
+                  It asks for the connection name and which sites it may reach. Your answers from
+                  steps 3 and 4 are not carried there, so it asks again and you answer it there.
+                </li>
+                <li>
+                  It has no permissions control. Approving without narrowing anything creates a
+                  connection able to read your sites and nothing else.
+                </li>
+                <li>
+                  Declining creates nothing. No credential exists and no grant is written, and you
+                  can start again whenever you are ready.
+                </li>
+              </ul>
+            </div>
+            <p className="text-xs text-[var(--color-muted-foreground)]">
+              This page does not watch for that approval, because your client and that page talk to
+              each other without going through this tab. Once it is approved the connection is
+              live, and it is listed under Settings, AI connections where you can revoke it.
+            </p>
+          </div>
+        </Section>
+      ) : null}
+
       {/* SPECIFIED STEP 8. The panel is ConnectionVerify, unchanged and
           unwrapped: it already polls GET /connections/:id/status, already ticks
           from the handshake the server RECORDED rather than from any clock, and
@@ -1073,6 +1177,7 @@ export function ConnectWizard({
  */
 type RailSegmentState =
   | "not-built"
+  | "not-applicable"
   | "current"
   | "completed"
   | "upcoming"
@@ -1102,7 +1207,19 @@ interface RailSegmentStyle {
  * exactly one answer, and is decided once in StepRail.
  */
 const RAIL_SEGMENT_STYLES: Record<RailSegmentState, RailSegmentStyle> = {
+  // THREE DISTINCT LOOKS FOR THREE DISTINCT FACTS, and the distinction is the
+  // requirement rather than the styling taste. `not-built` is italic and faded:
+  // the screen does not exist. `not-applicable` is struck through: the screen
+  // exists and this operator will never reach it. `upcoming` is plain: the
+  // screen exists and is ahead of them. An operator who cannot tell these apart
+  // is left guessing whether something they can see is missing, irrelevant, or
+  // simply next.
   "not-built": { circle: "opacity-70", label: "italic opacity-70", suffix: null },
+  "not-applicable": {
+    circle: "opacity-60",
+    label: "line-through opacity-60",
+    suffix: " (not asked on this path)",
+  },
   upcoming: { circle: "", label: "", suffix: null },
   completed: {
     circle:
@@ -1210,6 +1327,7 @@ function StepRail({
   walk,
   cursorPos,
   currentGate,
+  method,
 }: {
   /** The steps this wizard walks, from `walkFor`. */
   walk: readonly [Step, number][];
@@ -1222,6 +1340,12 @@ function StepRail({
    * value the Continue button is disabled from.
    */
   currentGate: StepGate;
+  /**
+   * The auth method chosen so far, or null. The rail needs it to tell a step
+   * that will never be asked of THIS operator from one that is merely ahead of
+   * them -- see specStepAvailability.
+   */
+  method: AuthMethod | null;
 }) {
   // THE OTHER HALF OF "ONE ROW THAT SCROLLS". Ten segments do not fit on a
   // phone, so on a narrow screen the step the operator is actually on can sit
@@ -1316,7 +1440,7 @@ function StepRail({
           // step with the first.
           const walkPos = walk.findIndex(([, spec]) => spec === s.n);
           const isCompleted = walkPos !== -1 && walkPos < cursorPos;
-          const availability = specStepAvailability(s);
+          const availability = specStepAvailability(s, method);
           // SITE SCOPE'S AND THE CAPABILITY PICKER'S OWN STATES, CHECKED
           // BEFORE THE GENERIC ONES BELOW AND OVERRIDING THEM. "completed"
           // here would be the exact defect this whole rework exists for: a
@@ -1338,7 +1462,9 @@ function StepRail({
           const state: RailSegmentState =
             availability === "not-built"
               ? "not-built"
-              : isCurrentStep
+              : availability === "not-applicable"
+                ? "not-applicable"
+                : isCurrentStep
                 ? currentGate.refusal !== null
                   ? currentGate.readiness
                   : "current"
