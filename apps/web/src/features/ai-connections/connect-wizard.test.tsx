@@ -14,7 +14,8 @@ import { formatAbsolute } from "@/features/updates/schedule";
 import { mockQueryResult } from "@/test/query-mocks";
 
 import { Route } from "@/routes/_authed/ai/connect";
-import { MCP_CLIENTS } from "./client-table";
+import { authKeys } from "@/features/auth/use-auth";
+import { CLIENT_TABLE_VERIFIED_AT, MCP_CLIENTS } from "./client-table";
 import { useSites, DEFAULT_SITES_LIMIT } from "@/features/sites/use-sites";
 import { useTags } from "@/features/tags/use-tags";
 import { snapshotFromPage } from "@/features/mcp-consent/site-scope";
@@ -71,10 +72,30 @@ beforeEach(() => {
 
 const ConnectPage = Route.options.component!;
 
+// The role this route's principal holds. The wizard itself is now behind
+// canManage, mirroring PermAPIKeyManage -> RoleAdmin
+// (apps/api/internal/authz/role.go:241), so every test that wants to see the
+// wizard needs a principal who could actually finish it. Seeded into the cache
+// rather than mocked at useMe, so the real canManage runs over a real Me shape.
+let wizardRole: "owner" | "admin" | "operator" | "viewer" = "admin";
+
+const WIZARD_TENANT = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+
 function renderWizard() {
+  const queryClient = createTestQueryClient();
+  queryClient.setQueryData(authKeys.me, {
+    id: "user-1",
+    email: "priya@example.test",
+    name: "Priya",
+    scope: "org",
+    role: wizardRole,
+    active_tenant_id: WIZARD_TENANT,
+    memberships: [{ tenant_id: WIZARD_TENANT, role: wizardRole, tenant_name: "Example" }],
+  });
   return renderWithProviders(<ConnectPage />, {
     withRouter: true,
     initialPath: "/ai/connect",
+    queryClient,
   });
 }
 
@@ -91,6 +112,51 @@ function authCard(method: "oauth" | "token"): HTMLButtonElement {
   if (el === null) throw new Error(`no auth card rendered for "${method}"`);
   return el;
 }
+
+// HIDING THE LINK IS NOT GUARDING THE ROUTE.
+//
+// /ai stops offering "New connection" to a principal who cannot mint, and this
+// route had no beforeLoad, so the URL still rendered the whole wizard. The
+// refusal arrived from the server at the last button, after the operator had
+// picked a client, an auth method and a site scope. These tests are the reason
+// that cannot come back quietly.
+describe("the wizard refuses a principal who could not finish it", () => {
+  afterEach(() => {
+    wizardRole = "admin";
+  });
+
+  it("renders no wizard at all for an operator who types the URL", async () => {
+    wizardRole = "operator";
+    renderWizard();
+    expect(await screen.findByTestId("connect-role-refused")).toBeInTheDocument();
+    // NOT "the first step is hidden". No part of the wizard renders, so there
+    // is no work to lose and no 403 to walk into.
+    expect(screen.queryByRole("button", { name: /claude code/i })).toBeNull();
+    expect(document.querySelector('button[data-method="oauth"]')).toBeNull();
+  });
+
+  it("renders no wizard for a viewer either", async () => {
+    wizardRole = "viewer";
+    renderWizard();
+    expect(await screen.findByTestId("connect-role-refused")).toBeInTheDocument();
+  });
+
+  it("says the refusal arrives before the work, not at the last button", async () => {
+    wizardRole = "viewer";
+    renderWizard();
+    expect(
+      await screen.findByText(/nothing has been created and nothing was attempted/i),
+    ).toBeInTheDocument();
+  });
+
+  it("renders the wizard for an owner, so the guard is not blanket", async () => {
+    // The over-fire half. A guard that refuses correct work gets switched off.
+    wizardRole = "owner";
+    renderWizard();
+    expect(await screen.findByRole("button", { name: /claude code/i })).toBeInTheDocument();
+    expect(screen.queryByTestId("connect-role-refused")).toBeNull();
+  });
+});
 
 describe("the wizard asks for the client first", () => {
   it("renders every row in the table as a picker card, including the generic one", async () => {
@@ -110,6 +176,428 @@ describe("the wizard asks for the client first", () => {
     renderWizard();
     await screen.findByRole("button", { name: /claude code/i });
     expect(document.querySelector('button[data-method="oauth"]')).toBeNull();
+  });
+});
+
+// STEP "HOW IT SIGNS IN", BROUGHT TO ITS SPECIFIED COPY.
+//
+// Every assertion is on the exact sentence. The two cards used to carry
+// one-line summaries ("Connection token", "Nothing to copy or keep secret"),
+// which are true but leave the two decisions this screen actually asks an
+// operator to make -- what is shown to me, and where does the secret live --
+// to be inferred. The words are the deliverable, so the words are pinned.
+describe("the auth cards say what each method actually does", () => {
+  it("states, on the browser card, that nothing secret is ever shown", async () => {
+    renderWizard();
+    await pickClient("Claude Code");
+    const oauth = authCard("oauth");
+    expect(within(oauth).getByText("Sign in through your browser")).toBeInTheDocument();
+    expect(
+      within(oauth).getByText(
+        "You approve the connection on a WPMgr page and the client stores the token it is issued. Nothing secret is ever shown to you or pasted anywhere. That token does not refresh itself, so the connection stops working when it expires.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("promises no refresh on any auth card, because the server mints none", async () => {
+    // THE SAME GUARD AS CONTRACT_FORBIDDEN, ON THE OTHER SCREEN THAT CAN MAKE
+    // THIS CLAIM. apps/api/internal/mcp/service.go:140: "There is no
+    // refresh_token grant: the connection token's lifetime is the connection's,
+    // and nothing here mints a refresh token", and discovery_test.go:256 drives
+    // the grant-type validator with "refresh_token" to prove the discovery
+    // document refuses it. The design frame promises a self-refreshing token;
+    // the deck is wrong and the server is right, so a fidelity pass that
+    // restores the frame's wording turns this red.
+    //
+    // The word, not the sentence. "refreshes itself", "auto-refresh" and "will
+    // be refreshed" are the same false claim in three shapes, and pinning one
+    // phrasing would let the next two through.
+    renderWizard();
+    await pickClient("Claude Code");
+
+    // The card is ALLOWED to say "does not refresh itself" and nothing else
+    // about refreshing. Striking the denial and then looking for the word is
+    // what makes this fire on an affirmative claim while passing on the
+    // correction -- a bare /refresh/i assertion would reject the true sentence
+    // along with the false one and get switched off by the next person here.
+    const oauthText = (authCard("oauth").textContent ?? "").replace(
+      /does not refresh itself/gi,
+      "",
+    );
+    expect(oauthText).not.toMatch(/refresh/i);
+    expect(authCard("token").textContent ?? "").not.toMatch(/refresh/i);
+
+    // And it says what DOES happen, so the guard cannot be satisfied by
+    // deleting the sentence rather than correcting it.
+    expect(
+      within(authCard("oauth")).getByText(/stops working when it expires/i),
+    ).toBeInTheDocument();
+  });
+
+  it("states, on the token card, that it is documented and not a fallback", async () => {
+    renderWizard();
+    await pickClient("Claude Code");
+    const token = authCard("token");
+    expect(within(token).getByText("Use a connection token")).toBeInTheDocument();
+    expect(
+      within(token).getByText(
+        "We show a token once. You put it in your environment, and the client sends it as a header. This is the documented path for CI, containers and SSH, not a fallback for when sign-in fails.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("marks which card is the answer when both methods are open", async () => {
+    // Claude Code offers both, so there is a recommendation to make.
+    renderWizard();
+    await pickClient("Claude Code");
+    expect(within(authCard("oauth")).getByText("Recommended for Claude Code")).toBeInTheDocument();
+    expect(
+      within(authCard("token")).getByText("The documented headless path"),
+    ).toBeInTheDocument();
+  });
+
+  it("says 'the only route' rather than recommending, when there is one route", async () => {
+    // Claude Desktop's add-connector dialog has no header field, so the token
+    // card is disabled and the browser card is not a preference.
+    renderWizard();
+    await pickClient("Claude Desktop");
+    expect(
+      within(authCard("oauth")).getByText("The only route for this client"),
+    ).toBeInTheDocument();
+    // A recommendation on a control nobody can press is noise.
+    expect(within(authCard("token")).queryByText(/recommended|only route|documented headless/i))
+      .toBeNull();
+    expect(within(authCard("token")).getByText("not possible here")).toBeInTheDocument();
+  });
+
+  it("says why there is no device-code option, with the date it was checked", async () => {
+    // Without this, a disabled browser card on a headless client reads as an
+    // oversight and the token reads as our fallback. It is neither.
+    renderWizard();
+    await pickClient("Claude Code");
+    expect(
+      await screen.findByText("Why there is no “enter this code on another device” option"),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/no MCP client implements one/i)).toBeInTheDocument();
+    // The date is rendered from the client table's own constant, so it goes
+    // stale visibly. A literal here would pass while the table moved on.
+    expect(screen.getByText(new RegExp(CLIENT_TABLE_VERIFIED_AT))).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The step rail: aria-current placement (defect 2) and the ten specified
+// steps (defect 3, design S29 "ADD MCP CONNECTION: THE TEN STEPS").
+// ---------------------------------------------------------------------------
+
+/** The single element the rail marks as the operator's current step. */
+function currentRailStep(): HTMLElement {
+  const els = document.querySelectorAll('[data-step-state="current"]');
+  // Never zero, and never more than one: a rail agreeing with itself about
+  // where the operator is is the entire point of aria-current.
+  expect(els).toHaveLength(1);
+  const el = els[0];
+  if (!(el instanceof HTMLElement)) throw new Error("current step element is not an HTMLElement");
+  return el;
+}
+
+describe("the step rail names all ten specified steps and marks the right one current", () => {
+  it("renders all ten specified steps, in specified order, with only five built", async () => {
+    renderWizard();
+    await screen.findByRole("button", { name: /claude code/i });
+
+    const segments = Array.from(document.querySelectorAll<HTMLElement>("[data-step-n]"));
+    expect(segments.map((s) => s.dataset.stepN)).toEqual(
+      Array.from({ length: 10 }, (_, i) => String(i + 1)),
+    );
+    const builtNs = segments.filter((s) => s.dataset.stepState !== "not-built").map((s) => s.dataset.stepN);
+    // The five shipped sections, and no others, are ever built. Step 4 (the
+    // capability picker) is built on the token path only, but `built: true`
+    // is a static property of SPEC_STEPS, not conditioned on the method
+    // chosen -- the same standard step 3 and step 6 already meet.
+    expect(builtNs.sort()).toEqual(["2", "3", "4", "5", "6"]);
+  });
+
+  it("marks specified step 2 current before any client is picked", async () => {
+    renderWizard();
+    await screen.findByRole("button", { name: /claude code/i });
+    expect(currentRailStep()).toHaveTextContent(/^2\. Name it, pick the AI client$/);
+  });
+
+  it("marks specified step 5 current once a client is picked and no method chosen", async () => {
+    renderWizard();
+    await pickClient("Cursor");
+    expect(currentRailStep()).toHaveTextContent(/^5\. Choose how it authenticates$/);
+    // The rail agrees this is later than step 2, not merely different from it.
+    expect(document.querySelector('[data-step-n="2"]')).toHaveAttribute(
+      "data-step-state",
+      "completed",
+    );
+  });
+
+  it("marks specified step 6 current once client and method are both picked -- THE DEFECT 2 FIX", async () => {
+    // Sections 3 ("Sites this connection may reach") and 4 ("Set it up") in
+    // this file share one reveal condition and always appear together, so by
+    // the time an operator can see either, step 6 (setup) is the furthest one
+    // actually revealed. Before the fix, aria-current stuck at the position
+    // in the shipped array (3), one behind reality.
+    renderWizard();
+    await pickClient("Cursor");
+    fireEvent.click(authCard("oauth"));
+    await screen.findByTestId("site-step-count");
+    // A scope has to actually be chosen for step 3 to be done -- see the
+    // "unselected" tests below for why the wizard's opening state (nothing
+    // picked yet) must not itself read as complete.
+    fireEvent.click(within(screen.getByRole("radiogroup", { name: /site scope/i })).getByText("All sites"));
+    expect(currentRailStep()).toHaveTextContent(/^6\. Get the setup artefact$/);
+  });
+
+  it("shows specified step 3 as passed, not merely unreached, once step 6 is current", async () => {
+    // THE NON-MONOTONIC CASE. Step 3 (site scope, specified number 3) is
+    // visited on screen AFTER step 5 (auth method, specified number 5) in
+    // this wizard, so a rail that compared raw specified numbers would call
+    // step 5 "incomplete" the moment the operator reached step 3, which is
+    // backwards. Both must read as completed once step 6 is current.
+    renderWizard();
+    await pickClient("Cursor");
+    fireEvent.click(authCard("oauth"));
+    await screen.findByTestId("site-step-count");
+    // A SCOPE IS ACTUALLY CHOSEN HERE, not left at the wizard's opening
+    // 'list'-with-nothing state -- see "does not mark site selection
+    // completed... unselected" below for why an unmade choice must not
+    // read as done either.
+    fireEvent.click(within(screen.getByRole("radiogroup", { name: /site scope/i })).getByText("All sites"));
+    expect(document.querySelector('[data-step-n="3"]')).toHaveAttribute(
+      "data-step-state",
+      "completed",
+    );
+    expect(document.querySelector('[data-step-n="5"]')).toHaveAttribute(
+      "data-step-state",
+      "completed",
+    );
+  });
+
+  it("never marks an unbuilt step current or completed, at any reachable stage -- NO FAKED PROGRESS", async () => {
+    renderWizard();
+    await pickClient("Cursor");
+    fireEvent.click(authCard("oauth"));
+    await screen.findByTestId("site-step-count");
+
+    // Step 4 (the capability picker) is excluded from this list -- it is
+    // `built: true` in SPEC_STEPS (it renders on the token path), so on this
+    // OAuth walk it is a real built-but-position-completed step, the same as
+    // step 3, and asserted separately below.
+    for (const n of ["1", "7", "8", "9", "10"]) {
+      const el = document.querySelector(`[data-step-n="${n}"]`);
+      expect(el).toHaveAttribute("data-step-state", "not-built");
+      expect(el).not.toHaveAttribute("aria-current", "step");
+    }
+    // Step 4 IS built, and on this OAuth walk is completed by position, same
+    // as step 3 -- neither is "faked": both really are earlier, in
+    // BUILT_ORDER, than the setup step this walk has actually reached.
+    expect(document.querySelector('[data-step-n="4"]')).toHaveAttribute(
+      "data-step-state",
+      "completed",
+    );
+  });
+
+  // ---------------------------------------------------------------------------
+  // Greptile P1 on connect-wizard.tsx:589 (pre-fix). Completion here used to be
+  // pure position: once client and method were picked, site selection read
+  // completed and setup read current REGARDLESS of whether the fleet/tag read
+  // that step depends on had actually come back. Loading and failed are
+  // covered separately -- collapsing them into one appearance is the same
+  // defect shape the finding names, one level down.
+  // ---------------------------------------------------------------------------
+
+  it("does not mark site selection completed or setup current while the fleet read is still loading", async () => {
+    // THE TOKEN COLUMN: a mint button exists here for the unresolved read to
+    // block. OAuth's mirror image ("does not drag the rail back for OAuth...
+    // loading") is below, and deliberately asserts the opposite.
+    mockedSites.mockReturnValue(mockQueryResult<Site[]>({ data: undefined, isPending: true }));
+    renderWizard();
+    await pickClient("Cursor");
+    fireEvent.click(authCard("token"));
+
+    const siteStep = document.querySelector('[data-step-n="3"]');
+    const setupStep = document.querySelector('[data-step-n="6"]');
+    // NOT "completed": the read behind this step has not resolved, whatever
+    // position the operator has otherwise reached.
+    expect(siteStep).toHaveAttribute("data-step-state", "loading");
+    expect(siteStep).toHaveTextContent(/\(loading\)/i);
+    // NOT "current" either -- setup is not the furthest ACTUAL step while the
+    // step behind it is unresolved, and the assistive-tech state has to agree:
+    // aria-current stays off setup and lands on the step still in progress.
+    expect(setupStep).not.toHaveAttribute("data-step-state", "current");
+    expect(setupStep).not.toHaveAttribute("aria-current", "step");
+    expect(siteStep).toHaveAttribute("aria-current", "step");
+  });
+
+  it("shows the fleet read as failed, distinctly from loading, and still refuses completion", async () => {
+    // THE TOKEN COLUMN, see the comment on the loading test above.
+    mockedSites.mockReturnValue(
+      mockQueryResult<Site[]>({ data: undefined, isPending: false, isError: true }),
+    );
+    renderWizard();
+    await pickClient("Cursor");
+    fireEvent.click(authCard("token"));
+
+    const siteStep = document.querySelector('[data-step-n="3"]');
+    const setupStep = document.querySelector('[data-step-n="6"]');
+    // A DIFFERENT STATE FROM LOADING, NOT THE SAME ONE RELABELLED. An operator
+    // told "loading" for a read that already failed keeps waiting for a state
+    // that will never arrive.
+    expect(siteStep).toHaveAttribute("data-step-state", "failed");
+    expect(siteStep).toHaveTextContent(/\(failed to load\)/i);
+    expect(siteStep).not.toHaveTextContent(/\(loading\)/i);
+    expect(setupStep).not.toHaveAttribute("data-step-state", "current");
+    expect(setupStep).not.toHaveAttribute("aria-current", "step");
+  });
+
+  it("still marks site selection completed and setup current once the read AND the selection are actually resolved", async () => {
+    // THE OVER-FIRE CASE. The fix must not hold the rail behind a resolved
+    // read, or a made selection, out of over-caution -- that would just move
+    // the false state from "prematurely done" to "permanently stuck."
+    loadedFleet(3);
+    renderWizard();
+    await pickClient("Cursor");
+    fireEvent.click(authCard("oauth"));
+    await screen.findByTestId("site-step-count");
+    fireEvent.click(within(screen.getByRole("radiogroup", { name: /site scope/i })).getByText("All sites"));
+
+    expect(document.querySelector('[data-step-n="3"]')).toHaveAttribute(
+      "data-step-state",
+      "completed",
+    );
+    expect(currentRailStep()).toHaveTextContent(/^6\. Get the setup artefact$/);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Greptile P1 / CodeRabbit Major on connect-wizard.tsx:268 (pre-fix), found
+  // a third time through a third door: the fleet resolves fine, but the TAG
+  // registry has not, under mode 'tags'. `scope.kind` alone read this as
+  // "resolved" -- it only ever asks about the fleet read -- while
+  // `mintScopeRequest` was refusing to mint with `tags-unresolved`. This is
+  // the SAME scenario "refuses to mint on an unresolved tag scope..." above
+  // already proves blocks the button, so the state asserted here is the real
+  // blocked-mint state, not a fixture built to merely look like it.
+  // ---------------------------------------------------------------------------
+
+  it("does not mark site selection completed while the tag registry is unresolved and mint is actually blocked", async () => {
+    loadedFleet(3);
+    mockedTags.mockReturnValue(mockQueryResult<SiteTag[]>({ data: undefined, isPending: true }));
+    renderWizard();
+    await pickClient("Cursor");
+    fireEvent.click(authCard("token"));
+    await screen.findByTestId("site-step-count");
+    fireEvent.click(screen.getByRole("radio", { name: /by tag/i }));
+
+    // PROVE THE BLOCK IS REAL FIRST. Everything below is vacuous if the
+    // button was never actually disabled.
+    expect(await screen.findByText(/tag scope could not be resolved/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /generate connection token/i })).toBeDisabled();
+
+    const siteStep = document.querySelector('[data-step-n="3"]');
+    const setupStep = document.querySelector('[data-step-n="6"]');
+    expect(siteStep).toHaveAttribute("data-step-state", "tags-unresolved");
+    expect(siteStep).not.toHaveAttribute("data-step-state", "completed");
+    expect(siteStep).toHaveTextContent(/\(tags still loading\)/i);
+    expect(setupStep).not.toHaveAttribute("data-step-state", "current");
+    expect(setupStep).not.toHaveAttribute("aria-current", "step");
+  });
+
+  it("holds the rail back on the token path when nothing has been selected yet", async () => {
+    // THE UNSELECTED CELL, TOKEN COLUMN. The wizard opens on mode 'list' with
+    // no sites picked -- reachable by doing nothing at all -- and
+    // mintScopeRequest refuses to mint on it ("names-nothing").
+    loadedFleet(3);
+    renderWizard();
+    await pickClient("Cursor");
+    fireEvent.click(authCard("token"));
+    await screen.findByTestId("site-step-count");
+
+    expect(screen.getByRole("button", { name: /generate connection token/i })).toBeDisabled();
+    const siteStep = document.querySelector('[data-step-n="3"]');
+    const setupStep = document.querySelector('[data-step-n="6"]');
+    expect(siteStep).toHaveAttribute("data-step-state", "unselected");
+    expect(siteStep).toHaveTextContent(/\(not chosen yet\)/i);
+    expect(setupStep).not.toHaveAttribute("data-step-state", "current");
+    expect(setupStep).not.toHaveAttribute("aria-current", "step");
+  });
+
+  // ---------------------------------------------------------------------------
+  // Greptile P1 on connect-wizard.tsx:639, the OVER-FIRE ARM OF THE FIX ABOVE.
+  // On the OAuth path there is no mint button to block -- step 4 renders
+  // NextSteps, never TokenMintPanel -- and the scope chosen in this wizard is
+  // rehearsal for OAuth (SiteScopeStep's own copy: "nothing carries this
+  // selection to the approval screen"). Every one of the four unresolved
+  // states must therefore leave step 6 current and step 3 completed, the same
+  // as the resolved case, because nothing downstream is actually blocked.
+  // ---------------------------------------------------------------------------
+
+  it.each([
+    [
+      "loading",
+      () => mockedSites.mockReturnValue(mockQueryResult<Site[]>({ data: undefined, isPending: true })),
+    ],
+    [
+      "failed",
+      () =>
+        mockedSites.mockReturnValue(
+          mockQueryResult<Site[]>({ data: undefined, isPending: false, isError: true }),
+        ),
+    ],
+  ] as const)(
+    "does not drag the rail back for OAuth while the fleet read is %s",
+    async (_label, mockRead) => {
+      mockRead();
+      renderWizard();
+      await pickClient("Cursor");
+      fireEvent.click(authCard("oauth"));
+
+      expect(currentRailStep()).toHaveTextContent(/^6\. Get the setup artefact$/);
+      expect(document.querySelector('[data-step-n="3"]')).toHaveAttribute(
+        "data-step-state",
+        "completed",
+      );
+    },
+  );
+
+  it("does not drag the rail back for OAuth while the tag registry is unresolved", async () => {
+    loadedFleet(3);
+    mockedTags.mockReturnValue(mockQueryResult<SiteTag[]>({ data: undefined, isPending: true }));
+    renderWizard();
+    await pickClient("Cursor");
+    fireEvent.click(authCard("oauth"));
+    await screen.findByTestId("site-step-count");
+    fireEvent.click(screen.getByRole("radio", { name: /by tag/i }));
+    // No TokenMintPanel exists on this path to show its own "could not be
+    // resolved" copy -- the radiogroup's own selected state is the only
+    // thing to wait for before the rail is asserted against.
+    expect(screen.getByRole("radio", { name: /by tag/i })).toBeChecked();
+
+    expect(currentRailStep()).toHaveTextContent(/^6\. Get the setup artefact$/);
+    expect(document.querySelector('[data-step-n="3"]')).toHaveAttribute(
+      "data-step-state",
+      "completed",
+    );
+  });
+
+  it("does not drag the rail back for OAuth when nothing has been selected yet", async () => {
+    // The wizard's opening state (mode 'list', nothing picked) is
+    // "unselected" on the token path; on OAuth it must not read as anything
+    // other than complete, because there is no button here for it to block.
+    loadedFleet(3);
+    renderWizard();
+    await pickClient("Cursor");
+    fireEvent.click(authCard("oauth"));
+    await screen.findByTestId("site-step-count");
+
+    expect(currentRailStep()).toHaveTextContent(/^6\. Get the setup artefact$/);
+    expect(document.querySelector('[data-step-n="3"]')).toHaveAttribute(
+      "data-step-state",
+      "completed",
+    );
   });
 });
 
@@ -301,23 +789,20 @@ describe("step 3 exists at all, and sits before capabilities", () => {
 
   it("numbers the setup artefact after it, so the rail and the page agree", async () => {
     await reachSiteStep();
-    expect(screen.getByRole("heading", { name: /^4\. Set it up$/ })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /^5\. Set it up$/ })).toBeInTheDocument();
     // And the rail no longer claims sites are chosen somewhere else.
     expect(screen.queryByText(/4\. Choose sites and permissions/i)).not.toBeInTheDocument();
   });
 
-  it("does not invent a numbered step for capabilities, which no completion path lets an operator choose today", async () => {
+  it("still renders no capability heading on the OAuth path, which has no channel for the answer", async () => {
     // reachSiteStep exercises the OAuth path (it clicks the oauth auth card),
     // where "this wizard never creates the grant" is true: Approve
     // (apps/api/internal/mcp/service.go:607) takes no capability field. The
-    // token path differs -- the mint endpoint already accepts one
-    // (dto.go:264) and only MintConnectionInput lacks the field
-    // (use-ai-connections.ts:228-233) -- but neither path has a picker in
-    // this frontend, so the assertion below holds for both. Not a claim
-    // about the backend either way: the vocabulary and both endpoints exist.
-    // See GH #660 for where a picker should live.
+    // TOKEN path now DOES have a picker (Section n=4, "Choose what it may
+    // do" -- see the describe block below), so this assertion is scoped to
+    // OAuth specifically rather than claiming neither path has one.
     await reachSiteStep();
-    expect(screen.queryByRole("heading", { name: /what this connection may do/i })).toBeNull();
+    expect(screen.queryByRole("heading", { name: /choose what it may do/i })).toBeNull();
     expect(screen.getByText(/permissions are chosen on the approval screen/i)).toBeInTheDocument();
   });
 });
@@ -390,7 +875,7 @@ describe("an empty scope is a working state, not an error", () => {
     // The setup artefact is reachable with nothing selected. An earlier
     // revision of this surface disabled Continue here; that is the behaviour
     // being corrected.
-    expect(screen.getByRole("heading", { name: /^4\. Set it up$/ })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /^5\. Set it up$/ })).toBeInTheDocument();
     expect(await screen.findByText(/"mcpServers"/)).toBeInTheDocument();
   });
 });
@@ -669,8 +1154,21 @@ function renderWizardInRouter() {
     routeTree: rootRoute.addChildren([connectRoute, listRoute]),
     history: createMemoryHistory({ initialEntries: ["/ai/connect"] }),
   });
+  // Seeded for the same reason renderWizard is: the route is behind canManage
+  // now, and these tests are about the navigation block around an open mint,
+  // which only a principal who can mint ever reaches.
+  const queryClient = createTestQueryClient();
+  queryClient.setQueryData(authKeys.me, {
+    id: "user-1",
+    email: "priya@example.test",
+    name: "Priya",
+    scope: "org",
+    role: "admin",
+    active_tenant_id: WIZARD_TENANT,
+    memberships: [{ tenant_id: WIZARD_TENANT, role: "admin", tenant_name: "Example" }],
+  });
   render(
-    <QueryClientProvider client={createTestQueryClient()}>
+    <QueryClientProvider client={queryClient}>
       <RouterProvider router={router} />
     </QueryClientProvider>,
   );
@@ -711,6 +1209,154 @@ function heldMint(body: unknown = MINTED, status = 201) {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+// ---------------------------------------------------------------------------
+// Step 4 -- "Choose what it may do" (spec S29 step 4), TOKEN PATH ONLY.
+// ---------------------------------------------------------------------------
+
+/** Client and token method picked, sitting at the capability picker. */
+async function reachCapabilityStep() {
+  renderWizard();
+  await pickClient("Cursor");
+  fireEvent.click(authCard("token"));
+  await screen.findByTestId("site-step-count");
+  return screen.findByRole("heading", { name: /choose what it may do/i });
+}
+
+describe("choosing what a token may do (step 4, token path only)", () => {
+  it("renders no capability heading at all on the OAuth path", async () => {
+    renderWizard();
+    await pickClient("Cursor");
+    fireEvent.click(authCard("oauth"));
+    await screen.findByTestId("site-step-count");
+    expect(screen.queryByRole("heading", { name: /choose what it may do/i })).toBeNull();
+  });
+
+  it("renders every conferrable capability with a real description, and Content disabled with its reason", async () => {
+    await reachCapabilityStep();
+
+    // The seven conferrable rows, each carrying label AND description --
+    // never a bare label, which would leave "what it permits" to be guessed.
+    // findAllByRole rather than a singular query: a still-loading render could
+    // otherwise let this pass against a skeleton.
+    const boxes = await screen.findAllByRole("checkbox", { name: /.+/ });
+    expect(boxes.length).toBe(8); // seven conferrable + the disabled Content row
+
+    expect(screen.getByRole("checkbox", { name: /^Sites/i })).toBeInTheDocument();
+    expect(
+      screen.getByText(/see the fleet inventory: site names, urls and tags/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/see uptime checks and outage history/i)).toBeInTheDocument();
+    expect(screen.getByText(/see backup runs, their status/i)).toBeInTheDocument();
+
+    // Content: seated in the vocabulary, never conferrable -- disabled, with
+    // the reason stated in an operator's words, not "coming soon".
+    const content = screen.getByRole("checkbox", { name: /^Content/i });
+    expect(content).toBeDisabled();
+    expect(
+      screen.getByText(/not available yet.*no content tools.*for a connection to call/i),
+    ).toBeInTheDocument();
+  });
+
+  it("states the negative space once: nothing here can change WordPress content or configuration", async () => {
+    await reachCapabilityStep();
+    expect(
+      screen.getByText(/no capability on this screen can change wordpress content or configuration/i),
+    ).toBeInTheDocument();
+  });
+
+  it("opens with only sites-read checked -- the server's own default for an omitted field, never empty and never all seven", async () => {
+    await reachCapabilityStep();
+    expect(screen.getByRole("checkbox", { name: /^Sites/i })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: /^Uptime/i })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: /^Backups/i })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: /^Security/i })).not.toBeChecked();
+  });
+
+  it("refuses to mint when every capability is deselected, rather than defaulting or sending nothing", async () => {
+    // THE GUARD UNDER MUTATION TEST. See the PR description for the red/green
+    // proof: temporarily changing mintCapabilitiesRequest's `selected.length
+    // === 0` to `selected.length === -1` turns this red, and restoring it
+    // turns it green again.
+    loadedFleet(3);
+    renderWizard();
+    await pickClient("Cursor");
+    fireEvent.click(authCard("token"));
+    await screen.findByTestId("site-step-count");
+    // A valid site scope, so the ONLY thing left blocking the button is the
+    // capability deselection this test is actually about.
+    fireEvent.click(screen.getByRole("button", { name: /\+ add sites/i }));
+    fireEvent.click(pickerBoxes()[0]!);
+    await screen.findByRole("heading", { name: /choose what it may do/i });
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Sites/i }));
+
+    // Rendered TWICE by design -- once beside the picker (an operator working
+    // the checkboxes sees it immediately) and once inside the mint panel
+    // (an operator who scrolled straight to the button sees it there) -- so
+    // this asserts on the plural.
+    expect((await screen.findAllByText(/no capability is selected/i)).length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: /generate connection token/i })).toBeDisabled();
+  });
+
+  it("re-enables minting the moment a capability is checked again -- the over-fire arm of the guard above", async () => {
+    loadedFleet(3);
+    renderWizard();
+    await pickClient("Cursor");
+    fireEvent.click(authCard("token"));
+    await screen.findByTestId("site-step-count");
+    fireEvent.click(screen.getByRole("button", { name: /\+ add sites/i }));
+    fireEvent.click(pickerBoxes()[0]!);
+    await screen.findByRole("heading", { name: /choose what it may do/i });
+
+    const sites = screen.getByRole("checkbox", { name: /^Sites/i });
+    fireEvent.click(sites);
+    expect(screen.getByRole("button", { name: /generate connection token/i })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Uptime/i }));
+    expect(screen.queryByText(/no capability is selected/i)).toBeNull();
+    expect(screen.getByRole("button", { name: /generate connection token/i })).toBeEnabled();
+  });
+
+  it("never sends `capabilities: []` on the wire, and sends exactly the selected set", async () => {
+    // Asserted on the ACTUAL SERIALIZED FETCH BODY, not on hook-internal state
+    // or React state -- a hook-level assertion could pass while a stray `?? []`
+    // still reached the network.
+    loadedFleet(3);
+    let capturedBody: unknown = null;
+    stubMintFetch((init) => {
+      capturedBody = typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : null;
+      return jsonResponse(MINTED, 201);
+    });
+
+    fireEvent.click(await reachMintButton());
+    await screen.findByText(/this is the only time this token is shown/i);
+
+    expect(capturedBody).not.toBeNull();
+    const body = capturedBody as Record<string, unknown>;
+    expect(Array.isArray(body.capabilities)).toBe(true);
+    expect(body.capabilities).toEqual(["mcp.sites.read"]);
+    expect(body.capabilities).not.toEqual([]);
+  });
+
+  it("sends every capability actually checked, not only the default", async () => {
+    loadedFleet(3);
+    let capturedBody: unknown = null;
+    stubMintFetch((init) => {
+      capturedBody = typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : null;
+      return jsonResponse(MINTED, 201);
+    });
+
+    const mintButton = await reachMintButton();
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Uptime/i }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Backups/i }));
+    fireEvent.click(mintButton);
+    await screen.findByText(/this is the only time this token is shown/i);
+
+    const body = capturedBody as Record<string, unknown>;
+    expect(body.capabilities).toEqual(["mcp.sites.read", "mcp.uptime.read", "mcp.backups.read"]);
+  });
 });
 
 describe("minting a connection token", () => {

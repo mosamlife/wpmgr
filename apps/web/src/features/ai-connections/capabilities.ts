@@ -66,3 +66,50 @@ export const KNOWN_CAPABILITIES: readonly Capability[] = Object.keys(
 export function capabilityLabel(capability: string): string {
   return (CAPABILITY_LABELS as Readonly<Record<string, string>>)[capability] ?? capability;
 }
+
+/**
+ * What each capability actually permits, in an operator's words, for the
+ * capability picker (step 4, "Choose what it may do", TOKEN path only --
+ * connect-wizard.tsx). `Record<Capability, string>` rather than a partial map
+ * so TypeScript itself refuses to compile a ninth capability added to
+ * CAPABILITY_LABELS above without a blurb here -- the same "one list, derived
+ * everywhere else" property the file header describes, extended to copy.
+ *
+ * ALL EIGHT ARE READ-ONLY, INCLUDING THE ONE THAT CANNOT BE GRANTED YET. There
+ * is no ninth "write" or "propose" capability anywhere in this build --
+ * mcp.sites.write and mcp.sites.restart appear only as REJECTED-VALUE test
+ * fixtures in apps/api, never as something Authenticate can hold. Every blurb
+ * below describes seeing something, never changing it.
+ */
+export const CAPABILITY_DESCRIPTIONS: Readonly<Record<Capability, string>> = {
+  "mcp.sites.read": "See the fleet inventory: site names, URLs and tags.",
+  "mcp.uptime.read": "See uptime checks and outage history for sites in scope.",
+  "mcp.backups.read": "See backup runs, their status, and when each last completed.",
+  "mcp.security.read": "See security findings and scan results for sites in scope.",
+  "mcp.activity.read": "See the activity log: what changed, and when.",
+  "mcp.performance.read": "See Core Web Vitals and other performance metrics.",
+  "mcp.diagnostics.read": "See health checks and diagnostic reports for sites in scope.",
+  // Seated but unreachable -- see CONFERRABLE_CAPABILITIES below for why this
+  // one is never offered as a live checkbox.
+  "mcp.content.read": "Read post and page content.",
+} as const;
+
+/**
+ * The seven capabilities the server will actually confer, mirrored from
+ * apps/api/internal/mcp/policy.go's scopeCapabilities[ScopeRead] (lines
+ * 190-198). `mcp.content.read` is deliberately excluded: policy.go's own
+ * comment above CapContentRead (~line 100-104) says there is no post/page
+ * table, no agent command that returns content, and ADR-062 holds it behind
+ * ship blockers -- the eighth name exists only because the DB CHECK constraint
+ * (m131 DECISION 5) requires the Go vocabulary and the database to agree on
+ * all eight, not because it can be granted.
+ *
+ * DERIVED, NOT A HAND-COPIED SUBSET. Filtering KNOWN_CAPABILITIES rather than
+ * writing the seven names out again means a capability added to
+ * CAPABILITY_LABELS defaults to "not conferrable" until this list is updated
+ * on purpose -- the safer direction for a name the picker cannot yet prove the
+ * server will honour.
+ */
+export const CONFERRABLE_CAPABILITIES: readonly Capability[] = KNOWN_CAPABILITIES.filter(
+  (c) => c !== "mcp.content.read",
+);

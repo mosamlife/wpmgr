@@ -689,6 +689,10 @@ type GetSmtpSettingsRes interface {
 	getSmtpSettingsRes()
 }
 
+type GetTenantAssistantStateRes interface {
+	getTenantAssistantStateRes()
+}
+
 type GetTenantRes interface {
 	getTenantRes()
 }
@@ -925,6 +929,10 @@ type PauseSiteMonitoringRes interface {
 	pauseSiteMonitoringRes()
 }
 
+type PauseTenantAssistantRes interface {
+	pauseTenantAssistantRes()
+}
+
 type PrepareSiteFileDownloadRes interface {
 	prepareSiteFileDownloadRes()
 }
@@ -1119,6 +1127,10 @@ type RestoreSiteVulnerabilityRes interface {
 
 type ResumeSiteMonitoringRes interface {
 	resumeSiteMonitoringRes()
+}
+
+type ResumeTenantAssistantRes interface {
+	resumeTenantAssistantRes()
 }
 
 type RetryUpdateRunRes interface {

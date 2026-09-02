@@ -19,6 +19,7 @@ import { basename, join } from "node:path";
 import {
   MCP_CLIENTS,
   CLIENT_TABLE_TARGET_NAMED_COUNT,
+  CLIENT_TABLE_VERIFIED_AT,
   availableAuthMethods,
   findClient,
   isAuthAvailable,
@@ -337,6 +338,112 @@ describe("token substitution", () => {
     if (snippet.kind !== "json") throw new Error("expected json");
     const server = serverObject(snippet, "mcpServers");
     expect(String(server.url)).not.toContain("wpm_live_abc123");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The shell shape (S16 addendum): a setup command, never a config file, and
+// never a token typed as a shell argument.
+// ---------------------------------------------------------------------------
+
+describe("the shell setup shape never puts the token in the generated text", () => {
+  // A local fixture, not a row in MCP_CLIENTS: no named client's shell
+  // invocation syntax is sourced yet (see CONFIG_PATH_GAP's sibling
+  // reasoning), so this exercises the mechanism the builder guarantees
+  // rather than asserting an unverified command for a real client.
+  const shellClient: McpClientRow = {
+    id: "test-shell-fixture",
+    name: "Shell Fixture Client",
+    blurb: "Exercises the shell snippet shape only.",
+    docsUrl: "https://example.com/docs",
+    docsLabel: "Fixture docs",
+    verifiedAt: CLIENT_TABLE_VERIFIED_AT,
+    configPath: null,
+    config: {
+      kind: "shell",
+      reason: "This fixture is set up by running a command, not editing a file.",
+    },
+    auth: {
+      oauth: {
+        state: "unavailable",
+        reason: "This fixture only exercises the token path.",
+      },
+      token: { state: "available", detail: "Reads the token interactively." },
+    },
+    generic: false,
+  };
+
+  const SECRET = "wpm_live_should_never_appear_in_any_generated_text";
+
+  function shellSnippet(token: string | null = null) {
+    const snippet = buildSnippet({
+      client: shellClient,
+      endpointUrl: ENDPOINT,
+      serverName: "wpmgr",
+      authMethod: "token",
+      token,
+    });
+    if (snippet.kind !== "shell") throw new Error(`expected a shell snippet, got "${snippet.kind}"`);
+    return snippet;
+  }
+
+  it("never contains the token value, minted or not", () => {
+    // THE ASSERTION THE DEFECT IS ABOUT. A token substituted into command text
+    // is a token written to the shell history file the moment the command
+    // runs; this fixture must never construct that string in the first place.
+    expect(shellSnippet(SECRET).text).not.toContain(SECRET);
+    expect(shellSnippet(null).text).not.toContain(TOKEN_PLACEHOLDER);
+  });
+
+  it("reads the token with read -rs, never as a positional argument", () => {
+    // -r: no backslash escaping surprises. -s: not echoed to the terminal.
+    expect(shellSnippet().text).toMatch(/\bread\s+-rs\b/);
+  });
+
+  it("references the token from the environment, never interpolated", () => {
+    expect(shellSnippet().text).toContain("$WPMGR_CONNECTION_TOKEN");
+    expect(shellSnippet().text).toContain("export WPMGR_CONNECTION_TOKEN");
+  });
+
+  it("keeps the read line out of shell history with a leading space", () => {
+    // HISTCONTROL=ignorespace (bash) / setopt HIST_IGNORE_SPACE (zsh): a line
+    // starting with whitespace is never written to history at all.
+    const readLine = shellSnippet()
+      .text.split("\n")
+      .find((line) => line.includes("read -rs"));
+    if (readLine === undefined) throw new Error("no read line in the generated script");
+    expect(readLine.startsWith(" ")).toBe(true);
+  });
+
+  it("never prompts with read -p -- bash and zsh disagree on what -p means", () => {
+    // In bash, `-p` prints the prompt string. In zsh, `-p` reads from a
+    // coprocess instead, so `read -rs -p "..." VAR` fails outright on zsh
+    // ("-p: no coprocess") and leaves the variable empty -- verified by
+    // actually running both shells, not assumed:
+    //   printf 'x\n' | bash -c 'read -rs -p "..." T; echo "[$T]"'  -> [x]
+    //   printf 'x\n' | zsh  -c 'read -rs -p "..." T; echo "[$T]"'  -> [] (errors)
+    // zsh is the default shell on macOS, so a snippet that only works on
+    // bash fails silently confusingly for most of the audience it is for.
+    const text = shellSnippet().text;
+    expect(text).not.toMatch(/read\s+[^\n]*-p\b/);
+    // The prompt still has to reach the terminal somehow: printed on its own
+    // line, before the read, is the form that behaves identically in both.
+    const lines = text.split("\n");
+    const promptLineIndex = lines.findIndex((l) => l.includes("Paste your connection token"));
+    const readLineIndex = lines.findIndex((l) => l.includes("read -rs"));
+    expect(promptLineIndex).toBeGreaterThanOrEqual(0);
+    expect(readLineIndex).toBeGreaterThan(promptLineIndex);
+  });
+
+  it("refuses a shell snippet for a method the row does not offer", () => {
+    expect(() =>
+      buildSnippet({
+        client: shellClient,
+        endpointUrl: ENDPOINT,
+        serverName: "wpmgr",
+        authMethod: "oauth",
+      }),
+    ).toThrow(UnsupportedAuthMethodError);
   });
 });
 

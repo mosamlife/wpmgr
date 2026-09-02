@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: WPMgr API
-  version: 0.61.153
+  version: 0.61.155
   description: |
     Control-plane REST API for **WPMgr**, the open-source, self-hostable
     WordPress fleet management platform (AGPL-3.0). One control plane enrolls,
@@ -3680,6 +3680,141 @@ paths:
                 $ref: "#/components/schemas/Tenant"
         "404":
           description: Tenant not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/tenants/{tenantId}/assistant:
+    get:
+      operationId: getTenantAssistantState
+      summary: Read the organisation's assistant enablement and kill-switch state
+      description: |
+        m130 / ADR-061. The operator console's read of the per-tenant assistant
+        state. This is NOT the request path: an assistant request reads the
+        pause through the `authorized` verdict in
+        ReCheckMCPRequestAuthorizationInTenantTx, never here.
+
+        `enabled` and `paused` come from two different columns with two
+        different null meanings and are deliberately not derived from one
+        another — an organisation can be enabled and paused, or disabled and
+        paused. Owner-only (`tenant:manage`), and refused outright for any
+        site-scoped principal regardless of the role it holds on a site.
+      tags: [tenants]
+      parameters:
+        - $ref: "#/components/parameters/TenantId"
+      responses:
+        "200":
+          description: The organisation's assistant state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantAssistantState"
+        "403":
+          description: Not an owner, or a site-scoped principal
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Tenant not found, or not the caller's own organisation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/tenants/{tenantId}/assistant/pause:
+    post:
+      operationId: pauseTenantAssistant
+      summary: Engage the assistant kill switch for an organisation
+      description: |
+        m130 / ADR-061's "per-tenant kill switch reachable in one click". ONE
+        UPDATE on ONE row that already exists, so it cannot fail with a unique
+        violation during an incident.
+
+        TAKES EFFECT ON THE NEXT REQUEST. The assistant request path recomputes
+        its whole authorization verdict per request and that verdict carries
+        `assistant_paused_at IS NULL`, so every in-flight connection for this
+        organisation — including already-issued, otherwise perfectly valid
+        tokens — is refused the moment this call commits. No sweep, no cache
+        invalidation and no token refresh is involved.
+
+        THIS IS NOT A TOGGLE. Releasing the switch is a separate, deliberate
+        call to /assistant/resume; a repeated pause re-engages and refreshes
+        the reason (which is what an escalating incident wants) and can never
+        restart the surface.
+
+        The body is optional: "stop it now, explain later" is the 3am case, and
+        a control that demands a justification before it will fire costs
+        seconds it does not have. An omitted or blank reason is stored as null
+        rather than an empty string, which would read as an answer.
+      tags: [tenants]
+      parameters:
+        - $ref: "#/components/parameters/TenantId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TenantAssistantPause"
+      responses:
+        "200":
+          description: The kill switch is engaged; the resulting state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantAssistantState"
+        "403":
+          description: Not an owner, or a site-scoped principal
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Tenant not found, or not the caller's own organisation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: Validation failed (reason longer than 500 characters)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/tenants/{tenantId}/assistant/resume:
+    post:
+      operationId: resumeTenantAssistant
+      summary: Release the assistant kill switch for an organisation
+      description: |
+        m130 / ADR-061. Clears `assistant_paused_at` and the pause reason in
+        one statement — the reason is part of the pause, so a stale reason
+        cannot outlive it.
+
+        IT DOES NOT ENABLE THE SURFACE. Releasing the switch never touches
+        `assistant_enabled_at`, so an organisation that was deliberately off
+        before the incident is still off after it. That is the whole reason the
+        state is two columns rather than one tri-state.
+
+        Resuming an organisation that is not paused is a successful no-op and
+        records no audit entry: a release that released nothing must not leave
+        a false incident-end marker in the chain.
+      tags: [tenants]
+      parameters:
+        - $ref: "#/components/parameters/TenantId"
+      responses:
+        "200":
+          description: The kill switch is released; the resulting state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantAssistantState"
+        "403":
+          description: Not an owner, or a site-scoped principal
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Tenant not found, or not the caller's own organisation
           content:
             application/json:
               schema:
@@ -13648,6 +13783,54 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Tenant"
+    TenantAssistantState:
+      type: object
+      description: |
+        m130's per-tenant assistant state. `enabled` and `paused` are computed
+        from two DIFFERENT columns whose nulls mean DIFFERENT things, and they
+        are not derived from one another: `enabled_at` null means the surface
+        was never enabled, `paused_at` null means the kill switch is released.
+        A consumer must not fold them into one predicate.
+      required: [tenant_id, enabled, paused]
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+        enabled:
+          type: boolean
+          description: |
+            Whether the organisation has ever enabled the assistant surface.
+            NOTHING ENFORCES THIS YET — it is a record of intent that gates no
+            request today (m130 DECISION 5 holds it out of the authorization
+            verdict until a follow-up migration wires it together with its
+            backfill). Display it; do not treat it as an access decision.
+        enabled_at:
+          type: [string, "null"]
+          format: date-time
+        paused:
+          type: boolean
+          description: |
+            Whether the kill switch is engaged. THIS ONE IS ENFORCED, on every
+            assistant request, from the moment it is written.
+        paused_at:
+          type: [string, "null"]
+          format: date-time
+        paused_reason:
+          type: [string, "null"]
+          description: Why the surface was stopped. Null when no reason was given.
+    TenantAssistantPause:
+      type: object
+      description: |
+        The optional body of a pause. Every field is optional: an empty or
+        absent body engages the kill switch with no reason recorded.
+      properties:
+        reason:
+          type: string
+          maxLength: 500
+          description: |
+            Why the surface is being stopped, recorded on the tenant row and in
+            the audit entry. A blank or whitespace-only value is normalised to
+            null rather than stored as an empty string.
     Site:
       type: object
       required:
