@@ -256,7 +256,7 @@ func grantScopes() []Scope {
 //     backfill.
 //
 // THE CEILING IS STILL THE SEVEN. An operator who asks for a wider set gets it
-// (Service.MintConnection -> resolveMintCapabilities -> NarrowTo), because
+// (Service.MintConnection -> resolveGrantCapabilities -> NarrowTo), because
 // asking is choosing. The default is what happens when nobody asked, and the
 // answer to "nobody asked" is never "everything".
 //

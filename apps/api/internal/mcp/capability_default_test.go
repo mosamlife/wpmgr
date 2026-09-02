@@ -108,19 +108,19 @@ func TestDefaultGrantCapabilitiesIsThePresetNotTheVocabulary(t *testing.T) {
 // TestMintWithNoRequestedCapabilitiesGetsThePresetNotTheCeiling is the same
 // proof one function over, on the OTHER path that mints a grant.
 //
-// resolveMintCapabilities returned the CEILING for an empty request, which was
+// resolveGrantCapabilities returned the CEILING for an empty request, which was
 // the default only while the ceiling held one member. Against a seven-member
 // ceiling that line is a second, independent copy of the same widening --
 // reached by the mint endpoint rather than by the consent screen, so a proof
 // aimed only at DefaultGrantCapabilities would miss it entirely.
 func TestMintWithNoRequestedCapabilitiesGetsThePresetNotTheCeiling(t *testing.T) {
-	// resolveMintCapabilities reads no Service field, so the zero value is the
+	// resolveGrantCapabilities reads no Service field, so the zero value is the
 	// honest fixture rather than a stub standing in for one.
 	svc := &Service{}
 
-	set, err := svc.resolveMintCapabilities(nil)
+	set, err := svc.resolveGrantCapabilities(nil)
 	if err != nil {
-		t.Fatalf("resolveMintCapabilities(nil): %v", err)
+		t.Fatalf("resolveGrantCapabilities(nil): %v", err)
 	}
 	if !sameCaps(set.Sorted(), DefaultGrantCapabilities()) {
 		t.Fatalf("an empty capability request minted %v, want exactly %v.\n"+
@@ -133,9 +133,9 @@ func TestMintWithNoRequestedCapabilitiesGetsThePresetNotTheCeiling(t *testing.T)
 	// The ceiling is still reachable BY ASKING, which is the other half of the
 	// decision: this is a narrower default, not a narrower surface.
 	wider := []Capability{CapSitesRead, CapUptimeRead, CapBackupsRead}
-	asked, err := svc.resolveMintCapabilities(wider)
+	asked, err := svc.resolveGrantCapabilities(&wider)
 	if err != nil {
-		t.Fatalf("resolveMintCapabilities(%v): %v -- an operator who explicitly asks "+
+		t.Fatalf("resolveGrantCapabilities(%v): %v -- an operator who explicitly asks "+
 			"for a seated, conferred capability must receive it", capsToStrings(wider), err)
 	}
 	if asked.Len() != len(wider) {

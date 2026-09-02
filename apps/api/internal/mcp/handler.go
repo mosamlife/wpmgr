@@ -278,10 +278,12 @@ func (h *Handler) mintConnection(c *gin.Context) {
 		return
 	}
 
-	caps := make([]Capability, 0, len(body.Capabilities))
-	for _, name := range body.Capabilities {
-		caps = append(caps, Capability(name))
-	}
+	// nil IN, nil OUT. body.Capabilities is nil when the key was absent and a
+	// non-nil empty slice when the caller sent `[]`, and that difference is
+	// the whole contract on this field: absent takes the preset, empty is
+	// refused. Building the slice unconditionally would erase it here, one
+	// layer above the resolver that reads it.
+	caps := parseCapabilities(body.Capabilities)
 
 	out, err := h.svc.MintConnection(c.Request.Context(), MintConnectionRequest{
 		// The WHOLE principal. Its Scope and AllowedSiteIDs are what route the
@@ -655,6 +657,13 @@ func (h *Handler) consent(c *gin.Context) {
 		scopes = append(scopes, Scope(s))
 	}
 
+	// The operator's capability choice, forwarded with its absence intact --
+	// see parseCapabilities and approvalRequestDTO.Capabilities. The handler
+	// does not resolve it, does not default it and does not check it against
+	// the ceiling: that is Service.Approve's single resolver, and a second
+	// opinion here is a second thing that can drift.
+	caps := parseCapabilities(body.Capabilities)
+
 	out, err := h.svc.Approve(c.Request.Context(), ApprovalRequest{
 		// The whole principal. Its Scope and AllowedSiteIDs are what route the
 		// grant insert to a site-scoped transaction, so narrowing this to
@@ -674,6 +683,7 @@ func (h *Handler) consent(c *gin.Context) {
 			TagIDs:  tagIDs,
 			SiteIDs: siteIDs,
 		},
+		Capabilities: caps,
 	})
 	if err != nil {
 		status, dto := oauthError(err)
@@ -761,6 +771,31 @@ func (h *Handler) token(c *gin.Context) {
 // parseUUIDs refuses a malformed id rather than dropping it. A dropped id
 // silently narrows or widens the scope the operator thought they approved,
 // depending on the mode, and uuid.Nil is what a failed parse decays to.
+// parseCapabilities carries an optional capability list from the wire to the
+// service WITHOUT deciding anything about it.
+//
+// NIL IN, NIL OUT, AND AN EMPTY LIST STAYS EMPTY. Both creation paths spell
+// this field as an optional array whose absence means the default preset and
+// whose explicit emptiness is a refusal, so flattening the two here -- by
+// building a slice unconditionally, or by treating a zero length as absence --
+// would erase the distinction one layer above the only function entitled to
+// act on it (Service.resolveGrantCapabilities).
+//
+// It does NOT validate membership. An unknown name is carried through as-is
+// and refused by NarrowTo against the organisation ceiling, which is where
+// every other capability decision is made and where the refusal message names
+// the offending capability.
+func parseCapabilities(in *[]string) *[]Capability {
+	if in == nil {
+		return nil
+	}
+	out := make([]Capability, 0, len(*in))
+	for _, name := range *in {
+		out = append(out, Capability(name))
+	}
+	return &out
+}
+
 func parseUUIDs(in []string) ([]uuid.UUID, error) {
 	out := make([]uuid.UUID, 0, len(in))
 	for _, raw := range in {
