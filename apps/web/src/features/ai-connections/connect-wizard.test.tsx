@@ -1180,13 +1180,21 @@ async function advanceToMintButton(answerScope?: () => void) {
  * would. Answers are kept across the move, which is the property several of
  * these tests are actually about.
  */
-async function backToSiteStep() {
+function backToSiteStep() {
   while (screen.queryByTestId("site-step-count") === null) {
     const button = backButton();
     expect(button).toBeEnabled();
     fireEvent.click(button);
   }
   return screen.getByTestId("site-step-count");
+}
+
+/** Forward from the site-scope step to the mint button, answering nothing else. */
+async function forwardToMintButton() {
+  goNext();
+  await screen.findByRole("heading", { name: /choose what it may do/i });
+  goNext();
+  return screen.findByRole("button", { name: /generate connection token/i });
 }
 
 /**
@@ -1895,10 +1903,13 @@ describe("minting a connection token", () => {
       return jsonResponse({ ...MINTED, site_scope_mode: "all" }, 201);
     });
 
-    const button = await reachMintButton();
-    expect(button).toBeEnabled();
+    expect(await reachMintButton()).toBeEnabled();
+    // Back to the step that owns the scope, the way an operator changes an
+    // answer now, and forward again. "Sites were picked first" is exactly what
+    // that walk leaves behind, which is the leak this test is about.
+    backToSiteStep();
     fireEvent.click(screen.getByRole("radio", { name: /all sites/i }));
-    fireEvent.click(await screen.findByRole("button", { name: /generate connection token/i }));
+    fireEvent.click(await forwardToMintButton());
 
     await screen.findByText(MINTED.token);
     expect(requestBodies).toHaveLength(1);
@@ -1921,10 +1932,13 @@ describe("minting a connection token", () => {
     });
 
     await reachMintButton();
+    backToSiteStep();
     fireEvent.click(screen.getByRole("radio", { name: /by tag/i }));
     fireEvent.click(screen.getByRole("button", { name: /\+ add tags/i }));
-    fireEvent.click(within(await screen.findByTestId("site-step-picker")).getAllByRole("checkbox")[0]!);
-    fireEvent.click(await screen.findByRole("button", { name: /generate connection token/i }));
+    fireEvent.click(
+      within(await screen.findByTestId("site-step-picker")).getAllByRole("checkbox")[0]!,
+    );
+    fireEvent.click(await forwardToMintButton());
 
     await screen.findByText(MINTED.token);
     expect(requestBodies).toHaveLength(1);
