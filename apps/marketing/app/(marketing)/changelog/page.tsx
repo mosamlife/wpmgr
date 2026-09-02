@@ -50,6 +50,38 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.159",
+    date: "2026-09-02",
+    summary:
+      "The AI connection wizard now walks all ten steps in order, one at a time, with Back and Continue.",
+    items: [
+      {
+        tag: "Added",
+        text: "The AI connection wizard now walks all ten steps in order, one at a time, with Back and Continue. Previously it was a single scrolling page whose sections appeared out of order, with the progress rail and the section headings disagreeing about which step you were on.",
+      },
+      {
+        tag: "Added",
+        text: "Steps that do not apply to the sign-in method you picked are shown struck through with the reason, instead of disappearing, so the wizard never changes length partway through.",
+      },
+      {
+        tag: "Added",
+        text: "The permissions step has two shortcuts, \"Read everything\" and \"Just the basics\", with a Custom state shown when your selection diverges from both.",
+      },
+      {
+        tag: "Added",
+        text: "The final step lists the tools that connection can actually call.",
+      },
+      {
+        tag: "Security",
+        text: "Site names and other site-supplied text reaching the assistant are now marked before they arrive, so a crafted site name cannot be read as an instruction.",
+      },
+      {
+        tag: "Security",
+        text: "The connections list, and a connection's status and tools, now send Cache-Control: no-store. Their responses vary by who is asking, and without this a shared cache could serve one identity's answer to another.",
+      },
+    ],
+  },
+  {
     version: "0.61.158",
     date: "2026-09-02",
     summary:
