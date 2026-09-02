@@ -173,6 +173,27 @@ export const WALK_SPEC_ORDER: readonly number[] = BUILT_ORDER.map(([, spec]) => 
 const VERIFICATION_PROMPT =
   "List the WordPress sites you can see through WPMgr, and tell me where that list came from.";
 
+/**
+ * What the rail says about the steps that have no section yet, DERIVED FROM
+ * SPEC_STEPS rather than written out.
+ *
+ * A hand-written version of this sentence went stale the moment steps 8 to 10
+ * were built and went on telling operators they were not. Deriving it means the
+ * sentence changes with the rail, and disappears entirely once nothing is
+ * unbuilt -- which is the only correct copy for that state and is the one a
+ * human would have forgotten to write.
+ */
+function unbuiltRailNote(steps: readonly SpecStepDef[]): string {
+  const unbuilt = steps.filter((s) => !s.built).map((s) => s.n);
+  if (unbuilt.length === 0) return "Every step is built.";
+  const list =
+    unbuilt.length === 1
+      ? `Step ${String(unbuilt[0])}`
+      : `Steps ${unbuilt.slice(0, -1).map(String).join(", ")} and ${String(unbuilt[unbuilt.length - 1])}`;
+  const verb = unbuilt.length === 1 ? "is" : "are";
+  return `${list} ${verb} not built yet, so ${unbuilt.length === 1 ? "it is" : "they are"} shown but not offered.`;
+}
+
 /** Each built section's local step, named rather than written as a bare number. */
 const CONTRACT_LOCAL_STEP: Step = 1;
 const CLIENT_LOCAL_STEP: Step = 2;
@@ -309,6 +330,8 @@ const SPEC_STEPS: readonly SpecStepDef[] = [
   { n: 9, rail: "Test", heading: "Verify with a first read", built: true },
   { n: 10, rail: "Done", heading: "Done: tool list and first prompt", built: true },
 ];
+
+const UNBUILT_RAIL_NOTE = unbuiltRailNote(SPEC_STEPS);
 
 /**
  * Whether the site-scope step is actually done, for every reason
@@ -1386,12 +1409,17 @@ function StepRail({
         })}
       </ol>
       {/* WHAT THE RAIL PROMISES, said once under it. Six of the ten segments
-          have a section behind them; the other four do not yet, and a rail
-          that showed only what is built would show an operator six tenths of a
-          path and let them believe it was the whole of it. */}
+          have a section behind them, and a rail that showed only what is built
+          would show an operator part of a path and let them believe it was the
+          whole of it.
+
+          THIS SENTENCE IS DERIVED, NOT WRITTEN. It said "steps 7 to 10 are not
+          built" and stayed on screen after 8, 9 and 10 were built -- a stale
+          claim about the very rail it sits under, caught by looking at a
+          screenshot rather than by any test. Counting SPEC_STEPS means it
+          cannot say the wrong thing again when step 7 lands. */}
       <p className="text-xs text-[var(--color-muted-foreground)]">
-        Steps 1 to 6 are built and you walk them in order. Steps 7 to 10 are not built yet, so
-        they are shown but not offered.
+        You walk these in order. {UNBUILT_RAIL_NOTE}
       </p>
     </div>
   );

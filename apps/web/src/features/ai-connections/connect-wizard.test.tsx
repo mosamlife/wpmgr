@@ -517,6 +517,33 @@ describe("the step rail names all ten specified steps and marks the right one cu
     expect(railNumbers()).toEqual(Array.from({ length: 10 }, (_, i) => String(i + 1)));
   });
 
+  it("names the unbuilt steps in prose that agrees with the rail itself", async () => {
+    // THE CAPTION WENT STALE ONCE ALREADY. It read "steps 7 to 10 are not
+    // built" and stayed on screen after 8, 9 and 10 were built, under the very
+    // rail that was drawing three of them as available. A screenshot caught it;
+    // no test did, because nothing compared the sentence to the rail.
+    //
+    // SO THE ASSERTION IS THE AGREEMENT, NOT THE WORDING. It reads which
+    // segments the rail marks not-built and requires the sentence to name
+    // exactly those, which stays true when step 7 lands and the sentence has to
+    // change again.
+    renderWizard();
+    await leaveContractStep();
+    await screen.findByRole("button", { name: /claude code/i });
+
+    const unbuilt = railStateNs("not-built");
+    expect(unbuilt.length).toBeGreaterThan(0);
+    const caption = screen.getByText(/not built yet/i).textContent ?? "";
+    for (const n of unbuilt) {
+      expect(caption).toContain(n);
+    }
+    // And it must not name a step the rail is offering. "Steps 7 to 10" over a
+    // rail whose 8, 9 and 10 are live is the exact defect.
+    for (const n of railStateNs("upcoming")) {
+      expect(caption).not.toContain(n);
+    }
+  });
+
   it("names step 7 as the only one not built, and never marks it current", async () => {
     renderWizard();
     await leaveContractStep();
