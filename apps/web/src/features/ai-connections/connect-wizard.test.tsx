@@ -2213,21 +2213,32 @@ describe("the rail is a stepper, not a paragraph", () => {
   });
 
   it("fills the circle only for a step actually behind the operator, and rings the current one", async () => {
+    // WALKED AS FAR AS A SETTLED STEP, on purpose. The ring is the "you are
+    // here and this step is in hand" signal, and a step whose gate is still
+    // refusing does not get it -- that rule is asserted next door, in "a
+    // blocked step never renders as the current one". So this test stands the
+    // operator on the OAuth site-scope step, where the gate is settled from
+    // the moment it is reached (ruling 4), and the ring is the honest answer.
+    loadedFleet(3);
     renderWizard();
-    await pickClient("Cursor");
+    await reachSiteScopeStep("Cursor", "oauth");
 
-    // Step 2 is behind them: filled. The fill is the strongest "done" signal
-    // on the screen and it is drawn from the rail's own state, so it cannot
-    // claim progress the wizard has not made.
-    expect(document.querySelector('[data-step-n="2"]')).toHaveAttribute(
-      "data-step-state",
-      "completed",
-    );
-    expect(screen.getByTestId("step-circle-2").className).toContain("bg-[var(--color-primary)]");
+    // Steps 2 and 5 are behind them: filled. The fill is the strongest "done"
+    // signal on the screen and it is drawn from the rail's own state, so it
+    // cannot claim progress the wizard has not made.
+    for (const n of ["2", "5"]) {
+      expect(document.querySelector(`[data-step-n="${n}"]`)).toHaveAttribute(
+        "data-step-state",
+        "completed",
+      );
+      expect(screen.getByTestId(`step-circle-${n}`).className).toContain(
+        "bg-[var(--color-primary)]",
+      );
+    }
 
-    // Step 5 is where they are: ringed, never filled.
-    expect(screen.getByTestId("step-circle-5").className).toContain("border-2");
-    expect(screen.getByTestId("step-circle-5").className).not.toContain(
+    // Step 3 is where they are: ringed, never filled.
+    expect(screen.getByTestId("step-circle-3").className).toContain("border-2");
+    expect(screen.getByTestId("step-circle-3").className).not.toContain(
       "bg-[var(--color-primary)]",
     );
 
@@ -2482,21 +2493,37 @@ describe("exactly one segment answers for the operator's position", () => {
     backToSiteStep();
     fireEvent.click(pickerBoxes()[0]!);
 
-    // Both steps still report their own blocked reason -- a reason is not a
-    // claim on the operator's position, and each is worth showing.
+    // ONLY THE STEP THE OPERATOR IS ON REPORTS A REASON, and that is the new
+    // truth rather than a softened assertion. A reason is a message to someone
+    // standing in front of the step; step 4 is now behind the wall at step 3
+    // and the operator cannot act on it, so advertising "not chosen yet" there
+    // would be telling them about a refusal they cannot reach. Both gates ARE
+    // still refusing, which the walk proves below.
     expect(document.querySelector('[data-step-n="3"]')).toHaveAttribute(
       "data-step-state",
       "unselected",
     );
     expect(document.querySelector('[data-step-n="4"]')).toHaveAttribute(
       "data-step-state",
-      "unselected",
+      "upcoming",
     );
+    expect(continueButton()).toBeDisabled();
 
     // ONE position, and it is the earlier blocked step.
     expect(currentCount()).toBe(1);
     const current = document.querySelector('[data-step-n][aria-current="step"]');
     expect(current).toHaveAttribute("data-step-n", "3");
+
+    // AND THE SECOND GATE IS GENUINELY STILL REFUSING, so the "both blocked"
+    // premise is not vacuous: answering the scope moves the operator to step 4
+    // and it refuses there in its own right, still with exactly one position.
+    chooseAllSites();
+    goNext();
+    expect(currentCount()).toBe(1);
+    const afterScope = document.querySelector('[data-step-n][aria-current="step"]');
+    expect(afterScope).toHaveAttribute("data-step-n", "4");
+    expect(afterScope).toHaveAttribute("data-step-state", "unselected");
+    expect(continueButton()).toBeDisabled();
   });
 
   it("keeps one current segment in every state this wizard can reach", async () => {
