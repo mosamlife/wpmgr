@@ -6,6 +6,7 @@ import { AlertTriangle, Check, ExternalLink, Lock } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { CopyableMono } from "@/components/shared/copyable-mono";
@@ -30,6 +31,8 @@ import {
   type McpClientRow,
 } from "./client-table";
 import { ConnectionContract } from "./connection-contract";
+import { ConnectionVerify } from "./connection-verify";
+import { useConnectionTools } from "./use-connection-tools";
 import { buildSnippet, type Snippet } from "./snippet";
 import { SiteScopeStep, type SiteScopeSelection } from "./site-scope-step";
 import {
@@ -108,7 +111,7 @@ import {
 // NO SNIPPET IS WRITTEN IN THIS FILE. Every block comes from buildSnippet, and
 // snippet.test.ts fails the build if a config literal appears here.
 
-type Step = 1 | 2 | 3 | 4 | 5 | 6;
+type Step = 1 | 2 | 3 | 4 | 5 | 6 | 8 | 9 | 10;
 
 /**
  * The rail this page renders is the design's own numbering (S29, "ADD MCP
@@ -136,6 +139,16 @@ const BUILT_ORDER: readonly [Step, number][] = [
   [4, 4],
   [5, 5],
   [6, 6],
+  // 7 IS ABSENT, AND ITS ABSENCE IS NOT A REORDER. Specified step 7 is the
+  // consent hand-off and it is not built: the approval screen is an OAuth
+  // redirect target needing a registered client's client_id and redirect_uri,
+  // which this wizard has neither of (see the comment on
+  // routes/_authed/connect.ai.tsx). A step that does not exist is skipped and
+  // the rail draws it as not built; that is a visible gap, not the silent
+  // renumbering this file was reported for.
+  [8, 8],
+  [9, 9],
+  [10, 10],
 ];
 
 /**
@@ -145,6 +158,21 @@ const BUILT_ORDER: readonly [Step, number][] = [
  */
 export const WALK_SPEC_ORDER: readonly number[] = BUILT_ORDER.map(([, spec]) => spec);
 
+/**
+ * The verification prompt, and there is exactly ONE of it.
+ *
+ * Ruling 27: step 9's prompt is the one that ships, because fleet_sites_list
+ * can serve it today. Step 10 shows the same prompt rather than a second one --
+ * the deck draws a meta-description prompt there and the tools it needs do not
+ * exist, so writing it would put an instruction on screen that cannot run.
+ *
+ * IT NAMES NO TOOL AND NO COUNT. A prompt naming a tool would go stale the
+ * moment the registry changes, and a prompt naming a number of sites would be
+ * asserting a fleet size this constant cannot know.
+ */
+const VERIFICATION_PROMPT =
+  "List the WordPress sites you can see through WPMgr, and tell me where that list came from.";
+
 /** Each built section's local step, named rather than written as a bare number. */
 const CONTRACT_LOCAL_STEP: Step = 1;
 const CLIENT_LOCAL_STEP: Step = 2;
@@ -152,6 +180,9 @@ const SITE_SCOPE_LOCAL_STEP: Step = 3;
 const CAPABILITY_LOCAL_STEP: Step = 4;
 const AUTH_LOCAL_STEP: Step = 5;
 const SETUP_LOCAL_STEP: Step = 6;
+const CONFIRM_LOCAL_STEP: Step = 8;
+const VERIFY_LOCAL_STEP: Step = 9;
+const DONE_LOCAL_STEP: Step = 10;
 
 
 /**
@@ -204,10 +235,24 @@ function specStepAvailability(s: SpecStepDef): SpecStepAvailability {
  * unnecessary and unusable -- the method is answered at step 5, after every
  * step the filter would have removed.
  */
-function walkFor(): readonly [Step, number][] {
-  return BUILT_ORDER.filter(([, spec]) => {
+function walkFor(connectionExists: boolean): readonly [Step, number][] {
+  return BUILT_ORDER.filter(([local, spec]) => {
     const def = SPEC_STEPS.find((s) => s.n === spec);
-    return def === undefined || specStepAvailability(def) === "built";
+    if (def !== undefined && specStepAvailability(def) !== "built") return false;
+    // STEPS 8 TO 10 NEED A CONNECTION TO EXIST, AND THAT IS A FACT THAT HAS
+    // ALREADY HAPPENED, NOT AN ANSWER THAT MIGHT COME. They poll one
+    // connection's status by id and list the tools that connection can see, so
+    // without an id there is nothing for them to be about: an empty confirm
+    // screen would be a page waiting on a handshake from a credential nobody
+    // minted.
+    //
+    // THIS IS NOT THE `onlyOnMethod` FILTER COMING BACK. That one keyed a
+    // step's existence on an answer the operator had not been asked for yet,
+    // which is why the reorder made it unusable. This keys it on whether a
+    // mint has already returned a grant id, which is behind the operator by
+    // construction: the only thing that sets it is the step 6 button.
+    if (local >= 8 && !connectionExists) return false;
+    return true;
   });
 }
 
@@ -258,11 +303,11 @@ const SPEC_STEPS: readonly SpecStepDef[] = [
   { n: 5, rail: "Auth", heading: "Choose how it authenticates", built: true },
   { n: 6, rail: "Setup", heading: "Get the setup artefact", built: true },
   { n: 7, rail: "Authorize", heading: "Connect and authorize", built: false },
-  { n: 8, rail: "Confirm", heading: "WPMgr confirms connection is live", built: false },
+  { n: 8, rail: "Confirm", heading: "WPMgr confirms connection is live", built: true },
   // "Test" in the rail, "Verify with a first read" as the heading -- ruling 15
   // names this pair explicitly, because the deck uses both words for step 9.
-  { n: 9, rail: "Test", heading: "Verify with a first read", built: false },
-  { n: 10, rail: "Done", heading: "Done: tool list and first prompt", built: false },
+  { n: 9, rail: "Test", heading: "Verify with a first read", built: true },
+  { n: 10, rail: "Done", heading: "Done: tool list and first prompt", built: true },
 ];
 
 /**
@@ -341,6 +386,12 @@ export function ConnectWizard({
   // mounted surface, whatever the operator clicked while it was in the air.
   const mint = useMintConnection();
   const [reveal, setReveal] = useState<MintedReveal | null>(null);
+  // THE CONNECTION'S ID, HELD SEPARATELY FROM THE REVEAL AND NEVER CLEARED
+  // WITH IT. The reveal is dismissed by the operator the moment they have
+  // copied the token, and the connection does not stop existing when they do.
+  // Sourcing steps 8 to 10 from `reveal` would delete the whole verification
+  // half of the wizard at the exact moment its subject came into being.
+  const [connectionId, setConnectionId] = useState<string | null>(null);
   // NO DEFAULT 'all'. The consent screen refuses one for the same reason
   // (m124 DECISION 1) and so does the schema: a scope nobody chose must not
   // begin life as the widest one. 'list' holding nothing is the wireframe's
@@ -457,7 +508,7 @@ export function ConnectWizard({
   };
 
   // The steps this wizard walks, 1 through 6 in order, the same for everyone.
-  const walk = walkFor();
+  const walk = walkFor(connectionId !== null);
   const gates: readonly StepGate[] = walk.map(([local]) => stepGate(local, gateContext));
   const cursorPos = resolveCursorPos(walk, gates, requestedStep);
   const currentLocal: Step = walk[cursorPos]![0];
@@ -904,7 +955,14 @@ export function ConnectWizard({
               <TokenMintPanel
                 mint={mint}
                 revealed={reveal !== null}
-                onMinted={setReveal}
+                onMinted={(r) => {
+                  setReveal(r);
+                  // Recorded here rather than inside TokenMintPanel for the
+                  // same reason the reveal is: this callback lands on the
+                  // wizard, which is mounted whatever the operator clicked
+                  // while the request was in the air.
+                  setConnectionId(r.token.grantId);
+                }}
                 clientId={client.id}
                 clientName={client.name}
                 name={name}
@@ -914,6 +972,57 @@ export function ConnectWizard({
               />
             )}
           </div>
+        </Section>
+      ) : null}
+
+      {/* SPECIFIED STEP 8. The panel is ConnectionVerify, unchanged and
+          unwrapped: it already polls GET /connections/:id/status, already ticks
+          from the handshake the server RECORDED rather than from any clock, and
+          already refuses to let a clock declare failure -- after five minutes
+          it says nothing has arrived and offers the checks, which is not the
+          same as calling it broken. Re-implementing any of that here would be a
+          second answer to a question that already has one. */}
+      {currentLocal === CONFIRM_LOCAL_STEP && connectionId !== null ? (
+        <Section
+          specN={8}
+          hint="Nothing is wrong yet. Your client connects when you next start it, and this updates itself when it does."
+        >
+          <ConnectionVerify connectionId={connectionId} />
+        </Section>
+      ) : null}
+
+      {/* SPECIFIED STEP 9. The prompt, and the same panel's own verdict for the
+          first call. The panel is NOT rendered a second time here -- step 8 is
+          one Back away and rendering it twice would put one live verdict on two
+          screens, which is the duplicate this component keeps producing. What
+          belongs here is the thing step 8 does not have: something for the
+          operator to actually run. */}
+      {currentLocal === VERIFY_LOCAL_STEP && connectionId !== null ? (
+        <Section
+          specN={9}
+          hint="A handshake proves your client reached us. It does not prove it can read anything, so ask it to."
+        >
+          <div className="space-y-3">
+            <p className="text-sm text-[var(--color-foreground)]">
+              Paste this to your assistant. It calls one read-only tool and nothing else.
+            </p>
+            <CopyableMono value={VERIFICATION_PROMPT} label="Verification prompt" />
+            <p className="text-xs text-[var(--color-muted-foreground)]">
+              Step 8 shows whether that call arrived. It is read from the audit row this
+              connection wrote, never from a last-used timestamp, because every client stamps
+              one the moment it connects and nothing about that proves it read your fleet.
+            </p>
+          </div>
+        </Section>
+      ) : null}
+
+      {/* SPECIFIED STEP 10. */}
+      {currentLocal === DONE_LOCAL_STEP && connectionId !== null ? (
+        <Section
+          specN={10}
+          hint="What this connection can actually call, read back from the grant rather than from the catalogue."
+        >
+          <ConnectionToolList connectionId={connectionId} />
         </Section>
       ) : null}
 
@@ -1066,9 +1175,8 @@ function WizardNav({
       </div>
       {isLastBuiltStep ? (
         <p className="text-xs text-[var(--color-muted-foreground)]">
-          This is as far as the wizard goes today. Steps 7 to 10 -- authorizing the client,
-          confirming it reached us, and a first read to prove it works -- are not built yet, so
-          there is no Continue here rather than a button that would lead nowhere.
+          This is the end of the wizard. Nothing here expires or has to be finished now: the
+          connection exists and can be revoked from Settings, AI connections at any time.
         </p>
       ) : null}
     </div>
@@ -1975,6 +2083,77 @@ function mintErrorCopy(error: Error): { title: string; body: string } {
  * cannot be handed a token without also being handed the scope that token
  * actually carries.
  */
+/**
+ * The tools one connection can actually call.
+ *
+ * RENDERED EXACTLY AS THE SERVER SENDS THEM, and the omission is the design.
+ * There is no availability badge, no "ready" pill and no client-side check of
+ * whether a tool would work, because the server ships no `available` flag and
+ * the answer already lives inside each description. A badge computed here could
+ * disagree with what a real call refuses, and this is the one screen whose
+ * entire purpose is to be trusted about what works.
+ *
+ * FOUR STATES, ALL DRAWN. Skeleton, failure, empty and data -- and the empty
+ * one is a real answer rather than a failure: a grant narrowed to capabilities
+ * that confer no tool sees none, and saying so plainly is more useful than a
+ * spinner that never resolves.
+ */
+function ConnectionToolList({ connectionId }: { connectionId: string }) {
+  const q = useConnectionTools(connectionId);
+
+  if (q.isPending) {
+    return (
+      <div className="space-y-2" data-testid="tool-list-loading">
+        <Skeleton className="h-12 w-full" />
+        <Skeleton className="h-12 w-full" />
+      </div>
+    );
+  }
+
+  if (q.isError) {
+    // THE FAILURE IS OUR FAILURE, SAID AS OURS. "This connection can call
+    // nothing" would be a claim about the operator's grant made out of our own
+    // broken request, which is the inversion this file removes everywhere else.
+    return (
+      <p
+        role="alert"
+        data-testid="tool-list-error"
+        className="rounded-md border border-[var(--color-destructive)]/40 bg-[var(--color-destructive)]/5 p-3 text-sm"
+      >
+        We could not read the tool list for this connection. That is our read failing, not a
+        statement about what your connection can do. The connection itself is made and works.
+      </p>
+    );
+  }
+
+  const tools = q.data;
+  if (tools.length === 0) {
+    return (
+      <p
+        data-testid="tool-list-empty"
+        className="rounded-md border border-[var(--color-border)] bg-[var(--color-muted)]/40 p-3 text-sm text-[var(--color-foreground)]"
+      >
+        This connection can see no tools. That is what the capabilities you chose confer today,
+        not an error, and widening it means making a new connection with more capabilities.
+      </p>
+    );
+  }
+
+  return (
+    <ul className="space-y-2" data-testid="tool-list">
+      {tools.map((tool) => (
+        <li
+          key={tool.name}
+          className="rounded-md border border-[var(--color-border)] p-3"
+        >
+          <p className="font-mono text-xs text-[var(--color-foreground)]">{tool.name}</p>
+          <p className="mt-1 text-xs text-[var(--color-muted-foreground)]">{tool.description}</p>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 type MintedReveal = {
   readonly token: MintedConnection;
   readonly scope: ResolvedSiteScope;
