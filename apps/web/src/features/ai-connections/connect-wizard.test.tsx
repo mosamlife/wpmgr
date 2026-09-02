@@ -2115,8 +2115,8 @@ describe("a preset is a shortcut, not a mode", () => {
   /** The capability rows actually ticked, by label. */
   function tickedLabels(): string[] {
     return screen
-      .getAllByRole("checkbox")
-      .filter((b) => (b as HTMLInputElement).checked)
+      .getAllByRole<HTMLInputElement>("checkbox")
+      .filter((b) => b.checked)
       .map((b) => b.getAttribute("aria-label") ?? b.closest("label")?.textContent ?? "");
   }
 
@@ -2126,7 +2126,7 @@ describe("a preset is a shortcut, not a mode", () => {
    * one is; "custom" means the set matches neither.
    */
   function expectClaimMatchesTicks() {
-    const boxes = screen.getAllByRole("checkbox") as HTMLInputElement[];
+    const boxes = screen.getAllByRole<HTMLInputElement>("checkbox");
     const enabled = boxes.filter((b) => !b.disabled);
     const ticked = enabled.filter((b) => b.checked);
     const claim = claimed();
@@ -2156,9 +2156,9 @@ describe("a preset is a shortcut, not a mode", () => {
     // AND THE UNCONFERRABLE ROW IS STILL NOT TICKED. "Read everything" means
     // every capability the server would confer, not every capability in the
     // vocabulary -- mcp.content.read is in the list and can never be granted.
-    const disabled = (screen.getAllByRole("checkbox") as HTMLInputElement[]).filter(
-      (b) => b.disabled,
-    );
+    const disabled = screen
+      .getAllByRole<HTMLInputElement>("checkbox")
+      .filter((b) => b.disabled);
     expect(disabled.length).toBeGreaterThan(0);
     for (const b of disabled) expect(b.checked).toBe(false);
   });
