@@ -781,13 +781,6 @@ interface RailSegmentStyle {
   /** Circle styling on top of the base ring. */
   readonly circle: string;
   readonly label: string;
-  /**
-   * Whether this segment carries `aria-current="step"`. A BLOCKED step is
-   * still where the operator is standing, so it keeps aria-current and loses
-   * the ring: those are different questions and this table is where they are
-   * answered separately, once each.
-   */
-  readonly ariaCurrent: boolean;
   /** The visible reason, if the state has one. */
   readonly suffix: string | null;
 }
@@ -795,33 +788,29 @@ interface RailSegmentStyle {
 /**
  * THE ONE PLACE A RAIL SEGMENT'S APPEARANCE IS DECIDED.
  *
- * This table exists because the same defect has now been found on this
- * component FIVE times, through five different doors: the rail presenting a
- * step as fine while the action that step gates is refused. Rounds two, three
- * and four widened the readiness predicate; round five was the ring, which had
- * gone on rendering from a positional `isCurrent` boolean that stayed true
- * while the derived state said "loading", "tags-unresolved" or "unselected".
+ * Every visual a segment renders is looked up here from its single state
+ * value, so a style that contradicts the state is not expressible: there is no
+ * second boolean for a style to read. The blocked states share the "upcoming"
+ * circle deliberately -- no fill, no ring, nothing that reads as progress on a
+ * step whose action is being refused.
  *
- * Patching the ring's condition would have been a sixth door on the same room.
- * Instead the styles have exactly ONE input -- the state value -- so a visual
- * that contradicts the state is not expressible: there is no second boolean
- * left for it to read. The blocked states below deliberately share the
- * "upcoming" circle: no fill, no ring, nothing that reads as progress.
+ * WHAT IS DELIBERATELY NOT IN THIS TABLE: whether a segment is the operator's
+ * current position. That is not a property of a state value, because several
+ * segments can hold a blocked state at once; it is a property of the rail, has
+ * exactly one answer, and is decided once in StepRail.
  */
 const RAIL_SEGMENT_STYLES: Record<RailSegmentState, RailSegmentStyle> = {
-  "not-built": { circle: "opacity-70", label: "italic opacity-70", ariaCurrent: false, suffix: null },
-  upcoming: { circle: "", label: "", ariaCurrent: false, suffix: null },
+  "not-built": { circle: "opacity-70", label: "italic opacity-70", suffix: null },
+  upcoming: { circle: "", label: "", suffix: null },
   completed: {
     circle:
       "border-[var(--color-primary)] bg-[var(--color-primary)] text-[var(--color-primary-foreground)]",
     label: "text-[var(--color-foreground)]",
-    ariaCurrent: false,
     suffix: null,
   },
   current: {
     circle: "border-2 border-[var(--color-primary)] text-[var(--color-primary)]",
     label: "font-medium text-[var(--color-foreground)]",
-    ariaCurrent: true,
     suffix: null,
   },
   // THE BLOCKED FOUR. Each keeps its own distinct reason on screen -- an
@@ -835,16 +824,15 @@ const RAIL_SEGMENT_STYLES: Record<RailSegmentState, RailSegmentStyle> = {
   // the table as a partial record, and a partial record is how a future state
   // gets added with no style and renders as whatever the base class happens to
   // be. If it is ever reached, it claims nothing.
-  resolved: { circle: "", label: "", ariaCurrent: false, suffix: null },
-  loading: { circle: "", label: "", ariaCurrent: true, suffix: " (loading)" },
+  resolved: { circle: "", label: "", suffix: null },
+  loading: { circle: "", label: "", suffix: " (loading)" },
   failed: {
     circle: "border-[var(--color-destructive)] text-[var(--color-destructive)]",
     label: "text-[var(--color-destructive)]",
-    ariaCurrent: true,
     suffix: " (failed to load)",
   },
-  "tags-unresolved": { circle: "", label: "", ariaCurrent: true, suffix: " (tags still loading)" },
-  unselected: { circle: "", label: "", ariaCurrent: true, suffix: " (not chosen yet)" },
+  "tags-unresolved": { circle: "", label: "", suffix: " (tags still loading)" },
+  unselected: { circle: "", label: "", suffix: " (not chosen yet)" },
 };
 
 function StepRail({
@@ -945,10 +933,15 @@ function StepRail({
         className="mb-1 flex snap-x snap-mandatory flex-nowrap items-center overflow-x-auto pb-1"
       >
         {SPEC_STEPS.map((s, i) => {
-          // POSITION ONLY. This is an input to `state` below and to nothing
-          // else -- see the comment on RAIL_SEGMENT_STYLES for why no visual
-          // may read it directly.
-          const positionallyCurrent = s.n === effectiveCurrentSpec;
+          // THE ONE QUESTION, ASKED ONCE PER SEGMENT: am I the step the rail
+          // is pointing at? `effectiveCurrentSpec` is a single number and
+          // SPEC_STEPS holds each `n` exactly once, so at most one segment can
+          // answer yes. Nothing else may promote a segment to current -- in
+          // particular the blocking flags must not, because two of them can be
+          // true at the same moment (an operator who has chosen no sites AND
+          // no capabilities blocks on both), and a rail with two current steps
+          // has no answer to "where am I".
+          const isCurrentStep = s.n === effectiveCurrentSpec;
           // Completed means "earlier in the order this wizard actually
           // visits built steps in," never "a smaller specified number" --
           // see the comment on BUILT_ORDER above for why those disagree here.
@@ -969,7 +962,7 @@ function StepRail({
               ? siteScopeState
               : s.n === CAPABILITY_SPEC_N && capabilityBlocking
                 ? capabilityState
-                : positionallyCurrent
+                : isCurrentStep
                   ? "current"
                   : isCompleted
                     ? "completed"
@@ -989,7 +982,7 @@ function StepRail({
               // The ref goes on whichever segment the rail is pointing at,
               // blocked or not: the operator needs to see the step they are
               // held on just as much as one they have finished.
-              ref={style.ariaCurrent ? currentSegment : undefined}
+              ref={isCurrentStep ? currentSegment : undefined}
               className="flex items-center"
             >
               {i > 0 ? (
@@ -1005,7 +998,7 @@ function StepRail({
                 />
               ) : null}
               <span
-                aria-current={style.ariaCurrent ? "step" : undefined}
+                aria-current={isCurrentStep ? "step" : undefined}
                 // A plain data attribute rather than only a class, so a test
                 // can assert the state this rail believes it is in without
                 // coupling to Tailwind class names.
