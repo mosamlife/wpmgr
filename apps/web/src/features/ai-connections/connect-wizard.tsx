@@ -929,24 +929,31 @@ function StepRail({
           // actually failed keeps waiting for a state that is never coming,
           // and one told "loading" for their own unmade selection is told
           // something false about themselves.
-          const state:
-            | "not-built"
-            | "not-applicable"
-            | "current"
-            | "completed"
-            | "upcoming"
-            | SiteScopeReadiness =
+          const state: "not-built" | "not-applicable" | "current" | "completed" | "upcoming" =
             availability === "not-built"
               ? "not-built"
               : availability === "not-applicable"
                 ? "not-applicable"
                 : isCurrent
-                  ? currentGate.refusal !== null
-                    ? currentGate.readiness
-                    : "current"
+                  ? "current"
                   : isCompleted
                     ? "completed"
                     : "upcoming";
+          // WHY THE REFUSAL IS A SECOND ATTRIBUTE AND NOT A SIXTH STATE.
+          // POSITION AND READINESS ARE DIFFERENT FACTS. The operator IS on this
+          // step -- that is what "current" means, and the cursor cannot be
+          // anywhere else, because the wizard clamps it to the first step whose
+          // gate refuses. Folding the refusal into `state` would leave the rail
+          // with no current segment at all whenever the step in front of the
+          // operator is unanswered, which is every wizard's opening frame.
+          //
+          // This is a PROJECTION of `currentGate`, not a second source: it is
+          // rendered only on the current segment and only from the value the
+          // wizard already computed, so it cannot disagree with the Continue
+          // button that reads the same gate. What the invariant forbids is a
+          // segment AFTER a refusing gate reading current or completed, and the
+          // clamp makes that unconstructible rather than merely untested.
+          const readiness = isCurrent && currentGate.refusal !== null ? currentGate.readiness : null;
           return (
             <li key={s.n} className="flex shrink-0 items-center gap-2">
               {i > 0 ? <span aria-hidden="true">/</span> : null}
@@ -957,6 +964,7 @@ function StepRail({
                 // coupling to Tailwind class names.
                 data-step-n={s.n}
                 data-step-state={state}
+                data-step-readiness={readiness ?? undefined}
                 // NOT FAKED PROGRESS, IN ANY DIRECTION. An unbuilt step gets
                 // none of the "current" or "completed" styling below, because
                 // it has no section behind it to have completed; a built step
@@ -970,7 +978,7 @@ function StepRail({
                   availability === "not-applicable" && "line-through opacity-70",
                   state === "current" && "font-medium text-[var(--color-foreground)]",
                   state === "completed" && "text-[var(--color-foreground)]",
-                  state === "failed" && "text-[var(--color-destructive)]",
+                  readiness === "failed" && "text-[var(--color-destructive)]",
                 )}
               >
                 {s.n}. {s.label}
@@ -978,10 +986,10 @@ function StepRail({
                   <span className="sr-only"> (not yet available)</span>
                 ) : null}
                 {availability === "not-applicable" ? " (not asked on this path)" : null}
-                {state === "loading" ? " (loading)" : null}
-                {state === "failed" ? " (failed to load)" : null}
-                {state === "tags-unresolved" ? " (tags still loading)" : null}
-                {state === "unselected" ? " (not chosen yet)" : null}
+                {readiness === "loading" ? " (loading)" : null}
+                {readiness === "failed" ? " (failed to load)" : null}
+                {readiness === "tags-unresolved" ? " (tags still loading)" : null}
+                {readiness === "unselected" ? " (not chosen yet)" : null}
               </span>
             </li>
           );
