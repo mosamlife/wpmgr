@@ -556,6 +556,88 @@
 -- earlier. Section (6) states the limit and where the remainder is tracked.
 
 -- ===========================================================================
+-- DECISION 10: THE TENANT AND THE SITE ARE ONE FACT, NOT TWO
+-- ===========================================================================
+--
+-- WHAT THIS TABLE GUARANTEES, POSITIVELY: every proposal names a site that
+-- belongs to the tenant that owns the proposal. The pair is checked by the
+-- database, on INSERT and on every UPDATE, for every writer, by
+-- assistant_update_proposals_site_within_tenant_fkey:
+--
+--     FOREIGN KEY (tenant_id, site_id) REFERENCES sites (tenant_id, id)
+--
+-- WHY A COMPOSITE KEY AND NOT TWO. Two independent foreign keys -- tenant_id to
+-- tenants, site_id to sites -- are each individually satisfiable while their
+-- COMBINATION means nothing: one says the tenant exists, the other says the
+-- site exists, and neither says the site is that tenant's. That is the failure
+-- shape this codebase keeps meeting, two correct-looking constraints whose
+-- conjunction is unconstrained, and the fix is to make the pair itself the
+-- thing referenced. Independently raised by two reviewers on the same diff,
+-- which is the signal worth acting on rather than arguing with.
+--
+-- WHY IT MATTERS MORE HERE THAN ON AN ORDINARY TABLE. The entire purpose of
+-- this row is to record that a HUMAN DECIDED SOMETHING ABOUT A SPECIFIC SITE.
+-- A proposal whose site half points somewhere else is not a slightly wrong
+-- record; it is a record of consent that was never given about the thing it
+-- names. presented_digest fingerprints what the human was shown and section (5)
+-- makes it immutable, but a digest over the right screen attached to the wrong
+-- site_id proves nothing at all. The digest and this FK are the same guarantee
+-- from two directions.
+--
+-- IT ALSO KEEPS THE CASCADE HONEST. site_id cascades on delete. With the pair
+-- unbound, the lifetime of one organisation's proposal could be governed by a
+-- row in another organisation's account -- a delete over there taking a record
+-- from over here. Bound, the cascade can only ever be the tenant's own.
+--
+-- WHY NOT A CHECK OR A TRIGGER. A CHECK constraint cannot read another table.
+-- A trigger could, and section (6) explains why this tree has none. The FK is
+-- the mechanism PostgreSQL already provides for exactly this, it is declarative
+-- and visible in \d, and it is enforced before any policy or constraint of ours
+-- is consulted.
+--
+-- WHAT IT COSTS: one UNIQUE (tenant_id, id) on sites, which section (0) adds
+-- and prices. The application never has to "remember to pass a matching pair",
+-- which is precisely the class of assumption this table exists to delete.
+
+-- ===========================================================================
+-- (0) THE KEY THE COMPOSITE FOREIGN KEY REFERENCES
+-- ===========================================================================
+--
+-- DECISION 10 binds (tenant_id, site_id) to sites (tenant_id, id). PostgreSQL
+-- requires the referenced columns to carry a unique constraint or index; the
+-- pair is already unique because sites.id is the PRIMARY KEY, but "already
+-- unique in fact" is not what the FK machinery accepts, so the constraint has
+-- to exist as a declared object.
+--
+-- WHAT IT COSTS. One extra btree over (uuid, uuid) on sites -- 32 bytes of key
+-- per row plus index overhead. sites holds one row per managed WordPress site,
+-- which is the smallest of the tenant-keyed tables here and is bounded by what
+-- customers have bought rather than by anything that grows on its own. The
+-- build takes an ACCESS EXCLUSIVE lock for the duration, which at this size is
+-- milliseconds, inside the transaction the runner already wraps this file in.
+-- It buys a class of invalid row becoming unrepresentable; that is a good
+-- trade at any size this table will reach.
+--
+-- IT IS NOT REDUNDANT WITH sites_tenant_id_url_key, which is UNIQUE on
+-- (tenant_id, url) and cannot serve as this FK's target.
+--
+-- Guarded so re-running against a database that already has it is a no-op:
+-- ADD CONSTRAINT has no IF NOT EXISTS.
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'sites_tenant_id_id_key'
+          AND conrelid = 'public.sites'::regclass
+    ) THEN
+        ALTER TABLE "public"."sites"
+            ADD CONSTRAINT "sites_tenant_id_id_key" UNIQUE ("tenant_id", "id");
+    END IF;
+END;
+$$;
+
+-- ===========================================================================
 -- (1) THE TABLE
 -- ===========================================================================
 
@@ -563,10 +645,31 @@ CREATE TABLE IF NOT EXISTS "public"."assistant_update_proposals" (
     "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
 
     -- Tenancy and site key side by side, per DECISION 1(a).
+    --
+    -- THE PAIR IS BOUND, NOT JUST THE HALVES. See DECISION 10. Two independent
+    -- foreign keys would each be satisfied by a real tenant and a real site
+    -- while saying nothing about whether the site belongs to the tenant. The
+    -- composite FK below is what makes "this tenant's proposal about that
+    -- tenant's site" a row PostgreSQL will not store.
     "tenant_id" uuid NOT NULL
         REFERENCES "public"."tenants" ("id") ON DELETE CASCADE,
-    "site_id"   uuid NOT NULL
-        REFERENCES "public"."sites" ("id") ON DELETE CASCADE,
+    "site_id"   uuid NOT NULL,
+
+    -- ON DELETE CASCADE: deleting the site deletes its proposals, and deleting
+    -- a tenant reaches them the same way, because sites.tenant_id cascades from
+    -- tenants. Asked as m113/m116 require -- what audit or reclaim record dies
+    -- with this cascade? Nothing that outlives the site; a proposal reserves no
+    -- object storage and names no external resource.
+    --
+    -- ON UPDATE is deliberately left at NO ACTION. Nothing moves a site between
+    -- tenants, and if anything ever tries while proposals exist, the right
+    -- outcome is a loud refusal rather than a silent rewrite of tenant_id --
+    -- which section (5) makes immutable to every ordinary writer, and which a
+    -- referential action would change anyway, since those run with the table
+    -- owner's rights and do not consult column privileges.
+    CONSTRAINT "assistant_update_proposals_site_within_tenant_fkey"
+        FOREIGN KEY ("tenant_id", "site_id")
+        REFERENCES "public"."sites" ("tenant_id", "id") ON DELETE CASCADE,
 
     -- WHO ASKED. No FK, per DECISION 7.
     "proposed_by_grant_id" uuid NOT NULL,

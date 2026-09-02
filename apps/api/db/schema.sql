@@ -458,6 +458,11 @@ CREATE INDEX idx_sites_last_seen ON sites (last_seen_at)
     WHERE connection_state IN ('connected','degraded');
 
 CREATE INDEX sites_tenant_id_idx ON sites (tenant_id);
+-- m133 DECISION 10: the target of assistant_update_proposals' composite foreign
+-- key on (tenant_id, site_id). The pair is already unique because id is the
+-- PRIMARY KEY, but the FK machinery needs the constraint to exist as a declared
+-- object. Not served by sites_tenant_id_url_key, which is (tenant_id, url).
+ALTER TABLE sites ADD CONSTRAINT sites_tenant_id_id_key UNIQUE (tenant_id, id);
 CREATE UNIQUE INDEX sites_tenant_id_url_key ON sites (tenant_id, url);
 -- GIN index over tags so tenant-scoped tag filtering stays cheap.
 CREATE INDEX sites_tags_idx ON sites USING gin (tags);
@@ -6539,8 +6544,18 @@ CREATE POLICY site_vulnerabilities_site_scope ON site_vulnerabilities
 CREATE TABLE IF NOT EXISTS assistant_update_proposals (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
 
+    -- THE PAIR IS BOUND, NOT JUST THE HALVES (m133 DECISION 10). Two separate
+    -- FKs would each be satisfied while saying nothing about whether the site
+    -- belongs to the tenant, and a proposal whose site half points elsewhere is
+    -- a record of consent that was never given about the thing it names. The
+    -- composite FK below makes that pair unrepresentable. ON UPDATE is left at
+    -- NO ACTION deliberately: nothing moves a site between tenants, and a loud
+    -- refusal beats a silent rewrite of an otherwise-immutable column.
     tenant_id uuid NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
-    site_id   uuid NOT NULL REFERENCES sites (id) ON DELETE CASCADE,
+    site_id   uuid NOT NULL,
+    CONSTRAINT assistant_update_proposals_site_within_tenant_fkey
+        FOREIGN KEY (tenant_id, site_id)
+        REFERENCES sites (tenant_id, id) ON DELETE CASCADE,
 
     -- WHO ASKED. No FK: neither ON DELETE action is right for a recorded fact
     -- (the same reasoning mcp_grants.client_id gives). CASCADE would erase what
