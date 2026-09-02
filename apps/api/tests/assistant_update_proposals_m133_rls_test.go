@@ -767,6 +767,171 @@ func m133DropForMutation(t *testing.T, admin *db.Pool, stmt string) {
 	}
 }
 
+// TestAgentContextCanScanButCannotDecideAsAppRole proves the shape of
+// assistant_update_proposals_agent: the cross-tenant service context may SEE
+// proposals and may not DECIDE them.
+//
+// WHY THE POLICY IS FOR SELECT AND NOT m118's FOR ALL. `CREATE POLICY` with no
+// FOR clause means FOR ALL, and this policy was patterned on m118's
+// update_runs_agent, which is FOR ALL on purpose -- the deferred dispatcher
+// really does claim update_runs rows under InAgentTx. But update_runs records
+// what a MACHINE DID, and this table records what a HUMAN DECIDED: three of its
+// five writable columns are the decision itself. `app.agent` is also the scope
+// an authenticated agent->CP request runs under (db.go:429), not only the
+// background workers, so FOR ALL would put decided_by_user_id on every tenant's
+// proposals inside reach of a request path a customer's plugin drives -- and
+// DECISION 7 records that nothing enforces that column names a real user. The
+// workers need the SCAN, which is the one statement that cannot name a tenant;
+// every write after it names the tenant and runs under InTenantTx.
+//
+// THE ORDER OF THE TWO HALVES IS THE POINT, and it is the opposite of the usual
+// leak-first rule for a reason worth stating. The failure this narrowing could
+// introduce is the m84/m89/m118 silence: a policy that admits the read and
+// nothing else makes a cross-tenant write match ZERO ROWS WITH NO ERROR. A test
+// that only asserted "the agent cannot write" would pass just as happily
+// against a policy that had been dropped altogether, or misspelled, or gated on
+// a GUC nothing sets -- the app.service defect this migration already made once
+// and documents in DECISION 5. So the POSITIVE half runs first: prove the agent
+// context can really see the row, then prove it cannot decide it.
+//
+// Mutations 7 and 8, planted and watched. Planting
+//
+//	DROP POLICY assistant_update_proposals_agent ON assistant_update_proposals;
+//
+// makes the FIRST assertion fail with "the agent context saw nothing", and
+//
+//	DROP POLICY assistant_update_proposals_agent ON assistant_update_proposals;
+//	CREATE POLICY assistant_update_proposals_agent ON assistant_update_proposals
+//	    USING (current_setting('app.agent', true) = 'on')
+//	    WITH CHECK (current_setting('app.agent', true) = 'on');
+//
+// restores the FOR ALL form this test exists to forbid and makes the second
+// fail with "the agent context decided a proposal".
+func TestAgentContextCanScanButCannotDecideAsAppRole(t *testing.T) {
+	ctx := context.Background()
+	pool := startPostgres(t)
+
+	tenant := seedTenant(t, pool, "m133-agentscan-"+uuid.NewString()[:8])
+	site := seedSite(t, pool, tenant, "")
+
+	admin := connectAdmin(t, pool)
+	impostor := seedUserRow(t, admin, "m133-impostor-"+uuid.NewString()[:8]+"@example.com")
+	admin.Close()
+
+	pending := m133InsertPending(t, pool, tenant, site, uuid.New(), "agent-scan-target")
+
+	if err := pool.InAgentTx(ctx, func(tx pgx.Tx) error {
+		mcpAssertAndReportRole(t, tx, "InAgentTx (the agent context scans)")
+
+		// THE POSITIVE HALF, FIRST. The dispatch worker's and the expiry
+		// sweep's scan is the one statement in either path that cannot name a
+		// tenant. If this comes back empty the policy is not doing its job, and
+		// every refusal asserted below would be vacuous.
+		if n := m133CountVisible(t, tx, pending); n != 1 {
+			t.Fatalf("THE AGENT CONTEXT SAW NOTHING: proposal %s is invisible under "+
+				"app.agent, saw it %d times, want 1. assistant_update_proposals_agent "+
+				"is missing, misspelled, or gated on a GUC nothing sets. This is the "+
+				"m84/m89/m118 silence: the dispatch worker and the expiry sweep would "+
+				"find this table empty at 3am, with no error, and every proposal would "+
+				"sit at 'approved_undispatched' forever.", pending, n)
+		}
+
+		// A cross-tenant scan really is cross-tenant: the row is visible with
+		// no app.tenant_id set at all, which is what the workers rely on.
+		var scanned int
+		if err := tx.QueryRow(ctx, `
+			SELECT count(*) FROM assistant_update_proposals
+			 WHERE state = 'pending'`).Scan(&scanned); err != nil {
+			t.Fatalf("the due-scan statement itself failed: %v", err)
+		}
+		if scanned < 1 {
+			t.Fatalf("THE DUE SCAN RETURNED NOTHING: the workers' actual query shape "+
+				"found %d pending proposals across all tenants, want at least 1", scanned)
+		}
+
+		// THE NEGATIVE HALF. The decision itself must be out of reach. This is
+		// the exact statement a compromised or buggy agent-request path would
+		// issue, and DECISION 8's guarantee depends on it failing.
+		decided := m133ExpectRefused(t, tx, `
+			UPDATE assistant_update_proposals
+			   SET state = 'approved_undispatched', decided_at = now(),
+			       decided_by_user_id = $2
+			 WHERE id = $1`, pending, impostor)
+		if decided == nil {
+			t.Fatalf("THE AGENT CONTEXT DECIDED A PROPOSAL: proposal %s was moved to "+
+				"'approved_undispatched' under app.agent, naming %s as the approver. "+
+				"assistant_update_proposals_agent is FOR ALL rather than FOR SELECT. "+
+				"app.agent is the scope an authenticated agent->CP request runs under, "+
+				"so this is a machine approving a change to a live site -- the one "+
+				"thing ADR-061 and DECISION 8 exist to make unrepresentable.",
+				pending, impostor)
+		}
+
+		// It must fail because no policy admits the write, not because some
+		// constraint happened to catch this particular statement. A row-level
+		// refusal here is PostgreSQL finding no applicable policy.
+		if strings.Contains(decided.Error(), "approval_names_a_human") ||
+			strings.Contains(decided.Error(), "consent_within_window") {
+			t.Fatalf("the agent write was refused by a CHECK constraint rather than by "+
+				"the absence of a write policy, so this proof does not test the policy: %v",
+				decided)
+		}
+
+		// The same must hold for the ordinary worker writes, which have to go
+		// through InTenantTx instead. If either of these were admitted here the
+		// policy would be FOR ALL in all but name.
+		dispatchWrite := m133ExpectRefused(t, tx, `
+			UPDATE assistant_update_proposals
+			   SET state = 'expired'
+			 WHERE id = $1 AND state = 'pending'`, pending)
+		if dispatchWrite == nil {
+			t.Fatalf("THE AGENT CONTEXT EXPIRED A PROPOSAL: the sweep's own write was "+
+				"admitted under app.agent. It must run under InTenantTx, where "+
+				"tenant_isolation admits it and the tenant is named.")
+		}
+
+		inserted := m133ExpectRefused(t, tx, `
+			INSERT INTO assistant_update_proposals
+			    (tenant_id, site_id, proposed_by_grant_id, component_type,
+			     component_slug, from_version, to_version, presented_digest,
+			     state, expires_at)
+			VALUES ($1, $2, $3, $4, 'agent-inserted', '1.0.0', '1.1.0', $5,
+			        'pending', now() + interval '1 hour')`,
+			tenant, site, uuid.New(), m133ComponentType, m133Digest("agent-inserted"))
+		if inserted == nil {
+			t.Fatalf("THE AGENT CONTEXT CREATED A PROPOSAL: a cross-tenant service " +
+				"context inserted a proposal for a tenant it was not acting for. " +
+				"Proposals are created by the propose tool under a tenant scope.")
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("agent-context-can-scan-but-cannot-decide: %v", err)
+	}
+
+	// AND THE ROW IS UNCHANGED. The refusals above must have been refusals, not
+	// writes that happened to roll back with the savepoint.
+	if err := pool.InTenantTx(ctx, tenant, func(tx pgx.Tx) error {
+		mcpAssertAndReportRole(t, tx, "InTenantTx (read back after the agent attempts)")
+		var state string
+		var decider *uuid.UUID
+		if err := tx.QueryRow(ctx, `
+			SELECT state, decided_by_user_id
+			  FROM assistant_update_proposals WHERE id = $1`, pending).
+			Scan(&state, &decider); err != nil {
+			return err
+		}
+		if state != "pending" {
+			t.Fatalf("the proposal left 'pending' after the agent attempts: now %q", state)
+		}
+		if decider != nil {
+			t.Fatalf("the proposal names a decider (%s) after the agent attempts", *decider)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("read back after the agent attempts: %v", err)
+	}
+}
+
 // TestApprovalRecordCannotBeDestroyedAsAppRole proves the two erasure paths a
 // review reached by execution against the pre-review schema, both closed by
 // m133 DECISION 9.

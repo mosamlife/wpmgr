@@ -238,9 +238,13 @@
 --       RESTRICTIVE policies are AND-combined and can only ever subtract, so
 --       this is inert on every path that does not set app.site_scope.
 --
---   assistant_update_proposals_agent              PERMISSIVE, FOR ALL.
---       The dispatch worker and the expiry sweep. Both run outside any one
---       organisation's transaction and must see rows across tenants.
+--   assistant_update_proposals_agent              PERMISSIVE, FOR SELECT.
+--       The dispatch worker's and the expiry sweep's SCAN, and nothing else.
+--       Both run outside any one organisation's transaction and must SEE rows
+--       across tenants to learn which tenant to go and work in. Neither writes
+--       under this policy. See "FOR SELECT, NOT FOR ALL" below -- this is the
+--       one place this table deliberately departs from the m118 precedent it
+--       otherwise follows.
 --
 -- ON THE THIRD POLICY, BECAUSE ITS NAME IS MISLEADING AND THE FIRST DRAFT OF
 -- THIS MIGRATION GOT IT WRONG. `app.agent` reads as "the WordPress plugin", and
@@ -274,6 +278,66 @@
 -- on 83 tables and this table does not renegotiate it. The site-scope policy
 -- above is RESTRICTIVE and therefore still subtracts even inside an agent
 -- transaction that sets app.site_scope; the agent policy cannot widen past it.
+--
+-- ---------------------------------------------------------------------------
+-- FOR SELECT, NOT FOR ALL. THE ONE PLACE THIS TABLE LEAVES THE m118 PATTERN.
+-- ---------------------------------------------------------------------------
+--
+-- `CREATE POLICY` with no `FOR` clause means FOR ALL. m118's update_runs_agent
+-- writes that word explicitly and the cross-tenant ledger records it as
+-- `ALL | select,update,lock`, because the deferred dispatcher genuinely CLAIMS
+-- update_runs rows and ExpireDueRun terminalises a run inside an agent
+-- transaction. Patterning this table's policy on that one would have inherited
+-- FOR ALL by simply not typing the clause -- which is the exact defect GH #470
+-- built the ledger for, in the direction that grants rather than withholds.
+--
+-- THIS TABLE IS DIFFERENT IN KIND FROM update_runs, and the difference is the
+-- whole design. update_runs records what a machine DID; every column the agent
+-- context writes there is a machine's own report of its own work. This table
+-- records what a HUMAN DECIDED. Its writable columns are state, decided_at,
+-- decided_by_user_id, dispatched_update_run_id and note -- three of the five
+-- are the decision itself.
+--
+-- WHAT FOR ALL WOULD HAVE MEANT, CONCRETELY. `app.agent` is not only the
+-- background workers: db.go:429 says an authenticated agent->CP request
+-- resolves its identity by the stored agent public key and runs under this same
+-- scope. So FOR ALL would put the approval columns of EVERY TENANT's proposals
+-- inside the reach of the request path a customer's WordPress plugin drives.
+-- DECISION 8's guarantee -- that a machine can never appear as the approver --
+-- rests on an API-key principal having no user id to supply. A writer under
+-- app.agent is not an API-key principal; it is the service context, and
+-- DECISION 7 records that nothing enforces decided_by_user_id names a real
+-- user. FOR ALL is therefore the one grant that could hand a machine the
+-- approval this whole table exists to withhold from it.
+--
+-- WHAT THE WORKERS ACTUALLY NEED, WHICH IS LESS. The m118 comment states the
+-- shape exactly, at dispatch_repo.go:162: the cross-tenant scan is "the one
+-- statement in the deferred-dispatch path that cannot name a tenant, because
+-- finding the tenant is what it is for; every statement after it names the
+-- tenant the scan returned". That is all this policy has to admit. The
+-- dispatch worker scans for 'approved_undispatched' and the expiry sweep scans
+-- for 'pending' past expires_at; both then hold a tenant, and both already have
+-- to take org.LifecycleLockKey for it ((7)(d)), so both can and must do their
+-- WRITE under InTenantTx, where tenant_isolation admits it.
+--
+-- THE PRECEDENT FOR THAT IS THIS FILE'S OWN. audit_log_agent is SELECT-only in
+-- the ledger for exactly this reason -- "the sole INSERT path runs under
+-- InTenantTx; UPDATE/DELETE are REVOKEd from wpmgr_app" -- and audit_log is one
+-- of the three tables section (5) already names as this table's model.
+-- alert_configs_evaluator, autologin_policies_agent and backup_chunks_agent are
+-- all the same shape: cross-tenant READ, tenant-scoped write. Following m118
+-- here would have been following the wrong one of two available precedents.
+--
+-- THE RISK OF NARROWING, NAMED, BECAUSE IT IS THE FAILURE THE LEDGER IS ABOUT.
+-- A wrongly-FOR-SELECT policy makes a cross-tenant write match ZERO ROWS WITH
+-- NO ERROR -- m84, m89 and m118 each shipped that silence. The protection here
+-- is that no Go caller writes this table yet (`grep -rn
+-- assistant_update_proposals --include="*.go" apps/api` returns test files
+-- only), so there is no write to break, and the proof below asserts the
+-- POSITIVE half -- the agent context really can read across tenants -- ahead of
+-- the negative half, so a policy that admits nothing fails loudly here rather
+-- than passing as a tidy refusal. Narrowing now costs one clause; narrowing
+-- after Session B ships costs a second migration against live rows.
 --
 -- ===========================================================================
 -- DECISION 6: THE FINGERPRINT
@@ -697,9 +761,18 @@ BEGIN
 END;
 $$;
 
--- The cross-tenant service context, set by pool.InAgentTx. This is what admits
--- the dispatch worker and the expiry sweep, exactly as m118's update_runs_agent
--- admits the update dispatcher. DECISION 5.
+-- The cross-tenant service context, set by pool.InAgentTx. This admits the
+-- dispatch worker's and the expiry sweep's SCAN -- the one statement in either
+-- path that cannot name a tenant. DECISION 5.
+--
+-- FOR SELECT IS LOAD-BEARING AND MUST NOT BE DROPPED TO "match m118". Omitting
+-- the clause means FOR ALL, and FOR ALL here would let the cross-tenant service
+-- context write decided_by_user_id on any tenant's proposal. Both workers write
+-- under InTenantTx, where tenant_isolation admits them. DECISION 5, and the row
+-- for this policy in db/rls-cross-tenant-policies.txt.
+--
+-- A FOR SELECT policy takes no WITH CHECK: there is no candidate row to test,
+-- and PostgreSQL rejects the clause outright.
 DO $$
 BEGIN
     IF NOT EXISTS (
@@ -709,8 +782,8 @@ BEGIN
     ) THEN
         CREATE POLICY "assistant_update_proposals_agent"
             ON "public"."assistant_update_proposals"
-            USING (current_setting('app.agent', true) = 'on')
-            WITH CHECK (current_setting('app.agent', true) = 'on');
+            FOR SELECT
+            USING (current_setting('app.agent', true) = 'on');
     END IF;
 END;
 $$;

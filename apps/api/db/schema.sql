@@ -6688,13 +6688,21 @@ CREATE POLICY assistant_update_proposals_site_scope ON assistant_update_proposal
         )
     );
 -- app.agent is the cross-tenant SERVICE context (pool.InAgentTx), not only the
--- WordPress plugin: the update dispatcher runs under it and is admitted by
--- m118's update_runs_agent. This policy is what lets the proposal dispatch
--- worker and the expiry sweep see rows across tenants. The RESTRICTIVE
+-- WordPress plugin: the update dispatcher runs under it, and so does an
+-- authenticated agent->CP request (db.go:429). This policy lets the proposal
+-- dispatch worker and the expiry sweep SEE rows across tenants - the one
+-- statement in either path that cannot name a tenant. The RESTRICTIVE
 -- site-scope policy above still subtracts inside it.
+--
+-- FOR SELECT, DELIBERATELY, AND NOT m118's FOR ALL. Omitting the clause means
+-- FOR ALL, which would put decided_by_user_id on every tenant's proposals
+-- inside reach of the cross-tenant service context - the one grant that could
+-- let a machine appear as the approver. Both workers write under InTenantTx.
+-- audit_log_agent is SELECT-only for the same reason. See m133 DECISION 5 and
+-- the row for this policy in db/rls-cross-tenant-policies.txt.
 CREATE POLICY assistant_update_proposals_agent ON assistant_update_proposals
-    USING (current_setting('app.agent', true) = 'on')
-    WITH CHECK (current_setting('app.agent', true) = 'on');
+    FOR SELECT
+    USING (current_setting('app.agent', true) = 'on');
 -- THE FACTS ARE IMMUTABLE AFTER INSERT, by column privilege - the audit_log /
 -- org_context_versions device at column granularity, not a trigger (this tree
 -- has zero). Without this, "extend the window" is one UPDATE on expires_at and
