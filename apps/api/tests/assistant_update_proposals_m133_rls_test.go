@@ -766,3 +766,200 @@ func m133DropForMutation(t *testing.T, admin *db.Pool, stmt string) {
 		t.Fatalf("plant mutation %q: %v", stmt, err)
 	}
 }
+
+// TestApprovalRecordCannotBeDestroyedAsAppRole proves the two erasure paths a
+// review reached by execution against the pre-review schema, both closed by
+// m133 DECISION 9.
+//
+// WHY ONE TEST AND NOT TWO. They are the same defect at two grains. Section (5)
+// of the migration argues that presented_digest and expires_at cannot be
+// rewritten, and DECISION 8 argues that an approval always names a human. Both
+// arguments are about a COLUMN, and a column is only as durable as the row that
+// carries it and the states that row can be moved into. Two ways to erase the
+// record therefore remained open:
+//
+//	the whole row, by DELETE -- the application role held it, observed
+//	relacl wpmgr_app=ard/wpmgr, where the 'd' is DELETE;
+//
+//	the approver alone, in place, by moving an approved row to 'rejected'
+//	while nulling decided_by_user_id -- legal before DECISION 9, because
+//	'rejected' was the one decided state with no requirement to name anyone.
+//
+// A proof of either half alone passes on a schema where the other is open, and
+// in both cases what is destroyed is the evidence the approval was supposed to
+// leave behind.
+//
+// WHAT THIS DOES NOT CLAIM. It does not prove the decision is immutable. The
+// decider can still be REPLACED with a different human, and states are still
+// not terminal; both need a transition guard, which needs a trigger this tree
+// does not have. Section (6) of the migration names them in full. This proves
+// erasure specifically: the record cannot be made to disappear.
+//
+// Mutations 5 and 6, planted and watched. Planting
+//
+//	GRANT DELETE ON assistant_update_proposals TO wpmgr_app;
+//
+// makes the FIRST assertion fail with "the approval record was deleted", and
+//
+//	ALTER TABLE assistant_update_proposals
+//	    DROP CONSTRAINT assistant_update_proposals_rejection_names_a_human_check;
+//
+// makes the third fail with "the approver was erased in place".
+func TestApprovalRecordCannotBeDestroyedAsAppRole(t *testing.T) {
+	ctx := context.Background()
+	pool := startPostgres(t)
+
+	tenant := seedTenant(t, pool, "m133-durable-"+uuid.NewString()[:8])
+	site := seedSite(t, pool, tenant, "")
+
+	admin := connectAdmin(t, pool)
+	approver := seedUserRow(t, admin, "m133-durable-"+uuid.NewString()[:8]+"@example.com")
+	rejecter := seedUserRow(t, admin, "m133-rejecter-"+uuid.NewString()[:8]+"@example.com")
+	admin.Close()
+
+	approved := m133InsertPending(t, pool, tenant, site, uuid.New(), "durable-record")
+	spare := m133InsertPending(t, pool, tenant, site, uuid.New(), "spare-for-rejection")
+	// Seeded out here, not inside the proof transaction below: m133InsertPending
+	// opens its own InTenantTx, and acquiring a second connection from inside a
+	// transaction that already holds one is how a pool-sized-1 run deadlocks.
+	sweepControl := m133InsertPending(t, pool, tenant, site, uuid.New(), "sweep-control")
+
+	// Approve it through the production dispatch, the way DECISION 4 and (7)(c)
+	// require: decided_at evaluated by the database, never supplied.
+	if err := pool.InTenantTx(ctx, tenant, func(tx pgx.Tx) error {
+		mcpAssertAndReportRole(t, tx, "InTenantTx (approve, so there is a record to destroy)")
+		tag, err := tx.Exec(ctx, `
+			UPDATE assistant_update_proposals
+			   SET state = 'approved_undispatched', decided_at = now(),
+			       decided_by_user_id = $2
+			 WHERE id = $1 AND state = 'pending'`, approved, approver)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			t.Fatalf("seeding an approved row affected %d rows, not 1", tag.RowsAffected())
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed an approved proposal: %v", err)
+	}
+
+	if err := pool.InTenantTx(ctx, tenant, func(tx pgx.Tx) error {
+		mcpAssertAndReportRole(t, tx, "InTenantTx (the approval record cannot be destroyed)")
+
+		// THE LEAK ASSERTION, FIRST. The whole row.
+		gone := m133ExpectRefused(t, tx,
+			`DELETE FROM assistant_update_proposals WHERE id = $1`, approved)
+		if gone == nil {
+			t.Fatalf("THE APPROVAL RECORD WAS DELETED: proposal %s was removed by "+
+				"wpmgr_app. DELETE is granted where the migration revokes it. Every "+
+				"immutability guarantee in section (5) is void against a writer who "+
+				"can drop the row instead of editing it: the approval simply stops "+
+				"having happened, and no audit read can tell that it ever did.", approved)
+		}
+		if !strings.Contains(gone.Error(), "permission denied") {
+			t.Fatalf("the DELETE was refused, but not by the privilege that exists to "+
+				"refuse it -- expected 42501 permission denied: %v", gone)
+		}
+
+		// TRUNCATE is DELETE without a WHERE clause and is revoked with it.
+		truncated := m133ExpectRefused(t, tx, `TRUNCATE assistant_update_proposals`)
+		if truncated == nil {
+			t.Fatalf("EVERY APPROVAL RECORD WAS DELETED AT ONCE: wpmgr_app truncated " +
+				"assistant_update_proposals. Revoking DELETE while leaving TRUNCATE " +
+				"grants the same erasure with a shorter statement.")
+		}
+
+		// THE SECOND ERASURE PATH: the approver alone, in place. This is the
+		// statement the review executed against the pre-review schema.
+		erased := m133ExpectRefused(t, tx, `
+			UPDATE assistant_update_proposals
+			   SET state = 'rejected', decided_by_user_id = NULL
+			 WHERE id = $1`, approved)
+		if erased == nil {
+			t.Fatalf("THE APPROVER WAS ERASED IN PLACE: proposal %s was moved to "+
+				"'rejected' with decided_by_user_id set to NULL, so who approved it is "+
+				"unrecoverable while the row still reads as an ordinary decided row. "+
+				"assistant_update_proposals_rejection_names_a_human_check is missing. "+
+				"decided_by_user_id has to stay inside the column UPDATE grant for an "+
+				"approval to write it at all, so the STATE it lands in is what has to "+
+				"require a name.", approved)
+		}
+		if !strings.Contains(erased.Error(), "rejection_names_a_human") {
+			t.Fatalf("the anonymising rejection was refused, but not by the constraint "+
+				"that exists to refuse it: %v", erased)
+		}
+
+		// The same hole written straight in rather than transitioned into.
+		anonInsert := m133ExpectRefused(t, tx, `
+			INSERT INTO assistant_update_proposals
+			    (tenant_id, site_id, proposed_by_grant_id, component_type,
+			     component_slug, from_version, to_version, presented_digest,
+			     state, decided_at, expires_at)
+			VALUES ($1, $2, $3, $4, 'inserted-rejected', '1.0.0', '1.1.0', $5,
+			        'rejected', now(), now() + interval '1 hour')`,
+			tenant, site, uuid.New(), m133ComponentType, m133Digest("inserted-rejected"))
+		if anonInsert == nil {
+			t.Fatalf("AN ANONYMOUS REJECTION WAS INSERTED DIRECTLY: a decided row was " +
+				"written with no decider. The constraint must hold on INSERT as well " +
+				"as on the transition, or the transition guard is just a speed bump.")
+		}
+		if !strings.Contains(anonInsert.Error(), "rejection_names_a_human") {
+			t.Fatalf("the anonymous rejected INSERT was refused, but not by the "+
+				"constraint that exists to refuse it: %v", anonInsert)
+		}
+
+		// POSITIVE CONTROL 1. A REAL rejection, naming its human, must still
+		// work. A constraint refusing every rejection would pass every
+		// assertion above and make the product unusable.
+		tag, err := tx.Exec(ctx, `
+			UPDATE assistant_update_proposals
+			   SET state = 'rejected', decided_at = now(), decided_by_user_id = $2
+			 WHERE id = $1 AND state = 'pending'`, spare, rejecter)
+		if err != nil {
+			t.Fatalf("OVER-FIRING: a rejection naming a human was refused: %v", err)
+		}
+		if tag.RowsAffected() != 1 {
+			t.Fatalf("OVER-FIRING: rejecting with a named human affected %d rows, not 1",
+				tag.RowsAffected())
+		}
+
+		// POSITIVE CONTROL 2. Expiry still names nobody, and the sweep's own
+		// statement must stay legal -- requiring a human of 'rejected' must not
+		// leak onto the one decided-looking state that has no human to name.
+		swept, err := tx.Exec(ctx, `
+			UPDATE assistant_update_proposals
+			   SET state = 'expired'
+			 WHERE id = $1 AND state = 'pending'`, sweepControl)
+		if err != nil {
+			t.Fatalf("OVER-FIRING: the expiry sweep's statement was refused: %v\n"+
+				"Expiry names nobody by design (DECISION 4); DECISION 9 must not have "+
+				"made an unattributed outcome impossible in general.", err)
+		}
+		if swept.RowsAffected() != 1 {
+			t.Fatalf("OVER-FIRING: expiring a pending proposal affected %d rows, not 1",
+				swept.RowsAffected())
+		}
+
+		// AND THE RECORD IS STILL THERE, naming the same human. The point of
+		// everything above.
+		var state string
+		var decider *uuid.UUID
+		if err := tx.QueryRow(ctx, `
+			SELECT state, decided_by_user_id
+			  FROM assistant_update_proposals WHERE id = $1`, approved).
+			Scan(&state, &decider); err != nil {
+			t.Fatalf("read back the approval record: %v", err)
+		}
+		if state != "approved_undispatched" {
+			t.Fatalf("the approval record survived but its state moved to %q", state)
+		}
+		if decider == nil || *decider != approver {
+			t.Fatalf("the approval record survived but no longer names the approver: got %v, want %s",
+				decider, approver)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("approval-record-cannot-be-destroyed: %v", err)
+	}
+}

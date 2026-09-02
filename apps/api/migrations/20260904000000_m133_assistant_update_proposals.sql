@@ -161,13 +161,29 @@
 --     state NOT IN ('approved_undispatched','dispatched')
 --     OR (decided_at IS NOT NULL AND decided_at < expires_at)
 --
--- An approved row whose approval landed at or after its own expiry is
--- UNREPRESENTABLE. This is not a guard on one transition; it is a property of
--- the row, so it holds whatever path wrote it, whatever a handler forgot, and
--- whatever order the statements ran in. The approve statement sets
--- decided_at = now(); if the window has closed, PostgreSQL raises 23514 and the
--- approval does not happen. An 'expired' row has expires_at in the past by
--- construction, so the same constraint refuses to flip it to approved.
+-- WHAT IT ACTUALLY GUARANTEES, STATED IN THE ONLY TERMS THAT ARE TRUE: an
+-- approved row whose RECORDED decided_at is at or after its own expires_at is
+-- unrepresentable. That is a property of the finished row, so it does hold
+-- whatever path wrote it and whatever order the statements ran in.
+--
+-- IT IS NOT A GUARANTEE ABOUT THE CLOCK, AND THE DIFFERENCE IS THE WHOLE POINT.
+-- The constraint compares decided_at to expires_at. It never compares either to
+-- now(), and it cannot: PostgreSQL refuses a non-immutable function in a CHECK,
+-- so there is no version of this constraint that knows what time it is. It
+-- therefore guarantees the row is SELF-CONSISTENT, not that the approval
+-- happened while the window was open. A caller that supplies its own decided_at
+-- inside the closed window gets an approved row on an expired proposal, and a
+-- review reached exactly that state by execution.
+--
+-- WHICH IS WHY (7)(c) IS A HARD REQUIREMENT AND NOT A STYLE NOTE. When the
+-- approve statement sets decided_at = now() and lets the database evaluate it,
+-- the constraint's comparison becomes a comparison against the real clock and
+-- the guarantee above is the guarantee everyone wants: the window has closed,
+-- PostgreSQL raises 23514, the approval does not happen. When decided_at comes
+-- from a request body or a client clock instead, the constraint still passes
+-- and it is checking the caller's arithmetic against itself. The invariant is
+-- half schema and half caller, and the schema half cannot be made to cover the
+-- other one.
 --
 -- WHY A CHECK AND NOT A TRIGGER. There is no CREATE TRIGGER anywhere in this
 -- migration tree or in db/schema.sql (0 matches for 'CREATE TRIGGER' in
@@ -407,6 +423,45 @@
 -- here for a reclaim sweep to find later, so the cascade strands nothing.
 
 -- ===========================================================================
+-- DECISION 9: A REJECTION NAMES ITS HUMAN, AND THE ROW CANNOT BE DELETED
+-- ===========================================================================
+--
+-- Two additions a review reached by execution as wpmgr_app. Both are the same
+-- observation from different directions: DECISION 8 protects a COLUMN inside a
+-- row, and a column is only as durable as the row and the states around it.
+--
+-- THE ROW WAS ERASABLE. The application role held DELETE on this table -- the
+-- observed relacl was `wpmgr_app=ard/wpmgr`, where the `d` is DELETE -- and an
+-- approved proposal was deleted with it. Section (5) argues at length that
+-- presented_digest and expires_at cannot be rewritten; none of that survives a
+-- writer who can drop the whole row instead. Every precedent section (5)
+-- invokes (audit_log in m2, the two context tables in m122) revokes DELETE
+-- alongside UPDATE, and this table now does the same. It is append-and-decide
+-- like all three: an outcome is a state here, never an absence, which is the
+-- entire reason 'expired' and 'rejected' exist as values.
+--
+-- THE APPROVER WAS ERASABLE IN PLACE. decided_by_user_id has to stay inside the
+-- column UPDATE grant, because an approval writes it. Before this decision
+-- 'rejected' was the one decided state with no requirement to name anyone, so
+-- moving an approved row to 'rejected' while nulling the column was legal, and
+-- it removed the record of who approved without leaving a gap a reader would
+-- notice. The new rejection_names_a_human_check closes it, and the rule it
+-- establishes is the simple one worth remembering: EVERY DECIDED STATE NAMES A
+-- HUMAN, and expiry -- which is not a decision -- may name nobody.
+--
+-- WHY REQUIRING IT OF 'rejected' IS RIGHT ON ITS OWN MERITS, not just as a
+-- side effect of closing that path: a rejection IS a human decision under
+-- ADR-061. The automatic outcome has its own state, 'expired', and DECISION 4
+-- forbids that one from naming anyone. A decided-but-anonymous rejection was
+-- therefore a state with no meaning in the design, and one that an audit read
+-- would have to guess at. No caller writes 'rejected' today, so nothing is
+-- broken by requiring it now, and requiring it later would need a backfill.
+--
+-- WHAT NEITHER ADDITION DOES: replace a transition guard. The decider can
+-- still be overwritten with a different human, and states are still not
+-- terminal. Section (6) names those in full.
+
+-- ===========================================================================
 -- (1) THE TABLE
 -- ===========================================================================
 
@@ -505,6 +560,34 @@ CREATE TABLE IF NOT EXISTS "public"."assistant_update_proposals" (
     CONSTRAINT "assistant_update_proposals_approval_names_a_human_check"
         CHECK (
             "state" NOT IN ('approved_undispatched', 'dispatched')
+            OR "decided_by_user_id" IS NOT NULL
+        ),
+
+    -- A REJECTION NAMES ITS HUMAN TOO. DECISION 9.
+    -- Every decided state that is not expiry names the person who decided it.
+    -- Expiry is the one decided-looking state with no human, and it is not a
+    -- decision -- the constraint above this one forbids it naming anyone.
+    --
+    -- This is not symmetry for its own sake. decided_by_user_id is inside the
+    -- column UPDATE grant section (5) hands back, because an approval has to be
+    -- able to write it. Without this constraint,
+    --
+    --     SET state = 'rejected', decided_by_user_id = NULL
+    --
+    -- is a legal statement against an already-approved row, and it erases who
+    -- approved while leaving a plausible decided row behind. A review executed
+    -- exactly that. With this constraint that statement raises 23514: a
+    -- rejection cannot be anonymous, so there is no decided state a writer can
+    -- move an approved row into that drops the name.
+    --
+    -- WHAT THIS DOES NOT CLOSE, stated here so the next reader does not read
+    -- more into it than it says: it stops the name being ERASED, not
+    -- REPLACED. Overwriting decided_by_user_id with a different user id is
+    -- still accepted, because a CHECK sees only the finished row and cannot
+    -- tell that the column just changed. Section (6) has the full list.
+    CONSTRAINT "assistant_update_proposals_rejection_names_a_human_check"
+        CHECK (
+            "state" <> 'rejected'
             OR "decided_by_user_id" IS NOT NULL
         ),
 
@@ -710,7 +793,10 @@ $$;
 --
 -- THE TEST HARNESS HAS TO KNOW. apps/api/tests/rls_integration_test.go runs a
 -- blanket `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES` AFTER the
--- migrations, which re-adds the table-level UPDATE this section removes. That
+-- migrations, which re-adds BOTH the table-level UPDATE and the DELETE this
+-- section removes -- the DELETE re-revoke is as necessary as the UPDATE one,
+-- and a proof of undeletability without it passes against a privilege no real
+-- install has. That
 -- file already carries re-revokes for audit_log and the two context tables,
 -- and its own comment says why: without them "every test in this package would
 -- run against privileges no real install has -- including the append-only
@@ -718,6 +804,28 @@ $$;
 -- same treatment and it has been added there. A proof of immutability that
 -- runs with the privilege restored is the exact vacuous shape that comment
 -- describes.
+
+-- THE ROW ITSELF HAS TO SURVIVE, OR NONE OF THE ABOVE MEANS ANYTHING.
+--
+-- Every precedent this section names -- audit_log in m2, org_context_versions
+-- and site_context_versions in m122 -- revokes DELETE in the same breath as
+-- UPDATE, and for one reason: a column made immutable inside a row that can be
+-- deleted is not immutable, it is merely inconvenient. An attacker who cannot
+-- rewrite presented_digest can drop the row that carries it and the approval
+-- stops having happened. A review executed that DELETE as wpmgr_app against an
+-- approved row and it succeeded; the observed relacl was `wpmgr_app=ard/wpmgr`,
+-- and the `d` is DELETE.
+--
+-- This table is append-and-decide, exactly like the three above it. Nothing in
+-- the workflow deletes a proposal: expiry writes 'expired', a refusal writes
+-- 'rejected', and both are states rather than absences precisely so the record
+-- of the ask survives the answer. TRUNCATE goes with it for the same reason
+-- the precedents include it -- it is DELETE without a WHERE clause.
+--
+-- Rows still leave by CASCADE when their tenant or site is deleted. That is
+-- the deliberate lifecycle boundary the FKs declare, and it is not reachable
+-- by an UPDATE or a DELETE this role can issue.
+REVOKE DELETE, TRUNCATE ON "public"."assistant_update_proposals" FROM "wpmgr_app";
 
 REVOKE UPDATE ON "public"."assistant_update_proposals" FROM "wpmgr_app";
 
@@ -742,20 +850,43 @@ GRANT UPDATE ("state", "decided_at", "decided_by_user_id",
 --      versions and proposer are all immutable once written.
 --   5. EXPIRY CAN NEVER NAME A HUMAN. DECISION 4.
 --   6. TENANT AND SITE ISOLATION, each proven under mutation.
+--   7. THE ROW CANNOT BE DELETED by the application role. Section (5) revokes
+--      DELETE and TRUNCATE, as m2 does for audit_log and m122 for the two
+--      context tables. Rows leave only by the tenant/site CASCADE.
+--   8. NO DECISION IS ANONYMOUS. Approved, dispatched and rejected all name a
+--      human; expired names nobody and may not name anyone. The approver of an
+--      approved row cannot be erased by moving the row to 'rejected'.
 --
--- THE GUARANTEES ARE PARTIAL AND THE REMAINDER IS TRACKED PRIVATELY. A small
--- residual set is not enforced by the schema; it is recorded in the maintainers'
--- private notes together with its severity assessment and the options for
--- closing it, and is NOT written here.
+-- THE GUARANTEES ARE PARTIAL, AND WHAT IS MISSING IS ONE THING WITH THREE
+-- FACES. Every one of them is the same absence: THERE IS NO TRANSITION GUARD.
+-- A CHECK sees the finished row and never the row it replaced, and a column
+-- privilege can say whether a column may move but not in which direction. So
+-- the PREVIOUS state of a row constrains NOTHING about its next state, and
+-- these three consequences follow and have each been reached by execution as
+-- wpmgr_app through the production dispatch:
 --
--- That omission is deliberate and is itself the rule: this repository is public,
--- and a description of how to defeat a guard that is not yet closed is a recipe,
--- not a residual-risk note. A commit cannot be recalled. An earlier revision of
--- this section enumerated the remainder in full and had to be removed from
--- history; if you are about to add it back because "a reader needs to know",
--- read this paragraph again -- a reader needs to know the guarantees are
--- partial, which is what the sentence above tells them, and the maintainers who
--- need the detail have it.
+--   a. STATES ARE NOT TERMINAL. A dispatched row can be moved back to
+--      'pending'. Nothing marks a decided row as finished.
+--   b. THE DECIDER CAN BE REPLACED, though no longer erased. Guarantee 8 above
+--      makes an anonymous decision unrepresentable; it does not stop
+--      decided_by_user_id being overwritten with a DIFFERENT user id.
+--   c. THE WINDOW CHECK VERIFIES ARITHMETIC, NOT TIME. It compares decided_at
+--      to expires_at and never to now(), which a CHECK cannot call. A caller
+--      that supplies its own decided_at rather than letting the database
+--      evaluate now() can therefore approve a proposal whose window has
+--      closed. DECISION 4 and (7)(c) both carry this; it is repeated here
+--      because this is the section a reader consults for what is NOT true.
+--
+-- These are stated because the alternative is worse. This file previously
+-- claimed absolutes in this area that a review disproved by execution, and the
+-- claims had been repeated onward as fact before that happened. A reader who is
+-- told only "the guarantees are partial" builds on whichever absolute they
+-- remember. Naming the three costs little: they are all one sentence -- the
+-- previous state constrains nothing -- and that sentence was already in this
+-- section, in the paragraph below, as the reason a trigger is what would close
+-- it. What is NOT written here is the severity assessment and the option
+-- analysis, which stay in the maintainers' private notes, because this
+-- repository is public and a commit cannot be recalled.
 --
 -- WHY THE REMAINDER IS NOT SIMPLY CLOSED HERE: what would close it is a
 -- transition guard, and that requires a trigger. This tree has ZERO

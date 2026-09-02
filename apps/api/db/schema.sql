@@ -6525,9 +6525,11 @@ CREATE POLICY site_vulnerabilities_site_scope ON site_vulnerabilities
 --   * presented_digest fingerprints exactly what the human was shown, is set at
 --     INSERT, and cannot be added retrospectively. Every approval taken before
 --     it existed would be permanently unverifiable.
---   * Running out of time means REJECTED, never approved. The
---     consent_within_window_check makes an approval landing at or after its own
---     expiry unrepresentable, whatever path wrote it.
+--   * Running out of time means REJECTED, never approved - PROVIDED the caller
+--     lets the database evaluate now(). consent_within_window_check compares
+--     decided_at to expires_at and never to now(), which a CHECK cannot call,
+--     so it makes a self-inconsistent row unrepresentable, not a late approval
+--     impossible. See DECISION 4 and (7)(c) in the migration.
 --   * 'approved_undispatched' is a committed state, not a moment between two
 --     statements, so a crash in the gap is an unclaimed row rather than a lost
 --     or doubled action (ADR-061).
@@ -6622,11 +6624,20 @@ CREATE TABLE IF NOT EXISTS assistant_update_proposals (
     -- An approval names a human, or it is not an approval. An API-key principal
     -- has no user id, so a credential cannot satisfy this at all: "a machine
     -- approved this" is a row the database will not store, rather than a rule a
-    -- handler has to remember. 'rejected' is deliberately excluded - rejection
-    -- is the fail-safe direction and has legitimate system-initiated cases.
+    -- handler has to remember.
     CONSTRAINT assistant_update_proposals_approval_names_a_human_check
         CHECK (
             state NOT IN ('approved_undispatched', 'dispatched')
+            OR decided_by_user_id IS NOT NULL
+        ),
+
+    -- A rejection names its human too (m133 DECISION 9). Every decided state
+    -- names a person; expiry, which is not a decision, may name nobody and the
+    -- check above forbids it naming anyone. Without this, moving an approved
+    -- row to 'rejected' while nulling this column erased who approved.
+    CONSTRAINT assistant_update_proposals_rejection_names_a_human_check
+        CHECK (
+            state <> 'rejected'
             OR decided_by_user_id IS NOT NULL
         ),
 
@@ -6698,6 +6709,13 @@ CREATE POLICY assistant_update_proposals_agent ON assistant_update_proposals
 -- apps/api/tests/rls_integration_test.go re-asserts this after its blanket
 -- GRANT, exactly as it does for audit_log. Without that, the immutability
 -- proofs run with the privilege restored and pass by testing nothing.
+--
+-- DELETE and TRUNCATE go too (m133 DECISION 9). An immutable column inside a
+-- deletable row is not immutable, and every precedent for the device above -
+-- audit_log in m2, the two context tables in m122 - revokes DELETE alongside
+-- UPDATE. This table is append-and-decide: an outcome is a state, never an
+-- absence. Rows leave only by the tenant/site CASCADE.
+REVOKE DELETE, TRUNCATE ON assistant_update_proposals FROM wpmgr_app;
 REVOKE UPDATE ON assistant_update_proposals FROM wpmgr_app;
 GRANT UPDATE (state, decided_at, decided_by_user_id,
               dispatched_update_run_id, note)

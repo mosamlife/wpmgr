@@ -192,6 +192,12 @@ func startPostgres(t testing.TB) *db.Pool {
 		// column and PostgreSQL will not carve a single column out of it.
 		"REVOKE UPDATE ON assistant_update_proposals FROM wpmgr_app",
 		"GRANT UPDATE (state, decided_at, decided_by_user_id, dispatched_update_run_id, note) ON assistant_update_proposals TO wpmgr_app",
+		// And the DELETE, for the same reason as the three tables above: m133
+		// DECISION 9 revokes it in the migration, the blanket GRANT re-adds it,
+		// and a proof that the approval record cannot be destroyed would pass
+		// here against a privilege no real install has. An immutable column
+		// inside a deletable row is not immutable.
+		"REVOKE DELETE, TRUNCATE ON assistant_update_proposals FROM wpmgr_app",
 	} {
 		if _, err := adminPool.Exec(ctx, stmt); err != nil {
 			setupFatalf(t, err, "postgres: provision app role ("+stmt+")")
