@@ -121,12 +121,19 @@ test.describe("the AI connection wizard shows one step at a time", () => {
 
   test("does not let the page itself scroll sideways at 390px", async ({ page }) => {
     // KNOWN FAILING, RECORDED RATHER THAN SOFTENED OR DELETED. At 390px the
-    // viewport still scrolls horizontally by roughly 410px. No element on the
-    // page overflows outside a clipping ancestor, so the remaining cause is
-    // not the rail: it predates this wizard's navigation model and is filed
-    // separately. The check stays, and stays honest, because a page a reader
-    // can shove off-screen on a phone is a real defect and removing the
-    // assertion would only make it invisible again.
+    // viewport scrolls horizontally by roughly 660px, measured by trying to
+    // scroll it rather than by reading documentElement.scrollWidth, which
+    // reports the scrollable overflow of a clipped descendant and answers a
+    // different question than "can a reader push this page off-screen".
+    //
+    // The rail is a scroll container and clips correctly: walking the ancestor
+    // chain shows every element up to and including BODY reporting the
+    // viewport width, and enumerating every element whose right edge exceeds
+    // the viewport WITHOUT a clipping ancestor returns an empty list. The
+    // remaining cause is therefore not the rail and not the one-step
+    // navigation; it is filed separately. The check stays, and stays honest,
+    // because a page a reader can shove off-screen on a phone is a real defect
+    // and removing the assertion would only make it invisible again.
     test.fixme();
 
     await page.setViewportSize({ width: 390, height: 900 });
