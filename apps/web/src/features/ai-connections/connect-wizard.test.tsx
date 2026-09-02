@@ -321,13 +321,17 @@ describe("the step rail names all ten specified steps and marks the right one cu
   it("marks specified step 2 current before any client is picked", async () => {
     renderWizard();
     await screen.findByRole("button", { name: /claude code/i });
-    expect(currentRailStep()).toHaveTextContent(/^2\. Name it, pick the AI client$/);
+    // "2Client" is the numbered circle plus the SHORT rail label, run together
+    // as textContent. Ruling 15 makes the short labels canonical for the rail;
+    // the long frame title belongs on the section heading and is asserted
+    // there, not here.
+    expect(currentRailStep()).toHaveTextContent(/^2Client$/);
   });
 
   it("marks specified step 5 current once a client is picked and no method chosen", async () => {
     renderWizard();
     await pickClient("Cursor");
-    expect(currentRailStep()).toHaveTextContent(/^5\. Choose how it authenticates$/);
+    expect(currentRailStep()).toHaveTextContent(/^5Auth$/);
     // The rail agrees this is later than step 2, not merely different from it.
     expect(document.querySelector('[data-step-n="2"]')).toHaveAttribute(
       "data-step-state",
@@ -335,7 +339,7 @@ describe("the step rail names all ten specified steps and marks the right one cu
     );
   });
 
-  it("marks specified step 6 current once client and method are both picked -- THE DEFECT 2 FIX", async () => {
+  it("marks specified step 6 current once client and method are both picked", async () => {
     // Sections 3 ("Sites this connection may reach") and 4 ("Set it up") in
     // this file share one reveal condition and always appear together, so by
     // the time an operator can see either, step 6 (setup) is the furthest one
@@ -349,7 +353,7 @@ describe("the step rail names all ten specified steps and marks the right one cu
     // "unselected" tests below for why the wizard's opening state (nothing
     // picked yet) must not itself read as complete.
     fireEvent.click(within(screen.getByRole("radiogroup", { name: /site scope/i })).getByText("All sites"));
-    expect(currentRailStep()).toHaveTextContent(/^6\. Get the setup artefact$/);
+    expect(currentRailStep()).toHaveTextContent(/^6Setup$/);
   });
 
   it("shows specified step 3 as passed, not merely unreached, once step 6 is current", async () => {
@@ -402,7 +406,7 @@ describe("the step rail names all ten specified steps and marks the right one cu
   });
 
   // ---------------------------------------------------------------------------
-  // Greptile P1 on connect-wizard.tsx:589 (pre-fix). Completion here used to be
+  // Completion here used to be
   // pure position: once client and method were picked, site selection read
   // completed and setup read current REGARDLESS of whether the fleet/tag read
   // that step depends on had actually come back. Loading and failed are
@@ -469,11 +473,11 @@ describe("the step rail names all ten specified steps and marks the right one cu
       "data-step-state",
       "completed",
     );
-    expect(currentRailStep()).toHaveTextContent(/^6\. Get the setup artefact$/);
+    expect(currentRailStep()).toHaveTextContent(/^6Setup$/);
   });
 
   // ---------------------------------------------------------------------------
-  // Greptile P1 / CodeRabbit Major on connect-wizard.tsx:268 (pre-fix), found
+  // The same failure through a third door, found
   // a third time through a third door: the fleet resolves fine, but the TAG
   // registry has not, under mode 'tags'. `scope.kind` alone read this as
   // "resolved" -- it only ever asks about the fleet read -- while
@@ -526,7 +530,7 @@ describe("the step rail names all ten specified steps and marks the right one cu
   });
 
   // ---------------------------------------------------------------------------
-  // Greptile P1 on connect-wizard.tsx:639, the OVER-FIRE ARM OF THE FIX ABOVE.
+  // THE OVER-FIRE ARM OF THE FIX ABOVE.
   // On the OAuth path there is no mint button to block -- step 4 renders
   // NextSteps, never TokenMintPanel -- and the scope chosen in this wizard is
   // rehearsal for OAuth (SiteScopeStep's own copy: "nothing carries this
@@ -555,7 +559,7 @@ describe("the step rail names all ten specified steps and marks the right one cu
       await pickClient("Cursor");
       fireEvent.click(authCard("oauth"));
 
-      expect(currentRailStep()).toHaveTextContent(/^6\. Get the setup artefact$/);
+      expect(currentRailStep()).toHaveTextContent(/^6Setup$/);
       expect(document.querySelector('[data-step-n="3"]')).toHaveAttribute(
         "data-step-state",
         "completed",
@@ -576,7 +580,7 @@ describe("the step rail names all ten specified steps and marks the right one cu
     // thing to wait for before the rail is asserted against.
     expect(screen.getByRole("radio", { name: /by tag/i })).toBeChecked();
 
-    expect(currentRailStep()).toHaveTextContent(/^6\. Get the setup artefact$/);
+    expect(currentRailStep()).toHaveTextContent(/^6Setup$/);
     expect(document.querySelector('[data-step-n="3"]')).toHaveAttribute(
       "data-step-state",
       "completed",
@@ -593,7 +597,7 @@ describe("the step rail names all ten specified steps and marks the right one cu
     fireEvent.click(authCard("oauth"));
     await screen.findByTestId("site-step-count");
 
-    expect(currentRailStep()).toHaveTextContent(/^6\. Get the setup artefact$/);
+    expect(currentRailStep()).toHaveTextContent(/^6Setup$/);
     expect(document.querySelector('[data-step-n="3"]')).toHaveAttribute(
       "data-step-state",
       "completed",
@@ -789,7 +793,7 @@ describe("step 3 exists at all, and sits before capabilities", () => {
 
   it("numbers the setup artefact after it, so the rail and the page agree", async () => {
     await reachSiteStep();
-    expect(screen.getByRole("heading", { name: /^5\. Set it up$/ })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /^6\. Get the setup artefact$/ })).toBeInTheDocument();
     // And the rail no longer claims sites are chosen somewhere else.
     expect(screen.queryByText(/4\. Choose sites and permissions/i)).not.toBeInTheDocument();
   });
@@ -875,7 +879,7 @@ describe("an empty scope is a working state, not an error", () => {
     // The setup artefact is reachable with nothing selected. An earlier
     // revision of this surface disabled Continue here; that is the behaviour
     // being corrected.
-    expect(screen.getByRole("heading", { name: /^5\. Set it up$/ })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /^6\. Get the setup artefact$/ })).toBeInTheDocument();
     expect(await screen.findByText(/"mcpServers"/)).toBeInTheDocument();
   });
 });
@@ -1898,5 +1902,394 @@ describe("minting a connection token", () => {
     expect(await screen.findByText(/too many connection tokens minted recently/i)).toBeInTheDocument();
     expect(screen.getByText(/wait about 42 seconds/i)).toBeInTheDocument();
     expect(screen.queryByText(/organisation-wide credential/i)).not.toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// THE STEPPER ITSELF. The owner looked at the shipped screen and said it was
+// neither a stepper nor a wizard, and he was right about the rail: it printed
+// the ten LONG frame titles run together with slashes, which is a paragraph in
+// a stepper's place, and it disagreed with the numbers on the sections below
+// it. These tests hold the component the deck actually draws.
+// ---------------------------------------------------------------------------
+
+/** Every rail segment, in the order the DOM has them. */
+function railSegments(): HTMLElement[] {
+  return Array.from(document.querySelectorAll<HTMLElement>("[data-step-n]"));
+}
+
+describe("the rail is a stepper, not a paragraph", () => {
+  it("labels the rail with the deck's SHORT labels and never the long frame titles", async () => {
+    renderWizard();
+    await screen.findByRole("button", { name: /claude code/i });
+
+    // Ruling 15, verbatim in its ordering: "Start, Client, Sites,
+    // Capabilities, Auth, Setup, Authorize, Confirm, Test, Done".
+    // The label's own text node, without the sr-only "(not yet available)"
+    // that an unbuilt step carries for a screen reader -- that suffix is
+    // asserted by the "not-built" tests above and is not part of the label.
+    expect(
+      railSegments().map(
+        (s) => screen.getByTestId(`step-label-${s.dataset.stepN}`).childNodes[0]?.textContent,
+      ),
+    ).toEqual([
+      "Start",
+      "Client",
+      "Sites",
+      "Capabilities",
+      "Auth",
+      "Setup",
+      "Authorize",
+      "Confirm",
+      "Test",
+      "Done",
+    ]);
+
+    // And the long frame titles are gone from the rail specifically. Asserting
+    // their absence from the whole document would be wrong: "Choose what it
+    // may do" is a legitimate SECTION heading, which is exactly where ruling
+    // 15 puts the long form.
+    const railText = railSegments()
+      .map((s) => s.textContent ?? "")
+      .join(" ");
+    for (const long of [
+      "Name it, pick the AI client",
+      "Choose how it authenticates",
+      "Get the setup artefact",
+      "WPMgr confirms connection is live",
+    ]) {
+      expect(railText).not.toContain(long);
+    }
+  });
+
+  it("draws a numbered circle per step and a connector between every pair", async () => {
+    renderWizard();
+    await screen.findByRole("button", { name: /claude code/i });
+
+    // Ten circles, each carrying its own specified number -- the number lives
+    // in the circle now, not in a "6. Get the setup artefact" run of prose.
+    expect(
+      Array.from({ length: 10 }, (_, i) => screen.getByTestId(`step-circle-${i + 1}`).textContent),
+    ).toEqual(["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]);
+
+    // Nine connectors for ten steps: one before every segment except the
+    // first. A connector before step 1 would draw a line coming from nowhere.
+    expect(document.querySelectorAll('[data-testid^="step-line-"]')).toHaveLength(9);
+    expect(screen.queryByTestId("step-line-1")).toBeNull();
+  });
+
+  it("shortens the connector below the deck's 640px breakpoint", async () => {
+    renderWizard();
+    await screen.findByRole("button", { name: /claude code/i });
+
+    // The deck: `.step .line { width: 44px }` with
+    // `@media (max-width: 640px) { .step .line { width: 16px } }`. In this
+    // project that is the unprefixed utility for the narrow case and the `sm:`
+    // variant for the wide one -- w-4 is 16px, w-11 is 44px.
+    const line = screen.getByTestId("step-line-2");
+    expect(line.className).toContain("w-4");
+    expect(line.className).toContain("sm:w-11");
+    expect(line.className).toContain("mx-1.5");
+    expect(line.className).toContain("sm:mx-2.5");
+  });
+
+  it("puts `sm:` at the 640px the deck specifies, so those classes mean what they say", async () => {
+    // THE HALF THAT MAKES THE TEST ABOVE ABOUT BEHAVIOUR RATHER THAN SPELLING.
+    // `sm:w-11` only implements the deck's breakpoint while `sm` IS 640px;
+    // Tailwind's default is 40rem/640px and this app must not have moved it.
+    // Moving it would silently change where the connector shortens, which no
+    // class-name assertion could see.
+    const fs = await import("node:fs");
+    const nodePath = await import("node:path");
+    // Resolved from the process, and a MISSING file throws rather than
+    // letting this test pass over nothing -- a check that cannot find its
+    // input has to go red, not green.
+    const candidates = [
+      nodePath.resolve(process.cwd(), "src/styles/globals.css"),
+      nodePath.resolve(process.cwd(), "apps/web/src/styles/globals.css"),
+    ];
+    const found = candidates.find((p) => fs.existsSync(p));
+    if (found === undefined) throw new Error(`globals.css not found at ${candidates.join(" or ")}`);
+    const css = fs.readFileSync(found, "utf8");
+    // The file has to have actually been read, or the regex below matches
+    // nothing and the assertion is skipped over an empty string.
+    expect(css).toContain("@theme");
+    const override = /--breakpoint-sm:\s*([^;]+);/.exec(css)?.[1];
+    // Either untouched (Tailwind's own 40rem = 640px), or explicitly set to
+    // the same value. Anything else moves the design's boundary.
+    if (override !== undefined) expect(override.trim()).toBe("40rem");
+  });
+
+  it("fills the circle only for a step actually behind the operator, and rings the current one", async () => {
+    renderWizard();
+    await pickClient("Cursor");
+
+    // Step 2 is behind them: filled. The fill is the strongest "done" signal
+    // on the screen and it is drawn from the rail's own state, so it cannot
+    // claim progress the wizard has not made.
+    expect(document.querySelector('[data-step-n="2"]')).toHaveAttribute(
+      "data-step-state",
+      "completed",
+    );
+    expect(screen.getByTestId("step-circle-2").className).toContain("bg-[var(--color-primary)]");
+
+    // Step 5 is where they are: ringed, never filled.
+    expect(screen.getByTestId("step-circle-5").className).toContain("border-2");
+    expect(screen.getByTestId("step-circle-5").className).not.toContain(
+      "bg-[var(--color-primary)]",
+    );
+
+    // Step 8 does not exist yet. No fill, no ring: an unbuilt step must never
+    // render as done or current.
+    expect(document.querySelector('[data-step-n="8"]')).toHaveAttribute(
+      "data-step-state",
+      "not-built",
+    );
+    expect(screen.getByTestId("step-circle-8").className).not.toContain(
+      "bg-[var(--color-primary)]",
+    );
+    expect(screen.getByTestId("step-circle-8").className).not.toContain("border-2");
+  });
+});
+
+describe("the rail and the section heading agree on which step this is", () => {
+  // Two numbering systems on one screen contradict each other as soon as the
+  // page order stops matching the spine: the rail calling the setup section
+  // step 6 while the heading over it says "4. Set it up". Every heading here
+  // is now numbered with the specified step it answers, so a section and its
+  // rail segment cannot name the same step differently.
+
+  /** Every "N. Title" heading on screen, as its leading number. */
+  function headingNumbers(): string[] {
+    return screen
+      .getAllByRole("heading", { level: 2 })
+      .map((h) => /^(\d+)\./.exec(h.textContent ?? "")?.[1])
+      .filter((n): n is string => n !== undefined);
+  }
+
+  it("numbers the client section 2, the way the rail does, before anything is picked", async () => {
+    renderWizard();
+    await screen.findByRole("button", { name: /claude code/i });
+
+    expect(screen.getByRole("heading", { name: /^2\. Pick your client$/ })).toBeInTheDocument();
+    expect(currentRailStep()).toHaveAttribute("data-step-n", "2");
+    // Nothing on screen is numbered 1: local position numbering is gone.
+    expect(headingNumbers()).toEqual(["2"]);
+  });
+
+  it("numbers every revealed section with a step the rail also names, on the token path", async () => {
+    renderWizard();
+    await pickClient("Claude Code");
+    fireEvent.click(authCard("token"));
+    await screen.findByTestId("site-step-count");
+
+    // The specified numbers for the five built sections, in the order this
+    // page reveals them -- deliberately non-monotonic (ruling: the on-screen
+    // order maps to the deck's numbers, the numbers are never renumbered to
+    // match the page).
+    expect(headingNumbers()).toEqual(["2", "5", "3", "4", "6"]);
+
+    // And every one of those numbers is a step the rail draws, in the rail's
+    // own order, so there is exactly one numbering system on the screen.
+    const railNs = railSegments().map((s) => s.dataset.stepN);
+    for (const n of headingNumbers()) expect(railNs).toContain(n);
+  });
+
+  it("gives the setup section the same number the rail marks current", async () => {
+    renderWizard();
+    await pickClient("Claude Code");
+    fireEvent.click(authCard("oauth"));
+    await screen.findByTestId("site-step-count");
+
+    const current = currentRailStep();
+    expect(current).toHaveAttribute("data-step-n", "6");
+    expect(screen.getByTestId("step-label-6")).toHaveTextContent("Setup");
+    // The heading over the section the operator is looking at carries that
+    // same 6, not the "4" its position on the page would give it.
+    expect(screen.getByRole("heading", { name: /^6\. Get the setup artefact$/ })).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The stepper rail: one row, one current step, one canonical heading.
+// ---------------------------------------------------------------------------
+
+describe("the rail is one row, so no connector can start a row", () => {
+  it("never wraps, at any width", async () => {
+    renderWizard();
+    await screen.findByRole("button", { name: /claude code/i });
+
+    // The orphan-connector defect is only possible if the rail can wrap: a
+    // connector travels with the step that follows it, so the first step on
+    // any row after the first would open with a line coming from nowhere. CSS
+    // cannot tell a flex item that it starts a visual row, so the rail does
+    // not wrap at all. This is the class-level half; the layout half is
+    // e2e/ai-connect-stepper.spec.ts, which measures the rendered rows at
+    // 390px, because no jsdom assertion can see a wrap.
+    const rail = screen.getByTestId("step-rail");
+    expect(rail.className).toContain("flex-nowrap");
+    expect(rail.className).not.toContain("flex-wrap");
+    // And it stays reachable when it does not fit, rather than clipping.
+    expect(rail.className).toContain("overflow-x-auto");
+  });
+});
+
+describe("a blocked step never renders as the current one", () => {
+  // A RAIL MUST NOT PRESENT A STEP AS IN HAND WHILE ITS ACTION IS REFUSED.
+  // While site scope is unresolved the rail correctly points at step 3, so the
+  // POSITIONAL "is this the current step" answer is true -- and the ring used
+  // to render off that boolean, telling the operator step 3 was in hand while
+  // the mint button was refusing it. Every visual now reads the state value
+  // and nothing else.
+
+  async function reachBlockedSiteScopeOnTokenPath() {
+    renderWizard();
+    await pickClient("Claude Code");
+    fireEvent.click(authCard("token"));
+    await screen.findByTestId("site-step-count");
+    const siteStep = document.querySelector('[data-step-n="3"]');
+    if (!(siteStep instanceof HTMLElement)) throw new Error("no step 3 segment");
+    return siteStep;
+  }
+
+  it("gives the ring to no step at all while site scope is unselected", async () => {
+    const siteStep = await reachBlockedSiteScopeOnTokenPath();
+    // The rail points here: this IS where the operator is standing.
+    expect(siteStep).toHaveAttribute("data-step-state", "unselected");
+    expect(siteStep).toHaveAttribute("aria-current", "step");
+
+    // And it is drawn as blocked, not as current: no ring, no fill.
+    const circle = screen.getByTestId("step-circle-3");
+    expect(circle.className).not.toContain("border-2");
+    expect(circle.className).not.toContain("bg-[var(--color-primary)]");
+
+    // No OTHER segment picked up the ring either -- the styling did not move
+    // to a step further along and call that step current instead.
+    expect(document.querySelectorAll('[data-step-state="current"]')).toHaveLength(0);
+    for (const n of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) {
+      expect(screen.getByTestId(`step-circle-${n}`).className).not.toContain("border-2");
+    }
+  });
+
+  it("gives the ring to no step while the fleet read is still loading", async () => {
+    mockedSites.mockReturnValue(mockQueryResult<Site[]>({ data: undefined, isPending: true }));
+    renderWizard();
+    await pickClient("Claude Code");
+    fireEvent.click(authCard("token"));
+    await screen.findByTestId("site-step-count");
+
+    const siteStep = document.querySelector('[data-step-n="3"]');
+    expect(siteStep).toHaveAttribute("data-step-state", "loading");
+    expect(siteStep).toHaveAttribute("aria-current", "step");
+    expect(screen.getByTestId("step-circle-3").className).not.toContain("border-2");
+    expect(document.querySelectorAll('[data-step-state="current"]')).toHaveLength(0);
+  });
+});
+
+describe("the heading a section renders is the canonical one", () => {
+  // `heading` on the spec entry was canonical and `title` on the
+  // Section was what actually rendered, so a step's name was written twice
+  // with nothing making the two agree. The expected strings below are the
+  // deck's own frame titles, written out here rather than imported, so this
+  // test reddens on drift from the DECK and not merely on drift within the
+  // file.
+  it("renders the deck's frame title over every section it reveals", async () => {
+    renderWizard();
+    await pickClient("Claude Code");
+    fireEvent.click(authCard("token"));
+    await screen.findByTestId("site-step-count");
+
+    const headings = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
+    expect(headings).toEqual([
+      // The single declared narrowing, and the only one: this section picks
+      // the client and does not yet ask for the name step 2's frame title
+      // promises, so it says what it does.
+      "2. Pick your client",
+      "5. Choose how it authenticates",
+      "3. Choose which sites",
+      "4. Choose what it may do",
+      "6. Get the setup artefact",
+    ]);
+  });
+});
+
+describe("exactly one segment answers for the operator's position", () => {
+  /**
+   * The count of segments claiming to be current. A COUNT and not a presence
+   * check: a rail with two current steps still has "a" current step, so
+   * `getByRole`-style presence passes over the very defect this asserts
+   * against.
+   */
+  function currentCount(): number {
+    return document.querySelectorAll('[data-step-n][aria-current="step"]').length;
+  }
+
+  it("keeps one current segment when site scope AND capabilities are both blocked", async () => {
+    renderWizard();
+    await pickClient("Claude Code");
+    fireEvent.click(authCard("token"));
+    await screen.findByTestId("site-step-count");
+
+    // BOTH BLOCKING AT ONCE. Nothing is selected under 'list' mode (the
+    // wizard's opening state, deliberately empty), and now no capability is
+    // ticked either, so `siteScopeBlocking` and `capabilityBlocking` are both
+    // true. Each used to promote its own segment, giving the rail two
+    // positions and handing the scroll ref to the later one.
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Sites/i }));
+    expect(screen.getByRole("checkbox", { name: /^Sites/i })).not.toBeChecked();
+
+    // Both steps still report their own blocked reason -- a reason is not a
+    // claim on the operator's position, and each is worth showing.
+    expect(document.querySelector('[data-step-n="3"]')).toHaveAttribute(
+      "data-step-state",
+      "unselected",
+    );
+    expect(document.querySelector('[data-step-n="4"]')).toHaveAttribute(
+      "data-step-state",
+      "unselected",
+    );
+
+    // ONE position, and it is the earlier blocked step.
+    expect(currentCount()).toBe(1);
+    const current = document.querySelector('[data-step-n][aria-current="step"]');
+    expect(current).toHaveAttribute("data-step-n", "3");
+  });
+
+  it("keeps one current segment in every state this wizard can reach", async () => {
+    // The invariant, not one scenario of it: at no point in the walk from an
+    // empty screen to a fully answered token path does the rail hold two
+    // positions.
+    loadedFleet(3);
+    renderWizard();
+    await screen.findByRole("button", { name: /claude code/i });
+    expect(currentCount()).toBe(1);
+
+    await pickClient("Claude Code");
+    expect(currentCount()).toBe(1);
+
+    fireEvent.click(authCard("token"));
+    await screen.findByTestId("site-step-count");
+    expect(currentCount()).toBe(1);
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Sites/i }));
+    expect(currentCount()).toBe(1);
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Sites/i }));
+    expect(currentCount()).toBe(1);
+  });
+
+  it("numbers every specified step exactly once, which is what makes one current possible", async () => {
+    // The premise the invariant above rests on. `aria-current` is placed by
+    // comparing a segment's specified number against one number; that yields
+    // at most one match only while the specified numbers are unique. If a
+    // duplicate `n` were ever added to SPEC_STEPS, two segments could match
+    // again -- so the uniqueness is asserted rather than assumed.
+    renderWizard();
+    await screen.findByRole("button", { name: /claude code/i });
+
+    const ns = Array.from(document.querySelectorAll<HTMLElement>("[data-step-n]")).map(
+      (s) => s.dataset.stepN,
+    );
+    expect(new Set(ns).size).toBe(ns.length);
   });
 });
