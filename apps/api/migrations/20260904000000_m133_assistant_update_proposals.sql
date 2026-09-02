@@ -110,9 +110,17 @@
 --   dispatched             A worker claimed the approved row and created the
 --                          update run. Terminal here; the run's own status
 --                          takes over from this point.
---   rejected               A human said no. Terminal.
+--   rejected               A human said no, and the row names which human.
+--                          Terminal. DECISION 9.
 --   expired                The window closed with no decision. Terminal, and
 --                          never approved. See DECISION 4.
+--
+-- "TERMINAL" ABOVE DESCRIBES THE WORKFLOW, NOT AN ENFORCED PROPERTY. The
+-- database has no transition guard: a CHECK sees only the finished row, so the
+-- previous state constrains nothing about the next one, and a row CAN be moved
+-- out of a state this list calls terminal. Section (6) says which moves remain
+-- reachable and why closing them was left to a later decision. Read this list
+-- as what the callers do, not as what the schema forbids.
 --
 -- ADR-061 requires 'approved, not yet dispatched' to be a committed state
 -- rather than a moment between two statements, and states why in its own words:
