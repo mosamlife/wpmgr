@@ -979,7 +979,7 @@ export function ConnectWizard({
                         setCapabilities([...preset.capabilities]);
                       }}
                       className={cn(
-                        "rounded-md border px-3 py-1.5 text-left text-xs transition-colors",
+                        "inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-left text-xs transition-colors",
                         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-ring)]",
                         mintInFlight && "cursor-not-allowed opacity-70",
                         active
@@ -987,6 +987,20 @@ export function ConnectWizard({
                           : "border-[var(--color-border)] text-[var(--color-muted-foreground)] hover:bg-[var(--color-accent)]",
                       )}
                     >
+                      {/* THE TICK IS WHAT ACTUALLY SAYS "CHOSEN", and it is
+                          here because border-and-fill alone did not. Pressing a
+                          preset leaves focus on that button, and the focus ring
+                          is close enough to the selected border that a
+                          just-diverged preset went on LOOKING selected next to
+                          a freshly appeared Custom -- aria-pressed said false
+                          and the picture said otherwise. Found by opening the
+                          screenshot; the e2e assertion on aria-pressed passed
+                          throughout. A glyph that only the active branch
+                          renders cannot be imitated by a focus style.
+                          ClientCard already marks selection this way. */}
+                      {active ? (
+                        <Check aria-hidden="true" className="size-3.5 text-[var(--color-primary)]" />
+                      ) : null}
                       {preset.label}
                     </button>
                   );

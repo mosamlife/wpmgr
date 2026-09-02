@@ -90,6 +90,27 @@ function shotPath(name: string): string {
     : `test-results/${name}.png`;
 }
 
+
+/** Walk to the capability step, which is where the presets live. */
+async function walkToCapabilities(page: Page) {
+  await page.goto("/ai/connect");
+  await expect(page.getByTestId("step-rail")).toBeVisible();
+  await page.getByRole("button", { name: /^Continue$/ }).click();
+  await page.getByRole("button", { name: /claude code/i }).click();
+  await page.getByRole("button", { name: /^Continue$/ }).click();
+  await page.getByRole("radio", { name: /all sites/i }).click();
+  await page.getByRole("button", { name: /^Continue$/ }).click();
+  await expect(page.getByRole("heading", { name: /^4\. Choose what it may do$/ })).toBeVisible();
+}
+
+/** Put the rail and the step in frame before shooting -- see the note below. */
+async function frameForShot(page: Page) {
+  await page.locator("main").evaluate((el) => {
+    el.scrollTop = 0;
+  });
+  await expect(page.getByTestId("step-rail")).toBeInViewport();
+}
+
 test.describe("the connection wizard stepper", () => {
   test("keeps all ten steps on one row at a phone width, so no connector starts a row", async ({
     page,
@@ -296,4 +317,51 @@ test.describe("the connection wizard stepper", () => {
     await expect(page.getByTestId("step-rail")).toBeInViewport();
     await page.screenshot({ path: shotPath("wizard-notasked-oauth-1440"), fullPage: true });
   });
+
+  // ---------------------------------------------------------------------------
+  // THE PRESET LABEL, WHERE IT CAN BE SEEN TO AGREE OR DISAGREE WITH THE ROWS.
+  //
+  // "Custom" being correct in the DOM while looking identical on screen is the
+  // failure these captures exist to catch: a control that claims a preset over
+  // a diverged set is the defect, and a control that says Custom in a way
+  // nobody notices is the same defect wearing a passing test.
+  // ---------------------------------------------------------------------------
+
+  for (const width of [390, 1440]) {
+    test(`shows the preset, then Custom once a row diverges, at ${String(width)}px`, async ({
+      page,
+    }) => {
+      await mockApi(page);
+      await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
+      await walkToCapabilities(page);
+
+      await page.getByTestId("preset-read-everything").click();
+      await expect(page.getByTestId("preset-read-everything")).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+      await expect(page.getByTestId("preset-custom")).toHaveCount(0);
+      // THE GLYPH, NOT ONLY THE ATTRIBUTE. aria-pressed was already correct
+      // when this control looked wrong: pressing a preset leaves focus on it,
+      // and the focus ring imitated the selected border closely enough that a
+      // just-diverged preset went on looking chosen. A tick that only the
+      // active branch renders is the thing a focus style cannot fake, so it is
+      // what the capture asserts.
+      await expect(page.getByTestId("preset-read-everything").locator("svg")).toHaveCount(1);
+      await frameForShot(page);
+      await page.screenshot({ path: shotPath(`wizard-preset-${String(width)}`), fullPage: true });
+
+      // Untick one row. The claim must drop, and it must be visible that it did.
+      await page.getByRole("checkbox", { name: /^Uptime/i }).click();
+      await expect(page.getByTestId("preset-custom")).toBeVisible();
+      await expect(page.getByTestId("preset-read-everything")).toHaveAttribute(
+        "aria-pressed",
+        "false",
+      );
+      // And the tick is GONE, which is the half that was silently wrong.
+      await expect(page.getByTestId("preset-read-everything").locator("svg")).toHaveCount(0);
+      await frameForShot(page);
+      await page.screenshot({ path: shotPath(`wizard-custom-${String(width)}`), fullPage: true });
+    });
+  }
 });
