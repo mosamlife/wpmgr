@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { UseMutationResult } from "@tanstack/react-query";
 import { useBlocker } from "@tanstack/react-router";
 import { AlertTriangle, Check, ExternalLink, Lock } from "lucide-react";
@@ -869,6 +869,14 @@ function StepRail({
    */
   capabilityState: CapabilityReadiness;
 }) {
+  // THE OTHER HALF OF "ONE ROW THAT SCROLLS". Ten segments do not fit on a
+  // phone, so on a narrow screen the step the operator is actually on can sit
+  // off the right-hand edge -- a rail whose current step is invisible is no
+  // better than the paragraph this replaced. The current segment is scrolled
+  // into view whenever it changes. `scrollIntoView` is absent in jsdom, so the
+  // guard is what keeps the unit suite from throwing on a browser API it does
+  // not implement; `block: "nearest"` keeps this from scrolling the PAGE.
+  const currentSegment = useRef<HTMLLIElement | null>(null);
   const currentSpec = specStepFor(current);
   const currentPos = BUILT_ORDER.findIndex(([, spec]) => spec === currentSpec);
   const siteScopeBuiltPos = BUILT_ORDER.findIndex(([, spec]) => spec === SITE_SCOPE_SPEC_N);
@@ -902,6 +910,12 @@ function StepRail({
     : capabilityBlocking
       ? capabilityBuiltPos
       : currentPos;
+  useEffect(() => {
+    const el = currentSegment.current;
+    if (el !== null && typeof el.scrollIntoView === "function") {
+      el.scrollIntoView({ block: "nearest", inline: "center" });
+    }
+  }, [effectiveCurrentSpec]);
   return (
     <div className="space-y-2">
       {/* THE STEPPER, AS THE DECK DRAWS IT: numbered circles, connector lines,
@@ -970,7 +984,14 @@ function StepRail({
           // else.
           const style = RAIL_SEGMENT_STYLES[state];
           return (
-            <li key={s.n} className="flex items-center">
+            <li
+              key={s.n}
+              // The ref goes on whichever segment the rail is pointing at,
+              // blocked or not: the operator needs to see the step they are
+              // held on just as much as one they have finished.
+              ref={style.ariaCurrent ? currentSegment : undefined}
+              className="flex items-center"
+            >
               {i > 0 ? (
                 // THE CONNECTOR, AND THE DECK'S OWN BREAKPOINT. 44px wide
                 // above 640px, 16px below it, margins shrinking with it. `sm:`
