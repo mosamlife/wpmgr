@@ -891,6 +891,7 @@ export function ConnectWizard({
                 mint={mint}
                 revealed={reveal !== null}
                 onMinted={setReveal}
+                clientId={client.id}
                 clientName={client.name}
                 name={name}
                 scope={scope}
@@ -2000,6 +2001,7 @@ function TokenMintPanel({
   mint,
   revealed,
   onMinted,
+  clientId,
   clientName,
   name,
   scope,
@@ -2016,6 +2018,12 @@ function TokenMintPanel({
   /** A token is already on screen, rendered by the wizard above every step. */
   revealed: boolean;
   onMinted: (reveal: MintedReveal) => void;
+  /**
+   * The client table's `id`, which is what goes on the wire as `setup_client`.
+   * Held separately from `clientName` rather than derived from it: the server
+   * refuses anything but the slug shape, and "Claude Code" is not one.
+   */
+  clientId: string;
   clientName: string;
   name: string;
   scope: ResolvedSiteScope;
@@ -2102,6 +2110,7 @@ function TokenMintPanel({
               name: trimmedName,
               ...scopeRequest.scope,
               capabilities: capabilitiesRequest.capabilities,
+              setupClient: clientId,
             },
             // onMinted writes state the WIZARD owns, so this callback lands on
             // a mounted component whatever happened to this panel meanwhile.

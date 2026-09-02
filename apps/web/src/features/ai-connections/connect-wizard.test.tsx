@@ -1661,6 +1661,39 @@ describe("choosing what a token may do (step 4, token path only)", () => {
     expect(body.capabilities).not.toEqual([]);
   });
 
+  it("sends the client table's id as setup_client, not the display name", async () => {
+    // THE FIELD WAS NEVER SENT BY ANY CALLER, while the column, the m128 CHECK
+    // and validateSetupClient (mint.go:195) had all shipped. Step 9's
+    // verification names the client a connection was set up for, and it can
+    // only do that if the choice reached the server.
+    //
+    // ASSERTED ON THE SERIALIZED BODY, and on the ID rather than the name: the
+    // server holds this to `^[a-z0-9]+(-[a-z0-9]+)*$` and answers a 400 naming
+    // the field for anything else, so "Cursor" here would be a mint that fails
+    // at the end of a six-step walk.
+    loadedFleet(3);
+    let capturedBody: unknown = null;
+    stubMintFetch((init) => {
+      capturedBody = typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : null;
+      return jsonResponse(MINTED, 201);
+    });
+
+    fireEvent.click(await reachMintButton());
+    await screen.findByText(/this is the only time this token is shown/i);
+
+    const body = capturedBody as Record<string, unknown>;
+    expect(body.setup_client).toBe("cursor");
+    // Not the display name, and not an empty string. The empty string is the
+    // one present value the server refuses, so an omitted key is the only
+    // other shape this may ever take.
+    expect(body.setup_client).not.toBe("Cursor");
+    expect(body.setup_client).not.toBe("");
+    // And it matches the shape the server enforces, checked here rather than
+    // trusted, because the whole point of the id is that equality is
+    // trustworthy on the far side.
+    expect(String(body.setup_client)).toMatch(/^[a-z0-9]+(-[a-z0-9]+)*$/);
+  });
+
   it("sends every capability actually checked, not only the default", async () => {
     loadedFleet(3);
     let capturedBody: unknown = null;
@@ -1700,6 +1733,116 @@ describe("choosing what a token may do (step 4, token path only)", () => {
  * can carry a refusal (1, 2, 3 and 4 -- the setup artefact step never
  * refuses, see `stepGate`'s final branch).
  */
+/**
+ * NO SENTENCE APPEARS TWICE ON ONE FRAME.
+ *
+ * This is the SECOND duplicate-render defect on this component. The first was
+ * a step-4 refusal rendered by both the section and the nav; the second was the
+ * wizard framing sentence, carried word for word by the page subline AND by
+ * step 1, which shipped and was caught by opening a screenshot rather than by
+ * any test. Nothing here asserted that a sentence was ABSENT from a second
+ * place, so both were invisible to a fully green suite.
+ *
+ * WHY IT SCANS THE RENDERED TEXT RATHER THAN NAMING STRINGS. A test that
+ * asserted `getAllByText(X)).toHaveLength(1)` for a list of sentences someone
+ * wrote down only guards the sentences on that list, and the defect is always
+ * the sentence nobody thought to list. This collects the paragraphs the frame
+ * actually rendered and looks for repeats, so a sentence duplicated by a future
+ * edit reddens without anyone having predicted it.
+ */
+describe("no framing sentence renders twice on one frame", () => {
+  /** Every rendered sentence long enough to be prose rather than a label. */
+  function sentencesOnScreen(): string[] {
+    const out: string[] = [];
+    // EVERY LEAF ELEMENT, NOT A TAG WHITELIST. This was `p, li, h1, h2, h3`
+    // first, and that whitelist ALSO went green against the shipped duplicate:
+    // the page subline that carried the second copy renders in a `div`, so the
+    // scan never saw one of the two halves it was written to compare. Reading
+    // every element with no element children costs nothing and cannot be wrong
+    // about which tag someone will use next.
+    for (const el of Array.from(document.querySelectorAll("*"))) {
+      // A container concatenates its descendants' text and would never match a
+      // leaf, so only nodes that own their text are read.
+      if (el.children.length > 0) continue;
+      const text = (el.textContent ?? "").replace(/\s+/g, " ").trim();
+      for (const sentence of text.split(/(?<=\.)\s+/)) {
+        const trimmed = sentence.trim();
+        // A SENTENCE, NOT A LABEL, AND THE FLOOR IS 18 FOR A MEASURED REASON.
+        // It was 40 first, and at 40 this guard went green against the very
+        // duplicate it was written for: the shipped pair was "Nothing is
+        // created yet." (24) and "This is a wizard, not a draft row." (34),
+        // both under the floor. A guard that cannot see the defect it was
+        // built for tests nothing, so the floor is set below the shortest
+        // half of that pair and above the longest legitimate repeat -- the
+        // rail's own labels, of which "Capabilities" is the longest at 12.
+        if (trimmed.length < 18) continue;
+        // AND IT ENDS IN A FULL STOP, which is what separates prose from a
+        // repeated per-item annotation. The rail draws "(not yet available)"
+        // once per unbuilt step -- four correct, identical labels on one frame
+        // -- and the first version of this guard reddened on them. A guard that
+        // reddens correct work gets switched off, so it asks for a sentence.
+        if (!trimmed.endsWith(".")) continue;
+        out.push(trimmed);
+      }
+    }
+    return out;
+  }
+
+  function duplicates(): string[] {
+    const seen = new Map<string, number>();
+    for (const sentence of sentencesOnScreen()) {
+      seen.set(sentence, (seen.get(sentence) ?? 0) + 1);
+    }
+    return [...seen.entries()].filter(([, n]) => n > 1).map(([text]) => text);
+  }
+
+  it("says nothing twice on the contract step, where the duplicate shipped", async () => {
+    loadedFleet(3);
+    renderWizard();
+    await screen.findByTestId("connection-contract");
+
+    // THE PROOF THIS IS NOT VACUOUS. If the scan found no prose at all it would
+    // report no duplicates and pass over anything, which is this project's
+    // signature defect: a check that goes green on missing input.
+    expect(sentencesOnScreen().length).toBeGreaterThan(3);
+    expect(duplicates()).toEqual([]);
+  });
+
+  it("says nothing twice on any step of a token walk", async () => {
+    loadedFleet(3);
+    renderWizard();
+    await screen.findByTestId("connection-contract");
+
+    const check = () => {
+      expect(sentencesOnScreen().length).toBeGreaterThan(2);
+      expect(duplicates()).toEqual([]);
+    };
+
+    check();
+    goNext();
+    check();
+    await pickClientOnly("Cursor");
+    goNext();
+
+    await screen.findByTestId("site-step-count");
+    check();
+    chooseAllSites();
+    goNext();
+
+    await screen.findByRole("heading", { name: /^4\. Choose what it may do$/ });
+    check();
+    goNext();
+
+    await screen.findByRole("heading", { name: /^5\. Choose how it authenticates$/ });
+    check();
+    fireEvent.click(authCard("token"));
+    goNext();
+
+    await screen.findByRole("button", { name: /generate connection token/i });
+    check();
+  });
+});
+
 describe("a blocked step's refusal renders exactly once, never twice", () => {
   it("step 1 -- no client chosen", async () => {
     renderWizard();

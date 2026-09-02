@@ -261,6 +261,29 @@ export interface MintConnectionInput {
    * empty array reach this function.
    */
   readonly capabilities: readonly string[];
+  /**
+   * The operator's step 2 client choice, wire key `setup_client`
+   * (dto.go:324, a `*string`).
+   *
+   * THIS IS THE CLIENT TABLE'S `id`, NOT ITS DISPLAY NAME. The server holds it
+   * to the shape `^[a-z0-9]+(-[a-z0-9]+)*$` (mint.go:180, mirroring the m128
+   * CHECK) and refuses a present-but-malformed value with a 400 naming the
+   * field rather than repairing it -- no trimming, no lowercasing. Sending
+   * `client.name` would put "Claude Code" on the wire and earn exactly that
+   * 400, so every caller sends `client.id`.
+   *
+   * OMITTED IS A REAL ANSWER AND IS NOT THE SAME AS "". Leaving this undefined
+   * omits the key, which the server reads as "the caller never asked" and
+   * always accepts. The empty string is a caller that sent the key and put
+   * nothing in it, which it refuses; the mint body below therefore omits the
+   * key rather than ever writing an empty one.
+   *
+   * WHAT DEPENDS ON IT, so it is not dropped again as cosmetic: step 9's
+   * verification names the client this connection was set up for, and the
+   * server can only do that if the choice was sent. No caller sent it until
+   * now, while the column, the CHECK and the validator had all shipped.
+   */
+  readonly setupClient?: string;
 }
 
 /**
@@ -333,6 +356,12 @@ export function useMintConnection(): UseMutationResult<
           // whatever the caller resolved, and the caller's contract is to have
           // already refused to reach this call with zero entries.
           capabilities: [...input.capabilities],
+          // THE KEY IS OMITTED, NEVER SENT EMPTY. validateSetupClient
+          // (mint.go:195) accepts a missing key and refuses "" with a 400, so
+          // a spread is the only correct shape here: writing
+          // `setup_client: input.setupClient ?? ""` would turn "the caller did
+          // not choose" into a malformed claim the server rejects.
+          ...(input.setupClient === undefined ? {} : { setup_client: input.setupClient }),
         }),
       });
       if (!res.ok) throw await readHouseError(res);
