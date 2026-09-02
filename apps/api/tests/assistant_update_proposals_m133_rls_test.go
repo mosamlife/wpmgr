@@ -124,6 +124,40 @@ func m133ExpectRefused(t *testing.T, tx pgx.Tx, sql string, args ...any) error {
 	return execErr
 }
 
+// m133ExpectNoRows runs a statement that RLS must refuse by admitting no rows,
+// inside a savepoint, and returns how many rows it touched.
+//
+// THIS IS A DIFFERENT SHAPE FROM m133ExpectRefused AND THE DIFFERENCE MATTERS.
+// A privilege refusal (42501) and a CHECK violation (23514) raise an error, so
+// m133ExpectRefused asserts on the error. An RLS policy refusing an UPDATE or a
+// DELETE raises NOTHING: PostgreSQL applies the policy as a row filter, the
+// statement succeeds, and it matches ZERO ROWS. Only INSERT is loud, because a
+// WITH CHECK violation has no row to filter and raises instead.
+//
+// So a test that asserts "this errored" against an RLS-refused UPDATE fails on
+// a correctly-narrowed policy and passes on a missing one -- backwards in the
+// direction that costs a tenant boundary. That silence is exactly the m84/#96
+// failure .claude/rules/go-control-plane.md is about, and the first draft of
+// TestAgentContextCanScanButCannotDecideAsAppRole made the mistake it exists to
+// catch: it reported the FOR SELECT policy as FOR ALL because the refusal was
+// quiet.
+func m133ExpectNoRows(t *testing.T, tx pgx.Tx, sql string, args ...any) (int64, error) {
+	t.Helper()
+	ctx := context.Background()
+	sp, err := tx.Begin(ctx)
+	if err != nil {
+		t.Fatalf("open savepoint: %v", err)
+	}
+	tag, execErr := sp.Exec(ctx, sql, args...)
+	if rbErr := sp.Rollback(ctx); rbErr != nil && execErr == nil {
+		t.Fatalf("release savepoint: %v", rbErr)
+	}
+	if execErr != nil {
+		return 0, execErr
+	}
+	return tag.RowsAffected(), nil
+}
+
 // m133CountVisible counts how many times a specific proposal id is visible from
 // inside the transaction it is handed. Returns a count rather than a boolean so
 // a failure message can say "saw it N times" instead of "saw it".
@@ -807,6 +841,11 @@ func m133DropForMutation(t *testing.T, admin *db.Pool, stmt string) {
 //
 // restores the FOR ALL form this test exists to forbid and makes the second
 // fail with "the agent context decided a proposal".
+//
+// THE WRITE ASSERTIONS CHECK ROWS TOUCHED, NOT ERRORS, and that is not a style
+// choice -- see m133ExpectNoRows. An RLS-refused UPDATE is silent. The first
+// draft of this test asserted on an error and reported this correctly-narrowed
+// policy as FOR ALL, which is the same silence, one level up.
 func TestAgentContextCanScanButCannotDecideAsAppRole(t *testing.T) {
 	ctx := context.Background()
 	pool := startPostgres(t)
@@ -851,43 +890,50 @@ func TestAgentContextCanScanButCannotDecideAsAppRole(t *testing.T) {
 
 		// THE NEGATIVE HALF. The decision itself must be out of reach. This is
 		// the exact statement a compromised or buggy agent-request path would
-		// issue, and DECISION 8's guarantee depends on it failing.
-		decided := m133ExpectRefused(t, tx, `
+		// issue, and DECISION 8's guarantee depends on it not landing.
+		//
+		// ASSERTED ON ROWS TOUCHED, NOT ON AN ERROR. An RLS policy refusing an
+		// UPDATE raises nothing at all; it filters the row away and the
+		// statement succeeds against zero rows. See m133ExpectNoRows.
+		decided, err := m133ExpectNoRows(t, tx, `
 			UPDATE assistant_update_proposals
 			   SET state = 'approved_undispatched', decided_at = now(),
 			       decided_by_user_id = $2
 			 WHERE id = $1`, pending, impostor)
-		if decided == nil {
+		if err != nil {
+			// Louder than silence and still a refusal, but it must not be a
+			// CHECK catching this particular statement by luck -- that would
+			// leave the policy itself untested.
+			if strings.Contains(err.Error(), "approval_names_a_human") ||
+				strings.Contains(err.Error(), "consent_within_window") {
+				t.Fatalf("the agent write was stopped by a CHECK constraint rather than "+
+					"by the absence of a write policy, so this proof does not test the "+
+					"policy at all: %v", err)
+			}
+			t.Logf("the agent decision attempt errored rather than matching zero rows, "+
+				"which is the louder of the two refusals: %v", err)
+		} else if decided != 0 {
 			t.Fatalf("THE AGENT CONTEXT DECIDED A PROPOSAL: proposal %s was moved to "+
-				"'approved_undispatched' under app.agent, naming %s as the approver. "+
-				"assistant_update_proposals_agent is FOR ALL rather than FOR SELECT. "+
-				"app.agent is the scope an authenticated agent->CP request runs under, "+
-				"so this is a machine approving a change to a live site -- the one "+
-				"thing ADR-061 and DECISION 8 exist to make unrepresentable.",
-				pending, impostor)
+				"'approved_undispatched' under app.agent, naming %s as the approver, "+
+				"touching %d row(s). assistant_update_proposals_agent is FOR ALL rather "+
+				"than FOR SELECT. app.agent is the scope an authenticated agent->CP "+
+				"request runs under, so this is a machine approving a change to a live "+
+				"site -- the one thing ADR-061 and DECISION 8 exist to make "+
+				"unrepresentable.", pending, impostor, decided)
 		}
 
-		// It must fail because no policy admits the write, not because some
-		// constraint happened to catch this particular statement. A row-level
-		// refusal here is PostgreSQL finding no applicable policy.
-		if strings.Contains(decided.Error(), "approval_names_a_human") ||
-			strings.Contains(decided.Error(), "consent_within_window") {
-			t.Fatalf("the agent write was refused by a CHECK constraint rather than by "+
-				"the absence of a write policy, so this proof does not test the policy: %v",
-				decided)
-		}
-
-		// The same must hold for the ordinary worker writes, which have to go
-		// through InTenantTx instead. If either of these were admitted here the
-		// policy would be FOR ALL in all but name.
-		dispatchWrite := m133ExpectRefused(t, tx, `
+		// The same must hold for the sweep's own write, which has to go through
+		// InTenantTx instead. If this were admitted here the policy would be
+		// FOR ALL in all but name.
+		swept, err := m133ExpectNoRows(t, tx, `
 			UPDATE assistant_update_proposals
 			   SET state = 'expired'
 			 WHERE id = $1 AND state = 'pending'`, pending)
-		if dispatchWrite == nil {
+		if err == nil && swept != 0 {
 			t.Fatalf("THE AGENT CONTEXT EXPIRED A PROPOSAL: the sweep's own write was "+
-				"admitted under app.agent. It must run under InTenantTx, where "+
-				"tenant_isolation admits it and the tenant is named.")
+				"admitted under app.agent, touching %d row(s). It must run under "+
+				"InTenantTx, where tenant_isolation admits it and the tenant is named. "+
+				"See (7)(g).", swept)
 		}
 
 		// THE TRAP, DEMONSTRATED ON PURPOSE. .claude/rules/go-control-plane.md
