@@ -174,7 +174,7 @@ describe("EffectiveContextPreview — a truncated layer never reads as the compl
     expect(screen.getByText("shell_exec")).toBeInTheDocument();
     // The gap between those two is exactly what the callout must surface.
     expect(
-      screen.getByText(/this layer's own list may be shorter than what's enforced/i),
+      screen.getByText(/this layer's own list may be shorter than the full union/i),
     ).toBeInTheDocument();
   });
 
@@ -188,8 +188,45 @@ describe("EffectiveContextPreview — a truncated layer never reads as the compl
     // "not next to layer 6" — layers 4-6 never set restrictions, so there is
     // nothing for the callout to be honest about on this fixture.
     expect(
-      screen.queryByText(/this layer's own list may be shorter than what's enforced/i),
+      screen.queryByText(/this layer's own list may be shorter than the full union/i),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("EffectiveContextPreview — the restrictions panel never claims server-side enforcement", () => {
+  // Security review finding: `grep -rn "Restrictions\|ForbiddenTools"
+  // apps/api/internal/mcp/` returns exactly one hit, in govcontext_test.go —
+  // nothing on the tools/call dispatch path consults the restriction set. It
+  // is joined into the tool-result text the model reads and nothing more, so
+  // a model that disregards it still gets the call served. This screen used
+  // to tell the operator the opposite ("enforced at dispatch", "what
+  // actually blocks a tool call"), which is a false claim about a security
+  // control. This test locks in the honest replacement: the panel names what
+  // the set actually is (a deny-list stated to the model) and says plainly
+  // that a disobedient model still gets through.
+  it("never claims the restriction set is enforced or blocks the call, and says a disregarding model still invokes the tool", () => {
+    mockData(buildEffective());
+    renderWithProviders(<EffectiveContextPreview siteId="site-1" />);
+
+    // Regression proof: reinstating the old heading/body text turns this
+    // whole block red; see the PR description for the paste of that run.
+    expect(screen.queryByText(/enforced at dispatch/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/what actually blocks a tool call/i)).not.toBeInTheDocument();
+
+    // The panel still says what it is — a real, useful feature — and is
+    // explicit that a model which ignores it still gets the call served.
+    expect(
+      screen.getByText(/resolved restrictions for this site/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/a model that disregards it can still invoke the tool/i),
+    ).toBeInTheDocument();
+
+    // The byte-budget claim is real (see resolver_test.go's
+    // TestResolve_RestrictionsUnionIsNeverTruncated) and must survive.
+    expect(
+      screen.getByText(/never shortened by the byte budget below/i),
+    ).toBeInTheDocument();
   });
 });
 
@@ -241,5 +278,95 @@ describe("EffectiveContextPreview — layer 4 'unavailable' is never rendered as
     expect(screen.getByText("6.7")).toBeInTheDocument();
     expect(screen.getByText("twentytwentyfive")).toBeInTheDocument();
     expect(screen.queryByText(/could not be loaded for this site/i)).not.toBeInTheDocument();
+  });
+});
+
+describe("EffectiveContextPreview — the union panel never claims this site's own layer 3 reaches the model", () => {
+  // Third false claim on this screen. The preview's union (layers 1-3)
+  // genuinely includes this site's own layer-3 restrictions — it calls the
+  // same Resolve() a live tool call would, just with the site's real id
+  // (govcontext/service.go's GetEffectiveContext). A live tool call,
+  // though, resolves organisation scope only:
+  // apps/api/internal/mcp/govcontext.go's operatorContext calls
+  // Resolve(ctx, tenantID, uuid.Nil, nil) — uuid.Nil is org scope, and at
+  // org scope resolver.go's LatestSiteSnapshot never matches a site row, so
+  // layer 3 never contributes. This screen used to say the full union
+  // (including layer 3) was "stated to the model" — true of layers 1-2,
+  // false of layer 3. This test locks in the honest split: the union panel
+  // never claims full-union delivery, and the site-override layer card says
+  // plainly that its own content is not part of what a live call resolves.
+  function buildSiteOverrideFixture(): GovContextEffective {
+    const base = buildEffective();
+    const layers = base.layers.map((l) =>
+      l.layer === 3
+        ? { ...l, restrictions: { forbidden_tools: ["site_only_tool"] } }
+        : l,
+    );
+    return {
+      ...base,
+      layers,
+      restrictions: { forbidden_tools: ["site_only_tool"] },
+    };
+  }
+
+  it("never claims the full layers-1-3 union is what the model is told, and says layer 3 does not reach a live call", () => {
+    mockData(buildSiteOverrideFixture());
+    renderWithProviders(<EffectiveContextPreview siteId="site-1" />);
+
+    // The false claim this finding reports: the union heading/body must
+    // never assert that the union (as opposed to org scope alone) is what
+    // the model is told.
+    expect(
+      screen.queryByText(/restrictions stated to the model \(union of layers 1-3\)/i),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/this is a standing deny-list added to what the model is told/i),
+    ).not.toBeInTheDocument();
+
+    // What replaces it: the union is named for what it is (resolved, not
+    // delivered), and the org-scope-only fact is stated plainly.
+    expect(
+      screen.getByText(/resolved restrictions for this site \(union of layers 1-3\)/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/a live tool call resolves organisation-scope context only/i),
+    ).toBeInTheDocument();
+
+    // The site-override layer (3) is still shown with its real content...
+    // (it legitimately appears twice: once in the top union list, once in
+    // layer 3's own list, hence getAllByText rather than getByText).
+    expect(screen.getAllByText("site_only_tool").length).toBeGreaterThan(0);
+    // ...but its own card says it is not part of what a live call resolves.
+    // Non-vacuous: "organisation-scope" is named twice on screen (the top
+    // panel and layer 3's own callout), not once and not zero times.
+    const orgScopeMentions = screen.getAllByText(/organisation-scope/i);
+    expect(orgScopeMentions.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("says nothing about live-call scope on the organisation-default layer (2), only on the site-override layer (3)", () => {
+    mockData(buildSiteOverrideFixture());
+    renderWithProviders(<EffectiveContextPreview siteId="site-1" />);
+
+    const layer2Card = screen.getByRole("heading", {
+      level: 4,
+      name: /Layer 2 — organisation default/,
+    }).closest("div.space-y-3");
+    const layer3Card = screen.getByRole("heading", {
+      level: 4,
+      name: /Layer 3 — site override/,
+    }).closest("div.space-y-3");
+    expect(layer2Card).not.toBeNull();
+    expect(layer3Card).not.toBeNull();
+
+    expect(
+      layer2Card && Array.from(layer2Card.querySelectorAll("p")).some((p) =>
+        /not part of what a live tool call resolves/i.test(p.textContent ?? ""),
+      ),
+    ).toBe(false);
+    expect(
+      layer3Card && Array.from(layer3Card.querySelectorAll("p")).some((p) =>
+        /not part of what a live tool call resolves/i.test(p.textContent ?? ""),
+      ),
+    ).toBe(true);
   });
 });
