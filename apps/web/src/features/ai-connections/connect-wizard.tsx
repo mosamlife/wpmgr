@@ -167,6 +167,42 @@ function walkFor(method: AuthMethod | null): readonly [Step, number][] {
  */
 type SpecStepAvailability = "built" | "not-applicable" | "not-built";
 
+/**
+ * Where the operator actually stands: the position they asked for, clamped to
+ * the first step in the walk whose gate refuses.
+ *
+ * THE CLAMP IS WHAT MAKES THE RAIL'S INVARIANT STRUCTURAL. The first blocked
+ * step is a wall: an operator may stand on it and never past it, so every
+ * position before the cursor is settled by construction, and "never shows a
+ * step complete while the action it gates is blocked" needs no second
+ * condition anywhere else to hold.
+ *
+ * IT IS EXPORTED, AND TESTED DIRECTLY, BECAUSE ITS SHARPEST CASE CANNOT BE
+ * REACHED THROUGH THE DOM. Requesting a position PAST the wall needs an answer
+ * to go bad behind the operator -- the fleet query refetching into a failure
+ * while they stand on the setup step, which is what a window focus or a
+ * reconnect does in production. Nothing in a mounted test can make the route
+ * re-read a mocked hook without the operator navigating, and navigating is
+ * exactly what resets the request. Removing the clamp therefore leaves every
+ * rendered test green, which would make it look like dead code and invite its
+ * deletion. The unit tests beside this function are what actually hold it.
+ *
+ * A requested step that is not in the walk at all (-1) means the path changed
+ * under it: the operator was on the capability picker and went back to choose
+ * browser sign-in, which does not ask that step. Falling back to the wall
+ * rather than to the start keeps every answer they have already given.
+ */
+export function resolveCursorPos(
+  walk: readonly [Step, number][],
+  gates: readonly StepGate[],
+  requestedStep: Step,
+): number {
+  const firstBlocked = gates.findIndex((g) => g.refusal !== null);
+  const maxPos = firstBlocked === -1 ? walk.length - 1 : firstBlocked;
+  const requestedPos = walk.findIndex(([local]) => local === requestedStep);
+  return Math.min(requestedPos === -1 ? maxPos : requestedPos, maxPos);
+}
+
 interface SpecStepDef {
   /** The specified step number (design S29), 1 through 10. */
   readonly n: number;
@@ -387,20 +423,7 @@ export function ConnectWizard({
   const walk = walkFor(method);
   const gates: readonly StepGate[] = walk.map(([local]) => stepGate(local, gateContext));
 
-  // THE FURTHEST POSITION THE ANSWERS SUPPORT. The first blocked step in the
-  // walk is a wall: an operator may stand on it, never past it. This is what
-  // makes "the rail never shows a step complete or current while the action it
-  // gates is blocked" STRUCTURAL rather than a rule the rail has to remember.
-  // An answer that goes bad behind them -- a fleet refetch that fails while
-  // they are on step 6 -- pulls them back to it, which is the honest outcome:
-  // the mint they were about to press would have been refused.
-  const firstBlocked = gates.findIndex((g) => g.refusal !== null);
-  const maxPos = firstBlocked === -1 ? walk.length - 1 : firstBlocked;
-  const requestedPos = walk.findIndex(([local]) => local === requestedStep);
-  // -1 means the operator's requested step is not on this path at all: they
-  // were on the capability picker and went back to change the method to OAuth.
-  // Falling back to the wall rather than to 0 keeps the answers they gave.
-  const cursorPos = Math.min(requestedPos === -1 ? maxPos : requestedPos, maxPos);
+  const cursorPos = resolveCursorPos(walk, gates, requestedStep);
   const currentLocal: Step = walk[cursorPos]![0];
   const currentGate: StepGate = gates[cursorPos]!;
   const isLastBuiltStep = cursorPos === walk.length - 1;

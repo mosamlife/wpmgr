@@ -14,6 +14,7 @@ import { formatAbsolute } from "@/features/updates/schedule";
 import { mockQueryResult } from "@/test/query-mocks";
 
 import { Route } from "@/routes/_authed/ai/connect";
+import { resolveCursorPos } from "./connect-wizard";
 import { authKeys } from "@/features/auth/use-auth";
 import { CLIENT_TABLE_VERIFIED_AT, MCP_CLIENTS } from "./client-table";
 import { useSites, DEFAULT_SITES_LIMIT } from "@/features/sites/use-sites";
@@ -2170,5 +2171,84 @@ describe("minting a connection token", () => {
     expect(await screen.findByText(/too many connection tokens minted recently/i)).toBeInTheDocument();
     expect(screen.getByText(/wait about 42 seconds/i)).toBeInTheDocument();
     expect(screen.queryByText(/organisation-wide credential/i)).not.toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The cursor clamp, tested directly.
+//
+// Its sharpest case -- a position requested PAST the first blocked step -- is
+// not reachable through the rendered wizard: it needs an answer to go bad
+// behind the operator while they stand further on, which in production is the
+// fleet query refetching into a failure on a window focus or a reconnect, and
+// which no mounted test can produce without navigating (and navigating is what
+// resets the request). Removing the clamp leaves every rendered test in this
+// file green. These are the tests that actually hold it.
+// ---------------------------------------------------------------------------
+
+describe("the cursor is clamped to the first step the answers do not support", () => {
+  const settled = { readiness: "resolved", refusal: null } as const;
+  const refused = { readiness: "unselected", refusal: "pick something" } as const;
+  /** The token walk: client, method, sites, capabilities, setup. */
+  const walk = [
+    [1, 2],
+    [2, 5],
+    [3, 3],
+    [4, 4],
+    [5, 6],
+  ] as [1 | 2 | 3 | 4 | 5, number][];
+
+  it("gives the operator the position they asked for when everything before it is settled", () => {
+    const gates = [settled, settled, settled, settled, settled];
+    expect(resolveCursorPos(walk, gates, 5)).toBe(4);
+    expect(resolveCursorPos(walk, gates, 3)).toBe(2);
+    expect(resolveCursorPos(walk, gates, 1)).toBe(0);
+  });
+
+  it("holds them AT a blocked step they are standing on", () => {
+    const gates = [settled, settled, refused, settled, settled];
+    expect(resolveCursorPos(walk, gates, 3)).toBe(2);
+  });
+
+  it("pulls them BACK when a step behind them stops being answered", () => {
+    // THE CASE THE RENDERED TESTS CANNOT REACH. The operator legitimately
+    // walked to the setup step, and then the read behind site scope failed.
+    // The mint they were about to press would now be refused, so leaving them
+    // standing on it -- with every step before it marked complete -- would be
+    // the rail asserting a readiness the button does not have.
+    const gates = [settled, settled, refused, settled, settled];
+    expect(resolveCursorPos(walk, gates, 5)).toBe(2);
+    expect(resolveCursorPos(walk, gates, 4)).toBe(2);
+  });
+
+  it("reports the EARLIEST blocked step when more than one refuses", () => {
+    // An operator who has answered neither is working on the earlier one.
+    // Naming the later would tell them they are stuck on a step they have not
+    // been let reach in any meaningful sense.
+    const gates = [settled, settled, refused, refused, settled];
+    expect(resolveCursorPos(walk, gates, 5)).toBe(2);
+  });
+
+  it("falls back to the wall, not to the start, when the path no longer asks the requested step", () => {
+    // The OAuth walk does not include the capability picker. An operator who
+    // was on it and went back to choose browser sign-in keeps every answer
+    // they gave rather than being sent to the beginning.
+    const oauthWalk = [
+      [1, 2],
+      [2, 5],
+      [3, 3],
+      [5, 6],
+    ] as [1 | 2 | 3 | 4 | 5, number][];
+    expect(resolveCursorPos(oauthWalk, [settled, settled, settled, settled], 4)).toBe(3);
+    expect(resolveCursorPos(oauthWalk, [settled, settled, refused, settled], 4)).toBe(2);
+  });
+
+  it("never returns a position outside the walk", () => {
+    const gates = [settled, settled, settled, settled, settled];
+    for (const requested of [1, 2, 3, 4, 5] as const) {
+      const pos = resolveCursorPos(walk, gates, requested);
+      expect(pos).toBeGreaterThanOrEqual(0);
+      expect(pos).toBeLessThan(walk.length);
+    }
   });
 });
