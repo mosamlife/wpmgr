@@ -288,6 +288,30 @@ check-mcp-containment: ## Check no MCP handler can pass a request site id round 
 check-mcp-containment-test: ## Run the MCP site-containment guard's regression suite (hermetic)
 	scripts/check-mcp-site-containment_test.sh
 
+# scripts/check-assistant-ship-gate.sh scores ADR-061's nine-item pre-ship gate
+# -- the section headed "What has to exist before v1 ships." Until this existed
+# that gate had never been evaluated once, while the surface it gates was live
+# in production. It needs no toolchain, no database and no network, so it runs
+# on a developer machine in under a second.
+#
+# EXPECT IT TO FAIL. Most of the nine are open, which is the finding and not a
+# defect in the guard. Each unmet line names the specific thing that closes it.
+# Items are labelled by kind: [code] was verified against the tree, [artefact]
+# means only that a written document exists and is current, and [manual] means
+# the item cannot be scored from a repository and is therefore counted as unmet
+# rather than skipped. Exit 2 is GUARD BROKEN and never means "clean".
+#
+# check-assistant-gate-test is the guard's own regression suite; it builds
+# fixture trees, so it is hermetic and unaffected by the real tree's state. Run
+# it after editing the guard.
+.PHONY: check-assistant-gate
+check-assistant-gate: ## Score ADR-061's nine-item assistant pre-ship gate (no toolchain, no DB)
+	scripts/check-assistant-ship-gate.sh
+
+.PHONY: check-assistant-gate-test
+check-assistant-gate-test: ## Run the assistant ship-gate guard's regression suite (hermetic)
+	scripts/check-assistant-ship-gate_test.sh
+
 # ---- Agent harness (.claude) ------------------------------------------------
 # The shell guards that used to live in scripts/claude/ are gone: deciding what
 # a shell command will write by parsing its text is undecidable (eval, bash -c,

@@ -251,25 +251,38 @@ report_unscoreable() {
 # be handled by the caller, never as a silent success.
 # ---------------------------------------------------------------------------
 
-# grep_q PATTERN PATH... -- true when the extended regex matches. Returns
-# non-zero both when it does not match and when the path is missing, which is
-# correct: a missing input cannot satisfy a requirement.
-grep_q() {
+# NOTE ON grep -q AND xargs. Every helper below counts matching FILES with
+# `grep -l` rather than short-circuiting with `grep -q`. `grep -q` exits as soon
+# as it matches, closing the pipe under it, and xargs then prints "terminated
+# with signal 13" to stderr on a check that PASSED. Noise on stderr from a
+# passing guard teaches a reader to ignore this guard's stderr, and the one
+# message that must never be ignored is GUARD BROKEN.
+
+# files_matching PATTERN FIND_ARGS... -- how many files under the given find
+# expression match the extended regex. Prints a number, always.
+files_matching() {
   _pat="$1"
   shift
-  [ "$#" -gt 0 ] || return 1
-  grep -REq -- "$_pat" "$@" 2>/dev/null
+  find "$@" -exec grep -lE -- "$_pat" {} + 2>/dev/null | wc -l | tr -d '[:space:]'
 }
 
-# go_defines PATTERN DIR -- a Go function whose declaration line matches
-# PATTERN is defined somewhere under DIR, in a non-test file. Non-test matters:
-# a helper that exists only inside _test.go is not a thing the surface uses.
+# go_defines PATTERN DIR -- a Go declaration matching PATTERN exists somewhere
+# under DIR in a non-test file. Non-test matters: a helper that exists only
+# inside _test.go is not a thing the surface uses.
 go_defines() {
   _pat="$1"
   _dir="$2"
   [ -d "$_dir" ] || return 1
-  find "$_dir" -name '*.go' ! -name '*_test.go' -print0 2>/dev/null |
-    xargs -0 grep -Eq -- "$_pat" 2>/dev/null
+  [ "$(files_matching "$_pat" "$_dir" -name '*.go' ! -name '*_test.go')" -gt 0 ]
+}
+
+# grep_dir PATTERN DIR [FIND_ARGS...] -- PATTERN appears in some file under DIR.
+grep_dir() {
+  _pat="$1"
+  _dir="$2"
+  shift 2
+  [ -d "$_dir" ] || return 1
+  [ "$(files_matching "$_pat" "$_dir" -type f "$@")" -gt 0 ]
 }
 
 # go_test_asserting NAME_PATTERN BODY_PATTERN DIR -- there is a Go test function
@@ -286,11 +299,25 @@ go_test_asserting() {
   _body="$2"
   _dir="$3"
   [ -d "$_dir" ] || return 1
-  while IFS= read -r _f; do
-    grep -Eq -- "^func $_name" "$_f" 2>/dev/null || continue
-    grep -Eq -- "$_body" "$_f" 2>/dev/null && return 0
-  done < <(find "$_dir" -name '*_test.go' -print0 2>/dev/null | xargs -0 -n1 echo)
-  return 1
+  _hits="$(find "$_dir" -name '*_test.go' -exec grep -lE -- "^func $_name" {} + 2>/dev/null)"
+  [ -n "$_hits" ] || return 1
+  # THE BODY PATTERN IS MATCHED WITH THE `func` DECLARATION LINES REMOVED.
+  #
+  # Without this, a stub closes the item on its own name. This suite planted
+  #
+  #     func TestSelfApprovalIsRefused(t *testing.T) {}
+  #
+  # -- an empty body -- and the guard passed it, because the body pattern
+  # /Refus|refus/ matched the word "Refused" inside the function's own name. A
+  # test that asserts nothing was scoring a gate item, which is the exact class
+  # of defect the two-pattern design was introduced to prevent. Deleting the
+  # declaration lines before the second match is what makes the body pattern
+  # about the body.
+  _n="$(printf '%s\n' "$_hits" | while IFS= read -r _f; do
+    [ -n "$_f" ] || continue
+    grep -v '^func ' "$_f" 2>/dev/null | grep -qE -- "$_body" 2>/dev/null && printf 'x\n'
+  done | wc -l | tr -d '[:space:]')"
+  [ "$_n" -gt 0 ]
 }
 
 # ci_runs_in_order FIRST SECOND -- both scripts are invoked by ci.yml and FIRST
@@ -318,20 +345,27 @@ ci_runs_in_order() {
 # BROKEN, because the alternative is scoring currency against nothing and
 # calling every artefact current.
 # ---------------------------------------------------------------------------
+# SURFACE_DATE IS RESOLVED ONCE, IN THE MAIN SHELL, BEFORE ANY SCORING.
+#
+# The first version of this guard resolved it lazily inside `surface_date()` and
+# called that function as `$(surface_date)`. Command substitution is a subshell,
+# so the `exit 2` inside `broken` killed only the subshell: against a tree with
+# no git history the guard printed GUARD BROKEN twice to stderr and then carried
+# on scoring and exited 1, with six MET lines above the message. That is the
+# precise defect this guard exists to complain about -- announcing a verdict over
+# its own errors -- committed by the guard itself, and its own suite caught it.
+#
+# Resolving up front, in the main shell, is what makes `broken` actually
+# terminate. Nothing below this point may resolve it lazily.
 SURFACE_DATE=''
-surface_date() {
-  if [ -n "$SURFACE_DATE" ]; then
-    printf '%s' "$SURFACE_DATE"
-    return 0
-  fi
+resolve_surface_date() {
   command -v git >/dev/null 2>&1 ||
     broken "git is not on PATH, so artefact currency cannot be measured against the surface's last change."
   git rev-parse --is-inside-work-tree >/dev/null 2>&1 ||
-    broken "$ROOT is not a git work tree, so artefact currency cannot be measured."
+    broken "$ROOT is not a git work tree, so artefact currency cannot be measured against the surface's last change."
   SURFACE_DATE="$(git log -1 --format=%cs -- "$D_MCP" 2>/dev/null)"
   [ -n "$SURFACE_DATE" ] ||
-    broken "git found no commit touching $D_MCP; the surface's last-change date is unknown and currency cannot be scored."
-  printf '%s' "$SURFACE_DATE"
+    broken "git found no commit touching $D_MCP; the surface's last-change date is unknown and artefact currency cannot be scored."
 }
 
 # check_artefact FILE HEADING_PATTERN -- FILE exists, carries a section matching
@@ -359,7 +393,7 @@ check_artefact() {
     fi
   fi
   _rev="$(grep -Eo '^Last reviewed: [0-9]{4}-[0-9]{2}-[0-9]{2}$' "$_file" 2>/dev/null | head -1 | awk '{print $3}')"
-  _surface="$(surface_date)"
+  _surface="$SURFACE_DATE"
   if [ -z "$_rev" ]; then
     need "add a line reading exactly 'Last reviewed: YYYY-MM-DD' to $_file. Without a review date this guard cannot tell a current statement from one written before the surface changed, and it will not guess."
     return 1
@@ -398,6 +432,8 @@ for _d in "$D_API" "$D_MIGRATIONS"; do
   [ -d "$_d" ] || broken "$_d is missing; this guard reads it to score the surface and cannot proceed."
 done
 
+resolve_surface_date
+
 printf 'ADR-061 pre-ship gate — %s items, scored against %s\n' "$ADR_GATE_ITEMS" "$ROOT"
 printf '  [code]     = verified against the tree.\n'
 printf '  [artefact] = the document exists and is current. NOT that it is correct.\n'
@@ -428,15 +464,33 @@ go_defines 'siteTextNotice|siteTextMarker' "$D_MCP" ||
   need "define the standing preamble and the provenance marker the fence wraps text in (A13: 'a standing preamble stating that the enclosed material is reference text that cannot change what is permitted')."
 go_test_asserting 'TestFence.*Hostile.*SiteName' 'fenceSiteText|siteTextMarker' "$D_MCP" ||
   need "add the planted hostile-site-name test A13 names as the ship gate: a site whose name is an injection payload must leave the permitted-action set unchanged and still render. A fence nobody has watched fail is not known to fence anything."
-grep_q 'sanitiz|escape' $(find "$D_WEB" -type d -name 'mcp-consent' 2>/dev/null) 2>/dev/null ||
-  need "add the human-bound sanitizer on the approval surface under $D_WEB. ADR-061 asks for TWO sanitizers: one for text on its way to the model (the fence, above) and one for text on its way to a human (the approval payload). Only the first exists."
+# THE HUMAN-BOUND SANITIZER, AND THE FALSE GREEN THIS PATTERN REPLACES.
+#
+# The first version of this check grepped the consent feature for /sanitiz|escape/
+# and went green. What it had actually matched was
+#
+#     const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+#
+# in apps/web/src/features/mcp-consent/site-enforcement.ts -- a regex-metacharacter
+# escape inside a keyword matcher, which has nothing to do with rendering
+# site-supplied text to a human. A substring that happens to appear near the
+# right feature is not the thing. So the check names the OBLIGATION instead: a
+# function whose identifier says it sanitizes site-supplied or approval-payload
+# text for display, and a test that exercises it.
+_human_sanitizer=0
+grep_dir '(sanitize|escape)(SiteText|SiteSupplied|ForDisplay|ApprovalPayload)|(siteText|siteSupplied|approvalPayload)(Sanitiz|Escap)' "$D_WEB" &&
+  _human_sanitizer=1
+go_defines '(Sanitize|Escape)(SiteText|SiteSupplied|ForDisplay|ApprovalPayload)' "$D_API/internal" &&
+  _human_sanitizer=1
+[ "$_human_sanitizer" -eq 1 ] ||
+  need "add the human-bound sanitizer for text on its way to a human. ADR-061 asks for TWO sanitizers; only the model-bound fence exists. The approval surface renders a site-supplied name to the operator who is about to authorise something, which is the exact moment a crafted name is worth the attacker's effort. Name it for what it does — sanitizeSiteTextForDisplay or similar — so it cannot be confused with the regex-metacharacter escape already in mcp-consent/site-enforcement.ts, which is not this."
 report 2 "code" "model-bound fence + human-bound sanitizer + planted hostile-name test"
 
 # ===========================================================================
 # ITEM 3 — the proposal state machine and its two refusal proofs.
 # ===========================================================================
 item_reset
-grep_q 'assistant_update_proposals' "$D_MIGRATIONS" ||
+grep_dir 'assistant_update_proposals' "$D_MIGRATIONS" -name '*.sql' ||
   need "create the assistant_update_proposals table with its state CHECK. The proposal state machine has no schema."
 # The table is not the state machine. A machine nobody drives from Go is a
 # schema, and the gate item is about the approve path.
@@ -467,9 +521,9 @@ report 4 "code" "approve path single transaction + forced ledger-write failure p
 # ITEM 5 — off by default, and an allowlist that starts empty.
 # ===========================================================================
 item_reset
-grep_q '"scope_site_ids" +uuid\[\] +NOT NULL +DEFAULT +.\{\}.' "$D_MIGRATIONS" ||
+grep_dir '"scope_site_ids" +uuid\[\] +NOT NULL +DEFAULT +.\{\}.' "$D_MIGRATIONS" -name '*.sql' ||
   need "give scope_site_ids an empty default in its creating migration, so a connection's site allowlist starts empty and a credential leaked from a half-configured connection reads nothing."
-grep_q '"scope_tag_ids" +uuid\[\] +NOT NULL +DEFAULT +.\{\}.' "$D_MIGRATIONS" ||
+grep_dir '"scope_tag_ids" +uuid\[\] +NOT NULL +DEFAULT +.\{\}.' "$D_MIGRATIONS" -name '*.sql' ||
   need "give scope_tag_ids an empty default in its creating migration, for the same reason as scope_site_ids."
 go_test_asserting 'Test.*Assistant.*\(Default\|Disabled\|Off\)|Test.*NoAssistantControl' 'enabl|Enabl' "$D_API" ||
   need "add the tenant default-off proof: a test asserting the assistant is off for an organisation that has never enabled it, and that reading it writes no enablement."
@@ -480,12 +534,20 @@ report 5 "code" "off by default at the tenant + connection allowlist starts empt
 # (artefact). Two halves of two kinds; MET needs both.
 # ===========================================================================
 item_reset
-grep_q 'assistant_enabled|assistant_paused' "$D_MIGRATIONS" ||
+grep_dir 'assistant_enabled|assistant_paused' "$D_MIGRATIONS" -name '*.sql' ||
   need "add the per-tenant assistant kill-switch columns to a migration."
 go_defines 'func .*Pause|func .*pauseAssistant' "$D_API/internal/tenant" ||
   need "add the API path that engages the per-tenant kill switch."
-grep_q 'assistant' $(find "$D_WEB" -type d -name 'settings' -o -type d -name 'organisation' -o -type d -name 'mcp-consent' 2>/dev/null) 2>/dev/null ||
-  need "add the one-click kill-switch control to the dashboard under $D_WEB. ADR-061 says 'reachable in one click'; an API route with no control is reachable by curl. The UI is how the owner uses it under the pressure it exists for."
+# THE UI HALF, AND THE FALSE GREEN THIS PATTERN REPLACES.
+#
+# The first version grepped apps/web/src for /assistant/ and went green on
+# mcp-consent files that mention the assistant while containing no control at
+# all. Bare /assistant/ is a word this product says everywhere. The check now
+# requires the identifier to name the ACTION -- pause, resume, disable, kill --
+# adjacent to the assistant, in either order, because that is the control and
+# not the topic.
+grep_dir '[Aa]ssistant[A-Za-z]*(Pause|Resume|Disable|Kill)|(pause|resume|disable|kill)[A-Za-z]*[Aa]ssistant|assistant/(pause|resume)' "$D_WEB" ||
+  need "add the one-click kill-switch control to the dashboard under $D_WEB. ADR-061 says 'reachable in one click'; the m130 API route exists but nothing in the dashboard calls it, so today the switch is reachable only by curl. The UI is how this gets used under the pressure it exists for, and that pressure is not the moment to look up an endpoint."
 check_artefact "$F_DATA_CLASS" '^#+ .*[Ff]ields.*leave'
 report 6 "mixed" "per-tenant kill switch in one click + data-classification statement"
 
@@ -495,9 +557,16 @@ report 6 "mixed" "per-tenant kill switch in one click + data-classification stat
 item_reset
 go_defines 'func newToolCallLimiter\(|func .*ToolCallLimiter\(' "$D_MCP" ||
   need "add the per-tenant and per-grant rate limiter on the tool-call path."
-go_defines 'func .*[Rr]egisterLimit|registerLimit' "$D_MCP" ||
-  need "add the quota counter on the registration path."
-grep_q 'pending_queue_capped|PendingQueueCapped|pending_capped' "$D_MCP" ||
+# RATE LIMITER AND QUOTA COUNTER ARE TWO THINGS, and an earlier draft of this
+# check conflated them: it looked for a "register limit" and would have counted
+# newRegistrationLimiter as the quota counter. It is not. A rate limiter is a
+# token bucket in memory that forgets; a quota counter is a persisted count
+# against an allowance. The ADR lists both, so both are required.
+go_defines 'func newRegistrationLimiter\(|func .*RegistrationLimiter\(' "$D_MCP" ||
+  need "add the registration-path rate limiter."
+go_defines '[Qq]uota' "$D_MCP" ||
+  need "add the quota counter. The tool-call and registration rate limiters exist and are in-memory token buckets, which forget across a restart and across a revision; nothing counts consumption against a per-tenant allowance. ADR-061 lists the limiter and the counter as two things because they answer two different questions."
+grep_dir 'pending_queue_capped|PendingQueueCapped|pending_capped' "$D_MCP" -name '*.go' ||
   need "add a NAMED, typed refusal for a capped pending queue, visible to a client on the wire. ADR-061 says 'a documented refusal when the pending queue is capped'; read strictly, a doc comment is not a refusal a caller can act on, and this guard takes the stricter reading."
 report 7 "code" "rate limiter + quota counter + typed refusal when the pending queue is capped"
 
@@ -514,14 +583,28 @@ report 8 "artefact" "agreed pilot kill criteria, written down before the pilot s
 # The two facts that make the obligation real are still checked, because if
 # either changed the item would need rewriting rather than scoring, and this
 # guard must not quietly keep asking for something that no longer applies.
+# THE PROBE MUST LOOK AT WHAT ci.yml RUNS, NOT WHAT IT MENTIONS. ci.yml
+# discusses `make test-integration` in two comments explaining why that package
+# is NOT run there, and a bare mention-grep read those two comments as evidence
+# that it is. Anchoring on `run:` is the difference between the workflow's
+# behaviour and the workflow's prose.
 _ctx=''
 grep -Eq '^\.PHONY: test-integration|^test-integration:' "$F_MAKEFILE" 2>/dev/null ||
-  _ctx="$_ctx (WARNING: no 'test-integration' target found in $F_MAKEFILE — re-derive this item from the ADR before acting on it.)"
-if grep -Eq 'make test-integration|test-integration' "$F_CI" 2>/dev/null; then
-  _ctx="$_ctx (WARNING: $F_CI now mentions test-integration — if CI runs that package, this item may be closable mechanically. Re-read it.)"
+  _ctx=" (WARNING: no 'test-integration' target found in $F_MAKEFILE — this item's premise has stopped holding; re-derive it from the ADR before acting on this line.)"
+
+if grep -Eq '^[[:space:]]*run:.*test-integration' "$F_CI" 2>/dev/null; then
+  # THE ONE WAY THIS ITEM CLOSES. "Somebody ran it locally" leaves no artefact
+  # and no script can score it. "CI runs it on every PR" is the same obligation
+  # discharged by a mechanism that does leave evidence, and it is strictly
+  # stronger: it holds for the merge nobody remembered to run it before. So when
+  # ci.yml actually invokes the package, the item is MET as [code] -- verified,
+  # not taken on trust.
+  item_reset
+  report 9 "code" "the integration package is run by $F_CI, so the obligation is discharged mechanically"
+else
+  report_unscoreable 9 "\`make test-integration\` run locally before merge$_ctx" \
+    "this is an event on a developer's machine and leaves no artefact, so no script can score it, and this guard will not pretend otherwise. It closes exactly one way: run the integration package in $F_CI, which discharges the same obligation by a mechanism that leaves evidence and that also covers the merge nobody remembered. That is a real decision — .claude/rules/ci-and-build-logic.md records why that package is not in ci.yml today — so take it deliberately rather than to clear this line."
 fi
-report_unscoreable 9 "\`make test-integration\` run locally before merge$_ctx" \
-  "this is an event on a developer's machine and leaves no artefact, so no script can score it. Close it by changing the obligation into one that leaves evidence: either run the integration package in CI (which is a decision ADR-061 and .claude/rules/ci-and-build-logic.md both bear on), or require a committed run receipt naming the commit it was run against, and score that receipt here as an [artefact]."
 
 # ===========================================================================
 # Verdict.
