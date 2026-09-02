@@ -231,7 +231,15 @@ type sitesPayload struct {
 //     the payload is in the exact position that a downstream context-window
 //     trim removes, which would turn a visibly-truncated result back into a
 //     silently-truncated one.
-func buildListSitesResult(rows []sqlc.Site, env Envelope, now time.Time) (string, error) {
+//
+//  3. GOVERNED OPERATOR CONTEXT IS A PARAMETER, NOT A LOOKUP. govText is
+//     already-resolved, already-budget-checked text (Service.operatorContext);
+//     this function never resolves it, never falls back to a default when it
+//     is empty, and never clips it. An empty govText means the organisation
+//     authored nothing -- the caller refuses rather than passing "" when
+//     resolution fails, so this function cannot be the place that turns a
+//     failure into a silent omission.
+func buildListSitesResult(rows []sqlc.Site, env Envelope, now time.Time, govText string) (string, error) {
 	available := len(rows)
 
 	kept := make([]json.RawMessage, 0, len(rows))
@@ -298,7 +306,7 @@ func buildListSitesResult(rows []sqlc.Site, env Envelope, now time.Time) (string
 	// exact position the clamp cuts from, so the first thing dropped under
 	// budget pressure was the notice that the result is incomplete. That is
 	// the same mistake as putting safety text in the tail, one level down.
-	header := clampInstructions(listSitesInstructions)
+	header := withOperatorContext(clampInstructions(listSitesInstructions), govText)
 	if truncated {
 		info.Explanation = truncationExplanation(len(kept), available)
 		header = truncationBanner(info.Explanation) + "\n\n" + header
@@ -359,6 +367,29 @@ const listSitesInstructions = "Fleet inventory, read-only. This connection canno
 	"inventory_status is authoritative: \"never_collected\" means no plugin/theme inventory has EVER been collected " +
 	"for that site and inventory_collected_at is null. Do not treat a never_collected site as up to date, and do not " +
 	"substitute last_seen_at for it -- they measure different things."
+
+// withOperatorContext appends the governed operator context to a tool's own
+// instruction header, and it is the ONE place that joins the two.
+//
+// APPENDED, NOT PREPENDED, AND NEVER CLAMPED. The tool's own instructions come
+// first because they are what the model needs in order to read the payload
+// correctly (the never_collected rule, the scope rule); the operator's context
+// follows because it governs what the model may then DO. Neither is at risk of
+// being cut: they hold separate budgets, and the operator's half has already
+// been refused outright by Service.operatorContext if it did not fit
+// contextInstructionByteBudget. There is deliberately no clamp call here --
+// adding one would reintroduce, at the last possible moment, exactly the
+// silent mid-text truncation this feature refuses at both ends.
+//
+// An empty govText adds nothing at all, not even a blank line, so an
+// organisation that has authored no context gets a byte-for-byte unchanged
+// header.
+func withOperatorContext(header, govText string) string {
+	if govText == "" {
+		return header
+	}
+	return header + "\n\n" + govText
+}
 
 // clampInstructions enforces the instruction budget. It cuts on a rune
 // boundary and marks the cut, so a clipped header cannot be mistaken for the
