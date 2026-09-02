@@ -58,6 +58,38 @@ async function stepRows(page: Page): Promise<number[][]> {
   return [...rows.entries()].sort(([a], [b]) => a - b).map(([, ns]) => ns);
 }
 
+
+/**
+ * Walk to the auth step and choose one method, which is the first frame where
+ * the rail can say a step will never be asked.
+ *
+ * BEFORE A METHOD IS CHOSEN NOTHING IS STRUCK THROUGH, deliberately: the answer
+ * that decides which of steps 7 to 10 an operator reaches is step 5's. So a
+ * screenshot of the opening frame cannot show this state at all, which is why
+ * every capture before this one missed it.
+ */
+async function walkToMethod(page: Page, method: "token" | "oauth") {
+  await page.goto("/ai/connect");
+  await expect(page.getByTestId("step-rail")).toBeVisible();
+  await page.getByRole("button", { name: /^Continue$/ }).click();
+  await page.getByRole("button", { name: /claude code/i }).click();
+  await page.getByRole("button", { name: /^Continue$/ }).click();
+  await page.getByRole("radio", { name: /all sites/i }).click();
+  await page.getByRole("button", { name: /^Continue$/ }).click();
+  await expect(page.getByRole("heading", { name: /^4\. Choose what it may do$/ })).toBeVisible();
+  await page.getByRole("button", { name: /^Continue$/ }).click();
+  await expect(
+    page.getByRole("heading", { name: /^5\. Choose how it authenticates$/ }),
+  ).toBeVisible();
+  await page.locator(`button[data-method="${method}"]`).click();
+}
+
+function shotPath(name: string): string {
+  return process.env.STEPPER_SHOT_DIR
+    ? `${process.env.STEPPER_SHOT_DIR}/${name}.png`
+    : `test-results/${name}.png`;
+}
+
 test.describe("the connection wizard stepper", () => {
   test("keeps all ten steps on one row at a phone width, so no connector starts a row", async ({
     page,
@@ -183,5 +215,85 @@ test.describe("the connection wizard stepper", () => {
         : "test-results/wizard-desktop-1440.png",
       fullPage: true,
     });
+  });
+
+  // ---------------------------------------------------------------------------
+  // THE RAIL'S STATES, CAPTURED WHERE THEY ARE ACTUALLY VISIBLE.
+  //
+  // They were correct in the DOM and asserted by two unit tests before any
+  // screenshot contained one: every capture was of the opening frame, where no
+  // method has been chosen and therefore nothing is struck through. A state
+  // that is right in the markup and never looked at is not known to be legible.
+  // ---------------------------------------------------------------------------
+
+  for (const width of [390, 1440]) {
+    test(`marks the step this path will never ask, legibly at ${String(width)}px`, async ({
+      page,
+    }) => {
+      await mockApi(page);
+      await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
+      await walkToMethod(page, "token");
+
+      // The token path never reaches the approval hand-off, so step 7 says so.
+      await expect(page.locator('[data-step-n="7"]')).toHaveAttribute(
+        "data-step-state",
+        "not-applicable",
+      );
+      // And a step that IS ahead of them is not marked the same way.
+      await expect(page.locator('[data-step-n="8"]')).toHaveAttribute(
+        "data-step-state",
+        "upcoming",
+      );
+
+      // MEASURED, NOT ASSUMED. A struck-through label that renders without the
+      // line is the exact "right in the DOM, invisible on screen" failure this
+      // capture exists to catch, so the computed style is read rather than the
+      // class name.
+      const struck = await page
+        .getByTestId("step-label-7")
+        .evaluate((el) => getComputedStyle(el).textDecorationLine);
+      const plain = await page
+        .getByTestId("step-label-8")
+        .evaluate((el) => getComputedStyle(el).textDecorationLine);
+      expect(struck).toContain("line-through");
+      expect(plain).not.toContain("line-through");
+
+      // THE RAIL HAS TO BE IN THE FRAME, and `fullPage` does not guarantee it.
+      // This app scrolls an inner `main` rather than the document, so a
+      // full-page capture records that scroller wherever it happens to be
+      // sitting -- and the rail's own centring effect, plus a tall step, had
+      // put it off the top at 390px. The first capture of this state showed no
+      // rail at all: a screenshot that proves nothing while looking like
+      // evidence.
+      await page.locator("main").evaluate((el) => {
+        el.scrollTop = 0;
+      });
+      await expect(page.getByTestId("step-rail")).toBeInViewport();
+      await page.screenshot({ path: shotPath(`wizard-notasked-${String(width)}`), fullPage: true });
+    });
+  }
+
+  test("marks the verification steps not-asked on the browser sign-in path", async ({ page }) => {
+    // THE OTHER DIRECTION, which is what makes this a general rule rather than
+    // a special case for step 7. On this path the client creates the grant
+    // through the approval screen, so this wizard never learns its id and steps
+    // 8 to 10 are the ones that will never be asked.
+    await mockApi(page);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await walkToMethod(page, "oauth");
+
+    for (const n of ["8", "9", "10"]) {
+      await expect(page.locator(`[data-step-n="${n}"]`)).toHaveAttribute(
+        "data-step-state",
+        "not-applicable",
+      );
+    }
+    await expect(page.locator('[data-step-n="7"]')).toHaveAttribute("data-step-state", "upcoming");
+
+    await page.locator("main").evaluate((el) => {
+      el.scrollTop = 0;
+    });
+    await expect(page.getByTestId("step-rail")).toBeInViewport();
+    await page.screenshot({ path: shotPath("wizard-notasked-oauth-1440"), fullPage: true });
   });
 });

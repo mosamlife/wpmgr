@@ -608,8 +608,14 @@ describe("the step rail names all ten specified steps and marks the right one cu
     expect(notAsked.className).toContain("line-through");
     expect(upcoming.className).not.toContain("line-through");
     // And the not-asked segment says WHY, rather than being silently dimmed.
-    expect(notAsked).toHaveTextContent(/not asked on this path/i);
-    expect(upcoming).not.toHaveTextContent(/not asked on this path/i);
+    // Two halves, because the visible label is deliberately short: the rail is
+    // horizontal and three of these at full length pushed step 10 off the
+    // screen. What a sighted reader gets from the strike-through, a screen
+    // reader has to get from the words, so the full phrase is still in the
+    // accessible name even though only part of it is drawn.
+    expect(notAsked).toHaveTextContent(/not asked/i);
+    expect(notAsked.textContent ?? "").toContain("on this path");
+    expect(upcoming).not.toHaveTextContent(/not asked/i);
   });
 
   // ---------------------------------------------------------------------------

@@ -1218,7 +1218,13 @@ const RAIL_SEGMENT_STYLES: Record<RailSegmentState, RailSegmentStyle> = {
   "not-applicable": {
     circle: "opacity-60",
     label: "line-through opacity-60",
-    suffix: " (not asked on this path)",
+    // SHORT ON SCREEN, WHOLE TO A SCREEN READER -- see the sr-only span at the
+    // render site. This read "(not asked on this path)" and, on the browser
+    // sign-in path where THREE consecutive segments carry it, the rail grew so
+    // wide that step 10 sat off the right edge at 1440px. Found by opening the
+    // screenshot: the state was correct, legible in isolation, and had pushed a
+    // segment out of the frame. The reason is not dropped, only the repetition.
+    suffix: " (not asked)",
   },
   upcoming: { circle: "", label: "", suffix: null },
   completed: {
@@ -1525,6 +1531,13 @@ function StepRail({
                 >
                   {s.rail}
                   {style.suffix}
+                  {availability === "not-applicable" ? (
+                    // The full sentence, for anyone who cannot see that the
+                    // label is struck through. "(not asked)" alone does not say
+                    // asked of whom or why, and the strike-through carries that
+                    // for sighted readers only.
+                    <span className="sr-only"> on this path</span>
+                  ) : null}
                   {availability === "not-built" ? (
                     <span className="sr-only"> (not yet available)</span>
                   ) : null}
