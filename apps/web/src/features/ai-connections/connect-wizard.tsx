@@ -149,16 +149,6 @@ function walkFor(method: AuthMethod | null): readonly [Step, number][] {
   });
 }
 
-/** The specified step number a locally-built step answers. */
-function specStepFor(step: Step): number {
-  const found = BUILT_ORDER.find(([local]) => local === step);
-  // Unreachable: BUILT_ORDER has one entry per Step value. A throw here
-  // rather than a fallback number, because a fallback would silently mark
-  // the wrong segment current instead of failing loudly.
-  if (found === undefined) throw new Error(`no specified step for local step ${step}`);
-  return found[1];
-}
-
 /**
  * What a rail segment IS, for the operator standing in front of it. THREE
  * STATES, NOT A BOOLEAN, and the third one is why: a step can be built and on
@@ -244,9 +234,6 @@ function specStepAvailability(s: SpecStepDef, method: AuthMethod | null): SpecSt
  */
 type SiteScopeReadiness = "loading" | "failed" | "tags-unresolved" | "unselected" | "resolved";
 
-/** The specified step number (design S29) that answers "which sites." */
-const SITE_SCOPE_SPEC_N = 3;
-
 /**
  * Whether the capability picker is actually done, for the one reason mint can
  * refuse it on the token path: nobody has been left checked. Deliberately a
@@ -259,9 +246,6 @@ const SITE_SCOPE_SPEC_N = 3;
  * that string) needs no new branch to cover this step as well.
  */
 type CapabilityReadiness = "unselected" | "resolved";
-
-/** The specified step number (design S29) that answers "what it may do." */
-const CAPABILITY_SPEC_N = 4;
 
 export interface ConnectWizardProps {
   /** Absolute MCP endpoint for this deployment. Passed in, never assembled here. */
