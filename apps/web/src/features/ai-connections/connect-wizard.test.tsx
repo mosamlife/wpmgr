@@ -431,296 +431,331 @@ function currentRailStep(): HTMLElement {
 }
 
 describe("the step rail names all ten specified steps and marks the right one current", () => {
-  it("renders all ten specified steps, in specified order, with only five built", async () => {
+  it("renders all ten specified steps, in specified order, on every step of the walk", async () => {
+    // RULING 15: the stepper is persistent. It never shortens, so an operator
+    // sees the whole path from the first frame and the rail does not change
+    // length under them halfway through.
+    renderWizard();
+    await screen.findByRole("button", { name: /claude code/i });
+    expect(railNumbers()).toEqual(Array.from({ length: 10 }, (_, i) => String(i + 1)));
+
+    await reachSetupStep("Cursor", "token");
+    expect(railNumbers()).toEqual(Array.from({ length: 10 }, (_, i) => String(i + 1)));
+  });
+
+  it("names exactly five built steps, and the other five as not yet available", async () => {
     renderWizard();
     await screen.findByRole("button", { name: /claude code/i });
 
-    const segments = Array.from(document.querySelectorAll<HTMLElement>("[data-step-n]"));
-    expect(segments.map((s) => s.dataset.stepN)).toEqual(
-      Array.from({ length: 10 }, (_, i) => String(i + 1)),
-    );
-    const builtNs = segments.filter((s) => s.dataset.stepState !== "not-built").map((s) => s.dataset.stepN);
-    // The five shipped sections, and no others, are ever built. Step 4 (the
-    // capability picker) is built on the token path only, but `built: true`
-    // is a static property of SPEC_STEPS, not conditioned on the method
-    // chosen -- the same standard step 3 and step 6 already meet.
-    expect(builtNs.sort()).toEqual(["2", "3", "4", "5", "6"]);
-  });
-
-  it("marks specified step 2 current before any client is picked", async () => {
-    renderWizard();
-    await screen.findByRole("button", { name: /claude code/i });
-    // "2Client" is the numbered circle plus the SHORT rail label, run together
-    // as textContent. Ruling 15 makes the short labels canonical for the rail;
-    // the long frame title belongs on the section heading and is asserted
-    // there, not here.
-    expect(currentRailStep()).toHaveTextContent(/^2Client$/);
-  });
-
-  it("marks specified step 5 current once a client is picked and no method chosen", async () => {
-    renderWizard();
-    await pickClient("Cursor");
-    expect(currentRailStep()).toHaveTextContent(/^5Auth$/);
-    // The rail agrees this is later than step 2, not merely different from it.
-    expect(document.querySelector('[data-step-n="2"]')).toHaveAttribute(
-      "data-step-state",
-      "completed",
-    );
-  });
-
-  it("marks specified step 6 current once client and method are both picked", async () => {
-    // Sections 3 ("Sites this connection may reach") and 4 ("Set it up") in
-    // this file share one reveal condition and always appear together, so by
-    // the time an operator can see either, step 6 (setup) is the furthest one
-    // actually revealed. Before the fix, aria-current stuck at the position
-    // in the shipped array (3), one behind reality.
-    renderWizard();
-    await reachSetupStep("Cursor", "oauth");
-    await screen.findByTestId("site-step-count");
-    // A scope has to actually be chosen for step 3 to be done -- see the
-    // "unselected" tests below for why the wizard's opening state (nothing
-    // picked yet) must not itself read as complete.
-    fireEvent.click(within(screen.getByRole("radiogroup", { name: /site scope/i })).getByText("All sites"));
-    expect(currentRailStep()).toHaveTextContent(/^6Setup$/);
-  });
-
-  it("shows specified step 3 as passed, not merely unreached, once step 6 is current", async () => {
-    // THE NON-MONOTONIC CASE. Step 3 (site scope, specified number 3) is
-    // visited on screen AFTER step 5 (auth method, specified number 5) in
-    // this wizard, so a rail that compared raw specified numbers would call
-    // step 5 "incomplete" the moment the operator reached step 3, which is
-    // backwards. Both must read as completed once step 6 is current.
-    renderWizard();
-    await reachSetupStep("Cursor", "oauth");
-    await screen.findByTestId("site-step-count");
-    // A SCOPE IS ACTUALLY CHOSEN HERE, not left at the wizard's opening
-    // 'list'-with-nothing state -- see "does not mark site selection
-    // completed... unselected" below for why an unmade choice must not
-    // read as done either.
-    fireEvent.click(within(screen.getByRole("radiogroup", { name: /site scope/i })).getByText("All sites"));
-    expect(document.querySelector('[data-step-n="3"]')).toHaveAttribute(
-      "data-step-state",
-      "completed",
-    );
-    expect(document.querySelector('[data-step-n="5"]')).toHaveAttribute(
-      "data-step-state",
-      "completed",
-    );
-  });
-
-  it("never marks an unbuilt step current or completed, at any reachable stage -- NO FAKED PROGRESS", async () => {
-    renderWizard();
-    await reachSetupStep("Cursor", "oauth");
-    await screen.findByTestId("site-step-count");
-
-    // Step 4 (the capability picker) is excluded from this list -- it is
-    // `built: true` in SPEC_STEPS (it renders on the token path), so on this
-    // OAuth walk it is a real built-but-position-completed step, the same as
-    // step 3, and asserted separately below.
+    expect(railStateNs("not-built")).toEqual(["1", "7", "8", "9", "10"]);
     for (const n of ["1", "7", "8", "9", "10"]) {
-      const el = document.querySelector(`[data-step-n="${n}"]`);
-      expect(el).toHaveAttribute("data-step-state", "not-built");
-      expect(el).not.toHaveAttribute("aria-current", "step");
+      expect(railSegment(n)).not.toHaveAttribute("aria-current", "step");
     }
-    // Step 4 IS built, and on this OAuth walk is completed by position, same
-    // as step 3 -- neither is "faked": both really are earlier, in
-    // BUILT_ORDER, than the setup step this walk has actually reached.
-    expect(document.querySelector('[data-step-n="4"]')).toHaveAttribute(
-      "data-step-state",
-      "completed",
-    );
   });
 
   // ---------------------------------------------------------------------------
-  // Completion here used to be
-  // pure position: once client and method were picked, site selection read
-  // completed and setup read current REGARDLESS of whether the fleet/tag read
-  // that step depends on had actually come back. Loading and failed are
-  // covered separately -- collapsing them into one appearance is the same
-  // defect shape the finding names, one level down.
+  // THE INVARIANT, ASSERTED AS A PROPERTY RATHER THAN AS A POSITION.
+  //
+  // The wizard clamps the cursor to the first step whose gate refuses, so three
+  // things hold at EVERY reachable point of EVERY walk. These assert them as
+  // such rather than pinning the segment a particular sequence of clicks lands
+  // on: a test written against the walk's internals passes until the walk is
+  // reordered; one written against the property survives it.
+  //
+  //   1. Exactly one segment is current.
+  //   2. A step with no section on this path is never that segment.
+  //   3. Continue is offered exactly when the current segment's state does not
+  //      carry a refusal -- one predicate, read by the rail and the button.
   // ---------------------------------------------------------------------------
 
-  it("does not mark site selection completed or setup current while the fleet read is still loading", async () => {
-    // THE TOKEN COLUMN: a mint button exists here for the unresolved read to
-    // block. OAuth's mirror image ("does not drag the rail back for OAuth...
-    // loading") is below, and deliberately asserts the opposite.
-    mockedSites.mockReturnValue(mockQueryResult<Site[]>({ data: undefined, isPending: true }));
-    renderWizard();
-    await reachSetupStep("Cursor", "token");
+  /** The four states a segment carries when its own gate is refusing. */
+  const BLOCKED_STATES = ["loading", "failed", "tags-unresolved", "unselected"];
 
-    const siteStep = document.querySelector('[data-step-n="3"]');
-    const setupStep = document.querySelector('[data-step-n="6"]');
-    // NOT "completed": the read behind this step has not resolved, whatever
-    // position the operator has otherwise reached.
-    expect(siteStep).toHaveAttribute("data-step-state", "loading");
-    expect(siteStep).toHaveTextContent(/\(loading\)/i);
-    // NOT "current" either -- setup is not the furthest ACTUAL step while the
-    // step behind it is unresolved, and the assistive-tech state has to agree:
-    // aria-current stays off setup and lands on the step still in progress.
-    expect(setupStep).not.toHaveAttribute("data-step-state", "current");
-    expect(setupStep).not.toHaveAttribute("aria-current", "step");
-    expect(siteStep).toHaveAttribute("aria-current", "step");
+  /**
+   * Assert the invariants against whatever the rail is showing now.
+   *
+   * NOTE WHAT THIS DELIBERATELY DOES NOT DO: compare specified step numbers to
+   * decide what is "past" the current one. The wizard walks the numbers out of
+   * order -- 2, 5, 3, 4, 6 -- so specified step 5 is legitimately completed
+   * while the operator stands on specified step 3, and a check reading a larger
+   * number as "later" would fail on correct work. Order-dependent claims are
+   * made in the individual tests below, where the walk is known.
+   */
+  function expectRailIsCoherent() {
+    const current = currentRailStep();
+
+    for (const el of railSegments()) {
+      const state = el.dataset.stepState;
+      if (state !== "not-built" && state !== "not-applicable") continue;
+      expect(el).not.toHaveAttribute("aria-current", "step");
+      expect(state).not.toBe("completed");
+    }
+
+    const refused = BLOCKED_STATES.includes(current.dataset.stepState ?? "");
+    const advance = screen.queryByRole("button", { name: /^continue$/i });
+    if (advance !== null) {
+      expect(advance).toHaveProperty("disabled", refused);
+    }
+    return current;
+  }
+
+  it("keeps exactly one segment current at every step of a token walk", async () => {
+    loadedFleet(3);
+    renderWizard();
+
+    await screen.findByRole("button", { name: /claude code/i });
+    expectRailIsCoherent();
+
+    await pickClientOnly("Cursor");
+    expectRailIsCoherent();
+    goNext();
+
+    expectRailIsCoherent();
+    fireEvent.click(authCard("token"));
+    expectRailIsCoherent();
+    goNext();
+
+    await screen.findByTestId("site-step-count");
+    expectRailIsCoherent();
+    chooseAllSites();
+    expectRailIsCoherent();
+    goNext();
+
+    await screen.findByRole("heading", { name: /^4\. Choose what it may do$/ });
+    expectRailIsCoherent();
+    goNext();
+
+    await screen.findByRole("button", { name: /generate connection token/i });
+    expectRailIsCoherent();
   });
 
-  it("shows the fleet read as failed, distinctly from loading, and still refuses completion", async () => {
-    // THE TOKEN COLUMN, see the comment on the loading test above.
-    mockedSites.mockReturnValue(
-      mockQueryResult<Site[]>({ data: undefined, isPending: false, isError: true }),
-    );
+  it("advances the rail only when the operator does, never on an answer alone", async () => {
+    // The old wizard derived its position from the answers, so answering a
+    // question moved the rail by itself while five steps' content stayed on
+    // screen. Now the answer settles the gate and Continue moves the cursor;
+    // they are two acts and the rail follows the second.
     renderWizard();
-    await reachSetupStep("Cursor", "token");
+    await pickClientOnly("Cursor");
 
-    const siteStep = document.querySelector('[data-step-n="3"]');
-    const setupStep = document.querySelector('[data-step-n="6"]');
-    // A DIFFERENT STATE FROM LOADING, NOT THE SAME ONE RELABELLED. An operator
-    // told "loading" for a read that already failed keeps waiting for a state
-    // that will never arrive.
-    expect(siteStep).toHaveAttribute("data-step-state", "failed");
-    expect(siteStep).toHaveTextContent(/\(failed to load\)/i);
-    expect(siteStep).not.toHaveTextContent(/\(loading\)/i);
-    expect(setupStep).not.toHaveAttribute("data-step-state", "current");
-    expect(setupStep).not.toHaveAttribute("aria-current", "step");
+    expect(currentRailStep()).toHaveAttribute("data-step-n", "2");
+    goNext();
+    expect(currentRailStep()).toHaveAttribute("data-step-n", "5");
+    expect(railSegment("2")).toHaveAttribute("data-step-state", "completed");
   });
 
-  it("still marks site selection completed and setup current once the read AND the selection are actually resolved", async () => {
-    // THE OVER-FIRE CASE. The fix must not hold the rail behind a resolved
-    // read, or a made selection, out of over-caution -- that would just move
-    // the false state from "prematurely done" to "permanently stuck."
+  it("walks the specified numbers out of order, and calls the earlier-visited step complete", async () => {
+    // THE NON-MONOTONIC CASE. Specified step 3 (site scope) is visited AFTER
+    // specified step 5 (auth method), so a rail comparing raw specified numbers
+    // would call step 5 incomplete the moment step 3 was reached, which is
+    // backwards. Completion follows the walk, not the numbering.
     loadedFleet(3);
     renderWizard();
     await reachSetupStep("Cursor", "oauth");
-    await screen.findByTestId("site-step-count");
-    fireEvent.click(within(screen.getByRole("radiogroup", { name: /site scope/i })).getByText("All sites"));
 
-    expect(document.querySelector('[data-step-n="3"]')).toHaveAttribute(
-      "data-step-state",
-      "completed",
-    );
-    expect(currentRailStep()).toHaveTextContent(/^6Setup$/);
+    expect(currentRailStep()).toHaveAttribute("data-step-n", "6");
+    expect(railSegment("5")).toHaveAttribute("data-step-state", "completed");
+    expect(railSegment("3")).toHaveAttribute("data-step-state", "completed");
   });
 
-  // ---------------------------------------------------------------------------
-  // The same failure through a third door, found
-  // a third time through a third door: the fleet resolves fine, but the TAG
-  // registry has not, under mode 'tags'. `scope.kind` alone read this as
-  // "resolved" -- it only ever asks about the fleet read -- while
-  // `mintScopeRequest` was refusing to mint with `tags-unresolved`. This is
-  // the SAME scenario "refuses to mint on an unresolved tag scope..." above
-  // already proves blocks the button, so the state asserted here is the real
-  // blocked-mint state, not a fixture built to merely look like it.
-  // ---------------------------------------------------------------------------
-
-  it("does not mark site selection completed while the tag registry is unresolved and mint is actually blocked", async () => {
-    loadedFleet(3);
-    mockedTags.mockReturnValue(mockQueryResult<SiteTag[]>({ data: undefined, isPending: true }));
-    renderWizard();
-    await reachSetupStep("Cursor", "token");
-    await screen.findByTestId("site-step-count");
-    fireEvent.click(screen.getByRole("radio", { name: /by tag/i }));
-
-    // PROVE THE BLOCK IS REAL FIRST. Everything below is vacuous if the
-    // button was never actually disabled.
-    expect(await screen.findByText(/tag scope could not be resolved/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /generate connection token/i })).toBeDisabled();
-
-    const siteStep = document.querySelector('[data-step-n="3"]');
-    const setupStep = document.querySelector('[data-step-n="6"]');
-    expect(siteStep).toHaveAttribute("data-step-state", "tags-unresolved");
-    expect(siteStep).not.toHaveAttribute("data-step-state", "completed");
-    expect(siteStep).toHaveTextContent(/\(tags still loading\)/i);
-    expect(setupStep).not.toHaveAttribute("data-step-state", "current");
-    expect(setupStep).not.toHaveAttribute("aria-current", "step");
-  });
-
-  it("holds the rail back on the token path when nothing has been selected yet", async () => {
-    // THE UNSELECTED CELL, TOKEN COLUMN. The wizard opens on mode 'list' with
-    // no sites picked -- reachable by doing nothing at all -- and
-    // mintScopeRequest refuses to mint on it ("names-nothing").
+  it("re-blocks a step whose answer is taken away again, rather than latching it done", async () => {
+    // THE GATE IS RE-EVALUATED ON EVERY RENDER, NEVER LATCHED AT THE MOMENT
+    // CONTINUE WAS PRESSED. An operator who walks back and removes the answer
+    // that let them through must be held again: the mint that answer was
+    // gating would now be refused, so a rail still calling step 3 complete
+    // would be asserting a readiness the button does not have.
     loadedFleet(3);
     renderWizard();
-    await reachSetupStep("Cursor", "token");
-    await screen.findByTestId("site-step-count");
+    await advanceToCapabilityStep();
+    goNext();
+    await screen.findByRole("button", { name: /generate connection token/i });
+    expect(railSegment("3")).toHaveAttribute("data-step-state", "completed");
 
-    expect(screen.getByRole("button", { name: /generate connection token/i })).toBeDisabled();
-    const siteStep = document.querySelector('[data-step-n="3"]');
-    const setupStep = document.querySelector('[data-step-n="6"]');
-    expect(siteStep).toHaveAttribute("data-step-state", "unselected");
-    expect(siteStep).toHaveTextContent(/\(not chosen yet\)/i);
-    expect(setupStep).not.toHaveAttribute("data-step-state", "current");
-    expect(setupStep).not.toHaveAttribute("aria-current", "step");
+    backToSiteStep();
+    fireEvent.click(pickerBoxes()[0]!);
+
+    const current = expectRailIsCoherent();
+    expect(current).toHaveAttribute("data-step-n", "3");
+    expect(current).toHaveAttribute("data-step-state", "unselected");
+    expect(continueButton()).toBeDisabled();
+    expect(railSegment("4")).toHaveAttribute("data-step-state", "upcoming");
+    expect(railSegment("6")).toHaveAttribute("data-step-state", "upcoming");
+    expect(screen.queryByRole("button", { name: /generate connection token/i })).toBeNull();
   });
 
   // ---------------------------------------------------------------------------
-  // THE OVER-FIRE ARM OF THE FIX ABOVE.
-  // On the OAuth path there is no mint button to block -- step 4 renders
-  // NextSteps, never TokenMintPanel -- and the scope chosen in this wizard is
-  // rehearsal for OAuth (SiteScopeStep's own copy: "nothing carries this
-  // selection to the approval screen"). Every one of the four unresolved
-  // states must therefore leave step 6 current and step 3 completed, the same
-  // as the resolved case, because nothing downstream is actually blocked.
+  // The four ways the site-scope step can be unsettled, each kept distinct
+  // rather than collapsed into one muted "not done yet". An operator told
+  // nothing when a read has actually failed keeps waiting for a state that is
+  // never coming, and one told "loading" for their own unmade selection is told
+  // something false about themselves.
   // ---------------------------------------------------------------------------
 
   it.each([
     [
       "loading",
-      () => mockedSites.mockReturnValue(mockQueryResult<Site[]>({ data: undefined, isPending: true })),
+      /\(loading\)/i,
+      () =>
+        mockedSites.mockReturnValue(mockQueryResult<Site[]>({ data: undefined, isPending: true })),
+      undefined,
     ],
     [
       "failed",
+      /\(failed to load\)/i,
       () =>
         mockedSites.mockReturnValue(
           mockQueryResult<Site[]>({ data: undefined, isPending: false, isError: true }),
         ),
+      undefined,
     ],
+    [
+      "tags-unresolved",
+      /\(tags still loading\)/i,
+      () => {
+        loadedFleet(3);
+        mockedTags.mockReturnValue(mockQueryResult<SiteTag[]>({ data: undefined, isPending: true }));
+      },
+      () => fireEvent.click(screen.getByRole("radio", { name: /by tag/i })),
+    ],
+    ["unselected", /\(not chosen yet\)/i, () => loadedFleet(3), undefined],
   ] as const)(
-    "does not drag the rail back for OAuth while the fleet read is %s",
-    async (_label, mockRead) => {
-      mockRead();
+    "holds the operator on site scope, and says it is %s, while a token mint would be refused",
+    async (readiness, annotation, seed, answer) => {
+      seed();
       renderWizard();
-      await pickClient("Cursor");
-      fireEvent.click(authCard("oauth"));
+      await reachSiteScopeStep("Cursor", "token");
+      answer?.();
 
-      expect(currentRailStep()).toHaveTextContent(/^6Setup$/);
-      expect(document.querySelector('[data-step-n="3"]')).toHaveAttribute(
-        "data-step-state",
-        "completed",
-      );
+      // THE REFUSAL IS REAL FIRST. Everything below is vacuous if the walk was
+      // never actually held here.
+      const current = expectRailIsCoherent();
+      expect(current).toHaveAttribute("data-step-n", "3");
+      expect(continueButton()).toBeDisabled();
+
+      // The reason is named, and it is THIS reason, not a generic one.
+      expect(current).toHaveAttribute("data-step-state", readiness);
+      expect(screen.getByTestId("step-label-3")).toHaveTextContent(annotation);
+      // NO RING AND NO FILL on a step whose action is being refused -- the
+      // style table maps the state and nothing reads a second boolean.
+      expect(screen.getByTestId("step-circle-3").className).not.toContain("border-2");
+      // And the setup step behind it is neither reached nor reachable.
+      expect(railSegment("6")).toHaveAttribute("data-step-state", "upcoming");
+      expect(screen.queryByRole("button", { name: /generate connection token/i })).toBeNull();
     },
   );
 
-  it("does not drag the rail back for OAuth while the tag registry is unresolved", async () => {
+  it("lets the walk through the moment the scope is actually answered", async () => {
+    // THE OVER-FIRE ARM of the four cases above. A gate that never opens is not
+    // a gate; it just moves the false state from "prematurely done" to
+    // "permanently stuck".
     loadedFleet(3);
-    mockedTags.mockReturnValue(mockQueryResult<SiteTag[]>({ data: undefined, isPending: true }));
     renderWizard();
-    await reachSetupStep("Cursor", "oauth");
-    await screen.findByTestId("site-step-count");
-    fireEvent.click(screen.getByRole("radio", { name: /by tag/i }));
-    // No TokenMintPanel exists on this path to show its own "could not be
-    // resolved" copy -- the radiogroup's own selected state is the only
-    // thing to wait for before the rail is asserted against.
-    expect(screen.getByRole("radio", { name: /by tag/i })).toBeChecked();
+    await reachSiteScopeStep("Cursor", "token");
+    expect(continueButton()).toBeDisabled();
 
-    expect(currentRailStep()).toHaveTextContent(/^6Setup$/);
-    expect(document.querySelector('[data-step-n="3"]')).toHaveAttribute(
-      "data-step-state",
-      "completed",
-    );
+    chooseAllSites();
+
+    expect(continueButton()).toBeEnabled();
+    expect(currentRailStep()).toHaveAttribute("data-step-state", "current");
+    goNext();
+    expect(currentRailStep()).toHaveAttribute("data-step-n", "4");
+    expect(railSegment("3")).toHaveAttribute("data-step-state", "completed");
   });
 
-  it("does not drag the rail back for OAuth when nothing has been selected yet", async () => {
-    // The wizard's opening state (mode 'list', nothing picked) is
-    // "unselected" on the token path; on OAuth it must not read as anything
-    // other than complete, because there is no button here for it to block.
+  // ---------------------------------------------------------------------------
+  // THE OAUTH COLUMN, and it is the over-fire arm of the whole gate. On this
+  // path there is no mint button for an unresolved scope to block -- the setup
+  // step renders NextSteps, never TokenMintPanel -- and the scope chosen here
+  // is rehearsal (SiteScopeStep's own copy: "nothing carries this selection to
+  // the approval screen"). Ruling 4 is exactly this: an empty scope is a
+  // working state and Continue stays enabled.
+  // ---------------------------------------------------------------------------
+
+  it.each([
+    [
+      "the fleet read is loading",
+      () =>
+        mockedSites.mockReturnValue(mockQueryResult<Site[]>({ data: undefined, isPending: true })),
+      undefined,
+    ],
+    [
+      "the fleet read failed",
+      () =>
+        mockedSites.mockReturnValue(
+          mockQueryResult<Site[]>({ data: undefined, isPending: false, isError: true }),
+        ),
+      undefined,
+    ],
+    [
+      "the tag registry is unresolved",
+      () => {
+        loadedFleet(3);
+        mockedTags.mockReturnValue(mockQueryResult<SiteTag[]>({ data: undefined, isPending: true }));
+      },
+      () => fireEvent.click(screen.getByRole("radio", { name: /by tag/i })),
+    ],
+    ["nothing has been selected yet", () => loadedFleet(3), undefined],
+  ] as const)("does not hold an OAuth walk at site scope when %s", async (_label, seed, answer) => {
+    seed();
+    renderWizard();
+    await reachSiteScopeStep("Cursor", "oauth");
+    answer?.();
+
+    const current = expectRailIsCoherent();
+    expect(current).toHaveAttribute("data-step-n", "3");
+    expect(current).toHaveAttribute("data-step-state", "current");
+    expect(continueButton()).toBeEnabled();
+
+    goNext();
+    expect(currentRailStep()).toHaveAttribute("data-step-n", "6");
+    expect(railSegment("3")).toHaveAttribute("data-step-state", "completed");
+  });
+
+  // ---------------------------------------------------------------------------
+  // Specified step 4 on the OAuth path. Ruling 15 keeps the stepper persistent,
+  // so the segment stays and says why it will not be asked -- a rail that went
+  // from ten segments to nine halfway through would be disorienting in a way a
+  // clearly-labelled inapplicable step is not.
+  // ---------------------------------------------------------------------------
+
+  it("keeps step 4 in the rail on the OAuth path, marked not asked rather than removed", async () => {
     loadedFleet(3);
     renderWizard();
-    await reachSetupStep("Cursor", "oauth");
-    await screen.findByTestId("site-step-count");
+    await reachSiteScopeStep("Cursor", "oauth");
 
-    expect(currentRailStep()).toHaveTextContent(/^6Setup$/);
-    expect(document.querySelector('[data-step-n="3"]')).toHaveAttribute(
-      "data-step-state",
-      "completed",
-    );
+    expect(railNumbers()).toHaveLength(10);
+    const capability = railSegment("4");
+    expect(capability).toHaveAttribute("data-step-state", "not-applicable");
+    expect(screen.getByTestId("step-label-4")).toHaveTextContent(/not asked on this path/i);
+    // AND IT IS NOT THE SAME AS AN UNBUILT STEP. Two different facts, and an
+    // operator must not have to guess which one they are looking at.
+    expect(railSegment("7")).toHaveAttribute("data-step-state", "not-built");
+    expect(screen.getByTestId("step-label-4").className).toContain("line-through");
+    expect(screen.getByTestId("step-label-7").className).not.toContain("line-through");
+  });
+
+  it("asks step 4 on the token path, and steps over it on the OAuth one", async () => {
+    // The over-fire arm: "not applicable" must be specific to the path that
+    // does not ask it, or the capability picker is simply broken.
+    loadedFleet(3);
+    renderWizard();
+    await reachSiteScopeStep("Cursor", "token");
+    chooseAllSites();
+
+    expect(railSegment("4")).toHaveAttribute("data-step-state", "upcoming");
+    goNext();
+    expect(currentRailStep()).toHaveAttribute("data-step-n", "4");
+    expect(screen.getByRole("heading", { name: /^4\. Choose what it may do$/ })).toBeInTheDocument();
+  });
+
+  it("does not rule step 4 out before a method has been chosen", async () => {
+    // Nothing has decided it yet, and telling an operator on step 2 that step 4
+    // will not be asked -- when their next answer decides exactly that -- would
+    // be a claim the wizard cannot make.
+    renderWizard();
+    await pickClientOnly("Cursor");
+    expect(railSegment("4")).not.toHaveAttribute("data-step-state", "not-applicable");
+    goNext();
+    expect(railSegment("4")).not.toHaveAttribute("data-step-state", "not-applicable");
   });
 });
 
@@ -2038,6 +2073,25 @@ describe("minting a connection token", () => {
 /** Every rail segment, in the order the DOM has them. */
 function railSegments(): HTMLElement[] {
   return Array.from(document.querySelectorAll<HTMLElement>("[data-step-n]"));
+}
+
+function railNumbers(): string[] {
+  return railSegments().map((s) => s.dataset.stepN ?? "");
+}
+
+function railSegment(n: string): HTMLElement {
+  const el = document.querySelector<HTMLElement>(`[data-step-n="${n}"]`);
+  // A missing segment must fail here rather than letting every assertion
+  // against it be silently skipped over a null.
+  if (el === null) throw new Error(`no rail segment for specified step ${n}`);
+  return el;
+}
+
+/** The specified step numbers currently in one rail state. */
+function railStateNs(state: string): string[] {
+  return railSegments()
+    .filter((s) => s.dataset.stepState === state)
+    .map((s) => s.dataset.stepN ?? "");
 }
 
 describe("the rail is a stepper, not a paragraph", () => {
