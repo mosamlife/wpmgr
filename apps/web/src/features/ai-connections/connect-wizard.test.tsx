@@ -930,9 +930,21 @@ describe("step 3 exists at all, and sits before capabilities", () => {
     expect(screen.getByText(/chosen before capabilities, on purpose/i)).toBeInTheDocument();
   });
 
-  it("numbers the setup artefact after it, so the rail and the page agree", async () => {
+  it("numbers every step by its specified number, so the rail and the page agree", async () => {
+    // THE HEADINGS CARRY THE SPECIFIED NUMBER, NOT A LOCAL ONE. With one step
+    // on screen at a time, a heading numbered by position would read "5. Set
+    // it up" while the rail marked segment 6 current -- the same rail-versus-
+    // page disagreement this whole change exists to remove. The walk visits
+    // them out of numeric order (2, 5, 3, 4, 6), which is only legible
+    // because the operator never sees two of them at once.
     await reachSiteStep();
-    expect(screen.getByRole("heading", { name: /^5\. Set it up$/ })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /^3\. Sites this connection may reach$/ }))
+      .toBeInTheDocument();
+    expect(currentRailStep()).toHaveAttribute("data-step-n", "3");
+
+    goNext();
+    expect(screen.getByRole("heading", { name: /^6\. Set it up$/ })).toBeInTheDocument();
+    expect(currentRailStep()).toHaveAttribute("data-step-n", "6");
     // And the rail no longer claims sites are chosen somewhere else.
     expect(screen.queryByText(/4\. Choose sites and permissions/i)).not.toBeInTheDocument();
   });
@@ -1014,11 +1026,14 @@ describe("an empty scope is a working state, not an error", () => {
 
   it("does not block the wizard on it", async () => {
     loadedFleet(60);
+    // reachSiteStep walks the OAUTH path, where an empty scope is a working
+    // state (ruling 4): nothing downstream reads the scope, so Continue stays
+    // enabled and the setup artefact is reachable with nothing selected.
     await reachSiteStep();
-    // The setup artefact is reachable with nothing selected. An earlier
-    // revision of this surface disabled Continue here; that is the behaviour
-    // being corrected.
-    expect(screen.getByRole("heading", { name: /^5\. Set it up$/ })).toBeInTheDocument();
+    expect(continueButton()).toBeEnabled();
+
+    goNext();
+    expect(screen.getByRole("heading", { name: /^6\. Set it up$/ })).toBeInTheDocument();
     expect(await screen.findByText(/"mcpServers"/)).toBeInTheDocument();
   });
 });
@@ -1499,13 +1514,9 @@ describe("choosing what a token may do (step 4, token path only)", () => {
     // turns it green again.
     loadedFleet(3);
     renderWizard();
-    await reachSetupStep("Cursor", "token");
-    await screen.findByTestId("site-step-count");
-    // A valid site scope, so the ONLY thing left blocking the button is the
-    // capability deselection this test is actually about.
-    fireEvent.click(screen.getByRole("button", { name: /\+ add sites/i }));
-    fireEvent.click(pickerBoxes()[0]!);
-    await screen.findByRole("heading", { name: /choose what it may do/i });
+    // A valid site scope, so the ONLY thing left blocking is the capability
+    // deselection this test is actually about.
+    await advanceToCapabilityStep();
 
     fireEvent.click(screen.getByRole("checkbox", { name: /^Sites/i }));
 
@@ -1514,25 +1525,31 @@ describe("choosing what a token may do (step 4, token path only)", () => {
     // (an operator who scrolled straight to the button sees it there) -- so
     // this asserts on the plural.
     expect((await screen.findAllByText(/no capability is selected/i)).length).toBeGreaterThan(0);
-    expect(screen.getByRole("button", { name: /generate connection token/i })).toBeDisabled();
+    // REFUSED AT CONTINUE NOW, not at a mint button three steps further on.
+    // The same predicate makes both refusals, so moving the assertion to the
+    // control the operator is standing in front of tests the same guard at the
+    // point it now fires.
+    expect(continueButton()).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /generate connection token/i })).toBeNull();
   });
 
   it("re-enables minting the moment a capability is checked again -- the over-fire arm of the guard above", async () => {
     loadedFleet(3);
     renderWizard();
-    await reachSetupStep("Cursor", "token");
-    await screen.findByTestId("site-step-count");
-    fireEvent.click(screen.getByRole("button", { name: /\+ add sites/i }));
-    fireEvent.click(pickerBoxes()[0]!);
-    await screen.findByRole("heading", { name: /choose what it may do/i });
+    await advanceToCapabilityStep();
 
     const sites = screen.getByRole("checkbox", { name: /^Sites/i });
     fireEvent.click(sites);
-    expect(screen.getByRole("button", { name: /generate connection token/i })).toBeDisabled();
+    expect(continueButton()).toBeDisabled();
 
     fireEvent.click(screen.getByRole("checkbox", { name: /^Uptime/i }));
     expect(screen.queryByText(/no capability is selected/i)).toBeNull();
-    expect(screen.getByRole("button", { name: /generate connection token/i })).toBeEnabled();
+    expect(continueButton()).toBeEnabled();
+    // And the walk really does open again, rather than merely un-refusing.
+    goNext();
+    expect(
+      screen.getByRole("button", { name: /generate connection token/i }),
+    ).toBeInTheDocument();
   });
 
   it("never sends `capabilities: []` on the wire, and sends exactly the selected set", async () => {
@@ -1713,10 +1730,11 @@ describe("minting a connection token", () => {
     release();
 
     expect(await screen.findByText(MINTED.token)).toBeInTheDocument();
-    // And the controls come back once nothing is outstanding -- the lock is
-    // for the duration of the request, not for the rest of the session.
-    expect(authCard("oauth")).toBeEnabled();
-    expect(screen.getByRole("button", { name: /claude desktop/i })).toBeEnabled();
+    // And the control comes back once nothing is outstanding -- the lock is for
+    // the duration of the request, not for the rest of the session. A block
+    // that outlived its request would strand the operator on a page they
+    // cannot leave, which is a worse defect than the one being prevented.
+    expect(backButton()).toBeEnabled();
   });
 
   // ---------------------------------------------------------------------------
