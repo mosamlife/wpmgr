@@ -1558,6 +1558,14 @@ function stepGate(local: Step, ctx: StepGateContext): StepGate {
   }
   if (local === SITE_SCOPE_LOCAL_STEP) {
     const readiness = siteScopeReadiness(ctx.scope, ctx.scopeRequest, ctx.method);
+    // RESOLVED IS CHECKED FIRST, AND THAT ORDER IS LOAD-BEARING. On the OAuth
+    // path `siteScopeReadiness` answers "resolved" for every scope, because
+    // nothing downstream reads the scope there and no mint can refuse it --
+    // ruling 4's "an empty scope is a working state" is exactly this case.
+    // `scopeRequest` still says `ok: false` for an empty 'list', so consulting
+    // it before the readiness verdict would block Continue on a step that is
+    // rehearsal, on the one path the readiness function exists to exempt.
+    if (readiness === "resolved") return STEP_SETTLED;
     if (readiness === "loading") {
       return {
         readiness,
@@ -1572,12 +1580,17 @@ function stepGate(local: Step, ctx: StepGateContext): StepGate {
           "This organisation's sites could not be read for step 3, so we cannot tell what this connection would cover. Fix that above before minting.",
       };
     }
-    // "tags-unresolved" and "unselected" both mean scopeRequest itself
-    // refused, which already carries its own remedy -- reusing it, rather
-    // than a second copy of the sentence, is what keeps the gate and the
-    // refusal text from drifting apart.
-    if (!ctx.scopeRequest.ok) return { readiness, refusal: ctx.scopeRequest.refusal };
-    return STEP_SETTLED;
+    // "tags-unresolved" and "unselected" are the only readiness values left,
+    // and `siteScopeReadiness` reaches both only through `scopeRequest`
+    // refusing, so it always carries a remedy here. Reusing that sentence,
+    // rather than writing a second copy, is what keeps the gate and the
+    // refusal text from drifting apart. The `ok` branch is unreachable and is
+    // written as a throw rather than a silent pass, because a silent pass
+    // would be the gate approving a step it has just called unresolved.
+    if (ctx.scopeRequest.ok) {
+      throw new Error(`site scope is "${readiness}" but the request has no refusal`);
+    }
+    return { readiness, refusal: ctx.scopeRequest.refusal };
   }
   if (local === CAPABILITY_LOCAL_STEP) {
     const readiness = capabilityReadiness(ctx.capabilitiesRequest, ctx.method);

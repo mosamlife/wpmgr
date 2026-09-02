@@ -149,6 +149,31 @@ function chooseMethod(method: "oauth" | "token") {
   goNext();
 }
 
+/**
+ * Walk from nothing to the setup artefact for one client and method.
+ *
+ * ON THE TOKEN PATH THIS ANSWERS SITE SCOPE AND THE TOKEN PATH ONLY. The
+ * wizard refuses Continue on an unanswered scope, which is the same refusal
+ * mint gives, so a walk that skipped it would be testing a screen no operator
+ * can reach. All sites is the shortest answer that works against any fleet,
+ * including the empty one most of these tests render. On the OAuth path there
+ * is nothing to answer -- the scope is rehearsal there, and the capability
+ * step is not on that path at all, so Continue steps straight over it.
+ */
+async function reachSetupStep(clientName: string, method: "oauth" | "token") {
+  await pickClient(clientName);
+  chooseMethod(method);
+  await screen.findByTestId("site-step-count");
+  if (method === "token") {
+    fireEvent.click(screen.getByRole("radio", { name: /all sites/i }));
+  }
+  goNext();
+  if (method === "token") {
+    await screen.findByRole("heading", { name: /choose what it may do/i });
+    goNext();
+  }
+}
+
 function authCard(method: "oauth" | "token"): HTMLButtonElement {
   const el = document.querySelector<HTMLButtonElement>(`button[data-method="${method}"]`);
   // A missing card must fail the test rather than letting every assertion
@@ -386,8 +411,7 @@ describe("the step rail names all ten specified steps and marks the right one cu
     // actually revealed. Before the fix, aria-current stuck at the position
     // in the shipped array (3), one behind reality.
     renderWizard();
-    await pickClient("Cursor");
-    fireEvent.click(authCard("oauth"));
+    await reachSetupStep("Cursor", "oauth");
     await screen.findByTestId("site-step-count");
     // A scope has to actually be chosen for step 3 to be done -- see the
     // "unselected" tests below for why the wizard's opening state (nothing
@@ -403,8 +427,7 @@ describe("the step rail names all ten specified steps and marks the right one cu
     // step 5 "incomplete" the moment the operator reached step 3, which is
     // backwards. Both must read as completed once step 6 is current.
     renderWizard();
-    await pickClient("Cursor");
-    fireEvent.click(authCard("oauth"));
+    await reachSetupStep("Cursor", "oauth");
     await screen.findByTestId("site-step-count");
     // A SCOPE IS ACTUALLY CHOSEN HERE, not left at the wizard's opening
     // 'list'-with-nothing state -- see "does not mark site selection
@@ -423,8 +446,7 @@ describe("the step rail names all ten specified steps and marks the right one cu
 
   it("never marks an unbuilt step current or completed, at any reachable stage -- NO FAKED PROGRESS", async () => {
     renderWizard();
-    await pickClient("Cursor");
-    fireEvent.click(authCard("oauth"));
+    await reachSetupStep("Cursor", "oauth");
     await screen.findByTestId("site-step-count");
 
     // Step 4 (the capability picker) is excluded from this list -- it is
@@ -460,8 +482,7 @@ describe("the step rail names all ten specified steps and marks the right one cu
     // loading") is below, and deliberately asserts the opposite.
     mockedSites.mockReturnValue(mockQueryResult<Site[]>({ data: undefined, isPending: true }));
     renderWizard();
-    await pickClient("Cursor");
-    fireEvent.click(authCard("token"));
+    await reachSetupStep("Cursor", "token");
 
     const siteStep = document.querySelector('[data-step-n="3"]');
     const setupStep = document.querySelector('[data-step-n="6"]');
@@ -483,8 +504,7 @@ describe("the step rail names all ten specified steps and marks the right one cu
       mockQueryResult<Site[]>({ data: undefined, isPending: false, isError: true }),
     );
     renderWizard();
-    await pickClient("Cursor");
-    fireEvent.click(authCard("token"));
+    await reachSetupStep("Cursor", "token");
 
     const siteStep = document.querySelector('[data-step-n="3"]');
     const setupStep = document.querySelector('[data-step-n="6"]');
@@ -504,8 +524,7 @@ describe("the step rail names all ten specified steps and marks the right one cu
     // the false state from "prematurely done" to "permanently stuck."
     loadedFleet(3);
     renderWizard();
-    await pickClient("Cursor");
-    fireEvent.click(authCard("oauth"));
+    await reachSetupStep("Cursor", "oauth");
     await screen.findByTestId("site-step-count");
     fireEvent.click(within(screen.getByRole("radiogroup", { name: /site scope/i })).getByText("All sites"));
 
@@ -531,8 +550,7 @@ describe("the step rail names all ten specified steps and marks the right one cu
     loadedFleet(3);
     mockedTags.mockReturnValue(mockQueryResult<SiteTag[]>({ data: undefined, isPending: true }));
     renderWizard();
-    await pickClient("Cursor");
-    fireEvent.click(authCard("token"));
+    await reachSetupStep("Cursor", "token");
     await screen.findByTestId("site-step-count");
     fireEvent.click(screen.getByRole("radio", { name: /by tag/i }));
 
@@ -556,8 +574,7 @@ describe("the step rail names all ten specified steps and marks the right one cu
     // mintScopeRequest refuses to mint on it ("names-nothing").
     loadedFleet(3);
     renderWizard();
-    await pickClient("Cursor");
-    fireEvent.click(authCard("token"));
+    await reachSetupStep("Cursor", "token");
     await screen.findByTestId("site-step-count");
 
     expect(screen.getByRole("button", { name: /generate connection token/i })).toBeDisabled();
@@ -611,8 +628,7 @@ describe("the step rail names all ten specified steps and marks the right one cu
     loadedFleet(3);
     mockedTags.mockReturnValue(mockQueryResult<SiteTag[]>({ data: undefined, isPending: true }));
     renderWizard();
-    await pickClient("Cursor");
-    fireEvent.click(authCard("oauth"));
+    await reachSetupStep("Cursor", "oauth");
     await screen.findByTestId("site-step-count");
     fireEvent.click(screen.getByRole("radio", { name: /by tag/i }));
     // No TokenMintPanel exists on this path to show its own "could not be
@@ -633,8 +649,7 @@ describe("the step rail names all ten specified steps and marks the right one cu
     // other than complete, because there is no button here for it to block.
     loadedFleet(3);
     renderWizard();
-    await pickClient("Cursor");
-    fireEvent.click(authCard("oauth"));
+    await reachSetupStep("Cursor", "oauth");
     await screen.findByTestId("site-step-count");
 
     expect(currentRailStep()).toHaveTextContent(/^6\. Get the setup artefact$/);
@@ -686,8 +701,7 @@ describe("the method step is computed from the client, with the reason on the ca
 describe("the setup artefact is generated per client", () => {
   it("emits the required http type for Claude Code", async () => {
     renderWizard();
-    await pickClient("Claude Code");
-    fireEvent.click(authCard("oauth"));
+    await reachSetupStep("Claude Code", "oauth");
 
     const block = await screen.findByText(/"mcpServers"/);
     const text = block.textContent ?? "";
@@ -699,8 +713,7 @@ describe("the setup artefact is generated per client", () => {
 
   it("emits httpUrl and no url for Gemini CLI", async () => {
     renderWizard();
-    await pickClient("Gemini CLI");
-    fireEvent.click(authCard("oauth"));
+    await reachSetupStep("Gemini CLI", "oauth");
 
     const text = (await screen.findByText(/"mcpServers"/)).textContent ?? "";
     expect(text).toContain('"httpUrl"');
@@ -709,8 +722,7 @@ describe("the setup artefact is generated per client", () => {
 
   it("emits the servers wrapper for VS Code", async () => {
     renderWizard();
-    await pickClient("VS Code");
-    fireEvent.click(authCard("token"));
+    await reachSetupStep("VS Code", "token");
 
     const text = (await screen.findByText(/"servers"/)).textContent ?? "";
     expect(text).toContain('"servers"');
@@ -719,8 +731,7 @@ describe("the setup artefact is generated per client", () => {
 
   it("emits no type key for Cursor", async () => {
     renderWizard();
-    await pickClient("Cursor");
-    fireEvent.click(authCard("oauth"));
+    await reachSetupStep("Cursor", "oauth");
 
     const text = (await screen.findByText(/"mcpServers"/)).textContent ?? "";
     expect(text).not.toContain('"type"');
@@ -728,8 +739,7 @@ describe("the setup artefact is generated per client", () => {
 
   it("renders the endpoint and a spec link for the generic entry, with no config block", async () => {
     renderWizard();
-    await pickClient("Other / generic");
-    fireEvent.click(authCard("oauth"));
+    await reachSetupStep("Other / generic", "oauth");
 
     expect(await screen.findByText(/endpoint for other \/ generic/i)).toBeInTheDocument();
     expect(screen.queryByText(/"mcpServers"/)).not.toBeInTheDocument();
@@ -740,8 +750,7 @@ describe("the setup artefact is generated per client", () => {
 
   it("gives GUI clients in-app steps rather than a file to edit", async () => {
     renderWizard();
-    await pickClient("Claude Desktop");
-    fireEvent.click(authCard("oauth"));
+    await reachSetupStep("Claude Desktop", "oauth");
 
     expect(await screen.findByText(/set this up inside claude desktop/i)).toBeInTheDocument();
     expect(screen.queryByText(/"mcpServers"/)).not.toBeInTheDocument();
@@ -749,8 +758,7 @@ describe("the setup artefact is generated per client", () => {
 
   it("never prints a Windows path", async () => {
     renderWizard();
-    await pickClient("Claude Code");
-    fireEvent.click(authCard("oauth"));
+    await reachSetupStep("Claude Code", "oauth");
     await screen.findByText(/"mcpServers"/);
     // Every source documented POSIX only; a Windows path here would be invented.
     expect(document.body.textContent ?? "").not.toMatch(/[A-Z]:\\|%APPDATA%/);
@@ -762,8 +770,7 @@ describe("the setup artefact is generated per client", () => {
     // block above still shows the placeholder -- buildSnippet emits the real
     // token only when one has actually been minted, and none has yet here.
     renderWizard();
-    await pickClient("Cursor");
-    fireEvent.click(authCard("token"));
+    await reachSetupStep("Cursor", "token");
 
     const text = (await screen.findByText(/"mcpServers"/)).textContent ?? "";
     expect(text).toContain("YOUR_CONNECTION_TOKEN");
@@ -777,8 +784,7 @@ describe("the setup artefact is generated per client", () => {
 describe("the wizard does not promise things it cannot deliver", () => {
   it("does not claim the entered name appears on the approval screen", async () => {
     renderWizard();
-    await pickClient("Claude Code");
-    fireEvent.click(authCard("oauth"));
+    await reachSetupStep("Claude Code", "oauth");
     await screen.findByText(/"mcpServers"/);
 
     // The old copy said "shown on the approval screen". Nothing carries the
@@ -791,8 +797,7 @@ describe("the wizard does not promise things it cannot deliver", () => {
 
   it("states the self-hosted proxy requirement beside the endpoint it printed", async () => {
     renderWizard();
-    await pickClient("Claude Code");
-    fireEvent.click(authCard("oauth"));
+    await reachSetupStep("Claude Code", "oauth");
     await screen.findByText(/"mcpServers"/);
 
     // The URL is derived from the origin, which does not prove anything
@@ -1075,8 +1080,7 @@ describe("the wizard does not promise to carry the scope it collected", () => {
 describe("changing the client recomputes rather than carrying a stale answer", () => {
   it("drops a method the newly chosen client cannot use", async () => {
     renderWizard();
-    await pickClient("Cursor");
-    fireEvent.click(authCard("token"));
+    await reachSetupStep("Cursor", "token");
     expect(await screen.findByText(/"mcpServers"/)).toBeInTheDocument();
 
     // Claude Desktop cannot use a token. The wizard must fall back to asking,
@@ -1286,8 +1290,7 @@ async function reachCapabilityStep() {
 describe("choosing what a token may do (step 4, token path only)", () => {
   it("renders no capability heading at all on the OAuth path", async () => {
     renderWizard();
-    await pickClient("Cursor");
-    fireEvent.click(authCard("oauth"));
+    await reachSetupStep("Cursor", "oauth");
     await screen.findByTestId("site-step-count");
     expect(screen.queryByRole("heading", { name: /choose what it may do/i })).toBeNull();
   });
@@ -1340,8 +1343,7 @@ describe("choosing what a token may do (step 4, token path only)", () => {
     // turns it green again.
     loadedFleet(3);
     renderWizard();
-    await pickClient("Cursor");
-    fireEvent.click(authCard("token"));
+    await reachSetupStep("Cursor", "token");
     await screen.findByTestId("site-step-count");
     // A valid site scope, so the ONLY thing left blocking the button is the
     // capability deselection this test is actually about.
@@ -1362,8 +1364,7 @@ describe("choosing what a token may do (step 4, token path only)", () => {
   it("re-enables minting the moment a capability is checked again -- the over-fire arm of the guard above", async () => {
     loadedFleet(3);
     renderWizard();
-    await pickClient("Cursor");
-    fireEvent.click(authCard("token"));
+    await reachSetupStep("Cursor", "token");
     await screen.findByTestId("site-step-count");
     fireEvent.click(screen.getByRole("button", { name: /\+ add sites/i }));
     fireEvent.click(pickerBoxes()[0]!);
@@ -1727,8 +1728,7 @@ describe("minting a connection token", () => {
     });
 
     renderWizard();
-    await pickClient("Cursor");
-    fireEvent.click(authCard("token"));
+    await reachSetupStep("Cursor", "token");
     await screen.findByTestId("site-step-count");
     fireEvent.click(screen.getByRole("button", { name: /\+ add sites/i }));
 
@@ -1778,8 +1778,7 @@ describe("minting a connection token", () => {
     });
 
     renderWizard();
-    await pickClient("Cursor");
-    fireEvent.click(authCard("token"));
+    await reachSetupStep("Cursor", "token");
     await screen.findByTestId("site-step-count");
     fireEvent.click(screen.getByRole("radio", { name: /by tag/i }));
     fireEvent.click(screen.getByRole("button", { name: /\+ add tags/i }));
@@ -1801,8 +1800,7 @@ describe("minting a connection token", () => {
     loadedFleet(3);
     mockedTags.mockReturnValue(mockQueryResult<SiteTag[]>({ data: undefined, isPending: true }));
     renderWizard();
-    await pickClient("Cursor");
-    fireEvent.click(authCard("token"));
+    await reachSetupStep("Cursor", "token");
     await screen.findByTestId("site-step-count");
     fireEvent.click(screen.getByRole("radio", { name: /by tag/i }));
 
@@ -1825,8 +1823,7 @@ describe("minting a connection token", () => {
     // the button, get a 400.
     loadedFleet(3);
     renderWizard();
-    await pickClient("Cursor");
-    fireEvent.click(authCard("token"));
+    await reachSetupStep("Cursor", "token");
 
     const button = await screen.findByRole("button", { name: /generate connection token/i });
     expect(button).toBeDisabled();
@@ -1846,8 +1843,7 @@ describe("minting a connection token", () => {
       mockQueryResult<SiteTag[]>({ data: [{ id: "tag-uuid-1", name: "prod" } as SiteTag] }),
     );
     renderWizard();
-    await pickClient("Cursor");
-    fireEvent.click(authCard("token"));
+    await reachSetupStep("Cursor", "token");
     await screen.findByTestId("site-step-count");
     fireEvent.click(screen.getByRole("radio", { name: /by tag/i }));
 
