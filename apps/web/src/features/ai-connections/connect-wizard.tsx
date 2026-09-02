@@ -193,6 +193,64 @@ function unbuiltRailNote(steps: readonly SpecStepDef[]): string {
   return `${list} ${verb} not built yet, so ${unbuilt.length === 1 ? "it is" : "they are"} shown but not offered.`;
 }
 
+/**
+ * THE TWO PRESETS, and there are two because the owner ruled two. The deck
+ * draws four; the other two name a propose model the backend does not have
+ * (ruling 17), so building them would put a shortcut on screen that sets a
+ * capability no grant can hold.
+ *
+ * BOTH ARE DERIVED FROM THE VOCABULARY, NOT WRITTEN OUT. "Read everything" is
+ * every conferrable capability, so a capability added to CONFERRABLE_CAPABILITIES
+ * joins it by construction rather than by somebody remembering. Writing the
+ * seven names here would be a second copy of the list that capabilities.ts
+ * exists to prevent, and its failure mode is a preset called "read everything"
+ * that quietly stops meaning it.
+ */
+const CAPABILITY_PRESETS = [
+  {
+    id: "basics",
+    label: "Just the basics",
+    /**
+     * The default the wizard already opens on, and dto.go's own default for an
+     * omitted field. An operator who changes nothing gets exactly what not
+     * answering would have given them.
+     */
+    capabilities: ["mcp.sites.read"] as readonly string[],
+    description: "See which sites are in scope, and nothing else.",
+  },
+  {
+    id: "read-everything",
+    label: "Read everything",
+    capabilities: CONFERRABLE_CAPABILITIES as readonly string[],
+    description: "Every read this connection could be given. It still cannot change anything.",
+  },
+] as const;
+
+/**
+ * Which preset the CURRENT selection is, or null for a custom set.
+ *
+ * DERIVED ON EVERY RENDER, NEVER STORED, AND THAT IS THE WHOLE DESIGN. Ruling
+ * 33 says touching a checkbox moves the control to an unlabelled Custom state.
+ * Storing "the operator pressed Read everything" and clearing it on each
+ * checkbox change would implement that with a second piece of state that can
+ * disagree with the set underneath -- and a label claiming a preset over a set
+ * that has diverged is this component's signature defect, the same shape as the
+ * rail claiming a step done while its action was blocked.
+ *
+ * Deriving it means the disagreement is not merely tested against, it is
+ * UNCONSTRUCTIBLE: there is no second value for a label to read. Unticking a
+ * row from "read everything" makes this return null on the very same render,
+ * and re-ticking it makes the preset name come back on its own -- which is
+ * correct, because the set genuinely is that preset again.
+ */
+function presetFor(selected: readonly string[]): string | null {
+  const chosen = [...selected].sort().join("|");
+  const match = CAPABILITY_PRESETS.find(
+    (p) => [...p.capabilities].sort().join("|") === chosen,
+  );
+  return match?.id ?? null;
+}
+
 /** Each built section's local step, named rather than written as a bare number. */
 const CONTRACT_LOCAL_STEP: Step = 1;
 const CLIENT_LOCAL_STEP: Step = 2;
@@ -559,6 +617,11 @@ export function ConnectWizard({
     [capabilities],
   );
 
+  // WHICH PRESET THE OPERATOR IS ON, OR NULL FOR CUSTOM -- derived from the
+  // same `capabilities` array the checkboxes render and the mint sends, so the
+  // label, the ticks and the wire payload are three readings of one value.
+  const activePreset = presetFor(capabilities);
+
   // THE RAIL'S CAPABILITY STATE, mirroring siteScopeState immediately above:
   // one function, read by both the rail and `mintBlockedReason` below, so
   // "step 4 reads done" and "mint will actually accept this" cannot drift
@@ -895,6 +958,59 @@ export function ConnectWizard({
               {describeSiteScope(scope)} This decides what it may see there -- how many sites
               it reaches is step 3's answer, already given.
             </p>
+            {/* THE PRESETS. A shortcut, not a mode: pressing one sets the
+                checkboxes and nothing else, and the moment the set diverges the
+                control says Custom. That is not enforced by a handler -- it is
+                derived by presetFor, so no code path exists that could leave a
+                preset selected over a set that no longer matches it. */}
+            <div className="space-y-2">
+              <p className="text-xs font-medium text-[var(--color-foreground)]">Start from</p>
+              <div className="flex flex-wrap items-center gap-2" data-testid="capability-presets">
+                {CAPABILITY_PRESETS.map((preset) => {
+                  const active = activePreset === preset.id;
+                  return (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      data-testid={`preset-${preset.id}`}
+                      aria-pressed={active}
+                      disabled={mintInFlight}
+                      onClick={() => {
+                        setCapabilities([...preset.capabilities]);
+                      }}
+                      className={cn(
+                        "rounded-md border px-3 py-1.5 text-left text-xs transition-colors",
+                        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-ring)]",
+                        mintInFlight && "cursor-not-allowed opacity-70",
+                        active
+                          ? "border-[var(--color-primary)] bg-[var(--color-accent)] font-medium text-[var(--color-foreground)]"
+                          : "border-[var(--color-border)] text-[var(--color-muted-foreground)] hover:bg-[var(--color-accent)]",
+                      )}
+                    >
+                      {preset.label}
+                    </button>
+                  );
+                })}
+                {/* THE THIRD STATE, AND IT IS A STATEMENT RATHER THAN A BUTTON.
+                    Ruling 33 calls it unlabelled and there is nothing to press:
+                    Custom is where you ARE, not somewhere you go. Rendering it
+                    as a third button would invite an operator to click it and
+                    wonder why nothing happened. */}
+                {activePreset === null ? (
+                  <span
+                    data-testid="preset-custom"
+                    className="rounded-md border border-dashed border-[var(--color-border)] px-3 py-1.5 text-xs font-medium text-[var(--color-foreground)]"
+                  >
+                    Custom
+                  </span>
+                ) : null}
+              </div>
+              <p className="text-xs text-[var(--color-muted-foreground)]">
+                {activePreset === null
+                  ? "You have changed the rows below, so this is your own set rather than either shortcut."
+                  : (CAPABILITY_PRESETS.find((p) => p.id === activePreset)?.description ?? "")}
+              </p>
+            </div>
             <ul className="space-y-2">
               {KNOWN_CAPABILITIES.map((cap) => {
                 const conferrable = (CONFERRABLE_CAPABILITIES as readonly string[]).includes(cap);
