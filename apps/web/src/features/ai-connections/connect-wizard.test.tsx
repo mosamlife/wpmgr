@@ -3520,10 +3520,6 @@ describe("the cursor is clamped to the first step the answers do not support", (
 // ---------------------------------------------------------------------------
 
 describe("the closing sentence says what is true of the path that reached it", () => {
-  beforeEach(() => {
-    vi.restoreAllMocks();
-  });
-
   it("does not claim a connection exists at the browser sign-in hand-off", async () => {
     loadedFleet(3);
     renderWizard();
