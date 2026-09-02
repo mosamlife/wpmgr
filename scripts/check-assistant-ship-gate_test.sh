@@ -355,6 +355,26 @@ rm -f "$t/apps/api/internal/proposal.go"
 expect_rc_and_text 'item 3 fires when the proposals table has no Go code path' "$t" 1 \
   'drive the proposal state machine from Go'
 
+# THE MISSING-DIRECTORY CASE, AND WHY IT IS NOT THE SAME AS i3d.
+#
+# i3d deletes the FILE inside a directory that still exists. It therefore never
+# exercised what the probe did when the directory itself was gone -- and the
+# shipped probe wrapped the whole check in `if [ -d "$D_API/internal" ]`, so a
+# renamed or deleted tree SKIPPED the requirement rather than failing it. That
+# is a missing input scoring as a pass, inside the guard whose own headline rule
+# is that a guard which finds nothing must go red, not green. Nothing else
+# caught it: the anti-rot probes verify $D_API and $D_MIGRATIONS only, so
+# apps/api/internal can vanish without a GUARD BROKEN.
+#
+# The directory is removed from the WORKING TREE only. It stays in git history,
+# so artefact currency still resolves and the guard reaches scoring rather than
+# exiting 2 -- which is the point: this case must prove item 3 goes UNMET, not
+# that the run aborts for an unrelated reason.
+t="$(clone_good i3e)"
+rm -rf "$t/apps/api/internal"
+expect_rc_and_text 'item 3 fires when apps/api/internal is absent entirely' "$t" 1 \
+  'drive the proposal state machine from Go'
+
 # --- item 4 ---------------------------------------------------------------
 t="$(clone_good i4a)"
 rm -f "$t/apps/api/internal/audit/failclosed.go"
@@ -386,6 +406,33 @@ t="$(clone_good i5b)"
 rm -f "$t/apps/api/tests/tenant_assistant_test.go"
 expect_rc_and_text 'item 5 fires when the tenant default-off proof is gone' "$t" 1 \
   'tenant default-off proof'
+
+# EVERY ALTERNATIVE OF A PATTERN MUST BE REACHABLE, AND THIS IS HOW YOU PROVE IT.
+#
+# Item 5's name pattern offers two ways to spell the default-off proof. The
+# passing fixture above names its test TestNoAssistantControlWritesEnablement,
+# which only ever exercises the SECOND alternative. The first was shipped as
+# `\(Default\|Disabled\|Off\)` -- BRE alternation handed to `grep -lE`, where
+# `\(`, `\|` and `\)` are the LITERAL characters. It asked for an identifier
+# containing the text "(Default|Disabled|Off)", which no Go identifier may
+# contain, so it could not match anything, ever. Item 5 still read MET off the
+# second alternative, so a check that could never fire was indistinguishable
+# from one that always passed, and no case in this suite noticed.
+#
+# The fix is a case that can ONLY pass through the first alternative: delete the
+# NoAssistantControl spelling and offer the Default/Disabled/Off one instead. A
+# never-matching first alternative makes this go red. That is the general
+# lesson -- a pattern with alternatives needs a case per alternative, or the
+# dead ones are invisible.
+t="$(clone_good i5c)"
+rm -f "$t/apps/api/tests/tenant_assistant_test.go"
+{
+  printf 'package tests\n\n'
+  printf 'func TestAssistantDisabledByDefault(t *testing.T) {\n'
+  printf '\trequire.Nil(t, org.assistantEnabledAt)\n}\n'
+} >"$t/apps/api/tests/tenant_assistant_test.go"
+expect_rc 'item 5 accepts the Default/Disabled/Off spelling of the default-off proof' "$t" 0
+expect_not_text 'and that spelling leaves no item UNMET' "$t" '] UNMET'
 
 # --- item 6 ---------------------------------------------------------------
 t="$(clone_good i6a)"
