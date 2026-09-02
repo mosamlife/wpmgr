@@ -6,6 +6,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ## [Unreleased]
 
+## [0.61.158] - 2026-09-02
+
+### Fixed
+
+- The connection wizard's capability step showed the "no capability is selected" refusal twice, stacked in two panels. It now shows once.
+
 ## [0.61.157] - 2026-09-02
 
 ### Changed
