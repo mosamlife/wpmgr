@@ -141,7 +141,22 @@ function specStepFor(step: Step): number {
 interface SpecStepDef {
   /** The specified step number (design S29), 1 through 10. */
   readonly n: number;
-  readonly label: string;
+  /**
+   * THE RAIL LABEL, AND IT IS THE SHORT ONE. Ruling 15 on the deck: "The
+   * stepper's short labels (Start, Client, Sites, Capabilities, Auth, Setup,
+   * Authorize, Confirm, Test, Done) are canonical for the rail; the long frame
+   * titles are canonical for the screen heading." We shipped the long titles
+   * in the rail, slash-separated, which is the frame heading standing in a
+   * place it does not belong and reads as a paragraph rather than a stepper.
+   */
+  readonly rail: string;
+  /**
+   * The long frame title, canonical for the screen heading. Held here so the
+   * rail and the section heading are two renderings of ONE row, and cannot
+   * drift into naming the same step differently -- which is exactly the defect
+   * reported: the rail called a section step 5 while its own heading said 2.
+   */
+  readonly heading: string;
   /** True when this specified step has a built, reachable section today. */
   readonly built: boolean;
 }
@@ -150,20 +165,22 @@ interface SpecStepDef {
 // starting. Only five are `built: true`; the rest render as not-yet-available
 // rather than being omitted or, worse, made to look done.
 const SPEC_STEPS: readonly SpecStepDef[] = [
-  { n: 1, label: "Start a connection", built: false },
-  { n: 2, label: "Name it, pick the AI client", built: true },
-  { n: 3, label: "Choose which sites", built: true },
+  { n: 1, rail: "Start", heading: "Start a connection", built: false },
+  { n: 2, rail: "Client", heading: "Name it, pick the AI client", built: true },
+  { n: 3, rail: "Sites", heading: "Choose which sites", built: true },
   // Built on the TOKEN path only -- see the file-top comment on the OAuth
   // split. `built: true` still means "reachable on at least one path", the
   // same standard site-scope and setup already meet even though the sites
   // page's copy names its own limits per method.
-  { n: 4, label: "Choose what it may do", built: true },
-  { n: 5, label: "Choose how it authenticates", built: true },
-  { n: 6, label: "Get the setup artefact", built: true },
-  { n: 7, label: "Connect and authorize", built: false },
-  { n: 8, label: "WPMgr confirms connection is live", built: false },
-  { n: 9, label: "Verify with a first read", built: false },
-  { n: 10, label: "Done: tool list and first prompt", built: false },
+  { n: 4, rail: "Capabilities", heading: "Choose what it may do", built: true },
+  { n: 5, rail: "Auth", heading: "Choose how it authenticates", built: true },
+  { n: 6, rail: "Setup", heading: "Get the setup artefact", built: true },
+  { n: 7, rail: "Authorize", heading: "Connect and authorize", built: false },
+  { n: 8, rail: "Confirm", heading: "WPMgr confirms connection is live", built: false },
+  // "Test" in the rail, "Verify with a first read" as the heading -- ruling 15
+  // names this pair explicitly, because the deck uses both words for step 9.
+  { n: 9, rail: "Test", heading: "Verify with a first read", built: false },
+  { n: 10, rail: "Done", heading: "Done: tool list and first prompt", built: false },
 ];
 
 /**
@@ -485,7 +502,7 @@ export function ConnectWizard({
       ) : null}
 
       <Section
-        n={1}
+        specN={2}
         title="Pick your client"
         hint="Everything after this is computed from your answer, so nothing asks you twice."
       >
@@ -505,7 +522,7 @@ export function ConnectWizard({
 
       {client !== null ? (
         <Section
-          n={2}
+          specN={5}
           title="How it signs in"
           hint={`Computed from ${client.name}. A method it cannot use is disabled with the reason.`}
         >
@@ -576,7 +593,7 @@ export function ConnectWizard({
 
       {client !== null && method !== null ? (
         <Section
-          n={3}
+          specN={3}
           title="Sites this connection may reach"
           hint="Chosen before capabilities, on purpose. What a connection may do is only meaningful once you have fixed what it may do it to."
         >
@@ -609,7 +626,7 @@ export function ConnectWizard({
           choice is actually made. */}
       {client !== null && method === "token" ? (
         <Section
-          n={4}
+          specN={4}
           title="Choose what it may do"
           hint="Every capability here is read-only. Nothing on this list can change WordPress content or configuration."
         >
@@ -682,7 +699,7 @@ export function ConnectWizard({
 
       {client !== null && method !== null ? (
         <Section
-          n={5}
+          specN={6}
           title="Set it up"
           hint="Generated for this client. Every difference below is a real difference between clients."
         >
@@ -804,8 +821,18 @@ function StepRail({
       ? capabilityBuiltPos
       : currentPos;
   return (
-    <div className="space-y-1">
-      <ol className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[var(--color-muted-foreground)]">
+    <div className="space-y-2">
+      {/* THE STEPPER, AS THE DECK DRAWS IT: numbered circles, connector lines,
+          done / current / upcoming states, and the 640px breakpoint that
+          shortens the connectors. What shipped instead was the ten long frame
+          titles run together with slashes, which is a paragraph doing a rail's
+          job -- and it printed the FRAME HEADING text, which ruling 15 assigns
+          to the screen heading, in the one place the short labels are
+          canonical. Both halves are corrected here. */}
+      <ol
+        aria-label="Connection setup steps"
+        className="mb-1 flex flex-wrap items-center gap-y-2"
+      >
         {SPEC_STEPS.map((s, i) => {
           const isCurrent = s.n === effectiveCurrentSpec;
           // Completed means "earlier in the order this wizard actually
@@ -839,9 +866,27 @@ function StepRail({
                   : isCompleted
                     ? "completed"
                     : "upcoming";
+          // NOT FAKED PROGRESS, IN EITHER DIRECTION. A filled circle is the
+          // strongest "this is finished" signal on the screen, so it is drawn
+          // from `state` alone: an unbuilt step has no section behind it to
+          // have completed, and a built step the mint would still refuse gets
+          // neither the filled nor the ringed circle.
+          const isDone = state === "completed";
+          const isFailed = state === "failed";
           return (
-            <li key={s.n} className="flex items-center gap-2">
-              {i > 0 ? <span aria-hidden="true">/</span> : null}
+            <li key={s.n} className="flex items-center">
+              {i > 0 ? (
+                // THE CONNECTOR, AND THE DECK'S OWN BREAKPOINT. 44px wide
+                // above 640px, 16px below it, margins shrinking with it. `sm:`
+                // IS that 640px boundary: Tailwind's default `sm` is 640px and
+                // globals.css never redefines it, which the stepper test
+                // asserts rather than assumes.
+                <span
+                  aria-hidden="true"
+                  data-testid={`step-line-${s.n}`}
+                  className="mx-1.5 h-px w-4 shrink-0 bg-[var(--color-border)] sm:mx-2.5 sm:w-11"
+                />
+              ) : null}
               <span
                 aria-current={isCurrent ? "step" : undefined}
                 // A plain data attribute rather than only a class, so a test
@@ -849,24 +894,39 @@ function StepRail({
                 // coupling to Tailwind class names.
                 data-step-n={s.n}
                 data-step-state={state}
-                // NOT FAKED PROGRESS, IN EITHER DIRECTION. An unbuilt step
-                // gets none of the "current" or "completed" styling below,
-                // because it has no section behind it to have completed; a
-                // built step mint would still refuse gets neither "current"
-                // nor "completed" either, for the same reason.
-                className={cn(
-                  !s.built && "italic opacity-70",
-                  state === "current" && "font-medium text-[var(--color-foreground)]",
-                  state === "completed" && "text-[var(--color-foreground)]",
-                  state === "failed" && "text-[var(--color-destructive)]",
-                )}
+                className="flex items-center gap-2"
               >
-                {s.n}. {s.label}
-                {!s.built ? <span className="sr-only"> (not yet available)</span> : null}
-                {state === "loading" ? " (loading)" : null}
-                {state === "failed" ? " (failed to load)" : null}
-                {state === "tags-unresolved" ? " (tags still loading)" : null}
-                {state === "unselected" ? " (not chosen yet)" : null}
+                <span
+                  data-testid={`step-circle-${s.n}`}
+                  className={cn(
+                    "inline-flex size-[22px] flex-none items-center justify-center rounded-full border-[1.5px] border-[var(--color-border)] font-mono text-[11px] leading-none text-[var(--color-muted-foreground)]",
+                    isDone &&
+                      "border-[var(--color-primary)] bg-[var(--color-primary)] text-[var(--color-primary-foreground)]",
+                    isCurrent &&
+                      "border-2 border-[var(--color-primary)] text-[var(--color-primary)]",
+                    isFailed && "border-[var(--color-destructive)] text-[var(--color-destructive)]",
+                    !s.built && "opacity-70",
+                  )}
+                >
+                  {s.n}
+                </span>
+                <span
+                  data-testid={`step-label-${s.n}`}
+                  className={cn(
+                    "text-[12.5px] text-[var(--color-muted-foreground)]",
+                    !s.built && "italic opacity-70",
+                    isCurrent && "font-medium text-[var(--color-foreground)]",
+                    isDone && "text-[var(--color-foreground)]",
+                    isFailed && "text-[var(--color-destructive)]",
+                  )}
+                >
+                  {s.rail}
+                  {!s.built ? <span className="sr-only"> (not yet available)</span> : null}
+                  {state === "loading" ? " (loading)" : null}
+                  {state === "failed" ? " (failed to load)" : null}
+                  {state === "tags-unresolved" ? " (tags still loading)" : null}
+                  {state === "unselected" ? " (not chosen yet)" : null}
+                </span>
               </span>
             </li>
           );
@@ -918,22 +978,40 @@ export function recommendationFor(
     : "The documented headless path";
 }
 
+/**
+ * ONE SECTION, NUMBERED WITH THE SPECIFIED STEP IT ANSWERS -- never with its
+ * position on this page. That disagreement is the defect the owner reported:
+ * the rail called the setup section step 6 while the heading over it said "4.
+ * Set it up", so two numbering systems were on screen at once and contradicted
+ * each other. `specN` is looked up in SPEC_STEPS, which throws for a number
+ * that is not a specified step, so a section cannot be numbered off the spine
+ * at all.
+ *
+ * The heading keeps this section's OWN title rather than the deck's long frame
+ * title, where the two differ: the built section for specified step 2 asks for
+ * the client and not yet the name (the name field is still down in the setup
+ * section), and printing "Name it, pick the AI client" over it would promise a
+ * field that is not there. Ruling 15 governs which text is canonical for a
+ * heading; it does not license a heading that describes an unbuilt screen.
+ */
 function Section({
-  n,
+  specN,
   title,
   hint,
   children,
 }: {
-  n: number;
+  specN: number;
   title: string;
   hint: string;
   children: ReactNode;
 }) {
+  const spec = SPEC_STEPS.find((s) => s.n === specN);
+  if (spec === undefined) throw new Error(`section numbered off the spine: ${specN}`);
   return (
     <section aria-label={title} className="space-y-3">
       <div className="space-y-0.5">
         <h2 className="text-sm font-semibold text-[var(--color-foreground)]">
-          {n}. {title}
+          {spec.n}. {title}
         </h2>
         <p className="text-xs text-[var(--color-muted-foreground)]">{hint}</p>
       </div>
