@@ -129,6 +129,41 @@ function goNext() {
 }
 
 /**
+ * Advance the rail until the operator stands on specified step `n`.
+ *
+ * BOUNDED, AND LOUD IN BOTH DIRECTIONS. This was
+ * `while (Number(currentRailStep().dataset.stepN) < n) goNext();`, which had
+ * two failure modes and a message for neither. A rail that stops advancing
+ * while a Continue is still rendered spun here until the suite timeout, naming
+ * no step. And `Number(undefined)` is `NaN` with `NaN < n` false, so a segment
+ * that lost its `data-step-n` ended the walk immediately and every assertion
+ * after it ran against whatever step the wizard happened to be on. Many tests
+ * walk through here, so when the walk misbehaves it has to say where.
+ *
+ * The bound is the number of segments the rail is showing rather than a
+ * written-down ten: the rail holds each step once and `goNext` only moves
+ * forward, so one advance per segment is more than any walk can need, and the
+ * bound follows the rail if its length ever changes.
+ */
+function walkRailTo(n: number) {
+  const limit = railSegments().length;
+  for (let i = 0; i <= limit; i++) {
+    const at = Number(currentRailStep().dataset.stepN);
+    if (!Number.isFinite(at)) {
+      throw new Error(`walking to step ${String(n)}: the current rail segment has no step number`);
+    }
+    if (at === n) return;
+    if (at > n) {
+      throw new Error(`walking to step ${String(n)}: the rail is already past it, on ${String(at)}`);
+    }
+    goNext();
+  }
+  throw new Error(
+    `walking to step ${String(n)}: gave up after ${String(limit)} advances, still on step ${String(currentRailStep().dataset.stepN)}`,
+  );
+}
+
+/**
  * Leave the contract step, if that is where the walk currently stands.
  *
  * SPECIFIED STEP 1 IS A READING STEP AND IT IS WHERE EVERY WALK NOW STARTS.
@@ -638,7 +673,36 @@ describe("the step rail names all ten specified steps and marks the right one cu
   const BLOCKED_STATES = ["loading", "failed", "tags-unresolved", "unselected"];
 
   /**
+   * The states that mean "the operator is standing on this segment". Plain
+   * `current` when the step's gate is happy; the refusal's own name when it is
+   * not -- position and reason are the same fact said once.
+   */
+  const STANDING_STATES = ["current", ...BLOCKED_STATES];
+
+  /**
+   * Every state a segment may carry. A value outside this set is a state the
+   * rail invented, and it must redden here rather than fall through whatever
+   * branch happens not to name it.
+   */
+  const SEGMENT_STATES = [
+    ...STANDING_STATES,
+    "completed",
+    "upcoming",
+    "not-built",
+    "not-applicable",
+  ];
+
+  /**
    * Assert the invariants against whatever the rail is showing now.
+   *
+   * THE LOOP FILTERS NOTHING, AND IT COUNTS WHAT IT LOOKED AT. It used to skip
+   * every segment whose state was not `not-built`, so the day the tenth step
+   * became built there was no such segment, the body ran zero times, and this
+   * helper certified every walk that calls it by examining none of the rail.
+   * The property below holds for a segment in ANY state, so there is nothing
+   * left to filter on; the count after the loop is what makes that structural
+   * rather than a promise, because a `continue` reintroduced here leaves
+   * `examined` short of the segments on screen and this fails.
    *
    * NOTE WHAT THIS DELIBERATELY DOES NOT DO: assert where in the walk the
    * operator is. These are properties that hold at every point of every walk;
@@ -647,13 +711,27 @@ describe("the step rail names all ten specified steps and marks the right one cu
    */
   function expectRailIsCoherent() {
     const current = currentRailStep();
+    const segments = railSegments();
+    // An empty rail would satisfy every per-segment property vacuously, which
+    // is the same hollowness in a different place.
+    expect(segments.length).toBeGreaterThan(0);
 
-    for (const el of railSegments()) {
-      const state = el.dataset.stepState;
-      if (state !== "not-built") continue;
-      expect(el).not.toHaveAttribute("aria-current", "step");
-      expect(state).not.toBe("completed");
+    let examined = 0;
+    for (const el of segments) {
+      const state = el.dataset.stepState ?? "";
+      expect(SEGMENT_STATES).toContain(state);
+      // POSITION READ TWICE, FROM TWO SOURCES, AND THE TWO AGREE IN BOTH
+      // DIRECTIONS. `aria-current` is what a screen reader follows and
+      // `data-step-state` is what the style table draws from, so a segment
+      // that is completed, upcoming, not-built or not-applicable can never be
+      // the one the operator stands on, and a segment naming a refusal can
+      // never be one they are not standing on. Stated as an equality rather
+      // than as two implications so neither direction can be dropped without
+      // the assertion changing shape.
+      expect(STANDING_STATES.includes(state)).toBe(el === current);
+      examined += 1;
     }
+    expect(examined).toBe(segments.length);
 
     const refused = BLOCKED_STATES.includes(current.dataset.stepState ?? "");
     const advance = screen.queryByRole("button", { name: /^continue$/i });
@@ -2017,7 +2095,7 @@ describe("steps 8 to 10 open once a connection exists", () => {
     // sourced from it, and a walk that only worked while the token was still on
     // screen would hide exactly that defect.
     fireEvent.click(screen.getByRole("button", { name: /i have saved this token/i }));
-    while (Number(currentRailStep().dataset.stepN) < n) goNext();
+    walkRailTo(n);
   }
 
   it("does not offer them before a mint, and they are upcoming rather than unbuilt", async () => {
@@ -3428,5 +3506,91 @@ describe("the cursor is clamped to the first step the answers do not support", (
       expect(pos).toBeGreaterThanOrEqual(0);
       expect(pos).toBeLessThan(walk.length);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The closing sentence, on both walks.
+//
+// The two walks end in different places and on different facts. The token walk
+// ends on step 10 with a grant this wizard minted and holds the id of. The
+// browser sign-in walk ends on step 7, the approval hand-off, where the client
+// has not yet been started and step 7's own copy says declining creates
+// nothing. One sentence claiming a connection exists was shown at both.
+// ---------------------------------------------------------------------------
+
+describe("the closing sentence says what is true of the path that reached it", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("does not claim a connection exists at the browser sign-in hand-off", async () => {
+    loadedFleet(3);
+    renderWizard();
+    await leaveContractStep();
+    await reachSetupStep("Claude Code", "oauth");
+    walkRailTo(7);
+
+    // The terminus, and it IS the terminus: no Continue leads out of it.
+    expect(screen.queryByRole("button", { name: /^continue$/i })).toBeNull();
+    const terminus = screen.getByTestId("wizard-terminus");
+    expect(terminus).toHaveTextContent(/no connection exists yet/i);
+    expect(terminus).not.toHaveTextContent(/the connection exists/i);
+    // And it does not contradict the step it sits under, which tells the
+    // operator in its own words that nothing has been created here.
+    expect(screen.getByText(/declining creates nothing/i)).toBeInTheDocument();
+  });
+
+  it("does claim a connection exists at the end of the token walk", async () => {
+    // The other half, so the branch above is not just the copy for everyone:
+    // a mint has happened, the wizard holds the id, and the sentence about
+    // revoking it is true.
+    loadedFleet(3);
+    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      const url = urlOf(input);
+      if (url.endsWith("/tools")) return Promise.resolve(jsonResponse({ tools: [] }, 200));
+      if (url.includes("/status")) {
+        return Promise.resolve(
+          jsonResponse(
+            {
+              status: "active",
+              created_at: new Date().toISOString(),
+              observed_at: new Date().toISOString(),
+              poll_after_ms: 5000,
+              handshake: {
+                state: "awaiting_client",
+                recorded_at: null,
+                reported_client_name: null,
+                reported_client_version: null,
+                refusal: null,
+                protocol: { state: "never_connected", version: null },
+              },
+              first_call: {
+                state: "awaiting_first_call",
+                called_at: null,
+                tool_name: null,
+                audit_event_id: null,
+                last_used_at: null,
+                partial: null,
+              },
+            },
+            200,
+          ),
+        );
+      }
+      if (url === CONNECTIONS_PATH && init?.method === "POST") {
+        return Promise.resolve(jsonResponse(MINTED, 201));
+      }
+      return Promise.resolve(jsonResponse({}, 200));
+    });
+
+    fireEvent.click(await reachMintButton());
+    await screen.findByText(MINTED.token);
+    fireEvent.click(screen.getByRole("button", { name: /i have saved this token/i }));
+    walkRailTo(10);
+
+    const terminus = screen.getByTestId("wizard-terminus");
+    expect(terminus).toHaveTextContent(/the connection exists and can be revoked/i);
+    expect(terminus).not.toHaveTextContent(/no connection exists yet/i);
   });
 });

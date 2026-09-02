@@ -1286,6 +1286,7 @@ export function ConnectWizard({
       <WizardNav
         gate={currentGate}
         isLastBuiltStep={isLastBuiltStep}
+        connectionExists={connectionId !== null}
         canGoBack={cursorPos > 0}
         locked={mintInFlight}
         onBack={() => setRequestedStep(walk[cursorPos - 1]![0])}
@@ -1406,15 +1407,23 @@ const RAIL_SEGMENT_STYLES: Record<RailSegmentState, RailSegmentStyle> = {
  * the rail reads, so a refused Continue and a rail segment that is not marked
  * done are one fact stated twice, never two facts that can disagree.
  *
- * ON THE LAST BUILT STEP THERE IS NO CONTINUE AT ALL. Specified steps 7 to 10
- * are not built, so a Continue here would be a control leading nowhere. The
- * step's own action is the terminus instead -- the mint button on the token
- * path, the client instructions on the OAuth path -- and the rail already
- * shows the four remaining segments as not yet available.
+ * ON THE LAST STEP OF THE WALK THERE IS NO CONTINUE AT ALL, because there is
+ * no step after it to lead to. Which step that is depends on the path: the
+ * token walk ends on step 10 with a connection this wizard minted, and the
+ * browser sign-in walk ends on step 7, the approval hand-off, where the client
+ * has not yet created anything.
+ *
+ * THE CLOSING SENTENCE IS BRANCHED ON THAT, AND IT HAS TO BE. It said the
+ * connection exists and can be revoked, which is true at the end of the token
+ * walk and false at the end of the other one: step 7 states in its own words
+ * that declining creates nothing and that the client, not this wizard, starts
+ * the flow. `connectionExists` is the same fact `walkFor` reads to decide
+ * whether steps 8 to 10 are in the walk at all, so the two cannot drift.
  */
 function WizardNav({
   gate,
   isLastBuiltStep,
+  connectionExists,
   canGoBack,
   locked,
   onBack,
@@ -1422,6 +1431,8 @@ function WizardNav({
 }: {
   gate: StepGate;
   isLastBuiltStep: boolean;
+  /** Whether a mint has already returned a grant id -- see `walkFor`. */
+  connectionExists: boolean;
   canGoBack: boolean;
   locked: boolean;
   onBack: () => void;
@@ -1450,9 +1461,10 @@ function WizardNav({
         )}
       </div>
       {isLastBuiltStep ? (
-        <p className="text-xs text-[var(--color-muted-foreground)]">
-          This is the end of the wizard. Nothing here expires or has to be finished now: the
-          connection exists and can be revoked from Settings, AI connections at any time.
+        <p data-testid="wizard-terminus" className="text-xs text-[var(--color-muted-foreground)]">
+          {connectionExists
+            ? "This is the end of the wizard. Nothing here expires or has to be finished now: the connection exists and can be revoked from Settings, AI connections at any time."
+            : "This is the end of the wizard. No connection exists yet: your client creates it when you approve it in the browser, and it appears under Settings, AI connections once you have."}
         </p>
       ) : null}
     </div>
