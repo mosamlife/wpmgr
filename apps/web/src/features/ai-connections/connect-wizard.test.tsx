@@ -1999,22 +1999,25 @@ describe("the rail is a stepper, not a paragraph", () => {
     // Tailwind's default is 40rem/640px and this app must not have moved it.
     // Moving it would silently change where the connector shortens, which no
     // class-name assertion could see.
-    const { readFileSync, existsSync } = await import("node:fs");
-    const { resolve } = await import("node:path");
+    const fs = await import("node:fs");
+    const nodePath = await import("node:path");
     // Resolved from the process, and a MISSING file throws rather than
     // letting this test pass over nothing -- a check that cannot find its
     // input has to go red, not green.
     const candidates = [
-      resolve(process.cwd(), "src/styles/globals.css"),
-      resolve(process.cwd(), "apps/web/src/styles/globals.css"),
+      nodePath.resolve(process.cwd(), "src/styles/globals.css"),
+      nodePath.resolve(process.cwd(), "apps/web/src/styles/globals.css"),
     ];
-    const path = candidates.find((p) => existsSync(p));
-    if (path === undefined) throw new Error(`globals.css not found at ${candidates.join(" or ")}`);
-    const css = readFileSync(path, "utf8");
-    const override = /--breakpoint-sm:\s*([^;]+);/.exec(css);
+    const found = candidates.find((p) => fs.existsSync(p));
+    if (found === undefined) throw new Error(`globals.css not found at ${candidates.join(" or ")}`);
+    const css = fs.readFileSync(found, "utf8");
+    // The file has to have actually been read, or the regex below matches
+    // nothing and the assertion is skipped over an empty string.
+    expect(css).toContain("@theme");
+    const override = /--breakpoint-sm:\s*([^;]+);/.exec(css)?.[1];
     // Either untouched (Tailwind's own 40rem = 640px), or explicitly set to
     // the same value. Anything else moves the design's boundary.
-    if (override !== null) expect(override[1].trim()).toBe("40rem");
+    if (override !== undefined) expect(override.trim()).toBe("40rem");
   });
 
   it("fills the circle only for a step actually behind the operator, and rings the current one", async () => {
