@@ -2343,8 +2343,9 @@ describe("a blocked step never renders as the current one", () => {
 
   async function reachBlockedSiteScopeOnTokenPath() {
     renderWizard();
-    await reachSetupStep("Claude Code", "token");
-    await screen.findByTestId("site-step-count");
+    // Standing ON the scope step with nothing answered -- reachSetupStep would
+    // answer it in order to get past, which is the state this test is not about.
+    await reachSiteScopeStep("Claude Code", "token");
     const siteStep = document.querySelector('[data-step-n="3"]');
     if (!(siteStep instanceof HTMLElement)) throw new Error("no step 3 segment");
     return siteStep;
@@ -2372,8 +2373,7 @@ describe("a blocked step never renders as the current one", () => {
   it("gives the ring to no step while the fleet read is still loading", async () => {
     mockedSites.mockReturnValue(mockQueryResult<Site[]>({ data: undefined, isPending: true }));
     renderWizard();
-    await reachSetupStep("Claude Code", "token");
-    await screen.findByTestId("site-step-count");
+    await reachSiteScopeStep("Claude Code", "token");
 
     const siteStep = document.querySelector('[data-step-n="3"]');
     expect(siteStep).toHaveAttribute("data-step-state", "loading");
@@ -2391,11 +2391,40 @@ describe("the heading a section renders is the canonical one", () => {
   // test reddens on drift from the DECK and not merely on drift within the
   // file.
   it("renders the deck's frame title over every section it reveals", async () => {
+    // COLLECTED ONE STEP AT A TIME, because that is how the operator meets
+    // them. Exactly one heading is on screen at any moment, and the sequence
+    // below is what the walk produces in order.
+    loadedFleet(3);
     renderWizard();
-    await reachSetupStep("Claude Code", "token");
-    await screen.findByTestId("site-step-count");
+    await screen.findByRole("button", { name: /claude code/i });
 
-    const headings = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
+    const headings: (string | null)[] = [];
+    const capture = () => {
+      const level2 = screen.getAllByRole("heading", { level: 2 });
+      expect(level2).toHaveLength(1);
+      headings.push(level2[0]!.textContent);
+    };
+
+    capture();
+    await pickClientOnly("Claude Code");
+    goNext();
+
+    capture();
+    fireEvent.click(authCard("token"));
+    goNext();
+
+    await screen.findByTestId("site-step-count");
+    capture();
+    chooseAllSites();
+    goNext();
+
+    await screen.findByRole("heading", { name: /^4\. Choose what it may do$/ });
+    capture();
+    goNext();
+
+    await screen.findByRole("button", { name: /generate connection token/i });
+    capture();
+
     expect(headings).toEqual([
       // The single declared narrowing, and the only one: this section picks
       // the client and does not yet ask for the name step 2's frame title
@@ -2421,17 +2450,21 @@ describe("exactly one segment answers for the operator's position", () => {
   }
 
   it("keeps one current segment when site scope AND capabilities are both blocked", async () => {
+    // BOTH BLOCKING AT ONCE, reached the way an operator reaches it now: the
+    // capability step is answered badly first, then the scope behind it is
+    // taken away. Each blocked step used to promote its own segment, giving the
+    // rail two positions and handing the scroll ref to the later one.
+    loadedFleet(3);
     renderWizard();
-    await reachSetupStep("Claude Code", "token");
-    await screen.findByTestId("site-step-count");
+    await advanceToCapabilityStep();
 
-    // BOTH BLOCKING AT ONCE. Nothing is selected under 'list' mode (the
-    // wizard's opening state, deliberately empty), and now no capability is
-    // ticked either, so `siteScopeBlocking` and `capabilityBlocking` are both
-    // true. Each used to promote its own segment, giving the rail two
-    // positions and handing the scroll ref to the later one.
     fireEvent.click(screen.getByRole("checkbox", { name: /^Sites/i }));
     expect(screen.getByRole("checkbox", { name: /^Sites/i })).not.toBeChecked();
+    expect(continueButton()).toBeDisabled();
+
+    // Now walk back and remove the scope answer too, so step 3 refuses as well.
+    backToSiteStep();
+    fireEvent.click(pickerBoxes()[0]!);
 
     // Both steps still report their own blocked reason -- a reason is not a
     // claim on the operator's position, and each is worth showing.
@@ -2459,17 +2492,32 @@ describe("exactly one segment answers for the operator's position", () => {
     await screen.findByRole("button", { name: /claude code/i });
     expect(currentCount()).toBe(1);
 
-    await pickClient("Claude Code");
+    await pickClientOnly("Claude Code");
+    expect(currentCount()).toBe(1);
+    goNext();
     expect(currentCount()).toBe(1);
 
     fireEvent.click(authCard("token"));
+    expect(currentCount()).toBe(1);
+    goNext();
+
     await screen.findByTestId("site-step-count");
     expect(currentCount()).toBe(1);
+    chooseAllSites();
+    expect(currentCount()).toBe(1);
+    goNext();
 
-    fireEvent.click(screen.getByRole("checkbox", { name: /^Sites/i }));
+    await screen.findByRole("heading", { name: /^4\. Choose what it may do$/ });
     expect(currentCount()).toBe(1);
 
+    // Blocked, and still exactly one position.
     fireEvent.click(screen.getByRole("checkbox", { name: /^Sites/i }));
+    expect(currentCount()).toBe(1);
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Sites/i }));
+    expect(currentCount()).toBe(1);
+    goNext();
+
+    await screen.findByRole("button", { name: /generate connection token/i });
     expect(currentCount()).toBe(1);
   });
 
