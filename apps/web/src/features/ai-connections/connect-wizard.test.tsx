@@ -17,6 +17,7 @@ import { Route } from "@/routes/_authed/ai/connect";
 import { resolveCursorPos, WALK_SPEC_ORDER } from "./connect-wizard";
 import { authKeys } from "@/features/auth/use-auth";
 import { CLIENT_TABLE_VERIFIED_AT, MCP_CLIENTS } from "./client-table";
+import { CONFERRABLE_CAPABILITIES } from "./capabilities";
 import { useSites, DEFAULT_SITES_LIMIT } from "@/features/sites/use-sites";
 import { useTags } from "@/features/tags/use-tags";
 import { snapshotFromPage } from "@/features/mcp-consent/site-scope";
@@ -2086,6 +2087,142 @@ describe("steps 8 to 10 open once a connection exists", () => {
     // Step 9's copy must not claim a read from a last-used timestamp, which is
     // the one trap this screen exists to avoid.
     expect(screen.getByText(/never from a last-used timestamp/i)).toBeInTheDocument();
+  });
+});
+
+/**
+ * THE PRESETS, AND THE ONE PROPERTY THAT MATTERS: the label never disagrees
+ * with the checkboxes underneath it.
+ *
+ * These assert the RELATIONSHIP between what the control claims and what is
+ * ticked, not the sequence of clicks that produces it. A test that pressed a
+ * preset and then asserted "Custom appears" would pass against an
+ * implementation that showed Custom on every checkbox change regardless of the
+ * resulting set -- including when the operator ticks a row back and the set is
+ * once again exactly the preset.
+ */
+describe("a preset is a shortcut, not a mode", () => {
+  /** What the control currently claims: a preset id, or "custom". */
+  function claimed(): string {
+    if (screen.queryByTestId("preset-custom") !== null) return "custom";
+    const pressed = screen
+      .getAllByRole("button", { pressed: true })
+      .filter((b) => b.dataset.testid?.startsWith("preset-"));
+    expect(pressed).toHaveLength(1);
+    return pressed[0]!.dataset.testid!.replace("preset-", "");
+  }
+
+  /** The capability rows actually ticked, by label. */
+  function tickedLabels(): string[] {
+    return screen
+      .getAllByRole("checkbox")
+      .filter((b) => (b as HTMLInputElement).checked)
+      .map((b) => b.getAttribute("aria-label") ?? b.closest("label")?.textContent ?? "");
+  }
+
+  /**
+   * THE INVARIANT, checked wherever it is called: the claim and the ticks agree.
+   * "read-everything" means every enabled row is ticked; "basics" means exactly
+   * one is; "custom" means the set matches neither.
+   */
+  function expectClaimMatchesTicks() {
+    const boxes = screen.getAllByRole("checkbox") as HTMLInputElement[];
+    const enabled = boxes.filter((b) => !b.disabled);
+    const ticked = enabled.filter((b) => b.checked);
+    const claim = claimed();
+    if (claim === "read-everything") {
+      expect(ticked).toHaveLength(enabled.length);
+    } else if (claim === "basics") {
+      expect(ticked).toHaveLength(1);
+    } else {
+      // Custom must genuinely be neither, or the label is hiding a preset.
+      expect(ticked.length === enabled.length || ticked.length === 1).toBe(false);
+    }
+  }
+
+  it("opens on the basics preset, which is the server's own default", async () => {
+    await reachCapabilityStep();
+    expect(claimed()).toBe("basics");
+    expectClaimMatchesTicks();
+    expect(tickedLabels()).toHaveLength(1);
+  });
+
+  it("ticks every conferrable row when read-everything is pressed", async () => {
+    await reachCapabilityStep();
+    fireEvent.click(screen.getByTestId("preset-read-everything"));
+
+    expect(claimed()).toBe("read-everything");
+    expectClaimMatchesTicks();
+    // AND THE UNCONFERRABLE ROW IS STILL NOT TICKED. "Read everything" means
+    // every capability the server would confer, not every capability in the
+    // vocabulary -- mcp.content.read is in the list and can never be granted.
+    const disabled = (screen.getAllByRole("checkbox") as HTMLInputElement[]).filter(
+      (b) => b.disabled,
+    );
+    expect(disabled.length).toBeGreaterThan(0);
+    for (const b of disabled) expect(b.checked).toBe(false);
+  });
+
+  it("drops the preset claim the moment one row diverges from it", async () => {
+    await reachCapabilityStep();
+    fireEvent.click(screen.getByTestId("preset-read-everything"));
+    expect(claimed()).toBe("read-everything");
+
+    // Untick one row. The set is no longer that preset, so the control must
+    // stop saying it is -- on this render, not on the next interaction.
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Uptime/i }));
+    expect(claimed()).toBe("custom");
+    expectClaimMatchesTicks();
+  });
+
+  it("takes the claim back when the set becomes a preset again", async () => {
+    // THE OVER-FIRE ARM, and the reason this is derived rather than stored. A
+    // control that latched Custom on the first checkbox change would still say
+    // Custom here, over a set that is exactly the preset -- a label lying in
+    // the other direction, which is just as wrong and much easier to ship.
+    await reachCapabilityStep();
+    fireEvent.click(screen.getByTestId("preset-read-everything"));
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Uptime/i }));
+    expect(claimed()).toBe("custom");
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Uptime/i }));
+    expect(claimed()).toBe("read-everything");
+    expectClaimMatchesTicks();
+  });
+
+  it("still refuses an empty selection rather than falling back to a preset", async () => {
+    // The presets must not have given the empty set somewhere to hide. Custom
+    // is the honest claim for "nothing ticked", and Continue still refuses.
+    await reachCapabilityStep();
+    fireEvent.click(screen.getByTestId("preset-basics"));
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Sites/i }));
+
+    expect(claimed()).toBe("custom");
+    expect(continueButton()).toBeDisabled();
+    expect(screen.getAllByText(/no capability is selected/i)).toHaveLength(1);
+  });
+
+  it("sends the preset's exact set on the wire, not a default", async () => {
+    loadedFleet(3);
+    let capturedBody: unknown = null;
+    stubMintFetch((init) => {
+      capturedBody = typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : null;
+      return jsonResponse(MINTED, 201);
+    });
+
+    renderWizard();
+    await advanceToCapabilityStep(chooseAllSites);
+    fireEvent.click(screen.getByTestId("preset-read-everything"));
+    fireEvent.click(await forwardToMintButtonFromCapabilities());
+    await screen.findByText(/this is the only time this token is shown/i);
+
+    const body = capturedBody as Record<string, unknown>;
+    const sent = body.capabilities as string[];
+    // Every conferrable capability, and the unconferrable one absent -- read
+    // off the same vocabulary the component uses rather than a written list,
+    // so a capability added to the product joins this assertion by itself.
+    expect([...sent].sort()).toEqual([...CONFERRABLE_CAPABILITIES].sort());
+    expect(sent).not.toContain("mcp.content.read");
   });
 });
 
