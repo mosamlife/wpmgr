@@ -217,7 +217,7 @@ func TestFleetUpdatesPending_DoesNotLeakAnUnscopedSite(t *testing.T) {
 	if p.Sites[0].SiteID != inScope.String() {
 		t.Errorf("site_id = %s, want the in-scope site %s", p.Sites[0].SiteID, inScope)
 	}
-	if len(p.Sites[0].Plugins) != 1 || p.Sites[0].Plugins[0].Slug != "in-scope-plugin" {
+	if len(p.Sites[0].Plugins) != 1 || p.Sites[0].Plugins[0].Slug != fenceSiteText("in-scope-plugin") {
 		t.Errorf("plugins = %+v, want exactly [in-scope-plugin]", p.Sites[0].Plugins)
 	}
 }
@@ -287,29 +287,33 @@ func TestFleetUpdatesPending_ReportsExactPendingUpdates(t *testing.T) {
 		t.Fatalf("acme plugins = %+v, want exactly 2 (hello-dolly has no advisory)", got.Plugins)
 	}
 	// ACTIVE BEFORE INACTIVE, matching the dashboard's own order.
-	if got.Plugins[0].Slug != "woocommerce" || got.Plugins[1].Slug != "akismet" {
+	// EVERY EXPECTATION BELOW IS FENCED. Slugs, names and version strings all
+	// come out of the site's inventory document, so each one carries the
+	// site-supplied marker in the rendered result; see fence.go.
+	if got.Plugins[0].Slug != fenceSiteText("woocommerce") || got.Plugins[1].Slug != fenceSiteText("akismet") {
 		t.Errorf("plugin order = [%s %s], want [woocommerce akismet] (active before inactive)",
 			got.Plugins[0].Slug, got.Plugins[1].Slug)
 	}
-	if got.Plugins[0].InstalledVersion != "8.1.0" || got.Plugins[0].NewVersion != "8.4.0" {
+	if got.Plugins[0].InstalledVersion != fenceSiteText("8.1.0") || got.Plugins[0].NewVersion != fenceSiteText("8.4.0") {
 		t.Errorf("woocommerce = %s -> %s, want 8.1.0 -> 8.4.0",
 			got.Plugins[0].InstalledVersion, got.Plugins[0].NewVersion)
 	}
-	if got.Plugins[0].Name != "WooCommerce" || !got.Plugins[0].Active {
+	if got.Plugins[0].Name != fenceSiteText("WooCommerce") || !got.Plugins[0].Active {
 		t.Errorf("woocommerce name/active = %q/%v, want WooCommerce/true",
 			got.Plugins[0].Name, got.Plugins[0].Active)
 	}
-	if got.Plugins[1].InstalledVersion != "5.1" || got.Plugins[1].NewVersion != "5.3" {
+	if got.Plugins[1].InstalledVersion != fenceSiteText("5.1") || got.Plugins[1].NewVersion != fenceSiteText("5.3") {
 		t.Errorf("akismet = %s -> %s, want 5.1 -> 5.3",
 			got.Plugins[1].InstalledVersion, got.Plugins[1].NewVersion)
 	}
-	if len(got.Themes) != 1 || got.Themes[0].Slug != "twentytwentyfour" || got.Themes[0].NewVersion != "1.2" {
+	if len(got.Themes) != 1 || got.Themes[0].Slug != fenceSiteText("twentytwentyfour") ||
+		got.Themes[0].NewVersion != fenceSiteText("1.2") {
 		t.Errorf("themes = %+v, want exactly [twentytwentyfour -> 1.2]", got.Themes)
 	}
 	if got.Core == nil {
 		t.Fatal("acme core_update is null, want 6.5.2 -> 6.6")
 	}
-	if got.Core.CurrentVersion != "6.5.2" || got.Core.NewVersion != "6.6" {
+	if got.Core.CurrentVersion != fenceSiteText("6.5.2") || got.Core.NewVersion != fenceSiteText("6.6") {
 		t.Errorf("core = %s -> %s, want 6.5.2 -> 6.6", got.Core.CurrentVersion, got.Core.NewVersion)
 	}
 
@@ -384,7 +388,7 @@ func TestFleetUpdatesPending_AgreesWithTheDashboardsPredicates(t *testing.T) {
 		t.Errorf("pending_total = %d, want 1 -- only woocommerce is actionable. Got plugins %+v, "+
 			"core %+v", got.PendingTotal, got.Plugins, got.Core)
 	}
-	if len(got.Plugins) != 1 || got.Plugins[0].Slug != "woocommerce" {
+	if len(got.Plugins) != 1 || got.Plugins[0].Slug != fenceSiteText("woocommerce") {
 		t.Fatalf("plugins = %+v, want exactly [woocommerce]", got.Plugins)
 	}
 	// Named, so the failure says WHICH rule broke rather than only that a count
@@ -581,7 +585,8 @@ func TestFleetUpdatesPending_SummaryCarriesTheAgeInProse(t *testing.T) {
 		byName[s.Name] = s.Summary
 	}
 
-	oldSummary := byName["forgotten.example"]
+	// KEYED ON THE FENCED NAME, because that is what the record now carries.
+	oldSummary := byName[fenceSiteText("forgotten.example")]
 	// THE AGE IS IN THE SENTENCE, not only in a neighbouring key.
 	if !strings.Contains(oldSummary, "months ago") {
 		t.Errorf("the summary for an eight-month-old inventory does not carry its age in prose: %q",
@@ -593,7 +598,7 @@ func TestFleetUpdatesPending_SummaryCarriesTheAgeInProse(t *testing.T) {
 		t.Errorf("the summary does not carry the count alongside the age: %q", oldSummary)
 	}
 
-	recentSummary := byName["current.example"]
+	recentSummary := byName[fenceSiteText("current.example")]
 	if !strings.Contains(recentSummary, "2 hours ago") {
 		t.Errorf("the summary for a two-hour-old inventory does not carry its age: %q", recentSummary)
 	}

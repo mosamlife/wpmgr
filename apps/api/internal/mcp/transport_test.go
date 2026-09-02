@@ -773,7 +773,11 @@ func TestListSites_OneOversizedRecordDoesNotBlockTheRest(t *testing.T) {
 		t.Fatalf("got %d sites, want 1 — the fitting site was suppressed by the oversized one",
 			len(payload.Sites))
 	}
-	if payload.Sites[0].Name != "b-small-site" {
+	// FENCED, because every site-controlled value in a tool result is (A13).
+	// The expectation is written as fenceSiteText("b-small-site") rather than
+	// as the marked literal so that this assertion keeps pinning "the small
+	// site came back" and not "the marker is spelled this way".
+	if payload.Sites[0].Name != fenceSiteText("b-small-site") {
 		t.Errorf("returned %q, want the small site", payload.Sites[0].Name)
 	}
 	// It is still truncation and must still be marked.
