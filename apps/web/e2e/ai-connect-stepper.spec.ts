@@ -106,8 +106,15 @@ test.describe("the connection wizard stepper", () => {
     await expect(page.getByTestId("step-rail")).toBeVisible();
 
     // Walk to the auth step and scroll down it, which is where an operator
-    // stands when their next action changes the current step.
+    // stands when their next action changes the current step. The walk is the
+    // specified order now -- contract, client, sites, capabilities, auth -- so
+    // getting here passes through every step before it rather than two.
+    await page.getByRole("button", { name: /^Continue$/ }).click();
     await page.getByRole("button", { name: /claude code/i }).click();
+    await page.getByRole("button", { name: /^Continue$/ }).click();
+    await page.getByRole("radio", { name: /all sites/i }).click();
+    await page.getByRole("button", { name: /^Continue$/ }).click();
+    await expect(page.getByRole("heading", { name: /^4\. Choose what it may do$/ })).toBeVisible();
     await page.getByRole("button", { name: /^Continue$/ }).click();
     const tokenCard = page.locator('button[data-method="token"]');
     await tokenCard.scrollIntoViewIfNeeded();
@@ -130,11 +137,11 @@ test.describe("the connection wizard stepper", () => {
     expect(scrollTopBefore).toBeGreaterThan(0);
     const railBefore = await page.getByTestId("step-rail").evaluate((el) => el.scrollLeft);
 
-    // This moves the current step (auth -> site scope), so the rail's scroll
-    // effect runs.
+    // This moves the current step (auth -> setup artefact), so the rail's
+    // scroll effect runs.
     await tokenCard.click();
     await page.getByRole("button", { name: /^Continue$/ }).click();
-    await expect(page.locator('[data-step-n="3"]')).toHaveAttribute("aria-current", "step");
+    await expect(page.locator('[data-step-n="6"]')).toHaveAttribute("aria-current", "step");
 
     // The smooth scroll settles; poll rather than sleep so this is not timing
     // dependent.
