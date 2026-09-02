@@ -532,34 +532,84 @@ describe("the step rail names all ten specified steps and marks the right one cu
     await screen.findByRole("button", { name: /claude code/i });
 
     const unbuilt = railStateNs("not-built");
-    expect(unbuilt.length).toBeGreaterThan(0);
+    if (unbuilt.length === 0) {
+      // EVERY STEP IS BUILT, and the caption has to say so rather than name a
+      // set that is now empty. This branch is live today; the other one was
+      // live an hour ago. Asserting the relationship covers both without the
+      // test having to be rewritten each time the answer changes -- which is
+      // the whole reason the caption is derived rather than written.
+      expect(screen.getByText(/every step is built/i)).toBeInTheDocument();
+      expect(screen.queryByText(/not built yet/i)).toBeNull();
+      return;
+    }
     const caption = screen.getByText(/not built yet/i).textContent ?? "";
     for (const n of unbuilt) {
       expect(caption).toContain(n);
     }
-    // And it must not name a step the rail is offering. "Steps 7 to 10" over a
-    // rail whose 8, 9 and 10 are live is the exact defect.
+    // And it must not name a step the rail is offering.
     for (const n of railStateNs("upcoming")) {
       expect(caption).not.toContain(n);
     }
   });
 
-  it("names step 7 as the only one not built, and never marks it current", async () => {
+  it("rules nothing out before a method is chosen", async () => {
     renderWizard();
     await leaveContractStep();
     await screen.findByRole("button", { name: /claude code/i });
 
-    // ONLY 7. Steps 8, 9 and 10 exist now; they are simply ahead of an operator
-    // who has not minted anything yet, which is "upcoming" and not "not built".
-    // Conflating the two would tell an operator a screen does not exist when it
-    // is one button away.
-    expect(railStateNs("not-built")).toEqual(["7"]);
-    for (const n of ["8", "9", "10"]) {
-      expect(railSegment(n)).toHaveAttribute("data-step-state", "upcoming");
-    }
-    for (const n of ["7"]) {
-      expect(railSegment(n)).not.toHaveAttribute("aria-current", "step");
-    }
+    // NOTHING IS MARKED NOT-ASKED YET, and that is the rule that never changed:
+    // the answer that decides which of steps 7 to 10 this operator reaches is
+    // step 5's, and they have not given it. Striking a step through here would
+    // be a claim the wizard cannot yet make.
+    expect(railStateNs("not-applicable")).toEqual([]);
+    expect(railNumbers()).toHaveLength(10);
+  });
+
+  it("marks the steps the chosen path will never ask, in both directions", async () => {
+    // THE RAIL STATE IS PATH-AWARE BOTH WAYS, which is what makes it a general
+    // rule rather than a special case for one step. Asserted as the
+    // COMPLEMENT: whichever path is taken, the not-asked set and the reachable
+    // set together are all ten, and neither overlaps. A test naming "7" for one
+    // path and "8, 9, 10" for the other would pass against a rail that had
+    // simply hard-coded those numbers.
+    loadedFleet(3);
+    renderWizard();
+    await leaveContractStep();
+    await reachAuthStep("Cursor");
+
+    fireEvent.click(authCard("oauth"));
+    const oauthNotAsked = railStateNs("not-applicable");
+    expect(oauthNotAsked).toEqual(["8", "9", "10"]);
+
+    fireEvent.click(authCard("token"));
+    const tokenNotAsked = railStateNs("not-applicable");
+    expect(tokenNotAsked).toEqual(["7"]);
+
+    // Disjoint, and between them exactly the four steps that depend on the
+    // path. Neither path strikes through a step the other one also strikes.
+    expect(oauthNotAsked.filter((n) => tokenNotAsked.includes(n))).toEqual([]);
+    expect([...tokenNotAsked, ...oauthNotAsked].sort()).toEqual(["10", "7", "8", "9"]);
+  });
+
+  it("keeps the three rail states visually distinct, because they are three facts", async () => {
+    // NOT BUILT, NOT ASKED AND UPCOMING must not look alike: an operator who
+    // cannot tell them apart is guessing whether something they can see is
+    // missing, irrelevant, or simply next. Asserted on the classes the style
+    // table produces rather than on a colour, so it survives a restyle but not
+    // a collapse of two states into one.
+    loadedFleet(3);
+    renderWizard();
+    await leaveContractStep();
+    await reachAuthStep("Cursor");
+    fireEvent.click(authCard("token"));
+
+    const notAsked = screen.getByTestId("step-label-7");
+    const upcoming = screen.getByTestId("step-label-8");
+    expect(notAsked.className).toContain("line-through");
+    expect(upcoming.className).not.toContain("line-through");
+    // And the not-asked segment says WHY, rather than being silently dimmed.
+    expect(notAsked).toHaveTextContent(/not asked on this path/i);
+    expect(upcoming).not.toHaveTextContent(/not asked on this path/i);
   });
 
   // ---------------------------------------------------------------------------
@@ -689,10 +739,10 @@ describe("the step rail names all ten specified steps and marks the right one cu
     expect(visited).toEqual(["1", "2", "3", "4", "5", "6"]);
     // The same sequence as the module's own written statement of the walk, so
     // the two cannot drift into disagreeing about what the wizard does.
-    // THE WRITTEN WALK INCLUDES THE STEPS A CONNECTION UNLOCKS, and 7 is
-    // absent from it because that screen is not built. The DOM walk above stops
-    // at 6 because this operator has not minted; both are the same order.
-    expect(WALK_SPEC_ORDER).toEqual([1, 2, 3, 4, 5, 6, 8, 9, 10]);
+    // THE WRITTEN WALK IS ALL TEN, IN ORDER. The DOM walk above stops at 6
+    // because this operator has not minted yet and step 7 is not on their path;
+    // both are the same order, and no step is ever visited out of it.
+    expect(WALK_SPEC_ORDER).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
   });
 
   it("marks every step behind the operator complete, in that same order", async () => {
@@ -861,11 +911,11 @@ describe("the step rail names all ten specified steps and marks the right one cu
 
     expect(railNumbers()).toHaveLength(10);
     expect(railSegment("4")).toHaveAttribute("data-step-state", "upcoming");
-    // An unbuilt step still reads differently from one merely ahead of the
-    // operator: two different facts, and nobody should have to guess which.
-    expect(railSegment("7")).toHaveAttribute("data-step-state", "not-built");
-    expect(screen.getByTestId("step-label-7").className).toContain("italic");
-    expect(screen.getByTestId("step-label-4").className).not.toContain("italic");
+    // Before a method is chosen nothing is ruled out, so step 7 is ahead of
+    // this operator rather than struck through. Which of 7, or 8 to 10, gets
+    // struck is decided at step 5 and is asserted in "marks the steps the
+    // chosen path will never ask".
+    expect(railSegment("7")).toHaveAttribute("data-step-state", "upcoming");
 
     chooseAllSites();
     goNext();
@@ -2804,16 +2854,16 @@ describe("the rail is a stepper, not a paragraph", () => {
       "bg-[var(--color-primary)]",
     );
 
-    // Step 7 does not exist. No fill, no ring: an unbuilt step must never
-    // render as done or current.
-    expect(document.querySelector('[data-step-n="7"]')).toHaveAttribute(
+    // A step the operator has not reached gets no fill and no ring, whatever
+    // else is true of it. Step 8 is ahead of them here.
+    expect(document.querySelector('[data-step-n="8"]')).toHaveAttribute(
       "data-step-state",
-      "not-built",
+      "upcoming",
     );
-    expect(screen.getByTestId("step-circle-7").className).not.toContain(
+    expect(screen.getByTestId("step-circle-8").className).not.toContain(
       "bg-[var(--color-primary)]",
     );
-    expect(screen.getByTestId("step-circle-7").className).not.toContain("border-2");
+    expect(screen.getByTestId("step-circle-8").className).not.toContain("border-2");
   });
 });
 
