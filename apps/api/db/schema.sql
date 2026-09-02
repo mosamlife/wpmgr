@@ -5726,9 +5726,6 @@ CREATE TABLE mcp_grants (
             'mcp.performance.read',
             'mcp.security.read',
             'mcp.sites.read',
-            -- m134: the first member that is not a read. It confers the power
-            -- to ASK, never to change. 'mcp.updates.write' does not exist.
-            'mcp.updates.propose',
             'mcp.uptime.read'
         ]::text[]),
     -- The registered OAuth client, or NULL on the headless token path. No
