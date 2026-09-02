@@ -584,6 +584,14 @@ func (f *fakeStore) getGrant(_ context.Context, p domain.Principal, id uuid.UUID
 	return sqlc.McpGrant{}, pgx.ErrNoRows
 }
 
+// GetGrant is the exported single-grant read, and it is the SAME fixture the
+// status snapshot uses -- getErr, grants and the pgx.ErrNoRows contract all
+// keep driving the branches they already drove. A second fixture would let the
+// tool list and the status poll disagree about which grants exist.
+func (f *fakeStore) GetGrant(ctx context.Context, p domain.Principal, id uuid.UUID) (sqlc.McpGrant, error) {
+	return f.getGrant(ctx, p, id)
+}
+
 // findFirstToolCall models the audit half. firstCall is returned as given so a
 // test can assert every one of the three Step 9 states, INCLUDING the
 // Found=false/Truncated=true pair that must become indeterminate rather than a

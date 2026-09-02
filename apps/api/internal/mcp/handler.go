@@ -193,6 +193,16 @@ func (h *Handler) RegisterConnections(r *gin.RouterGroup) {
 	g.GET("/:"+connectionIDParam+"/status",
 		authz.RequirePermission(authz.PermAPIKeyRead), h.connectionStatus)
 
+	// GET /:connectionId/tools -- the wizard's Step 10 (S29 ruling 28): the
+	// tools THIS connection can actually see, rendered from the registry
+	// rather than from a list written into the screen. PermAPIKeyRead, the
+	// SAME permission as the list and the status poll above, because it reads
+	// the same object: a caller who may list the organisation's connections
+	// may read what one of them can call, and one who may not must not learn
+	// it a tool at a time.
+	g.GET("/:"+connectionIDParam+"/tools",
+		authz.RequirePermission(authz.PermAPIKeyRead), h.connectionTools)
+
 	// 405 rather than gin's bare 404 on a wrong verb, for the reason
 	// RegisterPublic gives: a 404 reads as "not deployed", which is exactly how
 	// the S6b-2 blocker presented and cost a debugging session. These carry NO
@@ -202,6 +212,7 @@ func (h *Handler) RegisterConnections(r *gin.RouterGroup) {
 	houseMethodNotAllowedExcept(g, "", http.MethodGet, http.MethodPost)
 	houseMethodNotAllowedExcept(g, "/:"+connectionIDParam+"/revoke", http.MethodPost)
 	houseMethodNotAllowedExcept(g, "/:"+connectionIDParam+"/status", http.MethodGet)
+	houseMethodNotAllowedExcept(g, "/:"+connectionIDParam+"/tools", http.MethodGet)
 }
 
 // listConnections answers GET /api/v1/mcp/connections.
