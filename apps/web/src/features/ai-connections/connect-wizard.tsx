@@ -967,14 +967,11 @@ function StepRail({
                   : isCompleted
                     ? "completed"
                     : "upcoming";
-          // EVERY VISUAL FROM THE ONE STATE VALUE, VIA THE TABLE. There is no
-          // second boolean here for a style to read, so the ring cannot
-          // appear on a step whose state says it is blocked -- that was the
-          // FIFTH instance of this component's one defect family (the rail
-          // saying a thing is fine while the action it gates is refused), and
-          // it happened because `isCurrent` was positional and the style read
-          // it directly. Position is now an input to `state` and to nothing
-          // else.
+          // EVERY VISUAL FROM THE ONE STATE VALUE, VIA THE TABLE. No style
+          // reads a second boolean, so the ring cannot appear on a step whose
+          // state says its action is blocked: a rail that presents a step as
+          // in hand while the mint button refuses it is this component's
+          // recurring defect, and one input is what makes it inexpressible.
           const style = RAIL_SEGMENT_STYLES[state];
           return (
             <li
@@ -1079,10 +1076,11 @@ export function recommendationFor(
 
 /**
  * ONE SECTION, NUMBERED WITH THE SPECIFIED STEP IT ANSWERS -- never with its
- * position on this page. That disagreement is the defect the owner reported:
- * the rail called the setup section step 6 while the heading over it said "4.
- * Set it up", so two numbering systems were on screen at once and contradicted
- * each other. `specN` is looked up in SPEC_STEPS, which throws for a number
+ * position on this page. Numbering by position puts two numbering systems on
+ * one screen -- the rail calling a section step 6 while the heading over it
+ * says "4. Set it up" -- and they contradict each other as soon as the page
+ * order stops matching the spine, which here it deliberately does not.
+ * `specN` is looked up in SPEC_STEPS, which throws for a number
  * that is not a specified step, so a section cannot be numbered off the spine
  * at all.
  *
@@ -1479,10 +1477,10 @@ function mintScopeRequest(
  *       -> mint N/A; NextSteps is unconditionally actionable the moment
  *          client and method are picked, so step 3 reads by POSITION alone
  *          (the ordinary completed/upcoming logic) and step 6 stays current.
- *   Getting this wrong the other way was Greptile's P1 on :639: dragging
- *   `aria-current` back to step 3 while an OAuth operator sits in an
- *   already-actionable step 6, because the predicate could not tell "no
- *   button exists here" from "the button here is disabled."
+ *   The over-fire this avoids: dragging `aria-current` back to step 3 while
+ *   an OAuth operator sits in an already-actionable step 6, because the
+ *   predicate could not tell "no button exists here" from "the button here
+ *   is disabled."
  *
  * THE ONE PLACE THIS IS DECIDED. `mintBlockedReason` below and the step
  * rail's `siteScopeState` (ConnectWizard) both call this and nothing else, so

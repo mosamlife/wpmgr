@@ -339,7 +339,7 @@ describe("the step rail names all ten specified steps and marks the right one cu
     );
   });
 
-  it("marks specified step 6 current once client and method are both picked -- THE DEFECT 2 FIX", async () => {
+  it("marks specified step 6 current once client and method are both picked", async () => {
     // Sections 3 ("Sites this connection may reach") and 4 ("Set it up") in
     // this file share one reveal condition and always appear together, so by
     // the time an operator can see either, step 6 (setup) is the furthest one
@@ -406,7 +406,7 @@ describe("the step rail names all ten specified steps and marks the right one cu
   });
 
   // ---------------------------------------------------------------------------
-  // Greptile P1 on connect-wizard.tsx:589 (pre-fix). Completion here used to be
+  // Completion here used to be
   // pure position: once client and method were picked, site selection read
   // completed and setup read current REGARDLESS of whether the fleet/tag read
   // that step depends on had actually come back. Loading and failed are
@@ -477,7 +477,7 @@ describe("the step rail names all ten specified steps and marks the right one cu
   });
 
   // ---------------------------------------------------------------------------
-  // Greptile P1 / CodeRabbit Major on connect-wizard.tsx:268 (pre-fix), found
+  // The same failure through a third door, found
   // a third time through a third door: the fleet resolves fine, but the TAG
   // registry has not, under mode 'tags'. `scope.kind` alone read this as
   // "resolved" -- it only ever asks about the fleet read -- while
@@ -530,7 +530,7 @@ describe("the step rail names all ten specified steps and marks the right one cu
   });
 
   // ---------------------------------------------------------------------------
-  // Greptile P1 on connect-wizard.tsx:639, the OVER-FIRE ARM OF THE FIX ABOVE.
+  // THE OVER-FIRE ARM OF THE FIX ABOVE.
   // On the OAuth path there is no mint button to block -- step 4 renders
   // NextSteps, never TokenMintPanel -- and the scope chosen in this wizard is
   // rehearsal for OAuth (SiteScopeStep's own copy: "nothing carries this
@@ -2053,9 +2053,9 @@ describe("the rail is a stepper, not a paragraph", () => {
 });
 
 describe("the rail and the section heading agree on which step this is", () => {
-  // THE DEFECT THE OWNER REPORTED. Two numbering systems were visible at once
-  // and disagreed: the rail called the setup section step 6 while the heading
-  // over that same section said "4. Set it up". Every heading on this screen
+  // Two numbering systems on one screen contradict each other as soon as the
+  // page order stops matching the spine: the rail calling the setup section
+  // step 6 while the heading over it says "4. Set it up". Every heading here
   // is now numbered with the specified step it answers, so a section and its
   // rail segment cannot name the same step differently.
 
@@ -2111,7 +2111,7 @@ describe("the rail and the section heading agree on which step this is", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Review round five. Three findings, each held by a test below.
+// The stepper rail: one row, one current step, one canonical heading.
 // ---------------------------------------------------------------------------
 
 describe("the rail is one row, so no connector can start a row", () => {
@@ -2135,7 +2135,7 @@ describe("the rail is one row, so no connector can start a row", () => {
 });
 
 describe("a blocked step never renders as the current one", () => {
-  // FINDING 3, AND THE FIFTH INSTANCE OF THIS COMPONENT'S ONE DEFECT FAMILY.
+  // A RAIL MUST NOT PRESENT A STEP AS IN HAND WHILE ITS ACTION IS REFUSED.
   // While site scope is unresolved the rail correctly points at step 3, so the
   // POSITIONAL "is this the current step" answer is true -- and the ring used
   // to render off that boolean, telling the operator step 3 was in hand while
@@ -2187,7 +2187,7 @@ describe("a blocked step never renders as the current one", () => {
 });
 
 describe("the heading a section renders is the canonical one", () => {
-  // FINDING 2. `heading` on the spec entry was canonical and `title` on the
+  // `heading` on the spec entry was canonical and `title` on the
   // Section was what actually rendered, so a step's name was written twice
   // with nothing making the two agree. The expected strings below are the
   // deck's own frame titles, written out here rather than imported, so this
@@ -2210,5 +2210,86 @@ describe("the heading a section renders is the canonical one", () => {
       "4. Choose what it may do",
       "6. Get the setup artefact",
     ]);
+  });
+});
+
+describe("exactly one segment answers for the operator's position", () => {
+  /**
+   * The count of segments claiming to be current. A COUNT and not a presence
+   * check: a rail with two current steps still has "a" current step, so
+   * `getByRole`-style presence passes over the very defect this asserts
+   * against.
+   */
+  function currentCount(): number {
+    return document.querySelectorAll('[data-step-n][aria-current="step"]').length;
+  }
+
+  it("keeps one current segment when site scope AND capabilities are both blocked", async () => {
+    renderWizard();
+    await pickClient("Claude Code");
+    fireEvent.click(authCard("token"));
+    await screen.findByTestId("site-step-count");
+
+    // BOTH BLOCKING AT ONCE. Nothing is selected under 'list' mode (the
+    // wizard's opening state, deliberately empty), and now no capability is
+    // ticked either, so `siteScopeBlocking` and `capabilityBlocking` are both
+    // true. Each used to promote its own segment, giving the rail two
+    // positions and handing the scroll ref to the later one.
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Sites/i }));
+    expect(screen.getByRole("checkbox", { name: /^Sites/i })).not.toBeChecked();
+
+    // Both steps still report their own blocked reason -- a reason is not a
+    // claim on the operator's position, and each is worth showing.
+    expect(document.querySelector('[data-step-n="3"]')).toHaveAttribute(
+      "data-step-state",
+      "unselected",
+    );
+    expect(document.querySelector('[data-step-n="4"]')).toHaveAttribute(
+      "data-step-state",
+      "unselected",
+    );
+
+    // ONE position, and it is the earlier blocked step.
+    expect(currentCount()).toBe(1);
+    const current = document.querySelector('[data-step-n][aria-current="step"]');
+    expect(current).toHaveAttribute("data-step-n", "3");
+  });
+
+  it("keeps one current segment in every state this wizard can reach", async () => {
+    // The invariant, not one scenario of it: at no point in the walk from an
+    // empty screen to a fully answered token path does the rail hold two
+    // positions.
+    loadedFleet(3);
+    renderWizard();
+    await screen.findByRole("button", { name: /claude code/i });
+    expect(currentCount()).toBe(1);
+
+    await pickClient("Claude Code");
+    expect(currentCount()).toBe(1);
+
+    fireEvent.click(authCard("token"));
+    await screen.findByTestId("site-step-count");
+    expect(currentCount()).toBe(1);
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Sites/i }));
+    expect(currentCount()).toBe(1);
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Sites/i }));
+    expect(currentCount()).toBe(1);
+  });
+
+  it("numbers every specified step exactly once, which is what makes one current possible", async () => {
+    // The premise the invariant above rests on. `aria-current` is placed by
+    // comparing a segment's specified number against one number; that yields
+    // at most one match only while the specified numbers are unique. If a
+    // duplicate `n` were ever added to SPEC_STEPS, two segments could match
+    // again -- so the uniqueness is asserted rather than assumed.
+    renderWizard();
+    await screen.findByRole("button", { name: /claude code/i });
+
+    const ns = Array.from(document.querySelectorAll<HTMLElement>("[data-step-n]")).map(
+      (s) => s.dataset.stepN,
+    );
+    expect(new Set(ns).size).toBe(ns.length);
   });
 });
