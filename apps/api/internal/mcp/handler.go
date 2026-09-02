@@ -235,6 +235,9 @@ func (h *Handler) listConnections(c *gin.Context) {
 		return
 	}
 
+	// Varies by principal and by nothing in the URL, so it is never shareable
+	// between two identities. Same reason connectionTools sets it.
+	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, toConnectionListDTO(conns))
 }
 

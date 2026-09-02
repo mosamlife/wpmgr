@@ -90,7 +90,7 @@ func mcpToolsPath(grantID uuid.UUID) string {
 // oracle -- an error code, a message, a field present in one and not the other.
 func mcpGetRaw(t *testing.T, eng *gin.Engine, path string) (int, string) {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, path, strings.NewReader(""))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, path, strings.NewReader(""))
 	req.RemoteAddr = "203.0.113.7:5555"
 	w := httptest.NewRecorder()
 	eng.ServeHTTP(w, req)

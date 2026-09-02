@@ -151,6 +151,16 @@ func (h *Handler) connectionTools(c *gin.Context) {
 		httpx.Error(c, err)
 		return
 	}
+
+	// NEVER SHARED BETWEEN TWO IDENTITIES. This body is a function of who asked
+	// -- the principal's tenant, and the capabilities THIS grant holds under
+	// THIS organisation's ceiling -- while the URL that produced it carries
+	// nothing but a grant id. A cache keyed on that URL would hand one
+	// organisation's tool surface to the next caller of the same path, which is
+	// the disclosure the org-scope gate above exists to prevent, reintroduced
+	// downstream of it. Set before the body, because a header written after
+	// c.JSON has already lost the race with the flushed status line.
+	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, toConnectionToolListDTO(tools))
 }
 

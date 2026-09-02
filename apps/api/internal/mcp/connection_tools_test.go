@@ -206,7 +206,7 @@ func TestConnectionToolsIsA404ForAnUnknownConnection(t *testing.T) {
 	eng := newConnectionsRouter(t, store, orgPrincipal(uuid.New()))
 
 	w := httptest.NewRecorder()
-	eng.ServeHTTP(w, httptest.NewRequest(http.MethodGet, toolsPath(uuid.New()), nil))
+	eng.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, toolsPath(uuid.New()), nil))
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("an unknown connection answered %d, want 404. body: %s", w.Code, w.Body.String())
 	}
@@ -222,7 +222,7 @@ func TestConnectionToolsRouteAnswersTheGrantsListOnTheWire(t *testing.T) {
 	eng := newConnectionsRouter(t, store, orgPrincipal(tenantID))
 
 	w := httptest.NewRecorder()
-	eng.ServeHTTP(w, httptest.NewRequest(http.MethodGet, toolsPath(grantID), nil))
+	eng.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, toolsPath(grantID), nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("GET tools answered %d, want 200. body: %s", w.Code, w.Body.String())
 	}
@@ -257,7 +257,7 @@ func TestConnectionToolsRouteRefusesAWrongVerb(t *testing.T) {
 	eng := newConnectionsRouter(t, store, orgPrincipal(uuid.New()))
 
 	w := httptest.NewRecorder()
-	eng.ServeHTTP(w, httptest.NewRequest(http.MethodPost, toolsPath(uuid.New()), nil))
+	eng.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodPost, toolsPath(uuid.New()), nil))
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("POST to the tools route answered %d, want 405. body: %s", w.Code, w.Body.String())
 	}
@@ -329,5 +329,55 @@ func TestConnectionToolsReadsUnderTheCallersTenantNotTheRequests(t *testing.T) {
 	}
 	if got.UserID != caller.UserID {
 		t.Fatalf("GetGrant ran as user %s, want the caller's %s", got.UserID, caller.UserID)
+	}
+}
+
+// TestPrincipalVaryingConnectionReadsAreNeverCacheable pins the response header
+// AT THE ROUTE, on the wire, rather than asserting that a handler called
+// something.
+//
+// EVERY BODY BELOW IS A FUNCTION OF WHO ASKED. The tool list resolves the
+// caller's tenant against THIS grant's capabilities under THIS organisation's
+// ceiling; the connection list is the caller's organisation's grants. The URLs
+// that produce them carry a grant id and nothing else, so a cache keyed on the
+// URL is keyed on strictly less than the answer depends on -- and the second
+// identity to request the path is served the first one's answer. That would
+// reintroduce, downstream of the org-scope gate, the disclosure the gate exists
+// to prevent.
+//
+// The assertion reads the response the router actually wrote, so deleting the
+// c.Header line reddens this; a refactor that moves the header into middleware
+// keeps it green, which is correct -- the header is the contract, not the line
+// that sets it.
+func TestPrincipalVaryingConnectionReadsAreNeverCacheable(t *testing.T) {
+	tenantID := uuid.New()
+	grantID := uuid.New()
+
+	for _, tc := range []struct {
+		name string
+		path string
+	}{
+		{"tools", toolsPath(grantID)},
+		{"list", ConnectionsPath},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &fakeStore{grants: []sqlc.McpGrant{grantHolding(grantID, CapUptimeRead)}}
+			eng := newConnectionsRouter(t, store, orgPrincipal(tenantID))
+
+			w := httptest.NewRecorder()
+			eng.ServeHTTP(w, httptest.NewRequestWithContext(
+				context.Background(), http.MethodGet, tc.path, nil))
+
+			// The 200 is load-bearing: a 404 or a 403 would carry no header
+			// worth asserting on, and the check below would pass over an
+			// endpoint that answered nothing at all.
+			if w.Code != http.StatusOK {
+				t.Fatalf("GET %s answered %d, want 200. body: %s", tc.path, w.Code, w.Body.String())
+			}
+			if got := w.Header().Get("Cache-Control"); got != "no-store" {
+				t.Fatalf("GET %s carried Cache-Control %q, want %q -- this body varies by principal and must never be served from a shared cache",
+					tc.path, got, "no-store")
+			}
+		})
 	}
 }

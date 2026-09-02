@@ -239,8 +239,13 @@ func TestConsentHandlerRefusesAnEmptyCapabilityArray(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(w, req)
 
-	if w.Code == http.StatusOK {
-		t.Fatalf("POST /consent accepted an empty capability array: %s", w.Body.String())
+	// EXACTLY 400, not merely "not 200". `capabilities: []` is a malformed
+	// request and the frontend branches on the code, so a 500 out of a resolver
+	// regression is a different bug wearing the same refusal -- and a guard
+	// that accepts any non-200 would report it green.
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("POST /consent with an empty capability array = %d, want 400: %s",
+			w.Code, w.Body.String())
 	}
 	if len(store.approved) != 0 {
 		t.Fatalf("a refused consent wrote a grant holding %v", store.approved[0].Capabilities)

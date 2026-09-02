@@ -331,12 +331,22 @@ func TestFence_PlantedHostileSiteName_FleetUpdatesPending(t *testing.T) {
 		}
 	}
 
-	var got = p.Sites[0]
-	for _, rec := range p.Sites {
+	// FOUND, NOT DEFAULTED. Seeding `got` with p.Sites[0] made the lookup
+	// optional: with the never-collected record absent and the collected one
+	// first, every assertion below would run against the wrong arm and pass,
+	// and this test would no longer be about the path its name claims.
+	found := -1
+	for i, rec := range p.Sites {
 		if rec.SiteID == neverCollected.String() {
-			got = rec
+			found = i
+			break
 		}
 	}
+	if found < 0 {
+		t.Fatalf("no record for the never-collected site %s; the arm under test was not rendered: %+v",
+			neverCollected, p.Sites)
+	}
+	got := p.Sites[found]
 
 	if !strings.HasPrefix(got.Name, siteTextMarker) {
 		t.Errorf("fleet_updates_pending name is unmarked: %q", got.Name)
