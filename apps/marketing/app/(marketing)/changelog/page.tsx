@@ -50,6 +50,18 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.158",
+    date: "2026-09-02",
+    summary:
+      "The connection wizard's capability step showed its refusal message twice; it now shows once.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "The connection wizard's capability step showed the \"no capability is selected\" refusal twice, stacked in two panels. It now shows once.",
+      },
+    ],
+  },
+  {
     version: "0.61.157",
     date: "2026-09-02",
     summary:
