@@ -242,9 +242,17 @@ type MintConnectionRequest struct {
 	// do, is VERIFY the ids server-side -- see ErrCodeUnknownScopeTag.
 	SiteScope SiteScopeRequest
 
-	// Capabilities is the tool axis. EMPTY MEANS THE DEFAULT PRESET --
-	// DefaultGrantCapabilities(), which is {mcp.sites.read} -- and it is
-	// neither "none" nor "the organisation ceiling".
+	// Capabilities is the tool axis. NIL -- the caller named no list at all --
+	// MEANS THE DEFAULT PRESET, DefaultGrantCapabilities(), which is
+	// {mcp.sites.read}, and it is neither "none" nor "the organisation
+	// ceiling".
+	//
+	// IT IS A POINTER SO THAT "NAMED NOTHING" AND "NAMED AN EMPTY LIST" STAY
+	// DIFFERENT. A plain slice collapses them, and the collapse is not
+	// cosmetic: an operator who ticks every capability off and submits has
+	// asked for a connection that can reach no tool, and answering that with
+	// the default silently grants a capability nobody chose. Non-nil and empty
+	// is REFUSED by name; see resolveGrantCapabilities.
 	//
 	// BOTH OF THOSE READINGS ARE WRONG AND THEY ARE WRONG IN OPPOSITE
 	// DIRECTIONS. "None" would store an empty set, and an empty stored
@@ -258,7 +266,7 @@ type MintConnectionRequest struct {
 	// A non-empty list is NARROWED against that ceiling, never widened past it
 	// -- CapabilitySet.NarrowTo refuses rather than intersects. So the ceiling
 	// is reachable BY ASKING, and only by asking.
-	Capabilities []Capability
+	Capabilities *[]Capability
 
 	// SetupClient is the operator's step-2 choice, OPTIONAL, and nil means the
 	// caller never asked -- which is stored as NULL and NOT as "generic". See
@@ -407,7 +415,7 @@ func (s *Service) MintConnection(ctx context.Context, req MintConnectionRequest)
 	// widened past it. NarrowTo REFUSES a capability the ceiling does not hold
 	// rather than dropping it, for the reason written on that method: a
 	// silently-dropped capability is a grant the operator did not ask for.
-	caps, err := s.resolveMintCapabilities(req.Capabilities)
+	caps, err := s.resolveGrantCapabilities(req.Capabilities)
 	if err != nil {
 		return MintedConnection{}, err
 	}
@@ -550,8 +558,11 @@ func (s *Service) MintConnection(ctx context.Context, req MintConnectionRequest)
 	}, nil
 }
 
-// resolveMintCapabilities turns the operator's requested capability list into
-// the set that will be stored.
+// resolveGrantCapabilities turns the operator's requested capability list into
+// the set that will be stored. IT IS THE ONLY RESOLVER, and both paths that
+// create a grant go through it: MintConnection (the token path) and Approve
+// (the browser sign-in path). Two resolutions of the same question is how the
+// two ways of creating one object come to disagree about what it may do.
 //
 // AN EMPTY REQUEST MEANS THE DEFAULT PRESET, NOT AN EMPTY SET AND NOT THE
 // CEILING, and the difference is the whole function. mcp_grants.capabilities admits '{}' -- the
@@ -579,12 +590,19 @@ func (s *Service) MintConnection(ctx context.Context, req MintConnectionRequest)
 // and the answer to "nobody asked" is the preset, never the widest set
 // available. An operator who wants more asks for it on the line below, and
 // asking is choosing.
-func (s *Service) resolveMintCapabilities(requested []Capability) (CapabilitySet, error) {
+//
+// THE ARGUMENT IS A POINTER AND THE NIL CHECK IS NOT A len() CHECK. nil is
+// "the caller named no list"; a non-nil empty list is "the caller named an
+// empty list", and those are different requests with different answers. The
+// first gets the preset. The second is handed to NarrowTo, which refuses it in
+// so many words -- an empty narrowing is not a way to ask for the default, and
+// treating it as one would grant a capability the operator had just removed.
+func (s *Service) resolveGrantCapabilities(requested *[]Capability) (CapabilitySet, error) {
 	ceiling, err := OrgDefaultCapabilities(grantScopes())
 	if err != nil {
 		return CapabilitySet{}, fmt.Errorf("resolve organisation capabilities: %w", err)
 	}
-	if len(requested) == 0 {
+	if requested == nil {
 		// Still routed through NarrowTo rather than returned directly, so the
 		// preset is subject to the same ceiling every explicit request is. A
 		// preset that named a capability no scope confers would be a refusal
@@ -594,8 +612,10 @@ func (s *Service) resolveMintCapabilities(requested []Capability) (CapabilitySet
 	}
 	// NarrowTo REFUSES anything the ceiling does not hold rather than dropping
 	// it. Dropping would be fail-closed and still wrong: the operator would be
-	// told they minted a connection with capabilities it does not have.
-	return ceiling.NarrowTo(requested)
+	// told they minted a connection with capabilities it does not have. An
+	// explicitly empty list reaches here too, and NarrowTo refuses that by name
+	// as well.
+	return ceiling.NarrowTo(*requested)
 }
 
 // verifyScopeReferents refuses a scope payload naming an id that resolves to no

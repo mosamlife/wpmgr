@@ -726,7 +726,7 @@ func TestMintRefusesACapabilityWiderThanTheOrgDefault(t *testing.T) {
 	_, err := svc.MintConnection(context.Background(), MintConnectionRequest{
 		Principal: orgPrincipal(tenant), Name: "ci",
 		SiteScope:    SiteScopeRequest{Mode: SiteScopeModeAll},
-		Capabilities: []Capability{Capability("mcp.sites.write")},
+		Capabilities: &[]Capability{Capability("mcp.sites.write")},
 	})
 	if err == nil {
 		t.Fatal("a capability the organisation does not hold was accepted")

@@ -136,6 +136,13 @@ type Store interface {
 	// db.dispatchTenantTx's hands instead of this package's memory.
 	ListGrants(ctx context.Context, principal domain.Principal) ([]sqlc.McpGrant, error)
 
+	// GetGrant reads ONE grant, for the step-10 tool list. It takes the
+	// principal for the same reason ListGrants does -- mcp_grants carries the
+	// RESTRICTIVE _site_scope policies and only db.Pool.RunTenantTx sets the
+	// GUC they key on -- and it returns pgx.ErrNoRows VERBATIM so the caller
+	// can answer 404 for absent, foreign and RLS-refused alike.
+	GetGrant(ctx context.Context, principal domain.Principal, grantID uuid.UUID) (sqlc.McpGrant, error)
+
 	// ConnectionStatusSnapshot is the wizard's Step 8 / Step 9 pair (S29), and
 	// it is ONE METHOD RETURNING BOTH FACTS RATHER THAN TWO METHODS.
 	//
@@ -798,6 +805,36 @@ func (r *Repo) ListGrants(ctx context.Context, principal domain.Principal) ([]sq
 		// signature defect, and returning `[]T{}` alongside an error is how it
 		// gets made at the layer that is supposed to prevent it.
 		return nil, err
+	}
+	return out, nil
+}
+
+// GetGrant reads one grant by id, under the principal's own transaction scope.
+//
+// RunTenantTx and not InTenantTx, for the reason ListGrants and
+// ConnectionStatusSnapshot both give: mcp_grants carries RESTRICTIVE
+// _site_scope policies keyed on app.site_scope, which only RunTenantTx sets, so
+// the plain helper would leave them inert and a site-constrained principal
+// would read an organisation-wide credential with a 200 and no trace.
+// Service.ConnectionTools refuses such a principal before reaching here; this
+// is the second lock on the same door, in the layer that still holds if this
+// read is ever mounted behind a different gate.
+//
+// It reuses getGrantTx -- the same single-row read the status snapshot's gate
+// and handshake both use -- so there is one statement behind every per-grant
+// read in this package. pgx.ErrNoRows passes through untouched.
+func (r *Repo) GetGrant(ctx context.Context, principal domain.Principal, grantID uuid.UUID) (sqlc.McpGrant, error) {
+	var out sqlc.McpGrant
+	err := r.pool.RunTenantTx(ctx, principal, func(tx pgx.Tx) error {
+		g, err := getGrantTx(ctx, tx, principal.TenantID, grantID)
+		if err != nil {
+			return err
+		}
+		out = g
+		return nil
+	})
+	if err != nil {
+		return sqlc.McpGrant{}, err
 	}
 	return out, nil
 }

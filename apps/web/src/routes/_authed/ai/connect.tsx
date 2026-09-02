@@ -108,7 +108,19 @@ function ConnectAiClientPage() {
         // wizard's own heading. It used to repeat the button's old wording,
         // which made the button and the page it opened look like two features.
         title="Add an AI connection"
-        subline="Nothing is created yet. This is a wizard, not a draft row. Pick your client first: everything after that is computed from it, because the setup differs per client in ways that fail quietly."
+        // AND IT NAMES NO COUNT. It said "Six steps" and was stale within the
+        // hour, because steps 7 to 10 landed. A count cannot be written here
+        // even correctly: the rail is ten, and how many an operator actually
+        // walks depends on the sign-in method they have not chosen yet -- nine
+        // on the token path, seven on the browser one. The rail states the
+        // count by drawing it.
+        //
+        // THE "NOTHING IS CREATED YET" SENTENCE IS NOT HERE, and its absence is
+        // deliberate: step 1 carries it, and a page subline repeating it word
+        // for word put the same statement on screen twice. "Pick your client
+        // first" has gone with it, because it is no longer the first thing the
+        // operator does -- the can/cannot contract is.
+        subline="Walked in order, one step at a time. Everything after the client is computed from it, because the setup differs per client in ways that fail quietly."
         backTo={{ to: "/ai", label: "AI connections" }}
       />
       <ConnectWizard

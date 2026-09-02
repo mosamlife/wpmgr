@@ -722,6 +722,12 @@ func (h *Handler) connectionStatus(c *gin.Context) {
 		httpx.Error(c, err)
 		return
 	}
+
+	// Varies by principal and by nothing in the URL, so it is never shareable
+	// between two identities. Same reason connectionTools sets it -- and this
+	// one is polled every few seconds by the wizard, which is exactly the
+	// traffic shape an intermediary decides is worth caching.
+	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, connectionStatusResponse(st))
 }
 

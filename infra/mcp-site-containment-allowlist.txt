@@ -124,6 +124,53 @@ PARAM RevokeGrantWithTokens.grantID                     # operator-facing revoke
 #     at connection_status.go:642
 #   - connection_status.go:571 stops being RunTenantTx
 PARAM ConnectionStatusSnapshot.grantID                  # :connectionId path param; only ever bound to mcp_grants.id, never to a site column
+# grantID here IS request-supplied, exactly as ConnectionStatusSnapshot's is:
+# the :connectionId path parameter of GET /api/v1/mcp/connections/:connectionId/
+# tools, parsed in Handler.connectionTools (connection_tools.go:140) and passed
+# to Service.ConnectionTools (:63). It is the wizard's Step 10 tool list.
+#
+# WHAT THE ID IS. A grant id and nothing else. It reaches SQL at exactly one
+# place -- getGrantTx (connection_status.go:601), shared with the status
+# snapshot -- where it binds to GetMCPGrant's `id` parameter, and that query is
+# `SELECT * FROM mcp_grants WHERE tenant_id = $1 AND id = $2`
+# (db/query/mcp_connections.sql:331-332). There is no site column in that
+# statement, no uuid[] containment test, and no second read: ConnectionTools
+# resolves the tool axis only, so the AuthorizedRequest it builds
+# (connection_tools.go:111-116) leaves Sites at its zero value and VisibleTools
+# (registry.go:347) never reads it. A site id substituted for this parameter
+# matches no mcp_grants row and answers 404; it cannot be interpreted as a site.
+#
+# WHAT BOUNDS THE LOOKUP, AND IT IS THE TENANT THAT DOES IT. The request
+# supplies the id; it does NOT supply the tenant. Repo.GetGrant passes
+# principal.TenantID (repo.go:829) as $1, so a grant id belonging to another
+# organisation matches zero rows on the predicate alone, before RLS is
+# consulted. RLS is consulted too: GetGrant runs under r.pool.RunTenantTx
+# (repo.go:828), not InTenantTx, which is what makes the RESTRICTIVE
+# mcp_grants_site_scope_select policy live rather than inert for a
+# site-constrained principal. pgx.ErrNoRows comes back verbatim and
+# ConnectionTools turns it into the SAME 404 an absent id gets
+# (connection_tools.go:65-67), so absent, foreign and RLS-refused are
+# indistinguishable and the endpoint is not an oracle for which ids exist.
+#
+# A SITE-CONSTRAINED CALLER NEVER GETS AS FAR AS THE READ. A grant is an
+# organisation-wide credential with no :siteId for RequireSiteAccess to key on,
+# so the route carries authz.RequirePermission(authz.PermAPIKeyRead)
+# (handler.go:204) and PermAPIKeyRead is in authz.orgLevelPerms
+# (authz/middleware.go:152), which refuses any site-constrained principal with
+# 403 org_scope_required regardless of role. requireOrgScopedPrincipal
+# (connection_tools.go:56) refuses it a second time, before any store call.
+# Same three-layer arrangement as the status route above, and the same caveat:
+# all three read domain.IsSiteConstrained, so they are not independent
+# probabilities. That is the accepted architecture (#646), not a defect here.
+#
+# THIS ENTRY IS FALSIFIED IF ANY OF THESE CHANGES:
+#   - repo.go:829 stops passing principal.TenantID as GetMCPGrant's tenant_id
+#   - repo.go:828 stops being RunTenantTx
+#   - connection_tools.go:111-116 starts populating AuthorizedRequest.Sites, or
+#     ConnectionTools grows any read keyed on a site
+#   - the pgx.ErrNoRows arm at connection_tools.go:65 stops answering 404, or
+#     starts distinguishing foreign from absent
+PARAM GetGrant.grantID                                  # :connectionId path param; only ever bound to mcp_grants.id under principal.TenantID, never to a site column
 
 # ---- Tool argument surface -------------------------------------------------
 # Intentionally empty, and still the Phase 1 state: registry.go's one tool

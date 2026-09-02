@@ -642,6 +642,59 @@ jobs:
   # Self-test first, as its own step, same reasoning as the version surface
   # guard and codegen-drift above: a broken guard must fail before it ever
   # touches a database, not pass by failing open.
+  # ---- ADR-061 assistant pre-ship gate ----------------------------------------
+  # docs/adr/ADR-061-assistant-surface-phase-1.md carries a section headed
+  # "What has to exist before v1 ships." with nine bullets. Until this job
+  # existed, that gate had never been evaluated once — no script, no CI job, no
+  # release note — while the surface it gates had been live in production since
+  # 0.61.147. CLAUDE.md's rule that build-gating logic goes in a repo script
+  # with a committed test suite had been applied to the version surfaces and to
+  # nothing else. This is the second application of it.
+  #
+  # THIS JOB IS EXPECTED TO FAIL, AND THAT IS THE POINT. Most of the nine items
+  # are open. The failure is the finding. Do not weaken the guard, add a skip
+  # list, or gate it behind an environment variable to get a green: a gate that
+  # passes on the day it is written was measuring nothing. Each unmet line names
+  # the specific thing that closes it, so the output is actionable without
+  # opening the ADR.
+  #
+  # ITS OWN JOB, AND WHY. The guard measures artefact currency by comparing a
+  # document's "Last reviewed" date against `git log -1 -- apps/api/internal/mcp`.
+  # That needs real history, and every other job here checks out shallow on
+  # purpose. A shallow clone whose single commit does not touch that path makes
+  # the guard exit 2 (GUARD BROKEN) rather than score anything — correct
+  # behaviour, useless as a signal — so this job takes fetch-depth: 0 and leaves
+  # the other checkouts fast.
+  #
+  # THREE EXIT CODES, AND THERE IS NO CODE MEANING "SCORED NOTHING, FINE":
+  # 0 all nine met, 1 any item unmet OR unscoreable, 2 GUARD BROKEN (the ADR's
+  # gate section changed shape, an input is missing, a dependency is absent).
+  # An item the guard cannot score is red, never skipped and never fudged green.
+  #
+  # Self-test FIRST, same reasoning as the containment and version-surface
+  # guards: a guard broken into failing open must not be able to pass by
+  # reporting success over its own errors. The suite is hermetic — it builds
+  # fixture trees and needs no toolchain, database or network — so it is
+  # unaffected by whatever state the real assistant surface is in.
+  assistant-ship-gate:
+    name: ADR-061 assistant pre-ship gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          # Full history: the guard reads commit dates for apps/api/internal/mcp
+          # to decide whether a written statement is still current. With the
+          # default shallow checkout it exits 2 instead of scoring.
+          fetch-depth: 0
+
+      - name: Assistant ship-gate guard self-test (hermetic)
+        run: scripts/check-assistant-ship-gate_test.sh
+
+      - name: Assistant ship-gate guard (ADR-061 nine-item pre-ship gate)
+        run: scripts/check-assistant-ship-gate.sh
+
   rls-cross-tenant:
     name: RLS cross-tenant guard (live)
     runs-on: ubuntu-latest

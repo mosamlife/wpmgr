@@ -193,6 +193,16 @@ func (h *Handler) RegisterConnections(r *gin.RouterGroup) {
 	g.GET("/:"+connectionIDParam+"/status",
 		authz.RequirePermission(authz.PermAPIKeyRead), h.connectionStatus)
 
+	// GET /:connectionId/tools -- the wizard's Step 10 (S29 ruling 28): the
+	// tools THIS connection can actually see, rendered from the registry
+	// rather than from a list written into the screen. PermAPIKeyRead, the
+	// SAME permission as the list and the status poll above, because it reads
+	// the same object: a caller who may list the organisation's connections
+	// may read what one of them can call, and one who may not must not learn
+	// it a tool at a time.
+	g.GET("/:"+connectionIDParam+"/tools",
+		authz.RequirePermission(authz.PermAPIKeyRead), h.connectionTools)
+
 	// 405 rather than gin's bare 404 on a wrong verb, for the reason
 	// RegisterPublic gives: a 404 reads as "not deployed", which is exactly how
 	// the S6b-2 blocker presented and cost a debugging session. These carry NO
@@ -202,6 +212,7 @@ func (h *Handler) RegisterConnections(r *gin.RouterGroup) {
 	houseMethodNotAllowedExcept(g, "", http.MethodGet, http.MethodPost)
 	houseMethodNotAllowedExcept(g, "/:"+connectionIDParam+"/revoke", http.MethodPost)
 	houseMethodNotAllowedExcept(g, "/:"+connectionIDParam+"/status", http.MethodGet)
+	houseMethodNotAllowedExcept(g, "/:"+connectionIDParam+"/tools", http.MethodGet)
 }
 
 // listConnections answers GET /api/v1/mcp/connections.
@@ -224,6 +235,9 @@ func (h *Handler) listConnections(c *gin.Context) {
 		return
 	}
 
+	// Varies by principal and by nothing in the URL, so it is never shareable
+	// between two identities. Same reason connectionTools sets it.
+	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, toConnectionListDTO(conns))
 }
 
@@ -278,10 +292,12 @@ func (h *Handler) mintConnection(c *gin.Context) {
 		return
 	}
 
-	caps := make([]Capability, 0, len(body.Capabilities))
-	for _, name := range body.Capabilities {
-		caps = append(caps, Capability(name))
-	}
+	// nil IN, nil OUT. body.Capabilities is nil when the key was absent and a
+	// non-nil empty slice when the caller sent `[]`, and that difference is
+	// the whole contract on this field: absent takes the preset, empty is
+	// refused. Building the slice unconditionally would erase it here, one
+	// layer above the resolver that reads it.
+	caps := parseCapabilities(body.Capabilities)
 
 	out, err := h.svc.MintConnection(c.Request.Context(), MintConnectionRequest{
 		// The WHOLE principal. Its Scope and AllowedSiteIDs are what route the
@@ -655,6 +671,13 @@ func (h *Handler) consent(c *gin.Context) {
 		scopes = append(scopes, Scope(s))
 	}
 
+	// The operator's capability choice, forwarded with its absence intact --
+	// see parseCapabilities and approvalRequestDTO.Capabilities. The handler
+	// does not resolve it, does not default it and does not check it against
+	// the ceiling: that is Service.Approve's single resolver, and a second
+	// opinion here is a second thing that can drift.
+	caps := parseCapabilities(body.Capabilities)
+
 	out, err := h.svc.Approve(c.Request.Context(), ApprovalRequest{
 		// The whole principal. Its Scope and AllowedSiteIDs are what route the
 		// grant insert to a site-scoped transaction, so narrowing this to
@@ -674,6 +697,7 @@ func (h *Handler) consent(c *gin.Context) {
 			TagIDs:  tagIDs,
 			SiteIDs: siteIDs,
 		},
+		Capabilities: caps,
 	})
 	if err != nil {
 		status, dto := oauthError(err)
@@ -761,6 +785,31 @@ func (h *Handler) token(c *gin.Context) {
 // parseUUIDs refuses a malformed id rather than dropping it. A dropped id
 // silently narrows or widens the scope the operator thought they approved,
 // depending on the mode, and uuid.Nil is what a failed parse decays to.
+// parseCapabilities carries an optional capability list from the wire to the
+// service WITHOUT deciding anything about it.
+//
+// NIL IN, NIL OUT, AND AN EMPTY LIST STAYS EMPTY. Both creation paths spell
+// this field as an optional array whose absence means the default preset and
+// whose explicit emptiness is a refusal, so flattening the two here -- by
+// building a slice unconditionally, or by treating a zero length as absence --
+// would erase the distinction one layer above the only function entitled to
+// act on it (Service.resolveGrantCapabilities).
+//
+// It does NOT validate membership. An unknown name is carried through as-is
+// and refused by NarrowTo against the organisation ceiling, which is where
+// every other capability decision is made and where the refusal message names
+// the offending capability.
+func parseCapabilities(in *[]string) *[]Capability {
+	if in == nil {
+		return nil
+	}
+	out := make([]Capability, 0, len(*in))
+	for _, name := range *in {
+		out = append(out, Capability(name))
+	}
+	return &out
+}
+
 func parseUUIDs(in []string) ([]uuid.UUID, error) {
 	out := make([]uuid.UUID, 0, len(in))
 	for _, raw := range in {

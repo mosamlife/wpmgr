@@ -773,6 +773,21 @@ type ApprovalRequest struct {
 	Consent   ConsentContext
 	GrantName string
 	SiteScope SiteScopeRequest
+
+	// Capabilities is the operator's choice on the TOOL axis, made on the
+	// consent screen (wizard step 7) and resolved by the SAME function the
+	// token path uses -- Service.resolveGrantCapabilities. Two paths create a
+	// grant and there is one resolution of what it may do; a second one here
+	// would be free to disagree with the first, and the two ways of creating
+	// one object would grant different things.
+	//
+	// NIL MEANS THE CALLER NAMED NO LIST and gets DefaultGrantCapabilities(),
+	// exactly {mcp.sites.read}. A NON-NIL EMPTY LIST IS REFUSED rather than
+	// read as the default: it is the operator having removed every capability,
+	// and answering that with the preset would grant one they had just taken
+	// off. The pointer is what keeps those two requests distinguishable all
+	// the way from the wire; see approvalRequestDTO.Capabilities.
+	Capabilities *[]Capability
 }
 
 // Approval is the result: the code to hand back to the client via the
@@ -848,6 +863,16 @@ func (s *Service) Approve(ctx context.Context, req ApprovalRequest) (Approval, e
 			"redirect_uri does not exactly match a registered redirect URI")
 	}
 
+	// CAPABILITIES, resolved BEFORE anything is generated or written, and by
+	// the one resolver both creation paths share. A set wider than the
+	// organisation's ceiling refuses the whole approval here -- no code, no
+	// grant, no half-made connection -- rather than being narrowed to the
+	// intersection behind the operator's back.
+	caps, err := s.resolveGrantCapabilities(req.Capabilities)
+	if err != nil {
+		return Approval{}, err
+	}
+
 	code, err := randomToken(32)
 	if err != nil {
 		return Approval{}, fmt.Errorf("generate authorization code: %w", err)
@@ -877,11 +902,15 @@ func (s *Service) Approve(ctx context.Context, req ApprovalRequest) (Approval, e
 			//
 			// Capabilities is the STORED per-connection capability set, and
 			// from here on it is the authority Authenticate reads -- not a
-			// value recomputed from the scope registry at request time. It is
-			// written as the org default because Phase 1's consent screen
-			// offers no narrowing control; the moment it does, the operator's
-			// choice arrives here and NarrowTo is what applies it.
-			Capabilities: capabilityNames(DefaultGrantCapabilities()),
+			// value recomputed from the scope registry at request time.
+			//
+			// IT IS THE OPERATOR'S CHOICE, resolved above by the same function
+			// the token path calls. It was hard-coded to the org default for
+			// as long as the consent screen offered no narrowing control; step
+			// 7 offers one, so the choice arrives here and NarrowTo is what
+			// applied it -- refusing a set wider than the organisation
+			// ceiling rather than quietly intersecting it.
+			Capabilities: capabilityNames(caps.Sorted()),
 			ExpiresAt:    s.now().UTC().Add(grantAbsoluteTTL),
 
 			// IDLE EXPIRY IS WRITTEN NULL, AND NULL IS THE ANSWER, NOT A

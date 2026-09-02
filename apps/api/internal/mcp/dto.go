@@ -112,6 +112,29 @@ type approvalRequestDTO struct {
 	SiteScopeMode       string   `json:"site_scope_mode"`
 	ScopeTagIDs         []string `json:"scope_tag_ids"`
 	ScopeSiteIDs        []string `json:"scope_site_ids"`
+
+	// Capabilities is the TOOL axis of the consent screen, and it is spelled
+	// and resolved EXACTLY as mintConnectionRequestDTO.Capabilities is -- one
+	// wire vocabulary and one resolution for the two paths that create a
+	// connection.
+	//
+	// OMITTED MEANS THE DEFAULT PRESET: exactly ["mcp.sites.read"].
+	//
+	// AN EXPLICIT `[]` IS REFUSED, 400, and is NOT the default. It is a
+	// *[]string rather than a []string precisely so the two stay apart on the
+	// wire: an operator who unticks every capability has asked for a
+	// connection that can reach no tool, and answering that with the preset
+	// would grant a capability they had just removed. `capabilities: []` is
+	// therefore an error the consent screen must not send, and it is told so
+	// rather than silently widened.
+	//
+	// A NON-EMPTY LIST IS NARROWED AGAINST THE ORGANISATION CEILING, and a
+	// capability the ceiling does not hold REFUSES THE WHOLE APPROVAL rather
+	// than being dropped from it. Nothing is written -- no grant, no code --
+	// when it refuses. mcp.content.read is in the vocabulary and is conferred
+	// by no scope, so it is never inside the ceiling and naming it always
+	// refuses here.
+	Capabilities *[]string `json:"capabilities"`
 }
 
 type approvalResponseDTO struct {
@@ -263,7 +286,10 @@ type mintConnectionRequestDTO struct {
 	//
 	// IT DOES NOT MEAN AN EMPTY SET. An empty stored capability set is a
 	// connection that authenticates and can then reach no tool at all, which
-	// Authenticate refuses by name on every request.
+	// Authenticate refuses by name on every request. AN EXPLICIT `[]` IS
+	// THEREFORE REFUSED, 400 -- omitted and empty are different requests and
+	// this endpoint answers them differently, so an operator who unticked
+	// every capability is told so instead of being handed the preset back.
 	//
 	// AND IT DOES NOT MEAN THE ORGANISATION CEILING, which is the wider
 	// seven-member set OrgDefaultCapabilities resolves. This comment said "the
@@ -275,7 +301,12 @@ type mintConnectionRequestDTO struct {
 	// See Service.resolveMintCapabilities. A non-empty list is narrowed against
 	// the ceiling and a capability the ceiling does not hold refuses the whole
 	// request rather than being dropped from it.
-	Capabilities []string `json:"capabilities"`
+	//
+	// A *[]string, not a []string, for the reason
+	// approvalRequestDTO.Capabilities gives: omitted (nil) and `[]` (non-nil,
+	// empty) are different requests and this endpoint answers them
+	// differently, so the difference has to survive decoding.
+	Capabilities *[]string `json:"capabilities"`
 
 	// SetupClient is the operator's step-2 choice, and it is a *string SO THAT
 	// OMITTED AND EMPTY STAY DIFFERENT ON THE WIRE.

@@ -6,6 +6,7 @@ import { AlertTriangle, Check, ExternalLink, Lock } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { CopyableMono } from "@/components/shared/copyable-mono";
@@ -29,6 +30,9 @@ import {
   type AuthMethod,
   type McpClientRow,
 } from "./client-table";
+import { ConnectionContract } from "./connection-contract";
+import { ConnectionVerify } from "./connection-verify";
+import { useConnectionTools } from "./use-connection-tools";
 import { buildSnippet, type Snippet } from "./snippet";
 import { SiteScopeStep, type SiteScopeSelection } from "./site-scope-step";
 import {
@@ -46,19 +50,29 @@ import {
   type ResolvedSiteScope,
 } from "@/features/mcp-consent/site-scope";
 
-// The connection wizard (design §18). Client first, method second.
+// The connection wizard (design §18). The specified spine, walked in order.
 //
-// THE ORDERING IS THE DESIGN, NOT A PREFERENCE. "The user picks the client and
-// the system computes which authentication methods are possible, disabling the
+// THE ORDER IS 1, 2, 3, 4, 5, 6 AND IT IS THE SPEC'S OWN. The operator starts
+// on the can/cannot contract, names the client, fixes the sites, fixes the
+// capabilities, chooses how it signs in, and collects the setup artefact.
+// Nothing here is deliberately non-monotonic: an earlier version of this file
+// walked 2, 5, 3, 4, 6 and wrote that ordering up as a design decision. It was
+// not one. It was the order the sections happened to be built in, and the
+// operator reported it as the defect it is ("after step 2 it goes to step 5").
+//
+// THE CLIENT STILL COMES BEFORE THE AUTH METHOD, which is the one ordering
+// constraint the design actually states: "the user picks the client and the
+// system computes which authentication methods are possible, disabling the
 // rest with the specific reason written into the disabled card -- never a
-// generic 'unavailable'. Asking a user to choose an auth method their client
-// cannot use is asking them to fail."
+// generic 'unavailable'." Step 2 before step 5 satisfies that.
 //
-// WHAT THIS RENDERS AND WHAT IT DOES NOT. Steps 1, 2, 3 and the setup artefact
-// live here. STEP 3 IS NEW AND IS A REAL DECISION SURFACE: the wireframe puts
-// "which sites" before "what it may do" on purpose, and mcp_grants already
-// carries site_scope_mode, scope_tag_ids and scope_site_ids, so nothing about
-// the selection is blocked on the backend.
+// WHAT THIS RENDERS AND WHAT IT DOES NOT. Specified steps 1 through 6 live
+// here. Steps 7 to 10 are not built; the rail draws them as not yet available
+// and the last built step offers no Continue rather than one leading nowhere.
+// STEP 3 IS A REAL DECISION SURFACE: the wireframe puts "which sites" before
+// "what it may do" on purpose, and mcp_grants already carries site_scope_mode,
+// scope_tag_ids and scope_site_ids, so nothing about the selection is blocked
+// on the backend.
 //
 // WHAT STEP 3 STILL CANNOT DO, SAID ON SCREEN RATHER THAN HIDDEN. The grant is
 // created by the approval screen at /connect/ai, which the CLIENT redirects
@@ -67,86 +81,216 @@ import {
 // answer being written. The same is already true of the connection name two
 // sections down, and it is stated the same way rather than implied.
 //
-// THERE IS NOW A CAPABILITIES STEP HERE, ON THE TOKEN PATH ONLY. The
-// vocabulary is seated (policy.go: eight capability strings, seven of them
-// conferrable via the read scope), and TokenMintPanel calls useMintConnection(),
-// which POSTs to CONNECTIONS_PATH and accepts a `capabilities` list on the
-// request (dto.go:264) and returns one on the response (dto.go:305).
-// MintConnectionInput (use-ai-connections.ts) now carries that field, and the
-// new Section n=4 below ("Choose what it may do") is the picker that fills it.
+// THE CAPABILITIES STEP IS ASKED ON BOTH PATHS, AND THAT IS A CONSEQUENCE OF
+// THE ORDER. The vocabulary is seated (policy.go: eight capability strings,
+// seven of them conferrable via the read scope), and TokenMintPanel calls
+// useMintConnection(), which POSTs to CONNECTIONS_PATH and accepts a
+// `capabilities` list on the request (dto.go:264) and returns one on the
+// response (dto.go:305). MintConnectionInput (use-ai-connections.ts) carries
+// that field, and Section n=4 below ("Choose what it may do") is the picker
+// that fills it.
 //
-// THE OAUTH PATH IS THE ONE WHERE "THIS WIZARD NEVER CREATES THE GRANT" (WHAT
-// STEP 3 STILL CANNOT DO, above) IS ACTUALLY TRUE, AND STILL HAS NO
-// CAPABILITIES STEP. The client redirects into the approval screen at
-// /connect/ai, which calls Approve (service.go:607); ApprovalRequest carries
-// Principal, Consent, GrantName and SiteScope and nothing else, so that path
-// genuinely has no channel for a capability answer today. Section n=4 below
-// is therefore rendered only for `method === "token"`; for OAuth, NextSteps
-// still says permissions are chosen on the approval screen, because that
-// remains true there and only there.
+// IT USED TO BE RENDERED ONLY FOR `method === "token"`, AND IN THE SPECIFIED
+// ORDER THAT IS NOT EXPRESSIBLE. Step 4 comes BEFORE step 5, so at the moment
+// this step is asked no auth method has been chosen: keying the step's
+// existence on that answer would key it on an answer the operator has not
+// given yet. The old arrangement only looked coherent because the built order
+// put the auth step second.
 //
-// A permission model that varies by how the connection was made is a real
-// asymmetry, not a bug: the token path can put an answer on the wire today,
-// and the OAuth path genuinely cannot until the approval screen grows a
-// channel for one (tracked in GH #660). Cited by file:line above rather than
-// restated from memory: summarising this split instead of pointing at it is
-// exactly what went stale here before.
+// WHERE THE ANSWER ACTUALLY GOES, STATED ON THE STEP RATHER THAN IMPLIED. On
+// the token path it is on the wire. On the browser sign-in path it is not: the
+// client redirects into the approval screen at /connect/ai, which calls
+// Approve (service.go:607); ApprovalRequest carries Principal, Consent,
+// GrantName and SiteScope and nothing else, so that path has no channel for a
+// capability answer today (tracked in GH #660). That is exactly the position
+// site scope is already in one step earlier, and it is handled the same way:
+// the step is asked, and it says what happens to the answer on each path. A
+// step that vanished for half the operators would be a rail that changes
+// length under them, which ruling 15 forbids.
 //
 // NO SNIPPET IS WRITTEN IN THIS FILE. Every block comes from buildSnippet, and
 // snippet.test.ts fails the build if a config literal appears here.
 
-type Step = 1 | 2 | 3 | 4 | 5;
+type Step = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
 
 /**
  * The rail this page renders is the design's own numbering (S29, "ADD MCP
- * CONNECTION: THE TEN STEPS"), not the four sections built so far. Showing
- * only the four built ones would show an operator four-tenths of a path and
- * let them believe that was the whole of it; the approved wizard has ten
- * steps and the operator is entitled to see all ten before starting.
+ * CONNECTION: THE TEN STEPS"), not the six sections built so far. Showing only
+ * the six built ones would show an operator six-tenths of a path and let them
+ * believe that was the whole of it; the approved wizard has ten steps and the
+ * operator is entitled to see all ten before starting.
  *
- * THE MAP FROM A BUILT SECTION TO ITS SPECIFIED NUMBER IS NOT MONOTONIC ON
- * SCREEN. The five built sections answer specified steps 2, 5, 3, 4 and 6, IN
- * THAT ORDER: this wizard reaches specified step 3 ("which sites") AFTER
- * specified step 5 ("how it authenticates"), because the site-scope section
- * was inserted after the auth-method section by design (see the file-top
- * comment on ordering). `BUILT_ORDER` below is that on-screen order; a
- * "completed" segment is one earlier IN THIS ORDER, never one with a smaller
- * specified number -- comparing raw numbers would call specified step 5
- * incomplete the moment the operator reached specified step 3, which is
- * backwards.
+ * THE WALK IS MONOTONIC AND THE LOCAL NUMBER IS THE SPECIFIED NUMBER. There is
+ * no map to keep in step any more, because there are no two numbering systems:
+ * section n renders specified step n and the rail's nth segment is that same
+ * step. The previous version of this file walked 2, 5, 3, 4, 6 and wrote the
+ * discrepancy up as a design decision; WIZARD-SPEC lists the ten steps in
+ * order and prescribes no reordering. The operator reported the symptom
+ * exactly: after step 2 it went to step 5.
  *
- * SPECIFIED STEP 4 ("CHOOSE WHAT IT MAY DO") IS NEW HERE, TOKEN PATH ONLY. It
- * sits between site scope (spec 3) and the setup artefact (spec 6), matching
- * the specified order, so the local step numbers below shift: the setup
- * section that used to be local step 4 is now local step 5.
+ * `BUILT_ORDER` stays as the one written statement of the walk, so a test can
+ * assert the SEQUENCE rather than individual steps and a future reorder cannot
+ * pass silently by moving one entry.
  */
-const BUILT_ORDER: readonly [1 | 2 | 3 | 4 | 5, number][] = [
-  [1, 2],
-  [2, 5],
+const BUILT_ORDER: readonly [Step, number][] = [
+  [1, 1],
+  [2, 2],
   [3, 3],
   [4, 4],
-  [5, 6],
+  [5, 5],
+  [6, 6],
+  // 7 IS A HAND-OFF SCREEN, NOT A HAND-OFF. This wizard cannot open or
+  // pre-fill the approval screen: that screen is an OAuth redirect target
+  // needing a registered client's client_id and redirect_uri, and the client
+  // -- not this app -- starts the flow. Owner ruling: build the screen that
+  // says so, and do not persist anything to make the hand-off real.
+  [7, 7],
+  [8, 8],
+  [9, 9],
+  [10, 10],
 ];
 
-/** The local step that asks "which sites", and the one that asks "what it may do". */
+/**
+ * The specified step numbers this wizard walks, in walk order. Exported for
+ * the sequence assertion: a test that checked "step 3 exists" would still pass
+ * against a reordered wizard, and that is the defect being fixed here.
+ */
+export const WALK_SPEC_ORDER: readonly number[] = BUILT_ORDER.map(([, spec]) => spec);
+
+/**
+ * The verification prompt, and there is exactly ONE of it.
+ *
+ * Ruling 27: step 9's prompt is the one that ships, because fleet_sites_list
+ * can serve it today. Step 10 shows the same prompt rather than a second one --
+ * the deck draws a meta-description prompt there and the tools it needs do not
+ * exist, so writing it would put an instruction on screen that cannot run.
+ *
+ * IT NAMES NO TOOL AND NO COUNT. A prompt naming a tool would go stale the
+ * moment the registry changes, and a prompt naming a number of sites would be
+ * asserting a fleet size this constant cannot know.
+ */
+const VERIFICATION_PROMPT =
+  "List the WordPress sites you can see through WPMgr, and tell me where that list came from.";
+
+/**
+ * What the rail says about the steps that have no section yet, DERIVED FROM
+ * SPEC_STEPS rather than written out.
+ *
+ * A hand-written version of this sentence went stale the moment steps 8 to 10
+ * were built and went on telling operators they were not. Deriving it means the
+ * sentence changes with the rail, and disappears entirely once nothing is
+ * unbuilt -- which is the only correct copy for that state and is the one a
+ * human would have forgotten to write.
+ */
+function unbuiltRailNote(steps: readonly SpecStepDef[]): string {
+  const unbuilt = steps.filter((s) => !s.built).map((s) => s.n);
+  if (unbuilt.length === 0) return "Every step is built.";
+  const list =
+    unbuilt.length === 1
+      ? `Step ${String(unbuilt[0])}`
+      : `Steps ${unbuilt.slice(0, -1).map(String).join(", ")} and ${String(unbuilt[unbuilt.length - 1])}`;
+  const verb = unbuilt.length === 1 ? "is" : "are";
+  return `${list} ${verb} not built yet, so ${unbuilt.length === 1 ? "it is" : "they are"} shown but not offered.`;
+}
+
+/**
+ * THE TWO PRESETS, and there are two because the owner ruled two. The deck
+ * draws four; the other two name a propose model the backend does not have
+ * (ruling 17), so building them would put a shortcut on screen that sets a
+ * capability no grant can hold.
+ *
+ * BOTH ARE DERIVED FROM THE VOCABULARY, NOT WRITTEN OUT. "Read everything" is
+ * every conferrable capability, so a capability added to CONFERRABLE_CAPABILITIES
+ * joins it by construction rather than by somebody remembering. Writing the
+ * seven names here would be a second copy of the list that capabilities.ts
+ * exists to prevent, and its failure mode is a preset called "read everything"
+ * that quietly stops meaning it.
+ */
+const CAPABILITY_PRESETS = [
+  {
+    id: "basics",
+    label: "Just the basics",
+    /**
+     * The default the wizard already opens on, and dto.go's own default for an
+     * omitted field. An operator who changes nothing gets exactly what not
+     * answering would have given them.
+     */
+    capabilities: ["mcp.sites.read"] as readonly string[],
+    description: "See which sites are in scope, and nothing else.",
+  },
+  {
+    id: "read-everything",
+    label: "Read everything",
+    capabilities: CONFERRABLE_CAPABILITIES as readonly string[],
+    description: "Every read this connection could be given. It still cannot change anything.",
+  },
+] as const;
+
+/**
+ * Which preset the CURRENT selection is, or null for a custom set.
+ *
+ * DERIVED ON EVERY RENDER, NEVER STORED, AND THAT IS THE WHOLE DESIGN. Ruling
+ * 33 says touching a checkbox moves the control to an unlabelled Custom state.
+ * Storing "the operator pressed Read everything" and clearing it on each
+ * checkbox change would implement that with a second piece of state that can
+ * disagree with the set underneath -- and a label claiming a preset over a set
+ * that has diverged is this component's signature defect, the same shape as the
+ * rail claiming a step done while its action was blocked.
+ *
+ * Deriving it means the disagreement is not merely tested against, it is
+ * UNCONSTRUCTIBLE: there is no second value for a label to read. Unticking a
+ * row from "read everything" makes this return null on the very same render,
+ * and re-ticking it makes the preset name come back on its own -- which is
+ * correct, because the set genuinely is that preset again.
+ */
+function presetFor(selected: readonly string[]): string | null {
+  const chosen = [...selected].sort().join("|");
+  const match = CAPABILITY_PRESETS.find(
+    (p) => [...p.capabilities].sort().join("|") === chosen,
+  );
+  return match?.id ?? null;
+}
+
+/** Each built section's local step, named rather than written as a bare number. */
+const CONTRACT_LOCAL_STEP: Step = 1;
+const CLIENT_LOCAL_STEP: Step = 2;
 const SITE_SCOPE_LOCAL_STEP: Step = 3;
 const CAPABILITY_LOCAL_STEP: Step = 4;
+const AUTH_LOCAL_STEP: Step = 5;
+const SETUP_LOCAL_STEP: Step = 6;
+const AUTHORIZE_LOCAL_STEP: Step = 7;
+const CONFIRM_LOCAL_STEP: Step = 8;
+const VERIFY_LOCAL_STEP: Step = 9;
+const DONE_LOCAL_STEP: Step = 10;
 
 
 /**
  * What a rail segment IS, for the operator standing in front of it. THREE
- * STATES, NOT A BOOLEAN, and the third one is why: a step can be built and on
- * this operator's path, built but not asked of them because of an answer they
- * already gave, or not built at all.
+ * STATES, AND THEY ARE THREE DIFFERENT FACTS an operator must not have to
+ * guess between:
  *
  *   "built"          -- there is a section for it and this path visits it.
- *   "not-applicable" -- built, but this path does not ask it. Step 4 on the
- *                       OAuth path is the only instance: permissions are
- *                       chosen on the approval screen there. The segment STAYS,
- *                       with its reason, rather than the rail shortening from
- *                       ten segments to nine halfway through (ruling 15,
- *                       "persistent on every step").
+ *   "not-applicable" -- it exists, and this operator will never reach it,
+ *                       because of an answer they have already given.
  *   "not-built"      -- no section exists yet, on any path.
+ *
+ * THE MIDDLE STATE WAS DELETED AND IS BACK, WITH TWO USES INSTEAD OF ONE. It
+ * previously served the capability picker on the browser sign-in path, and the
+ * reorder made that unexpressible -- step 4 is asked BEFORE the auth method, so
+ * there was no answer to skip it on. That was a correct deletion of a use, not
+ * of the idea. The idea now has two uses that are both keyed on an answer
+ * already behind the operator:
+ *
+ *   step 7 is the approval hand-off and exists only on the browser sign-in
+ *   path, so on the token path it is the step that will never be asked;
+ *   steps 8 to 10 verify a connection this wizard minted, so on the browser
+ *   sign-in path -- where the client creates the grant and this wizard never
+ *   sees its id -- they are the steps that will never be asked.
+ *
+ * Owner ruling, made when step 4 was the token-only case: keep all ten
+ * segments and mark the inapplicable one, because a wizard that changes length
+ * halfway through is disorienting while a labelled inapplicable step tells an
+ * operator why something they can see will not be asked of them.
  */
 type SpecStepAvailability = "built" | "not-applicable" | "not-built";
 
@@ -169,25 +313,29 @@ interface SpecStepDef {
    * reported: the rail called a section step 5 while its own heading said 2.
    */
   readonly heading: string;
-  /** True when this specified step has a built section on at least one path. */
+  /** True when this specified step has a built section. */
   readonly built: boolean;
   /**
-   * Set only where a built step is asked on ONE auth path. The capability
-   * picker is the single case: the OAuth mint carries no capability field
-   * (service.go:842 hard-codes the default), so asking here would be a
-   * decision that does nothing.
+   * Set where a built step is asked on ONE auth path only.
+   *
+   * BOTH DIRECTIONS ARE USED NOW, which is what makes this general rather than
+   * a special case for one step: 7 is browser-sign-in only, 8 to 10 are token
+   * only. A field that only ever held one value was a special case wearing a
+   * general name.
    */
   readonly onlyOnMethod?: AuthMethod;
 }
 
 /**
- * Which of the three availability states one specified step is in, for the
- * auth method chosen so far.
+ * Which availability state one specified step is in, for the auth method
+ * chosen so far.
  *
  * BEFORE A METHOD IS CHOSEN, A PATH-ONLY STEP IS "built", NOT
  * "not-applicable". Nothing has ruled it out yet, and telling an operator on
- * step 2 that step 4 will not be asked of them -- when their next answer
- * decides exactly that -- would be a claim the wizard cannot yet make.
+ * step 2 that step 7 will not be asked of them -- when an answer they have not
+ * given decides exactly that -- would be a claim the wizard cannot yet make.
+ * This is the same rule the deleted version had, and it was never the part that
+ * went wrong.
  */
 function specStepAvailability(s: SpecStepDef, method: AuthMethod | null): SpecStepAvailability {
   if (!s.built) return "not-built";
@@ -198,19 +346,35 @@ function specStepAvailability(s: SpecStepDef, method: AuthMethod | null): SpecSt
 }
 
 /**
- * The steps this wizard actually walks, in order, for the auth method chosen
- * so far -- BUILT_ORDER with the steps this path does not ask removed.
+ * The steps this wizard walks, in order.
  *
- * Navigation reads this and nothing else, so Continue on the OAuth path steps
- * from site scope (spec 3) straight to the setup artefact (spec 6) without
- * ever landing the operator on a section that renders nothing. The rail still
- * draws all ten segments; only the WALK is shortened, and the segment it skips
- * says why it was skipped.
+ * ONE WALK, THE SAME FOR EVERY OPERATOR. Navigation reads this and nothing
+ * else. It used to be filtered by the auth method, which was the mechanism the
+ * non-monotonic order needed and which the specified order makes both
+ * unnecessary and unusable -- the method is answered at step 5, after every
+ * step the filter would have removed.
  */
-function walkFor(method: AuthMethod | null): readonly [Step, number][] {
-  return BUILT_ORDER.filter(([, spec]) => {
+function walkFor(
+  method: AuthMethod | null,
+  connectionExists: boolean,
+): readonly [Step, number][] {
+  return BUILT_ORDER.filter(([local, spec]) => {
     const def = SPEC_STEPS.find((s) => s.n === spec);
-    return def === undefined || specStepAvailability(def, method) === "built";
+    if (def !== undefined && specStepAvailability(def, method) !== "built") return false;
+    // STEPS 8 TO 10 NEED A CONNECTION TO EXIST, AND THAT IS A FACT THAT HAS
+    // ALREADY HAPPENED, NOT AN ANSWER THAT MIGHT COME. They poll one
+    // connection's status by id and list the tools that connection can see, so
+    // without an id there is nothing for them to be about: an empty confirm
+    // screen would be a page waiting on a handshake from a credential nobody
+    // minted.
+    //
+    // THIS IS NOT THE `onlyOnMethod` FILTER COMING BACK. That one keyed a
+    // step's existence on an answer the operator had not been asked for yet,
+    // which is why the reorder made it unusable. This keys it on whether a
+    // mint has already returned a grant id, which is behind the operator by
+    // construction: the only thing that sets it is the step 6 button.
+    if (local >= 8 && !connectionExists) return false;
+    return true;
   });
 }
 
@@ -251,26 +415,30 @@ export function resolveCursorPos(
 }
 
 // All ten, in specified order, so the operator sees the whole path before
-// starting. Only five are `built: true`; the rest render as not-yet-available
+// starting. Only six are `built: true`; the rest render as not-yet-available
 // rather than being omitted or, worse, made to look done.
 const SPEC_STEPS: readonly SpecStepDef[] = [
-  { n: 1, rail: "Start", heading: "Start a connection", built: false },
+  { n: 1, rail: "Start", heading: "Start a connection", built: true },
   { n: 2, rail: "Client", heading: "Name it, pick the AI client", built: true },
   { n: 3, rail: "Sites", heading: "Choose which sites", built: true },
-  // Built on the TOKEN path only -- see the file-top comment on the OAuth
-  // split. `built: true` still means "reachable on at least one path", the
-  // same standard site-scope and setup already meet even though the sites
-  // page's copy names its own limits per method.
-  { n: 4, rail: "Capabilities", heading: "Choose what it may do", built: true, onlyOnMethod: "token" },
+  { n: 4, rail: "Capabilities", heading: "Choose what it may do", built: true },
   { n: 5, rail: "Auth", heading: "Choose how it authenticates", built: true },
   { n: 6, rail: "Setup", heading: "Get the setup artefact", built: true },
-  { n: 7, rail: "Authorize", heading: "Connect and authorize", built: false },
-  { n: 8, rail: "Confirm", heading: "WPMgr confirms connection is live", built: false },
+  // BROWSER SIGN-IN ONLY. There is no approval screen on the token path at
+  // all, so this is the step a token operator will never be asked.
+  { n: 7, rail: "Authorize", heading: "Connect and authorize", built: true, onlyOnMethod: "oauth" },
+  // TOKEN PATH ONLY, and for a reason about ids rather than about screens:
+  // these three are ABOUT one connection, and on the browser sign-in path the
+  // client creates the grant through the approval screen, so this wizard never
+  // learns its id and has nothing to poll or list.
+  { n: 8, rail: "Confirm", heading: "WPMgr confirms connection is live", built: true, onlyOnMethod: "token" },
   // "Test" in the rail, "Verify with a first read" as the heading -- ruling 15
   // names this pair explicitly, because the deck uses both words for step 9.
-  { n: 9, rail: "Test", heading: "Verify with a first read", built: false },
-  { n: 10, rail: "Done", heading: "Done: tool list and first prompt", built: false },
+  { n: 9, rail: "Test", heading: "Verify with a first read", built: true, onlyOnMethod: "token" },
+  { n: 10, rail: "Done", heading: "Done: tool list and first prompt", built: true, onlyOnMethod: "token" },
 ];
+
+const UNBUILT_RAIL_NOTE = unbuiltRailNote(SPEC_STEPS);
 
 /**
  * Whether the site-scope step is actually done, for every reason
@@ -348,6 +516,12 @@ export function ConnectWizard({
   // mounted surface, whatever the operator clicked while it was in the air.
   const mint = useMintConnection();
   const [reveal, setReveal] = useState<MintedReveal | null>(null);
+  // THE CONNECTION'S ID, HELD SEPARATELY FROM THE REVEAL AND NEVER CLEARED
+  // WITH IT. The reveal is dismissed by the operator the moment they have
+  // copied the token, and the connection does not stop existing when they do.
+  // Sourcing steps 8 to 10 from `reveal` would delete the whole verification
+  // half of the wizard at the exact moment its subject came into being.
+  const [connectionId, setConnectionId] = useState<string | null>(null);
   // NO DEFAULT 'all'. The consent screen refuses one for the same reason
   // (m124 DECISION 1) and so does the schema: a scope nobody chose must not
   // begin life as the widest one. 'list' holding nothing is the wireframe's
@@ -431,7 +605,7 @@ export function ConnectWizard({
   // selection the operator had not made yet. One function, read by both the
   // button and the rail, is what makes a fourth door impossible rather than
   // merely unlikely.
-  const siteScopeState: SiteScopeReadiness = siteScopeReadiness(scope, scopeRequest, method);
+  const siteScopeState: SiteScopeReadiness = siteScopeReadiness(scope, scopeRequest);
   void siteScopeState;
 
   // THE CAPABILITY PAYLOAD, OR THE REASON THERE IS NONE -- built once, here,
@@ -443,11 +617,16 @@ export function ConnectWizard({
     [capabilities],
   );
 
+  // WHICH PRESET THE OPERATOR IS ON, OR NULL FOR CUSTOM -- derived from the
+  // same `capabilities` array the checkboxes render and the mint sends, so the
+  // label, the ticks and the wire payload are three readings of one value.
+  const activePreset = presetFor(capabilities);
+
   // THE RAIL'S CAPABILITY STATE, mirroring siteScopeState immediately above:
   // one function, read by both the rail and `mintBlockedReason` below, so
   // "step 4 reads done" and "mint will actually accept this" cannot drift
   // apart the way `scope.kind` alone once did for site scope.
-  const capabilityState: CapabilityReadiness = capabilityReadiness(capabilitiesRequest, method);
+  const capabilityState: CapabilityReadiness = capabilityReadiness(capabilitiesRequest);
   void capabilityState;
 
   // ONE CONTEXT, ONE PREDICATE, EVERY CONSUMER. The rail, the Continue button
@@ -463,10 +642,8 @@ export function ConnectWizard({
     capabilitiesRequest,
   };
 
-  // The steps this path actually walks. On OAuth the capability picker is not
-  // one of them, so Continue steps over it rather than landing the operator on
-  // a section that would render nothing.
-  const walk = walkFor(method);
+  // The steps this wizard walks, 1 through 6 in order, the same for everyone.
+  const walk = walkFor(method, connectionId !== null);
   const gates: readonly StepGate[] = walk.map(([local]) => stepGate(local, gateContext));
   const cursorPos = resolveCursorPos(walk, gates, requestedStep);
   const currentLocal: Step = walk[cursorPos]![0];
@@ -603,7 +780,38 @@ export function ConnectWizard({
         </p>
       ) : null}
 
-      {currentLocal === 1 ? (
+      {currentLocal === CONTRACT_LOCAL_STEP ? (
+        <Section
+          specN={1}
+          hint="Read this before anything is created. It is the whole of what a connection is allowed to be."
+        >
+          <div className="space-y-3">
+            {/* THE SAME COMPONENT THE /ai INDEX RENDERS, NOT A SECOND COPY OF
+                THE CONTRACT. Two renderings of the eight specified strings
+                would be two places they can drift, and the negative half is
+                the product's entire safety argument -- the half that must not
+                quietly soften on a later fidelity pass. ConnectionContract
+                owns the strings and its own guard test owns what may never
+                appear in them. */}
+            <ConnectionContract />
+            {/* WHY THIS SENTENCE IS ON THE FIRST STEP AND NOWHERE ELSE. An
+                operator who has just pressed "New connection" does not know
+                whether they have already made something. Nothing is written
+                until step 6 mints, or until the client's own approval screen
+                approves; saying so here is what makes Back and closing the tab
+                obviously safe, rather than something to be careful about. */}
+            <p
+              data-testid="wizard-nothing-created-yet"
+              className="text-xs text-[var(--color-muted-foreground)]"
+            >
+              Nothing is created yet. This is a wizard, not a draft row. No credential exists and
+              no grant is written until you finish; leaving now leaves nothing behind.
+            </p>
+          </div>
+        </Section>
+      ) : null}
+
+      {currentLocal === CLIENT_LOCAL_STEP ? (
       <Section
         specN={2}
         // The one narrowing, and its reason: this section picks the client and
@@ -626,11 +834,10 @@ export function ConnectWizard({
       </Section>
       ) : null}
 
-      {currentLocal === 2 && client !== null ? (
+      {currentLocal === AUTH_LOCAL_STEP && client !== null ? (
         <Section
           specN={5}
-
-          hint={`Computed from ${client.name}. A method it cannot use is disabled with the reason.`}
+          hint={`Computed from ${client.name}, which you picked at step 2. A method it cannot use is disabled with the reason.`}
         >
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <AuthCard
@@ -697,7 +904,11 @@ export function ConnectWizard({
         </Section>
       ) : null}
 
-      {currentLocal === SITE_SCOPE_LOCAL_STEP && client !== null && method !== null ? (
+      {/* NO `method !== null` GUARD ANY MORE, AND ITS ABSENCE IS THE POINT.
+          Step 3 is asked before step 5, so requiring a method here would
+          require an answer the operator has not been asked for and gate the
+          section on a state it can never be in. */}
+      {currentLocal === SITE_SCOPE_LOCAL_STEP && client !== null ? (
         <Section
           specN={3}
           hint="Chosen before capabilities, on purpose. What a connection may do is only meaningful once you have fixed what it may do it to."
@@ -710,35 +921,110 @@ export function ConnectWizard({
             tagsBySiteId={tagsBySiteId}
             sitesLoading={sitesLoading}
           />
-          {/* The same correction as the name field below, for the same reason.
-              The client opens the approval screen itself, so this page has no
-              channel into it and cannot hand it a scope. Deciding it here is
-              how you arrive with the answer; the approval screen is where it
-              is written, and it asks again. */}
+          {/* WHERE THE ANSWER GOES, AND IT DEPENDS ON A CHOICE NOT YET MADE.
+              This footnote used to state the browser sign-in outcome flatly,
+              which was safe only while the auth step came first. At step 3 no
+              method has been chosen, so it is written as the forward
+              conditional it actually is. Stating it now rather than at step 5
+              is deliberate: the operator is making the selection here, and the
+              time to say what becomes of it is while they are making it. */}
           <p className="mt-3 text-xs text-[var(--color-muted-foreground)]">
-            Nothing carries this selection to the approval screen. The client opens that
-            screen itself, so it asks for the scope again and that is where it is written.
-            Deciding it here is how you get there with the answer ready.
+            What happens to this answer depends on the sign-in method you choose at step 5. With a
+            connection token it is sent with the token and is what the connection is scoped to.
+            With browser sign-in the client opens the approval screen itself, so nothing carries
+            this selection there and it asks for the scope again. Deciding it here is how you get
+            there with the answer ready.
           </p>
         </Section>
       ) : null}
 
-      {/* TOKEN PATH ONLY. On OAuth there is no channel to carry an answer
-          anywhere -- see the file-top comment -- so rendering a picker here
-          would look like a decision that does something when it does
-          nothing, the same defect this whole file elsewhere refuses to
-          commit. NextSteps below already tells the OAuth operator where this
-          choice is actually made. */}
-      {currentLocal === CAPABILITY_LOCAL_STEP && client !== null && method === "token" ? (
+      {/* ASKED ON EVERY PATH, because at step 4 there is no path yet -- the
+          method is chosen at step 5. The old `method === "token"` condition
+          was only expressible while the auth step came second; see the
+          file-top comment. Where the answer ends up is stated on the step
+          itself, the same way step 3 states it one step earlier. */}
+      {currentLocal === CAPABILITY_LOCAL_STEP && client !== null ? (
         <Section
           specN={4}
           hint="Every capability here is read-only. Nothing on this list can change WordPress content or configuration."
         >
           <div className="space-y-3">
+            {/* STEP 3 IS BEHIND THE OPERATOR, so "already given" is a true
+                statement about an answer they have made. It was not, in the
+                order this wizard used to walk: step 4 came before step 3 was
+                reached on screen, and this sentence claimed an answer that did
+                not exist yet. */}
             <p className="text-xs text-[var(--color-muted-foreground)]">
               {describeSiteScope(scope)} This decides what it may see there -- how many sites
               it reaches is step 3's answer, already given.
             </p>
+            {/* THE PRESETS. A shortcut, not a mode: pressing one sets the
+                checkboxes and nothing else, and the moment the set diverges the
+                control says Custom. That is not enforced by a handler -- it is
+                derived by presetFor, so no code path exists that could leave a
+                preset selected over a set that no longer matches it. */}
+            <div className="space-y-2">
+              <p className="text-xs font-medium text-[var(--color-foreground)]">Start from</p>
+              <div className="flex flex-wrap items-center gap-2" data-testid="capability-presets">
+                {CAPABILITY_PRESETS.map((preset) => {
+                  const active = activePreset === preset.id;
+                  return (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      data-testid={`preset-${preset.id}`}
+                      aria-pressed={active}
+                      disabled={mintInFlight}
+                      onClick={() => {
+                        setCapabilities([...preset.capabilities]);
+                      }}
+                      className={cn(
+                        "inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-left text-xs transition-colors",
+                        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-ring)]",
+                        mintInFlight && "cursor-not-allowed opacity-70",
+                        active
+                          ? "border-[var(--color-primary)] bg-[var(--color-accent)] font-medium text-[var(--color-foreground)]"
+                          : "border-[var(--color-border)] text-[var(--color-muted-foreground)] hover:bg-[var(--color-accent)]",
+                      )}
+                    >
+                      {/* THE TICK IS WHAT ACTUALLY SAYS "CHOSEN", and it is
+                          here because border-and-fill alone did not. Pressing a
+                          preset leaves focus on that button, and the focus ring
+                          is close enough to the selected border that a
+                          just-diverged preset went on LOOKING selected next to
+                          a freshly appeared Custom -- aria-pressed said false
+                          and the picture said otherwise. Found by opening the
+                          screenshot; the e2e assertion on aria-pressed passed
+                          throughout. A glyph that only the active branch
+                          renders cannot be imitated by a focus style.
+                          ClientCard already marks selection this way. */}
+                      {active ? (
+                        <Check aria-hidden="true" className="size-3.5 text-[var(--color-primary)]" />
+                      ) : null}
+                      {preset.label}
+                    </button>
+                  );
+                })}
+                {/* THE THIRD STATE, AND IT IS A STATEMENT RATHER THAN A BUTTON.
+                    Ruling 33 calls it unlabelled and there is nothing to press:
+                    Custom is where you ARE, not somewhere you go. Rendering it
+                    as a third button would invite an operator to click it and
+                    wonder why nothing happened. */}
+                {activePreset === null ? (
+                  <span
+                    data-testid="preset-custom"
+                    className="rounded-md border border-dashed border-[var(--color-border)] px-3 py-1.5 text-xs font-medium text-[var(--color-foreground)]"
+                  >
+                    Custom
+                  </span>
+                ) : null}
+              </div>
+              <p className="text-xs text-[var(--color-muted-foreground)]">
+                {activePreset === null
+                  ? "You have changed the rows below, so this is your own set rather than either shortcut."
+                  : (CAPABILITY_PRESETS.find((p) => p.id === activePreset)?.description ?? "")}
+              </p>
+            </div>
             <ul className="space-y-2">
               {KNOWN_CAPABILITIES.map((cap) => {
                 const conferrable = (CONFERRABLE_CAPABILITIES as readonly string[]).includes(cap);
@@ -789,6 +1075,30 @@ export function ConnectWizard({
               These are all read-only. No capability on this screen can change WordPress
               content or configuration, whichever ones you pick.
             </p>
+            {/* The same forward conditional step 3's footnote carries, for the
+                same reason and about the same step-5 answer. Two steps whose
+                answers travel differently by path must both say so, or the one
+                that stays silent reads as the one that always travels.
+
+                THE BROWSER SIGN-IN HALF NAMES WHAT THE CONNECTION ENDS UP
+                WITH, RATHER THAN CLAIMING THE QUESTION IS ASKED ELSEWHERE. It
+                used to say permissions were "settled there instead", which was
+                true only while POST /api/v1/oauth/mcp/consent had no capability
+                field. It has one now (dto.go's approvalRequestDTO.Capabilities)
+                and this app does not yet send it, so an OMITTED field is what
+                reaches the server; service.go:871 resolves that through
+                resolveGrantCapabilities to DefaultGrantCapabilities(), which
+                policy.go:273 defines as exactly CapSitesRead. Naming that
+                outcome is a fact the operator can check against the connection
+                afterwards. "Permissions are chosen on the approval screen" was
+                a promise about a control that screen does not have. */}
+            <p className="text-xs text-[var(--color-muted-foreground)]">
+              Where this answer goes depends on step 5. With a connection token it is sent with
+              the mint request and is what the connection holds. With browser sign-in your client
+              opens the approval screen itself, so this wizard has no way to hand it your answer:
+              that connection is created able to read your sites and nothing else, whatever you
+              pick here.
+            </p>
             {/* NO PRIVATE REFUSAL PANEL HERE. `capabilitiesRequest.refusal` is
                 the exact string `stepGate`'s CAPABILITY_LOCAL_STEP branch
                 returns as `gate.refusal`, and WizardNav below already renders
@@ -800,10 +1110,10 @@ export function ConnectWizard({
         </Section>
       ) : null}
 
-      {currentLocal === 5 && client !== null && method !== null ? (
+      {currentLocal === SETUP_LOCAL_STEP && client !== null && method !== null ? (
         <Section
           specN={6}
-          hint="Generated for this client. Every difference below is a real difference between clients."
+          hint="Generated for this client and the sign-in method you chose at step 5. Every difference below is a real difference between clients."
         >
           <div className="space-y-4">
             <div className="max-w-sm space-y-1.5">
@@ -847,7 +1157,15 @@ export function ConnectWizard({
               <TokenMintPanel
                 mint={mint}
                 revealed={reveal !== null}
-                onMinted={setReveal}
+                onMinted={(r) => {
+                  setReveal(r);
+                  // Recorded here rather than inside TokenMintPanel for the
+                  // same reason the reveal is: this callback lands on the
+                  // wizard, which is mounted whatever the operator clicked
+                  // while the request was in the air.
+                  setConnectionId(r.token.grantId);
+                }}
+                clientId={client.id}
                 clientName={client.name}
                 name={name}
                 scope={scope}
@@ -859,9 +1177,116 @@ export function ConnectWizard({
         </Section>
       ) : null}
 
+      {/* SPECIFIED STEP 7, AND IT IS A SCREEN ABOUT A HAND-OFF RATHER THAN A
+          HAND-OFF. Owner ruling. This wizard cannot open the approval screen
+          and cannot pre-fill it: that screen is an OAuth redirect target which
+          needs a registered client's client_id and redirect_uri, and the client
+          -- not this app -- starts the flow. Nothing is persisted to fake it.
+
+          SO THE SCREEN'S JOB IS TO SAY WHAT TO EXPECT AND WHAT TO CHOOSE. The
+          capability sentence is the one already verified against the server:
+          this app sends no capabilities on the consent path, an omitted field
+          resolves through resolveGrantCapabilities to
+          DefaultGrantCapabilities(), and policy.go:273 defines that as
+          CapSitesRead alone.
+
+          NO WAITING STATE, DELIBERATELY. We do not drive this flow and cannot
+          observe it: a spinner here would be this screen pretending to watch
+          something it has no channel to. The decline outcome is drawn because
+          it is a thing the operator does, not a thing we detect. */}
+      {currentLocal === AUTHORIZE_LOCAL_STEP && client !== null ? (
+        <Section
+          specN={7}
+          hint="Your client opens this screen itself. Nothing here happens in this tab."
+        >
+          <div className="space-y-3">
+            <p className="text-sm text-[var(--color-foreground)]">
+              Start {client.name} and connect to WPMgr. It opens an approval page in your browser,
+              signed in as you, and asks you to approve the connection.
+            </p>
+            <div className="rounded-md border border-[var(--color-border)] p-3">
+              <p className="text-xs font-medium text-[var(--color-foreground)]">
+                What to expect on that page
+              </p>
+              <ul className="mt-2 space-y-1.5 text-xs text-[var(--color-muted-foreground)]">
+                <li>
+                  It asks for the connection name and which sites it may reach. Your answers from
+                  steps 3 and 4 are not carried there, so it asks again and you answer it there.
+                </li>
+                <li>
+                  It has no permissions control. Approving without narrowing anything creates a
+                  connection able to read your sites and nothing else.
+                </li>
+                <li>
+                  Declining creates nothing. No credential exists and no grant is written, and you
+                  can start again whenever you are ready.
+                </li>
+              </ul>
+            </div>
+            <p className="text-xs text-[var(--color-muted-foreground)]">
+              This page does not watch for that approval, because your client and that page talk to
+              each other without going through this tab. Once it is approved the connection is
+              live, and it is listed under Settings, AI connections where you can revoke it.
+            </p>
+          </div>
+        </Section>
+      ) : null}
+
+      {/* SPECIFIED STEP 8. The panel is ConnectionVerify, unchanged and
+          unwrapped: it already polls GET /connections/:id/status, already ticks
+          from the handshake the server RECORDED rather than from any clock, and
+          already refuses to let a clock declare failure -- after five minutes
+          it says nothing has arrived and offers the checks, which is not the
+          same as calling it broken. Re-implementing any of that here would be a
+          second answer to a question that already has one. */}
+      {currentLocal === CONFIRM_LOCAL_STEP && connectionId !== null ? (
+        <Section
+          specN={8}
+          hint="Nothing is wrong yet. Your client connects when you next start it, and this updates itself when it does."
+        >
+          <ConnectionVerify connectionId={connectionId} />
+        </Section>
+      ) : null}
+
+      {/* SPECIFIED STEP 9. The prompt, and the same panel's own verdict for the
+          first call. The panel is NOT rendered a second time here -- step 8 is
+          one Back away and rendering it twice would put one live verdict on two
+          screens, which is the duplicate this component keeps producing. What
+          belongs here is the thing step 8 does not have: something for the
+          operator to actually run. */}
+      {currentLocal === VERIFY_LOCAL_STEP && connectionId !== null ? (
+        <Section
+          specN={9}
+          hint="A handshake proves your client reached us. It does not prove it can read anything, so ask it to."
+        >
+          <div className="space-y-3">
+            <p className="text-sm text-[var(--color-foreground)]">
+              Paste this to your assistant. It calls one read-only tool and nothing else.
+            </p>
+            <CopyableMono value={VERIFICATION_PROMPT} label="Verification prompt" />
+            <p className="text-xs text-[var(--color-muted-foreground)]">
+              Step 8 shows whether that call arrived. It is read from the audit row this
+              connection wrote, never from a last-used timestamp, because every client stamps
+              one the moment it connects and nothing about that proves it read your fleet.
+            </p>
+          </div>
+        </Section>
+      ) : null}
+
+      {/* SPECIFIED STEP 10. */}
+      {currentLocal === DONE_LOCAL_STEP && connectionId !== null ? (
+        <Section
+          specN={10}
+          hint="What this connection can actually call, read back from the grant rather than from the catalogue."
+        >
+          <ConnectionToolList connectionId={connectionId} />
+        </Section>
+      ) : null}
+
       <WizardNav
         gate={currentGate}
         isLastBuiltStep={isLastBuiltStep}
+        connectionExists={connectionId !== null}
         canGoBack={cursorPos > 0}
         locked={mintInFlight}
         onBack={() => setRequestedStep(walk[cursorPos - 1]![0])}
@@ -913,17 +1338,24 @@ interface RailSegmentStyle {
  * exactly one answer, and is decided once in StepRail.
  */
 const RAIL_SEGMENT_STYLES: Record<RailSegmentState, RailSegmentStyle> = {
+  // THREE DISTINCT LOOKS FOR THREE DISTINCT FACTS, and the distinction is the
+  // requirement rather than the styling taste. `not-built` is italic and faded:
+  // the screen does not exist. `not-applicable` is struck through: the screen
+  // exists and this operator will never reach it. `upcoming` is plain: the
+  // screen exists and is ahead of them. An operator who cannot tell these apart
+  // is left guessing whether something they can see is missing, irrelevant, or
+  // simply next.
   "not-built": { circle: "opacity-70", label: "italic opacity-70", suffix: null },
-  // BUILT, AND NOT ASKED ON THIS PATH. Struck through rather than faded,
-  // because "we have not built this yet" and "your own earlier answer means we
-  // will not ask you this" are two different facts and an operator should not
-  // have to guess which one they are looking at. The segment stays either way:
-  // ruling 15 keeps the stepper ten long on every step, so the rail never
-  // changes length under the operator.
   "not-applicable": {
     circle: "opacity-60",
     label: "line-through opacity-60",
-    suffix: " (not asked on this path)",
+    // SHORT ON SCREEN, WHOLE TO A SCREEN READER -- see the sr-only span at the
+    // render site. This read "(not asked on this path)" and, on the browser
+    // sign-in path where THREE consecutive segments carry it, the rail grew so
+    // wide that step 10 sat off the right edge at 1440px. Found by opening the
+    // screenshot: the state was correct, legible in isolation, and had pushed a
+    // segment out of the frame. The reason is not dropped, only the repetition.
+    suffix: " (not asked)",
   },
   upcoming: { circle: "", label: "", suffix: null },
   completed: {
@@ -975,15 +1407,23 @@ const RAIL_SEGMENT_STYLES: Record<RailSegmentState, RailSegmentStyle> = {
  * the rail reads, so a refused Continue and a rail segment that is not marked
  * done are one fact stated twice, never two facts that can disagree.
  *
- * ON THE LAST BUILT STEP THERE IS NO CONTINUE AT ALL. Specified steps 7 to 10
- * are not built, so a Continue here would be a control leading nowhere. The
- * step's own action is the terminus instead -- the mint button on the token
- * path, the client instructions on the OAuth path -- and the rail already
- * shows the four remaining segments as not yet available.
+ * ON THE LAST STEP OF THE WALK THERE IS NO CONTINUE AT ALL, because there is
+ * no step after it to lead to. Which step that is depends on the path: the
+ * token walk ends on step 10 with a connection this wizard minted, and the
+ * browser sign-in walk ends on step 7, the approval hand-off, where the client
+ * has not yet created anything.
+ *
+ * THE CLOSING SENTENCE IS BRANCHED ON THAT, AND IT HAS TO BE. It said the
+ * connection exists and can be revoked, which is true at the end of the token
+ * walk and false at the end of the other one: step 7 states in its own words
+ * that declining creates nothing and that the client, not this wizard, starts
+ * the flow. `connectionExists` is the same fact `walkFor` reads to decide
+ * whether steps 8 to 10 are in the walk at all, so the two cannot drift.
  */
 function WizardNav({
   gate,
   isLastBuiltStep,
+  connectionExists,
   canGoBack,
   locked,
   onBack,
@@ -991,6 +1431,8 @@ function WizardNav({
 }: {
   gate: StepGate;
   isLastBuiltStep: boolean;
+  /** Whether a mint has already returned a grant id -- see `walkFor`. */
+  connectionExists: boolean;
   canGoBack: boolean;
   locked: boolean;
   onBack: () => void;
@@ -1019,10 +1461,10 @@ function WizardNav({
         )}
       </div>
       {isLastBuiltStep ? (
-        <p className="text-xs text-[var(--color-muted-foreground)]">
-          This is as far as the wizard goes today. Steps 7 to 10 -- authorizing the client,
-          confirming it reached us, and a first read to prove it works -- are not built yet, so
-          there is no Continue here rather than a button that would lead nowhere.
+        <p data-testid="wizard-terminus" className="text-xs text-[var(--color-muted-foreground)]">
+          {connectionExists
+            ? "This is the end of the wizard. Nothing here expires or has to be finished now: the connection exists and can be revoked from Settings, AI connections at any time."
+            : "This is the end of the wizard. No connection exists yet: your client creates it when you approve it in the browser, and it appears under Settings, AI connections once you have."}
         </p>
       ) : null}
     </div>
@@ -1035,7 +1477,7 @@ function StepRail({
   currentGate,
   method,
 }: {
-  /** The steps this path walks, from `walkFor`. */
+  /** The steps this wizard walks, from `walkFor`. */
   walk: readonly [Step, number][];
   /** Where the operator is in that walk, already clamped by the wizard. */
   cursorPos: number;
@@ -1046,6 +1488,11 @@ function StepRail({
    * value the Continue button is disabled from.
    */
   currentGate: StepGate;
+  /**
+   * The auth method chosen so far, or null. The rail needs it to tell a step
+   * that will never be asked of THIS operator from one that is merely ahead of
+   * them -- see specStepAvailability.
+   */
   method: AuthMethod | null;
 }) {
   // THE OTHER HALF OF "ONE ROW THAT SCROLLS". Ten segments do not fit on a
@@ -1166,12 +1613,12 @@ function StepRail({
               : availability === "not-applicable"
                 ? "not-applicable"
                 : isCurrentStep
-                  ? currentGate.refusal !== null
-                    ? currentGate.readiness
-                    : "current"
-                  : isCompleted
-                    ? "completed"
-                    : "upcoming";
+                ? currentGate.refusal !== null
+                  ? currentGate.readiness
+                  : "current"
+                : isCompleted
+                  ? "completed"
+                  : "upcoming";
           // EVERY VISUAL FROM THE ONE STATE VALUE, VIA THE TABLE. No style
           // reads a second boolean, so the ring cannot appear on a step whose
           // state says its action is blocked: a rail that presents a step as
@@ -1226,6 +1673,13 @@ function StepRail({
                 >
                   {s.rail}
                   {style.suffix}
+                  {availability === "not-applicable" ? (
+                    // The full sentence, for anyone who cannot see that the
+                    // label is struck through. "(not asked)" alone does not say
+                    // asked of whom or why, and the strike-through carries that
+                    // for sighted readers only.
+                    <span className="sr-only"> on this path</span>
+                  ) : null}
                   {availability === "not-built" ? (
                     <span className="sr-only"> (not yet available)</span>
                   ) : null}
@@ -1235,16 +1689,18 @@ function StepRail({
           );
         })}
       </ol>
-      {/* Step 4 in the rail above ("Choose what it may do") now has a section
-          on this page, on the TOKEN path only -- see the file-top comment on
-          the OAuth/token split. The OAuth path still has no channel for this
-          choice, so the second sentence below remains true only there; it is
-          kept rather than dropped, because an OAuth operator reading this
-          rail must not be led to look for a step 4 that will not appear for
-          them. */}
+      {/* WHAT THE RAIL PROMISES, said once under it. Six of the ten segments
+          have a section behind them, and a rail that showed only what is built
+          would show an operator part of a path and let them believe it was the
+          whole of it.
+
+          THIS SENTENCE IS DERIVED, NOT WRITTEN. It said "steps 7 to 10 are not
+          built" and stayed on screen after 8, 9 and 10 were built -- a stale
+          claim about the very rail it sits under, caught by looking at a
+          screenshot rather than by any test. Counting SPEC_STEPS means it
+          cannot say the wrong thing again when step 7 lands. */}
       <p className="text-xs text-[var(--color-muted-foreground)]">
-        Chosen here for a connection token. The browser sign-in path has no channel for it yet,
-        so for that path permissions are chosen on the approval screen.
+        You walk these in order. {UNBUILT_RAIL_NOTE}
       </p>
     </div>
   );
@@ -1656,46 +2112,42 @@ function mintScopeRequest(
 }
 
 /**
- * Whether step 3 is actually done, for every reason mint can refuse it, ON
- * THE PATH WHERE MINT IS THE THING BEING REFUSED.
+ * Whether step 3 is actually done, for every reason mint can refuse it.
  *
- * THE FULL MATRIX THIS FUNCTION ANSWERS -- auth method x site-scope state,
- * ten cells, derived from what actually gates the setup step on each path,
- * not from what feels right:
+ * IT NO LONGER ASKS WHICH AUTH METHOD WAS CHOSEN, BECAUSE AT STEP 3 THERE IS
+ * NOT ONE. This function used to answer "resolved" for anything but the token
+ * path, on the reasoning that the browser sign-in path has no mint button for
+ * an unanswered scope to refuse. That reasoning depended entirely on the auth
+ * step coming SECOND. In the specified order it comes fifth, so at step 3 the
+ * method is always null, and keeping the exemption would have waved every
+ * operator past this step and then refused them at step 6 with a sentence
+ * about step 3 -- a refusal pointing backwards at a step they were told was
+ * settled.
  *
- *   TOKEN.    TokenMintPanel is the only caller of `mintBlockedReason`, so on
- *   this path "is step 3 done" and "will mint accept this" are the same
- *   question, and every unresolved state genuinely blocks:
- *     unselected      -> mint blocked (mintScopeRequest: "names-nothing")
- *     loading         -> mint blocked (scope.kind === "unresolved")
- *     failed          -> mint blocked (scope.kind === "unresolved")
- *     tags-unresolved -> mint blocked (mintScopeRequest: "tags-unresolved")
- *     resolved        -> mint NOT blocked by scope (the name field is a
- *                         separate, later gate -- see the note on that below)
+ * SO THE GATE IS THE ANSWER ITSELF, ALWAYS. What blocks:
+ *     unselected      -> mintScopeRequest: "names-nothing"
+ *     loading         -> scope.kind === "unresolved"
+ *     failed          -> scope.kind === "unresolved"
+ *     tags-unresolved -> mintScopeRequest: "tags-unresolved"
+ *     resolved        -> not blocked (the name field is a separate, later
+ *                        gate -- see the note on that below)
  *
- *   OAUTH.    There is no mint button on this path at all -- step 4 renders
- *   NextSteps, not TokenMintPanel, for `method === 'oauth'` -- and the scope
- *   chosen in THIS wizard is rehearsal for it: SiteScopeStep's own copy says
- *   "nothing carries this selection to the approval screen... deciding it
- *   here is how you get there with the answer ready." Nothing downstream
- *   reads it, so nothing here can be "blocked" by it, for any of the five
- *   states:
- *     unselected / loading / failed / tags-unresolved / resolved
- *       -> mint N/A; NextSteps is unconditionally actionable the moment
- *          client and method are picked, so step 3 reads by POSITION alone
- *          (the ordinary completed/upcoming logic) and step 6 stays current.
- *   The over-fire this avoids: dragging `aria-current` back to step 3 while
- *   an OAuth operator sits in an already-actionable step 6, because the
- *   predicate could not tell "no button exists here" from "the button here
- *   is disabled."
+ * "All sites" is the one-click answer for every one of them, so this is a
+ * question with an always-available answer rather than a wall.
  *
- * THE ONE PLACE THIS IS DECIDED. `mintBlockedReason` below and the step
- * rail's `siteScopeState` (ConnectWizard) both call this and nothing else, so
+ * WHAT THIS COSTS THE BROWSER SIGN-IN PATH, SAID PLAINLY: an operator on that
+ * path must now answer step 3 to advance, and their answer is still rehearsal
+ * -- the client opens the approval screen itself and it asks again, which
+ * SiteScopeStep's own copy says on the step. Asking for an answer that is
+ * carried by the operator rather than by the wire is what this step has always
+ * been on that path; the change is that it is asked before it is possible to
+ * know the path.
+ *
+ * THE ONE PLACE THIS IS DECIDED. `mintBlockedReason` below and the step rail's
+ * `siteScopeState` (ConnectWizard) both call this and nothing else, so
  * "minting is blocked" and "the rail says step 3 is done" cannot disagree --
- * they read the same value, now including the method that changes what
- * "blocked" even means, rather than two derivations that could drift the way
- * `scope.kind` alone already did once, and the way a method-blind version of
- * this very function did a second time.
+ * they read the same value rather than two derivations that could drift the
+ * way `scope.kind` alone already did once.
  *
  * THE ORDER ON THE TOKEN PATH IS LOAD-BEARING, copied from
  * `mintBlockedReason`'s own comment because this function replaces that logic
@@ -1718,12 +2170,7 @@ function mintScopeRequest(
 function siteScopeReadiness(
   scope: ResolvedSiteScope,
   scopeRequest: MintScopeRequest,
-  method: AuthMethod | null,
 ): SiteScopeReadiness {
-  // OAUTH (AND NO METHOD CHOSEN YET) NEVER GATES ON THIS. See the matrix
-  // above: no mint button exists to refuse on this path, so nothing here can
-  // be "unresolved" in a sense that blocks anything.
-  if (method !== "token") return "resolved";
   if (!scopeRequest.ok && scopeRequest.because === "tags-unresolved") return "tags-unresolved";
   if (scope.kind === "unresolved") return scope.because;
   if (!scopeRequest.ok) return "unselected";
@@ -1764,15 +2211,18 @@ function mintCapabilitiesRequest(selected: readonly string[]): MintCapabilitiesR
 
 /**
  * Whether the capability picker is actually done, mirroring
- * `siteScopeReadiness` immediately above -- OAuth (and no method chosen yet)
- * never gates on this, for the same reason: NextSteps is unconditionally
- * actionable on that path, and the picker below does not even render there.
+ * `siteScopeReadiness` immediately above and, like it, no longer asking which
+ * auth method was chosen: step 4 is asked before step 5, so there is never one
+ * to ask about.
+ *
+ * The picker opens with `mcp.sites.read` ticked, so an operator who reads this
+ * step and changes nothing is settled. The only way to block here is to untick
+ * everything, which is the one selection the server would accept and the
+ * operator would not want -- a token that authenticates and can reach nothing.
  */
 function capabilityReadiness(
   capabilitiesRequest: MintCapabilitiesRequest,
-  method: AuthMethod | null,
 ): CapabilityReadiness {
-  if (method !== "token") return "resolved";
   return capabilitiesRequest.ok ? "resolved" : "unselected";
 }
 
@@ -1822,29 +2272,27 @@ interface StepGate {
 const STEP_SETTLED: StepGate = { readiness: "resolved", refusal: null };
 
 function stepGate(local: Step, ctx: StepGateContext): StepGate {
-  if (local === 1) {
+  // THE CONTRACT STEP ASKS NOTHING, SO IT REFUSES NOTHING. It is a reading
+  // step: what a connection can do, what it can never do, and that nothing
+  // about it is implicit. A gate here would be a control demanding an answer
+  // to a question that was not asked.
+  if (local === CONTRACT_LOCAL_STEP) return STEP_SETTLED;
+  if (local === CLIENT_LOCAL_STEP) {
     return ctx.clientChosen
       ? STEP_SETTLED
       : { readiness: "unselected", refusal: "Pick the client that will connect before going on." };
   }
-  if (local === 2) {
+  if (local === AUTH_LOCAL_STEP) {
     if (ctx.method !== null) return STEP_SETTLED;
     return {
       readiness: "unselected",
       refusal: ctx.methodOffered
         ? "Choose how this client signs in before going on."
-        : "This client has no confirmed way to sign in, so there is nothing to go on to. Pick a different client above.",
+        : "This client has no confirmed way to sign in, so there is nothing to go on to. Go back to step 2 and pick a different client.",
     };
   }
   if (local === SITE_SCOPE_LOCAL_STEP) {
-    const readiness = siteScopeReadiness(ctx.scope, ctx.scopeRequest, ctx.method);
-    // RESOLVED IS CHECKED FIRST, AND THAT ORDER IS LOAD-BEARING. On the OAuth
-    // path `siteScopeReadiness` answers "resolved" for every scope, because
-    // nothing downstream reads the scope there and no mint can refuse it --
-    // ruling 4's "an empty scope is a working state" is exactly this case.
-    // `scopeRequest` still says `ok: false` for an empty 'list', so consulting
-    // it before the readiness verdict would block Continue on a step that is
-    // rehearsal, on the one path the readiness function exists to exempt.
+    const readiness = siteScopeReadiness(ctx.scope, ctx.scopeRequest);
     if (readiness === "resolved") return STEP_SETTLED;
     if (readiness === "loading") {
       return {
@@ -1873,7 +2321,7 @@ function stepGate(local: Step, ctx: StepGateContext): StepGate {
     return { readiness, refusal: ctx.scopeRequest.refusal };
   }
   if (local === CAPABILITY_LOCAL_STEP) {
-    const readiness = capabilityReadiness(ctx.capabilitiesRequest, ctx.method);
+    const readiness = capabilityReadiness(ctx.capabilitiesRequest);
     if (readiness === "resolved") return STEP_SETTLED;
     return {
       readiness,
@@ -1944,6 +2392,77 @@ function mintErrorCopy(error: Error): { title: string; body: string } {
  * cannot be handed a token without also being handed the scope that token
  * actually carries.
  */
+/**
+ * The tools one connection can actually call.
+ *
+ * RENDERED EXACTLY AS THE SERVER SENDS THEM, and the omission is the design.
+ * There is no availability badge, no "ready" pill and no client-side check of
+ * whether a tool would work, because the server ships no `available` flag and
+ * the answer already lives inside each description. A badge computed here could
+ * disagree with what a real call refuses, and this is the one screen whose
+ * entire purpose is to be trusted about what works.
+ *
+ * FOUR STATES, ALL DRAWN. Skeleton, failure, empty and data -- and the empty
+ * one is a real answer rather than a failure: a grant narrowed to capabilities
+ * that confer no tool sees none, and saying so plainly is more useful than a
+ * spinner that never resolves.
+ */
+function ConnectionToolList({ connectionId }: { connectionId: string }) {
+  const q = useConnectionTools(connectionId);
+
+  if (q.isPending) {
+    return (
+      <div className="space-y-2" data-testid="tool-list-loading">
+        <Skeleton className="h-12 w-full" />
+        <Skeleton className="h-12 w-full" />
+      </div>
+    );
+  }
+
+  if (q.isError) {
+    // THE FAILURE IS OUR FAILURE, SAID AS OURS. "This connection can call
+    // nothing" would be a claim about the operator's grant made out of our own
+    // broken request, which is the inversion this file removes everywhere else.
+    return (
+      <p
+        role="alert"
+        data-testid="tool-list-error"
+        className="rounded-md border border-[var(--color-destructive)]/40 bg-[var(--color-destructive)]/5 p-3 text-sm"
+      >
+        We could not read the tool list for this connection. That is our read failing, not a
+        statement about what your connection can do. The connection itself is made and works.
+      </p>
+    );
+  }
+
+  const tools = q.data;
+  if (tools.length === 0) {
+    return (
+      <p
+        data-testid="tool-list-empty"
+        className="rounded-md border border-[var(--color-border)] bg-[var(--color-muted)]/40 p-3 text-sm text-[var(--color-foreground)]"
+      >
+        This connection can see no tools. That is what the capabilities you chose confer today,
+        not an error, and widening it means making a new connection with more capabilities.
+      </p>
+    );
+  }
+
+  return (
+    <ul className="space-y-2" data-testid="tool-list">
+      {tools.map((tool) => (
+        <li
+          key={tool.name}
+          className="rounded-md border border-[var(--color-border)] p-3"
+        >
+          <p className="font-mono text-xs text-[var(--color-foreground)]">{tool.name}</p>
+          <p className="mt-1 text-xs text-[var(--color-muted-foreground)]">{tool.description}</p>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 type MintedReveal = {
   readonly token: MintedConnection;
   readonly scope: ResolvedSiteScope;
@@ -1984,6 +2503,7 @@ function TokenMintPanel({
   mint,
   revealed,
   onMinted,
+  clientId,
   clientName,
   name,
   scope,
@@ -2000,6 +2520,12 @@ function TokenMintPanel({
   /** A token is already on screen, rendered by the wizard above every step. */
   revealed: boolean;
   onMinted: (reveal: MintedReveal) => void;
+  /**
+   * The client table's `id`, which is what goes on the wire as `setup_client`.
+   * Held separately from `clientName` rather than derived from it: the server
+   * refuses anything but the slug shape, and "Claude Code" is not one.
+   */
+  clientId: string;
   clientName: string;
   name: string;
   scope: ResolvedSiteScope;
@@ -2086,6 +2612,7 @@ function TokenMintPanel({
               name: trimmedName,
               ...scopeRequest.scope,
               capabilities: capabilitiesRequest.capabilities,
+              setupClient: clientId,
             },
             // onMinted writes state the WIZARD owns, so this callback lands on
             // a mounted component whatever happened to this panel meanwhile.
