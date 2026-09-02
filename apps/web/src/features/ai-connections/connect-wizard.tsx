@@ -221,17 +221,25 @@ interface SpecStepDef {
 // All ten, in specified order, so the operator sees the whole path before
 // starting. Only five are `built: true`; the rest render as not-yet-available
 // rather than being omitted or, worse, made to look done.
+// THE SHORT LABELS ARE THE RAIL'S, AND THEY ARE NOT AN ABBREVIATION OF THE
+// HEADINGS. The design names two separate strings per step: a short label for
+// the rail and a long title for the screen it leads to. Using the long titles
+// here was measurably wrong, not merely verbose -- ten of them are about
+// 1,800px wide, which at 390px pushed the whole PAGE sideways rather than
+// scrolling the rail, and a page a reader can shove off-screen is the defect
+// the e2e width check now catches. The long titles still render, on the step
+// headings, where there is one of them at a time and room for it.
 const SPEC_STEPS: readonly SpecStepDef[] = [
-  { n: 1, label: "Start a connection", built: false },
-  { n: 2, label: "Name it, pick the AI client", built: true },
-  { n: 3, label: "Choose which sites", built: true },
-  { n: 4, label: "Choose what it may do", built: true, onlyOnMethod: "token" },
-  { n: 5, label: "Choose how it authenticates", built: true },
-  { n: 6, label: "Get the setup artefact", built: true },
-  { n: 7, label: "Connect and authorize", built: false },
-  { n: 8, label: "WPMgr confirms connection is live", built: false },
-  { n: 9, label: "Verify with a first read", built: false },
-  { n: 10, label: "Done: tool list and first prompt", built: false },
+  { n: 1, label: "Start", built: false },
+  { n: 2, label: "Client", built: true },
+  { n: 3, label: "Sites", built: true },
+  { n: 4, label: "Capabilities", built: true, onlyOnMethod: "token" },
+  { n: 5, label: "Auth", built: true },
+  { n: 6, label: "Setup", built: true },
+  { n: 7, label: "Authorize", built: false },
+  { n: 8, label: "Confirm", built: false },
+  { n: 9, label: "Test", built: false },
+  { n: 10, label: "Done", built: false },
 ];
 
 /**
@@ -929,10 +937,16 @@ function StepRail({
   // disagreeing with them.
   const currentSpec = walk[cursorPos]![1];
   return (
-    <div className="space-y-1">
+    // min-w-0 IS LOAD-BEARING, NOT TIDYING. Without it this wrapper takes its
+    // width from its content, the ten segments push it past the viewport, and
+    // the PAGE scrolls sideways instead of the rail -- which is the one thing
+    // the rail must never cause. A Playwright check at 390px asserts the
+    // document does not scroll horizontally, because this is invisible to
+    // every unit test and obvious to anyone looking at a phone.
+    <div className="min-w-0 space-y-1">
       <ol
         data-testid="step-rail"
-        className="flex flex-nowrap items-center gap-x-2 overflow-x-auto overflow-y-hidden text-xs text-[var(--color-muted-foreground)]"
+        className="flex w-full max-w-full flex-nowrap items-center gap-x-2 overflow-x-auto overflow-y-hidden text-xs text-[var(--color-muted-foreground)]"
       >
         {SPEC_STEPS.map((s, i) => {
           const availability = specStepAvailability(s, method);

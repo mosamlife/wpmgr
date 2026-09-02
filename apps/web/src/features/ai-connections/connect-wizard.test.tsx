@@ -513,7 +513,9 @@ describe("the step rail names all ten specified steps and marks the right one cu
     goNext();
     // Specified step 5, reached second: the walk is not the numbering.
     expect(currentRailStep()).toHaveAttribute("data-step-n", "5");
-    expect(currentRailStep()).toHaveTextContent(/Choose how it authenticates/);
+    // "(not chosen yet)" rides along: the operator has arrived at the method
+    // step and has not answered it, which is the state Continue is refusing on.
+    expect(currentRailStep()).toHaveTextContent(/^5\. Auth/);
     expect(railSegment("2")).toHaveAttribute("data-step-state", "completed");
   });
 
@@ -526,7 +528,7 @@ describe("the step rail names all ten specified steps and marks the right one cu
     renderWizard();
     await reachSetupStep("Cursor", "oauth");
 
-    expect(currentRailStep()).toHaveTextContent(/^6\. Get the setup artefact$/);
+    expect(currentRailStep()).toHaveAttribute("data-step-n", "6");
     expect(railSegment("5")).toHaveAttribute("data-step-state", "completed");
     expect(railSegment("3")).toHaveAttribute("data-step-state", "completed");
   });
