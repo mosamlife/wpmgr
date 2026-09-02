@@ -50,6 +50,18 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.157",
+    date: "2026-09-02",
+    summary:
+      "The AI connection wizard now walks one step at a time, with Back and Continue, instead of stacking every section on one scrolling page.",
+    items: [
+      {
+        tag: "Changed",
+        text: "The AI connection wizard now shows one step at a time, with Back and Continue, instead of every section stacked on one scrolling page. The progress rail marks the step you are actually on. Continue refuses to advance while the current step's answer is missing or unresolved, and says why; Back keeps every answer already given. On the browser sign-in path, the step where you choose what the assistant may do is shown in the rail as not asked on that path, because permissions are chosen on the approval screen instead, rather than being silently removed and shortening the flow.",
+      },
+    ],
+  },
+  {
     version: "0.61.156",
     date: "2026-09-02",
     summary:

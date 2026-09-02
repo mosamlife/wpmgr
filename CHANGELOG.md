@@ -6,6 +6,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ## [Unreleased]
 
+## [0.61.157] - 2026-09-02
+
+### Changed
+
+- The AI connection wizard now shows one step at a time, with Back and Continue, instead of every section stacked on one scrolling page. The progress rail marks the step you are actually on. Continue refuses to advance while the current step's answer is missing or unresolved, and says why; Back keeps every answer already given. On the browser sign-in path, the step where you choose what the assistant may do is shown in the rail as not asked on that path, because permissions are chosen on the approval screen instead, rather than being silently removed and shortening the flow.
+
 ## [0.61.156] - 2026-09-02
 
 ### Added
