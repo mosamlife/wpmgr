@@ -92,12 +92,16 @@ function EffectiveContextBody({ data }: { data: GovContextEffective }) {
 
       <div className="space-y-1">
         <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          Restrictions enforced at dispatch (union of layers 1-3)
+          Resolved restrictions for this site (union of layers 1-3)
         </h3>
         <p className="text-xs text-muted-foreground">
-          This set is what actually blocks a tool call — it is never shortened
-          by the byte budget below, even when a layer&apos;s own copy further
-          down this page is.
+          This is the site&apos;s full deny-list, layers 1-3 combined and
+          never shortened by the byte budget below, even when a
+          layer&apos;s own copy further down this page is. A live tool call
+          resolves organisation-scope context only — layers 1-2 — and adds
+          it to what the model is told, not a server-side block: nothing on
+          the dispatch path checks it, so a model that disregards it can
+          still invoke the tool.
         </p>
         <div className="rounded-lg border border-border bg-card p-4">
           <DefinitionList rows={restrictionRows(data.restrictions)} />
@@ -167,10 +171,20 @@ function LayerCard({ layer }: { layer: GovContextLayerContribution }) {
   // For those two, `truncated` can mean this layer's OWN restriction list
   // was shortened to fit the byte budget — a real, expected state (Decision
   // 9), but one that must never read as though this card were the complete
-  // enforced set. The enforced union above is the authoritative number;
-  // this callout is what stops a short list here from being mistaken for it.
+  // resolved set. The union above (never truncated) is the authoritative
+  // list; this callout is what stops a short list here from being mistaken
+  // for it.
   const restrictionsMayBeIncomplete =
     layer.truncated && (layer.layer === 2 || layer.layer === 3);
+
+  // Layer 3 (site override) is stored and shown here like any other layer,
+  // but a live tool call resolves organisation-scope context only
+  // (apps/api/internal/mcp/govcontext.go's operatorContext calls
+  // Resolve(ctx, tenantID, uuid.Nil, nil) — uuid.Nil is org scope, and at
+  // org scope the resolver never reads a site row). Layers 1-2 reach that
+  // call; a restriction that lives only on this site's own layer 3 does
+  // not, because no site-scoped tool exists yet to read it.
+  const isSiteOverrideLayer = layer.layer === 3;
 
   return (
     <div className="space-y-3 rounded-lg border border-border bg-card p-4">
@@ -188,11 +202,18 @@ function LayerCard({ layer }: { layer: GovContextLayerContribution }) {
         <h5 className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
           Restrictions
         </h5>
+        {isSiteOverrideLayer ? (
+          <p className="text-xs text-warning-subtle-fg">
+            Stored for this site, but not part of what a live tool call
+            resolves today — that call is organisation-scope only (layers
+            1-2).
+          </p>
+        ) : null}
         {restrictionsMayBeIncomplete ? (
           <p className="text-xs text-warning-subtle-fg">
-            This layer&apos;s own list may be shorter than what&apos;s enforced
-            — truncated to fit the byte budget. See the enforced union above
-            for the complete, untruncated set.
+            This layer&apos;s own list may be shorter than the full union
+            resolved above, truncated to fit the byte budget. See the union
+            above for the complete, untruncated set.
           </p>
         ) : null}
         <DefinitionList rows={restrictionRows(layer.restrictions)} />

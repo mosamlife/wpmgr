@@ -458,6 +458,11 @@ CREATE INDEX idx_sites_last_seen ON sites (last_seen_at)
     WHERE connection_state IN ('connected','degraded');
 
 CREATE INDEX sites_tenant_id_idx ON sites (tenant_id);
+-- m133 DECISION 10: the target of assistant_update_proposals' composite foreign
+-- key on (tenant_id, site_id). The pair is already unique because id is the
+-- PRIMARY KEY, but the FK machinery needs the constraint to exist as a declared
+-- object. Not served by sites_tenant_id_url_key, which is (tenant_id, url).
+ALTER TABLE sites ADD CONSTRAINT sites_tenant_id_id_key UNIQUE (tenant_id, id);
 CREATE UNIQUE INDEX sites_tenant_id_url_key ON sites (tenant_id, url);
 -- GIN index over tags so tenant-scoped tag filtering stays cheap.
 CREATE INDEX sites_tags_idx ON sites USING gin (tags);
@@ -6515,3 +6520,226 @@ CREATE POLICY site_vulnerabilities_site_scope ON site_vulnerabilities
             )::uuid[]
         )
     );
+
+-- assistant_update_proposals - m133. ONE proposal: one site, one plugin, one
+-- from-version, one to-version. The assistant asks; a human decides; a separate
+-- worker acts. Full reasoning lives in the migration, not here; this copy is
+-- sqlc's input and is not authoritative for RLS.
+--
+-- The three properties worth knowing at a glance:
+--   * presented_digest fingerprints exactly what the human was shown, is set at
+--     INSERT, and cannot be added retrospectively. Every approval taken before
+--     it existed would be permanently unverifiable.
+--   * Running out of time means REJECTED, never approved - PROVIDED the caller
+--     lets the database evaluate now(). consent_within_window_check compares
+--     decided_at to expires_at and never to now(), which a CHECK cannot call,
+--     so it makes a self-inconsistent row unrepresentable, not a late approval
+--     impossible. See DECISION 4 and (7)(c) in the migration.
+--   * 'approved_undispatched' is a committed state, not a moment between two
+--     statements, so a crash in the gap is an unclaimed row rather than a lost
+--     or doubled action (ADR-061).
+--
+-- Three policies: tenant isolation, the RESTRICTIVE m19 site-scope predicate,
+-- and the _agent policy that admits the cross-tenant dispatch worker.
+CREATE TABLE IF NOT EXISTS assistant_update_proposals (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    -- THE PAIR IS BOUND, NOT JUST THE HALVES (m133 DECISION 10). Two separate
+    -- FKs would each be satisfied while saying nothing about whether the site
+    -- belongs to the tenant, and a proposal whose site half points elsewhere is
+    -- a record of consent that was never given about the thing it names. The
+    -- composite FK below makes that pair unrepresentable. ON UPDATE is left at
+    -- NO ACTION deliberately: nothing moves a site between tenants, and a loud
+    -- refusal beats a silent rewrite of an otherwise-immutable column.
+    tenant_id uuid NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    site_id   uuid NOT NULL,
+    CONSTRAINT assistant_update_proposals_site_within_tenant_fkey
+        FOREIGN KEY (tenant_id, site_id)
+        REFERENCES sites (tenant_id, id) ON DELETE CASCADE,
+
+    -- WHO ASKED. No FK: neither ON DELETE action is right for a recorded fact
+    -- (the same reasoning mcp_grants.client_id gives). CASCADE would erase what
+    -- a connection asked for at the moment someone revokes it; RESTRICT would
+    -- block the revocation with the evidence of why it is being revoked.
+    proposed_by_grant_id uuid NOT NULL,
+
+    -- Scalars, never arrays. A proposal covering two sites or two plugins is
+    -- unrepresentable, not merely refused by a handler.
+    component_type text NOT NULL
+        CONSTRAINT assistant_update_proposals_component_type_check
+        CHECK (component_type IN ('plugin')),
+    component_slug text NOT NULL
+        CONSTRAINT assistant_update_proposals_component_slug_not_blank_check
+        CHECK (length(btrim(component_slug)) > 0),
+    from_version text NOT NULL
+        CONSTRAINT assistant_update_proposals_from_version_not_blank_check
+        CHECK (length(btrim(from_version)) > 0),
+    to_version text NOT NULL
+        CONSTRAINT assistant_update_proposals_to_version_not_blank_check
+        CHECK (length(btrim(to_version)) > 0),
+    CONSTRAINT assistant_update_proposals_version_changes_check
+        CHECK (from_version <> to_version),
+
+    -- THE FINGERPRINT. SHA-256 of the control-plane-derived facts rendered on
+    -- the approval surface. `note` is excluded from it, per ADR-061 Decision 3.
+    presented_digest text NOT NULL
+        CONSTRAINT assistant_update_proposals_presented_digest_shape_check
+        CHECK (presented_digest ~ '^[0-9a-f]{64}$'),
+
+    -- The single quarantined proposer-controlled free text. Every other column
+    -- here is control-plane-derived or a closed enum.
+    note text NULL
+        CONSTRAINT assistant_update_proposals_note_length_check
+        CHECK (note IS NULL OR length(note) <= 2000),
+
+    -- Closed set, NOT NULL, NO DEFAULT. Deliberately unlike update_runs.status,
+    -- which has no CHECK and whose own comment admits a typo'd value "stores
+    -- fine and silently never dispatches".
+    state text NOT NULL
+        CONSTRAINT assistant_update_proposals_state_check
+        CHECK (state IN (
+            'pending',
+            'approved_undispatched',
+            'dispatched',
+            'rejected',
+            'expired'
+        )),
+
+    created_at timestamptz NOT NULL DEFAULT now(),
+
+    expires_at timestamptz NOT NULL,
+    CONSTRAINT assistant_update_proposals_window_is_positive_check
+        CHECK (expires_at > created_at),
+
+    decided_at timestamptz NULL,
+    -- THE APPROVER. A recorded fact, NOT a foreign key. An FK with SET NULL
+    -- would let offboarding a user erase who approved; an FK with RESTRICT
+    -- would let an approval block that offboarding. update_runs.created_by is
+    -- an authorship stamp and SET NULL is right for it; this is an approval.
+    decided_by_user_id uuid NULL,
+
+    CONSTRAINT assistant_update_proposals_decided_states_have_time_check
+        CHECK (
+            (state IN ('approved_undispatched', 'dispatched', 'rejected'))
+            = (decided_at IS NOT NULL)
+        ),
+
+    -- RUNNING OUT OF TIME IS NEVER CONSENT. An approved row whose approval
+    -- landed at or after its own expiry cannot exist.
+    CONSTRAINT assistant_update_proposals_consent_within_window_check
+        CHECK (
+            state NOT IN ('approved_undispatched', 'dispatched')
+            OR (decided_at IS NOT NULL AND decided_at < expires_at)
+        ),
+
+    -- Expiry never names a human.
+    CONSTRAINT assistant_update_proposals_expiry_is_not_a_decision_check
+        CHECK (state <> 'expired' OR decided_by_user_id IS NULL),
+
+    -- An approval names a human, or it is not an approval. An API-key principal
+    -- has no user id, so a credential cannot satisfy this at all: "a machine
+    -- approved this" is a row the database will not store, rather than a rule a
+    -- handler has to remember.
+    CONSTRAINT assistant_update_proposals_approval_names_a_human_check
+        CHECK (
+            state NOT IN ('approved_undispatched', 'dispatched')
+            OR decided_by_user_id IS NOT NULL
+        ),
+
+    -- A rejection names its human too (m133 DECISION 9). Every decided state
+    -- names a person; expiry, which is not a decision, may name nobody and the
+    -- check above forbids it naming anyone. Without this, moving an approved
+    -- row to 'rejected' while nulling this column erased who approved.
+    CONSTRAINT assistant_update_proposals_rejection_names_a_human_check
+        CHECK (
+            state <> 'rejected'
+            OR decided_by_user_id IS NOT NULL
+        ),
+
+    dispatched_update_run_id uuid NULL,
+    CONSTRAINT assistant_update_proposals_dispatch_pointer_check
+        CHECK ((state = 'dispatched') = (dispatched_update_run_id IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS assistant_update_proposals_tenant_idx
+    ON assistant_update_proposals (tenant_id);
+CREATE INDEX IF NOT EXISTS assistant_update_proposals_site_idx
+    ON assistant_update_proposals (site_id);
+-- The dispatch queue. Claiming moves the row out of this partial index, so a
+-- second replica or a restart cannot claim it twice - the update_runs_due_idx
+-- device, for the same reason.
+CREATE INDEX IF NOT EXISTS assistant_update_proposals_dispatch_idx
+    ON assistant_update_proposals (decided_at)
+    WHERE state = 'approved_undispatched';
+CREATE INDEX IF NOT EXISTS assistant_update_proposals_expiry_sweep_idx
+    ON assistant_update_proposals (expires_at)
+    WHERE state = 'pending';
+-- At most one live ask per component, so the assistant cannot queue five asks
+-- for one plugin and have an operator approve two. Partial on 'pending', so a
+-- rejected or expired proposal does not block an honest re-ask.
+CREATE UNIQUE INDEX IF NOT EXISTS assistant_update_proposals_one_live_per_component_idx
+    ON assistant_update_proposals (tenant_id, site_id, component_type, component_slug)
+    WHERE state = 'pending';
+ALTER TABLE assistant_update_proposals ENABLE ROW LEVEL SECURITY;
+ALTER TABLE assistant_update_proposals FORCE ROW LEVEL SECURITY;
+CREATE POLICY assistant_update_proposals_tenant_isolation ON assistant_update_proposals
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+CREATE POLICY assistant_update_proposals_site_scope ON assistant_update_proposals
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+-- app.agent is the cross-tenant SERVICE context (pool.InAgentTx), not only the
+-- WordPress plugin: the update dispatcher runs under it, and so does an
+-- authenticated agent->CP request (db.go:429). This policy lets the proposal
+-- dispatch worker and the expiry sweep SEE rows across tenants - the one
+-- statement in either path that cannot name a tenant. The RESTRICTIVE
+-- site-scope policy above still subtracts inside it.
+--
+-- FOR SELECT, DELIBERATELY, AND NOT m118's FOR ALL. Omitting the clause means
+-- FOR ALL, which would put decided_by_user_id on every tenant's proposals
+-- inside reach of the cross-tenant service context - the one grant that could
+-- let a machine appear as the approver. Both workers write under InTenantTx.
+-- audit_log_agent is SELECT-only for the same reason. See m133 DECISION 5 and
+-- the row for this policy in db/rls-cross-tenant-policies.txt.
+CREATE POLICY assistant_update_proposals_agent ON assistant_update_proposals
+    FOR SELECT
+    USING (current_setting('app.agent', true) = 'on');
+-- THE FACTS ARE IMMUTABLE AFTER INSERT, by column privilege - the audit_log /
+-- org_context_versions device at column granularity, not a trigger (this tree
+-- has zero). Without this, "extend the window" is one UPDATE on expires_at and
+-- consent_within_window_check guards nothing but the relation between two
+-- mutable columns; and presented_digest, whose entire purpose is to prove what
+-- was displayed, could be re-pointed at a freshly rendered screen.
+--
+-- Order matters: a table-level UPDATE covers every column and PostgreSQL will
+-- not carve one out of it, so the table privilege is revoked and the columns
+-- that may legitimately move are granted back.
+--
+-- apps/api/tests/rls_integration_test.go re-asserts this after its blanket
+-- GRANT, exactly as it does for audit_log. Without that, the immutability
+-- proofs run with the privilege restored and pass by testing nothing.
+--
+-- DELETE and TRUNCATE go too (m133 DECISION 9). An immutable column inside a
+-- deletable row is not immutable, and every precedent for the device above -
+-- audit_log in m2, the two context tables in m122 - revokes DELETE alongside
+-- UPDATE. This table is append-and-decide: an outcome is a state, never an
+-- absence. Rows leave only by the tenant/site CASCADE.
+REVOKE DELETE, TRUNCATE ON assistant_update_proposals FROM wpmgr_app;
+REVOKE UPDATE ON assistant_update_proposals FROM wpmgr_app;
+GRANT UPDATE (state, decided_at, decided_by_user_id,
+              dispatched_update_run_id, note)
+    ON assistant_update_proposals TO wpmgr_app;

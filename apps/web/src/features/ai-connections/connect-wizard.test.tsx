@@ -14,7 +14,6 @@ import { formatAbsolute } from "@/features/updates/schedule";
 import { mockQueryResult } from "@/test/query-mocks";
 
 import { Route } from "@/routes/_authed/ai/connect";
-import { resolveCursorPos } from "./connect-wizard";
 import { authKeys } from "@/features/auth/use-auth";
 import { CLIENT_TABLE_VERIFIED_AT, MCP_CLIENTS } from "./client-table";
 import { useSites, DEFAULT_SITES_LIMIT } from "@/features/sites/use-sites";
@@ -100,79 +99,10 @@ function renderWizard() {
   });
 }
 
-function continueButton(): HTMLButtonElement {
-  const el = screen.getByRole("button", { name: /^continue$/i });
-  if (!(el instanceof HTMLButtonElement)) throw new Error("Continue is not a button");
-  return el;
-}
-
-function backButton(): HTMLButtonElement {
-  const el = screen.getByRole("button", { name: /^back$/i });
-  if (!(el instanceof HTMLButtonElement)) throw new Error("Back is not a button");
-  return el;
-}
-
-/**
- * Press Continue, and FAIL rather than silently do nothing if it is refused.
- *
- * A disabled button swallows a fireEvent click without complaint, so a helper
- * that just clicked would turn "the wizard refused to advance" into "the
- * assertion after this one failed for an unrelated-looking reason." Every
- * walk below goes through here, so a step that starts refusing advancement
- * reddens at the line that tried to advance.
- */
-function goNext() {
-  const button = continueButton();
-  expect(button).toBeEnabled();
-  fireEvent.click(button);
-}
-
-/**
- * Pick a client AND advance past it, because the wizard now shows one step at
- * a time and almost every test below is about a later step. The tests that are
- * about step 1 itself use `pickClientOnly`.
- */
 async function pickClient(name: string) {
-  const card = await pickClientOnly(name);
-  goNext();
-  return card;
-}
-
-async function pickClientOnly(name: string) {
   const card = await screen.findByRole("button", { name: new RegExp(name, "i") });
   fireEvent.click(card);
   return card;
-}
-
-/** Choose an auth method and advance past it. */
-function chooseMethod(method: "oauth" | "token") {
-  fireEvent.click(authCard(method));
-  goNext();
-}
-
-/**
- * Walk from nothing to the setup artefact for one client and method.
- *
- * ON THE TOKEN PATH THIS ANSWERS SITE SCOPE AND THE TOKEN PATH ONLY. The
- * wizard refuses Continue on an unanswered scope, which is the same refusal
- * mint gives, so a walk that skipped it would be testing a screen no operator
- * can reach. All sites is the shortest answer that works against any fleet,
- * including the empty one most of these tests render. On the OAuth path there
- * is nothing to answer -- the scope is rehearsal there, and the capability
- * step is not on that path at all, so Continue steps straight over it.
- */
-async function reachSetupStep(clientName: string, method: "oauth" | "token") {
-  await pickClient(clientName);
-  chooseMethod(method);
-  await screen.findByTestId("site-step-count");
-  if (method === "token") {
-    fireEvent.click(screen.getByRole("radio", { name: /all sites/i }));
-  }
-  goNext();
-  if (method === "token") {
-    await screen.findByRole("heading", { name: /choose what it may do/i });
-    goNext();
-  }
 }
 
 function authCard(method: "oauth" | "token"): HTMLButtonElement {
@@ -361,29 +291,6 @@ describe("the auth cards say what each method actually does", () => {
 // ---------------------------------------------------------------------------
 
 /** The single element the rail marks as the operator's current step. */
-function railSegments(): HTMLElement[] {
-  return Array.from(document.querySelectorAll<HTMLElement>("[data-step-n]"));
-}
-
-function railNumbers(): string[] {
-  return railSegments().map((s) => s.dataset.stepN ?? "");
-}
-
-function railSegment(n: string): HTMLElement {
-  const el = document.querySelector<HTMLElement>(`[data-step-n="${n}"]`);
-  // A missing segment must fail here rather than letting every assertion
-  // against it be silently skipped over a null.
-  if (el === null) throw new Error(`no rail segment for specified step ${n}`);
-  return el;
-}
-
-/** The specified step numbers currently in one rail state. */
-function railStateNs(state: string): string[] {
-  return railSegments()
-    .filter((s) => s.dataset.stepState === state)
-    .map((s) => s.dataset.stepN ?? "");
-}
-
 function currentRailStep(): HTMLElement {
   const els = document.querySelectorAll('[data-step-state="current"]');
   // Never zero, and never more than one: a rail agreeing with itself about
@@ -395,365 +302,306 @@ function currentRailStep(): HTMLElement {
 }
 
 describe("the step rail names all ten specified steps and marks the right one current", () => {
-  it("renders all ten specified steps, in specified order, on every step of the walk", async () => {
-    // RULING 15: the stepper is persistent. It never shortens, so an operator
-    // can see the whole path from the first frame and the rail does not change
-    // length under them halfway through.
+  it("renders all ten specified steps, in specified order, with only five built", async () => {
     renderWizard();
     await screen.findByRole("button", { name: /claude code/i });
-    expect(railNumbers()).toEqual(Array.from({ length: 10 }, (_, i) => String(i + 1)));
 
-    await reachSetupStep("Cursor", "token");
-    expect(railNumbers()).toEqual(Array.from({ length: 10 }, (_, i) => String(i + 1)));
+    const segments = Array.from(document.querySelectorAll<HTMLElement>("[data-step-n]"));
+    expect(segments.map((s) => s.dataset.stepN)).toEqual(
+      Array.from({ length: 10 }, (_, i) => String(i + 1)),
+    );
+    const builtNs = segments.filter((s) => s.dataset.stepState !== "not-built").map((s) => s.dataset.stepN);
+    // The five shipped sections, and no others, are ever built. Step 4 (the
+    // capability picker) is built on the token path only, but `built: true`
+    // is a static property of SPEC_STEPS, not conditioned on the method
+    // chosen -- the same standard step 3 and step 6 already meet.
+    expect(builtNs.sort()).toEqual(["2", "3", "4", "5", "6"]);
   });
 
-  it("names exactly five built steps, and the other five as not yet available", async () => {
+  it("marks specified step 2 current before any client is picked", async () => {
     renderWizard();
     await screen.findByRole("button", { name: /claude code/i });
+    // "2Client" is the numbered circle plus the SHORT rail label, run together
+    // as textContent. Ruling 15 makes the short labels canonical for the rail;
+    // the long frame title belongs on the section heading and is asserted
+    // there, not here.
+    expect(currentRailStep()).toHaveTextContent(/^2Client$/);
+  });
 
-    expect(railStateNs("not-built")).toEqual(["1", "7", "8", "9", "10"]);
+  it("marks specified step 5 current once a client is picked and no method chosen", async () => {
+    renderWizard();
+    await pickClient("Cursor");
+    expect(currentRailStep()).toHaveTextContent(/^5Auth$/);
+    // The rail agrees this is later than step 2, not merely different from it.
+    expect(document.querySelector('[data-step-n="2"]')).toHaveAttribute(
+      "data-step-state",
+      "completed",
+    );
+  });
+
+  it("marks specified step 6 current once client and method are both picked", async () => {
+    // Sections 3 ("Sites this connection may reach") and 4 ("Set it up") in
+    // this file share one reveal condition and always appear together, so by
+    // the time an operator can see either, step 6 (setup) is the furthest one
+    // actually revealed. Before the fix, aria-current stuck at the position
+    // in the shipped array (3), one behind reality.
+    renderWizard();
+    await pickClient("Cursor");
+    fireEvent.click(authCard("oauth"));
+    await screen.findByTestId("site-step-count");
+    // A scope has to actually be chosen for step 3 to be done -- see the
+    // "unselected" tests below for why the wizard's opening state (nothing
+    // picked yet) must not itself read as complete.
+    fireEvent.click(within(screen.getByRole("radiogroup", { name: /site scope/i })).getByText("All sites"));
+    expect(currentRailStep()).toHaveTextContent(/^6Setup$/);
+  });
+
+  it("shows specified step 3 as passed, not merely unreached, once step 6 is current", async () => {
+    // THE NON-MONOTONIC CASE. Step 3 (site scope, specified number 3) is
+    // visited on screen AFTER step 5 (auth method, specified number 5) in
+    // this wizard, so a rail that compared raw specified numbers would call
+    // step 5 "incomplete" the moment the operator reached step 3, which is
+    // backwards. Both must read as completed once step 6 is current.
+    renderWizard();
+    await pickClient("Cursor");
+    fireEvent.click(authCard("oauth"));
+    await screen.findByTestId("site-step-count");
+    // A SCOPE IS ACTUALLY CHOSEN HERE, not left at the wizard's opening
+    // 'list'-with-nothing state -- see "does not mark site selection
+    // completed... unselected" below for why an unmade choice must not
+    // read as done either.
+    fireEvent.click(within(screen.getByRole("radiogroup", { name: /site scope/i })).getByText("All sites"));
+    expect(document.querySelector('[data-step-n="3"]')).toHaveAttribute(
+      "data-step-state",
+      "completed",
+    );
+    expect(document.querySelector('[data-step-n="5"]')).toHaveAttribute(
+      "data-step-state",
+      "completed",
+    );
+  });
+
+  it("never marks an unbuilt step current or completed, at any reachable stage -- NO FAKED PROGRESS", async () => {
+    renderWizard();
+    await pickClient("Cursor");
+    fireEvent.click(authCard("oauth"));
+    await screen.findByTestId("site-step-count");
+
+    // Step 4 (the capability picker) is excluded from this list -- it is
+    // `built: true` in SPEC_STEPS (it renders on the token path), so on this
+    // OAuth walk it is a real built-but-position-completed step, the same as
+    // step 3, and asserted separately below.
     for (const n of ["1", "7", "8", "9", "10"]) {
-      expect(railSegment(n)).not.toHaveAttribute("aria-current", "step");
-    }
-  });
-
-  // ---------------------------------------------------------------------------
-  // THE INVARIANT, ASSERTED AS A PROPERTY RATHER THAN AS A POSITION.
-  //
-  // The wizard clamps the cursor to the first step whose gate refuses, so three
-  // things are meant to be true at EVERY reachable point of EVERY walk, and the
-  // tests below assert them as such rather than pinning the specific segment a
-  // particular sequence of clicks happens to land on. A test written against
-  // the walk's internals passes until the walk is reordered; a test written
-  // against the property survives it.
-  //
-  //   1. Exactly one segment is current.
-  //   2. No segment after the current one is current or completed.
-  //   3. Continue is offered exactly when the current segment's gate does not
-  //      refuse -- one predicate, read by the rail and the button alike.
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Assert the invariants against whatever the rail is showing now.
-   *
-   * NOTE WHAT THIS DELIBERATELY DOES NOT DO: compare specified step numbers to
-   * decide what is "past" the current one. The wizard walks the specified
-   * numbers out of order -- 2, 5, 3, 4, 6 -- so specified step 5 is legitimately
-   * completed while the operator stands on specified step 3, and a check that
-   * read a larger number as "later" would fail on correct work. That is the
-   * non-monotonic trap `BUILT_ORDER` exists for. Order-dependent claims are
-   * made in the individual tests below, where the walk is known.
-   */
-  function expectRailIsCoherent() {
-    // 1. Exactly one segment is current -- currentRailStep throws otherwise.
-    const current = currentRailStep();
-    // 2. It is not simultaneously anything else.
-    expect(current.dataset.stepState).toBe("current");
-
-    // 3. A step with no section behind it, on this path, is never where the
-    //    operator is or somewhere they have been.
-    for (const el of railSegments()) {
-      if (el.dataset.stepState !== "not-built" && el.dataset.stepState !== "not-applicable") {
-        continue;
-      }
+      const el = document.querySelector(`[data-step-n="${n}"]`);
+      expect(el).toHaveAttribute("data-step-state", "not-built");
       expect(el).not.toHaveAttribute("aria-current", "step");
     }
-
-    // 4. The rail's account of the current step and the Continue button agree,
-    //    because both read one gate. A refusing gate stamps a readiness on the
-    //    current segment and disables Continue; a settled one does neither.
-    //    Anything else is the two having drifted apart.
-    const refused = current.dataset.stepReadiness !== undefined;
-    const advance = screen.queryByRole("button", { name: /^continue$/i });
-    if (advance !== null) {
-      expect(advance).toHaveProperty("disabled", refused);
-    }
-    return current;
-  }
-
-  it("keeps exactly one segment current, and nothing past it reached, at every step of a token walk", async () => {
-    loadedFleet(3);
-    renderWizard();
-
-    await screen.findByRole("button", { name: /claude code/i });
-    expectRailIsCoherent();
-
-    await pickClientOnly("Cursor");
-    expectRailIsCoherent();
-    goNext();
-
-    expectRailIsCoherent();
-    fireEvent.click(authCard("token"));
-    expectRailIsCoherent();
-    goNext();
-
-    await screen.findByTestId("site-step-count");
-    expectRailIsCoherent();
-    chooseAllSites();
-    expectRailIsCoherent();
-    goNext();
-
-    await screen.findByRole("heading", { name: /choose what it may do/i });
-    expectRailIsCoherent();
-    goNext();
-
-    await screen.findByRole("button", { name: /generate connection token/i });
-    expectRailIsCoherent();
-  });
-
-  it("advances the rail only when the operator does, never on an answer alone", async () => {
-    // The old wizard derived its position from the answers, so answering a
-    // question moved the rail by itself while five steps' content stayed on
-    // screen. Now the answer settles the gate and Continue moves the cursor;
-    // they are two acts and the rail follows the second.
-    renderWizard();
-    await pickClientOnly("Cursor");
-
-    expect(currentRailStep()).toHaveAttribute("data-step-n", "2");
-    goNext();
-    // Specified step 5, reached second: the walk is not the numbering.
-    expect(currentRailStep()).toHaveAttribute("data-step-n", "5");
-    // "(not chosen yet)" rides along: the operator has arrived at the method
-    // step and has not answered it, which is the state Continue is refusing on.
-    expect(currentRailStep()).toHaveTextContent(/^5\. Auth/);
-    expect(railSegment("2")).toHaveAttribute("data-step-state", "completed");
-  });
-
-  it("walks the specified numbers out of order, and calls the earlier-visited step complete", async () => {
-    // THE NON-MONOTONIC CASE. Specified step 3 (site scope) is visited AFTER
-    // specified step 5 (auth method), so a rail comparing raw specified
-    // numbers would call step 5 incomplete the moment step 3 was reached,
-    // which is backwards. Completion follows the walk, not the numbering.
-    loadedFleet(3);
-    renderWizard();
-    await reachSetupStep("Cursor", "oauth");
-
-    expect(currentRailStep()).toHaveAttribute("data-step-n", "6");
-    expect(railSegment("5")).toHaveAttribute("data-step-state", "completed");
-    expect(railSegment("3")).toHaveAttribute("data-step-state", "completed");
-  });
-
-  it("re-blocks a step whose answer is taken away again, rather than latching it done", async () => {
-    // THE GATE IS RE-EVALUATED ON EVERY RENDER, NEVER LATCHED AT THE MOMENT
-    // CONTINUE WAS PRESSED. An operator who walks back and removes the answer
-    // that let them through must be held again -- the mint that answer was
-    // gating would now be refused, so a rail still calling step 3 complete
-    // would be asserting a readiness the button does not have.
-    loadedFleet(3);
-    renderWizard();
-    await advanceToCapabilityStep();
-    goNext();
-    await screen.findByRole("button", { name: /generate connection token/i });
-    expect(railSegment("3")).toHaveAttribute("data-step-state", "completed");
-
-    backToSiteStep();
-    // Take the one selected site back off.
-    fireEvent.click(pickerBoxes()[0]!);
-
-    const current = expectRailIsCoherent();
-    expect(current).toHaveAttribute("data-step-n", "3");
-    expect(current).toHaveAttribute("data-step-readiness", "unselected");
-    expect(continueButton()).toBeDisabled();
-    // And the steps it gates are neither reached nor reachable.
-    expect(railSegment("4")).toHaveAttribute("data-step-state", "upcoming");
-    expect(railSegment("6")).toHaveAttribute("data-step-state", "upcoming");
-    expect(screen.queryByRole("button", { name: /generate connection token/i })).toBeNull();
+    // Step 4 IS built, and on this OAuth walk is completed by position, same
+    // as step 3 -- neither is "faked": both really are earlier, in
+    // BUILT_ORDER, than the setup step this walk has actually reached.
+    expect(document.querySelector('[data-step-n="4"]')).toHaveAttribute(
+      "data-step-state",
+      "completed",
+    );
   });
 
   // ---------------------------------------------------------------------------
-  // The four ways the site-scope step can be unsettled, each kept distinct
-  // rather than collapsed into one muted "not done yet". An operator told
-  // nothing when a read has actually failed keeps waiting for a state that is
-  // never coming, and one told "loading" for their own unmade selection is told
-  // something false about themselves.
+  // Completion here used to be
+  // pure position: once client and method were picked, site selection read
+  // completed and setup read current REGARDLESS of whether the fleet/tag read
+  // that step depends on had actually come back. Loading and failed are
+  // covered separately -- collapsing them into one appearance is the same
+  // defect shape the finding names, one level down.
+  // ---------------------------------------------------------------------------
+
+  it("does not mark site selection completed or setup current while the fleet read is still loading", async () => {
+    // THE TOKEN COLUMN: a mint button exists here for the unresolved read to
+    // block. OAuth's mirror image ("does not drag the rail back for OAuth...
+    // loading") is below, and deliberately asserts the opposite.
+    mockedSites.mockReturnValue(mockQueryResult<Site[]>({ data: undefined, isPending: true }));
+    renderWizard();
+    await pickClient("Cursor");
+    fireEvent.click(authCard("token"));
+
+    const siteStep = document.querySelector('[data-step-n="3"]');
+    const setupStep = document.querySelector('[data-step-n="6"]');
+    // NOT "completed": the read behind this step has not resolved, whatever
+    // position the operator has otherwise reached.
+    expect(siteStep).toHaveAttribute("data-step-state", "loading");
+    expect(siteStep).toHaveTextContent(/\(loading\)/i);
+    // NOT "current" either -- setup is not the furthest ACTUAL step while the
+    // step behind it is unresolved, and the assistive-tech state has to agree:
+    // aria-current stays off setup and lands on the step still in progress.
+    expect(setupStep).not.toHaveAttribute("data-step-state", "current");
+    expect(setupStep).not.toHaveAttribute("aria-current", "step");
+    expect(siteStep).toHaveAttribute("aria-current", "step");
+  });
+
+  it("shows the fleet read as failed, distinctly from loading, and still refuses completion", async () => {
+    // THE TOKEN COLUMN, see the comment on the loading test above.
+    mockedSites.mockReturnValue(
+      mockQueryResult<Site[]>({ data: undefined, isPending: false, isError: true }),
+    );
+    renderWizard();
+    await pickClient("Cursor");
+    fireEvent.click(authCard("token"));
+
+    const siteStep = document.querySelector('[data-step-n="3"]');
+    const setupStep = document.querySelector('[data-step-n="6"]');
+    // A DIFFERENT STATE FROM LOADING, NOT THE SAME ONE RELABELLED. An operator
+    // told "loading" for a read that already failed keeps waiting for a state
+    // that will never arrive.
+    expect(siteStep).toHaveAttribute("data-step-state", "failed");
+    expect(siteStep).toHaveTextContent(/\(failed to load\)/i);
+    expect(siteStep).not.toHaveTextContent(/\(loading\)/i);
+    expect(setupStep).not.toHaveAttribute("data-step-state", "current");
+    expect(setupStep).not.toHaveAttribute("aria-current", "step");
+  });
+
+  it("still marks site selection completed and setup current once the read AND the selection are actually resolved", async () => {
+    // THE OVER-FIRE CASE. The fix must not hold the rail behind a resolved
+    // read, or a made selection, out of over-caution -- that would just move
+    // the false state from "prematurely done" to "permanently stuck."
+    loadedFleet(3);
+    renderWizard();
+    await pickClient("Cursor");
+    fireEvent.click(authCard("oauth"));
+    await screen.findByTestId("site-step-count");
+    fireEvent.click(within(screen.getByRole("radiogroup", { name: /site scope/i })).getByText("All sites"));
+
+    expect(document.querySelector('[data-step-n="3"]')).toHaveAttribute(
+      "data-step-state",
+      "completed",
+    );
+    expect(currentRailStep()).toHaveTextContent(/^6Setup$/);
+  });
+
+  // ---------------------------------------------------------------------------
+  // The same failure through a third door, found
+  // a third time through a third door: the fleet resolves fine, but the TAG
+  // registry has not, under mode 'tags'. `scope.kind` alone read this as
+  // "resolved" -- it only ever asks about the fleet read -- while
+  // `mintScopeRequest` was refusing to mint with `tags-unresolved`. This is
+  // the SAME scenario "refuses to mint on an unresolved tag scope..." above
+  // already proves blocks the button, so the state asserted here is the real
+  // blocked-mint state, not a fixture built to merely look like it.
+  // ---------------------------------------------------------------------------
+
+  it("does not mark site selection completed while the tag registry is unresolved and mint is actually blocked", async () => {
+    loadedFleet(3);
+    mockedTags.mockReturnValue(mockQueryResult<SiteTag[]>({ data: undefined, isPending: true }));
+    renderWizard();
+    await pickClient("Cursor");
+    fireEvent.click(authCard("token"));
+    await screen.findByTestId("site-step-count");
+    fireEvent.click(screen.getByRole("radio", { name: /by tag/i }));
+
+    // PROVE THE BLOCK IS REAL FIRST. Everything below is vacuous if the
+    // button was never actually disabled.
+    expect(await screen.findByText(/tag scope could not be resolved/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /generate connection token/i })).toBeDisabled();
+
+    const siteStep = document.querySelector('[data-step-n="3"]');
+    const setupStep = document.querySelector('[data-step-n="6"]');
+    expect(siteStep).toHaveAttribute("data-step-state", "tags-unresolved");
+    expect(siteStep).not.toHaveAttribute("data-step-state", "completed");
+    expect(siteStep).toHaveTextContent(/\(tags still loading\)/i);
+    expect(setupStep).not.toHaveAttribute("data-step-state", "current");
+    expect(setupStep).not.toHaveAttribute("aria-current", "step");
+  });
+
+  it("holds the rail back on the token path when nothing has been selected yet", async () => {
+    // THE UNSELECTED CELL, TOKEN COLUMN. The wizard opens on mode 'list' with
+    // no sites picked -- reachable by doing nothing at all -- and
+    // mintScopeRequest refuses to mint on it ("names-nothing").
+    loadedFleet(3);
+    renderWizard();
+    await pickClient("Cursor");
+    fireEvent.click(authCard("token"));
+    await screen.findByTestId("site-step-count");
+
+    expect(screen.getByRole("button", { name: /generate connection token/i })).toBeDisabled();
+    const siteStep = document.querySelector('[data-step-n="3"]');
+    const setupStep = document.querySelector('[data-step-n="6"]');
+    expect(siteStep).toHaveAttribute("data-step-state", "unselected");
+    expect(siteStep).toHaveTextContent(/\(not chosen yet\)/i);
+    expect(setupStep).not.toHaveAttribute("data-step-state", "current");
+    expect(setupStep).not.toHaveAttribute("aria-current", "step");
+  });
+
+  // ---------------------------------------------------------------------------
+  // THE OVER-FIRE ARM OF THE FIX ABOVE.
+  // On the OAuth path there is no mint button to block -- step 4 renders
+  // NextSteps, never TokenMintPanel -- and the scope chosen in this wizard is
+  // rehearsal for OAuth (SiteScopeStep's own copy: "nothing carries this
+  // selection to the approval screen"). Every one of the four unresolved
+  // states must therefore leave step 6 current and step 3 completed, the same
+  // as the resolved case, because nothing downstream is actually blocked.
   // ---------------------------------------------------------------------------
 
   it.each([
     [
       "loading",
-      /\(loading\)/i,
-      () =>
-        mockedSites.mockReturnValue(mockQueryResult<Site[]>({ data: undefined, isPending: true })),
-      undefined,
+      () => mockedSites.mockReturnValue(mockQueryResult<Site[]>({ data: undefined, isPending: true })),
     ],
     [
       "failed",
-      /\(failed to load\)/i,
       () =>
         mockedSites.mockReturnValue(
           mockQueryResult<Site[]>({ data: undefined, isPending: false, isError: true }),
         ),
-      undefined,
-    ],
-    [
-      "tags-unresolved",
-      /\(tags still loading\)/i,
-      () => {
-        loadedFleet(3);
-        mockedTags.mockReturnValue(mockQueryResult<SiteTag[]>({ data: undefined, isPending: true }));
-      },
-      () => fireEvent.click(screen.getByRole("radio", { name: /by tag/i })),
-    ],
-    [
-      "unselected",
-      /\(not chosen yet\)/i,
-      () => loadedFleet(3),
-      undefined,
     ],
   ] as const)(
-    "holds the operator on site scope, and says it is %s, while a token mint would be refused",
-    async (readiness, annotation, seed, answer) => {
-      seed();
+    "does not drag the rail back for OAuth while the fleet read is %s",
+    async (_label, mockRead) => {
+      mockRead();
       renderWizard();
       await pickClient("Cursor");
-      chooseMethod("token");
-      await screen.findByTestId("site-step-count");
-      answer?.();
+      fireEvent.click(authCard("oauth"));
 
-      // THE REFUSAL IS REAL FIRST. Everything below is vacuous if the walk was
-      // never actually held here.
-      const current = expectRailIsCoherent();
-      expect(current).toHaveAttribute("data-step-n", "3");
-      expect(continueButton()).toBeDisabled();
-
-      // The reason is named, and it is THIS reason, not a generic one.
-      expect(current).toHaveAttribute("data-step-readiness", readiness);
-      expect(current).toHaveTextContent(annotation);
-      // And the setup step behind it is not reachable or reached.
-      expect(railSegment("6")).toHaveAttribute("data-step-state", "upcoming");
-      expect(screen.queryByRole("button", { name: /generate connection token/i })).toBeNull();
+      expect(currentRailStep()).toHaveTextContent(/^6Setup$/);
+      expect(document.querySelector('[data-step-n="3"]')).toHaveAttribute(
+        "data-step-state",
+        "completed",
+      );
     },
   );
 
-  it("lets the walk through the moment the scope is actually answered", async () => {
-    // THE OVER-FIRE ARM of the four cases above. A gate that never opens is
-    // not a gate; it just moves the false state from "prematurely done" to
-    // "permanently stuck."
+  it("does not drag the rail back for OAuth while the tag registry is unresolved", async () => {
+    loadedFleet(3);
+    mockedTags.mockReturnValue(mockQueryResult<SiteTag[]>({ data: undefined, isPending: true }));
+    renderWizard();
+    await pickClient("Cursor");
+    fireEvent.click(authCard("oauth"));
+    await screen.findByTestId("site-step-count");
+    fireEvent.click(screen.getByRole("radio", { name: /by tag/i }));
+    // No TokenMintPanel exists on this path to show its own "could not be
+    // resolved" copy -- the radiogroup's own selected state is the only
+    // thing to wait for before the rail is asserted against.
+    expect(screen.getByRole("radio", { name: /by tag/i })).toBeChecked();
+
+    expect(currentRailStep()).toHaveTextContent(/^6Setup$/);
+    expect(document.querySelector('[data-step-n="3"]')).toHaveAttribute(
+      "data-step-state",
+      "completed",
+    );
+  });
+
+  it("does not drag the rail back for OAuth when nothing has been selected yet", async () => {
+    // The wizard's opening state (mode 'list', nothing picked) is
+    // "unselected" on the token path; on OAuth it must not read as anything
+    // other than complete, because there is no button here for it to block.
     loadedFleet(3);
     renderWizard();
     await pickClient("Cursor");
-    chooseMethod("token");
-    await screen.findByTestId("site-step-count");
-    expect(continueButton()).toBeDisabled();
-
-    chooseAllSites();
-
-    expect(continueButton()).toBeEnabled();
-    expect(currentRailStep()).not.toHaveAttribute("data-step-readiness");
-    goNext();
-    expect(currentRailStep()).toHaveAttribute("data-step-n", "4");
-    expect(railSegment("3")).toHaveAttribute("data-step-state", "completed");
-  });
-
-  // ---------------------------------------------------------------------------
-  // THE OAUTH COLUMN, and it is the over-fire arm of the whole gate. On this
-  // path there is no mint button for an unresolved scope to block -- the setup
-  // step renders NextSteps, never TokenMintPanel -- and the scope chosen here
-  // is rehearsal (SiteScopeStep's own copy: "nothing carries this selection to
-  // the approval screen"). Ruling 4 is exactly this: an empty scope is a
-  // working state and Continue stays enabled.
-  // ---------------------------------------------------------------------------
-
-  it.each([
-    [
-      "the fleet read is loading",
-      () =>
-        mockedSites.mockReturnValue(mockQueryResult<Site[]>({ data: undefined, isPending: true })),
-      undefined,
-    ],
-    [
-      "the fleet read failed",
-      () =>
-        mockedSites.mockReturnValue(
-          mockQueryResult<Site[]>({ data: undefined, isPending: false, isError: true }),
-        ),
-      undefined,
-    ],
-    [
-      "the tag registry is unresolved",
-      () => {
-        loadedFleet(3);
-        mockedTags.mockReturnValue(mockQueryResult<SiteTag[]>({ data: undefined, isPending: true }));
-      },
-      () => fireEvent.click(screen.getByRole("radio", { name: /by tag/i })),
-    ],
-    [
-      "nothing has been selected yet",
-      () => loadedFleet(3),
-      undefined,
-    ],
-  ] as const)("does not hold an OAuth walk at site scope when %s", async (_label, seed, answer) => {
-    seed();
-    renderWizard();
-    await pickClient("Cursor");
-    chooseMethod("oauth");
-    await screen.findByTestId("site-step-count");
-    answer?.();
-
-    const current = expectRailIsCoherent();
-    expect(current).toHaveAttribute("data-step-n", "3");
-    expect(current).not.toHaveAttribute("data-step-readiness");
-    expect(continueButton()).toBeEnabled();
-
-    goNext();
-    expect(currentRailStep()).toHaveAttribute("data-step-n", "6");
-    expect(railSegment("3")).toHaveAttribute("data-step-state", "completed");
-  });
-
-  // ---------------------------------------------------------------------------
-  // Specified step 4 on the OAuth path. Ruling 15 keeps the stepper persistent,
-  // so the segment stays and says why it will not be asked -- a rail that went
-  // from ten segments to nine halfway through would be disorienting in a way a
-  // clearly-labelled inapplicable step is not.
-  // ---------------------------------------------------------------------------
-
-  it("keeps step 4 in the rail on the OAuth path, marked not asked rather than removed", async () => {
-    loadedFleet(3);
-    renderWizard();
-    await pickClient("Cursor");
-    chooseMethod("oauth");
+    fireEvent.click(authCard("oauth"));
     await screen.findByTestId("site-step-count");
 
-    expect(railNumbers()).toHaveLength(10);
-    const capability = railSegment("4");
-    expect(capability).toHaveAttribute("data-step-state", "not-applicable");
-    expect(capability).toHaveTextContent(/not asked on this path/i);
-    // AND IT IS NOT THE SAME AS AN UNBUILT STEP. Two different facts, and an
-    // operator must not have to guess which one they are looking at.
-    expect(capability).not.toHaveAttribute("data-step-state", "not-built");
-    expect(railSegment("7")).toHaveAttribute("data-step-state", "not-built");
-    // The rail says why in words, not only in styling.
-    expect(screen.getByText(/permissions are chosen on the approval screen, not here/i))
-      .toBeInTheDocument();
-  });
-
-  it("asks step 4 on the token path, and steps over it on the OAuth one", async () => {
-    // The over-fire arm: "not applicable" must be specific to the path that
-    // does not ask it, or the capability picker is simply broken.
-    loadedFleet(3);
-    renderWizard();
-    await pickClient("Cursor");
-    chooseMethod("token");
-    await screen.findByTestId("site-step-count");
-    chooseAllSites();
-
-    expect(railSegment("4")).toHaveAttribute("data-step-state", "upcoming");
-    goNext();
-    expect(currentRailStep()).toHaveAttribute("data-step-n", "4");
-    expect(
-      screen.getByRole("heading", { name: /choose what it may do/i }),
-    ).toBeInTheDocument();
-  });
-
-  it("does not rule step 4 out before a method has been chosen", async () => {
-    // Nothing has decided it yet, and telling an operator on step 2 that step
-    // 4 will not be asked -- when their next answer decides exactly that --
-    // would be a claim the wizard cannot make.
-    renderWizard();
-    await pickClientOnly("Cursor");
-    expect(railSegment("4")).not.toHaveAttribute("data-step-state", "not-applicable");
-    goNext();
-    expect(railSegment("4")).not.toHaveAttribute("data-step-state", "not-applicable");
+    expect(currentRailStep()).toHaveTextContent(/^6Setup$/);
+    expect(document.querySelector('[data-step-n="3"]')).toHaveAttribute(
+      "data-step-state",
+      "completed",
+    );
   });
 });
 
@@ -798,7 +646,8 @@ describe("the method step is computed from the client, with the reason on the ca
 describe("the setup artefact is generated per client", () => {
   it("emits the required http type for Claude Code", async () => {
     renderWizard();
-    await reachSetupStep("Claude Code", "oauth");
+    await pickClient("Claude Code");
+    fireEvent.click(authCard("oauth"));
 
     const block = await screen.findByText(/"mcpServers"/);
     const text = block.textContent ?? "";
@@ -810,7 +659,8 @@ describe("the setup artefact is generated per client", () => {
 
   it("emits httpUrl and no url for Gemini CLI", async () => {
     renderWizard();
-    await reachSetupStep("Gemini CLI", "oauth");
+    await pickClient("Gemini CLI");
+    fireEvent.click(authCard("oauth"));
 
     const text = (await screen.findByText(/"mcpServers"/)).textContent ?? "";
     expect(text).toContain('"httpUrl"');
@@ -819,7 +669,8 @@ describe("the setup artefact is generated per client", () => {
 
   it("emits the servers wrapper for VS Code", async () => {
     renderWizard();
-    await reachSetupStep("VS Code", "token");
+    await pickClient("VS Code");
+    fireEvent.click(authCard("token"));
 
     const text = (await screen.findByText(/"servers"/)).textContent ?? "";
     expect(text).toContain('"servers"');
@@ -828,7 +679,8 @@ describe("the setup artefact is generated per client", () => {
 
   it("emits no type key for Cursor", async () => {
     renderWizard();
-    await reachSetupStep("Cursor", "oauth");
+    await pickClient("Cursor");
+    fireEvent.click(authCard("oauth"));
 
     const text = (await screen.findByText(/"mcpServers"/)).textContent ?? "";
     expect(text).not.toContain('"type"');
@@ -836,7 +688,8 @@ describe("the setup artefact is generated per client", () => {
 
   it("renders the endpoint and a spec link for the generic entry, with no config block", async () => {
     renderWizard();
-    await reachSetupStep("Other / generic", "oauth");
+    await pickClient("Other / generic");
+    fireEvent.click(authCard("oauth"));
 
     expect(await screen.findByText(/endpoint for other \/ generic/i)).toBeInTheDocument();
     expect(screen.queryByText(/"mcpServers"/)).not.toBeInTheDocument();
@@ -847,7 +700,8 @@ describe("the setup artefact is generated per client", () => {
 
   it("gives GUI clients in-app steps rather than a file to edit", async () => {
     renderWizard();
-    await reachSetupStep("Claude Desktop", "oauth");
+    await pickClient("Claude Desktop");
+    fireEvent.click(authCard("oauth"));
 
     expect(await screen.findByText(/set this up inside claude desktop/i)).toBeInTheDocument();
     expect(screen.queryByText(/"mcpServers"/)).not.toBeInTheDocument();
@@ -855,7 +709,8 @@ describe("the setup artefact is generated per client", () => {
 
   it("never prints a Windows path", async () => {
     renderWizard();
-    await reachSetupStep("Claude Code", "oauth");
+    await pickClient("Claude Code");
+    fireEvent.click(authCard("oauth"));
     await screen.findByText(/"mcpServers"/);
     // Every source documented POSIX only; a Windows path here would be invented.
     expect(document.body.textContent ?? "").not.toMatch(/[A-Z]:\\|%APPDATA%/);
@@ -867,7 +722,8 @@ describe("the setup artefact is generated per client", () => {
     // block above still shows the placeholder -- buildSnippet emits the real
     // token only when one has actually been minted, and none has yet here.
     renderWizard();
-    await reachSetupStep("Cursor", "token");
+    await pickClient("Cursor");
+    fireEvent.click(authCard("token"));
 
     const text = (await screen.findByText(/"mcpServers"/)).textContent ?? "";
     expect(text).toContain("YOUR_CONNECTION_TOKEN");
@@ -881,7 +737,8 @@ describe("the setup artefact is generated per client", () => {
 describe("the wizard does not promise things it cannot deliver", () => {
   it("does not claim the entered name appears on the approval screen", async () => {
     renderWizard();
-    await reachSetupStep("Claude Code", "oauth");
+    await pickClient("Claude Code");
+    fireEvent.click(authCard("oauth"));
     await screen.findByText(/"mcpServers"/);
 
     // The old copy said "shown on the approval screen". Nothing carries the
@@ -894,7 +751,8 @@ describe("the wizard does not promise things it cannot deliver", () => {
 
   it("states the self-hosted proxy requirement beside the endpoint it printed", async () => {
     renderWizard();
-    await reachSetupStep("Claude Code", "oauth");
+    await pickClient("Claude Code");
+    fireEvent.click(authCard("oauth"));
     await screen.findByText(/"mcpServers"/);
 
     // The URL is derived from the origin, which does not prove anything
@@ -914,7 +772,7 @@ describe("the wizard does not promise things it cannot deliver", () => {
 async function reachSiteStep() {
   renderWizard();
   await pickClient("Claude Code");
-  chooseMethod("oauth");
+  fireEvent.click(authCard("oauth"));
   return await screen.findByTestId("site-step-count");
 }
 
@@ -933,21 +791,9 @@ describe("step 3 exists at all, and sits before capabilities", () => {
     expect(screen.getByText(/chosen before capabilities, on purpose/i)).toBeInTheDocument();
   });
 
-  it("numbers every step by its specified number, so the rail and the page agree", async () => {
-    // THE HEADINGS CARRY THE SPECIFIED NUMBER, NOT A LOCAL ONE. With one step
-    // on screen at a time, a heading numbered by position would read "5. Set
-    // it up" while the rail marked segment 6 current -- the same rail-versus-
-    // page disagreement this whole change exists to remove. The walk visits
-    // them out of numeric order (2, 5, 3, 4, 6), which is only legible
-    // because the operator never sees two of them at once.
+  it("numbers the setup artefact after it, so the rail and the page agree", async () => {
     await reachSiteStep();
-    expect(screen.getByRole("heading", { name: /^3\. Sites this connection may reach$/ }))
-      .toBeInTheDocument();
-    expect(currentRailStep()).toHaveAttribute("data-step-n", "3");
-
-    goNext();
-    expect(screen.getByRole("heading", { name: /^6\. Set it up$/ })).toBeInTheDocument();
-    expect(currentRailStep()).toHaveAttribute("data-step-n", "6");
+    expect(screen.getByRole("heading", { name: /^6\. Get the setup artefact$/ })).toBeInTheDocument();
     // And the rail no longer claims sites are chosen somewhere else.
     expect(screen.queryByText(/4\. Choose sites and permissions/i)).not.toBeInTheDocument();
   });
@@ -1029,14 +875,11 @@ describe("an empty scope is a working state, not an error", () => {
 
   it("does not block the wizard on it", async () => {
     loadedFleet(60);
-    // reachSiteStep walks the OAUTH path, where an empty scope is a working
-    // state (ruling 4): nothing downstream reads the scope, so Continue stays
-    // enabled and the setup artefact is reachable with nothing selected.
     await reachSiteStep();
-    expect(continueButton()).toBeEnabled();
-
-    goNext();
-    expect(screen.getByRole("heading", { name: /^6\. Set it up$/ })).toBeInTheDocument();
+    // The setup artefact is reachable with nothing selected. An earlier
+    // revision of this surface disabled Continue here; that is the behaviour
+    // being corrected.
+    expect(screen.getByRole("heading", { name: /^6\. Get the setup artefact$/ })).toBeInTheDocument();
     expect(await screen.findByText(/"mcpServers"/)).toBeInTheDocument();
   });
 });
@@ -1192,26 +1035,15 @@ describe("the wizard does not promise to carry the scope it collected", () => {
 describe("changing the client recomputes rather than carrying a stale answer", () => {
   it("drops a method the newly chosen client cannot use", async () => {
     renderWizard();
-    await reachSetupStep("Cursor", "token");
+    await pickClient("Cursor");
+    fireEvent.click(authCard("token"));
     expect(await screen.findByText(/"mcpServers"/)).toBeInTheDocument();
 
     // Claude Desktop cannot use a token. The wizard must fall back to asking,
-    // not silently keep a selection that produces no valid artefact. Changing
-    // the client means walking back to the step that owns that answer, which
-    // is also where the operator would be told the method had been dropped.
-    while (screen.queryByRole("button", { name: /claude desktop/i }) === null) {
-      fireEvent.click(backButton());
-    }
-    await pickClientOnly("Claude Desktop");
+    // not silently keep a selection that produces no valid artefact.
+    await pickClient("Claude Desktop");
     expect(screen.queryByText(/set this up inside/i)).not.toBeInTheDocument();
-
-    // The dropped method leaves step 2 unanswered, so the walk cannot run past
-    // it -- the cursor is held at the method step and the token card is
-    // disabled with the client's own reason.
-    goNext();
-    expect(currentRailStep()).toHaveAttribute("data-step-n", "5");
     expect(authCard("token")).toBeDisabled();
-    expect(continueButton()).toBeDisabled();
   });
 });
 
@@ -1288,95 +1120,13 @@ async function reachMintButton() {
  * through a router they hold a handle on, rather than duplicating the steps and
  * letting the two copies drift.
  */
-async function advanceToMintButton(answerScope?: () => void) {
-  await advanceToCapabilityStep(answerScope);
-  // Past the capability picker, which opens on sites-read and is therefore
-  // already settled -- nothing here has to touch it to get through.
-  goNext();
-  return screen.findByRole("button", { name: /generate connection token/i });
-}
-
-/**
- * Back to the site-scope step from wherever the walk currently stands.
- *
- * The wizard shows one step at a time, so a test that wants to change the
- * scope after reaching a later step has to walk back to it the way an operator
- * would. Answers are kept across the move, which is the property several of
- * these tests are actually about.
- */
-/** Back to the auth-method step, whichever later step the walk is on. */
-function backToMethodStep() {
-  while (document.querySelector('button[data-method="oauth"]') === null) {
-    const button = backButton();
-    expect(button).toBeEnabled();
-    fireEvent.click(button);
-  }
-}
-
-/**
- * Back to the site-scope step, and re-open its picker.
- *
- * The picker is a disclosure that opens on "+ add sites" and closes with the
- * step, so a walk that returns here finds it shut. Re-opening it is part of
- * arriving, not part of what any caller is testing.
- */
-function backToSiteStep() {
-  while (screen.queryByTestId("site-step-count") === null) {
-    const button = backButton();
-    expect(button).toBeEnabled();
-    fireEvent.click(button);
-  }
-  const reopen = screen.queryByRole("button", { name: /\+ add sites/i });
-  if (reopen !== null) fireEvent.click(reopen);
-  return screen.getByTestId("site-step-count");
-}
-
-/** Forward from the capability step to the mint button. */
-async function forwardToMintButtonFromCapabilities() {
-  goNext();
-  return screen.findByRole("button", { name: /generate connection token/i });
-}
-
-/** Forward from the site-scope step to the mint button, answering nothing else. */
-async function forwardToMintButton() {
-  goNext();
-  await screen.findByRole("heading", { name: /choose what it may do/i });
-  goNext();
-  return screen.findByRole("button", { name: /generate connection token/i });
-}
-
-/**
- * Client, method and A SITE PICKED, standing on the capability step.
- *
- * The site is picked deliberately and is not scaffolding: mode 'list' with
- * nothing selected is refused by ValidateSiteScopeRequest
- * (apps/api/internal/mcp/scope.go), and the wizard now refuses Continue on the
- * same predicate, so this is the shortest honest walk past step 3.
- */
-async function advanceToCapabilityStep(answerScope?: () => void) {
+async function advanceToMintButton() {
   await pickClient("Cursor");
-  chooseMethod("token");
+  fireEvent.click(authCard("token"));
   await screen.findByTestId("site-step-count");
-  if (answerScope === undefined) {
-    fireEvent.click(screen.getByRole("button", { name: /\+ add sites/i }));
-    fireEvent.click(pickerBoxes()[0]!);
-  } else {
-    answerScope();
-  }
-  goNext();
-  await screen.findByRole("heading", { name: /choose what it may do/i });
-}
-
-/** Client and method chosen, standing ON the site-scope step with nothing answered. */
-async function reachSiteScopeStep(clientName: string, method: "oauth" | "token") {
-  await pickClient(clientName);
-  chooseMethod(method);
-  return screen.findByTestId("site-step-count");
-}
-
-/** All sites: the shortest scope answer that works against any fleet, empty included. */
-function chooseAllSites() {
-  fireEvent.click(screen.getByRole("radio", { name: /all sites/i }));
+  fireEvent.click(screen.getByRole("button", { name: /\+ add sites/i }));
+  fireEvent.click(pickerBoxes()[0]!);
+  return screen.findByRole("button", { name: /generate connection token/i });
 }
 
 /**
@@ -1472,23 +1222,19 @@ afterEach(() => {
 /** Client and token method picked, sitting at the capability picker. */
 async function reachCapabilityStep() {
   renderWizard();
-  // All sites, because these tests render the default empty fleet and there is
-  // no site to pick in it. What the scope is does not matter here; getting past
-  // the step that gates this one does.
-  await advanceToCapabilityStep(chooseAllSites);
-  return screen.getByRole("heading", { name: /choose what it may do/i });
+  await pickClient("Cursor");
+  fireEvent.click(authCard("token"));
+  await screen.findByTestId("site-step-count");
+  return screen.findByRole("heading", { name: /choose what it may do/i });
 }
 
 describe("choosing what a token may do (step 4, token path only)", () => {
   it("renders no capability heading at all on the OAuth path", async () => {
-    // The walk steps straight from site scope to the setup artefact, so the
-    // picker is not merely hidden on this path -- there is no step there to
-    // land on. The rail says so rather than leaving the operator to notice.
     renderWizard();
-    await reachSetupStep("Cursor", "oauth");
+    await pickClient("Cursor");
+    fireEvent.click(authCard("oauth"));
+    await screen.findByTestId("site-step-count");
     expect(screen.queryByRole("heading", { name: /choose what it may do/i })).toBeNull();
-    expect(screen.getByRole("heading", { name: /^6\. Set it up$/ })).toBeInTheDocument();
-    expect(railSegment("4")).toHaveAttribute("data-step-state", "not-applicable");
   });
 
   it("renders every conferrable capability with a real description, and Content disabled with its reason", async () => {
@@ -1539,9 +1285,14 @@ describe("choosing what a token may do (step 4, token path only)", () => {
     // turns it green again.
     loadedFleet(3);
     renderWizard();
-    // A valid site scope, so the ONLY thing left blocking is the capability
-    // deselection this test is actually about.
-    await advanceToCapabilityStep();
+    await pickClient("Cursor");
+    fireEvent.click(authCard("token"));
+    await screen.findByTestId("site-step-count");
+    // A valid site scope, so the ONLY thing left blocking the button is the
+    // capability deselection this test is actually about.
+    fireEvent.click(screen.getByRole("button", { name: /\+ add sites/i }));
+    fireEvent.click(pickerBoxes()[0]!);
+    await screen.findByRole("heading", { name: /choose what it may do/i });
 
     fireEvent.click(screen.getByRole("checkbox", { name: /^Sites/i }));
 
@@ -1550,31 +1301,26 @@ describe("choosing what a token may do (step 4, token path only)", () => {
     // (an operator who scrolled straight to the button sees it there) -- so
     // this asserts on the plural.
     expect((await screen.findAllByText(/no capability is selected/i)).length).toBeGreaterThan(0);
-    // REFUSED AT CONTINUE NOW, not at a mint button three steps further on.
-    // The same predicate makes both refusals, so moving the assertion to the
-    // control the operator is standing in front of tests the same guard at the
-    // point it now fires.
-    expect(continueButton()).toBeDisabled();
-    expect(screen.queryByRole("button", { name: /generate connection token/i })).toBeNull();
+    expect(screen.getByRole("button", { name: /generate connection token/i })).toBeDisabled();
   });
 
   it("re-enables minting the moment a capability is checked again -- the over-fire arm of the guard above", async () => {
     loadedFleet(3);
     renderWizard();
-    await advanceToCapabilityStep();
+    await pickClient("Cursor");
+    fireEvent.click(authCard("token"));
+    await screen.findByTestId("site-step-count");
+    fireEvent.click(screen.getByRole("button", { name: /\+ add sites/i }));
+    fireEvent.click(pickerBoxes()[0]!);
+    await screen.findByRole("heading", { name: /choose what it may do/i });
 
     const sites = screen.getByRole("checkbox", { name: /^Sites/i });
     fireEvent.click(sites);
-    expect(continueButton()).toBeDisabled();
+    expect(screen.getByRole("button", { name: /generate connection token/i })).toBeDisabled();
 
     fireEvent.click(screen.getByRole("checkbox", { name: /^Uptime/i }));
     expect(screen.queryByText(/no capability is selected/i)).toBeNull();
-    expect(continueButton()).toBeEnabled();
-    // And the walk really does open again, rather than merely un-refusing.
-    goNext();
-    expect(
-      screen.getByRole("button", { name: /generate connection token/i }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /generate connection token/i })).toBeEnabled();
   });
 
   it("never sends `capabilities: []` on the wire, and sends exactly the selected set", async () => {
@@ -1606,15 +1352,10 @@ describe("choosing what a token may do (step 4, token path only)", () => {
       return jsonResponse(MINTED, 201);
     });
 
-    // The checkboxes live on the capability step, one before the mint button,
-    // so they are ticked there and carried forward -- which is also the
-    // property being relied on: an answer survives leaving the step that
-    // collected it.
-    renderWizard();
-    await advanceToCapabilityStep();
+    const mintButton = await reachMintButton();
     fireEvent.click(screen.getByRole("checkbox", { name: /^Uptime/i }));
     fireEvent.click(screen.getByRole("checkbox", { name: /^Backups/i }));
-    fireEvent.click(await forwardToMintButtonFromCapabilities());
+    fireEvent.click(mintButton);
     await screen.findByText(/this is the only time this token is shown/i);
 
     const body = capturedBody as Record<string, unknown>;
@@ -1665,11 +1406,7 @@ describe("minting a connection token", () => {
     fireEvent.change(screen.getByLabelText(/name this connection/i), {
       target: { value: "Fleet manager, renamed" },
     });
-    // And the scope too: the other half of what configKey watched. It lives on
-    // an earlier step now, so changing it means walking back to it, which is
-    // itself the stronger version of this test -- the reveal has to survive a
-    // step change as well as a keystroke.
-    backToSiteStep();
+    // And the scope too: the other half of what configKey watched.
     fireEvent.click(pickerBoxes()[1]!);
     expect(await screen.findByTestId("site-step-summary")).toHaveTextContent(/2 sites/i);
 
@@ -1711,14 +1448,7 @@ describe("minting a connection token", () => {
     fireEvent.click(await reachMintButton());
     await screen.findByText(MINTED.token);
 
-    // Walking back to the method step and switching to OAuth unmounts the mint
-    // panel completely -- the setup step renders NextSteps instead, and the
-    // capability step drops out of the walk altogether.
-    backToMethodStep();
     fireEvent.click(authCard("oauth"));
-    goNext();
-    await screen.findByTestId("site-step-count");
-    goNext();
 
     // The panel is genuinely gone, so this is not passing by nothing happening.
     expect(await screen.findByText(/start the connection in cursor/i)).toBeInTheDocument();
@@ -1742,29 +1472,23 @@ describe("minting a connection token", () => {
     // response has already landed.
     expect(await screen.findByRole("button", { name: /minting/i })).toBeInTheDocument();
 
-    // THE CONTROLS THAT CAN NOW UNMOUNT THE PANEL ARE BACK AND CONTINUE. The
-    // client and auth cards are on earlier steps and are not on screen at all,
-    // so the navigation controls are what the lock has to hold -- walking back
-    // mid-request would unmount the panel exactly as switching the method used
-    // to, with the same outcome: a live credential whose plaintext nobody saw.
-    expect(backButton()).toBeDisabled();
-    expect(screen.queryByRole("button", { name: /^continue$/i })).toBeNull();
+    expect(authCard("oauth")).toBeDisabled();
+    expect(authCard("token")).toBeDisabled();
+    expect(screen.getByRole("button", { name: /claude desktop/i })).toBeDisabled();
     // Said out loud, not silently greyed out.
     expect(screen.getByRole("status")).toHaveTextContent(/strand a live credential nobody holds/i);
 
     // Clicking anyway changes nothing, which is what "refuses" has to mean.
-    fireEvent.click(backButton());
+    fireEvent.click(authCard("oauth"));
     expect(await screen.findByRole("button", { name: /minting/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /minting/i })).toBeInTheDocument();
 
     release();
 
     expect(await screen.findByText(MINTED.token)).toBeInTheDocument();
-    // And the control comes back once nothing is outstanding -- the lock is for
-    // the duration of the request, not for the rest of the session. A block
-    // that outlived its request would strand the operator on a page they
-    // cannot leave, which is a worse defect than the one being prevented.
-    expect(backButton()).toBeEnabled();
+    // And the controls come back once nothing is outstanding -- the lock is
+    // for the duration of the request, not for the rest of the session.
+    expect(authCard("oauth")).toBeEnabled();
+    expect(screen.getByRole("button", { name: /claude desktop/i })).toBeEnabled();
   });
 
   // ---------------------------------------------------------------------------
@@ -1925,50 +1649,62 @@ describe("minting a connection token", () => {
     expect(formatAbsolute(MINTED.expires_at)).not.toContain("T00:00:00Z");
   });
 
-  it("describes the scope the token was minted FOR, not the scope chosen after it", async () => {
-    // THE WORST OUTCOME THIS SCREEN CAN PRODUCE, AND WHY THE TEST NOW REACHES
-    // IT DIFFERENTLY. A reveal that read the site scope at RENDER time would
-    // pair a real, shown-once credential with a description of access it does
-    // not carry -- on the one screen whose whole job is saying what was just
-    // made, at the only moment the token is ever visible.
+  it("describes the scope the token was minted FOR when the scope changed mid-flight", async () => {
+    // THE RACE, AND THE WORST OUTCOME THIS SCREEN CAN PRODUCE. The mint is a
+    // round trip; the site scope is an input the operator can go on clicking
+    // while it is open. A reveal that reads the scope at RESPONSE time pairs a
+    // real, shown-once credential with a description of access it does not
+    // carry -- on the one screen whose whole job is saying what was just made,
+    // at the only moment the token is ever visible. Nothing downstream can
+    // correct it: the operator reads that line and deploys the token.
     //
-    // The original test constructed this by widening the scope WHILE the mint
-    // request was open. That race is no longer reachable through the UI: the
-    // site-scope controls are on an earlier step, and Back and Continue are
-    // both locked for the duration of the request (see the in-flight lock test
-    // above). Unreachable is not the same as untrue, so the property is pinned
-    // through the route that IS reachable -- the operator walks back after the
-    // mint and changes the scope -- and MintedReveal must still describe what
-    // it was minted for. Nothing about the reveal is re-derived from live
-    // state; that is the whole point of it carrying its own configuration.
+    // The response is held open deliberately rather than raced against a
+    // timer. A test that depended on the operator being slower than a stubbed
+    // fetch would pass on a fixed component and on a broken one.
     loadedFleet(3);
-    stubMintFetch(() => jsonResponse(MINTED, 201));
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    stubMintFetch(async () => {
+      await held;
+      return jsonResponse(MINTED, 201);
+    });
 
     renderWizard();
-    await reachSiteScopeStep("Cursor", "token");
+    await pickClient("Cursor");
+    fireEvent.click(authCard("token"));
+    await screen.findByTestId("site-step-count");
     fireEvent.click(screen.getByRole("button", { name: /\+ add sites/i }));
-    fireEvent.click(pickerBoxes()[0]!);
+
+    const boxes = () =>
+      within(screen.getByTestId("site-step-picker")).getAllByRole("checkbox");
+    fireEvent.click(boxes()[0]!);
     expect(await screen.findByTestId("site-step-summary")).toHaveTextContent(
       /1 site, listed below/i,
     );
 
-    fireEvent.click(await forwardToMintButton());
-    expect(await screen.findByText(MINTED.token)).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: /generate connection token/i }));
+    // In flight, and provably so: the assertions below mean nothing if the
+    // scope was widened after the response had already landed.
+    expect(await screen.findByRole("button", { name: /minting/i })).toBeInTheDocument();
 
-    // The operator walks back and widens the scope from one site to three.
-    backToSiteStep();
-    fireEvent.click(pickerBoxes()[1]!);
-    fireEvent.click(pickerBoxes()[2]!);
+    // The operator widens the scope from one site to three, mid-request.
+    fireEvent.click(boxes()[1]!);
+    fireEvent.click(boxes()[2]!);
     expect(await screen.findByTestId("site-step-summary")).toHaveTextContent(
       /3 sites, listed below/i,
     );
 
+    release();
+
+    expect(await screen.findByText(MINTED.token)).toBeInTheDocument();
     const scopeLine = screen.getByText(/Capabilities:/);
     expect(scopeLine).toHaveTextContent(/1 site, listed below/i);
     expect(scopeLine).not.toHaveTextContent(/3 sites/i);
-    // And the live step shows the operator's newer, wider selection, so the
-    // reveal is not merely lagging the whole screen -- the two disagree on
-    // purpose, because they describe two different things.
+    // And the live step still shows the operator's newer, wider selection, so
+    // the reveal is not merely lagging the whole screen -- the two disagree on
+    // purpose, because they are describing two different things.
     expect(screen.getByTestId("site-step-summary")).toHaveTextContent(/3 sites, listed below/i);
   });
 
@@ -1987,13 +1723,13 @@ describe("minting a connection token", () => {
     });
 
     renderWizard();
-    await reachSiteScopeStep("Cursor", "token");
+    await pickClient("Cursor");
+    fireEvent.click(authCard("token"));
+    await screen.findByTestId("site-step-count");
     fireEvent.click(screen.getByRole("radio", { name: /by tag/i }));
     fireEvent.click(screen.getByRole("button", { name: /\+ add tags/i }));
-    fireEvent.click(
-      within(await screen.findByTestId("site-step-picker")).getAllByRole("checkbox")[0]!,
-    );
-    fireEvent.click(await forwardToMintButton());
+    fireEvent.click(within(await screen.findByTestId("site-step-picker")).getAllByRole("checkbox")[0]!);
+    fireEvent.click(await screen.findByRole("button", { name: /generate connection token/i }));
 
     await screen.findByText(/this is the only time this token is shown/i);
     expect(requestBodies).toHaveLength(1);
@@ -2010,17 +1746,13 @@ describe("minting a connection token", () => {
     loadedFleet(3);
     mockedTags.mockReturnValue(mockQueryResult<SiteTag[]>({ data: undefined, isPending: true }));
     renderWizard();
-    await reachSiteScopeStep("Cursor", "token");
+    await pickClient("Cursor");
+    fireEvent.click(authCard("token"));
+    await screen.findByTestId("site-step-count");
     fireEvent.click(screen.getByRole("radio", { name: /by tag/i }));
 
-    // THE REFUSAL MOVED EARLIER, IT DID NOT SOFTEN. The wizard shows one step
-    // at a time now, so this scope is refused at Continue rather than at the
-    // mint button four steps later -- the same predicate, read by the control
-    // the operator is actually standing in front of. The mint button is not
-    // merely disabled; it cannot be reached at all.
     expect(await screen.findByText(/tag scope could not be resolved/i)).toBeInTheDocument();
-    expect(continueButton()).toBeDisabled();
-    expect(screen.queryByRole("button", { name: /generate connection token/i })).toBeNull();
+    expect(screen.getByRole("button", { name: /generate connection token/i })).toBeDisabled();
   });
 
   // -------------------------------------------------------------------------
@@ -2038,17 +1770,16 @@ describe("minting a connection token", () => {
     // the button, get a 400.
     loadedFleet(3);
     renderWizard();
-    await reachSiteScopeStep("Cursor", "token");
+    await pickClient("Cursor");
+    fireEvent.click(authCard("token"));
 
-    // Refused at Continue, on the step that owns the answer, rather than at a
-    // mint button the operator would have walked three more steps to find.
-    expect(continueButton()).toBeDisabled();
+    const button = await screen.findByRole("button", { name: /generate connection token/i });
+    expect(button).toBeDisabled();
     expect(screen.getByText(/no site is picked/i)).toHaveTextContent(
       /pick at least one site in step 3, or switch that step to all sites/i,
     );
     // The remedy is the operator's own, not "the server said no".
     expect(screen.queryByText(/the server refused this request/i)).toBeNull();
-    expect(screen.queryByRole("button", { name: /generate connection token/i })).toBeNull();
   });
 
   it("refuses a by-tag scope with no tag picked, distinctly from an unreadable registry", async () => {
@@ -2060,10 +1791,14 @@ describe("minting a connection token", () => {
       mockQueryResult<SiteTag[]>({ data: [{ id: "tag-uuid-1", name: "prod" } as SiteTag] }),
     );
     renderWizard();
-    await reachSiteScopeStep("Cursor", "token");
+    await pickClient("Cursor");
+    fireEvent.click(authCard("token"));
+    await screen.findByTestId("site-step-count");
     fireEvent.click(screen.getByRole("radio", { name: /by tag/i }));
 
-    expect(continueButton()).toBeDisabled();
+    expect(
+      await screen.findByRole("button", { name: /generate connection token/i }),
+    ).toBeDisabled();
     expect(screen.getByText(/no tag is picked/i)).toBeInTheDocument();
     expect(screen.queryByText(/tag scope could not be resolved/i)).toBeNull();
   });
@@ -2080,13 +1815,10 @@ describe("minting a connection token", () => {
       return jsonResponse({ ...MINTED, site_scope_mode: "all" }, 201);
     });
 
-    expect(await reachMintButton()).toBeEnabled();
-    // Back to the step that owns the scope, the way an operator changes an
-    // answer now, and forward again. "Sites were picked first" is exactly what
-    // that walk leaves behind, which is the leak this test is about.
-    backToSiteStep();
+    const button = await reachMintButton();
+    expect(button).toBeEnabled();
     fireEvent.click(screen.getByRole("radio", { name: /all sites/i }));
-    fireEvent.click(await forwardToMintButton());
+    fireEvent.click(await screen.findByRole("button", { name: /generate connection token/i }));
 
     await screen.findByText(MINTED.token);
     expect(requestBodies).toHaveLength(1);
@@ -2109,13 +1841,10 @@ describe("minting a connection token", () => {
     });
 
     await reachMintButton();
-    backToSiteStep();
     fireEvent.click(screen.getByRole("radio", { name: /by tag/i }));
     fireEvent.click(screen.getByRole("button", { name: /\+ add tags/i }));
-    fireEvent.click(
-      within(await screen.findByTestId("site-step-picker")).getAllByRole("checkbox")[0]!,
-    );
-    fireEvent.click(await forwardToMintButton());
+    fireEvent.click(within(await screen.findByTestId("site-step-picker")).getAllByRole("checkbox")[0]!);
+    fireEvent.click(await screen.findByRole("button", { name: /generate connection token/i }));
 
     await screen.findByText(MINTED.token);
     expect(requestBodies).toHaveLength(1);
@@ -2177,80 +1906,390 @@ describe("minting a connection token", () => {
 });
 
 // ---------------------------------------------------------------------------
-// The cursor clamp, tested directly.
-//
-// Its sharpest case -- a position requested PAST the first blocked step -- is
-// not reachable through the rendered wizard: it needs an answer to go bad
-// behind the operator while they stand further on, which in production is the
-// fleet query refetching into a failure on a window focus or a reconnect, and
-// which no mounted test can produce without navigating (and navigating is what
-// resets the request). Removing the clamp leaves every rendered test in this
-// file green. These are the tests that actually hold it.
+// THE STEPPER ITSELF. The owner looked at the shipped screen and said it was
+// neither a stepper nor a wizard, and he was right about the rail: it printed
+// the ten LONG frame titles run together with slashes, which is a paragraph in
+// a stepper's place, and it disagreed with the numbers on the sections below
+// it. These tests hold the component the deck actually draws.
 // ---------------------------------------------------------------------------
 
-describe("the cursor is clamped to the first step the answers do not support", () => {
-  const settled = { readiness: "resolved", refusal: null } as const;
-  const refused = { readiness: "unselected", refusal: "pick something" } as const;
-  /** The token walk: client, method, sites, capabilities, setup. */
-  const walk = [
-    [1, 2],
-    [2, 5],
-    [3, 3],
-    [4, 4],
-    [5, 6],
-  ] as [1 | 2 | 3 | 4 | 5, number][];
+/** Every rail segment, in the order the DOM has them. */
+function railSegments(): HTMLElement[] {
+  return Array.from(document.querySelectorAll<HTMLElement>("[data-step-n]"));
+}
 
-  it("gives the operator the position they asked for when everything before it is settled", () => {
-    const gates = [settled, settled, settled, settled, settled];
-    expect(resolveCursorPos(walk, gates, 5)).toBe(4);
-    expect(resolveCursorPos(walk, gates, 3)).toBe(2);
-    expect(resolveCursorPos(walk, gates, 1)).toBe(0);
-  });
+describe("the rail is a stepper, not a paragraph", () => {
+  it("labels the rail with the deck's SHORT labels and never the long frame titles", async () => {
+    renderWizard();
+    await screen.findByRole("button", { name: /claude code/i });
 
-  it("holds them AT a blocked step they are standing on", () => {
-    const gates = [settled, settled, refused, settled, settled];
-    expect(resolveCursorPos(walk, gates, 3)).toBe(2);
-  });
+    // Ruling 15, verbatim in its ordering: "Start, Client, Sites,
+    // Capabilities, Auth, Setup, Authorize, Confirm, Test, Done".
+    // The label's own text node, without the sr-only "(not yet available)"
+    // that an unbuilt step carries for a screen reader -- that suffix is
+    // asserted by the "not-built" tests above and is not part of the label.
+    expect(
+      railSegments().map(
+        (s) => screen.getByTestId(`step-label-${s.dataset.stepN}`).childNodes[0]?.textContent,
+      ),
+    ).toEqual([
+      "Start",
+      "Client",
+      "Sites",
+      "Capabilities",
+      "Auth",
+      "Setup",
+      "Authorize",
+      "Confirm",
+      "Test",
+      "Done",
+    ]);
 
-  it("pulls them BACK when a step behind them stops being answered", () => {
-    // THE CASE THE RENDERED TESTS CANNOT REACH. The operator legitimately
-    // walked to the setup step, and then the read behind site scope failed.
-    // The mint they were about to press would now be refused, so leaving them
-    // standing on it -- with every step before it marked complete -- would be
-    // the rail asserting a readiness the button does not have.
-    const gates = [settled, settled, refused, settled, settled];
-    expect(resolveCursorPos(walk, gates, 5)).toBe(2);
-    expect(resolveCursorPos(walk, gates, 4)).toBe(2);
-  });
-
-  it("reports the EARLIEST blocked step when more than one refuses", () => {
-    // An operator who has answered neither is working on the earlier one.
-    // Naming the later would tell them they are stuck on a step they have not
-    // been let reach in any meaningful sense.
-    const gates = [settled, settled, refused, refused, settled];
-    expect(resolveCursorPos(walk, gates, 5)).toBe(2);
-  });
-
-  it("falls back to the wall, not to the start, when the path no longer asks the requested step", () => {
-    // The OAuth walk does not include the capability picker. An operator who
-    // was on it and went back to choose browser sign-in keeps every answer
-    // they gave rather than being sent to the beginning.
-    const oauthWalk = [
-      [1, 2],
-      [2, 5],
-      [3, 3],
-      [5, 6],
-    ] as [1 | 2 | 3 | 4 | 5, number][];
-    expect(resolveCursorPos(oauthWalk, [settled, settled, settled, settled], 4)).toBe(3);
-    expect(resolveCursorPos(oauthWalk, [settled, settled, refused, settled], 4)).toBe(2);
-  });
-
-  it("never returns a position outside the walk", () => {
-    const gates = [settled, settled, settled, settled, settled];
-    for (const requested of [1, 2, 3, 4, 5] as const) {
-      const pos = resolveCursorPos(walk, gates, requested);
-      expect(pos).toBeGreaterThanOrEqual(0);
-      expect(pos).toBeLessThan(walk.length);
+    // And the long frame titles are gone from the rail specifically. Asserting
+    // their absence from the whole document would be wrong: "Choose what it
+    // may do" is a legitimate SECTION heading, which is exactly where ruling
+    // 15 puts the long form.
+    const railText = railSegments()
+      .map((s) => s.textContent ?? "")
+      .join(" ");
+    for (const long of [
+      "Name it, pick the AI client",
+      "Choose how it authenticates",
+      "Get the setup artefact",
+      "WPMgr confirms connection is live",
+    ]) {
+      expect(railText).not.toContain(long);
     }
+  });
+
+  it("draws a numbered circle per step and a connector between every pair", async () => {
+    renderWizard();
+    await screen.findByRole("button", { name: /claude code/i });
+
+    // Ten circles, each carrying its own specified number -- the number lives
+    // in the circle now, not in a "6. Get the setup artefact" run of prose.
+    expect(
+      Array.from({ length: 10 }, (_, i) => screen.getByTestId(`step-circle-${i + 1}`).textContent),
+    ).toEqual(["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]);
+
+    // Nine connectors for ten steps: one before every segment except the
+    // first. A connector before step 1 would draw a line coming from nowhere.
+    expect(document.querySelectorAll('[data-testid^="step-line-"]')).toHaveLength(9);
+    expect(screen.queryByTestId("step-line-1")).toBeNull();
+  });
+
+  it("shortens the connector below the deck's 640px breakpoint", async () => {
+    renderWizard();
+    await screen.findByRole("button", { name: /claude code/i });
+
+    // The deck: `.step .line { width: 44px }` with
+    // `@media (max-width: 640px) { .step .line { width: 16px } }`. In this
+    // project that is the unprefixed utility for the narrow case and the `sm:`
+    // variant for the wide one -- w-4 is 16px, w-11 is 44px.
+    const line = screen.getByTestId("step-line-2");
+    expect(line.className).toContain("w-4");
+    expect(line.className).toContain("sm:w-11");
+    expect(line.className).toContain("mx-1.5");
+    expect(line.className).toContain("sm:mx-2.5");
+  });
+
+  it("puts `sm:` at the 640px the deck specifies, so those classes mean what they say", async () => {
+    // THE HALF THAT MAKES THE TEST ABOVE ABOUT BEHAVIOUR RATHER THAN SPELLING.
+    // `sm:w-11` only implements the deck's breakpoint while `sm` IS 640px;
+    // Tailwind's default is 40rem/640px and this app must not have moved it.
+    // Moving it would silently change where the connector shortens, which no
+    // class-name assertion could see.
+    const fs = await import("node:fs");
+    const nodePath = await import("node:path");
+    // Resolved from the process, and a MISSING file throws rather than
+    // letting this test pass over nothing -- a check that cannot find its
+    // input has to go red, not green.
+    const candidates = [
+      nodePath.resolve(process.cwd(), "src/styles/globals.css"),
+      nodePath.resolve(process.cwd(), "apps/web/src/styles/globals.css"),
+    ];
+    const found = candidates.find((p) => fs.existsSync(p));
+    if (found === undefined) throw new Error(`globals.css not found at ${candidates.join(" or ")}`);
+    const css = fs.readFileSync(found, "utf8");
+    // The file has to have actually been read, or the regex below matches
+    // nothing and the assertion is skipped over an empty string.
+    expect(css).toContain("@theme");
+    const override = /--breakpoint-sm:\s*([^;]+);/.exec(css)?.[1];
+    // Either untouched (Tailwind's own 40rem = 640px), or explicitly set to
+    // the same value. Anything else moves the design's boundary.
+    if (override !== undefined) expect(override.trim()).toBe("40rem");
+  });
+
+  it("fills the circle only for a step actually behind the operator, and rings the current one", async () => {
+    renderWizard();
+    await pickClient("Cursor");
+
+    // Step 2 is behind them: filled. The fill is the strongest "done" signal
+    // on the screen and it is drawn from the rail's own state, so it cannot
+    // claim progress the wizard has not made.
+    expect(document.querySelector('[data-step-n="2"]')).toHaveAttribute(
+      "data-step-state",
+      "completed",
+    );
+    expect(screen.getByTestId("step-circle-2").className).toContain("bg-[var(--color-primary)]");
+
+    // Step 5 is where they are: ringed, never filled.
+    expect(screen.getByTestId("step-circle-5").className).toContain("border-2");
+    expect(screen.getByTestId("step-circle-5").className).not.toContain(
+      "bg-[var(--color-primary)]",
+    );
+
+    // Step 8 does not exist yet. No fill, no ring: an unbuilt step must never
+    // render as done or current.
+    expect(document.querySelector('[data-step-n="8"]')).toHaveAttribute(
+      "data-step-state",
+      "not-built",
+    );
+    expect(screen.getByTestId("step-circle-8").className).not.toContain(
+      "bg-[var(--color-primary)]",
+    );
+    expect(screen.getByTestId("step-circle-8").className).not.toContain("border-2");
+  });
+});
+
+describe("the rail and the section heading agree on which step this is", () => {
+  // Two numbering systems on one screen contradict each other as soon as the
+  // page order stops matching the spine: the rail calling the setup section
+  // step 6 while the heading over it says "4. Set it up". Every heading here
+  // is now numbered with the specified step it answers, so a section and its
+  // rail segment cannot name the same step differently.
+
+  /** Every "N. Title" heading on screen, as its leading number. */
+  function headingNumbers(): string[] {
+    return screen
+      .getAllByRole("heading", { level: 2 })
+      .map((h) => /^(\d+)\./.exec(h.textContent ?? "")?.[1])
+      .filter((n): n is string => n !== undefined);
+  }
+
+  it("numbers the client section 2, the way the rail does, before anything is picked", async () => {
+    renderWizard();
+    await screen.findByRole("button", { name: /claude code/i });
+
+    expect(screen.getByRole("heading", { name: /^2\. Pick your client$/ })).toBeInTheDocument();
+    expect(currentRailStep()).toHaveAttribute("data-step-n", "2");
+    // Nothing on screen is numbered 1: local position numbering is gone.
+    expect(headingNumbers()).toEqual(["2"]);
+  });
+
+  it("numbers every revealed section with a step the rail also names, on the token path", async () => {
+    renderWizard();
+    await pickClient("Claude Code");
+    fireEvent.click(authCard("token"));
+    await screen.findByTestId("site-step-count");
+
+    // The specified numbers for the five built sections, in the order this
+    // page reveals them -- deliberately non-monotonic (ruling: the on-screen
+    // order maps to the deck's numbers, the numbers are never renumbered to
+    // match the page).
+    expect(headingNumbers()).toEqual(["2", "5", "3", "4", "6"]);
+
+    // And every one of those numbers is a step the rail draws, in the rail's
+    // own order, so there is exactly one numbering system on the screen.
+    const railNs = railSegments().map((s) => s.dataset.stepN);
+    for (const n of headingNumbers()) expect(railNs).toContain(n);
+  });
+
+  it("gives the setup section the same number the rail marks current", async () => {
+    renderWizard();
+    await pickClient("Claude Code");
+    fireEvent.click(authCard("oauth"));
+    await screen.findByTestId("site-step-count");
+
+    const current = currentRailStep();
+    expect(current).toHaveAttribute("data-step-n", "6");
+    expect(screen.getByTestId("step-label-6")).toHaveTextContent("Setup");
+    // The heading over the section the operator is looking at carries that
+    // same 6, not the "4" its position on the page would give it.
+    expect(screen.getByRole("heading", { name: /^6\. Get the setup artefact$/ })).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The stepper rail: one row, one current step, one canonical heading.
+// ---------------------------------------------------------------------------
+
+describe("the rail is one row, so no connector can start a row", () => {
+  it("never wraps, at any width", async () => {
+    renderWizard();
+    await screen.findByRole("button", { name: /claude code/i });
+
+    // The orphan-connector defect is only possible if the rail can wrap: a
+    // connector travels with the step that follows it, so the first step on
+    // any row after the first would open with a line coming from nowhere. CSS
+    // cannot tell a flex item that it starts a visual row, so the rail does
+    // not wrap at all. This is the class-level half; the layout half is
+    // e2e/ai-connect-stepper.spec.ts, which measures the rendered rows at
+    // 390px, because no jsdom assertion can see a wrap.
+    const rail = screen.getByTestId("step-rail");
+    expect(rail.className).toContain("flex-nowrap");
+    expect(rail.className).not.toContain("flex-wrap");
+    // And it stays reachable when it does not fit, rather than clipping.
+    expect(rail.className).toContain("overflow-x-auto");
+  });
+});
+
+describe("a blocked step never renders as the current one", () => {
+  // A RAIL MUST NOT PRESENT A STEP AS IN HAND WHILE ITS ACTION IS REFUSED.
+  // While site scope is unresolved the rail correctly points at step 3, so the
+  // POSITIONAL "is this the current step" answer is true -- and the ring used
+  // to render off that boolean, telling the operator step 3 was in hand while
+  // the mint button was refusing it. Every visual now reads the state value
+  // and nothing else.
+
+  async function reachBlockedSiteScopeOnTokenPath() {
+    renderWizard();
+    await pickClient("Claude Code");
+    fireEvent.click(authCard("token"));
+    await screen.findByTestId("site-step-count");
+    const siteStep = document.querySelector('[data-step-n="3"]');
+    if (!(siteStep instanceof HTMLElement)) throw new Error("no step 3 segment");
+    return siteStep;
+  }
+
+  it("gives the ring to no step at all while site scope is unselected", async () => {
+    const siteStep = await reachBlockedSiteScopeOnTokenPath();
+    // The rail points here: this IS where the operator is standing.
+    expect(siteStep).toHaveAttribute("data-step-state", "unselected");
+    expect(siteStep).toHaveAttribute("aria-current", "step");
+
+    // And it is drawn as blocked, not as current: no ring, no fill.
+    const circle = screen.getByTestId("step-circle-3");
+    expect(circle.className).not.toContain("border-2");
+    expect(circle.className).not.toContain("bg-[var(--color-primary)]");
+
+    // No OTHER segment picked up the ring either -- the styling did not move
+    // to a step further along and call that step current instead.
+    expect(document.querySelectorAll('[data-step-state="current"]')).toHaveLength(0);
+    for (const n of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) {
+      expect(screen.getByTestId(`step-circle-${n}`).className).not.toContain("border-2");
+    }
+  });
+
+  it("gives the ring to no step while the fleet read is still loading", async () => {
+    mockedSites.mockReturnValue(mockQueryResult<Site[]>({ data: undefined, isPending: true }));
+    renderWizard();
+    await pickClient("Claude Code");
+    fireEvent.click(authCard("token"));
+    await screen.findByTestId("site-step-count");
+
+    const siteStep = document.querySelector('[data-step-n="3"]');
+    expect(siteStep).toHaveAttribute("data-step-state", "loading");
+    expect(siteStep).toHaveAttribute("aria-current", "step");
+    expect(screen.getByTestId("step-circle-3").className).not.toContain("border-2");
+    expect(document.querySelectorAll('[data-step-state="current"]')).toHaveLength(0);
+  });
+});
+
+describe("the heading a section renders is the canonical one", () => {
+  // `heading` on the spec entry was canonical and `title` on the
+  // Section was what actually rendered, so a step's name was written twice
+  // with nothing making the two agree. The expected strings below are the
+  // deck's own frame titles, written out here rather than imported, so this
+  // test reddens on drift from the DECK and not merely on drift within the
+  // file.
+  it("renders the deck's frame title over every section it reveals", async () => {
+    renderWizard();
+    await pickClient("Claude Code");
+    fireEvent.click(authCard("token"));
+    await screen.findByTestId("site-step-count");
+
+    const headings = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
+    expect(headings).toEqual([
+      // The single declared narrowing, and the only one: this section picks
+      // the client and does not yet ask for the name step 2's frame title
+      // promises, so it says what it does.
+      "2. Pick your client",
+      "5. Choose how it authenticates",
+      "3. Choose which sites",
+      "4. Choose what it may do",
+      "6. Get the setup artefact",
+    ]);
+  });
+});
+
+describe("exactly one segment answers for the operator's position", () => {
+  /**
+   * The count of segments claiming to be current. A COUNT and not a presence
+   * check: a rail with two current steps still has "a" current step, so
+   * `getByRole`-style presence passes over the very defect this asserts
+   * against.
+   */
+  function currentCount(): number {
+    return document.querySelectorAll('[data-step-n][aria-current="step"]').length;
+  }
+
+  it("keeps one current segment when site scope AND capabilities are both blocked", async () => {
+    renderWizard();
+    await pickClient("Claude Code");
+    fireEvent.click(authCard("token"));
+    await screen.findByTestId("site-step-count");
+
+    // BOTH BLOCKING AT ONCE. Nothing is selected under 'list' mode (the
+    // wizard's opening state, deliberately empty), and now no capability is
+    // ticked either, so `siteScopeBlocking` and `capabilityBlocking` are both
+    // true. Each used to promote its own segment, giving the rail two
+    // positions and handing the scroll ref to the later one.
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Sites/i }));
+    expect(screen.getByRole("checkbox", { name: /^Sites/i })).not.toBeChecked();
+
+    // Both steps still report their own blocked reason -- a reason is not a
+    // claim on the operator's position, and each is worth showing.
+    expect(document.querySelector('[data-step-n="3"]')).toHaveAttribute(
+      "data-step-state",
+      "unselected",
+    );
+    expect(document.querySelector('[data-step-n="4"]')).toHaveAttribute(
+      "data-step-state",
+      "unselected",
+    );
+
+    // ONE position, and it is the earlier blocked step.
+    expect(currentCount()).toBe(1);
+    const current = document.querySelector('[data-step-n][aria-current="step"]');
+    expect(current).toHaveAttribute("data-step-n", "3");
+  });
+
+  it("keeps one current segment in every state this wizard can reach", async () => {
+    // The invariant, not one scenario of it: at no point in the walk from an
+    // empty screen to a fully answered token path does the rail hold two
+    // positions.
+    loadedFleet(3);
+    renderWizard();
+    await screen.findByRole("button", { name: /claude code/i });
+    expect(currentCount()).toBe(1);
+
+    await pickClient("Claude Code");
+    expect(currentCount()).toBe(1);
+
+    fireEvent.click(authCard("token"));
+    await screen.findByTestId("site-step-count");
+    expect(currentCount()).toBe(1);
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Sites/i }));
+    expect(currentCount()).toBe(1);
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Sites/i }));
+    expect(currentCount()).toBe(1);
+  });
+
+  it("numbers every specified step exactly once, which is what makes one current possible", async () => {
+    // The premise the invariant above rests on. `aria-current` is placed by
+    // comparing a segment's specified number against one number; that yields
+    // at most one match only while the specified numbers are unique. If a
+    // duplicate `n` were ever added to SPEC_STEPS, two segments could match
+    // again -- so the uniqueness is asserted rather than assumed.
+    renderWizard();
+    await screen.findByRole("button", { name: /claude code/i });
+
+    const ns = Array.from(document.querySelectorAll<HTMLElement>("[data-step-n]")).map(
+      (s) => s.dataset.stepN,
+    );
+    expect(new Set(ns).size).toBe(ns.length);
   });
 });

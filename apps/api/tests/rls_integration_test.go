@@ -178,6 +178,26 @@ func startPostgres(t testing.TB) *db.Pool {
 		// proofs, which would then pass by testing nothing.
 		"REVOKE UPDATE, DELETE, TRUNCATE ON org_context_versions FROM wpmgr_app",
 		"REVOKE UPDATE, DELETE, TRUNCATE ON site_context_versions FROM wpmgr_app",
+		// m133's assistant_update_proposals is immutable-after-insert in its
+		// FACTS but not in its workflow columns, so it needs the finer form of
+		// the same re-revoke: drop the table-level UPDATE the blanket grant
+		// above re-added, then hand back only the columns that may move.
+		//
+		// Without these two lines expires_at is updatable in tests and is not
+		// in production, so "an expired proposal cannot be approved" would be
+		// provable here while being false for every real install - one UPDATE
+		// moves the window forward to meet decided_at. That is the vacuous
+		// shape the comment above describes, and it is why the two statements
+		// are ordered revoke-then-grant: a table-level UPDATE covers every
+		// column and PostgreSQL will not carve a single column out of it.
+		"REVOKE UPDATE ON assistant_update_proposals FROM wpmgr_app",
+		"GRANT UPDATE (state, decided_at, decided_by_user_id, dispatched_update_run_id, note) ON assistant_update_proposals TO wpmgr_app",
+		// And the DELETE, for the same reason as the three tables above: m133
+		// DECISION 9 revokes it in the migration, the blanket GRANT re-adds it,
+		// and a proof that the approval record cannot be destroyed would pass
+		// here against a privilege no real install has. An immutable column
+		// inside a deletable row is not immutable.
+		"REVOKE DELETE, TRUNCATE ON assistant_update_proposals FROM wpmgr_app",
 	} {
 		if _, err := adminPool.Exec(ctx, stmt); err != nil {
 			setupFatalf(t, err, "postgres: provision app role ("+stmt+")")

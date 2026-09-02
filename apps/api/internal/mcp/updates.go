@@ -408,7 +408,7 @@ type fleetTotals struct {
 // banner as fleet_sites_list. The reasoning for each of those is on
 // buildListSitesResult and is not repeated here; what IS different is that the
 // totals are computed over the kept records, below.
-func buildUpdatesPendingResult(rows []sqlc.Site, env Envelope, now time.Time) (string, error) {
+func buildUpdatesPendingResult(rows []sqlc.Site, env Envelope, now time.Time, govText string) (string, error) {
 	available := len(rows)
 
 	kept := make([]json.RawMessage, 0, len(rows))
@@ -443,7 +443,7 @@ func buildUpdatesPendingResult(rows []sqlc.Site, env Envelope, now time.Time) (s
 		Explanation: "",
 	}
 
-	header := clampInstructions(updatesPendingInstructions)
+	header := withOperatorContext(clampInstructions(updatesPendingInstructions), govText)
 	if truncatedByBytes {
 		info.Explanation = truncationExplanation(len(kept), available)
 		header = truncationBanner(info.Explanation) + "\n\n" + header
