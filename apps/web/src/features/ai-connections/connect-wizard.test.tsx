@@ -99,10 +99,54 @@ function renderWizard() {
   });
 }
 
+function continueButton(): HTMLButtonElement {
+  const el = screen.getByRole("button", { name: /^continue$/i });
+  if (!(el instanceof HTMLButtonElement)) throw new Error("Continue is not a button");
+  return el;
+}
+
+function backButton(): HTMLButtonElement {
+  const el = screen.getByRole("button", { name: /^back$/i });
+  if (!(el instanceof HTMLButtonElement)) throw new Error("Back is not a button");
+  return el;
+}
+
+/**
+ * Press Continue, and FAIL rather than silently do nothing if it is refused.
+ *
+ * A disabled button swallows a fireEvent click without complaint, so a helper
+ * that just clicked would turn "the wizard refused to advance" into "the
+ * assertion after this one failed for an unrelated-looking reason." Every
+ * walk below goes through here, so a step that starts refusing advancement
+ * reddens at the line that tried to advance.
+ */
+function goNext() {
+  const button = continueButton();
+  expect(button).toBeEnabled();
+  fireEvent.click(button);
+}
+
+/**
+ * Pick a client AND advance past it, because the wizard now shows one step at
+ * a time and almost every test below is about a later step. The tests that are
+ * about step 1 itself use `pickClientOnly`.
+ */
 async function pickClient(name: string) {
+  const card = await pickClientOnly(name);
+  goNext();
+  return card;
+}
+
+async function pickClientOnly(name: string) {
   const card = await screen.findByRole("button", { name: new RegExp(name, "i") });
   fireEvent.click(card);
   return card;
+}
+
+/** Choose an auth method and advance past it. */
+function chooseMethod(method: "oauth" | "token") {
+  fireEvent.click(authCard(method));
+  goNext();
 }
 
 function authCard(method: "oauth" | "token"): HTMLButtonElement {
@@ -768,7 +812,7 @@ describe("the wizard does not promise things it cannot deliver", () => {
 async function reachSiteStep() {
   renderWizard();
   await pickClient("Claude Code");
-  fireEvent.click(authCard("oauth"));
+  chooseMethod("oauth");
   return await screen.findByTestId("site-step-count");
 }
 
@@ -1117,12 +1161,29 @@ async function reachMintButton() {
  * letting the two copies drift.
  */
 async function advanceToMintButton() {
+  await advanceToCapabilityStep();
+  // Past the capability picker, which opens on sites-read and is therefore
+  // already settled -- nothing here has to touch it to get through.
+  goNext();
+  return screen.findByRole("button", { name: /generate connection token/i });
+}
+
+/**
+ * Client, method and A SITE PICKED, standing on the capability step.
+ *
+ * The site is picked deliberately and is not scaffolding: mode 'list' with
+ * nothing selected is refused by ValidateSiteScopeRequest
+ * (apps/api/internal/mcp/scope.go), and the wizard now refuses Continue on the
+ * same predicate, so this is the shortest honest walk past step 3.
+ */
+async function advanceToCapabilityStep() {
   await pickClient("Cursor");
-  fireEvent.click(authCard("token"));
+  chooseMethod("token");
   await screen.findByTestId("site-step-count");
   fireEvent.click(screen.getByRole("button", { name: /\+ add sites/i }));
   fireEvent.click(pickerBoxes()[0]!);
-  return screen.findByRole("button", { name: /generate connection token/i });
+  goNext();
+  await screen.findByRole("heading", { name: /choose what it may do/i });
 }
 
 /**
@@ -1218,10 +1279,8 @@ afterEach(() => {
 /** Client and token method picked, sitting at the capability picker. */
 async function reachCapabilityStep() {
   renderWizard();
-  await pickClient("Cursor");
-  fireEvent.click(authCard("token"));
-  await screen.findByTestId("site-step-count");
-  return screen.findByRole("heading", { name: /choose what it may do/i });
+  await advanceToCapabilityStep();
+  return screen.getByRole("heading", { name: /choose what it may do/i });
 }
 
 describe("choosing what a token may do (step 4, token path only)", () => {
