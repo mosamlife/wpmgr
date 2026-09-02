@@ -793,7 +793,7 @@ describe("step 3 exists at all, and sits before capabilities", () => {
 
   it("numbers the setup artefact after it, so the rail and the page agree", async () => {
     await reachSiteStep();
-    expect(screen.getByRole("heading", { name: /^6\. Set it up$/ })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /^6\. Get the setup artefact$/ })).toBeInTheDocument();
     // And the rail no longer claims sites are chosen somewhere else.
     expect(screen.queryByText(/4\. Choose sites and permissions/i)).not.toBeInTheDocument();
   });
@@ -879,7 +879,7 @@ describe("an empty scope is a working state, not an error", () => {
     // The setup artefact is reachable with nothing selected. An earlier
     // revision of this surface disabled Continue here; that is the behaviour
     // being corrected.
-    expect(screen.getByRole("heading", { name: /^6\. Set it up$/ })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /^6\. Get the setup artefact$/ })).toBeInTheDocument();
     expect(await screen.findByText(/"mcpServers"/)).toBeInTheDocument();
   });
 });
@@ -2106,6 +2106,109 @@ describe("the rail and the section heading agree on which step this is", () => {
     expect(screen.getByTestId("step-label-6")).toHaveTextContent("Setup");
     // The heading over the section the operator is looking at carries that
     // same 6, not the "4" its position on the page would give it.
-    expect(screen.getByRole("heading", { name: /^6\. Set it up$/ })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /^6\. Get the setup artefact$/ })).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Review round five. Three findings, each held by a test below.
+// ---------------------------------------------------------------------------
+
+describe("the rail is one row, so no connector can start a row", () => {
+  it("never wraps, at any width", async () => {
+    renderWizard();
+    await screen.findByRole("button", { name: /claude code/i });
+
+    // The orphan-connector defect is only possible if the rail can wrap: a
+    // connector travels with the step that follows it, so the first step on
+    // any row after the first would open with a line coming from nowhere. CSS
+    // cannot tell a flex item that it starts a visual row, so the rail does
+    // not wrap at all. This is the class-level half; the layout half is
+    // e2e/ai-connect-stepper.spec.ts, which measures the rendered rows at
+    // 390px, because no jsdom assertion can see a wrap.
+    const rail = screen.getByTestId("step-rail");
+    expect(rail.className).toContain("flex-nowrap");
+    expect(rail.className).not.toContain("flex-wrap");
+    // And it stays reachable when it does not fit, rather than clipping.
+    expect(rail.className).toContain("overflow-x-auto");
+  });
+});
+
+describe("a blocked step never renders as the current one", () => {
+  // FINDING 3, AND THE FIFTH INSTANCE OF THIS COMPONENT'S ONE DEFECT FAMILY.
+  // While site scope is unresolved the rail correctly points at step 3, so the
+  // POSITIONAL "is this the current step" answer is true -- and the ring used
+  // to render off that boolean, telling the operator step 3 was in hand while
+  // the mint button was refusing it. Every visual now reads the state value
+  // and nothing else.
+
+  async function reachBlockedSiteScopeOnTokenPath() {
+    renderWizard();
+    await pickClient("Claude Code");
+    fireEvent.click(authCard("token"));
+    await screen.findByTestId("site-step-count");
+    const siteStep = document.querySelector('[data-step-n="3"]');
+    if (!(siteStep instanceof HTMLElement)) throw new Error("no step 3 segment");
+    return siteStep;
+  }
+
+  it("gives the ring to no step at all while site scope is unselected", async () => {
+    const siteStep = await reachBlockedSiteScopeOnTokenPath();
+    // The rail points here: this IS where the operator is standing.
+    expect(siteStep).toHaveAttribute("data-step-state", "unselected");
+    expect(siteStep).toHaveAttribute("aria-current", "step");
+
+    // And it is drawn as blocked, not as current: no ring, no fill.
+    const circle = screen.getByTestId("step-circle-3");
+    expect(circle.className).not.toContain("border-2");
+    expect(circle.className).not.toContain("bg-[var(--color-primary)]");
+
+    // No OTHER segment picked up the ring either -- the styling did not move
+    // to a step further along and call that step current instead.
+    expect(document.querySelectorAll('[data-step-state="current"]')).toHaveLength(0);
+    for (const n of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) {
+      expect(screen.getByTestId(`step-circle-${n}`).className).not.toContain("border-2");
+    }
+  });
+
+  it("gives the ring to no step while the fleet read is still loading", async () => {
+    mockedSites.mockReturnValue(mockQueryResult<Site[]>({ data: undefined, isPending: true }));
+    renderWizard();
+    await pickClient("Claude Code");
+    fireEvent.click(authCard("token"));
+    await screen.findByTestId("site-step-count");
+
+    const siteStep = document.querySelector('[data-step-n="3"]');
+    expect(siteStep).toHaveAttribute("data-step-state", "loading");
+    expect(siteStep).toHaveAttribute("aria-current", "step");
+    expect(screen.getByTestId("step-circle-3").className).not.toContain("border-2");
+    expect(document.querySelectorAll('[data-step-state="current"]')).toHaveLength(0);
+  });
+});
+
+describe("the heading a section renders is the canonical one", () => {
+  // FINDING 2. `heading` on the spec entry was canonical and `title` on the
+  // Section was what actually rendered, so a step's name was written twice
+  // with nothing making the two agree. The expected strings below are the
+  // deck's own frame titles, written out here rather than imported, so this
+  // test reddens on drift from the DECK and not merely on drift within the
+  // file.
+  it("renders the deck's frame title over every section it reveals", async () => {
+    renderWizard();
+    await pickClient("Claude Code");
+    fireEvent.click(authCard("token"));
+    await screen.findByTestId("site-step-count");
+
+    const headings = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
+    expect(headings).toEqual([
+      // The single declared narrowing, and the only one: this section picks
+      // the client and does not yet ask for the name step 2's frame title
+      // promises, so it says what it does.
+      "2. Pick your client",
+      "5. Choose how it authenticates",
+      "3. Choose which sites",
+      "4. Choose what it may do",
+      "6. Get the setup artefact",
+    ]);
   });
 });
