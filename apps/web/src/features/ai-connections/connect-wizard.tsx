@@ -825,12 +825,26 @@ export function ConnectWizard({
             {/* The same forward conditional step 3's footnote carries, for the
                 same reason and about the same step-5 answer. Two steps whose
                 answers travel differently by path must both say so, or the one
-                that stays silent reads as the one that always travels. */}
+                that stays silent reads as the one that always travels.
+
+                THE BROWSER SIGN-IN HALF NAMES WHAT THE CONNECTION ENDS UP
+                WITH, RATHER THAN CLAIMING THE QUESTION IS ASKED ELSEWHERE. It
+                used to say permissions were "settled there instead", which was
+                true only while POST /api/v1/oauth/mcp/consent had no capability
+                field. It has one now (dto.go's approvalRequestDTO.Capabilities)
+                and this app does not yet send it, so an OMITTED field is what
+                reaches the server; service.go:871 resolves that through
+                resolveGrantCapabilities to DefaultGrantCapabilities(), which
+                policy.go:273 defines as exactly CapSitesRead. Naming that
+                outcome is a fact the operator can check against the connection
+                afterwards. "Permissions are chosen on the approval screen" was
+                a promise about a control that screen does not have. */}
             <p className="text-xs text-[var(--color-muted-foreground)]">
               Where this answer goes depends on step 5. With a connection token it is sent with
-              the mint request and is what the connection holds. With browser sign-in the approval
-              screen has no channel for it yet, so permissions are settled there instead and this
-              choice stays on your machine.
+              the mint request and is what the connection holds. With browser sign-in your client
+              opens the approval screen itself, so this wizard has no way to hand it your answer:
+              that connection is created able to read your sites and nothing else, whatever you
+              pick here.
             </p>
             {/* NO PRIVATE REFUSAL PANEL HERE. `capabilitiesRequest.refusal` is
                 the exact string `stepGate`'s CAPABILITY_LOCAL_STEP branch

@@ -1548,9 +1548,19 @@ describe("choosing what a token may do (step 4, token path only)", () => {
     goNext();
 
     expect(screen.getByRole("heading", { name: /^4\. Choose what it may do$/ })).toBeInTheDocument();
+    // THE OUTCOME, NOT A CLAIM ABOUT A CONTROL SOMEWHERE ELSE. This assertion
+    // used to pin "the approval screen has no channel for it yet", which the
+    // consent endpoint's capability field falsified while the test kept it
+    // green. What is asserted now is the thing an operator can check against
+    // the connection afterwards: omitting the field resolves to
+    // DefaultGrantCapabilities(), policy.go:273, which is sites-read alone.
     expect(
-      screen.getByText(/with browser sign-in the approval screen has no channel for it yet/i),
+      screen.getByText(/created able to read your sites and nothing else/i),
     ).toBeInTheDocument();
+    // And the retired claim is gone rather than merely unasserted, so it cannot
+    // come back under a passing suite the way it just did.
+    expect(screen.queryByText(/no channel for it yet/i)).toBeNull();
+    expect(screen.queryByText(/permissions are settled there instead/i)).toBeNull();
     expect(railSegment("4")).toHaveAttribute("data-step-state", "current");
   });
 

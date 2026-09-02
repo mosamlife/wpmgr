@@ -36,6 +36,28 @@ import {
 // never navigated to from inside the app, so it stays out of
 // components/layout/sidebar.tsx along with the other callback and redirect
 // routes.
+//
+// WHY THE WIZARD STILL CANNOT HAND OFF TO THIS SCREEN, which is the ten-step
+// design's step 7 and is NOT built. The obstacle is not a missing link, and
+// adding one would not work: this route renders nothing without `client_id`,
+// `redirect_uri` and `scope`, and those come from a REGISTERED client's own
+// authorize request. The wizard has no client_id and no redirect_uri to give,
+// because on the browser sign-in path the client -- not this app -- starts the
+// flow. Manufacturing them here would mean inventing a registration.
+//
+// So carrying step 3's site scope and step 4's capability answer into this
+// screen is not a navigate: the answers have to survive a round trip out to
+// the client and back in through a redirect this app does not control. That
+// needs somewhere to put them -- a pending-selection row keyed to the operator,
+// or browser storage with all the cross-device caveats -- and that is a design
+// decision with a backend half, not a wiring job. It is deliberately left
+// undone rather than half-built, and the capability step says plainly what the
+// operator's answer does and does not affect on this path.
+//
+// The endpoint half IS ready: POST /api/v1/oauth/mcp/consent now takes an
+// optional `capabilities` (approvalRequestDTO.Capabilities). This screen does
+// not send one, so an omitted field reaches the server and resolves to
+// DefaultGrantCapabilities() -- sites-read alone.
 
 // Only `response_type`, `client_id`, `redirect_uri` and `scope` are required to
 // even ask the question. They are optional in the schema so that a malformed
