@@ -890,6 +890,35 @@ func TestAgentContextCanScanButCannotDecideAsAppRole(t *testing.T) {
 				"tenant_isolation admits it and the tenant is named.")
 		}
 
+		// THE TRAP, DEMONSTRATED ON PURPOSE. .claude/rules/go-control-plane.md
+		// carries "An RLS policy scoped FOR SELECT breaks a locking read":
+		// PostgreSQL applies the UPDATE policy to SELECT ... FOR UPDATE, so a
+		// locking read under app.agent matches nothing here -- with NO ERROR.
+		// That is m84/#96, where scheduled backups stopped firing for every
+		// install, silently.
+		//
+		// This table accepts that trade because nothing may write it
+		// cross-tenant (the rule's precondition is deliberately false here) and
+		// the claim is a tenant-scoped compare-and-set instead, per (7)(g). The
+		// behaviour is asserted rather than described so the next person to
+		// write the dispatch worker meets it in a test name and not at 3am.
+		var locked int
+		if err := tx.QueryRow(ctx, `
+			SELECT count(*) FROM (
+				SELECT 1 FROM assistant_update_proposals
+				 WHERE id = $1 FOR UPDATE
+			) t`, pending).Scan(&locked); err != nil {
+			// An error here is also acceptable and is the louder failure mode;
+			// what must never happen is a silent zero that reads as "nothing due".
+			t.Logf("the cross-tenant locking read errored rather than returning zero, "+
+				"which is the louder of the two failure modes: %v", err)
+		} else if locked != 0 {
+			t.Fatalf("THE CROSS-TENANT LOCKING READ RETURNED %d ROWS. The agent policy "+
+				"admits an UPDATE, so it is FOR ALL rather than FOR SELECT and the "+
+				"decision columns are reachable from the service context. See m133 "+
+				"DECISION 5.", locked)
+		}
+
 		inserted := m133ExpectRefused(t, tx, `
 			INSERT INTO assistant_update_proposals
 			    (tenant_id, site_id, proposed_by_grant_id, component_type,

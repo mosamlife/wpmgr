@@ -328,6 +328,30 @@
 -- all the same shape: cross-tenant READ, tenant-scoped write. Following m118
 -- here would have been following the wrong one of two available precedents.
 --
+-- THE STANDING RULE THIS DEPARTS FROM, QUOTED SO THE DEPARTURE IS DELIBERATE.
+-- .claude/rules/go-control-plane.md carries a rule headed "An RLS policy scoped
+-- FOR SELECT breaks a locking read": PostgreSQL applies the UPDATE USING clause
+-- to SELECT ... FOR UPDATE as well, so a FOR SELECT-only agent policy lets the
+-- plain read through and silently excludes every row from the CLAIM. That is
+-- m84/#96 -- scheduled backups never fired, for every install, no error, no
+-- log. The rule concludes: any RLS table a cross-tenant agent path LOCKS,
+-- UPDATES OR DELETES needs FOR ALL with the agent predicate in both USING and
+-- WITH CHECK.
+--
+-- ITS PRECONDITION IS THE POINT, AND IT IS FALSE HERE BY DESIGN. Nothing
+-- locks, updates or deletes this table cross-tenant, because nothing may: the
+-- rows carry a human's decision, and the scope that would be doing the writing
+-- is the same one an authenticated agent->CP request runs under. So the choice
+-- is not "FOR ALL or accept a silent claim failure"; it is "FOR ALL, or a claim
+-- that names its tenant". The second is available, is what m118's own comment
+-- describes, and does not put the approval columns in reach of the plugin path.
+--
+-- WHICH MAKES THE CLAIM SHAPE A REQUIREMENT ON SESSION B, NOT A SUGGESTION.
+-- See (7)(g). The dispatch worker must NOT reach for a cross-tenant
+-- SELECT ... FOR UPDATE SKIP LOCKED. It gets zero rows, forever, silently, and
+-- that is the exact m84 shape. TestAgentContextCanScanButCannotDecideAsAppRole
+-- demonstrates it deliberately rather than leaving it to be found at 3am.
+--
 -- THE RISK OF NARROWING, NAMED, BECAUSE IT IS THE FAILURE THE LEDGER IS ABOUT.
 -- A wrongly-FOR-SELECT policy makes a cross-tenant write match ZERO ROWS WITH
 -- NO ERROR -- m84, m89 and m118 each shipped that silence. The protection here
@@ -1007,3 +1031,33 @@ GRANT UPDATE ("state", "decided_at", "decided_by_user_id",
 --      "trusted automation may approve" flag, no approve button in a
 --      notification email, no "remember this choice for this session".
 --   f. THE EXPIRY SWEEP WRITES 'expired' AND NEVER decided_by_user_id.
+--   g. THE CLAIM IS A TENANT-SCOPED COMPARE-AND-SET, NEVER A CROSS-TENANT
+--      LOCKING READ. This is the one place the worker's shape is dictated by
+--      the schema, so it is spelled out.
+--
+--      The scan is cross-tenant and is a PLAIN SELECT under InAgentTx --
+--      state = 'approved_undispatched' for dispatch, or state = 'pending' AND
+--      expires_at < now() for expiry -- returning the id AND the tenant_id.
+--      That is the only statement admitted cross-tenant, by DECISION 5's
+--      FOR SELECT policy.
+--
+--      Then, per row, under InTenantTx(tenant_id) and holding
+--      org.LifecycleLockKey per (d):
+--
+--          UPDATE assistant_update_proposals
+--             SET state = 'dispatched', dispatched_update_run_id = $2
+--           WHERE id = $1 AND state = 'approved_undispatched'
+--
+--      Zero rows affected IS the claim failing, and it is the whole
+--      concurrency control: a second replica that raced to the same row finds
+--      the state has moved and skips it. This is ExpireDueRun's
+--      claimed=false contract, moved into tenant scope.
+--
+--      DO NOT reach for SELECT ... FOR UPDATE SKIP LOCKED on the cross-tenant
+--      scan. PostgreSQL applies the UPDATE policy to a locking read, and no
+--      policy here admits an UPDATE under app.agent, so it returns ZERO ROWS
+--      with no error and the worker does nothing forever. That is m84/#96
+--      exactly (scheduled backups, every install, silent), and
+--      .claude/rules/go-control-plane.md carries it as a standing rule. The
+--      diagnostic tell it gives is the one to remember: a bare SELECT works
+--      while the locking read returns nothing.
