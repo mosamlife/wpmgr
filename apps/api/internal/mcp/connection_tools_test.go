@@ -265,3 +265,69 @@ func TestConnectionToolsRouteRefusesAWrongVerb(t *testing.T) {
 		t.Error("a 405 carried no Allow header, so it does not say which verb to use")
 	}
 }
+
+// TestConnectionToolsReadsUnderTheCallersTenantNotTheRequests is the proof the
+// containment allowlist entry for GetGrant.grantID rests on.
+//
+// THE REQUEST SUPPLIES THE ID. IT DOES NOT SUPPLY THE TENANT. That sentence is
+// the whole reason `:connectionId` is not a bypass of ADR-061 A11: the id binds
+// to GetMCPGrant's `id` and nothing else, while the `tenant_id` beside it in
+// the same WHERE clause comes from the AUTHENTICATED PRINCIPAL. Another
+// organisation's grant id therefore matches no row and answers the same 404 an
+// absent id answers -- which TestConnectionToolsIsA404ForAnUnknownConnection
+// pins the other half of.
+//
+// This pins the GO half: that ConnectionTools hands the store the caller's own
+// principal, unaltered, rather than one it assembled. The SQL half (the
+// tenant_id predicate) and the RLS half (the RESTRICTIVE _site_scope policy,
+// live only because Repo.GetGrant dispatches through RunTenantTx) are proved
+// against a real database as the app role in apps/api/tests. A refactor that
+// synthesised a principal here -- from the grant row, from a header, from a
+// request field -- would leave both of those halves bounding the read by a
+// tenant the caller never proved, and every one of those database proofs would
+// still pass, because each would be asked the wrong question. This test would
+// not.
+//
+// It asserts on the WHOLE principal and not only the tenant id, because the
+// scope and the allowed-site list on it are what db.Pool.RunTenantTx dispatches
+// on: a principal flattened to org scope on the way down would set the wrong
+// GUCs and switch the site-scope policy off with no error.
+func TestConnectionToolsReadsUnderTheCallersTenantNotTheRequests(t *testing.T) {
+	caller := orgPrincipal(uuid.New())
+	grantID := uuid.New()
+
+	// The stored grant deliberately carries a DIFFERENT tenant id from the
+	// caller's. Nothing in the service may prefer it: if the tenant that bounds
+	// the read could come from the row, the read would be bounded by the very
+	// thing it exists to check.
+	stored := grantHolding(grantID, CapUptimeRead)
+	stored.TenantID = uuid.New()
+	store := &fakeStore{grants: []sqlc.McpGrant{stored}}
+
+	if _, err := NewService(store).ConnectionTools(context.Background(), caller, grantID); err != nil {
+		t.Fatalf("ConnectionTools: %v", err)
+	}
+
+	if len(store.getPrincipals) != 1 {
+		t.Fatalf("GetGrant was handed %d principals, want exactly 1", len(store.getPrincipals))
+	}
+	got := store.getPrincipals[0]
+	if got.TenantID != caller.TenantID {
+		t.Fatalf("GetGrant ran under tenant %s, want the caller's %s -- the read is bounded by something other than the authenticated principal",
+			got.TenantID, caller.TenantID)
+	}
+	if got.TenantID == stored.TenantID {
+		t.Fatal("GetGrant ran under the STORED grant's tenant, so the row bounds its own lookup")
+	}
+	if got.Scope != caller.Scope {
+		t.Fatalf("GetGrant ran with scope %q, want the caller's %q -- RunTenantTx dispatches on this, so a rewritten scope sets the wrong GUCs",
+			got.Scope, caller.Scope)
+	}
+	if len(got.AllowedSiteIDs) != len(caller.AllowedSiteIDs) {
+		t.Fatalf("GetGrant ran with %d allowed site ids, want the caller's %d",
+			len(got.AllowedSiteIDs), len(caller.AllowedSiteIDs))
+	}
+	if got.UserID != caller.UserID {
+		t.Fatalf("GetGrant ran as user %s, want the caller's %s", got.UserID, caller.UserID)
+	}
+}
