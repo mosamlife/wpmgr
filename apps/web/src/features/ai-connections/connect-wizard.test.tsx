@@ -1193,10 +1193,22 @@ describe("changing the client recomputes rather than carrying a stale answer", (
     expect(await screen.findByText(/"mcpServers"/)).toBeInTheDocument();
 
     // Claude Desktop cannot use a token. The wizard must fall back to asking,
-    // not silently keep a selection that produces no valid artefact.
-    await pickClient("Claude Desktop");
+    // not silently keep a selection that produces no valid artefact. Changing
+    // the client means walking back to the step that owns that answer, which
+    // is also where the operator would be told the method had been dropped.
+    while (screen.queryByRole("button", { name: /claude desktop/i }) === null) {
+      fireEvent.click(backButton());
+    }
+    await pickClientOnly("Claude Desktop");
     expect(screen.queryByText(/set this up inside/i)).not.toBeInTheDocument();
+
+    // The dropped method leaves step 2 unanswered, so the walk cannot run past
+    // it -- the cursor is held at the method step and the token card is
+    // disabled with the client's own reason.
+    goNext();
+    expect(currentRailStep()).toHaveAttribute("data-step-n", "5");
     expect(authCard("token")).toBeDisabled();
+    expect(continueButton()).toBeDisabled();
   });
 });
 
@@ -1314,6 +1326,12 @@ function backToSiteStep() {
   const reopen = screen.queryByRole("button", { name: /\+ add sites/i });
   if (reopen !== null) fireEvent.click(reopen);
   return screen.getByTestId("site-step-count");
+}
+
+/** Forward from the capability step to the mint button. */
+async function forwardToMintButtonFromCapabilities() {
+  goNext();
+  return screen.findByRole("button", { name: /generate connection token/i });
 }
 
 /** Forward from the site-scope step to the mint button, answering nothing else. */
@@ -1460,10 +1478,14 @@ async function reachCapabilityStep() {
 
 describe("choosing what a token may do (step 4, token path only)", () => {
   it("renders no capability heading at all on the OAuth path", async () => {
+    // The walk steps straight from site scope to the setup artefact, so the
+    // picker is not merely hidden on this path -- there is no step there to
+    // land on. The rail says so rather than leaving the operator to notice.
     renderWizard();
     await reachSetupStep("Cursor", "oauth");
-    await screen.findByTestId("site-step-count");
     expect(screen.queryByRole("heading", { name: /choose what it may do/i })).toBeNull();
+    expect(screen.getByRole("heading", { name: /^6\. Set it up$/ })).toBeInTheDocument();
+    expect(railSegment("4")).toHaveAttribute("data-step-state", "not-applicable");
   });
 
   it("renders every conferrable capability with a real description, and Content disabled with its reason", async () => {
@@ -1581,10 +1603,15 @@ describe("choosing what a token may do (step 4, token path only)", () => {
       return jsonResponse(MINTED, 201);
     });
 
-    const mintButton = await reachMintButton();
+    // The checkboxes live on the capability step, one before the mint button,
+    // so they are ticked there and carried forward -- which is also the
+    // property being relied on: an answer survives leaving the step that
+    // collected it.
+    renderWizard();
+    await advanceToCapabilityStep();
     fireEvent.click(screen.getByRole("checkbox", { name: /^Uptime/i }));
     fireEvent.click(screen.getByRole("checkbox", { name: /^Backups/i }));
-    fireEvent.click(mintButton);
+    fireEvent.click(await forwardToMintButtonFromCapabilities());
     await screen.findByText(/this is the only time this token is shown/i);
 
     const body = capturedBody as Record<string, unknown>;
