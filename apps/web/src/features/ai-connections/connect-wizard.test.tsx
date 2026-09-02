@@ -1164,12 +1164,29 @@ async function reachMintButton() {
  * through a router they hold a handle on, rather than duplicating the steps and
  * letting the two copies drift.
  */
-async function advanceToMintButton() {
-  await advanceToCapabilityStep();
+async function advanceToMintButton(answerScope?: () => void) {
+  await advanceToCapabilityStep(answerScope);
   // Past the capability picker, which opens on sites-read and is therefore
   // already settled -- nothing here has to touch it to get through.
   goNext();
   return screen.findByRole("button", { name: /generate connection token/i });
+}
+
+/**
+ * Back to the site-scope step from wherever the walk currently stands.
+ *
+ * The wizard shows one step at a time, so a test that wants to change the
+ * scope after reaching a later step has to walk back to it the way an operator
+ * would. Answers are kept across the move, which is the property several of
+ * these tests are actually about.
+ */
+async function backToSiteStep() {
+  while (screen.queryByTestId("site-step-count") === null) {
+    const button = backButton();
+    expect(button).toBeEnabled();
+    fireEvent.click(button);
+  }
+  return screen.getByTestId("site-step-count");
 }
 
 /**
@@ -1180,14 +1197,23 @@ async function advanceToMintButton() {
  * (apps/api/internal/mcp/scope.go), and the wizard now refuses Continue on the
  * same predicate, so this is the shortest honest walk past step 3.
  */
-async function advanceToCapabilityStep() {
+async function advanceToCapabilityStep(answerScope?: () => void) {
   await pickClient("Cursor");
   chooseMethod("token");
   await screen.findByTestId("site-step-count");
-  fireEvent.click(screen.getByRole("button", { name: /\+ add sites/i }));
-  fireEvent.click(pickerBoxes()[0]!);
+  if (answerScope === undefined) {
+    fireEvent.click(screen.getByRole("button", { name: /\+ add sites/i }));
+    fireEvent.click(pickerBoxes()[0]!);
+  } else {
+    answerScope();
+  }
   goNext();
   await screen.findByRole("heading", { name: /choose what it may do/i });
+}
+
+/** All sites: the shortest scope answer that works against any fleet, empty included. */
+function chooseAllSites() {
+  fireEvent.click(screen.getByRole("radio", { name: /all sites/i }));
 }
 
 /**
@@ -1283,7 +1309,10 @@ afterEach(() => {
 /** Client and token method picked, sitting at the capability picker. */
 async function reachCapabilityStep() {
   renderWizard();
-  await advanceToCapabilityStep();
+  // All sites, because these tests render the default empty fleet and there is
+  // no site to pick in it. What the scope is does not matter here; getting past
+  // the step that gates this one does.
+  await advanceToCapabilityStep(chooseAllSites);
   return screen.getByRole("heading", { name: /choose what it may do/i });
 }
 
