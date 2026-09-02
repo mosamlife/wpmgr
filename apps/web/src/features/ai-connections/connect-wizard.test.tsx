@@ -2254,26 +2254,51 @@ describe("the rail and the section heading agree on which step this is", () => {
   });
 
   it("numbers every revealed section with a step the rail also names, on the token path", async () => {
+    // COLLECTED ACROSS THE WALK, one step at a time, because that is how the
+    // operator meets them now. The sequence is the same and is deliberately
+    // non-monotonic: the on-screen order maps to the deck's numbers, and the
+    // numbers are never renumbered to match the page.
+    loadedFleet(3);
     renderWizard();
-    await reachSetupStep("Claude Code", "token");
+    await screen.findByRole("button", { name: /claude code/i });
+
+    const seen: string[] = [];
+    const step = () => {
+      // Exactly one section is on screen at a time, which is the property the
+      // whole navigation model exists for.
+      expect(headingNumbers()).toHaveLength(1);
+      seen.push(headingNumbers()[0]!);
+      // And the heading's number is the segment the rail marks current, so
+      // there is exactly one numbering system on the screen.
+      expect(currentRailStep()).toHaveAttribute("data-step-n", headingNumbers()[0]!);
+    };
+
+    step();
+    await pickClientOnly("Claude Code");
+    goNext();
+
+    step();
+    fireEvent.click(authCard("token"));
+    goNext();
+
     await screen.findByTestId("site-step-count");
+    step();
+    chooseAllSites();
+    goNext();
 
-    // The specified numbers for the five built sections, in the order this
-    // page reveals them -- deliberately non-monotonic (ruling: the on-screen
-    // order maps to the deck's numbers, the numbers are never renumbered to
-    // match the page).
-    expect(headingNumbers()).toEqual(["2", "5", "3", "4", "6"]);
+    await screen.findByRole("heading", { name: /^4\. Choose what it may do$/ });
+    step();
+    goNext();
 
-    // And every one of those numbers is a step the rail draws, in the rail's
-    // own order, so there is exactly one numbering system on the screen.
-    const railNs = railSegments().map((s) => s.dataset.stepN);
-    for (const n of headingNumbers()) expect(railNs).toContain(n);
+    await screen.findByRole("button", { name: /generate connection token/i });
+    step();
+
+    expect(seen).toEqual(["2", "5", "3", "4", "6"]);
   });
 
   it("gives the setup section the same number the rail marks current", async () => {
     renderWizard();
     await reachSetupStep("Claude Code", "oauth");
-    await screen.findByTestId("site-step-count");
 
     const current = currentRailStep();
     expect(current).toHaveAttribute("data-step-n", "6");
