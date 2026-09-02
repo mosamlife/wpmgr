@@ -1043,6 +1043,19 @@ func (h *TransportHandler) callTool(ctx context.Context, auth AuthorizedRequest,
 
 	text, err := entry.invoke(ctx, h.svc, auth, p.Arguments)
 	if err != nil {
+		// A GOVERNED-CONTEXT REFUSAL IS A DENIAL AND EARNS THE DENIAL ROW.
+		// Authorization refusals are recorded in authorizeCall, above; these
+		// two are refused further in, after the gate said yes, so they used to
+		// return here having written nothing at all. That left the ledger
+		// silent on the outcome an operator most needs to see -- the assistant
+		// asked, and the surface refused -- on a path where refusal is the
+		// EXPECTED answer rather than an edge case, because mcp.updates.propose
+		// is unreachable by design and mcp.content.read is conferred by no
+		// scope. Every other outcome of this function is recorded; these were
+		// the hole.
+		if reason, ok := contextRefusalReason(err); ok {
+			return h.refuseOnContext(ctx, auth, req, entry, reason, err)
+		}
 		return h.toolError(req.ID, err)
 	}
 
@@ -1087,6 +1100,60 @@ func (h *TransportHandler) callTool(ctx context.Context, auth AuthorizedRequest,
 	return newResponse(req.ID, map[string]any{
 		"content": []map[string]any{{"type": "text", "text": text}},
 	})
+}
+
+// refuseOnContext records one governed-context refusal and then answers it. It
+// is the post-authorization twin of the RecordToolDenied branch in
+// authorizeCall, and it is a separate function for the same reason auditGap is:
+// the ordering below is the property, and a property inlined into a branch is
+// one a later edit reorders without noticing.
+//
+// WHAT GOES ON THE WIRE AND WHAT GOES IN THE ROW ARE DIFFERENT, DELIBERATELY.
+// The wire answer is whatever toolError already makes of refusal: context_too_large
+// names the rendered size and the limit, because that is the OPERATOR'S OWN text
+// measured against a constant we publish, and an operator told 2049 against 2048
+// fixes it in one edit; context_unavailable says only genericToolFailure and
+// carries no data, because whatever failed is OUR internal state and naming it
+// hands any token holder a polled English read on it. The audit row is where
+// the detail belongs in both cases: it is tenant-scoped, hash-chained, and read
+// by the operator rather than by the model, so refusal_reason carries the
+// precise code on BOTH branches -- including the one the wire is silent about.
+// That asymmetry is the whole point, and it is why the row is not simply a copy
+// of the wire answer.
+//
+// FAIL-CLOSED, identically to the authorization branch. If the append fails the
+// caller gets the audit error instead of the refusal, so no interaction this
+// surface could not record is one it answers. aerr arrives already normalised
+// by auditFailure into ErrCodeAuditUnavailable, which is absent from
+// callerCausedToolErrors, so toolError answers it with the byte-identical
+// generic internal failure -- the same answer every other server-side fault
+// gets, and NOT a second, differently-shaped error layered over the first. The
+// original refusal is not lost: its code is the reason field on both the
+// warning line below and the auditGap line, which is where an operator reads
+// it once the row itself is gone.
+func (h *TransportHandler) refuseOnContext(
+	ctx context.Context,
+	auth AuthorizedRequest,
+	req jsonrpcRequest,
+	entry ToolPolicy,
+	reason refusalReason,
+	refusal error,
+) jsonrpcResponse {
+	h.log.WarnContext(ctx, "mcp tool call refused: governed context",
+		slog.String("tenant_id", auth.TenantID.String()),
+		slog.String("grant_id", auth.GrantID.String()),
+		slog.String("tool", entry.Name),
+		slog.String("refusal_reason", string(reason)),
+		slog.String("error", refusal.Error()),
+	)
+
+	if aerr := h.svc.RecordToolDenied(ctx, auth, entry.Name, reason); aerr != nil {
+		// No phase: like a tool denial, this happens at one place in the
+		// request, so there is no second axis to record.
+		h.auditGap(ctx, auth, audit.ActionMCPToolDenied, entry.Name, string(reason), "", aerr)
+		return h.toolError(req.ID, aerr)
+	}
+	return h.toolError(req.ID, refusal)
 }
 
 // callerCausedToolErrors enumerates the domain codes on the tools/call path

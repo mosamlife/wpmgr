@@ -81,3 +81,44 @@ func (s *Service) operatorContext(ctx context.Context, auth AuthorizedRequest) (
 // code for this path) so an operator sees one code for one cause, whichever
 // surface reports it.
 const ErrCodeContextUnavailable = "context_unavailable"
+
+// The two governed-context refusals AS refusalReason values, so a tool call
+// refused for either one writes the SAME mcp.tool.denied row the authorization
+// refusals write, through the same RecordToolDenied. There is deliberately no
+// second recording shape for this: "the assistant asked for something and was
+// refused" is one kind of fact, and an auditor asking "what was this connection
+// refused" must not have to know that some refusals live under a different
+// action with different fields.
+//
+// Each constant IS its wire code rather than a parallel spelling of it. An
+// operator reading refusal_reason in the ledger and an operator reading the
+// code in a support ticket are looking at the same string, and a drift between
+// them cannot happen because there is one definition.
+const (
+	reasonContextUnavailable refusalReason = ErrCodeContextUnavailable
+	reasonContextTooLarge    refusalReason = govcontext.ErrCodeContextTooLarge
+)
+
+// contextRefusalReason reports whether err is one of the two governed-context
+// refusals, and which.
+//
+// IT CLASSIFIES BY CODE, NOT BY CALL SITE. operatorContext is not the only
+// place these can be raised — ModelInstructions raises context_too_large from
+// inside govcontext's own rendering, and a future site-scoped tool will resolve
+// context somewhere else — so a branch keyed on "which function did I just
+// call" would silently stop auditing the moment a third raiser appeared. A
+// branch keyed on the code audits every raiser, including ones not written yet.
+func contextRefusalReason(err error) (refusalReason, bool) {
+	de, ok := domain.AsDomain(err)
+	if !ok {
+		return "", false
+	}
+	switch de.Code {
+	case ErrCodeContextUnavailable:
+		return reasonContextUnavailable, true
+	case govcontext.ErrCodeContextTooLarge:
+		return reasonContextTooLarge, true
+	default:
+		return "", false
+	}
+}
