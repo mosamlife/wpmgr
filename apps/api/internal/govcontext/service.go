@@ -141,6 +141,21 @@ func (s *Service) PatchOrgContext(ctx context.Context, tenantID uuid.UUID, in Pa
 	if verr := checkNoSecret(next); verr != nil {
 		return Version{}, verr
 	}
+	// THE DELIVERY CEILING (owner ruling, reversing this package's answer to
+	// ADR-064 open question 4 — see MaxDeliverableInstructionBytes). The layer
+	// name passed here is the one Resolve gives layer 2, so this measures the
+	// same rendered bytes the assistant surface will measure.
+	//
+	// EXISTING ROWS ARE NOT MIGRATED AND ARE NOT REWRITTEN. A row authored
+	// before this ceiling existed stays exactly as it is: readable, listable,
+	// diffable and editable. What changes for it is that the next WRITE must
+	// bring it under the ceiling, and that the assistant refuses to answer
+	// while it is over (ModelInstructions, render.go) instead of delivering a
+	// clipped version. No migration exists or is needed: this is a Go-side
+	// validation over rendered output, not a column constraint.
+	if verr := checkDeliverable("organisation default", next); verr != nil {
+		return Version{}, verr
+	}
 
 	expectVersion := currentVersion + 1
 	v, err := s.repo.CreateOrgVersion(ctx, tenantID, expectVersion, CreateOrgVersionInput{
@@ -193,6 +208,12 @@ func (s *Service) RestoreOrgContext(ctx context.Context, tenantID, versionID uui
 		return Version{}, verr
 	}
 	if verr := checkNoSecret(target.Snapshot); verr != nil {
+		return Version{}, verr
+	}
+	// A restore is a write, so it meets the same ceiling. Restoring a
+	// pre-ceiling version that is over it is refused with the size named,
+	// rather than succeeding into a row the assistant then refuses to read.
+	if verr := checkDeliverable("organisation default", target.Snapshot); verr != nil {
 		return Version{}, verr
 	}
 
@@ -339,6 +360,19 @@ func (s *Service) PatchSiteContext(ctx context.Context, tenantID, siteID uuid.UU
 	if verr := checkNoSecret(next); verr != nil {
 		return Version{}, verr
 	}
+	// The same ceiling at site scope. No site-scoped model surface exists yet
+	// (the two shipped tools are fleet-wide and resolve at organisation
+	// scope), so this is applied AHEAD of that surface rather than because of
+	// it: without it, every site row authored between now and then could be
+	// written at up to the 64 KiB resolution budget and be undeliverable the
+	// day the surface ships. It measures the site layer's own contribution,
+	// so it is conservative by the organisation guidance a real site-scope
+	// resolution would also carry — a site write that passes here can still
+	// be refused at read time by ModelInstructions once both layers are
+	// rendered together, and that refusal names the actual combined size.
+	if verr := checkDeliverable("site override", next); verr != nil {
+		return Version{}, verr
+	}
 
 	expectVersion := currentVersion + 1
 	v, err := s.repo.CreateSiteVersion(ctx, tenantID, siteID, expectVersion, CreateSiteVersionInput{
@@ -402,6 +436,9 @@ func (s *Service) RestoreSiteContext(ctx context.Context, tenantID, siteID, vers
 		return Version{}, verr
 	}
 	if verr := checkNoSecret(target.Snapshot); verr != nil {
+		return Version{}, verr
+	}
+	if verr := checkDeliverable("site override", target.Snapshot); verr != nil {
 		return Version{}, verr
 	}
 

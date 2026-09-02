@@ -72,7 +72,7 @@ func routerWithRecorder(t *testing.T, store Store, rec auditRecorder) *gin.Engin
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	svc := NewService(store)
+	svc := NewService(store).WithContextResolver(emptyContextResolver())
 	if rec != nil {
 		svc = svc.withAuditRecorder(rec)
 	}

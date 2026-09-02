@@ -42,6 +42,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
+	"github.com/mosamlife/wpmgr/apps/api/internal/govcontext"
 	"github.com/mosamlife/wpmgr/apps/api/internal/mcp"
 )
 
@@ -140,7 +141,17 @@ func TestMCPAuditFailClosed_NoAnswerIsServedWhenTheAppendCannotCommit(t *testing
 	t.Logf("seeded tenant=%s site=%s", tenantID, siteID)
 
 	rec := audit.NewRecorder(pool, domain.SystemClock{})
-	svc := mcp.NewService(mcp.NewRepo(pool)).WithAudit(rec)
+	// THE CONTEXT RESOLVER IS WIRED BECAUSE PRODUCTION WIRES IT: both non-test
+	// call sites of mcp.NewService (cmd/wpmgr/main.go, cmd/dump-routes/routes.go)
+	// chain WithContextResolver, and a Service without one refuses every fleet
+	// tool call rather than serving with the operator's governance silently
+	// absent. Omitting it here would make the tools/call below refuse and this
+	// test would prove nothing about what it is named for. It is the REAL
+	// govcontext.Repo over the same pool, so the organisation-context read runs
+	// through InTenantTx as wpmgr_app under the same RLS policies as every other
+	// read in this file.
+	svc := mcp.NewService(mcp.NewRepo(pool)).WithAudit(rec).
+		WithContextResolver(&govcontext.Resolver{Store: govcontext.NewRepo(pool)})
 
 	principal := domain.Principal{UserID: userID, TenantID: tenantID, Role: "admin", Scope: domain.ScopeOrg}
 	connEng := mountConnectionsLikeProduction(t, svc, principal)

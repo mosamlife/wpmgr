@@ -44,6 +44,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
+	"github.com/mosamlife/wpmgr/apps/api/internal/govcontext"
 	"github.com/mosamlife/wpmgr/apps/api/internal/mcp"
 )
 
@@ -98,7 +99,17 @@ func TestMCPSiteReadReturnsTheLastSortingInScopeSiteAsAppRole(t *testing.T) {
 	ctx := context.Background()
 	pool := startPostgres(t)
 	mcpRepo := mcp.NewRepo(pool)
-	svc := mcp.NewService(mcpRepo).WithAudit(audit.NewRecorder(pool, domain.SystemClock{}))
+	// THE CONTEXT RESOLVER IS WIRED BECAUSE PRODUCTION WIRES IT: both non-test
+	// call sites of mcp.NewService (cmd/wpmgr/main.go, cmd/dump-routes/routes.go)
+	// chain WithContextResolver, and a Service without one refuses every fleet
+	// tool call rather than serving with the operator's governance silently
+	// absent. Omitting it here would make the tools/call below refuse and this
+	// test would prove nothing about what it is named for. It is the REAL
+	// govcontext.Repo over the same pool, so the organisation-context read runs
+	// through InTenantTx as wpmgr_app under the same RLS policies as every other
+	// read in this file.
+	svc := mcp.NewService(mcpRepo).WithAudit(audit.NewRecorder(pool, domain.SystemClock{})).
+		WithContextResolver(&govcontext.Resolver{Store: govcontext.NewRepo(pool)})
 
 	tenant := seedTenant(t, pool, "mcp-ssr-"+uuid.NewString()[:8])
 	const lastName = "zzz-sorts-last"
@@ -314,7 +325,17 @@ func TestMCPSiteReadArchivedInScopeSiteIsAccountedAsAppRole(t *testing.T) {
 	ctx := context.Background()
 	pool := startPostgres(t)
 	mcpRepo := mcp.NewRepo(pool)
-	svc := mcp.NewService(mcpRepo).WithAudit(audit.NewRecorder(pool, domain.SystemClock{}))
+	// THE CONTEXT RESOLVER IS WIRED BECAUSE PRODUCTION WIRES IT: both non-test
+	// call sites of mcp.NewService (cmd/wpmgr/main.go, cmd/dump-routes/routes.go)
+	// chain WithContextResolver, and a Service without one refuses every fleet
+	// tool call rather than serving with the operator's governance silently
+	// absent. Omitting it here would make the tools/call below refuse and this
+	// test would prove nothing about what it is named for. It is the REAL
+	// govcontext.Repo over the same pool, so the organisation-context read runs
+	// through InTenantTx as wpmgr_app under the same RLS policies as every other
+	// read in this file.
+	svc := mcp.NewService(mcpRepo).WithAudit(audit.NewRecorder(pool, domain.SystemClock{})).
+		WithContextResolver(&govcontext.Resolver{Store: govcontext.NewRepo(pool)})
 
 	tenant := seedTenant(t, pool, "mcp-arch-"+uuid.NewString()[:8])
 	liveID := seedSitesBulk(t, pool, tenant, 2, "aaa-live")

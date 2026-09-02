@@ -21,6 +21,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
+	"github.com/mosamlife/wpmgr/apps/api/internal/govcontext"
 )
 
 // Lifetimes. The code is short-lived because it is a bearer credential in a
@@ -317,6 +318,19 @@ type Service struct {
 	// Zero is not a valid bound and is normalised in ListSitesForModel, so a
 	// Service built by a struct literal reads a full page rather than none.
 	pageBound int32
+
+	// context is ADR-064's resolver, and it is REQUIRED on the live tool
+	// surface: operatorContext (govcontext.go) refuses every fleet tool call
+	// while it is nil, the same shape as requireRecorder above and for the
+	// same reason. An assistant answering with its operator's standing
+	// instructions silently absent is the failure this field exists to
+	// prevent, and it is invisible from the outside -- the answer looks
+	// exactly like a correct one.
+	//
+	// It stays nil in unit tests that drive a fakeStore with no resolver,
+	// which is why those tests assert a REFUSAL rather than a result; see
+	// govcontext_test.go.
+	context ContextResolver
 }
 
 func NewService(store Store) *Service {
@@ -351,6 +365,34 @@ func (s *Service) WithPageBound(n int32) *Service {
 func (s *Service) WithClock(c Clock) *Service {
 	cp := *s
 	cp.now = c
+	return &cp
+}
+
+// WithContextResolver returns a copy that resolves governed operator context
+// (ADR-064) through r. cmd/wpmgr/main.go calls this with the SAME
+// *govcontext.Resolver the effective-context preview route is built on, which
+// is what makes the preview and the model's header the same bytes rather than
+// two renderings that happen to agree today.
+//
+// It mirrors WithAudit's nil handling for the identical reason: a typed nil
+// stored into an interface is a non-nil interface value, which would sail past
+// operatorContext's nil check and panic on the first tool call instead of
+// refusing it.
+func (s *Service) WithContextResolver(r *govcontext.Resolver) *Service {
+	cp := *s
+	if r == nil {
+		cp.context = nil
+		return &cp
+	}
+	cp.context = r
+	return &cp
+}
+
+// withContextResolver is WithContextResolver over the interface, for tests
+// that need a resolver whose store fails on demand.
+func (s *Service) withContextResolver(r ContextResolver) *Service {
+	cp := *s
+	cp.context = r
 	return &cp
 }
 
@@ -1733,7 +1775,14 @@ func (s *Service) ListSitesForModel(ctx context.Context, auth AuthorizedRequest)
 	if err != nil {
 		return "", err
 	}
-	return buildListSitesResult(allowed, env, s.now())
+	// RESOLVED BEFORE THE RESULT IS BUILT, AND ITS ERROR IS RETURNED, NOT
+	// LOGGED PAST. If the operator's context cannot be delivered whole, this
+	// call produces no answer at all -- see operatorContext (govcontext.go).
+	govText, err := s.operatorContext(ctx, auth)
+	if err != nil {
+		return "", err
+	}
+	return buildListSitesResult(allowed, env, s.now(), govText)
 }
 
 // ListPendingUpdatesForModel is fleet_updates_pending: outstanding plugin,
@@ -1750,7 +1799,11 @@ func (s *Service) ListPendingUpdatesForModel(ctx context.Context, auth Authorize
 	if err != nil {
 		return "", err
 	}
-	return buildUpdatesPendingResult(allowed, env, s.now())
+	govText, err := s.operatorContext(ctx, auth)
+	if err != nil {
+		return "", err
+	}
+	return buildUpdatesPendingResult(allowed, env, s.now(), govText)
 }
 
 // scopedSiteRead reads one bounded page of the caller's own sites and returns
