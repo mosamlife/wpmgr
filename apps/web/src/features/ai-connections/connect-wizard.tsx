@@ -860,10 +860,17 @@ function StepRail({
   // THE OTHER HALF OF "ONE ROW THAT SCROLLS". Ten segments do not fit on a
   // phone, so on a narrow screen the step the operator is actually on can sit
   // off the right-hand edge -- a rail whose current step is invisible is no
-  // better than the paragraph this replaced. The current segment is scrolled
-  // into view whenever it changes. `scrollIntoView` is absent in jsdom, so the
-  // guard is what keeps the unit suite from throwing on a browser API it does
-  // not implement; `block: "nearest"` keeps this from scrolling the PAGE.
+  // better than the paragraph this replaced.
+  //
+  // THE RAIL'S OWN CONTAINER IS SCROLLED, AND NOTHING ELSE IS. `scrollIntoView`
+  // is the obvious call and it is the wrong one: it moves whatever ancestors it
+  // must to satisfy the request, and `block: "nearest"` does not save this
+  // rail, which sits at the top of a long page. An operator ticking
+  // capabilities near the bottom, whose action changes the current step, is
+  // dragged back up to a rail they were not looking at. Setting `scrollLeft`
+  // from the segment's own offset means the horizontal axis is the only one
+  // that can move, because it is the only one written.
+  const railScroller = useRef<HTMLOListElement | null>(null);
   const currentSegment = useRef<HTMLLIElement | null>(null);
   const currentSpec = specStepFor(current);
   const currentPos = BUILT_ORDER.findIndex(([, spec]) => spec === currentSpec);
@@ -899,9 +906,26 @@ function StepRail({
       ? capabilityBuiltPos
       : currentPos;
   useEffect(() => {
-    const el = currentSegment.current;
-    if (el !== null && typeof el.scrollIntoView === "function") {
-      el.scrollIntoView({ block: "nearest", inline: "center" });
+    const rail = railScroller.current;
+    const segment = currentSegment.current;
+    if (rail === null || segment === null) return;
+    // Centre the segment in the rail's own viewport, clamped to the scrollable
+    // range so the first and last steps sit flush rather than half off.
+    const centred = segment.offsetLeft + segment.offsetWidth / 2 - rail.clientWidth / 2;
+    const left = Math.max(0, Math.min(centred, rail.scrollWidth - rail.clientWidth));
+    // A motion preference is a real answer about how a person's body responds
+    // to movement, so smooth is the default and never the only option. jsdom
+    // implements neither `matchMedia` nor element scroll methods, hence both
+    // guards: without them the unit suite throws on browser APIs that are
+    // simply absent there, and `scrollLeft` is the assignment that still works
+    // when `scrollTo` is missing.
+    const reduceMotion =
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (typeof rail.scrollTo === "function") {
+      rail.scrollTo({ left, behavior: reduceMotion ? "auto" : "smooth" });
+    } else {
+      rail.scrollLeft = left;
     }
   }, [effectiveCurrentSpec]);
   return (
@@ -929,6 +953,7 @@ function StepRail({
           mid-label. */}
       <ol
         aria-label="Connection setup steps"
+        ref={railScroller}
         data-testid="step-rail"
         className="mb-1 flex snap-x snap-mandatory flex-nowrap items-center overflow-x-auto pb-1"
       >
