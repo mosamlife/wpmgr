@@ -1395,10 +1395,15 @@ async function reachCapabilityStep() {
 
 describe("choosing what a token may do (step 4, token path only)", () => {
   it("renders no capability heading at all on the OAuth path", async () => {
+    // The walk steps straight from site scope to the setup artefact, so the
+    // picker is not merely hidden on this path -- there is no step there to
+    // land on. The rail says so rather than leaving the operator to notice.
+    loadedFleet(3);
     renderWizard();
     await reachSetupStep("Cursor", "oauth");
-    await screen.findByTestId("site-step-count");
     expect(screen.queryByRole("heading", { name: /choose what it may do/i })).toBeNull();
+    expect(screen.getByRole("heading", { name: /^6\. Get the setup artefact$/ })).toBeInTheDocument();
+    expect(railSegment("4")).toHaveAttribute("data-step-state", "not-applicable");
   });
 
   it("renders every conferrable capability with a real description, and Content disabled with its reason", async () => {
@@ -1449,13 +1454,9 @@ describe("choosing what a token may do (step 4, token path only)", () => {
     // turns it green again.
     loadedFleet(3);
     renderWizard();
-    await reachSetupStep("Cursor", "token");
-    await screen.findByTestId("site-step-count");
-    // A valid site scope, so the ONLY thing left blocking the button is the
-    // capability deselection this test is actually about.
-    fireEvent.click(screen.getByRole("button", { name: /\+ add sites/i }));
-    fireEvent.click(pickerBoxes()[0]!);
-    await screen.findByRole("heading", { name: /choose what it may do/i });
+    // A valid site scope, so the ONLY thing left blocking is the capability
+    // deselection this test is actually about.
+    await advanceToCapabilityStep();
 
     fireEvent.click(screen.getByRole("checkbox", { name: /^Sites/i }));
 
@@ -1464,25 +1465,29 @@ describe("choosing what a token may do (step 4, token path only)", () => {
     // (an operator who scrolled straight to the button sees it there) -- so
     // this asserts on the plural.
     expect((await screen.findAllByText(/no capability is selected/i)).length).toBeGreaterThan(0);
-    expect(screen.getByRole("button", { name: /generate connection token/i })).toBeDisabled();
+    // REFUSED AT CONTINUE NOW, not at a mint button one step further on. The
+    // same predicate makes both refusals, so moving the assertion to the
+    // control the operator is standing in front of tests the same guard at the
+    // point it now fires.
+    expect(continueButton()).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /generate connection token/i })).toBeNull();
   });
 
   it("re-enables minting the moment a capability is checked again -- the over-fire arm of the guard above", async () => {
     loadedFleet(3);
     renderWizard();
-    await reachSetupStep("Cursor", "token");
-    await screen.findByTestId("site-step-count");
-    fireEvent.click(screen.getByRole("button", { name: /\+ add sites/i }));
-    fireEvent.click(pickerBoxes()[0]!);
-    await screen.findByRole("heading", { name: /choose what it may do/i });
+    await advanceToCapabilityStep();
 
     const sites = screen.getByRole("checkbox", { name: /^Sites/i });
     fireEvent.click(sites);
-    expect(screen.getByRole("button", { name: /generate connection token/i })).toBeDisabled();
+    expect(continueButton()).toBeDisabled();
 
     fireEvent.click(screen.getByRole("checkbox", { name: /^Uptime/i }));
     expect(screen.queryByText(/no capability is selected/i)).toBeNull();
-    expect(screen.getByRole("button", { name: /generate connection token/i })).toBeEnabled();
+    expect(continueButton()).toBeEnabled();
+    // And the walk really does open again, rather than merely un-refusing.
+    goNext();
+    expect(screen.getByRole("button", { name: /generate connection token/i })).toBeInTheDocument();
   });
 
   it("never sends `capabilities: []` on the wire, and sends exactly the selected set", async () => {
@@ -1514,10 +1519,15 @@ describe("choosing what a token may do (step 4, token path only)", () => {
       return jsonResponse(MINTED, 201);
     });
 
-    const mintButton = await reachMintButton();
+    // The checkboxes live on the capability step, one before the mint button,
+    // so they are ticked there and carried forward -- which is also the
+    // property being relied on: an answer survives leaving the step that
+    // collected it.
+    renderWizard();
+    await advanceToCapabilityStep();
     fireEvent.click(screen.getByRole("checkbox", { name: /^Uptime/i }));
     fireEvent.click(screen.getByRole("checkbox", { name: /^Backups/i }));
-    fireEvent.click(mintButton);
+    fireEvent.click(await forwardToMintButtonFromCapabilities());
     await screen.findByText(/this is the only time this token is shown/i);
 
     const body = capturedBody as Record<string, unknown>;
