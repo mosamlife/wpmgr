@@ -50,6 +50,26 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.156",
+    date: "2026-09-02",
+    summary:
+      "The connection wizard's progress rail is a real stepper, the context screen states plainly what restrictions actually do, and operator-written guidance now reaches the assistant on every call.",
+    items: [
+      {
+        tag: "Added",
+        text: "Standing guidance an operator writes for the assistant, and its deny-lists, now reach the model on every call. If that context cannot be delivered, the call is refused rather than served without it, and the refusal is recorded.",
+      },
+      {
+        tag: "Fixed",
+        text: "The connection wizard's progress rail is now a real stepper: numbered steps with short labels, one row that scrolls sideways on a phone, the current step ringed, and steps that are not yet built shown as not yet available. It previously read as a run of prose whose numbering disagreed with the section headings.",
+      },
+      {
+        tag: "Fixed",
+        text: "The context screen no longer claims that restrictions are enforced at dispatch or that they can block a tool call. It now says plainly that they are stated to the model, which is asked to follow them, and that site-level restrictions are stored but not yet part of what a live call resolves.",
+      },
+    ],
+  },
+  {
     version: "0.61.155",
     date: "2026-09-02",
     summary:

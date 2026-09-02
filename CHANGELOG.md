@@ -6,6 +6,17 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ## [Unreleased]
 
+## [0.61.156] - 2026-09-02
+
+### Added
+
+- Standing guidance an operator writes for the assistant, and its deny-lists, now reaches the model on every call. If that context cannot be delivered, the call is refused rather than served without it, and the refusal is recorded.
+
+### Fixed
+
+- The connection wizard's progress rail is now a real stepper: numbered steps with short labels, one row that scrolls sideways on a phone, the current step ringed, and steps that are not yet built shown as not yet available. It previously read as a run of prose whose numbering disagreed with the section headings.
+- The context screen no longer claims that restrictions are enforced at dispatch or that they can block a tool call. It now says plainly that they are stated to the model, which is asked to follow them, and that site-level restrictions are stored but not yet part of what a live call resolves.
+
 ## [0.61.155] - 2026-09-02
 
 ### Added
