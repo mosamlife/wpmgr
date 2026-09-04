@@ -131,6 +131,10 @@ final class SecureMemory
      * the variable, so this overwrite is doing real work rather than
      * repeating something the polyfill already did.
      *
+     * The value is finally set to null, not to '': that is precisely what the
+     * native sodium_memzero() leaves behind, so every call site sees the same
+     * post-condition it saw before this helper existed, on every host.
+     *
      * @param mixed $value Value to overwrite. Modified in place.
      * @return void
      */
@@ -141,10 +145,6 @@ final class SecureMemory
             for ($i = 0; $i < $length; $i++) {
                 $value[$i] = "\0";
             }
-
-            $value = '';
-
-            return;
         }
 
         $value = null;
