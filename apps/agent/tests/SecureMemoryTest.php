@@ -261,7 +261,7 @@ final class SecureMemoryTest extends TestCase
     {
         $classFile = dirname(__DIR__) . '/includes/support/class-secure-memory.php';
         $script    = sprintf(
-            '<?php require %s; $s = "real-platform-secret"; '
+            '<?php define("ABSPATH", "/wp/"); require %s; $s = "real-platform-secret"; '
                 . '\\WPMgr\\Agent\\Support\\SecureMemory::wipe($s); '
                 . 'echo (extension_loaded("sodium") ? "native" : "polyfill"), "|", var_export($s, true), "|", '
                 . 'var_export(\\WPMgr\\Agent\\Support\\SecureMemory::hasNativeWipe(), true);',

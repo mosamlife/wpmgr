@@ -43,6 +43,10 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent\Support;
 
+if (!defined('ABSPATH')) {
+    exit; // No direct access.
+}
+
 /**
  * Platform-aware, never-fatal replacement for a bare sodium_memzero() call.
  */
