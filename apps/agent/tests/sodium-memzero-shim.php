@@ -31,6 +31,29 @@
  * existed. It is loaded from bootstrap.php rather than from a test case so the
  * namespaced function is defined before any call site is first executed.
  *
+ * THE LIMIT OF THIS SHIM
+ * ----------------------
+ * Namespace fallback is the mechanism and therefore also the boundary: this
+ * shim shadows unqualified sodium_memzero() calls made from inside
+ * WPMgr\Agent\Support, and nowhere else. Keystore and Signer live in
+ * WPMgr\Agent, so an unqualified sodium_memzero() written there resolves
+ * straight to the global builtin and this file never sees it.
+ *
+ * The consequence is worth stating plainly, because it is easy to assume
+ * otherwise: **no test built on this shim can detect the #709 regression
+ * coming back.** If a bare sodium_memzero() were reintroduced in Keystore or
+ * Signer, every test here would still pass green, because the shim cannot
+ * observe -- let alone refuse -- a call it does not shadow.
+ *
+ * What this shim is for is exercising SecureMemory's fallback path, through
+ * the real call chain, on a machine that does have the extension. The guard
+ * against the regression itself is the source grep in
+ * SecureMemoryTest::test_only_memzero_was_replaced().
+ *
+ * Do not widen this file to shadow WPMgr\Agent as well. Every real call site
+ * routes through SecureMemory::wipe(), so a second shadow would simulate a
+ * call shape the plugin does not make, and would read as coverage it is not.
+ *
  * @package WPMgr\Agent\Tests
  */
 

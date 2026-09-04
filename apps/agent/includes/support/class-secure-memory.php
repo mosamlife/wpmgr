@@ -65,7 +65,15 @@ final class SecureMemory
 
     /**
      * Wipe a sensitive value, by reference, as thoroughly as this platform
-     * allows. Never throws, and never leaves the value readable.
+     * allows. Never throws, and always clears the variable: on every host,
+     * $value is null once this returns.
+     *
+     * That is a guarantee about the variable, not about the bytes. It does
+     * not promise the secret is gone from the process: when the native wipe
+     * is unavailable and the string is shared, PHP's copy-on-write separates
+     * it and overwrite() scrubs only the separated copy, so the original
+     * bytes may still be resident elsewhere in memory (see overwrite()
+     * below). This is hygiene, not a security boundary.
      *
      * Accepts the value untyped and by reference so that it is a drop-in for
      * sodium_memzero() at every existing call site, including array elements
@@ -92,7 +100,14 @@ final class SecureMemory
      * the capability probe and the real work, so a capable platform pays no
      * extra cost. Once the platform has refused, no further attempt is made.
      *
-     * @param string $value Value to wipe. Modified in place on success.
+     * Takes a string in and, on success, leaves null behind: that is what the
+     * native sodium_memzero() writes back into its by-reference argument. PHP
+     * has no syntax for an out-type that differs from the in-type, so the
+     * out-type is declared with @param-out; without it the null this method
+     * genuinely produces contradicts the string it genuinely requires.
+     *
+     * @param string $value Value to wipe. Set to null in place on success.
+     * @param-out string|null $value
      * @return bool True when the native wipe was performed.
      */
     private static function supportsNativeWipe(string &$value): bool

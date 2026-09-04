@@ -24,6 +24,16 @@
  * Production code is not modified, not parameterised for the test, and not told
  * it is under test: it takes the same branch it takes on a real CloudLinux host.
  *
+ * WHAT THE SIMULATION DOES NOT COVER
+ * ----------------------------------
+ * Namespace fallback shadows one namespace, so the simulation reaches
+ * SecureMemory and nothing else. Keystore and Signer are in WPMgr\Agent, and a
+ * bare sodium_memzero() written in either would bypass the shim entirely and
+ * leave every simulated-host test below green. The tests that name a real call
+ * path therefore prove the fallback branch works end to end; they do not guard
+ * against the bug returning. test_only_memzero_was_replaced() does that, by
+ * source grep, and its docblock explains why nothing behavioural can.
+ *
  * @package WPMgr\Agent\Tests
  */
 
@@ -114,10 +124,22 @@ final class SecureMemoryTest extends TestCase
 
     /**
      * The reported crash path end to end: generating the site keypair reaches
-     * Keystore::encrypt() -> masterKey() -> ... -> the wipe. On a host without
-     * native libsodium this fataled, which is why enrollment white-screened.
+     * Keystore::encrypt() -> masterKey() -> ... -> SecureMemory::wipe(). With
+     * the platform refusing the native wipe, this walks the real call chain
+     * over SecureMemory's fallback branch and asserts a usable keypair still
+     * comes out.
+     *
+     * WHAT THIS CANNOT SEE
+     * --------------------
+     * It cannot detect the #709 regression returning. The refusal is injected
+     * by tests/sodium-memzero-shim.php, which works by namespace fallback and
+     * so shadows sodium_memzero() only for calls made from inside
+     * WPMgr\Agent\Support. Keystore is in WPMgr\Agent, so a bare
+     * sodium_memzero() reintroduced there would resolve to the global builtin,
+     * never reach the shim, never be refused, and leave this test green.
+     * test_only_memzero_was_replaced() is the guard for that.
      */
-    public function test_site_keypair_generation_completes_without_native_libsodium(): void
+    public function test_site_keypair_generation_completes_when_secure_memory_falls_back(): void
     {
         $this->simulateHostWithoutNativeLibsodium();
 
@@ -134,9 +156,15 @@ final class SecureMemoryTest extends TestCase
 
     /**
      * The enrollment entry point from the issue's backtrace
-     * (Enrollment::buildEnrollPayload -> Signer::agentPublicKeyBase64).
+     * (Enrollment::buildEnrollPayload -> Signer::agentPublicKeyBase64), driven
+     * with SecureMemory taking its fallback branch.
+     *
+     * Same blind spot as the test above: Signer is in WPMgr\Agent, outside the
+     * one namespace the shim can shadow, so this cannot detect a bare
+     * sodium_memzero() reappearing in Signer. It covers the fallback path, not
+     * the regression. See test_only_memzero_was_replaced().
      */
-    public function test_agent_public_key_base64_completes_without_native_libsodium(): void
+    public function test_agent_public_key_base64_completes_when_secure_memory_falls_back(): void
     {
         $this->simulateHostWithoutNativeLibsodium();
 
@@ -152,9 +180,14 @@ final class SecureMemoryTest extends TestCase
     }
 
     /**
-     * Request signing shares the same code path and was equally unreachable.
+     * Request signing shares the same code path and was equally unreachable
+     * before the fix; this drives it with SecureMemory falling back.
+     *
+     * Blind to a reintroduced bare sodium_memzero() for the same reason as the
+     * two tests above: the shim shadows only WPMgr\Agent\Support, and Signer
+     * and Keystore are in WPMgr\Agent. See test_only_memzero_was_replaced().
      */
-    public function test_request_signing_completes_without_native_libsodium(): void
+    public function test_request_signing_completes_when_secure_memory_falls_back(): void
     {
         $this->simulateHostWithoutNativeLibsodium();
 
@@ -309,9 +342,34 @@ final class SecureMemoryTest extends TestCase
     }
 
     /**
-     * No sodium primitive other than memzero may be guarded away: the sweep
-     * for #709 confirmed sodium_compat implements all of them, so they must
-     * keep being called directly rather than routed through a fallback.
+     * THE REVERSION GUARD FOR #709. Do not delete this test as redundant with
+     * the behavioural ones above; it is the only test in this file that fails
+     * if the bug comes back.
+     *
+     * It asserts by source grep that no file under includes/ outside
+     * SecureMemory itself calls sodium_memzero() directly. Reintroduce a bare
+     * call anywhere -- Keystore, Signer, or a new caller written next year --
+     * and this goes red naming the file.
+     *
+     * WHY A BEHAVIOURAL TEST CANNOT DO THIS JOB
+     * -----------------------------------------
+     * Simulating an extension-less host means intercepting sodium_memzero(),
+     * and the only interception available here is PHP's namespace fallback
+     * (tests/sodium-memzero-shim.php explains why Patchwork is not an option:
+     * it forwards a wrapped internal's arguments by value, breaking the very
+     * by-reference contract the function exists to provide). Namespace
+     * fallback reaches exactly one namespace -- WPMgr\Agent\Support, where
+     * SecureMemory lives. A bare sodium_memzero() written in WPMgr\Agent binds
+     * to the global builtin, which on this machine succeeds silently. Nothing
+     * about that call is observable from PHP: same name, same signature, same
+     * void return, no side effect a test can read back. So no behavioural test
+     * can distinguish the fixed code from the broken code here, and a source
+     * grep is the correct instrument rather than a weaker substitute for one.
+     *
+     * The second thing it pins, from the original sweep: no sodium primitive
+     * other than memzero may be guarded away. sodium_compat implements all the
+     * others, so they must keep being called directly rather than routed
+     * through a fallback.
      */
     public function test_only_memzero_was_replaced(): void
     {
