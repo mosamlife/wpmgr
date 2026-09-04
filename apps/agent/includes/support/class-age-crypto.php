@@ -158,7 +158,7 @@ class AgeCrypto
         $header  = $this->buildHeader($fileKey, $recipientKey);
         $payload = $this->encryptPayload($fileKey, $plaintext);
 
-        sodium_memzero($fileKey);
+        SecureMemory::wipe($fileKey);
 
         return $header . $payload;
     }
@@ -182,7 +182,7 @@ class AgeCrypto
         try {
             return $this->decryptPayload($fileKey, substr($ciphertext, $payloadOffset));
         } finally {
-            sodium_memzero($fileKey);
+            SecureMemory::wipe($fileKey);
         }
     }
 
@@ -203,11 +203,11 @@ class AgeCrypto
         $ephShare  = sodium_crypto_scalarmult_base($ephSecret);
 
         $shared  = sodium_crypto_scalarmult($ephSecret, $recipientKey);
-        sodium_memzero($ephSecret);
+        SecureMemory::wipe($ephSecret);
 
         $salt    = $ephShare . $recipientKey;
         $wrapKey = hash_hkdf('sha256', $shared, 32, 'age-encryption.org/v1/X25519', $salt);
-        sodium_memzero($shared);
+        SecureMemory::wipe($shared);
 
         // Wrap the file key: ChaCha20-Poly1305-IETF, 12x 0x00 nonce, no AAD.
         $wrapped = sodium_crypto_aead_chacha20poly1305_ietf_encrypt(
@@ -216,7 +216,7 @@ class AgeCrypto
             str_repeat("\0", SODIUM_CRYPTO_AEAD_CHACHA20POLY1305_IETF_NPUBBYTES),
             $wrapKey
         );
-        sodium_memzero($wrapKey);
+        SecureMemory::wipe($wrapKey);
 
         $stanza = '-> X25519 ' . self::b64($ephShare) . "\n"
             . self::wrap64(self::b64($wrapped)) . "\n";
@@ -225,7 +225,7 @@ class AgeCrypto
 
         $macKey = hash_hkdf('sha256', $fileKey, 32, 'header', '');
         $mac    = hash_hmac('sha256', $macInput, $macKey, true);
-        sodium_memzero($macKey);
+        SecureMemory::wipe($macKey);
 
         return $macInput . ' ' . self::b64($mac) . "\n";
     }
@@ -275,11 +275,11 @@ class AgeCrypto
         // Verify header MAC with the recovered file key.
         $macKey   = hash_hkdf('sha256', $fileKey, 32, 'header', '');
         $expected = hash_hmac('sha256', $macInput, $macKey, true);
-        sodium_memzero($macKey);
+        SecureMemory::wipe($macKey);
 
         $got = self::b64Decode($macB64);
         if ($got === null || !hash_equals($expected, $got)) {
-            sodium_memzero($fileKey);
+            SecureMemory::wipe($fileKey);
             throw new \RuntimeException('WPMgr Agent: age header MAC mismatch.');
         }
 
@@ -353,7 +353,7 @@ class AgeCrypto
         $shared    = sodium_crypto_scalarmult($secret, $ephShare);
         $salt      = $ephShare . $publicKey;
         $wrapKey   = hash_hkdf('sha256', $shared, 32, 'age-encryption.org/v1/X25519', $salt);
-        sodium_memzero($shared);
+        SecureMemory::wipe($shared);
 
         $fileKey = sodium_crypto_aead_chacha20poly1305_ietf_decrypt(
             $wrapped,
@@ -361,7 +361,7 @@ class AgeCrypto
             str_repeat("\0", SODIUM_CRYPTO_AEAD_CHACHA20POLY1305_IETF_NPUBBYTES),
             $wrapKey
         );
-        sodium_memzero($wrapKey);
+        SecureMemory::wipe($wrapKey);
 
         if ($fileKey === false || strlen($fileKey) !== self::FILE_KEY_BYTES) {
             return null;
@@ -407,7 +407,7 @@ class AgeCrypto
             $chunk++;
         } while ($offset < $len);
 
-        sodium_memzero($payloadKey);
+        SecureMemory::wipe($payloadKey);
 
         return $out;
     }
@@ -461,7 +461,7 @@ class AgeCrypto
                 $chunk++;
             } while ($offset < $bodyLen);
         } finally {
-            sodium_memzero($payloadKey);
+            SecureMemory::wipe($payloadKey);
         }
 
         return $out;

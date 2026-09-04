@@ -51,6 +51,7 @@ declare(strict_types=1);
 namespace WPMgr\Agent;
 
 use WPMgr\Agent\Email\EmailKeystoreInterface;
+use WPMgr\Agent\Support\SecureMemory;
 
 /**
  * Encrypted keystore backed by wp-options + a file-based master key.
@@ -265,7 +266,7 @@ final class Keystore implements EmailKeystoreInterface
         update_option(self::OPTION_SITE_KEYPAIR, $this->encrypt($keypair), false);
 
         // Wipe the in-memory keypair as soon as it is persisted.
-        sodium_memzero($keypair);
+        SecureMemory::wipe($keypair);
 
         return $publicKey;
     }
@@ -696,7 +697,7 @@ final class Keystore implements EmailKeystoreInterface
 
         // HKDF-SHA256 with a fixed info string yields a stable 32-byte key.
         $key = hash_hkdf('sha256', $ikm, self::KEY_BYTES, self::HKDF_INFO, '');
-        sodium_memzero($ikm);
+        SecureMemory::wipe($ikm);
 
         return $key;
     }
@@ -749,7 +750,7 @@ final class Keystore implements EmailKeystoreInterface
 
         // Lost the race: another request's add_option() already won.
         // Discard this key and adopt whichever key actually got persisted.
-        sodium_memzero($key);
+        SecureMemory::wipe($key);
 
         return $this->readDatabaseKey();
     }
@@ -850,7 +851,7 @@ final class Keystore implements EmailKeystoreInterface
 
         if ($written !== self::KEY_BYTES) {
             // Partial write: never pin a key that was not fully persisted.
-            sodium_memzero($key);
+            SecureMemory::wipe($key);
             wp_delete_file($path);
             return null;
         }

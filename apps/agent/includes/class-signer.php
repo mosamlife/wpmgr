@@ -25,6 +25,8 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent;
 
+use WPMgr\Agent\Support\SecureMemory;
+
 /**
  * Produces Ed25519-signed request headers for the control plane.
  */
@@ -102,14 +104,14 @@ final class Signer implements \WPMgr\Agent\Security\RequestSigner
 
         $secretKey = sodium_crypto_sign_secretkey($keypair);
         $publicKey = sodium_crypto_sign_publickey($keypair);
-        sodium_memzero($keypair);
+        SecureMemory::wipe($keypair);
 
         $timestamp = (string) ($now ?? time());
         $nonce     = bin2hex(random_bytes(16));
 
         $message   = self::canonicalMessage($method, $path, $timestamp, $nonce, $body);
         $signature = sodium_crypto_sign_detached($message, $secretKey);
-        sodium_memzero($secretKey);
+        SecureMemory::wipe($secretKey);
 
         return [
             self::HEADER_KEY       => base64_encode($publicKey),
@@ -133,7 +135,7 @@ final class Signer implements \WPMgr\Agent\Security\RequestSigner
         }
 
         $publicKey = sodium_crypto_sign_publickey($keypair);
-        sodium_memzero($keypair);
+        SecureMemory::wipe($keypair);
 
         return $publicKey;
     }

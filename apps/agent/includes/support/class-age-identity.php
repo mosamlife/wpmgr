@@ -58,14 +58,14 @@ class AgeIdentity
             $pair   = $this->age->generateIdentity();
             $this->keystore->storeAgeIdentity($pair['secret']);
             $recipient = $pair['recipient'];
-            sodium_memzero($pair['secret']);
-            sodium_memzero($pair['identity']);
+            SecureMemory::wipe($pair['secret']);
+            SecureMemory::wipe($pair['identity']);
 
             return $recipient;
         }
 
         $recipient = $this->age->recipientForSecret($secret);
-        sodium_memzero($secret);
+        SecureMemory::wipe($secret);
 
         return $recipient;
     }
@@ -83,7 +83,7 @@ class AgeIdentity
             return '';
         }
         $recipient = $this->age->recipientForSecret($secret);
-        sodium_memzero($secret);
+        SecureMemory::wipe($secret);
 
         return $recipient;
     }
@@ -134,7 +134,7 @@ class AgeIdentity
         try {
             return $this->age->decrypt($ciphertext, $secret);
         } finally {
-            sodium_memzero($secret);
+            SecureMemory::wipe($secret);
         }
     }
 }
