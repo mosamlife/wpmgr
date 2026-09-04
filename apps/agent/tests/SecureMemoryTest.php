@@ -10,12 +10,19 @@
  * extension, so a test that merely calls the code proves nothing.
  *
  * These tests therefore make the platform behave exactly as an
- * extension-less host does, by redefining sodium_memzero() through Patchwork
- * ("sodium_memzero" is listed in patchwork.json's redefinable-internals) to
- * throw the SodiumException that sodium_compat throws, with the verbatim
- * message taken from wp-includes/sodium_compat/src/Compat.php. Production
- * code is not modified, not parameterised for the test, and not told it is
- * under test: it takes the same branch it takes on a real CloudLinux host.
+ * extension-less host does, via tests/sodium-memzero-shim.php: a namespaced
+ * WPMgr\Agent\Support\sodium_memzero() that shadows the global builtin for
+ * the one namespace SecureMemory lives in, and raises the SodiumException
+ * sodium_compat raises, message verbatim from
+ * wp-includes/sodium_compat/src/Compat.php.
+ *
+ * That file's header explains why this is not a Patchwork redefinable-internal:
+ * Patchwork forwards a wrapped internal's arguments by value, which both emits
+ * a by-reference warning on every wipe in the suite (failOnWarning) and breaks
+ * the very contract sodium_memzero() exists to provide.
+ *
+ * Production code is not modified, not parameterised for the test, and not told
+ * it is under test: it takes the same branch it takes on a real CloudLinux host.
  *
  * @package WPMgr\Agent\Tests
  */
@@ -36,14 +43,6 @@ use Yoast\PHPUnitPolyfills\TestCases\TestCase;
  */
 final class SecureMemoryTest extends TestCase
 {
-    /**
-     * The message sodium_compat raises, verbatim, from
-     * wp-includes/sodium_compat/src/Compat.php.
-     */
-    private const POLYFILL_MESSAGE = 'This is not implemented in sodium_compat, as it is not possible to '
-        . 'securely wipe memory from PHP. To fix this error, make sure libsodium is installed and the PHP '
-        . 'extension is enabled.';
-
     /** @var array<string,mixed> */
     private array $options = [];
 
@@ -72,8 +71,9 @@ final class SecureMemoryTest extends TestCase
 
     protected function tear_down(): void
     {
-        // Patchwork redefinitions leak across tests unless they are undone.
-        \Patchwork\restoreAll();
+        // The shim is process-wide, so it must be handed back inert or the
+        // next test inherits a platform that refuses to wipe.
+        SodiumPlatform::reset();
         SecureMemory::resetCapabilityCache();
 
         if (is_file($this->keyFile)) {
@@ -87,22 +87,11 @@ final class SecureMemoryTest extends TestCase
      * Make this process behave like a host with no native libsodium: every
      * sodium_memzero() call raises sodium_compat's refusal.
      *
-     * @return \ArrayObject<int,string> Grows by one entry per refusal, so a
-     *                                   test can assert how often the
-     *                                   platform was asked.
+     * @return void
      */
-    private function simulateHostWithoutNativeLibsodium(): \ArrayObject
+    private function simulateHostWithoutNativeLibsodium(): void
     {
-        /** @var \ArrayObject<int,string> $attempts */
-        $attempts = new \ArrayObject();
-
-        \Patchwork\redefine('sodium_memzero', function (&$var) use ($attempts): void {
-            $attempts->append('refused');
-
-            throw new \SodiumException(self::POLYFILL_MESSAGE);
-        });
-
-        return $attempts;
+        SodiumPlatform::refuse();
     }
 
     // -----------------------------------------------------------------
@@ -185,14 +174,14 @@ final class SecureMemoryTest extends TestCase
      */
     public function test_platform_refusal_is_probed_only_once(): void
     {
-        $attempts = $this->simulateHostWithoutNativeLibsodium();
+        $this->simulateHostWithoutNativeLibsodium();
 
         for ($i = 0; $i < 25; $i++) {
             $secret = 'secret-' . $i;
             SecureMemory::wipe($secret);
         }
 
-        $this->assertCount(1, $attempts, 'The platform must be asked once, then the answer reused.');
+        $this->assertSame(1, SodiumPlatform::$calls, 'The platform must be asked once, then the answer reused.');
         $this->assertFalse(SecureMemory::hasNativeWipe());
     }
 
@@ -207,18 +196,19 @@ final class SecureMemoryTest extends TestCase
      */
     public function test_native_wipe_is_still_performed_when_the_platform_supports_it(): void
     {
-        /** @var \ArrayObject<int,string> $calls */
-        $calls = new \ArrayObject();
-        \Patchwork\redefine('sodium_memzero', function (&$var) use ($calls): void {
-            $calls->append((string) $var);
-            $var = '';
-        });
+        SodiumPlatform::reset();
 
         $secret = 'super-secret-key-material';
         SecureMemory::wipe($secret);
 
-        $this->assertCount(1, $calls, 'sodium_memzero() must still be called where the platform supports it.');
-        $this->assertSame('super-secret-key-material', $calls[0], 'It must receive the real value to wipe.');
+        $this->assertSame(1, SodiumPlatform::$calls, 'sodium_memzero() must still be called where supported.');
+        $this->assertSame(
+            'super-secret-key-material',
+            SodiumPlatform::$wiped[0],
+            'It must receive the real value to wipe.'
+        );
+        // The shim delegates to the real builtin, so this is the genuine wipe.
+        $this->assertNull($secret, 'The native wipe must actually have cleared the value.');
         $this->assertTrue(SecureMemory::hasNativeWipe());
     }
 
@@ -228,34 +218,24 @@ final class SecureMemoryTest extends TestCase
      */
     public function test_native_wipe_is_performed_for_every_secret(): void
     {
-        /** @var \ArrayObject<int,string> $calls */
-        $calls = new \ArrayObject();
-        \Patchwork\redefine('sodium_memzero', function (&$var) use ($calls): void {
-            $calls->append((string) $var);
-        });
+        SodiumPlatform::reset();
 
         foreach (['alpha', 'bravo', 'charlie'] as $value) {
             $secret = $value;
             SecureMemory::wipe($secret);
         }
 
-        $this->assertSame(['alpha', 'bravo', 'charlie'], (array) $calls->getArrayCopy());
+        $this->assertSame(['alpha', 'bravo', 'charlie'], SodiumPlatform::$wiped);
     }
 
     /**
      * The same over-fire arm, proven outside this harness.
      *
-     * Listing sodium_memzero in patchwork.json's redefinable-internals is what
-     * makes the polyfill tests above possible, but it has a cost: Patchwork
-     * routes every call to that function through a wrapper, and the wrapper
-     * does not carry the by-reference argument back out. In-process, then, a
-     * native wipe is observably *called* (asserted above) but its clearing
-     * effect cannot be observed. That is an artefact of the instrumentation
-     * and not of the shipped code.
-     *
-     * So this arm runs in a clean subprocess with no Patchwork, no PHPUnit and
-     * no stubs: real PHP, the real class file, the real platform. It is the
-     * assertion that a "fix" which quietly stopped wiping would fail.
+     * Every assertion above still runs through a shim, however thin, and a
+     * shim is a thing that can be wrong. So this arm runs in a clean
+     * subprocess with no shim, no PHPUnit and no stubs: real PHP, the real
+     * class file, the real global sodium_memzero(), the real platform. It is
+     * the assertion a "fix" that quietly stopped wiping would fail.
      */
     public function test_wipe_really_clears_the_value_on_an_uninstrumented_platform(): void
     {

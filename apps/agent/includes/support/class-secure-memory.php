@@ -157,9 +157,12 @@ final class SecureMemory
     /**
      * Whether this platform can perform a real sodium_memzero().
      *
-     * Reported as a plain environment fact on the agent's admin screen, and
-     * used by the tests. Probing here uses a throwaway string so that asking
-     * the question never touches a caller's value.
+     * Nothing in the plugin surfaces this today, by choice: after this class
+     * exists the missing extension no longer costs the operator anything they
+     * can act on. It is public, cheap and side-effect-free so that surfacing
+     * it later -- on the admin screen, or in the info command's payload -- is
+     * one call rather than a second copy of the detection logic. Probing here
+     * uses a throwaway string so asking never touches a caller's value.
      *
      * @return bool
      */

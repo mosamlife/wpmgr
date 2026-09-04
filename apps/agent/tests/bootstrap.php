@@ -29,6 +29,13 @@ if (!function_exists('Patchwork\redefine')) {
 // redefinable. Brain Monkey tests override these defaults via Functions\when().
 require_once __DIR__ . '/wp-stubs.php';
 
+// Namespaced shadow of sodium_memzero(), so the suite can run as if this
+// machine had no native libsodium extension (GH #709). Required here, not from
+// a test case, so the function exists before any call site is first executed.
+// Inert until a test flips WPMgr\Agent\Tests\SodiumPlatform::refuse(); see the
+// file's header for why this is not a Patchwork redefinable-internal.
+require_once __DIR__ . '/sodium-memzero-shim.php';
+
 // ---------------------------------------------------------------------------
 // Constants needed by the object-cache drop-in and engine files.
 // ---------------------------------------------------------------------------
