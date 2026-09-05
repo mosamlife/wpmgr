@@ -61,7 +61,7 @@ const RELEASES: ChangeEntry[] = [
       },
       {
         tag: "Fixed",
-        text: "Sites on hosts without the native libsodium PHP extension can now complete Enroll. The plugin previously showed a white screen on any such host, because a memory-wiping call was made unconditionally and WordPress's bundled polyfill throws instead of performing it. This affected shared hosting broadly, cPanel and CloudLinux hosts especially, where the plugin could not be installed at all. Requires updating the plugin to pick up the fix.",
+        text: "Sites on hosts without the native libsodium PHP extension can now complete Enroll. The plugin previously showed a white screen on any such host, because a memory-wiping call was made unconditionally and WordPress's bundled polyfill throws instead of performing it. This affected shared hosting broadly, cPanel and CloudLinux hosts especially, where the plugin installed and activated normally but enrollment could not be completed. Requires updating the plugin to pick up the fix.",
       },
       {
         tag: "Fixed",

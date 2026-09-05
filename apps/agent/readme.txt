@@ -287,7 +287,7 @@ This plugin ships two minified JavaScript files. Their human-readable source and
 The entries below summarize the notable changes since 0.31.1. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
 
 = 0.61.148 =
-* Fixed: this plugin no longer fatals with a white screen on Enroll on a host without the native libsodium PHP extension. A memory-wiping call was made unconditionally, and WordPress's bundled polyfill throws rather than perform it; every call site now degrades to a best-effort overwrite instead. This affected shared hosting broadly, cPanel and CloudLinux hosts especially, where the plugin could not be installed at all.
+* Fixed: this plugin no longer fatals with a white screen on Enroll on a host without the native libsodium PHP extension. A memory-wiping call was made unconditionally, and WordPress's bundled polyfill throws rather than perform it; every call site now degrades to a best-effort overwrite instead. This affected shared hosting broadly, cPanel and CloudLinux hosts especially, where the plugin installed and activated normally but enrollment could not be completed.
 * Changed: removed a settings-screen section that asked you to paste a minted connection key into a dashboard flow that was never built. The underlying mechanism is unchanged; only that dead, confusing step is gone.
 
 = 0.61.147 =
@@ -452,7 +452,7 @@ The entries below summarize the notable changes since 0.31.1. This project ships
 == Upgrade Notice ==
 
 = 0.61.148 =
-Fixes a white screen on Enroll on hosts without the native libsodium PHP extension, common on shared hosting, cPanel and CloudLinux in particular, where the plugin previously could not be installed at all. Update to complete setup on those hosts. Also removes a settings section that referenced a dashboard flow that was never built.
+Fixes a white screen on Enroll on hosts without the native libsodium PHP extension, common on shared hosting, cPanel and CloudLinux in particular, where the plugin installed and activated normally but enrollment could not be completed. Update to complete setup on those hosts. Also removes a settings section that referenced a dashboard flow that was never built.
 
 = 0.61.147 =
 On a multisite network, plugins activated for the whole network are now reported as active, so they stop being missing from the plugin inventory and from the update and vulnerability checks that read it. This plugin's licence is also now declared as MIT consistently across every surface that states one. Safe to update in place.
