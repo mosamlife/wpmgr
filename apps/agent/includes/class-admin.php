@@ -287,87 +287,7 @@ final class Admin
             echo '</form>';
         }
 
-        // --- Connection key (ADR-037 Sprint 1, 1E) -----------------------
-        // Always available, even before enrollment — operators on firewalled
-        // hosts often need to mint the key before they've finished setting
-        // up the CP-side site.
-        $this->renderConnectionKeySection($actionUrl);
-
         echo '</div>';
-    }
-
-    /**
-     * ADR-037 Sprint 1, 1E — connection-key pairing section.
-     *
-     * Renders one of three states:
-     *   - No key minted: shows the "Mint key" button.
-     *   - Key minted, still valid: shows the key (in a copy-able code block)
-     *     plus a countdown-style "expires in N minutes" line and a "Revoke" form.
-     *   - Key expired or used: cleared by the next read; renders the empty state.
-     *
-     * The key shape is `wpmgr:v1:<32-byte-base64url-token>:<base64-site_url>:<agent_version>`.
-     * The CP accepts this blob in the "Add site from connection key" flow
-     * (out of scope for this sprint — CP-side acceptance lands later).
-     *
-     * @param string $actionUrl The admin-post URL for form submissions.
-     * @return void
-     */
-    private function renderConnectionKeySection(string $actionUrl): void
-    {
-        echo '<h2>' . esc_html__('Connection key', 'wpmgr-agent') . '</h2>';
-        echo '<p class="description">'
-            . esc_html__(
-                'For control planes that cannot reach this site directly (firewalled hosts, private networks). Click "Mint key" to generate a one-time pairing code valid for 15 minutes. Paste it into the CP\'s "Add site from connection key" flow.',
-                'wpmgr-agent'
-            )
-            . '</p>';
-
-        $record = $this->readConnectionKey();
-        $now    = time();
-
-        if ($record !== null && (int) ($record['expires_at'] ?? 0) > $now && empty($record['used_at'])) {
-            // Active, unexpired, unused key — show it.
-            $blob    = $this->formatConnectionKeyBlob((string) $record['token']);
-            $expires = (int) $record['expires_at'];
-            $remaining = max(0, $expires - $now);
-            $mm = (int) floor($remaining / 60);
-            $ss = $remaining % 60;
-
-            echo '<div class="notice notice-warning inline" style="padding:12px;margin:10px 0;">';
-            echo '<p style="margin:0 0 8px;"><strong>'
-                . esc_html__('Anyone with this key can re-pair your site to a different control plane. Treat it like a password.', 'wpmgr-agent')
-                . '</strong></p>';
-            echo '<p style="margin:0 0 8px;">'
-                /* translators: 1: minutes remaining, 2: seconds remaining (zero-padded). */
-                . esc_html(sprintf(__('Key expires in %1$d:%2$02d.', 'wpmgr-agent'), $mm, $ss))
-                . '</p>';
-            echo '<textarea readonly rows="3" cols="80" '
-                . 'style="font-family:monospace;font-size:12px;width:100%;max-width:720px;" '
-                . 'onclick="this.select();" data-testid="wpmgr-connection-key">'
-                . esc_textarea($blob)
-                . '</textarea>';
-            echo '</div>';
-
-            // Revoke form — clears the key immediately.
-            echo '<form method="post" action="' . esc_url($actionUrl) . '" style="display:inline-block;">';
-            wp_nonce_field(self::ACTION_REVOKE_CONNECTION_KEY);
-            echo '<input type="hidden" name="action" value="' . esc_attr(self::ACTION_REVOKE_CONNECTION_KEY) . '" />';
-            submit_button(esc_html__('Revoke', 'wpmgr-agent'), 'delete', 'submit', false);
-            echo '</form>';
-        } else {
-            // No active key. If the existing record is expired/used, advise.
-            if ($record !== null && !empty($record['used_at'])) {
-                echo '<p>' . esc_html__('Previous key was accepted by the control plane.', 'wpmgr-agent') . '</p>';
-            } elseif ($record !== null) {
-                echo '<p>' . esc_html__('Previous key has expired.', 'wpmgr-agent') . '</p>';
-            }
-
-            echo '<form method="post" action="' . esc_url($actionUrl) . '">';
-            wp_nonce_field(self::ACTION_MINT_CONNECTION_KEY);
-            echo '<input type="hidden" name="action" value="' . esc_attr(self::ACTION_MINT_CONNECTION_KEY) . '" />';
-            submit_button(esc_html__('Mint key', 'wpmgr-agent'), 'secondary');
-            echo '</form>';
-        }
     }
 
     /**
@@ -393,22 +313,9 @@ final class Admin
     }
 
     /**
-     * Format the public connection-key blob from a stored token.
-     *
-     * Shape: `wpmgr:v1:<32-byte-base64url-token>:<base64(site_url)>:<agent_version>`
-     */
-    private function formatConnectionKeyBlob(string $token): string
-    {
-        $siteUrl    = function_exists('get_site_url') ? (string) get_site_url() : '';
-        $urlEncoded = $this->base64UrlEncode($siteUrl);
-        $version    = defined('WPMGR_AGENT_VERSION') ? (string) WPMGR_AGENT_VERSION : '0.0.0';
-        return 'wpmgr:v1:' . $token . ':' . $urlEncoded . ':' . $version;
-    }
-
-    /**
-     * URL-safe base64 encode without padding. Used for the token + site_url
-     * components of the connection-key blob so the result is safe to ship in
-     * URLs, headers, and paste-into-form inputs without further escaping.
+     * URL-safe base64 encode without padding. Used to encode the minted
+     * connection-key token so it is safe to store and, later, to ship in
+     * URLs, headers, or a paste-into-form input without further escaping.
      */
     private function base64UrlEncode(string $bytes): string
     {
