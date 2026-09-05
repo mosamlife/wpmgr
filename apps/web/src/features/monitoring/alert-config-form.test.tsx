@@ -311,6 +311,152 @@ describe("AlertConfigForm — vulnerability alerts severity select", () => {
   });
 });
 
+describe("AlertConfigForm — clearing recipients to zero (GH #706)", () => {
+  // The exact regression: a customer with a SINGLE recipient could not clear
+  // it and resorted to saving a fake address, because a client-only
+  // non-empty refine blocked the submit entirely (no request ever went out).
+  // Removing exactly one seeded recipient to zero is the only scenario that
+  // actually exercises the old refine — a two-address test that drops to one
+  // remaining address would pass against the broken code too.
+  it("sends email_recipients: [] when the single seeded recipient is cleared and saved", async () => {
+    const config = buildAlertConfig({ email_recipients: ["ops@example.com"] });
+    mockedUseAlertConfig.mockReturnValue(
+      mockQueryResult<AlertConfig | null>({ data: config }),
+    );
+    const mutateMock = vi.fn();
+    mockPutAlertConfig({ mutate: mutateMock });
+
+    renderForm(<AlertConfigForm />);
+
+    const recipients = await screen.findByLabelText("Email recipients");
+    fireEvent.change(recipients, { target: { value: "" } });
+    fireEvent.blur(recipients);
+
+    // The old refine's error must not appear, and Save must be reachable.
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(mutateMock).toHaveBeenCalledTimes(1));
+    const [body] = mutateMock.mock.calls[0] as [AlertConfigUpdate];
+    expect(body.email_recipients).toEqual([]);
+  });
+
+  it("shows a plain (non-error) empty state instead of a validation error when recipients are cleared", async () => {
+    const config = buildAlertConfig({ email_recipients: ["ops@example.com"] });
+    mockedUseAlertConfig.mockReturnValue(
+      mockQueryResult<AlertConfig | null>({ data: config }),
+    );
+    mockPutAlertConfig();
+
+    renderForm(<AlertConfigForm />);
+
+    const recipients = await screen.findByLabelText("Email recipients");
+    fireEvent.change(recipients, { target: { value: "" } });
+    fireEvent.blur(recipients);
+
+    expect(
+      await screen.findByText(
+        "No recipients configured. Email alerts are off until you add one.",
+      ),
+    ).toBeInTheDocument();
+    // Never rendered as role="alert" — this is valid state, not a mistake.
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("round-trips a zero-recipient config after save: a refetch reflecting the save re-seeds the form empty without re-raising the old error", async () => {
+    const config = buildAlertConfig({ email_recipients: ["ops@example.com"] });
+    mockedUseAlertConfig.mockReturnValue(
+      mockQueryResult<AlertConfig | null>({ data: config }),
+    );
+    mockPutAlertConfig();
+
+    const { rerender } = renderForm(<AlertConfigForm />);
+
+    // Simulate the server round trip: GET now reflects the saved empty list,
+    // exactly like `useAlertConfig`'s cache after `usePutAlertConfig`
+    // invalidates/refetches on settle.
+    const cleared = buildAlertConfig({ email_recipients: [] });
+    mockedUseAlertConfig.mockReturnValue(
+      mockQueryResult<AlertConfig | null>({ data: cleared }),
+    );
+    rerender(
+      <ShellContext.Provider
+        value={{
+          collapsed: false,
+          toggleCollapsed: vi.fn(),
+          mobileOpen: false,
+          setMobileOpen: vi.fn(),
+        }}
+      >
+        <AlertConfigForm />
+      </ShellContext.Provider>,
+    );
+
+    const recipients = await screen.findByLabelText("Email recipients");
+    await waitFor(() => expect(recipients).toHaveValue(""));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByText("No recipients")).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "No recipients configured. Email alerts are off until you add one.",
+      ),
+    ).toBeInTheDocument();
+  });
+});
+
+describe("AlertConfigForm — alert channel enabled switch (GH #706)", () => {
+  it("reflects an enabled:true config and sends enabled:false when the switch is turned off and saved", async () => {
+    const config = buildAlertConfig({ enabled: true });
+    mockedUseAlertConfig.mockReturnValue(
+      mockQueryResult<AlertConfig | null>({ data: config }),
+    );
+    const mutateMock = vi.fn();
+    mockPutAlertConfig({ mutate: mutateMock });
+
+    renderForm(<AlertConfigForm />);
+
+    const enabledSwitch = await screen.findByLabelText("Alert channel enabled");
+    expect(enabledSwitch).toHaveAttribute("aria-checked", "true");
+
+    fireEvent.click(enabledSwitch);
+    expect(enabledSwitch).toHaveAttribute("aria-checked", "false");
+
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(mutateMock).toHaveBeenCalledTimes(1));
+    expect(mutateMock).toHaveBeenCalledWith(
+      expect.objectContaining({ enabled: false }),
+      expect.anything(),
+    );
+  });
+
+  it("reflects an enabled:false config and sends enabled:true when the switch is turned on and saved", async () => {
+    const config = buildAlertConfig({ enabled: false });
+    mockedUseAlertConfig.mockReturnValue(
+      mockQueryResult<AlertConfig | null>({ data: config }),
+    );
+    const mutateMock = vi.fn();
+    mockPutAlertConfig({ mutate: mutateMock });
+
+    renderForm(<AlertConfigForm />);
+
+    const enabledSwitch = await screen.findByLabelText("Alert channel enabled");
+    expect(enabledSwitch).toHaveAttribute("aria-checked", "false");
+
+    fireEvent.click(enabledSwitch);
+    expect(enabledSwitch).toHaveAttribute("aria-checked", "true");
+
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(mutateMock).toHaveBeenCalledTimes(1));
+    expect(mutateMock).toHaveBeenCalledWith(
+      expect.objectContaining({ enabled: true }),
+      expect.anything(),
+    );
+  });
+});
+
 describe("AlertConfigForm — instance mailer warning banner", () => {
   it("shows the 'instance mailer not configured' banner with a link to /settings/smtp when instance email is not configured", async () => {
     mockedUseAlertConfig.mockReturnValue(

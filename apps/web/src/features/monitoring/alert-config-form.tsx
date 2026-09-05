@@ -63,23 +63,19 @@ const VULN_SEVERITY_OPTIONS: ReadonlyArray<{
 ];
 
 const formSchema = z.object({
-  // A textarea of recipients; validation happens after splitting (below).
-  recipients: z
-    .string()
-    .refine(
-      (raw) => {
-        const list = splitRecipients(raw);
-        return list.length > 0;
-      },
-      { message: "No recipients" },
-    )
-    .refine(
-      (raw) => splitRecipients(raw).every((e) => z.string().email().safeParse(e).success),
-      { message: "Invalid email address" },
-    ),
+  // A textarea of recipients; validation happens after splitting (below). An
+  // empty list is a valid, deliberate configuration (GH #706) — it silences
+  // email delivery for this channel (the dispatcher's own
+  // `no_recipients_configured` skip), so only the format of whatever
+  // addresses ARE present is checked here, never the count.
+  recipients: z.string().refine(
+    (raw) => splitRecipients(raw).every((e) => z.string().email().safeParse(e).success),
+    { message: "Invalid email address" },
+  ),
   webhook_url: z
     .union([z.literal(""), z.string().url("Invalid URL")])
     .optional(),
+  enabled: z.boolean(),
   notify_security: z.boolean(),
   app_alerts_enabled: z.boolean(),
   notify_vulns: z.boolean(),
@@ -121,6 +117,7 @@ export function AlertConfigForm() {
     defaultValues: {
       recipients: "",
       webhook_url: "",
+      enabled: true,
       notify_security: false,
       app_alerts_enabled: false,
       notify_vulns: false,
@@ -131,6 +128,8 @@ export function AlertConfigForm() {
   });
 
   const notifyVulns = useWatch({ control, name: "notify_vulns" });
+  const recipientsRaw = useWatch({ control, name: "recipients" });
+  const hasRecipients = splitRecipients(recipientsRaw ?? "").length > 0;
 
   // Seed the form once the config loads (or stays empty when none configured).
   useEffect(() => {
@@ -138,6 +137,9 @@ export function AlertConfigForm() {
     reset({
       recipients: config ? config.email_recipients.join("\n") : "",
       webhook_url: config?.webhook_url ?? "",
+      // No row yet matches the API's own zero-value default (service.go):
+      // a fresh tenant's alert channel starts enabled.
+      enabled: config?.enabled ?? true,
       notify_security: config?.notify_security ?? false,
       app_alerts_enabled: config?.app_alerts_enabled ?? false,
       notify_vulns: config?.notify_vulns ?? false,
@@ -152,6 +154,7 @@ export function AlertConfigForm() {
       webhook_url: values.webhook_url?.trim() ? values.webhook_url.trim() : "",
       // Always sent explicitly (never omitted) so a save never silently
       // drops a signal the operator didn't touch this time around.
+      enabled: values.enabled,
       notify_security: values.notify_security,
       app_alerts_enabled: values.app_alerts_enabled,
       notify_vulns: values.notify_vulns,
@@ -224,6 +227,33 @@ export function AlertConfigForm() {
                 description="Where every alert in this channel is delivered. Downtime, security events, and vulnerability alerts below all use these recipients and this webhook."
               >
                 <div className="space-y-1">
+                  <div className="flex items-center gap-3">
+                    <Controller
+                      control={control}
+                      name="enabled"
+                      render={({ field }) => (
+                        <Switch
+                          id="alert-channel-enabled"
+                          checked={field.value}
+                          onCheckedChange={field.onChange}
+                        />
+                      )}
+                    />
+                    <Label
+                      htmlFor="alert-channel-enabled"
+                      className="cursor-pointer"
+                    >
+                      Alert channel enabled
+                    </Label>
+                  </div>
+                  <p className="text-sm text-muted-foreground">
+                    Turns off delivery for every signal below — downtime,
+                    application health, security events, and vulnerability
+                    alerts — without discarding your recipients or webhook.
+                  </p>
+                </div>
+
+                <div className="space-y-1">
                   <Label htmlFor="recipients">Email recipients</Label>
                   <textarea
                     id="recipients"
@@ -238,12 +268,19 @@ export function AlertConfigForm() {
                     id="recipients-help"
                     className="text-sm text-muted-foreground"
                   >
-                    One per line, or separated by commas.
+                    One per line, or separated by commas. Leave blank to turn
+                    off email delivery for this channel.
                   </p>
+                  {!errors.recipients && !hasRecipients ? (
+                    <p className="text-sm text-muted-foreground">
+                      No recipients configured. Email alerts are off until
+                      you add one.
+                    </p>
+                  ) : null}
                   <FieldError
                     what={errors.recipients?.message}
-                    why="At least one valid email address is required."
-                    how="Edit the list above."
+                    why="Every recipient must be a valid email address."
+                    how="Fix the invalid address above."
                   />
                 </div>
 
@@ -283,8 +320,10 @@ export function AlertConfigForm() {
                 description="Email and webhook whenever a monitored site goes down or comes back online. Applies to every site in this tenant."
               >
                 <p className="text-sm text-muted-foreground">
-                  Uses the recipients and webhook above. There is no separate
-                  switch for downtime alerts.
+                  Uses the recipients and webhook above. There is no switch
+                  just for downtime alerts — the alert channel switch above
+                  turns this off along with every other signal in this
+                  channel.
                 </p>
               </FormSection>
 
