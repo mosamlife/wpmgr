@@ -6,6 +6,14 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ## [Unreleased]
 
+## [0.61.160] - 2026-09-05
+
+### Fixed
+
+- Clearing the alert recipient list now works. It previously showed a validation error and never sent the request, because of a client-side-only rule that rejected an empty list; the server, the database default and the dispatcher already accepted zero recipients. The dashboard also now exposes the master on/off switch for alerts, so you can stop alert email entirely without deleting the recipient list.
+- Sites on hosts without the native libsodium PHP extension can now complete Enroll. The plugin previously showed a white screen on any such host, because a memory-wiping call was made unconditionally and WordPress's bundled polyfill throws instead of performing it. This affected shared hosting broadly, cPanel and CloudLinux hosts especially, where the plugin could not be installed at all. **Requires updating the plugin to pick up the fix.**
+- Removed a settings-screen section that asked operators to paste a minted connection key into a dashboard flow that was never built. The underlying mechanism is unchanged; only that dead, confusing step is gone.
+
 ## [0.61.159] - 2026-09-02
 
 ### Added
