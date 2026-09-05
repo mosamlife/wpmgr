@@ -80,7 +80,7 @@
     "eslint-plugin-react-hooks": "^7.1.0",
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^16.0.0",
-    "impeccable": "^2.1.9",
+    "impeccable": "^3.6.0",
     "jsdom": "^29.0.0",
     "tailwindcss": "^4.3.0",
     "typescript": "^5.7.2",
