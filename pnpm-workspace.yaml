@@ -65,10 +65,11 @@ allowBuilds:
   # `pnpm install`, so this must be answered rather than left.
   core-js: false
   esbuild: true
-  # Puppeteer's postinstall downloads ~100 MB of Chromium. Disabled because
-  # nothing in our pipeline launches a headless browser; impeccable's critique
-  # uses static analysis, not screenshots. Flip to `true` if a future phase
-  # needs a real browser (live preview iteration, visual diffs, etc.).
-  puppeteer: false
+  # Puppeteer's postinstall downloads ~100 MB of Chromium. Enabled: impeccable's
+  # static engine only matches literal Tailwind palette classes and cannot see
+  # a semantic-token contrast bug (e.g. text-warning-foreground on an unfilled
+  # card), so the pixel-based low-contrast/gray-on-color checks in
+  # engines/browser + engines/visual need a real headless browser to run.
+  puppeteer: true
   sharp: true
   vue-demi: false
