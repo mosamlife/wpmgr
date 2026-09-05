@@ -50,6 +50,26 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.160",
+    date: "2026-09-05",
+    summary:
+      "Clearing the alert recipient list now works, with a master switch to turn alert email off entirely, and sites without native libsodium can complete Enroll again.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "Clearing the alert recipient list now works. It previously showed a validation error and never sent the request, because of a client-side-only rule that rejected an empty list; the server, the database default and the dispatcher already accepted zero recipients. The dashboard also now exposes the master on/off switch for alerts, so you can stop alert email entirely without deleting the recipient list.",
+      },
+      {
+        tag: "Fixed",
+        text: "Sites on hosts without the native libsodium PHP extension can now complete Enroll. The plugin previously showed a white screen on any such host, because a memory-wiping call was made unconditionally and WordPress's bundled polyfill throws instead of performing it. This affected shared hosting broadly, cPanel and CloudLinux hosts especially, where the plugin installed and activated normally but enrollment could not be completed. Requires updating the plugin to pick up the fix.",
+      },
+      {
+        tag: "Fixed",
+        text: "Removed a settings-screen section that asked operators to paste a minted connection key into a dashboard flow that was never built. The underlying mechanism is unchanged; only that dead, confusing step is gone.",
+      },
+    ],
+  },
+  {
     version: "0.61.159",
     date: "2026-09-02",
     summary:
