@@ -1,0 +1,404 @@
+<?php
+/**
+ * Regression tests for GH #709: enrollment fataled with an uncaught
+ * SodiumException on any host without the native libsodium PHP extension.
+ *
+ * HOW THE POLYFILL PATH IS EXERCISED
+ * ----------------------------------
+ * The bug only appears when WordPress's bundled sodium_compat polyfill
+ * services the call, and this machine (like most CI runners) has the native
+ * extension, so a test that merely calls the code proves nothing.
+ *
+ * These tests therefore make the platform behave exactly as an
+ * extension-less host does, via tests/sodium-memzero-shim.php: a namespaced
+ * WPMgr\Agent\Support\sodium_memzero() that shadows the global builtin for
+ * the one namespace SecureMemory lives in, and raises the SodiumException
+ * sodium_compat raises, message verbatim from
+ * wp-includes/sodium_compat/src/Compat.php.
+ *
+ * That file's header explains why this is not a Patchwork redefinable-internal:
+ * Patchwork forwards a wrapped internal's arguments by value, which both emits
+ * a by-reference warning on every wipe in the suite (failOnWarning) and breaks
+ * the very contract sodium_memzero() exists to provide.
+ *
+ * Production code is not modified, not parameterised for the test, and not told
+ * it is under test: it takes the same branch it takes on a real CloudLinux host.
+ *
+ * WHAT THE SIMULATION DOES NOT COVER
+ * ----------------------------------
+ * Namespace fallback shadows one namespace, so the simulation reaches
+ * SecureMemory and nothing else. Keystore and Signer are in WPMgr\Agent, and a
+ * bare sodium_memzero() written in either would bypass the shim entirely and
+ * leave every simulated-host test below green. The tests that name a real call
+ * path therefore prove the fallback branch works end to end; they do not guard
+ * against the bug returning. test_only_memzero_was_replaced() does that, by
+ * source grep, and its docblock explains why nothing behavioural can.
+ *
+ * @package WPMgr\Agent\Tests
+ */
+
+declare(strict_types=1);
+
+namespace WPMgr\Agent\Tests;
+
+use Brain\Monkey;
+use Brain\Monkey\Functions;
+use WPMgr\Agent\Keystore;
+use WPMgr\Agent\Signer;
+use WPMgr\Agent\Support\SecureMemory;
+use Yoast\PHPUnitPolyfills\TestCases\TestCase;
+
+/**
+ * @covers \WPMgr\Agent\Support\SecureMemory
+ */
+final class SecureMemoryTest extends TestCase
+{
+    /** @var array<string,mixed> */
+    private array $options = [];
+
+    private string $keyFile = '';
+
+    protected function set_up(): void
+    {
+        parent::set_up();
+        Monkey\setUp();
+
+        // The capability answer is cached per request; every test starts by
+        // forgetting it so each one re-probes against its own simulated host.
+        SecureMemory::resetCapabilityCache();
+
+        $this->keyFile = sys_get_temp_dir() . '/wpmgr-secmem-test-' . bin2hex(random_bytes(8)) . '.key';
+        $this->options = [];
+        Functions\when('update_option')->alias(function ($name, $value) {
+            $this->options[$name] = $value;
+
+            return true;
+        });
+        Functions\when('get_option')->alias(function ($name, $default = false) {
+            return $this->options[$name] ?? $default;
+        });
+    }
+
+    protected function tear_down(): void
+    {
+        // The shim is process-wide, so it must be handed back inert or the
+        // next test inherits a platform that refuses to wipe.
+        SodiumPlatform::reset();
+        SecureMemory::resetCapabilityCache();
+
+        if (is_file($this->keyFile)) {
+            @unlink($this->keyFile);
+        }
+        Monkey\tearDown();
+        parent::tear_down();
+    }
+
+    /**
+     * Make this process behave like a host with no native libsodium: every
+     * sodium_memzero() call raises sodium_compat's refusal.
+     *
+     * @return void
+     */
+    private function simulateHostWithoutNativeLibsodium(): void
+    {
+        SodiumPlatform::refuse();
+    }
+
+    // -----------------------------------------------------------------
+    // The bug itself.
+    // -----------------------------------------------------------------
+
+    /**
+     * The crux. Before the fix this call site was a bare sodium_memzero()
+     * and this test fataled with an uncaught SodiumException.
+     */
+    public function test_wipe_does_not_throw_when_the_platform_refuses(): void
+    {
+        $this->simulateHostWithoutNativeLibsodium();
+
+        $secret = 'super-secret-key-material';
+        SecureMemory::wipe($secret);
+
+        $this->assertNull($secret, 'The value must still be cleared when the native wipe is unavailable.');
+    }
+
+    /**
+     * The reported crash path end to end: generating the site keypair reaches
+     * Keystore::encrypt() -> masterKey() -> ... -> SecureMemory::wipe(). With
+     * the platform refusing the native wipe, this walks the real call chain
+     * over SecureMemory's fallback branch and asserts a usable keypair still
+     * comes out.
+     *
+     * WHAT THIS CANNOT SEE
+     * --------------------
+     * It cannot detect the #709 regression returning. The refusal is injected
+     * by tests/sodium-memzero-shim.php, which works by namespace fallback and
+     * so shadows sodium_memzero() only for calls made from inside
+     * WPMgr\Agent\Support. Keystore is in WPMgr\Agent, so a bare
+     * sodium_memzero() reintroduced there would resolve to the global builtin,
+     * never reach the shim, never be refused, and leave this test green.
+     * test_only_memzero_was_replaced() is the guard for that.
+     */
+    public function test_site_keypair_generation_completes_when_secure_memory_falls_back(): void
+    {
+        $this->simulateHostWithoutNativeLibsodium();
+
+        $keystore  = new Keystore();
+        $publicKey = $keystore->generateSiteKeypair();
+
+        $this->assertSame(
+            SODIUM_CRYPTO_SIGN_PUBLICKEYBYTES,
+            strlen($publicKey),
+            'A full Ed25519 public key must still be produced on a host without native libsodium.'
+        );
+        $this->assertNotSame('', (string) ($this->options[Keystore::OPTION_SITE_KEYPAIR] ?? ''));
+    }
+
+    /**
+     * The enrollment entry point from the issue's backtrace
+     * (Enrollment::buildEnrollPayload -> Signer::agentPublicKeyBase64), driven
+     * with SecureMemory taking its fallback branch.
+     *
+     * Same blind spot as the test above: Signer is in WPMgr\Agent, outside the
+     * one namespace the shim can shadow, so this cannot detect a bare
+     * sodium_memzero() reappearing in Signer. It covers the fallback path, not
+     * the regression. See test_only_memzero_was_replaced().
+     */
+    public function test_agent_public_key_base64_completes_when_secure_memory_falls_back(): void
+    {
+        $this->simulateHostWithoutNativeLibsodium();
+
+        $signer = new Signer(new Keystore());
+        $base64 = $signer->agentPublicKeyBase64();
+
+        $this->assertNotSame('', $base64);
+        $this->assertSame(
+            SODIUM_CRYPTO_SIGN_PUBLICKEYBYTES,
+            strlen((string) base64_decode($base64, true)),
+            'agentPublicKeyBase64() must return a decodable 32-byte Ed25519 key.'
+        );
+    }
+
+    /**
+     * Request signing shares the same code path and was equally unreachable
+     * before the fix; this drives it with SecureMemory falling back.
+     *
+     * Blind to a reintroduced bare sodium_memzero() for the same reason as the
+     * two tests above: the shim shadows only WPMgr\Agent\Support, and Signer
+     * and Keystore are in WPMgr\Agent. See test_only_memzero_was_replaced().
+     */
+    public function test_request_signing_completes_when_secure_memory_falls_back(): void
+    {
+        $this->simulateHostWithoutNativeLibsodium();
+
+        $keystore = new Keystore();
+        $signer   = new Signer($keystore);
+        $signer->agentPublicKey();
+
+        $headers = $signer->signHeaders('POST', '/v1/agent/heartbeat', '{}');
+
+        $this->assertNotSame('', $headers[Signer::HEADER_SIGNATURE] ?? '');
+        $this->assertNotSame('', $headers[Signer::HEADER_KEY] ?? '');
+    }
+
+    /**
+     * The refusal is probed once, not on every secret. Without the cache each
+     * key operation would build and throw a fresh exception forever.
+     */
+    public function test_platform_refusal_is_probed_only_once(): void
+    {
+        $this->simulateHostWithoutNativeLibsodium();
+
+        for ($i = 0; $i < 25; $i++) {
+            $secret = 'secret-' . $i;
+            SecureMemory::wipe($secret);
+        }
+
+        $this->assertSame(1, SodiumPlatform::$calls, 'The platform must be asked once, then the answer reused.');
+        $this->assertFalse(SecureMemory::hasNativeWipe());
+    }
+
+    // -----------------------------------------------------------------
+    // The over-fire arm: the wipe must NOT be skipped where it works.
+    // -----------------------------------------------------------------
+
+    /**
+     * On a platform that can wipe, the real sodium_memzero() is still called.
+     * A "fix" that simply stopped wiping would pass every test above and fail
+     * this one.
+     */
+    public function test_native_wipe_is_still_performed_when_the_platform_supports_it(): void
+    {
+        SodiumPlatform::reset();
+
+        $secret = 'super-secret-key-material';
+        SecureMemory::wipe($secret);
+
+        $this->assertSame(1, SodiumPlatform::$calls, 'sodium_memzero() must still be called where supported.');
+        $this->assertSame(
+            'super-secret-key-material',
+            SodiumPlatform::$wiped[0],
+            'It must receive the real value to wipe.'
+        );
+        // The shim delegates to the real builtin, so this is the genuine wipe.
+        $this->assertNull($secret, 'The native wipe must actually have cleared the value.');
+        $this->assertTrue(SecureMemory::hasNativeWipe());
+    }
+
+    /**
+     * And it keeps being called for every subsequent secret, rather than the
+     * capability cache turning one success into a permanent skip.
+     */
+    public function test_native_wipe_is_performed_for_every_secret(): void
+    {
+        SodiumPlatform::reset();
+
+        foreach (['alpha', 'bravo', 'charlie'] as $value) {
+            $secret = $value;
+            SecureMemory::wipe($secret);
+        }
+
+        $this->assertSame(['alpha', 'bravo', 'charlie'], SodiumPlatform::$wiped);
+    }
+
+    /**
+     * The same over-fire arm, proven outside this harness.
+     *
+     * Every assertion above still runs through a shim, however thin, and a
+     * shim is a thing that can be wrong. So this arm runs in a clean
+     * subprocess with no shim, no PHPUnit and no stubs: real PHP, the real
+     * class file, the real global sodium_memzero(), the real platform. It is
+     * the assertion a "fix" that quietly stopped wiping would fail.
+     */
+    public function test_wipe_really_clears_the_value_on_an_uninstrumented_platform(): void
+    {
+        $classFile = dirname(__DIR__) . '/includes/support/class-secure-memory.php';
+        $script    = sprintf(
+            '<?php define("ABSPATH", "/wp/"); require %s; $s = "real-platform-secret"; '
+                . '\\WPMgr\\Agent\\Support\\SecureMemory::wipe($s); '
+                . 'echo (extension_loaded("sodium") ? "native" : "polyfill"), "|", var_export($s, true), "|", '
+                . 'var_export(\\WPMgr\\Agent\\Support\\SecureMemory::hasNativeWipe(), true);',
+            var_export($classFile, true)
+        );
+
+        $scriptFile = sys_get_temp_dir() . '/wpmgr-secmem-subprocess-' . bin2hex(random_bytes(8)) . '.php';
+        file_put_contents($scriptFile, $script);
+
+        $output = (string) shell_exec(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($scriptFile) . ' 2>&1');
+        @unlink($scriptFile);
+
+        $parts = explode('|', trim($output));
+        $this->assertCount(3, $parts, 'Subprocess did not complete cleanly. Output: ' . $output);
+
+        [$platform, $wiped, $usedNative] = $parts;
+
+        $this->assertSame('NULL', $wiped, 'The secret must be cleared on a real, uninstrumented platform.');
+
+        if ($platform === 'native') {
+            $this->assertSame(
+                'true',
+                $usedNative,
+                'With the native extension present the real sodium_memzero() must still be the one doing the work.'
+            );
+        } else {
+            $this->assertSame('false', $usedNative);
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Drop-in equivalence with the sodium_memzero() calls it replaced.
+    // -----------------------------------------------------------------
+
+    /**
+     * Several call sites wipe an array element (AgeIdentity wipes
+     * $pair['secret']), so the by-reference contract must hold for those too.
+     */
+    public function test_wipe_clears_an_array_element_by_reference(): void
+    {
+        $this->simulateHostWithoutNativeLibsodium();
+
+        $pair = ['secret' => 'private-key-bytes', 'recipient' => 'age1public'];
+        SecureMemory::wipe($pair['secret']);
+
+        $this->assertNull($pair['secret']);
+        $this->assertSame('age1public', $pair['recipient'], 'Only the named element may be touched.');
+    }
+
+    /**
+     * The helper replaced a call that fataled; it must not be able to
+     * introduce a fatal of its own on an unexpected argument.
+     */
+    public function test_wipe_tolerates_a_non_string_value(): void
+    {
+        $this->simulateHostWithoutNativeLibsodium();
+
+        $value = null;
+        SecureMemory::wipe($value);
+        $this->assertNull($value);
+
+        $empty = '';
+        SecureMemory::wipe($empty);
+        $this->assertNull($empty);
+    }
+
+    /**
+     * THE REVERSION GUARD FOR #709. Do not delete this test as redundant with
+     * the behavioural ones above; it is the only test in this file that fails
+     * if the bug comes back.
+     *
+     * It asserts by source grep that no file under includes/ outside
+     * SecureMemory itself calls sodium_memzero() directly. Reintroduce a bare
+     * call anywhere -- Keystore, Signer, or a new caller written next year --
+     * and this goes red naming the file.
+     *
+     * WHY A BEHAVIOURAL TEST CANNOT DO THIS JOB
+     * -----------------------------------------
+     * Simulating an extension-less host means intercepting sodium_memzero(),
+     * and the only interception available here is PHP's namespace fallback
+     * (tests/sodium-memzero-shim.php explains why Patchwork is not an option:
+     * it forwards a wrapped internal's arguments by value, breaking the very
+     * by-reference contract the function exists to provide). Namespace
+     * fallback reaches exactly one namespace -- WPMgr\Agent\Support, where
+     * SecureMemory lives. A bare sodium_memzero() written in WPMgr\Agent binds
+     * to the global builtin, which on this machine succeeds silently. Nothing
+     * about that call is observable from PHP: same name, same signature, same
+     * void return, no side effect a test can read back. So no behavioural test
+     * can distinguish the fixed code from the broken code here, and a source
+     * grep is the correct instrument rather than a weaker substitute for one.
+     *
+     * The second thing it pins, from the original sweep: no sodium primitive
+     * other than memzero may be guarded away. sodium_compat implements all the
+     * others, so they must keep being called directly rather than routed
+     * through a fallback.
+     */
+    public function test_only_memzero_was_replaced(): void
+    {
+        $dir   = dirname(__DIR__) . '/includes';
+        $files = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($dir));
+
+        $helper = $dir . '/support/class-secure-memory.php';
+
+        $found = [];
+        foreach ($files as $file) {
+            if (!$file->isFile() || $file->getExtension() !== 'php') {
+                continue;
+            }
+            // The helper is the one place allowed to make the raw call: it is
+            // what wraps it in the guard.
+            if ($file->getPathname() === $helper) {
+                continue;
+            }
+            $source = (string) file_get_contents($file->getPathname());
+            if (preg_match('/\bsodium_memzero\s*\(/', $source) === 1) {
+                $found[] = $file->getPathname();
+            }
+        }
+
+        $this->assertSame(
+            [],
+            $found,
+            'sodium_memzero() must not be called directly; use SecureMemory::wipe(). Offenders: '
+                . implode(', ', $found)
+        );
+    }
+}
