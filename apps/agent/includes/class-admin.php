@@ -313,22 +313,9 @@ final class Admin
     }
 
     /**
-     * Format the public connection-key blob from a stored token.
-     *
-     * Shape: `wpmgr:v1:<32-byte-base64url-token>:<base64(site_url)>:<agent_version>`
-     */
-    private function formatConnectionKeyBlob(string $token): string
-    {
-        $siteUrl    = function_exists('get_site_url') ? (string) get_site_url() : '';
-        $urlEncoded = $this->base64UrlEncode($siteUrl);
-        $version    = defined('WPMGR_AGENT_VERSION') ? (string) WPMGR_AGENT_VERSION : '0.0.0';
-        return 'wpmgr:v1:' . $token . ':' . $urlEncoded . ':' . $version;
-    }
-
-    /**
-     * URL-safe base64 encode without padding. Used for the token + site_url
-     * components of the connection-key blob so the result is safe to ship in
-     * URLs, headers, and paste-into-form inputs without further escaping.
+     * URL-safe base64 encode without padding. Used to encode the minted
+     * connection-key token so it is safe to store and, later, to ship in
+     * URLs, headers, or a paste-into-form input without further escaping.
      */
     private function base64UrlEncode(string $bytes): string
     {
