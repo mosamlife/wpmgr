@@ -493,6 +493,64 @@ final class FileManagerWriteCommandsTest extends TestCase {
 		$this->assertSame( 'invalid_path', $result['error']['code'] );
 	}
 
+	public function test_file_mkdir_symlink_parent_escape_rejected(): void {
+		// Regression: jailPath() returns a lexical path when the target does
+		// not exist yet, so a pre-existing in-jail symlink pointing outside
+		// the jail must not let file_mkdir create directories outside the
+		// jail root (wp_mkdir_p follows symlinks).
+		$outside = sys_get_temp_dir() . '/wpmgr-mkdir-escape-' . bin2hex( random_bytes( 6 ) );
+		mkdir( $outside, 0755, true );
+
+		try {
+			symlink( $outside, $this->testAbsDir . '/link' );
+
+			$cmd    = new FileMkdirCommand();
+			$result = $cmd->execute( [], [ 'path' => $this->testSubDir . '/link/pwned' ] );
+
+			$this->assertArrayHasKey( 'error', $result, json_encode( $result ) );
+			$this->assertSame( 'outside_root', $result['error']['code'] );
+			$this->assertDirectoryDoesNotExist( $outside . '/pwned' );
+		} finally {
+			$this->rmdir_r( $outside );
+		}
+	}
+
+	public function test_file_mkdir_dangling_symlink_target_rejected(): void {
+		// file_exists() follows symlinks, so a dangling symlink at the target
+		// passes the 'exists' check; the is_link() guard must reject it.
+		symlink( $this->testAbsDir . '/nonexistent-target', $this->testAbsDir . '/dangling' );
+
+		$cmd    = new FileMkdirCommand();
+		$result = $cmd->execute( [], [ 'path' => $this->testSubDir . '/dangling' ] );
+
+		$this->assertArrayHasKey( 'error', $result );
+		$this->assertSame( 'outside_root', $result['error']['code'] );
+	}
+
+	public function test_file_mkdir_nested_path_still_created(): void {
+		// The ancestor re-jail walk must not break legitimate nested creation
+		// (wp_mkdir_p creates intermediate directories).
+		$jailPath = $this->testSubDir . '/a/b/c';
+		$cmd      = new FileMkdirCommand();
+		$result   = $cmd->execute( [], [ 'path' => $jailPath ] );
+
+		$this->assertArrayNotHasKey( 'error', $result, json_encode( $result ) );
+		$this->assertDirectoryExists( $this->testAbsDir . '/a/b/c' );
+	}
+
+	public function test_file_mkdir_in_jail_symlink_parent_still_allowed(): void {
+		// A symlink parent that RESOLVES inside the jail is legitimate: the
+		// guard keys on realpath containment, not on symlink presence.
+		$this->makeDir( 'real-dir' );
+		symlink( $this->testAbsDir . '/real-dir', $this->testAbsDir . '/in-jail-link' );
+
+		$cmd    = new FileMkdirCommand();
+		$result = $cmd->execute( [], [ 'path' => $this->testSubDir . '/in-jail-link/child' ] );
+
+		$this->assertArrayNotHasKey( 'error', $result, json_encode( $result ) );
+		$this->assertDirectoryExists( $this->testAbsDir . '/real-dir/child' );
+	}
+
 	// ==================================================================
 	// FileRenameCommand — POSITIVE + NEGATIVE TESTS
 	// ==================================================================
