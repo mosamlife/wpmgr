@@ -2,6 +2,7 @@ package tests
 
 import (
 	"context"
+	"net/netip"
 	"testing"
 
 	"github.com/google/uuid"
@@ -52,7 +53,7 @@ func TestBootstrapAndLogin(t *testing.T) {
 	}
 
 	// Login success.
-	login, err := svc.Login(ctx, "owner@example.com", "a-very-strong-password")
+	login, err := svc.Login(ctx, "owner@example.com", "a-very-strong-password", netip.Addr{})
 	if err != nil {
 		t.Fatalf("login: %v", err)
 	}
@@ -61,14 +62,14 @@ func TestBootstrapAndLogin(t *testing.T) {
 	}
 
 	// Login failure: wrong password.
-	if _, err := svc.Login(ctx, "owner@example.com", "wrong"); err == nil {
+	if _, err := svc.Login(ctx, "owner@example.com", "wrong", netip.Addr{}); err == nil {
 		t.Fatal("login with wrong password should fail")
 	} else if de, ok := domain.AsDomain(err); !ok || de.Kind != domain.KindUnauthorized {
 		t.Fatalf("want unauthorized, got %v", err)
 	}
 
 	// Login failure: unknown user (must not reveal existence).
-	if _, err := svc.Login(ctx, "nobody@example.com", "whatever"); err == nil {
+	if _, err := svc.Login(ctx, "nobody@example.com", "whatever", netip.Addr{}); err == nil {
 		t.Fatal("login with unknown user should fail")
 	} else if de, ok := domain.AsDomain(err); !ok || de.Kind != domain.KindUnauthorized {
 		t.Fatalf("want unauthorized, got %v", err)

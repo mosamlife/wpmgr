@@ -8,6 +8,7 @@ package tests
 
 import (
 	"context"
+	"net/netip"
 	"strings"
 	"testing"
 
@@ -171,7 +172,7 @@ func TestChangePassword(t *testing.T) {
 			t.Fatalf("ChangePassword: %v", err)
 		}
 		// Verify new password works at login.
-		res, err := svc.Login(ctx, "pwchange@example.com", newPwd)
+		res, err := svc.Login(ctx, "pwchange@example.com", newPwd, netip.Addr{})
 		if err != nil {
 			t.Fatalf("login with new password: %v", err)
 		}
@@ -179,7 +180,7 @@ func TestChangePassword(t *testing.T) {
 			t.Fatal("login returned unexpected user")
 		}
 		// Old password should no longer work.
-		if _, err := svc.Login(ctx, "pwchange@example.com", originalPwd); err == nil {
+		if _, err := svc.Login(ctx, "pwchange@example.com", originalPwd, netip.Addr{}); err == nil {
 			t.Fatal("old password should no longer be valid")
 		}
 	})
