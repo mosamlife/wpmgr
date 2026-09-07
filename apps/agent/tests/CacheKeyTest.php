@@ -203,4 +203,23 @@ final class CacheKeyTest extends TestCase
         $p = $this->key->path('/var/cache/wpmgr', 'evil.com/../..', '/a/../../etc', 'index.html.gz');
         $this->assertStringNotContainsString('..', $p);
     }
+
+    /**
+     * Regression: the dot-segment strip must run to a fixpoint. A single pass
+     * over these generators removes the inner '../' but recombines its
+     * neighbours into a brand-new '../' that then reaches the filesystem.
+     */
+    public function test_normalize_path_strips_traversal_to_fixpoint(): void
+    {
+        $cases = [
+            '/.//.../x'        => '/x',
+            '/.../.../victim'  => '/victim',
+            '/.../...//victim' => '/victim',
+        ];
+        foreach ($cases as $input => $want) {
+            $got = CacheKey::normalizePath($input);
+            $this->assertSame($want, $got, "normalizePath('$input')");
+            $this->assertStringNotContainsString('../', $got);
+        }
+    }
 }

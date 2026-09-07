@@ -38,7 +38,7 @@ if (!defined('ABSPATH')) {
  * finds in the on-disk copy; a mismatch triggers a transparent reinstall so
  * existing sites always run the current drop-in logic without manual intervention.
  */
-define('WPMGR_PAGE_CACHE_DROPIN_VERSION', '0.45.1');
+define('WPMGR_PAGE_CACHE_DROPIN_VERSION', '0.46.0');
 
 if (!defined('WP_CACHE')) {
     return;
@@ -295,11 +295,18 @@ if (!empty($_GET)) {
 
 // HTTP_HOST: strict charset validation guards against cache-poisoning via a
 // crafted Host header. Accept only hostname characters + optional port; reject
-// (treat as cache bypass via 'unknown-host') anything else. No WP sanitizers
-// available at drop-in load time.
+// (treat as cache bypass via 'unknown-host') anything else. The charset allows
+// dots, so consecutive dots ('..') are rejected separately — the host is used
+// as a directory segment of the cache path, and a host of '..' would key into
+// the bucket tree's parent (CacheKey::sanitizeHost strips '..' on the write
+// side; read and write must agree). No WP sanitizers available at drop-in load
+// time.
 // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.MissingUnslash,WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- advanced-cache drop-in runs pre-WP; wp_unslash/sanitize_* unavailable; value strictly validated via preg_match allowlist below
 $wpmgr_host_raw = isset($_SERVER['HTTP_HOST']) ? strtolower((string) $_SERVER['HTTP_HOST']) : '';
-if ($wpmgr_host_raw !== '' && preg_match('/^[a-z0-9.-]+(:[0-9]{1,5})?$/', $wpmgr_host_raw) === 1) {
+if ($wpmgr_host_raw !== ''
+    && strpos($wpmgr_host_raw, '..') === false
+    && preg_match('/^[a-z0-9.-]+(:[0-9]{1,5})?$/', $wpmgr_host_raw) === 1
+) {
     $wpmgr_host = $wpmgr_host_raw;
 } else {
     $wpmgr_host = 'unknown-host';
@@ -323,7 +330,15 @@ if ($wpmgr_qpos !== false) {
 $wpmgr_path = strtolower(rawurldecode($wpmgr_uri));
 $wpmgr_path = str_replace(array('\\', "\0"), array('/', ''), $wpmgr_path);
 $wpmgr_path = preg_replace('#/+#', '/', $wpmgr_path);
-$wpmgr_path = preg_replace('#(\.\./|/\.\.)#', '', (string) $wpmgr_path);
+// Dot-segment strip runs to a FIXPOINT: a single pass over e.g. '/.//.../x'
+// removes the inner '../' but recombines its neighbours into a brand-new
+// '../' (non-idempotent-sanitizer traversal). Must match
+// CacheKey::normalizePath exactly or read and write key differently.
+do {
+    $wpmgr_path_prev = (string) $wpmgr_path;
+    $wpmgr_path      = preg_replace('#(\.\./|/\.\.)#', '', $wpmgr_path_prev);
+} while ($wpmgr_path !== $wpmgr_path_prev);
+unset($wpmgr_path_prev);
 $wpmgr_path = '/' . ltrim((string) $wpmgr_path, '/');
 $wpmgr_path = rtrim($wpmgr_path, '/'); // '' for root
 
@@ -376,6 +391,23 @@ if (!is_file($wpmgr_file)) {
     }
     @file_put_contents($wpmgr_miss_file, "\n", FILE_APPEND); // phpcs:ignore PluginCheck.CodeAnalysis.WriteFile.PluginDirectoryWrite -- writes to wp-content/cache, a persistent install target outside the plugin folder
     return false; // MISS — boot WordPress
+}
+
+// Containment backstop: the key components above are sanitised lexically, but
+// the file about to be served must ALSO physically resolve inside the cache
+// root — a planted symlink (or any sanitiser gap) must never leak a file from
+// outside the bucket tree. realpath() is cheap here (one HIT per request, and
+// PHP caches the resolution); an escaped path is handed to WordPress as a MISS.
+$wpmgr_cache_root = realpath(rtrim($wpmgr_content, '/\\') . '/cache/wpmgr');
+$wpmgr_file_real  = realpath($wpmgr_file);
+if ($wpmgr_cache_root === false || $wpmgr_file_real === false
+    || strncmp(
+        str_replace('\\', '/', $wpmgr_file_real),
+        str_replace('\\', '/', $wpmgr_cache_root) . '/',
+        strlen(str_replace('\\', '/', $wpmgr_cache_root)) + 1
+    ) !== 0
+) {
+    return false; // outside the cache root — never serve; boot WordPress
 }
 
 // --- Serve the cache hit ------------------------------------------------------

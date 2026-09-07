@@ -254,10 +254,18 @@ final class CacheKey
         $uriPath = rawurldecode($uriPath);
         $uriPath = strtolower($uriPath);
 
-        // Collapse path traversal and stray separators defensively.
+        // Collapse path traversal and stray separators defensively. The
+        // dot-segment strip runs to a FIXPOINT: a single pass over e.g.
+        // '/.//.../x' removes the inner '../' but recombines its neighbours
+        // into a brand-new '../' (non-idempotent-sanitizer traversal). Must
+        // match the advanced-cache drop-in exactly or read and write key
+        // differently.
         $uriPath = str_replace(['\\', "\0"], ['/', ''], $uriPath);
         $uriPath = preg_replace('#/+#', '/', $uriPath) ?? $uriPath;
-        $uriPath = preg_replace('#(\.\./|/\.\.)#', '', $uriPath) ?? $uriPath;
+        do {
+            $prev    = $uriPath;
+            $uriPath = preg_replace('#(\.\./|/\.\.)#', '', $prev) ?? $prev;
+        } while ($uriPath !== $prev);
 
         $uriPath = '/' . ltrim($uriPath, '/');
         $uriPath = rtrim($uriPath, '/');

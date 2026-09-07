@@ -457,6 +457,25 @@ final class CacheWriter
             return false;
         }
 
+        // Containment backstop: the key components are sanitised lexically
+        // upstream (CacheKey), but the directory about to receive the write
+        // must ALSO physically resolve inside the cache root — a planted
+        // symlink (or any sanitiser gap) must never redirect a cache write
+        // outside the bucket tree. Mirrors the serve-side check in the
+        // advanced-cache drop-in.
+        $rootReal = realpath($this->cacheRoot);
+        $dirReal  = realpath($dir);
+        if ($rootReal === false || $dirReal === false) {
+            return false;
+        }
+        $rootNorm = str_replace('\\', '/', $rootReal);
+        $dirNorm  = str_replace('\\', '/', $dirReal);
+        if ($dirNorm !== $rootNorm
+            && strncmp($dirNorm, $rootNorm . '/', strlen($rootNorm) + 1) !== 0
+        ) {
+            return false;
+        }
+
         $tmp = $path . '.tmp-' . getmypid() . '-' . wp_rand();
         if (@file_put_contents($tmp, $compressed, LOCK_EX) === false) {
             wp_delete_file($tmp);

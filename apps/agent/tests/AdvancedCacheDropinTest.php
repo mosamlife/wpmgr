@@ -166,4 +166,76 @@ final class AdvancedCacheDropinTest extends TestCase
         $this->assertFalse($result);
     }
 
+    /**
+     * Regression (traversal via non-idempotent strip): a single pass over
+     * '/.../.../victim' leaves '/../victim', keying one level ABOVE the host
+     * bucket — another host's cached page. The fixpoint strip must reduce it
+     * to '/victim', which is a plain miss. On vulnerable code this test does
+     * not merely fail: the drop-in serves the foreign bucket and exit()s the
+     * process.
+     */
+    public function test_traversal_generator_cannot_read_across_host_buckets(): void
+    {
+        // A different host's bucket, adjacent to example.com's.
+        $this->warmCacheFile('victim', '');
+
+        $result = $this->runDropin(
+            (new CacheConfig([]))->toDropinArray(),
+            ['REQUEST_URI' => '/.../.../victim']
+        );
+
+        $this->assertFalse($result, 'traversal-generator URI must miss, never serve another bucket');
+    }
+
+    /**
+     * Regression: the host charset regex permits dots, so HTTP_HOST '..' keyed
+     * into the cache root's PARENT directory. A host containing '..' must be
+     * treated as unknown-host (cache bypass), matching CacheKey::sanitizeHost
+     * on the write side.
+     */
+    public function test_dotdot_host_cannot_escape_cache_root(): void
+    {
+        // File OUTSIDE the cache root: <tmp>/cache/victim/index.html.gz —
+        // exactly where host '..' + path '/victim' used to land.
+        @mkdir($this->tempDir . '/cache/victim', 0o777, true);
+        file_put_contents(
+            $this->tempDir . '/cache/victim/index.html.gz',
+            gzencode('<html><body>outside</body></html>')
+        );
+
+        $result = $this->runDropin(
+            (new CacheConfig([]))->toDropinArray(),
+            ['HTTP_HOST' => '..', 'REQUEST_URI' => '/victim']
+        );
+
+        $this->assertFalse($result, "host '..' must bypass the cache, never key outside the root");
+    }
+
+    /**
+     * Containment backstop: even when every lexical sanitiser passes, a file
+     * that physically resolves OUTSIDE the cache root (here: through a planted
+     * symlink) must be handed to WordPress as a miss, never served.
+     */
+    public function test_symlinked_bucket_is_not_served(): void
+    {
+        $outside = $this->tempDir . '/outside-root';
+        @mkdir($outside, 0o777, true);
+        file_put_contents($outside . '/index.html.gz', gzencode('<html><body>leaked</body></html>'));
+        symlink($outside, $this->tempDir . '/cache/wpmgr/example.com');
+
+        try {
+            $result = $this->runDropin(
+                (new CacheConfig([]))->toDropinArray(),
+                ['REQUEST_URI' => '/']
+            );
+
+            $this->assertFalse($result, 'a bucket resolving outside the cache root must miss, never serve');
+        } finally {
+            // rmdirRecursive() resolves entries via getRealPath(), which
+            // returns false for a symlink whose target is already gone —
+            // remove the link here so tear_down never sees it.
+            @unlink($this->tempDir . '/cache/wpmgr/example.com');
+        }
+    }
+
 }
