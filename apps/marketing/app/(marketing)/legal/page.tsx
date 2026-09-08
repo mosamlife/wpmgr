@@ -18,7 +18,7 @@ const LEGAL_ITEMS = [
     icon: "ShieldCheck",
     title: "Security Policy",
     description:
-      "Responsible disclosure scope and process, our security posture (Ed25519-signed agent, redacted diagnostics, client-side-encrypted backups), and how to report a vulnerability.",
+      "Responsible disclosure scope and process, our security posture (Ed25519-signed agent, redacted diagnostics, backups stored by default in a control-plane-managed bucket on plans with managed storage, your own infrastructure if you self-host, WPMgr's on the hosted service, or in storage you configure yourself on the Free plan), and how to report a vulnerability.",
     href: "/legal/security-policy",
     external: false,
     cta: "Read the security policy",

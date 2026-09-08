@@ -62,11 +62,11 @@ The practical effect is that frequency stops being a budget decision. That is th
 
 A backup on the same server as the site is not a backup. Server dies, backup dies. Server is compromised, and any attacker competent enough to matter deletes the backups first, because that is what converts an incident into leverage.
 
-Offsite means a different failure domain: a different provider, or at minimum a different account. The practical options are S3-compatible object storage (S3, Cloudflare R2, Backblaze B2, MinIO), a remote SFTP target, or a NAS you control.
+Offsite means a different failure domain: a different provider, or at minimum a different account. The practical options are S3-compatible object storage (S3, Cloudflare R2, Backblaze B2, MinIO) or a NAS you control.
 
 Two properties are worth insisting on. **Encryption before the data leaves the site**, so the storage provider holds ciphertext rather than your client's customer database. And **credentials the site cannot use to delete history**: if the WordPress install holds keys with delete permission on the bucket, then anything that compromises the site can erase the backups. Write-only or append-only credentials, or object lock on the bucket, close that path.
 
-WPMgr encrypts on the site before upload, supports S3-compatible and local destinations configured once at the control plane and reused across the fleet, and keeps destination credentials in the control plane rather than on the sites.
+WPMgr keeps destination credentials in the control plane rather than on the sites, and supports S3-compatible and local destinations configured once at the control plane and reused across the fleet; on the default managed bucket, the control plane holds the data too. The first property above, encryption before the data leaves the site, is not available yet. A destination that encrypts at rest closes a different gap, data resting on disk, but the provider still receives plaintext on the way in.
 
 ## Retention, and pruning on purpose
 
