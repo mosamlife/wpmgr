@@ -70,7 +70,7 @@ export const SECURITY_PAGE: FeaturePageData = {
     },
     {
       icon: "Server",
-      title: "Backup storage: ours by default, or yours",
+      title: "Backup storage: control-plane-managed, or yours",
       desc: "The default destination is a bucket the control plane manages. Point a site at your own S3-compatible bucket, SFTP, or a local folder on its own server instead and the chunks stay off the control plane. Client-side encryption before upload is planned.",
     },
     {

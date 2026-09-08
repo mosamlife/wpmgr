@@ -78,6 +78,11 @@ export default function PrivacyPage() {
                   <strong className="font-semibold text-foreground">Backups.</strong> Backup
                   archives of your database and/or files are stored either on our managed
                   infrastructure or on storage you configure and control, depending on your plan.
+                  None of it is encrypted client-side before upload: on our managed infrastructure,
+                  protection follows however that storage is configured; on storage you configure
+                  yourself, it is whatever encryption you have enabled there; a local folder on the
+                  site&apos;s own server gets none from us, only whatever the host&apos;s own disk
+                  provides.
                 </p>
                 <p>
                   <strong className="font-semibold text-foreground">Aggregate performance telemetry.</strong>{" "}
@@ -194,7 +199,10 @@ export default function PrivacyPage() {
               <ul className="list-disc space-y-2 pl-6">
                 <li>
                   Backup destination is either our managed infrastructure or storage you configure
-                  and control, depending on your plan.
+                  and control, depending on your plan; none of it is encrypted client-side before
+                  upload, so protection follows the destination, our storage&apos;s configuration,
+                  your bucket&apos;s or SFTP server&apos;s, or, for a local folder, whatever the
+                  host&apos;s own disk provides.
                 </li>
                 <li>All network traffic to and from the Service uses TLS.</li>
                 <li>

@@ -9,7 +9,7 @@ import { SITE_CONFIG } from "@/lib/site";
 export const metadata: Metadata = buildMetadata({
   title: "Security Policy: Responsible Disclosure",
   description:
-    "WPMgr responsible disclosure policy and security posture: Ed25519-signed agent, redacted diagnostics, backups on our managed infrastructure or on storage you configure, depending on your plan, and how to report a bug.",
+    "WPMgr responsible disclosure policy and security posture: Ed25519-signed agent, redacted diagnostics, backups stored by default in a control-plane-managed bucket, your own infrastructure if you self-host, WPMgr's on the hosted service, or in storage you configure yourself, and how to report a bug.",
   canonical: "/legal/security-policy",
 });
 
@@ -28,9 +28,9 @@ const SECURITY_POSTURE = [
   },
   {
     icon: "Server",
-    title: "Backups: managed storage or yours",
+    title: "Backup storage: control-plane-managed, or yours",
     description:
-      "Backup data lands on our managed infrastructure or on storage you configure and control, depending on your plan. Client-side encryption before upload is not available yet, so whichever destination is in use is what protects the data, through its own access controls and encryption-at-rest settings.",
+      "The default destination is a control-plane-managed bucket: your own infrastructure if you self-host, WPMgr's if you use the hosted service. Point a site at your own S3-compatible bucket, SFTP, or a local folder on its own server instead and the chunks stay off the control plane. Client-side encryption before upload is not available yet, so the destination in use, and whatever protection it applies, is what protects the data; a local folder gets none from WPMgr, only whatever the host's own disk provides.",
   },
   {
     icon: "ShieldOff",
@@ -283,10 +283,13 @@ export default function SecurityPolicyPage() {
                 personally identifiable information. No session replay, no visitor fingerprinting.
               </li>
               <li className="leading-7">
-                Backup data is stored on our managed infrastructure or on storage you configure
-                and control, depending on your plan. Client-side encryption before upload is not
-                available yet, so the destination in use, not WPMgr, protects it through its own
-                access controls and encryption-at-rest settings.
+                Backup data is stored by default in a control-plane-managed bucket: your own
+                infrastructure if you self-host, WPMgr&apos;s if you use the hosted service. Point
+                a site at your own S3-compatible bucket, SFTP, or a local folder instead and the
+                chunks stay off the control plane. Client-side encryption before upload is not
+                available yet, so the destination in use, not WPMgr, protects it; a local folder
+                gets no encryption from WPMgr at all, only whatever the host&apos;s own disk
+                provides.
               </li>
               <li className="leading-7">
                 Email logs record metadata (from, to domain, subject, status) but not message bodies.

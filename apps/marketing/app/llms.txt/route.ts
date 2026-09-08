@@ -65,8 +65,9 @@ export function GET(): Response {
   const body = `# WPMgr
 
 > Open source, self-hostable WordPress fleet management. One dashboard to back
-> up, update, monitor, secure and speed up many WordPress sites, running on
-> infrastructure you control.
+> up, update, monitor, secure and speed up many WordPress sites. Self-host it
+> and everything runs on infrastructure you control, or use the hosted
+> service instead.
 
 ## What this is
 

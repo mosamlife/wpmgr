@@ -38,7 +38,7 @@ export const BACKUPS_PAGE: FeaturePageData = {
       n: "3",
       icon: "Upload",
       title: "Stored to the destination you choose",
-      desc: "Completed archives are streamed to your configured backup destination. The default is a bucket the control plane manages, so those chunks land with us; point a site at your own S3-compatible bucket, SFTP, or a local folder on its own server instead and they land there, not with us.",
+      desc: "Completed archives are streamed to your configured backup destination. The default is a control-plane-managed bucket, so those chunks land there; point a site at your own S3-compatible bucket, SFTP, or a local folder on its own server instead and they land there, off the control plane.",
     },
     {
       n: "4",
@@ -65,7 +65,7 @@ export const BACKUPS_PAGE: FeaturePageData = {
     },
     {
       icon: "Server",
-      title: "Backup storage: ours by default, or yours",
+      title: "Backup storage: control-plane-managed, or yours",
       desc: "The default destination is a bucket the control plane manages. Point a site at your own S3-compatible bucket, SFTP, or a local folder on its own server instead and the chunks stay off the control plane. Client-side encryption before upload is planned.",
     },
     {
@@ -98,7 +98,7 @@ export const BACKUPS_PAGE: FeaturePageData = {
     },
     {
       q: "Can backups be encrypted?",
-      a: "Not yet. Backup chunks are stored as WPMgr writes them at the destination you configure, so a backup's security follows that destination's access controls and its own encryption-at-rest settings. Client-side encryption before upload is planned.",
+      a: "Not yet. Backup chunks are stored as WPMgr writes them at the destination in use: a control-plane-managed bucket protects them however that storage is configured, your own S3-compatible bucket or SFTP server protects them however you have configured that, and a local folder gets no encryption from WPMgr at all, only whatever the host's own disk provides. Client-side encryption before upload is planned.",
     },
   ],
   siblingLinks: [

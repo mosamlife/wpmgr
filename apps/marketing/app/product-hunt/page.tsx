@@ -88,7 +88,7 @@ export default function ProductHuntPage() {
                 WordPress fleet management, open-source and self-hosted
               </h1>
               <p className="mt-6 text-lg leading-relaxed text-[var(--muted-foreground)] max-w-[60ch] mx-auto">
-                WPMgr is a self-hostable control plane for WordPress site operators, developers, and agencies. Back up, restore, optimize images, monitor uptime, harden security, and push safe bulk updates across every site you manage, from one dashboard on infrastructure you own.
+                WPMgr is a self-hostable control plane for WordPress site operators, developers, and agencies. Back up, restore, optimize images, monitor uptime, harden security, and push safe bulk updates across every site you manage, from one dashboard. Self-host it and everything runs on infrastructure you own.
               </p>
               <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
                 <a

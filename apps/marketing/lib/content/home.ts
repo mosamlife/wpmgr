@@ -20,14 +20,14 @@ export const HOME_HERO = {
   badge: `v${AGENT_VERSION} / open source`,
   heading: "The open-source WordPress fleet manager you can run, read, and contribute to",
   subhead:
-    "WPMgr is a self-hostable control plane for managing one WordPress site or a whole portfolio. Back up, restore, update, monitor uptime, optimize images with the Media Optimizer, clean the database, and lock down every site from a single dashboard, all on infrastructure you own, built from code you can read and improve.",
+    "WPMgr is a self-hostable control plane for managing one WordPress site or a whole portfolio. Back up, restore, update, monitor uptime, optimize images with the Media Optimizer, clean the database, and lock down every site from a single dashboard, built from code you can read and improve. Self-host it and everything runs on infrastructure you own.",
   bodyLines: [
     "Add a site by URL, paste a one-time code into the plugin, and watch it flip from Awaiting to Connected with no page refresh.",
     "Open source under AGPL with an MIT-licensed agent. Every message it exchanges is Ed25519-signed, so nothing happens to your sites you cannot verify.",
   ],
   trust: [
     { icon: "GitFork", title: "Fork and contribute", desc: "AGPL control plane, MIT agent, PRs welcome" },
-    { icon: "ServerCog", title: "Your infrastructure", desc: "Fleet data never leaves your server" },
+    { icon: "ServerCog", title: "Your infrastructure", desc: "Self-host it and fleet data never leaves your server" },
     { icon: "FileSearch", title: "Reviewed on WordPress.org", desc: "Listed in the plugin directory, install straight from wp-admin", href: "#provenance" },
   ],
   ctas: [
@@ -552,7 +552,7 @@ export const HOME_FAQ: FaqItem[] = [
   },
   {
     q: "Is my data private?",
-    a: "Your data lives on the infrastructure you run WPMgr on, not ours. Backups land at the destination you configure: the default is a bucket the control plane manages, and pointing a site at your own S3-compatible bucket, SFTP, or a local folder on its own server keeps the chunks off the control plane instead. Nothing is encrypted client-side today, so whichever destination is in use, its own access controls and encryption-at-rest settings are what protect the data. Image bytes move directly between your site and your storage, and the agent redacts emails, passwords, secrets, tokens, and salts before any diagnostics ever leave a site.",
+    a: "If you self-host the control plane, your data stays on your own infrastructure. On the hosted service, backups default to a control-plane-managed bucket that WPMgr operates; either way, pointing a site at your own S3-compatible bucket, SFTP server, or a local folder on its own server keeps the chunks off the control plane instead. Nothing is encrypted client-side today: a control-plane-managed bucket protects data however that storage is configured, your own S3-compatible bucket or SFTP server protects it however you have configured that, and a local folder gets no encryption from WPMgr at all, only whatever the host's own disk provides. Image bytes move directly between your site and your storage, and the agent redacts emails, passwords, secrets, tokens, and salts before any diagnostics ever leave a site.",
   },
   {
     q: "How many sites can I manage?",
@@ -561,7 +561,7 @@ export const HOME_FAQ: FaqItem[] = [
 ];
 
 export const HOME_FINAL_CTA = {
-  heading: "Run your whole fleet from a dashboard you own.",
+  heading: "Self-host and run your whole fleet from a dashboard you own.",
   subhead:
     "Bring up the full stack with a few commands, enroll your first site with a one-time code, and run your whole fleet from a dashboard that lives on infrastructure you control. Or fork it and build what you need.",
   body: "Free, open source, no per-site fee. Read every line before you run it.",
