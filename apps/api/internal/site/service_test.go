@@ -199,6 +199,24 @@ func TestServiceCreate(t *testing.T) {
 			wantErr:  true,
 			wantKind: domain.KindConflict,
 		},
+		{
+			// The `url` validator tag accepts any scheme, so the explicit
+			// http/https gate (mirroring Enroll) must catch these.
+			name:     "javascript scheme rejected",
+			in:       CreateInput{TenantID: tenant, URL: "javascript://example.com/%0aalert(1)", Name: "Example"},
+			wantErr:  true,
+			wantKind: domain.KindValidation,
+		},
+		{
+			name:     "file scheme rejected",
+			in:       CreateInput{TenantID: tenant, URL: "file:///etc/passwd", Name: "Example"},
+			wantErr:  true,
+			wantKind: domain.KindValidation,
+		},
+		{
+			name: "plain http accepted",
+			in:   CreateInput{TenantID: tenant, URL: "http://example.com", Name: "Example"},
+		},
 	}
 
 	for _, tt := range tests {
