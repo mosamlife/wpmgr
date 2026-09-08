@@ -168,7 +168,9 @@ func (h *Handler) login(c *gin.Context) {
 		httpx.Error(c, domain.Validation("invalid_body", "request body is not valid JSON"))
 		return
 	}
-	res, err := h.svc.Login(c.Request.Context(), body.Email, body.Password)
+	// limiterAddr, not clientAddr: Login rate-limits on this value (see the
+	// decision-site pins in clientaddr_limiter_key_test.go).
+	res, err := h.svc.Login(c.Request.Context(), body.Email, body.Password, h.limiterAddr(c))
 	if err != nil {
 		httpx.Error(c, err)
 		return

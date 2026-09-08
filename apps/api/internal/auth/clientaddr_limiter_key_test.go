@@ -2,10 +2,11 @@ package auth
 
 // Regression pins for the address the authentication rate limiters key on.
 //
-// Two auth limiters make a DECISION from the requesting address:
+// Three auth limiters make a DECISION from the requesting address:
 //
-//   - reset.go  "pwreset-consume:"+ip  (resetPerMinute)
-//   - twofa.go  "2fa-ip:"+ip           (twoFAIPLockoutPerMinute)
+//   - reset.go   "pwreset-consume:"+ip  (resetPerMinute)
+//   - twofa.go   "2fa-ip:"+ip           (twoFAIPLockoutPerMinute)
+//   - service.go "login-ip:"+ip         (loginIPPerMinute)
 //
 // Both must key on limiterAddr, which selects the entry the infrastructure
 // appended (see proxyHops in handler.go), not on clientAddr, which resolves the
@@ -18,7 +19,7 @@ package auth
 //  2. The registered route — TestResetPasswordRouteKeysOnAppendedClient drives
 //     the real gin route through h.Register into the real Service and the real
 //     limiter, so the wiring is covered and not just the helper.
-//  3. TestDecisionSitesUseLimiterAddr parses the source and pins that all four
+//  3. TestDecisionSitesUseLimiterAddr parses the source and pins that all five
 //     decision sites call limiterAddr. Layer 2 cannot reach the three 2FA sites
 //     without a database (their limiter sits behind a challenge lookup), so
 //     without this a revert of those three would be silent.
@@ -467,7 +468,7 @@ func TestTwoFAPerIPLimiterKeysOnAppendedClient(t *testing.T) {
 
 // decisionSites are the handlers whose address feeds a rate-limit decision.
 var decisionSites = map[string][]string{
-	"handler.go":       {"resetPassword"},
+	"handler.go":       {"resetPassword", "login"},
 	"twofa_handler.go": {"twoFATOTPComplete", "twoFARecoveryComplete", "twoFAWebAuthnFinish"},
 }
 
@@ -536,7 +537,7 @@ func TestDecisionSitesUseLimiterAddr(t *testing.T) {
 		}
 	}
 
-	if checked != 4 {
-		t.Fatalf("checked %d decision sites, want 4; the pin is not covering what it claims", checked)
+	if checked != 5 {
+		t.Fatalf("checked %d decision sites, want 5; the pin is not covering what it claims", checked)
 	}
 }

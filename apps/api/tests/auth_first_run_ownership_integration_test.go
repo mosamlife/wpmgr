@@ -2,6 +2,7 @@ package tests
 
 import (
 	"context"
+	"net/netip"
 	"strings"
 	"sync"
 	"testing"
@@ -181,7 +182,7 @@ func TestFirstRunOwnership_CorrectClaimStillWorks(t *testing.T) {
 
 	// The session-issuing half of the existing behaviour: the owner can log in
 	// immediately, with no verification step.
-	if _, err := svc.Login(ctx, "owner@example.com", "a-very-strong-password"); err != nil {
+	if _, err := svc.Login(ctx, "owner@example.com", "a-very-strong-password", netip.Addr{}); err != nil {
 		t.Fatalf("owner login after bootstrap: %v", err)
 	}
 

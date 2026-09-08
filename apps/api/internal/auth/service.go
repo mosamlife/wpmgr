@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"log/slog"
 	"net/netip"
 	"strings"
 
@@ -132,11 +133,44 @@ type loginInput struct {
 	Password string `validate:"required"`
 }
 
+// Login brute-force caps, mirroring the 2FA cross-challenge limits (S2).
+// Interactive login was the sole unthrottled credential endpoint: password
+// reset, 2FA and verify-resend were already limited. The per-account cap
+// stops a targeted brute-force; the per-IP cap stops a single host spraying
+// across accounts.
+const (
+	loginUserPerMinute = 10
+	loginIPPerMinute   = 30
+)
+
 // Login verifies an email+password and returns the user with their memberships.
 // It records a login success/failure audit event against the user's first
 // tenant (failures with no resolvable tenant are not chained to any tenant).
-func (s *Service) Login(ctx context.Context, email, password string) (LoginResult, error) {
+func (s *Service) Login(ctx context.Context, email, password string, ip netip.Addr) (LoginResult, error) {
 	email = normalizeEmail(email)
+
+	// Brute-force throttle, checked before validation, the account lookup and
+	// the argon2 verify, so a spray burns neither CPU nor DB round-trips. Keyed
+	// on the submitted email whether or not the account exists — the 429 must
+	// not leak account existence. ip may be a zero netip.Addr (limit skipped
+	// for IP), matching checkCrossChallengeLimits.
+	if s.limiter != nil {
+		if ok, _ := s.limiter.Allow(ctx, "login-user:"+email, loginUserPerMinute); !ok {
+			return LoginResult{}, domain.RateLimited("too_many_attempts", "too many login attempts; wait before trying again")
+		}
+		if ip.IsValid() {
+			if ok, _ := s.limiter.Allow(ctx, "login-ip:"+ip.String(), loginIPPerMinute); !ok {
+				// Logged because the refusal is otherwise invisible (see the
+				// matching 2FA per-address limit): if the address this keys on
+				// ever stops distinguishing callers, every login in the fleet
+				// is refused and this line is the only thing that says so.
+				slog.WarnContext(ctx, "login per-address rate limited",
+					"key", "login-ip", "addr", ip.String(), "limit_per_minute", loginIPPerMinute)
+				return LoginResult{}, domain.RateLimited("too_many_attempts", "too many requests from this address; wait before trying again")
+			}
+		}
+	}
+
 	if err := s.validator.Struct(loginInput{Email: email, Password: password}); err != nil {
 		return LoginResult{}, err
 	}

@@ -2,6 +2,7 @@ package tests
 
 import (
 	"context"
+	"net/netip"
 	"testing"
 
 	"github.com/google/uuid"
@@ -328,7 +329,7 @@ func TestSocialSignInDoesNotMintAnOrgDuringTheDeleteGraceWindow(t *testing.T) {
 	// now (the first-run call set one), so this is the stronger form of the
 	// original check: the two paths are compared on the same account, and both
 	// must report zero visible memberships rather than one merely failing.
-	pw, lerr := svc.Login(ctx, "sarah@acme.com", "a-very-strong-password")
+	pw, lerr := svc.Login(ctx, "sarah@acme.com", "a-very-strong-password", netip.Addr{})
 	if lerr != nil {
 		t.Fatalf("password login: %v", lerr)
 	}
