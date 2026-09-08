@@ -99,8 +99,9 @@ Postgres per site: about 1-2 GB at 25 sites, about 5-10 GB at 100 sites, about
 ClickHouse.
 
 **Backup chunk storage (S3 or SeaweedFS).** This is the dominant consumer and
-dwarfs everything else. Chunks are content-addressed (blake3), age-encrypted
-on the agent, and deduplicated within a tenant, with incremental
+dwarfs everything else. Chunks are content-addressed (BLAKE2b-256, under the
+field name `blake3`), stored as uploaded, and deduplicated within a tenant,
+with incremental
 archive-delta backups: each increment packs only changed or new files.
 Budget roughly 1.5 to 3 times one full backup per site (a typical WordPress
 full backup is 0.5-5 GB), sized by sites times site size times

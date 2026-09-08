@@ -26,11 +26,29 @@ control plane therefore treats every agent as untrusted:
   private/link-local/loopback ranges at dial time (ADR-009), defeating
   DNS-rebinding via user-controlled site URLs.
 
-### Client-side backup encryption
+### Backup storage
 
-Backup blobs are encrypted with **age**. The control plane must never hold
-decryption keys without the user's explicit consent — by default, encryption is
-client-side and the server stores only ciphertext.
+Backups are **not** encrypted client-side in shipped builds. Chunks are stored
+as they were uploaded at the destination configured for the site, so a backup
+is protected by whatever protects that destination.
+
+What that means differs by destination, and by whether the control plane is one
+you self-host or the hosted service:
+
+| Destination | Who holds the chunks | Transport | Encryption at rest |
+|---|---|---|---|
+| Control-plane-managed bucket (**the default**) | The control plane's object storage. Yours on a self-hosted control plane; operated by WPMgr on the hosted service. | HTTPS upload | Whatever that object storage is configured to provide |
+| Customer-owned S3-compatible bucket | Your bucket, on storage you control | HTTPS upload | Whatever you have enabled on the bucket |
+| Local folder on the WordPress host | The site's own server, on storage you control | None; written to disk | None from WPMgr. Whatever the host's own disk provides, which WPMgr does not configure and cannot guarantee |
+
+Keeping the bytes on operator-controlled storage is a different property from
+encryption at rest and does not stand in for it.
+
+Client-side encryption is the intended model. The **age** implementation and
+the per-site keypair management ship with the agent, and the control plane
+still requires a site to have published an age recipient before it will accept
+a backup. The encrypt step itself is not enabled. The constraint that the
+control plane must never hold a backup decryption key stands.
 
 ### Agent transport
 
@@ -91,8 +109,8 @@ Locked algorithms — **changing any requires an ADR**:
 |-----------|-----|
 | **Ed25519** | Agent request signing (both directions) |
 | **AES-256-GCM** | At-rest secret encryption |
-| **blake3** | Content addressing / integrity |
-| **age** | Backup encryption (client-side) |
+| **BLAKE2b-256** | Content addressing / integrity. The code identifier and the wire field name both read `blake3`. |
+| **age** | Backup encryption (client-side). Implemented; not enabled in shipped builds. |
 
 ## Disclosure
 
