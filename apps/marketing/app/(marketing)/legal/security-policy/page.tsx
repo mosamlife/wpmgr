@@ -9,7 +9,7 @@ import { SITE_CONFIG } from "@/lib/site";
 export const metadata: Metadata = buildMetadata({
   title: "Security Policy: Responsible Disclosure",
   description:
-    "WPMgr responsible disclosure policy and security posture: Ed25519-signed agent, redacted diagnostics, backups stored where you control them, and how to report a bug.",
+    "WPMgr responsible disclosure policy and security posture: Ed25519-signed agent, redacted diagnostics, backups on our managed infrastructure or on storage you configure, depending on your plan, and how to report a bug.",
   canonical: "/legal/security-policy",
 });
 
@@ -28,9 +28,9 @@ const SECURITY_POSTURE = [
   },
   {
     icon: "Server",
-    title: "Backups stored where you control them",
+    title: "Backups: managed storage or yours",
     description:
-      "Backup data moves directly from the agent to the S3-compatible, SFTP, or local destination you configure; the control plane never holds it. Client-side encryption before upload is planned.",
+      "Backup data lands on our managed infrastructure or on storage you configure and control, depending on your plan. Client-side encryption before upload is not available yet, so whichever destination is in use is what protects the data, through its own access controls and encryption-at-rest settings.",
   },
   {
     icon: "ShieldOff",
@@ -283,10 +283,10 @@ export default function SecurityPolicyPage() {
                 personally identifiable information. No session replay, no visitor fingerprinting.
               </li>
               <li className="leading-7">
-                Backup data moves directly from the agent to the destination you configure; the
-                control plane never stores or proxies it. Client-side encryption before upload is
-                planned, so today the destination&apos;s own access controls and encryption-at-rest
-                settings protect it.
+                Backup data is stored on our managed infrastructure or on storage you configure
+                and control, depending on your plan. Client-side encryption before upload is not
+                available yet, so the destination in use, not WPMgr, protects it through its own
+                access controls and encryption-at-rest settings.
               </li>
               <li className="leading-7">
                 Email logs record metadata (from, to domain, subject, status) but not message bodies.

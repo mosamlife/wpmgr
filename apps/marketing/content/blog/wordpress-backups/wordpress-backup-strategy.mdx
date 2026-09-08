@@ -66,7 +66,7 @@ Offsite means a different failure domain: a different provider, or at minimum a 
 
 Two properties are worth insisting on. **Encryption before the data leaves the site**, so the storage provider holds ciphertext rather than your client's customer database. And **credentials the site cannot use to delete history**: if the WordPress install holds keys with delete permission on the bucket, then anything that compromises the site can erase the backups. Write-only or append-only credentials, or object lock on the bucket, close that path.
 
-WPMgr keeps destination credentials in the control plane rather than on the sites, and supports S3-compatible and local destinations configured once at the control plane and reused across the fleet. Client-side encryption before upload is planned; until it ships, choose a destination that encrypts at rest so the first property above still holds.
+WPMgr keeps destination credentials in the control plane rather than on the sites, and supports S3-compatible and local destinations configured once at the control plane and reused across the fleet; on the default managed bucket, the control plane holds the data too. The first property above, encryption before the data leaves the site, is not available yet. A destination that encrypts at rest closes a different gap, data resting on disk, but the provider still receives plaintext on the way in.
 
 ## Retention, and pruning on purpose
 

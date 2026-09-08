@@ -93,7 +93,7 @@ export function CompareHeroPanel() {
       <div className="mt-3 flex items-center gap-2 rounded-lg bg-[var(--primary-subtle)] px-3 py-2.5">
         <Icon name="Server" size={14} className="text-[var(--primary-pressed)]" aria-hidden />
         <span className="text-[11px] leading-snug text-[var(--primary-pressed)]">
-          Backups move directly from each site to the storage you choose, never through the control plane.
+          Backups default to our storage, or point them at storage you configure and control.
         </span>
       </div>
     </div>

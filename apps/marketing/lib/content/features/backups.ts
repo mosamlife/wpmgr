@@ -8,7 +8,7 @@ export const BACKUPS_PAGE: FeaturePageData = {
   title: "WordPress Backup Plugin",
   metaTitle: "WordPress Backup Plugin with Incremental Backups",
   metaDescription:
-    "WPMgr is a self-hosted WordPress backup plugin with incremental backups, point-in-time restore, fleet-wide backup health, and storage you control.",
+    "WPMgr is a self-hosted WordPress backup plugin with incremental backups, point-in-time restore, fleet-wide backup health, and a backup destination you choose.",
   hero: {
     eyebrow: "Backups and restore",
     heading: "Incremental WordPress backups with point-in-time restore",
@@ -38,7 +38,7 @@ export const BACKUPS_PAGE: FeaturePageData = {
       n: "3",
       icon: "Upload",
       title: "Stored to the destination you choose",
-      desc: "Completed archives are streamed to your configured backup destination: S3-compatible storage, SFTP, or local disk. Image bytes and file data move directly from the site to storage using short-lived presigned URLs, never through the control plane.",
+      desc: "Completed archives are streamed to your configured backup destination. The default is a bucket the control plane manages, so those chunks land with us; point a site at your own S3-compatible bucket, SFTP, or a local folder on its own server instead and they land there, not with us.",
     },
     {
       n: "4",
@@ -65,8 +65,8 @@ export const BACKUPS_PAGE: FeaturePageData = {
     },
     {
       icon: "Server",
-      title: "Stored where you control it",
-      desc: "Backup chunks move directly from the site to the S3-compatible, SFTP, or local destination you configure; the control plane never holds them. Client-side encryption before upload is planned.",
+      title: "Backup storage: ours by default, or yours",
+      desc: "The default destination is a bucket the control plane manages. Point a site at your own S3-compatible bucket, SFTP, or a local folder on its own server instead and the chunks stay off the control plane. Client-side encryption before upload is planned.",
     },
     {
       icon: "ServerCog",
@@ -94,7 +94,7 @@ export const BACKUPS_PAGE: FeaturePageData = {
     },
     {
       q: "Where are backups stored?",
-      a: "You configure the destination: S3-compatible object storage, SFTP, or local disk on the control plane host. File data moves directly from the site to storage using short-lived presigned URLs and never passes through WPMgr's control plane.",
+      a: "You configure the destination. The default is a bucket the control plane manages, so those chunks land there. Point a site at your own S3-compatible bucket, SFTP, or a local folder on its own server instead, and the chunks land there, not with the control plane.",
     },
     {
       q: "Can backups be encrypted?",

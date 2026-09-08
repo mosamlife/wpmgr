@@ -825,7 +825,7 @@ export const MANAGEWP_VS_MAINWP: ComparisonPageData = {
         {
           label: "Where backups are stored",
           cells: {
-            wpmgr: { value: "Storage you choose, never held by the control plane", tone: "included" },
+            wpmgr: { value: "Ours by default, or your own S3-compatible bucket, SFTP, or local folder", tone: "included" },
             managewp: { value: "The vendor's servers, with a US or EU region choice", tone: "neutral", cites: ["mw-11", "mw-12"] },
             mainwp: { value: "Wherever the third-party plugin you configure sends them", tone: "neutral", cites: ["mn-25", "mn-26"] },
           },
@@ -867,7 +867,7 @@ export const MANAGEWP_VS_MAINWP: ComparisonPageData = {
         {
           label: "Backup engine",
           cells: {
-            wpmgr: { value: "Built in. Incremental, to storage you control", tone: "included" },
+            wpmgr: { value: "Built in. Incremental, to the destination you configure", tone: "included" },
             managewp: { value: "Built in. Incremental, encrypted in transit and at rest", tone: "included", cites: ["mw-19", "mw-20"] },
             mainwp: { value: "None of its own. It drives third-party backup plugins", tone: "partial", cites: ["mn-25", "mn-26"] },
           },
@@ -954,7 +954,7 @@ export const MANAGEWP_VS_MAINWP: ComparisonPageData = {
       {
         productKey: "wpmgr",
         path: ["Your sites", "Your control plane", "Your storage"],
-        note: "Backup data moves straight from the site to the storage you configure; the control plane never holds it, even on the hosted tier.",
+        note: "Backups land in storage the control plane manages by default, the same as the hosted tier. Point a site at your own S3-compatible bucket, SFTP, or a local folder on its own server, and the chunks move there instead, off control-plane storage.",
       },
       {
         productKey: "managewp",
@@ -985,7 +985,7 @@ export const MANAGEWP_VS_MAINWP: ComparisonPageData = {
     },
     {
       q: "Where do backups go, and can you read them?",
-      a: "To storage you choose. Backup data moves directly from the site to that storage and never passes through the control plane, on the hosted tier or self-hosted. It is not encrypted before upload today, so the destination's own access controls and encryption-at-rest settings are what protect it; client-side encryption is planned.",
+      a: "Depends on the destination. Leave it on the default and the control plane holds the backup, the same as any managed backup service holds what it stores. Point the site at your own S3-compatible bucket, SFTP, or a local folder on its own server, and the control plane never holds the chunks, only the routing metadata. Nothing is encrypted client-side today, so whichever you use, that destination's own access controls and encryption-at-rest settings are what protect it; client-side encryption is planned.",
     },
     {
       q: "How current are the figures on this page?",

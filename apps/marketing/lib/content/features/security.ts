@@ -70,8 +70,8 @@ export const SECURITY_PAGE: FeaturePageData = {
     },
     {
       icon: "Server",
-      title: "Backups stored where you control it",
-      desc: "Backup chunks move straight to the S3-compatible, SFTP, or local destination you configure; the control plane never holds them. Client-side encryption before upload is planned.",
+      title: "Backup storage: ours by default, or yours",
+      desc: "The default destination is a bucket the control plane manages. Point a site at your own S3-compatible bucket, SFTP, or a local folder on its own server instead and the chunks stay off the control plane. Client-side encryption before upload is planned.",
     },
     {
       icon: "KeySquare",

@@ -552,7 +552,7 @@ export const HOME_FAQ: FaqItem[] = [
   },
   {
     q: "Is my data private?",
-    a: "Your data lives on the infrastructure you run WPMgr on, not ours. Backup chunks and image bytes move directly between your site and the storage you configure, never through the control plane, and the agent redacts emails, passwords, secrets, tokens, and salts before any diagnostics ever leave a site.",
+    a: "Your data lives on the infrastructure you run WPMgr on, not ours. Backups land at the destination you configure: the default is a bucket the control plane manages, and pointing a site at your own S3-compatible bucket, SFTP, or a local folder on its own server keeps the chunks off the control plane instead. Nothing is encrypted client-side today, so whichever destination is in use, its own access controls and encryption-at-rest settings are what protect the data. Image bytes move directly between your site and your storage, and the agent redacts emails, passwords, secrets, tokens, and salts before any diagnostics ever leave a site.",
   },
   {
     q: "How many sites can I manage?",
