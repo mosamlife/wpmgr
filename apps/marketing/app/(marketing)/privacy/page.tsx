@@ -201,7 +201,7 @@ export default function PrivacyPage() {
                   Backup destination is either our managed infrastructure or storage you configure
                   and control, depending on your plan; none of it is encrypted client-side before
                   upload, so protection follows the destination, our storage&apos;s configuration,
-                  your bucket&apos;s or SFTP server&apos;s, or, for a local folder, whatever the
+                  your bucket&apos;s configuration, or, for a local folder, whatever the
                   host&apos;s own disk provides.
                 </li>
                 <li>All network traffic to and from the Service uses TLS.</li>

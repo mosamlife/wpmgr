@@ -30,7 +30,7 @@ const SECURITY_POSTURE = [
     icon: "Server",
     title: "Backup storage: control-plane-managed, or yours",
     description:
-      "The default destination is a control-plane-managed bucket: your own infrastructure if you self-host, WPMgr's if you use the hosted service. Point a site at your own S3-compatible bucket, SFTP, or a local folder on its own server instead and the chunks stay off the control plane. Client-side encryption before upload is not available yet, so the destination in use, and whatever protection it applies, is what protects the data; a local folder gets none from WPMgr, only whatever the host's own disk provides.",
+      "The default destination is a control-plane-managed bucket: your own infrastructure if you self-host, WPMgr's if you use the hosted service. Point a site at your own S3-compatible bucket or a local folder on its own server instead and the chunks stay off the control plane. Client-side encryption before upload is not available yet, so the destination in use, and whatever protection it applies, is what protects the data; a local folder gets none from WPMgr, only whatever the host's own disk provides.",
   },
   {
     icon: "ShieldOff",
@@ -285,7 +285,7 @@ export default function SecurityPolicyPage() {
               <li className="leading-7">
                 Backup data is stored by default in a control-plane-managed bucket: your own
                 infrastructure if you self-host, WPMgr&apos;s if you use the hosted service. Point
-                a site at your own S3-compatible bucket, SFTP, or a local folder instead and the
+                a site at your own S3-compatible bucket or a local folder instead and the
                 chunks stay off the control plane. Client-side encryption before upload is not
                 available yet, so the destination in use, not WPMgr, protects it; a local folder
                 gets no encryption from WPMgr at all, only whatever the host&apos;s own disk
