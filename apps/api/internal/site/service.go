@@ -96,6 +96,12 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Site, error) {
 	if err := s.validator.Struct(in); err != nil {
 		return Site{}, err
 	}
+	// Reject site URLs whose scheme isn't http/https, mirroring Enroll: the
+	// `url` validator tag accepts javascript:/file:/gopher: URLs, and the
+	// stored value is rendered as a clickable link in the client portal.
+	if u, err := url.Parse(in.URL); err != nil || u == nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return Site{}, domain.Validation("site_url_scheme", "url must be an http or https URL")
+	}
 	return s.repo.Create(ctx, in)
 }
 
