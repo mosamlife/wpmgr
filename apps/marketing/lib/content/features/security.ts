@@ -69,9 +69,9 @@ export const SECURITY_PAGE: FeaturePageData = {
       desc: "Plugins, themes, and core checked against the Wordfence Intelligence vulnerability feed. One-click remediation updates the vulnerable component through the existing update flow. Requires a free Wordfence Intelligence API key.",
     },
     {
-      icon: "FileLock2",
-      title: "Client-side encrypted backups",
-      desc: "Optional end-to-end encryption for backups: the control plane stores only ciphertext and never holds the decryption key.",
+      icon: "Server",
+      title: "Backups stored where you control it",
+      desc: "Backup chunks move straight to the S3-compatible, SFTP, or local destination you configure; the control plane never holds them. Client-side encryption before upload is planned.",
     },
     {
       icon: "KeySquare",

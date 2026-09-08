@@ -9,7 +9,7 @@ import { SITE_CONFIG } from "@/lib/site";
 export const metadata: Metadata = buildMetadata({
   title: "Security Policy: Responsible Disclosure",
   description:
-    "WPMgr responsible disclosure policy and security posture: Ed25519-signed agent, redacted diagnostics, client-side-encrypted backups, and how to report a bug.",
+    "WPMgr responsible disclosure policy and security posture: Ed25519-signed agent, redacted diagnostics, backups stored where you control them, and how to report a bug.",
   canonical: "/legal/security-policy",
 });
 
@@ -27,10 +27,10 @@ const SECURITY_POSTURE = [
       "Agent diagnostics (sent to the control plane on enrollment and on schedule) never include passwords, secret keys, or user data. The redaction logic is open-source and auditable.",
   },
   {
-    icon: "Lock",
-    title: "Client-side-encrypted backups",
+    icon: "Server",
+    title: "Backups stored where you control them",
     description:
-      "Backup data is encrypted on the agent before it leaves the site. The encryption key is derived from a per-site secret managed by the control plane and never stored in plaintext on the backup destination.",
+      "Backup data moves directly from the agent to the S3-compatible, SFTP, or local destination you configure; the control plane never holds it. Client-side encryption before upload is planned.",
   },
   {
     icon: "ShieldOff",
@@ -283,9 +283,10 @@ export default function SecurityPolicyPage() {
                 personally identifiable information. No session replay, no visitor fingerprinting.
               </li>
               <li className="leading-7">
-                Backup data is encrypted on the agent before leaving the site. The control plane
-                stores a per-site encryption key reference; the backup destination stores only
-                ciphertext.
+                Backup data moves directly from the agent to the destination you configure; the
+                control plane never stores or proxies it. Client-side encryption before upload is
+                planned, so today the destination&apos;s own access controls and encryption-at-rest
+                settings protect it.
               </li>
               <li className="leading-7">
                 Email logs record metadata (from, to domain, subject, status) but not message bodies.

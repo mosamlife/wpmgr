@@ -552,7 +552,7 @@ export const HOME_FAQ: FaqItem[] = [
   },
   {
     q: "Is my data private?",
-    a: "Your data lives on the infrastructure you run WPMgr on, not ours. Backups can be client-side encrypted so the control plane only ever stores ciphertext and never holds a decryption key, image bytes move directly between your site and your storage, and the agent redacts emails, passwords, secrets, tokens, and salts before any diagnostics ever leave a site.",
+    a: "Your data lives on the infrastructure you run WPMgr on, not ours. Backup chunks and image bytes move directly between your site and the storage you configure, never through the control plane, and the agent redacts emails, passwords, secrets, tokens, and salts before any diagnostics ever leave a site.",
   },
   {
     q: "How many sites can I manage?",

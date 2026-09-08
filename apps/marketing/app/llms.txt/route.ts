@@ -104,7 +104,7 @@ Fleet Agent Site Manager is the same plugin's listing name in the WordPress.org
 
 ## Capabilities
 
-Backups with incremental archives, client side encryption and restore to any
+Backups with incremental archives and restore to any
 snapshot. Bulk plugin, theme and core updates with a pre-update snapshot and
 automatic rollback on failure. Uptime and TLS expiry monitoring. Security
 hardening, file integrity checking against WordPress.org checksums, and

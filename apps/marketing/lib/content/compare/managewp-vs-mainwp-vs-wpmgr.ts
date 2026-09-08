@@ -825,7 +825,7 @@ export const MANAGEWP_VS_MAINWP: ComparisonPageData = {
         {
           label: "Where backups are stored",
           cells: {
-            wpmgr: { value: "Storage you choose, encrypted before it leaves the site", tone: "included" },
+            wpmgr: { value: "Storage you choose, never held by the control plane", tone: "included" },
             managewp: { value: "The vendor's servers, with a US or EU region choice", tone: "neutral", cites: ["mw-11", "mw-12"] },
             mainwp: { value: "Wherever the third-party plugin you configure sends them", tone: "neutral", cites: ["mn-25", "mn-26"] },
           },
@@ -867,7 +867,7 @@ export const MANAGEWP_VS_MAINWP: ComparisonPageData = {
         {
           label: "Backup engine",
           cells: {
-            wpmgr: { value: "Built in. Incremental, client-side encrypted", tone: "included" },
+            wpmgr: { value: "Built in. Incremental, to storage you control", tone: "included" },
             managewp: { value: "Built in. Incremental, encrypted in transit and at rest", tone: "included", cites: ["mw-19", "mw-20"] },
             mainwp: { value: "None of its own. It drives third-party backup plugins", tone: "partial", cites: ["mn-25", "mn-26"] },
           },
@@ -954,7 +954,7 @@ export const MANAGEWP_VS_MAINWP: ComparisonPageData = {
       {
         productKey: "wpmgr",
         path: ["Your sites", "Your control plane", "Your storage"],
-        note: "Backups are encrypted on the site before they leave it, so the control plane only ever holds ciphertext, even when you use the hosted tier.",
+        note: "Backup data moves straight from the site to the storage you configure; the control plane never holds it, even on the hosted tier.",
       },
       {
         productKey: "managewp",
@@ -985,7 +985,7 @@ export const MANAGEWP_VS_MAINWP: ComparisonPageData = {
     },
     {
       q: "Where do backups go, and can you read them?",
-      a: "To storage you choose, and no. Each backup is encrypted on the site with a key held by the site, so the control plane stores ciphertext it cannot open. That holds on the hosted tier too.",
+      a: "To storage you choose. Backup data moves directly from the site to that storage and never passes through the control plane, on the hosted tier or self-hosted. It is not encrypted before upload today, so the destination's own access controls and encryption-at-rest settings are what protect it; client-side encryption is planned.",
     },
     {
       q: "How current are the figures on this page?",

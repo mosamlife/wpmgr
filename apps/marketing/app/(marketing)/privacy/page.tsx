@@ -76,9 +76,8 @@ export default function PrivacyPage() {
                 </p>
                 <p>
                   <strong className="font-semibold text-foreground">Backups.</strong> Backup
-                  archives of your database and/or files are encrypted before they leave your
-                  server and stored either on our managed infrastructure or on storage you configure
-                  and control, depending on your plan.
+                  archives of your database and/or files are stored either on our managed
+                  infrastructure or on storage you configure and control, depending on your plan.
                 </p>
                 <p>
                   <strong className="font-semibold text-foreground">Aggregate performance telemetry.</strong>{" "}
@@ -193,7 +192,10 @@ export default function PrivacyPage() {
             heading: "6. Security",
             body: (
               <ul className="list-disc space-y-2 pl-6">
-                <li>Backup archives are encrypted before they leave your server.</li>
+                <li>
+                  Backup destination is either our managed infrastructure or storage you configure
+                  and control, depending on your plan.
+                </li>
                 <li>All network traffic to and from the Service uses TLS.</li>
                 <li>
                   Agent-to-control-plane requests are cryptographically signed and

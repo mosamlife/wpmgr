@@ -8,7 +8,7 @@ export const BACKUPS_PAGE: FeaturePageData = {
   title: "WordPress Backup Plugin",
   metaTitle: "WordPress Backup Plugin with Incremental Backups",
   metaDescription:
-    "WPMgr is a self-hosted WordPress backup plugin with incremental backups, point-in-time restore, fleet-wide backup health, and client-side encryption.",
+    "WPMgr is a self-hosted WordPress backup plugin with incremental backups, point-in-time restore, fleet-wide backup health, and storage you control.",
   hero: {
     eyebrow: "Backups and restore",
     heading: "Incremental WordPress backups with point-in-time restore",
@@ -64,9 +64,9 @@ export const BACKUPS_PAGE: FeaturePageData = {
       desc: "See every site's backup status across the fleet: protected, stale, or unprotected. Sort and filter to find sites that have not run a successful backup in the last 24 hours.",
     },
     {
-      icon: "FileLock2",
-      title: "Client-side encrypted backups",
-      desc: "Enable end-to-end encryption and the control plane stores only ciphertext. It never holds the decryption key, so even a compromised control plane cannot read your backup data.",
+      icon: "Server",
+      title: "Stored where you control it",
+      desc: "Backup chunks move directly from the site to the S3-compatible, SFTP, or local destination you configure; the control plane never holds them. Client-side encryption before upload is planned.",
     },
     {
       icon: "ServerCog",
@@ -98,7 +98,7 @@ export const BACKUPS_PAGE: FeaturePageData = {
     },
     {
       q: "Can backups be encrypted?",
-      a: "Yes. Client-side encryption is opt-in per site. When enabled the control plane stores only ciphertext and never holds the decryption key. The key stays on your infrastructure.",
+      a: "Not yet. Backup chunks are stored as WPMgr writes them at the destination you configure, so a backup's security follows that destination's access controls and its own encryption-at-rest settings. Client-side encryption before upload is planned.",
     },
   ],
   siblingLinks: [

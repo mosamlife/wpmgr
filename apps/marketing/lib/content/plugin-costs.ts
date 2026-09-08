@@ -126,7 +126,7 @@ export const PLUGIN_COST_CATEGORIES: CostCategory[] = [
     key: "backups",
     label: "Backups and restore",
     icon: "DatabaseBackup",
-    wpmgr: "Incremental, client-side encrypted, to storage you own",
+    wpmgr: "Incremental, to storage you own",
     group: "core",
     products: [
       {
