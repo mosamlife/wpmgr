@@ -33,11 +33,13 @@ anonymous performance data directly to the control plane; it is off by default.
   versions, active theme and plugins, and Site Health diagnostics. Used to show
   your site's status.
 - **Update inventory** — the list of available core, plugin, and theme updates.
-- **Backup archives (encrypted)** — when you run or schedule a backup, the agent
-  creates an archive of your database and/or files, encrypts it, and uploads it
-  to the storage destination your control plane configures. Archive contents may
-  include your site's content and personal data; they are encrypted before they
-  leave your server.
+- **Backup archives** — when you run or schedule a backup, the agent creates an
+  archive of your database and/or files and sends it to the storage destination
+  configured for the site. The default is a WPMgr-managed bucket; it can instead
+  be a bucket you own or a folder on the site's own server. Archive contents may
+  include your site's content and personal data. Archives are not encrypted on
+  your server before they are sent, so they are protected by the access controls
+  and encryption at rest of the destination they go to.
 - **Rendered HTML** — for used-CSS optimization, the agent submits rendered HTML
   of selected pages so unused CSS can be computed.
 - **Diagnostics and activity logs** — error logs, performance/cache statistics,
@@ -102,8 +104,11 @@ sub-processors at all.
 ## Security
 
 - Agent-to-control-plane requests are Ed25519-signed and replay-protected.
-- Backups are encrypted before they leave your server.
-- All network traffic uses TLS.
+- Backups are not encrypted on your server before they are sent. They are
+  protected by the access controls and encryption at rest of the destination
+  configured for the site, which by default is a WPMgr-managed bucket.
+- All network traffic uses TLS. A backup sent to a folder on the site's own
+  server does not cross the network at all.
 
 ## Your data, your control
 

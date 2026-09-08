@@ -28,12 +28,21 @@ control plane therefore treats every agent as untrusted:
 
 ### Backup storage
 
-Backups are **not** encrypted client-side in shipped builds. Chunks travel over
-TLS and are stored as they were uploaded at the destination configured for the
-site, so the security of a backup is the security of that destination. Pointing
-a site at an S3 bucket you own, or at a local folder on the WordPress host,
-keeps the bytes on storage the operator controls; that is a different property
-from encryption at rest and does not stand in for it.
+Backups are **not** encrypted client-side in shipped builds. Chunks are stored
+as they were uploaded at the destination configured for the site, so a backup
+is protected by whatever protects that destination: its own access controls and
+its own encryption at rest.
+
+Which destination a site uses therefore decides who can read its backups:
+
+| Destination | Who holds the chunks | Transport |
+|---|---|---|
+| WPMgr-managed bucket (**the default**) | The control plane's object storage, and anyone with access to it | HTTPS upload |
+| Customer-owned S3-compatible bucket | Your bucket, on storage you control | HTTPS upload |
+| Local folder on the WordPress host | The site's own server, on storage you control | None; written to disk |
+
+Keeping the bytes on operator-controlled storage is a different property from
+encryption at rest and does not stand in for it.
 
 Client-side encryption is the intended model. The **age** implementation and
 the per-site keypair management ship with the agent, and the control plane
