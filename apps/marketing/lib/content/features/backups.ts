@@ -38,7 +38,7 @@ export const BACKUPS_PAGE: FeaturePageData = {
       n: "3",
       icon: "Upload",
       title: "Stored to the destination you choose",
-      desc: "Completed archives are streamed to your configured backup destination. The default is a control-plane-managed bucket, so those chunks land there; point a site at your own S3-compatible bucket or a local folder on its own server instead and they land there, off the control plane.",
+      desc: "Completed archives are streamed to your configured backup destination. The default is a control-plane-managed bucket, on plans with managed backup storage; point a site at your own S3-compatible bucket or a local folder on its own server instead and they land there, off the control plane. The Free plan has no managed bucket, so a site needs one of those two configured before backups will run.",
     },
     {
       n: "4",
@@ -66,7 +66,7 @@ export const BACKUPS_PAGE: FeaturePageData = {
     {
       icon: "Server",
       title: "Backup storage: control-plane-managed, or yours",
-      desc: "The default destination is a bucket the control plane manages. Point a site at your own S3-compatible bucket or a local folder on its own server instead and the chunks stay off the control plane. Client-side encryption before upload is planned.",
+      desc: "The default destination is a bucket the control plane manages, on plans with managed backup storage. The Free plan is bring-your-own, so a site there needs its own S3-compatible bucket or a local folder before backups run. Pointing a site at your own S3-compatible bucket or a local folder keeps the chunks off the control plane on any plan. Client-side encryption before upload is planned.",
     },
     {
       icon: "ServerCog",
@@ -94,7 +94,7 @@ export const BACKUPS_PAGE: FeaturePageData = {
     },
     {
       q: "Where are backups stored?",
-      a: "You configure the destination. The default is a bucket the control plane manages, so those chunks land there. Point a site at your own S3-compatible bucket or a local folder on its own server instead, and the chunks land there, not with the control plane.",
+      a: "You configure the destination. On plans with managed backup storage, the default is a bucket the control plane manages, so those chunks land there. Point a site at your own S3-compatible bucket or a local folder on its own server instead, and the chunks land there, not with the control plane. The Free plan has no managed bucket: a site needs one of those two destinations configured before backups will run.",
     },
     {
       q: "Can backups be encrypted?",

@@ -71,7 +71,7 @@ export const SECURITY_PAGE: FeaturePageData = {
     {
       icon: "Server",
       title: "Backup storage: control-plane-managed, or yours",
-      desc: "The default destination is a bucket the control plane manages. Point a site at your own S3-compatible bucket or a local folder on its own server instead and the chunks stay off the control plane. Client-side encryption before upload is planned.",
+      desc: "The default destination is a bucket the control plane manages, on plans with managed backup storage. The Free plan is bring-your-own, so a site there needs its own S3-compatible bucket or a local folder before backups run. Pointing a site at your own S3-compatible bucket or a local folder keeps the chunks off the control plane on any plan. Client-side encryption before upload is planned.",
     },
     {
       icon: "KeySquare",

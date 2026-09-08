@@ -825,7 +825,7 @@ export const MANAGEWP_VS_MAINWP: ComparisonPageData = {
         {
           label: "Where backups are stored",
           cells: {
-            wpmgr: { value: "A control-plane-managed bucket by default, or your own S3-compatible bucket or local folder", tone: "included" },
+            wpmgr: { value: "A control-plane-managed bucket by default on plans with managed storage, or your own S3-compatible bucket or local folder", tone: "included" },
             managewp: { value: "The vendor's servers, with a US or EU region choice", tone: "neutral", cites: ["mw-11", "mw-12"] },
             mainwp: { value: "Wherever the third-party plugin you configure sends them", tone: "neutral", cites: ["mn-25", "mn-26"] },
           },
@@ -954,7 +954,7 @@ export const MANAGEWP_VS_MAINWP: ComparisonPageData = {
       {
         productKey: "wpmgr",
         path: ["Your sites", "Your control plane", "Your storage"],
-        note: "Backups land in storage the control plane manages by default, the same as the hosted tier. Point a site at your own S3-compatible bucket or a local folder on its own server, and the chunks move there instead, off control-plane storage.",
+        note: "Backups land in storage the control plane manages by default on plans with managed backup storage, the same as the hosted tier. Point a site at your own S3-compatible bucket or a local folder on its own server, and the chunks move there instead, off control-plane storage. On the Free plan, which has no managed bucket, one of those two is required before backups will run.",
       },
       {
         productKey: "managewp",
@@ -985,7 +985,7 @@ export const MANAGEWP_VS_MAINWP: ComparisonPageData = {
     },
     {
       q: "Where do backups go, and can you read them?",
-      a: "Depends on the destination. Leave it on the default and the control plane holds the backup, the same as any managed backup service holds what it stores. Point the site at your own S3-compatible bucket or a local folder on its own server, and the control plane never holds the chunks, only the routing metadata. Nothing is encrypted client-side today: a control-plane-managed bucket protects the data however that storage is configured, your own bucket protects it however you have configured that, and a local folder gets no encryption from WPMgr at all, only whatever the host's own disk provides. Client-side encryption is planned.",
+      a: "Depends on the destination and the plan. On plans with managed backup storage, leave it on the default and the control plane holds the backup, the same as any managed backup service holds what it stores. The Free plan has no managed bucket, so a site there needs its own S3-compatible bucket or a local folder configured before backups will run. Point the site at your own S3-compatible bucket or a local folder on its own server, and the control plane never holds the chunks, only the routing metadata. Nothing is encrypted client-side today: a control-plane-managed bucket protects the data however that storage is configured, your own bucket protects it however you have configured that, and a local folder gets no encryption from WPMgr at all, only whatever the host's own disk provides. Client-side encryption is planned.",
     },
     {
       q: "How current are the figures on this page?",
