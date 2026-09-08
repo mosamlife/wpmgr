@@ -33,7 +33,7 @@ anonymous performance data directly to the control plane; it is off by default.
   versions, active theme and plugins, and Site Health diagnostics. Used to show
   your site's status.
 - **Update inventory** — the list of available core, plugin, and theme updates.
-- **Backup archives** — when you run or schedule a backup, the agent creates an
+- **Backup archives**: when you run or schedule a backup, the agent creates an
   archive of your database and/or files and sends it to the storage destination
   configured for the site. The default is a WPMgr-managed bucket; it can instead
   be a bucket you own or a folder on the site's own server. Archive contents may
@@ -87,7 +87,9 @@ If you use the hosted WPMgr service rather than self-hosting, we also process:
   account and send transactional email (verification, password reset, alerts).
 - **The site data described above**, on your behalf, to provide the dashboard,
   backups, and management features you use.
-- **Encrypted backup archives**, stored in cloud object storage.
+- **Backup archives**, stored in cloud object storage when the site uses the
+  default WPMgr-managed destination. They are stored as the agent sent them and
+  are protected by that storage's access controls and encryption at rest.
 - **Anonymous Real User Monitoring measurements** from your site visitors, if you
   enable RUM, processed on your behalf as the operator of the hosted service. We
   do not use this data to identify individual visitors.
