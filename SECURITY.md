@@ -17,13 +17,20 @@ triage. Coordinated disclosure is appreciated.
   application-layer `tenant_id` scoping.
 - **Untrusted agents:** the agent runs on potentially-compromised WordPress
   sites. All site-supplied data is treated as untrusted and schema-validated.
-- **Client-side backup encryption:** backup blobs are encrypted with `age`;
-  the control plane must never hold decryption keys without explicit consent.
+- **Backup storage:** backups are **not** encrypted client-side in shipped
+  builds. Chunks travel over TLS and are stored as uploaded at the destination
+  configured for the site, so the security of a backup is the security of that
+  destination. Client-side encryption is the intended model and the `age`
+  implementation and per-site key management ship with the agent, but the
+  encrypt step is not enabled. The constraint that the control plane must never
+  hold a backup decryption key stands.
 
 ## Cryptography
 
 Locked algorithms (changes require an ADR): **Ed25519** (agent request
-signing), **AES-256-GCM** (at-rest secret encryption), **blake3** (content
-addressing / integrity), **age** (backup encryption).
+signing), **AES-256-GCM** (at-rest secret encryption), **BLAKE2b-256** (content
+addressing / integrity; the code identifier and the wire field name both read
+`blake3`), **age** (backup encryption; implemented, not enabled in shipped
+builds).
 
 The full threat model lives in [docs/security.md](./docs/security.md).

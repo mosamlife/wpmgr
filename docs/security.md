@@ -26,11 +26,20 @@ control plane therefore treats every agent as untrusted:
   private/link-local/loopback ranges at dial time (ADR-009), defeating
   DNS-rebinding via user-controlled site URLs.
 
-### Client-side backup encryption
+### Backup storage
 
-Backup blobs are encrypted with **age**. The control plane must never hold
-decryption keys without the user's explicit consent — by default, encryption is
-client-side and the server stores only ciphertext.
+Backups are **not** encrypted client-side in shipped builds. Chunks travel over
+TLS and are stored as they were uploaded at the destination configured for the
+site, so the security of a backup is the security of that destination. Pointing
+a site at an S3 bucket you own, or at a local folder on the WordPress host,
+keeps the bytes on storage the operator controls; that is a different property
+from encryption at rest and does not stand in for it.
+
+Client-side encryption is the intended model. The **age** implementation and
+the per-site keypair management ship with the agent, and the control plane
+still requires a site to have published an age recipient before it will accept
+a backup. The encrypt step itself is not enabled. The constraint that the
+control plane must never hold a backup decryption key stands.
 
 ### Agent transport
 
@@ -91,8 +100,8 @@ Locked algorithms — **changing any requires an ADR**:
 |-----------|-----|
 | **Ed25519** | Agent request signing (both directions) |
 | **AES-256-GCM** | At-rest secret encryption |
-| **blake3** | Content addressing / integrity |
-| **age** | Backup encryption (client-side) |
+| **BLAKE2b-256** | Content addressing / integrity. The code identifier and the wire field name both read `blake3`. |
+| **age** | Backup encryption (client-side). Implemented; not enabled in shipped builds. |
 
 ## Disclosure
 
