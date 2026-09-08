@@ -1,6 +1,6 @@
 # Backups
 
-Schedule, run, and restore backups of your WordPress files and database from a single dashboard. Backup chunks are not encrypted client-side in shipped builds: they are stored as uploaded at the destination configured for the site, so a backup is protected by whatever protects that destination. The default destination is a WPMgr-managed bucket, so unless a site is pointed elsewhere the control plane holds its chunks (see [Backup storage and encryption](#backup-storage-and-encryption)). The agent generates its own age keypair and syncs the public recipient to the control plane automatically on connect, so this normally requires no operator action; a brand-new or not-yet-synced site is the one case where a backup is refused.
+Schedule, run, and restore backups of your WordPress files and database from a single dashboard. Backup chunks are not encrypted client-side in shipped builds: they are stored as uploaded at the destination configured for the site, so a backup is protected by whatever protects that destination. The default destination is a control-plane-managed bucket, so unless a site is pointed elsewhere the control plane holds its chunks (see [Backup storage and encryption](#backup-storage-and-encryption)). The agent generates its own age keypair and syncs the public recipient to the control plane automatically on connect, so this normally requires no operator action; a brand-new or not-yet-synced site is the one case where a backup is refused.
 
 Design: [ADR-051](../adr/ADR-051-archive-delta-incremental.md).
 API: [api reference below](#api-reference).
@@ -112,17 +112,17 @@ Schedules are control-plane-driven. The agent is a stateless push target.
 
 ## Backup storage and encryption
 
-Chunks are not encrypted on the agent in shipped builds. They are stored as uploaded at the destination configured for the site, so a backup is protected by whatever protects that destination: its own access controls, and its own encryption at rest.
+Chunks are not encrypted on the agent in shipped builds. They are stored as uploaded at the destination configured for the site, so a backup is protected by whatever protects that destination.
 
-Which destination a site uses is therefore what decides who can read its backups:
+What that means differs by destination, and by whether the control plane is one you self-host or the hosted service:
 
-| Destination | Who holds the chunks | Transport |
-|---|---|---|
-| WPMgr-managed bucket (**the default**) | The control plane's object storage, and anyone with access to it | Uploaded over HTTPS to a presigned URL |
-| Customer-owned S3-compatible bucket | Your bucket, on storage you control | Uploaded over HTTPS to a presigned URL |
-| Local folder on the WordPress host | The site's own server, on storage you control | None; the agent writes to disk |
+| Destination | Who holds the chunks | Transport | Encryption at rest |
+|---|---|---|---|
+| Control-plane-managed bucket (**the default**) | The control plane's object storage, and anyone with access to it. On a self-hosted control plane that storage is yours; on the hosted service it is operated by WPMgr. | Uploaded over HTTPS to a presigned URL | Whatever that object storage is configured to provide |
+| Customer-owned S3-compatible bucket | Your bucket, on storage you control | Uploaded over HTTPS to a presigned URL | Whatever you have enabled on the bucket |
+| Local folder on the WordPress host | The site's own server, on storage you control | None; the agent writes to disk | None from WPMgr. Whatever the host's own disk or filesystem provides, which WPMgr does not configure and cannot guarantee |
 
-Keeping the bytes on operator-controlled storage is a different property from encryption at rest and does not stand in for it. Treat backup storage the way you would treat any store holding a full copy of the site's files and database: restrict access to the bucket or directory, and turn on the destination's own server-side encryption if it offers one.
+Keeping the bytes on operator-controlled storage is a different property from encryption at rest and does not stand in for it. Treat backup storage the way you would treat any store holding a full copy of the site's files and database: restrict access to the bucket or directory, and turn on the destination's own server-side encryption where it offers one.
 
 Client-side encryption is the intended model. The `age` implementation and the per-site keypair management ship with the agent, and the control plane still requires a site to have published an age recipient before it will accept a backup. The encrypt step itself is not enabled, so no build currently produces `.age` chunks.
 

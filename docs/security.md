@@ -30,16 +30,16 @@ control plane therefore treats every agent as untrusted:
 
 Backups are **not** encrypted client-side in shipped builds. Chunks are stored
 as they were uploaded at the destination configured for the site, so a backup
-is protected by whatever protects that destination: its own access controls and
-its own encryption at rest.
+is protected by whatever protects that destination.
 
-Which destination a site uses therefore decides who can read its backups:
+What that means differs by destination, and by whether the control plane is one
+you self-host or the hosted service:
 
-| Destination | Who holds the chunks | Transport |
-|---|---|---|
-| WPMgr-managed bucket (**the default**) | The control plane's object storage, and anyone with access to it | HTTPS upload |
-| Customer-owned S3-compatible bucket | Your bucket, on storage you control | HTTPS upload |
-| Local folder on the WordPress host | The site's own server, on storage you control | None; written to disk |
+| Destination | Who holds the chunks | Transport | Encryption at rest |
+|---|---|---|---|
+| Control-plane-managed bucket (**the default**) | The control plane's object storage. Yours on a self-hosted control plane; operated by WPMgr on the hosted service. | HTTPS upload | Whatever that object storage is configured to provide |
+| Customer-owned S3-compatible bucket | Your bucket, on storage you control | HTTPS upload | Whatever you have enabled on the bucket |
+| Local folder on the WordPress host | The site's own server, on storage you control | None; written to disk | None from WPMgr. Whatever the host's own disk provides, which WPMgr does not configure and cannot guarantee |
 
 Keeping the bytes on operator-controlled storage is a different property from
 encryption at rest and does not stand in for it.

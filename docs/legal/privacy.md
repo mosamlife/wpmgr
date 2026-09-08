@@ -35,11 +35,14 @@ anonymous performance data directly to the control plane; it is off by default.
 - **Update inventory** — the list of available core, plugin, and theme updates.
 - **Backup archives**: when you run or schedule a backup, the agent creates an
   archive of your database and/or files and sends it to the storage destination
-  configured for the site. The default is a WPMgr-managed bucket; it can instead
-  be a bucket you own or a folder on the site's own server. Archive contents may
-  include your site's content and personal data. Archives are not encrypted on
-  your server before they are sent, so they are protected by the access controls
-  and encryption at rest of the destination they go to.
+  configured for the site. The default is a bucket managed by the control plane
+  you connected to; it can instead be a bucket you own or a folder on the site's
+  own server. Archive contents may include your site's content and personal
+  data. Archives are not encrypted on your server before they are sent, so they
+  are protected by the access controls of the destination they go to, and by
+  whatever encryption at rest that destination provides. A bucket can be
+  configured for encryption at rest; a folder on the site's own server gets only
+  whatever the host's disk does, which WPMgr does not configure.
 - **Rendered HTML** — for used-CSS optimization, the agent submits rendered HTML
   of selected pages so unused CSS can be computed.
 - **Diagnostics and activity logs** — error logs, performance/cache statistics,
@@ -107,8 +110,11 @@ sub-processors at all.
 
 - Agent-to-control-plane requests are Ed25519-signed and replay-protected.
 - Backups are not encrypted on your server before they are sent. They are
-  protected by the access controls and encryption at rest of the destination
-  configured for the site, which by default is a WPMgr-managed bucket.
+  protected by the access controls of the destination configured for the site,
+  which by default is a bucket managed by the control plane you connected to,
+  and by whatever encryption at rest that destination provides. A folder on the
+  site's own server gets only whatever the host's disk does, which WPMgr does
+  not configure.
 - All network traffic uses TLS. A backup sent to a folder on the site's own
   server does not cross the network at all.
 

@@ -19,13 +19,17 @@ triage. Coordinated disclosure is appreciated.
   sites. All site-supplied data is treated as untrusted and schema-validated.
 - **Backup storage:** backups are **not** encrypted client-side in shipped
   builds, so a backup is protected by whatever protects the destination it was
-  sent to: that destination's own access controls and encryption at rest. The
-  default destination is a WPMgr-managed bucket, so unless a site is pointed
-  elsewhere the control plane holds its chunks; a customer-owned S3-compatible
-  bucket or a local folder on the WordPress host keeps them on storage the
-  operator controls. Uploads to a managed or S3-compatible bucket go over
-  HTTPS; a local destination writes to disk on the site's own server and does
-  no network transfer. Client-side encryption is the intended model and the
+  sent to. The default destination is a control-plane-managed bucket, so unless
+  a site is pointed elsewhere the control plane holds its chunks; that storage
+  is the operator's own on a self-hosted control plane and WPMgr's on the
+  hosted service. A customer-owned S3-compatible bucket or a local folder on
+  the WordPress host keeps them on storage the operator controls. Uploads to a
+  managed or S3-compatible bucket go over HTTPS; a local destination writes to
+  disk on the site's own server and does no network transfer. Encryption at
+  rest is whatever the chosen destination provides: a bucket can be configured
+  for it, while a local folder gets only whatever the host's own disk does,
+  which WPMgr does not configure and cannot guarantee. Client-side encryption
+  is the intended model and the
   `age` implementation and per-site key management ship with the agent, but the
   encrypt step is not enabled. The constraint that the control plane must never
   hold a backup decryption key stands.
