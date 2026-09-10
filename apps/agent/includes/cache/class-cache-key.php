@@ -354,10 +354,13 @@ final class CacheKey
     }
 
     /**
-     * Bucket name for path building. Callers that must not cache an unusable
-     * host check {@see normalizeHost()} directly; this keeps a stable directory
-     * name for path arithmetic (purge scans and the like), and nothing on the
-     * write path stores into it.
+     * Bucket name for path building only.
+     *
+     * Callers that decide whether to cache use {@see normalizeHost()} directly
+     * and honour its ''. This keeps a stable directory name so path arithmetic
+     * (purge scans and the like) always has one to work with. Nothing on the
+     * write or serve path reaches the placeholder any more: both decline the
+     * host before a path is built.
      *
      * @param string $host Raw HTTP_HOST.
      * @return string

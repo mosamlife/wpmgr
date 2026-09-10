@@ -511,7 +511,7 @@ if (!headers_sent()) {
             header($wpmgr_proto . ' 304 Not Modified', true, 304);
             // 304 is a HIT — fire the cron kick after the response headers are
             // committed. No body to flush, so the kick happens immediately.
-            if ($wpmgr_cron_kick_enabled && $wpmgr_host !== 'unknown-host') {
+            if ($wpmgr_cron_kick_enabled) {
                 wpmgr_cron_kick_if_overdue(
                     $wpmgr_cron_kick_marker,
                     $wpmgr_cron_kick_interval,
@@ -529,7 +529,7 @@ if (!headers_sent()) {
 // HEAD requests get headers only.
 if ($wpmgr_method === 'HEAD') {
     // HEAD is a HIT — fire the cron kick after headers are committed.
-    if ($wpmgr_cron_kick_enabled && $wpmgr_host !== 'unknown-host') {
+    if ($wpmgr_cron_kick_enabled) {
         wpmgr_cron_kick_if_overdue(
             $wpmgr_cron_kick_marker,
             $wpmgr_cron_kick_interval,
@@ -561,7 +561,7 @@ if (function_exists('fastcgi_finish_request')) {
 }
 
 // Fire the WP-Cron loopback kick after the response has been handed off.
-if ($wpmgr_cron_kick_enabled && $wpmgr_host !== 'unknown-host') {
+if ($wpmgr_cron_kick_enabled) {
     wpmgr_cron_kick_if_overdue(
         $wpmgr_cron_kick_marker,
         $wpmgr_cron_kick_interval,
