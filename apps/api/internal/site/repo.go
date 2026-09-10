@@ -35,6 +35,12 @@ type Repo interface {
 	Delete(ctx context.Context, tenantID, id uuid.UUID) error
 	SetTags(ctx context.Context, in SetTagsInput) (Site, error)
 	SetAgeRecipient(ctx context.Context, tenantID, siteID uuid.UUID, recipient string) (Site, error)
+	// SetAgeRecipientIfUnset is the AGENT path's write: it stores the recipient
+	// only when the site has none yet, and never overwrites an established one.
+	// Returns the site as it stands after the call and whether the write was
+	// applied. SetAgeRecipient (above) stays the deliberate, unconditional
+	// operator path.
+	SetAgeRecipientIfUnset(ctx context.Context, tenantID, siteID uuid.UUID, recipient string) (Site, bool, error)
 
 	// GH #414 m117 — monitoring pause/resume. Bulk by construction (the UI
 	// entry point is a multi-select) and idempotent: see monitoring_repo.go.
@@ -627,6 +633,60 @@ func (r *pgRepo) SetAgeRecipient(ctx context.Context, tenantID, siteID uuid.UUID
 		return nil
 	})
 	return out, err
+}
+
+// ageRecipientLockNamespace is the advisory-lock namespace that serializes the
+// read-then-write in SetAgeRecipientIfUnset. Without it two concurrent agent
+// pushes (the twelve-clones-under-one-identity shape of GH #577) both read an
+// empty column, both decide they are the first set, and the later write wins —
+// which is exactly the silent overwrite this method exists to prevent. The lock
+// is xact-scoped, so it releases on commit or rollback; it is taken per SITE,
+// so it never serializes unrelated sites.
+const ageRecipientLockNamespace = "site_age_recipient"
+
+func (r *pgRepo) SetAgeRecipientIfUnset(ctx context.Context, tenantID, siteID uuid.UUID, recipient string) (Site, bool, error) {
+	var out Site
+	var applied bool
+	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx,
+			"SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))",
+			ageRecipientLockNamespace, siteID.String()); err != nil {
+			return domain.Internal("site_recipient_lock_failed", "failed to lock site age recipient").WithCause(err)
+		}
+		q := sqlc.New(tx)
+		cur, err := q.GetSite(ctx, sqlc.GetSiteParams{ID: siteID, TenantID: tenantID})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return domain.NotFound("site_not_found", "site not found")
+			}
+			return domain.Internal("site_get_failed", "failed to load site").WithCause(err)
+		}
+		// Already set: leave it alone and report the row as it stands. The
+		// caller decides whether that is a no-op (same value) or a refused
+		// change (different value) and records it.
+		if cur.AgeRecipient != "" {
+			out = toModelFromGetSiteRow(cur)
+			return nil
+		}
+		row, err := q.SetSiteAgeRecipient(ctx, sqlc.SetSiteAgeRecipientParams{
+			ID:           siteID,
+			TenantID:     tenantID,
+			AgeRecipient: recipient,
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return domain.NotFound("site_not_found", "site not found")
+			}
+			return domain.Internal("site_set_recipient_failed", "failed to set site age recipient").WithCause(err)
+		}
+		out = toModel(row)
+		applied = true
+		return nil
+	})
+	if err != nil {
+		return Site{}, false, err
+	}
+	return out, applied, nil
 }
 
 func (r *pgRepo) CreatePairingCode(ctx context.Context, in CreatePairingCodeInput, codeHash string, expiresAt time.Time) (PairingCode, error) {

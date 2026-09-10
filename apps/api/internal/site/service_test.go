@@ -20,6 +20,13 @@ type fakeRepo struct {
 	getErr      error
 	listErr     error
 	deleteErr   error
+
+	// Backup-recipient state for the agent metadata path. ageRecipient models
+	// the sites.age_recipient column: empty means "never set".
+	ageRecipient      string
+	ifUnsetErr        error
+	ifUnsetCalls      int
+	unconditionalSets int
 }
 
 func (f *fakeRepo) Create(_ context.Context, in CreateInput) (Site, error) {
@@ -55,7 +62,24 @@ func (f *fakeRepo) SetTags(_ context.Context, in SetTagsInput) (Site, error) {
 }
 
 func (f *fakeRepo) SetAgeRecipient(_ context.Context, tenantID, siteID uuid.UUID, recipient string) (Site, error) {
+	f.unconditionalSets++
+	f.ageRecipient = recipient
 	return Site{ID: siteID, TenantID: tenantID, AgeRecipient: recipient}, nil
+}
+
+// SetAgeRecipientIfUnset mirrors the pgRepo contract: first set wins, an
+// established value is never overwritten, and the returned Site is the row as
+// it stands after the call.
+func (f *fakeRepo) SetAgeRecipientIfUnset(_ context.Context, tenantID, siteID uuid.UUID, recipient string) (Site, bool, error) {
+	f.ifUnsetCalls++
+	if f.ifUnsetErr != nil {
+		return Site{}, false, f.ifUnsetErr
+	}
+	if f.ageRecipient != "" {
+		return Site{ID: siteID, TenantID: tenantID, AgeRecipient: f.ageRecipient}, false, nil
+	}
+	f.ageRecipient = recipient
+	return Site{ID: siteID, TenantID: tenantID, AgeRecipient: recipient}, true, nil
 }
 
 func (f *fakeRepo) CreatePairingCode(_ context.Context, in CreatePairingCodeInput, codeHash string, expiresAt time.Time) (PairingCode, error) {
@@ -71,7 +95,9 @@ func (f *fakeRepo) GetByAgentKey(_ context.Context, key string) (Site, error) {
 }
 
 func (f *fakeRepo) UpdateMetadata(_ context.Context, tenantID, siteID uuid.UUID, _ Metadata, _ []byte) (Site, error) {
-	return Site{ID: siteID, TenantID: tenantID}, nil
+	// RETURNING * on the real query carries age_recipient back, so the fake
+	// must too — the service reads it to tell a first set from a change.
+	return Site{ID: siteID, TenantID: tenantID, AgeRecipient: f.ageRecipient}, nil
 }
 
 func (f *fakeRepo) TouchSeen(_ context.Context, _, _ uuid.UUID) error { return nil }
