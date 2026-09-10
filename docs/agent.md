@@ -106,8 +106,10 @@ TLS trust alone cannot force a destructive self-deactivation. See the
   WordPress host, so the control plane treats all agent-supplied data as
   untrusted and schema-validates it.
 
-Locked crypto: Ed25519 (signing), AES-256-GCM (at-rest secrets), blake3
-(integrity), age (backup encryption). Details in [security.md](./security.md).
+Locked crypto: Ed25519 (signing), AES-256-GCM (at-rest secrets), BLAKE2b-256
+(integrity; the code identifier reads `blake3`), age (backup encryption;
+implemented, not enabled in shipped builds). Details in
+[security.md](./security.md).
 
 ## Media Optimizer
 

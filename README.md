@@ -2,7 +2,7 @@
 
 **Open-source, self-hostable WordPress fleet management.**
 
-WPMgr lets you enroll, monitor, update, back up, and secure a fleet of WordPress sites from one dashboard, all running on infrastructure you control. The control plane is a Go binary with a React dashboard; a lightweight PHP plugin on each managed site handles the work. Everything between the agent and the control plane is Ed25519-signed.
+WPMgr lets you enroll, monitor, update, back up, and secure a fleet of WordPress sites from one dashboard, running on infrastructure you control when you self-host it. The control plane is a Go binary with a React dashboard; a lightweight PHP plugin on each managed site handles the work. Everything between the agent and the control plane is Ed25519-signed.
 
 [![Latest release](https://img.shields.io/github/v/release/mosamlife/wpmgr?label=release&style=flat)](https://github.com/mosamlife/wpmgr/releases)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat)](./LICENSE)
@@ -57,9 +57,8 @@ The script downloads every file the stack needs, generates all secrets, and prin
 - **Pure-PHP streaming file archiver**: ZipArchive streaming (never loads file bodies into memory), rotated at 200 MiB / 55 k entries per part. Splits wp-content into per-component sequences (plugins, themes, uploads, other, WP core) for targeted restore.
 - **Incremental archive-delta backups**: Each increment diffs the live file tree against the parent snapshot's `files.list` by size + mtime and packs only changed or new files into standard part archives, with deletions recorded as tombstone manifest sidecars. The database is dumped in full every run.
 - **Selective-component backups + exclusion patterns**: Per-site choice of which components to archive (plugins / themes / uploads / wp-content / database / WP core) plus exclude-path, exclude-extension, and max-file-size filters pushed to the agent on every run. Backup content settings are decoupled from the schedule so manual and scheduled runs share one definition.
-- **Content-addressed chunking with dedup**: Each artifact is chunked at ~4 MiB, BLAKE3-hashed, and deduplicated across snapshots. Only changed chunks re-upload on the next full backup.
-- **Client-side age encryption**: Unconditional X25519 + ChaCha20-Poly1305 per-chunk encryption to the site's public recipient, auto-provisioned by the agent on connect; the control plane stores only ciphertext and never holds a decryption key.
-- **Three backup destinations**: Control-plane-managed bucket, customer-owned S3-compatible bucket (agent never holds the credentials), or a local folder on the WordPress host. See [docs/features/backups.md](./docs/features/backups.md#backup-destinations).
+- **Content-addressed chunking with dedup**: Each artifact is chunked at ~4 MiB, content-hashed with BLAKE2b-256, and deduplicated across snapshots. Only changed chunks re-upload on the next full backup.
+- **Three backup destinations**: Control-plane-managed bucket (the default, so unless a site is pointed elsewhere the control plane holds its chunks), customer-owned S3-compatible bucket (agent never holds the credentials), or a local folder on the WordPress host. Chunks are stored as uploaded; uploads to a managed or S3-compatible bucket go over HTTPS, and a local destination writes straight to disk on the site's own server with no network transfer. Nothing is encrypted client-side in shipped builds, so whichever destination you pick, that destination's own access controls are what protect the data, along with whatever encryption at rest it provides: a bucket can be configured for it, a local folder gets only whatever the host's disk does. See [docs/features/backups.md](./docs/features/backups.md#backup-storage-and-encryption).
 - **SQL inspection at backup time**: A streaming constant-memory scanner produces `sql-inspection.json` (charset, table prefix, per-table row/byte estimates, WordPress detection, `siteurl`/`home`/`db_version`) stored with every snapshot.
 - **Environment fingerprint**: `environment.json` captures PHP/MySQL/WordPress versions, plugin/theme slugs, table list, and size at snapshot time.
 - **Resumable watchdog-driven state machine**: Phases are checkpointed to a task row; a watchdog re-enters stalled backups up to 6 times. Long backups survive PHP time limits and FPM worker recycling without redoing finished work.
@@ -75,7 +74,7 @@ The script downloads every file the stack needs, generates all secrets, and prin
 - **Resumable restore**: Same watchdog pattern as backup: persisted phase state, chunk-level download resume, mid-table URL-rewrite resume.
 - **Two-leg disk-free precheck**: Estimates required disk before touching anything; refuses with a GB-denominated message if there is not enough space.
 - **Self-preservation guards**: Never clobbers the running agent plugin, keystore, `wp-config.php`, `.htaccess`, or cache drop-ins; copies them forward from the live tree into staging before the swap.
-- **Path-traversal & integrity hardening**: Every downloaded chunk is BLAKE3-verified; every zip entry is traversal-checked with a canonical-path containment check against the staging root.
+- **Path-traversal & integrity hardening**: Every downloaded chunk is verified against its content hash; every zip entry is traversal-checked with a canonical-path containment check against the staging root.
 - **Maintenance-mode windowing**: Drops WordPress's `.maintenance` file around the destructive swap; removes it and flushes object cache, OPcache, and rewrite rules on completion.
 
 ### Updates

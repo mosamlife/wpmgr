@@ -65,8 +65,9 @@ export function GET(): Response {
   const body = `# WPMgr
 
 > Open source, self-hostable WordPress fleet management. One dashboard to back
-> up, update, monitor, secure and speed up many WordPress sites, running on
-> infrastructure you control.
+> up, update, monitor, secure and speed up many WordPress sites. Self-host it
+> and everything runs on infrastructure you control, or use the hosted
+> service instead.
 
 ## What this is
 
@@ -104,7 +105,7 @@ Fleet Agent Site Manager is the same plugin's listing name in the WordPress.org
 
 ## Capabilities
 
-Backups with incremental archives, client side encryption and restore to any
+Backups with incremental archives and restore to any
 snapshot. Bulk plugin, theme and core updates with a pre-update snapshot and
 automatic rollback on failure. Uptime and TLS expiry monitoring. Security
 hardening, file integrity checking against WordPress.org checksums, and

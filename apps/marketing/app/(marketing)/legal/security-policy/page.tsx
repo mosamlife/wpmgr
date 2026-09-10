@@ -9,7 +9,7 @@ import { SITE_CONFIG } from "@/lib/site";
 export const metadata: Metadata = buildMetadata({
   title: "Security Policy: Responsible Disclosure",
   description:
-    "WPMgr responsible disclosure policy and security posture: Ed25519-signed agent, redacted diagnostics, client-side-encrypted backups, and how to report a bug.",
+    "WPMgr responsible disclosure policy and security posture: Ed25519-signed agent, redacted diagnostics, backups stored by default in a control-plane-managed bucket on plans with managed storage, your own infrastructure if you self-host, WPMgr's on the hosted service, or in storage you configure yourself on the Free plan, and how to report a bug.",
   canonical: "/legal/security-policy",
 });
 
@@ -27,10 +27,10 @@ const SECURITY_POSTURE = [
       "Agent diagnostics (sent to the control plane on enrollment and on schedule) never include passwords, secret keys, or user data. The redaction logic is open-source and auditable.",
   },
   {
-    icon: "Lock",
-    title: "Client-side-encrypted backups",
+    icon: "Server",
+    title: "Backup storage: control-plane-managed, or yours",
     description:
-      "Backup data is encrypted on the agent before it leaves the site. The encryption key is derived from a per-site secret managed by the control plane and never stored in plaintext on the backup destination.",
+      "On plans with managed backup storage, the default destination is a control-plane-managed bucket: your own infrastructure if you self-host, WPMgr's if you use the hosted service. The Free plan has no managed bucket, so a site there needs its own S3-compatible bucket or a local folder configured before backups will run. Point a site at your own S3-compatible bucket or a local folder on its own server instead and the chunks stay off the control plane on any plan. Client-side encryption before upload is not available yet, so the destination in use, and whatever protection it applies, is what protects the data; a local folder gets none from WPMgr, only whatever the host's own disk provides.",
   },
   {
     icon: "ShieldOff",
@@ -283,9 +283,13 @@ export default function SecurityPolicyPage() {
                 personally identifiable information. No session replay, no visitor fingerprinting.
               </li>
               <li className="leading-7">
-                Backup data is encrypted on the agent before leaving the site. The control plane
-                stores a per-site encryption key reference; the backup destination stores only
-                ciphertext.
+                On plans with managed backup storage, backup data is stored by default in a
+                control-plane-managed bucket: your own infrastructure if you self-host,
+                WPMgr&apos;s if you use the hosted service. The Free plan has no managed bucket,
+                so a site there needs its own S3-compatible bucket or a local folder configured
+                before backups will run. Client-side encryption before upload is not available
+                yet, so the destination in use, not WPMgr, protects it; a local folder gets no
+                encryption from WPMgr at all, only whatever the host&apos;s own disk provides.
               </li>
               <li className="leading-7">
                 Email logs record metadata (from, to domain, subject, status) but not message bodies.
