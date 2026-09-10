@@ -353,10 +353,16 @@ class SnapshotManager
         $receipt = $this->capture($type, $slug, $fromVersion);
 
         if (!self::isRestorable($receipt)) {
+            // The three arguments below are this class's own receipt values
+            // (a log line it composed, one of its own CAPTURE_FAILURE_*
+            // constants, and the receipt array), never request input, and
+            // this exception is never echoed — the headless agent turns it
+            // into a JSON command response, which escapes at its own output
+            // boundary.
             throw new SnapshotCaptureFailed(
-                $receipt['log'],
-                $receipt['failure'] !== '' ? $receipt['failure'] : self::CAPTURE_FAILURE_NOT_RESTORABLE,
-                $receipt
+                $receipt['log'], // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- self-composed log line; never echoed (JSON response escapes at its own boundary)
+                $receipt['failure'] !== '' ? $receipt['failure'] : self::CAPTURE_FAILURE_NOT_RESTORABLE, // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- one of this class's own CAPTURE_FAILURE_* constants; never echoed
+                $receipt // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- structured receipt array for the handler; never echoed
             );
         }
 
