@@ -38,7 +38,7 @@ if (!defined('ABSPATH')) {
  * finds in the on-disk copy; a mismatch triggers a transparent reinstall so
  * existing sites always run the current drop-in logic without manual intervention.
  */
-define('WPMGR_PAGE_CACHE_DROPIN_VERSION', '0.45.1');
+define('WPMGR_PAGE_CACHE_DROPIN_VERSION', '0.46.0');
 
 if (!defined('WP_CACHE')) {
     return;
@@ -293,16 +293,49 @@ if (!empty($_GET)) {
 
 // --- Locate the cache file ----------------------------------------------------
 
-// HTTP_HOST: strict charset validation guards against cache-poisoning via a
-// crafted Host header. Accept only hostname characters + optional port; reject
-// (treat as cache bypass via 'unknown-host') anything else. No WP sanitizers
+// HTTP_HOST decides the bucket this request is keyed into, so a crafted Host
+// header is a cache-poisoning vector and the value is validated whole. The
+// block below is duplicated verbatim in CacheKey::normalizeHost(), which keys
+// the write side; the two are byte-identical once dedented, so a host is
+// either spelled the same by both sides or cached by neither. No WP sanitizers
 // available at drop-in load time.
-// phpcs:ignore WordPress.Security.ValidatedSanitizedInput.MissingUnslash,WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- advanced-cache drop-in runs pre-WP; wp_unslash/sanitize_* unavailable; value strictly validated via preg_match allowlist below
-$wpmgr_host_raw = isset($_SERVER['HTTP_HOST']) ? strtolower((string) $_SERVER['HTTP_HOST']) : '';
-if ($wpmgr_host_raw !== '' && preg_match('/^[a-z0-9.-]+(:[0-9]{1,5})?$/', $wpmgr_host_raw) === 1) {
-    $wpmgr_host = $wpmgr_host_raw;
+// phpcs:ignore WordPress.Security.ValidatedSanitizedInput.MissingUnslash,WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- advanced-cache drop-in runs pre-WP; wp_unslash/sanitize_* unavailable; value strictly validated via the anchored preg_match allowlist below
+$wpmgr_host = isset($_SERVER['HTTP_HOST']) ? (string) $_SERVER['HTTP_HOST'] : '';
+
+// WPMGR-NORMALIZE-HOST-SHARED BEGIN
+// Validate the whole value against an anchored pattern, then transform.
+// Validation decides only two things — cacheable, or not — so the two
+// sides cannot disagree about which bucket a host lands in: either they
+// both compute the same name, or they both decline to cache.
+//
+// The pattern requires the host to begin and end with an alphanumeric,
+// which rejects a value that is only separators. Such a value would
+// otherwise pass a charset test and then name a relative directory
+// rather than a bucket. Consecutive dots are rejected for the same
+// reason: an empty label is not a host, and it is not a directory
+// either.
+//
+// A port belongs to the identity of the site, so it stays in the bucket
+// name. ':' is not portable in a path segment, so both sides spell it
+// '_' — the alternative, discarding the port, would key two different
+// sites onto one bucket.
+$wpmgr_host = strtolower($wpmgr_host);
+if ($wpmgr_host === ''
+    || strpos($wpmgr_host, '..') !== false
+    || preg_match('/^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]{1,5})?$/', $wpmgr_host) !== 1
+) {
+    $wpmgr_host = '';
 } else {
-    $wpmgr_host = 'unknown-host';
+    $wpmgr_host = str_replace(':', '_', $wpmgr_host);
+}
+// WPMGR-NORMALIZE-HOST-SHARED END
+
+if ($wpmgr_host === '') {
+    // Not a host this cache keys on. Bypass entirely rather than falling back
+    // to a placeholder bucket: a shared bucket is readable and writable by
+    // every request that lands in it, so one rejected request could be answered
+    // with a page cached for a different one.
+    return false; // boot WordPress
 }
 
 // REQUEST_URI: strip control characters and cap length before use as a
@@ -321,11 +354,46 @@ if ($wpmgr_qpos !== false) {
     $wpmgr_uri = substr($wpmgr_uri, 0, $wpmgr_qpos);
 }
 $wpmgr_path = strtolower(rawurldecode($wpmgr_uri));
-$wpmgr_path = str_replace(array('\\', "\0"), array('/', ''), $wpmgr_path);
-$wpmgr_path = preg_replace('#/+#', '/', $wpmgr_path);
-$wpmgr_path = preg_replace('#(\.\./|/\.\.)#', '', (string) $wpmgr_path);
-$wpmgr_path = '/' . ltrim((string) $wpmgr_path, '/');
-$wpmgr_path = rtrim($wpmgr_path, '/'); // '' for root
+
+// The traversal-containment step below is duplicated verbatim in
+// CacheKey::normalizePath(), which keys the write side. This drop-in runs
+// before WordPress loads and so cannot call that class; the two copies are
+// byte-identical once dedented, and a divergence would store a page under one
+// key and look it up under another.
+// WPMGR-NORMALIZE-PATH-SHARED BEGIN
+// Resolve the path one SEGMENT at a time, and classify each segment by
+// its whole value. A pattern strip over the joined string is the wrong
+// instrument here: removing a substring can fuse the two neighbours it
+// sat between into a token that was in neither of them, so the result
+// depends on how many times the strip is applied and no single pass is
+// trustworthy. Splitting on the separator first cannot fuse anything,
+// which makes the outcome correct by construction rather than by
+// iterating a substitution until it stops changing.
+//
+// An empty segment (a repeated or trailing separator) carries no name.
+// Neither does a segment that is nothing but dots: one dot is the
+// directory itself, two dots is its parent, and longer runs are not
+// portable filenames. Two dots pops one level first; popping at the
+// root is deliberately a no-op, so the result can never name anything
+// above the bucket it belongs to. Every other segment is preserved
+// exactly as it arrived.
+$wpmgr_path = str_replace(['\\', "\0"], ['/', ''], $wpmgr_path);
+$wpmgr_segments = [];
+foreach (explode('/', $wpmgr_path) as $wpmgr_segment) {
+    if ($wpmgr_segment === '') {
+        continue;
+    }
+    if (trim($wpmgr_segment, '.') === '') {
+        if ($wpmgr_segment === '..') {
+            array_pop($wpmgr_segments);
+        }
+        continue;
+    }
+    $wpmgr_segments[] = $wpmgr_segment;
+}
+$wpmgr_path = $wpmgr_segments === [] ? '' : '/' . implode('/', $wpmgr_segments);
+// WPMGR-NORMALIZE-PATH-SHARED END
+unset($wpmgr_segments, $wpmgr_segment);
 
 // Bypass URLs: any configured substring in the request URI/path disables the
 // cache. This runs BEFORE locating an existing cache file so an already-warmed
@@ -378,6 +446,23 @@ if (!is_file($wpmgr_file)) {
     return false; // MISS — boot WordPress
 }
 
+// Containment backstop: the key components above are sanitised lexically, but
+// the file about to be served must ALSO physically resolve inside the cache
+// root — a planted symlink (or any sanitiser gap) must never leak a file from
+// outside the bucket tree. realpath() is cheap here (one HIT per request, and
+// PHP caches the resolution); an escaped path is handed to WordPress as a MISS.
+$wpmgr_cache_root = realpath(rtrim($wpmgr_content, '/\\') . '/cache/wpmgr');
+$wpmgr_file_real  = realpath($wpmgr_file);
+if ($wpmgr_cache_root === false || $wpmgr_file_real === false
+    || strncmp(
+        str_replace('\\', '/', $wpmgr_file_real),
+        str_replace('\\', '/', $wpmgr_cache_root) . '/',
+        strlen(str_replace('\\', '/', $wpmgr_cache_root)) + 1
+    ) !== 0
+) {
+    return false; // outside the cache root — never serve; boot WordPress
+}
+
 // --- Serve the cache hit ------------------------------------------------------
 
 // HIT — append one line to the hour-bucket hit file BEFORE any early exits
@@ -426,7 +511,7 @@ if (!headers_sent()) {
             header($wpmgr_proto . ' 304 Not Modified', true, 304);
             // 304 is a HIT — fire the cron kick after the response headers are
             // committed. No body to flush, so the kick happens immediately.
-            if ($wpmgr_cron_kick_enabled && $wpmgr_host !== 'unknown-host') {
+            if ($wpmgr_cron_kick_enabled) {
                 wpmgr_cron_kick_if_overdue(
                     $wpmgr_cron_kick_marker,
                     $wpmgr_cron_kick_interval,
@@ -444,7 +529,7 @@ if (!headers_sent()) {
 // HEAD requests get headers only.
 if ($wpmgr_method === 'HEAD') {
     // HEAD is a HIT — fire the cron kick after headers are committed.
-    if ($wpmgr_cron_kick_enabled && $wpmgr_host !== 'unknown-host') {
+    if ($wpmgr_cron_kick_enabled) {
         wpmgr_cron_kick_if_overdue(
             $wpmgr_cron_kick_marker,
             $wpmgr_cron_kick_interval,
@@ -476,7 +561,7 @@ if (function_exists('fastcgi_finish_request')) {
 }
 
 // Fire the WP-Cron loopback kick after the response has been handed off.
-if ($wpmgr_cron_kick_enabled && $wpmgr_host !== 'unknown-host') {
+if ($wpmgr_cron_kick_enabled) {
     wpmgr_cron_kick_if_overdue(
         $wpmgr_cron_kick_marker,
         $wpmgr_cron_kick_interval,
