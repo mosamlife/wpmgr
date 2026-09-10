@@ -1375,6 +1375,102 @@ final class SnapshotManagerTest extends TestCase
         $this->assertFileExists($live . '/keep-me.php', 'a mismatched rollback must delete nothing');
     }
 
+    public function test_rollback_of_an_absent_before_state_refuses_a_degenerate_slug_and_deletes_nothing(): void
+    {
+        // The exact shape the delete guard must survive: an EMPTY slug makes
+        // the real liveDir() build "<plugins root>/", whose is_dir() is true,
+        // whose basename() is the root's own name (not ''), and whose
+        // dirname() differs from itself — so every positional check passes and
+        // deleteDir() would receive the whole plugins directory.
+        $pluginsRoot = $this->root . '/plugins-root';
+        mkdir($pluginsRoot . '/innocent-neighbour', 0755, true);
+        file_put_contents($pluginsRoot . '/innocent-neighbour/plugin.php', "<?php\n");
+
+        $mgr = $this->manager();
+
+        // Capture while the path is absent...
+        $mgr->liveOverride = $this->root . '/not-there-yet';
+        $snap              = $mgr->capture('plugin', '', '');
+        $this->assertSame(SnapshotManager::BEFORE_STATE_ABSENT, $snap['before_state']);
+
+        // ...then roll back when the resolved path is the plugins ROOT, with
+        // its trailing separator, exactly as liveDir() would build it.
+        $mgr->liveOverride = $pluginsRoot . '/';
+
+        $res = $mgr->restore('plugin', '', $snap['snapshot_id']);
+
+        $this->assertFalse($res['ok'], 'a degenerate slug must be refused');
+        $this->assertDirectoryExists($pluginsRoot);
+        $this->assertFileExists(
+            $pluginsRoot . '/innocent-neighbour/plugin.php',
+            'a refused rollback must delete nothing'
+        );
+    }
+
+    /**
+     * @dataProvider provide_unusable_delete_slugs
+     */
+    public function test_rollback_of_an_absent_before_state_refuses_any_slug_that_is_not_one_plain_segment(
+        string $type,
+        string $slug
+    ): void {
+        $root = $this->root . '/segment-root';
+        mkdir($root . '/bystander', 0755, true);
+        file_put_contents($root . '/bystander/keep.php', "<?php\n");
+
+        $mgr               = $this->manager();
+        $mgr->liveOverride = $this->root . '/absent-at-capture';
+        $snap              = $mgr->capture($type, $slug, '');
+        $this->assertSame(SnapshotManager::BEFORE_STATE_ABSENT, $snap['before_state']);
+
+        $mgr->liveOverride = $root;
+
+        $res = $mgr->restore($type, $slug, $snap['snapshot_id']);
+
+        $this->assertFalse($res['ok'], 'slug ' . var_export($slug, true) . ' must not reach the delete');
+        $this->assertFileExists($root . '/bystander/keep.php');
+    }
+
+    /**
+     * @return array<string,array{0:string,1:string}>
+     */
+    public static function provide_unusable_delete_slugs(): array
+    {
+        return [
+            'empty plugin slug'        => ['plugin', ''],
+            'plugin parent traversal'  => ['plugin', '../evil/evil.php'],
+            'plugin dot folder'        => ['plugin', './evil.php'],
+            'plugin all-dots folder'   => ['plugin', '.../evil.php'],
+            'plugin null byte'         => ['plugin', "evil\0/evil.php"],
+            'empty theme slug'         => ['theme', ''],
+            'theme nested path'        => ['theme', 'twentytwenty/subdir'],
+            'theme parent traversal'   => ['theme', '..'],
+            'theme drive letter'       => ['theme', 'C:evil'],
+        ];
+    }
+
+    public function test_a_resolved_live_path_that_is_not_the_items_own_directory_is_refused(): void
+    {
+        // The slug is perfectly well formed, but the path resolution does not
+        // land on that item's directory. A delete must not proceed on a path
+        // it cannot match back to the item it was asked to roll back.
+        $elsewhere = $this->root . '/elsewhere';
+        mkdir($elsewhere, 0755, true);
+        file_put_contents($elsewhere . '/keep.php', "<?php\n");
+
+        $mgr               = $this->manager();
+        $mgr->liveOverride = $this->root . '/plugins-src/well-formed';
+        $snap              = $mgr->capture('plugin', 'well-formed/well-formed.php', '');
+        $this->assertSame(SnapshotManager::BEFORE_STATE_ABSENT, $snap['before_state']);
+
+        $mgr->liveOverride = $elsewhere;
+
+        $res = $mgr->restore('plugin', 'well-formed/well-formed.php', $snap['snapshot_id']);
+
+        $this->assertFalse($res['ok']);
+        $this->assertFileExists($elsewhere . '/keep.php');
+    }
+
     public function test_failed_copy_is_distinguishable_and_never_presents_as_a_successful_capture(): void
     {
         $source = $this->root . '/plugins-src/copy-fails';
