@@ -254,23 +254,49 @@ final class CacheKey
         $uriPath = rawurldecode($uriPath);
         $uriPath = strtolower($uriPath);
 
-        // Collapse path traversal and stray separators defensively. The
-        // dot-segment strip runs to a FIXPOINT: a single pass over e.g.
-        // '/.//.../x' removes the inner '../' but recombines its neighbours
-        // into a brand-new '../' (non-idempotent-sanitizer traversal). Must
-        // match the advanced-cache drop-in exactly or read and write key
-        // differently.
-        $uriPath = str_replace(['\\', "\0"], ['/', ''], $uriPath);
-        $uriPath = preg_replace('#/+#', '/', $uriPath) ?? $uriPath;
-        do {
-            $prev    = $uriPath;
-            $uriPath = preg_replace('#(\.\./|/\.\.)#', '', $prev) ?? $prev;
-        } while ($uriPath !== $prev);
+        // The traversal-containment step below is duplicated verbatim in the
+        // advanced-cache drop-in, which runs before WordPress loads and so can
+        // never call this class. Bridge through the drop-in's variable name so
+        // the two copies are byte-identical once dedented; a divergence would
+        // store a page under one key and look it up under another.
+        // tests/CacheNormalizeParityTest.php enforces that mechanically.
+        $wpmgr_path = $uriPath;
 
-        $uriPath = '/' . ltrim($uriPath, '/');
-        $uriPath = rtrim($uriPath, '/');
+        // WPMGR-NORMALIZE-PATH-SHARED BEGIN
+        // Resolve the path one SEGMENT at a time, and classify each segment by
+        // its whole value. A pattern strip over the joined string is the wrong
+        // instrument here: removing a substring can fuse the two neighbours it
+        // sat between into a token that was in neither of them, so the result
+        // depends on how many times the strip is applied and no single pass is
+        // trustworthy. Splitting on the separator first cannot fuse anything,
+        // which makes the outcome correct by construction rather than by
+        // iterating a substitution until it stops changing.
+        //
+        // An empty segment (a repeated or trailing separator) carries no name.
+        // Neither does a segment that is nothing but dots: one dot is the
+        // directory itself, two dots is its parent, and longer runs are not
+        // portable filenames. Two dots pops one level first; popping at the
+        // root is deliberately a no-op, so the result can never name anything
+        // above the bucket it belongs to. Every other segment is preserved
+        // exactly as it arrived.
+        $wpmgr_path = str_replace(['\\', "\0"], ['/', ''], $wpmgr_path);
+        $wpmgr_segments = [];
+        foreach (explode('/', $wpmgr_path) as $wpmgr_segment) {
+            if ($wpmgr_segment === '') {
+                continue;
+            }
+            if (trim($wpmgr_segment, '.') === '') {
+                if ($wpmgr_segment === '..') {
+                    array_pop($wpmgr_segments);
+                }
+                continue;
+            }
+            $wpmgr_segments[] = $wpmgr_segment;
+        }
+        $wpmgr_path = $wpmgr_segments === [] ? '' : '/' . implode('/', $wpmgr_segments);
+        // WPMGR-NORMALIZE-PATH-SHARED END
 
-        return $uriPath; // '' for root
+        return $wpmgr_path; // '' for root
     }
 
     /**

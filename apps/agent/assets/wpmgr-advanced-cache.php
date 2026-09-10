@@ -328,19 +328,46 @@ if ($wpmgr_qpos !== false) {
     $wpmgr_uri = substr($wpmgr_uri, 0, $wpmgr_qpos);
 }
 $wpmgr_path = strtolower(rawurldecode($wpmgr_uri));
-$wpmgr_path = str_replace(array('\\', "\0"), array('/', ''), $wpmgr_path);
-$wpmgr_path = preg_replace('#/+#', '/', $wpmgr_path);
-// Dot-segment strip runs to a FIXPOINT: a single pass over e.g. '/.//.../x'
-// removes the inner '../' but recombines its neighbours into a brand-new
-// '../' (non-idempotent-sanitizer traversal). Must match
-// CacheKey::normalizePath exactly or read and write key differently.
-do {
-    $wpmgr_path_prev = (string) $wpmgr_path;
-    $wpmgr_path      = preg_replace('#(\.\./|/\.\.)#', '', $wpmgr_path_prev);
-} while ($wpmgr_path !== $wpmgr_path_prev);
-unset($wpmgr_path_prev);
-$wpmgr_path = '/' . ltrim((string) $wpmgr_path, '/');
-$wpmgr_path = rtrim($wpmgr_path, '/'); // '' for root
+
+// The traversal-containment step below is duplicated verbatim in
+// CacheKey::normalizePath(), which keys the write side. This drop-in runs
+// before WordPress loads and so cannot call that class; the two copies are
+// byte-identical once dedented, and a divergence would store a page under one
+// key and look it up under another.
+// WPMGR-NORMALIZE-PATH-SHARED BEGIN
+// Resolve the path one SEGMENT at a time, and classify each segment by
+// its whole value. A pattern strip over the joined string is the wrong
+// instrument here: removing a substring can fuse the two neighbours it
+// sat between into a token that was in neither of them, so the result
+// depends on how many times the strip is applied and no single pass is
+// trustworthy. Splitting on the separator first cannot fuse anything,
+// which makes the outcome correct by construction rather than by
+// iterating a substitution until it stops changing.
+//
+// An empty segment (a repeated or trailing separator) carries no name.
+// Neither does a segment that is nothing but dots: one dot is the
+// directory itself, two dots is its parent, and longer runs are not
+// portable filenames. Two dots pops one level first; popping at the
+// root is deliberately a no-op, so the result can never name anything
+// above the bucket it belongs to. Every other segment is preserved
+// exactly as it arrived.
+$wpmgr_path = str_replace(['\\', "\0"], ['/', ''], $wpmgr_path);
+$wpmgr_segments = [];
+foreach (explode('/', $wpmgr_path) as $wpmgr_segment) {
+    if ($wpmgr_segment === '') {
+        continue;
+    }
+    if (trim($wpmgr_segment, '.') === '') {
+        if ($wpmgr_segment === '..') {
+            array_pop($wpmgr_segments);
+        }
+        continue;
+    }
+    $wpmgr_segments[] = $wpmgr_segment;
+}
+$wpmgr_path = $wpmgr_segments === [] ? '' : '/' . implode('/', $wpmgr_segments);
+// WPMGR-NORMALIZE-PATH-SHARED END
+unset($wpmgr_segments, $wpmgr_segment);
 
 // Bypass URLs: any configured substring in the request URI/path disables the
 // cache. This runs BEFORE locating an existing cache file so an already-warmed
