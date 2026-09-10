@@ -300,17 +300,71 @@ final class CacheKey
     }
 
     /**
-     * Strip a host of anything that is not a safe path component (port, casing,
-     * directory-traversal characters).
+     * Canonical cache bucket name for a request host, or '' when the host must
+     * not participate in caching at all.
+     *
+     * Returning '' rather than a placeholder is the point. A placeholder is a
+     * single bucket that every rejected host shares, and a shared bucket is
+     * both readable and writable by all of them — one rejected request could be
+     * answered with a page cached for a different rejected request. Callers
+     * must treat '' as "do not store, do not serve, boot WordPress".
+     *
+     * The advanced-cache drop-in carries this block verbatim, for the same
+     * reason the path block is duplicated: it runs before WordPress loads and
+     * cannot call this class. Bridge through its variable name so the two
+     * copies are byte-identical once dedented.
+     * tests/CacheNormalizeParityTest.php enforces that mechanically.
+     *
+     * @param string $host Raw HTTP_HOST.
+     * @return string Bucket name, or '' when the host is not cacheable.
+     */
+    public static function normalizeHost(string $host): string
+    {
+        $wpmgr_host = $host;
+
+        // WPMGR-NORMALIZE-HOST-SHARED BEGIN
+        // Validate the whole value against an anchored pattern, then transform.
+        // Validation decides only two things — cacheable, or not — so the two
+        // sides cannot disagree about which bucket a host lands in: either they
+        // both compute the same name, or they both decline to cache.
+        //
+        // The pattern requires the host to begin and end with an alphanumeric,
+        // which rejects a value that is only separators. Such a value would
+        // otherwise pass a charset test and then name a relative directory
+        // rather than a bucket. Consecutive dots are rejected for the same
+        // reason: an empty label is not a host, and it is not a directory
+        // either.
+        //
+        // A port belongs to the identity of the site, so it stays in the bucket
+        // name. ':' is not portable in a path segment, so both sides spell it
+        // '_' — the alternative, discarding the port, would key two different
+        // sites onto one bucket.
+        $wpmgr_host = strtolower($wpmgr_host);
+        if ($wpmgr_host === ''
+            || strpos($wpmgr_host, '..') !== false
+            || preg_match('/^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]{1,5})?$/', $wpmgr_host) !== 1
+        ) {
+            $wpmgr_host = '';
+        } else {
+            $wpmgr_host = str_replace(':', '_', $wpmgr_host);
+        }
+        // WPMGR-NORMALIZE-HOST-SHARED END
+
+        return $wpmgr_host; // '' when the host must not be cached
+    }
+
+    /**
+     * Bucket name for path building. Callers that must not cache an unusable
+     * host check {@see normalizeHost()} directly; this keeps a stable directory
+     * name for path arithmetic (purge scans and the like), and nothing on the
+     * write path stores into it.
      *
      * @param string $host Raw HTTP_HOST.
      * @return string
      */
     private function sanitizeHost(string $host): string
     {
-        $host = strtolower($host);
-        $host = preg_replace('/[^a-z0-9\.\-:]/', '', $host) ?? '';
-        $host = str_replace([':', '..'], ['_', ''], $host);
+        $host = self::normalizeHost($host);
         return $host === '' ? 'unknown-host' : $host;
     }
 

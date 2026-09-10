@@ -293,23 +293,49 @@ if (!empty($_GET)) {
 
 // --- Locate the cache file ----------------------------------------------------
 
-// HTTP_HOST: strict charset validation guards against cache-poisoning via a
-// crafted Host header. Accept only hostname characters + optional port; reject
-// (treat as cache bypass via 'unknown-host') anything else. The charset allows
-// dots, so consecutive dots ('..') are rejected separately — the host is used
-// as a directory segment of the cache path, and a host of '..' would key into
-// the bucket tree's parent (CacheKey::sanitizeHost strips '..' on the write
-// side; read and write must agree). No WP sanitizers available at drop-in load
-// time.
-// phpcs:ignore WordPress.Security.ValidatedSanitizedInput.MissingUnslash,WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- advanced-cache drop-in runs pre-WP; wp_unslash/sanitize_* unavailable; value strictly validated via preg_match allowlist below
-$wpmgr_host_raw = isset($_SERVER['HTTP_HOST']) ? strtolower((string) $_SERVER['HTTP_HOST']) : '';
-if ($wpmgr_host_raw !== ''
-    && strpos($wpmgr_host_raw, '..') === false
-    && preg_match('/^[a-z0-9.-]+(:[0-9]{1,5})?$/', $wpmgr_host_raw) === 1
+// HTTP_HOST decides the bucket this request is keyed into, so a crafted Host
+// header is a cache-poisoning vector and the value is validated whole. The
+// block below is duplicated verbatim in CacheKey::normalizeHost(), which keys
+// the write side; the two are byte-identical once dedented, so a host is
+// either spelled the same by both sides or cached by neither. No WP sanitizers
+// available at drop-in load time.
+// phpcs:ignore WordPress.Security.ValidatedSanitizedInput.MissingUnslash,WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- advanced-cache drop-in runs pre-WP; wp_unslash/sanitize_* unavailable; value strictly validated via the anchored preg_match allowlist below
+$wpmgr_host = isset($_SERVER['HTTP_HOST']) ? (string) $_SERVER['HTTP_HOST'] : '';
+
+// WPMGR-NORMALIZE-HOST-SHARED BEGIN
+// Validate the whole value against an anchored pattern, then transform.
+// Validation decides only two things — cacheable, or not — so the two
+// sides cannot disagree about which bucket a host lands in: either they
+// both compute the same name, or they both decline to cache.
+//
+// The pattern requires the host to begin and end with an alphanumeric,
+// which rejects a value that is only separators. Such a value would
+// otherwise pass a charset test and then name a relative directory
+// rather than a bucket. Consecutive dots are rejected for the same
+// reason: an empty label is not a host, and it is not a directory
+// either.
+//
+// A port belongs to the identity of the site, so it stays in the bucket
+// name. ':' is not portable in a path segment, so both sides spell it
+// '_' — the alternative, discarding the port, would key two different
+// sites onto one bucket.
+$wpmgr_host = strtolower($wpmgr_host);
+if ($wpmgr_host === ''
+    || strpos($wpmgr_host, '..') !== false
+    || preg_match('/^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]{1,5})?$/', $wpmgr_host) !== 1
 ) {
-    $wpmgr_host = $wpmgr_host_raw;
+    $wpmgr_host = '';
 } else {
-    $wpmgr_host = 'unknown-host';
+    $wpmgr_host = str_replace(':', '_', $wpmgr_host);
+}
+// WPMGR-NORMALIZE-HOST-SHARED END
+
+if ($wpmgr_host === '') {
+    // Not a host this cache keys on. Bypass entirely rather than falling back
+    // to a placeholder bucket: a shared bucket is readable and writable by
+    // every request that lands in it, so one rejected request could be answered
+    // with a page cached for a different one.
+    return false; // boot WordPress
 }
 
 // REQUEST_URI: strip control characters and cap length before use as a
