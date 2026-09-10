@@ -79,6 +79,27 @@ const (
 	ActionPairingCodeCreated = "pairing_code.created"
 	ActionSiteTagsSet        = "site.tags.set"
 
+	// Backup encryption recipient (sites.age_recipient). The column is key
+	// material: it decides which age PUBLIC key future backups are encrypted
+	// to, and the control plane never holds the matching identity, so a change
+	// to it is otherwise only discoverable at restore time. Both events are
+	// recorded with ActorSystem — the writer is the agent channel, not a human
+	// — and carry the FULL recipient values in metadata. Those are public keys,
+	// never secrets, and recording them is the point: the log is where an
+	// operator looks to find which recipient a site's older backups were
+	// written for. audit_log.action is plain text with no CHECK and no enum
+	// (db/schema.sql), so neither of these needed a migration.
+	//
+	// ActionSiteBackupRecipientSet: the FIRST recipient was recorded for a site
+	// (normal enrolment). Metadata: recipient, source ("agent_metadata"),
+	// agent_version.
+	ActionSiteBackupRecipientSet = "site.backup.recipient.set"
+	// ActionSiteBackupRecipientChangeRejected: an agent metadata push carried a
+	// recipient DIFFERENT from the one already recorded, and the change was NOT
+	// applied. Metadata: current_recipient, proposed_recipient, source,
+	// agent_version, reason.
+	ActionSiteBackupRecipientChangeRejected = "site.backup.recipient.change_rejected"
+
 	// GH #230 "rich tags" — tenant-level tag registry (internal/sitetag).
 	ActionTagCreate    = "tag.create"
 	ActionTagUpdate    = "tag.update"

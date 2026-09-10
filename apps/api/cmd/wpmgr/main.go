@@ -534,6 +534,9 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	siteSvc := site.NewService(site.NewRepo(pool), validator, clock)
 	siteSvc.SetLogger(logger)
 	auditRec := audit.NewRecorder(pool, clock)
+	// The agent metadata path records a first set of, and any refused change
+	// to, a site's backup encryption recipient (sites.age_recipient).
+	siteSvc.SetAuditRecorder(auditRec)
 
 	// S6b — the MCP read surface. Wired UNCONDITIONALLY, not behind a hosted
 	// flag: the endpoint is published on the connect screen, and a nil handler

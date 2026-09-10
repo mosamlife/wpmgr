@@ -13,6 +13,7 @@ import (
 	agentpkg "github.com/mosamlife/wpmgr/apps/api/internal/agent"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentplugin"
 	"github.com/mosamlife/wpmgr/apps/api/internal/api/gen"
+	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 	"github.com/mosamlife/wpmgr/apps/api/internal/metrics"
 	"github.com/mosamlife/wpmgr/apps/api/internal/wpversion"
@@ -38,6 +39,17 @@ type Service struct {
 	// deployments see real data (ClickHouse never writes to site_uptime_probes).
 	// nil disables uptime enrichment (tests that don't inject a store).
 	uptimeStore metrics.Store
+	// audit records agent-channel events that change (or are refused from
+	// changing) backup key material on a site. Optional: nil means the audit
+	// entry is skipped, never that the event goes unreported — the structured
+	// log line is unconditional.
+	audit *audit.Recorder
+}
+
+// SetAuditRecorder wires the hash-chained audit recorder. Call once at boot;
+// nil-safe when omitted (dump-routes and unit tests).
+func (s *Service) SetAuditRecorder(rec *audit.Recorder) {
+	s.audit = rec
 }
 
 // NewService builds a site Service.
@@ -392,16 +404,133 @@ func (s *Service) ApplyAgentMetadata(ctx context.Context, tenantID, siteID uuid.
 	if err != nil {
 		return gen.Site{}, err
 	}
-	// Opportunistically register the agent's age recipient (M4 backups need it).
-	// Best-effort: a malformed recipient is silently ignored — the agent will
-	// retry on the next sync, and operators can also set it explicitly elsewhere.
+	// Register the agent's age recipient (M4 backups need it). A malformed
+	// recipient is still ignored — the agent retries on the next sync — but a
+	// well-formed one is now routed through applyAgentAgeRecipient, which
+	// distinguishes a first set from a change to an established value.
 	if rec := strings.TrimSpace(m.AgeRecipient); rec != "" && len(rec) <= 256 &&
 		strings.HasPrefix(rec, "age1") && out.AgeRecipient != rec {
-		if updated, err := s.repo.SetAgeRecipient(ctx, tenantID, siteID, rec); err == nil {
-			out = updated
+		updated, err := s.applyAgentAgeRecipient(ctx, tenantID, siteID, rec, out, m.AgentVersion)
+		if err != nil {
+			return gen.Site{}, err
 		}
+		out = updated
 	}
 	return toAPI(out), nil
+}
+
+// applyAgentAgeRecipient decides what an agent-pushed age recipient may do to
+// sites.age_recipient, which is backup key material: it names the age PUBLIC
+// key the site's future backups are encrypted to, and the control plane never
+// holds the matching identity.
+//
+// FIRST SET (column empty) is applied. That is ordinary enrolment and the
+// column gates backups outright (internal/backup: age_recipient_missing), so
+// breaking it would stop every new site backing up.
+//
+// A CHANGE to an established recipient is NOT applied. The agent channel proves
+// possession of the site's agent credential, and nothing more: a cloned install
+// carries the original's credential (GH #577 reported twelve clones reporting
+// under one identity), so "a different recipient arrived over an authenticated
+// push" does not distinguish a legitimately re-provisioned keystore from a copy
+// of the site speaking for the original. Accepting the change would let
+// whichever install pushed last repoint an established site's backup encryption
+// at a key its owner does not hold — silently, since the CP cannot read either.
+// Refusing leaves the established recipient in force, which is the state the
+// operator already has working backups under.
+//
+// Either way the outcome is now RECORDED: a hash-chained audit entry plus a
+// structured log line. The previous behaviour left a change invisible in every
+// direction — no log, no audit row, no error — and that invisibility, not the
+// overwrite itself, is what made the mismatch undiscoverable until a restore.
+//
+// A refused change is deliberately NOT an error to the agent: the metadata push
+// carries the whole inventory and rejecting it would strand every other field
+// over a value the agent cannot fix by retrying. A failure to PERSIST is a
+// different matter and is returned (see below).
+func (s *Service) applyAgentAgeRecipient(ctx context.Context, tenantID, siteID uuid.UUID, rec string, current Site, agentVersion string) (Site, error) {
+	if current.AgeRecipient != "" {
+		s.recordRecipientChangeRejected(ctx, tenantID, siteID, current.AgeRecipient, rec, agentVersion, "already_set")
+		return current, nil
+	}
+
+	// The read-and-decide above is advisory only: the authoritative first-set
+	// check happens inside the repo's transaction, under a per-site advisory
+	// lock, so two concurrent pushes cannot both conclude they are first.
+	updated, applied, err := s.repo.SetAgeRecipientIfUnset(ctx, tenantID, siteID, rec)
+	if err != nil {
+		// NOT swallowed. The old code dropped this error on the floor and
+		// returned the pre-write site, so a failed write read back to the
+		// caller as a success and the site was left unable to back up with no
+		// signal anywhere. The metadata itself is already committed and this
+		// path is idempotent, so the agent's next push retries cleanly.
+		s.logger.Error("failed to persist site age recipient",
+			"tenant_id", tenantID, "site_id", siteID, "err", err)
+		return Site{}, err
+	}
+	if !applied {
+		// Lost the race to a concurrent first set. If the winner stored the
+		// same value there is nothing to report; a different one is a refused
+		// change like any other.
+		if updated.AgeRecipient != rec {
+			s.recordRecipientChangeRejected(ctx, tenantID, siteID, updated.AgeRecipient, rec, agentVersion, "concurrent_first_set")
+		}
+		return updated, nil
+	}
+
+	s.logger.Info("site backup recipient recorded",
+		"tenant_id", tenantID, "site_id", siteID, "recipient", rec)
+	s.recordAudit(ctx, tenantID, siteID, audit.ActionSiteBackupRecipientSet, map[string]any{
+		"recipient":     rec,
+		"source":        agentMetadataSource,
+		"agent_version": agentVersion,
+	})
+	return updated, nil
+}
+
+// agentMetadataSource names the channel a recipient event arrived on, so the
+// audit log distinguishes it from any future operator-initiated change.
+const agentMetadataSource = "agent_metadata"
+
+func (s *Service) recordRecipientChangeRejected(ctx context.Context, tenantID, siteID uuid.UUID, current, proposed, agentVersion, reason string) {
+	// WARN, not INFO: on a site with backups this means the install that is
+	// reporting cannot decrypt what the site's backups are being written for,
+	// or vice versa, and an operator has to decide which one is right.
+	s.logger.Warn("rejected agent-pushed change to an established site backup recipient",
+		"tenant_id", tenantID,
+		"site_id", siteID,
+		"current_recipient", current,
+		"proposed_recipient", proposed,
+		"agent_version", agentVersion,
+		"reason", reason,
+	)
+	s.recordAudit(ctx, tenantID, siteID, audit.ActionSiteBackupRecipientChangeRejected, map[string]any{
+		"current_recipient":  current,
+		"proposed_recipient": proposed,
+		"source":             agentMetadataSource,
+		"agent_version":      agentVersion,
+		"reason":             reason,
+	})
+}
+
+// recordAudit appends a hash-chained audit entry for an agent-channel event.
+// Best-effort and nil-safe: the recorder is optional (tests and dump-routes
+// construct the service without one), and an audit write failure must not undo
+// a metadata push that already committed. The structured log line above is
+// emitted unconditionally, so the event is never invisible even when the
+// recorder is absent.
+func (s *Service) recordAudit(ctx context.Context, tenantID, siteID uuid.UUID, action string, meta map[string]any) {
+	if s.audit == nil {
+		return
+	}
+	_, _ = s.audit.Record(ctx, audit.Event{
+		TenantID:   tenantID,
+		ActorType:  audit.ActorSystem,
+		Action:     action,
+		TargetType: "site",
+		TargetID:   siteID.String(),
+		Metadata:   meta,
+	})
 }
 
 func fromAgentComponents(cs []agentpkg.Component) []Component {
