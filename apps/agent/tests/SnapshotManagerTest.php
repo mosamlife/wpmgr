@@ -1558,6 +1558,27 @@ final class SnapshotManagerTest extends TestCase
 
         $snap = $mgr->capture('plugin', 'hello.php', '1.0');
 
+        // The update lands on the single-file plugin.
+        file_put_contents($pluginFile, "<?php\n// Hello Dolly v2\n");
+
+        $res = $mgr->restore('plugin', 'hello.php', $snap['snapshot_id']);
+
+        // Asserted FIRST, and on the filesystem rather than a returned flag.
+        // Misclassifying this plugin as absent records a before-state that
+        // says "nothing was here", and rolling THAT back means "delete what
+        // is here" — so the plugin file is destroyed, and the caller is told
+        // the rollback succeeded. The live plugin surviving a rollback that
+        // never had a before-state is the property under test.
+        $this->assertFileExists(
+            $pluginFile,
+            'a rollback with no real before-state deleted the live plugin file'
+        );
+        $this->assertSame(
+            "<?php\n// Hello Dolly v2\n",
+            (string) file_get_contents($pluginFile),
+            'the live plugin file must be left exactly as the update left it'
+        );
+
         $this->assertNotSame(
             SnapshotManager::BEFORE_STATE_ABSENT,
             $snap['before_state'],
@@ -1571,20 +1592,7 @@ final class SnapshotManagerTest extends TestCase
         // absence was modelled, so the rollback gates stay shut and the item
         // is visibly unprotected rather than falsely protected.
         $this->assertSame('', $snap['snapshot_id'], 'no id means the rollback gates never fire');
-
-        // The update lands on the single-file plugin.
-        file_put_contents($pluginFile, "<?php\n// Hello Dolly v2\n");
-
-        // Nothing claims to be able to undo it, and nothing silently reports
-        // that it did.
-        $res = $mgr->restore('plugin', 'hello.php', $snap['snapshot_id']);
-
         $this->assertFalse($res['ok'], 'there is no snapshot to restore from');
-        $this->assertSame(
-            "<?php\n// Hello Dolly v2\n",
-            (string) file_get_contents($pluginFile),
-            'the file is untouched by a rollback that never had a before-state'
-        );
     }
 
     public function test_an_absent_before_state_rollback_removes_a_file_created_in_its_place(): void
