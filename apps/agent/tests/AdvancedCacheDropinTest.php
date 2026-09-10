@@ -383,19 +383,73 @@ final class AdvancedCacheDropinTest extends TestCase
     }
 
     /**
+     * A host the cache does not key on must not be served from a shared
+     * placeholder bucket.
+     *
+     * The old behaviour mapped every rejected host to one name, which made that
+     * bucket readable by all of them at once: a page cached under it for one
+     * rejected request would answer a different rejected request. The bucket is
+     * warmed here precisely so that a fallback would be visible.
+     *
+     * @dataProvider provide_uncacheable_hosts
+     *
+     * @param string $host Host header value the cache must decline.
+     */
+    public function test_uncacheable_host_is_never_served_from_a_shared_bucket(string $host): void
+    {
+        $this->warmCacheFile('unknown-host', '', 'index', 'SHARED-PLACEHOLDER-BODY');
+        $this->warmCacheFile('example.com', '', 'index', 'OWN-BUCKET-BODY');
+
+        $out = $this->serveDropin(
+            (new CacheConfig([]))->toDropinArray(),
+            ['HTTP_HOST' => $host, 'REQUEST_URI' => '/']
+        );
+
+        $this->assertStringNotContainsString(
+            'SHARED-PLACEHOLDER-BODY',
+            $out,
+            'an uncacheable host was answered from the shared placeholder bucket'
+        );
+        $this->assertStringNotContainsString('OWN-BUCKET-BODY', $out);
+        $this->assertStringContainsString(self::MISS, $out, 'an uncacheable host must bypass and boot WordPress');
+    }
+
+    /**
+     * @return array<string,array{0:string}>
+     */
+    public static function provide_uncacheable_hosts(): array
+    {
+        return [
+            'empty'            => [''],
+            'empty label'      => ['victim..com'],
+            'leading dots'     => ['..victim.com'],
+            'bare dot'         => ['.'],
+            'bare dots'        => ['..'],
+            'leading dot'      => ['.victim.com'],
+            'trailing dot'     => ['victim.com.'],
+            'separator only'   => ['-'],
+            'path in host'     => ['evil.com/../..'],
+            'space in host'    => ['exa mple.com'],
+            'underscore'       => ['exam_ple.com'],
+            'bracketed ipv6'   => ['[2001:db8::1]'],
+            'port only'        => [':8443'],
+            'oversized port'   => ['example.com:99999'],
+        ];
+    }
+
+    /**
      * A host carrying a port must key into its own bucket and still serve.
      *
-     * This pins the SERVE side only. The store side spells the same host
-     * differently — CacheKey::sanitizeHost() maps ':' to '_' and the drop-in
-     * keeps it verbatim — so a site on a non-default port stores under one
-     * bucket name and looks up under another. That divergence predates this
-     * change and is a cache-miss bug rather than a containment one, so it is
-     * left alone here rather than folded into a security fix; the fixture below
-     * is therefore written with the drop-in's spelling on purpose.
+     * The fixture directory is named by the STORE side, so this also pins that
+     * the two sides agree: a site on a non-default port previously stored under
+     * one bucket name and looked up under another and could never hit.
      */
     public function test_host_with_port_still_serves(): void
     {
-        $this->warmCacheFile('example.com:8443', '/about', 'index', 'PORT-BUCKET-BODY');
+        $bucket = \WPMgr\Agent\Cache\CacheKey::normalizeHost('example.com:8443');
+        $this->assertNotSame('', $bucket, 'a host with a port must remain cacheable');
+
+        $this->warmCacheFile($bucket, '/about', 'index', 'PORT-BUCKET-BODY');
 
         $out = $this->serveDropin(
             (new CacheConfig([]))->toDropinArray(),
@@ -403,6 +457,47 @@ final class AdvancedCacheDropinTest extends TestCase
         );
 
         $this->assertStringContainsString('PORT-BUCKET-BODY', $out, 'a host with a port must still hit its bucket');
+    }
+
+    /**
+     * An unusual but legitimate host must keep caching. A rule that declines
+     * anything it does not recognise stops being a cache.
+     *
+     * @dataProvider provide_unusual_but_legitimate_hosts
+     *
+     * @param string $host Host header value that must still be cached.
+     */
+    public function test_unusual_but_legitimate_hosts_still_serve(string $host): void
+    {
+        $bucket = \WPMgr\Agent\Cache\CacheKey::normalizeHost($host);
+        $this->assertNotSame('', $bucket, "host $host must remain cacheable");
+
+        $this->warmCacheFile($bucket, '/about', 'index', 'LEGIT-HOST-BODY');
+
+        $out = $this->serveDropin(
+            (new CacheConfig([]))->toDropinArray(),
+            ['HTTP_HOST' => $host, 'REQUEST_URI' => '/about/']
+        );
+
+        $this->assertStringContainsString('LEGIT-HOST-BODY', $out, "host $host must still hit its bucket");
+    }
+
+    /**
+     * @return array<string,array{0:string}>
+     */
+    public static function provide_unusual_but_legitimate_hosts(): array
+    {
+        return [
+            'punycode idn'      => ['xn--bcher-kva.example'],
+            'deep subdomain'    => ['a.b.c.d.example.co.uk'],
+            'hyphenated'        => ['my-site.example.com'],
+            'single label'      => ['localhost'],
+            'ipv4 literal'      => ['127.0.0.1'],
+            'uppercase'         => ['EXAMPLE.COM'],
+            'uppercase w/ port' => ['EXAMPLE.COM:8443'],
+            'explicit port 80'  => ['example.com:80'],
+            'digits only label' => ['123.example.com'],
+        ];
     }
 
     /**

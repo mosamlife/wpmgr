@@ -462,6 +462,16 @@ final class CacheWriter
     {
         $dir = dirname($path);
 
+        // The cache root is the jail itself — a configured path, not anything
+        // derived from the request — so creating it is safe and must happen
+        // before it can be resolved. On a fresh install nothing else has made
+        // it yet, and a root that cannot be resolved would refuse every write.
+        if (!@is_dir($this->cacheRoot)
+            && !wp_mkdir_p($this->cacheRoot)
+            && !@is_dir($this->cacheRoot)
+        ) {
+            return false;
+        }
         $rootReal = realpath($this->cacheRoot);
         if ($rootReal === false) {
             return false;

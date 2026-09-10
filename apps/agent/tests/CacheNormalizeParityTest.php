@@ -29,8 +29,8 @@ use Yoast\PHPUnitPolyfills\TestCases\TestCase;
  */
 final class CacheNormalizeParityTest extends TestCase
 {
-    private const BEGIN = 'WPMGR-NORMALIZE-PATH-SHARED BEGIN';
-    private const END   = 'WPMGR-NORMALIZE-PATH-SHARED END';
+    private const PATH_MARKER = 'WPMGR-NORMALIZE-PATH-SHARED';
+    private const HOST_MARKER = 'WPMGR-NORMALIZE-HOST-SHARED';
 
     /**
      * Paths exercised by both implementations. Ordinary traffic first, then the
@@ -62,7 +62,7 @@ final class CacheNormalizeParityTest extends TestCase
      * @param string $file Absolute path to the source file.
      * @return string Block source, one line per element, trailing newline kept.
      */
-    private function sharedBlock(string $file): string
+    private function sharedBlock(string $file, string $marker = self::PATH_MARKER): string
     {
         $source = file_get_contents($file);
         $this->assertIsString($source, "unreadable: $file");
@@ -72,12 +72,12 @@ final class CacheNormalizeParityTest extends TestCase
         $in    = false;
         foreach ($lines as $line) {
             if (!$in) {
-                if (strpos($line, self::BEGIN) !== false) {
+                if (strpos($line, $marker . ' BEGIN') !== false) {
                     $in = true;
                 }
                 continue;
             }
-            if (strpos($line, self::END) !== false) {
+            if (strpos($line, $marker . ' END') !== false) {
                 $in = false;
                 break;
             }
@@ -163,6 +163,107 @@ final class CacheNormalizeParityTest extends TestCase
         } finally {
             @unlink($tmp);
         }
+    }
+
+    /**
+     * Hosts the two sides must agree about. Ordinary first, then the shapes
+     * that a per-side rule got wrong.
+     *
+     * @return list<string>
+     */
+    private function hostCorpus(): array
+    {
+        return [
+            'example.com', 'EXAMPLE.COM', 'sub.example.co.uk', 'xn--bcher-kva.example',
+            'example.com:8443', 'example.com:80', 'localhost', 'a', '127.0.0.1',
+            'my-site.example.com', 'a1.b2.c3',
+            '', '..', '.', '-', '...', 'victim..com', '..victim.com', 'victim.com..',
+            '.victim.com', 'victim.com.', '-victim.com', 'victim.com-',
+            'evil.com/../..', '../../etc', 'example.com/x', 'example.com:99999',
+            'example.com:', ':8443', '[2001:db8::1]', '[2001:db8::1]:8443',
+            "example.com\0", "example.com\n", 'exa mple.com', 'exam_ple.com',
+            'EXAMPLE.COM:8443', str_repeat('a', 300) . '.com',
+        ];
+    }
+
+    /**
+     * The host block is duplicated the same way the path block is, and for the
+     * same reason. It must match byte for byte once dedented.
+     */
+    public function test_shared_host_blocks_are_byte_identical(): void
+    {
+        $classBlock  = $this->sharedBlock(
+            dirname(__DIR__) . '/includes/cache/class-cache-key.php',
+            self::HOST_MARKER
+        );
+        $dropinBlock = $this->sharedBlock(
+            dirname(__DIR__) . '/assets/wpmgr-advanced-cache.php',
+            self::HOST_MARKER
+        );
+
+        $this->assertNotSame('', trim($classBlock), 'class host block must not be empty');
+        $this->assertSame($classBlock, $dropinBlock, 'store and serve must carry the same host rule');
+    }
+
+    /**
+     * Behavioural host parity: the drop-in's own extracted block against
+     * CacheKey::normalizeHost() over the corpus. Every host resolves to the
+     * same bucket name on both sides, or to '' on both sides.
+     */
+    public function test_dropin_host_block_and_normalize_host_agree(): void
+    {
+        $block = $this->sharedBlock(
+            dirname(__DIR__) . '/assets/wpmgr-advanced-cache.php',
+            self::HOST_MARKER
+        );
+
+        $tmp = sys_get_temp_dir() . '/wpmgr-hostparity-' . getmypid() . '-' . uniqid('', true) . '.php';
+        file_put_contents($tmp, "<?php\n" . $block);
+
+        $runner = static function (string $raw) use ($tmp): string {
+            $wpmgr_host = $raw;
+            include $tmp;
+            return $wpmgr_host;
+        };
+
+        try {
+            foreach ($this->hostCorpus() as $raw) {
+                $this->assertSame(
+                    CacheKey::normalizeHost($raw),
+                    $runner($raw),
+                    'store and serve disagree about host ' . var_export($raw, true)
+                );
+            }
+        } finally {
+            @unlink($tmp);
+        }
+    }
+
+    /**
+     * A bucket name, when accepted, must be a single usable directory segment
+     * that names something inside the cache root — never a separator, never a
+     * relative reference, never empty-labelled.
+     */
+    public function test_accepted_host_is_a_single_contained_segment(): void
+    {
+        $accepted = 0;
+        foreach ($this->hostCorpus() as $raw) {
+            $bucket = CacheKey::normalizeHost($raw);
+            if ($bucket === '') {
+                continue; // not cached at all — nothing to contain
+            }
+            $accepted++;
+            $this->assertStringNotContainsString('/', $bucket, var_export($raw, true));
+            $this->assertStringNotContainsString('\\', $bucket, var_export($raw, true));
+            $this->assertStringNotContainsString('..', $bucket, var_export($raw, true));
+            $this->assertNotSame('.', $bucket, var_export($raw, true));
+            $this->assertSame(
+                0,
+                preg_match('/^[.\-]|[.\-]$/', $bucket),
+                'bucket must not begin or end with a separator: ' . var_export($bucket, true)
+            );
+        }
+        $this->assertGreaterThan(8, $accepted, 'the corpus must still accept ordinary hosts');
     }
 
     /**
