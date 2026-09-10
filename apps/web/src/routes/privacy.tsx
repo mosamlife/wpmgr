@@ -73,10 +73,12 @@ function PrivacyPage() {
                 <strong className="text-[var(--color-foreground)]">Backup archives:</strong>{" "}
                 when you run or schedule a backup, the agent creates an archive of your database
                 and/or files and uploads it to the storage destination your control plane
-                configures: a control-plane-managed bucket by default, or a customer-owned bucket or
-                local folder you point it at instead. Archive contents may include your site's content
-                and personal data; the agent does not encrypt them before upload, so protection comes
-                from your chosen destination's own access controls and at-rest encryption, if any.
+                configures. The default is a control-plane-managed bucket on plans with managed
+                backup storage; otherwise a customer-owned bucket or local folder must be
+                configured before backups will run. Archive contents may include your site's
+                content and personal data; the agent does not encrypt them before upload, so
+                protection comes from your chosen destination's own access controls and at-rest
+                encryption, if any.
               </li>
               <li className="leading-relaxed">
                 <strong className="text-[var(--color-foreground)]">Rendered HTML</strong> — for
@@ -112,10 +114,10 @@ function PrivacyPage() {
               </li>
               <li className="leading-relaxed">
                 <strong className="text-[var(--color-foreground)]">Backup archives:</strong> for sites
-                using the control-plane-managed bucket (the default), stored in our cloud object storage
-                with the provider's encryption at rest. If you configure your own S3-compatible bucket or
-                a local folder on the WordPress host instead, backup data does not pass through our
-                storage.
+                on a plan with managed backup storage using the control-plane-managed bucket, stored in
+                our cloud object storage with the provider's encryption at rest. Free-plan sites, and any
+                site pointed at your own S3-compatible bucket or a local folder instead, keep backup data
+                off our storage.
               </li>
               <li className="leading-relaxed">
                 <strong className="text-[var(--color-foreground)]">Operational logs</strong> needed to
