@@ -36,6 +36,7 @@ namespace WPMgr\Agent\Tests;
 
 use Brain\Monkey;
 use Brain\Monkey\Functions;
+use WPMgr\Agent\Support\SnapshotCaptureFailed;
 use WPMgr\Agent\Support\SnapshotManager;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
@@ -1294,5 +1295,515 @@ final class SnapshotManagerTest extends TestCase
         $paths = $mgr->resolvedRestorePaths('plugin', 'watchdog-demo2/watchdog-demo2.php', $snap['snapshot_id']);
 
         $this->assertSame(['live' => '', 'payload' => ''], $paths);
+    }
+
+    // =========================================================================
+    // Explicit before-state: an absent source is a before-state, a failed copy
+    // is an error, and the two stop being the same empty snapshot id.
+    // =========================================================================
+
+    public function test_absent_source_records_a_real_before_state_whose_rollback_removes_what_was_created(): void
+    {
+        $live = $this->root . '/plugins-src/brand-new';
+
+        $mgr               = $this->manager();
+        $mgr->liveOverride = $live; // Resolvable, but nothing is there yet.
+
+        $this->assertDirectoryDoesNotExist($live);
+
+        $snap = $mgr->capture('plugin', 'brand-new/brand-new.php', '');
+
+        // A real, non-empty id: every downstream rollback gate keys on this,
+        // so an absent before-state has to produce one or it is not a
+        // before-state at all.
+        $this->assertNotSame('', $snap['snapshot_id'], 'an absent source must still yield a snapshot id');
+        $this->assertSame(SnapshotManager::BEFORE_STATE_ABSENT, $snap['before_state']);
+        $this->assertTrue($snap['restorable']);
+        $this->assertSame('', $snap['failure']);
+        $this->assertTrue(SnapshotManager::isRestorable($snap));
+
+        // No payload directory is written for an absent before-state.
+        $this->assertDirectoryDoesNotExist($this->snapshotsBase . '/' . $snap['snapshot_id'] . '/payload');
+        $this->assertFileExists($this->snapshotsBase . '/' . $snap['snapshot_id'] . '/meta.json');
+
+        // Now something creates the directory that did not exist.
+        mkdir($live . '/nested', 0755, true);
+        file_put_contents($live . '/created.php', "<?php\n// new\n");
+        file_put_contents($live . '/nested/also-created.txt', 'new');
+
+        $res = $mgr->restore('plugin', 'brand-new/brand-new.php', $snap['snapshot_id']);
+
+        $this->assertTrue($res['ok'], $res['log']);
+        $this->assertDirectoryDoesNotExist($live, 'rollback of an absent before-state must remove what was created');
+    }
+
+    public function test_rollback_of_an_absent_before_state_is_idempotent_when_nothing_was_created(): void
+    {
+        $live              = $this->root . '/plugins-src/never-created';
+        $mgr               = $this->manager();
+        $mgr->liveOverride = $live;
+
+        $snap = $mgr->capture('plugin', 'never-created/never-created.php', '');
+        $this->assertSame(SnapshotManager::BEFORE_STATE_ABSENT, $snap['before_state']);
+
+        // Nothing was ever created: the site is already in the recorded
+        // state, so rollback succeeds rather than reporting a failure the
+        // watchdog / in-flight reconcile would have to interpret.
+        $res = $mgr->restore('plugin', 'never-created/never-created.php', $snap['snapshot_id']);
+
+        $this->assertTrue($res['ok'], $res['log']);
+    }
+
+    public function test_rollback_of_an_absent_before_state_refuses_a_mismatched_item(): void
+    {
+        $live              = $this->root . '/plugins-src/mismatch';
+        $mgr               = $this->manager();
+        $mgr->liveOverride = $live;
+
+        $snap = $mgr->capture('plugin', 'mismatch/mismatch.php', '');
+        $this->assertSame(SnapshotManager::BEFORE_STATE_ABSENT, $snap['before_state']);
+
+        // Something now exists at the live path, and a caller asks to roll
+        // back a DIFFERENT slug against this snapshot's id. The only
+        // rollback path in this class that deletes must refuse.
+        mkdir($live, 0755, true);
+        file_put_contents($live . '/keep-me.php', "<?php\n");
+
+        $res = $mgr->restore('plugin', 'some-other-plugin/other.php', $snap['snapshot_id']);
+
+        $this->assertFalse($res['ok']);
+        $this->assertFileExists($live . '/keep-me.php', 'a mismatched rollback must delete nothing');
+    }
+
+    public function test_rollback_of_an_absent_before_state_refuses_a_degenerate_slug_and_deletes_nothing(): void
+    {
+        // The exact shape the delete guard must survive: an EMPTY slug makes
+        // the real liveDir() build "<plugins root>/", whose is_dir() is true,
+        // whose basename() is the root's own name (not ''), and whose
+        // dirname() differs from itself — so every positional check passes and
+        // deleteDir() would receive the whole plugins directory.
+        $pluginsRoot = $this->root . '/plugins-root';
+        mkdir($pluginsRoot . '/innocent-neighbour', 0755, true);
+        file_put_contents($pluginsRoot . '/innocent-neighbour/plugin.php', "<?php\n");
+
+        $mgr = $this->manager();
+
+        // Capture while the path is absent...
+        $mgr->liveOverride = $this->root . '/not-there-yet';
+        $snap              = $mgr->capture('plugin', '', '');
+        $this->assertSame(SnapshotManager::BEFORE_STATE_ABSENT, $snap['before_state']);
+
+        // ...then roll back when the resolved path is the plugins ROOT, with
+        // its trailing separator, exactly as liveDir() would build it.
+        $mgr->liveOverride = $pluginsRoot . '/';
+
+        $res = $mgr->restore('plugin', '', $snap['snapshot_id']);
+
+        // Asserted FIRST, deliberately: "nothing was deleted" is the property
+        // that matters, and asserting the return value first would abort the
+        // test before it could report a destroyed plugins directory.
+        $this->assertFileExists(
+            $pluginsRoot . '/innocent-neighbour/plugin.php',
+            'a refused rollback must delete nothing'
+        );
+        $this->assertDirectoryExists($pluginsRoot);
+        $this->assertFalse($res['ok'], 'a degenerate slug must be refused');
+    }
+
+    /**
+     * @dataProvider provide_unusable_delete_slugs
+     */
+    public function test_rollback_of_an_absent_before_state_refuses_any_slug_that_is_not_one_plain_segment(
+        string $type,
+        string $slug
+    ): void {
+        $root = $this->root . '/segment-root';
+        mkdir($root . '/bystander', 0755, true);
+        file_put_contents($root . '/bystander/keep.php', "<?php\n");
+
+        $mgr               = $this->manager();
+        $mgr->liveOverride = $this->root . '/absent-at-capture';
+        $snap              = $mgr->capture($type, $slug, '');
+        $this->assertSame(SnapshotManager::BEFORE_STATE_ABSENT, $snap['before_state']);
+
+        $mgr->liveOverride = $root;
+
+        $res = $mgr->restore($type, $slug, $snap['snapshot_id']);
+
+        $this->assertFileExists(
+            $root . '/bystander/keep.php',
+            'slug ' . var_export($slug, true) . ' must not reach the delete'
+        );
+        $this->assertFalse($res['ok'], 'slug ' . var_export($slug, true) . ' must be refused');
+    }
+
+    /**
+     * @return array<string,array{0:string,1:string}>
+     */
+    public static function provide_unusable_delete_slugs(): array
+    {
+        return [
+            'empty plugin slug'        => ['plugin', ''],
+            'plugin parent traversal'  => ['plugin', '../evil/evil.php'],
+            'plugin dot folder'        => ['plugin', './evil.php'],
+            'plugin all-dots folder'   => ['plugin', '.../evil.php'],
+            'plugin null byte'         => ['plugin', "evil\0/evil.php"],
+            'empty theme slug'         => ['theme', ''],
+            'theme nested path'        => ['theme', 'twentytwenty/subdir'],
+            'theme parent traversal'   => ['theme', '..'],
+            'theme drive letter'       => ['theme', 'C:evil'],
+        ];
+    }
+
+    public function test_a_resolved_live_path_that_is_not_the_items_own_directory_is_refused(): void
+    {
+        // The slug is perfectly well formed, but the path resolution does not
+        // land on that item's directory. A delete must not proceed on a path
+        // it cannot match back to the item it was asked to roll back.
+        $elsewhere = $this->root . '/elsewhere';
+        mkdir($elsewhere, 0755, true);
+        file_put_contents($elsewhere . '/keep.php', "<?php\n");
+
+        $mgr               = $this->manager();
+        $mgr->liveOverride = $this->root . '/plugins-src/well-formed';
+        $snap              = $mgr->capture('plugin', 'well-formed/well-formed.php', '');
+        $this->assertSame(SnapshotManager::BEFORE_STATE_ABSENT, $snap['before_state']);
+
+        $mgr->liveOverride = $elsewhere;
+
+        $res = $mgr->restore('plugin', 'well-formed/well-formed.php', $snap['snapshot_id']);
+
+        $this->assertFileExists($elsewhere . '/keep.php', 'an unmatched path must not be deleted');
+        $this->assertFalse($res['ok']);
+    }
+
+    public function test_failed_copy_is_distinguishable_and_never_presents_as_a_successful_capture(): void
+    {
+        $source = $this->root . '/plugins-src/copy-fails';
+        mkdir($source, 0755, true);
+        file_put_contents($source . '/copy-fails.php', "<?php\n// v1\n");
+
+        $mgr               = $this->manager();
+        $mgr->liveOverride = $source;
+        $mgr->failCopy     = true;
+
+        $snap = $mgr->capture('plugin', 'copy-fails/copy-fails.php', '1.0');
+
+        // An error, not an absence, and not a capture.
+        $this->assertSame('', $snap['snapshot_id']);
+        $this->assertSame(SnapshotManager::BEFORE_STATE_NONE, $snap['before_state']);
+        $this->assertNotSame(
+            SnapshotManager::BEFORE_STATE_ABSENT,
+            $snap['before_state'],
+            'a failed copy must not be reported as a legitimate absence'
+        );
+        $this->assertSame(SnapshotManager::CAPTURE_FAILURE_COPY_FAILED, $snap['failure']);
+        $this->assertFalse($snap['restorable']);
+        $this->assertFalse(SnapshotManager::isRestorable($snap));
+
+        // The partial payload the failed copy left behind is gone, so
+        // nothing on disk looks like a snapshot that is not one.
+        $leftovers = array_values(array_diff((array) scandir($this->snapshotsBase), ['.', '..']));
+        foreach ($leftovers as $entry) {
+            $this->assertDirectoryDoesNotExist(
+                $this->snapshotsBase . '/' . $entry . '/payload',
+                'a failed copy must not leave a payload directory behind'
+            );
+        }
+    }
+
+    public function test_capture_required_throws_on_a_failed_copy_but_accepts_an_absent_source(): void
+    {
+        $source = $this->root . '/plugins-src/demanding';
+        mkdir($source, 0755, true);
+        file_put_contents($source . '/demanding.php', "<?php\n");
+
+        $mgr               = $this->manager();
+        $mgr->liveOverride = $source;
+        $mgr->failCopy     = true;
+
+        $threw = null;
+        try {
+            $mgr->captureRequired('plugin', 'demanding/demanding.php', '1.0');
+        } catch (SnapshotCaptureFailed $e) {
+            $threw = $e;
+        }
+
+        $this->assertNotNull($threw, 'a caller demanding a guarantee must not receive an empty id');
+        $this->assertSame(SnapshotManager::CAPTURE_FAILURE_COPY_FAILED, $threw->failureCode());
+
+        // An absent source is a REAL before-state, so the same demanding
+        // caller is served rather than refused.
+        $mgr->failCopy     = false;
+        $mgr->liveOverride = $this->root . '/plugins-src/demanding-absent';
+
+        $receipt = $mgr->captureRequired('plugin', 'demanding-absent/demanding-absent.php', '');
+
+        $this->assertNotSame('', $receipt['snapshot_id']);
+        $this->assertSame(SnapshotManager::BEFORE_STATE_ABSENT, $receipt['before_state']);
+    }
+
+    public function test_an_existing_single_file_plugin_is_never_recorded_as_absent(): void
+    {
+        // hello.php and friends: liveDir() resolves to the FILE, so is_dir()
+        // is false even though the plugin plainly exists. Recording that as
+        // absent would hand the caller a snapshot id promising a rollback
+        // that, on a file, silently restores nothing.
+        $pluginFile = $this->root . '/plugins-src/hello.php';
+        mkdir($this->root . '/plugins-src', 0755, true);
+        file_put_contents($pluginFile, "<?php\n// Hello Dolly v1\n");
+
+        $mgr               = $this->manager();
+        $mgr->liveOverride = $pluginFile;
+
+        $snap = $mgr->capture('plugin', 'hello.php', '1.0');
+
+        // The update lands on the single-file plugin.
+        file_put_contents($pluginFile, "<?php\n// Hello Dolly v2\n");
+
+        $res = $mgr->restore('plugin', 'hello.php', $snap['snapshot_id']);
+
+        // Asserted FIRST, and on the filesystem rather than a returned flag.
+        // Misclassifying this plugin as absent records a before-state that
+        // says "nothing was here", and rolling THAT back means "delete what
+        // is here" — so the plugin file is destroyed, and the caller is told
+        // the rollback succeeded. The live plugin surviving a rollback that
+        // never had a before-state is the property under test.
+        $this->assertFileExists(
+            $pluginFile,
+            'a rollback with no real before-state deleted the live plugin file'
+        );
+        $this->assertSame(
+            "<?php\n// Hello Dolly v2\n",
+            (string) file_get_contents($pluginFile),
+            'the live plugin file must be left exactly as the update left it'
+        );
+
+        $this->assertNotSame(
+            SnapshotManager::BEFORE_STATE_ABSENT,
+            $snap['before_state'],
+            'a plugin file that exists must never be recorded as absent'
+        );
+        $this->assertSame(SnapshotManager::BEFORE_STATE_NONE, $snap['before_state']);
+        $this->assertSame(SnapshotManager::CAPTURE_FAILURE_UNSUPPORTED_SOURCE, $snap['failure']);
+        $this->assertFalse($snap['restorable']);
+
+        // The empty id is the point: it is what this branch returned before
+        // absence was modelled, so the rollback gates stay shut and the item
+        // is visibly unprotected rather than falsely protected.
+        $this->assertSame('', $snap['snapshot_id'], 'no id means the rollback gates never fire');
+        $this->assertFalse($res['ok'], 'there is no snapshot to restore from');
+    }
+
+    public function test_an_absent_before_state_rollback_removes_a_file_created_in_its_place(): void
+    {
+        // The absence was real, and what filled it is a FILE. Removing only
+        // directories would leave it behind and still report success.
+        $pluginFile        = $this->root . '/plugins-src/newcomer.php';
+        $mgr               = $this->manager();
+        $mgr->liveOverride = $pluginFile;
+        mkdir($this->root . '/plugins-src', 0755, true);
+
+        $snap = $mgr->capture('plugin', 'newcomer.php', '');
+        $this->assertSame(SnapshotManager::BEFORE_STATE_ABSENT, $snap['before_state']);
+
+        file_put_contents($pluginFile, "<?php\n// created\n");
+
+        $res = $mgr->restore('plugin', 'newcomer.php', $snap['snapshot_id']);
+
+        $this->assertFileDoesNotExist($pluginFile, 'rollback must remove the file created in place of the absence');
+        $this->assertTrue($res['ok'], $res['log']);
+    }
+
+    public function test_an_unresolvable_live_path_is_not_recorded_as_an_absent_before_state(): void
+    {
+        // liveDir() returning '' is ignorance, not absence: nothing can be
+        // claimed about a path this class never resolved.
+        $mgr               = $this->manager();
+        $mgr->liveOverride = '';
+
+        $snap = $mgr->capture('plugin', 'unresolvable/unresolvable.php', '1.0');
+
+        $this->assertSame(SnapshotManager::BEFORE_STATE_NONE, $snap['before_state']);
+        $this->assertSame(SnapshotManager::CAPTURE_FAILURE_UNRESOLVED_SOURCE, $snap['failure']);
+        $this->assertFalse($snap['restorable']);
+        $this->assertSame('', $snap['snapshot_id']);
+    }
+
+    // =========================================================================
+    // The receipt can never contradict the predicate that reads it.
+    // =========================================================================
+
+    public function test_every_receipt_agrees_with_is_restorable_and_every_before_state_is_covered(): void
+    {
+        $produced = [];
+
+        foreach ($this->everyCaptureScenario() as $label => $receipt) {
+            // The invariant, pinned rather than the instance: whatever
+            // capture() returns, its own `restorable` field must equal what
+            // isRestorable() says about it. A future before-state that gets
+            // this wrong fails here without anyone remembering to add a case.
+            $this->assertSame(
+                SnapshotManager::isRestorable($receipt),
+                $receipt['restorable'],
+                $label . ': the receipt contradicts isRestorable()'
+            );
+
+            // A receipt is either restorable or it says why not.
+            if ($receipt['restorable'] === false) {
+                $this->assertNotSame(
+                    '',
+                    $receipt['failure'],
+                    $label . ': a non-restorable receipt must carry a failure code'
+                );
+            } else {
+                $this->assertSame('', $receipt['failure'], $label . ': a restorable receipt carries no failure code');
+                $this->assertNotSame('', $receipt['snapshot_id'], $label . ': a restorable receipt needs an id');
+            }
+
+            $produced[$receipt['before_state']] = true;
+        }
+
+        // Every BEFORE_STATE_* the class declares must have been exercised
+        // above, so adding a new one without covering it fails this test
+        // rather than sliding through untested.
+        $reflected = new \ReflectionClass(SnapshotManager::class);
+        foreach ($reflected->getConstants() as $name => $value) {
+            if (strpos($name, 'BEFORE_STATE_') !== 0) {
+                continue;
+            }
+            $this->assertArrayHasKey(
+                $value,
+                $produced,
+                'before-state ' . $name . ' is declared but no capture scenario produces it'
+            );
+        }
+    }
+
+    /**
+     * One capture receipt per outcome capture() can produce.
+     *
+     * @return array<string,array<string,mixed>>
+     */
+    private function everyCaptureScenario(): array
+    {
+        $scenarios = [];
+
+        // BEFORE_STATE_DIRECTORY, with content.
+        $full = $this->root . '/scenarios/full';
+        mkdir($full, 0755, true);
+        file_put_contents($full . '/plugin.php', "<?php\n");
+        $mgr               = $this->manager();
+        $mgr->liveOverride = $full;
+        $scenarios['directory with content'] = $mgr->capture('plugin', 'full/full.php', '1.0');
+
+        // BEFORE_STATE_DIRECTORY, empty — the case that contradicted itself.
+        $empty = $this->root . '/scenarios/empty';
+        mkdir($empty, 0755, true);
+        $mgr               = $this->manager();
+        $mgr->liveOverride = $empty;
+        $scenarios['empty directory'] = $mgr->capture('plugin', 'empty/empty.php', '1.0');
+
+        // BEFORE_STATE_ABSENT.
+        $mgr               = $this->manager();
+        $mgr->liveOverride = $this->root . '/scenarios/not-there';
+        $scenarios['absent source'] = $mgr->capture('plugin', 'not-there/not-there.php', '');
+
+        // BEFORE_STATE_CORE_VERSION.
+        $mgr = $this->manager();
+        $scenarios['core version'] = $mgr->capture('core', 'core', '6.5.2');
+
+        // BEFORE_STATE_NONE via a failed copy.
+        $broken = $this->root . '/scenarios/broken';
+        mkdir($broken, 0755, true);
+        file_put_contents($broken . '/plugin.php', "<?php\n");
+        $mgr               = $this->manager();
+        $mgr->liveOverride = $broken;
+        $mgr->failCopy     = true;
+        $scenarios['failed copy'] = $mgr->capture('plugin', 'broken/broken.php', '1.0');
+
+        // BEFORE_STATE_NONE via a single-file plugin.
+        $file = $this->root . '/scenarios/single.php';
+        if (!is_dir($this->root . '/scenarios')) {
+            mkdir($this->root . '/scenarios', 0755, true);
+        }
+        file_put_contents($file, "<?php\n");
+        $mgr               = $this->manager();
+        $mgr->liveOverride = $file;
+        $scenarios['single-file plugin'] = $mgr->capture('plugin', 'single.php', '1.0');
+
+        // BEFORE_STATE_NONE via an unresolvable path.
+        $mgr               = $this->manager();
+        $mgr->liveOverride = '';
+        $scenarios['unresolvable path'] = $mgr->capture('plugin', 'gone/gone.php', '1.0');
+
+        return $scenarios;
+    }
+
+    // =========================================================================
+    // Non-regression: the shipped update snapshot + auto-rollback path.
+    // =========================================================================
+
+    public function test_update_snapshot_path_is_unchanged_for_a_source_that_exists(): void
+    {
+        $live = $this->root . '/plugins-src/regression';
+        mkdir($live . '/inc', 0755, true);
+        file_put_contents($live . '/regression.php', "<?php\n// v1\n");
+        file_put_contents($live . '/inc/lib.php', "<?php\n// lib v1\n");
+
+        $mgr               = $this->manager();
+        $mgr->liveOverride = $live;
+
+        $snap = $mgr->capture('plugin', 'regression/regression.php', '1.0');
+
+        // Same contract as before this change: a real id and a full payload.
+        $this->assertNotSame('', $snap['snapshot_id']);
+        $this->assertStringContainsString('Captured snapshot', $snap['log']);
+        $this->assertSame(SnapshotManager::BEFORE_STATE_DIRECTORY, $snap['before_state']);
+        $this->assertTrue($snap['restorable']);
+        $this->assertSame(2, $snap['files'], 'the receipt must count what was actually copied');
+        $this->assertGreaterThan(0, $snap['bytes']);
+        $this->assertTrue(SnapshotManager::isRestorable($snap));
+
+        $payload = $this->snapshotsBase . '/' . $snap['snapshot_id'] . '/payload';
+        $this->assertFileExists($payload . '/regression.php');
+        $this->assertFileExists($payload . '/inc/lib.php');
+
+        // The update lands and breaks the plugin.
+        file_put_contents($live . '/regression.php', "<?php\n// v2 broken\n");
+        // phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink -- test-only fixture mutation
+        @unlink($live . '/inc/lib.php');
+
+        // Auto-rollback: the shipped safety property.
+        $res = $mgr->restore('plugin', 'regression/regression.php', $snap['snapshot_id']);
+
+        $this->assertTrue($res['ok'], $res['log']);
+        $this->assertStringContainsString('Restored', $res['log']);
+        $this->assertSame("<?php\n// v1\n", (string) file_get_contents($live . '/regression.php'));
+        $this->assertFileExists($live . '/inc/lib.php');
+        $this->assertSame("<?php\n// lib v1\n", (string) file_get_contents($live . '/inc/lib.php'));
+    }
+
+    public function test_core_capture_records_only_a_version_and_stays_restorable_by_downgrade(): void
+    {
+        $mgr = $this->manager();
+
+        $snap = $mgr->capture('core', 'core', '6.5.2');
+
+        $this->assertNotSame('', $snap['snapshot_id']);
+        $this->assertStringContainsString('Recorded core version 6.5.2', $snap['log']);
+        $this->assertSame(SnapshotManager::BEFORE_STATE_CORE_VERSION, $snap['before_state']);
+        $this->assertTrue($snap['restorable']);
+        $this->assertSame(0, $snap['files']);
+
+        // Core takes the version-downgrade path, never a directory copy.
+        $this->assertDirectoryDoesNotExist($this->snapshotsBase . '/' . $snap['snapshot_id'] . '/payload');
+        $this->assertSame('6.5.2', $mgr->recordedVersion($snap['snapshot_id']));
+
+        // And it is never a delete: a core snapshot is not an absent
+        // before-state, so restore() does not take restoreAbsent().
+        $res = $mgr->restore('core', 'core', $snap['snapshot_id']);
+        $this->assertFalse($res['ok']);
+        $this->assertSame('Snapshot payload missing.', $res['log']);
     }
 }
