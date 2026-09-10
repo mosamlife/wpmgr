@@ -166,4 +166,167 @@ final class CacheWriterTest extends TestCase
         $this->assertTrue($written);
         $this->assertFileExists($this->root . '/example.com/about/index-mobile.html.gz');
     }
+
+    /**
+     * Write containment: the directory a page is about to be written into must
+     * physically resolve inside the cache root.
+     *
+     * The bucket here is a symlink pointing out of the tree, which every
+     * lexical check upstream passes — the key string is ordinary and contains
+     * nothing to sanitise. Only comparing the RESOLVED directory against the
+     * resolved root can refuse it, so this is the case that distinguishes a
+     * containment guard from its absence.
+     */
+    public function test_write_into_a_bucket_resolving_outside_the_root_is_refused(): void
+    {
+        $outside = dirname(dirname($this->root)) . '/outside-the-cache-root';
+        @mkdir($outside, 0o777, true);
+        @mkdir($this->root, 0o777, true);
+        $this->assertTrue(symlink($outside, $this->root . '/example.com'), 'fixture symlink must be created');
+
+        $written = $this->writer()->maybeWrite(self::HTML, $this->ctx());
+
+        $this->assertFalse($written, 'a write whose directory resolves outside the cache root must be refused');
+        $this->assertFileDoesNotExist(
+            $outside . '/about/index.html.gz',
+            'no cache file may be created outside the cache root'
+        );
+        $this->assertSame(
+            [],
+            glob($outside . '/about/*') ?: [],
+            'nothing at all may be written outside the cache root'
+        );
+
+        @unlink($this->root . '/example.com');
+    }
+
+    /**
+     * A host the cache does not key on must not be stored under a placeholder
+     * bucket. The serve side declines the same hosts, so anything written here
+     * could only ever be read back by an unrelated request.
+     *
+     * @dataProvider provide_uncacheable_hosts
+     *
+     * @param string $host Host the writer must decline.
+     */
+    public function test_uncacheable_host_writes_nothing(string $host): void
+    {
+        $written = $this->writer()->maybeWrite(self::HTML, $this->ctx(['host' => $host]));
+
+        $this->assertFalse($written, "host '$host' must not be cached at all");
+        $this->assertSame(
+            [],
+            glob($this->root . '/*') ?: [],
+            'no bucket may be created for an uncacheable host'
+        );
+    }
+
+    /**
+     * @return array<string,array{0:string}>
+     */
+    public static function provide_uncacheable_hosts(): array
+    {
+        return [
+            'empty'          => [''],
+            'empty label'    => ['victim..com'],
+            'leading dots'   => ['..victim.com'],
+            'bare dot'       => ['.'],
+            'bare dots'      => ['..'],
+            'trailing dot'   => ['victim.com.'],
+            'separator only' => ['-'],
+            'path in host'   => ['evil.com/../..'],
+            'bracketed ipv6' => ['[2001:db8::1]'],
+        ];
+    }
+
+    /**
+     * The bucket a page is written into must be the one the serve side would
+     * look in. Both sides run the same host rule, so this pins the agreement
+     * rather than a hard-coded spelling.
+     *
+     * @dataProvider provide_cacheable_hosts
+     *
+     * @param string $host Host that must be cached.
+     */
+    public function test_cacheable_host_writes_into_the_bucket_both_sides_agree_on(string $host): void
+    {
+        $bucket = \WPMgr\Agent\Cache\CacheKey::normalizeHost($host);
+        $this->assertNotSame('', $bucket, "host $host must remain cacheable");
+
+        $written = $this->writer()->maybeWrite(self::HTML, $this->ctx(['host' => $host]));
+
+        $this->assertTrue($written, "host $host must still be cached");
+        $this->assertFileExists($this->root . '/' . $bucket . '/about/index.html.gz');
+    }
+
+    /**
+     * @return array<string,array{0:string}>
+     */
+    public static function provide_cacheable_hosts(): array
+    {
+        return [
+            'plain'             => ['example.com'],
+            'with port'         => ['example.com:8443'],
+            'explicit port 80'  => ['example.com:80'],
+            'uppercase'         => ['EXAMPLE.COM'],
+            'punycode idn'      => ['xn--bcher-kva.example'],
+            'single label'      => ['localhost'],
+            'ipv4 literal'      => ['127.0.0.1'],
+            'hyphenated'        => ['my-site.example.com'],
+        ];
+    }
+
+    /**
+     * Containment must be decided BEFORE the directory is created.
+     *
+     * wp_mkdir_p() follows symlinks, so a link in an existing parent segment
+     * redirects the creation outside the cache root. A check that runs after
+     * the mkdir refuses the file but leaves the directories behind — the write
+     * is contained and the filesystem is not. Nothing may appear outside.
+     */
+    public function test_no_directories_are_created_outside_the_root(): void
+    {
+        $outside = dirname(dirname($this->root)) . '/outside-the-cache-root';
+        @mkdir($outside, 0o777, true);
+        @mkdir($this->root, 0o777, true);
+        $this->assertTrue(symlink($outside, $this->root . '/example.com'), 'fixture symlink must be created');
+
+        $written = $this->writer()->maybeWrite(self::HTML, $this->ctx());
+
+        $this->assertFalse($written, 'a write redirected outside the cache root must be refused');
+        $this->assertDirectoryDoesNotExist(
+            $outside . '/about',
+            'no directory may be created outside the cache root'
+        );
+        $this->assertSame(
+            [],
+            glob($outside . '/*') ?: [],
+            'nothing at all may appear outside the cache root'
+        );
+
+        @unlink($this->root . '/example.com');
+    }
+
+    /**
+     * A cache root that is itself reached through a symlink must still be
+     * writable: both the root and the target directory resolve through the same
+     * link, so a containment check comparing resolved paths agrees with itself.
+     * A guard that compared raw paths would refuse every write on such a host.
+     */
+    public function test_write_through_a_symlinked_cache_root_still_succeeds(): void
+    {
+        $base = dirname(dirname($this->root));
+        $real = $base . '/real-cache-store';
+        @mkdir($real, 0o777, true);
+        @mkdir(dirname($this->root), 0o777, true);
+        @rmdir($this->root);
+        $this->assertTrue(symlink($real, $this->root), 'fixture symlink must be created');
+
+        $written = $this->writer()->maybeWrite(self::HTML, $this->ctx());
+
+        $this->assertTrue($written, 'a symlinked cache root must remain writable');
+        $this->assertFileExists($real . '/example.com/about/index.html.gz');
+
+        @unlink($this->root);
+    }
 }
