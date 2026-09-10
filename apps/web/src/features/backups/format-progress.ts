@@ -56,14 +56,14 @@ export const PHASE_LABEL: Record<PhaseId, string> = {
   dumping_db: "Dumping database",
   archiving_files: "Archiving files",
   compressing_files: "Compressing files",
-  encrypting: "Encrypting",
-  uploading: "Uploading",
-  encrypting_uploading: "Encrypting & uploading",
+  encrypting: "Processing backup chunks",
+  uploading: "Processing backup chunks",
+  encrypting_uploading: "Processing backup chunks",
   submitting_manifest: "Finalising",
   // Incremental backup (ADR-048)
   fetching_file_index: "Fetching file index",
   scanning_files: "Scanning changes",
-  uploading_incremental: "Uploading changed files",
+  uploading_incremental: "Storing changed files",
   incremental_fallback: "Switching to full backup",
   // Restore (phase names match the agent's task-runner)
   preflight: "Pre-flight checks",

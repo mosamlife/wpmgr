@@ -203,4 +203,79 @@ final class CacheKeyTest extends TestCase
         $p = $this->key->path('/var/cache/wpmgr', 'evil.com/../..', '/a/../../etc', 'index.html.gz');
         $this->assertStringNotContainsString('..', $p);
     }
+
+    /**
+     * Normalisation resolves segments, so no arrangement of dot segments can
+     * name anything above the bucket the path belongs to.
+     *
+     * Each case pins the exact result, not merely the absence of a substring:
+     * a containment assertion that only checks for '../' is satisfied by code
+     * that has already collapsed two segments into one.
+     */
+    public function test_normalize_path_resolves_dot_segments(): void
+    {
+        $cases = [
+            '/.//.../x'        => '/x',
+            '/.../.../victim'  => '/victim',
+            '/.../...//victim' => '/victim',
+            // A dot run is not a name, and the last one must not survive to be
+            // re-read as a parent reference after the leading separator is put
+            // back on.
+            '/....'            => '',
+            '/..../x'          => '/x',
+            // Neighbouring segments must never be fused into one another.
+            '/a/....//b'       => '/a/b',
+            '/aa/.//.../b'     => '/aa/b',
+            // Parent references resolve, and stop at the root.
+            '/a/../b'          => '/b',
+            '/a/b/../..'       => '',
+            '/a/../../../../b' => '/b',
+            '/..'              => '',
+            '/../..'           => '',
+            // Ordinary paths are untouched.
+            '/'                => '',
+            '/about/'          => '/about',
+            '/blog/2026/post/' => '/blog/2026/post',
+            '/.hidden/file'    => '/.hidden/file',
+            '/a..b/c'          => '/a..b/c',
+        ];
+        foreach ($cases as $input => $want) {
+            $got = CacheKey::normalizePath((string) $input);
+            $this->assertSame($want, $got, "normalizePath('$input')");
+            $this->assertSame(
+                0,
+                preg_match('#(^|/)\.+(/|$)#', $got),
+                "dot segment survived normalizePath('$input')"
+            );
+        }
+    }
+
+    /**
+     * Containment stated as an invariant rather than a case list: joining any
+     * normalised path under a bucket directory must resolve inside it.
+     */
+    public function test_normalized_path_never_escapes_its_bucket(): void
+    {
+        $inputs = [
+            '/....', '/.....', '/..%2f..%2fx', '/%2e%2e/%2e%2e/x', '/%252e%252e%252fx',
+            '/..%2fx', '/....//x', '\\..\\..\\x', '/a\\..\\..\\x', "/a\0/../x",
+            '/a/../../../../..', '..', '.', '', '/', '//', '///',
+            '/' . str_repeat('../', 500) . 'x',
+            '/' . str_repeat('.', 4096),
+        ];
+        foreach ($inputs as $input) {
+            $got = CacheKey::normalizePath($input);
+            $joined = '/cache/wpmgr/example.com' . $got;
+            $this->assertStringStartsWith(
+                '/cache/wpmgr/example.com',
+                $joined,
+                'join must stay under the bucket for ' . var_export($input, true)
+            );
+            $this->assertSame(
+                0,
+                preg_match('#(^|/)\.+(/|$)#', $got),
+                'dot segment survived for ' . var_export($input, true) . ' -> ' . var_export($got, true)
+            );
+        }
+    }
 }
