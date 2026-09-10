@@ -554,6 +554,19 @@ type AuthConfig struct {
 	// at startup.
 	ProxyHops int `koanf:"proxy_hops"`
 
+	// LoginMode (WPMGR_AUTH_LOGIN_MODE) selects what POST /auth/login does with
+	// its admission-control verdict: "observe" measures the per-source and
+	// per-account budgets and applies none of them, "enforce" applies them.
+	// Default "observe" (GH #718 Phase 0). The value is validated at startup by
+	// auth.ParseLoginMode, which refuses an unrecognised mode rather than
+	// coercing it, and the effective mode is logged unconditionally at boot and
+	// warned about every five minutes while it is not "enforce".
+	//
+	// The concurrency bound on password verification is NOT selected by this:
+	// it is in force in every mode, because it sheds only under genuine
+	// saturation and needs no observation period behind it.
+	LoginMode string `koanf:"login_mode"`
+
 	// BootstrapClaimSecret (WPMGR_BOOTSTRAP_CLAIM_SECRET) is the provisioning
 	// claim the installer mints and hands to the person who is entitled to own
 	// the install. First-run ownership — the very first organisation and its
@@ -792,13 +805,19 @@ func defaults() map[string]any {
 		"db.allow_rls_bypass_role": false,
 		"redis.addr":               "localhost:6379",
 		"redis.password":           "",
-		"auth.session_secret": "",
+		"auth.session_secret":      "",
 		// 2 is correct for the hosted deployment (load balancer appends the
 		// client address then its own). Every other topology must set this;
 		// see AuthConfig.ProxyHops and the startup log line that names it.
-		"auth.proxy_hops":   2,
-		"auth.idle_timeout": "168h", // 7 days idle
-		"auth.absolute_expiry":     "720h", // 30 days hard cap
+		"auth.proxy_hops": 2,
+		// GH #718 Phase 0. "observe" until the logged numbers have been
+		// reviewed; Phase 1 flips this default to "enforce". The literal, not
+		// auth.LoginModeObserve, because internal/auth imports this package —
+		// auth.ParseLoginMode is what actually validates the value at startup,
+		// so a drift between these two spellings fails the boot loudly.
+		"auth.login_mode":      "observe",
+		"auth.idle_timeout":    "168h", // 7 days idle
+		"auth.absolute_expiry": "720h", // 30 days hard cap
 		// ADR-056: WebAuthn relying party defaults (hosted instance).
 		// Self-hosted operators override via WPMGR_AUTH_WEBAUTHN_RPID etc.
 		"auth.webauthn_rpid":            "manage.wpmgr.app",
