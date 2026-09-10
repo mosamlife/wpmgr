@@ -260,6 +260,14 @@ final class CacheWriter
             return false;
         }
 
+        // A host the cache does not key on is not stored under a placeholder:
+        // the serve side declines the same hosts by the same rule, so a bucket
+        // written here for one of them could never be read back by the request
+        // that produced it, and would be readable by unrelated ones.
+        if (CacheKey::normalizeHost((string) ($ctx['host'] ?? '')) === '') {
+            return false;
+        }
+
         $fileName = $this->key->build(
             (array) ($ctx['cookies'] ?? []),
             (array) ($ctx['query'] ?? []),
@@ -453,7 +461,50 @@ final class CacheWriter
     private function atomicWrite(string $path, string $compressed): bool
     {
         $dir = dirname($path);
+
+        // The cache root is the jail itself — a configured path, not anything
+        // derived from the request — so creating it is safe and must happen
+        // before it can be resolved. On a fresh install nothing else has made
+        // it yet, and a root that cannot be resolved would refuse every write.
+        if (!@is_dir($this->cacheRoot)
+            && !wp_mkdir_p($this->cacheRoot)
+            && !@is_dir($this->cacheRoot)
+        ) {
+            return false;
+        }
+        $rootReal = realpath($this->cacheRoot);
+        if ($rootReal === false) {
+            return false;
+        }
+        $rootNorm = str_replace('\\', '/', $rootReal);
+
+        // Containment is checked BEFORE the directory is created, not after.
+        // wp_mkdir_p() follows symlinks, so a link anywhere in an existing
+        // parent segment redirects the creation outside the cache root — and a
+        // check that runs afterwards refuses the file while leaving those
+        // directories behind. The key components are sanitised lexically
+        // upstream (CacheKey), but a lexical check cannot see a link, so walk
+        // up to the deepest segment that already exists and require IT to
+        // resolve inside the root before anything is created.
+        $ancestor = $dir;
+        while (!@file_exists($ancestor) && !@is_link($ancestor)) {
+            $parent = dirname($ancestor);
+            if ($parent === $ancestor) {
+                break; // reached the filesystem root
+            }
+            $ancestor = $parent;
+        }
+        if (!self::resolvesInside($ancestor, $rootNorm)) {
+            return false;
+        }
+
         if (!@is_dir($dir) && !wp_mkdir_p($dir) && !@is_dir($dir)) {
+            return false;
+        }
+
+        // Re-check the finished directory. The ancestor test and the write are
+        // separate moments, and only this one is about the path being written.
+        if (!self::resolvesInside($dir, $rootNorm)) {
             return false;
         }
 
@@ -469,5 +520,30 @@ final class CacheWriter
         }
 
         return true;
+    }
+
+    /**
+     * Whether an existing path physically resolves at or inside a root.
+     *
+     * Compares RESOLVED paths on both sides, so a cache root that is itself
+     * reached through a symlink stays usable: the root and everything under it
+     * resolve through the same link and agree. A path that does not exist
+     * resolves to false and is refused — callers must only ask about a path
+     * they have established exists.
+     *
+     * @param string $path     Path to test.
+     * @param string $rootNorm Already-resolved, slash-normalised root.
+     * @return bool
+     */
+    private static function resolvesInside(string $path, string $rootNorm): bool
+    {
+        $real = realpath($path);
+        if ($real === false) {
+            return false;
+        }
+        $norm = str_replace('\\', '/', $real);
+
+        return $norm === $rootNorm
+            || strncmp($norm, $rootNorm . '/', strlen($rootNorm) + 1) === 0;
     }
 }
