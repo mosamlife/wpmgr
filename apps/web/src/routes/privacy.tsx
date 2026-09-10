@@ -150,7 +150,10 @@ function PrivacyPage() {
                 destination provides it, encryption at rest. Client-side encryption of backup
                 archives is planned.
               </li>
-              <li className="leading-relaxed">All network traffic uses TLS.</li>
+              <li className="leading-relaxed">
+                All network traffic uses TLS. A backup sent to a folder on the site's own server
+                does not cross the network at all.
+              </li>
             </ul>
           </Section>
 
