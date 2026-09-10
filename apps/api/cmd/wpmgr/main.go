@@ -2823,6 +2823,26 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	if err := authH.SetHandshakeSecret(cfg.Auth.SessionSecret); err != nil {
 		return fmt.Errorf("social handshake key: %w", err)
 	}
+	// GH #718 Phase 0 — login admission control. Fatal on a bad mode rather
+	// than a fallback: "observe" and "off" are not the same thing, and an
+	// operator who typed the mode wrong must find out here and not from an
+	// endpoint that quietly stopped measuring.
+	loginMode, err := auth.ParseLoginMode(cfg.Auth.LoginMode)
+	if err != nil {
+		return err
+	}
+	// 0 takes the default bound, which is derived from GOMAXPROCS; see
+	// auth.defaultVerifyConcurrency.
+	loginGate, err := auth.NewLoginGate(cfg.Auth.SessionSecret, loginMode, 0)
+	if err != nil {
+		return fmt.Errorf("login admission control: %w", err)
+	}
+	loginGate.SetLogger(logger)
+	loginGate.StartModeReminder(ctx)
+	authH.SetLoginGate(loginGate)
+	// Unconditional, and it names whether the wiring above actually happened.
+	// See LogAdmissionStartup for why that is worth a line of its own.
+	authH.LogAdmissionStartup(logger)
 	authH.SetHosted(cfg.Hosted.Enabled)
 	// M16 Phase B: Me.managed_storage_allowed. billingSvc.ManagedStorageAllowed
 	// no-ops to true when WPMGR_HOSTED is off, so this wiring is safe to leave

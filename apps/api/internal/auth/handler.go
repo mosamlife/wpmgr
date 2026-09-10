@@ -68,6 +68,11 @@ type Handler struct {
 	// session record. NOT optional in effect: unset makes socialStart refuse
 	// rather than issue a handshake nobody signed. See social_handshake.go.
 	handshake *handshakeCodec
+	// loginGate is the GH #718 Phase 0 login admission control: it measures the
+	// per-source and per-account budgets without applying them, and bounds how
+	// many argon2id verifications run at once. Unset removes BOTH, which is a
+	// wiring failure and not a mode — LogAdmissionStartup says so at boot.
+	loginGate *LoginGate
 }
 
 // NewHandler builds an auth Handler.
@@ -168,7 +173,45 @@ func (h *Handler) login(c *gin.Context) {
 		httpx.Error(c, domain.Validation("invalid_body", "request body is not valid JSON"))
 		return
 	}
+
+	// GH #718 Phase 0 — login admission control.
+	//
+	// Placed here, and not inside Service.Login, for two reasons. It has to run
+	// BEFORE any account lookup so it cannot branch on whether the account
+	// exists (that is what keeps it from becoming an enumeration oracle), and
+	// Service.Login's signature has to stay exactly as it is because seven
+	// service-level tests call it directly.
+	//
+	// Observe measures and returns nothing. AcquireVerify is the only part that
+	// can change what the caller sees, and only when this process already has
+	// as many password verifications in flight as it is willing to run.
+	addr, fromChain := h.limiterAddrSource(c)
+	h.loginGate.Observe(c.Request.Context(), loginAttempt{
+		Addr:      addr,
+		FromChain: fromChain,
+		Hops:      h.effectiveProxyHops(),
+		Email:     body.Email,
+	})
+
+	releaseVerify, admitted := h.loginGate.AcquireVerify(c.Request.Context())
+	if !admitted {
+		// Saturation, not a limit: no account was looked at and nothing about
+		// this caller decided it. Retry-After is short because the condition it
+		// describes clears in the time one verification takes.
+		c.Header("Retry-After", "2")
+		httpx.Error(c, domain.ServiceUnavailable("server_busy", "server is busy verifying sign-ins; retry shortly"))
+		return
+	}
+	// Idempotent, so the explicit release below can free the slot before the
+	// session and two-factor work that follows a successful verify, while this
+	// still covers every path that returns first.
+	defer releaseVerify()
+
 	res, err := h.svc.Login(c.Request.Context(), body.Email, body.Password)
+	// The argon2id verification is over by here, whatever the outcome. Hand the
+	// slot back before the session store and the trusted-device lookups, so the
+	// bound stays a bound on CPU and not on the whole handler.
+	releaseVerify()
 	if err != nil {
 		httpx.Error(c, err)
 		return
@@ -660,14 +703,40 @@ func (h *Handler) effectiveProxyHops() int {
 // keeps a key per request. Only a correct hop count, matching what actually sits
 // in front, makes this sound.
 func (h *Handler) limiterAddr(c *gin.Context) netip.Addr {
+	addr, _ := h.limiterAddrSource(c)
+	return addr
+}
+
+// limiterAddrSource returns exactly what limiterAddr returns, plus whether that
+// address was read FROM THE FORWARDED CHAIN at the configured hop position
+// (true) or came from the peer-address fallback (false).
+//
+// The flag grades a degraded address. It is not itself a decision, and Phase 0
+// only logs it, but it is the signal that distinguishes the two ways an address
+// arrives, which the caller-visible behaviour cannot:
+//
+//   - hops > 0 and fromChain=false means the chain was SHORTER than
+//     WPMGR_AUTH_PROXY_HOPS claims. Either the hop count is wrong or this
+//     process is reachable without the proxies it is configured for. Every
+//     affected client collapses onto one key, and an enforcing phase would
+//     refuse them together. An operator cannot see this from inside the
+//     process any other way, which is why it is logged.
+//   - hops == 0 also reports false, because nothing was read from a chain —
+//     but there is nothing degraded about it: the peer address IS the
+//     configured source in that topology. loginAttempt.addrSource is where the
+//     two are told apart, using the hop count.
+//
+// limiterAddr's own return and behaviour are unchanged, so every existing
+// caller is unaffected.
+func (h *Handler) limiterAddrSource(c *gin.Context) (netip.Addr, bool) {
 	hops := h.effectiveProxyHops()
 	if hops == 0 {
 		// Nothing in front appends, so every forwarded entry is caller-supplied
 		// and none of it is evidence. The peer address is the client.
 		if addr, ok := parseForwardedAddr(c.RemoteIP()); ok {
-			return addr
+			return addr, false
 		}
-		return netip.Addr{}
+		return netip.Addr{}, false
 	}
 	// Values, not Get. Get returns only the FIRST header line, so a caller that
 	// sends X-Forwarded-For twice would have the appended entries land on a line
@@ -678,13 +747,13 @@ func (h *Handler) limiterAddr(c *gin.Context) netip.Addr {
 	parts := strings.Split(joined, ",")
 	if len(parts) >= hops {
 		if addr, ok := parseForwardedAddr(parts[len(parts)-hops]); ok {
-			return addr
+			return addr, true
 		}
 	}
 	if addr, ok := parseForwardedAddr(c.RemoteIP()); ok {
-		return addr
+		return addr, false
 	}
-	return netip.Addr{}
+	return netip.Addr{}, false
 }
 
 // parseForwardedAddr parses one forwarded-chain entry. Entries are usually bare
