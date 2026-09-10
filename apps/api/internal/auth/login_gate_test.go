@@ -570,7 +570,8 @@ func TestParseLoginMode(t *testing.T) {
 	}{
 		{"", LoginModeObserve, false},
 		{"observe", LoginModeObserve, false},
-		{"enforce", LoginModeEnforce, false},
+		// Refused in Phase 0 on purpose; see TestEnforceIsNotConfigurableInPhase0.
+		{"enforce", "", true},
 		{"Observe", "", true},
 		{"off", "", true},
 		{"true", "", true},
@@ -645,5 +646,157 @@ func TestNewLoginGateRefusesAWeakSecretAndAnUnknownMode(t *testing.T) {
 	}
 	if _, err := NewLoginGate(testSessionSecret, LoginMode("off"), 4); err == nil {
 		t.Error("NewLoginGate accepted an unknown mode")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// F1 GUARD — the startup line cannot claim enforcement that does not happen.
+// ---------------------------------------------------------------------------
+
+// TestStartupLineCannotClaimEnforcementItDoesNotDo is the guard, not a careful
+// edit.
+//
+// It enumerates every mode ParseLoginMode ACCEPTS — it does not hard-code
+// "observe" — builds a gate in each, drives enough real requests through the
+// real handler to blow the smallest budget many times over, and compares two
+// things that must never disagree:
+//
+//   - what the boot line asserts in budgets_enforced, and
+//   - whether any request was actually refused for being over budget.
+//
+// Both directions fail. A mode that claims enforcement and admits everything
+// is the defect this guard exists for; a mode that quietly enforces while the
+// boot line says it does not is just as bad, because the operator reading that
+// line would have no idea why sign-ins were being refused.
+//
+// It also pins the second half of the same defect: a mode that stops
+// StartModeReminder from warning must be a mode that actually enforces.
+func TestStartupLineCannotClaimEnforcementItDoesNotDo(t *testing.T) {
+	// Every string worth asking about, including the one Phase 1 will add.
+	// Whatever ParseLoginMode accepts is what gets exercised, so the day
+	// "enforce" starts being accepted this guard starts checking it.
+	candidates := []string{"", "observe", "enforce"}
+
+	accepted := 0
+	for _, raw := range candidates {
+		mode, err := ParseLoginMode(raw)
+		if err != nil {
+			continue // Not configurable, so no operator can be misled by it.
+		}
+		accepted++
+
+		t.Run("mode="+string(mode), func(t *testing.T) {
+			g, _ := newTestGate(t, mode, 64)
+			e := loginHandlerForTest(t, g, 2)
+
+			// Far past the smallest budget, all on one key.
+			const attempts = loginPairBudget * 10
+			refusedForBudget := false
+			var baseline int
+			for i := 0; i < attempts; i++ {
+				w := postLogin(e, simulatedClient, httpEmailA)
+				if i == 0 {
+					baseline = w.Code
+					continue
+				}
+				// The verify bound is 64 and these are sequential, so a 503
+				// here could only come from budget enforcement.
+				if w.Code == http.StatusServiceUnavailable || w.Code == http.StatusTooManyRequests {
+					refusedForBudget = true
+				}
+				if w.Code != baseline {
+					refusedForBudget = true
+				}
+			}
+
+			var logs bytes.Buffer
+			h := &Handler{}
+			h.SetProxyHops(2)
+			h.SetLoginGate(g)
+			h.LogAdmissionStartup(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+			out := logs.String()
+
+			claimsEnforcement := strings.Contains(out, `"budgets_enforced":true`)
+			if !claimsEnforcement && !strings.Contains(out, `"budgets_enforced":false`) {
+				t.Fatalf("startup line reports no budgets_enforced field at all; log:\n%s", out)
+			}
+
+			if claimsEnforcement && !refusedForBudget {
+				t.Errorf("mode %q: the boot line asserts budgets_enforced=true, but %d attempts past a budget of %d were ALL admitted. A startup line that can be wrong is worse than none.\nlog:\n%s",
+					mode, attempts, loginPairBudget, out)
+			}
+			if !claimsEnforcement && refusedForBudget {
+				t.Errorf("mode %q: requests were refused for being over budget, but the boot line asserts budgets_enforced=false. An operator could not explain the refusals.\nlog:\n%s",
+					mode, out)
+			}
+
+			// Same defect, other half: the five-minute reminder must only go
+			// quiet for a mode that actually enforces.
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			g.StartModeReminder(ctx)
+			remindersSuppressed := g.mode == LoginModeEnforce
+			if remindersSuppressed && !refusedForBudget {
+				t.Errorf("mode %q silences StartModeReminder without enforcing anything", mode)
+			}
+		})
+	}
+
+	if accepted == 0 {
+		t.Fatal("ParseLoginMode accepted no mode at all; this guard checked nothing")
+	}
+}
+
+// TestEnforceIsNotConfigurableInPhase0 pins the narrow fact the guard above
+// depends on, with the reason attached, so the day it changes the change is
+// deliberate.
+func TestEnforceIsNotConfigurableInPhase0(t *testing.T) {
+	if _, err := ParseLoginMode("enforce"); err == nil {
+		t.Error("ParseLoginMode accepted \"enforce\" while Observe still refuses nothing; that mode would assert enforcement, silence the reminder, and enforce nothing")
+	}
+	if _, err := ParseLoginMode("observe"); err != nil {
+		t.Errorf("ParseLoginMode rejected the documented default: %v", err)
+	}
+}
+
+// TestOverBudgetLoggingIsBounded pins the F2 latch: a key that goes over budget
+// must not write a line per request for the rest of the window.
+func TestOverBudgetLoggingIsBounded(t *testing.T) {
+	g, logs := newTestGate(t, LoginModeObserve, 64)
+	e := loginHandlerForTest(t, g, 2)
+
+	for i := 0; i < loginPairBudget; i++ {
+		postLogin(e, simulatedClient, httpEmailA)
+	}
+	if n := strings.Count(logs.String(), "would refuse"); n != 0 {
+		t.Fatalf("%d lines before any budget was crossed, want 0", n)
+	}
+
+	// First crossing: exactly one line.
+	postLogin(e, simulatedClient, httpEmailA)
+	if n := strings.Count(logs.String(), "would refuse"); n != 1 {
+		t.Fatalf("first crossing wrote %d lines, want 1", n)
+	}
+
+	// A long run over the same key. Unlatched this wrote one line each.
+	const flood = 300
+	before := logs.Len()
+	for i := 0; i < flood; i++ {
+		postLogin(e, simulatedClient, httpEmailA)
+	}
+	lines := strings.Count(logs.String(), "would refuse")
+	wantAtMost := 1 + flood/loginOverLogEvery + 1
+	if lines > wantAtMost {
+		t.Errorf("%d lines for %d over-budget attempts, want at most %d; the latch is not holding", lines, flood, wantAtMost)
+	}
+	if lines < 2 {
+		t.Errorf("%d lines for %d over-budget attempts; the periodic repeat is not firing and the volume is invisible", lines, flood)
+	}
+	if grown := logs.Len() - before; grown > flood*10 {
+		t.Errorf("log grew %d bytes over %d shed attempts (~%d/request); the point of the latch is that this is bounded", grown, flood, grown/flood)
+	}
+	// The suppressed volume must still be countable from the lines that print.
+	if !strings.Contains(logs.String(), `"over_budget_attempts":`) {
+		t.Error("no over_budget_attempts field; a suppressed run must still be countable")
 	}
 }

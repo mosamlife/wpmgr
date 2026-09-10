@@ -208,9 +208,22 @@ func (h *Handler) login(c *gin.Context) {
 	defer releaseVerify()
 
 	res, err := h.svc.Login(c.Request.Context(), body.Email, body.Password)
-	// The argon2id verification is over by here, whatever the outcome. Hand the
-	// slot back before the session store and the trusted-device lookups, so the
-	// bound stays a bound on CPU and not on the whole handler.
+	// Hand the slot back before the session store and the trusted-device
+	// lookups below, which are the rest of this handler.
+	//
+	// WHAT THIS BOUNDS, EXACTLY. The slot is held across the WHOLE of
+	// Service.Login, and that includes GetUserByEmail and
+	// ListMembershipsForUser, not just the argon2id verification. So this is a
+	// bound on concurrent Service.Login calls, not a pure CPU bound, and the
+	// consequence is worth stating rather than discovering: a slow database
+	// makes every login hold its slot for longer, and the endpoint starts
+	// answering 503 on latency it did not cause.
+	//
+	// That is the intended trade. Shedding early under a database stall is
+	// better than piling every login attempt onto a struggling database and
+	// holding 19 MiB of argon2id state per queued attempt while doing it. But
+	// it means a 503 here does not prove CPU saturation, and an operator
+	// diagnosing one should look at database latency too.
 	releaseVerify()
 	if err != nil {
 		httpx.Error(c, err)

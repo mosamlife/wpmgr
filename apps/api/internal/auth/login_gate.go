@@ -112,7 +112,24 @@ func ParseLoginMode(s string) (LoginMode, error) {
 	case LoginModeObserve:
 		return LoginModeObserve, nil
 	case LoginModeEnforce:
-		return LoginModeEnforce, nil
+		// PHASE 0 REFUSES THIS, AND THAT IS THE POINT.
+		//
+		// Observe evaluates every budget and refuses nothing — it returns no
+		// verdict, so there is nothing a handler could act on. Accepting
+		// "enforce" therefore bought an operator three things at once: a boot
+		// line asserting budgets_enforced=true, a StartModeReminder that
+		// short-circuits and stops warning, and no enforcement whatsoever. A
+		// switch that silences the warning without doing the work is worse
+		// than no switch, and worst of all during the incident someone flips
+		// it in.
+		//
+		// So the mode is refused HERE, at the one place a configured string
+		// becomes a mode, rather than described as unfinished somewhere a
+		// reader has to find. Phase 1 deletes this branch in the same change
+		// that makes Observe act on its verdict; until then the state that
+		// could lie about itself does not exist. TestStartupLineCannotClaim
+		// EnforcementItDoesNotDo is the guard that keeps the two together.
+		return "", fmt.Errorf("%s=%q is not available yet: login budgets are measured but not applied (GH #718 Phase 0). Use %q, or leave the variable unset", LoginModeEnvVar, s, LoginModeObserve)
 	default:
 		return "", fmt.Errorf("%s: %q is not a mode; use %q or %q", LoginModeEnvVar, s, LoginModeObserve, LoginModeEnforce)
 	}
@@ -159,6 +176,16 @@ const (
 	// still running would be handed back full, which resets the very budget it
 	// is recording.
 	loginBucketIdle = 30 * time.Minute
+
+	// loginOverLogEvery re-states a scope that is STILL over budget once every
+	// this many further attempts, on top of the line its first crossing wrote.
+	// Without it a scope that goes over stays over for the rest of the window
+	// and writes a line per request forever: measured at ~346 bytes and one
+	// synchronous write per attempt, on the unauthenticated path, where the
+	// pre-change code wrote nothing. A first crossing plus a periodic repeat
+	// carries the same distribution at a bounded cost, and the repeat count is
+	// on the line so the volume is not lost either.
+	loginOverLogEvery = 100
 
 	// loginModeReminderEvery is how often a non-enforce mode announces itself.
 	// A kill switch flipped during an incident is forgotten when nothing keeps
@@ -312,6 +339,13 @@ type verdict struct {
 	limit      int
 	retryAfter time.Duration
 	overBudget bool
+	// worthLogging is set on the first attempt that finds this key over budget
+	// and every loginOverLogEvery-th one after it. See loginOverLogEvery.
+	worthLogging bool
+	// overCount is how many attempts have found this key over budget since it
+	// last had budget. Carried onto the line so a suppressed run is still
+	// countable.
+	overCount int
 }
 
 // Observe evaluates every budget for one attempt and logs what a later phase
@@ -386,6 +420,9 @@ func (g *LoginGate) Observe(ctx context.Context, a loginAttempt) {
 	// No email here, by construction: acctH is what identifies the account, and
 	// the raw address is not carried past AccountDigest.
 	for _, v := range over {
+		if !v.worthLogging {
+			continue
+		}
 		g.log().InfoContext(ctx, "login admission: would refuse (observe mode; request was admitted)",
 			"mode", string(g.mode),
 			"scope", v.scope,
@@ -394,6 +431,8 @@ func (g *LoginGate) Observe(ctx context.Context, a loginAttempt) {
 			"window", loginWindow.String(),
 			"retry_after_seconds", int(v.retryAfter.Round(time.Second).Seconds()),
 			"acct_h", acctH,
+			"over_budget_attempts", v.overCount,
+			"log_sampling", fmt.Sprintf("first crossing, then 1 in %d", loginOverLogEvery),
 			"addr_source", a.addrSource(),
 			"proxy_hops", a.Hops,
 			"enforced", false,
@@ -522,6 +561,12 @@ func (h *Handler) LogAdmissionStartup(logger *slog.Logger) {
 	}
 	attrs = append(attrs,
 		"mode", string(g.mode),
+		// Not a promise: ParseLoginMode is the only way a configured string
+		// becomes a mode, and it refuses every mode that would make this true
+		// while Observe still refuses nothing.
+		// TestStartupLineCannotClaimEnforcementItDoesNotDo drives real requests
+		// through the real handler for every mode ParseLoginMode accepts and
+		// fails if this field and the observed behaviour ever disagree.
 		"budgets_enforced", g.mode == LoginModeEnforce,
 		"window", loginWindow.String(),
 		loginScopePair, loginPairBudget,
@@ -596,6 +641,10 @@ type keyedBudget struct {
 type loginBucket struct {
 	lim  *rate.Limiter
 	seen time.Time
+	// overCount counts consecutive over-budget findings, and resets the moment
+	// the key is charged again (which only happens when it has budget). It
+	// drives the logging latch, never a decision.
+	overCount int
 }
 
 func newKeyedBudget(scope string, limit int) *keyedBudget {
@@ -628,18 +677,41 @@ func (b *keyedBudget) query(key string, now time.Time) verdict {
 	if wait := budgetShortfall(bk.lim, now); wait > 0 {
 		v.overBudget = true
 		v.retryAfter = wait
+		bk.overCount++
+		v.overCount = bk.overCount
+		// First crossing, then one line per loginOverLogEvery attempts.
+		v.worthLogging = bk.overCount == 1 || bk.overCount%loginOverLogEvery == 0
 	}
 	return v
 }
 
-// charge takes one token. It is only ever reached after every scope's query
-// returned overBudget=false at the same instant, and TokensAt cannot fall
-// between the two under this mutex, so the token is guaranteed to be there.
+// charge takes one token, and resets the logging latch because a key with a
+// token to spare is by definition no longer over budget.
+//
+// WHAT THE LOCKING ACTUALLY GUARANTEES, which is less than it may look.
+//
+// query and charge are SEPARATE lock regions; the mutex is released between
+// them. So two concurrent attempts can both see the last token in query and
+// both call charge, and the loser's AllowN returns false. That result is
+// discarded here.
+//
+// The error is therefore a silent UNDERCOUNT — a token that was observed as
+// available by two attempts is spent once — and never an overshoot: AllowN
+// cannot hand out a token the bucket does not hold. Undercounting is the safe
+// direction for Phase 0 (a budget reads as slightly less consumed than it was,
+// so this phase under-reports rather than invents crossings) and it stays the
+// safe direction in Phase 1, where it can only admit a request at the boundary
+// and never refuse one that had budget.
+//
+// Do not upgrade this comment into a claim of atomicity without first making
+// query and charge one locked region. A future reader deciding an enforcement
+// path is exact because "the mutex covers it" would be wrong.
 func (b *keyedBudget) charge(key string, now time.Time) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if bk, ok := b.buckets[key]; ok {
 		bk.lim.AllowN(now, 1)
+		bk.overCount = 0
 	}
 }
 
