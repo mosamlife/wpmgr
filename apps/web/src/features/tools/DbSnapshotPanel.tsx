@@ -117,9 +117,10 @@ export function DbSnapshotPanel({ siteId, canOperate }: Props) {
       <div>
         <h2 className="text-base font-semibold">Database Snapshots</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Capture the database before a risky change — plugin update, search-replace,
-          or bulk edit. Revert in one click if something breaks. Snapshots are
-          stored locally on the WP server (not encrypted off-site backups).
+          Capture the database before a risky change, such as a plugin update,
+          search-replace, or bulk edit. Revert in one click if something breaks.
+          Snapshots are stored locally on the WP server; they are separate from
+          this site's off-site backups.
         </p>
       </div>
 

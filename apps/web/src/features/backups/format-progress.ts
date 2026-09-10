@@ -56,9 +56,9 @@ export const PHASE_LABEL: Record<PhaseId, string> = {
   dumping_db: "Dumping database",
   archiving_files: "Archiving files",
   compressing_files: "Compressing files",
-  encrypting: "Encrypting",
+  encrypting: "Uploading",
   uploading: "Uploading",
-  encrypting_uploading: "Encrypting & uploading",
+  encrypting_uploading: "Uploading",
   submitting_manifest: "Finalising",
   // Incremental backup (ADR-048)
   fetching_file_index: "Fetching file index",

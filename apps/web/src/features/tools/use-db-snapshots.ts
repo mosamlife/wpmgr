@@ -20,9 +20,9 @@ import { toError } from "@/features/auth/use-auth";
 // useDbSnapshots — local database snapshot hooks (#189).
 //
 // Snapshots are a fast LOCAL safety-net stored on the WP server filesystem.
-// They are distinct from durable backups (encrypted, off-site). Use them to
-// capture the DB state before a risky change (plugin update, search-replace,
-// bulk edit) and revert in one click if something goes wrong.
+// They are distinct from durable backups (off-site, unencrypted client side).
+// Use them to capture the DB state before a risky change (plugin update,
+// search-replace, bulk edit) and revert in one click if something goes wrong.
 //
 // Data flow:
 //   useDbSnapshotList  — GET  /api/v1/sites/{siteId}/perf/db/snapshots

@@ -70,11 +70,13 @@ function PrivacyPage() {
                 of available core, plugin, and theme updates.
               </li>
               <li className="leading-relaxed">
-                <strong className="text-[var(--color-foreground)]">Backup archives (encrypted)</strong>{" "}
-                — when you run or schedule a backup, the agent creates an archive of your database
-                and/or files, encrypts it, and uploads it to the storage destination your control plane
-                configures. Archive contents may include your site's content and personal data; they are
-                encrypted before they leave your server.
+                <strong className="text-[var(--color-foreground)]">Backup archives:</strong>{" "}
+                when you run or schedule a backup, the agent creates an archive of your database
+                and/or files and uploads it to the storage destination your control plane
+                configures: a control-plane-managed bucket by default, or a customer-owned bucket or
+                local folder you point it at instead. Archive contents may include your site's content
+                and personal data; the agent does not encrypt them before upload, so protection comes
+                from your chosen destination's own access controls and at-rest encryption, if any.
               </li>
               <li className="leading-relaxed">
                 <strong className="text-[var(--color-foreground)]">Rendered HTML</strong> — for
@@ -109,8 +111,11 @@ function PrivacyPage() {
                 management features you use.
               </li>
               <li className="leading-relaxed">
-                <strong className="text-[var(--color-foreground)]">Encrypted backup archives</strong>,
-                stored in cloud object storage.
+                <strong className="text-[var(--color-foreground)]">Backup archives:</strong> for sites
+                using the control-plane-managed bucket (the default), stored in our cloud object storage
+                with the provider's encryption at rest. If you configure your own S3-compatible bucket or
+                a local folder on the WordPress host instead, backup data does not pass through our
+                storage.
               </li>
               <li className="leading-relaxed">
                 <strong className="text-[var(--color-foreground)]">Operational logs</strong> needed to
@@ -134,7 +139,11 @@ function PrivacyPage() {
               <li className="leading-relaxed">
                 Agent-to-control-plane requests are Ed25519-signed and replay-protected.
               </li>
-              <li className="leading-relaxed">Backups are encrypted before they leave your server.</li>
+              <li className="leading-relaxed">
+                Backup archives are not encrypted client side before upload; protection comes from
+                your chosen destination's access controls and, where the destination provides it,
+                encryption at rest. Client-side encryption of backup archives is planned.
+              </li>
               <li className="leading-relaxed">All network traffic uses TLS.</li>
             </ul>
           </Section>

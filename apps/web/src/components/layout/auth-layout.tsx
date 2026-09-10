@@ -47,7 +47,7 @@ export function AuthLayout({ children }: { children: React.ReactNode }) {
 
 const PROOF = [
   "Connect a site in about a minute",
-  "Backups encrypted before they leave the site",
+  "Agent commands are signed and allow-listed",
   "Open source, and self-hostable for free",
 ];
 
