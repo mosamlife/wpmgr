@@ -6,6 +6,22 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ## [Unreleased]
 
+## [0.61.161] - 2026-09-10
+
+### Security
+
+- The marketing site's `next` dependency is upgraded from 16.2.11 to 16.3.4, closing two published critical advisories, including an unauthenticated remote code execution in the image optimization API. `sharp` and `js-yaml` are also upgraded, closing three published high-severity advisories. Anyone self-hosting the marketing site should update.
+- The manual site-create path now only accepts http and https URLs. It previously accepted any URL scheme a generic validator allowed, so a non-http(s) URL could be stored and later rendered as a link in a client portal. This is not the path a normal install uses to add a site.
+- The agent's `file_mkdir` command now re-checks path containment for a directory that does not yet exist, matching every sibling write command, which already did this check. Previously, a signed command combined with a pre-existing symlink could create a directory outside the WordPress root.
+- Container hardening: Linux capabilities are dropped and privilege escalation is forbidden across the services in `infra/docker-compose.yml`, with nginx keeping only the capabilities it needs.
+
+Thanks to Ines Opifanti (GitHub `wildfang`) for a private security review that found the URL scheme, `file_mkdir` containment, and container capability issues above, reported and fixed in coordination.
+
+### Fixed
+
+- Corrected documentation, marketing copy, and the dashboard that claimed backups are encrypted client side before upload. Shipped builds do not perform this encryption; the claim has been removed from the README, SECURITY.md, the docs, the marketing site, the dashboard (including the sign-in screen and the backups screen), the privacy pages, and the legal security policy (#723, #724, #729).
+- The dashboard's own backup progress indicator repeated the same false claim live: it labeled a real backup run's upload phase "Encrypting" while nothing was being encrypted. The label now describes what is actually happening (#729).
+
 ## [0.61.160] - 2026-09-05
 
 ### Fixed
