@@ -8,7 +8,7 @@ export const BACKUPS_PAGE: FeaturePageData = {
   title: "WordPress Backup Plugin",
   metaTitle: "WordPress Backup Plugin with Incremental Backups",
   metaDescription:
-    "WPMgr is a self-hosted WordPress backup plugin with incremental backups, point-in-time restore, fleet-wide backup health, and client-side encryption.",
+    "WPMgr is a self-hosted WordPress backup plugin with incremental backups, point-in-time restore, fleet-wide backup health, and a backup destination you choose.",
   hero: {
     eyebrow: "Backups and restore",
     heading: "Incremental WordPress backups with point-in-time restore",
@@ -38,7 +38,7 @@ export const BACKUPS_PAGE: FeaturePageData = {
       n: "3",
       icon: "Upload",
       title: "Stored to the destination you choose",
-      desc: "Completed archives are streamed to your configured backup destination: S3-compatible storage, SFTP, or local disk. Image bytes and file data move directly from the site to storage using short-lived presigned URLs, never through the control plane.",
+      desc: "Completed archives are streamed to your configured backup destination. The default is a control-plane-managed bucket, on plans with managed backup storage; point a site at your own S3-compatible bucket or a local folder on its own server instead and they land there, off the control plane. The Free plan has no managed bucket, so a site needs one of those two configured before backups will run.",
     },
     {
       n: "4",
@@ -64,9 +64,9 @@ export const BACKUPS_PAGE: FeaturePageData = {
       desc: "See every site's backup status across the fleet: protected, stale, or unprotected. Sort and filter to find sites that have not run a successful backup in the last 24 hours.",
     },
     {
-      icon: "FileLock2",
-      title: "Client-side encrypted backups",
-      desc: "Enable end-to-end encryption and the control plane stores only ciphertext. It never holds the decryption key, so even a compromised control plane cannot read your backup data.",
+      icon: "Server",
+      title: "Backup storage: control-plane-managed, or yours",
+      desc: "The default destination is a bucket the control plane manages, on plans with managed backup storage. The Free plan is bring-your-own, so a site there needs its own S3-compatible bucket or a local folder before backups run. Pointing a site at your own S3-compatible bucket or a local folder keeps the chunks off the control plane on any plan. Client-side encryption before upload is planned.",
     },
     {
       icon: "ServerCog",
@@ -94,11 +94,11 @@ export const BACKUPS_PAGE: FeaturePageData = {
     },
     {
       q: "Where are backups stored?",
-      a: "You configure the destination: S3-compatible object storage, SFTP, or local disk on the control plane host. File data moves directly from the site to storage using short-lived presigned URLs and never passes through WPMgr's control plane.",
+      a: "You configure the destination. On plans with managed backup storage, the default is a bucket the control plane manages, so those chunks land there. Point a site at your own S3-compatible bucket or a local folder on its own server instead, and the chunks land there, not with the control plane. The Free plan has no managed bucket: a site needs one of those two destinations configured before backups will run.",
     },
     {
       q: "Can backups be encrypted?",
-      a: "Yes. Client-side encryption is opt-in per site. When enabled the control plane stores only ciphertext and never holds the decryption key. The key stays on your infrastructure.",
+      a: "Not yet. Backup chunks are stored as WPMgr writes them at the destination in use: a control-plane-managed bucket protects them however that storage is configured, your own S3-compatible bucket protects them however you have configured that, and a local folder gets no encryption from WPMgr at all, only whatever the host's own disk provides. Client-side encryption before upload is planned.",
     },
   ],
   siblingLinks: [

@@ -91,9 +91,9 @@ export function CompareHeroPanel() {
       </ul>
 
       <div className="mt-3 flex items-center gap-2 rounded-lg bg-[var(--primary-subtle)] px-3 py-2.5">
-        <Icon name="Lock" size={14} className="text-[var(--primary-pressed)]" aria-hidden />
+        <Icon name="Server" size={14} className="text-[var(--primary-pressed)]" aria-hidden />
         <span className="text-[11px] leading-snug text-[var(--primary-pressed)]">
-          Backups encrypted on each site before they leave it, to storage you choose.
+          Backups default to a control-plane-managed bucket on plans with managed storage, or point them at storage you configure and control on any plan.
         </span>
       </div>
     </div>

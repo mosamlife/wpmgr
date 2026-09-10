@@ -16,6 +16,9 @@
  *
  * Security:
  *   - Path jail via FileListCommand::jailPath() (segment checks + realpath containment).
+ *   - F3: nearest existing ancestor re-jailed via realpath before wp_mkdir_p()
+ *     (jailPath() is lexical for not-yet-existing targets; a pre-existing
+ *     in-jail symlink parent must not redirect the mkdir outside the jail).
  *   - T3: jail root resolved or error before any FS write.
  *   - Directory is hardened via StoragePaths::ensureHardenedPath() (.htaccess + index.php guard).
  *   - 'exists' error if the path is already present (any type).
@@ -82,13 +85,46 @@ final class FileMkdirCommand implements CommandInterface {
 
 		// ------------------------------------------------------------------
 		// 4. Check for pre-existing entry.
+		//    file_exists() follows symlinks, so a dangling symlink at the
+		//    target slips past it — the is_link() check below catches it.
 		// ------------------------------------------------------------------
 		if ( file_exists( $absPath ) ) {
 			return $this->error( 'exists', 'path already exists: ' . $resolvedRel );
 		}
 
 		// ------------------------------------------------------------------
-		// 5. Create and harden the directory.
+		// 5. F3: Re-jail the nearest existing ancestor before creating.
+		//    jailPath() returns a LEXICAL path when the target does not exist
+		//    yet, so a pre-existing in-jail symlink in a parent segment would
+		//    let wp_mkdir_p() (which follows symlinks) create the directory
+		//    outside the jail. Walk up to the deepest ancestor that exists (or
+		//    is a dangling symlink) and require its realpath to stay inside
+		//    the jail root — the same parent re-jail the other write commands
+		//    perform before touching the filesystem.
+		// ------------------------------------------------------------------
+		if ( is_link( $absPath ) ) {
+			return $this->error( 'outside_root', 'mkdir denied: destination is a symbolic link' );
+		}
+
+		$ancestor = dirname( $absPath );
+		while ( ! file_exists( $ancestor ) && ! is_link( $ancestor ) ) {
+			$parent = dirname( $ancestor );
+			if ( $parent === $ancestor ) {
+				break;
+			}
+			$ancestor = $parent;
+		}
+
+		$ancestorReal = realpath( $ancestor );
+		if ( $ancestorReal === false
+			|| ( strncmp( str_replace( '\\', '/', $ancestorReal ), $jailRoot . '/', strlen( $jailRoot ) + 1 ) !== 0
+				&& str_replace( '\\', '/', $ancestorReal ) !== $jailRoot )
+		) {
+			return $this->error( 'outside_root', 'mkdir denied: parent directory resolves outside the jail root' );
+		}
+
+		// ------------------------------------------------------------------
+		// 6. Create and harden the directory.
 		//    StoragePaths::ensureHardenedPath() creates the directory with
 		//    wp_mkdir_p() and drops a deny-all .htaccess + index.php guard.
 		// ------------------------------------------------------------------

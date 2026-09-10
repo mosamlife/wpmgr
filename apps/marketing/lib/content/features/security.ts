@@ -69,9 +69,9 @@ export const SECURITY_PAGE: FeaturePageData = {
       desc: "Plugins, themes, and core checked against the Wordfence Intelligence vulnerability feed. One-click remediation updates the vulnerable component through the existing update flow. Requires a free Wordfence Intelligence API key.",
     },
     {
-      icon: "FileLock2",
-      title: "Client-side encrypted backups",
-      desc: "Optional end-to-end encryption for backups: the control plane stores only ciphertext and never holds the decryption key.",
+      icon: "Server",
+      title: "Backup storage: control-plane-managed, or yours",
+      desc: "The default destination is a bucket the control plane manages, on plans with managed backup storage. The Free plan is bring-your-own, so a site there needs its own S3-compatible bucket or a local folder before backups run. Pointing a site at your own S3-compatible bucket or a local folder keeps the chunks off the control plane on any plan. Client-side encryption before upload is planned.",
     },
     {
       icon: "KeySquare",

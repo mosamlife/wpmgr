@@ -33,11 +33,16 @@ anonymous performance data directly to the control plane; it is off by default.
   versions, active theme and plugins, and Site Health diagnostics. Used to show
   your site's status.
 - **Update inventory** — the list of available core, plugin, and theme updates.
-- **Backup archives (encrypted)** — when you run or schedule a backup, the agent
-  creates an archive of your database and/or files, encrypts it, and uploads it
-  to the storage destination your control plane configures. Archive contents may
-  include your site's content and personal data; they are encrypted before they
-  leave your server.
+- **Backup archives**: when you run or schedule a backup, the agent creates an
+  archive of your database and/or files and sends it to the storage destination
+  configured for the site. The default is a bucket managed by the control plane
+  you connected to; it can instead be a bucket you own or a folder on the site's
+  own server. Archive contents may include your site's content and personal
+  data. Archives are not encrypted on your server before they are sent, so they
+  are protected by the access controls of the destination they go to, and by
+  whatever encryption at rest that destination provides. A bucket can be
+  configured for encryption at rest; a folder on the site's own server gets only
+  whatever the host's disk does, which WPMgr does not configure.
 - **Rendered HTML** — for used-CSS optimization, the agent submits rendered HTML
   of selected pages so unused CSS can be computed.
 - **Diagnostics and activity logs** — error logs, performance/cache statistics,
@@ -85,7 +90,9 @@ If you use the hosted WPMgr service rather than self-hosting, we also process:
   account and send transactional email (verification, password reset, alerts).
 - **The site data described above**, on your behalf, to provide the dashboard,
   backups, and management features you use.
-- **Encrypted backup archives**, stored in cloud object storage.
+- **Backup archives**, stored in cloud object storage when the site uses the
+  default WPMgr-managed destination. They are stored as the agent sent them and
+  are protected by that storage's access controls and encryption at rest.
 - **Anonymous Real User Monitoring measurements** from your site visitors, if you
   enable RUM, processed on your behalf as the operator of the hosted service. We
   do not use this data to identify individual visitors.
@@ -102,8 +109,14 @@ sub-processors at all.
 ## Security
 
 - Agent-to-control-plane requests are Ed25519-signed and replay-protected.
-- Backups are encrypted before they leave your server.
-- All network traffic uses TLS.
+- Backups are not encrypted on your server before they are sent. They are
+  protected by the access controls of the destination configured for the site,
+  which by default is a bucket managed by the control plane you connected to,
+  and by whatever encryption at rest that destination provides. A folder on the
+  site's own server gets only whatever the host's disk does, which WPMgr does
+  not configure.
+- All network traffic uses TLS. A backup sent to a folder on the site's own
+  server does not cross the network at all.
 
 ## Your data, your control
 
