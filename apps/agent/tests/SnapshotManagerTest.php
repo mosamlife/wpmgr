@@ -1399,12 +1399,15 @@ final class SnapshotManagerTest extends TestCase
 
         $res = $mgr->restore('plugin', '', $snap['snapshot_id']);
 
-        $this->assertFalse($res['ok'], 'a degenerate slug must be refused');
-        $this->assertDirectoryExists($pluginsRoot);
+        // Asserted FIRST, deliberately: "nothing was deleted" is the property
+        // that matters, and asserting the return value first would abort the
+        // test before it could report a destroyed plugins directory.
         $this->assertFileExists(
             $pluginsRoot . '/innocent-neighbour/plugin.php',
             'a refused rollback must delete nothing'
         );
+        $this->assertDirectoryExists($pluginsRoot);
+        $this->assertFalse($res['ok'], 'a degenerate slug must be refused');
     }
 
     /**
@@ -1427,8 +1430,11 @@ final class SnapshotManagerTest extends TestCase
 
         $res = $mgr->restore($type, $slug, $snap['snapshot_id']);
 
-        $this->assertFalse($res['ok'], 'slug ' . var_export($slug, true) . ' must not reach the delete');
-        $this->assertFileExists($root . '/bystander/keep.php');
+        $this->assertFileExists(
+            $root . '/bystander/keep.php',
+            'slug ' . var_export($slug, true) . ' must not reach the delete'
+        );
+        $this->assertFalse($res['ok'], 'slug ' . var_export($slug, true) . ' must be refused');
     }
 
     /**
@@ -1467,8 +1473,8 @@ final class SnapshotManagerTest extends TestCase
 
         $res = $mgr->restore('plugin', 'well-formed/well-formed.php', $snap['snapshot_id']);
 
+        $this->assertFileExists($elsewhere . '/keep.php', 'an unmatched path must not be deleted');
         $this->assertFalse($res['ok']);
-        $this->assertFileExists($elsewhere . '/keep.php');
     }
 
     public function test_failed_copy_is_distinguishable_and_never_presents_as_a_successful_capture(): void
