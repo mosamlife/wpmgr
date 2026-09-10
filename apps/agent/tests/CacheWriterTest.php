@@ -166,4 +166,60 @@ final class CacheWriterTest extends TestCase
         $this->assertTrue($written);
         $this->assertFileExists($this->root . '/example.com/about/index-mobile.html.gz');
     }
+
+    /**
+     * Write containment: the directory a page is about to be written into must
+     * physically resolve inside the cache root.
+     *
+     * The bucket here is a symlink pointing out of the tree, which every
+     * lexical check upstream passes — the key string is ordinary and contains
+     * nothing to sanitise. Only comparing the RESOLVED directory against the
+     * resolved root can refuse it, so this is the case that distinguishes a
+     * containment guard from its absence.
+     */
+    public function test_write_into_a_bucket_resolving_outside_the_root_is_refused(): void
+    {
+        $outside = dirname(dirname($this->root)) . '/outside-the-cache-root';
+        @mkdir($outside, 0o777, true);
+        @mkdir($this->root, 0o777, true);
+        $this->assertTrue(symlink($outside, $this->root . '/example.com'), 'fixture symlink must be created');
+
+        $written = $this->writer()->maybeWrite(self::HTML, $this->ctx());
+
+        $this->assertFalse($written, 'a write whose directory resolves outside the cache root must be refused');
+        $this->assertFileDoesNotExist(
+            $outside . '/about/index.html.gz',
+            'no cache file may be created outside the cache root'
+        );
+        $this->assertSame(
+            [],
+            glob($outside . '/about/*') ?: [],
+            'nothing at all may be written outside the cache root'
+        );
+
+        @unlink($this->root . '/example.com');
+    }
+
+    /**
+     * A cache root that is itself reached through a symlink must still be
+     * writable: both the root and the target directory resolve through the same
+     * link, so a containment check comparing resolved paths agrees with itself.
+     * A guard that compared raw paths would refuse every write on such a host.
+     */
+    public function test_write_through_a_symlinked_cache_root_still_succeeds(): void
+    {
+        $base = dirname(dirname($this->root));
+        $real = $base . '/real-cache-store';
+        @mkdir($real, 0o777, true);
+        @mkdir(dirname($this->root), 0o777, true);
+        @rmdir($this->root);
+        $this->assertTrue(symlink($real, $this->root), 'fixture symlink must be created');
+
+        $written = $this->writer()->maybeWrite(self::HTML, $this->ctx());
+
+        $this->assertTrue($written, 'a symlinked cache root must remain writable');
+        $this->assertFileExists($real . '/example.com/about/index.html.gz');
+
+        @unlink($this->root);
+    }
 }

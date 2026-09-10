@@ -29,6 +29,9 @@ use Yoast\PHPUnitPolyfills\TestCases\TestCase;
  */
 final class AdvancedCacheDropinTest extends TestCase
 {
+    /** Emitted by the out-of-process harness only when the drop-in returns. */
+    private const MISS = '__WPMGR_DROPIN_RETURNED__';
+
     /** @var string */
     private string $tempDir;
 
@@ -125,17 +128,94 @@ final class AdvancedCacheDropinTest extends TestCase
      * @param string $host  Canonical host.
      * @param string $path  URL path (no trailing slash for root).
      * @param string $name  Cache file base name.
+     * @param string $body  Marker text placed in the page body, so a test can
+     *                      tell WHICH bucket answered rather than only that
+     *                      something did.
      * @return string Absolute path to the warmed file.
      */
-    private function warmCacheFile(string $host, string $path, string $name = 'index'): string
+    private function warmCacheFile(string $host, string $path, string $name = 'index', string $body = 'cached'): string
     {
         $dir = $this->tempDir . '/cache/wpmgr/' . $host . ($path === '' ? '' : $path);
         if (!is_dir($dir)) {
             @mkdir($dir, 0o777, true);
         }
         $file = $dir . '/' . $name . '.html.gz';
-        file_put_contents($file, gzencode('<html><body>cached</body></html>'));
+        file_put_contents($file, gzencode('<html><body>' . $body . '</body></html>'));
         return $file;
+    }
+
+    /**
+     * Create a host bucket directory without warming a page into it.
+     *
+     * Path resolution on POSIX walks every component, so a bucket that does not
+     * exist on disk makes a lookup fail before normalisation is ever consulted.
+     * A containment test that omits this passes against uncontained code.
+     *
+     * @param string $host Canonical host.
+     * @return string Absolute path to the bucket directory.
+     */
+    private function makeBucketDir(string $host): string
+    {
+        $dir = $this->tempDir . '/cache/wpmgr/' . $host;
+        @mkdir($dir, 0o777, true);
+        return $dir;
+    }
+
+    /**
+     * Run the drop-in in a CHILD PHP PROCESS and return everything it emitted.
+     *
+     * A cache HIT ends in exit(), which cannot be observed from inside the
+     * PHPUnit process. Running it out-of-process lets a test assert on the
+     * bytes actually served — which bucket answered, not merely that the
+     * drop-in returned something. A miss appends the MISS marker below.
+     *
+     * @param array<string,mixed> $config Drop-in config array.
+     * @param array<string,mixed> $server $_SERVER overrides.
+     * @return string Combined stdout/stderr of the child process.
+     */
+    private function serveDropin(array $config, array $server = []): string
+    {
+        $template  = dirname(__DIR__) . '/assets/wpmgr-advanced-cache.php';
+        $installer = new DropinInstaller($this->tempDir, $template);
+        $rendered  = $installer->render($config);
+        $this->assertNotEmpty($rendered);
+
+        $renderedPath = $this->tempDir . '/advanced-cache.php';
+        file_put_contents($renderedPath, $rendered);
+
+        $server = array_merge([
+            'REQUEST_METHOD' => 'GET',
+            'REQUEST_URI'    => '/',
+            'HTTP_HOST'      => 'example.com',
+            'HTTPS'          => 'on',
+        ], $server);
+
+        $harnessPath = $this->tempDir . '/serve-harness.php';
+        $harness     = "<?php\n"
+            . 'define(\'ABSPATH\', ' . var_export($this->tempDir . '/', true) . ");\n"
+            . "define('WP_CACHE', true);\n"
+            . 'define(\'WP_CONTENT_DIR\', ' . var_export($this->tempDir, true) . ");\n"
+            . '$_SERVER = ' . var_export($server, true) . ";\n"
+            . "\$_GET = [];\n\$_POST = [];\n\$_COOKIE = [];\n"
+            . 'include ' . var_export($renderedPath, true) . ";\n"
+            . 'echo ' . var_export("\n" . self::MISS, true) . ";\n";
+        file_put_contents($harnessPath, $harness);
+
+        $cmd = escapeshellarg(PHP_BINARY) . ' -d error_reporting=E_ALL ' . escapeshellarg($harnessPath) . ' 2>&1';
+        $out = shell_exec($cmd);
+        $this->assertIsString($out, 'drop-in child process produced no output at all');
+
+        // The drop-in serves the stored .gz bytes verbatim. Decode them so the
+        // marker in the page body is greppable; a miss is plain text and is
+        // returned unchanged.
+        if (strncmp($out, "\x1f\x8b", 2) === 0) {
+            $decoded = @gzdecode($out);
+            if (is_string($decoded)) {
+                return $decoded;
+            }
+        }
+
+        return $out;
     }
 
     /**
@@ -167,24 +247,154 @@ final class AdvancedCacheDropinTest extends TestCase
     }
 
     /**
-     * Regression (traversal via non-idempotent strip): a single pass over
-     * '/.../.../victim' leaves '/../victim', keying one level ABOVE the host
-     * bucket — another host's cached page. The fixpoint strip must reduce it
-     * to '/victim', which is a plain miss. On vulnerable code this test does
-     * not merely fail: the drop-in serves the foreign bucket and exit()s the
-     * process.
+     * A URI that resolves above the requesting host's own bucket must never
+     * reach a neighbouring bucket's cached page.
+     *
+     * The requesting host's bucket is created FIRST and deliberately: on a
+     * POSIX filesystem every component of a path must exist before the parent
+     * reference in it can be followed, so without example.com/ on disk the
+     * lookup fails for the wrong reason and the assertion below holds against
+     * code that does not contain the path at all. With it present, unsafe
+     * normalisation reaches the neighbouring bucket, serves it and exit()s the
+     * process — which is what makes this test capable of going red.
      */
     public function test_traversal_generator_cannot_read_across_host_buckets(): void
     {
-        // A different host's bucket, adjacent to example.com's.
-        $this->warmCacheFile('victim', '');
+        // The requesting host's own bucket must exist for the lookup to be
+        // decided by normalisation rather than by a missing directory.
+        $this->makeBucketDir('example.com');
 
-        $result = $this->runDropin(
+        // A different host's bucket, adjacent to example.com's, holding a page.
+        $victim = $this->warmCacheFile('victim', '', 'index', 'VICTIM-BUCKET-BODY');
+        $this->assertFileExists($victim);
+
+        $out = $this->serveDropin(
             (new CacheConfig([]))->toDropinArray(),
             ['REQUEST_URI' => '/.../.../victim']
         );
 
-        $this->assertFalse($result, 'traversal-generator URI must miss, never serve another bucket');
+        $this->assertStringNotContainsString(
+            'VICTIM-BUCKET-BODY',
+            $out,
+            'traversal-generator URI reached a neighbouring host bucket'
+        );
+        $this->assertStringContainsString(self::MISS, $out, 'traversal-generator URI must miss');
+    }
+
+    /**
+     * The same containment property against a shorter generator that survived
+     * the first fix: normalisation must not be able to produce a parent
+     * reference at all, including one manufactured after the last strip.
+     *
+     * The target here is the file every host bucket would collapse onto — one
+     * shared page at the cache root, served to every site on the install.
+     */
+    public function test_dot_run_cannot_reach_the_shared_cache_root(): void
+    {
+        $this->makeBucketDir('example.com');
+
+        // A page sitting at the cache root itself, one level above every bucket.
+        $shared = $this->tempDir . '/cache/wpmgr/index.html.gz';
+        file_put_contents($shared, gzencode('<html><body>SHARED-ROOT-BODY</body></html>'));
+
+        $out = $this->serveDropin(
+            (new CacheConfig([]))->toDropinArray(),
+            ['REQUEST_URI' => '/....']
+        );
+
+        $this->assertStringNotContainsString(
+            'SHARED-ROOT-BODY',
+            $out,
+            'a dot-run URI collapsed the host bucket onto the shared cache root'
+        );
+        $this->assertStringContainsString(self::MISS, $out, 'a dot-run URI must stay inside the host bucket');
+    }
+
+    /**
+     * Ordinary traffic must still hit. A guard that also blocks correct work
+     * gets switched off, and then it guards nothing.
+     *
+     * @dataProvider provide_ordinary_paths
+     *
+     * @param string $uri  Request URI as the browser sends it.
+     * @param string $path Bucket-relative directory the page is stored under.
+     */
+    public function test_ordinary_paths_still_resolve_to_their_own_bucket(string $uri, string $path): void
+    {
+        $file = $this->warmCacheFile('example.com', $path, 'index', 'OWN-BUCKET-BODY');
+        $this->assertFileExists($file, 'fixture must exist or the assertion below proves nothing');
+
+        $out = $this->serveDropin((new CacheConfig([]))->toDropinArray(), ['REQUEST_URI' => $uri]);
+
+        $this->assertStringContainsString(
+            'OWN-BUCKET-BODY',
+            $out,
+            "ordinary URI $uri must still be served from its own bucket"
+        );
+    }
+
+    /**
+     * @return array<string,array{0:string,1:string}>
+     */
+    public static function provide_ordinary_paths(): array
+    {
+        return [
+            'root'                 => ['/', ''],
+            'trailing slash'       => ['/about/', '/about'],
+            'no trailing slash'    => ['/about', '/about'],
+            'nested'               => ['/blog/2026/09/hello-world/', '/blog/2026/09/hello-world'],
+            'multisite subdir'     => ['/site-two/blog/post-name/', '/site-two/blog/post-name'],
+            'long query string'    => ['/about/?' . str_repeat('k=v&', 200) . 'utm_source=x', '/about'],
+            'percent-encoded utf8' => ['/caf%C3%A9/', '/café'],
+            'literal utf8'         => ['/日本語/page/2/', '/日本語/page/2'],
+            'mixed case'           => ['/About/Us/', '/about/us'],
+        ];
+    }
+
+    /**
+     * A symlinked cache root must work: both sides resolve THROUGH the link, so
+     * the containment check must compare resolved paths, not raw ones.
+     */
+    public function test_symlinked_cache_root_still_serves(): void
+    {
+        // Move the real tree aside and put a symlink where the drop-in looks.
+        $real = $this->tempDir . '/real-cache-store';
+        @mkdir($real, 0o777, true);
+        $link = $this->tempDir . '/cache/wpmgr';
+        @rmdir($link);
+        symlink($real, $link);
+
+        @mkdir($real . '/example.com/about', 0o777, true);
+        file_put_contents($real . '/example.com/about/index.html.gz', gzencode('<html><body>VIA-LINK-BODY</body></html>'));
+
+        try {
+            $out = $this->serveDropin(
+                (new CacheConfig([]))->toDropinArray(),
+                ['REQUEST_URI' => '/about/']
+            );
+            $this->assertStringContainsString(
+                'VIA-LINK-BODY',
+                $out,
+                'a symlinked cache root must resolve through the link, not be rejected by it'
+            );
+        } finally {
+            @unlink($link);
+        }
+    }
+
+    /**
+     * A host carrying a port must key into its own bucket and still serve.
+     */
+    public function test_host_with_port_still_serves(): void
+    {
+        $this->warmCacheFile('example.com:8443', '/about', 'index', 'PORT-BUCKET-BODY');
+
+        $out = $this->serveDropin(
+            (new CacheConfig([]))->toDropinArray(),
+            ['HTTP_HOST' => 'example.com:8443', 'REQUEST_URI' => '/about/']
+        );
+
+        $this->assertStringContainsString('PORT-BUCKET-BODY', $out, 'a host with a port must still hit its bucket');
     }
 
     /**
