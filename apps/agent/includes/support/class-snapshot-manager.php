@@ -144,22 +144,80 @@ class SnapshotManager
     private const OPTION_GC_LAST = 'wpmgr_snapshot_gc_last';
 
     /**
+     * Before-state kinds, recorded in each snapshot's meta.json as
+     * `before_state` and reported back on capture()'s receipt.
+     *
+     * The whole point of naming them is that "the source directory was not
+     * there" and "the copy failed" stop being the same outcome. They never
+     * were the same thing: the first is a complete before-state whose undo is
+     * a delete, the second is an error with no before-state at all.
+     *
+     *   DIRECTORY    — a full copy of the live directory sits in payload/.
+     *   ABSENT       — the live path did not exist; rollback deletes whatever
+     *                  was created in its place. No payload/ directory.
+     *   CORE_VERSION — only the prior core version string was recorded;
+     *                  rollback is a downgrade-by-version (see D3).
+     *   NONE         — nothing was recorded. Always paired with a
+     *                  CAPTURE_FAILURE_* code and an empty snapshot id.
+     *
+     * A snapshot written before this constant existed has no `before_state`
+     * key at all; readMeta() consumers therefore treat a missing/unknown
+     * value as DIRECTORY, which is what every pre-existing snapshot is (the
+     * only other pre-existing kind, core, has no payload and is never passed
+     * to restore()).
+     */
+    public const BEFORE_STATE_DIRECTORY    = 'directory';
+    public const BEFORE_STATE_ABSENT       = 'absent';
+    public const BEFORE_STATE_CORE_VERSION = 'core_version';
+    public const BEFORE_STATE_NONE         = 'none';
+
+    /**
+     * Machine-readable reasons a capture recorded no before-state at all.
+     * Reported on the receipt's `failure` key and carried by
+     * SnapshotCaptureFailed, so a caller can tell an environment problem
+     * (no writable store) from a real copy error, and neither from the
+     * legitimate absence that is BEFORE_STATE_ABSENT.
+     */
+    public const CAPTURE_FAILURE_STORE_UNAVAILABLE = 'store_unavailable';
+    public const CAPTURE_FAILURE_COPY_FAILED       = 'copy_failed';
+    public const CAPTURE_FAILURE_NOT_RESTORABLE    = 'not_restorable';
+
+    /**
      * Capture a pre-update snapshot for an item.
      *
      * For plugin/theme the live source directory is copied into the snapshot
-     * store. For core only the prior version is recorded (no copy).
+     * store. For core only the prior version is recorded (no copy). When the
+     * live source directory does not exist, the ABSENCE ITSELF is recorded as
+     * a first-class before-state (see BEFORE_STATE_ABSENT) rather than being
+     * reported as "no snapshot".
+     *
+     * The returned array is a RECEIPT, not just an id: `before_state` says
+     * which kind of before-state was recorded, `restorable` says whether
+     * rollback() can put the item back the way it was, and `files`/`bytes`
+     * quantify a directory payload so a caller can tell a real capture from a
+     * nominal one. `failure` carries a machine-readable reason (one of the
+     * CAPTURE_FAILURE_* constants) whenever nothing was recorded, so a copy
+     * failure — an error — is distinguishable from a legitimate absence.
      *
      * @param string $type        plugin|theme|core.
      * @param string $slug        Sanitized slug.
      * @param string $fromVersion Currently installed version (recorded for core).
-     * @return array{snapshot_id:string,log:string}
+     * @return array{snapshot_id:string,log:string,before_state:string,restorable:bool,files:int,bytes:int,failure:string}
      */
     public function capture(string $type, string $slug, string $fromVersion): array
     {
         $snapshotId = $this->newSnapshotId();
         $base       = $this->snapshotBaseDir();
         if ($base === '') {
-            return ['snapshot_id' => '', 'log' => 'Snapshot store unavailable; proceeding without snapshot.'];
+            return $this->receipt(
+                '',
+                'Snapshot store unavailable; proceeding without snapshot.',
+                self::BEFORE_STATE_NONE,
+                false,
+                0,
+                0,
+                self::CAPTURE_FAILURE_STORE_UNAVAILABLE
+            );
         }
 
         $this->protectBaseDir($base);
@@ -174,23 +232,248 @@ class SnapshotManager
 
         if ($type === 'core') {
             // Record the prior version for downgrade-by-version on rollback.
-            $this->writeMeta($dest, $type, $slug, $fromVersion);
+            $this->writeMeta($dest, $type, $slug, $fromVersion, self::BEFORE_STATE_CORE_VERSION);
 
-            return ['snapshot_id' => $snapshotId, 'log' => 'Recorded core version ' . $fromVersion . ' for rollback.'];
+            return $this->receipt(
+                $snapshotId,
+                'Recorded core version ' . $fromVersion . ' for rollback.',
+                self::BEFORE_STATE_CORE_VERSION,
+                true,
+                0,
+                0,
+                ''
+            );
         }
 
         $source = $this->liveDir($type, $slug);
         if ($source === '' || !is_dir($source)) {
-            return ['snapshot_id' => '', 'log' => 'Source directory not found; proceeding without snapshot.'];
+            // A MISSING SOURCE IS NOT A FAILED CAPTURE. "This path did not
+            // exist" is a complete, perfectly recoverable before-state: the
+            // undo is to delete whatever gets created. Recording it as a real
+            // snapshot (with a real, non-empty id) is what lets every
+            // downstream rollback gate — all of which key on a non-empty
+            // snapshot id — treat it as the genuine before-state it is,
+            // instead of throwing the information away and running unguarded.
+            //
+            // liveDir() returning '' lands here too, deliberately: its own
+            // anchored fallback requires is_dir(), so a path that does not
+            // exist yet legitimately resolves to '' on the hosts that
+            // fallback exists for (open_basedir, relocated/symlinked
+            // wp-content). restore() re-resolves the live path itself at
+            // rollback time and treats an unresolvable/absent path as
+            // "already in the recorded state" — never as a licence to delete
+            // something it could not identify.
+            $this->writeMeta($dest, $type, $slug, $fromVersion, self::BEFORE_STATE_ABSENT);
+
+            return $this->receipt(
+                $snapshotId,
+                'Recorded absent-source before-state ' . $snapshotId . '; rollback removes whatever is created.',
+                self::BEFORE_STATE_ABSENT,
+                true,
+                0,
+                0,
+                ''
+            );
         }
 
         if (!$this->copyDir($source, $dest . '/payload')) {
-            return ['snapshot_id' => '', 'log' => 'Snapshot copy failed; proceeding without snapshot.'];
+            // A COPY FAILURE IS AN ERROR, not an absence: disk full,
+            // permissions, or a half-written tree. Two things follow.
+            //
+            // First, the partial payload is deleted rather than left behind.
+            // copyDir() creates directories as it descends, so a failure
+            // leaves a truncated tree on disk; without meta.json nothing
+            // would restore FROM it today, but leaving a directory that looks
+            // like a snapshot is exactly the "nominal, not real" state this
+            // receipt exists to make impossible. Best effort — a delete that
+            // itself fails still leaves an id-less, meta-less directory the
+            // GC backstop reclaims.
+            //
+            // Second, the receipt says so: BEFORE_STATE_NONE plus
+            // CAPTURE_FAILURE_COPY_FAILED, so a caller can distinguish this
+            // from the absent case above and refuse to proceed (see
+            // captureRequired()). Existing callers that only read
+            // `snapshot_id` see the same empty id, and the same log intent,
+            // that they saw before this change.
+            $this->deleteDir($dest);
+
+            return $this->receipt(
+                '',
+                'Snapshot copy failed; no before-state was captured.',
+                self::BEFORE_STATE_NONE,
+                false,
+                0,
+                0,
+                self::CAPTURE_FAILURE_COPY_FAILED
+            );
         }
 
-        $this->writeMeta($dest, $type, $slug, $fromVersion);
+        $measured = $this->measureDir($dest . '/payload');
 
-        return ['snapshot_id' => $snapshotId, 'log' => 'Captured snapshot ' . $snapshotId . '.'];
+        $this->writeMeta(
+            $dest,
+            $type,
+            $slug,
+            $fromVersion,
+            self::BEFORE_STATE_DIRECTORY,
+            $measured['files'],
+            $measured['bytes']
+        );
+
+        return $this->receipt(
+            $snapshotId,
+            'Captured snapshot ' . $snapshotId . '.',
+            self::BEFORE_STATE_DIRECTORY,
+            true,
+            $measured['files'],
+            $measured['bytes'],
+            ''
+        );
+    }
+
+    /**
+     * capture(), for a caller that will NOT proceed without a real before-state.
+     *
+     * This is the demand-a-guarantee entry point. capture() itself stays
+     * best-effort on purpose — UpdateCommand deliberately degrades to an
+     * unprotected apply rather than refusing an update outright (see its
+     * class doc, S8 revised), and that behaviour is unchanged. A caller that
+     * cannot make that trade — anything whose only undo is the snapshot —
+     * calls this instead and gets an exception rather than an empty id it
+     * has to remember to check.
+     *
+     * @param string $type        plugin|theme|core.
+     * @param string $slug        Sanitized slug.
+     * @param string $fromVersion Currently installed version.
+     * @return array{snapshot_id:string,log:string,before_state:string,restorable:bool,files:int,bytes:int,failure:string}
+     * @throws SnapshotCaptureFailed When no restorable before-state was recorded.
+     */
+    public function captureRequired(string $type, string $slug, string $fromVersion): array
+    {
+        $receipt = $this->capture($type, $slug, $fromVersion);
+
+        if (!self::isRestorable($receipt)) {
+            throw new SnapshotCaptureFailed(
+                $receipt['log'],
+                $receipt['failure'] !== '' ? $receipt['failure'] : self::CAPTURE_FAILURE_NOT_RESTORABLE,
+                $receipt
+            );
+        }
+
+        return $receipt;
+    }
+
+    /**
+     * Whether a capture receipt describes a before-state rollback can actually
+     * return to.
+     *
+     * Both halves are required and neither implies the other: an id with no
+     * recorded before-state is a bookkeeping artefact, and a before-state kind
+     * with no id cannot be addressed by any rollback path (they all key on the
+     * id). A directory before-state additionally has to have copied at least
+     * one file — a zero-file payload for a source directory that existed is
+     * nominal, not real.
+     *
+     * Accepts a loose array so a receipt that has been round-tripped through
+     * JSON (an in-flight marker, a command response) can still be checked.
+     *
+     * @param array<string,mixed> $receipt Receipt from capture().
+     * @return bool
+     */
+    public static function isRestorable(array $receipt): bool
+    {
+        $id    = isset($receipt['snapshot_id']) && is_string($receipt['snapshot_id']) ? $receipt['snapshot_id'] : '';
+        $state = isset($receipt['before_state']) && is_string($receipt['before_state']) ? $receipt['before_state'] : '';
+
+        if ($id === '') {
+            return false;
+        }
+
+        if ($state === self::BEFORE_STATE_DIRECTORY) {
+            $files = isset($receipt['files']) && is_int($receipt['files']) ? $receipt['files'] : 0;
+
+            return $files > 0;
+        }
+
+        return $state === self::BEFORE_STATE_ABSENT || $state === self::BEFORE_STATE_CORE_VERSION;
+    }
+
+    /**
+     * Build a capture receipt.
+     *
+     * @param string $snapshotId  Snapshot id ('' when nothing was recorded).
+     * @param string $log         Human-readable log line.
+     * @param string $beforeState One of the BEFORE_STATE_* constants.
+     * @param bool   $restorable  Whether rollback can return to this state.
+     * @param int    $files       Files copied into the payload.
+     * @param int    $bytes       Bytes copied into the payload.
+     * @param string $failure     One of the CAPTURE_FAILURE_* constants, or ''.
+     * @return array{snapshot_id:string,log:string,before_state:string,restorable:bool,files:int,bytes:int,failure:string}
+     */
+    private function receipt(
+        string $snapshotId,
+        string $log,
+        string $beforeState,
+        bool $restorable,
+        int $files,
+        int $bytes,
+        string $failure
+    ): array {
+        return [
+            'snapshot_id'  => $snapshotId,
+            'log'          => $log,
+            'before_state' => $beforeState,
+            'restorable'   => $restorable,
+            'files'        => $files,
+            'bytes'        => $bytes,
+            'failure'      => $failure,
+        ];
+    }
+
+    /**
+     * Count the files and bytes under a directory, so a receipt can prove a
+     * payload is real rather than nominal.
+     *
+     * Symlinks are skipped, matching copyDir()'s own refusal to follow them
+     * out of the tree, so the count describes exactly what was copied.
+     *
+     * @param string $dir Directory to measure.
+     * @return array{files:int,bytes:int}
+     */
+    private function measureDir(string $dir): array
+    {
+        $files = 0;
+        $bytes = 0;
+
+        if (!is_dir($dir)) {
+            return ['files' => $files, 'bytes' => $bytes];
+        }
+
+        $items = @scandir($dir);
+        if ($items === false) {
+            return ['files' => $files, 'bytes' => $bytes];
+        }
+
+        foreach ($items as $item) {
+            if ($item === '.' || $item === '..') {
+                continue;
+            }
+            $path = $dir . '/' . $item;
+            if (is_link($path)) {
+                continue;
+            }
+            if (is_dir($path)) {
+                $nested = $this->measureDir($path);
+                $files += $nested['files'];
+                $bytes += $nested['bytes'];
+                continue;
+            }
+            ++$files;
+            $size   = @filesize($path);
+            $bytes += $size === false ? 0 : (int) $size;
+        }
+
+        return ['files' => $files, 'bytes' => $bytes];
     }
 
     /**
@@ -214,6 +497,14 @@ class SnapshotManager
         $snapshotDir = $this->resolveSnapshotDir($base, $snapshotId);
         if ($snapshotDir === '') {
             return ['ok' => false, 'log' => 'Invalid snapshot id.'];
+        }
+
+        $meta = $this->readMeta($snapshotDir);
+        if (is_array($meta)
+            && isset($meta['before_state'])
+            && $meta['before_state'] === self::BEFORE_STATE_ABSENT
+        ) {
+            return $this->restoreAbsent($type, $slug, $snapshotId, $meta);
         }
 
         $payload = $snapshotDir . '/payload';
@@ -331,6 +622,78 @@ class SnapshotManager
         }
 
         return ['ok' => true, 'log' => 'Restored ' . $slug . ' from snapshot ' . $snapshotId . '.'];
+    }
+
+    /**
+     * Roll back to a BEFORE_STATE_ABSENT snapshot: the recorded before-state
+     * is "this path did not exist", so the undo is to remove what was created
+     * in its place.
+     *
+     * This is the only rollback path in this class that DELETES rather than
+     * copies, so it is deliberately narrow. It runs only when the snapshot's
+     * own meta.json says `before_state: absent` — a key this class writes and
+     * nothing else does — and only after three further checks:
+     *
+     *   1. The meta's type and slug must match the ones the caller asked to
+     *      roll back. A snapshot id addresses one item; a mismatch means the
+     *      caller and the snapshot disagree about what is being undone, and
+     *      the safe response to that disagreement is to delete nothing.
+     *   2. liveDir() must resolve the path, with the same containment rules
+     *      every other path in this class goes through. An unresolvable path
+     *      is reported as already-absent, never guessed at.
+     *   3. The resolved path must have a real parent (dirname() !== itself)
+     *      and a non-empty final segment, so a degenerate slug can never make
+     *      this the plugin root, the theme root, or the filesystem root.
+     *
+     * An already-absent live path is a SUCCESS, not a failure: the site is
+     * already in the state this snapshot records, which makes rollback
+     * idempotent and safe to retry (the watchdog and the in-flight reconcile
+     * can both re-enter it).
+     *
+     * @param string              $type       plugin|theme.
+     * @param string              $slug       Sanitized slug.
+     * @param string              $snapshotId Snapshot identifier.
+     * @param array<string,mixed> $meta       The snapshot's decoded meta.json.
+     * @return array{ok:bool,log:string}
+     */
+    private function restoreAbsent(string $type, string $slug, string $snapshotId, array $meta): array
+    {
+        $metaType = isset($meta['type']) && is_string($meta['type']) ? $meta['type'] : '';
+        $metaSlug = isset($meta['slug']) && is_string($meta['slug']) ? $meta['slug'] : '';
+        if ($metaType !== $type || $metaSlug !== $slug) {
+            return [
+                'ok'  => false,
+                'log' => 'Snapshot ' . $snapshotId . ' records an absent before-state for a different item; refusing to remove anything.',
+            ];
+        }
+
+        $live = $this->liveDir($type, $slug);
+        if ($live === '' || !is_dir($live)) {
+            return [
+                'ok'  => true,
+                'log' => 'Nothing to remove for ' . $slug . '; already in the absent before-state recorded by snapshot ' . $snapshotId . '.',
+            ];
+        }
+
+        $parent = dirname($live);
+        if ($parent === $live || $parent === '' || basename($live) === '') {
+            return [
+                'ok'  => false,
+                'log' => 'Refusing to remove ' . $slug . ': the resolved live path has no distinct parent directory.',
+            ];
+        }
+
+        if (!$this->deleteDir($live)) {
+            return [
+                'ok'  => false,
+                'log' => 'Could not remove ' . $slug . ' to restore the absent before-state recorded by snapshot ' . $snapshotId . '.',
+            ];
+        }
+
+        return [
+            'ok'  => true,
+            'log' => 'Removed ' . $slug . ', restoring the absent before-state recorded by snapshot ' . $snapshotId . '.',
+        ];
     }
 
     /**
@@ -1290,10 +1653,20 @@ class SnapshotManager
      * @param string $type        Item type.
      * @param string $slug        Slug.
      * @param string $fromVersion Recorded version.
+     * @param string $beforeState One of the BEFORE_STATE_* constants.
+     * @param int    $files       Files in the payload (0 when there is none).
+     * @param int    $bytes       Bytes in the payload (0 when there is none).
      * @return void
      */
-    private function writeMeta(string $dir, string $type, string $slug, string $fromVersion): void
-    {
+    private function writeMeta(
+        string $dir,
+        string $type,
+        string $slug,
+        string $fromVersion,
+        string $beforeState = self::BEFORE_STATE_DIRECTORY,
+        int $files = 0,
+        int $bytes = 0
+    ): void {
         if (!is_dir($dir)) {
             wp_mkdir_p($dir);
         }
@@ -1301,6 +1674,15 @@ class SnapshotManager
             'type'         => $type,
             'slug'         => $slug,
             'from_version' => $fromVersion,
+            // The recorded before-state kind. restore() reads this to decide
+            // whether rollback means "copy the payload back" or "delete what
+            // was created", so it is written for EVERY snapshot, including
+            // the ones that have a payload.
+            'before_state' => $beforeState,
+            // Payload size, for a reader that wants to confirm the snapshot
+            // is real rather than nominal without walking it again.
+            'files'        => $files,
+            'bytes'        => $bytes,
             // M1 (issue #131 adversarial review) — microtime(true), not
             // time(): pruneForSlug() orders same-slug snapshots by this
             // field to decide which to keep, and two captures for the same

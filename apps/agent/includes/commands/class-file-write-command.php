@@ -60,6 +60,18 @@ final class FileWriteCommand implements CommandInterface {
 	private const MAX_BYTES = 262144;
 
 	/**
+	 * Before-state kinds reported on a successful write's response, mirroring
+	 * SnapshotManager's BEFORE_STATE_* vocabulary.
+	 *
+	 * A write that creates a NEW file has a real before-state ("this path did
+	 * not exist"), whose undo is a delete — it is not the same thing as a
+	 * staging failure, and reporting both as silence was the defect.
+	 */
+	private const BEFORE_STATE_CAPTURED = 'captured';
+	private const BEFORE_STATE_ABSENT   = 'absent';
+	private const BEFORE_STATE_FAILED   = 'failed';
+
+	/**
 	 * {@inheritDoc}
 	 */
 	public function name(): string {
@@ -155,9 +167,26 @@ final class FileWriteCommand implements CommandInterface {
 
 		// ------------------------------------------------------------------
 		// 7. T11: Pre-write backup — if target exists, copy to staging area.
+		//
+		// The outcome is RECORDED, not swallowed. Staging stays best-effort
+		// and still does not block the write (see stageBackup()'s doc), but
+		// the caller no longer has to assume a backup exists: the response
+		// reports which before-state this write has, using the same
+		// vocabulary as SnapshotManager.
+		//   'captured' — the previous bytes are in the staging area.
+		//   'absent'   — the target did not exist; the undo is to delete the
+		//                file this write creates. A real before-state, not a
+		//                missing one.
+		//   'failed'   — the target existed and could not be staged. The
+		//                write still proceeds, but a caller that needs an undo
+		//                can now see that it does not have one.
 		// ------------------------------------------------------------------
 		if ( file_exists( $absPath ) && ! is_dir( $absPath ) ) {
-			$this->stageBackup( $absPath, $resolvedRel );
+			$beforeState = $this->stageBackup( $absPath, $resolvedRel )
+				? self::BEFORE_STATE_CAPTURED
+				: self::BEFORE_STATE_FAILED;
+		} else {
+			$beforeState = self::BEFORE_STATE_ABSENT;
 		}
 
 		// ------------------------------------------------------------------
@@ -234,10 +263,14 @@ final class FileWriteCommand implements CommandInterface {
 		$mode  = $lstat !== false ? (int) ( $lstat['mode'] ?? 0 ) : 0;
 
 		return [
-			'path'  => $resolvedRel,
-			'size'  => $size,
-			'mtime' => $mtime,
-			'mode'  => sprintf( '%04o', $mode & 07777 ),
+			'path'         => $resolvedRel,
+			'size'         => $size,
+			'mtime'        => $mtime,
+			'mode'         => sprintf( '%04o', $mode & 07777 ),
+			// Which before-state this write has, so the caller can tell an
+			// undoable write from one with no undo. Additive: existing
+			// consumers that read only path/size/mtime/mode are unaffected.
+			'before_state' => $beforeState,
 		];
 	}
 
@@ -254,17 +287,21 @@ final class FileWriteCommand implements CommandInterface {
 	 * unreadable without the agent's master key. The key is derived from wp-config
 	 * salts (or a site-specific file), same as all other Keystore-protected data.
 	 *
-	 * Errors are silenced — failure here does NOT block the write; the backup is
-	 * best-effort so that a later "restore previous version" is possible.
+	 * Errors do NOT block the write; the backup is best-effort so that a later
+	 * "restore previous version" is possible. They are, however, REPORTED: the
+	 * return value says whether the previous bytes actually reached the staging
+	 * area, and the caller surfaces that on the response. Silently swallowing a
+	 * staging failure left the caller unable to tell "I have an undo" from "I
+	 * have none", which is the whole defect this return value closes.
 	 *
 	 * @param string $absPath     Absolute path to the current target file.
 	 * @param string $resolvedRel Site-relative path of the target.
-	 * @return void
+	 * @return bool True when the encrypted backup was written.
 	 */
-	private function stageBackup( string $absPath, string $resolvedRel ): void {
+	private function stageBackup( string $absPath, string $resolvedRel ): bool {
 		$stagingBase = StoragePaths::ensureHardened( 'file-backups' );
 		if ( $stagingBase === '' ) {
-			return;
+			return false;
 		}
 
 		// Per-op directory: <staging_base>/<sanitized_rel>/<timestamp>-<rand>.bak
@@ -279,7 +316,7 @@ final class FileWriteCommand implements CommandInterface {
 		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_get_contents -- headless agent; WP_Filesystem never initialized; reading source file for encrypted backup
 		$plaintext = @file_get_contents( $absPath );
 		if ( $plaintext === false ) {
-			return; // Unreadable source — skip silently.
+			return false; // Unreadable source — no before-state captured.
 		}
 
 		// F4: Encrypt the backup bytes with the existing Keystore AES-256-GCM cipher.
@@ -288,12 +325,17 @@ final class FileWriteCommand implements CommandInterface {
 			$keystore   = new Keystore();
 			$ciphertext = $keystore->encrypt( $plaintext );
 		} catch ( \Throwable $e ) {
-			return; // Encryption failed — skip backup rather than writing plaintext.
+			return false; // Encryption failed — skip backup rather than writing plaintext.
 		}
 
 		$backupFile = $backupDir . '/' . time() . '-' . bin2hex( random_bytes( 4 ) ) . '.bak';
 		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- headless agent; WP_Filesystem never initialized; writing AES-256-GCM-encrypted backup file
-		@file_put_contents( $backupFile, $ciphertext, LOCK_EX );
+		$written = @file_put_contents( $backupFile, $ciphertext, LOCK_EX );
+
+		// A short write is a failed backup: a truncated ciphertext will not
+		// decrypt, so it is not an undo, and reporting it as one would be the
+		// same nominal-not-real claim this change exists to prevent.
+		return $written !== false && $written === strlen( $ciphertext );
 	}
 
 	// ------------------------------------------------------------------
