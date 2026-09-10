@@ -130,8 +130,9 @@ export function BackupsSection({
           <div className="space-y-1.5">
             <CardTitle>Backups</CardTitle>
             <CardDescription>
-              Encrypted snapshots of this site. Chunks are encrypted on the
-              agent; the control plane cannot read your data.
+              Snapshots of this site, stored at the destination you configure: a
+              control-plane-managed bucket, your own S3-compatible bucket, or a local folder
+              from Destinations.
             </CardDescription>
           </div>
           {canOperate ? <BackupNowControl siteId={siteId} /> : null}
