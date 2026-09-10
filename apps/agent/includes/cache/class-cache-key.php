@@ -254,29 +254,120 @@ final class CacheKey
         $uriPath = rawurldecode($uriPath);
         $uriPath = strtolower($uriPath);
 
-        // Collapse path traversal and stray separators defensively.
-        $uriPath = str_replace(['\\', "\0"], ['/', ''], $uriPath);
-        $uriPath = preg_replace('#/+#', '/', $uriPath) ?? $uriPath;
-        $uriPath = preg_replace('#(\.\./|/\.\.)#', '', $uriPath) ?? $uriPath;
+        // The traversal-containment step below is duplicated verbatim in the
+        // advanced-cache drop-in, which runs before WordPress loads and so can
+        // never call this class. Bridge through the drop-in's variable name so
+        // the two copies are byte-identical once dedented; a divergence would
+        // store a page under one key and look it up under another.
+        // tests/CacheNormalizeParityTest.php enforces that mechanically.
+        $wpmgr_path = $uriPath;
 
-        $uriPath = '/' . ltrim($uriPath, '/');
-        $uriPath = rtrim($uriPath, '/');
+        // WPMGR-NORMALIZE-PATH-SHARED BEGIN
+        // Resolve the path one SEGMENT at a time, and classify each segment by
+        // its whole value. A pattern strip over the joined string is the wrong
+        // instrument here: removing a substring can fuse the two neighbours it
+        // sat between into a token that was in neither of them, so the result
+        // depends on how many times the strip is applied and no single pass is
+        // trustworthy. Splitting on the separator first cannot fuse anything,
+        // which makes the outcome correct by construction rather than by
+        // iterating a substitution until it stops changing.
+        //
+        // An empty segment (a repeated or trailing separator) carries no name.
+        // Neither does a segment that is nothing but dots: one dot is the
+        // directory itself, two dots is its parent, and longer runs are not
+        // portable filenames. Two dots pops one level first; popping at the
+        // root is deliberately a no-op, so the result can never name anything
+        // above the bucket it belongs to. Every other segment is preserved
+        // exactly as it arrived.
+        $wpmgr_path = str_replace(['\\', "\0"], ['/', ''], $wpmgr_path);
+        $wpmgr_segments = [];
+        foreach (explode('/', $wpmgr_path) as $wpmgr_segment) {
+            if ($wpmgr_segment === '') {
+                continue;
+            }
+            if (trim($wpmgr_segment, '.') === '') {
+                if ($wpmgr_segment === '..') {
+                    array_pop($wpmgr_segments);
+                }
+                continue;
+            }
+            $wpmgr_segments[] = $wpmgr_segment;
+        }
+        $wpmgr_path = $wpmgr_segments === [] ? '' : '/' . implode('/', $wpmgr_segments);
+        // WPMGR-NORMALIZE-PATH-SHARED END
 
-        return $uriPath; // '' for root
+        return $wpmgr_path; // '' for root
     }
 
     /**
-     * Strip a host of anything that is not a safe path component (port, casing,
-     * directory-traversal characters).
+     * Canonical cache bucket name for a request host, or '' when the host must
+     * not participate in caching at all.
+     *
+     * Returning '' rather than a placeholder is the point. A placeholder is a
+     * single bucket that every rejected host shares, and a shared bucket is
+     * both readable and writable by all of them — one rejected request could be
+     * answered with a page cached for a different rejected request. Callers
+     * must treat '' as "do not store, do not serve, boot WordPress".
+     *
+     * The advanced-cache drop-in carries this block verbatim, for the same
+     * reason the path block is duplicated: it runs before WordPress loads and
+     * cannot call this class. Bridge through its variable name so the two
+     * copies are byte-identical once dedented.
+     * tests/CacheNormalizeParityTest.php enforces that mechanically.
+     *
+     * @param string $host Raw HTTP_HOST.
+     * @return string Bucket name, or '' when the host is not cacheable.
+     */
+    public static function normalizeHost(string $host): string
+    {
+        $wpmgr_host = $host;
+
+        // WPMGR-NORMALIZE-HOST-SHARED BEGIN
+        // Validate the whole value against an anchored pattern, then transform.
+        // Validation decides only two things — cacheable, or not — so the two
+        // sides cannot disagree about which bucket a host lands in: either they
+        // both compute the same name, or they both decline to cache.
+        //
+        // The pattern requires the host to begin and end with an alphanumeric,
+        // which rejects a value that is only separators. Such a value would
+        // otherwise pass a charset test and then name a relative directory
+        // rather than a bucket. Consecutive dots are rejected for the same
+        // reason: an empty label is not a host, and it is not a directory
+        // either.
+        //
+        // A port belongs to the identity of the site, so it stays in the bucket
+        // name. ':' is not portable in a path segment, so both sides spell it
+        // '_' — the alternative, discarding the port, would key two different
+        // sites onto one bucket.
+        $wpmgr_host = strtolower($wpmgr_host);
+        if ($wpmgr_host === ''
+            || strpos($wpmgr_host, '..') !== false
+            || preg_match('/^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]{1,5})?$/', $wpmgr_host) !== 1
+        ) {
+            $wpmgr_host = '';
+        } else {
+            $wpmgr_host = str_replace(':', '_', $wpmgr_host);
+        }
+        // WPMGR-NORMALIZE-HOST-SHARED END
+
+        return $wpmgr_host; // '' when the host must not be cached
+    }
+
+    /**
+     * Bucket name for path building only.
+     *
+     * Callers that decide whether to cache use {@see normalizeHost()} directly
+     * and honour its ''. This keeps a stable directory name so path arithmetic
+     * (purge scans and the like) always has one to work with. Nothing on the
+     * write or serve path reaches the placeholder any more: both decline the
+     * host before a path is built.
      *
      * @param string $host Raw HTTP_HOST.
      * @return string
      */
     private function sanitizeHost(string $host): string
     {
-        $host = strtolower($host);
-        $host = preg_replace('/[^a-z0-9\.\-:]/', '', $host) ?? '';
-        $host = str_replace([':', '..'], ['_', ''], $host);
+        $host = self::normalizeHost($host);
         return $host === '' ? 'unknown-host' : $host;
     }
 
