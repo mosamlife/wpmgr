@@ -131,8 +131,8 @@ export function BackupsSection({
             <CardTitle>Backups</CardTitle>
             <CardDescription>
               Snapshots of this site, stored at the destination you configure: a
-              control-plane-managed bucket on plans with managed backup storage, or your own
-              S3-compatible bucket or local folder from Destinations otherwise.
+              control-plane-managed bucket, your own S3-compatible bucket, or a local folder
+              from Destinations.
             </CardDescription>
           </div>
           {canOperate ? <BackupNowControl siteId={siteId} /> : null}

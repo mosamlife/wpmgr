@@ -72,12 +72,13 @@ function PrivacyPage() {
               <li className="leading-relaxed">
                 <strong className="text-[var(--color-foreground)]">Backup archives:</strong>{" "}
                 when you run or schedule a backup, the agent creates an archive of your database
-                and/or files and stores it at the destination your control plane configures. The
-                default is a control-plane-managed bucket on plans with managed backup storage;
-                otherwise a customer-owned bucket or local folder must be configured before
-                backups will run. A control-plane-managed or customer-owned bucket receives the
-                archive over the network; a local folder keeps it on your own server, written
-                there directly by the agent. Archive contents may include your site's content and
+                and/or files and stores it at the destination configured for that site: a
+                control-plane-managed bucket, your own S3-compatible bucket, or a local folder on
+                the WordPress host. The control-plane-managed bucket is available only on plans
+                with managed backup storage; without that entitlement, one of the other two must
+                be configured before backups will run. A bucket destination receives the archive
+                over the network; a local folder keeps it on your own server, written there
+                directly by the agent. Archive contents may include your site's content and
                 personal data; the agent does not encrypt them beforehand, so protection comes
                 from your chosen destination's own access controls and at-rest encryption, if
                 any.
