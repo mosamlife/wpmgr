@@ -384,6 +384,14 @@ final class AdvancedCacheDropinTest extends TestCase
 
     /**
      * A host carrying a port must key into its own bucket and still serve.
+     *
+     * This pins the SERVE side only. The store side spells the same host
+     * differently — CacheKey::sanitizeHost() maps ':' to '_' and the drop-in
+     * keeps it verbatim — so a site on a non-default port stores under one
+     * bucket name and looks up under another. That divergence predates this
+     * change and is a cache-miss bug rather than a containment one, so it is
+     * left alone here rather than folded into a security fix; the fixture below
+     * is therefore written with the drop-in's spelling on purpose.
      */
     public function test_host_with_port_still_serves(): void
     {
