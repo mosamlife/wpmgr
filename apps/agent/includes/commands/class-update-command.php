@@ -604,6 +604,20 @@ final class UpdateCommand implements CommandInterface
                 // wpmgr-snapshots. `core` keeps the original opt-in behavior:
                 // there is no directory to snapshot/restore for core, and D3
                 // deliberately does not build one (see UpdateRunner::isComplete()).
+                //
+                // capture() is deliberately the best-effort entry point here,
+                // not SnapshotManager::captureRequired(). Now that a missing
+                // source directory is recorded as a real before-state
+                // (BEFORE_STATE_ABSENT) rather than a failed capture, the only
+                // outcomes left with no before-state are an unwritable
+                // snapshot store and a failed copy — both real errors — so
+                // captureRequired() here would be defensible. It is not taken
+                // because it would turn those two cases from a best-effort
+                // apply into a refused update across the live fleet, which is
+                // exactly the S8 regression documented above and needs its own
+                // decision rather than arriving as a side effect. The receipt
+                // capture() returns (`before_state`, `restorable`, `files`,
+                // `bytes`) is what a caller that DOES need the guarantee reads.
                 $shouldSnapshot = $type === 'core' ? $snapshot : true;
                 if ($shouldSnapshot) {
                     $snap        = $this->snapshots->capture($type, $slug, $fromVersion);

@@ -673,6 +673,32 @@ class SnapshotManager
             ];
         }
 
+        // Validate the slug HERE, in the method that deletes, rather than
+        // inheriting the guarantee from UpdateCommand::sanitizeSlug().
+        // liveDir()'s containment argument is explicitly "the slug was already
+        // sanitized upstream" — sound for the update path, but restore() is
+        // reachable by callers holding nothing but a snapshot id, and that
+        // guarantee lives in a class this one never calls. A delete must not
+        // rest on a promise made somewhere else.
+        //
+        // The concrete case this closes, which the positional checks below
+        // cannot see: an EMPTY slug on the plugin branch makes liveDir() build
+        // "<plugins root>/", so is_dir() is true, basename() returns the
+        // root's own name rather than '', and dirname() differs from the path
+        // — all three positional guards pass and deleteDir() would be handed
+        // the entire plugins directory. It is not reachable today (an empty
+        // slug at capture time finds a real directory, so capture() records
+        // BEFORE_STATE_DIRECTORY and never reaches this method), but the guard
+        // must not depend on that reasoning continuing to hold.
+        $folder = $this->itemFolderSegment($type, $slug);
+        if ($folder === '') {
+            return [
+                'ok'  => false,
+                'log' => 'Refusing to remove the item recorded by snapshot ' . $snapshotId
+                    . ': its slug is not a single plain path segment.',
+            ];
+        }
+
         $live = $this->liveDir($type, $slug);
         if ($live === '' || !is_dir($live)) {
             return [
@@ -689,6 +715,19 @@ class SnapshotManager
             ];
         }
 
+        // Strictly BELOW the item's own root, not merely somewhere under
+        // wp-content: the final segment of the path about to be deleted must
+        // be the item's own folder name. liveDir() builds "<root>/<folder>",
+        // so a resolved path whose last segment is anything else — a root
+        // directory, a parent, a path some future liveDir() change resolved
+        // differently — is not this item's directory and is not deleted.
+        if (basename($live) !== $folder) {
+            return [
+                'ok'  => false,
+                'log' => 'Refusing to remove ' . $slug . ': the resolved live path is not that item\'s own directory.',
+            ];
+        }
+
         if (!$this->deleteDir($live)) {
             return [
                 'ok'  => false,
@@ -700,6 +739,55 @@ class SnapshotManager
             'ok'  => true,
             'log' => 'Removed ' . $slug . ', restoring the absent before-state recorded by snapshot ' . $snapshotId . '.',
         ];
+    }
+
+    /**
+     * The single directory segment an item's live path must end in, or '' when
+     * the slug cannot safely name one.
+     *
+     * Used only by restoreAbsent() — the one rollback path in this class that
+     * deletes — so it is deliberately stricter than the update path needs. A
+     * plugin slug is "<folder>/<file>.php" (or a bare single-file plugin
+     * name); a theme slug is the theme directory name. Either way the part
+     * that names a DIRECTORY is one plain segment, and anything else ('', '.',
+     * '..', a nested path, a Windows drive letter, an embedded null byte, a
+     * segment of nothing but dots) is refused rather than normalized: for a
+     * delete, "I cannot tell exactly which directory this is" has to end the
+     * operation, not start a best guess.
+     *
+     * @param string $type plugin|theme.
+     * @param string $slug Recorded slug.
+     * @return string The folder segment, or '' when the slug is unusable here.
+     */
+    private function itemFolderSegment(string $type, string $slug): string
+    {
+        if ($type !== 'plugin' && $type !== 'theme') {
+            return '';
+        }
+        if ($slug === '' || strpos($slug, "\0") !== false) {
+            return '';
+        }
+
+        $normalized = str_replace('\\', '/', $slug);
+
+        $folder = $normalized;
+        if ($type === 'plugin') {
+            $separator = strpos($normalized, '/');
+            if ($separator !== false) {
+                $folder = substr($normalized, 0, $separator);
+            }
+        }
+
+        if ($folder === '' || strpos($folder, '/') !== false || strpos($folder, ':') !== false) {
+            return '';
+        }
+
+        // Rejects '.', '..' and any all-dots segment in one check.
+        if (trim($folder, '.') === '') {
+            return '';
+        }
+
+        return $folder;
     }
 
     /**
