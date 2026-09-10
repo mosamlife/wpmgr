@@ -1543,6 +1543,195 @@ final class SnapshotManagerTest extends TestCase
         $this->assertSame(SnapshotManager::BEFORE_STATE_ABSENT, $receipt['before_state']);
     }
 
+    public function test_an_existing_single_file_plugin_is_never_recorded_as_absent(): void
+    {
+        // hello.php and friends: liveDir() resolves to the FILE, so is_dir()
+        // is false even though the plugin plainly exists. Recording that as
+        // absent would hand the caller a snapshot id promising a rollback
+        // that, on a file, silently restores nothing.
+        $pluginFile = $this->root . '/plugins-src/hello.php';
+        mkdir($this->root . '/plugins-src', 0755, true);
+        file_put_contents($pluginFile, "<?php\n// Hello Dolly v1\n");
+
+        $mgr               = $this->manager();
+        $mgr->liveOverride = $pluginFile;
+
+        $snap = $mgr->capture('plugin', 'hello.php', '1.0');
+
+        $this->assertNotSame(
+            SnapshotManager::BEFORE_STATE_ABSENT,
+            $snap['before_state'],
+            'a plugin file that exists must never be recorded as absent'
+        );
+        $this->assertSame(SnapshotManager::BEFORE_STATE_NONE, $snap['before_state']);
+        $this->assertSame(SnapshotManager::CAPTURE_FAILURE_UNSUPPORTED_SOURCE, $snap['failure']);
+        $this->assertFalse($snap['restorable']);
+
+        // The empty id is the point: it is what this branch returned before
+        // absence was modelled, so the rollback gates stay shut and the item
+        // is visibly unprotected rather than falsely protected.
+        $this->assertSame('', $snap['snapshot_id'], 'no id means the rollback gates never fire');
+
+        // The update lands on the single-file plugin.
+        file_put_contents($pluginFile, "<?php\n// Hello Dolly v2\n");
+
+        // Nothing claims to be able to undo it, and nothing silently reports
+        // that it did.
+        $res = $mgr->restore('plugin', 'hello.php', $snap['snapshot_id']);
+
+        $this->assertFalse($res['ok'], 'there is no snapshot to restore from');
+        $this->assertSame(
+            "<?php\n// Hello Dolly v2\n",
+            (string) file_get_contents($pluginFile),
+            'the file is untouched by a rollback that never had a before-state'
+        );
+    }
+
+    public function test_an_absent_before_state_rollback_removes_a_file_created_in_its_place(): void
+    {
+        // The absence was real, and what filled it is a FILE. Removing only
+        // directories would leave it behind and still report success.
+        $pluginFile        = $this->root . '/plugins-src/newcomer.php';
+        $mgr               = $this->manager();
+        $mgr->liveOverride = $pluginFile;
+        mkdir($this->root . '/plugins-src', 0755, true);
+
+        $snap = $mgr->capture('plugin', 'newcomer.php', '');
+        $this->assertSame(SnapshotManager::BEFORE_STATE_ABSENT, $snap['before_state']);
+
+        file_put_contents($pluginFile, "<?php\n// created\n");
+
+        $res = $mgr->restore('plugin', 'newcomer.php', $snap['snapshot_id']);
+
+        $this->assertFileDoesNotExist($pluginFile, 'rollback must remove the file created in place of the absence');
+        $this->assertTrue($res['ok'], $res['log']);
+    }
+
+    public function test_an_unresolvable_live_path_is_not_recorded_as_an_absent_before_state(): void
+    {
+        // liveDir() returning '' is ignorance, not absence: nothing can be
+        // claimed about a path this class never resolved.
+        $mgr               = $this->manager();
+        $mgr->liveOverride = '';
+
+        $snap = $mgr->capture('plugin', 'unresolvable/unresolvable.php', '1.0');
+
+        $this->assertSame(SnapshotManager::BEFORE_STATE_NONE, $snap['before_state']);
+        $this->assertSame(SnapshotManager::CAPTURE_FAILURE_UNRESOLVED_SOURCE, $snap['failure']);
+        $this->assertFalse($snap['restorable']);
+        $this->assertSame('', $snap['snapshot_id']);
+    }
+
+    // =========================================================================
+    // The receipt can never contradict the predicate that reads it.
+    // =========================================================================
+
+    public function test_every_receipt_agrees_with_is_restorable_and_every_before_state_is_covered(): void
+    {
+        $produced = [];
+
+        foreach ($this->everyCaptureScenario() as $label => $receipt) {
+            // The invariant, pinned rather than the instance: whatever
+            // capture() returns, its own `restorable` field must equal what
+            // isRestorable() says about it. A future before-state that gets
+            // this wrong fails here without anyone remembering to add a case.
+            $this->assertSame(
+                SnapshotManager::isRestorable($receipt),
+                $receipt['restorable'],
+                $label . ': the receipt contradicts isRestorable()'
+            );
+
+            // A receipt is either restorable or it says why not.
+            if ($receipt['restorable'] === false) {
+                $this->assertNotSame(
+                    '',
+                    $receipt['failure'],
+                    $label . ': a non-restorable receipt must carry a failure code'
+                );
+            } else {
+                $this->assertSame('', $receipt['failure'], $label . ': a restorable receipt carries no failure code');
+                $this->assertNotSame('', $receipt['snapshot_id'], $label . ': a restorable receipt needs an id');
+            }
+
+            $produced[$receipt['before_state']] = true;
+        }
+
+        // Every BEFORE_STATE_* the class declares must have been exercised
+        // above, so adding a new one without covering it fails this test
+        // rather than sliding through untested.
+        $reflected = new \ReflectionClass(SnapshotManager::class);
+        foreach ($reflected->getConstants() as $name => $value) {
+            if (strpos($name, 'BEFORE_STATE_') !== 0) {
+                continue;
+            }
+            $this->assertArrayHasKey(
+                $value,
+                $produced,
+                'before-state ' . $name . ' is declared but no capture scenario produces it'
+            );
+        }
+    }
+
+    /**
+     * One capture receipt per outcome capture() can produce.
+     *
+     * @return array<string,array<string,mixed>>
+     */
+    private function everyCaptureScenario(): array
+    {
+        $scenarios = [];
+
+        // BEFORE_STATE_DIRECTORY, with content.
+        $full = $this->root . '/scenarios/full';
+        mkdir($full, 0755, true);
+        file_put_contents($full . '/plugin.php', "<?php\n");
+        $mgr               = $this->manager();
+        $mgr->liveOverride = $full;
+        $scenarios['directory with content'] = $mgr->capture('plugin', 'full/full.php', '1.0');
+
+        // BEFORE_STATE_DIRECTORY, empty — the case that contradicted itself.
+        $empty = $this->root . '/scenarios/empty';
+        mkdir($empty, 0755, true);
+        $mgr               = $this->manager();
+        $mgr->liveOverride = $empty;
+        $scenarios['empty directory'] = $mgr->capture('plugin', 'empty/empty.php', '1.0');
+
+        // BEFORE_STATE_ABSENT.
+        $mgr               = $this->manager();
+        $mgr->liveOverride = $this->root . '/scenarios/not-there';
+        $scenarios['absent source'] = $mgr->capture('plugin', 'not-there/not-there.php', '');
+
+        // BEFORE_STATE_CORE_VERSION.
+        $mgr = $this->manager();
+        $scenarios['core version'] = $mgr->capture('core', 'core', '6.5.2');
+
+        // BEFORE_STATE_NONE via a failed copy.
+        $broken = $this->root . '/scenarios/broken';
+        mkdir($broken, 0755, true);
+        file_put_contents($broken . '/plugin.php', "<?php\n");
+        $mgr               = $this->manager();
+        $mgr->liveOverride = $broken;
+        $mgr->failCopy     = true;
+        $scenarios['failed copy'] = $mgr->capture('plugin', 'broken/broken.php', '1.0');
+
+        // BEFORE_STATE_NONE via a single-file plugin.
+        $file = $this->root . '/scenarios/single.php';
+        if (!is_dir($this->root . '/scenarios')) {
+            mkdir($this->root . '/scenarios', 0755, true);
+        }
+        file_put_contents($file, "<?php\n");
+        $mgr               = $this->manager();
+        $mgr->liveOverride = $file;
+        $scenarios['single-file plugin'] = $mgr->capture('plugin', 'single.php', '1.0');
+
+        // BEFORE_STATE_NONE via an unresolvable path.
+        $mgr               = $this->manager();
+        $mgr->liveOverride = '';
+        $scenarios['unresolvable path'] = $mgr->capture('plugin', 'gone/gone.php', '1.0');
+
+        return $scenarios;
+    }
+
     // =========================================================================
     // Non-regression: the shipped update snapshot + auto-rollback path.
     // =========================================================================
