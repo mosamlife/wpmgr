@@ -130,7 +130,7 @@ export function BackupsSection({
           <div className="space-y-1.5">
             <CardTitle>Backups</CardTitle>
             <CardDescription>
-              Snapshots of this site, uploaded to the destination you configure: a
+              Snapshots of this site, stored at the destination you configure: a
               control-plane-managed bucket on plans with managed backup storage, or your own
               S3-compatible bucket or local folder from Destinations otherwise.
             </CardDescription>

@@ -72,13 +72,15 @@ function PrivacyPage() {
               <li className="leading-relaxed">
                 <strong className="text-[var(--color-foreground)]">Backup archives:</strong>{" "}
                 when you run or schedule a backup, the agent creates an archive of your database
-                and/or files and uploads it to the storage destination your control plane
-                configures. The default is a control-plane-managed bucket on plans with managed
-                backup storage; otherwise a customer-owned bucket or local folder must be
-                configured before backups will run. Archive contents may include your site's
-                content and personal data; the agent does not encrypt them before upload, so
-                protection comes from your chosen destination's own access controls and at-rest
-                encryption, if any.
+                and/or files and stores it at the destination your control plane configures. The
+                default is a control-plane-managed bucket on plans with managed backup storage;
+                otherwise a customer-owned bucket or local folder must be configured before
+                backups will run. A control-plane-managed or customer-owned bucket receives the
+                archive over the network; a local folder keeps it on your own server, written
+                there directly by the agent. Archive contents may include your site's content and
+                personal data; the agent does not encrypt them beforehand, so protection comes
+                from your chosen destination's own access controls and at-rest encryption, if
+                any.
               </li>
               <li className="leading-relaxed">
                 <strong className="text-[var(--color-foreground)]">Rendered HTML</strong> — for
@@ -142,9 +144,10 @@ function PrivacyPage() {
                 Agent-to-control-plane requests are Ed25519-signed and replay-protected.
               </li>
               <li className="leading-relaxed">
-                Backup archives are not encrypted client side before upload; protection comes from
-                your chosen destination's access controls and, where the destination provides it,
-                encryption at rest. Client-side encryption of backup archives is planned.
+                Backup archives are not encrypted client side before they reach the destination;
+                protection comes from your chosen destination's access controls and, where the
+                destination provides it, encryption at rest. Client-side encryption of backup
+                archives is planned.
               </li>
               <li className="leading-relaxed">All network traffic uses TLS.</li>
             </ul>
