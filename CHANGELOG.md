@@ -19,7 +19,8 @@ Thanks to Ines Opifanti (GitHub `wildfang`) for a private security review that f
 
 ### Fixed
 
-- Corrected documentation and marketing copy that claimed backups are encrypted client side before upload. Shipped builds do not perform this encryption; the claim has been removed from the README, SECURITY.md, the docs, the marketing site, the privacy page, and the legal security policy.
+- Corrected documentation, marketing copy, and the dashboard that claimed backups are encrypted client side before upload. Shipped builds do not perform this encryption; the claim has been removed from the README, SECURITY.md, the docs, the marketing site, the dashboard (including the sign-in screen and the backups screen), the privacy pages, and the legal security policy (#723, #724, #729).
+- The dashboard's own backup progress indicator repeated the same false claim live: it labeled a real backup run's upload phase "Encrypting" while nothing was being encrypted. The label now describes what is actually happening (#729).
 
 ## [0.61.160] - 2026-09-05
 
