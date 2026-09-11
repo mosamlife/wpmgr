@@ -6079,7 +6079,7 @@ CREATE TABLE mcp_oauth_clients (
         CHECK (cardinality(redirect_uris) > 0),
     client_name  text NULL,
     client_uri   text NULL,
-    created_at   timestamptz NOT NULL DEFAULT now()
+    created_at   timestamptz NOT NULL DEFAULT now(),
     -- NO last_used_at, AND DO NOT ADD ONE BACK. m124 shipped one and m126
     -- dropped it. This table has FOR INSERT and FOR SELECT policies and no
     -- UPDATE policy, so under FORCE ROW LEVEL SECURITY the stamp matched zero
@@ -6090,6 +6090,78 @@ CREATE TABLE mcp_oauth_clients (
     -- operator actually reads. Re-adding this needs its own migration, a FOR
     -- UPDATE policy and a cross-tenant ledger row -- see
     -- migrations/20260828000000_m126_drop_mcp_oauth_clients_last_used_at.sql.
+
+    -- WHAT THIS CLIENT MAY ASK FOR -- the right-hand side of the scope check at
+    -- /authorize. NOT what it was granted: mcp_grants.oauth_scopes is that, and
+    -- the two are deliberately spelled differently because the whole reason
+    -- this column exists is that one scope set was checked against the wrong
+    -- other scope set. Every grant's oauth_scopes is a subset of the
+    -- registering client's registered_scopes, never the reverse.
+    --
+    -- NOT NULL WITH NO DEFAULT, and the absence of the DEFAULT is load-bearing.
+    -- Registration is UNAUTHENTICATED, so a DEFAULT would seat an authorisation
+    -- bound on behalf of an anonymous caller that omitted it -- m127's "a
+    -- credential nobody chose the terms of", rebuilt one layer below where
+    -- anyone is looking for it. A caller that omits the column gets 23502.
+    --
+    -- ITS DECLARED POSITION IS LAST, TO MATCH THE PHYSICAL ORDER A MIGRATED
+    -- DATABASE ACTUALLY HAS. m137 appends it with ALTER TABLE ... ADD COLUMN,
+    -- so on every existing install it sits after created_at, and this file is
+    -- meant to depict the table that exists rather than a tidier one.
+    --
+    -- BE EXACT ABOUT WHAT DOES AND DOES NOT DEPEND ON THAT, because the
+    -- overstated version of this note is easy to write: sqlc EXPANDS the
+    -- `SELECT *` in GetMCPOAuthClientByClientIDForLookup into an explicit,
+    -- named column list in the generated SQL, in the order declared here, and
+    -- generates the Scan in that same order -- so the generated code is
+    -- self-consistent whatever order this file uses, and a mid-table
+    -- declaration would NOT have broken client lookup. What a mismatch would
+    -- break is anything that reads this table POSITIONALLY without sqlc: a
+    -- hand-written `SELECT *` in a test or a psql session scanned by position,
+    -- and COPY. Keeping the two orders equal costs one line and removes the
+    -- question. Any future column on this table goes at the END.
+    --
+    -- THREE CONSTRAINTS, THREE NAMES, so a 23514 says which rule was broken.
+    -- See migrations/20260908000000_m137_mcp_client_registered_scopes.sql for
+    -- the reasoning behind each; the short version is below.
+    registered_scopes text[] NOT NULL,
+
+    -- Shape, as m120/m127/m136 check it: one dimension (a nested literal would
+    -- be flattened by unnest() into scopes nobody registered), no NULL element,
+    -- no empty string. The 16 is a pathological-input bound and not a policy;
+    -- it matches mcp_grants_oauth_scopes_shape_check because a grant's scopes
+    -- are a subset of a client's, so the client bound must be at least the
+    -- grant bound and has no reason to exceed it.
+    CONSTRAINT mcp_oauth_clients_registered_scopes_shape_check CHECK (
+        coalesce(array_ndims(registered_scopes), 1) = 1
+        AND cardinality(registered_scopes) <= 16
+        AND array_position(registered_scopes, NULL) IS NULL
+        AND NOT ('' = ANY (registered_scopes))
+    ),
+
+    -- At least one scope, always -- the same rule as
+    -- mcp_oauth_clients_redirect_uris_present_check above and reasoned from it.
+    -- This column has the same job as redirect_uris: it is a stored set an
+    -- incoming request is matched against. An empty one leaves the scope check
+    -- with nothing on its right-hand side, and "matches nothing" is one
+    -- careless Go comparison -- `if len(registered) == 0 { skip }` -- away from
+    -- "matches anything", which is exactly the global-registry behaviour this
+    -- column was added to remove.
+    CONSTRAINT mcp_oauth_clients_registered_scopes_present_check
+        CHECK (cardinality(registered_scopes) >= 1),
+
+    -- Closed vocabulary. KEEP IN LOCKSTEP with recognisedScopes in
+    -- internal/mcp/scope.go AND with mcp_grants_oauth_scopes_vocabulary_check,
+    -- which holds the same set on the other table. The migration that widens
+    -- one must widen the other; missing either fails closed with a 23514 rather
+    -- than widening silently. `<@` is array containment and is IMMUTABLE.
+    -- Containment alone would admit '{}' -- the empty array is contained by
+    -- every array -- which is why emptiness is refused by its own constraint
+    -- above rather than by this one.
+    CONSTRAINT mcp_oauth_clients_registered_scopes_vocabulary_check
+        CHECK (registered_scopes <@ ARRAY[
+            'mcp:read'
+        ]::text[])
 );
 
 CREATE UNIQUE INDEX mcp_oauth_clients_client_id_key ON mcp_oauth_clients (client_id);

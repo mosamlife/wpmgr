@@ -530,6 +530,7 @@ type McpOauthClient struct {
 	ClientName              *string   `json:"client_name"`
 	ClientUri               *string   `json:"client_uri"`
 	CreatedAt               time.Time `json:"created_at"`
+	RegisteredScopes        []string  `json:"registered_scopes"`
 }
 
 type Membership struct {
