@@ -19,6 +19,10 @@
  *     something else now occupies, and reports the skip with a reason code.
  *   - restoreManifest() does not delete a quarantined file it refused to restore —
  *     cleanup runs only on a complete restore, so a partial one keeps every copy.
+ *   - restoreManifest() withholds `complete` while the quarantine tree still holds
+ *     anything the counters cannot see: an unrecorded file, an entry no stat can
+ *     classify, or a stray beside files/ that cleanup would delete unseen.
+ *   - restoreManifest() never reports `complete` for a manifest id that named nothing.
  *   - restoreManifest() handles entries with empty files[] cleanly (0 files back, no error).
  *   - deleteManifest() returns a zero-count result for an unknown manifest_id.
  *   - deleteManifest() removes quarantined files, calls wp_delete_attachment,
@@ -454,6 +458,142 @@ final class MediaQuarantineTest extends TestCase
         $this->assertSame(1, $receipt['restored'], 'the uncontested file counts as restored');
         $this->assertSame(1, $receipt['skipped'], 'the contested file counts as skipped');
         $this->assertFalse($receipt['complete'], 'a partial restore never reports complete');
+    }
+
+    // =========================================================================
+    // restoreManifest() — the physical scan, the half of `complete` the
+    // restore counters cannot see
+    //
+    // Every test below leaves something in the quarantine tree that no
+    // manifest entry describes, so the counters read clean and only the scan
+    // can withhold `complete`. Delete the hasRemainingFiles() term from
+    // restoreReceipt() and each of them fails.
+    // =========================================================================
+
+    public function testRestoreManifestIsNotCompleteWhileAnUnrecordedFileRemains(): void
+    {
+        $relPath = '2024/01/hero.jpg';
+        $srcAbs  = $this->createUploadFile($relPath, 'restore-me');
+
+        $q          = $this->makeQuarantine();
+        $manifestId = $q->beginManifest('job-unrecorded');
+        $q->quarantineAttachment($manifestId, 42, $relPath, [$srcAbs]);
+        $q->finaliseManifest($manifestId);
+
+        // A file under files/ that no manifest entry names. A fragment
+        // derivation that went down a different branch leaves exactly this:
+        // bytes in the tree with no countable record anywhere.
+        $orphan = $this->mediaRoot() . '/' . $manifestId . '/files/2024/01/orphan.jpg';
+        file_put_contents($orphan, 'orphan-bytes');
+
+        $receipt = $q->restoreManifest($manifestId);
+
+        // The counters are clean: every file the manifest described went back.
+        $this->assertSame(1, $receipt['restored'], 'the recorded file is restored');
+        $this->assertSame(0, $receipt['skipped'], 'nothing was skipped');
+        $this->assertSame(0, $receipt['failed'], 'nothing failed');
+        $this->assertFileExists($srcAbs, 'the guard does not block correct work');
+
+        // Load-bearing: only the physical scan knows the orphan is there.
+        $this->assertFalse(
+            $receipt['complete'],
+            'a tree that still holds an unrecorded file is not a complete restore'
+        );
+        $this->assertFileExists($orphan, 'the unrecorded file is not deleted behind the counters');
+        $this->assertSame('orphan-bytes', file_get_contents($orphan));
+        $this->assertFileExists(
+            $this->manifestsRoot() . '/' . $manifestId . '.json',
+            'the manifest stays, so the leftover still has something naming it'
+        );
+    }
+
+    public function testRestoreManifestIsNotCompleteWhileAnUnclassifiableEntryRemains(): void
+    {
+        $relPath = '2024/01/hero.jpg';
+        $srcAbs  = $this->createUploadFile($relPath, 'restore-me');
+
+        $q          = $this->makeQuarantine();
+        $manifestId = $q->beginManifest('job-unclassifiable');
+        $q->quarantineAttachment($manifestId, 42, $relPath, [$srcAbs]);
+        $q->finaliseManifest($manifestId);
+
+        // An entry scandir() lists but that is neither link, file nor
+        // directory. A FIFO is the portable way to produce one: unlike the
+        // read-bit-without-search-bit directory that motivated this rule, it
+        // behaves the same for root, so it is reproducible in a CI container.
+        $oddball = $this->mediaRoot() . '/' . $manifestId . '/files/2024/01/oddball';
+        if (!function_exists('posix_mkfifo') || !@posix_mkfifo($oddball, 0644)) {
+            $this->markTestSkipped('posix_mkfifo() unavailable: cannot create an unclassifiable entry');
+        }
+
+        // Refuse to pass vacuously: if the entry is classifiable after all,
+        // this test proves nothing about the hazard and must not report green.
+        $this->assertTrue(file_exists($oddball), 'the planted entry exists');
+        $this->assertFalse(is_link($oddball), 'precondition: not a link');
+        $this->assertFalse(is_file($oddball), 'precondition: not a file');
+        $this->assertFalse(is_dir($oddball), 'precondition: not a directory');
+
+        $receipt = $q->restoreManifest($manifestId);
+
+        $this->assertSame(1, $receipt['restored'], 'the recorded file is restored');
+        $this->assertSame(0, $receipt['skipped'], 'nothing was skipped');
+        $this->assertSame(0, $receipt['failed'], 'nothing failed');
+
+        // Load-bearing: an entry no stat can classify is not an empty tree.
+        $this->assertFalse(
+            $receipt['complete'],
+            'an entry that cannot be positively classified counts as remaining'
+        );
+        $this->assertTrue(file_exists($oddball), 'the unclassified entry is not deleted behind the scan');
+    }
+
+    public function testRestoreManifestIsNotCompleteWhileAStrayOutsideFilesRemains(): void
+    {
+        $relPath = '2024/01/hero.jpg';
+        $srcAbs  = $this->createUploadFile($relPath, 'restore-me');
+
+        $q          = $this->makeQuarantine();
+        $manifestId = $q->beginManifest('job-stray');
+        $q->quarantineAttachment($manifestId, 42, $relPath, [$srcAbs]);
+        $q->finaliseManifest($manifestId);
+
+        // Beside files/, not under it. removeManifestDir() deletes the whole
+        // media/<manifest_id> tree, so the scan has to cover the whole of it
+        // rather than the one sub-directory today's layout happens to use.
+        $stray = $this->mediaRoot() . '/' . $manifestId . '/stray.dat';
+        file_put_contents($stray, 'stray-bytes');
+
+        $receipt = $q->restoreManifest($manifestId);
+
+        $this->assertSame(1, $receipt['restored'], 'the recorded file is restored');
+        $this->assertSame(0, $receipt['skipped'], 'nothing was skipped');
+        $this->assertSame(0, $receipt['failed'], 'nothing failed');
+
+        $this->assertFalse(
+            $receipt['complete'],
+            'a stray beside files/ is inside what the cleanup deletes, so it withholds complete'
+        );
+        $this->assertFileExists($stray, 'the stray is not deleted unseen');
+        $this->assertSame('stray-bytes', file_get_contents($stray));
+    }
+
+    public function testRestoreManifestUnknownIdIsNeverComplete(): void
+    {
+        $q = $this->makeQuarantine();
+        $q->beginManifest('warmup');
+
+        $receipt = $q->restoreManifest('00000000000000000000000000000000');
+
+        $this->assertSame(0, $receipt['files_seen'], 'an unknown id describes no files');
+        $this->assertSame(0, $receipt['restored'], 'and restores none');
+
+        // `complete` is public receipt API. A caller that gates a delete on it
+        // must never read "this id means nothing to me" as "everything was
+        // put back".
+        $this->assertFalse(
+            $receipt['complete'],
+            'a receipt for a manifest that never existed is not a complete restore'
+        );
     }
 
     // =========================================================================
