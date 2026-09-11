@@ -64,6 +64,28 @@ final class RollbackCommand implements CommandInterface
     }
 
     /**
+     * Effect: reinstates a pre-update snapshot over the currently installed plugin, theme or core. The
+     * currently installed version is not retained.
+     *
+     * @return CommandEffect
+     */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Destructive;
+    }
+
+    /**
+     * Repeatability: a blind retry re-applies the same snapshot and discards changes made since the first
+     * rollback landed.
+     *
+     * @return CommandRepeatability
+     */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Unsafe;
+    }
+
+    /**
      * {@inheritDoc}
      *
      * @param array<string,mixed> $claims Validated JWT claims (unused).

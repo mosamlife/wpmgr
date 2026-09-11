@@ -49,6 +49,24 @@ final class FileMkdirCommand implements CommandInterface {
 	}
 
 	/**
+	 * Effect: creates a directory and drops a deny-all guard into it. Adds only.
+	 *
+	 * @return CommandEffect
+	 */
+	public function effect(): CommandEffect {
+		return CommandEffect::Write;
+	}
+
+	/**
+	 * Repeatability: creating an existing directory converges.
+	 *
+	 * @return CommandRepeatability
+	 */
+	public function repeatability(): CommandRepeatability {
+		return CommandRepeatability::Idempotent;
+	}
+
+	/**
 	 * {@inheritDoc}
 	 *
 	 * @param array<string,mixed> $claims Validated JWT claims.

@@ -75,6 +75,29 @@ final class RucssComputeCommand implements CommandInterface
     }
 
     /**
+     * Effect: purges each target URL's cache entry, then forces a fresh self-fetch render so the optimizer's
+     * RUCSS stage runs, and is a Write -- driving every subsequent visitor to a freshly computed,
+     * RUCSS-optimized page is the whole reason this command exists. Only derived cache state changes, and the
+     * site would rebuild it on the next real visit regardless; that does not decide the label -- purpose does.
+     *
+     * @return CommandEffect
+     */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Write;
+    }
+
+    /**
+     * Repeatability: a second call re-queues the same URLs.
+     *
+     * @return CommandRepeatability
+     */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Repeatable;
+    }
+
+    /**
      * {@inheritDoc}
      *
      * @param array<string,mixed> $claims Validated JWT claims (unused).

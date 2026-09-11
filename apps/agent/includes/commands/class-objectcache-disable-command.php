@@ -42,6 +42,30 @@ final class ObjectcacheDisableCommand implements CommandInterface
 	}
 
 	/**
+	 * Effect: removes the object-cache drop-in and, by default, flushes first, and is a Write -- turning
+	 * object caching off for every request after this one is the whole reason this command exists. Both the
+	 * drop-in and the flushed cache are derived state the site can rebuild; that does not decide the label --
+	 * purpose does. The flush takes the same guarded path as objectcache.flush: FLUSHDB only when the stored
+	 * config declares the database is not shared, prefix-scoped SCAN + UNLINK otherwise.
+	 *
+	 * @return CommandEffect
+	 */
+	public function effect(): CommandEffect
+	{
+		return CommandEffect::Write;
+	}
+
+	/**
+	 * Repeatability: disabling an already-disabled object cache converges.
+	 *
+	 * @return CommandRepeatability
+	 */
+	public function repeatability(): CommandRepeatability
+	{
+		return CommandRepeatability::Idempotent;
+	}
+
+	/**
 	 * {@inheritDoc}
 	 *
 	 * @param array<string,mixed> $claims Validated JWT claims (unused).

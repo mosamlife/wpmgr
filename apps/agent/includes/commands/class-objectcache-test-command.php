@@ -48,6 +48,27 @@ final class ObjectcacheTestCommand implements CommandInterface
 	}
 
 	/**
+	 * Effect: probes a candidate Redis config: PING, INFO, and one round-trip through a probe key it then
+	 * unlinks. Nothing is persisted -- the config is not saved.
+	 *
+	 * @return CommandEffect
+	 */
+	public function effect(): CommandEffect
+	{
+		return CommandEffect::Read;
+	}
+
+	/**
+	 * Repeatability: the probe key is written and removed each time.
+	 *
+	 * @return CommandRepeatability
+	 */
+	public function repeatability(): CommandRepeatability
+	{
+		return CommandRepeatability::Idempotent;
+	}
+
+	/**
 	 * {@inheritDoc}
 	 *
 	 * @param array<string,mixed> $claims Validated JWT claims (unused).

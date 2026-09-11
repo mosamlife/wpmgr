@@ -40,6 +40,33 @@ final class ObjectcacheFlushCommand implements CommandInterface
 	}
 
 	/**
+	 * Effect: empties the object cache, and is a Write -- clearing stale cached objects out for every
+	 * request after this one is the whole reason this command exists. Cache content is derived and the site
+	 * rebuilds it; that does not decide the label -- purpose does. An earlier revision of this comment
+	 * warned that FLUSHDB can clear keys another application put in the same Redis database; re-reading the
+	 * code, that is already guarded -- $useFlushDb is ( $strategy === 'flushdb' || $strategy === 'auto' ) &&
+	 * ! $shared, and $shared defaults to TRUE, so a database not explicitly declared exclusive gets a
+	 * prefix-scoped SCAN + UNLINK instead. The indiscriminate path is reachable only when an operator has
+	 * declared the database is not shared.
+	 *
+	 * @return CommandEffect
+	 */
+	public function effect(): CommandEffect
+	{
+		return CommandEffect::Write;
+	}
+
+	/**
+	 * Repeatability: flushing an already-empty cache is a no-op.
+	 *
+	 * @return CommandRepeatability
+	 */
+	public function repeatability(): CommandRepeatability
+	{
+		return CommandRepeatability::Idempotent;
+	}
+
+	/**
 	 * {@inheritDoc}
 	 *
 	 * @param array<string,mixed> $claims Validated JWT claims (unused).

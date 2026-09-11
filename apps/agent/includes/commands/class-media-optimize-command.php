@@ -83,6 +83,28 @@ final class MediaOptimizeCommand implements CommandInterface
     }
 
     /**
+     * Effect: claims a batch under a fresh run id and encodes optimized variants in the background.
+     * Originals are kept for media_restore.
+     *
+     * @return CommandEffect
+     */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Write;
+    }
+
+    /**
+     * Repeatability: its own code notes this: a retry mints a NEW run id and per-attachment encode-ready is
+     * deduped control-plane side, so the only cost is repeated encoding.
+     *
+     * @return CommandRepeatability
+     */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Repeatable;
+    }
+
+    /**
      * {@inheritDoc}
      *
      * Validates the batch, persists it under a fresh run id, schedules the

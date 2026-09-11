@@ -100,6 +100,26 @@ final class DbScanCommand implements CommandInterface
     }
 
     /**
+     * Effect: counts reclaimable rows and bytes per category and enumerates orphans. Writes nothing.
+     *
+     * @return CommandEffect
+     */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Read;
+    }
+
+    /**
+     * Repeatability: a read.
+     *
+     * @return CommandRepeatability
+     */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Idempotent;
+    }
+
+    /**
      * Run the read-only scan synchronously and return the full result in the ACK.
      *
      * @param array<string,mixed> $claims Validated JWT claims (unused here).

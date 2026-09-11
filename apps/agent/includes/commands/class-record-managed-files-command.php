@@ -67,6 +67,27 @@ final class RecordManagedFilesCommand implements CommandInterface
     }
 
     /**
+     * Effect: md5s the control-plane-supplied list of managed paths and returns the hashes. It writes none
+     * of them.
+     *
+     * @return CommandEffect
+     */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Read;
+    }
+
+    /**
+     * Repeatability: a read.
+     *
+     * @return CommandRepeatability
+     */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Idempotent;
+    }
+
+    /**
      * {@inheritDoc}
      *
      * @param array<string,mixed> $claims Validated JWT claims (Router enforced aud + cmd).

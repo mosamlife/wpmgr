@@ -41,7 +41,9 @@ use Brain\Monkey;
 use Brain\Monkey\Functions;
 use ReflectionProperty;
 use WPMgr\Agent\Commands\AgentSelfUpdateCommand;
+use WPMgr\Agent\Commands\CommandEffect;
 use WPMgr\Agent\Commands\CommandInterface;
+use WPMgr\Agent\Commands\CommandRepeatability;
 use WPMgr\Agent\Commands\RefreshInventoryCommand;
 use WPMgr\Agent\Connector;
 use WPMgr\Agent\Keystore;
@@ -410,6 +412,18 @@ final class ParamRecorderCommand implements CommandInterface
     public function name(): string
     {
         return $this->commandName;
+    }
+
+    /** @return CommandEffect A recording double changes nothing on the site. */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Read;
+    }
+
+    /** @return CommandRepeatability Recording the same params twice converges. */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Idempotent;
     }
 
     /**

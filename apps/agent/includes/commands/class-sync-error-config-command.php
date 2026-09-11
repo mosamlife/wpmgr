@@ -62,6 +62,26 @@ final class SyncErrorConfigCommand implements CommandInterface
     }
 
     /**
+     * Effect: persists the error-monitor level bitmask and the ignore fingerprint list.
+     *
+     * @return CommandEffect
+     */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Write;
+    }
+
+    /**
+     * Repeatability: writing the same configuration twice converges.
+     *
+     * @return CommandRepeatability
+     */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Idempotent;
+    }
+
+    /**
      * {@inheritDoc}
      *
      * Accepts:
