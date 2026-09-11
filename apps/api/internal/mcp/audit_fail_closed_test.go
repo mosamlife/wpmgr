@@ -62,7 +62,7 @@ const failClosedSiteName = "zzz-canary-site"
 // ABOUT the unaudited case call NewService directly and assert the refusal --
 // see TestToolCall_ARecorderlessServiceRefusesRatherThanServing.
 func auditedService(store Store) *Service {
-	return NewService(store).withAuditRecorder(&capturingRecorder{})
+	return consentKeyed(NewService(store).withAuditRecorder(&capturingRecorder{}))
 }
 
 // routerWithRecorder mounts the real route over a store with the given

@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -31,7 +32,7 @@ import (
 // before the capability set is ever stored, which would make every assertion
 // below vacuous.
 func approvalService(store *fakeStore) *Service {
-	return NewService(store).withAuditRecorder(&capturingRecorder{})
+	return consentKeyed(NewService(store).withAuditRecorder(&capturingRecorder{}))
 }
 
 // storedCapabilities is the capability column of the single grant the consent
@@ -189,10 +190,13 @@ func TestConsentHandlerCarriesTheCapabilityFieldToTheGrant(t *testing.T) {
 
 	chosen := []string{string(CapSitesRead), string(CapUptimeRead)}
 	body := approvalRequestDTO{
-		ClientID:            registeredClientID,
-		RedirectURI:         registeredRedirect,
-		Scopes:              []string{"mcp:read"},
-		State:               "s",
+		ClientID:    registeredClientID,
+		RedirectURI: registeredRedirect,
+		Scopes:      []string{"mcp:read"},
+		State:       "s",
+		// The ticket the authorize call for this client and scope set would
+		// have issued. Every consent body on the wire carries one.
+		ConsentTicket:       issueTestTicket(registeredClientID, []Scope{ScopeRead}, time.Now()),
 		CodeChallenge:       "challenge",
 		CodeChallengeMethod: "S256",
 		GrantName:           "Priya's laptop",
@@ -235,6 +239,11 @@ func TestConsentHandlerRefusesAnEmptyCapabilityArray(t *testing.T) {
 		`{"client_id":"`+registeredClientID+`","redirect_uri":"`+registeredRedirect+`",`+
 			`"scopes":["mcp:read"],"state":"s","code_challenge":"challenge",`+
 			`"code_challenge_method":"S256","name":"Priya's laptop",`+
+			// A VALID ticket, so the 400 below is the empty capability array
+			// being refused and not the consent binding refusing first. A
+			// refusal for the wrong reason is a test that has stopped covering
+			// what it names.
+			`"consent_ticket":"`+issueTestTicket(registeredClientID, []Scope{ScopeRead}, time.Now())+`",`+
 			`"site_scope_mode":"all","capabilities":[]}`))
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(w, req)

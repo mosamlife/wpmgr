@@ -131,10 +131,10 @@ type approvalRequestDTO struct {
 	// there is no path that falls back to believing `scopes`.
 	ConsentTicket string `json:"consent_ticket"`
 
-	GrantName           string   `json:"name"`
-	SiteScopeMode       string   `json:"site_scope_mode"`
-	ScopeTagIDs         []string `json:"scope_tag_ids"`
-	ScopeSiteIDs        []string `json:"scope_site_ids"`
+	GrantName     string   `json:"name"`
+	SiteScopeMode string   `json:"site_scope_mode"`
+	ScopeTagIDs   []string `json:"scope_tag_ids"`
+	ScopeSiteIDs  []string `json:"scope_site_ids"`
 
 	// Capabilities is the TOOL axis of the consent screen, and it is spelled
 	// and resolved EXACTLY as mintConnectionRequestDTO.Capabilities is -- one

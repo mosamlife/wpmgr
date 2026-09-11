@@ -763,9 +763,9 @@ func (h *Handler) token(c *gin.Context) {
 	// secret at all; that is the "none" path and it is unchanged.
 
 	out, err := h.svc.Exchange(c.Request.Context(), TokenRequest{
-		GrantType:    body.GrantType,
-		Code:         body.Code,
-		RedirectURI:  body.RedirectURI,
+		GrantType:     body.GrantType,
+		Code:          body.Code,
+		RedirectURI:   body.RedirectURI,
 		ClientID:      clientID,
 		ClientSecret:  clientSecret,
 		CodeVerifier:  body.CodeVerifier,
