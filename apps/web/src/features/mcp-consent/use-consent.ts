@@ -168,22 +168,47 @@ export interface ApproveResult {
 export function useApproveConsent(): UseMutationResult<ApproveResult, Error, ApproveInput> {
   return useMutation({
     mutationFn: async (input: ApproveInput): Promise<ApproveResult> => {
+      const requestBody: Record<string, unknown> = {
+        client_id: input.consent.clientId,
+        redirect_uri: input.consent.redirectUri,
+        scopes: input.consent.scopes,
+        state: input.consent.state ?? "",
+        code_challenge: input.consent.codeChallenge ?? "",
+        code_challenge_method: input.consent.codeChallengeMethod ?? "",
+        name: input.name,
+        site_scope_mode: input.siteScopeMode,
+        scope_tag_ids: input.scopeTagIds,
+        scope_site_ids: input.scopeSiteIds,
+      };
+
+      // THE TICKET GOES BACK EXACTLY AS IT CAME, OR NOT AT ALL.
+      //
+      // Every other field above is this dashboard restating an authorize-time
+      // fact from memory, which is precisely the weakness the ticket closes:
+      // the server signed those facts itself and will read them from here
+      // rather than from the fields above. Our only job is transport.
+      //
+      // Assigned by reference, never rebuilt. No trim, no normalisation, no
+      // `?? ""` (which would send a wrong-but-present value where the server
+      // wants a real signature), no round trip through another type. The
+      // signature covers the bytes; one changed character fails the check, and
+      // it fails as an opaque OAuth rejection that reads like a broken login,
+      // not like a string somebody tidied up in the client.
+      //
+      // ABSENT MEANS ABSENT. Today's deployed API does not issue a ticket and
+      // does not read one, so the key is omitted rather than sent as null or
+      // "". That omission is what makes this change safe to deploy ahead of
+      // the API: the old server ignores a field it never sees, and the new
+      // server gets the real ticket the moment it starts issuing them.
+      if (input.consent.consentTicket !== null) {
+        requestBody.consent_ticket = input.consent.consentTicket;
+      }
+
       const res = await fetch(CONSENT_APPROVE_PATH, {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({
-          client_id: input.consent.clientId,
-          redirect_uri: input.consent.redirectUri,
-          scopes: input.consent.scopes,
-          state: input.consent.state ?? "",
-          code_challenge: input.consent.codeChallenge ?? "",
-          code_challenge_method: input.consent.codeChallengeMethod ?? "",
-          name: input.name,
-          site_scope_mode: input.siteScopeMode,
-          scope_tag_ids: input.scopeTagIds,
-          scope_site_ids: input.scopeSiteIds,
-        }),
+        body: JSON.stringify(requestBody),
       });
       if (!res.ok) throw await readOAuthError(res);
       const body = (await res.json()) as Record<string, unknown>;

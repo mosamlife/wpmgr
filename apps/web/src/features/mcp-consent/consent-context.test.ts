@@ -3,6 +3,7 @@ import { describe, it, expect } from "vitest";
 import {
   allScopesRecognised,
   asSelfAsserted,
+  consentWireSchema,
   describeScope,
   parseConsentContext,
   SCOPE_READ,
@@ -108,6 +109,46 @@ describe("parseConsentContext — unverified identity", () => {
     expect(ctx.state).toBeNull();
     expect(ctx.codeChallenge).toBeNull();
     expect(ctx.codeChallengeMethod).toBeNull();
+  });
+});
+
+describe("parseConsentContext — the consent ticket is carried, never interpreted", () => {
+  // The whitespace is load-bearing: it makes any trim, re-encode or round trip
+  // through another type show up as a failed equality rather than as a
+  // plausible-looking string that fails a signature check in production.
+  const TICKET = "  v1.eyJhIjoxfQ.c1gN-_~+/=AbC  ";
+
+  it("carries a ticket through byte for byte", () => {
+    expect(parseConsentContext({ ...VALID, consent_ticket: TICKET }).consentTicket).toBe(TICKET);
+  });
+
+  it("parses fine with no ticket, because today's server sends none", () => {
+    // Required here would fail this screen closed against every currently
+    // deployed server -- the fail-closed direction aimed at our own users
+    // rather than at an attacker. Absent and Go's "" zero value are the same
+    // fact and reach the same null.
+    expect(parseConsentContext(VALID).consentTicket).toBeNull();
+    expect(parseConsentContext({ ...VALID, consent_ticket: "" }).consentTicket).toBeNull();
+  });
+
+  it("refuses a non-string ticket rather than coercing one", () => {
+    expect(() => parseConsentContext({ ...VALID, consent_ticket: 12345 })).toThrow();
+    expect(() => parseConsentContext({ ...VALID, consent_ticket: { t: "x" } })).toThrow();
+    expect(() => parseConsentContext({ ...VALID, consent_ticket: null })).toThrow();
+  });
+
+  it("did NOT make the wire schema permissive", () => {
+    // Adding one KNOWN optional key is the change. Turning the object
+    // permissive is not, and it would be the easy accidental version of this
+    // commit. The known key survives the parse and an unknown one still does
+    // not, which is exactly the behaviour this file had yesterday.
+    const parsed = consentWireSchema.parse({
+      ...VALID,
+      consent_ticket: "t",
+      surprise: "payload",
+    });
+    expect(parsed.consent_ticket).toBe("t");
+    expect(parsed).not.toHaveProperty("surprise");
   });
 });
 
