@@ -612,9 +612,18 @@ func connectRealGrant(t *testing.T, pool *db.Pool, svc *mcp.Service) connectedGr
 	q.Set("state", "s16-state")
 	q.Set("code_challenge", challenge)
 	q.Set("code_challenge_method", "S256")
+	// The consent screen, kept rather than discarded: it carries the ticket
+	// that binds the approval below to THIS authorize call, and a fixture that
+	// threw it away would be building a consent no operator was shown.
+	var consentScreen struct {
+		ConsentTicket string `json:"consent_ticket"`
+	}
 	if code := mcpDoJSON(t, eng, http.MethodGet,
-		mcp.AuthorizePath+"?"+q.Encode(), nil, nil, nil); code != http.StatusOK {
+		mcp.AuthorizePath+"?"+q.Encode(), nil, nil, &consentScreen); code != http.StatusOK {
 		t.Fatalf("fixture: authorize answered %d, want 200", code)
+	}
+	if consentScreen.ConsentTicket == "" {
+		t.Fatal("fixture: authorize returned no consent_ticket")
 	}
 
 	var approval struct {
@@ -630,6 +639,7 @@ func connectRealGrant(t *testing.T, pool *db.Pool, svc *mcp.Service) connectedGr
 		"code_challenge_method": "S256",
 		"name":                  "s16 connection under test",
 		"site_scope_mode":       string(mcp.SiteScopeModeAll),
+		"consent_ticket":        consentScreen.ConsentTicket,
 	}, nil, &approval); code != http.StatusOK {
 		t.Fatalf("fixture: consent answered %d, want 200", code)
 	}
