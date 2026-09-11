@@ -52,11 +52,15 @@ jobs:
           # Suppress interactive prompts; no version stamp needed for E2E.
           VERSION: "0.0.0-e2e"
 
+      # No PLUGIN_ZIP override. run.sh asks `make -s print-agent-wporg-zip` for
+      # the path, so the workflow and the build agree by construction. The line
+      # this replaces pinned a previous slug and overrode the harness's own
+      # default with it, which is why every scheduled run failed on a missing
+      # zip while `make agent-e2e-objectcache` passed locally.
       - name: Run E2E harness
         run: |
           chmod +x apps/agent/tests-e2e/run.sh
-          PLUGIN_ZIP="${PWD}/release/fleet-agent-for-wpmgr.zip" \
-            apps/agent/tests-e2e/run.sh
+          apps/agent/tests-e2e/run.sh
         env:
           DOCKER_BUILDKIT: "1"
 

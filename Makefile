@@ -353,6 +353,28 @@ check-assistant-gate-test: ## Run the assistant ship-gate guard's regression sui
 #          a Linux CI runner and a macOS workstation agree.
 #
 # $(1) working dir, $(2) directory to package, $(3) output archive name.
+# The wordpress.org distribution slug, and the zip that carries it. THIS IS THE
+# ONE PLACE EITHER NAME IS WRITTEN. The slug is also the top-level directory
+# inside the archive, which is what WordPress names the installed plugin folder,
+# so a rename moves the zip path and the install path together.
+#
+# Consumers outside this file must NOT restate the literal — they ask make:
+#   PLUGIN_ZIP="$$(make -s print-agent-wporg-zip)"
+# `.github/workflows/e2e-agent.yml` and `apps/agent/tests-e2e/run.sh` both do
+# that. They used to hard-code a previous slug; the rename to the current one
+# updated this file and not them, and the nightly E2E workflow then failed 40
+# runs in a row on a missing zip while `make` kept working locally.
+AGENT_WPORG_SLUG := fleet-agent-site-manager
+AGENT_WPORG_ZIP  := release/$(AGENT_WPORG_SLUG).zip
+
+.PHONY: print-agent-wporg-zip
+print-agent-wporg-zip: ## Print the absolute path of the wp.org agent zip (machine-readable; use with `make -s`)
+	@echo "$(PWD)/$(AGENT_WPORG_ZIP)"
+
+.PHONY: print-agent-wporg-slug
+print-agent-wporg-slug: ## Print the wp.org agent slug (machine-readable; use with `make -s`)
+	@echo "$(AGENT_WPORG_SLUG)"
+
 define reproducible_zip
 	find $(1)/$(2) -exec touch -h -t 200001010000.00 {} +
 	cd $(1) && find $(2) -print | LC_ALL=C sort | zip -X -q -@ $(3)
@@ -437,11 +459,11 @@ agent-zip: agent-vendor ## Package the WordPress agent plugin as a zip (with ifs
 	@echo "agent zip: $$(du -sh release/wpmgr-agent.zip | cut -f1)"
 
 .PHONY: agent-zip-wporg
-agent-zip-wporg: agent-vendor ## Package the wp.org-distributable plugin zip (fleet-agent-site-manager identity; self-hosted identity untouched)
+agent-zip-wporg: agent-vendor ## Package the wp.org-distributable plugin zip ($(AGENT_WPORG_SLUG) identity; self-hosted identity untouched)
 	mkdir -p release
-	rm -f release/fleet-agent-site-manager.zip
-	rm -rf release/fleet-agent-site-manager
-	# Stage under fleet-agent-site-manager/ — the permanent wp.org slug. The self-updater
+	rm -f $(AGENT_WPORG_ZIP)
+	rm -rf release/$(AGENT_WPORG_SLUG)
+	# Stage under $(AGENT_WPORG_SLUG)/ — the permanent wp.org slug. The self-updater
 	# (class-update-checker.php) is physically excluded so PCP cannot match the
 	# site_transient_update_plugins hook (B2 / G8). NOTICE.md and README.md are
 	# excluded because wp.org rejects unexpected Markdown files (B4 / C8).
@@ -465,21 +487,21 @@ agent-zip-wporg: agent-vendor ## Package the wp.org-distributable plugin zip (fl
 		--exclude 'NOTICE.md' --exclude 'README.md' \
 		--exclude 'patchwork.json' \
 		--exclude 'includes/support/class-update-checker.php' \
-		apps/agent/ release/fleet-agent-site-manager/
+		apps/agent/ release/$(AGENT_WPORG_SLUG)/
 	# Remove CLI entrypoints, LICENSE files, data-scripts dirs, and Python files
 	# that wp.org does not permit. rsync --exclude patterns for vendor/*/bin/ do not
 	# recurse into arbitrary depth (e.g. vendor/matthiasmullie/minify/bin/ is 3 levels
 	# deep), so a post-stage find+delete is more reliable than path-based excludes.
-	find release/fleet-agent-site-manager/vendor/bin -mindepth 0 -maxdepth 0 -type d -exec rm -rf {} + 2>/dev/null || true
-	find release/fleet-agent-site-manager/vendor -mindepth 2 -type d -name bin -exec rm -rf {} + 2>/dev/null || true
-	find release/fleet-agent-site-manager/vendor -mindepth 2 -type f -name LICENSE -delete 2>/dev/null || true
-	find release/fleet-agent-site-manager/vendor -type d -name data-scripts -exec rm -rf {} + 2>/dev/null || true
-	find release/fleet-agent-site-manager/vendor -type f -name "*.py" -delete 2>/dev/null || true
+	find release/$(AGENT_WPORG_SLUG)/vendor/bin -mindepth 0 -maxdepth 0 -type d -exec rm -rf {} + 2>/dev/null || true
+	find release/$(AGENT_WPORG_SLUG)/vendor -mindepth 2 -type d -name bin -exec rm -rf {} + 2>/dev/null || true
+	find release/$(AGENT_WPORG_SLUG)/vendor -mindepth 2 -type f -name LICENSE -delete 2>/dev/null || true
+	find release/$(AGENT_WPORG_SLUG)/vendor -type d -name data-scripts -exec rm -rf {} + 2>/dev/null || true
+	find release/$(AGENT_WPORG_SLUG)/vendor -type f -name "*.py" -delete 2>/dev/null || true
 	# Rename the main plugin file to match the wp.org slug. WordPress derives the
 	# plugin's displayed name, slug, and update identity from the top-level .php
 	# filename inside the archive folder — renaming is mandatory for the wp.org slug.
-	mv release/fleet-agent-site-manager/wpmgr-agent.php \
-		release/fleet-agent-site-manager/fleet-agent-site-manager.php
+	mv release/$(AGENT_WPORG_SLUG)/wpmgr-agent.php \
+		release/$(AGENT_WPORG_SLUG)/$(AGENT_WPORG_SLUG).php
 	# VERSION override: same mechanism as agent-zip — stamp ONLY the staged copy.
 	# Two lines: the plugin header "Version:" and the WPMGR_AGENT_VERSION constant.
 	@if [ -n "$(VERSION)" ]; then \
@@ -494,20 +516,20 @@ agent-zip-wporg: agent-vendor ## Package the wp.org-distributable plugin zip (fl
 		esac; \
 		_v_esc=$$(printf '%s' "$$_v" | sed -e 's/[\/&|]/\\&/g'); \
 		echo "agent-zip-wporg: stamping staged copy with version $$_v"; \
-		sed -i.bak -E "s/^( \* Version:[ \t]+)[0-9]+\.[0-9]+\.[0-9].*/\1$$_v_esc/" release/fleet-agent-site-manager/fleet-agent-site-manager.php; \
-		sed -i.bak -E "s/^(define\('WPMGR_AGENT_VERSION', *')[^']+(')/\1$$_v_esc\2/" release/fleet-agent-site-manager/fleet-agent-site-manager.php; \
-		rm -f release/fleet-agent-site-manager/fleet-agent-site-manager.php.bak; \
+		sed -i.bak -E "s/^( \* Version:[ \t]+)[0-9]+\.[0-9]+\.[0-9].*/\1$$_v_esc/" release/$(AGENT_WPORG_SLUG)/$(AGENT_WPORG_SLUG).php; \
+		sed -i.bak -E "s/^(define\('WPMGR_AGENT_VERSION', *')[^']+(')/\1$$_v_esc\2/" release/$(AGENT_WPORG_SLUG)/$(AGENT_WPORG_SLUG).php; \
+		rm -f release/$(AGENT_WPORG_SLUG)/$(AGENT_WPORG_SLUG).php.bak; \
 	fi
 	# Stamp readme.txt Stable tag to match the plugin header Version. Mirrors the
 	# VERSION block above; reads the stamped Version from the staged main file so
 	# the two values always agree regardless of the VERSION variable.
-	@_stamped_v=$$(grep -E '^ \* Version:' release/fleet-agent-site-manager/fleet-agent-site-manager.php | sed -E 's/.*Version:[ \t]+//'); \
+	@_stamped_v=$$(grep -E '^ \* Version:' release/$(AGENT_WPORG_SLUG)/$(AGENT_WPORG_SLUG).php | sed -E 's/.*Version:[ \t]+//'); \
 	echo "agent-zip-wporg: stamping readme.txt Stable tag: $$_stamped_v"; \
-	sed -i.bak -E "s/^(Stable tag:[ \t]+).*/\1$$_stamped_v/" release/fleet-agent-site-manager/readme.txt; \
-	rm -f release/fleet-agent-site-manager/readme.txt.bak
+	sed -i.bak -E "s/^(Stable tag:[ \t]+).*/\1$$_stamped_v/" release/$(AGENT_WPORG_SLUG)/readme.txt; \
+	rm -f release/$(AGENT_WPORG_SLUG)/readme.txt.bak
 	# Rewrite plugin-identity header fields in the staged main file:
 	#   Plugin Name  -> Fleet Agent Site Manager  (reviewer-accepted display name; no "WP" prefix)
-	#   Text Domain  -> fleet-agent-site-manager  (matches new slug)
+	#   Text Domain  -> $(AGENT_WPORG_SLUG)  (matches new slug)
 	#   WPMGR_AGENT_DISPLAY_NAME -> Fleet Agent Site Manager (admin menu/page
 	#   title constant; keeps the wp.org admin screen name consistent with the
 	#   listing identity above instead of showing the self-hosted "WPMgr Agent")
@@ -527,10 +549,10 @@ agent-zip-wporg: agent-vendor ## Package the wp.org-distributable plugin zip (fl
 	# license value could live.
 	sed -i.bak \
 		-e "s|^ \* Plugin Name:.*| * Plugin Name:       Fleet Agent Site Manager|" \
-		-e "s|^ \* Text Domain:.*| * Text Domain:       fleet-agent-site-manager|" \
+		-e "s|^ \* Text Domain:.*| * Text Domain:       $(AGENT_WPORG_SLUG)|" \
 		-e "s|define('WPMGR_AGENT_DISPLAY_NAME', 'WPMgr Agent');|define('WPMGR_AGENT_DISPLAY_NAME', 'Fleet Agent Site Manager');|" \
-		release/fleet-agent-site-manager/fleet-agent-site-manager.php
-	rm -f release/fleet-agent-site-manager/fleet-agent-site-manager.php.bak
+		release/$(AGENT_WPORG_SLUG)/$(AGENT_WPORG_SLUG).php
+	rm -f release/$(AGENT_WPORG_SLUG)/$(AGENT_WPORG_SLUG).php.bak
 	# Inject the WPMGR_WPORG_BUILD constant immediately after the WPMGR_AGENT_VERSION
 	# define line. This guards the self-updater boot hook (class-plugin.php:522) so
 	# it never binds in the wp.org build, satisfying G8 / B2 (the file exclusion
@@ -538,34 +560,34 @@ agent-zip-wporg: agent-vendor ## Package the wp.org-distributable plugin zip (fl
 	# Use awk to insert the line immediately after the WPMGR_AGENT_VERSION define,
 	# avoiding the multi-line sed /a\ syntax which is non-portable across BSD/GNU sed.
 	awk "/^define\('WPMGR_AGENT_VERSION',/{print; print \"define('WPMGR_WPORG_BUILD', true);\"; next}1" \
-		release/fleet-agent-site-manager/fleet-agent-site-manager.php \
-		> release/fleet-agent-site-manager/fleet-agent-site-manager.php.tmp
-	mv release/fleet-agent-site-manager/fleet-agent-site-manager.php.tmp \
-		release/fleet-agent-site-manager/fleet-agent-site-manager.php
-	# Rewrite the text-domain literal 'wpmgr-agent' -> 'fleet-agent-site-manager' across
+		release/$(AGENT_WPORG_SLUG)/$(AGENT_WPORG_SLUG).php \
+		> release/$(AGENT_WPORG_SLUG)/$(AGENT_WPORG_SLUG).php.tmp
+	mv release/$(AGENT_WPORG_SLUG)/$(AGENT_WPORG_SLUG).php.tmp \
+		release/$(AGENT_WPORG_SLUG)/$(AGENT_WPORG_SLUG).php
+	# Rewrite the text-domain literal 'wpmgr-agent' -> '$(AGENT_WPORG_SLUG)' across
 	# all staged PHP files. This covers both __()/__e() text-domain args AND the
 	# plugin-identity constants (PAGE_SLUG, exclude-dir lists) that reference the
-	# plugin folder name — in the wp.org install the folder IS fleet-agent-site-manager,
+	# plugin folder name — in the wp.org install the folder IS $(AGENT_WPORG_SLUG),
 	# so all references must agree. class-update-checker.php is already excluded above
 	# and is never present in the staged tree.
 	# GREP FIRST — surface every occurrence so the caller can audit non-text-domain hits.
 	@echo "--- grep of 'wpmgr-agent' in staged tree (before rewrite) ---"; \
-	grep -rn "'wpmgr-agent'" release/fleet-agent-site-manager/ --include="*.php" || true; \
+	grep -rn "'wpmgr-agent'" release/$(AGENT_WPORG_SLUG)/ --include="*.php" || true; \
 	echo "--- end grep ---"
-	find release/fleet-agent-site-manager -name "*.php" -print0 | \
-		xargs -0 sed -i.bak "s/'wpmgr-agent'/'fleet-agent-site-manager'/g"
-	find release/fleet-agent-site-manager -name "*.php.bak" -delete
+	find release/$(AGENT_WPORG_SLUG) -name "*.php" -print0 | \
+		xargs -0 sed -i.bak "s/'wpmgr-agent'/'$(AGENT_WPORG_SLUG)'/g"
+	find release/$(AGENT_WPORG_SLUG) -name "*.php.bak" -delete
 	# ASSERT the rewrite above reached the self-target guard's own constant.
 	# tests/ is excluded from the staged tree, so nothing else checks that the
 	# wp.org build recognises its OWN slug as the agent; a refactor of that
 	# constant to double quotes or string concatenation would silently leave the
 	# wp.org build guarding the self-hosted slug only.
-	@if ! grep -q "SELF_PLUGIN_FOLDER = 'fleet-agent-site-manager';" \
-		release/fleet-agent-site-manager/includes/commands/class-update-command.php; then \
-		echo "agent-zip-wporg: FAILED. SELF_PLUGIN_FOLDER in the staged tree is not 'fleet-agent-site-manager', so the self-target guard would not recognise the wp.org slug. Check the 'wpmgr-agent' rewrite above and the constant in apps/agent/includes/commands/class-update-command.php" >&2; \
+	@if ! grep -q "SELF_PLUGIN_FOLDER = '$(AGENT_WPORG_SLUG)';" \
+		release/$(AGENT_WPORG_SLUG)/includes/commands/class-update-command.php; then \
+		echo "agent-zip-wporg: FAILED. SELF_PLUGIN_FOLDER in the staged tree is not '$(AGENT_WPORG_SLUG)', so the self-target guard would not recognise the wp.org slug. Check the 'wpmgr-agent' rewrite above and the constant in apps/agent/includes/commands/class-update-command.php" >&2; \
 		exit 1; \
 	fi
-	@echo "agent-zip-wporg: self-target guard constant OK (SELF_PLUGIN_FOLDER = 'fleet-agent-site-manager')"
+	@echo "agent-zip-wporg: self-target guard constant OK (SELF_PLUGIN_FOLDER = '$(AGENT_WPORG_SLUG)')"
 	# ASSERT no staged file resolves the (now absent) self-updater class outside a
 	# guard. includes/class-plugin.php SURVIVES the rsync above and holds two hard
 	# class fetches, `new UpdateChecker(...)` and `UpdateChecker::HOOK_APPLY`, each
@@ -578,10 +600,10 @@ agent-zip-wporg: agent-vendor ## Package the wp.org-distributable plugin zip (fl
 	# against the artifact that actually ships. Mirrors the SELF_PLUGIN_FOLDER
 	# assertion above. tools/ is excluded from the staged tree, so the checker is
 	# invoked from the source tree.
-	php apps/agent/tools/assert-wporg-updatechecker-guard.php release/fleet-agent-site-manager
-	$(call reproducible_zip,release,fleet-agent-site-manager,fleet-agent-site-manager.zip)
-	rm -rf release/fleet-agent-site-manager
-	@echo "agent wporg zip: $$(du -sh release/fleet-agent-site-manager.zip | cut -f1)"
+	php apps/agent/tools/assert-wporg-updatechecker-guard.php release/$(AGENT_WPORG_SLUG)
+	$(call reproducible_zip,release,$(AGENT_WPORG_SLUG),$(AGENT_WPORG_SLUG).zip)
+	rm -rf release/$(AGENT_WPORG_SLUG)
+	@echo "agent wporg zip: $$(du -sh $(AGENT_WPORG_ZIP) | cut -f1)"
 
 .PHONY: agent-check
 agent-check: ## Fast phpcs pass over apps/agent (committed phpcs.xml.dist). NOT the authoritative gate.
@@ -619,18 +641,20 @@ agent-format: ## phpcbf auto-fix over apps/agent, then re-lint
 
 .PHONY: agent-plugincheck
 agent-plugincheck: agent-zip-wporg ## AUTHORITATIVE: `wp plugin check` on real WordPress via Docker (mariadb + wordpress:cli)
-	# Always tests the wp.org-identity build (fleet-agent-site-manager) so the META
+	# Always tests the wp.org-identity build ($(AGENT_WPORG_SLUG)) so the META
 	# trademark/updater/readme checks key off the right slug. Exits non-zero on any ERROR row.
-	cd tools/plugincheck && PLUGIN_ZIP="$(PWD)/release/fleet-agent-site-manager.zip" ./run.sh
+	cd tools/plugincheck && PLUGIN_ZIP="$(PWD)/$(AGENT_WPORG_ZIP)" ./run.sh
 
 .PHONY: agent-e2e-objectcache
-agent-e2e-objectcache: agent-zip ## Run the object-cache E2E harness (Docker; Redis + WordPress + phpredis)
+agent-e2e-objectcache: agent-zip-wporg ## Run the object-cache E2E harness (Docker; Redis + WordPress + phpredis)
 	# Spins a full Docker environment: WordPress 6.8 + MariaDB 11 + Redis 7 + phpredis.
 	# Exercises provision → assert-cli → cross-request persistence (FIX A net) →
 	# freshness guard → cron-check → negative-check → disable.
-	# Requires Docker. PLUGIN_ZIP can be overridden; defaults to the wporg build.
+	# Requires Docker. Depends on agent-zip-wporg because the zip passed below IS
+	# the wp.org build; the old `agent-zip` dependency built release/wpmgr-agent.zip
+	# and then handed the harness a path that target never produces.
 	chmod +x apps/agent/tests-e2e/run.sh
-	PLUGIN_ZIP="$(PWD)/release/fleet-agent-site-manager.zip" apps/agent/tests-e2e/run.sh
+	PLUGIN_ZIP="$(PWD)/$(AGENT_WPORG_ZIP)" apps/agent/tests-e2e/run.sh
 
 .PHONY: agent-release
 agent-release: agent-zip ## Publish the agent release (zip + latest.json) to object storage for CP-driven self-update (ADR-042)

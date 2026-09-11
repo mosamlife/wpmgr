@@ -33,8 +33,20 @@ declare(strict_types=1);
 $stage = $argv[1] ?? '';
 
 $wpRoot    = '/var/www/html';
-$pluginZip = '/tmp/fleet-agent-for-wpmgr.zip';
-$pluginSlug = 'fleet-agent-for-wpmgr';
+// The compose file mounts the zip at this slug-free path; see docker-compose.yml.
+$pluginZip = '/tmp/wpmgr-agent-e2e.zip';
+
+// The installed plugin directory. NOT a literal: run.sh reads it out of the
+// archive's top-level entry (what WordPress names the folder) and compose passes
+// it in. A hard-coded slug here is exactly what stranded this harness on the
+// previous plugin name, so an absent value is a loud failure, never a default.
+$pluginSlug = (string) (getenv('WPMGR_E2E_PLUGIN_SLUG') ?: '');
+if ($pluginSlug === '') {
+    fwrite(STDERR, "assert.php: WPMGR_E2E_PLUGIN_SLUG is empty.\n"
+        . "assert.php: run.sh derives it from the plugin archive and docker-compose.yml\n"
+        . "assert.php: passes it through; run this harness via tests-e2e/run.sh.\n");
+    exit(1);
+}
 
 /**
  * Run a shell command, print stdout/stderr, return exit code.
