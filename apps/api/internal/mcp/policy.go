@@ -67,10 +67,11 @@ const ErrCodeCapabilityWiderThanDefault = "mcp_capability_wider_than_default"
 // something this path enforces. See ToolPolicy.OperatorPermission.
 type Capability string
 
-// The v1 READ vocabulary, one constant per outcome group. m131 seated these
+// The v1 vocabulary, one constant per outcome group. m131 seated the first
 // eight in mcp_grants_capabilities_vocabulary_check and its DECISION 1 is the
 // argument for each name and each boundary; it is not restated here, because a
-// second copy of that argument is a second thing that can drift.
+// second copy of that argument is a second thing that can drift. m135 seated
+// the ninth, CapCachePurge, which is the first member that is not a read.
 //
 // Three properties of the set that this file DOES have to hold:
 //
@@ -78,9 +79,13 @@ type Capability string
 //     render the operator-facing form as `site.*`; those are the SCREEN's
 //     labels and the picker may render whatever label it likes above these
 //     strings.
-//   - EVERY MEMBER ENDS IN `.read`, which is what makes "no write capability is
-//     reachable from this build" checkable by pattern rather than by claim.
-//     TestEveryCapabilityIsARead pins it.
+//   - EVERY MEMBER EXCEPT CapCachePurge ENDS IN `.read`, and the exception is
+//     enumerated rather than pattern-matched. This used to be a pure pattern
+//     test ("no write capability is reachable from this build"), which was
+//     checkable precisely while it was true. It is no longer true, so the
+//     property is now stated as a named allowlist of non-read members:
+//     TestEveryCapabilityIsAReadOrAnEnumeratedWrite pins it, and a second
+//     non-read member arriving without being named there goes red.
 //   - The set is CLOSED, for the same reason recognisedScopes is closed: an
 //     unrecognised capability must be a refusal, never a token quietly dropped
 //     from a set that is then honoured.
@@ -102,6 +107,17 @@ const (
 	// agree exactly (m131 DECISION 5), and it is in NO scope's capability list
 	// so no grant can be minted holding it. See scopeCapabilities.
 	CapContentRead Capability = "mcp.content.read"
+
+	// CapCachePurge is THE FIRST NON-READ MEMBER OF THIS VOCABULARY, seated by
+	// m135. It gates one operation: clear a site's page cache.
+	//
+	// IT IS SEATED AND, LIKE CapContentRead, IT IS CONFERRED BY NO SCOPE -- so
+	// no grant can currently be minted holding it and no connection can
+	// currently call the tool behind it. That is not an oversight and it is not
+	// the same stance for the same reason; see the CapCachePurge paragraph on
+	// scopeCapabilities for the argument, and the ceiling note there for what
+	// has to land before it can be conferred at all.
+	CapCachePurge Capability = "mcp.cache.purge"
 )
 
 // capabilityVocabulary is the CLOSED set of capabilities this surface knows.
@@ -110,7 +126,7 @@ const (
 //
 // IT IS THE GO HALF OF A SET THAT IS CLOSED IN TWO PLACES. The other half is
 // mcp_grants_capabilities_vocabulary_check, and the two must hold the same
-// eight names: a name the database accepts and this map does not is refused at
+// NINE names: a name the database accepts and this map does not is refused at
 // a different layer with a different error, and a name this map accepts and the
 // database does not is a 23514 at INSERT on a path an operator reached through
 // a wizard. TestCapabilityVocabularyMatchesTheDatabaseCheckAsAppRole (in
@@ -119,15 +135,21 @@ const (
 // KNOWING a capability is not CONFERRING it and is not DEFAULTING to it. Those
 // are three separate sets and this is the widest of them:
 //
-//	capabilityVocabulary   -- what may be spelled at all           (8)
-//	scopeCapabilities      -- what a scope confers, the CEILING    (7)
+//	capabilityVocabulary     -- what may be spelled at all         (9)
+//	scopeCapabilities        -- what a scope confers, the CEILING  (7)
 //	DefaultGrantCapabilities -- what an unasked grant receives     (1)
 //
+// THE GAP BETWEEN 9 AND 7 IS TWO DELIBERATELY UNREACHABLE MEMBERS, and it is
+// the shape of this design rather than a backlog: CapContentRead (m131
+// DECISION 3) and CapCachePurge (m135). Both are spellable, neither is
+// conferred, so NarrowTo refuses either by name and no mint path can store one.
+//
 // Widening this map alone widens NOTHING a grant receives, and that separation
-// is the whole point of this commit. See DefaultGrantCapabilities.
+// is the whole point. See DefaultGrantCapabilities.
 var capabilityVocabulary = map[Capability]struct{}{
 	CapActivityRead:    {},
 	CapBackupsRead:     {},
+	CapCachePurge:      {},
 	CapContentRead:     {},
 	CapDiagnosticsRead: {},
 	CapPerformanceRead: {},
@@ -186,6 +208,53 @@ func AllCapabilities() []Capability {
 // consent, arriving as a side effect of a registry edit. Adding it to this list
 // is a one-line change at the moment the content tools ship, in that diff,
 // under that review. TestContentReadIsKnownButConferredByNoScope pins it.
+//
+// ---------------------------------------------------------------------------
+// CapCachePurge IS ALSO ABSENT, AND THAT IS THE m135 CEILING DECISION.
+//
+// THE CHOICE MADE: mcp.cache.purge is conferred by NO SCOPE. ScopeRead does not
+// confer it and no second scope is added here.
+//
+// WHY NOT ScopeRead. It is a read scope. The paragraph above already states the
+// rule this map encodes -- "the read scope confers the READ capabilities, and a
+// member that does not end in `.read` is not conferred by it until someone
+// writes that line and defends it" -- and mcp.cache.purge is the first member
+// that tests it. The line cannot be defended: every live grant holds ScopeRead
+// by construction (see grantScopes), and every operator who consented to it
+// consented to a screen describing reads. Adding one entry here would hand the
+// power to purge a live site's cache to EVERY GRANT THIS SURFACE HAS EVER
+// MINTED, retroactively, with no second consent -- a write capability arriving
+// through a scope the operator did not read, which is the exact failure m135's
+// own note (3)(a) and m131 DECISION 3 both name.
+//
+// WHY NOT A SECOND SCOPE EITHER, WHICH IS THE PART THAT BLOCKS THE TOOL.
+// "Mint-only" is not a mechanism this package has, and reading it as one is the
+// trap here. There is no mint path that bypasses this ceiling: BOTH creation
+// paths resolve through Service.resolveGrantCapabilities (mint.go:600), which
+// calls ceiling.NarrowTo for the explicit request AND for the preset, and
+// Service.Authenticate (service.go:1408) re-derives the same ceiling and
+// NarrowTo's the STORED column against it on every request. So a capability
+// conferred by no scope is not "mint-only", it is UNREACHABLE -- unstorable at
+// mint, and fatal to the whole connection if a row ever holds it.
+//
+// Conferring it therefore requires a second scope, and a second scope cannot be
+// added here alone. grantScopes() is a CONSTANT because mcp_grants has no
+// scopes column, so a second entry in recognisedScopes would hand ScopeRead's
+// capabilities to a grant that never asked for them -- the widening
+// TestGrantScopesIsExactOnlyWhileOneScopeExists exists to force someone to fix
+// by replacing that constant with a real per-grant read. That read needs the
+// column, and the column is a migration, which is not this diff's to write.
+//
+// SO THE TOOL SHIPS DORMANT, DELIBERATELY. registry.go registers
+// fleet_cache_purge requiring this capability; withinOrgCeiling drops it from
+// every tools/list and AuthorizeTool answers it as an unregistered name, for
+// every connection, until the scopes column and a write scope land together in
+// one reviewed diff. That is the same seated-and-unreachable stance
+// CapContentRead has held since m131, and for a write capability it is the
+// direction that fails safe. TestCachePurgeIsKnownButConferredByNoScope pins
+// it, and it is the test that must be DELETED -- not edited -- by whoever
+// confers this, so the conferral cannot happen quietly.
+// ---------------------------------------------------------------------------
 var scopeCapabilities = map[Scope][]Capability{
 	ScopeRead: {
 		CapActivityRead,
