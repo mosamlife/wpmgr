@@ -3422,6 +3422,15 @@ type Querier interface {
 	// 'none' hold exactly when client_secret_hash IS NULL, so a public client
 	// carrying a secret and a confidential client without one both fail here with
 	// 23514 rather than reaching a Go comparison against NULL (Decision 11).
+	// registered_scopes IS NAMED EXPLICITLY AND HAS NO DATABASE DEFAULT (m137
+	// DECISION 3). The caller decides the value; the column refuses to decide for
+	// it. Omitting this column from the INSERT is 23502, loudly, and that is the
+	// designed behaviour -- see Service.Register for what an omitted RFC 7591
+	// `scope` is resolved to and why.
+	//
+	// THE VALUE IS AN AUTHORISATION BOUND. Authorize and Approve both read it back
+	// and refuse a requested scope set it does not contain, so widening it here
+	// widens what the client may ever be granted.
 	RegisterMCPOAuthClient(ctx context.Context, arg RegisterMCPOAuthClientParams) (int64, error)
 	// ReleaseTenantAssistantKillSwitch clears the pause after an incident.
 	//

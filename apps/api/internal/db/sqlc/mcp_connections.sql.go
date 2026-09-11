@@ -955,9 +955,9 @@ const registerMCPOAuthClient = `-- name: RegisterMCPOAuthClient :execrows
 
 INSERT INTO mcp_oauth_clients (
     client_id, client_secret_hash, token_endpoint_auth_method,
-    redirect_uris, client_name, client_uri
+    redirect_uris, client_name, client_uri, registered_scopes
 ) VALUES (
-    $1, $2, $3, $4, $5, $6
+    $1, $2, $3, $4, $5, $6, $7
 )
 `
 
@@ -968,6 +968,7 @@ type RegisterMCPOAuthClientParams struct {
 	RedirectUris            []string `json:"redirect_uris"`
 	ClientName              *string  `json:"client_name"`
 	ClientUri               *string  `json:"client_uri"`
+	RegisteredScopes        []string `json:"registered_scopes"`
 }
 
 // S6a-q: the query layer for m124's four MCP tables. QUERIES ONLY.
@@ -1102,6 +1103,15 @@ type RegisterMCPOAuthClientParams struct {
 // 'none' hold exactly when client_secret_hash IS NULL, so a public client
 // carrying a secret and a confidential client without one both fail here with
 // 23514 rather than reaching a Go comparison against NULL (Decision 11).
+// registered_scopes IS NAMED EXPLICITLY AND HAS NO DATABASE DEFAULT (m137
+// DECISION 3). The caller decides the value; the column refuses to decide for
+// it. Omitting this column from the INSERT is 23502, loudly, and that is the
+// designed behaviour -- see Service.Register for what an omitted RFC 7591
+// `scope` is resolved to and why.
+//
+// THE VALUE IS AN AUTHORISATION BOUND. Authorize and Approve both read it back
+// and refuse a requested scope set it does not contain, so widening it here
+// widens what the client may ever be granted.
 func (q *Queries) RegisterMCPOAuthClient(ctx context.Context, arg RegisterMCPOAuthClientParams) (int64, error) {
 	result, err := q.db.Exec(ctx, registerMCPOAuthClient,
 		arg.ClientID,
@@ -1110,6 +1120,7 @@ func (q *Queries) RegisterMCPOAuthClient(ctx context.Context, arg RegisterMCPOAu
 		arg.RedirectUris,
 		arg.ClientName,
 		arg.ClientUri,
+		arg.RegisteredScopes,
 	)
 	if err != nil {
 		return 0, err

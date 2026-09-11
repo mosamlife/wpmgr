@@ -536,6 +536,43 @@ type RegisteredClient struct {
 	ClientURI               string
 }
 
+// registeredScopesForOmittedRequest resolves what a registration that names no
+// `scope` is recorded as registered for. THE ANSWER IS THE FULL RECOGNISED
+// REGISTRY, and this is a decision, not a fallout.
+//
+// RFC 7591 section 2 leaves an omitted `scope` to the server, and m137 DECISION
+// 3 deliberately gave the column NO DATABASE DEFAULT so that something in Go
+// has to choose out loud. The two defensible answers are to REFUSE the
+// registration or to register for the whole registry; both are safe under this
+// schema. This is the second.
+//
+// WHY NOT REFUSE. RegistrationRequest carries no Scope field and the
+// registration handler parses none, so NO CLIENT CAN SUPPLY ONE: today every
+// registration is an omission. Refusing would take dynamic client registration
+// dark on deploy for a distinction that is unobservable while the registry
+// holds one member -- the registry's only member is ScopeRead, so "the full
+// registry" is exactly {mcp:read}, which is exactly what m137's backfill wrote
+// onto every client that already existed. The ceiling does not move: this
+// registers no client for a scope it could not already have obtained, because
+// before m137 every client could request every recognised scope.
+//
+// WHAT THIS COSTS, STATED RATHER THAN DISCOVERED LATER. The two answers diverge
+// the day a second scope is recognised, and on that day THIS ONE IS THE
+// DANGEROUS DIRECTION: a client that says nothing would be registered for the
+// new scope too, and the containment check in Authorize and Approve would grant
+// it nothing to bite on. That is the same trap m137 DECISION 3 refused to build
+// into the schema as a DEFAULT, and choosing it here means it must be revisited
+// rather than inherited.
+//
+// IT CANNOT BE INHERITED SILENTLY. TestOmittedRegistrationScopeMustBeRevisited-
+// WhenTheRegistryGrows fails the moment recognisedScopes holds more than one
+// member, so the second scope's change cannot land without an author reading
+// this comment and choosing again. A comment asking to be revisited is a wish;
+// that test is the mechanism.
+func registeredScopesForOmittedRequest() []string {
+	return SupportedScopes()
+}
+
 // Register implements RFC 7591 dynamic client registration.
 func (s *Service) Register(ctx context.Context, req RegistrationRequest) (RegisteredClient, error) {
 	if len(req.RedirectURIs) == 0 {
@@ -599,6 +636,7 @@ func (s *Service) Register(ctx context.Context, req RegistrationRequest) (Regist
 		RedirectUris:            req.RedirectURIs,
 		ClientName:              nullableText(strings.TrimSpace(req.ClientName)),
 		ClientUri:               nullableText(strings.TrimSpace(req.ClientURI)),
+		RegisteredScopes:        registeredScopesForOmittedRequest(),
 	})
 	if err != nil {
 		return RegisteredClient{}, fmt.Errorf("register client: %w", err)
@@ -767,6 +805,16 @@ func (s *Service) Authorize(ctx context.Context, req AuthorizeRequest) (ConsentC
 			"redirect_uri does not exactly match a registered redirect URI")
 	}
 
+	// CONTAINMENT, AND IT MUST PRECEDE THE TICKET. ParseRequestedScopes above
+	// established that the server knows these scopes; this establishes that
+	// THIS CLIENT registered for them. Placed here rather than after the issue
+	// call because the ticket is the durable artefact of this request -- it is
+	// what Approve measures the approval body against -- so a set outside the
+	// registration must never be sealed into one.
+	if err := requireScopesWithinRegistration(client.RegisteredScopes, scopes); err != nil {
+		return ConsentContext{}, err
+	}
+
 	redirectHost := ""
 	if u, perr := url.Parse(req.RedirectURI); perr == nil {
 		redirectHost = u.Host
@@ -795,6 +843,54 @@ func (s *Service) Authorize(ctx context.Context, req AuthorizeRequest) (ConsentC
 		CodeChallengeMethod:  req.CodeChallengeMethod,
 		ConsentTicket:        ticket,
 	}, nil
+}
+
+// requireScopesWithinRegistration refuses a scope set the CLIENT'S OWN
+// REGISTRATION does not contain (m137).
+//
+// TWO DIFFERENT QUESTIONS, BOTH ASKED, IN THIS ORDER. ParseRequestedScopes
+// answers "is this a scope this SERVER knows", against the global
+// recognisedScopes registry. This answers "is this a scope THIS CLIENT
+// registered for", against mcp_oauth_clients.registered_scopes. Registry
+// membership alone was the whole gate until m137, which meant every registered
+// client could request every recognised scope: the ceiling was the server's,
+// not the client's.
+//
+// THE MODEL IS exactMatchRedirectURI, one function below, and the resemblance
+// is deliberate. Both compare in Go against an array read off the stored client
+// row; neither pushes the comparison into SQL, where `= ANY(...)` invites a
+// match against an array the caller never inspected.
+//
+// THERE IS NO SPECIAL CASE FOR AN EMPTY registered SLICE, AND ADDING ONE WOULD
+// REOPEN EXACTLY WHAT THIS CLOSES (m137 DECISION 4 and section (5)(d)). An
+// empty or nil registration means NO AUTHORITY TO REQUEST ANYTHING, and set
+// containment already yields that answer for free: every requested scope is
+// outside an empty set, so the whole request is refused. The wrong shape is
+// `if len(registered) == 0 { skip }`, which reads absence as "no restriction
+// recorded, therefore unrestricted" and reinstates the global-registry
+// behaviour this column exists to remove. The schema makes '{}' unstorable, but
+// this read must not depend on the database being the only writer.
+//
+// The refusal is ErrCodeInvalidScope -- RFC 6749 section 5.2 `invalid_scope`,
+// which the OAuth handlers map explicitly to 400. The offending scope is named
+// back because it is the caller's own input. The client's registered set is
+// NOT echoed: it is another party's registration metadata whenever the
+// client_id was not the caller's to begin with, and naming the one scope that
+// was refused is what makes the failure debuggable.
+func requireScopesWithinRegistration(registered []string, requested []Scope) error {
+	registeredSet := make(map[Scope]struct{}, len(registered))
+	for _, r := range registered {
+		registeredSet[Scope(r)] = struct{}{}
+	}
+	for _, s := range requested {
+		if _, ok := registeredSet[s]; !ok {
+			return domain.Validation(ErrCodeInvalidScope,
+				fmt.Sprintf("scope %q is not one this client is registered to request",
+					string(s))).
+				WithDetails(map[string]any{"unregistered_scope": string(s)})
+		}
+	}
+	return nil
 }
 
 // exactMatchRedirectURI compares byte-for-byte against each registered URI.
@@ -893,59 +989,80 @@ func (s *Service) Approve(ctx context.Context, req ApprovalRequest) (Approval, e
 	// the ticket says THIS REQUEST ASKED FOR IT. The second question is the one
 	// the stored grant answers, and it is now asked.
 	//
-	// WHOEVER ADDS THE SECOND RECOGNISED SCOPE MUST STILL SETTLE SOMETHING
-	// FIRST, and this comment is again the only thing pointing at it. An
-	// earlier version of it said the binding described above was the
-	// prerequisite. The binding is built and it NARROWS the problem; it does
-	// not close it, so the prerequisite is now a decision rather than a diff.
+	// THE PREREQUISITE THIS COMMENT USED TO NAME HAS BEEN MET. Candidate 2 of
+	// the three it listed -- constrain the requestable scope set to the
+	// client's own registration -- was chosen by the owner and is built (m137).
+	// What follows is what that bought, what it cost, and what survives, so the
+	// next reader can tell a decision from an oversight.
 	//
-	// WHAT THE BINDING DOES BUY, exactly. An approval body can no longer
+	// WHAT THE BINDING BOUGHT, and it is unchanged. An approval body cannot
 	// fabricate a scope set out of nothing: every set that reaches
 	// mcp_grants.oauth_scopes is one this server sealed after validating an
-	// authorize call. And a cross-origin forged POST cannot obtain a ticket at
-	// all, because the attacker would have to read the /authorize response to
-	// copy it and same-origin policy does not let it. Both are strictly better
-	// than the registry-membership check that stood here alone.
+	// authorize call. A cross-origin forged POST cannot obtain a ticket at all,
+	// because the attacker would have to read the /authorize response to copy
+	// it and same-origin policy does not let it.
 	//
-	// WHAT IT DOES NOT BUY. The ticket attests that a (client_id, scope set)
-	// pair was VALIDATED, not that a human was shown it or chose it -- see the
-	// header of consent_ticket.go. handler.go mounts GET /authorize and POST
-	// /consent behind the same requireOrgScope() + requireGrantPermission()
-	// pair, and Authorize measures the requested scope against the global
-	// recognisedScopes registry rather than against the client's own
-	// registration. So any principal that can submit an approval can also
-	// obtain a ticket for any recognised scope, by making the authorize call
-	// itself. Against an operator that is what consent means; against a
-	// BROWSER-SIDE ATTACKER holding that principal's session -- XSS, a
-	// malicious extension, a compromised dashboard bundle -- it costs nothing,
-	// and the escalation is narrowed rather than closed.
+	// WHAT THE BINDING DID NOT BUY, and this is the door m137 shut. The ticket
+	// attests that a (client_id, scope set) pair was VALIDATED, not that a human
+	// was shown it or chose it -- see the header of consent_ticket.go. handler.go
+	// mounts GET /authorize and POST /consent behind the same requireOrgScope()
+	// + requireGrantPermission() pair, so any principal that can submit an
+	// approval can also obtain a ticket by making the authorize call itself.
+	// While Authorize measured the requested scope against the GLOBAL
+	// recognisedScopes registry, that principal could mint a ticket for any
+	// recognised scope, and a browser-side attacker holding the session -- XSS,
+	// a malicious extension, a compromised dashboard bundle -- could do the same.
 	//
-	// THERE IS NO CHEAP STATELESS FIX. This was looked for. Sealing the
-	// operator, the org, the redirect_uri, the state or the code_challenge into
-	// the MAC buys nothing, because the second authorize call is made by the
-	// same principal in the same browser and reuses every one of them. Recorded
-	// here so the next author does not spend the afternoon re-deriving it.
+	// WHAT IS NOW TRUE. Both entry points measure the scope set against
+	// mcp_oauth_clients.registered_scopes: Authorize before it seals a ticket,
+	// and this function before it stores a grant -- see
+	// requireScopesWithinRegistration. A ticket for a scope the client never
+	// registered cannot be minted, and one that exists anyway (issued by an
+	// older build, still inside its TTL) cannot be spent. The ceiling on what
+	// any principal can obtain through this pair of endpoints is now THE
+	// CLIENT'S OWN REGISTRATION rather than the server's whole registry. The
+	// escalation described above is closed, not narrowed.
 	//
-	// THE THREE CANDIDATES THAT DO WORK, one of which has to be chosen before a
-	// second scope is recognised, not in the diff after it:
+	// WHAT IT COST. Registration must now decide what it registers a client
+	// for, because the column is NOT NULL with no DEFAULT (m137 DECISION 3);
+	// registeredScopesForOmittedRequest is that decision and carries its own
+	// reasoning and its own revisit-on-growth test. And the bound is only as
+	// good as that decision: a registration path that registers every client
+	// for everything would leave containment with nothing to bite on. That is
+	// the live obligation this change creates, and it is why the two sit one
+	// file apart rather than one being implied by the other.
+	//
+	// WHAT SURVIVES, PLAINLY, BECAUSE IT IS NOT NOTHING. Containment bounds
+	// WHICH scopes a principal may obtain; it does not make consent a thing a
+	// human demonstrably gave. Within a client's registered set, a principal
+	// that can submit an approval can still obtain a ticket for any of those
+	// scopes by making the authorize call itself, and so can a browser-side
+	// attacker holding that principal's session. Candidates 1 and 3 from the
+	// original list address that and neither has been done:
 	//
 	//  1. A single-use nonce minted per consent SCREEN and required by the
-	//     approval, which turns "this pair was validated" into "this screen was
+	//     approval, turning "this pair was validated" into "this screen was
 	//     answered once". It costs the server-side state this design was
 	//     deliberately built without; consent_ticket.go says why.
-	//  2. Constrain /authorize to the scopes on the client's own registration,
-	//     so a ticket for a scope that client never registered cannot be minted
-	//     in the first place. This is the narrowest of the three and does not
-	//     add state.
 	//  3. An explicit owner ruling that a browser-side attacker already holding
 	//     PermAPIKeyManage is outside the threat model -- written down, not
-	//     assumed, because everything above then becomes a documented
-	//     acceptance rather than an oversight.
+	//     assumed.
 	//
-	// NOTHING IS REACHABLE TODAY: one scope is recognised, so the only ticket
-	// this server will mint and the only set this line can store is {mcp:read},
-	// which is what the old hard-coded constant produced anyway. Recognising
-	// the second scope is what makes the difference observable.
+	// That residue is bounded by the registration in a way it was not before,
+	// and it no longer blocks recognising a second scope. It is still open.
+	//
+	// THERE IS NO CHEAP STATELESS FIX FOR THE RESIDUE. This was looked for.
+	// Sealing the operator, the org, the redirect_uri, the state or the
+	// code_challenge into the MAC buys nothing, because the second authorize
+	// call is made by the same principal in the same browser and reuses every
+	// one of them. Recorded here so the next author does not spend the
+	// afternoon re-deriving it.
+	//
+	// THE DIFFERENCE IS STILL NOT OBSERVABLE IN PRODUCTION TODAY: one scope is
+	// recognised, so the only ticket this server will mint and the only set
+	// this line can store is {mcp:read}. Containment is proved against a second
+	// scope planted in the test process -- see m137_scope_containment_test.go,
+	// which is the only place the two sets can differ.
 	grantedScopes, err := s.authorizedScopes(req.Consent)
 	if err != nil {
 		return Approval{}, err
@@ -985,6 +1102,27 @@ func (s *Service) Approve(ctx context.Context, req ApprovalRequest) (Approval, e
 	if !exactMatchRedirectURI(client.RedirectUris, req.Consent.RedirectURI) {
 		return Approval{}, domain.Validation(ErrCodeInvalidRedirectURI,
 			"redirect_uri does not exactly match a registered redirect URI")
+	}
+
+	// CONTAINMENT AGAIN, ON THE SET ABOUT TO BE STORED, AND THIS IS THE HALF
+	// THAT IS EASY TO MISS (m137 section (5)(e)).
+	//
+	// Constraining Authorize alone does not close the door, and the reason is
+	// the one recorded above authorizedScopes: everything on req.Consent
+	// round-trips through the browser, and the ticket that authenticates it
+	// attests only that some authorize call VALIDATED this (client, scope set)
+	// pair. Tickets outlive the build that minted them -- one issued before
+	// this check existed, and still inside its TTL, seals a set this client may
+	// never have registered for -- and the same is true of any future path that
+	// learns to mint one. This is the check measured against the client's own
+	// row rather than against another call's say-so, and it is the last one
+	// before the set is written to mcp_grants.oauth_scopes and turned into a
+	// capability ceiling.
+	//
+	// grantedScopes, not req.Consent.Scopes: the ticket's set is what gets
+	// stored, so the ticket's set is what must be contained.
+	if err := requireScopesWithinRegistration(client.RegisteredScopes, grantedScopes); err != nil {
+		return Approval{}, err
 	}
 
 	// CAPABILITIES, resolved BEFORE anything is generated or written, and by
