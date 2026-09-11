@@ -474,6 +474,22 @@ final class MediaQuarantine
                 // has always had. is_link() is paired with file_exists()
                 // because a broken symlink is not an empty slot; the pair is
                 // the one FilesRestorer::revertSingleItem() uses.
+                //
+                // The stat and the rename below are not one atomic operation,
+                // and PHP offers no rename-if-absent, so a residual window
+                // stays open between them. Something can create the
+                // destination inside it and the rename will still clobber it:
+                // in-process, DiskWriter::write() (class-disk-writer.php:74)
+                // renames onto live uploads paths, driven by the
+                // wp_generate_attachment_metadata filter registered at
+                // class-plugin.php:806.
+                //
+                // Narrowing is the whole available fix, and it is strictly
+                // better than what it replaces: before this guard existed
+                // every restore clobbered its destination unconditionally, so
+                // the losing window was the entire operation rather than the
+                // gap between two adjacent syscalls. Nothing worse than the
+                // pre-guard behaviour can happen inside what is left.
                 if (file_exists($normalised) || is_link($normalised)) {
                     $skipped++;
                     $this->noteRestoreSkip($reasons, $blocked, self::RESTORE_SKIP_DESTINATION_OCCUPIED, $fragment);
@@ -549,27 +565,39 @@ final class MediaQuarantine
     ): array {
         $accountedFor = ($skipped === 0 && $failed === 0);
 
+        // A receipt that saw no file and moved no file describes no restore at
+        // all — an unknown or unreadable manifest id reaches here that way.
+        // `complete` is public receipt API, so it must never let "the id means
+        // nothing to me" derive to "everything was put back".
+        $describesARestore = ($filesSeen > 0 || $restored > 0);
+
         return [
             'restored'   => $restored,
             'skipped'    => $skipped,
             'failed'     => $failed,
             'files_seen' => $filesSeen,
-            'complete'   => $accountedFor && !$this->hasRemainingFiles($manifestId),
+            'complete'   => $describesARestore && $accountedFor && !$this->hasRemainingFiles($manifestId),
             'reasons'    => $reasons,
             'blocked'    => array_values($blocked),
         ];
     }
 
     /**
-     * Whether any file remains anywhere under media/<manifest_id>/files.
+     * Whether anything remains anywhere under media/<manifest_id>.
      *
      * The second, independent half of the `complete` derivation. The restore
      * counters only see files the manifest described; a file left behind by a
      * fragment-derivation branch produces no countable record, so the tree
      * itself is scanned before its deletion is licensed.
      *
-     * Fails closed: anything that cannot be proven empty reports remaining
-     * files, because the caller's only use for a false is to delete.
+     * The scan root is media/<manifest_id>, not media/<manifest_id>/files,
+     * because removeManifestDir() deletes media/<manifest_id> whole. The scan
+     * must cover everything the cleanup destroys or the gate is only accurate
+     * for today's directory layout; an earlier layout kept other things beside
+     * files/, and a stray at media/<manifest_id>/x was deleted unseen.
+     *
+     * Fails closed: an entry that cannot be positively classified counts as
+     * remaining, because the caller's only use for a false is to delete.
      */
     private function hasRemainingFiles(string $manifestId): bool
     {
@@ -577,17 +605,29 @@ final class MediaQuarantine
             return true;
         }
 
-        return $this->dirHoldsFile($this->mediaRoot . '/' . $manifestId . '/files');
+        return $this->dirHoldsFile($this->mediaRoot . '/' . $manifestId);
     }
 
     /**
      * Recursive half of hasRemainingFiles(). A symlink counts as a file: it is
      * something the tree still holds, whatever it points at.
+     *
+     * Classification is positive-only. An entry scandir() listed but that is
+     * neither link, file nor directory counts as remaining: that covers FIFOs,
+     * sockets and device nodes, and it covers the case that motivated this
+     * rule — a directory carrying the read bit without the search bit, where
+     * scandir() succeeds, every stat on its entries fails, and each entry
+     * would otherwise be silently dropped from a tree about to be deleted.
      */
     private function dirHoldsFile(string $dir): bool
     {
+        if (is_link($dir) || is_file($dir)) {
+            // The scan root is not a directory but is something. It is held.
+            return true;
+        }
+
         if (!is_dir($dir)) {
-            return false;
+            return $this->pathPresentButUnclassified($dir);
         }
 
         $entries = @scandir($dir);
@@ -604,12 +644,47 @@ final class MediaQuarantine
             if (is_link($path) || is_file($path)) {
                 return true;
             }
-            if (is_dir($path) && $this->dirHoldsFile($path)) {
-                return true;
+            if (is_dir($path)) {
+                if ($this->dirHoldsFile($path)) {
+                    return true;
+                }
+                continue;
             }
+
+            // Listed, so something is there, but nothing could classify it.
+            // Unclassified is not empty.
+            return true;
         }
 
         return false;
+    }
+
+    /**
+     * Whether a path that no stat could classify is nevertheless present.
+     *
+     * A path whose own stat fails looks identical to one that was never
+     * created — file_exists() is false for both — so the parent directory is
+     * asked instead, which can tell them apart by listing the name. Absent is
+     * the licit answer: a manifest that quarantined nothing never creates a
+     * media/<manifest_id> tree, and that must stay eligible for cleanup.
+     */
+    private function pathPresentButUnclassified(string $path): bool
+    {
+        $parent = dirname($path);
+        if ($parent === $path || !is_dir($parent)) {
+            // No parent left to ask, or the parent is absent too. Nothing was
+            // ever there to hold a file.
+            return false;
+        }
+
+        $entries = @scandir($parent);
+        if ($entries === false) {
+            // The parent exists but will not be listed: nothing below it can
+            // be proven empty.
+            return true;
+        }
+
+        return in_array(basename($path), $entries, true);
     }
 
     /**
