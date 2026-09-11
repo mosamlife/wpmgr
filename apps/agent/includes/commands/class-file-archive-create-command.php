@@ -80,6 +80,26 @@ final class FileArchiveCreateCommand implements CommandInterface {
 	}
 
 	/**
+	 * Effect: zips jailed paths into a temp file, streams it to control-plane-minted presigned PUTs, then
+	 * removes the temp file. The site is unchanged when it returns; the durable artifact lands off-site.
+	 *
+	 * @return CommandEffect
+	 */
+	public function effect(): CommandEffect {
+		return CommandEffect::Read;
+	}
+
+	/**
+	 * Repeatability: a second call rebuilds and re-uploads the archive; work and egress are duplicated,
+	 * nothing is lost.
+	 *
+	 * @return CommandRepeatability
+	 */
+	public function repeatability(): CommandRepeatability {
+		return CommandRepeatability::Repeatable;
+	}
+
+	/**
 	 * {@inheritDoc}
 	 *
 	 * @param array<string,mixed> $claims Validated JWT claims.

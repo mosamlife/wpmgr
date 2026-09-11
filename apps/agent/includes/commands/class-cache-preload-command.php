@@ -48,6 +48,29 @@ final class CachePreloadCommand implements CommandInterface
     }
 
     /**
+     * Effect: queues background warm jobs for the supplied URLs, and is a Write -- populating the cache ahead
+     * of real visitor traffic is the whole reason this command exists. Only the preload queue and the page
+     * cache change, both state the site could rebuild on its own; that does not decide the label -- purpose
+     * does.
+     *
+     * @return CommandEffect
+     */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Write;
+    }
+
+    /**
+     * Repeatability: a second call re-queues the same URLs: real work is redone, nothing is lost.
+     *
+     * @return CommandRepeatability
+     */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Repeatable;
+    }
+
+    /**
      * {@inheritDoc}
      *
      * @param array<string,mixed> $claims Validated JWT claims (unused).

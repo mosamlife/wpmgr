@@ -79,6 +79,28 @@ final class FileWriteCommand implements CommandInterface {
 	}
 
 	/**
+	 * Effect: writes content over a path via temp+rename. stageBackup() encrypts the previous bytes first, but
+	 * it is explicitly best-effort and does NOT block the write, so a successful run can replace content it
+	 * did not retain. The response's before_state says which happened.
+	 *
+	 * @return CommandEffect
+	 */
+	public function effect(): CommandEffect {
+		return CommandEffect::Destructive;
+	}
+
+	/**
+	 * Repeatability: the request's content is fixed, the destination is not. A blind retry renames those same
+	 * bytes over whatever the file holds NOW, erasing any edit made between the two runs, and stageBackup() is
+	 * best-effort so the erased version may not be recoverable either.
+	 *
+	 * @return CommandRepeatability
+	 */
+	public function repeatability(): CommandRepeatability {
+		return CommandRepeatability::Unsafe;
+	}
+
+	/**
 	 * {@inheritDoc}
 	 *
 	 * @param array<string,mixed> $claims Validated JWT claims.

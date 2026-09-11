@@ -44,6 +44,26 @@ final class SendTestEmailCommand implements CommandInterface {
 	}
 
 	/**
+	 * Effect: sends one test message through the configured provider with the fallback disabled, and logs the
+	 * attempt.
+	 *
+	 * @return CommandEffect
+	 */
+	public function effect(): CommandEffect {
+		return CommandEffect::Write;
+	}
+
+	/**
+	 * Repeatability: a duplicate test message is noise, not harm -- unlike resend_email, the recipient is the
+	 * operator testing their own configuration.
+	 *
+	 * @return CommandRepeatability
+	 */
+	public function repeatability(): CommandRepeatability {
+		return CommandRepeatability::Repeatable;
+	}
+
+	/**
 	 * {@inheritDoc}
 	 *
 	 * @param array<string,mixed> $claims Validated JWT claims.

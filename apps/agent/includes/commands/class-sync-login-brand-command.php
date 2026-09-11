@@ -67,6 +67,26 @@ final class SyncLoginBrandCommand implements CommandInterface
     }
 
     /**
+     * Effect: persists the cosmetic login-page branding option.
+     *
+     * @return CommandEffect
+     */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Write;
+    }
+
+    /**
+     * Repeatability: writing the same configuration twice converges.
+     *
+     * @return CommandRepeatability
+     */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Idempotent;
+    }
+
+    /**
      * {@inheritDoc}
      *
      * Accepts (all optional, default to ""):

@@ -79,6 +79,29 @@ final class SearchReplaceCommand implements CommandInterface
     }
 
     /**
+     * Effect: worst case is dry_run=false, which rewrites matching database values in place with
+     * serialization-safe substitution and stages no backup. dry_run defaults to true, and a preview is a
+     * read -- but the label must hold without parsing the arguments.
+     *
+     * @return CommandEffect
+     */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Destructive;
+    }
+
+    /**
+     * Repeatability: a second pass runs the same substitution over the already-substituted data, which
+     * compounds whenever the replacement still contains the search term.
+     *
+     * @return CommandRepeatability
+     */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Unsafe;
+    }
+
+    /**
      * Validate the request and run the serialization-safe search-replace (or
      * dry-run count) synchronously.
      *

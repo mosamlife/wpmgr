@@ -115,6 +115,31 @@ final class DbCleanCommand implements CommandInterface
     }
 
     /**
+     * Effect: permanently deletes rows in the requested cleanup categories (revisions, spam, expired
+     * transients, orphaned meta). Nothing is retained; recovery needs a backup taken beforehand.
+     *
+     * @return CommandEffect
+     */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Destructive;
+    }
+
+    /**
+     * Repeatability: job_id is documented as a single-use dedup key but nothing stores it: execute() checks
+     * only that it is non-empty and registers a shutdown worker unconditionally, so a redelivery runs a
+     * SECOND concurrent worker. DbCleanup::run() also selects rows at worker time, so the retry deletes
+     * revisions, spam and scheduler rows created after the first worker finished. Contrast backup, which
+     * claims its snapshot_id atomically and refuses with runner_in_flight.
+     *
+     * @return CommandRepeatability
+     */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Unsafe;
+    }
+
+    /**
      * Validate the request, register the async shutdown worker, and return the
      * frozen db_clean_ack immediately.
      *

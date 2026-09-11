@@ -211,6 +211,40 @@ final class MediaCleanCommand implements CommandInterface
     }
 
     /**
+     * Effect: worst case of five actions. action=delete permanently removes attachments via
+     * wp_delete_attachment and unlinks their quarantined files; scan and list read, isolate and restore
+     * move files in and out of a reversible quarantine.
+     *
+     * @return CommandEffect
+     */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Destructive;
+    }
+
+    /**
+     * Repeatability: Unsafe, on the restore path -- not on delete, which an earlier pass wrongly blamed.
+     * action=isolate and action=delete are both pinned by identifiers already in the request
+     * (sanitiseIdList() / sanitiseStringList()); neither re-derives its target at run time, so the
+     * earlier docblock's claim that a delete retry "removes whatever now matches" was wrong about the
+     * code -- handleDelete() never re-scans.
+     *
+     * But action=restore is unsafe to retry. MediaQuarantine::restoreManifest() guards only the source:
+     * it skips a file only when file_exists($src) is false (class-media-quarantine.php:380), and moves
+     * it onto $normalised with a bare @rename() that overwrites unchecked -- the destination is never
+     * tested. Cleanup only runs when if ($restored > 0) (class-media-quarantine.php:397), so a restore
+     * attempt that restores zero files leaves the manifest live for a retry. A retry after that point can
+     * rename a quarantined file over a file created at the original path since the first attempt,
+     * destroying it. The manifest pins the source; nothing pins the destination.
+     *
+     * @return CommandRepeatability
+     */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Unsafe;
+    }
+
+    /**
      * {@inheritDoc}
      */
     public function execute(array $claims, array $params): array

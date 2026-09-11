@@ -97,6 +97,27 @@ final class FileUploadApplyCommand implements CommandInterface {
 	}
 
 	/**
+	 * Effect: reassembles presigned chunks and renames the result over the destination path. Unlike file_write
+	 * it stages no backup at all, so an existing file's previous bytes are gone.
+	 *
+	 * @return CommandEffect
+	 */
+	public function effect(): CommandEffect {
+		return CommandEffect::Destructive;
+	}
+
+	/**
+	 * Repeatability: the sha256 validates the STAGED bytes, never the destination. A blind retry writes the
+	 * original request's content over whatever is at that path now, erasing anything written since -- and
+	 * unlike file_write this command stages no backup at all.
+	 *
+	 * @return CommandRepeatability
+	 */
+	public function repeatability(): CommandRepeatability {
+		return CommandRepeatability::Unsafe;
+	}
+
+	/**
 	 * {@inheritDoc}
 	 *
 	 * @param array<string,mixed> $claims Validated JWT claims.

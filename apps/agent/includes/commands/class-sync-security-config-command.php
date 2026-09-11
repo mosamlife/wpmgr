@@ -73,6 +73,27 @@ final class SyncSecurityConfigCommand implements CommandInterface
     }
 
     /**
+     * Effect: persists the login-protection mode, thresholds, IP header and CIDR lists, and clears the
+     * in-request cache.
+     *
+     * @return CommandEffect
+     */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Write;
+    }
+
+    /**
+     * Repeatability: writing the same configuration twice converges.
+     *
+     * @return CommandRepeatability
+     */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Idempotent;
+    }
+
+    /**
      * {@inheritDoc}
      *
      * Accepts:

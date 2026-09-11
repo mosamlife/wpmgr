@@ -53,6 +53,27 @@ final class CachePreloadQueueTestRestCommand implements CommandInterface
     }
 
     /**
+     * Effect: looks like a probe and is not one: it POSTs a VALID runner token to the loopback preload-run
+     * route, so a reachable loopback means this call actually drained a preload batch.
+     *
+     * @return CommandEffect
+     */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Write;
+    }
+
+    /**
+     * Repeatability: a second probe runs another batch; work is redone, nothing is lost.
+     *
+     * @return CommandRepeatability
+     */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Repeatable;
+    }
+
+    /**
      * {@inheritDoc}
      *
      * @param array<string,mixed> $claims Validated JWT claims (unused).

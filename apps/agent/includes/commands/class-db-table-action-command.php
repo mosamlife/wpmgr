@@ -87,6 +87,27 @@ final class DbTableActionCommand implements CommandInterface
     }
 
     /**
+     * Effect: worst case of six actions. action=drop runs DROP TABLE and action=empty runs TRUNCATE;
+     * optimize, repair, analyze and convert_innodb lose nothing.
+     *
+     * @return CommandEffect
+     */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Destructive;
+    }
+
+    /**
+     * Repeatability: a blind retry of a TRUNCATE that already succeeded destroys rows written since.
+     *
+     * @return CommandRepeatability
+     */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Unsafe;
+    }
+
+    /**
      * Validate the request and execute the action on each listed table.
      *
      * @param array<string,mixed> $claims Validated JWT claims (unused here).

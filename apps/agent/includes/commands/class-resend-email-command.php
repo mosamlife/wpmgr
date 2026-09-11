@@ -161,6 +161,26 @@ final class ResendEmailCommand implements CommandInterface {
 	}
 
 	/**
+	 * Effect: re-sends a previously buffered message through the configured provider and records the attempt
+	 * in the local mail log.
+	 *
+	 * @return CommandEffect
+	 */
+	public function effect(): CommandEffect {
+		return CommandEffect::Write;
+	}
+
+	/**
+	 * Repeatability: a real message that has already left cannot be recalled, so a blind retry delivers a
+	 * duplicate to a real recipient.
+	 *
+	 * @return CommandRepeatability
+	 */
+	public function repeatability(): CommandRepeatability {
+		return CommandRepeatability::Unsafe;
+	}
+
+	/**
 	 * {@inheritDoc}
 	 *
 	 * @param array<string,mixed> $claims Validated JWT claims.

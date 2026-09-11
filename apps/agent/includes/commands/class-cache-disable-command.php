@@ -44,6 +44,29 @@ final class CacheDisableCommand implements CommandInterface
     }
 
     /**
+     * Effect: turns page caching off and reverses every artefact -- the WP_CACHE define, the drop-in and the
+     * .htaccess block -- then purges, and is a Write: stopping the site from serving cached pages to the next
+     * visitor is the whole reason this command exists. Everything it removes is config plus cache content the
+     * site rebuilds on its own if caching is re-enabled; that does not decide the label -- purpose does.
+     *
+     * @return CommandEffect
+     */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Write;
+    }
+
+    /**
+     * Repeatability: disabling an already-disabled cache converges on the same state.
+     *
+     * @return CommandRepeatability
+     */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Idempotent;
+    }
+
+    /**
      * {@inheritDoc}
      *
      * @param array<string,mixed> $claims Validated JWT claims (unused).

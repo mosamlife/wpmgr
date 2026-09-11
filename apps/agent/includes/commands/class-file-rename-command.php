@@ -50,6 +50,26 @@ final class FileRenameCommand implements CommandInterface {
 	}
 
 	/**
+	 * Effect: moves a path. The destination is refused when it already exists, so nothing is overwritten and
+	 * no content is lost.
+	 *
+	 * @return CommandEffect
+	 */
+	public function effect(): CommandEffect {
+		return CommandEffect::Write;
+	}
+
+	/**
+	 * Repeatability: after a successful run the source is gone, so a blind retry either errors or, if
+	 * something new has since appeared at the source path, moves the wrong file.
+	 *
+	 * @return CommandRepeatability
+	 */
+	public function repeatability(): CommandRepeatability {
+		return CommandRepeatability::Unsafe;
+	}
+
+	/**
 	 * {@inheritDoc}
 	 *
 	 * @param array<string,mixed> $claims Validated JWT claims.

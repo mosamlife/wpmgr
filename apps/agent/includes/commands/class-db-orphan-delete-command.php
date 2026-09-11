@@ -205,6 +205,30 @@ final class DbOrphanDeleteCommand implements CommandInterface
     }
 
     /**
+     * Effect: permanently deletes the control-plane-signed allowlist of orphaned options, cron entries and
+     * tables, including DROP TABLE. Nothing is retained.
+     *
+     * @return CommandEffect
+     */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Destructive;
+    }
+
+    /**
+     * Repeatability: the allowlist is fixed by the caller and an item already deleted is skipped, so a
+     * retry destroys nothing new. It is not idempotent either: job_id is stored nowhere, so a redelivery
+     * starts a second concurrent worker that re-verifies the whole allowlist against the live plugin set
+     * and emits another progress stream.
+     *
+     * @return CommandRepeatability
+     */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Repeatable;
+    }
+
+    /**
      * Validate the request, register the async shutdown worker, and return the
      * frozen db_orphan_delete ACK immediately.
      *

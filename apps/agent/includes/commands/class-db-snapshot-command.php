@@ -70,6 +70,29 @@ final class DbSnapshotCommand implements CommandInterface
     }
 
     /**
+     * Effect: worst case of four actions. action=revert imports a snapshot over the live database and
+     * action=delete removes a snapshot permanently; action=create and action=list are far milder, but the
+     * label must hold without parsing the arguments.
+     *
+     * @return CommandEffect
+     */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Destructive;
+    }
+
+    /**
+     * Repeatability: a blind retry of a revert that already succeeded throws away everything written to the
+     * database since it succeeded.
+     *
+     * @return CommandRepeatability
+     */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Unsafe;
+    }
+
+    /**
      * {@inheritDoc}
      *
      * @param array<string,mixed> $claims Validated JWT claims.

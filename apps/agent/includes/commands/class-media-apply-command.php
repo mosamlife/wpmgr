@@ -74,6 +74,28 @@ final class MediaApplyCommand implements CommandInterface
     }
 
     /**
+     * Effect: installs optimized image variants and rewrites attachment metadata and content URLs. The
+     * originals are archived by the optimizer pipeline, and media_restore is the paired undo.
+     *
+     * @return CommandEffect
+     */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Write;
+    }
+
+    /**
+     * Repeatability: each run bumps the attachment's optimization generation, so a blind retry can
+     * re-encode an already-optimized image and overwrite the archive that made the first run reversible.
+     *
+     * @return CommandRepeatability
+     */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Unsafe;
+    }
+
+    /**
      * {@inheritDoc}
      *
      * @param array<string,mixed> $claims

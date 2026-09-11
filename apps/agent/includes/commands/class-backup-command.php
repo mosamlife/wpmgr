@@ -91,6 +91,27 @@ final class BackupCommand implements CommandInterface
     }
 
     /**
+     * Effect: seeds a backup task and hands off to the cron runner. Adds an archive; removes nothing.
+     *
+     * @return CommandEffect
+     */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Write;
+    }
+
+    /**
+     * Repeatability: the task is keyed by the control plane's snapshot_id and deduped on it, so a
+     * redelivery joins the existing run instead of starting a second.
+     *
+     * @return CommandRepeatability
+     */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Idempotent;
+    }
+
+    /**
      * {@inheritDoc}
      *
      * @param array<string,mixed> $claims Validated JWT claims (unused — Connector verified them).

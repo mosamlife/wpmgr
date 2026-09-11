@@ -40,6 +40,27 @@ final class ObjectcacheApplyConfigCommand implements CommandInterface
 	}
 
 	/**
+	 * Effect: persists the Redis object-cache config file with 0600 permissions. It does not activate
+	 * anything.
+	 *
+	 * @return CommandEffect
+	 */
+	public function effect(): CommandEffect
+	{
+		return CommandEffect::Write;
+	}
+
+	/**
+	 * Repeatability: writing the same config twice converges.
+	 *
+	 * @return CommandRepeatability
+	 */
+	public function repeatability(): CommandRepeatability
+	{
+		return CommandRepeatability::Idempotent;
+	}
+
+	/**
 	 * {@inheritDoc}
 	 *
 	 * @param array<string,mixed> $claims Validated JWT claims (unused).

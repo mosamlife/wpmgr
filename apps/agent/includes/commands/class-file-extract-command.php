@@ -122,6 +122,26 @@ final class FileExtractCommand implements CommandInterface {
 	}
 
 	/**
+	 * Effect: extracts an archive into a jailed destination and atomically swaps each top-level entry into
+	 * place, replacing whatever was already there. The replaced content is not retained.
+	 *
+	 * @return CommandEffect
+	 */
+	public function effect(): CommandEffect {
+		return CommandEffect::Destructive;
+	}
+
+	/**
+	 * Repeatability: a blind retry replaces the destination again, discarding anything written there since the
+	 * first run.
+	 *
+	 * @return CommandRepeatability
+	 */
+	public function repeatability(): CommandRepeatability {
+		return CommandRepeatability::Unsafe;
+	}
+
+	/**
 	 * {@inheritDoc}
 	 *
 	 * @param array<string,mixed> $claims Validated JWT claims.
