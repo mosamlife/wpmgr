@@ -52,6 +52,26 @@ final class ObjectcacheEnableCommand implements CommandInterface
 	}
 
 	/**
+	 * Effect: installs the object-cache drop-in and purges transients. Both are derived state.
+	 *
+	 * @return CommandEffect
+	 */
+	public function effect(): CommandEffect
+	{
+		return CommandEffect::Write;
+	}
+
+	/**
+	 * Repeatability: enabling an already-enabled object cache converges.
+	 *
+	 * @return CommandRepeatability
+	 */
+	public function repeatability(): CommandRepeatability
+	{
+		return CommandRepeatability::Idempotent;
+	}
+
+	/**
 	 * {@inheritDoc}
 	 *
 	 * @param array<string,mixed> $claims Validated JWT claims (unused).

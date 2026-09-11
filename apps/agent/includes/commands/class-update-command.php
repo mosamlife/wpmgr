@@ -267,6 +267,29 @@ final class UpdateCommand implements CommandInterface
     }
 
     /**
+     * Effect: installs plugin, theme or core updates, replacing installed code. A pre-update snapshot is
+     * taken first and rollback is the paired undo, which is what keeps this out of Destructive; that
+     * snapshot is the whole reason.
+     *
+     * @return CommandEffect
+     */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Write;
+    }
+
+    /**
+     * Repeatability: a blind retry can re-enter an apply that is still in flight, which is what the site
+     * update lock exists to prevent.
+     *
+     * @return CommandRepeatability
+     */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Unsafe;
+    }
+
+    /**
      * {@inheritDoc}
      *
      * @param array<string,mixed> $claims Validated JWT claims (unused).

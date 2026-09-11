@@ -40,6 +40,29 @@ final class ObjectcacheFlushCommand implements CommandInterface
 	}
 
 	/**
+	 * Effect: empties the object cache, either FLUSHDB or SCAN+UNLINK by prefix. Cache content is derived and
+	 * the site rebuilds it. The caveat worth knowing: FLUSHDB clears every key in the configured Redis DB,
+	 * including any a different application put there, so 'derived' holds for WordPress and is an assumption
+	 * about how the DB is shared.
+	 *
+	 * @return CommandEffect
+	 */
+	public function effect(): CommandEffect
+	{
+		return CommandEffect::Write;
+	}
+
+	/**
+	 * Repeatability: flushing an already-empty cache is a no-op.
+	 *
+	 * @return CommandRepeatability
+	 */
+	public function repeatability(): CommandRepeatability
+	{
+		return CommandRepeatability::Idempotent;
+	}
+
+	/**
 	 * {@inheritDoc}
 	 *
 	 * @param array<string,mixed> $claims Validated JWT claims (unused).

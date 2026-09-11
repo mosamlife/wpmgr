@@ -64,6 +64,26 @@ final class FileVersionRestoreCommand implements CommandInterface {
 	}
 
 	/**
+	 * Effect: overwrites the live file with a staged earlier version. It attempts a pre-restore backup first,
+	 * but that write is @-suppressed and unchecked, so a successful restore can still leave the replaced bytes
+	 * unretained.
+	 *
+	 * @return CommandEffect
+	 */
+	public function effect(): CommandEffect {
+		return CommandEffect::Destructive;
+	}
+
+	/**
+	 * Repeatability: restoring the same staged version twice converges on the same file.
+	 *
+	 * @return CommandRepeatability
+	 */
+	public function repeatability(): CommandRepeatability {
+		return CommandRepeatability::Idempotent;
+	}
+
+	/**
 	 * {@inheritDoc}
 	 *
 	 * @param array<string,mixed> $claims Validated JWT claims.

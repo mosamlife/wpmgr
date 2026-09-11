@@ -52,6 +52,26 @@ final class FileDeleteCommand implements CommandInterface {
 	}
 
 	/**
+	 * Effect: unlinks a file, or recursively removes a directory tree, with no backup staged. Nothing is
+	 * retained.
+	 *
+	 * @return CommandEffect
+	 */
+	public function effect(): CommandEffect {
+		return CommandEffect::Destructive;
+	}
+
+	/**
+	 * Repeatability: deleting a path that is already gone is a no-op, which is why a destructive command can
+	 * still be safe to retry.
+	 *
+	 * @return CommandRepeatability
+	 */
+	public function repeatability(): CommandRepeatability {
+		return CommandRepeatability::Idempotent;
+	}
+
+	/**
 	 * {@inheritDoc}
 	 *
 	 * @param array<string,mixed> $claims Validated JWT claims.

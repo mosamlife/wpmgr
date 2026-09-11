@@ -44,6 +44,27 @@ final class CachePreloadQueueClearCommand implements CommandInterface
     }
 
     /**
+     * Effect: deletes every row from the preload queue. The queue is derived work-tracking state, not site
+     * data.
+     *
+     * @return CommandEffect
+     */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Write;
+    }
+
+    /**
+     * Repeatability: clearing an already-empty queue is a no-op.
+     *
+     * @return CommandRepeatability
+     */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Idempotent;
+    }
+
+    /**
      * {@inheritDoc}
      *
      * @param array<string,mixed> $claims Validated JWT claims (unused).

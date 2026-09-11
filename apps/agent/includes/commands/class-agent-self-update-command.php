@@ -104,6 +104,27 @@ final class AgentSelfUpdateCommand implements CommandInterface
     }
 
     /**
+     * Effect: arms the next self-update by persisting an apply record (UpdateChecker::planSelfUpdate writes
+     * an option); no plugin file on disk moves in this beat.
+     *
+     * @return CommandEffect
+     */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Write;
+    }
+
+    /**
+     * Repeatability: re-arming replaces the previous arm rather than adding a second one.
+     *
+     * @return CommandRepeatability
+     */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Idempotent;
+    }
+
+    /**
      * {@inheritDoc}
      *
      * The Router's permission_callback has already enforced the signed-JWT

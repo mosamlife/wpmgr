@@ -71,6 +71,26 @@ final class SyncMediaConfigCommand implements CommandInterface
     }
 
     /**
+     * Effect: persists the auto-optimize enable flag, target format and target quality.
+     *
+     * @return CommandEffect
+     */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Write;
+    }
+
+    /**
+     * Repeatability: writing the same configuration twice converges.
+     *
+     * @return CommandRepeatability
+     */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Idempotent;
+    }
+
+    /**
      * {@inheritDoc}
      *
      * Accepts (field names match media_config_contract.go exactly):

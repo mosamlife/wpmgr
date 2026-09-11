@@ -56,6 +56,28 @@ final class MediaSyncCommand implements CommandInterface
     }
 
     /**
+     * Effect: enumerates the attachment library and POSTs pages of it to the control plane. It raises this
+     * request's time limit but changes no site state.
+     *
+     * @return CommandEffect
+     */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Read;
+    }
+
+    /**
+     * Repeatability: a second run re-enumerates and re-POSTs the same library; the control plane upserts,
+     * so nothing is lost.
+     *
+     * @return CommandRepeatability
+     */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Repeatable;
+    }
+
+    /**
      * {@inheritDoc}
      *
      * @param array<string,mixed> $claims

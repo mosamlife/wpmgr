@@ -82,6 +82,27 @@ final class MediaDeleteOriginalsCommand implements CommandInterface
     }
 
     /**
+     * Effect: permanently deletes the original image files left behind after optimization. Once gone,
+     * media_restore can no longer put the attachment back.
+     *
+     * @return CommandEffect
+     */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Destructive;
+    }
+
+    /**
+     * Repeatability: an original that is already deleted is skipped.
+     *
+     * @return CommandRepeatability
+     */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Idempotent;
+    }
+
+    /**
      * {@inheritDoc}
      *
      * Persists the batch under a fresh run id, schedules the background worker,

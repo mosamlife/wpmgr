@@ -42,6 +42,28 @@ final class ObjectcacheDisableCommand implements CommandInterface
 	}
 
 	/**
+	 * Effect: removes the object-cache drop-in and, by default, flushes the Redis database first. A flush
+	 * empties keys in the configured Redis DB, which is derived cache state the site rebuilds -- see the
+	 * caveat on objectcache.flush.
+	 *
+	 * @return CommandEffect
+	 */
+	public function effect(): CommandEffect
+	{
+		return CommandEffect::Write;
+	}
+
+	/**
+	 * Repeatability: disabling an already-disabled object cache converges.
+	 *
+	 * @return CommandRepeatability
+	 */
+	public function repeatability(): CommandRepeatability
+	{
+		return CommandRepeatability::Idempotent;
+	}
+
+	/**
 	 * {@inheritDoc}
 	 *
 	 * @param array<string,mixed> $claims Validated JWT claims (unused).

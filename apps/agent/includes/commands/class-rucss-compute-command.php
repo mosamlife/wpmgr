@@ -75,6 +75,27 @@ final class RucssComputeCommand implements CommandInterface
     }
 
     /**
+     * Effect: queues used-CSS computation for same-host URLs and purges those URLs' cache entries. Only
+     * derived cache state changes.
+     *
+     * @return CommandEffect
+     */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Write;
+    }
+
+    /**
+     * Repeatability: a second call re-queues the same URLs.
+     *
+     * @return CommandRepeatability
+     */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Repeatable;
+    }
+
+    /**
      * {@inheritDoc}
      *
      * @param array<string,mixed> $claims Validated JWT claims (unused).

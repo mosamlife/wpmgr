@@ -115,6 +115,28 @@ final class DbCleanCommand implements CommandInterface
     }
 
     /**
+     * Effect: permanently deletes rows in the requested cleanup categories (revisions, spam, expired
+     * transients, orphaned meta). Nothing is retained; recovery needs a backup taken beforehand.
+     *
+     * @return CommandEffect
+     */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Destructive;
+    }
+
+    /**
+     * Repeatability: a retry deletes whatever now matches the same task list and nothing the first run was
+     * not already asked to delete.
+     *
+     * @return CommandRepeatability
+     */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Idempotent;
+    }
+
+    /**
      * Validate the request, register the async shutdown worker, and return the
      * frozen db_clean_ack immediately.
      *

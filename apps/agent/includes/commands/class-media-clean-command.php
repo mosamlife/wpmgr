@@ -211,6 +211,29 @@ final class MediaCleanCommand implements CommandInterface
     }
 
     /**
+     * Effect: worst case of five actions. action=delete permanently removes attachments via
+     * wp_delete_attachment and unlinks their quarantined files; scan and list read, isolate and restore
+     * move files in and out of a reversible quarantine.
+     *
+     * @return CommandEffect
+     */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Destructive;
+    }
+
+    /**
+     * Repeatability: delete acts on a fixed manifest of attachment ids, and WordPress does not reuse post
+     * ids, so a second pass finds nothing left to remove.
+     *
+     * @return CommandRepeatability
+     */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Idempotent;
+    }
+
+    /**
      * {@inheritDoc}
      */
     public function execute(array $claims, array $params): array

@@ -74,6 +74,27 @@ final class SyncSecurityPolicyCommand implements CommandInterface
     }
 
     /**
+     * Effect: persists the site-user auth policy and may flag accounts for a forced password change on next
+     * login. It changes no credential and locks no one out.
+     *
+     * @return CommandEffect
+     */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Write;
+    }
+
+    /**
+     * Repeatability: applying the same policy twice converges.
+     *
+     * @return CommandRepeatability
+     */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Idempotent;
+    }
+
+    /**
      * {@inheritDoc}
      *
      * @param array<string,mixed> $claims Validated JWT claims (unused; Router enforced aud+cmd).

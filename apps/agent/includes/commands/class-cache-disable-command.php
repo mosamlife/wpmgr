@@ -44,6 +44,27 @@ final class CacheDisableCommand implements CommandInterface
     }
 
     /**
+     * Effect: removes the WP_CACHE define, the drop-in and the .htaccess block, then purges. Everything it
+     * removes is derived state the site rebuilds.
+     *
+     * @return CommandEffect
+     */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Write;
+    }
+
+    /**
+     * Repeatability: disabling an already-disabled cache converges on the same state.
+     *
+     * @return CommandRepeatability
+     */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Idempotent;
+    }
+
+    /**
      * {@inheritDoc}
      *
      * @param array<string,mixed> $claims Validated JWT claims (unused).

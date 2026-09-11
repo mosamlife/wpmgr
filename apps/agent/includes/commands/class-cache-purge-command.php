@@ -43,6 +43,26 @@ final class CachePurgeCommand implements CommandInterface
     }
 
     /**
+     * Effect: empties the page cache, all or per-URL. The cache is derived state.
+     *
+     * @return CommandEffect
+     */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Write;
+    }
+
+    /**
+     * Repeatability: purging an already-cold cache is a no-op.
+     *
+     * @return CommandRepeatability
+     */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Idempotent;
+    }
+
+    /**
      * {@inheritDoc}
      *
      * @param array<string,mixed> $claims Validated JWT claims (unused).

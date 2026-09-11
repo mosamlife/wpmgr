@@ -95,6 +95,28 @@ class AutologinCommand implements CommandInterface
     }
 
     /**
+     * Effect: execute() is not dispatchable through the signed command channel (it returns
+     * not_dispatchable); the work happens in handle(), which mints a one-time authenticated session.
+     * Labelled for handle(): a session is created, nothing is destroyed.
+     *
+     * @return CommandEffect
+     */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Write;
+    }
+
+    /**
+     * Repeatability: each call mints another one-time session; harmless, but not free.
+     *
+     * @return CommandRepeatability
+     */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Repeatable;
+    }
+
+    /**
      * {@inheritDoc} The autologin flow is NEVER reached through the dispatch
      * Router (it's a browser GET, not an agent POST). Implemented to satisfy
      * the registry contract; calling it is a programming error.
