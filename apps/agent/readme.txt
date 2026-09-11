@@ -4,7 +4,7 @@ Tags: backup, security, performance, updates, site management
 Requires at least: 6.2
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 0.61.148
+Stable tag: 0.61.149
 License: MIT
 License URI: https://opensource.org/licenses/MIT
 
@@ -286,6 +286,13 @@ This plugin ships two minified JavaScript files. Their human-readable source and
 
 The entries below summarize the notable changes since 0.31.1. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
 
+= 0.61.149 =
+* Fixed: restoring a file from media quarantine no longer overwrites a file that has since been recreated at the same path. A file that cannot be put back safely is now left in quarantine and reported with a reason, instead of being removed after a restore that did not happen, so nothing is lost when a restore cannot complete in full. The quarantine folder is now cleared only once every file it recorded has been accounted for and a scan confirms nothing is left behind.
+* Fixed: every path the page cache reads or writes is now kept inside the cache folder.
+* Fixed: creating a folder on this site now stays inside the WordPress installation even when the parent folder does not exist yet.
+* Fixed: the snapshot taken before an update now tells apart "nothing was here before" from "the snapshot could not be taken". Both previously looked the same to the code that decides whether an automatic rollback is possible, so a rollback could be skipped when it was available, or attempted when there was nothing to restore. A snapshot that could not be completed is also no longer left behind as a partial copy.
+* Changed: every command this plugin accepts now declares what a successful run does to the site and whether running it again is safe. This is descriptive information for the dashboard's approval and audit screens; no command behaves differently because of it.
+
 = 0.61.148 =
 * Fixed: this plugin no longer fatals with a white screen on Enroll on a host without the native libsodium PHP extension. A memory-wiping call was made unconditionally, and WordPress's bundled polyfill throws rather than perform it; every call site now degrades to a best-effort overwrite instead. This affected shared hosting broadly, cPanel and CloudLinux hosts especially, where the plugin installed and activated normally but enrollment could not be completed.
 * Changed: removed a settings-screen section that asked you to paste a minted connection key into a dashboard flow that was never built. The underlying mechanism is unchanged; only that dead, confusing step is gone.
@@ -450,6 +457,9 @@ The entries below summarize the notable changes since 0.31.1. This project ships
 * New: WOFF2 font transcoding. TTF, OTF and WOFF are converted on the control plane; the flag defaults to off.
 
 == Upgrade Notice ==
+
+= 0.61.149 =
+Fixes a media quarantine restore that could overwrite a file recreated at the same path, and could remove a quarantined file it had declined to restore. Also tightens where the page cache and folder creation may write. Update if this site uses the unused-image quarantine.
 
 = 0.61.148 =
 Fixes a white screen on Enroll on hosts without the native libsodium PHP extension, common on shared hosting, cPanel and CloudLinux in particular, where the plugin installed and activated normally but enrollment could not be completed. Update to complete setup on those hosts. Also removes a settings section that referenced a dashboard flow that was never built.
