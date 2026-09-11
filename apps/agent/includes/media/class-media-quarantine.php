@@ -1165,7 +1165,7 @@ final class MediaQuarantine
         if ($base === '') {
             $message = 'WPMgr MediaQuarantine: wp_upload_dir() reported no usable basedir; '
                 . 'refusing to run an uploads-containment check against an empty base path.';
-            throw new \RuntimeException($message);
+            throw new \RuntimeException($message); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- fixed self-composed literal, caught in-class and never echoed; carries no caller or request input
         }
 
         return $base;
