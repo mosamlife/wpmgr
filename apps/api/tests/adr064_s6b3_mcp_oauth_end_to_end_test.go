@@ -146,6 +146,9 @@ func TestMCPOAuthEndToEndThroughMountedRoutesAsAppRole(t *testing.T) {
 		RedirectURI          string   `json:"redirect_uri"`
 		RedirectHost         string   `json:"redirect_host"`
 		Scopes               []string `json:"scopes"`
+		// The server's own record of THIS authorize call, echoed back on the
+		// approval below. A client that drops it cannot complete a consent.
+		ConsentTicket string `json:"consent_ticket"`
 	}
 	code = mcpDoJSON(t, eng, http.MethodGet,
 		"/api/v1/oauth/mcp/authorize?"+q.Encode(), nil, nil, &consentScreen)
@@ -178,6 +181,10 @@ func TestMCPOAuthEndToEndThroughMountedRoutesAsAppRole(t *testing.T) {
 	// STEP 3: consent. The human's approval, and the only thing that binds this
 	// client to an organisation.
 	// -----------------------------------------------------------------------
+	if consentScreen.ConsentTicket == "" {
+		t.Fatal("STEP 2 consent screen carried no consent_ticket, so STEP 3 has " +
+			"nothing to prove which authorize call it is approving")
+	}
 	approveBody := map[string]any{
 		"client_id":             reg.ClientID,
 		"redirect_uri":          redirectURI,
@@ -187,6 +194,8 @@ func TestMCPOAuthEndToEndThroughMountedRoutesAsAppRole(t *testing.T) {
 		"code_challenge_method": "S256",
 		"name":                  "s6b3 end-to-end connection",
 		"site_scope_mode":       string(mcp.SiteScopeModeAll),
+		// Echoed back verbatim, exactly as a client must.
+		"consent_ticket": consentScreen.ConsentTicket,
 	}
 	var approval struct {
 		GrantID string `json:"grant_id"`

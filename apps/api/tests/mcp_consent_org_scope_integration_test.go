@@ -401,10 +401,17 @@ func TestMCPConsentAdmitsAnOrgMemberAsAppRole(t *testing.T) {
 	q.Set("code_challenge", challenge)
 	q.Set("code_challenge_method", "S256")
 
+	var consentScreen struct {
+		ConsentTicket string `json:"consent_ticket"`
+	}
 	if s := mcpDoJSON(t, eng, http.MethodGet,
-		"/api/v1/oauth/mcp/authorize?"+q.Encode(), nil, nil, nil); s != http.StatusOK {
+		"/api/v1/oauth/mcp/authorize?"+q.Encode(), nil, nil, &consentScreen); s != http.StatusOK {
 		t.Fatalf("OVER-FIRE: GET /authorize answered %d for an ordinary org "+
 			"member, want 200", s)
+	}
+	if consentScreen.ConsentTicket == "" {
+		t.Fatal("OVER-FIRE: /authorize answered 200 with no consent_ticket, so no " +
+			"honest client could complete the consent it just passed")
 	}
 
 	var approval struct {
@@ -421,6 +428,10 @@ func TestMCPConsentAdmitsAnOrgMemberAsAppRole(t *testing.T) {
 		"code_challenge_method": "S256",
 		"name":                  "my laptop",
 		"site_scope_mode":       "all",
+		// The ticket the authorize call above issued, echoed back as a client
+		// does. Without it this over-fire test would refuse for a reason that
+		// has nothing to do with the gate it is about.
+		"consent_ticket": consentScreen.ConsentTicket,
 	}, nil, &approval)
 
 	if status != http.StatusOK {
