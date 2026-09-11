@@ -32,7 +32,9 @@ namespace WPMgr\Agent\Tests;
 use Brain\Monkey;
 use Brain\Monkey\Functions;
 use ReflectionClass;
+use WPMgr\Agent\Commands\CommandEffect;
 use WPMgr\Agent\Commands\CommandInterface;
+use WPMgr\Agent\Commands\CommandRepeatability;
 use WPMgr\Agent\Connector;
 use WPMgr\Agent\Router;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
@@ -265,6 +267,18 @@ final class RouterTest extends TestCase
 			public function name(): string
 			{
 				return $this->n;
+			}
+
+			/** @return CommandEffect A double that only echoes its own name reads nothing and changes nothing. */
+			public function effect(): CommandEffect
+			{
+				return CommandEffect::Read;
+			}
+
+			/** @return CommandRepeatability Returning a constant string converges on every run. */
+			public function repeatability(): CommandRepeatability
+			{
+				return CommandRepeatability::Idempotent;
 			}
 
 			/** @param array<string,mixed> $claims @param array<string,mixed> $params @return array<string,mixed> */
