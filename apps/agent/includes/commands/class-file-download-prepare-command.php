@@ -77,6 +77,27 @@ final class FileDownloadPrepareCommand implements CommandInterface
     }
 
     /**
+     * Effect: streams an existing file to control-plane-minted presigned PUTs. The site is unchanged; only
+     * the content leaves it.
+     *
+     * @return CommandEffect
+     */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Read;
+    }
+
+    /**
+     * Repeatability: a second call re-uploads the same bytes; egress is duplicated, nothing is lost.
+     *
+     * @return CommandRepeatability
+     */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Repeatable;
+    }
+
+    /**
      * {@inheritDoc}
      *
      * @param array<string,mixed> $claims Validated JWT claims.

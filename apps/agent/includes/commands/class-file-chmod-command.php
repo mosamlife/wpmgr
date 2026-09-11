@@ -69,6 +69,24 @@ final class FileChmodCommand implements CommandInterface {
 	}
 
 	/**
+	 * Effect: changes a file's permission bits from a safe-mode allowlist. No file content changes.
+	 *
+	 * @return CommandEffect
+	 */
+	public function effect(): CommandEffect {
+		return CommandEffect::Write;
+	}
+
+	/**
+	 * Repeatability: setting the same mode twice converges.
+	 *
+	 * @return CommandRepeatability
+	 */
+	public function repeatability(): CommandRepeatability {
+		return CommandRepeatability::Idempotent;
+	}
+
+	/**
 	 * {@inheritDoc}
 	 *
 	 * @param array<string,mixed> $claims Validated JWT claims.

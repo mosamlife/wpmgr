@@ -107,6 +107,25 @@ final class SyncEmailConfigCommand implements CommandInterface {
 	}
 
 	/**
+	 * Effect: stores the control plane's outgoing-mail configuration, including the decrypted provider secret,
+	 * in the agent keystore.
+	 *
+	 * @return CommandEffect
+	 */
+	public function effect(): CommandEffect {
+		return CommandEffect::Write;
+	}
+
+	/**
+	 * Repeatability: writing the same configuration twice converges.
+	 *
+	 * @return CommandRepeatability
+	 */
+	public function repeatability(): CommandRepeatability {
+		return CommandRepeatability::Idempotent;
+	}
+
+	/**
 	 * {@inheritDoc}
 	 *
 	 * @param array<string,mixed> $claims Validated JWT claims.

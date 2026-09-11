@@ -53,6 +53,26 @@ final class CacheEnableCommand implements CommandInterface
     }
 
     /**
+     * Effect: writes the WP_CACHE define, installs the drop-in and the .htaccess block.
+     *
+     * @return CommandEffect
+     */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Write;
+    }
+
+    /**
+     * Repeatability: enabling an already-enabled cache converges on the same state.
+     *
+     * @return CommandRepeatability
+     */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Idempotent;
+    }
+
+    /**
      * Optionally apply a pushed config, then enable caching.
      *
      * @param array<string,mixed> $claims Validated JWT claims (unused here).

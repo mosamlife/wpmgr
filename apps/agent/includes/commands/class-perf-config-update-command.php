@@ -76,6 +76,28 @@ final class PerfConfigUpdateCommand implements CommandInterface
     }
 
     /**
+     * Effect: persists the performance config option and re-renders the drop-in config and the .htaccess
+     * mobile flag.
+     *
+     * @return CommandEffect
+     */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Write;
+    }
+
+    /**
+     * Repeatability: a retry re-renders the drop-in config and the .htaccess block and re-runs the perf
+     * report. The end state converges; the work and the report do not.
+     *
+     * @return CommandRepeatability
+     */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Repeatable;
+    }
+
+    /**
      * {@inheritDoc}
      *
      * @param array<string,mixed> $claims Validated JWT claims (unused).

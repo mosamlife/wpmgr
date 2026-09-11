@@ -267,6 +267,36 @@ final class UpdateCommand implements CommandInterface
     }
 
     /**
+     * Effect: replaces installed plugin, theme or core files. A pre-update snapshot is attempted first, but
+     * processItem() does not REQUIRE one: when capture() returns an empty snapshot_id it logs "Applied
+     * without a pre-update snapshot" and calls apply() anyway, with both the UpdateGuard and the in-flight
+     * marker gated on a non-empty id. `core` never gets a directory snapshot at all, by design (D3). So a
+     * successful apply can replace installed files with no copy retained, which is exactly what Destructive
+     * means here. The first revision labelled this Write by assuming the snapshot; #733 made the
+     * no-before-state outcomes nameable, which is what exposed the assumption. The other half of that
+     * argument still stands and belongs in the approval copy rather than in the label: this is the most
+     * routine operation in the product, and a warning tuned for `restore` will simply be clicked through
+     * here.
+     *
+     * @return CommandEffect
+     */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Destructive;
+    }
+
+    /**
+     * Repeatability: a blind retry can re-enter an apply that is still in flight, which is what the site
+     * update lock exists to prevent.
+     *
+     * @return CommandRepeatability
+     */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Unsafe;
+    }
+
+    /**
      * {@inheritDoc}
      *
      * @param array<string,mixed> $claims Validated JWT claims (unused).

@@ -82,6 +82,26 @@ final class ScanCommand implements CommandInterface
     }
 
     /**
+     * Effect: walks core and plugin files, hashing them for the integrity report. Writes nothing.
+     *
+     * @return CommandEffect
+     */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Read;
+    }
+
+    /**
+     * Repeatability: a read.
+     *
+     * @return CommandRepeatability
+     */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Idempotent;
+    }
+
+    /**
      * {@inheritDoc}
      *
      * @param array<string,mixed> $claims Validated JWT claims (aud, cmd already enforced by Router).

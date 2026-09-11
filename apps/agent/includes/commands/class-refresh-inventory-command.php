@@ -65,6 +65,28 @@ final class RefreshInventoryCommand implements CommandInterface
     }
 
     /**
+     * Effect: force-refreshes WordPress's own update transients and pushes the inventory to the control
+     * plane. The transients are derived state WordPress owns and rebuilds.
+     *
+     * @return CommandEffect
+     */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Read;
+    }
+
+    /**
+     * Repeatability: a retry re-polls WordPress's update APIs and pushes a second full inventory report to
+     * the control plane.
+     *
+     * @return CommandRepeatability
+     */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Repeatable;
+    }
+
+    /**
      * {@inheritDoc}
      *
      * @param array<string,mixed> $claims Validated JWT claims (unused — Router

@@ -52,6 +52,28 @@ final class FileDeleteCommand implements CommandInterface {
 	}
 
 	/**
+	 * Effect: unlinks a file, or recursively removes a directory tree, with no backup staged. Nothing is
+	 * retained.
+	 *
+	 * @return CommandEffect
+	 */
+	public function effect(): CommandEffect {
+		return CommandEffect::Destructive;
+	}
+
+	/**
+	 * Repeatability: the path is fixed, what lives at it is not. A blind retry deletes a file recreated at
+	 * that path since the first run, which is destruction the first run did not perform. The first revision
+	 * called this idempotent because the end state -- path absent -- converges; that reads the outcome and
+	 * ignores the victim.
+	 *
+	 * @return CommandRepeatability
+	 */
+	public function repeatability(): CommandRepeatability {
+		return CommandRepeatability::Unsafe;
+	}
+
+	/**
 	 * {@inheritDoc}
 	 *
 	 * @param array<string,mixed> $claims Validated JWT claims.

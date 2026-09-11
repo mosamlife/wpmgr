@@ -63,6 +63,26 @@ final class FileReadCommand implements CommandInterface
     }
 
     /**
+     * Effect: returns a base64 preview of a jailed file.
+     *
+     * @return CommandEffect
+     */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Read;
+    }
+
+    /**
+     * Repeatability: a read.
+     *
+     * @return CommandRepeatability
+     */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Idempotent;
+    }
+
+    /**
      * {@inheritDoc}
      *
      * @param array<string,mixed> $claims Validated JWT claims.

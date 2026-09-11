@@ -75,6 +75,27 @@ final class SyncSecurityHardeningCommand implements CommandInterface
     }
 
     /**
+     * Effect: persists the hardening config, applies the DISALLOW_FILE_EDIT define to wp-config, refreshes
+     * the .htaccess security block and merges the ban list into the WAF.
+     *
+     * @return CommandEffect
+     */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Write;
+    }
+
+    /**
+     * Repeatability: applying the same hardening configuration twice converges.
+     *
+     * @return CommandRepeatability
+     */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Idempotent;
+    }
+
+    /**
      * {@inheritDoc}
      *
      * Accepts the full wire contract body described in the file docblock.

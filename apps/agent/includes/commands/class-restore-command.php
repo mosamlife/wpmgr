@@ -90,6 +90,28 @@ final class RestoreCommand implements CommandInterface
     }
 
     /**
+     * Effect: replaces the site's files and database from a backup snapshot. The state being replaced is
+     * not captured by this command.
+     *
+     * @return CommandEffect
+     */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Destructive;
+    }
+
+    /**
+     * Repeatability: a blind retry of a restore that already succeeded discards everything written to the
+     * site since it succeeded.
+     *
+     * @return CommandRepeatability
+     */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Unsafe;
+    }
+
+    /**
      * {@inheritDoc}
      *
      * @param array<string,mixed> $claims Validated JWT claims (unused).

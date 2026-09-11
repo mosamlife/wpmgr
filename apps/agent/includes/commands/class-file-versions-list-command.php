@@ -76,6 +76,24 @@ final class FileVersionsListCommand implements CommandInterface {
 	}
 
 	/**
+	 * Effect: lists the staged pre-write backups for a jailed path.
+	 *
+	 * @return CommandEffect
+	 */
+	public function effect(): CommandEffect {
+		return CommandEffect::Read;
+	}
+
+	/**
+	 * Repeatability: a read.
+	 *
+	 * @return CommandRepeatability
+	 */
+	public function repeatability(): CommandRepeatability {
+		return CommandRepeatability::Idempotent;
+	}
+
+	/**
 	 * {@inheritDoc}
 	 *
 	 * @param array<string,mixed> $claims Validated JWT claims.

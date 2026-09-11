@@ -44,6 +44,26 @@ final class CachePreloadQueueRetryFailedCommand implements CommandInterface
     }
 
     /**
+     * Effect: flips failed queue rows back to pending and dispatches runners.
+     *
+     * @return CommandEffect
+     */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Write;
+    }
+
+    /**
+     * Repeatability: a second call finds no failed rows left to revive.
+     *
+     * @return CommandRepeatability
+     */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Idempotent;
+    }
+
+    /**
      * {@inheritDoc}
      *
      * @param array<string,mixed> $claims Validated JWT claims (unused).

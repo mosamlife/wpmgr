@@ -44,6 +44,27 @@ final class PingCommand implements CommandInterface
     }
 
     /**
+     * Effect: returns liveness, agent version and heartbeat lag. It calls spawn_cron(), which drains
+     * already-due cron events -- a scheduling nudge, not a change of site state.
+     *
+     * @return CommandEffect
+     */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Read;
+    }
+
+    /**
+     * Repeatability: a read, though the cron nudge means a second call may drain more due events.
+     *
+     * @return CommandRepeatability
+     */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Idempotent;
+    }
+
+    /**
      * {@inheritDoc}
      *
      * @param array<string,mixed> $claims Validated JWT claims (unused for ping).

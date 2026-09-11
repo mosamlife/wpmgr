@@ -61,6 +61,27 @@ final class UnblockIpCommand implements CommandInterface
     }
 
     /**
+     * Effect: deletes one IP's login-failure rows so its counter resets. The rows are protection
+     * bookkeeping, not site data.
+     *
+     * @return CommandEffect
+     */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Write;
+    }
+
+    /**
+     * Repeatability: unblocking an IP that is not blocked is a no-op.
+     *
+     * @return CommandRepeatability
+     */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Idempotent;
+    }
+
+    /**
      * {@inheritDoc}
      *
      * Accepts:

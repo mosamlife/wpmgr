@@ -73,6 +73,27 @@ final class DiagnosticsCommand implements CommandInterface
     }
 
     /**
+     * Effect: collects the fourteen-category site-health report. It caches a derived value and may nudge a
+     * cron event, neither of which is durable site state.
+     *
+     * @return CommandEffect
+     */
+    public function effect(): CommandEffect
+    {
+        return CommandEffect::Read;
+    }
+
+    /**
+     * Repeatability: a read.
+     *
+     * @return CommandRepeatability
+     */
+    public function repeatability(): CommandRepeatability
+    {
+        return CommandRepeatability::Idempotent;
+    }
+
+    /**
      * Run every probe and assemble the categorized payload.
      *
      * @param array<string,mixed> $claims Validated JWT claims.

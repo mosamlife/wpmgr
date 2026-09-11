@@ -52,6 +52,29 @@ final class ObjectcacheEnableCommand implements CommandInterface
 	}
 
 	/**
+	 * Effect: installs the object-cache drop-in, purges transients so they migrate to Redis, and flushes
+	 * through the same shared-aware path as objectcache.flush, and is a Write -- turning object caching on
+	 * for every request after this one is the whole reason this command exists. All of what it touches is
+	 * derived state the site can rebuild; that does not decide the label -- purpose does.
+	 *
+	 * @return CommandEffect
+	 */
+	public function effect(): CommandEffect
+	{
+		return CommandEffect::Write;
+	}
+
+	/**
+	 * Repeatability: enabling an already-enabled object cache converges.
+	 *
+	 * @return CommandRepeatability
+	 */
+	public function repeatability(): CommandRepeatability
+	{
+		return CommandRepeatability::Idempotent;
+	}
+
+	/**
 	 * {@inheritDoc}
 	 *
 	 * @param array<string,mixed> $claims Validated JWT claims (unused).
