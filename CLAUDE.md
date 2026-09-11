@@ -183,15 +183,20 @@ the mechanism is cited only once the fix is merged **and** released to the
 fleet.
 
 This bites hardest on label and classification work, where naming the mechanism
-feels like rigour. On 2026-09-11 a `repeatability()` docblock was written to
-name the two exact lines of an unpatched data-loss path, the missing guard and
-the sequence that triggers it, explicitly so the next reader could check the
-claim without re-deriving it. It merged. About an hour later the same session
-correctly refused to open a *public issue* on that defect, for the reason that
-already applied to the commit it had just merged. The worklog rule below covers
-worklogs, issues and PR bodies; nobody had made a code comment into a
-disclosure before, and the reason applies identically. A commit cannot be
-recalled, and rewriting history to remove one orphans every release tag.
+feels like rigour. It has happened here: a docblock was written to justify a
+label by describing how the unsafe thing worked, so the next reader could check
+the claim without re-deriving it, and it merged while the fix did not yet exist.
+About an hour later the same session correctly refused to open a *public issue*
+on that defect, for the reason that already applied to the commit it had just
+merged. The worklog rule below covers worklogs, issues and PR bodies; nobody had
+made a code comment into a disclosure before, and the reason applies
+identically. A commit cannot be recalled, and rewriting history to remove one
+orphans every release tag.
+
+Note what this paragraph does not say. Naming the method, the file or the lines
+would point a reader at the mechanism, which is the thing the rule exists to
+keep private — an example is subject to its own rule, and the first draft of
+this one was not.
 
 The publishable form states the consequence and no more: "Unsafe on retry: a
 retry can overwrite a file that now occupies an original path." True, useful to
@@ -374,8 +379,11 @@ reconstruct the tracks by reading the code.**
 It exists because the work is easy to lose across a compaction and was, on
 2026-09-11, easy to lose behind defects found while doing something else. The
 distinction that file turns on is worth repeating here: a **blocker** stops the
-feature and is worked first; a **defect found along the way** does not, and runs
-in parallel or waits. Before sequencing anything ahead of a track in that file,
+feature and is worked first; an **incidental defect found along the way** does
+not, and runs in parallel or waits. Incidental is the load-bearing word — a
+blocker can perfectly well be found while doing something else, and "I found it
+along the way" is not a reason to defer something that leaves the feature
+inoperable. Before sequencing anything ahead of a track in that file,
 ask whether the feature literally does not work until the new thing lands. If it
 does work, it was not a blocker, and putting it first is a choice being made on
 the owner's behalf.
