@@ -15,6 +15,10 @@
  *   - finaliseManifest() — media/ subtree contains only image files (no JSON).
  *   - restoreManifest() returns 0 for an unknown manifest_id.
  *   - restoreManifest() moves files back and removes the manifest dir.
+ *   - restoreManifest() never moves a quarantined file onto an original path that
+ *     something else now occupies, and reports the skip with a reason code.
+ *   - restoreManifest() does not delete a quarantined file it refused to restore —
+ *     cleanup runs only on a complete restore, so a partial one keeps every copy.
  *   - restoreManifest() handles entries with empty files[] cleanly (0 files back, no error).
  *   - deleteManifest() returns a zero-count result for an unknown manifest_id.
  *   - deleteManifest() removes quarantined files, calls wp_delete_attachment,
@@ -304,7 +308,9 @@ final class MediaQuarantineTest extends TestCase
         // Ensure the quarantine root exists (needed for realpath in loadManifest).
         $q->beginManifest('warmup');
 
-        $this->assertSame(0, $q->restoreManifest('00000000000000000000000000000000'));
+        $receipt = $q->restoreManifest('00000000000000000000000000000000');
+
+        $this->assertSame(0, $receipt['restored']);
     }
 
     // =========================================================================
@@ -324,9 +330,10 @@ final class MediaQuarantineTest extends TestCase
         // Confirm file is gone from uploads.
         $this->assertFileDoesNotExist($srcAbs);
 
-        $restored = $q->restoreManifest($manifestId);
+        $receipt = $q->restoreManifest($manifestId);
 
-        $this->assertSame(1, $restored);
+        $this->assertSame(1, $receipt['restored']);
+        $this->assertTrue($receipt['complete'], 'a restore that put everything back is complete');
 
         // File is back in uploads.
         $this->assertFileExists($srcAbs);
@@ -577,9 +584,9 @@ final class MediaQuarantineTest extends TestCase
         $q->finaliseManifest($manifestId);
 
         // restoreManifest must handle empty files[] without error and return 0.
-        $restored = $q->restoreManifest($manifestId);
+        $receipt = $q->restoreManifest($manifestId);
 
-        $this->assertSame(0, $restored, 'Nothing to restore when files array is empty.');
+        $this->assertSame(0, $receipt['restored'], 'Nothing to restore when files array is empty.');
     }
 
     // =========================================================================
@@ -595,7 +602,7 @@ final class MediaQuarantineTest extends TestCase
 
         foreach ($traversalIds as $id) {
             $result = $q->restoreManifest($id);
-            $this->assertSame(0, $result, "Path-traversal id '{$id}' must be rejected (returns 0).");
+            $this->assertSame(0, $result['restored'], "Path-traversal id '{$id}' must be rejected (restores 0).");
         }
     }
 
@@ -632,11 +639,16 @@ final class MediaQuarantineTest extends TestCase
         file_put_contents($manifestFile, $crafted);
 
         // restoreManifest must skip the crafted entry (returns 0 restored).
-        $restored = $q->restoreManifest($manifestId);
+        $receipt = $q->restoreManifest($manifestId);
         $this->assertSame(
             0,
-            $restored,
+            $receipt['restored'],
             'normalisePath() must reject paths containing "/.." — 0 files restored.'
+        );
+        $this->assertSame(
+            1,
+            $receipt['reasons'][MediaQuarantine::RESTORE_SKIP_OUTSIDE_UPLOADS] ?? 0,
+            'the rejected entry is attributed to the containment check, not silently dropped'
         );
     }
 }
