@@ -1,0 +1,279 @@
+-- m135 - seat the FIRST NON-READ capability: 'mcp.cache.purge'.
+--
+-- This migration CORRECTS NOTHING. It edits no applied migration and re-runs no
+-- earlier backfill. m131 is correct and every decision it records is preserved
+-- here in full; this file is the event m131 DECISION 2 said would come.
+--
+-- m131 DECISION 2, verbatim:
+--
+--     "Every member of this vocabulary ends in '.read'. The next migration that
+--      adds a member not ending in '.read' is the one that needs the write
+--      review."
+--
+-- THIS IS THAT MIGRATION. The '.read' invariant m131 made checkable by pattern
+-- ends here, deliberately and on its own diff, which is precisely the shape
+-- m124 DECISION 1 built the closed CHECK to force.
+--
+-- CONVERGE PATH. Every database in every state converges by applying this file
+-- and nothing else. There is no separate converge migration owed and no
+-- operator step, for the identical reason m131 gave: the only object this
+-- migration changes is a CHECK constraint whose definition is a literal, so the
+-- constraint's post-state is a function of THIS FILE ALONE and not of what the
+-- database held before. Step (1) drops the constraint by name whatever its
+-- current definition; step (2) re-adds the definition written here. A database
+-- that ran m127, a database that ran m131, and a database created after this
+-- file all end with the identical constraint.
+--
+-- That property is what makes the ordinal collision in DECISION 4 dangerous
+-- rather than merely untidy, and DECISION 4 is the part of this file a reviewer
+-- must not skip.
+--
+-- ===========================================================================
+-- DECISION 1: WHY 'mcp.cache.purge' IS THE FIRST WRITE
+-- ===========================================================================
+--
+-- It is the safest available write in the product, and "safest" here is a
+-- property of the operation rather than a judgement about it:
+--
+--   a. IT IS IDEMPOTENT AND CONVERGENT. The agent-side command is `cache_purge`,
+--      labelled Write / Idempotent. A retry converges and loses nothing; a
+--      second purge of an already-purged cache is indistinguishable from the
+--      first. Every other write on the roadmap has a retry story that has to be
+--      argued. This one does not.
+--
+--   b. IT DESTROYS NO AUTHORED STATE. A page cache is derived data, regenerated
+--      from the site's own content on the next request. There is no version of
+--      this operation that loses something a human wrote. Contrast the write
+--      group the wireframes draw next to it -- content editing -- which is
+--      exactly a write over authored state and is why that one arrives as
+--      '.propose' with an approval step rather than as a bare '.write'.
+--
+--   c. ITS BLAST RADIUS IS A SLOWER PAGE LOAD. The worst outcome of an
+--      unwanted purge is that the next few requests miss cache and the site
+--      rebuilds it. That is a performance event, not a data event, and it is
+--      self-healing on the timescale of one page view.
+--
+-- WHY IT IS STILL A REVIEWED EVENT DESPITE ALL THAT. It changes a live site on
+-- purpose. m131 DECISION 2 does not say "the first DANGEROUS write gets the
+-- review"; it says the first member not ending in '.read' does, because the
+-- boundary being defended is read-versus-write and not safe-versus-unsafe. A
+-- capability that is nearly harmless is the correct first crossing of that
+-- boundary -- it is the crossing itself that is being reviewed here, and doing
+-- it with the mildest possible member is the point rather than a loophole.
+--
+-- ===========================================================================
+-- DECISION 2: THE NAME
+-- ===========================================================================
+--
+--   mcp.cache.purge   MAY I CLEAR THIS SITE'S PAGE CACHE. Purging the cached
+--                     copies of a site's pages so the next visitor gets a fresh
+--                     render.
+--
+-- THE THREE SEGMENTS, following m131 DECISION 1 exactly:
+--
+--   a. THE `mcp.` PREFIX IS FROZEN, not chosen. m131 records why: every grant
+--      this surface has ever minted is spelled with it, and the operator-facing
+--      labels on the Step 4 screen are the frontend's business. One prefix.
+--
+--   b. `cache` IS THE OUTCOME DOMAIN, in the operator's words. It is what a
+--      human ticks on a checkbox and recognises without being taught. It is NOT
+--      mechanism-shaped: there is no 'mcp.wp_cli.run', no 'mcp.agent.command'
+--      and no 'mcp.http.post' here, and m131 DECISION 1 forbids all three
+--      shapes by name. An operator grants "clear my cache", never "run a
+--      command on my site that happens to clear my cache".
+--
+--   c. `.purge` IS THE VERB, AND IT IS NEITHER '.read' NOR '.write' NOR
+--      '.propose'. m131 named '.propose' and '.write' as the write side's
+--      suffixes. This is a third, and that is deliberate rather than a drift:
+--
+--        - '.propose' would be a lie. A propose-shaped capability means the
+--          assistant drafts a change and a human approves it before it lands.
+--          There is no approval step here and none is wanted for an operation
+--          whose worst case is a slow page load; wiring a proposal queue for it
+--          would train operators to click through approvals that never matter,
+--          which is how an approval step stops being read at all.
+--
+--        - '.write' would be broader than the thing. '.write' on a domain reads
+--          as "may change what is in it". This capability confers exactly one
+--          operation, purge, and cannot create, edit or configure a cache. A
+--          name wider than its grant is a name that will be widened in code
+--          later without a migration, because the string already sounds like it
+--          covers the new thing.
+--
+--      The suffix is the OPERATION when the domain has exactly one, and the
+--      general verb when it has several. That rule is stated here so the next
+--      write capability has something to follow rather than a precedent to
+--      guess at.
+--
+-- THE '.read' PATTERN CHECK IS NOW DEAD, AND ITS OBITUARY BELONGS HERE. m131
+-- offered "no write capability is seated" as a property checkable by pattern:
+-- every member ends in '.read'. After this file that check answers "a write is
+-- seated" and it can no longer say WHICH, so it must not be reused as a safety
+-- property. What replaces it is enumeration: the nine members below, read by a
+-- human. Nothing in the tree should grep for '.read' to decide what this
+-- vocabulary permits.
+--
+-- ===========================================================================
+-- DECISION 3: EXACTLY ONE MEMBER IS ADDED, AND NOTHING IS BACKFILLED
+-- ===========================================================================
+--
+-- WIDENING A CONTAINMENT CHECK CANNOT INVALIDATE AN EXISTING ROW. The
+-- constraint is `capabilities <@ ARRAY[...]`, array containment, and widening
+-- the right-hand array is MONOTONE: a row contained by the smaller array is
+-- contained by every superset. The empty array '{}' -- zero capabilities, the
+-- restrictive value -- is contained by every array and still passes, as m127
+-- intended. Step (2) re-adds WITHOUT `NOT VALID`, so PostgreSQL scans the table
+-- and would refuse this migration outright rather than leave an unchecked row.
+--
+-- WHAT THIS MIGRATION DOES NOT DO: it does not widen a single existing grant.
+-- Every grant that held '{mcp.sites.read}' before this file holds exactly
+-- '{mcp.sites.read}' after it. The CHECK is a CEILING on what a grant MAY hold,
+-- not a floor and not a default; raising a ceiling moves nothing under it.
+-- There is no backfill here and none is wanted -- a backfill would hand the
+-- power to change a live site to credentials whose operators consented only to
+-- reads, which is the exact failure m127 DECISION 1 and m131 DECISION 4 both
+-- refuse.
+--
+-- Nine members against the 64-element ceiling m127's shape check imposes, so
+-- the ceiling is not in play and the shape check is untouched.
+--
+-- ===========================================================================
+-- DECISION 4: ORDINAL COLLISION -- READ THIS BEFORE MERGING EITHER BRANCH
+-- ===========================================================================
+--
+-- THIS ORDINAL IS 20260906000000/m135 AND NOT 20260905000000/m134, BECAUSE
+-- m134 IS ALREADY TAKEN ON AN UNMERGED BRANCH. At the time this file was
+-- written, `pr675` carries:
+--
+--     apps/api/migrations/20260905000000_m134_mcp_updates_propose_capability.sql
+--
+-- which drops and re-adds THIS SAME CONSTRAINT, by the same name, over a
+-- nine-member list that is m131's eight plus 'mcp.updates.propose'. It is not
+-- in HEAD and it is not assumed here.
+--
+-- THE HAZARD IS NOT THE FILENAME. Taking a free ordinal avoids a collision on
+-- disk and avoids nothing else. Both files DROP the constraint by name and
+-- re-add a LITERAL list, and that literal is the whole post-state -- the same
+-- property the CONVERGE PATH note above relies on. So if both files ever apply
+-- to one database, THE ONE WITH THE HIGHER ORDINAL APPLIES SECOND AND ITS LIST
+-- WINS ENTIRELY. This file's ordinal is higher. On a database that applies
+-- both, in order:
+--
+--     m134 seats  ...+ 'mcp.updates.propose'   -> nine members
+--     m135 re-adds ...+ 'mcp.cache.purge'      -> nine members, and
+--                                                 'mcp.updates.propose' IS GONE
+--
+-- The loss is SILENT. Containment is monotone in the widening direction only;
+-- NARROWING it is not, and step (2) re-adds WITHOUT `NOT VALID`, so a grant row
+-- already holding 'mcp.updates.propose' makes the table scan fail and this
+-- migration errors inside main() at boot -- a control-plane outage on every
+-- install that had minted such a grant. If no such grant exists yet, the scan
+-- passes, the member vanishes from the vocabulary with no error at all, and the
+-- first symptom is a 23514 at INSERT on the wizard path some days later.
+--
+-- WHAT IS OWED, AND BY WHOM. Whichever of the two branches merges SECOND owes a
+-- reconciling migration, at a fresh ordinal, whose literal list names BOTH
+-- writes alongside m131's eight. Neither branch may quietly adopt the other's
+-- member: 'mcp.updates.propose' is a proposal-gated write over update runs and
+-- is a different review from this one, and seating it here to dodge the
+-- reconcile would spend that review to save a migration -- which m131 DECISION
+-- 2 already calls exactly backwards. This file therefore states the nine
+-- members it has reviewed and names the collision rather than resolving it
+-- unilaterally.
+--
+-- ===========================================================================
+-- DECISION 5: THE VOCABULARY IS STILL CLOSED IN TWO PLACES
+-- ===========================================================================
+--
+-- capabilityVocabulary in apps/api/internal/mcp/policy.go is the other closed
+-- set, and m131 DECISION 5's hazard is unchanged: a capability the database
+-- accepts and Go does not is refused at a different layer with a different
+-- error, and a capability Go accepts and the database does not is a 23514 at
+-- INSERT on a path an operator reached through a wizard.
+--
+-- TestCapabilityVocabularyMatchesTheDatabaseCheckAsAppRole
+-- (apps/api/tests/mcp_m131_capability_vocabulary_parity_test.go) executes that
+-- comparison, reading this constraint at runtime by NAME via
+-- pg_get_constraintdef. THE NAME IS THEREFORE KEPT, unchanged, exactly as m131
+-- kept it: one stable name means one lookup that works against an m127-era, an
+-- m131-era and a post-m135 database alike.
+--
+-- THAT TEST FAILS THE MOMENT THIS FILE APPLIES, AND THAT IS CORRECT. The
+-- database now holds nine members and Go holds eight, so the test's FAILURE
+-- MODE 2 arm fires: "in the CHECK but NOT in Go: [mcp.cache.purge]". The
+-- migration lands first and the Go code that depends on the member follows;
+-- the red test is the handoff, and the next engineer makes it green.
+--
+-- ===========================================================================
+-- (1) DROP THE EIGHT-MEMBER CONSTRAINT
+-- ===========================================================================
+--
+-- By name, unconditionally, whatever definition it currently carries. A CHECK
+-- constraint's expression cannot be altered in place, so widening is a drop and
+-- a re-add; there is no window in which the column is unconstrained, because
+-- both statements run in the one transaction the runner wraps this file in.
+
+ALTER TABLE "public"."mcp_grants"
+    DROP CONSTRAINT IF EXISTS "mcp_grants_capabilities_vocabulary_check";
+
+-- ===========================================================================
+-- (2) RE-ADD IT OVER m131'S EIGHT READS PLUS THE FIRST WRITE
+-- ===========================================================================
+--
+-- Validated on add, not NOT VALID. See DECISION 3.
+--
+-- Alphabetical, which is also the order AllCapabilities() sorts into, so the
+-- two lists can be read side by side without either being re-sorted first.
+-- Note that alphabetical order no longer groups the reads together --
+-- 'mcp.cache.purge' sorts into the middle of them. That is a consequence of
+-- sorting by string and not a grouping claim; DECISION 2's obituary for the
+-- '.read' pattern check is the reason nothing should infer a member's kind from
+-- its position or its suffix any more.
+--
+-- KEEP IN LOCKSTEP with capabilityVocabulary in apps/api/internal/mcp/policy.go.
+-- Extending this list is still a migration.
+
+ALTER TABLE "public"."mcp_grants"
+    ADD CONSTRAINT "mcp_grants_capabilities_vocabulary_check"
+    CHECK ("capabilities" <@ ARRAY[
+        'mcp.activity.read',
+        'mcp.backups.read',
+        'mcp.cache.purge',
+        'mcp.content.read',
+        'mcp.diagnostics.read',
+        'mcp.performance.read',
+        'mcp.security.read',
+        'mcp.sites.read',
+        'mcp.uptime.read'
+    ]::text[]);
+
+-- ===========================================================================
+-- (3) WHAT THE GO LAYER MUST NOW DO -- READ THIS BEFORE WIDENING policy.go
+-- ===========================================================================
+--
+-- A note to the next engineer, not work this file performs. It is here because
+-- the hazard is created by widening the OTHER closed set, and whoever widens it
+-- will be reading this file.
+--
+--   a. THE DEFAULT MUST NOT INHERIT THIS MEMBER. m131 DECISION 3's warning
+--      applies with more force now, because the member being handed out is no
+--      longer a read. If DefaultGrantCapabilities() still returns
+--      AllCapabilities() when capabilityVocabulary is widened, EVERY NEWLY
+--      MINTED GRANT IS STAMPED WITH THE POWER TO PURGE A LIVE SITE'S CACHE,
+--      silently, as a consequence of a one-line map edit. Decouple the default
+--      from the vocabulary in the SAME commit that widens the map, not after
+--      it. The v1 preset is READ EVERYTHING, CHANGE NOTHING, and this member is
+--      not in it.
+--
+--   b. A CAPABILITY IS NOT A TOOL AND IS NOT AN AUTHORISATION TO DISPATCH. The
+--      capability gates whether the tool is offered and callable. Whether the
+--      `cache_purge` command may be sent to a particular site is still the
+--      site-scope decision the grant's own scope columns make, and the two
+--      checks are separate. Neither substitutes for the other.
+--
+--   c. THE STEP 4 PICKER NOW HAS TWO KINDS OF ROW. Every checkbox on that
+--      screen has until now been a read. One of them is now an operation that
+--      changes a live site, and rendering it identically to its neighbours
+--      makes the operator's consent to it indistinguishable from consent to a
+--      read. That is a frontend decision and this file does not make it -- it
+--      is named here only so it is not discovered after the fact.

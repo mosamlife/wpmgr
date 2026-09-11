@@ -16,14 +16,16 @@
 -- run every migration since m1 end with the identical column and the identical
 -- four constraints.
 --
--- ORDINAL. 20260907000000 / m136. origin/main's migrations end at m133
--- (20260904000000). m134 (20260905000000) exists only on a local unpushed
--- branch whose PR merged WITHOUT it -- 'mcp.updates.propose' is in neither
--- db/schema.sql nor internal/mcp/policy.go, so it is not live. m135
--- (20260906000000) is on a branch and seats 'mcp.cache.purge' in the CAPABILITY
--- vocabulary. THIS FILE IS INDEPENDENT OF BOTH: it touches no capability
--- constraint and adds a column neither of them mentions, so it applies
--- correctly whether it lands before m135, after it, or without it ever landing.
+-- ORDINAL. 20260907000000 / m136. origin/main's migrations end at m135
+-- (20260906000000), merged by #738 as 0f84ca3d, which seats 'mcp.cache.purge'
+-- in the CAPABILITY vocabulary. This file is the only migration on this branch
+-- that origin/main does not already carry. m134 (20260905000000) never reached
+-- origin/main -- it was authored in the same commit as m133 and only m133
+-- landed -- and 'mcp.updates.propose' is in neither db/schema.sql nor
+-- internal/mcp/policy.go, so it is not live. THIS FILE IS INDEPENDENT OF BOTH:
+-- it touches no capability constraint and adds a column neither of them
+-- mentions. m135's lower ordinal settles the order -- it applies first, on
+-- every database -- and nothing below depends on that.
 --
 -- ===========================================================================
 -- WHY IT EXISTS

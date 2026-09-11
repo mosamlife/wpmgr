@@ -42,6 +42,12 @@ func grantHolding(id uuid.UUID, caps ...Capability) sqlc.McpGrant {
 		Status:        string(GrantStatusActive),
 		SiteScopeMode: string(SiteScopeModeAll),
 		Capabilities:  capabilityNames(caps),
+		// The scope column the CEILING is derived from (m136), distinct from
+		// the capability column above, which is what the ceiling NARROWS. Every
+		// grant this surface has minted holds exactly this, so it is what a
+		// stored row looks like; an empty column is refused rather than
+		// defaulted, which is why a fixture has to say it.
+		OauthScopes: scopeNames(DefaultGrantScopes()),
 	}
 }
 
@@ -64,7 +70,7 @@ func TestConnectionToolsAnswersWithTheGrantsOwnList(t *testing.T) {
 		t.Fatalf("ConnectionTools: %v", err)
 	}
 
-	ceiling, err := OrgDefaultCapabilities(grantScopes())
+	ceiling, err := OrgDefaultCapabilities(DefaultGrantScopes())
 	if err != nil {
 		t.Fatalf("OrgDefaultCapabilities: %v", err)
 	}

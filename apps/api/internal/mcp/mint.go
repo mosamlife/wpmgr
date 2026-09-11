@@ -415,7 +415,13 @@ func (s *Service) MintConnection(ctx context.Context, req MintConnectionRequest)
 	// widened past it. NarrowTo REFUSES a capability the ceiling does not hold
 	// rather than dropping it, for the reason written on that method: a
 	// silently-dropped capability is a grant the operator did not ask for.
-	caps, err := s.resolveGrantCapabilities(req.Capabilities)
+	//
+	// THE SCOPES ARE DefaultGrantScopes() ON THIS PATH AND THE SAME SLICE IS
+	// STORED BELOW. A connection token has no RFC 7591 client behind it and so
+	// no `scope` request parameter to honour; the answer to "nobody asked" is
+	// the preset, which is the read scope and nothing else.
+	grantedScopes := DefaultGrantScopes()
+	caps, err := s.resolveGrantCapabilities(grantedScopes, req.Capabilities)
 	if err != nil {
 		return MintedConnection{}, err
 	}
@@ -464,7 +470,15 @@ func (s *Service) MintConnection(ctx context.Context, req MintConnectionRequest)
 			// field is 23502 at the INSERT rather than an unrestricted or
 			// never-expiring connection.
 			Capabilities: capabilityNames(caps.Sorted()),
-			ExpiresAt:    now.Add(grantAbsoluteTTL),
+
+			// m136's column, SUPPLIED EXPLICITLY and NOT NULL with no DEFAULT,
+			// so a forgotten field is 23502 rather than a grant whose scope set
+			// the schema chose. It is the SAME slice the ceiling above was
+			// derived from -- see resolveGrantCapabilities -- so the row and
+			// the ceiling cannot disagree about what this grant holds.
+			OauthScopes: scopeNames(grantedScopes),
+
+			ExpiresAt: now.Add(grantAbsoluteTTL),
 
 			// NULL means "never idle-expire" (m127 DECISION 4), and NULL is the
 			// answer rather than a placeholder. Nothing asks the operator for a
@@ -597,8 +611,17 @@ func (s *Service) MintConnection(ctx context.Context, req MintConnectionRequest)
 // first gets the preset. The second is handed to NarrowTo, which refuses it in
 // so many words -- an empty narrowing is not a way to ask for the default, and
 // treating it as one would grant a capability the operator had just removed.
-func (s *Service) resolveGrantCapabilities(requested *[]Capability) (CapabilitySet, error) {
-	ceiling, err := OrgDefaultCapabilities(grantScopes())
+// THE SCOPES ARE A PARAMETER AND NOT A CONSTANT, AND THAT IS m136's CHANGE
+// HERE. This function runs BEFORE the grant row exists, so there is no row to
+// read: the caller passes the scope set the grant is ABOUT TO BE STORED WITH,
+// and the ceiling is derived from that. The two creation paths pass different
+// things and both are honest -- Approve passes the client's re-parsed request,
+// MintConnection passes DefaultGrantScopes() because no client asked -- and
+// each then writes the SAME slice into oauth_scopes. Deriving the ceiling from
+// one value and storing another is the divergence this signature makes
+// impossible to write by accident.
+func (s *Service) resolveGrantCapabilities(scopes []Scope, requested *[]Capability) (CapabilitySet, error) {
+	ceiling, err := OrgDefaultCapabilities(scopes)
 	if err != nil {
 		return CapabilitySet{}, fmt.Errorf("resolve organisation capabilities: %w", err)
 	}

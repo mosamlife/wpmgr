@@ -84,6 +84,10 @@ func liveGrantStore(siteIDs ...uuid.UUID) *fakeStore {
 			// the service was still computing capabilities instead of reading
 			// them.
 			GrantCapabilities: []string{string(CapSitesRead)},
+			// The scope column the ceiling is now DERIVED from (m136). Set to
+			// what every live grant holds, because a nil column is refused --
+			// correctly -- as "no scope, so no capability".
+			GrantOauthScopes: []string{string(ScopeRead)},
 			GrantExpiresAt:    time.Now().UTC().Add(90 * 24 * time.Hour),
 		},
 		scopeSites: siteIDs,

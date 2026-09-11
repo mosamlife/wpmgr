@@ -75,7 +75,21 @@ func (s *Service) ConnectionTools(ctx context.Context, p domain.Principal, grant
 	// grant does not hold is LISTED and annotated. Passing the stored set as
 	// both would collapse the two boundaries into one and quietly hide every
 	// tool the operator unticked -- which is the D1 ruling backwards.
-	ceiling, err := OrgDefaultCapabilities(grantScopes())
+	//
+	// THE SCOPES ARE THE GRANT'S OWN (m136), read off the row already fetched
+	// above rather than recomputed from the registry. An empty column is
+	// refused by name for the reason Authenticate gives: it is the state
+	// mcp_grants_oauth_scopes_not_empty_check makes unrepresentable, so it
+	// means a writer outside that constraint, and rendering it as an empty tool
+	// list would put "this connection has no tools" on the screen for a
+	// credential that is in fact refused on every request.
+	scopes := grantScopes(grant.OauthScopes)
+	if len(scopes) == 0 {
+		return nil, domain.Forbidden(ErrCodeCapabilityUnmapped,
+			"this connection holds no scope, so it confers no capability")
+	}
+
+	ceiling, err := OrgDefaultCapabilities(scopes)
 	if err != nil {
 		// A ceiling that cannot be resolved is a REFUSAL, never an empty list.
 		// An empty list here reads as "this connection can call nothing",
