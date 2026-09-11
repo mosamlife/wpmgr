@@ -338,6 +338,118 @@ final class MediaQuarantineTest extends TestCase
     }
 
     // =========================================================================
+    // restoreManifest() — never moves a quarantined file over a file that
+    // occupies the original path
+    // =========================================================================
+
+    public function testRestoreManifestDoesNotOverwriteANewerFileAtTheOriginalPath(): void
+    {
+        $relPath = '2024/01/hero.jpg';
+        $srcAbs  = $this->createUploadFile($relPath, 'quarantined-bytes');
+
+        $q          = $this->makeQuarantine();
+        $manifestId = $q->beginManifest('job-restore-occupied');
+        $q->quarantineAttachment($manifestId, 42, $relPath, [$srcAbs]);
+        $q->finaliseManifest($manifestId);
+
+        // The original path is empty: quarantineAttachment() MOVES the bytes,
+        // so the quarantined copy is the only copy that exists.
+        $this->assertFileDoesNotExist($srcAbs);
+
+        // A different file comes to occupy that exact path while the
+        // attachment is isolated.
+        $this->createUploadFile($relPath, 'newer-bytes-written-after-isolation');
+
+        $receipt = $q->restoreManifest($manifestId);
+
+        // Load-bearing: the occupant is the only copy of its own bytes.
+        $this->assertSame(
+            'newer-bytes-written-after-isolation',
+            file_get_contents($srcAbs),
+            'restore must not move a quarantined file onto an occupied original path'
+        );
+
+        // The refused file is likewise the only copy of itself, so it must
+        // survive the refusal rather than be cleaned up behind it.
+        $quarantinedCopy = $this->mediaRoot() . '/' . $manifestId . '/files/' . $relPath;
+        $this->assertFileExists($quarantinedCopy, 'the refused file stays in quarantine');
+        $this->assertSame('quarantined-bytes', file_get_contents($quarantinedCopy));
+
+        $this->assertFileExists(
+            $this->manifestsRoot() . '/' . $manifestId . '.json',
+            'the manifest survives an incomplete restore so the operator can retry'
+        );
+
+        $this->assertSame(0, $receipt['restored'], 'nothing was restored');
+        $this->assertSame(1, $receipt['skipped'], 'the contested file counts as skipped');
+        $this->assertSame(
+            1,
+            $receipt['reasons'][MediaQuarantine::RESTORE_SKIP_DESTINATION_OCCUPIED] ?? 0,
+            'the skip is attributed to the occupied destination'
+        );
+        $this->assertFalse($receipt['complete'], 'an incomplete restore never reports complete');
+    }
+
+    // =========================================================================
+    // restoreManifest() — a file it refused to restore is never then deleted
+    // by the cleanup gate
+    // =========================================================================
+
+    public function testRestoreManifestDoesNotDeleteAQuarantinedFileItRefusedToRestore(): void
+    {
+        $mainRel  = '2024/01/gallery.jpg';
+        $thumbRel = '2024/01/gallery-150x150.jpg';
+
+        $mainAbs  = $this->createUploadFile($mainRel,  'main-bytes');
+        $thumbAbs = $this->createUploadFile($thumbRel, 'thumb-bytes');
+
+        // One entry, two files — the shape isolate produces for an attachment
+        // with sub-sizes.
+        $q          = $this->makeQuarantine();
+        $manifestId = $q->beginManifest('job-restore-partial');
+        $q->quarantineAttachment($manifestId, 42, $mainRel, [$mainAbs, $thumbAbs]);
+        $q->finaliseManifest($manifestId);
+
+        $this->assertFileDoesNotExist($mainAbs);
+        $this->assertFileDoesNotExist($thumbAbs);
+
+        // Only the main file's original path is taken.
+        $this->createUploadFile($mainRel, 'newer-main-bytes');
+
+        $receipt = $q->restoreManifest($manifestId);
+
+        $this->assertSame(
+            'newer-main-bytes',
+            file_get_contents($mainAbs),
+            'the occupant survives'
+        );
+
+        // The guard must not block correct work: the uncontested file still
+        // goes back, with its original content.
+        $this->assertFileExists($thumbAbs, 'the uncontested file is still restored');
+        $this->assertSame('thumb-bytes', file_get_contents($thumbAbs), 'restored content intact');
+
+        // Load-bearing: cleanup must not delete the copy restore declined to
+        // move. A partial restore that then removes the manifest directory
+        // destroys the only remaining copy of the refused file.
+        $refusedCopy = $this->mediaRoot() . '/' . $manifestId . '/files/' . $mainRel;
+        $this->assertFileExists(
+            $refusedCopy,
+            'a quarantined file restore refused to move must not then be deleted'
+        );
+        $this->assertSame('main-bytes', file_get_contents($refusedCopy));
+
+        $this->assertFileExists(
+            $this->manifestsRoot() . '/' . $manifestId . '.json',
+            'the manifest survives so the refused file can still be recovered'
+        );
+
+        $this->assertSame(1, $receipt['restored'], 'the uncontested file counts as restored');
+        $this->assertSame(1, $receipt['skipped'], 'the contested file counts as skipped');
+        $this->assertFalse($receipt['complete'], 'a partial restore never reports complete');
+    }
+
+    // =========================================================================
     // deleteManifest() — unknown manifest_id returns 0
     // =========================================================================
 

@@ -98,6 +98,23 @@ final class MediaQuarantine
     /** Manifest schema version. */
     private const MANIFEST_VERSION = 1;
 
+    /**
+     * Machine-readable reasons restoreManifest() did not move a recorded file
+     * back to its original path. Each appears as a key on the receipt's
+     * `reasons` map with the number of files it accounts for.
+     *
+     * DESTINATION_OCCUPIED is the load-bearing one: something already sits at
+     * the original path, and rename(2) would replace it without a word.
+     * quarantineAttachment() MOVES the originals, so both the occupant and the
+     * quarantined copy are the only copies of themselves; the move is refused
+     * and both are kept for the operator to resolve.
+     */
+    public const RESTORE_SKIP_DESTINATION_OCCUPIED = 'destination_occupied';
+    public const RESTORE_SKIP_OUTSIDE_UPLOADS      = 'outside_uploads';
+    public const RESTORE_SKIP_UPLOADS_UNRESOLVED   = 'uploads_unresolved';
+    public const RESTORE_SKIP_SOURCE_MISSING       = 'source_missing';
+    public const RESTORE_SKIP_RENAME_FAILED        = 'rename_failed';
+
     /** Absolute path to the quarantine root (uploads/wpmgr-quarantine; legacy: wp-content/wpmgr-quarantine). */
     private string $quarantineRoot;
 
@@ -240,9 +257,20 @@ final class MediaQuarantine
         }
 
         $filesRoot   = $this->mediaRoot . '/' . $manifestId . '/files';
-        $uploadsBase = $this->uploadsBase();
         $movedPaths  = [];
         $moved       = 0;
+
+        // Without a resolvable uploads base nothing can be shown to be inside
+        // uploads, so nothing is moved. The manifest entry is still recorded
+        // below with an empty files[] — that is the same shape an attachment
+        // with no on-disk files produces, and it keeps the post deletable.
+        try {
+            $uploadsBase = $this->uploadsBase();
+        } catch (\RuntimeException $e) {
+            unset($e);
+            $absPaths = [];
+            $uploadsBase = '';
+        }
 
         foreach ($absPaths as $src) {
             // Containment: only move files that are inside the uploads dir.
@@ -321,24 +349,71 @@ final class MediaQuarantine
     /**
      * Move all files in a manifest back to their original paths.
      *
+     * Returns an instrumented receipt rather than a bare count, so a caller can
+     * tell a complete restore from a partial one and so the cleanup decision
+     * below rests on evidence instead of on "at least one file moved":
+     *
+     *   [
+     *     'restored'   => int,  // files moved back to their original path
+     *     'skipped'    => int,  // files deliberately left in quarantine
+     *     'failed'     => int,  // files whose move was attempted and did not happen
+     *     'files_seen' => int,  // file records read from the manifest
+     *     'complete'   => bool, // DERIVED, never passed in — see below
+     *     'reasons'    => array<string,int>,  // RESTORE_SKIP_* => count
+     *     'blocked'    => list<string>,       // uploads-relative fragments not restored
+     *   ]
+     *
+     * A file already occupying the original path is never overwritten, and the
+     * quarantined copy it displaced is never deleted. Both are the only copies
+     * of themselves — quarantineAttachment() MOVES the originals — so the move
+     * is refused, both survive, and the manifest stays live for the operator.
+     *
+     * `complete` is derived from two independent conditions, both required:
+     * every recorded file is accounted for (nothing skipped, nothing failed),
+     * AND no regular file remains anywhere under media/<manifest_id>/files. The
+     * counters cannot see a file left behind by a fragment-derivation branch,
+     * and the physical scan cannot say why one is there; only together do they
+     * license removing the quarantine copy.
+     *
+     * `blocked` carries uploads-relative fragments only. Absolute server paths
+     * are treated as disclosure here for the same reason finaliseManifest()
+     * keeps the manifest JSON outside the web-served media/ tree.
+     *
      * @param string $manifestId
-     * @return int Number of files successfully restored.
+     * @return array{restored:int,skipped:int,failed:int,files_seen:int,complete:bool,reasons:array<string,int>,blocked:list<string>}
      */
-    public function restoreManifest(string $manifestId): int
+    public function restoreManifest(string $manifestId): array
     {
+        $restored  = 0;
+        $skipped   = 0;
+        $failed    = 0;
+        $filesSeen = 0;
+        $reasons   = [];
+        $blocked   = [];
+
         $manifest = $this->loadManifest($manifestId);
         if ($manifest === null) {
-            return 0;
+            return $this->restoreReceipt($manifestId, 0, 0, 0, 0, [], []);
         }
 
-        $filesRoot   = $this->mediaRoot . '/' . $manifestId . '/files';
-        $uploadsBase = $this->uploadsBase();
-        $restored    = 0;
+        $filesRoot = $this->mediaRoot . '/' . $manifestId . '/files';
+
+        // An unresolvable uploads base is not a reason to relax containment;
+        // it is a reason to move nothing. Every recorded file is reported as
+        // skipped so the caller can say why, and nothing is cleaned up.
+        $uploadsBase = null;
+        try {
+            $uploadsBase = $this->uploadsBase();
+        } catch (\RuntimeException $e) {
+            unset($e);
+        }
 
         foreach ($manifest['entries'] as $entry) {
             $files = is_array($entry['files']) ? $entry['files'] : [];
 
             foreach ($files as $fileRecord) {
+                $filesSeen++;
+
                 // Support both the current {"orig","frag"} object format and the
                 // legacy plain-string format written by agent versions < 0.25.9.
                 if (is_array($fileRecord)) {
@@ -349,9 +424,17 @@ final class MediaQuarantine
                     $fragment        = '';
                 }
 
+                if ($uploadsBase === null) {
+                    $skipped++;
+                    $this->noteRestoreSkip($reasons, $blocked, self::RESTORE_SKIP_UPLOADS_UNRESOLVED, $fragment);
+                    continue;
+                }
+
                 // Containment: restore target must be inside uploads.
                 $normalised = $this->normalisePath($originalAbsPath, $uploadsBase);
                 if ($normalised === '') {
+                    $skipped++;
+                    $this->noteRestoreSkip($reasons, $blocked, self::RESTORE_SKIP_OUTSIDE_UPLOADS, $fragment);
                     continue;
                 }
 
@@ -364,6 +447,8 @@ final class MediaQuarantine
                 if ($fragment === '') {
                     $uploadsReal = realpath($uploadsBase);
                     if ($uploadsReal === false) {
+                        $skipped++;
+                        $this->noteRestoreSkip($reasons, $blocked, self::RESTORE_SKIP_UPLOADS_UNRESOLVED, '');
                         continue;
                     }
                     $uploadsBaseNorm = rtrim(str_replace('\\', '/', $uploadsBase), '/');
@@ -378,6 +463,20 @@ final class MediaQuarantine
                 $src = $filesRoot . '/' . $fragment;
 
                 if (!file_exists($src)) {
+                    $skipped++;
+                    $this->noteRestoreSkip($reasons, $blocked, self::RESTORE_SKIP_SOURCE_MISSING, $fragment);
+                    continue;
+                }
+
+                // Destination guard. POSIX rename(2) unlinks an existing
+                // destination silently and the '@' would eat any warning, so
+                // the destination is stat'd first — the check the source side
+                // has always had. is_link() is paired with file_exists()
+                // because a broken symlink is not an empty slot; the pair is
+                // the one FilesRestorer::revertSingleItem() uses.
+                if (file_exists($normalised) || is_link($normalised)) {
+                    $skipped++;
+                    $this->noteRestoreSkip($reasons, $blocked, self::RESTORE_SKIP_DESTINATION_OCCUPIED, $fragment);
                     continue;
                 }
 
@@ -389,16 +488,128 @@ final class MediaQuarantine
 
                 if (@rename($src, $normalised)) { // phpcs:ignore WordPress.WP.AlternativeFunctions.rename_rename,WordPress.WP.AlternativeFunctions.file_system_operations_rename,PluginCheck.CodeAnalysis.WriteFile.ABSPATHDetected -- restore/quarantine engine intentionally writes under ABSPATH (the live WP tree); relocating would defeat the restore
                     $restored++;
+                } else {
+                    // A move that did not happen must never read as one that
+                    // was never attempted: the quarantined copy is still the
+                    // only copy and cleanup must not run behind it.
+                    $failed++;
+                    $this->noteRestoreSkip($reasons, $blocked, self::RESTORE_SKIP_RENAME_FAILED, $fragment);
                 }
             }
         }
 
-        // Remove the (now-empty) manifest directory if everything was restored.
-        if ($restored > 0) {
+        $receipt = $this->restoreReceipt($manifestId, $restored, $skipped, $failed, $filesSeen, $reasons, $blocked);
+
+        // Remove the manifest directory only when the restore is provably
+        // complete. removeManifestDir() deletes every file still under
+        // media/<manifest_id>/ and the manifest JSON with it, and those files
+        // exist nowhere else, so anything short of complete keeps them.
+        if ($receipt['complete']) {
             $this->removeManifestDir($manifestId);
         }
 
-        return $restored;
+        return $receipt;
+    }
+
+    /**
+     * Record one non-restored file against its reason code.
+     *
+     * @param array<string,int> $reasons  Reason-code tally, by reference.
+     * @param list<string>      $blocked  Uploads-relative fragments, by reference.
+     * @param string            $reason   One of the RESTORE_SKIP_* constants.
+     * @param string            $fragment Uploads-relative fragment, or '' when unknown.
+     */
+    private function noteRestoreSkip(array &$reasons, array &$blocked, string $reason, string $fragment): void
+    {
+        $reasons[$reason] = ($reasons[$reason] ?? 0) + 1;
+
+        // Only uploads-relative fragments are reported; an absolute server path
+        // would be disclosure, and an unknown fragment is reported as a count
+        // under its reason code rather than as a bare path.
+        if ($fragment !== '') {
+            $blocked[] = $fragment;
+        }
+    }
+
+    /**
+     * Assemble a restore receipt, deriving `complete` rather than accepting it.
+     *
+     * @param array<string,int> $reasons
+     * @param list<string>      $blocked
+     * @return array{restored:int,skipped:int,failed:int,files_seen:int,complete:bool,reasons:array<string,int>,blocked:list<string>}
+     */
+    private function restoreReceipt(
+        string $manifestId,
+        int $restored,
+        int $skipped,
+        int $failed,
+        int $filesSeen,
+        array $reasons,
+        array $blocked
+    ): array {
+        $accountedFor = ($skipped === 0 && $failed === 0);
+
+        return [
+            'restored'   => $restored,
+            'skipped'    => $skipped,
+            'failed'     => $failed,
+            'files_seen' => $filesSeen,
+            'complete'   => $accountedFor && !$this->hasRemainingFiles($manifestId),
+            'reasons'    => $reasons,
+            'blocked'    => array_values($blocked),
+        ];
+    }
+
+    /**
+     * Whether any file remains anywhere under media/<manifest_id>/files.
+     *
+     * The second, independent half of the `complete` derivation. The restore
+     * counters only see files the manifest described; a file left behind by a
+     * fragment-derivation branch produces no countable record, so the tree
+     * itself is scanned before its deletion is licensed.
+     *
+     * Fails closed: anything that cannot be proven empty reports remaining
+     * files, because the caller's only use for a false is to delete.
+     */
+    private function hasRemainingFiles(string $manifestId): bool
+    {
+        if (!preg_match('/^[a-zA-Z0-9_-]{1,64}$/', $manifestId)) {
+            return true;
+        }
+
+        return $this->dirHoldsFile($this->mediaRoot . '/' . $manifestId . '/files');
+    }
+
+    /**
+     * Recursive half of hasRemainingFiles(). A symlink counts as a file: it is
+     * something the tree still holds, whatever it points at.
+     */
+    private function dirHoldsFile(string $dir): bool
+    {
+        if (!is_dir($dir)) {
+            return false;
+        }
+
+        $entries = @scandir($dir);
+        if ($entries === false) {
+            // Unreadable: cannot prove the tree is empty, so do not say it is.
+            return true;
+        }
+
+        foreach ($entries as $entry) {
+            if ($entry === '.' || $entry === '..') {
+                continue;
+            }
+            $path = $dir . '/' . $entry;
+            if (is_link($path) || is_file($path)) {
+                return true;
+            }
+            if (is_dir($path) && $this->dirHoldsFile($path)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -437,7 +648,23 @@ final class MediaQuarantine
         }
 
         $filesRoot   = $this->mediaRoot . '/' . $manifestId . '/files';
-        $uploadsBase = $this->uploadsBase();
+
+        // No resolvable uploads base means containment cannot be enforced on a
+        // delete either. Report the zero-count result — the same one an unknown
+        // manifest_id produces — so the manifest and its files stay put and a
+        // later attempt can still run.
+        try {
+            $uploadsBase = $this->uploadsBase();
+        } catch (\RuntimeException $e) {
+            unset($e);
+            return [
+                'posts_deleted'     => 0,
+                'posts_failed'      => 0,
+                'files_deleted'     => 0,
+                'entries_processed' => 0,
+                'results'           => [],
+            ];
+        }
 
         $postsDeleted     = 0;
         $postsFailed      = 0;
@@ -919,11 +1146,29 @@ final class MediaQuarantine
 
     /**
      * Absolute filesystem path to the uploads root.
+     *
+     * Never returns an empty string. Every containment check in this class is
+     * a prefix test against this value, and normalisePath() compares against
+     * rtrim($base, '/') . '/', so an empty base becomes the prefix '/' and the
+     * test then passes for every absolute path on the server. Containment
+     * would not be weakened by that, it would be switched off. An uploads
+     * directory that cannot be resolved is therefore a hard failure here
+     * rather than a silently permissive value at the call site.
+     *
+     * @throws \RuntimeException When wp_upload_dir() reports no usable basedir.
      */
     private function uploadsBase(): string
     {
-        $dir = wp_upload_dir();
-        return rtrim((string)($dir['basedir'] ?? ''), '/\\');
+        $dir  = wp_upload_dir();
+        $base = is_array($dir) ? rtrim((string)($dir['basedir'] ?? ''), '/\\') : '';
+
+        if ($base === '') {
+            $message = 'WPMgr MediaQuarantine: wp_upload_dir() reported no usable basedir; '
+                . 'refusing to run an uploads-containment check against an empty base path.';
+            throw new \RuntimeException($message);
+        }
+
+        return $base;
     }
 
     /**
