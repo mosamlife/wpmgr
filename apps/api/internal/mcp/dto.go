@@ -62,6 +62,25 @@ type consentResponseDTO struct {
 	CodeChallenge        string   `json:"code_challenge"`
 	CodeChallengeMethod  string   `json:"code_challenge_method"`
 
+	// ConsentTicket is the server's sealed record of THIS authorize call: the
+	// client it was made for and the scope set it carried. The screen does not
+	// render it; it exists to be handed back verbatim on the approval POST,
+	// where it is what lets the server store a scope set it sealed itself
+	// rather than the one the POST body spells.
+	//
+	// SEALED IS NOT SECRET. The payload is plain base64url JSON and anyone
+	// holding the ticket can read it in one line -- which costs nothing,
+	// because its contents are the client id and the scope set the same screen
+	// already displays. What the MAC buys is integrity and origin, never
+	// confidentiality (consent_ticket.go, "WHY A MAC AND NOT AN AEAD"), and no
+	// part of this design leans on the value being unreadable.
+	//
+	// REQUIRED ON THE APPROVAL. A consent submitted without it is refused
+	// (mcp_invalid_consent_ticket), so a client of this API echoes the field
+	// unchanged rather than reconstructing it: a re-encoded or re-serialised
+	// ticket is a ticket this server did not issue.
+	ConsentTicket string `json:"consent_ticket"`
+
 	// GrantLifetimeDays is how long the grant this screen consents to will
 	// live, and it is here because the screen cannot state a lifetime it is
 	// not given.
@@ -95,6 +114,7 @@ func toConsentResponse(c ConsentContext) consentResponseDTO {
 		State:               c.State,
 		CodeChallenge:       c.CodeChallenge,
 		CodeChallengeMethod: c.CodeChallengeMethod,
+		ConsentTicket:       c.ConsentTicket,
 		// Read from the same constant CreateGrant stamps expires_at from, not
 		// from a second copy of the number. See grantLifetimeDays.
 		GrantLifetimeDays: grantLifetimeDays(),
@@ -108,10 +128,21 @@ type approvalRequestDTO struct {
 	State               string   `json:"state"`
 	CodeChallenge       string   `json:"code_challenge"`
 	CodeChallengeMethod string   `json:"code_challenge_method"`
-	GrantName           string   `json:"name"`
-	SiteScopeMode       string   `json:"site_scope_mode"`
-	ScopeTagIDs         []string `json:"scope_tag_ids"`
-	ScopeSiteIDs        []string `json:"scope_site_ids"`
+
+	// ConsentTicket is consentResponseDTO.ConsentTicket, echoed back unchanged.
+	//
+	// IT IS THE ONLY FIELD IN THIS BODY THE CALLER CANNOT AUTHOR, and that is
+	// its whole job. `scopes` above says what this POST wants recorded; the
+	// ticket says what the authorize call actually asked for and the consent
+	// screen actually showed. The grant is written from the second. An absent,
+	// altered, expired or wrong-client ticket refuses the approval outright --
+	// there is no path that falls back to believing `scopes`.
+	ConsentTicket string `json:"consent_ticket"`
+
+	GrantName     string   `json:"name"`
+	SiteScopeMode string   `json:"site_scope_mode"`
+	ScopeTagIDs   []string `json:"scope_tag_ids"`
+	ScopeSiteIDs  []string `json:"scope_site_ids"`
 
 	// Capabilities is the TOOL axis of the consent screen, and it is spelled
 	// and resolved EXACTLY as mintConnectionRequestDTO.Capabilities is -- one
@@ -472,6 +503,18 @@ func oauthError(err error) (int, oauthErrorDTO) {
 	switch domErr.Code {
 	case ErrCodeInvalidScope:
 		return http.StatusBadRequest, oauthErrorDTO{Err: "invalid_scope", ErrDesc: domErr.Message}
+	case ErrCodeScopeNotAuthorized:
+		// RFC 6749 section 5.2 invalid_scope: "the requested scope is ...
+		// exceeds the scope granted by the resource owner". That is exactly
+		// this case, and the description names which scope, so a client is told
+		// what to change rather than being left to retry the same body.
+		return http.StatusBadRequest, oauthErrorDTO{Err: "invalid_scope", ErrDesc: domErr.Message}
+	case ErrCodeConsentTicketInvalid:
+		// invalid_request, not invalid_scope: the remedy is to start the
+		// authorization request again, not to edit the scope list. Mapped
+		// explicitly even though the default arm renders the same pair, so the
+		// mapping is a decision on the page rather than a coincidence.
+		return http.StatusBadRequest, oauthErrorDTO{Err: "invalid_request", ErrDesc: domErr.Message}
 	case ErrCodeInvalidClient:
 		return http.StatusUnauthorized, oauthErrorDTO{Err: "invalid_client", ErrDesc: domErr.Message}
 	case ErrCodeInvalidGrant:

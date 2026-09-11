@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -47,6 +48,12 @@ func validConsent() ConsentContext {
 		State:               "opaque-state",
 		CodeChallenge:       "a-real-challenge-value",
 		CodeChallengeMethod: "S256",
+		// The ticket an /authorize call carrying mcp:read for this client would
+		// have issued, minted under the key every service constructor in this
+		// package is wired with (consent_ticket_test.go). A hand-built consent
+		// is one this server never issued, and Approve refuses those: a fixture
+		// has to stand in for the authorize call, not around it.
+		ConsentTicket: issueTestTicket(registeredClientID, []Scope{ScopeRead}, time.Now()),
 	}
 }
 

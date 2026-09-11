@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -74,10 +75,14 @@ func authorizeQuery() url.Values {
 func consentBody(t *testing.T) string {
 	t.Helper()
 	raw, err := json.Marshal(approvalRequestDTO{
-		ClientID:            registeredClientID,
-		RedirectURI:         registeredRedirect,
-		Scopes:              []string{string(ScopeRead)},
-		State:               "opaque-state",
+		ClientID:    registeredClientID,
+		RedirectURI: registeredRedirect,
+		Scopes:      []string{string(ScopeRead)},
+		State:       "opaque-state",
+		// The ticket authorizeQuery()'s request would have been issued: these
+		// cases are about the permission gate, so the consent binding must be
+		// satisfied or every one of them would refuse for the wrong reason.
+		ConsentTicket:       issueTestTicket(registeredClientID, []Scope{ScopeRead}, time.Now()),
 		CodeChallenge:       "a-real-challenge-value",
 		CodeChallengeMethod: "S256",
 		GrantName:           "Claude Desktop on my laptop",
@@ -241,7 +246,7 @@ func TestConsentPermissionGateResolvesTheRoleTheSameWay(t *testing.T) {
 		TenantID:     uuid.New(),
 		Scope:        domain.ScopeOrg,
 		AuthModel:    domain.AuthModelCapability,
-		Role:         "owner", // the role says yes ...
+		Role:         "owner",                              // the role says yes ...
 		Capabilities: []string{string(authz.PermSiteRead)}, // ... the capability set says no
 	}
 	if !key.IsCapabilityScoped() {

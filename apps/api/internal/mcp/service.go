@@ -331,6 +331,15 @@ type Service struct {
 	// which is why those tests assert a REFUSAL rather than a result; see
 	// govcontext_test.go.
 	context ContextResolver
+
+	// consentTickets binds an approval to the authorize call it followed. See
+	// consent_ticket.go.
+	//
+	// NEVER NIL after NewService, and that is what keeps "verify the ticket"
+	// from acquiring a "unless none is configured" arm. See
+	// newEphemeralConsentTicketCodec for what the unwired default does and does
+	// not promise; cmd/wpmgr replaces it with the instance-wide key at boot.
+	consentTickets *consentTicketCodec
 }
 
 func NewService(store Store) *Service {
@@ -340,9 +349,30 @@ func NewService(store Store) *Service {
 		// Armed HERE rather than injected with a nil default, for the reason
 		// NewHandler gives about its own limiter: an unarmed limiter would be a
 		// wiring failure that presents as a working endpoint.
-		mintLimit: newMintLimiter(),
-		pageBound: sitesPageBound,
+		mintLimit:      newMintLimiter(),
+		pageBound:      sitesPageBound,
+		consentTickets: newEphemeralConsentTicketCodec(),
 	}
+}
+
+// SetConsentSigningSecret keys the consent ticket from the instance session
+// secret, so a ticket issued by one instance verifies on the one that receives
+// the approval. Call it after NewService, before serving.
+//
+// It MUTATES the receiver rather than returning a copy, unlike the With*
+// options above, and mirrors auth.Handler.SetHandshakeSecret. The distinction
+// is deliberate: a With* option that silently dropped its result is a
+// misconfiguration that compiles, and this is the one setting whose absence
+// must be noticed at boot. It returns an error for the same reason -- a secret
+// too short to derive a key from fails the process rather than degrading to
+// something weaker.
+func (s *Service) SetConsentSigningSecret(sessionSecret string) error {
+	codec, err := newConsentTicketCodec(sessionSecret)
+	if err != nil {
+		return err
+	}
+	s.consentTickets = codec
+	return nil
 }
 
 // WithPageBound returns a copy reading sites with the supplied per-request
@@ -677,6 +707,17 @@ type ConsentContext struct {
 	// verifier -- so carrying it is not a secret leak.
 	CodeChallenge       string
 	CodeChallengeMethod string
+
+	// ConsentTicket is this server's own authenticated record of the authorize
+	// call that produced this context: the client it was made for and the scope
+	// set it carried, under a MAC, with an expiry inside the MAC.
+	//
+	// Authorize ISSUES it and Approve REQUIRES it. Everything else on this
+	// struct arrives in the approval POST body and is therefore caller input;
+	// this field is the one value on it that the caller cannot author, which is
+	// what lets Approve store the scope set the operator was shown rather than
+	// the one the body claims. See consent_ticket.go.
+	ConsentTicket string
 }
 
 // Authorize validates an authorization request and returns what the consent
@@ -731,6 +772,17 @@ func (s *Service) Authorize(ctx context.Context, req AuthorizeRequest) (ConsentC
 		redirectHost = u.Host
 	}
 
+	// THE ONE THING THIS CALL LEAVES BEHIND. It is still true that Authorize
+	// mints nothing -- no grant, no code, no row -- but it no longer forgets
+	// what it validated: the client and the scope set it just accepted are
+	// sealed into a ticket that the approval must present back. Without this
+	// the whole consent context is caller input by the time it returns here,
+	// and the stored scope set would be whatever the final POST spelled.
+	ticket, err := s.consentTickets.issue(client.ClientID, scopes, s.now())
+	if err != nil {
+		return ConsentContext{}, fmt.Errorf("issue consent ticket: %w", err)
+	}
+
 	return ConsentContext{
 		ClientID:             client.ClientID,
 		ClientNameUnverified: derefString(client.ClientName),
@@ -741,6 +793,7 @@ func (s *Service) Authorize(ctx context.Context, req AuthorizeRequest) (ConsentC
 		State:                req.State,
 		CodeChallenge:        req.CodeChallenge,
 		CodeChallengeMethod:  req.CodeChallengeMethod,
+		ConsentTicket:        ticket,
 	}, nil
 }
 
@@ -819,43 +872,81 @@ func (s *Service) Approve(ctx context.Context, req ApprovalRequest) (Approval, e
 		return Approval{}, domain.Validation(ErrCodeInvalidRequest, "a connection name is required")
 	}
 
-	// Re-run the exit gate on the approval too. The consent screen's scope list
-	// arrives back over the wire and a resubmitted form is caller input like
-	// any other, so it is re-parsed rather than trusted.
+	// THE SCOPE SET IS THE AUTHORIZE CALL'S, NOT THIS BODY'S.
 	//
-	// THE RESULT IS KEPT NOW, NOT DISCARDED. m136 gave the grant an
-	// oauth_scopes column and this is the only place on the OAuth path that
-	// carries what the client asked for and the operator saw. The stored value
-	// is this re-parsed set rather than a preset, and it is the same value the
-	// ceiling below is computed from, so the row and the ceiling cannot
-	// disagree.
+	// The consent context round-trips through the browser, so everything on
+	// req.Consent is caller input by the time it arrives here -- including the
+	// scope list. authorizedScopes measures that list against the consent
+	// ticket Authorize sealed (consent_ticket.go): the ticket carries the
+	// client and the scope set that call actually validated, under a MAC with
+	// an expiry, so this approval can only store the set the operator was
+	// shown. A body naming any other set is refused by name, in both
+	// directions, and nothing is written.
 	//
-	// BUT BE EXACT ABOUT WHAT THE RE-PARSE ESTABLISHES, BECAUSE IT IS LESS THAN
-	// IT LOOKS. Authorize mints nothing: the whole consent context round-trips
-	// through the browser and comes back here as caller input, and
-	// ParseRequestedScopes checks only that every member is in recognisedScopes.
-	// It does NOT check that this set is the set the authorize call carried. So
-	// the stored set is the approval BODY, constrained by registry membership,
-	// and calling it "the consent rather than a restatement of the registry"
-	// overstates it -- the two are the same thing only while the registry has a
-	// single member, which is why nothing is reachable here today: a tampered
-	// body can produce exactly {mcp:read} and nothing else, which is what the
-	// old hard-coded constant produced anyway.
+	// WHAT IT RETURNS IS THE TICKET'S SET, which is what makes this the single
+	// source for both writes below: mcp_grants.oauth_scopes and the capability
+	// ceiling are computed from one server-held value, so the row and the
+	// ceiling cannot disagree with each other or with the screen.
 	//
-	// WHOEVER ADDS THE SECOND RECOGNISED SCOPE MUST FIX THIS FIRST, and this
-	// comment is the only thing left pointing at it. The branch that introduced
-	// the column removed TestGrantScopesIsExactOnlyWhileOneScopeExists, which
-	// asserted len(recognisedScopes) == 1; removing it was right, because m136
-	// exists to make the registry safe to grow -- but that assertion was the
-	// tripwire that would have forced a visit to this line. The moment a second
-	// scope is recognised, an approval body naming it is accepted here on the
-	// strength of registry membership alone, and the grant is stored holding a
-	// scope the authorize call need never have requested. Bind the stored set
-	// to what that call actually carried -- the authorize request has to leave
-	// behind something server-side to compare against -- before recognising the
-	// second scope, not in the diff after it. That binding is the write-scope
-	// PR's prerequisite and is deliberately not built here.
-	grantedScopes, err := ParseRequestedScopes(scopesToString(req.Consent.Scopes))
+	// The registry check that used to stand alone here still runs, inside
+	// authorizedScopes, on both sets. Registry membership says a scope EXISTS;
+	// the ticket says THIS REQUEST ASKED FOR IT. The second question is the one
+	// the stored grant answers, and it is now asked.
+	//
+	// WHOEVER ADDS THE SECOND RECOGNISED SCOPE MUST STILL SETTLE SOMETHING
+	// FIRST, and this comment is again the only thing pointing at it. An
+	// earlier version of it said the binding described above was the
+	// prerequisite. The binding is built and it NARROWS the problem; it does
+	// not close it, so the prerequisite is now a decision rather than a diff.
+	//
+	// WHAT THE BINDING DOES BUY, exactly. An approval body can no longer
+	// fabricate a scope set out of nothing: every set that reaches
+	// mcp_grants.oauth_scopes is one this server sealed after validating an
+	// authorize call. And a cross-origin forged POST cannot obtain a ticket at
+	// all, because the attacker would have to read the /authorize response to
+	// copy it and same-origin policy does not let it. Both are strictly better
+	// than the registry-membership check that stood here alone.
+	//
+	// WHAT IT DOES NOT BUY. The ticket attests that a (client_id, scope set)
+	// pair was VALIDATED, not that a human was shown it or chose it -- see the
+	// header of consent_ticket.go. handler.go mounts GET /authorize and POST
+	// /consent behind the same requireOrgScope() + requireGrantPermission()
+	// pair, and Authorize measures the requested scope against the global
+	// recognisedScopes registry rather than against the client's own
+	// registration. So any principal that can submit an approval can also
+	// obtain a ticket for any recognised scope, by making the authorize call
+	// itself. Against an operator that is what consent means; against a
+	// BROWSER-SIDE ATTACKER holding that principal's session -- XSS, a
+	// malicious extension, a compromised dashboard bundle -- it costs nothing,
+	// and the escalation is narrowed rather than closed.
+	//
+	// THERE IS NO CHEAP STATELESS FIX. This was looked for. Sealing the
+	// operator, the org, the redirect_uri, the state or the code_challenge into
+	// the MAC buys nothing, because the second authorize call is made by the
+	// same principal in the same browser and reuses every one of them. Recorded
+	// here so the next author does not spend the afternoon re-deriving it.
+	//
+	// THE THREE CANDIDATES THAT DO WORK, one of which has to be chosen before a
+	// second scope is recognised, not in the diff after it:
+	//
+	//  1. A single-use nonce minted per consent SCREEN and required by the
+	//     approval, which turns "this pair was validated" into "this screen was
+	//     answered once". It costs the server-side state this design was
+	//     deliberately built without; consent_ticket.go says why.
+	//  2. Constrain /authorize to the scopes on the client's own registration,
+	//     so a ticket for a scope that client never registered cannot be minted
+	//     in the first place. This is the narrowest of the three and does not
+	//     add state.
+	//  3. An explicit owner ruling that a browser-side attacker already holding
+	//     PermAPIKeyManage is outside the threat model -- written down, not
+	//     assumed, because everything above then becomes a documented
+	//     acceptance rather than an oversight.
+	//
+	// NOTHING IS REACHABLE TODAY: one scope is recognised, so the only ticket
+	// this server will mint and the only set this line can store is {mcp:read},
+	// which is what the old hard-coded constant produced anyway. Recognising
+	// the second scope is what makes the difference observable.
+	grantedScopes, err := s.authorizedScopes(req.Consent)
 	if err != nil {
 		return Approval{}, err
 	}

@@ -151,18 +151,30 @@ func TestMCPApproveSuppliesM127ColumnsAsAppRole(t *testing.T) {
 		t.Fatalf("seed client: affected=%d err=%v", n, err)
 	}
 
+	// THE CONSENT COMES FROM AUTHORIZE, not from a literal. An approval is
+	// measured against the authorize call it followed -- the consent context
+	// carries that call's own ticket -- so a hand-built one is a consent this
+	// server never issued and Approve refuses it. Running the real first half
+	// is also what makes this a proof about the shipped path rather than about
+	// a struct.
+	consent, err := svc.Authorize(ctx, mcp.AuthorizeRequest{
+		ResponseType:        "code",
+		ClientID:            clientID,
+		RedirectURI:         "https://claude.ai/api/mcp/auth_callback",
+		Scope:               string(mcp.ScopeRead),
+		CodeChallenge:       "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+		CodeChallengeMethod: "S256",
+	})
+	if err != nil {
+		t.Fatalf("Authorize failed for a registered client: %v", err)
+	}
+
 	before := time.Now().UTC()
 	approval, err := svc.Approve(ctx, mcp.ApprovalRequest{
 		Principal: domain.Principal{TenantID: tenant, Scope: domain.ScopeOrg},
 		GrantName: "m127 column proof",
 		SiteScope: mcp.SiteScopeRequest{Mode: mcp.SiteScopeModeAll},
-		Consent: mcp.ConsentContext{
-			ClientID:            clientID,
-			RedirectURI:         "https://claude.ai/api/mcp/auth_callback",
-			Scopes:              []mcp.Scope{mcp.ScopeRead},
-			CodeChallenge:       "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
-			CodeChallengeMethod: "S256",
-		},
+		Consent:   consent,
 	})
 	if err != nil {
 		// A 23502 lands HERE, and it is the failure this whole change exists to

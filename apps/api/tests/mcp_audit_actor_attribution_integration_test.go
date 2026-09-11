@@ -305,9 +305,15 @@ func driveConsentAsPrincipal(t *testing.T, eng *gin.Engine, grantName string) st
 	q.Set("state", "actor-state")
 	q.Set("code_challenge", challenge)
 	q.Set("code_challenge_method", "S256")
+	var consentScreen struct {
+		ConsentTicket string `json:"consent_ticket"`
+	}
 	if code := mcpDoJSON(t, eng, http.MethodGet,
-		mcp.AuthorizePath+"?"+q.Encode(), nil, nil, nil); code != http.StatusOK {
+		mcp.AuthorizePath+"?"+q.Encode(), nil, nil, &consentScreen); code != http.StatusOK {
 		t.Fatalf("authorize answered %d, want 200", code)
+	}
+	if consentScreen.ConsentTicket == "" {
+		t.Fatal("authorize returned no consent_ticket")
 	}
 
 	var approval struct {
@@ -322,6 +328,7 @@ func driveConsentAsPrincipal(t *testing.T, eng *gin.Engine, grantName string) st
 		"code_challenge_method": "S256",
 		"name":                  grantName,
 		"site_scope_mode":       string(mcp.SiteScopeModeAll),
+		"consent_ticket":        consentScreen.ConsentTicket,
 	}, nil, &approval); code != http.StatusOK {
 		t.Fatalf("consent answered %d, want 200", code)
 	}
