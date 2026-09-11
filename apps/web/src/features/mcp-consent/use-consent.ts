@@ -168,7 +168,7 @@ export interface ApproveResult {
 export function useApproveConsent(): UseMutationResult<ApproveResult, Error, ApproveInput> {
   return useMutation({
     mutationFn: async (input: ApproveInput): Promise<ApproveResult> => {
-      const body: Record<string, unknown> = {
+      const requestBody: Record<string, unknown> = {
         client_id: input.consent.clientId,
         redirect_uri: input.consent.redirectUri,
         scopes: input.consent.scopes,
@@ -201,14 +201,14 @@ export function useApproveConsent(): UseMutationResult<ApproveResult, Error, App
       // the API: the old server ignores a field it never sees, and the new
       // server gets the real ticket the moment it starts issuing them.
       if (input.consent.consentTicket !== null) {
-        body.consent_ticket = input.consent.consentTicket;
+        requestBody.consent_ticket = input.consent.consentTicket;
       }
 
       const res = await fetch(CONSENT_APPROVE_PATH, {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify(requestBody),
       });
       if (!res.ok) throw await readOAuthError(res);
       const body = (await res.json()) as Record<string, unknown>;
