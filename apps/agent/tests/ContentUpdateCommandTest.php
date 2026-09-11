@@ -48,6 +48,9 @@ final class ContentUpdateCommandTest extends TestCase
     /** When true, the fake wp_save_post_revision() does nothing. */
     private bool $suppressPreflightRevision = false;
 
+    /** Post IDs passed to clean_post_cache(), in order. @var list<int> */
+    private array $cleanPostCacheCalls = [];
+
     protected function set_up(): void
     {
         parent::set_up();
@@ -58,6 +61,7 @@ final class ContentUpdateCommandTest extends TestCase
         $this->nextRevisionId            = 9000;
         $this->revisionsToKeep           = -1;
         $this->suppressPreflightRevision = false;
+        $this->cleanPostCacheCalls       = [];
 
         $this->installWordPressFake();
     }
@@ -81,6 +85,22 @@ final class ContentUpdateCommandTest extends TestCase
     private function installWordPressFake(): void
     {
         Functions\when('get_post')->alias(fn ($id) => $this->posts[(int) $id] ?? null);
+
+        // The in-memory store IS the database here, so there is no cache to
+        // clean; what matters is that the command calls this before every
+        // authoritative read, and that a re-read returns what is stored now.
+        Functions\when('clean_post_cache')->alias(function ($id): void {
+            $this->cleanPostCacheCalls[] = (int) $id;
+        });
+
+        // has_blocks(), verbatim from the vendored WordPress 7.1 tree
+        // (wp-includes/blocks.php:878-890), reduced to the string branch the
+        // command actually uses: a plain substring test for '<!-- wp:'.
+        // Measured against that source: '' => false, classic HTML => false,
+        // delimiterless freeform => false, '<!-- wp:freeform -->' => true.
+        Functions\when('has_blocks')->alias(
+            static fn ($post) => is_string($post) && str_contains($post, '<!-- wp:')
+        );
 
         Functions\when('sanitize_text_field')->alias(
             static fn ($str) => trim((string) wp_strip_all_tags((string) $str))
@@ -213,6 +233,53 @@ final class ContentUpdateCommandTest extends TestCase
     }
 
     /**
+     * The fingerprint of what a post holds RIGHT NOW.
+     *
+     * Recomputed here from the spec rather than called on the command, so a
+     * change to the command's framing shows up as a red test instead of both
+     * sides drifting together: exact stored bytes, length-framed, domain
+     * separator, no normalisation of any kind.
+     *
+     * @param int $postId Post ID.
+     * @return string
+     */
+    private function fingerprintOf(int $postId): string
+    {
+        $post    = $this->posts[$postId];
+        $title   = (string) $post->post_title;
+        $content = (string) $post->post_content;
+
+        return 'sha256:' . hash(
+            'sha256',
+            "wpmgr.content_update.v1\n"
+            . strlen($title) . "\n" . $title . "\n"
+            . strlen($content) . "\n" . $content
+        );
+    }
+
+    /**
+     * Runs the command, filling in a CURRENT expected_fingerprint unless the
+     * test supplies its own.
+     *
+     * Every pre-existing test here predates the precondition and means "the
+     * caller is up to date", so the default keeps them testing what they were
+     * written to test. A test about staleness passes its own value.
+     *
+     * @param array<string,mixed> $params Request parameters.
+     * @return array<string,mixed>
+     */
+    private function runCommand(array $params): array
+    {
+        $postId = (int) ($params['post_id'] ?? 0);
+
+        if (!array_key_exists('expected_fingerprint', $params) && isset($this->posts[$postId])) {
+            $params['expected_fingerprint'] = $this->fingerprintOf($postId);
+        }
+
+        return (new ContentUpdateCommand())->execute([], $params);
+    }
+
+    /**
      * Every revision body currently stored for a post.
      *
      * @param int $postId Parent post ID.
@@ -250,7 +317,7 @@ final class ContentUpdateCommandTest extends TestCase
     {
         $this->seedPost(12);
 
-        $result = (new ContentUpdateCommand())->execute([], [
+        $result = $this->runCommand([
             'post_id' => 12,
             'title'   => 'New title',
             'content' => 'New content',
@@ -269,7 +336,7 @@ final class ContentUpdateCommandTest extends TestCase
     {
         $this->seedPost(13, 'page');
 
-        $result = (new ContentUpdateCommand())->execute([], [
+        $result = $this->runCommand([
             'post_id' => 13,
             'content' => 'Just the body',
         ]);
@@ -288,7 +355,7 @@ final class ContentUpdateCommandTest extends TestCase
     {
         $this->seedPost(21, 'post', 'publish', 'Before title', 'Before content');
 
-        $result = (new ContentUpdateCommand())->execute([], [
+        $result = $this->runCommand([
             'post_id' => 21,
             'title'   => 'After title',
             'content' => 'After content',
@@ -333,7 +400,7 @@ final class ContentUpdateCommandTest extends TestCase
         $this->seedPost(22, 'post', 'publish', 'Before title', 'Before content');
         $this->suppressPreflightRevision = true;
 
-        $result = (new ContentUpdateCommand())->execute([], [
+        $result = $this->runCommand([
             'post_id' => 22,
             'content' => 'After content',
         ]);
@@ -350,7 +417,7 @@ final class ContentUpdateCommandTest extends TestCase
         $this->seedPost(23);
         $this->revisionsToKeep = 0;
 
-        $result = (new ContentUpdateCommand())->execute([], [
+        $result = $this->runCommand([
             'post_id' => 23,
             'content' => 'New content',
         ]);
@@ -371,7 +438,7 @@ final class ContentUpdateCommandTest extends TestCase
         $this->seedPost(24);
         $this->revisionsToKeep = 1;
 
-        $result = (new ContentUpdateCommand())->execute([], [
+        $result = $this->runCommand([
             'post_id' => 24,
             'content' => 'New content',
         ]);
@@ -387,9 +454,12 @@ final class ContentUpdateCommandTest extends TestCase
 
     public function test_refuses_a_post_that_does_not_exist(): void
     {
-        $result = (new ContentUpdateCommand())->execute([], [
-            'post_id' => 404,
-            'content' => 'New content',
+        $result = $this->runCommand([
+            'post_id'              => 404,
+            'content'              => 'New content',
+            // There is no post to fingerprint; any well-formed value is fine,
+            // and "post not found" must win over anything about this field.
+            'expected_fingerprint' => 'sha256:' . str_repeat('0', 64),
         ]);
 
         $this->assertFalse($result['ok']);
@@ -401,7 +471,7 @@ final class ContentUpdateCommandTest extends TestCase
     {
         $this->seedPost(31, 'post', 'trash');
 
-        $result = (new ContentUpdateCommand())->execute([], [
+        $result = $this->runCommand([
             'post_id' => 31,
             'content' => 'New content',
         ]);
@@ -415,7 +485,7 @@ final class ContentUpdateCommandTest extends TestCase
     {
         $this->seedPost(32);
 
-        $result = (new ContentUpdateCommand())->execute([], ['post_id' => 32]);
+        $result = $this->runCommand(['post_id' => 32]);
 
         $this->assertFalse($result['ok']);
         $this->assertStringContainsString('nothing to update', $result['detail']);
@@ -423,7 +493,7 @@ final class ContentUpdateCommandTest extends TestCase
 
     public function test_refuses_a_missing_post_id(): void
     {
-        $result = (new ContentUpdateCommand())->execute([], ['content' => 'New content']);
+        $result = $this->runCommand(['content' => 'New content']);
 
         $this->assertFalse($result['ok']);
         $this->assertStringContainsString('post_id', $result['detail']);
@@ -433,7 +503,7 @@ final class ContentUpdateCommandTest extends TestCase
     {
         $this->seedPost(33, 'product');
 
-        $result = (new ContentUpdateCommand())->execute([], [
+        $result = $this->runCommand([
             'post_id' => 33,
             'content' => 'New content',
         ]);
@@ -447,7 +517,7 @@ final class ContentUpdateCommandTest extends TestCase
     {
         $this->seedPost(34, 'product');
 
-        $result = (new ContentUpdateCommand())->execute([], [
+        $result = $this->runCommand([
             'post_id'            => 34,
             'content'            => 'New content',
             'allowed_post_types' => ['product'],
@@ -461,7 +531,7 @@ final class ContentUpdateCommandTest extends TestCase
     {
         $this->seedPost(35);
 
-        $result = (new ContentUpdateCommand())->execute([], [
+        $result = $this->runCommand([
             'post_id'            => 35,
             'content'            => 'New content',
             'allowed_post_types' => ['post', 7],
@@ -476,7 +546,7 @@ final class ContentUpdateCommandTest extends TestCase
     {
         $this->seedPost(36);
 
-        $result = (new ContentUpdateCommand())->execute([], [
+        $result = $this->runCommand([
             'post_id' => 36,
             'content' => ['not', 'a', 'string'],
         ]);
@@ -493,7 +563,7 @@ final class ContentUpdateCommandTest extends TestCase
     {
         $this->seedPost(41);
 
-        $result = (new ContentUpdateCommand())->execute([], [
+        $result = $this->runCommand([
             'post_id' => 41,
             'content' => 'Safe<script>alert(1)</script> text',
         ]);
@@ -511,7 +581,7 @@ final class ContentUpdateCommandTest extends TestCase
             static fn () => new \WP_Error('db_error', 'Could not update post in the database.')
         );
 
-        $result = (new ContentUpdateCommand())->execute([], [
+        $result = $this->runCommand([
             'post_id' => 42,
             'content' => 'New content',
         ]);
@@ -519,5 +589,266 @@ final class ContentUpdateCommandTest extends TestCase
         $this->assertFalse($result['ok']);
         $this->assertStringContainsString('wp_update_post failed', $result['detail']);
         $this->assertStringContainsString('database', $result['detail']);
+    }
+
+    // -------------------------------------------------------------------------
+    // Block documents
+    //
+    // Writing free-form HTML into a block document leaves markup that no
+    // longer matches what the block type's save routine emits. Nothing fails
+    // at write time; the damage surfaces when a human next opens the editor,
+    // is offered block recovery on a page they never touched, and accepts it,
+    // which discards the block. So the write must not happen at all.
+    // -------------------------------------------------------------------------
+
+    public function test_refuses_a_block_document_and_leaves_it_byte_for_byte_unchanged(): void
+    {
+        $blockContent = "<!-- wp:paragraph -->\n<p>Canonical markup.</p>\n<!-- /wp:paragraph -->";
+        $this->seedPost(51, 'page', 'publish', 'Block page', $blockContent);
+
+        $before = $this->fingerprintOf(51);
+
+        $result = $this->runCommand([
+            'post_id' => 51,
+            'title'   => 'Rewritten title',
+            'content' => '<p>Free-form HTML.</p>',
+        ]);
+
+        $this->assertFalse($result['ok'], 'a block document was written');
+        $this->assertSame('failed', $result['outcome']);
+        $this->assertSame('block_document_unsupported', $result['code']);
+
+        // The refusal has to be actionable, or an automated caller retries the
+        // identical call until its budget is gone.
+        $this->assertStringContainsString('block document', $result['detail']);
+        $this->assertStringContainsString('Do not retry', $result['detail']);
+
+        $this->assertSame($blockContent, $this->posts[51]->post_content);
+        $this->assertSame('Block page', $this->posts[51]->post_title);
+        $this->assertSame($before, $this->fingerprintOf(51), 'the post changed');
+        $this->assertSame([], $this->revisionContents(51), 'a refused call left a revision behind');
+    }
+
+    /**
+     * The over-fire test, and it matters as much as the refusals: a guard that
+     * blocks correct work gets switched off, and then it guards nothing.
+     *
+     * @return void
+     */
+    public function test_a_classic_document_with_a_matching_fingerprint_still_succeeds(): void
+    {
+        $this->seedPost(52, 'page', 'publish', 'Classic page', '<p>Plain old HTML.</p>');
+
+        $result = $this->runCommand([
+            'post_id' => 52,
+            'content' => '<p>Replacement HTML.</p>',
+        ]);
+
+        $this->assertTrue($result['ok'], 'correct work was refused: ' . ($result['detail'] ?? ''));
+        $this->assertSame('<p>Replacement HTML.</p>', $this->posts[52]->post_content);
+        $this->assertSame(['content'], $result['changed']);
+    }
+
+    public function test_a_stale_fingerprint_is_a_conflict_not_a_failure_and_writes_nothing(): void
+    {
+        $this->seedPost(53, 'post', 'publish', 'Title as read', 'Content as read');
+
+        $stale = $this->fingerprintOf(53);
+
+        // Somebody else edits the post between the caller's read and its write.
+        $this->posts[53]->post_content = 'Content as it is NOW';
+
+        $result = $this->runCommand([
+            'post_id'              => 53,
+            'content'              => 'Content the caller planned',
+            'expected_fingerprint' => $stale,
+        ]);
+
+        $this->assertFalse($result['ok']);
+        $this->assertSame('conflict', $result['outcome'], 'a conflict was reported as a failure');
+        $this->assertSame('expected_fingerprint_mismatch', $result['code']);
+        $this->assertFalse($result['written']);
+        $this->assertSame($stale, $result['expected_fingerprint']);
+        $this->assertSame($this->fingerprintOf(53), $result['current_fingerprint']);
+
+        // A conflict is not a failure, and the response must say which it is:
+        // the remedies are opposite -- re-read and re-plan, versus retry.
+        $this->assertStringContainsString('conflict, not a failure', $result['detail']);
+
+        $this->assertSame('Content as it is NOW', $this->posts[53]->post_content, 'the other writer was overwritten');
+    }
+
+    /**
+     * The failure outcome and the conflict outcome must not be the same value,
+     * asserted side by side so a future "simplification" that collapses them
+     * cannot pass.
+     *
+     * @return void
+     */
+    public function test_conflict_and_failure_are_distinguishable_outcomes(): void
+    {
+        $this->seedPost(54);
+        $this->revisionsToKeep = 0;
+
+        $failure = $this->runCommand(['post_id' => 54, 'content' => 'New content']);
+
+        $this->seedPost(55);
+        $conflict = $this->runCommand([
+            'post_id'              => 55,
+            'content'              => 'New content',
+            'expected_fingerprint' => 'sha256:' . str_repeat('f', 64),
+        ]);
+
+        $this->assertFalse($failure['ok']);
+        $this->assertFalse($conflict['ok']);
+        $this->assertSame('failed', $failure['outcome']);
+        $this->assertSame('conflict', $conflict['outcome']);
+        $this->assertNotSame($failure['outcome'], $conflict['outcome']);
+    }
+
+    /**
+     * The reported fingerprint must be of the bytes that are STORED, which is
+     * not the same thing as the bytes that were sent.
+     *
+     * The proof is a filter that quietly rewrites the content on its way into
+     * the database, standing in for the real thing: a page builder, a kses
+     * variant, a sanitising plugin. A response echoing the request's value
+     * reports a fingerprint the database does not hold, and the caller has no
+     * way to see that its write did not land as asked.
+     *
+     * @return void
+     */
+    public function test_the_returned_fingerprint_is_the_re_read_stored_value(): void
+    {
+        $this->seedPost(56, 'post', 'publish', 'Title', 'Before');
+
+        $sent = 'After';
+
+        // Something between the command and the row rewrites the content.
+        Functions\when('wp_update_post')->alias(function ($postarr) {
+            $id                              = (int) $postarr['ID'];
+            $this->posts[$id]->post_content  = 'SOMETHING ELSE ENTIRELY';
+            return $id;
+        });
+
+        $result = $this->runCommand(['post_id' => 56, 'content' => $sent]);
+
+        $this->assertTrue($result['ok'], (string) ($result['detail'] ?? ''));
+        $this->assertSame(
+            $this->fingerprintOf(56),
+            $result['fingerprint'],
+            'the reported fingerprint is not the fingerprint of what is stored'
+        );
+        $this->assertNotSame(
+            'sha256:' . hash('sha256', "wpmgr.content_update.v1\n5\nTitle\n5\n" . $sent),
+            $result['fingerprint'],
+            'the response echoed the request instead of re-reading the row'
+        );
+        $this->assertSame(strlen('SOMETHING ELSE ENTIRELY'), $result['content_bytes']);
+        $this->assertSame(strlen('Title'), $result['title_bytes']);
+
+        // Re-read means re-read: the object cache is dropped first, or a
+        // persistent cache can answer with a version the row no longer holds.
+        $this->assertContains(56, $this->cleanPostCacheCalls);
+    }
+
+    // -------------------------------------------------------------------------
+    // What has_blocks() ACTUALLY does
+    //
+    // Measured against the vendored WordPress 7.1 source
+    // (tools/plugincheck/wp/wp-includes/blocks.php:878-890), which is
+    // str_contains($content, '<!-- wp:') and nothing more:
+    //
+    //   empty string                  => false
+    //   classic HTML                  => false
+    //   freeform, delimiterless       => false   <- what the block editor
+    //                                               stores for classic content
+    //   '<!-- wp:freeform -->' framed => true
+    //
+    // These assert the measured behaviour, not the behaviour one might expect
+    // of something called "has blocks".
+    // -------------------------------------------------------------------------
+
+    public function test_an_empty_post_is_not_a_block_document(): void
+    {
+        $this->seedPost(57, 'post', 'publish', 'Empty', '');
+
+        $result = $this->runCommand(['post_id' => 57, 'content' => 'First body.']);
+
+        $this->assertTrue($result['ok'], 'an empty post was treated as a block document: '
+            . (string) ($result['detail'] ?? ''));
+        $this->assertSame('First body.', $this->posts[57]->post_content);
+        $this->assertFalse($result['ownership']['is_block_document']);
+    }
+
+    /**
+     * Classic content round-tripped through the block editor is stored as a
+     * core/freeform block, and core/freeform serialises WITHOUT delimiters.
+     * has_blocks() therefore answers false and the write is allowed — which is
+     * the measured behaviour, and is also the right answer, since freeform
+     * holds raw HTML and has no save routine to mismatch.
+     *
+     * @return void
+     */
+    public function test_a_delimiterless_freeform_document_is_allowed(): void
+    {
+        $this->seedPost(58, 'page', 'publish', 'Freeform', '<p>Classic content.</p>');
+
+        $result = $this->runCommand(['post_id' => 58, 'content' => '<p>Replaced.</p>']);
+
+        $this->assertTrue($result['ok'], (string) ($result['detail'] ?? ''));
+        $this->assertSame('<p>Replaced.</p>', $this->posts[58]->post_content);
+    }
+
+    /**
+     * The same content WITH an explicit freeform delimiter is refused, because
+     * has_blocks() is a substring test and the delimiter is present.
+     *
+     * @return void
+     */
+    public function test_a_delimited_freeform_document_is_refused(): void
+    {
+        $content = "<!-- wp:freeform -->\n<p>Classic content.</p>\n<!-- /wp:freeform -->";
+        $this->seedPost(59, 'page', 'publish', 'Freeform', $content);
+
+        $result = $this->runCommand(['post_id' => 59, 'content' => '<p>Replaced.</p>']);
+
+        $this->assertFalse($result['ok']);
+        $this->assertSame('block_document_unsupported', $result['code']);
+        $this->assertSame($content, $this->posts[59]->post_content);
+    }
+
+    // -------------------------------------------------------------------------
+    // Ownership confidence
+    // -------------------------------------------------------------------------
+
+    public function test_the_response_admits_it_did_not_check_for_a_page_builder(): void
+    {
+        $this->seedPost(60, 'page');
+
+        $result = $this->runCommand(['post_id' => 60, 'content' => 'New body']);
+
+        $this->assertTrue($result['ok'], (string) ($result['detail'] ?? ''));
+        $this->assertTrue($result['ownership']['block_document_checked']);
+        $this->assertFalse($result['ownership']['is_block_document']);
+        $this->assertFalse(
+            $result['ownership']['page_builder_checked'],
+            'the response claims a page-builder verdict this slice did not earn'
+        );
+        $this->assertStringContainsString('page builder', $result['ownership']['detail']);
+    }
+
+    public function test_expected_fingerprint_is_required(): void
+    {
+        $this->seedPost(61);
+
+        $result = (new ContentUpdateCommand())->execute([], [
+            'post_id' => 61,
+            'content' => 'New content',
+        ]);
+
+        $this->assertFalse($result['ok']);
+        $this->assertSame('missing_expected_fingerprint', $result['code']);
+        $this->assertSame('Original content', $this->posts[61]->post_content);
     }
 }
