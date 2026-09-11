@@ -108,7 +108,10 @@ if ! command -v unzip >/dev/null 2>&1; then
     echo "[e2e] ERROR: 'unzip' not found; cannot read the plugin slug out of ${PLUGIN_ZIP}." >&2
     exit 1
 fi
-PLUGIN_SLUG="$(unzip -Z1 "${PLUGIN_ZIP}" | awk -F/ 'NF>1 && $1!="" {print $1; exit}')"
+# awk deliberately reads the WHOLE listing rather than `exit`-ing on the first
+# match: exiting early closes the pipe, unzip dies on SIGPIPE, and `set -o
+# pipefail` turns a correct read into exit 141.
+PLUGIN_SLUG="$(unzip -Z1 "${PLUGIN_ZIP}" | awk -F/ 'NF>1 && $1!="" && !seen {print $1; seen=1}')"
 if [ -z "${PLUGIN_SLUG}" ]; then
     echo "[e2e] ERROR: ${PLUGIN_ZIP} has no top-level directory." >&2
     echo "[e2e]        WordPress would then name the install folder after the zip FILENAME," >&2
