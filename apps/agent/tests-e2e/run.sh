@@ -25,11 +25,20 @@
 # 18.  EXIT trap: docker compose down -v.
 #
 # Usage:
-#   PLUGIN_ZIP=/path/to/fleet-agent-for-wpmgr.zip ./tests-e2e/run.sh
+#   ./tests-e2e/run.sh                    # asks make where the zip is
+#   PLUGIN_ZIP=/path/to/agent.zip ./tests-e2e/run.sh   # explicit override
 #
-# The PLUGIN_ZIP default is derived from `make agent-zip` output location when
-# run from the repo root (release/fleet-agent-for-wpmgr.zip is the wporg build,
-# but we use the standard build zip here since we only need the plugin installed).
+# THE ZIP NAME IS NOT WRITTEN IN THIS FILE. The Makefile owns the wp.org slug
+# (AGENT_WPORG_SLUG) and the zip path built from it, and this script asks for it
+# with `make -s print-agent-wporg-zip`. The same goes for the INSTALLED plugin
+# directory: it is read out of the archive itself (its top-level entry, which is
+# what WordPress names the folder), never assumed.
+#
+# Both used to be hard-coded here under a previous slug. The rename updated the
+# Makefile and not this script, so `make agent-e2e-objectcache` kept working on a
+# developer machine (it passes PLUGIN_ZIP explicitly) while the nightly workflow,
+# which restated the old literal too, failed 40 consecutive runs before a single
+# assertion ran.
 
 set -euo pipefail
 
@@ -37,8 +46,23 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 AGENT_ROOT="${REPO_ROOT}/apps/agent"
 
-# Default zip location: the wporg build, since it is the one tested by plugincheck.
-: "${PLUGIN_ZIP:=${REPO_ROOT}/release/fleet-agent-for-wpmgr.zip}"
+# Default zip location: whatever the Makefile says the wp.org build is. Ask, do
+# not restate. `make` is required for that, so a missing make is a hard failure
+# with a usable message, never a silent fallback to a guessed path.
+if [ -z "${PLUGIN_ZIP:-}" ]; then
+    if ! command -v make >/dev/null 2>&1; then
+        echo "[e2e] ERROR: 'make' not found, so the wp.org zip path cannot be resolved." >&2
+        echo "[e2e]        Install make, or pass PLUGIN_ZIP=/abs/path/to/agent.zip explicitly." >&2
+        exit 1
+    fi
+    PLUGIN_ZIP="$(make -s -C "${REPO_ROOT}" print-agent-wporg-zip)"
+    if [ -z "${PLUGIN_ZIP}" ]; then
+        echo "[e2e] ERROR: 'make -s -C ${REPO_ROOT} print-agent-wporg-zip' printed nothing." >&2
+        echo "[e2e]        That target is the single source of the wp.org zip path; an empty" >&2
+        echo "[e2e]        answer means it was renamed or removed. Fix the Makefile." >&2
+        exit 1
+    fi
+fi
 
 # Compose project directory is the tests-e2e directory.
 COMPOSE_DIR="${SCRIPT_DIR}"
@@ -59,13 +83,11 @@ trap cleanup EXIT
 # -----------------------------------------------------------------------
 echo "[e2e] Step 1: Ensure agent zip exists at ${PLUGIN_ZIP}"
 if [ ! -f "${PLUGIN_ZIP}" ]; then
-    echo "[e2e] Zip not found; building via make agent-zip..."
-    make -C "${REPO_ROOT}" agent-zip
-    # agent-zip produces release/wpmgr-agent.zip; for e2e we need the wporg build.
-    if [ ! -f "${PLUGIN_ZIP}" ]; then
-        echo "[e2e] Building wporg zip via make agent-zip-wporg..."
-        make -C "${REPO_ROOT}" agent-zip-wporg
-    fi
+    # Build the wp.org zip directly. This used to run `make agent-zip` first,
+    # which produces a DIFFERENT archive (the self-hosted identity) and could
+    # never satisfy the path above, then fall through to agent-zip-wporg anyway.
+    echo "[e2e] Zip not found; building via make agent-zip-wporg..."
+    make -C "${REPO_ROOT}" agent-zip-wporg
 fi
 
 if [ ! -f "${PLUGIN_ZIP}" ]; then
@@ -73,6 +95,30 @@ if [ ! -f "${PLUGIN_ZIP}" ]; then
     exit 1
 fi
 echo "[e2e] Plugin zip: ${PLUGIN_ZIP}"
+
+# -----------------------------------------------------------------------
+# Step 1b: Derive the INSTALLED plugin directory name from the archive.
+#
+# WordPress names a plugin's folder after the archive's top-level directory, so
+# that entry — not the zip filename, and not any literal in this repo — is the
+# authority on where the installed files land. Reading it here means a slug
+# rename cannot desynchronise the harness from the artifact again.
+# -----------------------------------------------------------------------
+if ! command -v unzip >/dev/null 2>&1; then
+    echo "[e2e] ERROR: 'unzip' not found; cannot read the plugin slug out of ${PLUGIN_ZIP}." >&2
+    exit 1
+fi
+PLUGIN_SLUG="$(unzip -Z1 "${PLUGIN_ZIP}" | awk -F/ 'NF>1 && $1!="" {print $1; exit}')"
+if [ -z "${PLUGIN_SLUG}" ]; then
+    echo "[e2e] ERROR: ${PLUGIN_ZIP} has no top-level directory." >&2
+    echo "[e2e]        WordPress would then name the install folder after the zip FILENAME," >&2
+    echo "[e2e]        which is not what this harness (or the wp.org build) expects." >&2
+    echo "[e2e]        Archive listing:" >&2
+    unzip -Z1 "${PLUGIN_ZIP}" | head -5 >&2
+    exit 1
+fi
+export PLUGIN_SLUG
+echo "[e2e] Installed plugin directory (from the archive's top-level entry): ${PLUGIN_SLUG}"
 
 # -----------------------------------------------------------------------
 # Step 2: Export PLUGIN_ZIP for docker compose.
@@ -292,7 +338,7 @@ INSTALLED_VER="$(docker compose -f "${COMPOSE_DIR}/docker-compose.yml" \
 ASSET_VER="$(docker compose -f "${COMPOSE_DIR}/docker-compose.yml" \
     --project-name wpmgr-agent-e2e \
     exec -T wordpress grep -m1 'Version:' \
-    /var/www/html/wp-content/plugins/fleet-agent-for-wpmgr/assets/wpmgr-object-cache-dropin.php \
+    "/var/www/html/wp-content/plugins/${PLUGIN_SLUG}/assets/wpmgr-object-cache-dropin.php" \
     | awk '{print $NF}')"
 echo "[e2e] Drop-in installer state: ${INSTALLED_VER}"
 echo "[e2e] Asset version: ${ASSET_VER}"
