@@ -72,7 +72,7 @@ func TestApproveStoresTheOperatorsNarrowedChoice(t *testing.T) {
 	}
 	// And it is genuinely narrower than the ceiling, or the assertion above
 	// would be satisfied by an implementation that stores everything.
-	ceiling, err := OrgDefaultCapabilities(grantScopes())
+	ceiling, err := OrgDefaultCapabilities(DefaultGrantScopes())
 	if err != nil {
 		t.Fatalf("OrgDefaultCapabilities: %v", err)
 	}

@@ -1045,6 +1045,10 @@ func TestAuthenticateHandsTheChokepointAnUnscopedPrincipal(t *testing.T) {
 			SiteScopeMode: "all", TokenID: tok.ID, TokenStatus: "active",
 			TokenExpiresAt:    tok.ExpiresAt,
 			GrantCapabilities: []string{string(CapSitesRead)},
+			// The scope column the ceiling is now DERIVED from (m136). Set to
+			// what every live grant holds, because a nil column is refused --
+			// correctly -- as "no scope, so no capability".
+			GrantOauthScopes: []string{string(ScopeRead)},
 			GrantExpiresAt:    time.Now().UTC().Add(90 * 24 * time.Hour),
 			Authorized:        true,
 		},
@@ -1085,6 +1089,10 @@ func TestAuthenticate_RevocationBitesOnTheNextRequest(t *testing.T) {
 			SiteScopeMode: "all", TokenID: tok.ID, TokenStatus: "active",
 			TokenExpiresAt:    tok.ExpiresAt,
 			GrantCapabilities: []string{string(CapSitesRead)},
+			// The scope column the ceiling is now DERIVED from (m136). Set to
+			// what every live grant holds, because a nil column is refused --
+			// correctly -- as "no scope, so no capability".
+			GrantOauthScopes: []string{string(ScopeRead)},
 			GrantExpiresAt:    time.Now().UTC().Add(90 * 24 * time.Hour),
 			Authorized:        true,
 		},
@@ -1167,6 +1175,10 @@ func TestAuthenticate_EmptyResolvedScopeGrantsNoSites(t *testing.T) {
 			TokenID: tok.ID, TokenStatus: "active",
 			TokenExpiresAt:    tok.ExpiresAt,
 			GrantCapabilities: []string{string(CapSitesRead)},
+			// The scope column the ceiling is now DERIVED from (m136). Set to
+			// what every live grant holds, because a nil column is refused --
+			// correctly -- as "no scope, so no capability".
+			GrantOauthScopes: []string{string(ScopeRead)},
 			GrantExpiresAt:    time.Now().UTC().Add(90 * 24 * time.Hour),
 			Authorized:        true,
 		},

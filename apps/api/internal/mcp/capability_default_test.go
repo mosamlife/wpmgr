@@ -93,9 +93,9 @@ func TestDefaultGrantCapabilitiesIsThePresetNotTheVocabulary(t *testing.T) {
 	// request authenticates and then reaches nothing -- the half-working
 	// connection m127 DECISION 3 forbids. Checked against the ceiling, which is
 	// what Authenticate narrows the stored column against.
-	ceiling, err := OrgDefaultCapabilities(grantScopes())
+	ceiling, err := OrgDefaultCapabilities(DefaultGrantScopes())
 	if err != nil {
-		t.Fatalf("OrgDefaultCapabilities(grantScopes()): %v", err)
+		t.Fatalf("OrgDefaultCapabilities(DefaultGrantScopes()): %v", err)
 	}
 	if _, err := ceiling.NarrowTo(got); err != nil {
 		t.Fatalf("the default preset %v is not held by the organisation ceiling %v: %v.\n"+
@@ -118,7 +118,7 @@ func TestMintWithNoRequestedCapabilitiesGetsThePresetNotTheCeiling(t *testing.T)
 	// honest fixture rather than a stub standing in for one.
 	svc := &Service{}
 
-	set, err := svc.resolveGrantCapabilities(nil)
+	set, err := svc.resolveGrantCapabilities(DefaultGrantScopes(), nil)
 	if err != nil {
 		t.Fatalf("resolveGrantCapabilities(nil): %v", err)
 	}
@@ -133,7 +133,7 @@ func TestMintWithNoRequestedCapabilitiesGetsThePresetNotTheCeiling(t *testing.T)
 	// The ceiling is still reachable BY ASKING, which is the other half of the
 	// decision: this is a narrower default, not a narrower surface.
 	wider := []Capability{CapSitesRead, CapUptimeRead, CapBackupsRead}
-	asked, err := svc.resolveGrantCapabilities(&wider)
+	asked, err := svc.resolveGrantCapabilities(DefaultGrantScopes(), &wider)
 	if err != nil {
 		t.Fatalf("resolveGrantCapabilities(%v): %v -- an operator who explicitly asks "+
 			"for a seated, conferred capability must receive it", capsToStrings(wider), err)
@@ -258,9 +258,9 @@ func TestContentReadIsKnownButConferredByNoScope(t *testing.T) {
 	}
 
 	// NOT CONFERRED: no scope hands it out, so no grant can be minted holding it.
-	ceiling, err := OrgDefaultCapabilities(grantScopes())
+	ceiling, err := OrgDefaultCapabilities(DefaultGrantScopes())
 	if err != nil {
-		t.Fatalf("OrgDefaultCapabilities(grantScopes()): %v", err)
+		t.Fatalf("OrgDefaultCapabilities(DefaultGrantScopes()): %v", err)
 	}
 	if ceiling.Allows(CapContentRead) {
 		t.Fatalf("the organisation ceiling confers %q. Nothing serves it: the tool "+
