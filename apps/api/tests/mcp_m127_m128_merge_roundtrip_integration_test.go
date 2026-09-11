@@ -95,6 +95,9 @@ func TestMCPMergedGrantCarriesBothMigrationsColumnsAsAppRole(t *testing.T) {
 		ScopeSiteIds: []uuid.UUID{},
 		// m127.
 		Capabilities:        []string{"mcp.sites.read"},
+		// m136: NOT NULL with no DEFAULT, so a fixture that omits it takes
+		// 23502 rather than minting a grant whose scope set the schema chose.
+		OauthScopes:         []string{"mcp:read"},
 		ExpiresAt:           expires,
 		IdleExpireAfterDays: &idleDays,
 		// m128.
@@ -164,6 +167,9 @@ func TestMCPMergedGrantOmittingSetupClientIsNullAsAppRole(t *testing.T) {
 		ScopeTagIds:   []uuid.UUID{},
 		ScopeSiteIds:  []uuid.UUID{},
 		Capabilities:  []string{"mcp.sites.read"},
+		// m136: NOT NULL with no DEFAULT, so a fixture that omits it takes
+		// 23502 rather than minting a grant whose scope set the schema chose.
+		OauthScopes:   []string{"mcp:read"},
 		ExpiresAt:     expires,
 		// IdleExpireAfterDays and SetupClient both deliberately omitted. Both are
 		// nullable; leaving the fields zero is exactly what a caller that does

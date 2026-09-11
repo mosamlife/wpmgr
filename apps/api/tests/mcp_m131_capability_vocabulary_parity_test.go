@@ -231,6 +231,9 @@ func m131GrantWithBearer(
 		ScopeSiteIds:        []uuid.UUID{},
 		ClientID:            &clientID,
 		Capabilities:        caps,
+		// m136: NOT NULL with no DEFAULT, so a fixture that omits it takes
+		// 23502 rather than minting a grant whose scope set the schema chose.
+		OauthScopes:         []string{"mcp:read"},
 		ExpiresAt:           time.Now().UTC().Add(90 * 24 * time.Hour),
 		IdleExpireAfterDays: nil,
 	}, func(grantID uuid.UUID) sqlc.CreateMCPAuthorizationCodeParams {
