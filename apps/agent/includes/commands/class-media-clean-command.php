@@ -223,23 +223,25 @@ final class MediaCleanCommand implements CommandInterface
     }
 
     /**
-     * Repeatability: worst case across the three side-effecting actions, and none of them is Unsafe.
-     * action=isolate calls beginManifest(), which mints a fresh manifest id on every invocation, so a
-     * retry leaves a second, largely-empty quarantine artefact behind -- the files already moved on the
-     * first run. action=delete and action=restore both read quarantine_ids straight from the request via
-     * sanitiseStringList(); the manifests they act on are fixed by that list, not re-derived at run time,
-     * so a retry just re-processes the same already-handled manifests and finds nothing left to touch.
-     * handleRestore() exists precisely so an isolate can be undone.
+     * Repeatability: Unsafe, on the restore path -- not on delete, which an earlier pass wrongly blamed.
+     * action=isolate and action=delete are both pinned by identifiers already in the request
+     * (sanitiseIdList() / sanitiseStringList()); neither re-derives its target at run time, so the
+     * earlier docblock's claim that a delete retry "removes whatever now matches" was wrong about the
+     * code -- handleDelete() never re-scans.
      *
-     * The previous pass called this Unsafe on the claim that a delete retry "removes whatever now
-     * matches" -- that reads handleDelete() as re-scanning by criteria. It does not; the parameter flow
-     * says otherwise.
+     * But action=restore is unsafe to retry. MediaQuarantine::restoreManifest() guards only the source:
+     * it skips a file only when file_exists($src) is false (class-media-quarantine.php:380), and moves
+     * it onto $normalised with a bare @rename() that overwrites unchecked -- the destination is never
+     * tested. Cleanup only runs when if ($restored > 0) (class-media-quarantine.php:397), so a restore
+     * attempt that restores zero files leaves the manifest live for a retry. A retry after that point can
+     * rename a quarantined file over a file created at the original path since the first attempt,
+     * destroying it. The manifest pins the source; nothing pins the destination.
      *
      * @return CommandRepeatability
      */
     public function repeatability(): CommandRepeatability
     {
-        return CommandRepeatability::Repeatable;
+        return CommandRepeatability::Unsafe;
     }
 
     /**
