@@ -368,12 +368,16 @@ final class MediaQuarantine
      * of themselves — quarantineAttachment() MOVES the originals — so the move
      * is refused, both survive, and the manifest stays live for the operator.
      *
-     * `complete` is derived from two independent conditions, both required:
-     * every recorded file is accounted for (nothing skipped, nothing failed),
-     * AND no regular file remains anywhere under media/<manifest_id>/files. The
-     * counters cannot see a file left behind by a fragment-derivation branch,
-     * and the physical scan cannot say why one is there; only together do they
-     * license removing the quarantine copy.
+     * `complete` is derived from three independent conditions, all required:
+     * the manifest loaded at all, AND every recorded file is accounted for
+     * (nothing skipped, nothing failed), AND no regular file remains anywhere
+     * under media/<manifest_id>. The counters cannot see a file left behind by
+     * a fragment-derivation branch, and the physical scan cannot say why one
+     * is there; only together do they license removing the quarantine copy.
+     *
+     * `complete` is internal to this class today: it gates the cleanup below
+     * and no caller reads it. It is documented because it is returned, not
+     * because anything outside consumes it.
      *
      * `blocked` carries uploads-relative fragments only. Absolute server paths
      * are treated as disclosure here for the same reason finaliseManifest()
@@ -393,7 +397,7 @@ final class MediaQuarantine
 
         $manifest = $this->loadManifest($manifestId);
         if ($manifest === null) {
-            return $this->restoreReceipt($manifestId, 0, 0, 0, 0, [], []);
+            return $this->restoreReceipt($manifestId, false, 0, 0, 0, 0, [], []);
         }
 
         $filesRoot = $this->mediaRoot . '/' . $manifestId . '/files';
@@ -514,7 +518,16 @@ final class MediaQuarantine
             }
         }
 
-        $receipt = $this->restoreReceipt($manifestId, $restored, $skipped, $failed, $filesSeen, $reasons, $blocked);
+        $receipt = $this->restoreReceipt(
+            $manifestId,
+            true,
+            $restored,
+            $skipped,
+            $failed,
+            $filesSeen,
+            $reasons,
+            $blocked
+        );
 
         // Remove the manifest directory only when the restore is provably
         // complete. removeManifestDir() deletes every file still under
@@ -550,12 +563,18 @@ final class MediaQuarantine
     /**
      * Assemble a restore receipt, deriving `complete` rather than accepting it.
      *
+     * $manifestLoaded is a private discriminator, never a receipt field: it
+     * says only that loadManifest() returned a manifest, which is the fact
+     * `complete` needs and which the counters cannot express.
+     *
+     * @param bool              $manifestLoaded Whether loadManifest() returned a manifest.
      * @param array<string,int> $reasons
      * @param list<string>      $blocked
      * @return array{restored:int,skipped:int,failed:int,files_seen:int,complete:bool,reasons:array<string,int>,blocked:list<string>}
      */
     private function restoreReceipt(
         string $manifestId,
+        bool $manifestLoaded,
         int $restored,
         int $skipped,
         int $failed,
@@ -565,18 +584,20 @@ final class MediaQuarantine
     ): array {
         $accountedFor = ($skipped === 0 && $failed === 0);
 
-        // A receipt that saw no file and moved no file describes no restore at
-        // all — an unknown or unreadable manifest id reaches here that way.
-        // `complete` is public receipt API, so it must never let "the id means
-        // nothing to me" derive to "everything was put back".
-        $describesARestore = ($filesSeen > 0 || $restored > 0);
+        // The discriminator is whether a manifest loaded, not whether it
+        // described any file. An unknown or unreadable id reaches here with
+        // $manifestLoaded false and must never derive "everything was put
+        // back" from "the id means nothing to me". A manifest that loaded and
+        // legitimately recorded an attachment with no on-disk files is the
+        // opposite case: it is complete the moment it is read, and gating on
+        // the counters instead would leave it permanently uncleanable.
 
         return [
             'restored'   => $restored,
             'skipped'    => $skipped,
             'failed'     => $failed,
             'files_seen' => $filesSeen,
-            'complete'   => $describesARestore && $accountedFor && !$this->hasRemainingFiles($manifestId),
+            'complete'   => $manifestLoaded && $accountedFor && !$this->hasRemainingFiles($manifestId),
             'reasons'    => $reasons,
             'blocked'    => array_values($blocked),
         ];

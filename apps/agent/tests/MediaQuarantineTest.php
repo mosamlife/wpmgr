@@ -587,8 +587,8 @@ final class MediaQuarantineTest extends TestCase
         $this->assertSame(0, $receipt['files_seen'], 'an unknown id describes no files');
         $this->assertSame(0, $receipt['restored'], 'and restores none');
 
-        // `complete` is public receipt API. A caller that gates a delete on it
-        // must never read "this id means nothing to me" as "everything was
+        // `complete` gates the cleanup that deletes the quarantine copy, and
+        // it must never read "this id means nothing to me" as "everything was
         // put back".
         $this->assertFalse(
             $receipt['complete'],
@@ -727,6 +727,43 @@ final class MediaQuarantineTest extends TestCase
         $receipt = $q->restoreManifest($manifestId);
 
         $this->assertSame(0, $receipt['restored'], 'Nothing to restore when files array is empty.');
+    }
+
+    // =========================================================================
+    // restoreManifest() — a manifest that loaded and legitimately recorded no
+    // on-disk file is complete, and is cleaned up
+    // =========================================================================
+
+    public function testRestoreManifestWithOnlyEmptyFilesEntriesIsCompleteAndCleansUp(): void
+    {
+        $q          = $this->makeQuarantine();
+        $manifestId = $q->beginManifest('job-restore-empty-complete');
+
+        // A broken attachment with no on-disk files: quarantineAttachment()
+        // deliberately records the entry with files => [].
+        $q->quarantineAttachment($manifestId, 12, '2024/01/ghost.jpg', []);
+        $q->finaliseManifest($manifestId);
+
+        $manifestFile = $this->manifestsRoot() . '/' . $manifestId . '.json';
+        $manifestDir  = $this->mediaRoot() . '/' . $manifestId;
+        $this->assertFileExists($manifestFile, 'the manifest exists before the restore');
+
+        $receipt = $q->restoreManifest($manifestId);
+
+        $this->assertSame(0, $receipt['files_seen'], 'the manifest described no file');
+        $this->assertSame(0, $receipt['restored'], 'so nothing was moved back');
+
+        // The discriminator is "did a manifest load", not "did it describe
+        // files". Deriving this from the counters makes a zero-file manifest
+        // permanently uncleanable: complete never becomes true, so the JSON
+        // and the directory tree are retained for ever.
+        $this->assertTrue(
+            $receipt['complete'],
+            'a manifest that loaded and held nothing to restore is a complete restore'
+        );
+
+        $this->assertFileDoesNotExist($manifestFile, 'the manifest JSON is cleaned up');
+        $this->assertDirectoryDoesNotExist($manifestDir, 'and the media directory with it');
     }
 
     // =========================================================================
