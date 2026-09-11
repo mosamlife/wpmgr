@@ -268,11 +268,19 @@ func TestEveryCapabilityIsAReadOrAnEnumeratedWrite(t *testing.T) {
 // capability cannot then happen as a quiet one-line map edit, because the diff
 // that does it also has to remove a test whose comment says why it was there.
 //
-// The prerequisite that blocks the conferral today is NOT a missing line in
-// scopeCapabilities. It is that grantScopes() is a constant -- mcp_grants has
-// no scopes column -- so a second scope added to recognisedScopes would hand
-// ScopeRead's capabilities to a grant that never requested them. See the
-// CapCachePurge note on scopeCapabilities in policy.go.
+// THE PREREQUISITE THIS COMMENT NAMED HAS BEEN MET, and what remains is not
+// the same thing. It used to read that grantScopes() was a constant because
+// mcp_grants had no scopes column, so a second entry in recognisedScopes would
+// hand ScopeRead's capabilities to a grant that never requested them. m136
+// added the column and grantScopes is now a per-grant read, so that widening is
+// no longer the blocker.
+//
+// What blocks the conferral now is that no scope confers it: a second scope has
+// to arrive in recognisedScopes, be mapped in scopeCapabilities, and -- see the
+// note at service.go's Approve -- have the STORED scope set bound to what the
+// authorize call actually carried, which today is unnecessary only because the
+// registry holds one member. See the CapCachePurge note on scopeCapabilities in
+// policy.go.
 func TestCachePurgeIsKnownButConferredByNoScope(t *testing.T) {
 	// KNOWN: the database CHECK holds it, so this map must too, or a name the
 	// database accepts is refused at a different layer with a different error.
@@ -284,9 +292,9 @@ func TestCachePurgeIsKnownButConferredByNoScope(t *testing.T) {
 
 	// NOT CONFERRED: no scope hands it out, so no grant can be minted holding
 	// it and no stored row carrying it can authenticate.
-	ceiling, err := OrgDefaultCapabilities(grantScopes())
+	ceiling, err := OrgDefaultCapabilities(DefaultGrantScopes())
 	if err != nil {
-		t.Fatalf("OrgDefaultCapabilities(grantScopes()): %v", err)
+		t.Fatalf("OrgDefaultCapabilities(DefaultGrantScopes()): %v", err)
 	}
 	if ceiling.Allows(CapCachePurge) {
 		t.Fatalf("the organisation ceiling confers %q -- the FIRST WRITE capability "+
