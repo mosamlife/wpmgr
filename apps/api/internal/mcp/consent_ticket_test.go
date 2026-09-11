@@ -93,6 +93,25 @@ func withRecognisedScope(t *testing.T, sc Scope) {
 	t.Cleanup(func() { delete(recognisedScopes, sc) })
 }
 
+// withScopeConferring makes sc confer caps for the duration of one test, and
+// restores the shipped map afterwards.
+//
+// IT IS WHAT MAKES THE PLANTED FAILURE HONEST. A scope that confers nothing is
+// refused a few lines further on by the capability resolver, so an escalation
+// test built on one would keep passing with the binding deleted -- refused for
+// a reason that has nothing to do with what it claims to prove. Conferring an
+// EXISTING capability on the planted scope removes that accidental backstop, so
+// deleting the binding actually mints the grant. scopeCapabilities itself is
+// unchanged; nothing here is conferred in the shipped build.
+func withScopeConferring(t *testing.T, sc Scope, caps ...Capability) {
+	t.Helper()
+	if _, exists := scopeCapabilities[sc]; exists {
+		t.Fatalf("withScopeConferring: %q already confers in the shipped map", sc)
+	}
+	scopeCapabilities[sc] = caps
+	t.Cleanup(func() { delete(scopeCapabilities, sc) })
+}
+
 // plantedScope is the second registry member these tests run against. The
 // spelling is not a scope anyone plans to ship.
 const plantedScope = Scope("mcp:planted-test-only")
@@ -152,6 +171,10 @@ func mustNotHaveCreatedAGrant(t *testing.T, store *fakeStore) {
 // Registry membership cannot see that. The ticket can.
 func TestApprove_RefusesAScopeTheAuthorizeCallDidNotCarry(t *testing.T) {
 	withRecognisedScope(t, plantedScope)
+	// And it confers something, so nothing downstream refuses this approval for
+	// an unrelated reason. Without this the test would pass with the binding
+	// deleted.
+	withScopeConferring(t, plantedScope, CapSitesRead)
 
 	cases := map[string][]Scope{
 		"substituted for the authorized scope": {plantedScope},
@@ -285,6 +308,7 @@ func TestAuthorizedScopes_ComparesSetsNotSequences(t *testing.T) {
 // said one thing and the grant recorded another.
 func TestApprove_RefusesABodyNarrowerThanTheAuthorizeCall(t *testing.T) {
 	withRecognisedScope(t, plantedScope)
+	withScopeConferring(t, plantedScope, CapSitesRead)
 
 	store := approvalStore()
 	svc := consentSvc(store)
