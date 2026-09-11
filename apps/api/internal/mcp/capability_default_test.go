@@ -1,9 +1,13 @@
 // The three sets this package keeps separate, and the tests that keep them
 // separate.
 //
-//	capabilityVocabulary       what may be spelled at all      -- 8
+//	capabilityVocabulary       what may be spelled at all      -- 9
 //	scopeCapabilities          what a scope confers, a CEILING -- 7
 //	DefaultGrantCapabilities   what an unasked grant receives  -- 1
+//
+// The gap between 9 and 7 is two deliberately unreachable members,
+// mcp.content.read (m131) and mcp.cache.purge (m135). Neither is conferred by
+// any scope, so neither can be minted or authenticated; see policy.go.
 //
 // Before m131 all three held one member, so all three were the same list and
 // nothing in the tree could tell them apart. The identity was TRUE, and every
@@ -147,14 +151,21 @@ func TestMintWithNoRequestedCapabilitiesGetsThePresetNotTheCeiling(t *testing.T)
 // The vocabulary and the ceiling, pinned by value.
 // ---------------------------------------------------------------------------
 
-// TestVocabularyIsM131sEight pins the Go half of the two-place closed set by
+// TestVocabularyIsM135sNine pins the Go half of the two-place closed set by
 // value. The DATABASE half is proved separately and against the live
 // constraint, by TestCapabilityVocabularyMatchesTheDatabaseCheckAsAppRole in
 // apps/api/tests -- this one cannot see the database and does not pretend to.
-func TestVocabularyIsM131sEight(t *testing.T) {
+//
+// It was TestVocabularyIsM131sEight until m135 seated mcp.cache.purge. The
+// rename is deliberate rather than a silent edit of the literal: the name of
+// this test is the only place the vocabulary's SIZE is asserted in prose, and a
+// test called "IsM131sEight" passing over nine members is the drift this
+// project keeps finding.
+func TestVocabularyIsM135sNine(t *testing.T) {
 	want := []Capability{
 		CapActivityRead,
 		CapBackupsRead,
+		CapCachePurge,
 		CapContentRead,
 		CapDiagnosticsRead,
 		CapPerformanceRead,
@@ -163,42 +174,148 @@ func TestVocabularyIsM131sEight(t *testing.T) {
 		CapUptimeRead,
 	}
 	if !sameCaps(AllCapabilities(), want) {
-		t.Fatalf("AllCapabilities() = %v, want exactly %v (m131's seated vocabulary, "+
+		t.Fatalf("AllCapabilities() = %v, want exactly %v (m135's seated vocabulary, "+
 			"alphabetical, which is the order the constraint lists them in)",
 			capsToStrings(AllCapabilities()), capsToStrings(want))
 	}
 }
 
-// TestEveryCapabilityIsARead makes "this build seats no write capability" a
-// property that is checked rather than claimed. m131 DECISION 2 froze the
-// three-segment form specifically so this is a pattern test: the write side of
-// the design uses '.propose' and '.write', and the first member that does not
-// end in '.read' is the one that needs the write review.
+// nonReadCapabilities is the ENUMERATED allowlist of vocabulary members that
+// are not reads. It is a literal and not a pattern, so seating a second write
+// capability is a diff that has to name it here.
+//
+// It exists because m135 ended the pure pattern test below it. Until then
+// "this build seats no write capability" was checkable by suffix, which was
+// exactly as strong as it was true; the honest successor is not a weaker
+// pattern but a named exception list, so the property becomes "the only
+// non-read members are the ones a reviewer wrote down".
+var nonReadCapabilities = map[Capability]struct{}{
+	CapCachePurge: {},
+}
+
+// TestEveryCapabilityIsAReadOrAnEnumeratedWrite makes "this build seats no
+// UNREVIEWED write capability" a property that is checked rather than claimed.
+// m131 DECISION 2 froze the three-segment form specifically so this could be a
+// suffix test; m135 seated the first member that fails it, so the suffix rule
+// now has one enumerated exception and gains nothing else.
+//
+// It was TestEveryCapabilityIsARead. The rename is deliberate: the old name
+// asserts something this build no longer does, and a test whose name is a false
+// claim is worse than no test, because the next session greps for the claim and
+// believes it.
 //
 // It also fails on an empty vocabulary, because a loop over an empty set passes
 // having checked nothing -- the exact shape this brief names as failure mode 3
 // on the database side.
-func TestEveryCapabilityIsARead(t *testing.T) {
+func TestEveryCapabilityIsAReadOrAnEnumeratedWrite(t *testing.T) {
 	all := AllCapabilities()
 	if len(all) == 0 {
 		t.Fatal("the vocabulary is empty, so this test ranged over nothing and " +
 			"would have reported a pass having checked no capability at all")
 	}
+	if len(nonReadCapabilities) == 0 {
+		t.Fatal("nonReadCapabilities is empty, so the exception arm below checked " +
+			"nothing; if the last write capability was removed, delete the arm " +
+			"rather than leaving it to pass vacuously")
+	}
+	reads := 0
 	for _, c := range all {
-		if !strings.HasSuffix(string(c), ".read") {
-			t.Fatalf("capability %q does not end in '.read'.\n"+
-				"If this is the first write capability, it needs the review m124 "+
-				"DECISION 1 built the closed CHECK to force -- and it must not be "+
-				"conferred by ScopeRead, which is a read scope.", c)
-		}
 		if !strings.HasPrefix(string(c), "mcp.") {
 			t.Fatalf("capability %q does not carry the frozen 'mcp.' prefix. The "+
 				"wireframes' 'site.*' labels are the SCREEN's, not the stored "+
 				"string's; adopting one here strands every live grant.", c)
 		}
+		if strings.HasSuffix(string(c), ".read") {
+			reads++
+			if _, listed := nonReadCapabilities[c]; listed {
+				t.Fatalf("capability %q ends in '.read' and is ALSO listed in "+
+					"nonReadCapabilities. One of the two is wrong, and while they "+
+					"disagree the exception list is not describing the vocabulary.", c)
+			}
+			continue
+		}
+		if _, listed := nonReadCapabilities[c]; !listed {
+			t.Fatalf("capability %q does not end in '.read' and is not named in "+
+				"nonReadCapabilities.\n"+
+				"If this is a new write capability, it needs the review m124 "+
+				"DECISION 1 built the closed CHECK to force -- and it must not be "+
+				"conferred by ScopeRead, which is a read scope. Name it in "+
+				"nonReadCapabilities in the same diff that seats it.", c)
+		}
 	}
-	t.Logf("all %d seated capabilities carry the mcp. prefix and the .read suffix: %v",
-		len(all), capsToStrings(all))
+
+	// EVERY NAMED EXCEPTION MUST STILL BE IN THE VOCABULARY. Without this arm a
+	// capability could be deleted from the vocabulary and left in the list, and
+	// the list would go on describing a member that no longer exists.
+	for c := range nonReadCapabilities {
+		if !KnownCapability(c) {
+			t.Fatalf("nonReadCapabilities names %q, which is not in the vocabulary. "+
+				"Remove it here in the diff that removes it there.", c)
+		}
+	}
+	t.Logf("%d seated capabilities: %d reads and %d enumerated writes (%v)",
+		len(all), reads, len(nonReadCapabilities), capsToStrings(all))
+}
+
+// TestCachePurgeIsKnownButConferredByNoScope is the m135 ceiling decision, held
+// as a test. It is the sibling of TestContentReadIsKnownButConferredByNoScope
+// and it is deliberately a SEPARATE test rather than a second arm of that one:
+// the two members are unreachable for different reasons, and a shared test
+// would let one reason be deleted while the other kept it green.
+//
+// WHOEVER CONFERS mcp.cache.purge MUST DELETE THIS TEST, not edit it. That is
+// the point of pinning the refusal by name: conferring the first write
+// capability cannot then happen as a quiet one-line map edit, because the diff
+// that does it also has to remove a test whose comment says why it was there.
+//
+// The prerequisite that blocks the conferral today is NOT a missing line in
+// scopeCapabilities. It is that grantScopes() is a constant -- mcp_grants has
+// no scopes column -- so a second scope added to recognisedScopes would hand
+// ScopeRead's capabilities to a grant that never requested them. See the
+// CapCachePurge note on scopeCapabilities in policy.go.
+func TestCachePurgeIsKnownButConferredByNoScope(t *testing.T) {
+	// KNOWN: the database CHECK holds it, so this map must too, or a name the
+	// database accepts is refused at a different layer with a different error.
+	if !KnownCapability(CapCachePurge) {
+		t.Fatalf("%q is not in capabilityVocabulary, but m135 seats it in "+
+			"mcp_grants_capabilities_vocabulary_check; the two closed sets must "+
+			"agree exactly", CapCachePurge)
+	}
+
+	// NOT CONFERRED: no scope hands it out, so no grant can be minted holding
+	// it and no stored row carrying it can authenticate.
+	ceiling, err := OrgDefaultCapabilities(grantScopes())
+	if err != nil {
+		t.Fatalf("OrgDefaultCapabilities(grantScopes()): %v", err)
+	}
+	if ceiling.Allows(CapCachePurge) {
+		t.Fatalf("the organisation ceiling confers %q -- the FIRST WRITE capability "+
+			"on this surface. Every live grant holds ScopeRead by construction, so "+
+			"conferring this widens every grant ever minted with no second consent. "+
+			"Confer it only alongside a real per-grant scope read (mcp_grants has no "+
+			"scopes column today), in that diff, under that review.", CapCachePurge)
+	}
+
+	// AND THE REFUSAL IS LOUD. An operator asking for it is told by name rather
+	// than handed a quietly smaller connection -- and critically, the whole
+	// request is refused rather than trimmed down to the read capabilities.
+	if _, err := ceiling.NarrowTo([]Capability{CapSitesRead, CapCachePurge}); err == nil {
+		t.Fatalf("a mint request naming %q was accepted; it must be refused whole, "+
+			"not trimmed down to the capabilities the ceiling does hold", CapCachePurge)
+	}
+
+	// THE DEFAULT DOES NOT CARRY IT EITHER. This is the m135 note (3)(a) arm:
+	// asserted here as well as in the preset test, because that test pins the
+	// whole set by value and this one says WHICH member must never appear in it
+	// and why -- so a future widening fails with the reason attached.
+	for _, c := range DefaultGrantCapabilities() {
+		if c == CapCachePurge {
+			t.Fatalf("DefaultGrantCapabilities() hands out %q. A grant minted with no "+
+				"explicit request would be stamped with the power to purge a live "+
+				"site's cache, which is exactly the widening m135 note (3)(a) and "+
+				"m131 DECISION 3 both forbid.", CapCachePurge)
+		}
+	}
 }
 
 // TestScopeReadConfersTheSevenReachableGroups pins the CEILING by value, and it
