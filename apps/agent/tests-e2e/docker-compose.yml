@@ -38,6 +38,14 @@ services:
       WORDPRESS_DB_USER: wordpress
       WORDPRESS_DB_PASSWORD: wordpress
       WORDPRESS_TABLE_PREFIX: wp_
+      # The installed plugin directory name, read by run.sh out of the archive's
+      # top-level entry (which is what WordPress names the folder). assert.php
+      # takes it from here rather than carrying a literal that a slug rename can
+      # strand. Unset means run.sh was bypassed; assert.php fails loudly on that
+      # rather than guessing a name.
+      WPMGR_E2E_PLUGIN_SLUG: ${PLUGIN_SLUG:-}
     volumes:
-      # Mount the agent zip read-only so assert.php can install it.
-      - ${PLUGIN_ZIP}:/tmp/fleet-agent-for-wpmgr.zip:ro
+      # Mount the agent zip read-only so assert.php can install it. The container
+      # path is deliberately slug-free: the archive's own top-level directory is
+      # what decides the install folder, so nothing here needs to spell the slug.
+      - ${PLUGIN_ZIP}:/tmp/wpmgr-agent-e2e.zip:ro

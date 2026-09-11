@@ -386,6 +386,7 @@ func seedSnapshotGrant(t *testing.T, pool *db.Pool, p domain.Principal, name str
 			ClientID:            nil,
 			CreatedByUserID:     uuidToPG(p.UserID),
 			Capabilities:        capabilityNames(DefaultGrantCapabilities()),
+			OauthScopes:         scopeNames(DefaultGrantScopes()),
 			ExpiresAt:           time.Now().UTC().Add(grantAbsoluteTTL),
 			IdleExpireAfterDays: nil,
 			SetupClient:         nil,

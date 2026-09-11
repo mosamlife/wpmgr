@@ -122,34 +122,115 @@ func TestEveryRecognisedScopeHasACapabilityMapping(t *testing.T) {
 	}
 }
 
-// TestGrantScopesIsExactOnlyWhileOneScopeExists is a TRIPWIRE, not a property
-// test. It asserts the precondition that makes grantScopes' constant honest.
+// TestGrantScopesIsAPerGrantReadAndNeverAConstant IS THE RENAMED TRIPWIRE.
 //
-// Authenticate hands OrgDefaultCapabilities a constant instead of the grant's
-// own scopes, which is exact only while every live grant holds the same single
-// scope. Adding a second recognised scope silently converts that constant into
-// a WIDENING: a connection granted only the new scope keeps being handed
-// ScopeRead's capabilities, and no other test in this package notices, because
-// TestEveryRecognisedScopeHasACapabilityMapping pins the map's totality rather
-// than Authenticate's input.
+// It used to be TestGrantScopesIsExactOnlyWhileOneScopeExists, and it was a
+// tripwire rather than a property test: it asserted `len(recognisedScopes) == 1`
+// so that adding a second scope went red and forced whoever did it to replace
+// grantScopes' constant with a real per-grant read. m136 added
+// mcp_grants.oauth_scopes and that read now exists, so the precondition the old
+// name asserted is no longer the thing being defended -- and a test whose name
+// asserts something the build no longer does is worse than no test.
 //
-// So this fails the moment recognisedScopes grows. The fix when it does is NOT
-// to update the number here: it is to store the grant's scopes and read them,
-// then delete this test.
-func TestGrantScopesIsExactOnlyWhileOneScopeExists(t *testing.T) {
-	if len(recognisedScopes) != 1 {
-		t.Fatalf("recognisedScopes now holds %d scopes, so grantScopes()'s constant is no longer "+
-			"exact: a connection granted only one of them is still handed %v's capabilities by "+
-			"Authenticate, which WIDENS it. Read the grant's own scopes instead of a constant "+
-			"(mcp_grants needs the column first -- see m124 DECISION 1), then delete this test. "+
-			"Do not just update the count.", len(recognisedScopes), ScopeRead)
+// IT IS NOT DELETED AND IT IS NOT WEAKER. The old test's own instructions said
+// to delete it once the read landed; that would have left the read itself
+// unpinned, and the read is where the failure direction lives. So it is
+// renamed and repointed at the property the constant's removal bought:
+// grantScopes ANSWERS FROM ITS ARGUMENT. Every case below fails against the old
+// `return []Scope{ScopeRead}` body.
+func TestGrantScopesIsAPerGrantReadAndNeverAConstant(t *testing.T) {
+	// 1. IT REFLECTS THE ROW. A constant returns {mcp:read} for every input,
+	// so a row holding something else proves the argument is read at all.
+	got := grantScopes([]string{"mcp:write-someday"})
+	if len(got) != 1 || got[0] != Scope("mcp:write-someday") {
+		t.Fatalf("grantScopes([mcp:write-someday]) = %v, want exactly "+
+			"[mcp:write-someday].\nIf this returned [%v] the function is still "+
+			"answering from a constant and every grant shares one ceiling.",
+			got, ScopeRead)
 	}
-	got := grantScopes()
+
+	// 2. IT DOES NOT FILTER. This is the failure direction that matters and it
+	// is capabilitiesFromColumn's rule verbatim: trimming the unknown entry
+	// would hand OrgDefaultCapabilities {mcp:read} alone, and the grant would
+	// authenticate as though its row carried only the known scope.
+	mixed := grantScopes([]string{string(ScopeRead), "mcp:not-a-scope"})
+	if len(mixed) != 2 {
+		t.Fatalf("grantScopes dropped an unrecognised scope: got %v from "+
+			"{mcp:read, mcp:not-a-scope}.\nA trimmed read is a WIDENING wearing "+
+			"the shape of a narrowing: the row says two things, the ceiling is "+
+			"computed from one, and nobody learns the two disagreed.", mixed)
+	}
+
+	// 3. AND THE UNKNOWN ENTRY REFUSES THE WHOLE SET rather than shrinking it.
+	// Step 2 only proves the read carried it; this proves carrying it matters.
+	if set, err := OrgDefaultCapabilities(mixed); err == nil {
+		t.Fatalf("a scope set containing an unrecognised scope resolved to %v.\n"+
+			"It must REFUSE. Resolving it means a row carrying a scope outside "+
+			"this build's registry authenticates holding the known scopes' "+
+			"capabilities, which is exactly what not filtering the read exists "+
+			"to prevent.", set.Sorted())
+	}
+
+	// 4. NIL AND EMPTY ARE NO AUTHORITY, NEVER UNRESTRICTED. The database makes
+	// the value unrepresentable (m136 DECISION 4), so reaching either means a
+	// writer outside that constraint -- and the answer to "I cannot tell what
+	// this grant may do" is nothing at all.
+	for _, stored := range [][]string{nil, {}} {
+		if sc := grantScopes(stored); len(sc) != 0 {
+			t.Fatalf("grantScopes(%v) = %v, want an empty slice", stored, sc)
+		}
+		if set, err := OrgDefaultCapabilities(grantScopes(stored)); err == nil {
+			t.Fatalf("an empty scope column resolved to %v instead of refusing.\n"+
+				"Absence must never widen.", set.Sorted())
+		}
+	}
+}
+
+// TestDefaultGrantScopesIsTheReadScopeAndNothingElse pins what a grant nobody
+// stated terms for RECEIVES, so a future edit cannot widen it silently.
+//
+// This is the pin the old tripwire's `len(recognisedScopes) == 1` assertion
+// used to provide by accident, moved to the thing it was actually protecting.
+// recognisedScopes may now grow -- that is what m136 made safe -- but a wider
+// REGISTRY must not become a wider DEFAULT: every grant this surface has ever
+// minted holds exactly {mcp:read}, which is what m136's backfill wrote down,
+// and the answer to "nobody asked" is never "everything we have".
+func TestDefaultGrantScopesIsTheReadScopeAndNothingElse(t *testing.T) {
+	got := DefaultGrantScopes()
 	if len(got) != 1 || got[0] != ScopeRead {
-		t.Fatalf("grantScopes() = %v, want exactly [%v]", got, ScopeRead)
+		t.Fatalf("DefaultGrantScopes() = %v, want exactly [%v].\n"+
+			"Widening the default hands new authority to every grant minted "+
+			"without an explicit request, with no second consent from anyone. A "+
+			"new scope belongs in recognisedScopes and in an operator's explicit "+
+			"choice, not in the preset.", got, ScopeRead)
 	}
 	if _, ok := recognisedScopes[got[0]]; !ok {
-		t.Fatalf("grantScopes() returns %v, which is not a recognised scope", got[0])
+		t.Fatalf("DefaultGrantScopes() returns %v, which is not a recognised scope", got[0])
+	}
+
+	// It must also be REACHABLE: a preset that resolves to no capability mints
+	// a credential that authenticates and reaches nothing.
+	set, err := OrgDefaultCapabilities(got)
+	if err != nil {
+		t.Fatalf("the default scope set %v confers no capability: %v", got, err)
+	}
+	if set.IsEmpty() {
+		t.Fatalf("the default scope set %v resolved to an empty ceiling", got)
+	}
+}
+
+// TestScopeNamesRoundTripsThroughTheColumn pins the pair that crosses the
+// database boundary. scopeNames writes the column and grantScopes reads it, and
+// a mismatch between them is invisible to the compiler.
+func TestScopeNamesRoundTripsThroughTheColumn(t *testing.T) {
+	in := []Scope{ScopeRead}
+	out := grantScopes(scopeNames(in))
+	if len(out) != len(in) || out[0] != in[0] {
+		t.Fatalf("scopeNames -> grantScopes round trip changed %v into %v", in, out)
+	}
+	if names := scopeNames(nil); len(names) != 0 {
+		t.Fatalf("scopeNames(nil) = %v, want an empty slice -- a nil column is "+
+			"refused by the not-empty CHECK, not repaired here", names)
 	}
 }
 

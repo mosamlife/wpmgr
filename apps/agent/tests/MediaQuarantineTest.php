@@ -15,6 +15,14 @@
  *   - finaliseManifest() — media/ subtree contains only image files (no JSON).
  *   - restoreManifest() returns 0 for an unknown manifest_id.
  *   - restoreManifest() moves files back and removes the manifest dir.
+ *   - restoreManifest() never moves a quarantined file onto an original path that
+ *     something else now occupies, and reports the skip with a reason code.
+ *   - restoreManifest() does not delete a quarantined file it refused to restore —
+ *     cleanup runs only on a complete restore, so a partial one keeps every copy.
+ *   - restoreManifest() withholds `complete` while the quarantine tree still holds
+ *     anything the counters cannot see: an unrecorded file, an entry no stat can
+ *     classify, or a stray beside files/ that cleanup would delete unseen.
+ *   - restoreManifest() never reports `complete` for a manifest id that named nothing.
  *   - restoreManifest() handles entries with empty files[] cleanly (0 files back, no error).
  *   - deleteManifest() returns a zero-count result for an unknown manifest_id.
  *   - deleteManifest() removes quarantined files, calls wp_delete_attachment,
@@ -304,7 +312,9 @@ final class MediaQuarantineTest extends TestCase
         // Ensure the quarantine root exists (needed for realpath in loadManifest).
         $q->beginManifest('warmup');
 
-        $this->assertSame(0, $q->restoreManifest('00000000000000000000000000000000'));
+        $receipt = $q->restoreManifest('00000000000000000000000000000000');
+
+        $this->assertSame(0, $receipt['restored']);
     }
 
     // =========================================================================
@@ -324,9 +334,10 @@ final class MediaQuarantineTest extends TestCase
         // Confirm file is gone from uploads.
         $this->assertFileDoesNotExist($srcAbs);
 
-        $restored = $q->restoreManifest($manifestId);
+        $receipt = $q->restoreManifest($manifestId);
 
-        $this->assertSame(1, $restored);
+        $this->assertSame(1, $receipt['restored']);
+        $this->assertTrue($receipt['complete'], 'a restore that put everything back is complete');
 
         // File is back in uploads.
         $this->assertFileExists($srcAbs);
@@ -335,6 +346,254 @@ final class MediaQuarantineTest extends TestCase
         // Manifest dir is removed after successful restore.
         $manifestDir = $this->mediaRoot() . '/' . $manifestId;
         $this->assertDirectoryDoesNotExist($manifestDir);
+    }
+
+    // =========================================================================
+    // restoreManifest() — never moves a quarantined file over a file that
+    // occupies the original path
+    // =========================================================================
+
+    public function testRestoreManifestDoesNotOverwriteANewerFileAtTheOriginalPath(): void
+    {
+        $relPath = '2024/01/hero.jpg';
+        $srcAbs  = $this->createUploadFile($relPath, 'quarantined-bytes');
+
+        $q          = $this->makeQuarantine();
+        $manifestId = $q->beginManifest('job-restore-occupied');
+        $q->quarantineAttachment($manifestId, 42, $relPath, [$srcAbs]);
+        $q->finaliseManifest($manifestId);
+
+        // The original path is empty: quarantineAttachment() MOVES the bytes,
+        // so the quarantined copy is the only copy that exists.
+        $this->assertFileDoesNotExist($srcAbs);
+
+        // A different file comes to occupy that exact path while the
+        // attachment is isolated.
+        $this->createUploadFile($relPath, 'newer-bytes-written-after-isolation');
+
+        $receipt = $q->restoreManifest($manifestId);
+
+        // Load-bearing: the occupant is the only copy of its own bytes.
+        $this->assertSame(
+            'newer-bytes-written-after-isolation',
+            file_get_contents($srcAbs),
+            'restore must not move a quarantined file onto an occupied original path'
+        );
+
+        // The refused file is likewise the only copy of itself, so it must
+        // survive the refusal rather than be cleaned up behind it.
+        $quarantinedCopy = $this->mediaRoot() . '/' . $manifestId . '/files/' . $relPath;
+        $this->assertFileExists($quarantinedCopy, 'the refused file stays in quarantine');
+        $this->assertSame('quarantined-bytes', file_get_contents($quarantinedCopy));
+
+        $this->assertFileExists(
+            $this->manifestsRoot() . '/' . $manifestId . '.json',
+            'the manifest survives an incomplete restore so the operator can retry'
+        );
+
+        $this->assertSame(0, $receipt['restored'], 'nothing was restored');
+        $this->assertSame(1, $receipt['skipped'], 'the contested file counts as skipped');
+        $this->assertSame(
+            1,
+            $receipt['reasons'][MediaQuarantine::RESTORE_SKIP_DESTINATION_OCCUPIED] ?? 0,
+            'the skip is attributed to the occupied destination'
+        );
+        $this->assertFalse($receipt['complete'], 'an incomplete restore never reports complete');
+    }
+
+    // =========================================================================
+    // restoreManifest() — a file it refused to restore is never then deleted
+    // by the cleanup gate
+    // =========================================================================
+
+    public function testRestoreManifestDoesNotDeleteAQuarantinedFileItRefusedToRestore(): void
+    {
+        $mainRel  = '2024/01/gallery.jpg';
+        $thumbRel = '2024/01/gallery-150x150.jpg';
+
+        $mainAbs  = $this->createUploadFile($mainRel,  'main-bytes');
+        $thumbAbs = $this->createUploadFile($thumbRel, 'thumb-bytes');
+
+        // One entry, two files — the shape isolate produces for an attachment
+        // with sub-sizes.
+        $q          = $this->makeQuarantine();
+        $manifestId = $q->beginManifest('job-restore-partial');
+        $q->quarantineAttachment($manifestId, 42, $mainRel, [$mainAbs, $thumbAbs]);
+        $q->finaliseManifest($manifestId);
+
+        $this->assertFileDoesNotExist($mainAbs);
+        $this->assertFileDoesNotExist($thumbAbs);
+
+        // Only the main file's original path is taken.
+        $this->createUploadFile($mainRel, 'newer-main-bytes');
+
+        $receipt = $q->restoreManifest($manifestId);
+
+        $this->assertSame(
+            'newer-main-bytes',
+            file_get_contents($mainAbs),
+            'the occupant survives'
+        );
+
+        // The guard must not block correct work: the uncontested file still
+        // goes back, with its original content.
+        $this->assertFileExists($thumbAbs, 'the uncontested file is still restored');
+        $this->assertSame('thumb-bytes', file_get_contents($thumbAbs), 'restored content intact');
+
+        // Load-bearing: cleanup must not delete the copy restore declined to
+        // move. A partial restore that then removes the manifest directory
+        // destroys the only remaining copy of the refused file.
+        $refusedCopy = $this->mediaRoot() . '/' . $manifestId . '/files/' . $mainRel;
+        $this->assertFileExists(
+            $refusedCopy,
+            'a quarantined file restore refused to move must not then be deleted'
+        );
+        $this->assertSame('main-bytes', file_get_contents($refusedCopy));
+
+        $this->assertFileExists(
+            $this->manifestsRoot() . '/' . $manifestId . '.json',
+            'the manifest survives so the refused file can still be recovered'
+        );
+
+        $this->assertSame(1, $receipt['restored'], 'the uncontested file counts as restored');
+        $this->assertSame(1, $receipt['skipped'], 'the contested file counts as skipped');
+        $this->assertFalse($receipt['complete'], 'a partial restore never reports complete');
+    }
+
+    // =========================================================================
+    // restoreManifest() — the physical scan, the half of `complete` the
+    // restore counters cannot see
+    //
+    // Every test below leaves something in the quarantine tree that no
+    // manifest entry describes, so the counters read clean and only the scan
+    // can withhold `complete`. Delete the hasRemainingFiles() term from
+    // restoreReceipt() and each of them fails.
+    // =========================================================================
+
+    public function testRestoreManifestIsNotCompleteWhileAnUnrecordedFileRemains(): void
+    {
+        $relPath = '2024/01/hero.jpg';
+        $srcAbs  = $this->createUploadFile($relPath, 'restore-me');
+
+        $q          = $this->makeQuarantine();
+        $manifestId = $q->beginManifest('job-unrecorded');
+        $q->quarantineAttachment($manifestId, 42, $relPath, [$srcAbs]);
+        $q->finaliseManifest($manifestId);
+
+        // A file under files/ that no manifest entry names. A fragment
+        // derivation that went down a different branch leaves exactly this:
+        // bytes in the tree with no countable record anywhere.
+        $orphan = $this->mediaRoot() . '/' . $manifestId . '/files/2024/01/orphan.jpg';
+        file_put_contents($orphan, 'orphan-bytes');
+
+        $receipt = $q->restoreManifest($manifestId);
+
+        // The counters are clean: every file the manifest described went back.
+        $this->assertSame(1, $receipt['restored'], 'the recorded file is restored');
+        $this->assertSame(0, $receipt['skipped'], 'nothing was skipped');
+        $this->assertSame(0, $receipt['failed'], 'nothing failed');
+        $this->assertFileExists($srcAbs, 'the guard does not block correct work');
+
+        // Load-bearing: only the physical scan knows the orphan is there.
+        $this->assertFalse(
+            $receipt['complete'],
+            'a tree that still holds an unrecorded file is not a complete restore'
+        );
+        $this->assertFileExists($orphan, 'the unrecorded file is not deleted behind the counters');
+        $this->assertSame('orphan-bytes', file_get_contents($orphan));
+        $this->assertFileExists(
+            $this->manifestsRoot() . '/' . $manifestId . '.json',
+            'the manifest stays, so the leftover still has something naming it'
+        );
+    }
+
+    public function testRestoreManifestIsNotCompleteWhileAnUnclassifiableEntryRemains(): void
+    {
+        $relPath = '2024/01/hero.jpg';
+        $srcAbs  = $this->createUploadFile($relPath, 'restore-me');
+
+        $q          = $this->makeQuarantine();
+        $manifestId = $q->beginManifest('job-unclassifiable');
+        $q->quarantineAttachment($manifestId, 42, $relPath, [$srcAbs]);
+        $q->finaliseManifest($manifestId);
+
+        // An entry scandir() lists but that is neither link, file nor
+        // directory. A FIFO is the portable way to produce one: unlike the
+        // read-bit-without-search-bit directory that motivated this rule, it
+        // behaves the same for root, so it is reproducible in a CI container.
+        $oddball = $this->mediaRoot() . '/' . $manifestId . '/files/2024/01/oddball';
+        if (!function_exists('posix_mkfifo') || !@posix_mkfifo($oddball, 0644)) {
+            $this->markTestSkipped('posix_mkfifo() unavailable: cannot create an unclassifiable entry');
+        }
+
+        // Refuse to pass vacuously: if the entry is classifiable after all,
+        // this test proves nothing about the hazard and must not report green.
+        $this->assertTrue(file_exists($oddball), 'the planted entry exists');
+        $this->assertFalse(is_link($oddball), 'precondition: not a link');
+        $this->assertFalse(is_file($oddball), 'precondition: not a file');
+        $this->assertFalse(is_dir($oddball), 'precondition: not a directory');
+
+        $receipt = $q->restoreManifest($manifestId);
+
+        $this->assertSame(1, $receipt['restored'], 'the recorded file is restored');
+        $this->assertSame(0, $receipt['skipped'], 'nothing was skipped');
+        $this->assertSame(0, $receipt['failed'], 'nothing failed');
+
+        // Load-bearing: an entry no stat can classify is not an empty tree.
+        $this->assertFalse(
+            $receipt['complete'],
+            'an entry that cannot be positively classified counts as remaining'
+        );
+        $this->assertTrue(file_exists($oddball), 'the unclassified entry is not deleted behind the scan');
+    }
+
+    public function testRestoreManifestIsNotCompleteWhileAStrayOutsideFilesRemains(): void
+    {
+        $relPath = '2024/01/hero.jpg';
+        $srcAbs  = $this->createUploadFile($relPath, 'restore-me');
+
+        $q          = $this->makeQuarantine();
+        $manifestId = $q->beginManifest('job-stray');
+        $q->quarantineAttachment($manifestId, 42, $relPath, [$srcAbs]);
+        $q->finaliseManifest($manifestId);
+
+        // Beside files/, not under it. removeManifestDir() deletes the whole
+        // media/<manifest_id> tree, so the scan has to cover the whole of it
+        // rather than the one sub-directory today's layout happens to use.
+        $stray = $this->mediaRoot() . '/' . $manifestId . '/stray.dat';
+        file_put_contents($stray, 'stray-bytes');
+
+        $receipt = $q->restoreManifest($manifestId);
+
+        $this->assertSame(1, $receipt['restored'], 'the recorded file is restored');
+        $this->assertSame(0, $receipt['skipped'], 'nothing was skipped');
+        $this->assertSame(0, $receipt['failed'], 'nothing failed');
+
+        $this->assertFalse(
+            $receipt['complete'],
+            'a stray beside files/ is inside what the cleanup deletes, so it withholds complete'
+        );
+        $this->assertFileExists($stray, 'the stray is not deleted unseen');
+        $this->assertSame('stray-bytes', file_get_contents($stray));
+    }
+
+    public function testRestoreManifestUnknownIdIsNeverComplete(): void
+    {
+        $q = $this->makeQuarantine();
+        $q->beginManifest('warmup');
+
+        $receipt = $q->restoreManifest('00000000000000000000000000000000');
+
+        $this->assertSame(0, $receipt['files_seen'], 'an unknown id describes no files');
+        $this->assertSame(0, $receipt['restored'], 'and restores none');
+
+        // `complete` gates the cleanup that deletes the quarantine copy, and
+        // it must never read "this id means nothing to me" as "everything was
+        // put back".
+        $this->assertFalse(
+            $receipt['complete'],
+            'a receipt for a manifest that never existed is not a complete restore'
+        );
     }
 
     // =========================================================================
@@ -465,9 +724,46 @@ final class MediaQuarantineTest extends TestCase
         $q->finaliseManifest($manifestId);
 
         // restoreManifest must handle empty files[] without error and return 0.
-        $restored = $q->restoreManifest($manifestId);
+        $receipt = $q->restoreManifest($manifestId);
 
-        $this->assertSame(0, $restored, 'Nothing to restore when files array is empty.');
+        $this->assertSame(0, $receipt['restored'], 'Nothing to restore when files array is empty.');
+    }
+
+    // =========================================================================
+    // restoreManifest() — a manifest that loaded and legitimately recorded no
+    // on-disk file is complete, and is cleaned up
+    // =========================================================================
+
+    public function testRestoreManifestWithOnlyEmptyFilesEntriesIsCompleteAndCleansUp(): void
+    {
+        $q          = $this->makeQuarantine();
+        $manifestId = $q->beginManifest('job-restore-empty-complete');
+
+        // A broken attachment with no on-disk files: quarantineAttachment()
+        // deliberately records the entry with files => [].
+        $q->quarantineAttachment($manifestId, 12, '2024/01/ghost.jpg', []);
+        $q->finaliseManifest($manifestId);
+
+        $manifestFile = $this->manifestsRoot() . '/' . $manifestId . '.json';
+        $manifestDir  = $this->mediaRoot() . '/' . $manifestId;
+        $this->assertFileExists($manifestFile, 'the manifest exists before the restore');
+
+        $receipt = $q->restoreManifest($manifestId);
+
+        $this->assertSame(0, $receipt['files_seen'], 'the manifest described no file');
+        $this->assertSame(0, $receipt['restored'], 'so nothing was moved back');
+
+        // The discriminator is "did a manifest load", not "did it describe
+        // files". Deriving this from the counters makes a zero-file manifest
+        // permanently uncleanable: complete never becomes true, so the JSON
+        // and the directory tree are retained for ever.
+        $this->assertTrue(
+            $receipt['complete'],
+            'a manifest that loaded and held nothing to restore is a complete restore'
+        );
+
+        $this->assertFileDoesNotExist($manifestFile, 'the manifest JSON is cleaned up');
+        $this->assertDirectoryDoesNotExist($manifestDir, 'and the media directory with it');
     }
 
     // =========================================================================
@@ -483,7 +779,7 @@ final class MediaQuarantineTest extends TestCase
 
         foreach ($traversalIds as $id) {
             $result = $q->restoreManifest($id);
-            $this->assertSame(0, $result, "Path-traversal id '{$id}' must be rejected (returns 0).");
+            $this->assertSame(0, $result['restored'], "Path-traversal id '{$id}' must be rejected (restores 0).");
         }
     }
 
@@ -520,11 +816,16 @@ final class MediaQuarantineTest extends TestCase
         file_put_contents($manifestFile, $crafted);
 
         // restoreManifest must skip the crafted entry (returns 0 restored).
-        $restored = $q->restoreManifest($manifestId);
+        $receipt = $q->restoreManifest($manifestId);
         $this->assertSame(
             0,
-            $restored,
+            $receipt['restored'],
             'normalisePath() must reject paths containing "/.." — 0 files restored.'
+        );
+        $this->assertSame(
+            1,
+            $receipt['reasons'][MediaQuarantine::RESTORE_SKIP_OUTSIDE_UPLOADS] ?? 0,
+            'the rejected entry is attributed to the containment check, not silently dropped'
         );
     }
 }

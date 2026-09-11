@@ -5708,10 +5708,21 @@ CREATE TABLE mcp_grants (
     -- middle segment is the OUTCOME an operator ticks on Step 4 and never the
     -- mechanism that serves it.
     --
-    -- EVERY MEMBER ENDS IN '.read', and that is checkable by pattern rather
-    -- than by trust. No write capability is seated: the write side uses
-    -- '.propose' and '.write', and the first migration to add a member not
-    -- ending in '.read' is the one that owes the write review.
+    -- m135 SEATED THE FIRST NON-READ MEMBER, 'mcp.cache.purge', which is the
+    -- write review m131 DECISION 2 said the next non-'.read' member would owe.
+    -- It authorises purging a site's page cache: the agent-side `cache_purge`
+    -- command, Write / Idempotent, whose retry converges and whose worst case is
+    -- a slower page load rather than lost authored state. m135 DECISION 1 gives
+    -- the full argument and DECISION 2 gives the naming rule -- the suffix is
+    -- the OPERATION where a domain has exactly one, which is why it is neither
+    -- '.write' (broader than the grant) nor '.propose' (there is no approval
+    -- step and none is wanted).
+    --
+    -- 'EVERY MEMBER ENDS IN .read' WAS TRUE UNTIL m135 AND IS NOW FALSE. m131
+    -- offered that as a property checkable by pattern; after m135 the pattern
+    -- answers "a write is seated" and cannot say which, so it must not be reused
+    -- as a safety property. Read the enumeration below instead, and do not grep
+    -- for '.read' to decide what this vocabulary permits.
     --
     -- 'mcp.content.read' is seated DELIBERATELY AND UNREACHABLE -- there is no
     -- post or page table here and no agent command returns post content, and
@@ -5726,6 +5737,7 @@ CREATE TABLE mcp_grants (
         CHECK (capabilities <@ ARRAY[
             'mcp.activity.read',
             'mcp.backups.read',
+            'mcp.cache.purge',
             'mcp.content.read',
             'mcp.diagnostics.read',
             'mcp.performance.read',
@@ -5733,6 +5745,85 @@ CREATE TABLE mcp_grants (
             'mcp.sites.read',
             'mcp.uptime.read'
         ]::text[]),
+
+    -- WHICH OAUTH SCOPES this grant holds (m136). The capability ceiling is
+    -- DERIVED from this set -- scopeCapabilities in internal/mcp/policy.go maps
+    -- a scope to the capabilities it confers -- so this is the column every
+    -- capability path ultimately narrows through.
+    --
+    -- NOT `scopes`, AND THE NAME IS DELIBERATE. This table already carries
+    -- site_scope_mode, scope_tag_ids and scope_site_ids, which are the SITE
+    -- axis: WHICH SITES a grant may touch. They are unrelated to WHAT A GRANT
+    -- MAY DO, and a bare `scopes` column sitting beside `scope_site_ids` is an
+    -- invitation to read one for the other in a query, a review or a policy
+    -- predicate. See m136 DECISION 1.
+    --
+    -- NOT NULL, NO DEFAULT, exactly as capabilities above and for the same
+    -- reason. NULL could only mean "unknown", and a nullable scope column read
+    -- as "no restriction recorded, therefore the ceiling is everything" is the
+    -- defect this surface exists to prevent. A DEFAULT would be worse than
+    -- pointless: a backfill sets a value on rows that already exist, once, but
+    -- a DEFAULT silently seats a scope on every FUTURE insert that forgets to
+    -- say -- so an INSERT meaning to grant a write scope and omitting the
+    -- column would grant the read scope instead, with nothing failing anywhere.
+    -- policy.go says the same of DefaultGrantCapabilities in its own words.
+    -- See m136 DECISION 3.
+    oauth_scopes text[] NOT NULL,
+    -- Shape, as m120 and m127 check their arrays: one dimension (a nested
+    -- literal would be flattened by unnest() into scopes nobody granted), no
+    -- NULL element, no empty string. The ceiling is 16 and NOT capabilities'
+    -- 64: 64 is the wireframe's stated property of the credential for
+    -- capabilities, which an operator ticks one by one; scopes are requested by
+    -- a client from a registry holding ONE member. Element uniqueness is not
+    -- checked -- deduplication needs a subquery and CHECK forbids one -- and a
+    -- duplicate is harmless to a set-membership read.
+    CONSTRAINT mcp_grants_oauth_scopes_shape_check CHECK (
+        coalesce(array_ndims(oauth_scopes), 1) = 1
+        AND cardinality(oauth_scopes) <= 16
+        AND array_position(oauth_scopes, NULL) IS NULL
+        AND NOT ('' = ANY (oauth_scopes))
+    ),
+    -- A ZERO-LENGTH SCOPE SET IS UNREPRESENTABLE, and this is the one place
+    -- this column deliberately diverges from capabilities, which permits '{}'.
+    --
+    -- '{}' is coherent for capabilities: it is the restrictive direction and a
+    -- connection holding it reaches no tool. Zero SCOPES is a different kind of
+    -- value -- it is a grant no OAuth exchange could have produced.
+    -- ParseRequestedScopes already refuses an absent, empty or whitespace-only
+    -- `scope` parameter outright, so the authorisation layer has already
+    -- declared a scopeless grant impossible; a row holding '{}' is reachable
+    -- only by a bug or a deliberate write. It is also the axis where an empty
+    -- value is most likely to be misread, because an empty ceiling derived from
+    -- an empty scope set is indistinguishable downstream from a deliberate
+    -- narrowing.
+    --
+    -- This is mcp_grants_site_scope_payload_check's sentence -- "requested a
+    -- scope and named nothing" is unrepresentable -- applied to the authority
+    -- axis. It is NOT a way to kill a credential: immediate termination is
+    -- REVOCATION (status = 'revoked'), one mechanism per meaning, so revoked_at
+    -- stays honest. Its own name so the 23514 says which rule broke.
+    -- See m136 DECISION 4.
+    CONSTRAINT mcp_grants_oauth_scopes_not_empty_check
+        CHECK (cardinality(oauth_scopes) >= 1),
+    -- CLOSED VOCABULARY, and it holds exactly what recognisedScopes in
+    -- internal/mcp/scope.go holds. Two closed sets with two answers is worse
+    -- than one open set (m131 DECISION 5), so this list and that map move
+    -- together or not at all.
+    --
+    -- NO WRITE SCOPE IS SEATED. scope.go states the rule in its own words -- "A
+    -- write scope arrives with its own migration and its own review, never by
+    -- being appended here" -- and m136 kept it: seating one early would spend
+    -- the gate to save the toll. Widening a containment CHECK is monotone, so
+    -- that later migration is a drop-and-re-add of THIS NAME, exactly as m131
+    -- did for the capability vocabulary, and it cannot invalidate a row.
+    --
+    -- Containment alone would admit '{}', which is why emptiness is refused by
+    -- its own constraint above and not by this one.
+    CONSTRAINT mcp_grants_oauth_scopes_vocabulary_check
+        CHECK (oauth_scopes <@ ARRAY[
+            'mcp:read'
+        ]::text[]),
+
     -- The registered OAuth client, or NULL on the headless token path. No
     -- foreign key: neither ON DELETE action is right for a recorded fact.
     client_id text NULL,
