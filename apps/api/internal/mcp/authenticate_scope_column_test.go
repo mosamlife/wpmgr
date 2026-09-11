@@ -4,8 +4,10 @@
 // WHY THESE PLANT THROUGH THE FAKE STORE AND NOT THROUGH POSTGRES. The value
 // under test is UNSTORABLE: mcp_grants_oauth_scopes_vocabulary_check refuses an
 // unrecognised scope and mcp_grants_oauth_scopes_not_empty_check refuses an
-// empty set, and the integration suite proves both of those refusals are live
-// as wpmgr_app. That is exactly why the Go half has to be tested here: m136
+// empty set. Both refusals are executed as wpmgr_app, by constraint name, in
+// tests/mcp_m136_scope_column_constraints_test.go -- which also proves the
+// honest value is still accepted, so the refusals are not a column that says
+// no to everything. That is exactly why the Go half has to be tested here: m136
 // DECISION 5(d) says the read "must not depend on the database being the only
 // writer", and a test that can only plant what the database permits cannot
 // check what happens when something else writes the row. The fake store is the

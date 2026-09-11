@@ -821,15 +821,40 @@ func (s *Service) Approve(ctx context.Context, req ApprovalRequest) (Approval, e
 
 	// Re-run the exit gate on the approval too. The consent screen's scope list
 	// arrives back over the wire and a resubmitted form is caller input like
-	// any other; re-parsing means a tampered approval cannot widen what the
-	// authorize call already refused.
+	// any other, so it is re-parsed rather than trusted.
+	//
 	// THE RESULT IS KEPT NOW, NOT DISCARDED. m136 gave the grant an
 	// oauth_scopes column and this is the only place on the OAuth path that
-	// knows what the client asked for and the operator consented to. Storing
-	// the re-parsed value rather than a preset is what makes the stored set the
-	// consent rather than a restatement of the registry -- and it is the same
-	// value the ceiling below is computed from, so the row and the ceiling
-	// cannot disagree.
+	// carries what the client asked for and the operator saw. The stored value
+	// is this re-parsed set rather than a preset, and it is the same value the
+	// ceiling below is computed from, so the row and the ceiling cannot
+	// disagree.
+	//
+	// BUT BE EXACT ABOUT WHAT THE RE-PARSE ESTABLISHES, BECAUSE IT IS LESS THAN
+	// IT LOOKS. Authorize mints nothing: the whole consent context round-trips
+	// through the browser and comes back here as caller input, and
+	// ParseRequestedScopes checks only that every member is in recognisedScopes.
+	// It does NOT check that this set is the set the authorize call carried. So
+	// the stored set is the approval BODY, constrained by registry membership,
+	// and calling it "the consent rather than a restatement of the registry"
+	// overstates it -- the two are the same thing only while the registry has a
+	// single member, which is why nothing is reachable here today: a tampered
+	// body can produce exactly {mcp:read} and nothing else, which is what the
+	// old hard-coded constant produced anyway.
+	//
+	// WHOEVER ADDS THE SECOND RECOGNISED SCOPE MUST FIX THIS FIRST, and this
+	// comment is the only thing left pointing at it. The branch that introduced
+	// the column removed TestGrantScopesIsExactOnlyWhileOneScopeExists, which
+	// asserted len(recognisedScopes) == 1; removing it was right, because m136
+	// exists to make the registry safe to grow -- but that assertion was the
+	// tripwire that would have forced a visit to this line. The moment a second
+	// scope is recognised, an approval body naming it is accepted here on the
+	// strength of registry membership alone, and the grant is stored holding a
+	// scope the authorize call need never have requested. Bind the stored set
+	// to what that call actually carried -- the authorize request has to leave
+	// behind something server-side to compare against -- before recognising the
+	// second scope, not in the diff after it. That binding is the write-scope
+	// PR's prerequisite and is deliberately not built here.
 	grantedScopes, err := ParseRequestedScopes(scopesToString(req.Consent.Scopes))
 	if err != nil {
 		return Approval{}, err

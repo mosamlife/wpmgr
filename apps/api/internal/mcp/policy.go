@@ -237,13 +237,20 @@ func AllCapabilities() []Capability {
 // conferred by no scope is not "mint-only", it is UNREACHABLE -- unstorable at
 // mint, and fatal to the whole connection if a row ever holds it.
 //
-// Conferring it therefore requires a second scope, and a second scope cannot be
-// added here alone. grantScopes() is a CONSTANT because mcp_grants has no
-// scopes column, so a second entry in recognisedScopes would hand ScopeRead's
-// capabilities to a grant that never asked for them -- the widening
-// TestGrantScopesIsExactOnlyWhileOneScopeExists exists to force someone to fix
-// by replacing that constant with a real per-grant read. That read needs the
-// column, and the column is a migration, which is not this diff's to write.
+// Conferring it therefore requires a second scope. WHEN THIS PARAGRAPH WAS
+// WRITTEN the blocker was that grantScopes() was a constant -- mcp_grants had
+// no scopes column -- so a second entry in recognisedScopes would have handed
+// ScopeRead's capabilities to a grant that never asked for them. m136 added the
+// column and grantScopes is now a real per-grant read, so THAT widening is
+// closed and this is no longer the thing standing in the way.
+//
+// What stands in the way now is one step further on, and it is smaller but not
+// nothing: the scope set STORED at consent is the approval body re-parsed, not
+// a restatement of the registry, and the two coincide only while
+// recognisedScopes has a single member. The note at Service.Approve in
+// service.go says what has to be bound before a second scope is recognised.
+// That binding, the write scope and the tool behind it belong in one diff,
+// under one review.
 //
 // SO THE CAPABILITY IS SEATED AND NO TOOL IS REGISTERED BEHIND IT YET.
 // registryTools() is unchanged by this diff, and that is the honest ordering
