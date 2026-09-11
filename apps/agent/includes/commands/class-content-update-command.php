@@ -1,4 +1,23 @@
 <?php
+
+declare(strict_types=1);
+
+namespace WPMgr\Agent\Commands;
+
+// Plugin Check's Direct_File_Access_Check only scans the first 50 lines of
+// the file (after the opening `<?php`) for this guard via its regex
+// fallback; its AST path never matches an `if (!defined('ABSPATH'))` guard
+// here because it is nested inside this file's `namespace` statement and the
+// AST walker does not recurse into it for that check. A guard placed past
+// line ~50 is therefore invisible to the check AND disqualifies the file
+// from the checker's separate "no guard needed, it's just a class" exemption
+// (a top-level If-with-exit is not one of its recognised "safe" statements)
+// — which is *worse* than having no guard at all. Keep this guard here,
+// above the file docblock below, not after it.
+if (!defined('ABSPATH')) {
+    exit;
+}
+
 /**
  * ContentUpdateCommand: change the title and/or body of an EXISTING post or
  * page, and guarantee before writing that the version being overwritten is
@@ -52,14 +71,6 @@
  *
  * @package WPMgr\Agent\Commands
  */
-
-declare(strict_types=1);
-
-namespace WPMgr\Agent\Commands;
-
-if (!defined('ABSPATH')) {
-    exit;
-}
 
 /**
  * Updates the title and/or content of one existing post or page.
