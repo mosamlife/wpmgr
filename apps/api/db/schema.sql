@@ -5708,10 +5708,21 @@ CREATE TABLE mcp_grants (
     -- middle segment is the OUTCOME an operator ticks on Step 4 and never the
     -- mechanism that serves it.
     --
-    -- EVERY MEMBER ENDS IN '.read', and that is checkable by pattern rather
-    -- than by trust. No write capability is seated: the write side uses
-    -- '.propose' and '.write', and the first migration to add a member not
-    -- ending in '.read' is the one that owes the write review.
+    -- m135 SEATED THE FIRST NON-READ MEMBER, 'mcp.cache.purge', which is the
+    -- write review m131 DECISION 2 said the next non-'.read' member would owe.
+    -- It authorises purging a site's page cache: the agent-side `cache_purge`
+    -- command, Write / Idempotent, whose retry converges and whose worst case is
+    -- a slower page load rather than lost authored state. m135 DECISION 1 gives
+    -- the full argument and DECISION 2 gives the naming rule -- the suffix is
+    -- the OPERATION where a domain has exactly one, which is why it is neither
+    -- '.write' (broader than the grant) nor '.propose' (there is no approval
+    -- step and none is wanted).
+    --
+    -- 'EVERY MEMBER ENDS IN .read' WAS TRUE UNTIL m135 AND IS NOW FALSE. m131
+    -- offered that as a property checkable by pattern; after m135 the pattern
+    -- answers "a write is seated" and cannot say which, so it must not be reused
+    -- as a safety property. Read the enumeration below instead, and do not grep
+    -- for '.read' to decide what this vocabulary permits.
     --
     -- 'mcp.content.read' is seated DELIBERATELY AND UNREACHABLE -- there is no
     -- post or page table here and no agent command returns post content, and
@@ -5726,6 +5737,7 @@ CREATE TABLE mcp_grants (
         CHECK (capabilities <@ ARRAY[
             'mcp.activity.read',
             'mcp.backups.read',
+            'mcp.cache.purge',
             'mcp.content.read',
             'mcp.diagnostics.read',
             'mcp.performance.read',

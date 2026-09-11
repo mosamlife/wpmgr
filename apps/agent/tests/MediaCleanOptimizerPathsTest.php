@@ -848,8 +848,8 @@ final class MediaCleanOptimizerPathsTest extends TestCase
         $this->assertSame($relPath,    $fileRecord['frag'], 'frag stores the uploads-relative fragment');
 
         // Restore must work correctly via the recorded frag.
-        $restored = $q->restoreManifest($manifestId);
-        $this->assertSame(1, $restored, 'file restored via symlinked uploads base');
+        $receipt = $q->restoreManifest($manifestId);
+        $this->assertSame(1, $receipt['restored'], 'file restored via symlinked uploads base');
         $this->assertFileExists($symlinkAbs, 'file restored to original path');
         $this->assertSame('symbase-content', file_get_contents($symlinkAbs), 'content intact');
 

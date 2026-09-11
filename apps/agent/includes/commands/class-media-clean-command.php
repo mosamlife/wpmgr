@@ -93,7 +93,14 @@
  *     }
  *
  *   restore ->
- *     { "ok": true, "job_id": "<uuid>", "restored": <int> }
+ *     {
+ *       "ok": true,                          // true even when incomplete; the counts carry that
+ *       "job_id": "<uuid>",
+ *       "restored": <int>,                   // files moved back to their original path
+ *       "skipped": <int>,                    // files deliberately left in quarantine
+ *       "failed": <int>,                     // files whose move was attempted and did not happen
+ *       "detail": "<string>"                 // present only when skipped+failed > 0
+ *     }
  *
  *   delete ->
  *     {
@@ -185,6 +192,8 @@ final class MediaCleanCommand implements CommandInterface
     private const OP_MAX      = 200;
     /** Confirm token required for permanent deletion. */
     private const DELETE_CONFIRM = 'DELETE';
+    /** Uploads-relative paths named in a restore `detail` before it summarises the rest. */
+    private const RESTORE_DETAIL_PATHS = 5;
 
     /**
      * Optional quarantine instance injected for tests; null = create on demand
@@ -229,13 +238,12 @@ final class MediaCleanCommand implements CommandInterface
      * earlier docblock's claim that a delete retry "removes whatever now matches" was wrong about the
      * code -- handleDelete() never re-scans.
      *
-     * But action=restore is unsafe to retry. MediaQuarantine::restoreManifest() guards only the source:
-     * it skips a file only when file_exists($src) is false (class-media-quarantine.php:380), and moves
-     * it onto $normalised with a bare @rename() that overwrites unchecked -- the destination is never
-     * tested. Cleanup only runs when if ($restored > 0) (class-media-quarantine.php:397), so a restore
-     * attempt that restores zero files leaves the manifest live for a retry. A retry after that point can
-     * rename a quarantined file over a file created at the original path since the first attempt,
-     * destroying it. The manifest pins the source; nothing pins the destination.
+     * action=restore is likewise pinned by its quarantine_ids and re-derives nothing, and
+     * MediaQuarantine::restoreManifest() now guards both ends of every move: a file already
+     * occupying the original path is left alone and its quarantined counterpart is kept, so no
+     * retry can consume either. It stays classified Unsafe because a retry is still not a no-op --
+     * an incomplete restore deliberately keeps its manifest live, and a second call does more work
+     * against a tree the first one changed. Unsafe here means "not idempotent", not "destructive".
      *
      * @return CommandRepeatability
      */
@@ -631,20 +639,83 @@ final class MediaCleanCommand implements CommandInterface
 
         $quarantine = $this->quarantine ?? new MediaQuarantine();
         $restored   = 0;
+        $skipped    = 0;
+        $failed     = 0;
+        $blocked    = [];
 
         try {
             foreach ($manifestIds as $mId) {
-                $restored += $quarantine->restoreManifest($mId);
+                $receipt   = $quarantine->restoreManifest($mId);
+                $restored += (int)($receipt['restored'] ?? 0);
+                $skipped  += (int)($receipt['skipped'] ?? 0);
+                $failed   += (int)($receipt['failed'] ?? 0);
+                foreach ((array)($receipt['blocked'] ?? []) as $frag) {
+                    $blocked[] = (string)$frag;
+                }
             }
         } catch (\Throwable $e) {
             return ['ok' => false, 'detail' => 'media quarantine unavailable: ' . $e->getMessage()];
         }
 
-        return [
+        // phpcs:disable WordPress.PHP.DevelopmentFunctions.error_log_error_log
+        error_log(sprintf(
+            '[wpmgr] media-clean restore: job_id=%s manifests=%d restored=%d skipped=%d failed=%d',
+            $jobId,
+            count($manifestIds),
+            $restored,
+            $skipped,
+            $failed
+        ));
+        // phpcs:enable
+
+        $result = [
+            // ok stays true for an incomplete restore: files really were moved
+            // back, and the control plane treats ok:false as an error and
+            // returns before recording the outcome, which would leave a real
+            // mutation unaudited. The counts below carry the incompleteness.
             'ok'       => true,
             'job_id'   => $jobId,
             'restored' => $restored,
+            'skipped'  => $skipped,
+            'failed'   => $failed,
         ];
+
+        if ($skipped > 0 || $failed > 0) {
+            $result['detail'] = $this->restoreDetail($skipped, $failed, $blocked);
+        }
+
+        return $result;
+    }
+
+    /**
+     * Human-readable summary of a restore that did not put everything back.
+     *
+     * Names only the first few uploads-relative paths plus a total, so the
+     * operator gets something actionable without the payload growing with the
+     * manifest and without absolute server paths appearing on the wire.
+     *
+     * @param list<string> $blocked Uploads-relative fragments left in quarantine.
+     */
+    private function restoreDetail(int $skipped, int $failed, array $blocked): string
+    {
+        $outstanding = $skipped + $failed;
+        $detail      = sprintf(
+            '%d file(s) were not restored and remain in quarantine (skipped=%d failed=%d)',
+            $outstanding,
+            $skipped,
+            $failed
+        );
+
+        $names = array_slice($blocked, 0, self::RESTORE_DETAIL_PATHS);
+        if (!empty($names)) {
+            $detail .= ': ' . implode(', ', $names);
+            $more    = count($blocked) - count($names);
+            if ($more > 0) {
+                $detail .= sprintf(' (+%d more)', $more);
+            }
+        }
+
+        return $detail;
     }
 
     // =========================================================================
