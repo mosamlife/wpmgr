@@ -223,16 +223,23 @@ final class MediaCleanCommand implements CommandInterface
     }
 
     /**
-     * Repeatability: worst case again. action=isolate calls beginManifest(), which mints a fresh random
-     * manifest id on every invocation, so a retry leaves a second durable quarantine artefact behind;
-     * action=delete then removes whatever now matches, which can include attachments added between the two
-     * runs.
+     * Repeatability: worst case across the three side-effecting actions, and none of them is Unsafe.
+     * action=isolate calls beginManifest(), which mints a fresh manifest id on every invocation, so a
+     * retry leaves a second, largely-empty quarantine artefact behind -- the files already moved on the
+     * first run. action=delete and action=restore both read quarantine_ids straight from the request via
+     * sanitiseStringList(); the manifests they act on are fixed by that list, not re-derived at run time,
+     * so a retry just re-processes the same already-handled manifests and finds nothing left to touch.
+     * handleRestore() exists precisely so an isolate can be undone.
+     *
+     * The previous pass called this Unsafe on the claim that a delete retry "removes whatever now
+     * matches" -- that reads handleDelete() as re-scanning by criteria. It does not; the parameter flow
+     * says otherwise.
      *
      * @return CommandRepeatability
      */
     public function repeatability(): CommandRepeatability
     {
-        return CommandRepeatability::Unsafe;
+        return CommandRepeatability::Repeatable;
     }
 
     /**
