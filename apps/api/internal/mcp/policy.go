@@ -245,15 +245,23 @@ func AllCapabilities() []Capability {
 // by replacing that constant with a real per-grant read. That read needs the
 // column, and the column is a migration, which is not this diff's to write.
 //
-// SO THE TOOL SHIPS DORMANT, DELIBERATELY. registry.go registers
-// fleet_cache_purge requiring this capability; withinOrgCeiling drops it from
-// every tools/list and AuthorizeTool answers it as an unregistered name, for
-// every connection, until the scopes column and a write scope land together in
-// one reviewed diff. That is the same seated-and-unreachable stance
-// CapContentRead has held since m131, and for a write capability it is the
-// direction that fails safe. TestCachePurgeIsKnownButConferredByNoScope pins
-// it, and it is the test that must be DELETED -- not edited -- by whoever
-// confers this, so the conferral cannot happen quietly.
+// SO THE CAPABILITY IS SEATED AND NO TOOL IS REGISTERED BEHIND IT YET.
+// registryTools() is unchanged by this diff, and that is the honest ordering
+// rather than a shortfall: a tool requiring this capability would be dropped
+// from every tools/list by withinOrgCeiling and answered as an unregistered
+// name by AuthorizeTool, for every connection, so registering it would ship an
+// authorisation path -- site-scope enforcement, agent dispatch, audit -- that
+// no test could exercise end to end through Authenticate, because no grant can
+// hold the capability that reaches it. An unreachable write path is exactly the
+// thing that gets reviewed once and then quietly goes wrong.
+//
+// The tool, its site-scope check and its dispatch belong in the SAME diff as
+// the scopes column and the write scope, where all three can be proved
+// together. That is the same seated-and-unreachable stance CapContentRead has
+// held since m131, and for a write capability it is the direction that fails
+// safe. TestCachePurgeIsKnownButConferredByNoScope pins it, and it is the test
+// that must be DELETED -- not edited -- by whoever confers this, so the
+// conferral cannot happen quietly.
 // ---------------------------------------------------------------------------
 var scopeCapabilities = map[Scope][]Capability{
 	ScopeRead: {
