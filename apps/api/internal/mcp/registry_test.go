@@ -51,7 +51,7 @@ func nonEmptyRegistry(t *testing.T) []ToolPolicy {
 // A test that needs a NARROWER ceiling than the vocabulary -- the org-switched-
 // off case -- must say so, and authWithCeiling is how.
 func authWith(caps CapabilitySet, siteIDs ...uuid.UUID) AuthorizedRequest {
-	ceiling, err := OrgDefaultCapabilities(grantScopes())
+	ceiling, err := OrgDefaultCapabilities(DefaultGrantScopes())
 	if err != nil {
 		// Not t.Fatal: authWith has no *testing.T and this is unreachable while
 		// scopeCapabilities is total over recognisedScopes, which

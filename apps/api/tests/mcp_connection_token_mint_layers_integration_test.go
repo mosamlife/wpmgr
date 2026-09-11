@@ -528,6 +528,9 @@ func mintProbeGrant(tenantID uuid.UUID, name string) sqlc.CreateMCPGrantParams {
 		ScopeSiteIds:  []uuid.UUID{},
 		ClientID:      nil,
 		Capabilities:  []string{"mcp.sites.read"},
+		// m136: NOT NULL with no DEFAULT, so a fixture that omits it takes
+		// 23502 rather than minting a grant whose scope set the schema chose.
+		OauthScopes:   []string{"mcp:read"},
 		ExpiresAt:     time.Now().UTC().Add(24 * time.Hour),
 	}
 }

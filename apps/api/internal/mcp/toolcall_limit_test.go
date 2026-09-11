@@ -109,6 +109,9 @@ func (s *twoTenantStore) ReCheckAuthorization(
 		GrantID:           grant,
 		TokenID:           uuid.New(),
 		GrantCapabilities: []string{string(CapSitesRead)},
+		// The scope column the ceiling is now DERIVED from (m136). A nil
+		// column is refused as "no scope, so no capability".
+		GrantOauthScopes: []string{string(ScopeRead)},
 		GrantExpiresAt:    time.Now().UTC().Add(90 * 24 * time.Hour),
 	}, nil
 }

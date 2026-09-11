@@ -506,6 +506,7 @@ type McpGrant struct {
 	ScopeTagIds              []uuid.UUID        `json:"scope_tag_ids"`
 	ScopeSiteIds             []uuid.UUID        `json:"scope_site_ids"`
 	Capabilities             []string           `json:"capabilities"`
+	OauthScopes              []string           `json:"oauth_scopes"`
 	ClientID                 *string            `json:"client_id"`
 	ClientName               *string            `json:"client_name"`
 	ClientVersion            *string            `json:"client_version"`

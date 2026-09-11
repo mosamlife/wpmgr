@@ -237,13 +237,20 @@ func AllCapabilities() []Capability {
 // conferred by no scope is not "mint-only", it is UNREACHABLE -- unstorable at
 // mint, and fatal to the whole connection if a row ever holds it.
 //
-// Conferring it therefore requires a second scope, and a second scope cannot be
-// added here alone. grantScopes() is a CONSTANT because mcp_grants has no
-// scopes column, so a second entry in recognisedScopes would hand ScopeRead's
-// capabilities to a grant that never asked for them -- the widening
-// TestGrantScopesIsExactOnlyWhileOneScopeExists exists to force someone to fix
-// by replacing that constant with a real per-grant read. That read needs the
-// column, and the column is a migration, which is not this diff's to write.
+// Conferring it therefore requires a second scope. WHEN THIS PARAGRAPH WAS
+// WRITTEN the blocker was that grantScopes() was a constant -- mcp_grants had
+// no scopes column -- so a second entry in recognisedScopes would have handed
+// ScopeRead's capabilities to a grant that never asked for them. m136 added the
+// column and grantScopes is now a real per-grant read, so THAT widening is
+// closed and this is no longer the thing standing in the way.
+//
+// What stands in the way now is one step further on, and it is smaller but not
+// nothing: the scope set STORED at consent is the approval body re-parsed, not
+// a restatement of the registry, and the two coincide only while
+// recognisedScopes has a single member. The note at Service.Approve in
+// service.go says what has to be bound before a second scope is recognised.
+// That binding, the write scope and the tool behind it belong in one diff,
+// under one review.
 //
 // SO THE CAPABILITY IS SEATED AND NO TOOL IS REGISTERED BEHIND IT YET.
 // registryTools() is unchanged by this diff, and that is the honest ordering
@@ -275,23 +282,77 @@ var scopeCapabilities = map[Scope][]Capability{
 	},
 }
 
-// grantScopes returns the OAuth scopes a live grant holds.
+// grantScopes reads mcp_grants.oauth_scopes back into the domain type. IT IS A
+// PER-GRANT READ AND NO LONGER A CONSTANT.
 //
-// IT IS A CONSTANT, AND THAT IS THE WHOLE REASON THIS FUNCTION EXISTS RATHER
-// THAN A LITERAL AT THE CALL SITE. mcp_grants has no scopes column (m124
-// DECISION 1 declines to mint one), so there is nothing per-grant to read; every
-// grant that can authenticate holds ScopeRead, because ParseRequestedScopes
-// refuses anything recognisedScopes does not carry and recognisedScopes carries
-// exactly one entry.
+// IT USED TO RETURN []Scope{ScopeRead} UNCONDITIONALLY, and the comment that
+// stood here argued the constant was exact because recognisedScopes held one
+// entry and ParseRequestedScopes refuses anything outside it. That argument was
+// true and it was also the reason the first write capability could never be
+// reached: a capability no scope confers is unstorable at mint AND narrowed
+// away by Authenticate, so seating one in the vocabulary shipped nothing. m136
+// added the column; this function is the read it exists for.
 //
-// That reasoning is load-bearing and it EXPIRES the moment a second scope is
-// recognised: a connection granted only the new scope would still be handed
-// ScopeRead's capabilities, which is a widening rather than a narrowing and is
-// therefore the direction that matters. Naming it here gives
-// TestGrantScopesIsExactOnlyWhileOneScopeExists something to point at, and gives
-// whoever adds that scope one obvious place to replace with a real per-grant
-// read.
-func grantScopes() []Scope {
+// IT DOES NOT FILTER, and the omission is capabilitiesFromColumn's, verbatim
+// and for the same reason. Dropping an unknown name here would hand
+// OrgDefaultCapabilities a set that had already been quietly reduced, so a row
+// carrying a scope outside this build's registry would authenticate as though
+// it carried ONLY the known ones -- the widening wearing the shape of a
+// narrowing. The refusal belongs at OrgDefaultCapabilities, where an unmapped
+// scope rejects the WHOLE set instead of being trimmed out of it, exactly as
+// ParseRequestedScopes refuses an unrecognised scope rather than ignoring it.
+//
+// A NIL OR EMPTY COLUMN YIELDS AN EMPTY SLICE, WHICH MEANS NO AUTHORITY AND
+// NEVER "UNRESTRICTED". That is the one direction this surface must never fail
+// in. mcp_grants_oauth_scopes_not_empty_check makes the value unrepresentable
+// (m136 DECISION 4), so an empty read means something is wrong rather than
+// something is permissive -- and the Go read does not depend on the database
+// being the only writer. OrgDefaultCapabilities refuses an empty scope list by
+// name, and Authenticate refuses it again by name before it gets there.
+func grantScopes(stored []string) []Scope {
+	out := make([]Scope, 0, len(stored))
+	for _, s := range stored {
+		out = append(out, Scope(s))
+	}
+	return out
+}
+
+// scopeNames renders scopes for the text[] column. capabilityNames' twin.
+func scopeNames(scopes []Scope) []string {
+	out := make([]string, 0, len(scopes))
+	for _, s := range scopes {
+		out = append(out, string(s))
+	}
+	return out
+}
+
+// DefaultGrantScopes is the scope set stamped onto mcp_grants.oauth_scopes when
+// a new grant is created and NO CLIENT ASKED FOR ONE -- the operator-facing
+// connection-token path (Service.MintConnection), which has no RFC 7591 client
+// behind it and therefore no `scope` request parameter to honour.
+//
+// IT IS NOT grantScopes' OLD CONSTANT MOVED. The old constant answered "what
+// does THIS LIVE GRANT hold", for every grant, without reading it; this answers
+// "what does a grant nobody stated terms for RECEIVE", once, at creation, and
+// is then written to the row that grantScopes reads. The OAuth path does not
+// call it at all: Approve passes the scope set the client requested and the
+// operator consented to, re-parsed from the approval body.
+//
+// IT IS DELIBERATELY THE READ SCOPE AND NOTHING ELSE, and that is the same
+// stance DefaultGrantCapabilities takes one function down: the answer to
+// "nobody asked" is never "everything". It moves no floor -- every grant this
+// surface has ever minted holds exactly {mcp:read}, which is what m136's
+// backfill wrote down -- and it raises no ceiling.
+//
+// A FUNCTION, NOT A PACKAGE VARIABLE, for DefaultGrantCapabilities' reason: a
+// shared slice is one append away from widening every grant this surface has
+// ever minted.
+//
+// WHEN A WRITE SCOPE EXISTS this is where the operator's choice replaces the
+// preset on the token path, and it is NOT where the write scope gets added to
+// the preset. See recognisedScopes in scope.go: a write scope arrives with its
+// own migration and its own review.
+func DefaultGrantScopes() []Scope {
 	return []Scope{ScopeRead}
 }
 

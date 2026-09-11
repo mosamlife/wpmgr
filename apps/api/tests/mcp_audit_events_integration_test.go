@@ -341,6 +341,9 @@ func TestMCPAuditEvents_RolledBackGrantCreationLeavesNoAuditRow_AsAppRole(t *tes
 		// would roll the same transaction back for the wrong reason -- which
 		// would make the assertion pass while proving nothing.
 		Capabilities:        []string{"mcp.sites.read"},
+		// m136: NOT NULL with no DEFAULT, so a fixture that omits it takes
+		// 23502 rather than minting a grant whose scope set the schema chose.
+		OauthScopes:         []string{"mcp:read"},
 		ExpiresAt:           time.Now().UTC().Add(90 * 24 * time.Hour),
 		IdleExpireAfterDays: nil,
 	}, func(grantID uuid.UUID) sqlc.CreateMCPAuthorizationCodeParams {

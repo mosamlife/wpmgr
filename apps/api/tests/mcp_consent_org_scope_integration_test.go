@@ -320,6 +320,9 @@ func TestMCPCreateGrantWithCodeRefusesASiteScopedPrincipalAsAppRole(t *testing.T
 		// m127: both NOT NULL with no default. Supplied so this proof fails on
 		// the RLS refusal it is actually about, not on a 23502.
 		Capabilities:        []string{"mcp.sites.read"},
+		// m136: NOT NULL with no DEFAULT, so a fixture that omits it takes
+		// 23502 rather than minting a grant whose scope set the schema chose.
+		OauthScopes:         []string{"mcp:read"},
 		ExpiresAt:           time.Now().UTC().Add(90 * 24 * time.Hour),
 		IdleExpireAfterDays: nil,
 	}, func(grantID uuid.UUID) sqlc.CreateMCPAuthorizationCodeParams {
