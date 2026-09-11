@@ -75,8 +75,10 @@ final class RucssComputeCommand implements CommandInterface
     }
 
     /**
-     * Effect: queues used-CSS computation for same-host URLs and purges those URLs' cache entries. Only
-     * derived cache state changes.
+     * Effect: purges each target URL's cache entry, then forces a fresh self-fetch render so the optimizer's
+     * RUCSS stage runs, and is a Write -- driving every subsequent visitor to a freshly computed,
+     * RUCSS-optimized page is the whole reason this command exists. Only derived cache state changes, and the
+     * site would rebuild it on the next real visit regardless; that does not decide the label -- purpose does.
      *
      * @return CommandEffect
      */

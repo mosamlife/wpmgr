@@ -42,9 +42,11 @@ final class ObjectcacheDisableCommand implements CommandInterface
 	}
 
 	/**
-	 * Effect: removes the object-cache drop-in and, by default, flushes first. Both are derived state. The
-	 * flush takes the same guarded path as objectcache.flush: FLUSHDB only when the stored config declares the
-	 * database is not shared, prefix-scoped SCAN + UNLINK otherwise.
+	 * Effect: removes the object-cache drop-in and, by default, flushes first, and is a Write -- turning
+	 * object caching off for every request after this one is the whole reason this command exists. Both the
+	 * drop-in and the flushed cache are derived state the site can rebuild; that does not decide the label --
+	 * purpose does. The flush takes the same guarded path as objectcache.flush: FLUSHDB only when the stored
+	 * config declares the database is not shared, prefix-scoped SCAN + UNLINK otherwise.
 	 *
 	 * @return CommandEffect
 	 */

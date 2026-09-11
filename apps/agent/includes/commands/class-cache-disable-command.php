@@ -44,8 +44,10 @@ final class CacheDisableCommand implements CommandInterface
     }
 
     /**
-     * Effect: removes the WP_CACHE define, the drop-in and the .htaccess block, then purges. Everything it
-     * removes is derived state the site rebuilds.
+     * Effect: turns page caching off and reverses every artefact -- the WP_CACHE define, the drop-in and the
+     * .htaccess block -- then purges, and is a Write: stopping the site from serving cached pages to the next
+     * visitor is the whole reason this command exists. Everything it removes is config plus cache content the
+     * site rebuilds on its own if caching is re-enabled; that does not decide the label -- purpose does.
      *
      * @return CommandEffect
      */

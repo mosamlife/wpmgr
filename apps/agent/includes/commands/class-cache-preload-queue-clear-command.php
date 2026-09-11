@@ -44,8 +44,10 @@ final class CachePreloadQueueClearCommand implements CommandInterface
     }
 
     /**
-     * Effect: deletes every row from the preload queue. The queue is derived work-tracking state, not site
-     * data.
+     * Effect: deletes every row from the preload queue, and is a Write -- emptying the queue is the entire
+     * point of this command, the mechanism behind the viewer's "Clear queue" action. The queue is derived
+     * work-tracking state, not site data, and re-populates the moment cache_preload runs again; that does not
+     * decide the label -- purpose does.
      *
      * @return CommandEffect
      */

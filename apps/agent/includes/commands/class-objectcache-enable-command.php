@@ -52,8 +52,10 @@ final class ObjectcacheEnableCommand implements CommandInterface
 	}
 
 	/**
-	 * Effect: installs the object-cache drop-in and purges transients, and flushes through the same
-	 * shared-aware path as objectcache.flush. All of it is derived state.
+	 * Effect: installs the object-cache drop-in, purges transients so they migrate to Redis, and flushes
+	 * through the same shared-aware path as objectcache.flush, and is a Write -- turning object caching on
+	 * for every request after this one is the whole reason this command exists. All of what it touches is
+	 * derived state the site can rebuild; that does not decide the label -- purpose does.
 	 *
 	 * @return CommandEffect
 	 */

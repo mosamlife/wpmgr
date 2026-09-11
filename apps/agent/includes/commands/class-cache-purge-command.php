@@ -43,7 +43,9 @@ final class CachePurgeCommand implements CommandInterface
     }
 
     /**
-     * Effect: empties the page cache, all or per-URL. The cache is derived state.
+     * Effect: empties the page cache, all or per-URL, and is a Write -- changing what every visitor is served
+     * next is the whole reason it exists. The cache is derived state the site rebuilds by itself; that does
+     * not decide the label -- purpose does.
      *
      * @return CommandEffect
      */
