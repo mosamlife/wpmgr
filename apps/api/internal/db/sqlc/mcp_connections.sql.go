@@ -203,9 +203,9 @@ const createMCPGrant = `-- name: CreateMCPGrant :one
 INSERT INTO mcp_grants (
     tenant_id, name, status, site_scope_mode, scope_tag_ids, scope_site_ids,
     client_id, created_by_user_id, capabilities, expires_at,
-    idle_expire_after_days, setup_client
+    idle_expire_after_days, setup_client, oauth_scopes
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
 )
 RETURNING id, tenant_id, name, status, site_scope_mode, scope_tag_ids, scope_site_ids, capabilities, oauth_scopes, client_id, client_name, client_version, protocol_version, client_identity_recorded_at, setup_client, created_by_user_id, created_at, last_used_at, revoked_at, expires_at, idle_expire_after_days
 `
@@ -223,6 +223,7 @@ type CreateMCPGrantParams struct {
 	ExpiresAt           time.Time   `json:"expires_at"`
 	IdleExpireAfterDays *int32      `json:"idle_expire_after_days"`
 	SetupClient         *string     `json:"setup_client"`
+	OauthScopes         []string    `json:"oauth_scopes"`
 }
 
 // ===========================================================================
@@ -292,6 +293,21 @@ type CreateMCPGrantParams struct {
 // setup_client from this list would silently discard the operator's step-2
 // choice on every create; omitting any m127 column would mint a credential
 // nobody chose the terms of. Both failures compile and generate cleanly.
+//
+// m136 ADDS oauth_scopes AND IT OBEYS THE SAME RULE AS THE m127 COLUMNS: NOT
+// NULL, no DEFAULT, so a caller that omits it gets 23502 rather than a grant
+// whose scope set the schema chose. It is named here for that reason and not
+// because the generator needed it -- CreateMCPGrantParams is a named-field
+// literal at every call site, so omitting the field would have compiled and
+// left it nil, which is NULL, which is the 23502 m136 DECISION 3 designed.
+//
+// IT IS THE COLUMN THE CAPABILITY CEILING IS DERIVED FROM, so a wrong value
+// here is not a wrong label: it is the wrong ceiling on every request that
+// grant ever makes. The two creation paths pass different things on purpose --
+// the OAuth path passes the scope set the client requested and the operator
+// consented to, the token path passes DefaultGrantScopes() because no client
+// asked for anything -- and both are validated against recognisedScopes in Go
+// before they arrive, on top of the vocabulary CHECK here.
 func (q *Queries) CreateMCPGrant(ctx context.Context, arg CreateMCPGrantParams) (McpGrant, error) {
 	row := q.db.QueryRow(ctx, createMCPGrant,
 		arg.TenantID,
@@ -306,6 +322,7 @@ func (q *Queries) CreateMCPGrant(ctx context.Context, arg CreateMCPGrantParams) 
 		arg.ExpiresAt,
 		arg.IdleExpireAfterDays,
 		arg.SetupClient,
+		arg.OauthScopes,
 	)
 	var i McpGrant
 	err := row.Scan(
@@ -681,6 +698,12 @@ SELECT
     g.scope_site_ids              AS scope_site_ids,
     g.client_id                   AS client_id,
     g.capabilities                AS grant_capabilities,
+    -- g.oauth_scopes is returned for the SAME REASON g.capabilities is: the
+    -- CEILING the stored capability set is narrowed against is derived from
+    -- these scopes, and deriving it from a constant instead makes it a guess
+    -- that agrees with the row only while the registry holds one entry. Read
+    -- from the same row and the same transaction as the ` + "`" + `authorized` + "`" + ` verdict.
+    g.oauth_scopes                AS grant_oauth_scopes,
     g.expires_at                  AS grant_expires_at,
     g.idle_expire_after_days      AS grant_idle_expire_after_days,
     g.last_used_at                AS grant_last_used_at,
@@ -778,6 +801,7 @@ type ReCheckMCPRequestAuthorizationInTenantTxRow struct {
 	ScopeSiteIds                []uuid.UUID        `json:"scope_site_ids"`
 	ClientID                    *string            `json:"client_id"`
 	GrantCapabilities           []string           `json:"grant_capabilities"`
+	GrantOauthScopes            []string           `json:"grant_oauth_scopes"`
 	GrantExpiresAt              time.Time          `json:"grant_expires_at"`
 	GrantIdleExpireAfterDays    *int32             `json:"grant_idle_expire_after_days"`
 	GrantLastUsedAt             pgtype.Timestamptz `json:"grant_last_used_at"`
@@ -844,6 +868,7 @@ func (q *Queries) ReCheckMCPRequestAuthorizationInTenantTx(ctx context.Context, 
 		&i.ScopeSiteIds,
 		&i.ClientID,
 		&i.GrantCapabilities,
+		&i.GrantOauthScopes,
 		&i.GrantExpiresAt,
 		&i.GrantIdleExpireAfterDays,
 		&i.GrantLastUsedAt,

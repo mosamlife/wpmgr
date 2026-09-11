@@ -823,7 +823,15 @@ func (s *Service) Approve(ctx context.Context, req ApprovalRequest) (Approval, e
 	// arrives back over the wire and a resubmitted form is caller input like
 	// any other; re-parsing means a tampered approval cannot widen what the
 	// authorize call already refused.
-	if _, err := ParseRequestedScopes(scopesToString(req.Consent.Scopes)); err != nil {
+	// THE RESULT IS KEPT NOW, NOT DISCARDED. m136 gave the grant an
+	// oauth_scopes column and this is the only place on the OAuth path that
+	// knows what the client asked for and the operator consented to. Storing
+	// the re-parsed value rather than a preset is what makes the stored set the
+	// consent rather than a restatement of the registry -- and it is the same
+	// value the ceiling below is computed from, so the row and the ceiling
+	// cannot disagree.
+	grantedScopes, err := ParseRequestedScopes(scopesToString(req.Consent.Scopes))
+	if err != nil {
 		return Approval{}, err
 	}
 	if err := ValidateSiteScopeRequest(req.SiteScope); err != nil {
@@ -868,7 +876,7 @@ func (s *Service) Approve(ctx context.Context, req ApprovalRequest) (Approval, e
 	// organisation's ceiling refuses the whole approval here -- no code, no
 	// grant, no half-made connection -- rather than being narrowed to the
 	// intersection behind the operator's back.
-	caps, err := s.resolveGrantCapabilities(req.Capabilities)
+	caps, err := s.resolveGrantCapabilities(grantedScopes, req.Capabilities)
 	if err != nil {
 		return Approval{}, err
 	}
@@ -911,7 +919,20 @@ func (s *Service) Approve(ctx context.Context, req ApprovalRequest) (Approval, e
 			// applied it -- refusing a set wider than the organisation
 			// ceiling rather than quietly intersecting it.
 			Capabilities: capabilityNames(caps.Sorted()),
-			ExpiresAt:    s.now().UTC().Add(grantAbsoluteTTL),
+
+			// m136's column, SUPPLIED EXPLICITLY for the same reason and with
+			// the same failure mode: NOT NULL, no DEFAULT, so omitting this
+			// field would compile, leave it nil, and take 23502 at the INSERT
+			// rather than mint a grant whose scope set the schema chose.
+			//
+			// IT IS THE CLIENT'S REQUEST, RE-PARSED FROM THIS APPROVAL, and not
+			// DefaultGrantScopes(). The preset is what the token path uses
+			// because no client asked it anything; here one did, the operator
+			// consented to it on the screen, and the value the ceiling above
+			// was computed from is the value written down.
+			OauthScopes: scopeNames(grantedScopes),
+
+			ExpiresAt: s.now().UTC().Add(grantAbsoluteTTL),
 
 			// IDLE EXPIRY IS WRITTEN NULL, AND NULL IS THE ANSWER, NOT A
 			// PLACEHOLDER. NULL means "never idle-expire" (m127 DECISION 4).
@@ -1390,22 +1411,35 @@ func (s *Service) Authenticate(ctx context.Context, bearer string) (AuthorizedRe
 	// honoured, and not quietly dropped. Dropping would be fail-closed and
 	// still wrong, for the reason written on NarrowTo.
 	//
-	// ONE GAP SURVIVES m127, AND IT IS A LATENT WIDENING RATHER THAN A MISSING
-	// NARROWING: the scope list below is a CONSTANT, not the grant's own
-	// scopes. mcp_grants still has no scopes column, so there is nothing
-	// per-grant to read; grantScopes() returns the one scope every live grant
-	// holds by construction. That is exact TODAY and only because
-	// recognisedScopes holds exactly one entry. The day a second scope joins
-	// it, a connection granted ONLY that scope would still be handed
-	// ScopeRead's capabilities as its CEILING here -- a widening, and one no
-	// existing test catches, because
-	// TestEveryRecognisedScopeHasACapabilityMapping pins the map's totality and
-	// not this function's input.
+	// THE SCOPES ARE THE GRANT'S OWN, READ OFF THE SAME ROW AND THE SAME
+	// TRANSACTION, AND THAT IS WHAT m136 CHANGED. This line used to pass
+	// grantScopes() -- a hard-coded {ScopeRead} -- because mcp_grants had no
+	// scopes column. The constant was exact only while recognisedScopes held one
+	// entry, and it was exact in the direction that matters least: the day a
+	// second scope joined the registry, a connection granted ONLY that scope
+	// would still have been handed ScopeRead's capabilities as its CEILING here.
+	// A ceiling computed from a constant is a guess that agrees with the row by
+	// coincidence.
 	//
-	// TestGrantScopesIsExactOnlyWhileOneScopeExists goes red the moment
-	// recognisedScopes grows, so whoever adds the second scope is forced to
-	// come here and read a grant's scopes instead of a constant.
-	ceiling, err := OrgDefaultCapabilities(grantScopes())
+	// AN EMPTY SCOPE COLUMN IS REFUSED BY NAME AND IS NEVER READ AS
+	// UNRESTRICTED. mcp_grants_oauth_scopes_not_empty_check makes '{}'
+	// unrepresentable (m136 DECISION 4), so reaching this with an empty set means
+	// a writer outside that constraint, and the fail-closed answer to "I cannot
+	// tell what this grant may do" is nothing at all. OrgDefaultCapabilities
+	// refuses it too; it is refused here first so the message names the SCOPE
+	// column rather than the capability one, which is the difference between an
+	// operator looking at the right row and the wrong one.
+	//
+	// IT IS 403, NOT 401, for the reason spelled out on the empty-capabilities
+	// refusal below: an MCP client that receives 401 re-runs the OAuth handshake,
+	// which cannot repair a stored column.
+	scopes := grantScopes(chk.GrantOauthScopes)
+	if len(scopes) == 0 {
+		return AuthorizedRequest{}, domain.Forbidden(ErrCodeCapabilityUnmapped,
+			"this connection holds no scope, so it confers no capability")
+	}
+
+	ceiling, err := OrgDefaultCapabilities(scopes)
 	if err != nil {
 		// A capability set that cannot be resolved is a REFUSAL, never an
 		// empty-but-proceeding one. An AuthorizedRequest with a zero-value
@@ -2297,20 +2331,20 @@ func (s *Service) RevokeConnection(ctx context.Context, p domain.Principal, gran
 // date in the year 1 and would render as "last used 1 Jan 0001" for a
 // connection that has never been used.
 //
-// Scopes is DERIVED, not read. mcp_grants has no scopes column (m124 Decision
-// 1 declines to add one, so that a write capability cannot appear without a
-// migration), and grantScopes() returns the one scope every live grant holds by
-// construction. That is exact only while recognisedScopes has one entry, which
-// is what TestGrantScopesIsExactOnlyWhileOneScopeExists pins -- when a second
-// scope is added, that test goes red and this line has to start reading the
-// grant instead of a constant.
+// Scopes is READ, not derived, and m136 is what made that possible. It used to
+// be grantScopes() -- a constant -- on the reasoning that every live grant held
+// {mcp:read} by construction. That rendered the same answer for every row
+// whether or not the row agreed, which on an operator console is worse than no
+// column at all: the screen would have kept saying "mcp:read" for a grant whose
+// stored scope set had changed. It is now grantScopes(g.OauthScopes), the same
+// unfiltered reader Authenticate uses, so the console shows what the row holds.
 func connectionFromGrant(g sqlc.McpGrant) Connection {
 	return Connection{
 		ID:            g.ID,
 		Name:          g.Name,
 		Status:        GrantStatus(g.Status),
 		SiteScopeMode: SiteScopeMode(g.SiteScopeMode),
-		Scopes:        grantScopes(),
+		Scopes:        grantScopes(g.OauthScopes),
 		// Read straight off the row via capabilitiesFromColumn -- the same
 		// reader Authenticate uses on chk.GrantCapabilities -- and never
 		// recomputed. See Connection.Capabilities.
