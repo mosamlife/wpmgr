@@ -55,6 +55,7 @@ use WPMgr\Agent\Commands\SyncMediaConfigCommand;
 use WPMgr\Agent\Commands\SyncSecurityConfigCommand;
 use WPMgr\Agent\Commands\UnblockIpCommand;
 use WPMgr\Agent\Commands\UpdateCommand;
+use WPMgr\Agent\Commands\ContentUpdateCommand;
 use WPMgr\Agent\Commands\CacheEnableCommand;
 use WPMgr\Agent\Commands\CacheDisableCommand;
 use WPMgr\Agent\Commands\CachePurgeCommand;
@@ -2007,6 +2008,15 @@ final class Plugin
 
         return [
             new InfoCommand(),
+            // The agent's first content-write command: retitle / rewrite one
+            // EXISTING post or page, nothing else. It takes a post revision of
+            // the current version BEFORE writing and reads it back to confirm
+            // it stuck, refusing outright when revisions are off for the post
+            // type or retention is too low to survive core's post-update
+            // prune — WordPress's own revision-on-update holds the NEW content
+            // (wp-includes/revision.php), so without that pre-flight the
+            // overwritten version would not be retained anywhere.
+            new ContentUpdateCommand(),
             // M5.6 / ADR-033: BackupCommand validates the signed CP request,
             // dedups, seeds the wpmgr_backup_tasks row, schedules the
             // watchdog cron event, then hands off via wp_schedule_single_event
