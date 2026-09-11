@@ -690,6 +690,12 @@ func (h *Handler) consent(c *gin.Context) {
 			State:               body.State,
 			CodeChallenge:       body.CodeChallenge,
 			CodeChallengeMethod: body.CodeChallengeMethod,
+			// Copied through unexamined, like every other field here. The
+			// handler does not open it, does not check it and cannot: it is
+			// sealed with a key only the service holds, and Service.Approve is
+			// the single place that decides whether this approval matches the
+			// authorize call it claims to follow.
+			ConsentTicket: body.ConsentTicket,
 		},
 		GrantName: body.GrantName,
 		SiteScope: SiteScopeRequest{

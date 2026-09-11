@@ -555,6 +555,21 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 
 	mcpSvc := mcp.NewService(mcp.NewRepo(pool)).WithClock(clock.Now).WithAudit(auditRec).
 		WithContextResolver(govContextResolver)
+	// The consent ticket's key, derived from the instance session secret, which
+	// every replica shares and which is already validated before boot
+	// (cfg.ValidateSessionSecret, above). It is what makes an OAuth consent
+	// approvable on an instance other than the one that drew the screen: the
+	// ticket binds the approval to the authorize call that preceded it, and a
+	// per-process key would bind it to one container.
+	//
+	// FATAL RATHER THAN LOGGED. A Service that could not take this key still
+	// verifies tickets -- NewService arms its own -- so the symptom would be
+	// consents that work on one instance and are refused on the next, which is
+	// a worse thing to discover in production than a process that will not
+	// start.
+	if err := mcpSvc.SetConsentSigningSecret(cfg.Auth.SessionSecret); err != nil {
+		return fmt.Errorf("mcp consent signing: %w", err)
+	}
 	mcpTransportH := mcp.NewTransportHandler(mcpSvc, logger, version)
 	// The OAuth half, wired unconditionally for the same reason. Without it the
 	// transport above is mounted and correct and refuses every request forever,
