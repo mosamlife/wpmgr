@@ -107,13 +107,14 @@ final class FileUploadApplyCommand implements CommandInterface {
 	}
 
 	/**
-	 * Repeatability: the destination path and the verified sha256 are both fixed by the caller, so a second
-	 * run writes the same bytes to the same place.
+	 * Repeatability: the sha256 validates the STAGED bytes, never the destination. A blind retry writes the
+	 * original request's content over whatever is at that path now, erasing anything written since -- and
+	 * unlike file_write this command stages no backup at all.
 	 *
 	 * @return CommandRepeatability
 	 */
 	public function repeatability(): CommandRepeatability {
-		return CommandRepeatability::Idempotent;
+		return CommandRepeatability::Unsafe;
 	}
 
 	/**

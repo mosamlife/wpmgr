@@ -85,7 +85,9 @@ final class SyncSecurityPolicyCommand implements CommandInterface
     }
 
     /**
-     * Repeatability: applying the same policy twice converges.
+     * Repeatability: applying the same policy twice converges. applyForcePasswordChange() re-stamps the
+     * user-meta flag for the same fixed list, so a retry could in principle re-flag someone who complied
+     * between the two runs -- over a dropped-ack retry window, measured in seconds, nobody has.
      *
      * @return CommandRepeatability
      */

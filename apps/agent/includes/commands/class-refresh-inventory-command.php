@@ -76,13 +76,14 @@ final class RefreshInventoryCommand implements CommandInterface
     }
 
     /**
-     * Repeatability: a second refresh re-polls and re-pushes the same inventory.
+     * Repeatability: a retry re-polls WordPress's update APIs and pushes a second full inventory report to
+     * the control plane.
      *
      * @return CommandRepeatability
      */
     public function repeatability(): CommandRepeatability
     {
-        return CommandRepeatability::Idempotent;
+        return CommandRepeatability::Repeatable;
     }
 
     /**

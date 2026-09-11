@@ -90,12 +90,14 @@ final class FileWriteCommand implements CommandInterface {
 	}
 
 	/**
-	 * Repeatability: the same path and the same content produce the same file on a second run.
+	 * Repeatability: the request's content is fixed, the destination is not. A blind retry renames those same
+	 * bytes over whatever the file holds NOW, erasing any edit made between the two runs, and stageBackup() is
+	 * best-effort so the erased version may not be recoverable either.
 	 *
 	 * @return CommandRepeatability
 	 */
 	public function repeatability(): CommandRepeatability {
-		return CommandRepeatability::Idempotent;
+		return CommandRepeatability::Unsafe;
 	}
 
 	/**

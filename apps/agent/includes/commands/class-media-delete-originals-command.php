@@ -93,13 +93,15 @@ final class MediaDeleteOriginalsCommand implements CommandInterface
     }
 
     /**
-     * Repeatability: an original that is already deleted is skipped.
+     * Repeatability: each delivery mints a new run id, schedules another event, and fires another status
+     * callback even for attachments already carrying original_deleted=1. An original already deleted stays
+     * deleted, so nothing extra is destroyed -- but the run is not free.
      *
      * @return CommandRepeatability
      */
     public function repeatability(): CommandRepeatability
     {
-        return CommandRepeatability::Idempotent;
+        return CommandRepeatability::Repeatable;
     }
 
     /**

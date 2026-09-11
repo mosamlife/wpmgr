@@ -62,13 +62,15 @@ final class FileDeleteCommand implements CommandInterface {
 	}
 
 	/**
-	 * Repeatability: deleting a path that is already gone is a no-op, which is why a destructive command can
-	 * still be safe to retry.
+	 * Repeatability: the path is fixed, what lives at it is not. A blind retry deletes a file recreated at
+	 * that path since the first run, which is destruction the first run did not perform. The first revision
+	 * called this idempotent because the end state -- path absent -- converges; that reads the outcome and
+	 * ignores the victim.
 	 *
 	 * @return CommandRepeatability
 	 */
 	public function repeatability(): CommandRepeatability {
-		return CommandRepeatability::Idempotent;
+		return CommandRepeatability::Unsafe;
 	}
 
 	/**

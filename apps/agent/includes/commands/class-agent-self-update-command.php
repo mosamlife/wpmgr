@@ -115,13 +115,14 @@ final class AgentSelfUpdateCommand implements CommandInterface
     }
 
     /**
-     * Repeatability: re-arming replaces the previous arm rather than adding a second one.
+     * Repeatability: re-arming replaces the previous arm rather than adding a second one, but it re-fetches
+     * and re-verifies the signed manifest and re-stages the package to get there.
      *
      * @return CommandRepeatability
      */
     public function repeatability(): CommandRepeatability
     {
-        return CommandRepeatability::Idempotent;
+        return CommandRepeatability::Repeatable;
     }
 
     /**

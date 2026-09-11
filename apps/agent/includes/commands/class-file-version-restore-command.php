@@ -75,12 +75,13 @@ final class FileVersionRestoreCommand implements CommandInterface {
 	}
 
 	/**
-	 * Repeatability: restoring the same staged version twice converges on the same file.
+	 * Repeatability: the backup path is validated, the live file is not. A blind retry puts the same old
+	 * version back over whatever the file holds now, discarding edits made since the first restore landed.
 	 *
 	 * @return CommandRepeatability
 	 */
 	public function repeatability(): CommandRepeatability {
-		return CommandRepeatability::Idempotent;
+		return CommandRepeatability::Unsafe;
 	}
 
 	/**

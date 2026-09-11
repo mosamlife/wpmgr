@@ -40,10 +40,12 @@ final class ObjectcacheFlushCommand implements CommandInterface
 	}
 
 	/**
-	 * Effect: empties the object cache, either FLUSHDB or SCAN+UNLINK by prefix. Cache content is derived and
-	 * the site rebuilds it. The caveat worth knowing: FLUSHDB clears every key in the configured Redis DB,
-	 * including any a different application put there, so 'derived' holds for WordPress and is an assumption
-	 * about how the DB is shared.
+	 * Effect: empties the object cache. Cache content is derived and the site rebuilds it. An earlier revision
+	 * of this comment warned that FLUSHDB can clear keys another application put in the same Redis database;
+	 * re-reading the code, that is already guarded -- $useFlushDb is ( $strategy === 'flushdb' || $strategy
+	 * === 'auto' ) && ! $shared, and $shared defaults to TRUE, so a database not explicitly declared exclusive
+	 * gets a prefix-scoped SCAN + UNLINK instead. The indiscriminate path is reachable only when an operator
+	 * has declared the database is not shared.
 	 *
 	 * @return CommandEffect
 	 */

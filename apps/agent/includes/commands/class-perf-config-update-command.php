@@ -87,13 +87,14 @@ final class PerfConfigUpdateCommand implements CommandInterface
     }
 
     /**
-     * Repeatability: applying the same config twice converges.
+     * Repeatability: a retry re-renders the drop-in config and the .htaccess block and re-runs the perf
+     * report. The end state converges; the work and the report do not.
      *
      * @return CommandRepeatability
      */
     public function repeatability(): CommandRepeatability
     {
-        return CommandRepeatability::Idempotent;
+        return CommandRepeatability::Repeatable;
     }
 
     /**

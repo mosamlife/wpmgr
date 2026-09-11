@@ -126,14 +126,17 @@ final class DbCleanCommand implements CommandInterface
     }
 
     /**
-     * Repeatability: a retry deletes whatever now matches the same task list and nothing the first run was
-     * not already asked to delete.
+     * Repeatability: job_id is documented as a single-use dedup key but nothing stores it: execute() checks
+     * only that it is non-empty and registers a shutdown worker unconditionally, so a redelivery runs a
+     * SECOND concurrent worker. DbCleanup::run() also selects rows at worker time, so the retry deletes
+     * revisions, spam and scheduler rows created after the first worker finished. Contrast backup, which
+     * claims its snapshot_id atomically and refuses with runner_in_flight.
      *
      * @return CommandRepeatability
      */
     public function repeatability(): CommandRepeatability
     {
-        return CommandRepeatability::Idempotent;
+        return CommandRepeatability::Unsafe;
     }
 
     /**

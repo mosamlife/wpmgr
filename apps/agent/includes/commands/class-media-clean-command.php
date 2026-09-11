@@ -223,14 +223,16 @@ final class MediaCleanCommand implements CommandInterface
     }
 
     /**
-     * Repeatability: delete acts on a fixed manifest of attachment ids, and WordPress does not reuse post
-     * ids, so a second pass finds nothing left to remove.
+     * Repeatability: worst case again. action=isolate calls beginManifest(), which mints a fresh random
+     * manifest id on every invocation, so a retry leaves a second durable quarantine artefact behind;
+     * action=delete then removes whatever now matches, which can include attachments added between the two
+     * runs.
      *
      * @return CommandRepeatability
      */
     public function repeatability(): CommandRepeatability
     {
-        return CommandRepeatability::Idempotent;
+        return CommandRepeatability::Unsafe;
     }
 
     /**

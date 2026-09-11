@@ -52,7 +52,8 @@ final class ObjectcacheEnableCommand implements CommandInterface
 	}
 
 	/**
-	 * Effect: installs the object-cache drop-in and purges transients. Both are derived state.
+	 * Effect: installs the object-cache drop-in and purges transients, and flushes through the same
+	 * shared-aware path as objectcache.flush. All of it is derived state.
 	 *
 	 * @return CommandEffect
 	 */

@@ -42,9 +42,9 @@ final class ObjectcacheDisableCommand implements CommandInterface
 	}
 
 	/**
-	 * Effect: removes the object-cache drop-in and, by default, flushes the Redis database first. A flush
-	 * empties keys in the configured Redis DB, which is derived cache state the site rebuilds -- see the
-	 * caveat on objectcache.flush.
+	 * Effect: removes the object-cache drop-in and, by default, flushes first. Both are derived state. The
+	 * flush takes the same guarded path as objectcache.flush: FLUSHDB only when the stored config declares the
+	 * database is not shared, prefix-scoped SCAN + UNLINK otherwise.
 	 *
 	 * @return CommandEffect
 	 */
