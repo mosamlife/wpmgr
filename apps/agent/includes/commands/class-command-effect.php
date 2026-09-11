@@ -31,14 +31,26 @@ namespace WPMgr\Agent\Commands;
  *
  *   1. Can a successful run leave this site missing or overwriting data that
  *      the command itself does not retain a copy of?   -> Destructive
- *   2. Does it change durable site state at all?        -> Write
- *   3. Otherwise                                        -> Read
+ *   2. Does the command EXIST IN ORDER TO change the site?  -> Write
+ *   3. Otherwise -- it exists in order to report            -> Read
  *
- * "Durable site state" means options, database rows, files on disk, installed
- * code, user accounts — anything an operator could be asked about. It does NOT
- * mean derived state the site rebuilds by itself: page caches, object caches,
- * update transients, a cron nudge, or a temp file the command removes before it
- * returns. A command that only touches derived state is still a Read.
+ * Rule 2 is a test of PURPOSE, not of whether the state involved is
+ * rebuildable. An earlier revision of this file drew the line at derived state
+ * instead, saying that caches and transients "do not count" -- and then
+ * labelled cache_purge, cache_preload and objectcache.flush as Writes, which
+ * that rule cannot produce. Both could not be right. Purpose is the one that
+ * predicts the labels actually on the commands, and the one a consumer can
+ * apply without reading an implementation:
+ *
+ *   cache_purge empties a cache the site rebuilds by itself, and is a Write --
+ *   changing what every visitor is served next is the whole reason it exists.
+ *
+ *   diagnostics memoizes a computed value in a transient and nudges WP-Cron,
+ *   and is a Read -- it exists to answer a question, and that bookkeeping is
+ *   done in order to answer it.
+ *
+ * So the question is never "did any byte change anywhere", which is almost
+ * always yes. It is "is changing the site what this command is for".
  *
  * Where a command's effect depends on its arguments — the action-dispatch
  * commands such as db_snapshot, db_table_action and media_clean — it declares
@@ -48,19 +60,25 @@ namespace WPMgr\Agent\Commands;
 enum CommandEffect: string
 {
     /**
-     * Observes and reports. Leaves no durable change to this site.
+     * Exists in order to report. Changing the site is not what it is for.
      *
-     * A Read may still: compute and cache a derived value, nudge WP-Cron, write
-     * and immediately remove a temp file, or send what it read to the control
-     * plane (file_download_prepare streams file content to CP-minted presigned
-     * URLs and is still a Read — the SITE is unchanged). Data leaving the site
-     * is a confidentiality question, which is a different axis from this one and
-     * is not what this enum records.
+     * A Read may still touch state in the course of answering: memoize a
+     * computed value in a transient, nudge WP-Cron, write and immediately
+     * remove a probe key or a temp file. That is bookkeeping performed in order
+     * to answer, not the point of the call.
+     *
+     * A Read may also send what it read to the control plane --
+     * file_download_prepare streams file bytes to CP-minted presigned URLs and
+     * is still a Read, because the SITE is unchanged. Data leaving the site is a
+     * confidentiality question on a different axis, which this enum deliberately
+     * does not record. If a read-only connection is also meant to mean "no
+     * exfiltration", that needs its own axis rather than a re-reading of this
+     * one.
      */
     case Read = 'read';
 
     /**
-     * Changes durable site state, and nothing is lost by it.
+     * Exists in order to change the site, and nothing is lost by it.
      *
      * Either the command only adds or sets something, or whatever it replaced is
      * retained by the command itself (file_write stages an encrypted copy of the
