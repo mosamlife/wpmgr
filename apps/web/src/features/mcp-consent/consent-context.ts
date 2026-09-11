@@ -97,6 +97,34 @@ export const consentWireSchema = z.object({
   // grant that expires the moment it is created, which the schema refuses
   // outright (mcp_grants_expires_at_after_created_check).
   grant_lifetime_days: z.number().int().positive(),
+
+  // AN OPAQUE SEALED TOKEN. READ IT, HOLD IT, SEND IT BACK. NOTHING ELSE.
+  //
+  // The consent flow round-trips through the browser, so every authorize-time
+  // fact used to come back as caller input on the approval POST and the server
+  // stored what the body said -- including the scope set the operator was
+  // actually shown. The ticket is the server sealing those facts at authorize
+  // time and signing them, so the approval is recorded against what was on the
+  // screen rather than against what the POST claims was on the screen.
+  //
+  // Typed as a bare string, deliberately, and never parsed. Only the server
+  // holds the key. Any structure this file imagined it could see would be
+  // structure it had decoded without verifying, which is the same mistake as
+  // trusting the body -- one indirection further along.
+  //
+  // OPTIONAL ON THE WAY IN, AND THAT IS A DEPLOY-ORDERING FACT, NOT A DEFAULT.
+  // Today's deployed API does not issue one; the API change that always issues
+  // it is still in flight. Required here would mean this dashboard refuses
+  // every consent screen the moment it ships and until the API catches up,
+  // which is the fail-closed direction pointed at our own users rather than at
+  // an attacker. Optional lets this land first, which is the only safe order:
+  // the reverse -- API first -- breaks the screen, because the server would
+  // demand a field the shipped dashboard cannot send.
+  //
+  // It is NOT optional in the sense the other optionals here are. There is no
+  // branch below that renders differently without it and no sentence on the
+  // screen that depends on it. It is cargo.
+  consent_ticket: z.string().optional(),
 });
 
 export type ConsentWire = z.infer<typeof consentWireSchema>;
@@ -179,6 +207,21 @@ export interface ConsentContext {
    * schema's note for why the dashboard is told this rather than computing it.
    */
   readonly grantLifetimeDays: number;
+
+  /**
+   * The server's sealed record of this authorization request, to be handed
+   * back on the approval POST unread and unaltered.
+   *
+   * OPAQUE. Do not parse it, validate it, truncate it for display, or put it
+   * anywhere a human will see it. It is signed, so one altered character is a
+   * failed signature check, and that failure surfaces as a generic OAuth
+   * rejection with nothing in it pointing back at whoever normalised the
+   * string. Read the wire schema's note before touching this.
+   *
+   * `null` means the server sent none, which today is every server. See the
+   * wire schema for why that case is tolerated rather than refused.
+   */
+  readonly consentTicket: string | null;
 }
 
 function orNull(raw: string | undefined): string | null {
@@ -207,6 +250,12 @@ export function parseConsentContext(raw: unknown): ConsentContext {
     codeChallenge: orNull(wire.code_challenge),
     codeChallengeMethod: orNull(wire.code_challenge_method),
     grantLifetimeDays: wire.grant_lifetime_days,
+    // orNull, not a trim and not a re-encode. It maps an absent key and Go's
+    // empty-string zero value onto the same `null` -- both are "the server sent
+    // no ticket" -- and returns every other value as the identical string
+    // reference it arrived as. A non-empty ticket is not touched here, which is
+    // the whole requirement.
+    consentTicket: orNull(wire.consent_ticket),
   };
 }
 
