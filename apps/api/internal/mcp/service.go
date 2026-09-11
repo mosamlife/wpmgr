@@ -892,6 +892,60 @@ func (s *Service) Approve(ctx context.Context, req ApprovalRequest) (Approval, e
 	// authorizedScopes, on both sets. Registry membership says a scope EXISTS;
 	// the ticket says THIS REQUEST ASKED FOR IT. The second question is the one
 	// the stored grant answers, and it is now asked.
+	//
+	// WHOEVER ADDS THE SECOND RECOGNISED SCOPE MUST STILL SETTLE SOMETHING
+	// FIRST, and this comment is again the only thing pointing at it. An
+	// earlier version of it said the binding described above was the
+	// prerequisite. The binding is built and it NARROWS the problem; it does
+	// not close it, so the prerequisite is now a decision rather than a diff.
+	//
+	// WHAT THE BINDING DOES BUY, exactly. An approval body can no longer
+	// fabricate a scope set out of nothing: every set that reaches
+	// mcp_grants.oauth_scopes is one this server sealed after validating an
+	// authorize call. And a cross-origin forged POST cannot obtain a ticket at
+	// all, because the attacker would have to read the /authorize response to
+	// copy it and same-origin policy does not let it. Both are strictly better
+	// than the registry-membership check that stood here alone.
+	//
+	// WHAT IT DOES NOT BUY. The ticket attests that a (client_id, scope set)
+	// pair was VALIDATED, not that a human was shown it or chose it -- see the
+	// header of consent_ticket.go. handler.go mounts GET /authorize and POST
+	// /consent behind the same requireOrgScope() + requireGrantPermission()
+	// pair, and Authorize measures the requested scope against the global
+	// recognisedScopes registry rather than against the client's own
+	// registration. So any principal that can submit an approval can also
+	// obtain a ticket for any recognised scope, by making the authorize call
+	// itself. Against an operator that is what consent means; against a
+	// BROWSER-SIDE ATTACKER holding that principal's session -- XSS, a
+	// malicious extension, a compromised dashboard bundle -- it costs nothing,
+	// and the escalation is narrowed rather than closed.
+	//
+	// THERE IS NO CHEAP STATELESS FIX. This was looked for. Sealing the
+	// operator, the org, the redirect_uri, the state or the code_challenge into
+	// the MAC buys nothing, because the second authorize call is made by the
+	// same principal in the same browser and reuses every one of them. Recorded
+	// here so the next author does not spend the afternoon re-deriving it.
+	//
+	// THE THREE CANDIDATES THAT DO WORK, one of which has to be chosen before a
+	// second scope is recognised, not in the diff after it:
+	//
+	//  1. A single-use nonce minted per consent SCREEN and required by the
+	//     approval, which turns "this pair was validated" into "this screen was
+	//     answered once". It costs the server-side state this design was
+	//     deliberately built without; consent_ticket.go says why.
+	//  2. Constrain /authorize to the scopes on the client's own registration,
+	//     so a ticket for a scope that client never registered cannot be minted
+	//     in the first place. This is the narrowest of the three and does not
+	//     add state.
+	//  3. An explicit owner ruling that a browser-side attacker already holding
+	//     PermAPIKeyManage is outside the threat model -- written down, not
+	//     assumed, because everything above then becomes a documented
+	//     acceptance rather than an oversight.
+	//
+	// NOTHING IS REACHABLE TODAY: one scope is recognised, so the only ticket
+	// this server will mint and the only set this line can store is {mcp:read},
+	// which is what the old hard-coded constant produced anyway. Recognising
+	// the second scope is what makes the difference observable.
 	grantedScopes, err := s.authorizedScopes(req.Consent)
 	if err != nil {
 		return Approval{}, err

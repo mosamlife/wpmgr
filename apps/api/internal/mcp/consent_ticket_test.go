@@ -363,7 +363,14 @@ func TestApprove_RefusesAnApprovalWithNoUsableConsentTicket(t *testing.T) {
 				time.Now().Add(time.Minute))
 			otherBody, _, _ := strings.Cut(other, ".")
 			if otherBody == body {
-				t.Skip("the two payloads collided; nothing to substitute")
+				// DELIBERATELY NOT A SKIP. This is a negative control, and a
+				// negative control that opts itself out is a guard that has
+				// silently stopped guarding -- green, and testing nothing. The
+				// two payloads differ by 60s of expiry, so a collision here
+				// means the ticket payload has lost a field or the clock has
+				// stopped; either is a finding.
+				t.Fatalf("the two ticket payloads are identical (%q), so the substitution "+
+					"this case exists to perform is no longer possible", body)
 			}
 			c.ConsentTicket = otherBody + "." + sig
 			return c

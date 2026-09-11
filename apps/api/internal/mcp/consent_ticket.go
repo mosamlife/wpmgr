@@ -4,9 +4,18 @@ package mcp
 // actually carried, so that the approval which follows it is measured against
 // that request rather than against its own body.
 //
-// THE PROPERTY THIS FILE EXISTS TO HOLD. A grant's stored scope set is the set
-// the authorize call requested and the consent screen displayed. Not a set the
-// approval POST names, and not "any set the registry happens to recognise".
+// THE PROPERTY THIS FILE EXISTS TO HOLD, STATED AS EXACTLY AS THE TICKET CAN
+// SUPPORT IT. A grant's stored scope set is one that some principal authorized
+// to create grants on this install validated, as a (client_id, scope set) pair,
+// within the last fifteen minutes. Not a set the approval POST names, and not
+// "any set the registry happens to recognise".
+//
+// IT IS NOT "THE SET THE CONSENT SCREEN DISPLAYED", and the gap is worth
+// spelling out because the stronger sentence is the one that wants writing. The
+// ticket is minted by Service.Authorize, which the same principal can call
+// again; what it records is that the pair passed validation, not that a screen
+// rendered it or that a human agreed to it. Service.Approve carries the note on
+// what that leaves open, and the three fixes that would close it.
 //
 // WHY A TICKET AND NOT A ROW. Service.Authorize mints nothing -- no grant, no
 // code, no row -- and that is deliberate: until a human approves, nothing
@@ -191,6 +200,21 @@ func (c *consentTicketCodec) issue(clientID string, scopes []Scope, now time.Tim
 // One boolean rather than an error, for the reason handshakeCodec.open gives:
 // every failure here has the same answer for the caller, and naming which check
 // failed invites a branch that treats "altered" as recoverable.
+//
+// THE TICKET STRING IS MALLEABLE; THE CLAIMS IT CARRIES ARE NOT. Both halves
+// are decoded with base64.RawURLEncoding, which -- unlike its .Strict() form --
+// accepts non-canonical trailing bits, so several DISTINCT strings decode to
+// the same signature and the same payload and every one of them opens here.
+// Nothing is weakened by that today for exactly one reason: NOTHING KEYS
+// ANYTHING ON THE STRING. The ticket is not single-use, there is no replay
+// cache, and the only value anything downstream reads is the verified claims
+// struct this returns.
+//
+// THAT IS A PRECONDITION, NOT A PROPERTY OF THE ENCODING. The moment anyone
+// adds state keyed on the raw ticket -- a seen-tickets set to make it
+// single-use, a dedupe key, a rate-limit bucket -- re-encoding the same payload
+// walks straight past it. Key such a thing on the verified claims, or switch
+// both decoders here to base64.RawURLEncoding.Strict() before adding it.
 func (c *consentTicketCodec) open(raw string, now time.Time) (consentTicketClaims, bool) {
 	if raw == "" || len(raw) > consentTicketMaxBytes {
 		return consentTicketClaims{}, false

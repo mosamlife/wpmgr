@@ -64,13 +64,21 @@ type consentResponseDTO struct {
 
 	// ConsentTicket is the server's sealed record of THIS authorize call: the
 	// client it was made for and the scope set it carried. The screen does not
-	// render it and cannot read it; it exists to be handed back verbatim on the
-	// approval POST, where it is what lets the server store the scope set this
-	// screen displayed rather than the one the POST body spells.
+	// render it; it exists to be handed back verbatim on the approval POST,
+	// where it is what lets the server store a scope set it sealed itself
+	// rather than the one the POST body spells.
+	//
+	// SEALED IS NOT SECRET. The payload is plain base64url JSON and anyone
+	// holding the ticket can read it in one line -- which costs nothing,
+	// because its contents are the client id and the scope set the same screen
+	// already displays. What the MAC buys is integrity and origin, never
+	// confidentiality (consent_ticket.go, "WHY A MAC AND NOT AN AEAD"), and no
+	// part of this design leans on the value being unreadable.
 	//
 	// REQUIRED ON THE APPROVAL. A consent submitted without it is refused
 	// (mcp_invalid_consent_ticket), so a client of this API echoes the field
-	// unchanged; it is opaque and nothing about it is worth parsing.
+	// unchanged rather than reconstructing it: a re-encoded or re-serialised
+	// ticket is a ticket this server did not issue.
 	ConsentTicket string `json:"consent_ticket"`
 
 	// GrantLifetimeDays is how long the grant this screen consents to will
