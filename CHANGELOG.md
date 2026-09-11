@@ -6,6 +6,16 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ## [Unreleased]
 
+### Added
+
+- Every agent command now declares two facts about itself: what a successful run does to the site (read, write or destructive) and whether running it again is safe (idempotent, repeatable or unsafe). Nothing in the agent reads these to allow or refuse a command; they exist so an approval screen, a read-only connection or an audit trail can be built on a declared fact rather than a guess made from a command name. A command that declares neither is refused at build time (#734). Agent 0.61.149.
+
+### Fixed
+
+- Restoring a file from the agent's media quarantine no longer overwrites a file that has since been recreated at the same path, and a file the restore declines to move is no longer removed from quarantine afterwards. Quarantine moves the original rather than copying it, so a file removed without being restored existed nowhere else. Restore now reports a per-file outcome with a reason instead of a bare count, and the quarantine folder is cleared only once every file it recorded is accounted for and a scan of the folder confirms nothing remains; anything the scan cannot positively classify counts as remaining (#737). **Requires updating the plugin to pick up the fix.**
+- The agent's page cache now keeps every path it builds inside the cache root (#719). **Requires updating the plugin to pick up the fix.**
+- The agent's pre-update snapshot now distinguishes a source directory that did not exist from a snapshot that could not be taken. Both previously produced the same empty result, and every rollback gate reads that result, so the two outcomes could not be told apart: a rollback could be skipped when one was available, or attempted when there was nothing to restore. An absent source is now a first-class before-state that a rollback undoes by removing whatever was created in its place, a capture failure is reported with a machine-readable code, and a partial snapshot left by a failed capture is deleted rather than left looking like a snapshot (#733). **Requires updating the plugin to pick up the fix.**
+
 ## [0.61.161] - 2026-09-10
 
 ### Security
