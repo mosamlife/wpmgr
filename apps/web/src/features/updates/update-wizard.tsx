@@ -249,6 +249,29 @@ function WizardForm({
     });
   }
 
+  // Keys for the active tab's available-update options, for the
+  // "Select all" / "Deselect all" toggle below.
+  const activeUpdatableKeys = useMemo(() => {
+    const list = activeTab === "plugins" ? pluginOptions : themeOptions;
+    return list.filter((o) => o.hasUpdate).map((o) => `${o.type}:${o.slug}`);
+  }, [activeTab, pluginOptions, themeOptions]);
+
+  const allActiveUpdatableSelected =
+    activeUpdatableKeys.length > 0 &&
+    activeUpdatableKeys.every((key) => selectedSlugs.has(key));
+
+  function toggleSelectAll() {
+    setSelectedSlugs((prev) => {
+      const next = new Set(prev);
+      if (allActiveUpdatableSelected) {
+        for (const key of activeUpdatableKeys) next.delete(key);
+      } else {
+        for (const key of activeUpdatableKeys) next.add(key);
+      }
+      return next;
+    });
+  }
+
   function buildItems(): UpdateItem[] {
     const items: UpdateItem[] = [];
     if (updateCore) items.push({ type: "core", version: "latest" });
@@ -406,13 +429,29 @@ function WizardForm({
                     ? `Showing ${totalWithUpdates} with available update${totalWithUpdates === 1 ? "" : "s"}`
                     : `Showing all ${(activeTab === "plugins" ? pluginOptions : themeOptions).length}`}
                 </p>
-                <button
-                  type="button"
-                  onClick={() => setFilterToUpdates((v) => !v)}
-                  className="text-xs text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                >
-                  {filterToUpdates ? "Show all" : "Show only with updates"}
-                </button>
+                <div className="flex items-center gap-3">
+                  {activeUpdatableKeys.length > 0 ? (
+                    <button
+                      type="button"
+                      onClick={toggleSelectAll}
+                      aria-label={
+                        allActiveUpdatableSelected
+                          ? "Deselect all available updates"
+                          : "Select all available updates"
+                      }
+                      className="text-xs text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      {allActiveUpdatableSelected ? "Deselect all" : "Select all"}
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => setFilterToUpdates((v) => !v)}
+                    className="text-xs text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    {filterToUpdates ? "Show all" : "Show only with updates"}
+                  </button>
+                </div>
               </div>
             ) : null}
 
