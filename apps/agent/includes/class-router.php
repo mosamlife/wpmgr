@@ -36,6 +36,12 @@ final class Router
      */
     private const MAX_REASON_CHARS = 200;
 
+    /**
+     * Minimum upper- and lower-case letters a run needs before redactReason()
+     * will treat it as encoded material rather than a path. See isEncodedRun().
+     */
+    private const MIN_MIXED_CASE = 6;
+
     private Connector $connector;
 
     /** @var array<string,CommandInterface> Map of command name => handler. */
@@ -335,8 +341,18 @@ final class Router
         // redaction below can no longer catch, because its leading "/" is gone.
         // Requiring the separator leaves such a path fully absolute, so it
         // reaches that redaction and is dropped whole.
+        // Both separators, because the needle has to match the message as PHP
+        // wrote it. On Windows a root arrives as "C:\wp\site" and the message
+        // carries backslashes, so a '/'-only needle never matches and the whole
+        // path falls through to the absolute-path rule below — correct, but it
+        // throws away the root-relative remainder that is the useful half. The
+        // message is NOT globally normalised to do this: rewriting every '\'
+        // would turn a namespaced class name into something the absolute-path
+        // rule then eats.
         foreach (self::knownRoots() as $root) {
-            $msg = str_replace($root . '/', '', $msg);
+            $unix = str_replace('\\', '/', $root);
+            $msg  = str_replace($unix . '/', '', $msg);
+            $msg  = str_replace(str_replace('/', '\\', $unix) . '\\', '', $msg);
         }
 
         // Anything STILL absolute is outside the WordPress tree: drop it whole.
@@ -348,20 +364,52 @@ final class Router
             $msg
         );
 
-        // Redact long opaque runs: the shape of a key, token, hash or
-        // ciphertext. Threshold-only, with no "looks random" refinement, and
-        // that asymmetry is deliberate — a false positive costs one long
-        // identifier that is still intact in the local debug log, a false
-        // negative puts key material in a dashboard.
+        // Pass 1 — STANDARD base64, whose alphabet includes '/'. The agent's
+        // own encrypted material is emitted in it (the keystore envelope, the
+        // DB-fallback master key, the age header), so a rule whose alphabet
+        // stops at '/' does not cover it: a run is cut at the separator rather
+        // than seen whole. This pass matches over an alphabet that DOES include
+        // '/' and then decides per run, so that a '/'-separated high-entropy
+        // run is judged as one token.
         //
-        // '/' is deliberately NOT in the class. It was, and it ate any relative
-        // path longer than the threshold ("wp-content/uploads/wpmgr/keystore"
-        // is 33 characters of that alphabet), destroying the very diagnostic
-        // this change exists to deliver. The alphabet covers the encodings the
-        // agent's own secrets actually use: base64url, hex and bech32.
+        // The decision is a shape test on the whole run: encoded material only
+        // when the run is substantially case-MIXED and carries a digit, over
+        // the same 32-character budget (slashes excluded from the count). That
+        // predicate is chosen for what it CANNOT match. Every path, table name,
+        // option key and command name this plugin emits is single-case, so none
+        // of them can satisfy it, and "wp-content/uploads/wpmgr/keystore"
+        // survives whole — which is the diagnostic this change exists to
+        // deliver, and which an earlier attempt destroyed by simply adding '/'
+        // to the alphabet below.
         //
-        // This is a backstop, not a boundary. The boundary is that a command
-        // must not put a secret in an exception message in the first place.
+        // Stated honestly in both directions: a run that is not case-mixed, or
+        // that carries no digit, is not caught here, and a case-mixed path is
+        // caught. The second is the cheaper error — a redacted identifier is
+        // still intact in the local debug log; key material in a dashboard is
+        // not recoverable from.
+        $msg = self::pregCallbackOrKeep(
+            '~[A-Za-z0-9+/=_\-]{32,}~',
+            static function (array $m): string {
+                return self::isEncodedRun($m[0]) ? '<redacted>' : $m[0];
+            },
+            $msg
+        );
+
+        // Pass 2 — long opaque runs over the slash-free alphabet: the shape of
+        // a key, token, hash or ciphertext. Threshold-only, with no "looks
+        // random" refinement, and that asymmetry is deliberate — a false
+        // positive costs one long identifier that is still intact in the local
+        // debug log, a false negative puts key material in a dashboard.
+        //
+        // '/' is deliberately NOT in this class. It was, and it ate any
+        // relative path longer than the threshold
+        // ("wp-content/uploads/wpmgr/keystore" is 33 characters of that
+        // alphabet). The alphabet here covers base64url, hex and bech32; it
+        // does NOT cover standard base64, which is pass 1's job.
+        //
+        // Both passes are a backstop, not a boundary. The boundary is that a
+        // command must not put a secret in an exception message in the first
+        // place.
         $msg = self::pregOrKeep('~[A-Za-z0-9+=_\-]{32,}~', '<redacted>', $msg);
 
         if ($msg === '') {
@@ -369,6 +417,62 @@ final class Router
         }
 
         return self::clamp($msg, self::MAX_REASON_CHARS);
+    }
+
+    /**
+     * Decide whether a run over the standard-base64 alphabet is encoded
+     * material rather than a path.
+     *
+     * Case-mixed AND carrying a digit, over a 32-character budget that ignores
+     * '/'. Single-case runs — which is every path, table name, option key and
+     * command name this plugin emits — can never qualify.
+     *
+     * Byte-oriented by design, like every pattern in redactReason(): a
+     * multibyte-aware test would have to trust the message to be valid UTF-8,
+     * and an exception message is not guaranteed to be.
+     *
+     * @param string $run Candidate run.
+     * @return bool True when the run should be redacted.
+     */
+    private static function isEncodedRun(string $run): bool
+    {
+        $len   = 0;
+        $upper = 0;
+        $lower = 0;
+        $digit = 0;
+
+        for ($i = 0, $n = strlen($run); $i < $n; $i++) {
+            $c = $run[$i];
+            if ($c === '/') {
+                continue;
+            }
+            $len++;
+            if ($c >= 'A' && $c <= 'Z') {
+                $upper++;
+            } elseif ($c >= 'a' && $c <= 'z') {
+                $lower++;
+            } elseif ($c >= '0' && $c <= '9') {
+                $digit++;
+            }
+        }
+
+        return $len >= 32 && $upper >= self::MIN_MIXED_CASE && $lower >= self::MIN_MIXED_CASE && $digit >= 1;
+    }
+
+    /**
+     * preg_replace_callback that keeps the subject when the engine bails, the
+     * same contract as pregOrKeep().
+     *
+     * @param string               $pattern  Pattern.
+     * @param callable(array<int,string>):string $callback Per-match decision.
+     * @param string               $subject  Subject.
+     * @return string
+     */
+    private static function pregCallbackOrKeep(string $pattern, callable $callback, string $subject): string
+    {
+        $out = preg_replace_callback($pattern, $callback, $subject);
+
+        return is_string($out) ? $out : $subject;
     }
 
     /**
