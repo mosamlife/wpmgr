@@ -242,6 +242,11 @@ func (f *fakeStore) RegisterClient(_ context.Context, arg sqlc.RegisterMCPOAuthC
 			RedirectUris:            arg.RedirectUris,
 			ClientName:              arg.ClientName,
 			ClientUri:               arg.ClientUri,
+			// Echoed from the params, not hard-coded: the read-back must show
+			// what Register actually wrote, so a Register that stopped naming
+			// registered_scopes produces a client registered for nothing here
+			// rather than a fixture that quietly supplies the right answer.
+			RegisteredScopes: arg.RegisteredScopes,
 		}
 		f.clientOK = true
 	}
@@ -665,6 +670,16 @@ func newAuthorizeRouter(t *testing.T, store Store) *gin.Engine {
 	return r
 }
 
+// liveClient is the ordinary healthy registration every OAuth test in this
+// package authorizes against.
+//
+// RegisteredScopes IS NOT DECORATION AND MUST NOT BE DROPPED (m137). Authorize
+// and Approve both refuse a scope set this array does not contain, so a fixture
+// that left it nil would model a client registered for NOTHING and every
+// authorize test in this file would fail with invalid_scope rather than
+// exercising what it is named for. It carries the honest value -- the same one
+// registeredScopesForOmittedRequest writes and the same one m137's backfill put
+// on every client that already existed.
 func liveClient(redirect string) sqlc.McpOauthClient {
 	name := "Claude Desktop"
 	return sqlc.McpOauthClient{
@@ -673,6 +688,7 @@ func liveClient(redirect string) sqlc.McpOauthClient {
 		TokenEndpointAuthMethod: "none",
 		RedirectUris:            []string{redirect},
 		ClientName:              &name,
+		RegisteredScopes:        registeredScopesForOmittedRequest(),
 	}
 }
 
