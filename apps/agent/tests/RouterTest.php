@@ -218,6 +218,139 @@ final class RouterTest extends TestCase
 	}
 
 	/**
+	 * #754: STANDARD base64 — the encoding the agent's own encrypted material
+	 * is actually emitted in — must not survive. Its alphabet contains '/', so
+	 * a rule whose alphabet stops at the separator sees two sub-threshold
+	 * pieces instead of one token.
+	 *
+	 * Driven over many random keys, not one sample, because whether a '/'
+	 * lands inside a given encoding is chance: a single fixed key can pass by
+	 * luck and prove nothing.
+	 *
+	 * @return void
+	 */
+	public function test_redaction_catches_standard_base64_key_material(): void
+	{
+		$shapes = array(
+			// The DB-fallback master key: base64_encode() of 32 raw bytes.
+			'master key'   => static function (): string {
+				return base64_encode( random_bytes( 32 ) );
+			},
+			// The age header: the same 32 bytes with padding stripped.
+			'age header'   => static function (): string {
+				return rtrim( base64_encode( random_bytes( 32 ) ), '=' );
+			},
+			// The at-rest envelope: iv . tag . ciphertext, ~92 raw bytes.
+			'envelope'     => static function (): string {
+				return base64_encode( random_bytes( 92 ) );
+			},
+		);
+
+		foreach ( $shapes as $label => $make ) {
+			for ( $i = 0; $i < 40; $i++ ) {
+				$secret = $make();
+				$wire   = $this->wireBlob(
+					$this->dispatchThrowing( new \RuntimeException( 'Keystore: cannot unwrap ' . $secret ) )
+				);
+
+				$this->assertStringNotContainsString(
+					$secret,
+					$wire,
+					sprintf( '%s survived redaction whole: %s', $label, $secret )
+				);
+				$this->assertStringContainsString( '<redacted>', $wire, $label . ' was not redacted' );
+			}
+		}
+	}
+
+	/**
+	 * #754: the same thing without relying on chance. Each case puts a '/' at
+	 * a position chosen to split a 44-character standard-base64 key into two
+	 * pieces that are each BELOW the 32-character threshold — the exact shape
+	 * that a slash-free alphabet cannot see.
+	 *
+	 * @return void
+	 */
+	public function test_redaction_catches_base64_with_a_slash_inside_the_window(): void
+	{
+		// A realistic 44-char padded standard-base64 body, case-mixed as random
+		// bytes are, with no '/' of its own so the split position is exact.
+		$body = 'aG7kQ2pXvR8nZtL4yB6cM1sEwD3fUhJ9KrTgNxVbPq0=';
+		$this->assertSame( 44, strlen( $body ), 'fixture must be a full 44-char base64 body' );
+
+		// A 44-char body split at offset N leaves pieces of N and 43-N. Both are
+		// below the 32-character run threshold exactly when 12 <= N <= 31, so
+		// every offset here is a case the slash-free rule provably cannot see.
+		foreach ( array( 12, 15, 20, 22, 25, 31 ) as $at ) {
+			$secret = substr( $body, 0, $at ) . '/' . substr( $body, $at + 1 );
+
+			$this->assertLessThan( 32, $at, 'left piece must be below the run threshold' );
+			$this->assertLessThan( 32, 43 - $at, 'right piece must be below the run threshold' );
+
+			$wire = $this->wireBlob(
+				$this->dispatchThrowing( new \RuntimeException( 'Keystore: cannot unwrap ' . $secret ) )
+			);
+
+			$this->assertStringNotContainsString(
+				$secret,
+				$wire,
+				sprintf( 'base64 with a separator at offset %d survived whole', $at )
+			);
+			// No fragment of the key body escapes either: assert on the longer
+			// of the two pieces, which is the one a threshold rule might keep.
+			$left  = substr( $secret, 0, $at );
+			$right = substr( $secret, $at + 1 );
+			$piece = strlen( $left ) >= strlen( $right ) ? $left : $right;
+			$this->assertStringNotContainsString(
+				$piece,
+				$wire,
+				sprintf( 'a %d-char fragment of the key survived at offset %d', strlen( $piece ), $at )
+			);
+			$this->assertStringContainsString( '<redacted>', $wire );
+		}
+	}
+
+	/**
+	 * #754 over-fire control, and the reason the standard-base64 rule is a
+	 * shape test rather than "add '/' to the alphabet": every path, table
+	 * name, option key and command name the agent emits is single-case, and
+	 * every one of them has to come through the redaction untouched.
+	 *
+	 * An earlier attempt that simply widened the alphabet turned the first of
+	 * these into "<redacted>" — destroying the diagnostic #754 exists to
+	 * deliver.
+	 *
+	 * @return void
+	 */
+	public function test_redaction_keeps_single_case_agent_identifiers(): void
+	{
+		$intact = array(
+			'wp-content/uploads/wpmgr/keystore',
+			'wp-content/uploads/wpmgr/keystore.json',
+			'wp-content/uploads/wpmgr/restore-staging/files',
+			'wp-content/plugins/wpmgr-agent/includes/class-router.php',
+			'wp-content/uploads/wpmgr/snapshots/2026-09-18-full',
+			'wp_wpmgr_command_log',
+			'objectcache.apply_config',
+		);
+
+		foreach ( $intact as $identifier ) {
+			$response = $this->dispatchThrowing(
+				new \RuntimeException( 'cannot read ' . $identifier )
+			);
+			$message = $response->get_error_message();
+
+			$this->assertStringContainsString(
+				$identifier,
+				$message,
+				$identifier . ' was eaten by the redaction'
+			);
+			$this->assertStringNotContainsString( '<redacted>', $message, $identifier . ' was redacted' );
+			$this->assertStringNotContainsString( '<path>', $message, $identifier . ' was treated as absolute' );
+		}
+	}
+
+	/**
 	 * #754: the redaction must not over-fire. A path already relative to the
 	 * WordPress root is the diagnostic payload — it says WHICH file failed —
 	 * and has to survive intact.
