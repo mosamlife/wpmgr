@@ -42,12 +42,14 @@
 // scope breaks EVERY dynamic client registration on the installation rather
 // than one request.
 //
-// THE EXTRACTION IS m131's AND m136's, VERBATIM AND NOT A REWRITE. The same
-// query against a different constraint name -- which is what m137 DECISION 2(c)
-// chose text[]-plus-CHECK to buy, one mechanism covering three constraints
-// rather than a second catalogue query for an enum. pg_get_constraintdef
-// renders the STORED expression tree, so this reads what the database enforces
-// and cannot be fooled by editing the migration file's text or its comments.
+// THE EXTRACTION IS m131's AND m136's MECHANISM, WITH THE REGCLASS CHANGED AND
+// NOTHING ELSE -- see m137ClientVocabularyExtraction, which says why it is a
+// separate constant rather than the shared one. That is still what m137
+// DECISION 2(c) chose text[]-plus-CHECK to buy: one mechanism covering three
+// constraints, rather than a second catalogue query for an enum.
+// pg_get_constraintdef renders the STORED expression tree, so this reads what
+// the database enforces and cannot be fooled by editing the migration file's
+// text or its comments.
 //
 // THE FAILURE MODE THAT LOOKS LIKE A PASS IS CHECKED FIRST. Rename or drop the
 // constraint and the extraction matches nothing: both difference arms come back
@@ -74,6 +76,29 @@ import (
 // constraint the query did not look for sends the reader to the wrong place,
 // and the whole point of the INDETERMINATE arm is that the reader believes it.
 const m137ClientScopeConstraint = "mcp_oauth_clients_registered_scopes_vocabulary_check"
+
+// m137ClientVocabularyExtraction is m131VocabularyExtraction with ONE token
+// changed: the regclass. It is not shared with the m131 and m136 tests because
+// that constant pins `c.conrelid = 'public.mcp_grants'::regclass` and
+// parameterises only the constraint NAME -- both of those constraints live on
+// mcp_grants, and this one does not.
+//
+// THAT DETAIL IS NOT PEDANTRY, IT IS THE BUG THIS FILE HIT ON ITS FIRST RUN.
+// Reusing the shared constant with only the conname changed looks right, runs
+// without error, and returns ZERO ROWS: the name exists, but not on mcp_grants.
+// The INDETERMINATE arm below is what turned that into a failure instead of a
+// green test that had compared nothing -- which is precisely the failure mode
+// it was written for, arriving before the constraint it guards ever drifted.
+// m137 DECISION 2(c) did say "the same extraction works verbatim with only the
+// regclass and conname changed"; the regclass is the half that is easy to miss,
+// because nothing about the query looks table-specific at the call site.
+const m137ClientVocabularyExtraction = `
+	SELECT m[1] AS scope
+	  FROM pg_constraint c
+	  CROSS JOIN LATERAL regexp_matches(
+	           pg_get_constraintdef(c.oid), '''([^'']*)''::text', 'g') AS m
+	 WHERE c.conrelid = 'public.mcp_oauth_clients'::regclass
+	   AND c.conname  = $1`
 
 // TestClientRegisteredScopeVocabularyMatchesTheDatabaseCheckAsAppRole is the
 // parity proof for m137's column.
@@ -104,7 +129,7 @@ func TestClientRegisteredScopeVocabularyMatchesTheDatabaseCheckAsAppRole(t *test
 	// read; the catalogue tables it queries are not tenant-scoped either.
 	if err := pool.InTenantTx(ctx, tenant, func(tx pgx.Tx) error {
 		mcpAssertAndReportRole(t, tx, "InTenantTx (client registered-scope vocabulary parity)")
-		rows, err := tx.Query(ctx, m131VocabularyExtraction, m137ClientScopeConstraint)
+		rows, err := tx.Query(ctx, m137ClientVocabularyExtraction, m137ClientScopeConstraint)
 		if err != nil {
 			return err
 		}
