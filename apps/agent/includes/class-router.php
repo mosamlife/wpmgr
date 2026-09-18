@@ -350,9 +350,11 @@ final class Router
         // '/' is deliberately NOT in the class. It was, and it ate any relative
         // path longer than the threshold ("wp-content/uploads/wpmgr/keystore"
         // is 33 characters of that alphabet), destroying the very diagnostic
-        // this change exists to deliver. The residual gap is a STANDARD-base64
-        // secret whose '/' characters break every 32-character window; the
-        // agent's own secrets are base64url, hex or bech32 and contain no '/'.
+        // this change exists to deliver. The alphabet covers the encodings the
+        // agent's own secrets actually use: base64url, hex and bech32.
+        //
+        // This is a backstop, not a boundary. The boundary is that a command
+        // must not put a secret in an exception message in the first place.
         $msg = self::pregOrKeep('~[A-Za-z0-9+=_\-]{32,}~', '<redacted>', $msg);
 
         if ($msg === '') {
