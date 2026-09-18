@@ -328,8 +328,15 @@ final class Router
         // Rewrite paths under a known root to a root-relative form, so
         // "wp-content/uploads/wpmgr/scratch" survives but the
         // "/home/customer123/public_html" that preceded it does not.
+        // The separator is part of the needle, deliberately. Stripping a bare
+        // root would be an UNANCHORED prefix match: with a root of
+        // "/var/www/site", the unrelated "/var/www/site2/secret" would come out
+        // as "2/secret" — a surviving path fragment that the absolute-path
+        // redaction below can no longer catch, because its leading "/" is gone.
+        // Requiring the separator leaves such a path fully absolute, so it
+        // reaches that redaction and is dropped whole.
         foreach (self::knownRoots() as $root) {
-            $msg = str_replace([$root . '/', $root], '', $msg);
+            $msg = str_replace($root . '/', '', $msg);
         }
 
         // Anything STILL absolute is outside the WordPress tree: drop it whole.

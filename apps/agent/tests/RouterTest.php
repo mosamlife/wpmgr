@@ -253,6 +253,27 @@ final class RouterTest extends TestCase
 	}
 
 	/**
+	 * #754: root stripping is ANCHORED on the separator. A sibling directory
+	 * whose name merely starts with a known root ("<ABSPATH>2/secret") must not
+	 * be half-stripped into a surviving fragment — an unanchored match would
+	 * leave "2/secret", which no longer looks absolute and so escapes the
+	 * absolute-path redaction entirely.
+	 */
+	public function test_root_stripping_is_anchored_on_the_separator(): void
+	{
+		$abspath  = rtrim( (string) constant( 'ABSPATH' ), '/\\' );
+		$response = $this->dispatchThrowing(
+			new \RuntimeException( 'cannot open ' . $abspath . '2/secret-sibling-dir/payload.txt' )
+		);
+
+		$wire = $this->wireBlob( $response );
+
+		$this->assertStringNotContainsString( 'secret-sibling-dir', $wire );
+		$this->assertStringNotContainsString( 'payload.txt', $wire );
+		$this->assertStringContainsString( '<path>', $wire );
+	}
+
+	/**
 	 * #754, the reporter's actual case: `RuntimeException: WPMgr Agent:
 	 * ciphertext authentication failed.` must arrive as something an operator
 	 * can act on, not as "Command execution failed."
