@@ -315,10 +315,13 @@ final class Router
     /**
      * Reduce an exception message to something safe to transmit.
      *
-     * Order matters: paths under a known root are rewritten to a useful
+     * Order matters throughout, and each step's comment says why it sits where
+     * it does. In outline: paths under a known root are rewritten to a useful
      * root-relative form FIRST, so that the catch-all absolute-path redaction
-     * that follows only fires on paths outside the WordPress tree — which are
-     * pure host-layout disclosure and carry no diagnostic value.
+     * only fires on paths outside the WordPress tree — which are pure
+     * host-layout disclosure and carry no diagnostic value. Encoded material is
+     * then decided BEFORE that path redaction, so a token that contains a
+     * separator is disposed of whole rather than partly rewritten.
      *
      * @param string $msg Raw exception message.
      * @return string Redacted, single-line, length-capped message.
@@ -355,15 +358,6 @@ final class Router
             $msg  = str_replace(str_replace('/', '\\', $unix) . '\\', '', $msg);
         }
 
-        // Anything STILL absolute is outside the WordPress tree: drop it whole.
-        // Covers POSIX (/a/b) and Windows (C:\a\b). The negative lookbehind
-        // keeps "and/or" and "HTTP 500" intact.
-        $msg = self::pregOrKeep(
-            '~(?<![A-Za-z0-9_.\-])(?:[A-Za-z]:[\\\\/]|/)[A-Za-z0-9_.\-]+[A-Za-z0-9_.\-/\\\\]*~',
-            '<path>',
-            $msg
-        );
-
         // Pass 1 — STANDARD base64, whose alphabet includes '/'. The agent's
         // own encrypted material is emitted in it (the keystore envelope, the
         // DB-fallback master key, the age header), so a rule whose alphabet
@@ -372,26 +366,45 @@ final class Router
         // '/' and then decides per run, so that a '/'-separated high-entropy
         // run is judged as one token.
         //
-        // The decision is a shape test on the whole run: encoded material only
-        // when the run is substantially case-MIXED and carries a digit, over
-        // the same 32-character budget (slashes excluded from the count). That
-        // predicate is chosen for what it CANNOT match. Every path, table name,
-        // option key and command name this plugin emits is single-case, so none
-        // of them can satisfy it, and "wp-content/uploads/wpmgr/keystore"
-        // survives whole — which is the diagnostic this change exists to
-        // deliver, and which an earlier attempt destroyed by simply adding '/'
-        // to the alphabet below.
+        // It runs BEFORE the absolute-path rule below, and that ordering is
+        // load-bearing rather than incidental. Both rules can match the same
+        // '/'-bearing run, and whichever fires first owns it. The path rule
+        // matches from a separator to the end of a path-ish run, which is a
+        // SUB-run of an encoded value, not the whole of it — so letting it go
+        // first replaces the middle of a token and leaves the rest standing.
+        // Deciding encoded material first means a token is disposed of whole,
+        // and the path rule only ever sees what is genuinely a path.
         //
-        // Stated honestly in both directions: a run that is not case-mixed, or
-        // that carries no digit, is not caught here, and a case-mixed path is
-        // caught. The second is the cheaper error — a redacted identifier is
-        // still intact in the local debug log; key material in a dashboard is
-        // not recoverable from.
+        // The decision is a shape test on the whole run: encoded material only
+        // when the run is substantially case-MIXED and carries a digit or one
+        // of base64's own symbols, over the same 32-character budget (slashes
+        // excluded from the count). That predicate is chosen for what it CANNOT
+        // match. Every path, table name, option key and command name this plugin
+        // emits is single-case, so none of them can satisfy it, and
+        // "wp-content/uploads/wpmgr/keystore" survives whole — which is the
+        // diagnostic this change exists to deliver, and which an earlier attempt
+        // destroyed by simply adding '/' to the alphabet below.
+        //
+        // Stated honestly in both directions: a run that is not case-mixed is
+        // not caught here, and a case-mixed path is caught. The second is the
+        // cheaper error — a redacted identifier is still intact in the local
+        // debug log; key material in a dashboard is not recoverable from. An
+        // absolute path that is case-mixed comes out as <redacted> rather than
+        // <path>; both disclose nothing, only the label differs.
         $msg = self::pregCallbackOrKeep(
             '~[A-Za-z0-9+/=_\-]{32,}~',
             static function (array $m): string {
                 return self::isEncodedRun($m[0]) ? '<redacted>' : $m[0];
             },
+            $msg
+        );
+
+        // Anything STILL absolute is outside the WordPress tree: drop it whole.
+        // Covers POSIX (/a/b) and Windows (C:\a\b). The negative lookbehind
+        // keeps "and/or" and "HTTP 500" intact.
+        $msg = self::pregOrKeep(
+            '~(?<![A-Za-z0-9_.\-])(?:[A-Za-z]:[\\\\/]|/)[A-Za-z0-9_.\-]+[A-Za-z0-9_.\-/\\\\]*~',
+            '<path>',
             $msg
         );
 
@@ -423,9 +436,9 @@ final class Router
      * Decide whether a run over the standard-base64 alphabet is encoded
      * material rather than a path.
      *
-     * Case-mixed AND carrying a digit, over a 32-character budget that ignores
-     * '/'. Single-case runs — which is every path, table name, option key and
-     * command name this plugin emits — can never qualify.
+     * Case-mixed AND carrying a digit or a base64 symbol, over a 32-character
+     * budget that ignores '/'. Single-case runs — which is every path, table
+     * name, option key and command name this plugin emits — never qualify.
      *
      * Byte-oriented by design, like every pattern in redactReason(): a
      * multibyte-aware test would have to trust the message to be valid UTF-8,
@@ -456,7 +469,14 @@ final class Router
             }
         }
 
-        return $len >= 32 && $upper >= self::MIN_MIXED_CASE && $lower >= self::MIN_MIXED_CASE && $digit >= 1;
+        if ($len < 32 || $upper < self::MIN_MIXED_CASE || $lower < self::MIN_MIXED_CASE) {
+            return false;
+        }
+
+        // A digit, or one of base64's two non-alphanumeric symbols. The second
+        // clause is what makes a padded 32-byte key deterministic rather than
+        // likely: base64 of 32 bytes is always 44 characters ending in '='.
+        return $digit >= 1 || strpbrk($run, '+=') !== false;
     }
 
     /**
