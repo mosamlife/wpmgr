@@ -346,7 +346,14 @@ final class Router
         // that asymmetry is deliberate — a false positive costs one long
         // identifier that is still intact in the local debug log, a false
         // negative puts key material in a dashboard.
-        $msg = self::pregOrKeep('~[A-Za-z0-9+/_\-]{32,}={0,2}~', '<redacted>', $msg);
+        //
+        // '/' is deliberately NOT in the class. It was, and it ate any relative
+        // path longer than the threshold ("wp-content/uploads/wpmgr/keystore"
+        // is 33 characters of that alphabet), destroying the very diagnostic
+        // this change exists to deliver. The residual gap is a STANDARD-base64
+        // secret whose '/' characters break every 32-character window; the
+        // agent's own secrets are base64url, hex or bech32 and contain no '/'.
+        $msg = self::pregOrKeep('~[A-Za-z0-9+=_\-]{32,}~', '<redacted>', $msg);
 
         if ($msg === '') {
             return '(no message)';
