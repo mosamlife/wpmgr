@@ -671,6 +671,73 @@ jobs:
       - name: "RLS cross-tenant guard (live, GH #470)"
         run: scripts/check-rls-cross-tenant.sh
 
+  # ---- schema.sql matches the migrations -----------------------------------
+  # apps/api/db/schema.sql is sqlc's input and the file people read; the
+  # migrations are what production runs. It fell 23 tables and 54 policies
+  # behind them, 13 of those RESTRICTIVE site_scope gates, and the gap was
+  # found by hand with grep counts. scripts/check-schema-drift.sh keeps it
+  # closed: ptah-compat replays every migration on this job's throwaway
+  # Postgres, compares the result with schema.sql, policies and function bodies
+  # included, and the job fails with the statements that differ. Full
+  # rationale is in the script's own header.
+  #
+  # The Postgres major is the one infra/docker-compose.yml and the integration
+  # tests use. PTAH_DEV_SERVER_DISPOSABLE=1 declares the service container the
+  # run's own, which the replay needs because the migrations create roles in DO
+  # blocks; the container is thrown away with the job.
+  #
+  # No path filter, for the reason given on the RLS cross-tenant job above.
+  schema-drift:
+    name: schema.sql matches the migrations
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: dev
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d dev"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # Stubbed, no toolchain or database needed, so a broken guard is caught
+      # before the install below rather than after it.
+      - name: Schema drift guard self-test
+        run: scripts/check-schema-drift_test.sh
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.6"
+          cache: false
+
+      # setup-go sets GOTOOLCHAIN=local. ptah-compat declares its own minimum
+      # Go version, which may be newer than the one pinned above, so this step
+      # lets the go command fetch that toolchain instead of refusing.
+      #
+      # v0.10.0 is the first release this check can use: v0.9.0 and earlier
+      # report a false difference on assistant_update_proposals
+      # (stokaro/ptah#3718).
+      - name: Install ptah-compat
+        env:
+          GOTOOLCHAIN: auto
+        run: go install ptah.run/cmd/ptah-compat@v0.10.0
+
+      - name: schema.sql matches the migrations
+        env:
+          ATLAS_DEV_URL: postgres://postgres:postgres@localhost:5432/dev?sslmode=disable
+          PTAH_DEV_SERVER_DISPOSABLE: "1"
+        run: scripts/check-schema-drift.sh
+
   # ---- nginx routing (infra/nginx/nginx.conf) ----
   # `nginx -t` only checks syntax; it does not catch a public Go route with no
   # matching nginx location (GH #175 — self-hosted RUM ingest 405'd on every

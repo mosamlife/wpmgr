@@ -24,9 +24,13 @@
 -- The check is the strong one: `ptah-compat migrate diff --env local` replays
 -- every migration and this file on a throwaway database and compares the two
 -- catalogs, policies and function bodies included. A migration file in its
--- output is a difference between them.
+-- output is a difference between them. CI runs it on every push and pull
+-- request (scripts/check-schema-drift.sh, the "schema.sql matches the
+-- migrations" job in ci.yml), so a migration this file does not mirror fails
+-- the build.
 --
--- SO: DO NOT USE THIS FILE TO ANSWER "is this table site-scoped".
+-- SO: UNLESS THAT JOB IS GREEN ON YOUR COMMIT, DO NOT USE THIS FILE TO ANSWER
+-- "is this table site-scoped".
 --
 -- And do not use apps/api/db/rls-cross-tenant-policies.txt or
 -- scripts/check-rls-cross-tenant.sh for it either. Both deliberately EXCLUDE
