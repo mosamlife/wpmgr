@@ -4,7 +4,8 @@
 -- (as this line did until GH #470) is what made the drift below dangerous.
 -- apps/api/migrations/*.sql is what actually runs, in lexical order, inside
 -- main() at boot. This file is consumed by sqlc for query codegen and by Atlas
--- for migration diffing, and it lags the migrations.
+-- for migration diffing, and it lagged the migrations until the
+-- reconciliation below.
 --
 -- The lag is not cosmetic when the missing statement is a POLICY. Grepping
 -- this file to decide whether a table is tenant- or site-scoped returns
@@ -14,25 +15,16 @@
 -- that had been live in every database since m19 and were absent from this
 -- file.
 --
--- THE RECONCILIATION IS NOT FINISHED, and here is exactly what is left, so
--- nobody has to rediscover it. 21 tables are absent from this file altogether,
--- and 54 live policies with them. THIRTEEN of those 54 are RESTRICTIVE
--- site_scope gates — the same kind just added, most of them from the same m19:
+-- THE RECONCILIATION IS DONE, up to m137. The 23 tables that were missing
+-- are declared here now, with their 54 live policies (13 of them RESTRICTIVE
+-- site_scope gates), and so are the columns, column comments and foreign-key
+-- names the migrations had and this file did not. Where this file declared
+-- something no migration ever created, the migrations won and it was removed.
 --
---   agent_activity_log      agent_diagnostics       agent_login_events
---   agent_php_errors        restore_runs            restore_run_events
---   scan_runs               scan_findings           scan_run_hashes
---   site_backup_settings    site_error_config       site_login_brand
---   site_security_config
---
--- restore_runs and restore_run_events are on the restore path. Every one of
--- these gates IS live in the database; the gap is in this file's description
--- of reality, not in the tenant boundary itself.
---
--- Closing it means transcribing 13 whole table definitions, not 13 policy
--- statements, which is a different and much larger job than #470 took on — and
--- one with no verification as strong as the shadow-install-and-compare used
--- for the 11 above. It is deliberately left, not overlooked.
+-- The check is the strong one: `ptah-compat migrate diff --env local` replays
+-- every migration and this file on a throwaway database and compares the two
+-- catalogs, policies and function bodies included. A migration file in its
+-- output is a difference between them.
 --
 -- SO: DO NOT USE THIS FILE TO ANSWER "is this table site-scoped".
 --
@@ -200,6 +192,7 @@ CREATE TABLE tenants (
     assistant_enabled_at     timestamptz,
     assistant_paused_at      timestamptz,
     assistant_paused_reason  text
+        CONSTRAINT tenants_assistant_paused_reason_check
         CHECK (assistant_paused_reason IS NULL
                OR (assistant_paused_at IS NOT NULL
                    AND length(btrim(assistant_paused_reason)) > 0
@@ -900,6 +893,11 @@ CREATE POLICY audit_log_agent ON audit_log
 -- to a single RETURN that restores it first. (m35 already ran in prod before
 -- this fix existed; the corrected body is re-issued via CREATE OR REPLACE in
 -- m91 so prod actually receives it on next boot — see m91's migration file.)
+--
+-- GH #408 (m116): the body also records a tenant_object_reclaim row, in the
+-- same transaction and only when the tenant row was really deleted, because
+-- the cascade destroys backup_chunks, the only inventory naming the tenant's
+-- stored chunks. The body below is m116's, verbatim.
 CREATE OR REPLACE FUNCTION admin_delete_empty_tenant(p_tenant_id uuid)
 RETURNS boolean
 LANGUAGE plpgsql
@@ -911,33 +909,37 @@ DECLARE
     v_result boolean := false;
     v_prev_agent text := current_setting('app.agent', true);
 BEGIN
-    -- app.agent='on' makes the emptiness checks see rows across tenants under
-    -- FORCE RLS. Set in-body (set_config needs no special privilege; InAgentTx
-    -- uses it too), NOT as a function SET clause — a SET clause on the custom
-    -- app.agent placeholder GUC requires superuser ownership / GRANT SET ON
-    -- PARAMETER, which the prod non-superuser owner lacks and which would abort
-    -- this CREATE FUNCTION and roll back the migration.
     PERFORM set_config('app.agent', 'on', true);
     IF NOT (
         EXISTS (SELECT 1 FROM memberships m WHERE m.tenant_id = p_tenant_id)
         OR EXISTS (SELECT 1 FROM sites s WHERE s.tenant_id = p_tenant_id)
     ) THEN
-        -- Explicitly remove the tenant's append-only audit rows as the function
-        -- owner (which keeps DELETE on audit_log). app.tenant_id is scoped to
-        -- this tenant so the FORCE-RLS USING clause matches; reset immediately
-        -- after. Doing this before the tenant delete keeps audit_log out of the
-        -- cascade entirely.
         PERFORM set_config('app.tenant_id', p_tenant_id::text, true);
         DELETE FROM audit_log WHERE tenant_id = p_tenant_id;
         PERFORM set_config('app.tenant_id', '', true);
-        -- Now delete the tenant; remaining cascades hit only tables the owner
-        -- may delete and no longer include any audit_log rows.
         DELETE FROM tenants t WHERE t.id = p_tenant_id;
         GET DIAGNOSTICS v_count = ROW_COUNT;
         v_result := v_count > 0;
+
+        -- GH #408. The cascade above has just destroyed backup_chunks for this
+        -- tenant, which was the only inventory naming chunks/<tenant_id>/, and
+        -- this statement frees no object storage whatsoever. This row is now the
+        -- only surviving name for that storage. It is written HERE, in the same
+        -- transaction and gated on the delete having actually happened, so it
+        -- exists if and only if the tenant row is really gone. A failure here
+        -- aborts the delete on purpose: a committed delete with no record is the
+        -- bug, and is unrecoverable; a failed request is not.
+        IF v_result THEN
+            INSERT INTO tenant_object_reclaim (tenant_id)
+            VALUES (p_tenant_id)
+            ON CONFLICT (tenant_id, kind) DO UPDATE
+            SET completed_at    = NULL,
+                attempts        = 0,
+                next_attempt_at = now() + interval '24 hours',
+                last_error      = NULL,
+                updated_at      = now();
+        END IF;
     END IF;
-    -- Single return path: always restore app.agent to whatever the caller's
-    -- transaction had before this call, whether the tenant was empty or not.
     PERFORM set_config('app.agent', coalesce(v_prev_agent, ''), true);
     RETURN v_result;
 END;
@@ -1034,10 +1036,22 @@ DECLARE
     v_count integer;
     v_prev_tenant text := current_setting('app.tenant_id', true);
 BEGIN
+    -- Set for the WHOLE function body (see the top-of-file rationale): every
+    -- tenant-scoped table's tenant_isolation policy must see p_tenant_id for
+    -- the cascade the final DELETE triggers.
     PERFORM set_config('app.tenant_id', p_tenant_id::text, true);
+
+    -- audit_log is insert-only for wpmgr_app (m1 revokes UPDATE/DELETE/
+    -- TRUNCATE), so it is cleared explicitly here, as the function OWNER
+    -- (which retains DELETE) — mirrors admin_delete_empty_tenant exactly.
     DELETE FROM audit_log WHERE tenant_id = p_tenant_id;
+
+    -- Every other row the tenant owns cascades from this single statement.
     DELETE FROM tenants t WHERE t.id = p_tenant_id;
     GET DIAGNOSTICS v_count = ROW_COUNT;
+
+    -- Single return path: restore the caller's prior app.tenant_id exactly
+    -- once (M91 Finding A GUC-leak lesson).
     PERFORM set_config('app.tenant_id', coalesce(v_prev_tenant, ''), true);
     RETURN v_count > 0;
 END;
@@ -1205,6 +1219,53 @@ CREATE INDEX update_runs_tenant_id_created_at_idx ON update_runs (tenant_id, cre
 -- clause repeated by the caller to keep the index usable.
 CREATE INDEX update_runs_due_idx ON update_runs (scheduled_at) WHERE status = 'scheduled';
 
+-- The live contract text, exactly as m119 installed it. Keep it byte for byte:
+-- the schema drift check compares it with the database.
+COMMENT ON COLUMN update_runs.status IS
+'Run lifecycle. No CHECK constraint exists; this comment is the contract.
+Reconciled against internal/update/model.go by m119 (#482).
+
+  pending      Created and its tasks enqueued for immediate execution. The m3
+               default, and still the only state an immediate run passes
+               through.
+  scheduled    (#463) Created with a future scheduled_at and NOT yet handed to
+               the worker. The dispatcher''s due-scan selects exactly these,
+               and update_runs_due_idx is partial on this value.
+  dispatching  (#463) Claimed by the dispatcher for this tick. The row has left
+               update_runs_due_idx, so a concurrent tick, a second replica or a
+               restart mid-dispatch cannot claim it again. Transient: the same
+               transaction that sets it enqueues the work.
+  running      At least one task is running.
+  completed    Every task reached a terminal state.
+  halted       (m119/#482 - written since the agent self-update wave machine
+               shipped, and declared by no migration until m119.) Terminal. The
+               run was STOPPED rather than finished, and is deliberately not
+               spelled ''completed'', which would erase that fact. Reached two
+               ways, by two subsystems:
+                 - a wave gate refused to advance an agent self-update rollout
+                   (update/agent_repo.go haltLocked). Tasks underneath are a
+                   MIXTURE of real outcomes: those already dispatched run to
+                   their own conclusion and are never overwritten, only the
+                   still-''pending'' ones become ''cancelled''.
+                 - an operator cancelled a scheduled run before it fired
+                   (update/cancel_repo.go CancelScheduledRun, #463). Tasks
+                   underneath are UNIFORMLY ''cancelled'' and nothing was ever
+                   sent to any site.
+               The run vocabulary has no separate ''cancelled'': cancel_repo.go
+               reuses this value on purpose rather than minting a status no
+               existing reader can render, and the task statuses underneath are
+               what distinguish the two cases.
+  expired      (#463) The run passed its dispatch window without being
+               dispatched - the control plane was down across scheduled_at, or
+               the run sat past the point where executing it is still what the
+               operator asked for. Terminal, and NEVER retried: a deferred bulk
+               update that fires days late is a surprise, not a service.
+               Distinct from ''completed'' with failures, which was attempted, and
+               from ''halted'', which was stopped by a gate or a human.
+
+Cross-tenant readers of this column run under InAgentTx and are admitted by
+update_runs_agent (m118), not by update_runs_tenant_isolation.';
+
 ALTER TABLE update_runs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE update_runs FORCE ROW LEVEL SECURITY;
 CREATE POLICY update_runs_tenant_isolation ON update_runs
@@ -1310,6 +1371,48 @@ CREATE UNIQUE INDEX update_tasks_inflight_target_idx ON update_tasks
     (tenant_id, site_id, target_type, target_slug)
     WHERE status IN ('pending', 'running');
 
+-- The live contract text, exactly as m119 installed it (see update_runs above).
+COMMENT ON COLUMN update_tasks.status IS
+'Per-task lifecycle. No CHECK constraint exists; this comment is the contract.
+Reconciled against internal/update/model.go by m119 (#482).
+
+  pending      Created, awaiting execution.
+  running      In flight on the agent.
+  succeeded    Applied.
+  failed       Attempted and failed.
+  rolled_back  Attempted, failed, and reverted from the snapshot.
+  skipped      Not attempted, by decision at plan time - the control plane
+               declined this particular target.
+  cancelled    (m119/#482 - written since the wave machine shipped, and declared
+               by no migration until m119.) Terminal. NOTHING WAS EVER SENT TO
+               THIS SITE, and a human or a gate decided that. Written by
+               update/agent_repo.go haltLocked (only over tasks still ''pending'';
+               a ''running'' task is left alone, because its command is already
+               delivered and marking it cancelled would both record a falsehood
+               and stop the confirm poll that is the control plane''s only way to
+               learn whether the site upgraded or bricked) and by
+               update/cancel_repo.go CancelScheduledRun (#463, over the
+               ''scheduled'' tasks of a run an operator cancelled).
+               Distinct from ''skipped'', where the control plane declined the
+               target rather than a human stopping the run; from ''failed'', where
+               the site WAS contacted; and from ''expired'', below.
+  scheduled    (#463) Belongs to a run that is ''scheduled'' and is not yet
+               eligible for execution. NOTE: ''scheduled'' is NOT one of the
+               statuses in update_tasks_inflight_target_idx, whose predicate is
+               status IN (''pending'',''running''). That index is the authoritative
+               cross-run dedup guard (m88), so a scheduled task does NOT reserve
+               its (tenant, site, target) pair against a concurrent immediate
+               run.
+  expired      (#463) The parent run expired without dispatching, so this task
+               was never attempted. Terminal. NOT a spelling of ''cancelled'':
+               ''cancelled'' records a decision somebody made, ''expired'' records
+               that the window closed while the control plane was unavailable.
+
+The RESTRICTIVE update_tasks_site_scope policy (m19) and the cross-tenant
+update_tasks_agent policy (m89) both apply to this table; update_runs carries
+the agent policy from m118 but no site-scope policy, because it has no
+site_id.';
+
 ALTER TABLE update_tasks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE update_tasks FORCE ROW LEVEL SECURITY;
 CREATE POLICY update_tasks_tenant_isolation ON update_tasks
@@ -1405,7 +1508,12 @@ CREATE TABLE backup_chunks (
     size       bigint      NOT NULL DEFAULT 0,
     refcount   bigint      NOT NULL DEFAULT 0,
     created_at timestamptz NOT NULL DEFAULT now(),
-    updated_at timestamptz NOT NULL DEFAULT now()
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    -- m47 (ADR-050): stamped whenever the chunk is referenced again, at dedup
+    -- time and at completion. The sweep deletes a chunk only when
+    -- GREATEST(created_at, last_referenced_at) is older than the grace floor,
+    -- so a chunk an in-flight backup just re-referenced survives.
+    last_referenced_at timestamptz NOT NULL DEFAULT now()
 );
 
 -- A chunk is unique per (tenant, blake3): dedup is scoped to the tenant so no
@@ -1753,7 +1861,16 @@ CREATE TABLE backup_snapshots (
     cycle_files_deleted  bigint      NOT NULL DEFAULT 0,
     cycle_bytes_uploaded bigint      NOT NULL DEFAULT 0,
     created_at    timestamptz NOT NULL DEFAULT now(),
-    updated_at    timestamptz NOT NULL DEFAULT now()
+    updated_at    timestamptz NOT NULL DEFAULT now(),
+    -- m6: existence marker of the CP's legacy SQL-inspection cache object.
+    sql_inspection_cached_at timestamptz,
+    -- m7 URL rewriter: the source URLs recorded at backup time, so a restore
+    -- can rewrite them for another environment. NULL on pre-m7 snapshots; the
+    -- agent then reads them from the dump banner.
+    source_site_url    text,
+    source_home_url    text,
+    source_content_url text,
+    source_upload_url  text
 );
 
 CREATE INDEX backup_snapshots_tenant_site_idx ON backup_snapshots (tenant_id, site_id, created_at DESC);
@@ -1778,9 +1895,8 @@ CREATE INDEX backup_snapshots_locked_idx ON backup_snapshots (tenant_id, locked)
 -- completed/failed rows are unconstrained and retention GC is unaffected.
 CREATE UNIQUE INDEX backup_snapshots_one_inflight_per_site ON backup_snapshots (site_id)
     WHERE status IN ('pending', 'running');
--- M7 / ADR-036 P1: presign routing + destination-CRUD cascade lookups.
-CREATE INDEX backup_snapshots_destination_id_idx ON backup_snapshots (destination_id)
-    WHERE destination_id IS NOT NULL;
+-- There is no index on destination_id: no migration ever created one, so no
+-- database has it. Adding one takes a new migration, not an edit here.
 -- m96 (GH #168): at most one COMPLETED row per (chain_id, generation). A
 -- failed/pending/running retry that reused a generation is unconstrained —
 -- only two COMPLETED rows at the same slot are rejected. Closes the
@@ -1789,6 +1905,17 @@ CREATE INDEX backup_snapshots_destination_id_idx ON backup_snapshots (destinatio
 -- root-cause writeup).
 CREATE UNIQUE INDEX backup_snapshots_chain_gen_completed_uidx ON backup_snapshots (chain_id, generation)
     WHERE status = 'completed';
+
+COMMENT ON COLUMN backup_snapshots.sql_inspection_cached_at IS
+  'When the CP wrote a legacy inspection cache for this snapshot. NULL means no cache; manifest-based inspection has its own resolution path.';
+COMMENT ON COLUMN backup_snapshots.source_site_url IS
+    'siteurl recorded at backup time. Used by restore to compute URL rewrites when restoring to a different environment (dev->prod, staging->prod).';
+COMMENT ON COLUMN backup_snapshots.source_home_url IS
+    'home_url recorded at backup time. See source_site_url.';
+COMMENT ON COLUMN backup_snapshots.source_content_url IS
+    'WP_CONTENT_URL recorded at backup time. See source_site_url.';
+COMMENT ON COLUMN backup_snapshots.source_upload_url IS
+    'wp_upload_dir()[''baseurl''] recorded at backup time. See source_site_url.';
 
 ALTER TABLE backup_snapshots ENABLE ROW LEVEL SECURITY;
 ALTER TABLE backup_snapshots FORCE ROW LEVEL SECURITY;
@@ -1962,16 +2089,9 @@ CREATE TABLE backup_schedules (
     incremental_enabled boolean NOT NULL DEFAULT false,
     -- Optional override of BackupBaseWindowDays (7). NULL = use the constant.
     base_window_days    integer NULL CHECK (base_window_days IS NULL OR base_window_days BETWEEN 1 AND 365),
-    -- m49 — per-schedule notification settings (Track B).
-    notify_on_completion text    NOT NULL DEFAULT 'never'
-        CHECK (notify_on_completion IN ('always', 'on_failure', 'never')),
-    notify_recipients    jsonb   NOT NULL DEFAULT '[]'::jsonb,
-    -- m49 — backup composition / exclusions (Track A).
-    backup_components    jsonb   NULL,
-    exclude_paths        jsonb   NULL,
-    exclude_extensions   jsonb   NULL,
-    exclude_file_size_mb integer NULL CHECK (exclude_file_size_mb > 0),
-    include_core         boolean NOT NULL DEFAULT false,
+    -- The m49 notification (Track B) and composition (Track A) columns are not
+    -- here: m50 moved them to site_backup_settings and dropped them from this
+    -- table.
     next_run_at   timestamptz NOT NULL DEFAULT now(),
     last_run_at   timestamptz,
     created_at    timestamptz NOT NULL DEFAULT now(),
@@ -2097,6 +2217,183 @@ CREATE POLICY backup_schedule_runs_site_scope ON backup_schedule_runs
     );
 
 -- ---------------------------------------------------------------------------
+-- site_backup_settings  (m50 — backup composition + notification settings)
+-- ---------------------------------------------------------------------------
+-- One row per site (PK = site_id), split out of backup_schedules by m50: the
+-- m49 Track-A (composition / exclusions) and Track-B (completion email)
+-- columns moved here and were dropped from backup_schedules in the same
+-- migration. backup_schedules keeps only timing and retention.
+--   backup_components    — JSONB array of component names to include. NULL
+--                          means all components (a full backup).
+--   exclude_paths        — JSONB array of relative path segments the agent
+--                          FilesArchiver skips. NULL = none.
+--   exclude_extensions   — JSONB array of lowercase extensions without the
+--                          leading dot. NULL = none.
+--   exclude_file_size_mb — files strictly larger than this (MiB) are skipped.
+--                          NULL = no size filter.
+--   include_core         — archive the WordPress core root (ABSPATH) too.
+--                          Default false keeps the wp-content-only scope.
+--   notify_on_completion — 'always' | 'on_failure' | 'never'.
+--   notify_recipients    — JSONB array of email addresses.
+-- Tenant-scoped + RLS, mirroring backup_schedules, plus the RESTRICTIVE
+-- site-scope gate.
+CREATE TABLE site_backup_settings (
+    tenant_id            uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    site_id              uuid        PRIMARY KEY REFERENCES sites (id) ON DELETE CASCADE,
+    backup_components    jsonb       NULL,
+    include_core         boolean     NOT NULL DEFAULT false,
+    exclude_paths        jsonb       NULL,
+    exclude_extensions   jsonb       NULL,
+    exclude_file_size_mb integer     NULL CHECK (exclude_file_size_mb > 0),
+    notify_on_completion text        NOT NULL DEFAULT 'never'
+                         CHECK (notify_on_completion IN ('always', 'on_failure', 'never')),
+    notify_recipients    jsonb       NOT NULL DEFAULT '[]'::jsonb,
+    created_at           timestamptz NOT NULL DEFAULT now(),
+    updated_at           timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX backup_settings_tenant_id_idx ON site_backup_settings (tenant_id);
+
+ALTER TABLE site_backup_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE site_backup_settings FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY backup_settings_tenant_isolation ON site_backup_settings
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+CREATE POLICY backup_settings_site_scope ON site_backup_settings
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+-- ---------------------------------------------------------------------------
+-- restore_runs / restore_run_events  (m16 — restore runs and their phase log)
+-- ---------------------------------------------------------------------------
+-- restore_runs is the first-class per-site restore entity: status advances
+-- queued -> running -> completed | failed | rolled_back. restore_run_events is
+-- the durable, append-only phase log: one row per agent progress POST that is
+-- a restore phase, cascading from its run. Both tables: tenant isolation, the
+-- app.agent policy for the agent path, and the RESTRICTIVE site-scope gate
+-- (m19). restore_run_events has no site_id, so its gate resolves the site
+-- through the parent run.
+CREATE TABLE restore_runs (
+    id            uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id     uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    site_id       uuid        NOT NULL REFERENCES sites (id) ON DELETE CASCADE,
+    snapshot_id   uuid        NOT NULL,
+    mode          text        NOT NULL DEFAULT '',
+    components    text[]      NOT NULL DEFAULT '{}',
+    selection     jsonb       NOT NULL DEFAULT '{}',
+    status        text        NOT NULL DEFAULT 'queued',
+    current_phase text,
+    error         text,
+    triggered_by  text,
+    created_at    timestamptz NOT NULL DEFAULT now(),
+    started_at    timestamptz,
+    finished_at   timestamptz,
+    updated_at    timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX restore_runs_tenant_site_created_idx
+    ON restore_runs (tenant_id, site_id, created_at DESC);
+CREATE INDEX restore_runs_snapshot_status_idx
+    ON restore_runs (snapshot_id, status);
+
+ALTER TABLE restore_runs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE restore_runs FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY restore_runs_tenant_isolation ON restore_runs
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+CREATE POLICY restore_runs_agent ON restore_runs
+    USING (current_setting('app.agent', true) = 'on')
+    WITH CHECK (current_setting('app.agent', true) = 'on');
+
+CREATE POLICY restore_runs_site_scope ON restore_runs
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE TABLE restore_run_events (
+    id             bigserial   PRIMARY KEY,
+    tenant_id      uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    restore_run_id uuid        NOT NULL REFERENCES restore_runs (id) ON DELETE CASCADE,
+    phase          text        NOT NULL,
+    status         text        NOT NULL DEFAULT '',
+    message        text        NOT NULL DEFAULT '',
+    detail         jsonb,
+    occurred_at    timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX restore_run_events_run_id_idx
+    ON restore_run_events (restore_run_id, id);
+
+ALTER TABLE restore_run_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE restore_run_events FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY restore_run_events_tenant_isolation ON restore_run_events
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+CREATE POLICY restore_run_events_agent ON restore_run_events
+    USING (current_setting('app.agent', true) = 'on')
+    WITH CHECK (current_setting('app.agent', true) = 'on');
+
+CREATE POLICY restore_run_events_site_scope ON restore_run_events
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR restore_run_id IN (
+            SELECT restore_runs.id FROM restore_runs
+            WHERE restore_runs.site_id = ANY (
+                string_to_array(
+                    nullif(current_setting('app.allowed_site_ids', true), ''), ','
+                )::uuid[]
+            )
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR restore_run_id IN (
+            SELECT restore_runs.id FROM restore_runs
+            WHERE restore_runs.site_id = ANY (
+                string_to_array(
+                    nullif(current_setting('app.allowed_site_ids', true), ''), ','
+                )::uuid[]
+            )
+        )
+    );
+
+-- ---------------------------------------------------------------------------
 -- app_alert_rollout  (m108 - GH #291 Phase 3: app-health alerting rollout)
 -- ---------------------------------------------------------------------------
 -- A single global row recording whether this deployment already had sites at
@@ -2105,12 +2402,11 @@ CREATE POLICY backup_schedule_runs_site_scope ON backup_schedule_runs
 -- and the design doc's "measure first, alert later" rollout section).
 -- Deliberately NOT RLS-scoped: it carries one global, non-tenant,
 -- non-sensitive fact, mirroring the `tenants` table's own no-RLS rationale.
--- A schema built from THIS file (rather than replayed from the migrations)
--- has no history to consult, so fresh_install defaults true here - exactly
--- what a from-scratch build represents.
+-- fresh_install has no default, as in m108: the migration computes it from
+-- whether any site existed when it ran and inserts the single row itself.
 CREATE TABLE app_alert_rollout (
     singleton     boolean     PRIMARY KEY DEFAULT true,
-    fresh_install boolean     NOT NULL DEFAULT true,
+    fresh_install boolean     NOT NULL,
     decided_at    timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT app_alert_rollout_singleton_chk CHECK (singleton)
 );
@@ -2320,8 +2616,8 @@ CREATE POLICY tenant_app_alert_breaker_agent ON tenant_app_alert_breaker
 -- issuer/subject/not_after from the latest probe row for the site.
 CREATE TABLE site_uptime_probes (
     id           uuid             NOT NULL DEFAULT gen_random_uuid(),
-    tenant_id    uuid             NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
-    site_id      uuid             NOT NULL REFERENCES sites   (id) ON DELETE CASCADE,
+    tenant_id    uuid             NOT NULL,
+    site_id      uuid             NOT NULL,
     probed_at    timestamptz      NOT NULL DEFAULT now(),
     up           boolean          NOT NULL,
     http_status  integer          NOT NULL DEFAULT 0,
@@ -2348,7 +2644,9 @@ CREATE TABLE site_uptime_probes (
     -- metrics.Check.AppProbeReason.
     app_up            boolean,
     app_probe_reason  text,
-    PRIMARY KEY (id)
+    PRIMARY KEY (id),
+    CONSTRAINT site_uptime_probes_tenant_fkey FOREIGN KEY (tenant_id) REFERENCES tenants (id) ON DELETE CASCADE,
+    CONSTRAINT site_uptime_probes_site_fkey   FOREIGN KEY (site_id)   REFERENCES sites   (id) ON DELETE CASCADE
 );
 
 -- Covering index for QueryFleetUptime: both the lat LATERAL (LIMIT 1 latest
@@ -2771,6 +3069,314 @@ CREATE POLICY autologin_policies_site_scope ON autologin_policies
     );
 
 -- ---------------------------------------------------------------------------
+-- agent_diagnostics / agent_php_errors  (m8 — site Health tab + PHP errors)
+-- ---------------------------------------------------------------------------
+-- agent_diagnostics holds one row per (site, category): the LATEST collector
+-- blob the agent shipped. The ingest handler upserts on
+-- (tenant_id, site_id, category). payload may carry fields the agent marks
+-- SENSITIVE (admin_email, from_address, user emails); the agent redacts the
+-- wp_native category itself (m9).
+--
+-- agent_php_errors holds one row per (site, md5) for fingerprint-deduped PHP
+-- errors; the CP upserts by md5 and increments occurrence_count. backtrace
+-- (m11) is the 10-frame call stack the agent ships with every row.
+--
+-- Both: tenant isolation, the app.agent policy for the agent ingest path, and
+-- the RESTRICTIVE site-scope gate (m19).
+CREATE TABLE agent_diagnostics (
+    id           uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id    uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    site_id      uuid        NOT NULL REFERENCES sites (id) ON DELETE CASCADE,
+    -- One of the 14 legacy collector categories or wp_native (m9); the
+    -- COMMENT ON COLUMN below is the full list.
+    category     text        NOT NULL,
+    payload      jsonb       NOT NULL DEFAULT '{}'::jsonb,
+    collected_at timestamptz NOT NULL DEFAULT now(),
+    received_at  timestamptz NOT NULL DEFAULT now()
+);
+
+-- One row per (site, category) — the latest payload wins.
+CREATE UNIQUE INDEX agent_diagnostics_site_category_idx
+    ON agent_diagnostics (tenant_id, site_id, category);
+CREATE INDEX agent_diagnostics_received_idx
+    ON agent_diagnostics (tenant_id, received_at DESC);
+
+COMMENT ON COLUMN agent_diagnostics.category IS
+    'One of: identity / php / mysql / filesystem / http / cron / themes / plugins / users / security / https / mail / performance / hosting / wp_native. The 14 legacy categories are the WPMgr-extra leapfrog collector; wp_native is the verbatim WP_Debug_Data::debug_data() dump introduced in agent v0.9.14 (Site-Health-Full).';
+
+ALTER TABLE agent_diagnostics ENABLE ROW LEVEL SECURITY;
+ALTER TABLE agent_diagnostics FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY agent_diagnostics_tenant_isolation ON agent_diagnostics
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+CREATE POLICY agent_diagnostics_agent ON agent_diagnostics
+    USING (current_setting('app.agent', true) = 'on')
+    WITH CHECK (current_setting('app.agent', true) = 'on');
+
+CREATE POLICY agent_diagnostics_site_scope ON agent_diagnostics
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE TABLE agent_php_errors (
+    id               uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id        uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    site_id          uuid        NOT NULL REFERENCES sites (id) ON DELETE CASCADE,
+    -- md5(code:file:line:message) — the agent-side dedup fingerprint.
+    md5              text        NOT NULL,
+    code             integer     NOT NULL,
+    severity         text        NOT NULL DEFAULT 'warning',
+    message          text        NOT NULL,
+    file             text        NOT NULL DEFAULT '',
+    line             integer     NOT NULL DEFAULT 0,
+    request_path     text        NOT NULL DEFAULT '',
+    -- Agent-supplied first/last seen timestamps (Unix seconds -> timestamptz).
+    first_seen_at    timestamptz NOT NULL DEFAULT now(),
+    last_seen_at     timestamptz NOT NULL DEFAULT now(),
+    occurrence_count bigint      NOT NULL DEFAULT 1,
+    silenced         boolean     NOT NULL DEFAULT false,
+    created_at       timestamptz NOT NULL DEFAULT now(),
+    updated_at       timestamptz NOT NULL DEFAULT now(),
+    -- m11: the call stack the agent ships with each row.
+    backtrace        jsonb       NOT NULL DEFAULT '[]'::jsonb
+);
+
+-- One row per (site, md5) — agent-side dedup carries through to the CP.
+CREATE UNIQUE INDEX agent_php_errors_site_md5_idx
+    ON agent_php_errors (tenant_id, site_id, md5);
+CREATE INDEX agent_php_errors_site_lastseen_idx
+    ON agent_php_errors (tenant_id, site_id, last_seen_at DESC);
+CREATE INDEX agent_php_errors_silenced_idx
+    ON agent_php_errors (tenant_id, site_id)
+    WHERE silenced = false;
+
+ALTER TABLE agent_php_errors ENABLE ROW LEVEL SECURITY;
+ALTER TABLE agent_php_errors FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY agent_php_errors_tenant_isolation ON agent_php_errors
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+CREATE POLICY agent_php_errors_agent ON agent_php_errors
+    USING (current_setting('app.agent', true) = 'on')
+    WITH CHECK (current_setting('app.agent', true) = 'on');
+
+CREATE POLICY agent_php_errors_site_scope ON agent_php_errors
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+-- ---------------------------------------------------------------------------
+-- agent_activity_log  (m10 — WordPress activity log, hash-chained)
+-- ---------------------------------------------------------------------------
+-- The agent ships a hash-chained event stream to POST /agent/v1/activity. The
+-- CP re-verifies the chain at ingest and flags a tampered row with
+-- chain_valid=false. High-severity events route into the uptime alert
+-- dispatcher when alert_configs.notify_security is on. Tenant isolation, the
+-- app.agent policy, and the RESTRICTIVE site-scope gate (m19).
+CREATE TABLE agent_activity_log (
+    id            bigserial   NOT NULL,
+    tenant_id     uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    site_id       uuid        NOT NULL REFERENCES sites (id) ON DELETE CASCADE,
+    -- Agent-assigned monotonic sequence within the (tenant, site) chain.
+    seq           bigint      NOT NULL,
+    event_type    text        NOT NULL,
+    object_type   text        NOT NULL,
+    object_id     text        NOT NULL DEFAULT '',
+    object_label  text        NOT NULL DEFAULT '',
+    actor_user_id bigint      NOT NULL DEFAULT 0,
+    actor_login   text        NOT NULL DEFAULT '',
+    actor_ip      text        NOT NULL DEFAULT '',
+    summary       text        NOT NULL DEFAULT '',
+    meta          jsonb,
+    -- Verbatim agent-serialized meta bytes: the EXACT preimage the agent
+    -- hashed. Chain re-verification hashes THIS, not the jsonb meta column,
+    -- because jsonb and Go's json.Marshal both re-encode and would false-flag
+    -- every multi-key event as a break.
+    meta_raw      text        NOT NULL DEFAULT '{}',
+    -- Extracted from meta.severity (high|medium|low); drives the alert decision.
+    severity      text        NOT NULL DEFAULT 'low',
+    -- Hash chain. prev_hash of the first event is 64 zero chars; this_hash =
+    -- sha256(canonical preimage); chain_valid is set by the CP's re-verification.
+    prev_hash     text        NOT NULL,
+    this_hash     text        NOT NULL,
+    chain_valid   boolean     NOT NULL DEFAULT true,
+    occurred_at   timestamptz NOT NULL,
+    received_at   timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (id),
+    -- Idempotent agent retry: one row per (tenant, site, seq).
+    CONSTRAINT agent_activity_log_tenant_site_seq_key UNIQUE (tenant_id, site_id, seq)
+);
+
+-- Newest-first listing per site (the operator's default view).
+CREATE INDEX activity_site_occurred_idx
+    ON agent_activity_log (site_id, occurred_at DESC);
+-- The high-severity security feed (the alert-worthy slice).
+CREATE INDEX activity_site_severity_idx
+    ON agent_activity_log (site_id, severity)
+    WHERE severity = 'high';
+
+ALTER TABLE agent_activity_log ENABLE ROW LEVEL SECURITY;
+ALTER TABLE agent_activity_log FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY agent_activity_log_tenant_isolation ON agent_activity_log
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+CREATE POLICY agent_activity_log_agent ON agent_activity_log
+    USING (current_setting('app.agent', true) = 'on')
+    WITH CHECK (current_setting('app.agent', true) = 'on');
+
+CREATE POLICY agent_activity_log_site_scope ON agent_activity_log
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+-- ---------------------------------------------------------------------------
+-- site_error_config  (m12 — PHP error level + ignore list; m74 enabled flag)
+-- ---------------------------------------------------------------------------
+-- At most one row per site (PK = site_id). The CP pushes it to the agent with
+-- the signed sync_error_config command whenever it changes. enabled (m74)
+-- gates the agent's early-boot error-trap mu-plugin; it defaults true so
+-- existing configurations keep the trap. Tenant isolation, the app.agent
+-- policy, and the RESTRICTIVE site-scope gate (m19).
+CREATE TABLE site_error_config (
+    tenant_id   uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    site_id     uuid        PRIMARY KEY REFERENCES sites (id) ON DELETE CASCADE,
+    -- PHP E_* bitmask (6143 = E_ALL & ~E_STRICT, the WordPress default).
+    error_level integer     NOT NULL DEFAULT 6143,
+    -- md5 fingerprints the agent suppresses without counting.
+    ignore_md5s text[]      NOT NULL DEFAULT '{}',
+    updated_at  timestamptz NOT NULL DEFAULT now(),
+    enabled     boolean     NOT NULL DEFAULT true
+);
+
+CREATE INDEX site_error_config_tenant_idx ON site_error_config (tenant_id);
+
+ALTER TABLE site_error_config ENABLE ROW LEVEL SECURITY;
+ALTER TABLE site_error_config FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY site_error_config_tenant_isolation ON site_error_config
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+CREATE POLICY site_error_config_agent ON site_error_config
+    USING (current_setting('app.agent', true) = 'on')
+    WITH CHECK (current_setting('app.agent', true) = 'on');
+
+CREATE POLICY site_error_config_site_scope ON site_error_config
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+-- ---------------------------------------------------------------------------
+-- site_login_brand  (m14 — login page whitelabel)
+-- ---------------------------------------------------------------------------
+-- At most one row per site (PK = site_id): the logo, its link, and the message
+-- shown on the WordPress login page. An empty string means no override. The CP
+-- pushes it with the signed sync_login_brand command on every save. Tenant
+-- isolation, the app.agent policy, and the RESTRICTIVE site-scope gate (m19).
+CREATE TABLE site_login_brand (
+    tenant_id  uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    site_id    uuid        PRIMARY KEY REFERENCES sites (id) ON DELETE CASCADE,
+    logo_url   text        NOT NULL DEFAULT '',
+    logo_link  text        NOT NULL DEFAULT '',
+    -- Max 2000 characters, enforced at the CP layer.
+    message    text        NOT NULL DEFAULT '',
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX site_login_brand_tenant_idx ON site_login_brand (tenant_id);
+
+ALTER TABLE site_login_brand ENABLE ROW LEVEL SECURITY;
+ALTER TABLE site_login_brand FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY site_login_brand_tenant_isolation ON site_login_brand
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+CREATE POLICY site_login_brand_agent ON site_login_brand
+    USING (current_setting('app.agent', true) = 'on')
+    WITH CHECK (current_setting('app.agent', true) = 'on');
+
+CREATE POLICY site_login_brand_site_scope ON site_login_brand
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+-- ---------------------------------------------------------------------------
 -- site_shares  (M19 — per-site collaborator grants)
 -- ---------------------------------------------------------------------------
 -- One row per (site, user) grant. Allows an outside user (no memberships row)
@@ -2790,8 +3396,9 @@ CREATE TABLE site_shares (
     granted_by uuid        REFERENCES users (id) ON DELETE SET NULL,
     expires_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT now(),
-    UNIQUE (site_id, user_id),
-    FOREIGN KEY (site_id, tenant_id) REFERENCES sites (id, tenant_id) ON DELETE CASCADE
+    CONSTRAINT site_shares_site_user_key UNIQUE (site_id, user_id),
+    CONSTRAINT site_shares_site_tenant_fkey
+        FOREIGN KEY (site_id, tenant_id) REFERENCES sites (id, tenant_id) ON DELETE CASCADE
 );
 
 CREATE INDEX site_shares_user_id_idx ON site_shares (user_id);
@@ -2921,6 +3528,179 @@ CREATE POLICY site_events_tenant_isolation ON site_events
     WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
 -- M21 follow-up: the cross-tenant ring-buffer prune runs under app.agent='on'.
 CREATE POLICY site_events_agent ON site_events
+    USING (current_setting('app.agent', true) = 'on')
+    WITH CHECK (current_setting('app.agent', true) = 'on');
+
+-- ---------------------------------------------------------------------------
+-- Media optimizer  (m23 / ADR-043; m24 sync generations; m26 variant metrics;
+-- m51 River job id; m25 auto-optimize settings)
+-- ---------------------------------------------------------------------------
+-- No image bytes are stored here (ADR-043 §2): bytes move agent<->storage via
+-- presigned URLs. These tables hold metadata and status only. updated_at is set
+-- by repo code; there is no trigger. Every table: ENABLE + FORCE RLS with a
+-- tenant-isolation policy and an app.agent policy.
+--
+-- None of the four carries a site-scope policy. m132 DECISION 5 lists them
+-- among the site-keyed tables still owed one; media_variant_results needs the
+-- subquery form, since it is keyed by job_id.
+
+-- site_media_assets: one row per WordPress attachment synced from the site.
+-- generation is the per-asset optimization counter; sync_generation (m24) is
+-- the sync run that last saw the row, so the finalize sweep can delete rows
+-- for attachments that are gone. variant_count and saved_bytes (m26) are
+-- exact-set by the agent.
+CREATE TABLE site_media_assets (
+    id                  uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id           uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    site_id             uuid        NOT NULL REFERENCES sites (id) ON DELETE CASCADE,
+    wp_attachment_id    bigint      NOT NULL,
+    title               text        NOT NULL,
+    original_path       text        NOT NULL,
+    original_url        text        NOT NULL,
+    original_mime       text        NOT NULL,
+    original_width      integer,
+    original_height     integer,
+    original_size_bytes bigint      NOT NULL,
+    -- 'original' | 'webp' | 'avif': the format the optimized variants are in now.
+    current_format      text        NOT NULL DEFAULT 'original',
+    current_size_bytes  bigint      NOT NULL,
+    -- pending|optimizing|optimized|failed|restoring|restored|excluded|originals_deleted
+    status              text        NOT NULL DEFAULT 'pending',
+    generation          integer     NOT NULL DEFAULT 0,
+    compression_level   text,       -- 'lossy' | 'lossless' at last optimization
+    target_format       text,       -- requested format at last optimization
+    sizes_optimized     jsonb       NOT NULL DEFAULT '[]'::jsonb,
+    sizes_unoptimized   jsonb       NOT NULL DEFAULT '{}'::jsonb,  -- map<size_name, reason>
+    last_optimized_at   timestamptz,
+    last_synced_at      timestamptz NOT NULL DEFAULT now(),
+    created_at          timestamptz NOT NULL DEFAULT now(),
+    updated_at          timestamptz NOT NULL DEFAULT now(),
+    sync_generation     bigint      NOT NULL DEFAULT 0,
+    variant_count       integer     NOT NULL DEFAULT 0,
+    saved_bytes         bigint      NOT NULL DEFAULT 0,
+    CONSTRAINT site_media_assets_site_attachment_uniq UNIQUE (site_id, wp_attachment_id)
+);
+
+CREATE INDEX site_media_assets_site_status_idx ON site_media_assets (site_id, status);
+CREATE INDEX site_media_assets_tenant_idx ON site_media_assets (tenant_id);
+CREATE INDEX site_media_assets_site_syncgen_idx ON site_media_assets (site_id, sync_generation);
+
+ALTER TABLE site_media_assets ENABLE ROW LEVEL SECURITY;
+ALTER TABLE site_media_assets FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY site_media_assets_tenant_isolation ON site_media_assets
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+CREATE POLICY site_media_assets_agent ON site_media_assets
+    USING (current_setting('app.agent', true) = 'on')
+    WITH CHECK (current_setting('app.agent', true) = 'on');
+
+-- media_optimization_jobs: one job per attachment per action. id is a ULID
+-- (text), used as the agent's wpmgr_job_id. sync_generation (m24) carries the
+-- sync run's generation so finalize can read it back. encode_river_job_id
+-- (m51) lets the cancel path cancel the River media_encode job.
+CREATE TABLE media_optimization_jobs (
+    id                  text        PRIMARY KEY,
+    tenant_id           uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    site_id             uuid        NOT NULL REFERENCES sites (id) ON DELETE CASCADE,
+    asset_id            uuid        REFERENCES site_media_assets (id) ON DELETE SET NULL,
+    wp_attachment_id    bigint      NOT NULL,
+    kind                text        NOT NULL,  -- 'optimize'|'restore'|'delete_originals'|'sync'
+    target_format       text,                  -- 'avif'|'webp'|'original'
+    target_quality      text,                  -- 'lossy'|'lossless'
+    -- queued|in_progress|succeeded|partially_succeeded|failed|cancelled
+    state               text        NOT NULL DEFAULT 'queued',
+    bytes_before        bigint,
+    bytes_after         bigint,
+    variants_total      integer     NOT NULL DEFAULT 0,
+    variants_succeeded  integer     NOT NULL DEFAULT 0,
+    variants_failed     integer     NOT NULL DEFAULT 0,
+    error_reason        text,
+    initiator_user_id   uuid
+        CONSTRAINT media_optimization_jobs_initiator_fkey
+        REFERENCES users (id) ON DELETE SET NULL,
+    created_at          timestamptz NOT NULL DEFAULT now(),
+    started_at          timestamptz,
+    completed_at        timestamptz,
+    sync_generation     bigint,
+    encode_river_job_id bigint
+);
+
+CREATE INDEX media_optimization_jobs_site_state_idx
+    ON media_optimization_jobs (site_id, state);
+CREATE INDEX media_optimization_jobs_tenant_created_idx
+    ON media_optimization_jobs (tenant_id, created_at DESC);
+
+COMMENT ON COLUMN media_optimization_jobs.encode_river_job_id IS
+    'River river_jobs.id for the media_encode job enqueued at encode-ready time. NULL for non-optimize jobs and for rows created before m51. Used by the cancel path to cancel the River job proactively.';
+
+ALTER TABLE media_optimization_jobs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE media_optimization_jobs FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY media_optimization_jobs_tenant_isolation ON media_optimization_jobs
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+CREATE POLICY media_optimization_jobs_agent ON media_optimization_jobs
+    USING (current_setting('app.agent', true) = 'on')
+    WITH CHECK (current_setting('app.agent', true) = 'on');
+
+-- media_variant_results: the encode result of one variant (full, thumbnail,
+-- medium, ...) of a job; a failure carries a human-readable reason.
+CREATE TABLE media_variant_results (
+    id                   uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    job_id               text        NOT NULL REFERENCES media_optimization_jobs (id) ON DELETE CASCADE,
+    tenant_id            uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    variant_name         text        NOT NULL,  -- 'full'|'thumbnail'|'medium'|'large'|...
+    source_size_bytes    bigint      NOT NULL,
+    optimized_size_bytes bigint,
+    source_mime          text        NOT NULL,
+    optimized_mime       text,
+    encode_ms            integer,
+    state                text        NOT NULL,  -- 'succeeded'|'failed'|'skipped'
+    reason               text,
+    created_at           timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX media_variant_results_job_idx ON media_variant_results (job_id);
+
+ALTER TABLE media_variant_results ENABLE ROW LEVEL SECURITY;
+ALTER TABLE media_variant_results FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY media_variant_results_tenant_isolation ON media_variant_results
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+CREATE POLICY media_variant_results_agent ON media_variant_results
+    USING (current_setting('app.agent', true) = 'on')
+    WITH CHECK (current_setting('app.agent', true) = 'on');
+
+-- site_media_settings (m25 / ADR-044 Phase B): the per-site opt-in for
+-- auto-optimizing new uploads, and the format and quality to use. One row per
+-- site (PK = site_id). Read under both GUCs: the operator routes use the
+-- tenant GUC, and the agent auto-optimize callback re-checks under app.agent.
+CREATE TABLE site_media_settings (
+    tenant_id             uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    site_id               uuid        PRIMARY KEY REFERENCES sites (id) ON DELETE CASCADE,
+    -- Off by default: nothing changes until an operator opts in.
+    auto_optimize_enabled boolean     NOT NULL DEFAULT false,
+    auto_target_format    text        NOT NULL DEFAULT 'webp',   -- avif | webp | original
+    auto_target_quality   text        NOT NULL DEFAULT 'lossy',  -- lossy | lossless
+    created_at            timestamptz NOT NULL DEFAULT now(),
+    updated_at            timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX site_media_settings_tenant_idx ON site_media_settings (tenant_id);
+
+ALTER TABLE site_media_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE site_media_settings FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY site_media_settings_tenant_isolation ON site_media_settings
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+CREATE POLICY site_media_settings_agent ON site_media_settings
     USING (current_setting('app.agent', true) = 'on')
     WITH CHECK (current_setting('app.agent', true) = 'on');
 
@@ -3368,7 +4148,8 @@ CREATE TABLE cache_purge_audit (
     tenant_id         uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
     site_id           uuid        NOT NULL REFERENCES sites (id) ON DELETE CASCADE,
     kind              text        NOT NULL,
-    initiator_user_id uuid        REFERENCES users (id) ON DELETE SET NULL,
+    initiator_user_id uuid
+        CONSTRAINT cache_purge_audit_initiator_fkey REFERENCES users (id) ON DELETE SET NULL,
     target_urls       text[]      NOT NULL DEFAULT '{}',
     urls_count        integer     NOT NULL DEFAULT 0,
     created_at        timestamptz NOT NULL DEFAULT now()
@@ -3542,9 +4323,9 @@ CREATE TABLE IF NOT EXISTS font_transcode_results (
     error_detail   text,
     created_at     timestamptz NOT NULL DEFAULT now(),
     updated_at     timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (source_hash, tenant_id),
-    FOREIGN KEY (tenant_id) REFERENCES tenants (id) ON DELETE CASCADE,
-    FOREIGN KEY (site_id)   REFERENCES sites   (id) ON DELETE CASCADE
+    -- No foreign keys: m54 created none, so a row outlives its site and
+    -- tenant. Adding them takes a new migration, not an edit here.
+    PRIMARY KEY (source_hash, tenant_id)
 );
 
 CREATE INDEX IF NOT EXISTS font_transcode_results_site_id_idx
@@ -3588,8 +4369,8 @@ CREATE TABLE IF NOT EXISTS font_results (
     CONSTRAINT font_results_pkey        PRIMARY KEY (id),
     CONSTRAINT font_results_site_hash_uniq UNIQUE (site_id, source_hash),
     CONSTRAINT font_results_state_check CHECK (state IN ('pending','ready','subset','negative')),
-    FOREIGN KEY (tenant_id) REFERENCES tenants (id) ON DELETE CASCADE,
-    FOREIGN KEY (site_id)   REFERENCES sites   (id) ON DELETE CASCADE
+    CONSTRAINT font_results_tenant_fk FOREIGN KEY (tenant_id) REFERENCES tenants (id) ON DELETE CASCADE,
+    CONSTRAINT font_results_site_fk   FOREIGN KEY (site_id)   REFERENCES sites   (id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_font_results_site
@@ -3648,8 +4429,8 @@ CREATE TABLE IF NOT EXISTS rum_events_raw (
     conn         text        NOT NULL DEFAULT 'unknown',
     received_at  timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (id),
-    FOREIGN KEY (tenant_id) REFERENCES tenants (id) ON DELETE CASCADE,
-    FOREIGN KEY (site_id)   REFERENCES sites   (id) ON DELETE CASCADE
+    CONSTRAINT rum_events_raw_tenant_fk FOREIGN KEY (tenant_id) REFERENCES tenants (id) ON DELETE CASCADE,
+    CONSTRAINT rum_events_raw_site_fk   FOREIGN KEY (site_id)   REFERENCES sites   (id) ON DELETE CASCADE
 );
 
 -- BRIN for time-range scans on the rolling buffer (efficient when writes are
@@ -3700,8 +4481,8 @@ CREATE TABLE IF NOT EXISTS rum_rollup_hourly (
     min_value    integer     NOT NULL DEFAULT 0,
     max_value    integer     NOT NULL DEFAULT 0,
     PRIMARY KEY (site_id, url_pattern, metric, device, country, bucket_hour),
-    FOREIGN KEY (tenant_id) REFERENCES tenants (id) ON DELETE CASCADE,
-    FOREIGN KEY (site_id)   REFERENCES sites   (id) ON DELETE CASCADE
+    CONSTRAINT rum_rollup_hourly_tenant_fk FOREIGN KEY (tenant_id) REFERENCES tenants (id) ON DELETE CASCADE,
+    CONSTRAINT rum_rollup_hourly_site_fk   FOREIGN KEY (site_id)   REFERENCES sites   (id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS rum_rollup_hourly_tenant_idx
@@ -3738,8 +4519,8 @@ CREATE TABLE IF NOT EXISTS rum_rollup_daily (
     min_value    integer     NOT NULL DEFAULT 0,
     max_value    integer     NOT NULL DEFAULT 0,
     PRIMARY KEY (site_id, url_pattern, metric, device, country, bucket_day),
-    FOREIGN KEY (tenant_id) REFERENCES tenants (id) ON DELETE CASCADE,
-    FOREIGN KEY (site_id)   REFERENCES sites   (id) ON DELETE CASCADE
+    CONSTRAINT rum_rollup_daily_tenant_fk FOREIGN KEY (tenant_id) REFERENCES tenants (id) ON DELETE CASCADE,
+    CONSTRAINT rum_rollup_daily_site_fk   FOREIGN KEY (site_id)   REFERENCES sites   (id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS rum_rollup_daily_tenant_idx
@@ -4591,8 +5372,10 @@ CREATE POLICY site_object_cache_config_agent ON site_object_cache_config
 -- ---------------------------------------------------------------------------
 CREATE TABLE site_object_cache_stats_history (
     id                  uuid          PRIMARY KEY DEFAULT gen_random_uuid(),
-    site_id             uuid          NOT NULL REFERENCES sites   (id) ON DELETE CASCADE,
-    tenant_id           uuid          NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    site_id             uuid          NOT NULL
+        CONSTRAINT site_object_cache_stats_history_site_fkey REFERENCES sites (id) ON DELETE CASCADE,
+    tenant_id           uuid          NOT NULL
+        CONSTRAINT site_object_cache_stats_history_tenant_fkey REFERENCES tenants (id) ON DELETE CASCADE,
     hit_count           bigint        NOT NULL DEFAULT 0,
     miss_count          bigint        NOT NULL DEFAULT 0,
     ratio_pct           numeric(5,2),
@@ -4822,6 +5605,219 @@ CREATE POLICY trusted_devices_agent ON trusted_devices
     WITH CHECK (current_setting('app.agent', true) = 'on');
 
 -- ---------------------------------------------------------------------------
+-- site_security_config / agent_login_events  (m13 — login protection)
+-- ---------------------------------------------------------------------------
+-- site_security_config holds at most one row per site (PK = site_id): the
+-- login-protection mode, the thresholds, the header the agent reads the client
+-- IP from, and CIDR allow/deny lists. The CP pushes it with the signed
+-- sync_security_config command on every save.
+--
+-- agent_login_events is the time series of login attempts the agent ships,
+-- deduped by (tenant_id, site_id, agent_event_id).
+--
+-- Both: tenant isolation, the app.agent policy for the ingest path, and the
+-- RESTRICTIVE site-scope gate (m19).
+CREATE TABLE site_security_config (
+    tenant_id   uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    site_id     uuid        PRIMARY KEY REFERENCES sites (id) ON DELETE CASCADE,
+    -- disabled | audit (record, never block) | protect (record and block).
+    mode        text        NOT NULL DEFAULT 'protect',
+    -- When the agent challenges, temporarily blocks or blocks an IP. The
+    -- default matches the agent's built-in defaults.
+    thresholds  jsonb       NOT NULL DEFAULT '{"captcha_limit":3,"temp_block_limit":10,"block_all_limit":100,"failed_login_gap":1800,"success_login_gap":1800,"all_blocked_gap":1800}',
+    -- The HTTP header the agent reads the client IP from.
+    ip_header   text        NOT NULL DEFAULT 'REMOTE_ADDR',
+    -- CIDR strings the agent applies before threshold evaluation.
+    allow_cidrs text[]      NOT NULL DEFAULT '{}',
+    deny_cidrs  text[]      NOT NULL DEFAULT '{}',
+    updated_at  timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX site_security_config_tenant_idx ON site_security_config (tenant_id);
+
+ALTER TABLE site_security_config ENABLE ROW LEVEL SECURITY;
+ALTER TABLE site_security_config FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY site_security_config_tenant_isolation ON site_security_config
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+CREATE POLICY site_security_config_agent ON site_security_config
+    USING (current_setting('app.agent', true) = 'on')
+    WITH CHECK (current_setting('app.agent', true) = 'on');
+
+CREATE POLICY site_security_config_site_scope ON site_security_config
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE TABLE agent_login_events (
+    id             bigserial   PRIMARY KEY,
+    tenant_id      uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    site_id        uuid        NOT NULL REFERENCES sites (id) ON DELETE CASCADE,
+    -- The agent's local row id, for dedup cursor tracking.
+    agent_event_id bigint      NOT NULL,
+    ip             text,
+    -- 1 = failure, 2 = success, 3 = blocked.
+    status         smallint,
+    category       text,
+    username       text,
+    request_id     text,
+    occurred_at    timestamptz,
+    ingested_at    timestamptz NOT NULL DEFAULT now()
+);
+
+-- The operator login-events list, newest first.
+CREATE INDEX agent_login_events_tenant_site_time_idx
+    ON agent_login_events (tenant_id, site_id, occurred_at DESC);
+-- Dedup: one row per (tenant, site, agent_event_id).
+CREATE UNIQUE INDEX agent_login_events_dedup_idx
+    ON agent_login_events (tenant_id, site_id, agent_event_id);
+
+ALTER TABLE agent_login_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE agent_login_events FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY agent_login_events_tenant_isolation ON agent_login_events
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+CREATE POLICY agent_login_events_agent ON agent_login_events
+    USING (current_setting('app.agent', true) = 'on')
+    WITH CHECK (current_setting('app.agent', true) = 'on');
+
+CREATE POLICY agent_login_events_site_scope ON agent_login_events
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+-- ---------------------------------------------------------------------------
+-- m76 — Security Suite Phase 1: per-site hardening config + durable ban list
+-- ---------------------------------------------------------------------------
+-- site_security_hardening_config holds one row per site (PK = site_id) with a
+-- typed column per hardening toggle; every toggle defaults OFF. The CP is the
+-- source of truth and the agent mirrors it via the signed
+-- sync_security_hardening command on every save. site_security_bans holds the
+-- durable per-site ban entries (IP, CIDR, user agent), sent in the same push.
+--
+-- Both: tenant isolation and the app.agent policy. Neither carries a
+-- site-scope policy: m76 gated collaborators in-app (authz.RequireSiteAccess),
+-- and m132 DECISION 5 lists both among the site-keyed tables still owed one.
+CREATE TABLE site_security_hardening_config (
+    site_id                     uuid        PRIMARY KEY
+        CONSTRAINT site_security_hardening_config_site_fkey
+        REFERENCES sites (id) ON DELETE CASCADE,
+    tenant_id                   uuid        NOT NULL
+        CONSTRAINT site_security_hardening_config_tenant_fkey
+        REFERENCES tenants (id) ON DELETE CASCADE,
+    -- DISALLOW_FILE_EDIT in wp-config: no theme/plugin editor in wp-admin.
+    disable_file_editor         boolean     NOT NULL DEFAULT false,
+    -- 'on' (as WordPress ships it) | 'off' (reject all) | 'limited' (block
+    -- system.multicall only).
+    xmlrpc_mode                 text        NOT NULL DEFAULT 'on'
+        CONSTRAINT site_security_hardening_config_xmlrpc_mode_chk
+        CHECK (xmlrpc_mode IN ('on', 'off', 'limited')),
+    -- 'default' | 'restricted' (anonymous access to sensitive routes blocked).
+    restrict_rest_api           text        NOT NULL DEFAULT 'default'
+        CONSTRAINT site_security_hardening_config_restrict_rest_api_chk
+        CHECK (restrict_rest_api IN ('default', 'restricted')),
+    -- Which credential the login form accepts: username | email | both.
+    restrict_login_identifier   text        NOT NULL DEFAULT 'both'
+        CONSTRAINT site_security_hardening_config_login_id_chk
+        CHECK (restrict_login_identifier IN ('username', 'email', 'both')),
+    force_unique_nickname       boolean     NOT NULL DEFAULT false,
+    disable_author_archive_enum boolean     NOT NULL DEFAULT false,
+    force_ssl                   boolean     NOT NULL DEFAULT false,
+    disable_directory_browsing  boolean     NOT NULL DEFAULT false,
+    disable_php_in_uploads      boolean     NOT NULL DEFAULT false,
+    protect_system_files        boolean     NOT NULL DEFAULT false,
+    updated_at                  timestamptz NOT NULL DEFAULT now(),
+    actor_type                  text,
+    actor_id                    text
+);
+
+CREATE INDEX site_security_hardening_config_tenant_idx
+    ON site_security_hardening_config (tenant_id);
+
+ALTER TABLE site_security_hardening_config ENABLE ROW LEVEL SECURITY;
+ALTER TABLE site_security_hardening_config FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY site_security_hardening_config_tenant_isolation ON site_security_hardening_config
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+CREATE POLICY site_security_hardening_config_agent ON site_security_hardening_config
+    USING (current_setting('app.agent', true) = 'on')
+    WITH CHECK (current_setting('app.agent', true) = 'on');
+
+CREATE TABLE site_security_bans (
+    id         uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id  uuid        NOT NULL
+        CONSTRAINT site_security_bans_tenant_fkey
+        REFERENCES tenants (id) ON DELETE CASCADE,
+    site_id    uuid        NOT NULL
+        CONSTRAINT site_security_bans_site_fkey
+        REFERENCES sites (id) ON DELETE CASCADE,
+    -- 'ip' (exact address) | 'range' (CIDR) | 'user_agent' (exact string).
+    type       text        NOT NULL
+        CONSTRAINT site_security_bans_type_chk
+        CHECK (type IN ('ip', 'range', 'user_agent')),
+    -- Validated at write time in the service layer.
+    value      text        NOT NULL,
+    -- Optional operator note explaining the ban.
+    comment    text        NOT NULL DEFAULT '',
+    -- The operator or API key that created the ban.
+    actor_type text        NOT NULL DEFAULT '',
+    actor_id   text        NOT NULL DEFAULT '',
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- One entry per (site, type, value).
+CREATE UNIQUE INDEX site_security_bans_unique_entry_idx
+    ON site_security_bans (site_id, type, value);
+-- The ban list, newest first.
+CREATE INDEX site_security_bans_tenant_site_idx
+    ON site_security_bans (tenant_id, site_id, created_at DESC);
+
+ALTER TABLE site_security_bans ENABLE ROW LEVEL SECURITY;
+ALTER TABLE site_security_bans FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY site_security_bans_tenant_isolation ON site_security_bans
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+CREATE POLICY site_security_bans_agent ON site_security_bans
+    USING (current_setting('app.agent', true) = 'on')
+    WITH CHECK (current_setting('app.agent', true) = 'on');
+
+-- ---------------------------------------------------------------------------
 -- m78 — Security Suite Phase 3: per-site user 2FA + password policy
 -- ---------------------------------------------------------------------------
 
@@ -4928,6 +5924,274 @@ CREATE TABLE IF NOT EXISTS hibp_breach_cache (
 
 CREATE INDEX IF NOT EXISTS hibp_breach_cache_fetched_at_idx
     ON hibp_breach_cache (fetched_at);
+
+-- ---------------------------------------------------------------------------
+-- scan_runs / scan_run_hashes / scan_findings  (m15 — malware / file-integrity
+-- scan, hashes streamed to the CP)
+-- ---------------------------------------------------------------------------
+-- scan_runs is one per-site scan job: queued -> scanning -> diffing -> done |
+-- failed. scan_run_hashes stages the streamed file hashes and is purged on
+-- done/failed. scan_findings holds deduplicated findings: UNIQUE (tenant,
+-- site, dedup_key); a re-found row bumps last_seen_run and actual_md5 and
+-- keeps ignored. All three: tenant isolation, the app.agent policy, and the
+-- RESTRICTIVE site-scope gate (m19). scan_run_hashes has no site_id, so its
+-- gate resolves the site through the parent run.
+CREATE TABLE scan_runs (
+    id             uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id      uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    site_id        uuid        NOT NULL REFERENCES sites (id) ON DELETE CASCADE,
+    kind           text        NOT NULL DEFAULT 'core',    -- 'core'|'files'|'full'
+    status         text        NOT NULL DEFAULT 'queued',  -- 'queued'|'scanning'|'diffing'|'done'|'failed'
+    -- The resume_cursor JSON the agent returned in the last batch. NULL means
+    -- the first scan command has not been sent yet.
+    cursor         jsonb,
+    files_scanned  bigint      NOT NULL DEFAULT 0,
+    wp_version     text,
+    locale         text,
+    error          text,
+    -- {core_modified:N, core_missing:N, core_unknown_injected:N}
+    finding_counts jsonb,
+    created_at     timestamptz NOT NULL DEFAULT now(),
+    started_at     timestamptz,
+    finished_at    timestamptz
+);
+
+CREATE INDEX scan_runs_tenant_site_created_idx
+    ON scan_runs (tenant_id, site_id, created_at DESC);
+
+ALTER TABLE scan_runs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE scan_runs FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY scan_runs_tenant_isolation ON scan_runs
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+CREATE POLICY scan_runs_agent ON scan_runs
+    USING (current_setting('app.agent', true) = 'on')
+    WITH CHECK (current_setting('app.agent', true) = 'on');
+
+CREATE POLICY scan_runs_site_scope ON scan_runs
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE TABLE scan_run_hashes (
+    id        bigserial PRIMARY KEY,
+    tenant_id uuid      NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    run_id    uuid      NOT NULL REFERENCES scan_runs (id) ON DELETE CASCADE,
+    path      text      NOT NULL,
+    size      bigint,
+    md5       text,     -- 32 hex chars, or '' for an unreadable file
+    mtime     bigint,   -- Unix seconds from the agent
+    is_link   boolean   NOT NULL DEFAULT false,
+    UNIQUE (run_id, path)
+);
+
+CREATE INDEX scan_run_hashes_run_idx ON scan_run_hashes (run_id);
+
+ALTER TABLE scan_run_hashes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE scan_run_hashes FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY scan_run_hashes_tenant_isolation ON scan_run_hashes
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+CREATE POLICY scan_run_hashes_agent ON scan_run_hashes
+    USING (current_setting('app.agent', true) = 'on')
+    WITH CHECK (current_setting('app.agent', true) = 'on');
+
+CREATE POLICY scan_run_hashes_site_scope ON scan_run_hashes
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR run_id IN (
+            SELECT scan_runs.id FROM scan_runs
+            WHERE scan_runs.site_id = ANY (
+                string_to_array(
+                    nullif(current_setting('app.allowed_site_ids', true), ''), ','
+                )::uuid[]
+            )
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR run_id IN (
+            SELECT scan_runs.id FROM scan_runs
+            WHERE scan_runs.site_id = ANY (
+                string_to_array(
+                    nullif(current_setting('app.allowed_site_ids', true), ''), ','
+                )::uuid[]
+            )
+        )
+    );
+
+CREATE TABLE scan_findings (
+    id            uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id     uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    site_id       uuid        NOT NULL REFERENCES sites (id) ON DELETE CASCADE,
+    run_id        uuid        NOT NULL,
+    -- 'core_modified' | 'core_missing' | 'core_unknown_injected'
+    finding_type  text        NOT NULL,
+    path          text        NOT NULL,
+    severity      text        NOT NULL,  -- 'high' | 'medium'
+    expected_md5  text,
+    actual_md5    text,
+    -- md5(site_id || ':' || finding_type || ':' || path)
+    dedup_key     text        NOT NULL,
+    ignored       boolean     NOT NULL DEFAULT false,
+    ignored_by    text,
+    created_at    timestamptz NOT NULL DEFAULT now(),
+    last_seen_run uuid        NOT NULL,
+    UNIQUE (tenant_id, site_id, dedup_key)
+);
+
+CREATE INDEX scan_findings_tenant_site_idx
+    ON scan_findings (tenant_id, site_id, ignored, created_at DESC);
+
+ALTER TABLE scan_findings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE scan_findings FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY scan_findings_tenant_isolation ON scan_findings
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+CREATE POLICY scan_findings_agent ON scan_findings
+    USING (current_setting('app.agent', true) = 'on')
+    WITH CHECK (current_setting('app.agent', true) = 'on');
+
+CREATE POLICY scan_findings_site_scope ON scan_findings
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+-- ---------------------------------------------------------------------------
+-- wporg_core_checksums / wporg_core_checksums_meta  (m15)
+-- ---------------------------------------------------------------------------
+-- No RLS. Public reference data: the WordPress.org known-good core checksums,
+-- not tenant-scoped. The _meta row is the freshness / negative-cache sentinel
+-- per (version, locale); ok=false means the fetch failed (404 or empty).
+CREATE TABLE wporg_core_checksums (
+    version    text        NOT NULL,
+    locale     text        NOT NULL,
+    path       text        NOT NULL,
+    md5        text        NOT NULL,
+    fetched_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (version, locale, path)
+);
+
+CREATE TABLE wporg_core_checksums_meta (
+    version    text        NOT NULL,
+    locale     text        NOT NULL,
+    fetched_at timestamptz NOT NULL DEFAULT now(),
+    ok         boolean     NOT NULL DEFAULT true,
+    PRIMARY KEY (version, locale)
+);
+
+-- ---------------------------------------------------------------------------
+-- site_file_baseline / site_managed_files  (m77 — Security Suite Phase 2:
+-- file-integrity monitoring)
+-- ---------------------------------------------------------------------------
+-- site_file_baseline is the durable last-good hash snapshot per site, promoted
+-- from scan_run_hashes when a run completes; the next run diffs against it.
+-- site_managed_files registers the paths WPMgr itself writes (perf suite,
+-- config writers, hardening), so its own writes never produce an Added or
+-- Changed finding. md5 = '' there means "suppress every finding for this
+-- path"; a specific md5 means "expect exactly this hash".
+--
+-- Both: tenant isolation and the app.agent policy. Neither carries a
+-- site-scope policy: m77 followed m76's in-app gating, and m132 DECISION 5
+-- lists both among the site-keyed tables still owed one.
+CREATE TABLE site_file_baseline (
+    site_id     uuid        NOT NULL
+        CONSTRAINT site_file_baseline_site_fkey
+        REFERENCES sites (id) ON DELETE CASCADE,
+    tenant_id   uuid        NOT NULL
+        CONSTRAINT site_file_baseline_tenant_fkey
+        REFERENCES tenants (id) ON DELETE CASCADE,
+    path        text        NOT NULL,  -- site-relative, forward slashes
+    md5         text        NOT NULL,
+    size        bigint      NOT NULL DEFAULT 0,
+    mtime       bigint      NOT NULL DEFAULT 0,
+    is_link     boolean     NOT NULL DEFAULT false,
+    -- Which authority blessed this hash (informational; the diff ignores it).
+    source      text        NOT NULL DEFAULT 'baseline'
+        CONSTRAINT site_file_baseline_source_chk
+        CHECK (source IN ('baseline', 'wporg_core', 'wporg_plugin', 'managed')),
+    -- The scan run that last promoted or updated this row.
+    updated_run uuid        NOT NULL,
+    updated_at  timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT site_file_baseline_pkey PRIMARY KEY (site_id, path)
+);
+
+CREATE INDEX site_file_baseline_tenant_idx ON site_file_baseline (tenant_id, site_id);
+
+ALTER TABLE site_file_baseline ENABLE ROW LEVEL SECURITY;
+ALTER TABLE site_file_baseline FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY site_file_baseline_tenant_isolation ON site_file_baseline
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+CREATE POLICY site_file_baseline_agent ON site_file_baseline
+    USING (current_setting('app.agent', true) = 'on')
+    WITH CHECK (current_setting('app.agent', true) = 'on');
+
+CREATE TABLE site_managed_files (
+    site_id    uuid        NOT NULL
+        CONSTRAINT site_managed_files_site_fkey
+        REFERENCES sites (id) ON DELETE CASCADE,
+    tenant_id  uuid        NOT NULL
+        CONSTRAINT site_managed_files_tenant_fkey
+        REFERENCES tenants (id) ON DELETE CASCADE,
+    path       text        NOT NULL,
+    md5        text        NOT NULL DEFAULT '',  -- '' = suppress all findings
+    -- The subsystem that owns the path: perf_cache | object_cache |
+    -- config_writer | hardening | cp_command.
+    managed_by text        NOT NULL DEFAULT 'cp_command',
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT site_managed_files_pkey PRIMARY KEY (site_id, path)
+);
+
+CREATE INDEX site_managed_files_tenant_idx ON site_managed_files (tenant_id, site_id);
+
+ALTER TABLE site_managed_files ENABLE ROW LEVEL SECURITY;
+ALTER TABLE site_managed_files FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY site_managed_files_tenant_isolation ON site_managed_files
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+CREATE POLICY site_managed_files_agent ON site_managed_files
+    USING (current_setting('app.agent', true) = 'on')
+    WITH CHECK (current_setting('app.agent', true) = 'on');
 
 -- ---------------------------------------------------------------------------
 -- wporg_plugin_checksums / wporg_plugin_checksums_meta
@@ -5197,6 +6461,7 @@ CREATE TABLE IF NOT EXISTS file_transfers (
     id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id    uuid NOT NULL,
     site_id      uuid NOT NULL
+        CONSTRAINT file_transfers_site_fkey
         REFERENCES sites (id) ON UPDATE NO ACTION ON DELETE CASCADE,
     direction    text NOT NULL
         CONSTRAINT file_transfers_direction_chk
@@ -5948,6 +7213,9 @@ CREATE INDEX mcp_grants_live_idx ON mcp_grants (tenant_id) WHERE status = 'activ
 -- The partial index above does not serve the purge cascade, which must reach
 -- revoked rows too.
 CREATE INDEX mcp_grants_tenant_idx ON mcp_grants (tenant_id);
+
+COMMENT ON COLUMN mcp_grants.setup_client IS
+    'The AI client the operator chose at S29 step 2, as a client-table.ts slug. NULL means no operator choice was recorded -- NOT "generic", which is the distinct case of an operator actively choosing "Other MCP client". Distinct from client_name/client_version, which are self-reported by the client at initialize, and from client_id, which is an OAuth registration id. Never written by RecordConnect. See m128 DECISIONS 1, 2 and 4.';
 
 ALTER TABLE mcp_grants ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mcp_grants FORCE ROW LEVEL SECURITY;
