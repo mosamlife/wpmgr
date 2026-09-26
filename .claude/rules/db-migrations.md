@@ -53,36 +53,32 @@ m112 exists because four tables shipped without it, so the database refused only
 another tenant and not another site. Seven privilege-escalation doors were
 closed in handlers before anyone asked why they kept appearing.
 
-## `db/schema.sql` is not authoritative for RLS
+## `db/schema.sql` matches the migrations, and CI enforces it
 
-Its first line calls itself the single source of truth. It is sqlc's input, and
-it is well behind the migrations:
+It is sqlc's input, and it had fallen well behind the migrations: 23 tables and
+54 policies, 13 of them `site_scope` gates. It was brought up to date, and the
+"schema.sql matches the migrations" job in `ci.yml` now keeps it there. The job
+runs `scripts/check-schema-drift.sh`, which replays every migration with
+ptah-compat on a throwaway Postgres and compares the result with `schema.sql`,
+policies and function bodies included. A migration that `schema.sql` does not
+mirror fails the build, and the log shows the statements that differ.
+
+That retires the hand comparison of `site_scope` grep counts between the two.
+Run the guard instead:
 
 ```sh
-site_scope_count() {
-  n=$(grep -rhoE 'CREATE POLICY "?[a-z_0-9]+_site_scope[a-z_0-9]*"?' "$@" | sort -u | grep -c .)
-  [ "$n" -gt 0 ] || { echo "no site_scope policy matched across $# path(s); fix the pattern or the path before concluding anything" >&2; return 1; }
-  echo "$n"
-}
-
-site_scope_count apps/api/migrations/*.sql
-site_scope_count apps/api/db/schema.sql
+ATLAS_DEV_URL=postgres://USER:PASS@localhost:5432/dev?sslmode=disable \
+PTAH_DEV_SERVER_DISPOSABLE=1 scripts/check-schema-drift.sh
 ```
 
-Run both in the turn you need the figures. Expect the migrations to return the
-larger number by a wide margin, not by one or two; if the two ever agree, prove
-the drift actually closed rather than assuming it.
+Exit 0 means they agree. Exit 1 prints the difference. Exit 2 means the check
+did not run, and it is never a pass.
 
-The wrapper exists because the bare pipeline ends in `wc -l`, which prints `0`
-and exits `0` when the pattern matches nothing. On this page, `0` is not a
-number: it is the same answer a renamed policy convention, a moved path or a
-mangled paste produces, and it reads as "this table has no site-scope policy",
-which is the exact wrong conclusion the paragraph below warns about. An empty
-search here has to refuse rather than answer.
-
-Grepping `schema.sql` to decide whether a table is site-scoped concludes it is
-unprotected, which is the opposite of the truth. Grep both the quoted,
-schema-qualified form the migrations use and the bare form `schema.sql` uses.
+So a migration that adds or changes a table lands with the matching
+`schema.sql` change and a re-hashed `atlas.sum`
+(`ptah-compat migrate hash --dir file://migrations` in `apps/api`) in the same
+commit. Until that job is green on your commit, a grep of `schema.sql` can
+still call a protected table unprotected.
 
 ## Deletes take the lock; cascades destroy the record
 
