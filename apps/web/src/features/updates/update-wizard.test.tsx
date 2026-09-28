@@ -918,8 +918,8 @@ describe("UpdateWizard — PR #766 adversarial review of the #763 fix", () => {
     });
   });
 
-  // Pins `prevOptionsRef.current = options;` (update-wizard.tsx:248). Without
-  // it, every later comparison runs against the snapshot from when the
+  // Pins the `prevOptionsRef.current = options` assignment in update-wizard.tsx.
+  // Without it, every later comparison runs against the snapshot from when the
   // wizard first opened, never against the render just before it — so an
   // update that arrives only AFTER the wizard is open, gets ticked, and then
   // disappears again looks (against that stale mount-time snapshot, where
@@ -1011,7 +1011,8 @@ describe("UpdateWizard — PR #766 adversarial review of the #763 fix", () => {
     ]);
   });
 
-  // Pins the "no longer listed" branch (update-wizard.tsx:267-271). This is
+  // Pins the "no longer listed" branch (the `if (!nextOpt)` branch in
+  // update-wizard.tsx). This is
   // the only branch that can drop a key whose item vanished from `options`
   // entirely WHILE UP TO DATE (hasUpdate already false, not transitioning
   // true -> false) — the hasUpdate-comparison branch below it never fires for
