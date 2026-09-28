@@ -431,31 +431,26 @@ func enrollFakeSite(t *testing.T, pool *db.Pool, tenant uuid.UUID, url string) s
 	return s
 }
 
-// startUpdateRiver migrates River, grants the app role, builds the worker with
-// an SSRF client that may reach loopback (test-only), and starts River.
+// startUpdateRiver migrates River as the owner (mirrors main.migrateRiver),
+// builds the worker with an SSRF client that may reach loopback (test-only),
+// and starts River.
 func startUpdateRiver(t *testing.T, pool *db.Pool, worker *update.Worker) *river.Client[pgx.Tx] {
 	t.Helper()
 	ctx := context.Background()
-	admin := connectAdmin(t, pool)
-	defer admin.Close()
-	migrator, err := rivermigrate.New(riverpgxv5.New(admin.Pool), nil)
+	owner := connectOwner(t, pool)
+	defer owner.Close()
+	migrator, err := rivermigrate.New(riverpgxv5.New(owner.Pool), nil)
 	if err != nil {
 		t.Fatalf("river migrator: %v", err)
 	}
 	if _, err := migrator.Migrate(ctx, rivermigrate.DirectionUp, nil); err != nil {
 		t.Fatalf("river migrate: %v", err)
 	}
-	// River's tables (and their id sequences) are created by the container
-	// superuser here, not by wpmgr_owner (the role startPostgres's own schema
-	// migration ran as), so wpmgr_owner's m1 ALTER DEFAULT PRIVILEGES never
-	// covers them: grant the app role access explicitly, tables AND
-	// sequences, the same as TestRiverDualSchemaIsolation already does.
-	if _, err := admin.Exec(ctx, "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO wpmgr_app"); err != nil {
-		t.Fatalf("grant river tables: %v", err)
-	}
-	if _, err := admin.Exec(ctx, "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO wpmgr_app"); err != nil {
-		t.Fatalf("grant river sequences: %v", err)
-	}
+	// River's tables (and their id sequences) are created by wpmgr_owner here
+	// — the same role startPostgres's own schema migration ran as — so m1's
+	// ALTER DEFAULT PRIVILEGES already covers them: wpmgr_app gets
+	// SELECT/INSERT/UPDATE/DELETE on the tables and USAGE/SELECT on their
+	// sequences with no explicit grant needed.
 
 	workers := river.NewWorkers()
 	river.AddWorker(workers, worker)
