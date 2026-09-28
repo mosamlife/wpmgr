@@ -297,7 +297,15 @@ func sanitizeRedirectURL(u *url.URL) string {
 	if (scheme != "http" && scheme != "https") || u.Host == "" || u.Hostname() == "" {
 		return ""
 	}
-	host := strings.ToLower(u.Host)
+	// ASCII letters only: Unicode lowercasing can turn one domain's
+	// spelling into another's (a capital sharp s becomes a small one, which
+	// converts to a different name), and this value is compared and shown.
+	host := strings.Map(func(r rune) rune {
+		if r >= 'A' && r <= 'Z' {
+			return r + ('a' - 'A')
+		}
+		return r
+	}, u.Host)
 	for _, r := range host {
 		if !unicode.IsGraphic(r) || unicode.IsSpace(r) || unicode.Is(unicode.Cf, r) {
 			return ""

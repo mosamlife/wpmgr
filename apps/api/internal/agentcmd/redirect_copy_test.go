@@ -41,7 +41,7 @@ func TestRedirectExplanation_Cases(t *testing.T) {
 		wantSuggested    string
 	}{
 		{"A adopt: http apex to https www", "http://x.test", "https://www.x.test" + pingRoute, 301,
-			"http://x.test redirects to https://www.x.test, so no command was sent. If WordPress on the site reports https://www.x.test as its address, the saved address updates to https://www.x.test automatically at the site's next daily check-in.",
+			"http://x.test redirects to https://www.x.test, so no command was sent. If WordPress on the site reports https://www.x.test as its address, the saved address updates to https://www.x.test automatically at a later check-in from the site. That update does not happen while another site in this workspace uses https://www.x.test: if one does, remove or change the duplicate site.",
 			"https://www.x.test"},
 		{"D self: the route redirects to itself with a slash", "https://x.test", "https://x.test" + pingRoute + "/", 308,
 			"https://x.test redirects its command address back to itself (HTTP 308), so no command was sent." + exempt, ""},
@@ -63,17 +63,17 @@ func TestRedirectExplanation_Cases(t *testing.T) {
 			if re.SuggestedSiteURL != c.wantSuggested {
 				t.Errorf("SuggestedSiteURL = %q, want %q", re.SuggestedSiteURL, c.wantSuggested)
 			}
-			// SuggestedSiteURL is Plan's To whenever Plan adopts, and empty
-			// otherwise.
+			// SuggestedSiteURL is PlanStrict's To whenever PlanStrict adopts,
+			// and empty otherwise.
 			target, ok := trimCommandSuffix(re.To, re.Command)
 			var planTo string
 			if ok && target != "" {
-				if p := siteaddr.Plan(re.SavedSiteURL(), target); p.Decision == siteaddr.Adopt {
+				if p := siteaddr.PlanStrict(re.SavedSiteURL(), target); p.Decision == siteaddr.Adopt {
 					planTo = p.To
 				}
 			}
 			if re.SuggestedSiteURL != planTo {
-				t.Errorf("SuggestedSiteURL = %q, siteaddr.Plan gives %q", re.SuggestedSiteURL, planTo)
+				t.Errorf("SuggestedSiteURL = %q, siteaddr.PlanStrict gives %q", re.SuggestedSiteURL, planTo)
 			}
 			if strings.ContainsAny(re.Explanation(), "–—") {
 				t.Errorf("Explanation contains an en or em dash: %q", re.Explanation())

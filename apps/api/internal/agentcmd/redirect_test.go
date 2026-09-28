@@ -372,7 +372,7 @@ func TestNewRedirectError_ApexAndWww(t *testing.T) {
 		Header:     http.Header{"Location": {"https://www.example.com" + backupRoute}},
 		Request:    req,
 	})
-	want := "Backup not started. https://example.com redirects to https://www.example.com, so no command was sent. If WordPress on the site reports https://www.example.com as its address, the saved address updates to https://www.example.com automatically at the site's next daily check-in."
+	want := "Backup not started. https://example.com redirects to https://www.example.com, so no command was sent. If WordPress on the site reports https://www.example.com as its address, the saved address updates to https://www.example.com automatically at a later check-in from the site. That update does not happen while another site in this workspace uses https://www.example.com: if one does, remove or change the duplicate site."
 	if got := re.OperatorMessage("Backup"); got != want {
 		t.Errorf("OperatorMessage:\n got %q\nwant %q", got, want)
 	}
