@@ -98,6 +98,7 @@ example for each — read it top-to-bottom. Key env vars (all prefixed `WPMGR_`)
 |-----|---------|---------|
 | `WPMGR_HTTP_ADDR` | API listen address | `:8080` |
 | `WPMGR_AUTH_PROXY_HOPS` | proxies in front of the control plane that append to `X-Forwarded-For`. **Set this deliberately**, see [Proxy hops](#proxy-hops) below | `2` (the hosted topology; the bundled compose stack needs `1`) |
+| `WPMGR_AUTH_LOGIN_MODE` | login admission for `POST /auth/login`. **Set this deliberately**, see [Login admission](#login-admission) below | `observe` |
 | `WPMGR_DB_HOST` | Postgres host | `localhost` |
 | `WPMGR_DB_PORT` | Postgres port | `5432` |
 | `WPMGR_DB_NAME` | Postgres database | `wpmgr` |
@@ -147,6 +148,35 @@ because empty and absent are not the same thing, and reading empty as `0` would
 silently reconfigure a load-balanced deployment onto a single shared limiter
 key. The control plane logs the value it resolved, and names the variable in
 the error when it refuses one.
+
+### Login admission: `WPMGR_AUTH_LOGIN_MODE` {#login-admission}
+
+Login admission control for `POST /auth/login` evaluates a set of budgets
+(source address, account, source `/48`) and can refuse an attempt that is over
+one of them. Two modes:
+
+| Value | Behavior |
+|-------|----------|
+| `observe` (default) | Evaluates every budget and logs what `enforce` would have refused, but refuses nothing. An install that has never set this variable runs `observe`. Safe to leave on; it changes no status, body or header. |
+| `enforce` | Must be asked for by name. Refuses an attempt over budget with `429 too_many_attempts` and a `Retry-After` header. |
+
+Budgets are **per process**: each `api` instance keeps its own counters, so a
+deployment running N instances admits up to N times each budget across the
+fleet. That is a property of this design, not a bug.
+
+`enforce` is only as safe as the identity it keys on, which depends on two
+things being correct at once:
+
+- **[`WPMGR_AUTH_PROXY_HOPS`](#proxy-hops) matching your real proxy chain.**
+  If it does not, a caller can spoof the address the budgets key on.
+- **The `api` container's published port staying off any interface a client
+  could reach without going through that proxy.** The bundled
+  `infra/docker-compose.yml` publishes it to `127.0.0.1` only, precisely so a
+  caller cannot reach `api` directly, hand it a self-chosen
+  `X-Forwarded-For`, and spend or drain another user's login budget. See
+  [First-run notes](#first-run-notes) below before you change that bind.
+
+Get both right before turning `enforce` on.
 
 ### Reverse proxy: paths that must reach the API {#proxy-paths}
 
@@ -270,11 +300,13 @@ The script downloads:
 | `infra/prometheus/prometheus.yml` + `infra/grafana/…` | observability profile |
 
 > **Port note:** the API listens on `:8080` *inside* the container, but is
-> published to the **host** on `:8081` (`WPMGR_API_PORT`). The dashboard nginx
-> is on **`:8088`** (`WPMGR_WEB_PORT`). These are the ports you curl and put
-> behind a reverse proxy. Neither is `:80` or `:8080` on the host — those are
-> deliberately avoided so first boot never needs root or collides with an
-> existing web server.
+> published to the **host** on `:8081` (`WPMGR_API_PORT`), bound to
+> `127.0.0.1` only — reachable from the host itself, not from another host or
+> container network. The dashboard nginx is on **`:8088`** (`WPMGR_WEB_PORT`)
+> and published on all interfaces. **`:8088` is the port a reverse proxy
+> belongs in front of**; it already forwards to the API in-network. Neither
+> is `:80` or `:8080` on the host — those are deliberately avoided so first
+> boot never needs root or collides with an existing web server.
 
 ### Or: build from source (clone path)
 
