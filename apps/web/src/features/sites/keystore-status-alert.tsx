@@ -52,9 +52,11 @@ function describeUnreadableItems(unreadable: string[] | undefined): string {
 }
 
 function formatList(items: string[]): string {
-  if (items.length === 1) return items[0];
-  if (items.length === 2) return `${items[0]} and ${items[1]}`;
-  return `${items.slice(0, -1).join(", ")}, and ${items[items.length - 1]}`;
+  if (items.length === 0) return "";
+  const rest = items.slice(0, -1);
+  const last = items.at(-1) ?? "";
+  if (rest.length === 0) return last;
+  return `${rest.join(", ")}${rest.length > 1 ? "," : ""} and ${last}`;
 }
 
 export function KeystoreStatusAlert({ site }: { site: Site }) {

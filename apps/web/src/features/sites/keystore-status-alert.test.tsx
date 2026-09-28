@@ -16,8 +16,8 @@ import { KeystoreStatusAlert } from "./keystore-status-alert";
 // the component itself never touches the router, matching the project's
 // component-render convention (backups-section.test.tsx). RouterProvider's
 // first paint is asynchronous, so every test awaits a stable sentinel
-// rendered alongside the alert before asserting either presence or absence
-// — asserting synchronously right after render would pass trivially before
+// rendered alongside the alert before asserting either presence or absence:
+// asserting synchronously right after render would pass trivially before
 // anything has painted at all.
 
 function buildSite(overrides: Partial<Site> = {}): Site {
@@ -59,7 +59,7 @@ function renderAlert(site: Site) {
   });
 }
 
-describe("KeystoreStatusAlert — visibility", () => {
+describe("KeystoreStatusAlert: visibility", () => {
   it("renders nothing for state ok", async () => {
     renderAlert(siteWithKeystore({ state: "ok" }));
     await screen.findByTestId("ready");
@@ -113,20 +113,15 @@ describe("KeystoreStatusAlert — visibility", () => {
   });
 });
 
-describe("KeystoreStatusAlert — wp-admin link", () => {
+describe("KeystoreStatusAlert: wp-admin link", () => {
   it("links to the site's wp-admin, stripping a trailing slash from the site URL", async () => {
-    renderAlert(
-      siteWithKeystore(
-        { state: "key_unavailable" },
-        { url: "https://example.com/" } as unknown as Partial<Site>,
-      ),
-    );
+    renderAlert(siteWithKeystore({ state: "key_unavailable" }, { url: "https://example.com/" }));
     const link = await screen.findByRole("link", { name: "Open wp-admin" });
     expect(link).toHaveAttribute("href", "https://example.com/wp-admin/");
   });
 });
 
-describe("KeystoreStatusAlert — copy branches (item 2)", () => {
+describe("KeystoreStatusAlert: copy branches (item 2)", () => {
   it("says backups cannot run for key_unavailable, without asserting the salts cause when key_source isn't salts", async () => {
     renderAlert(siteWithKeystore({ state: "key_unavailable", key_source: "constant" }));
     expect(await screen.findByText("Backups cannot run for this site.")).toBeInTheDocument();
