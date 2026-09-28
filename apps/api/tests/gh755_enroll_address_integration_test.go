@@ -242,6 +242,17 @@ func assertURLMismatch(t *testing.T, got []audit.Entry, stored, reported, reason
 	}
 }
 
+// assertInitiatedBy checks that an audit row carries initiated_by naming the
+// user who minted the Reconnect code that produced it (T6, GH #755): the
+// actor stays ActorSystem (enrollment chose the address, not the user), but
+// the metadata still names the human who set the re-enrollment in motion.
+func assertInitiatedBy(t *testing.T, e audit.Entry, userID uuid.UUID) {
+	t.Helper()
+	if e.Metadata["initiated_by"] != userID.String() {
+		t.Fatalf("%s metadata initiated_by = %v, want %s", e.Action, e.Metadata["initiated_by"], userID)
+	}
+}
+
 // TestSiteFirstEnroll_AdoptsEquivalentAgentAddress: the first connect of a site
 // saved as the apex, whose agent reports the www address, stores the www
 // address; an http site whose agent reports https is upgraded. The same address
@@ -335,6 +346,9 @@ func TestReEnroll_AdoptsAgentWwwAddress_KeepsSiteID(t *testing.T) {
 	}
 	changed, _ := env.urlAudits(t, tenant, id)
 	assertURLChanged(t, changed, "https://reconnect755.example.com", "https://www.reconnect755.example.com")
+	// T6: the row names the user who minted the Reconnect code (env.as, the
+	// owner, throughout this test), not just that "the system" changed it.
+	assertInitiatedBy(t, changed[0], env.as.UserID)
 }
 
 // TestSiteFirstEnroll_KeepsStoredURLForNonEquivalentAddress: a downgrade, a
@@ -403,6 +417,9 @@ func TestSiteFirstEnroll_AdoptConflictKeepsStoredURL(t *testing.T) {
 			t.Fatalf("conflict recorded as adopted: %v", changed)
 		}
 		assertURLMismatch(t, mismatch, "https://held755.example.com", "https://www.held755.example.com", "address_in_use")
+		// T6: the mismatch row names the user who minted the Reconnect code
+		// (env.as, the owner) that surfaced the conflict.
+		assertInitiatedBy(t, mismatch[0], env.as.UserID)
 	})
 
 	t.Run("holder commits during the enrollment", func(t *testing.T) {
