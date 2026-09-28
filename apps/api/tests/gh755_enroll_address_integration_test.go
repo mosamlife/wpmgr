@@ -100,11 +100,17 @@ func (e *gh755Env) addSite(t *testing.T, url string) (uuid.UUID, string) {
 	return id, body["enrollment_code"].(string)
 }
 
-// reconnect runs Reconnect (POST /sites/:siteId/enrollment-codes) and returns
-// the fresh enrollment code.
+// reconnect takes a connected site through the dashboard's Disconnect (POST
+// /sites/:siteId/revoke) and then Reconnect (POST
+// /sites/:siteId/enrollment-codes), and returns the fresh enrollment code.
+// Reconnect is offered only once the site is no longer connected.
 func (e *gh755Env) reconnect(t *testing.T, siteID uuid.UUID) string {
 	t.Helper()
-	code, body := e.do(t, http.MethodPost, "/api/v1/sites/"+siteID.String()+"/enrollment-codes", nil)
+	code, body := e.do(t, http.MethodPost, "/api/v1/sites/"+siteID.String()+"/revoke", map[string]any{"reason": "gh755"})
+	if code != http.StatusOK {
+		t.Fatalf("disconnect answered %d, want 200: %v", code, body)
+	}
+	code, body = e.do(t, http.MethodPost, "/api/v1/sites/"+siteID.String()+"/enrollment-codes", nil)
 	if code != http.StatusCreated {
 		t.Fatalf("reconnect answered %d, want 201: %v", code, body)
 	}
@@ -472,9 +478,10 @@ func TestSiteFirstEnroll_AdoptConflictKeepsStoredURL(t *testing.T) {
 // TestReEnrollAddressGate_RequiresOrgScopedSiteWriter: the address changes
 // only through an enrollment code, and a code for an existing site is minted
 // only by Reconnect, which needs site:write, org scope and access to the site.
-// A site-scoped collaborator (with or without a share of this site), an org
-// viewer, and an owner of another tenant all fail to mint one, and the site is
-// left connected under its address.
+// On a disconnected site, where Reconnect is available, a site-scoped
+// collaborator (with or without a share of this site), an org viewer, and an
+// owner of another tenant all fail to mint one and the site stays as it was;
+// the owner, as the positive control, can.
 func TestReEnrollAddressGate_RequiresOrgScopedSiteWriter(t *testing.T) {
 	env, tenant := gh755Setup(t, "gh755-gate")
 	owner := env.as
@@ -482,6 +489,9 @@ func TestReEnrollAddressGate_RequiresOrgScopedSiteWriter(t *testing.T) {
 	id, code := env.addSite(t, "https://gate755.example.com")
 	env.mustEnroll(t, code, "https://gate755.example.com", id)
 	otherSite, _ := env.addSite(t, "https://gate-other755.example.com")
+	if status, body := env.do(t, http.MethodPost, "/api/v1/sites/"+id.String()+"/revoke", nil); status != http.StatusOK {
+		t.Fatalf("disconnect answered %d: %v", status, body)
+	}
 
 	otherTenant := seedTenant(t, env.pool, "gh755-gate-other")
 	callers := []struct {
@@ -515,8 +525,12 @@ func TestReEnrollAddressGate_RequiresOrgScopedSiteWriter(t *testing.T) {
 
 	env.as = owner
 	s := env.site(t, tenant, id)
-	if s.URL != "https://gate755.example.com" || s.ConnectionState != site.StateConnected {
-		t.Fatalf("site url=%q state=%s, want it untouched and connected", s.URL, s.ConnectionState)
+	if s.URL != "https://gate755.example.com" || s.ConnectionState != site.StateRevoked {
+		t.Fatalf("site url=%q state=%s, want it untouched and still revoked", s.URL, s.ConnectionState)
+	}
+	// Positive control: the same request as the owner mints a code.
+	if status, body := env.do(t, http.MethodPost, "/api/v1/sites/"+id.String()+"/enrollment-codes", nil); status != http.StatusCreated {
+		t.Fatalf("owner reconnect answered %d, want 201: %v", status, body)
 	}
 }
 
