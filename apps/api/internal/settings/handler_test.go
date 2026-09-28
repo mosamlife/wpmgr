@@ -130,6 +130,16 @@ func TestSMTPGate_SuperadminAdmitted(t *testing.T) {
 	}
 }
 
+// Instance authority is not tied to an active organisation: a superadmin whose
+// request carries no tenant is admitted like one whose request carries one.
+func TestSMTPGate_NoActiveTenantSuperadminAdmitted(t *testing.T) {
+	p := orgUser()
+	p.TenantID = uuid.Nil
+	p.Role = ""
+	p.Scope = ""
+	requireAdmitted(t, gatedSettingsEngine(&fakeInstanceGate{superadmin: true}), p)
+}
+
 func TestSMTPGate_SoleLiveTenantOwnerAdmitted(t *testing.T) {
 	requireAdmitted(t, gatedSettingsEngine(&fakeInstanceGate{soleOwner: true}), orgUser())
 }
