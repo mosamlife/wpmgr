@@ -298,8 +298,13 @@ func TestRiverMediaSchemaSelfHealsOnBoot(t *testing.T) {
 	}
 
 	// Mirror exactly what cmd/wpmgr/main.go's run() and cmd/media-encoder's
-	// run() both do unconditionally at boot.
-	if err := riverutil.EnsureSchema(ctx, admin.Pool, cfg.River.MediaSchema, "wpmgr_app"); err != nil {
+	// run() both do unconditionally at boot: EnsureSchema runs on the
+	// migration-owner pool (migPool.Pool in both binaries), never the
+	// bootstrap superuser. admin above/below is only for the test's own
+	// read-only countRiverJobs checks.
+	owner := connectOwner(t, pool)
+	defer owner.Close()
+	if err := riverutil.EnsureSchema(ctx, owner.Pool, cfg.River.MediaSchema, "wpmgr_app"); err != nil {
 		t.Fatalf("ensure media schema from config default: %v", err)
 	}
 
