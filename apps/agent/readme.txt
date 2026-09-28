@@ -287,7 +287,7 @@ This plugin ships two minified JavaScript files. Their human-readable source and
 The entries below summarize the notable changes since 0.31.1. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
 
 = 0.61.150 =
-* Fixed: a command that fails now reports back what broke: the kind of error, where in the plugin it was thrown, and a short reason, instead of a generic failure message. Key material and absolute paths are left out of the reason. The same failure is written to this site's debug log on one line, with key material redacted and the path kept, so a failure can be diagnosed from the dashboard or the log without reproducing it.
+* Fixed: a command that fails now reports back what broke: the kind of error, where in the plugin it was thrown, and a short reason, instead of a generic failure message. The reason passes through a redactor that removes recognised key material and absolute paths, and is withheld entirely if that cannot be done safely. The same failure is written to this site's debug log on one line, with recognised key material redacted and the path kept, so a failure can be diagnosed from the dashboard or the log without reproducing it.
 * Added: a new content-update command can change the title and/or body of an existing post or page by id. It keeps a retained copy of what it overwrites before writing, refuses to touch a document built in the block editor, and requires a fingerprint of the content it expects to replace, so a conflicting write is reported as a conflict rather than silently applied. Nothing in the dashboard uses this yet.
 
 = 0.61.149 =
