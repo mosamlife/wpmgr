@@ -15,47 +15,89 @@ import (
 	"golang.org/x/net/idna"
 )
 
-// HostKey is host in the ASCII form a resolver is asked for: an IP literal
-// lowercased as written, and any other host through IDNA's lookup profile
-// (UTS #46 mapping, then Punycode), which is the conversion net/http applies
-// before it dials a non-ASCII host. ok is false when the host is empty or
-// does not convert (a label IDNA refuses, such as one holding "_"), and a
-// caller treats that as "not the same host".
+// HostKey is host in the ASCII form it is dialled by, which is what net/http
+// does with it. An all-ASCII host (a name or an IP literal) is used as
+// written, so its key is itself with A to Z lowercased and no IDNA
+// validation: a label IDNA would refuse, such as one holding "_", still names
+// the host net/http dials. A host holding any non-ASCII byte goes through
+// IDNA's lookup profile (UTS #46 mapping, then Punycode), the conversion
+// net/http applies before it dials such a host. ok is false when the host is
+// empty or a non-ASCII host does not convert, and a caller treats that as
+// "not the same host".
 func HostKey(host string) (string, bool) {
 	if host == "" {
 		return "", false
 	}
-	if ip := net.ParseIP(host); ip != nil {
-		return asciiLower(host)
+	if isASCII(host) {
+		return LowerASCII(host), true
 	}
 	ascii, err := idna.Lookup.ToASCII(host)
-	if err != nil || ascii == "" {
+	if err != nil || ascii == "" || !isASCII(ascii) {
 		return "", false
 	}
-	return asciiLower(ascii)
+	return LowerASCII(ascii), true
 }
 
-// asciiLower lowercases A to Z only, and refuses a string holding any byte
-// outside ASCII.
-func asciiLower(s string) (string, bool) {
+// LowerASCII lowercases the letters A to Z and leaves every other byte as it
+// is. It is the only lowercasing the address rule applies to a host: Unicode
+// lowercasing can turn one domain's spelling into another's (a capital
+// dotted I becomes a plain "i", a capital sharp s a small one), and each of
+// those converts to a different name.
+func LowerASCII(s string) string {
 	b := []byte(s)
 	for i, c := range b {
-		switch {
-		case c >= 0x80:
-			return "", false
-		case c >= 'A' && c <= 'Z':
+		if c >= 'A' && c <= 'Z' {
 			b[i] = c + ('a' - 'A')
 		}
 	}
-	return string(b), true
+	return string(b)
+}
+
+// isASCII reports whether s holds only bytes below 0x80.
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
+// addressHostKey is the HostKey of the host in address, an address Join
+// built.
+func addressHostKey(address string) (string, bool) {
+	u, err := url.Parse(address)
+	if err != nil || u == nil {
+		return "", false
+	}
+	return HostKey(u.Hostname())
+}
+
+// NormalizePath is a site address's path in the form the address rule
+// compares it: its trailing slashes removed, so an empty path and "/" name
+// the same address, as do "/blog" and "/blog/". Parse applies it, so Plan,
+// PlanStrict and SameAddress compare paths through it, and the suggestion a
+// refused redirect makes is built with it.
+func NormalizePath(p string) string { return strings.TrimRight(p, "/") }
+
+// SameAddress reports whether a and b are one site address once each is
+// normalised by Parse (scheme and the ASCII letters of the host lowercased, a
+// default port dropped, the path through NormalizePath): "https://x.test/"
+// and "https://x.test" are the same address, "https://x.test/blog" is not.
+// An address Parse refuses is the same as nothing. It is the comparison Plan
+// answers Same by.
+func SameAddress(a, b string) bool {
+	x, _, okA := Parse(a)
+	y, _, okB := Parse(b)
+	return okA && okB && x == y
 }
 
 // SameHost reports whether a and b name the same host once each is reduced
 // to its HostKey. Unicode case folding is never used: two spellings it
 // treats as equal can convert to different registrable domains (a capital
 // sharp s maps to "ss", a small one to its own Punycode label), and a
-// request is dialled by the converted form. A host that does not convert is
-// the same as nothing.
+// request is dialled by the converted form. A non-ASCII host that does not
+// convert is the same as nothing.
 func SameHost(a, b string) bool {
 	ka, okA := HostKey(a)
 	kb, okB := HostKey(b)
@@ -67,10 +109,13 @@ func SameHost(a, b string) bool {
 // the stored host (Same, or an https upgrade) or the stored host's "www."
 // sibling (a host change), both taken through HostKey. Anything else, a host
 // that does not convert included, is Mismatch. The address it returns to
-// store is Plan's, built from the stored spelling.
+// store is Plan's, built from the stored spelling, and dials the key the
+// reported host was compared with (Plan asserts it, and PlanStrict checks it
+// again against its own expected key).
 //
 // Push-time adoption and a refused redirect's suggestion use it. Enrollment
-// keeps Plan.
+// uses Plan, which applies the same ASCII-only lowercasing and the same
+// assertion on the address it returns.
 func PlanStrict(stored, reported string) PlanResult {
 	p := Plan(stored, reported)
 	if p.Decision == Mismatch {
@@ -98,13 +143,19 @@ func PlanStrict(stored, reported string) PlanResult {
 	if kr != want {
 		return PlanResult{Decision: Mismatch}
 	}
+	if p.Decision == Adopt {
+		if got, ok := addressHostKey(p.To); !ok || got != want {
+			return PlanResult{Decision: Mismatch}
+		}
+	}
 	return p
 }
 
 // Address is a site URL reduced to the parts that decide whether two
-// spellings name the same WordPress install: the scheme, the lowercased host,
-// the port only when it is not the scheme's default, and the path with its
-// trailing slashes removed.
+// spellings name the same WordPress install: the scheme, the host with its
+// ASCII letters lowercased (LowerASCII; any other character is kept as
+// written), the port only when it is not the scheme's default, and the path
+// through NormalizePath.
 type Address struct {
 	Scheme string
 	Host   string
@@ -128,7 +179,7 @@ func Parse(raw string) (Address, *url.URL, bool) {
 	if u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.RawFragment != "" {
 		return Address{}, nil, false
 	}
-	host := strings.ToLower(u.Hostname())
+	host := LowerASCII(u.Hostname())
 	if host == "" {
 		return Address{}, nil, false
 	}
@@ -140,7 +191,7 @@ func Parse(raw string) (Address, *url.URL, bool) {
 		Scheme: scheme,
 		Host:   host,
 		Port:   port,
-		Path:   strings.TrimRight(u.Path, "/"),
+		Path:   NormalizePath(u.Path),
 	}, u, true
 }
 
@@ -192,7 +243,16 @@ type PlanResult struct {
 // its agent reports. Adoption is limited to a leading "www."
 // toggle and/or an http to https upgrade, on the same port and path. A
 // downgrade from https to http, another host or subdomain, another port and
-// another path are never adopted.
+// another path are never adopted. Same is SameAddress: a trailing slash never
+// makes two addresses differ.
+//
+// Hosts are compared with only their ASCII letters lowercased. Before it
+// answers Adopt, Plan checks that the address it returns dials, by HostKey,
+// the stored host's key (a scheme-only change) or the "www." sibling of that
+// key (a host change); any other key, or a host that does not convert, is
+// Mismatch. So the host that is stored, and pinged to confirm the change, is
+// always the host that was compared. To keeps the stored address's path as
+// written, a trailing slash included.
 func Plan(stored, reported string) PlanResult {
 	s, su, okS := Parse(stored)
 	r, _, okR := Parse(reported)
@@ -211,6 +271,10 @@ func Plan(stored, reported string) PlanResult {
 	if s.Scheme != r.Scheme && !(s.Scheme == "http" && r.Scheme == "https") {
 		return PlanResult{Decision: Mismatch}
 	}
+	want, ok := HostKey(su.Hostname())
+	if !ok {
+		return PlanResult{Decision: Mismatch}
+	}
 	host := s.Host
 	if r.Host != s.Host {
 		sibling, ok := WWWSibling(s.Host)
@@ -218,9 +282,16 @@ func Plan(stored, reported string) PlanResult {
 			return PlanResult{Decision: Mismatch}
 		}
 		host = sibling
+		if want, ok = WWWSibling(want); !ok {
+			return PlanResult{Decision: Mismatch}
+		}
 	}
 
-	return PlanResult{Decision: Adopt, To: Join(r.Scheme, host, s.Port, su.EscapedPath())}
+	to := Join(r.Scheme, host, s.Port, su.EscapedPath())
+	if got, ok := addressHostKey(to); !ok || got != want {
+		return PlanResult{Decision: Mismatch}
+	}
+	return PlanResult{Decision: Adopt, To: to}
 }
 
 // Join builds an address from its parts. The host is written as
@@ -263,7 +334,7 @@ func Variants(raw string) []string {
 	if a.Scheme == "https" {
 		schemes[1] = "http"
 	}
-	path := strings.TrimRight(u.EscapedPath(), "/")
+	path := NormalizePath(u.EscapedPath())
 	for _, scheme := range schemes {
 		for _, host := range hosts {
 			base := Join(scheme, host, a.Port, path)

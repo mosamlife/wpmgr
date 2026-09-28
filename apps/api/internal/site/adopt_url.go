@@ -48,7 +48,9 @@ func (s *Service) SetCommandRedirectProber(p CommandRedirectProber) { s.redirect
 // without a signed ping confirming it at the moment of the push:
 //
 //   - A host change (the "www." toggle) is written only when a ping to the
-//     saved address is redirected to exactly the planned address.
+//     saved address is redirected to the planned address (siteaddr.SameAddress:
+//     the same address once normalised, so a trailing slash on either side
+//     does not matter and any other difference does).
 //   - A scheme-only upgrade is written only when a ping to the https form of
 //     the saved host is answered with a 2xx. A failure or a redirect leaves
 //     the saved address as it is.
@@ -117,8 +119,11 @@ func (s *Service) adoptReportedURL(ctx context.Context, tenantID, siteID uuid.UU
 		return false, nil
 	}
 	if saved.Host != to.Host {
+		// The suggestion is built from the command URL, which never carries
+		// the saved address's trailing slash, so it is compared as an
+		// address, not as a string. plan.To keeps the saved path form.
 		suggested, redirected := s.redirectProber.CommandRedirectTarget(ctx, siteID, st.URL)
-		if !redirected || suggested != plan.To {
+		if !redirected || !sameSiteAddress(suggested, plan.To) {
 			log.Info("adopt reported address: not adopted: saved address does not redirect to the reported address",
 				slog.String("saved", st.URL), slog.String("to", plan.To))
 			return false, nil

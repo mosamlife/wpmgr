@@ -297,15 +297,10 @@ func sanitizeRedirectURL(u *url.URL) string {
 	if (scheme != "http" && scheme != "https") || u.Host == "" || u.Hostname() == "" {
 		return ""
 	}
-	// ASCII letters only: Unicode lowercasing can turn one domain's
-	// spelling into another's (a capital sharp s becomes a small one, which
-	// converts to a different name), and this value is compared and shown.
-	host := strings.Map(func(r rune) rune {
-		if r >= 'A' && r <= 'Z' {
-			return r + ('a' - 'A')
-		}
-		return r
-	}, u.Host)
+	// ASCII letters only, as the address rule lowercases a host: Unicode
+	// lowercasing can turn one domain's spelling into another's, and this
+	// value is compared and shown.
+	host := siteaddr.LowerASCII(u.Host)
 	for _, r := range host {
 		if !unicode.IsGraphic(r) || unicode.IsSpace(r) || unicode.Is(unicode.Cf, r) {
 			return ""
@@ -340,11 +335,11 @@ func trimCommandSuffix(commandURL, command string) (string, bool) {
 		return "", false
 	}
 	suffix := fmt.Sprintf(commandPathFormat, command)
-	path := strings.TrimRight(u.Path, "/")
+	path := siteaddr.NormalizePath(u.Path)
 	if !strings.HasSuffix(path, suffix) {
 		return "", false
 	}
-	u.Path = strings.TrimRight(strings.TrimSuffix(path, suffix), "/")
+	u.Path = siteaddr.NormalizePath(strings.TrimSuffix(path, suffix))
 	u.RawPath = ""
 	return u.Scheme + "://" + u.Host + escapedPath(u), true
 }
