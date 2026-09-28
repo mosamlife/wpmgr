@@ -4290,8 +4290,8 @@ CREATE TABLE IF NOT EXISTS font_transcode_results (
     error_detail   text,
     created_at     timestamptz NOT NULL DEFAULT now(),
     updated_at     timestamptz NOT NULL DEFAULT now(),
-    -- No foreign keys: m54 created none, so a row outlives its site and
-    -- tenant. Adding them takes a new migration, not an edit here.
+    -- negative = true marks a source font that cannot be transcoded, with
+    -- error_detail saying why; woff2_key stays NULL on such a row.
     PRIMARY KEY (source_hash, tenant_id)
 );
 
