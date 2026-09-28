@@ -1,12 +1,16 @@
 package agentcmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 	"unicode"
+
+	"github.com/google/uuid"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/siteaddr"
 )
@@ -135,6 +139,27 @@ func (e *RedirectError) fromSite() string {
 		return site
 	}
 	return e.From
+}
+
+// commandRedirectProbeTimeout bounds CommandRedirectTarget's single ping.
+const commandRedirectProbeTimeout = 10 * time.Second
+
+// CommandRedirectTarget sends one signed ping to siteURL, the site's saved
+// address, and reports whether it was answered with a redirect that was not
+// followed. suggested is that redirect's SuggestedSiteURL: the address the
+// saved one would become, or "" when the redirect names none. The ping goes
+// only to the saved address (and, under the same-host upgrade rule, to its
+// https form), never to the address being considered. It implements
+// site.CommandRedirectProber.
+func (c *Client) CommandRedirectTarget(ctx context.Context, siteID uuid.UUID, siteURL string) (suggested string, redirected bool) {
+	ctx, cancel := context.WithTimeout(ctx, commandRedirectProbeTimeout)
+	defer cancel()
+	_, err := c.Ping(ctx, siteID, siteURL)
+	re, ok := AsRedirect(err)
+	if !ok {
+		return "", false
+	}
+	return re.SuggestedSiteURL, true
 }
 
 // AsRedirect reports whether err is, or wraps, a *RedirectError, and returns

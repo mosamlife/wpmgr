@@ -44,6 +44,10 @@ type Service struct {
 	// entry is skipped, never that the event goes unreported — the structured
 	// log line is unconditional.
 	audit *audit.Recorder
+	// redirectProber confirms a host change before AdoptReportedURL writes
+	// it. Optional: nil means a host change is never adopted after
+	// enrollment.
+	redirectProber CommandRedirectProber
 }
 
 // SetAuditRecorder wires the hash-chained audit recorder. Call once at boot;
@@ -415,6 +419,15 @@ func (s *Service) ApplyAgentMetadata(ctx context.Context, tenantID, siteID uuid.
 			return gen.Site{}, err
 		}
 		out = updated
+	}
+	// The agent's WordPress address. Best-effort: a refusal or failure never
+	// fails the metadata push (AdoptReportedURL logs it).
+	if m.HomeURL != "" {
+		if adopted, _ := s.adoptReportedURL(ctx, tenantID, siteID, m.HomeURL, urlSourceAgentMetadata, m.AgentVersion); adopted {
+			if reloaded, gerr := s.repo.Get(ctx, tenantID, siteID); gerr == nil {
+				out = reloaded
+			}
+		}
 	}
 	return toAPI(out), nil
 }

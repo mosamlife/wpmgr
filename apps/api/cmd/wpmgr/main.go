@@ -785,6 +785,13 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		logger.Warn("WPMGR_AGENT_SIGNING_PRIVATE_KEY is empty: CP->agent update commands are disabled")
 		commander = disabledCommander{}
 	}
+	// GH #755: an agent push may report a www toggle of the saved address; the
+	// site service adopts it only when a signed ping to the saved address is
+	// redirected there right now. Without a signer a host change is never
+	// adopted after enrollment.
+	if cmdSigner != nil {
+		siteSvc.SetCommandRedirectProber(agentcmd.NewClient(ssrfClient, cmdSigner))
+	}
 	prober := agentcmd.NewProbe(ssrfClient)
 	updateHub := update.NewHub()
 	updateRepo := update.NewRepo(pool)
@@ -2398,6 +2405,9 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// diagnostics.DBSizeHistorySink structurally via
 	// RecordDBSizeHistoryFromDiagnostics.
 	diagnosticsSvc.SetDBSizeHistorySink(perfRepo)
+	// GH #755: the daily diagnostics push's http.home_url goes to the site
+	// service, which decides whether it replaces the saved address.
+	diagnosticsSvc.SetReportedURLSink(siteSvc)
 	// M28 — offline IP -> hosting-provider resolver. Self-disables (no-op) if the
 	// embedded DB-IP ASN database fails to open; never blocks boot.
 	if ipResolver, ipErr := ipprovider.New(); ipErr != nil {

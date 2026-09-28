@@ -41,6 +41,11 @@ type Repo interface {
 	// applied. SetAgeRecipient (above) stays the deliberate, unconditional
 	// operator path.
 	SetAgeRecipientIfUnset(ctx context.Context, tenantID, siteID uuid.UUID, recipient string) (Site, bool, error)
+	// AdoptSiteURL replaces the saved address with to, compare-and-set on
+	// from, for an enrolled site. false with no error means not adopted (the
+	// address changed, the state is not enrolled, or another site in the
+	// tenant holds to).
+	AdoptSiteURL(ctx context.Context, tenantID, siteID uuid.UUID, from, to string) (bool, error)
 
 	// GH #414 m117 — monitoring pause/resume. Bulk by construction (the UI
 	// entry point is a multi-select) and idempotent: see monitoring_repo.go.
