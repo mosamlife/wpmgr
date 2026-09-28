@@ -70,6 +70,14 @@ final class Router
      */
     private const REASON_WITHHELD = '(reason withheld: redaction could not complete)';
 
+    /**
+     * What a router log line becomes when escapeControlChars() cannot
+     * complete. Fixed and self-contained — never built from any part of the
+     * line that failed to escape, because that line is exactly the untrusted
+     * value the pass could not make safe to write.
+     */
+    private const LOG_LINE_WITHHELD = 'WPMgr Agent: log line withheld (control-character escaping could not complete).';
+
     private Connector $connector;
 
     /** @var array<string,CommandInterface> Map of command name => handler. */
@@ -176,7 +184,11 @@ final class Router
             // without giving an attacker any cryptographic oracle beyond what they
             // already get from the 403 itself.
             $category = $this->classifyTokenError($e->getMessage());
-            \WPMgr\Agent\Support\DebugLog::write('WPMgr Agent: command authorize failed: command=' . $command . ' category=' . $category . ' reason=' . $e->getMessage());
+            \WPMgr\Agent\Support\DebugLog::write(
+                self::escapeControlChars(
+                    'WPMgr Agent: command authorize failed: command=' . $command . ' category=' . $category . ' reason=' . $e->getMessage()
+                ) ?? self::LOG_LINE_WITHHELD
+            );
             return $this->forbidden($category);
         }
 
@@ -279,16 +291,18 @@ final class Router
             // the web. That one line is what turns a weeks-long investigation
             // into a minute.
             //
-            // One failure is one log line. Line breaks in it are written as the
-            // two-character sequences \r and \n: the text survives, and nothing
-            // in it can start a log line of its own.
+            // One failure is one log line. Every control character that could
+            // pass for a line break, hide output on a terminal, or truncate the
+            // line is written as a visible escape by escapeControlChars(): the
+            // text survives, and nothing in it can start a log line of its own
+            // or make part of a real one disappear.
             \WPMgr\Agent\Support\DebugLog::write(
-                self::foldLineBreaks(
+                self::escapeControlChars(
                     'WPMgr Agent: command failed: command=' . $name
                     . ' class=' . $class
                     . ' at=' . $location
                     . ' reason=' . self::logReason($e->getMessage())
-                )
+                ) ?? self::LOG_LINE_WITHHELD
             );
 
             // The response is transmitted, stored by the control plane and
@@ -469,6 +483,70 @@ final class Router
     private static function foldLineBreaks(string $line): string
     {
         return strtr($line, ["\r\n" => '\r\n', "\r" => '\r', "\n" => '\n']);
+    }
+
+    /**
+     * Make a router log line safe to write as one line to a plain-text file,
+     * whatever an exception message threw into it. Shared by every router log
+     * line that carries one — the command-failure line and the
+     * authorize-failure line both call this and nothing else.
+     *
+     * CR and LF fold first, via foldLineBreaks(), to the two-character visible
+     * sequences \r and \n. Every other character that a log reader, a
+     * terminal, or PHP's own error_log() could treat specially is then
+     * escaped: the rest of the C0 control range (tab excepted — a literal tab
+     * is harmless and common in a message), DEL, the C1 control range
+     * (U+0080-U+009F, which includes NEL, itself a line break to some
+     * readers), and the two Unicode line/paragraph separators U+2028 and
+     * U+2029, which some terminals and log viewers also treat as breaking a
+     * line. A C0/DEL byte is written as \xHH; the others, which only exist as
+     * multi-byte UTF-8 sequences, are written as \u{HHHH}.
+     *
+     * NUL is included for a second reason beyond "looks like a line break":
+     * PHP's error_log() writes to a C string under the hood, so a raw NUL
+     * silently truncates everything written after it. Escaping it here is
+     * what keeps the rest of the line from being lost.
+     *
+     * Byte-oriented throughout, like every pattern in redactReason(): the
+     * match patterns are literal byte sequences, not a /u pattern, so the
+     * pass runs the same whether or not $line is valid UTF-8, and a stray
+     * byte elsewhere in the line (e.g. inside a CJK character or a truncated
+     * multi-byte sequence) is never mistaken for one of these because the
+     * multi-byte alternatives only match their exact lead-byte-and-successor
+     * shape.
+     *
+     * Fails closed like the redaction passes it sits next to: null when the
+     * pass cannot complete, so the caller can withhold a fixed marker instead
+     * of writing a line this function was unable to make safe.
+     *
+     * @param string $line Line to escape.
+     * @return string|null Null when the pass did not complete.
+     */
+    private static function escapeControlChars(string $line): ?string
+    {
+        $line = self::foldLineBreaks($line);
+
+        return self::pregCallbackOrNull(
+            '/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]|\xC2[\x80-\x9F]|\xE2\x80[\xA8\xA9]/',
+            static function (array $m): string {
+                $seq = $m[0];
+
+                if (strlen($seq) === 1) {
+                    // C0 control (tab, CR, LF excepted) or DEL.
+                    return sprintf('\\x%02X', ord($seq));
+                }
+
+                if (strlen($seq) === 2) {
+                    // C1 control, UTF-8 encoded as \xC2 followed by a byte
+                    // that is numerically the codepoint itself (0x80-0x9F).
+                    return sprintf('\\u{%04X}', ord($seq[1]));
+                }
+
+                // U+2028 LINE SEPARATOR or U+2029 PARAGRAPH SEPARATOR.
+                return $seq[2] === "\xA8" ? '\\u{2028}' : '\\u{2029}';
+            },
+            $line
+        );
     }
 
     /**
@@ -720,10 +798,15 @@ final class Router
      *
      * Contract: key material is redacted by the same two passes the response
      * uses — pass 1 and pass 2 of redactReason(), in that order — and nothing
-     * else is changed. Paths, absolute ones included, stay as thrown: they are
-     * the site owner's own diagnostic, and PHP writes them to the same log. If
-     * either pass cannot complete, the line carries REASON_WITHHELD in place of
-     * the message.
+     * else about the message is changed here (control characters are the
+     * caller's job; see escapeControlChars()). An ordinary path, absolute ones
+     * included, stays as thrown: it is the site owner's own diagnostic, and
+     * PHP writes it to the same log. But a path SEGMENT shaped like encoded
+     * key material — a long case-mixed run carrying a digit, '+' or '=', or a
+     * long case-mixed run that contains a '/' — is redacted exactly as
+     * isEncodedRun() decides for the response, so a path keeps its directory
+     * and loses only that segment. If either pass cannot complete, the line
+     * carries REASON_WITHHELD in place of the message.
      *
      * @param string $msg Raw exception message.
      * @return string
