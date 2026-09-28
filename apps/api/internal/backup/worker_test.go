@@ -28,6 +28,7 @@ package backup
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -217,6 +218,46 @@ func TestBackupWorker_RefuseWithoutCode_StillFailsTerminal(t *testing.T) {
 				t.Errorf("snapshot status = %q, want %q", got.Status, StatusFailed)
 			}
 		})
+	}
+}
+
+// TestBackupWorkerKeystoreUnreadableFailsImmediately (GH #753): a
+// keystore_unreadable refusal must fail the snapshot on the FIRST attempt
+// with fixed, CP-authored operator copy — never the agent's own free-form
+// Detail text, which can change independently of this control plane's
+// release — and must never be retried: Work() returns nil so River does not
+// requeue it, exactly like every other terminal ok=false refusal.
+func TestBackupWorkerKeystoreUnreadableFailsImmediately(t *testing.T) {
+	repo, tenantID, snapshotID, svc := newBackupWorkerFixture()
+	cmd := &refusalCommander{backupResp: agentcmd.BackupResponse{
+		OK: false,
+		// Deliberately a DIFFERENT sentence than the fixed CP copy, so a test
+		// that accidentally asserted on resp.Detail (rather than the CP's own
+		// substituted message) would fail loudly instead of passing by luck.
+		Detail: "Backup not started: this site cannot read its backup key. See admin notice.",
+		Code:   codeKeystoreUnreadable,
+	}}
+	worker := NewBackupWorker(svc, cmd, nil, nil, "https://cp.example.com", 0)
+
+	job := &river.Job[BackupArgs]{Args: BackupArgs{TenantID: tenantID, SnapshotID: snapshotID}}
+	if err := worker.Work(context.Background(), job); err != nil {
+		t.Fatalf("Work() error: %v (a keystore_unreadable refusal must fail terminally on the first attempt, not retry)", err)
+	}
+	if !repo.failCalled {
+		t.Fatal("FailSnapshot must be called on the first attempt for a keystore_unreadable refusal")
+	}
+	got := repo.snapshots[snapshotID]
+	if got.Status != StatusFailed {
+		t.Errorf("snapshot status = %q, want %q", got.Status, StatusFailed)
+	}
+	if !strings.Contains(got.Error, keystoreUnreadableOperatorMessage) {
+		t.Errorf("snapshot error = %q, want it to contain the fixed keystore_unreadable operator copy", got.Error)
+	}
+	if strings.Contains(got.Error, "See admin notice") {
+		t.Error("the agent's own free-form Detail text must NOT reach the stored failure message for this code")
+	}
+	if strings.Contains(got.Error, "stopped responding") {
+		t.Error("keystore_unreadable must never surface the generic stall/watchdog message")
 	}
 }
 
