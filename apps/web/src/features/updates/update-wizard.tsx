@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 
 import { Button } from "@/components/ui/button";
@@ -223,6 +223,56 @@ function WizardForm({
   const [filterToUpdates, setFilterToUpdates] = useState(true);
 
   const options = useMemo(() => componentOptions(sites), [sites]);
+
+  // GH #763: `sites` is live data — a refetch while the wizard is open (see
+  // use-sites-live.ts) recomputes `options` above with the SAME WizardForm
+  // instance still mounted, because the form only remounts on target change
+  // (targetKey, at the top of this file), not on a sites refetch. Without
+  // this, a key ticked while its item had an update stays in `selectedSlugs`
+  // after the item updates elsewhere and drops out of `options`/hasUpdate,
+  // and buildItems() below posts it anyway even though no checkbox on screen
+  // is still ticked for it.
+  //
+  // The rule: drop a selected key when its item is no longer listed at all,
+  // or when it transitioned from having an update to not having one. Keep a
+  // key whose item was already up to date when selected (and still is) — an
+  // operator may deliberately tick an up-to-date row under "Show all" (see
+  // the PR #752 tests), and that pick must survive an unrelated refetch.
+  // Comparing hasUpdate true -> false across the PREVIOUS and CURRENT options
+  // (rather than remembering "why" a key was picked) gets both right: a
+  // deliberately-picked up-to-date row is hasUpdate:false in both snapshots,
+  // so it never matches the drop condition.
+  const prevOptionsRef = useRef<ComponentOption[]>(options);
+  useEffect(() => {
+    const prevOptions = prevOptionsRef.current;
+    prevOptionsRef.current = options;
+    if (prevOptions === options) return;
+
+    const prevByKey = new Map(
+      prevOptions.map((o) => [`${o.type}:${o.slug}`, o]),
+    );
+    const nextByKey = new Map(options.map((o) => [`${o.type}:${o.slug}`, o]));
+
+    setSelectedSlugs((prev) => {
+      let changed = false;
+      const next = new Set(prev);
+      for (const key of prev) {
+        const nextOpt = nextByKey.get(key);
+        if (!nextOpt) {
+          next.delete(key);
+          changed = true;
+          continue;
+        }
+        const prevOpt = prevByKey.get(key);
+        if (prevOpt?.hasUpdate && !nextOpt.hasUpdate) {
+          next.delete(key);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [options]);
+
   const pluginOptions = useMemo(
     () => options.filter((o) => o.type === "plugin"),
     [options],
