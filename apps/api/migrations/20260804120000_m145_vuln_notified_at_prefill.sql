@@ -29,8 +29,12 @@
 -- sorts before versions already applied, so this file also runs on every
 -- database already past m103. There the column exists, the probe finds it, and
 -- the file changes nothing and takes no lock. It never writes to a column it
--- did not add: once m103 has applied, a NULL means a finding not yet alerted,
--- and filling it would suppress that alert.
+-- did not add.
+--
+-- So m145 guarantees two things. On a database that has not yet run m103,
+-- every existing finding has notified_at filled. On a database already past
+-- m103, m145 changes nothing: every notified_at value, NULL or not, stays as
+-- it was.
 --
 -- END STATE IS m103's. notified_at timestamptz, nullable, no default.
 -- db/schema.sql already describes this end state and is not changed.
