@@ -86,6 +86,38 @@ final class RouterCommandFailureLogTest extends TestCase
 	}
 
 	/**
+	 * #754: one failure is ONE log line, whatever line breaks the message
+	 * carries. They are written as the visible sequences \n and \r\n, so the
+	 * whole text survives and nothing in the message can start a line of its
+	 * own — including text shaped like another entry.
+	 */
+	public function test_a_multiline_message_is_logged_as_one_line(): void
+	{
+		$run = $this->runInSubprocess(
+			true,
+			"first line\nsecond line\r\nWPMgr Agent: command failed: command=forged"
+		);
+
+		$this->assertSame( 0, $run['status'], 'subprocess failed: ' . $run['stdout'] . $run['stderr'] );
+
+		$lines = array_values(
+			array_filter(
+				preg_split( '/\R/', $run['log'] ) ?: [],
+				static function ( string $line ): bool {
+					return trim( $line ) !== '';
+				}
+			)
+		);
+
+		$this->assertCount( 1, $lines, 'the failure was logged as ' . count( $lines ) . " lines:\n" . $run['log'] );
+		$this->assertStringContainsString(
+			'reason=first line\nsecond line\r\nWPMgr Agent: command failed: command=forged',
+			$lines[0]
+		);
+		$this->assertStringContainsString( 'command=boom', $lines[0] );
+	}
+
+	/**
 	 * Control: with debug disabled the log stays empty. A production install
 	 * must not start writing on every command failure.
 	 */

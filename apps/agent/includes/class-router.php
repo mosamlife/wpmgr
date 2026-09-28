@@ -28,19 +28,38 @@ final class Router
     private const ATTR_CLAIMS = 'wpmgr_claims';
 
     /**
-     * Character budget for the exception reason echoed in a command-failure
-     * response. The control plane clamps an agent error body to 512 bytes
-     * (apps/api/internal/agentcmd/client.go), so anything longer is only cut
-     * again there, mid-JSON; 200 leaves room for the code, the exception class
-     * and the relative location alongside it.
+     * Character cap on the redacted reason, applied first. It is a readability
+     * cap, not the size guarantee: characters are not bytes on the wire. The
+     * guarantee is MAX_FAILURE_BODY_BYTES.
      */
     private const MAX_REASON_CHARS = 200;
+
+    /**
+     * Byte budget for the WHOLE command-failure response body, as the REST
+     * server encodes it. The control plane keeps only the first 512 bytes of a
+     * non-2xx agent response body (apps/api/internal/agentcmd/client.go), and
+     * the encoding escapes every '/' and every non-ASCII character, so a
+     * 200-character reason can still be several times that. fitFailureBody()
+     * keeps the body inside this budget, shortening the reason first, so that
+     * data.exception and data.at are what survive.
+     */
+    private const MAX_FAILURE_BODY_BYTES = 512;
+
+    /** WP_Error code of a command-failure response. */
+    private const FAILURE_CODE = 'wpmgr_command_failed';
 
     /**
      * Minimum upper- and lower-case letters a run needs before redactReason()
      * will treat it as encoded material rather than a path. See isEncodedRun().
      */
     private const MIN_MIXED_CASE = 6;
+
+    /**
+     * Length, '/' included, at which a case-mixed run that contains a '/'
+     * counts as encoded material with no digit, '+' or '=' in it. See
+     * isEncodedRun().
+     */
+    private const ENCODED_SLASH_RUN = 40;
 
     /**
      * What a command-failure response carries in place of the reason when a
@@ -248,18 +267,24 @@ final class Router
             // signature, expiry, anti-replay, aud (this site) and cmd (this
             // endpoint) all verified — so this response goes to the control
             // plane, never to an anonymous caller.
-            $class    = get_class($e);
-            $location = self::relativeSourcePath($e->getFile()) . ':' . $e->getLine();
+            $class    = self::exceptionClass($e);
+            $location = self::validUtf8(self::relativeSourcePath($e->getFile()) . ':' . $e->getLine());
 
             // The local log is the site owner's own debug.log on their own
             // server, so it carries full detail, including the raw message and
             // the absolute file path PHP reports. That one line is what turns a
             // weeks-long investigation into a minute.
+            //
+            // One failure is one log line. Line breaks in the message are
+            // written as the two-character sequences \r and \n: the full text
+            // survives, and nothing in it can start a log line of its own.
             \WPMgr\Agent\Support\DebugLog::write(
-                'WPMgr Agent: command failed: command=' . $name
-                . ' class=' . $class
-                . ' at=' . $location
-                . ' reason=' . $e->getMessage()
+                self::foldLineBreaks(
+                    'WPMgr Agent: command failed: command=' . $name
+                    . ' class=' . $class
+                    . ' at=' . $location
+                    . ' reason=' . $e->getMessage()
+                )
             );
 
             // The response is transmitted, stored by the control plane and
@@ -274,9 +299,9 @@ final class Router
             // staging dir). A needle table over an open set would be guesswork
             // that silently goes stale, so the reason is sanitised and the
             // stable machine-readable part is the exception class.
-            return new \WP_Error(
-                'wpmgr_command_failed',
-                'Command execution failed: ' . $class . ': ' . self::redactReason($e->getMessage()),
+            [$message, $data] = self::fitFailureBody(
+                $class,
+                self::redactReason($e->getMessage()),
                 [
                     'status'    => 500,
                     'command'   => $name,
@@ -284,6 +309,8 @@ final class Router
                     'at'        => $location,
                 ]
             );
+
+            return new \WP_Error(self::FAILURE_CODE, $message, $data);
         }
 
         return new \WP_REST_Response($result, 200);
@@ -318,6 +345,179 @@ final class Router
 
         // Outside every known root: a bare filename discloses no host layout.
         return basename($normalised);
+    }
+
+    /**
+     * Fit a command-failure response inside MAX_FAILURE_BODY_BYTES.
+     *
+     * Contract: for any input, the body as the REST server encodes it — this
+     * code, message and data, JSON with no flags — is at most
+     * MAX_FAILURE_BODY_BYTES. The reason gives way first: it is shortened, UTF-8
+     * safely, to the longest prefix that fits, then dropped, then the class is
+     * dropped from the message. data.exception and data.at are sent intact
+     * whenever the body fits with a bare message; only a class name or
+     * location that would overflow the budget on its own is shortened, from
+     * the front, keeping its tail.
+     *
+     * @param string $class  Exception class, already valid UTF-8.
+     * @param string $reason Redacted reason.
+     * @param array{status:int,command:string,exception:string,at:string} $data Error data.
+     * @return array{0:string,1:array{status:int,command:string,exception:string,at:string}}
+     */
+    private static function fitFailureBody(string $class, string $reason, array $data): array
+    {
+        $reason = self::validUtf8($reason);
+        $prefix = 'Command execution failed: ' . $class;
+
+        $message = $prefix . ': ' . $reason;
+        if (self::failureBodyBytes($message, $data) <= self::MAX_FAILURE_BODY_BYTES) {
+            return [$message, $data];
+        }
+
+        // The longest reason prefix that fits. Encoded size never shrinks as
+        // the prefix grows, so a binary search over its length is exact.
+        $best = null;
+        $low  = 0;
+        $high = self::charLength($reason) - 1;
+        while ($low <= $high) {
+            $mid       = intdiv($low + $high, 2);
+            $candidate = $prefix . ': ' . self::clamp($reason, $mid);
+            if (self::failureBodyBytes($candidate, $data) <= self::MAX_FAILURE_BODY_BYTES) {
+                $best = $candidate;
+                $low  = $mid + 1;
+            } else {
+                $high = $mid - 1;
+            }
+        }
+        if ($best !== null) {
+            return [$best, $data];
+        }
+
+        foreach ([$prefix, 'Command execution failed.'] as $message) {
+            if (self::failureBodyBytes($message, $data) <= self::MAX_FAILURE_BODY_BYTES) {
+                return [$message, $data];
+            }
+        }
+
+        // Only a class name or location that alone overflows the budget gets
+        // here. Keep the tail of the longer one, halving until the body fits.
+        $original = ['exception' => $data['exception'], 'at' => $data['at']];
+        $keep     = [
+            'exception' => self::charLength($data['exception']),
+            'at'        => self::charLength($data['at']),
+        ];
+        while (self::failureBodyBytes($message, $data) > self::MAX_FAILURE_BODY_BYTES) {
+            $key = $keep['exception'] >= $keep['at'] ? 'exception' : 'at';
+            if ($keep[$key] === 0) {
+                break;
+            }
+            $keep[$key] = intdiv($keep[$key], 2);
+            $data[$key] = '...' . self::tail($original[$key], $keep[$key]);
+        }
+
+        return [$message, $data];
+    }
+
+    /**
+     * Size in bytes of a command-failure body as the REST server sends it: an
+     * error response is this code, message and data, JSON-encoded with no
+     * flags, so every '/' and every non-ASCII character is escaped.
+     *
+     * @param string $message Message.
+     * @param array{status:int,command:string,exception:string,at:string} $data Error data.
+     * @return int
+     */
+    private static function failureBodyBytes(string $message, array $data): int
+    {
+        $body = [
+            'code'    => self::FAILURE_CODE,
+            'message' => $message,
+            'data'    => $data,
+        ];
+        $json = wp_json_encode($body);
+
+        return is_string($json) ? strlen($json) : PHP_INT_MAX;
+    }
+
+    /**
+     * The exception's class name as it may be reported. An anonymous class's
+     * runtime name carries a NUL byte followed by where it was declared; only
+     * the part before the NUL names the class.
+     *
+     * @param \Throwable $e Exception.
+     * @return string
+     */
+    private static function exceptionClass(\Throwable $e): string
+    {
+        $class = get_class($e);
+        $nul   = strpos($class, "\0");
+
+        return self::validUtf8($nul === false ? $class : substr($class, 0, $nul));
+    }
+
+    /**
+     * Write CR and LF as the visible sequences \r and \n, so a value occupies
+     * exactly one log line and keeps its full text.
+     *
+     * @param string $line Line to fold.
+     * @return string
+     */
+    private static function foldLineBreaks(string $line): string
+    {
+        return strtr($line, ["\r\n" => '\r\n', "\r" => '\r', "\n" => '\n']);
+    }
+
+    /**
+     * Return the value unchanged when it is valid UTF-8; otherwise with each
+     * invalid sequence replaced by U+FFFD, so it encodes to JSON at a size
+     * that can be measured in advance.
+     *
+     * @param string $value Value.
+     * @return string
+     */
+    private static function validUtf8(string $value): string
+    {
+        if (preg_match('//u', $value) === 1) {
+            return $value;
+        }
+
+        $json    = wp_json_encode($value, JSON_INVALID_UTF8_SUBSTITUTE);
+        $decoded = is_string($json) ? json_decode($json) : null;
+
+        return is_string($decoded) ? $decoded : '';
+    }
+
+    /**
+     * Length in characters when mbstring is present, else in bytes — the
+     * same unit clamp() cuts in.
+     *
+     * @param string $value Value.
+     * @return int
+     */
+    private static function charLength(string $value): int
+    {
+        return function_exists('mb_strlen') ? (int) mb_strlen($value, 'UTF-8') : strlen($value);
+    }
+
+    /**
+     * The last $chars characters of a value, without splitting a UTF-8
+     * sequence.
+     *
+     * @param string $value Value.
+     * @param int    $chars Characters to keep.
+     * @return string
+     */
+    private static function tail(string $value, int $chars): string
+    {
+        if ($chars <= 0) {
+            return '';
+        }
+        if (function_exists('mb_substr')) {
+            return (string) mb_substr($value, -$chars, null, 'UTF-8');
+        }
+
+        // No mbstring: cut on bytes, then drop leading continuation bytes.
+        return ltrim(substr($value, -$chars), "\x80..\xBF");
     }
 
     /**
@@ -395,8 +595,9 @@ final class Router
         // The decision is a shape test on the whole run, set out in
         // isEncodedRun(): a run that ends in base64 padding is always encoded
         // material; otherwise it is only when the run is substantially
-        // case-MIXED and carries a digit, '+' or '=', over the same
-        // 32-character budget (slashes excluded from the count). That
+        // case-MIXED, over the same 32-character budget (slashes excluded
+        // from the count), and either carries a digit, '+' or '=', or is a
+        // long run that contains a '/'. That
         // predicate is chosen for what it CANNOT match. Every path, table name,
         // option key and command name this plugin emits is single-case and none
         // ends in '=', so none of them can satisfy it, and
@@ -405,12 +606,13 @@ final class Router
         // destroyed by simply adding '/' to the alphabet below.
         //
         // Stated honestly in both directions. Not caught here: an unpadded run
-        // that is not case-mixed, or that carries no digit and neither '+' nor
-        // '=', or that falls under the budget once its slashes are set aside.
-        // Caught here: a case-mixed path that carries a digit, '+' or '=', and
-        // any run that ends in '='. The second is the cheaper error — a
-        // redacted identifier is still intact in the local debug log; key
-        // material in a dashboard is not recoverable from.
+        // that is not case-mixed, or that falls under the budget once its
+        // slashes are set aside, or a short one that carries no digit, '+' or
+        // '='. Caught here: a case-mixed path that carries a digit, '+' or '=',
+        // a long case-mixed path with a '/' in it, and any run that ends in
+        // '='; isEncodedRun() gives the exact lengths. The second is the
+        // cheaper error — a redacted identifier is still intact in the local
+        // debug log; key material in a dashboard is not recoverable from.
         //
         // A redacted run that starts with '/' keeps that '/', and the
         // absolute-path rule below takes "<redacted>" as a path component. So a
@@ -493,16 +695,25 @@ final class Router
      * whatever its case mix, so a padded key — a 32-byte key encodes to 44
      * characters ending in '=' — is caught whenever it stands as its own run.
      * Any other run qualifies only when it is case-mixed (at least
-     * MIN_MIXED_CASE letters of each case) AND carries a digit, '+' or '=',
-     * over a 32-character budget that ignores '/'.
+     * MIN_MIXED_CASE letters of each case) over a 32-character budget that
+     * ignores '/', AND either carries a digit, '+' or '=', or contains a '/'
+     * and is at least ENCODED_SLASH_RUN characters long.
      *
      * What that leaves uncaught is an unpadded run with fewer than
-     * MIN_MIXED_CASE letters of either case, or with no digit and neither '+'
-     * nor '=', or with fewer than 32 characters once '/' is set aside; an
-     * unpadded key can take any of those shapes. A single-case run qualifies
-     * only through the padding branch. Every path, table name, option key and
-     * command name this plugin emits is single-case and none ends in '=', so
-     * none of them qualifies.
+     * MIN_MIXED_CASE letters of either case; one with fewer than 32 characters
+     * once '/' is set aside; and one shorter than ENCODED_SLASH_RUN that
+     * carries no digit, '+' or '='. An unpadded 32-byte key is long enough
+     * that only the first two shapes apply to it. A run with no '/' at all
+     * is left to the slash-free pass, which takes any 32-character run.
+     *
+     * The over-fire this accepts: a case-mixed run of ENCODED_SLASH_RUN
+     * characters or more that contains a '/' qualifies with no digit or symbol
+     * at all, so a long relative path with at least MIN_MIXED_CASE letters of
+     * each case — a third-party class path, say — comes out as <redacted>.
+     *
+     * A single-case run qualifies only through the padding branch. Every path,
+     * table name, option key and command name this plugin emits is single-case
+     * and none ends in '=', so none of them qualifies.
      *
      * Byte-oriented by design, like every pattern in redactReason(): a
      * multibyte-aware test would have to trust the message to be valid UTF-8,
@@ -545,10 +756,13 @@ final class Router
             return false;
         }
 
-        // A digit, or '+' or '=' anywhere in the run. Only the padding check
-        // above is decisive on its own; this clause, like the gate before it,
-        // is a likelihood.
-        return $digit >= 1 || strpbrk($run, '+=') !== false;
+        // A digit, or '+' or '=' anywhere in the run, or a '/' in a run of at
+        // least ENCODED_SLASH_RUN characters. Only the padding check above is
+        // decisive on its own; this clause, like the gate before it, is a
+        // likelihood.
+        return $digit >= 1
+            || strpbrk($run, '+=') !== false
+            || (strlen($run) >= self::ENCODED_SLASH_RUN && strpos($run, '/') !== false);
     }
 
     /**

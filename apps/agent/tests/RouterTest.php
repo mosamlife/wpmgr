@@ -245,6 +245,9 @@ final class RouterTest extends TestCase
 			'unpadded key with a digit'           => 'Quuv2rC/E4vYuaEw/i55soD7zlzCIHHFipbimo2QHGo',
 			// No digit: only its '+' marks it as encoded.
 			'unpadded key, plus and no digit'     => 'lXsoS/nsflSfFisFl/boKcLKEqsv/ZKSJXfiUZzbW+Q',
+			// No digit, '+' or '=': only length plus a '/' marks these.
+			'unpadded key, slash only (a)'        => 'XBdOdyJ/XJllQvQIAjsdcQ/PyiiRcOOiwYxMukFVQlI',
+			'unpadded key, slash only (b)'        => 'uDjBQFxylLNWjnhpokxYJoDgoWRHuZ/iWvaQuOfOZlc',
 			// The at-rest envelope: iv . tag . ciphertext, ~92 raw bytes.
 			'envelope'                            => '5bz9N3ww7Ce8KKPuh/EsRN75w/udeH1odTVrBbKuJBaI0bSATp/YJfEYUVAiwJTNZ1XLTBmQxsb/ZCdqE45NwXf3sTLBAbKQl/4SxCEdBZiVklsftCaJzXgtSTg=',
 		);
@@ -282,7 +285,7 @@ final class RouterTest extends TestCase
 
 	/**
 	 * #754: the stated limit of the encoded-run pass, pinned as a contract. An
-	 * UNPADDED key with no digit and neither '+' nor '=' does not qualify as
+	 * UNPADDED key with fewer than six letters of one case does not qualify as
 	 * encoded, and a '/' inside it keeps every piece below the slash-free
 	 * threshold, so it comes through. Each of these is a real encoding of
 	 * random bytes.
@@ -293,16 +296,16 @@ final class RouterTest extends TestCase
 	 *
 	 * @return void
 	 */
-	public function test_redaction_limit_unpadded_key_with_no_digit_plus_or_equals(): void
+	public function test_redaction_limit_unpadded_key_that_is_not_case_mixed(): void
 	{
 		$uncaught = array(
-			'XBdOdyJ/XJllQvQIAjsdcQ/PyiiRcOOiwYxMukFVQlI',
-			'uDjBQFxylLNWjnhpokxYJoDgoWRHuZ/iWvaQuOfOZlc',
+			// Four upper-case letters.
+			'8wghyLbmBwxzgguxz6gptdaajh43m/mbka0o/bcVoAs',
+			// Five lower-case letters.
+			'G/2H5NR4J/PoUT4eKnVGSH8M63CCUOzF7IW7A9If/NQ',
 		);
 
 		foreach ( $uncaught as $key ) {
-			$this->assertSame( 0, preg_match( '~[0-9+=]~', $key ), 'fixture must carry no digit, + or =' );
-
 			$response = $this->dispatchThrowing( new \RuntimeException( 'Keystore: cannot unwrap ' . $key ) );
 
 			$this->assertSame(
@@ -310,6 +313,99 @@ final class RouterTest extends TestCase
 				$response->get_error_message()
 			);
 		}
+	}
+
+	/**
+	 * #754: the length rule for a case-mixed run that carries a '/' and no
+	 * digit, '+' or '=', both sides of the line. At 40 characters it is
+	 * redacted; one shorter, it is not. The accepted over-fire is pinned too:
+	 * a long case-mixed relative path is redacted by this rule.
+	 *
+	 * @return void
+	 */
+	public function test_case_mixed_slash_run_is_redacted_from_forty_characters(): void
+	{
+		$unit  = 'AbCdEfGhIjKlMnOpQrSt/';
+		$short = substr( str_repeat( $unit, 3 ), 0, 39 );
+		$long  = substr( str_repeat( $unit, 3 ), 0, 40 );
+
+		$this->assertSame( 0, preg_match( '~[0-9+=]~', $short . $long ), 'fixture must carry no digit, + or =' );
+		$this->assertStringEndsNotWith( '/', $short );
+		$this->assertStringEndsNotWith( '/', $long );
+
+		$this->assertSame(
+			'Command execution failed: RuntimeException: cannot unwrap ' . $short,
+			$this->dispatchThrowing( new \RuntimeException( 'cannot unwrap ' . $short ) )->get_error_message()
+		);
+		$this->assertSame(
+			'Command execution failed: RuntimeException: cannot unwrap <redacted>',
+			$this->dispatchThrowing( new \RuntimeException( 'cannot unwrap ' . $long ) )->get_error_message()
+		);
+
+		// The over-fire this rule accepts, stated as a contract.
+		$this->assertSame(
+			'Command execution failed: RuntimeException: cannot load <redacted>',
+			$this->dispatchThrowing(
+				new \RuntimeException( 'cannot load wp-content/plugins/example/src/Internal/DataStores/Orders/OrdersTableDataStore' )
+			)->get_error_message()
+		);
+	}
+
+	/**
+	 * #754: the whole failure body, encoded exactly as the REST server encodes
+	 * an error, fits the control plane's 512-byte window with data.exception
+	 * and data.at intact — for reasons whose encoded size is several times
+	 * their character count, and with a long namespaced exception class, which
+	 * the body carries twice.
+	 *
+	 * @return void
+	 */
+	public function test_failure_body_fits_the_control_plane_window(): void
+	{
+		$long = RouterTestBudgetExceptionWithALongNameStandingInForADeeplyNamespacedPluginException::class;
+
+		$cases = array(
+			'cjk'                => array( \RuntimeException::class, str_repeat( '鍵', 300 ) ),
+			'emoji'              => array( \RuntimeException::class, str_repeat( '🔑', 300 ) ),
+			'slash-heavy'        => array( \RuntimeException::class, 'cannot read ' . str_repeat( 'a/', 150 ) ),
+			'long class, ascii'  => array( $long, str_repeat( 'verbose failure ', 20 ) ),
+			'long class, cjk'    => array( $long, str_repeat( '鍵', 300 ) ),
+			'long class, emoji'  => array( $long, str_repeat( '🔑', 300 ) ),
+			'long class, slashy' => array( $long, 'cannot read ' . str_repeat( 'a/', 150 ) ),
+		);
+
+		foreach ( $cases as $label => $case ) {
+			list( $class, $reason ) = $case;
+
+			$response = $this->dispatchThrowing( new $class( $reason ) );
+			$body     = $this->restBody( $response );
+			$decoded  = json_decode( $body, true );
+
+			$this->assertLessThanOrEqual( 512, strlen( $body ), $label . ': body is ' . strlen( $body ) . ' bytes' );
+			$this->assertIsArray( $decoded, $label . ': body is not valid JSON' );
+			$this->assertSame( $class, $decoded['data']['exception'] ?? null, $label . ': data.exception did not survive' );
+			$this->assertMatchesRegularExpression( '~^[^/].*RouterTest\.php:\d+$~', (string) ( $decoded['data']['at'] ?? '' ), $label . ': data.at did not survive' );
+			$this->assertStringStartsWith( 'Command execution failed: ' . $class, (string) $decoded['message'], $label );
+		}
+	}
+
+	/**
+	 * #754: an anonymous exception class is reported by the name before its
+	 * NUL byte. The part after it is where the class was declared — an
+	 * absolute path — and must not reach the response.
+	 *
+	 * @return void
+	 */
+	public function test_anonymous_exception_class_does_not_carry_its_declaring_path(): void
+	{
+		$response = $this->dispatchThrowing( new class( 'boom' ) extends \RuntimeException {} );
+		$data     = $response->get_error_data();
+		$wire     = $this->wireBlob( $response );
+
+		$this->assertSame( 'RuntimeException@anonymous', $data['exception'] ?? null );
+		$this->assertStringNotContainsString( "\0", $wire );
+		$this->assertStringNotContainsString( '\u0000', $wire );
+		$this->assertStringNotContainsString( dirname( __DIR__ ), $wire );
 	}
 
 	/**
@@ -929,6 +1025,24 @@ final class RouterTest extends TestCase
 	}
 
 	/**
+	 * The error body exactly as the REST server sends it: code, message and
+	 * data, JSON-encoded with no flags, so '/' and non-ASCII are escaped.
+	 *
+	 * @param \WP_Error $error The error.
+	 * @return string
+	 */
+	private function restBody( \WP_Error $error ): string
+	{
+		return (string) json_encode(
+			[
+				'code'    => $error->get_error_code(),
+				'message' => $error->get_error_message(),
+				'data'    => $error->get_error_data(),
+			]
+		);
+	}
+
+	/**
 	 * Build a CommandInterface stub whose execute() throws.
 	 *
 	 * @param string     $name      Command name.
@@ -1013,4 +1127,12 @@ final class RouterTest extends TestCase
 			}
 		};
 	}
+}
+
+/**
+ * An exception whose fully qualified name is long, standing in for a deeply
+ * namespaced plugin exception: the failure body carries it twice.
+ */
+final class RouterTestBudgetExceptionWithALongNameStandingInForADeeplyNamespacedPluginException extends \RuntimeException
+{
 }
