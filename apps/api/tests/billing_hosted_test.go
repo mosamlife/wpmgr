@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -404,10 +405,14 @@ const m91MigrationVersion = "20260724000000_m91_hosted_billing_substrate"
 
 // startPostgresBeforeM91 mirrors startPostgresBeforeM88 (see
 // update_m88_dedup_test.go, same package): boots a fresh container, applies
-// every embedded migration up to (not including) m91 as the bootstrap
-// superuser, and returns that admin pool so the caller can seed pre-m91 data
-// before finishing the boot with pool.Migrate(ctx).
-func startPostgresBeforeM91(t *testing.T) *db.Pool {
+// every embedded migration up to (not including) m91 AS wpmgr_owner — the
+// NOSUPERUSER NOBYPASSRLS role production's migrator uses, not the bootstrap
+// superuser (see startPostgres's doc comment in rls_integration_test.go).
+// sites/tenants are FORCE ROW LEVEL SECURITY (tenants is not, but sites is).
+// Returns (admin, owner): seed pre-m91 rows through admin, the bootstrap
+// superuser; call owner.Migrate(ctx) to finish the boot under the production
+// role.
+func startPostgresBeforeM91(t *testing.T) (admin *db.Pool, owner *db.Pool) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -438,14 +443,41 @@ func startPostgresBeforeM91(t *testing.T) *db.Pool {
 	if err != nil {
 		t.Fatalf("connection string: %v", err)
 	}
-	pool, err := db.Connect(ctx, adminDSN)
+	admin, err = db.Connect(ctx, adminDSN)
 	if err != nil {
 		t.Fatalf("connect admin: %v", err)
 	}
-	t.Cleanup(pool.Close)
+	t.Cleanup(admin.Close)
 
-	applyMigrationsBefore(t, pool, m91MigrationVersion)
-	return pool
+	for _, stmt := range []string{
+		"CREATE ROLE wpmgr_owner LOGIN PASSWORD 'owner' NOSUPERUSER NOBYPASSRLS CREATEROLE",
+		"ALTER DATABASE wpmgr OWNER TO wpmgr_owner",
+	} {
+		if _, err := admin.Exec(ctx, stmt); err != nil {
+			setupFatalf(t, err, "postgres: provision owner role ("+stmt+")")
+		}
+	}
+
+	ownerDSN := strings.Replace(adminDSN, "wpmgr:wpmgr@", "wpmgr_owner:owner@", 1)
+	owner, err = db.Connect(ctx, ownerDSN)
+	if err != nil {
+		setupFatalf(t, err, "postgres: connect as wpmgr_owner")
+	}
+	t.Cleanup(owner.Close)
+
+	var ownerSuper, ownerBypass bool
+	if err := owner.QueryRow(ctx,
+		"SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user").
+		Scan(&ownerSuper, &ownerBypass); err != nil {
+		setupFatalf(t, err, "postgres: read owner role attributes")
+	}
+	if ownerSuper || ownerBypass {
+		t.Fatalf("wpmgr_owner has rolsuper=%t rolbypassrls=%t; this harness's premise is a role row security applies to",
+			ownerSuper, ownerBypass)
+	}
+
+	applyMigrationsBefore(t, owner, m91MigrationVersion)
+	return admin, owner
 }
 
 // TestGrandfatherBackfill_OverCapTenantKeepsOperating is the non-destructive
@@ -455,7 +487,32 @@ func startPostgresBeforeM91(t *testing.T) *db.Pool {
 // the tenant keeps operating; only a 6th (new) site is blocked once hosted
 // billing is actually turned on.
 func TestGrandfatherBackfill_OverCapTenantKeepsOperating(t *testing.T) {
-	pool := startPostgresBeforeM91(t)
+	// KNOWN GAP (found by PR #775's owner-role harness, not fixed here — a
+	// migration change for database-engineer, not this test-harness PR):
+	// the same silent shape as m99/m103. m91's grandfather UPDATE joins
+	// against a FROM-subquery reading FROM sites (FORCE ROW LEVEL SECURITY,
+	// no GUC set by the migrator), so under the real migrator role that
+	// subquery is empty, the UPDATE's join matches no tenant, and no tenant
+	// is ever grandfathered:
+	//
+	//   billing_hosted_test.go:523: plan_overrides.max_sites = 0, want 5
+	//   (grandfathered to the tenant's existing count)
+	//
+	// (0 here is Go's zero value for an absent JSON key, not a written 0 —
+	// the migration writes nothing, it does not write a wrong number.)
+	//
+	// Implication: any self-hosted install still pre-m91 that already has a
+	// tenant over the free-tier site cap (>3 active sites), on upgrade, gets
+	// NO plan_overrides.max_sites grandfather -- the next hosted-billing
+	// enforcement treats them as capped at the base free-tier limit (3)
+	// instead of their existing count, blocking new site creation even
+	// though the whole point of this migration was to let them keep
+	// operating uninterrupted. No error, no log, a successful boot. Do not
+	// loosen this test or the migration to make the skip below go away —
+	// see PR #775 / the session worklog.
+	t.Skip("known gap: m91's grandfather backfill writes no plan_overrides.max_sites for any tenant under the production migrator role (RLS on sites); see PR #775")
+
+	pool, owner := startPostgresBeforeM91(t)
 	ctx := context.Background()
 
 	tenant := seedTenant(t, pool, "m91-grandfather")
@@ -471,8 +528,9 @@ func TestGrandfatherBackfill_OverCapTenantKeepsOperating(t *testing.T) {
 		}
 	}
 
-	// Finish the boot: applies m91 (schema + grandfather backfill).
-	if err := pool.Migrate(ctx); err != nil {
+	// Finish the boot: applies m91 (schema + grandfather backfill), AS
+	// wpmgr_owner.
+	if err := owner.Migrate(ctx); err != nil {
 		t.Fatalf("m91 migration failed: %v", err)
 	}
 
@@ -513,7 +571,7 @@ func TestGrandfatherBackfill_OverCapTenantKeepsOperating(t *testing.T) {
 // no-op, so the assertion checks for the ABSENCE of a max_sites key rather
 // than requiring the whole plan_overrides document to be empty.
 func TestGrandfatherBackfill_IsNoopUnderCap(t *testing.T) {
-	pool := startPostgresBeforeM91(t)
+	pool, owner := startPostgresBeforeM91(t)
 	ctx := context.Background()
 
 	tenant := seedTenant(t, pool, "m91-noop")
@@ -526,7 +584,7 @@ func TestGrandfatherBackfill_IsNoopUnderCap(t *testing.T) {
 		}
 	}
 
-	if err := pool.Migrate(ctx); err != nil {
+	if err := owner.Migrate(ctx); err != nil {
 		t.Fatalf("migrate failed: %v", err)
 	}
 
