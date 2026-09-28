@@ -65,9 +65,12 @@ const lateRunLockBound = 2 * time.Second
 // mutatedMigrationBound is the wall-clock ceiling given to a MUTATED
 // (guard-stripped) migration body before this harness's own context cancels
 // it. 6s comfortably exceeds m141/m143's internal 5s lock_timeout, so their
-// own 55P03 fires first; m145 sets no lock_timeout of its own and would
-// otherwise hang until the holder releases, which nothing does before this
-// call returns, so this bound is what turns that hang into a red result.
+// own 55P03 fires first when their fires check is run against a held
+// ROW EXCLUSIVE holder, as designed. m145's fires check needs no such
+// ceiling to turn a hang into a red result — its guard-stripped body fails
+// fast on a duplicate column and is deliberately run before any holder is
+// taken — but this bound still applies to it as the general ceiling on
+// every call through mutatedMigrationMustBlockOrError.
 const mutatedMigrationBound = 6 * time.Second
 
 // holdRowExclusiveOpen opens a second connection on pool (the SAME role
@@ -166,8 +169,11 @@ func assertFileTakesNoLockOnRelation(t *testing.T, pool *db.Pool, relation, body
 // migration's SQL with its early-return/probe check stripped — never the
 // committed file) as a single implicit-transaction statement, bounded by
 // mutatedMigrationBound, and fails the test unless it fails with EXACTLY
-// wantSQLState. Meant to be called while a holdRowExclusiveOpen on the
-// migration's target table is open.
+// wantSQLState. For m141 and m143, meant to be called while a
+// holdRowExclusiveOpen on the migration's target table is open — their
+// expected SQLSTATE is a proof of blocking against that hold. m145's fires
+// proof is state-based, not lock-based (see below), so its caller runs this
+// deliberately BEFORE taking any hold.
 //
 // Accepting any non-nil error here is not a proof: for m145, once the target
 // column already exists, the guard-stripped body is a bare
