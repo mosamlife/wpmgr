@@ -453,11 +453,26 @@ Grafana then ships with the WPMgr dashboards pre-provisioned. See
 - **Migrations** run automatically on API startup (Atlas, ADR-002).
 - **Default credentials in `.env.example` are for local dev only** — rotate the
   session secret, DB password, and S3 keys before any network-exposed deploy.
-- Put a TLS-terminating reverse proxy (the bundled `infra/nginx/` config, or
-  your own) in front of the published API port (`WPMGR_API_PORT`, default
-  `:8081`) for production. If it is your own rather than the bundled config,
-  see [Reverse proxy: paths that must reach the API](#proxy-paths) for the four
-  root-mounted paths an `/api/`-only rule will miss.
+- **The bundled nginx (`WPMGR_WEB_PORT`) is the supported entry point for
+  production.** `infra/docker-compose.yml` publishes the API port
+  (`WPMGR_API_PORT`, default `:8081`) to `127.0.0.1` only, so it is reachable
+  from the host itself but not from another host or a separate Docker
+  network. Put your TLS-terminating reverse proxy — the bundled
+  `infra/nginx/` config, or your own — in front of `WPMGR_WEB_PORT` instead;
+  it already forwards to the API in-network. If your reverse proxy runs on
+  another host or in a separate Docker network and genuinely needs to reach
+  the API port directly, that means deliberately rebinding it in
+  `infra/docker-compose.yml` (there is no override variable, by design — see
+  the comment on that line), and you must then also set
+  [`WPMGR_AUTH_PROXY_HOPS`](#proxy-hops) to match the real proxy chain in
+  front of it. If you use your own reverse proxy rather than the bundled
+  config, see [Reverse proxy: paths that must reach the API](#proxy-paths)
+  for the four root-mounted paths an `/api/`-only rule will miss.
+- **Login admission control (`WPMGR_AUTH_LOGIN_MODE`) is opt-in.** `observe`
+  is the default and refuses nothing; `enforce` refuses sign-in attempts over
+  budget, and is only as safe as the `WPMGR_AUTH_PROXY_HOPS` value and the
+  API-port bind above being correct. See
+  [Login admission](#login-admission).
 - **First-run ownership requires the provisioning claim.** The dashboard Sign
   Up form cannot create the first account. `POST /auth/register` only grants
   ownership when the request carries the `X-Wpmgr-Bootstrap-Claim` header set

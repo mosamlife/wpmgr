@@ -6,6 +6,14 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ## [Unreleased]
 
+### Added
+
+- Opt-in login admission budgets for POST /auth/login. WPMGR_AUTH_LOGIN_MODE=enforce refuses a sign in attempt that is over budget with 429 too_many_attempts and a Retry-After header. observe remains the default and refuses nothing (#718).
+
+### Changed
+
+- The bundled infra/docker-compose.yml now publishes the API port (WPMGR_API_PORT) to loopback only, not every interface. An operator whose own reverse proxy runs on another host or in a separate Docker network should point it at the bundled nginx (WPMGR_WEB_PORT) instead; reaching the API port directly from off the host now requires deliberately rebinding it and setting WPMGR_AUTH_PROXY_HOPS to match the real proxy chain (#718).
+
 ## [0.61.164] - 2026-09-28
 
 ### Fixed
