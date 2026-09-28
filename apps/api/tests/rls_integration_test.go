@@ -135,6 +135,21 @@ func setupFatalfOrSkipIfDaemonDied(t testing.TB, ctx context.Context, startErr e
 // migration body itself, and its DSN is kept (via adminDSNs) purely as the
 // existing connectAdmin() escape hatch for tests that must tamper with data
 // outside RLS/privilege constraints entirely (e.g. the append-only audit_log).
+//
+// What this change does and does not catch, precisely, because it is easy to
+// overstate: every startPostgres(t) call migrates a freshly created, EMPTY
+// database, same as a fresh install. On an empty database this still catches
+// a migration that needs superuser, ownership or role privileges the real
+// migrator lacks, or that writes to a FORCE ROW LEVEL SECURITY table in a way
+// that fails regardless of whether any rows exist yet (a bad GRANT, a
+// privilege-gated DDL statement). It does NOT, by itself, catch m136's actual
+// failure shape — a backfill whose UPDATE/INSERT silently touches zero rows
+// under RLS because the migrator sets no GUC. On an empty table that is
+// indistinguishable from correct behaviour: zero rows were the right answer
+// either way. Catching that class requires a test that seeds rows BEFORE
+// calling Migrate, so the migration has real pre-existing data to (fail to)
+// act on — see e.g. update_m88_dedup_test.go's startPostgresBeforeM88 and its
+// siblings, which is where this change actually found several such bugs.
 func startPostgres(t testing.TB) *db.Pool {
 	t.Helper()
 	ctx := context.Background()
