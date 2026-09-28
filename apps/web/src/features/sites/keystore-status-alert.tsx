@@ -1,6 +1,6 @@
 import { AlertTriangle } from "lucide-react";
 
-import type { Site } from "@wpmgr/api";
+import type { Site, SiteKeystoreStatus } from "@wpmgr/api";
 
 // KeystoreStatusAlert, GH #753 slice 1b.
 //
@@ -51,11 +51,32 @@ const UNREADABLE_ITEM_LABELS: Record<string, string> = {
   email_connection_secrets: "email credentials",
 };
 
-// Returns null when there is no usable item detail to name (the "no items
-// map" case), so the caller can fall back to a heading that doesn't pretend
-// to know what's affected.
-function describeUnreadableItems(unreadable: string[] | undefined): string | null {
-  if (!unreadable || unreadable.length === 0) return null;
+// PR #778 item 1 (Greptile review). `status.unreadable` is a convenience list
+// that is supposed to mirror the "unreadable" entries in `status.items`, but
+// a push can arrive with a usable `items` map and an `unreadable` field that
+// is missing or malformed (not an array, since the tolerant decode on the CP
+// side means the wire shape isn't guaranteed even though the generated type
+// says `Array<string>`). Preferring the list and silently giving up when it
+// isn't usable threw away detail the `items` map still had.
+//
+// Resolves the actual set of unreadable item keys: the `unreadable` list when
+// it is a non-empty array, otherwise the `items` entries whose value is
+// "unreadable". When both are present and disagree, the list wins, since it
+// is the field the control plane populates deliberately for this purpose
+// rather than a byproduct of the per-item map.
+function resolveUnreadableKeys(status: SiteKeystoreStatus | undefined): string[] {
+  const list = status?.unreadable;
+  if (Array.isArray(list) && list.length > 0) return list;
+  const items = status?.items;
+  if (!items || typeof items !== "object") return [];
+  return Object.keys(items).filter((key) => items[key] === "unreadable");
+}
+
+// Returns null when there is no usable item detail to name (neither the
+// `unreadable` list nor the `items` map yielded anything), so the caller can
+// fall back to a heading that doesn't pretend to know what's affected.
+function describeUnreadableItems(unreadable: string[]): string | null {
+  if (unreadable.length === 0) return null;
   const labels = new Set<string>();
   for (const key of unreadable) {
     labels.add(UNREADABLE_ITEM_LABELS[key] ?? "other stored credentials");
@@ -80,7 +101,7 @@ export function KeystoreStatusAlert({ site }: { site: Site }) {
   const backupsAffected =
     state === "key_unavailable" || status?.items?.age_identity === "unreadable";
   const saltsSuspected = status?.key_source === "salts";
-  const unreadableItems = describeUnreadableItems(status?.unreadable);
+  const unreadableItems = describeUnreadableItems(resolveUnreadableKeys(status));
 
   const heading = backupsAffected
     ? "Backups cannot run for this site."

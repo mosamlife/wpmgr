@@ -191,4 +191,69 @@ describe("KeystoreStatusAlert: copy branches (item 2)", () => {
     expect(screen.queryByText(/some stored credentials/)).not.toBeInTheDocument();
     expect(screen.queryByText("Backups cannot run for this site.")).not.toBeInTheDocument();
   });
+
+  // PR #778 item 1 (Greptile review). Before this fix, describeUnreadableItems
+  // took `status.unreadable` directly and fell back to the no-detail copy the
+  // moment that list wasn't a usable array, even when `status.items` still
+  // named exactly which items were unreadable. These three pin the fallback:
+  // list missing, list malformed, and list/map disagreement (list wins).
+  it("derives the unreadable set from items when the unreadable list is missing but items is usable", async () => {
+    renderAlert(
+      siteWithKeystore({
+        state: "unreadable",
+        items: { age_identity: "ok", email_secret: "unreadable" },
+      }),
+    );
+    expect(
+      await screen.findByText("This site's email credentials cannot be read."),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        "This site has stored credentials that cannot be read, and it is not known whether backups are affected.",
+      ),
+    ).not.toBeInTheDocument();
+  });
+
+  it("derives the unreadable set from items when the unreadable list is malformed (an object, not an array)", async () => {
+    renderAlert(
+      siteWithKeystore({
+        state: "unreadable",
+        items: { age_identity: "ok", site_keypair: "unreadable" },
+        unreadable: { age_identity: "ok", site_keypair: "unreadable" },
+      }),
+    );
+    expect(
+      await screen.findByText("This site's connection keys cannot be read."),
+    ).toBeInTheDocument();
+  });
+
+  it("derives the unreadable set from items when the unreadable list is malformed (a string, not an array)", async () => {
+    renderAlert(
+      siteWithKeystore({
+        state: "unreadable",
+        items: { age_identity: "ok", email_secret: "unreadable" },
+        unreadable: "email_secret",
+      }),
+    );
+    expect(
+      await screen.findByText("This site's email credentials cannot be read."),
+    ).toBeInTheDocument();
+  });
+
+  it("prefers the unreadable list over items when the two disagree", async () => {
+    renderAlert(
+      siteWithKeystore({
+        state: "unreadable",
+        // items says only email_secret is unreadable; the list says
+        // site_keypair is too. The list is the field the control plane
+        // populates deliberately for this purpose, so it wins: the heading
+        // names connection keys, not just email credentials.
+        items: { age_identity: "ok", email_secret: "unreadable" },
+        unreadable: ["email_secret", "site_keypair"],
+      }),
+    );
+    expect(
+      await screen.findByText("This site's email credentials and connection keys cannot be read."),
+    ).toBeInTheDocument();
+  });
 });
