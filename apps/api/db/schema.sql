@@ -499,48 +499,15 @@ CREATE POLICY sites_agent ON sites
     USING (current_setting('app.agent', true) = 'on')
     WITH CHECK (current_setting('app.agent', true) = 'on');
 
--- M22 shared-read: a site-scoped collaborator (no membership in the owning org)
--- may READ the metadata of sites shared with them, for the "Shared with me"
--- surface. Self-read style, keyed on app.user_id via a non-expired site_shares
--- grant. SELECT-only and PERMISSIVE — therefore OR-combined with the other
--- permissive policies but still AND-gated by the RESTRICTIVE sites_site_scope
--- policy (M19), so it CANNOT widen a site-scoped read. On bare-tenant/agent/
--- enroll paths app.user_id is unset → the subquery matches nothing. It only adds
--- visibility under InUserTx (the self-read context with no site_scope gate).
-CREATE POLICY sites_shared_read ON sites
-    FOR SELECT
-    USING (EXISTS (
-        SELECT 1 FROM site_shares s
-        WHERE s.site_id = sites.id
-          AND s.user_id = nullif(current_setting('app.user_id', true), '')::uuid
-          AND (s.expires_at IS NULL OR s.expires_at > now())
-    ));
+-- Two more permissive SELECT policies on sites, sites_shared_read (M22) and
+-- sites_client_read (m66), read site_shares, clients and client_members, so
+-- they are declared after those tables, further down this file.
 
--- m66 sites_client_read — PERMISSIVE SELECT-only policy. Mirrors sites_shared_read.
--- Under InUserTx (auth-time client-member expansion) there is no app.tenant_id,
--- so sites_tenant_isolation hides every row. This policy lets a client member
--- read site rows for sites belonging to their client only. Still AND-gated by
--- the RESTRICTIVE sites_site_scope policy (m19). archived_at gate ensures
--- members of an archived client lose access instantly.
-CREATE POLICY sites_client_read ON sites
-    FOR SELECT
-    USING (EXISTS (
-        SELECT 1
-        FROM client_members cm
-        JOIN clients cl
-          ON cl.id = cm.client_id AND cl.tenant_id = cm.tenant_id
-        WHERE cm.client_id = sites.client_id
-          AND cm.tenant_id = sites.tenant_id
-          AND cm.user_id   = nullif(current_setting('app.user_id', true), '')::uuid
-          AND cl.archived_at IS NULL
-    ));
-
--- sites_site_scope (m19) — the RESTRICTIVE site-scope gate. Referred to by
--- name three times in the comments above; declared here as of GH #470, having
--- been live in every database since m19 and absent from this file until now.
--- RESTRICTIVE, so it AND-combines with every permissive policy above and can
--- only narrow: it is what stops sites_shared_read or sites_client_read
--- widening a site-scoped principal's reach.
+-- sites_site_scope (m19) — the RESTRICTIVE site-scope gate; declared here as
+-- of GH #470, having been live in every database since m19 and absent from
+-- this file until then. RESTRICTIVE, so it AND-combines with every permissive
+-- policy on sites and can only narrow: it is what stops sites_shared_read or
+-- sites_client_read widening a site-scoped principal's reach.
 CREATE POLICY sites_site_scope ON sites
     AS RESTRICTIVE FOR ALL
     USING (
@@ -3415,6 +3382,23 @@ CREATE POLICY site_shares_self_read ON site_shares
     FOR SELECT
     USING (user_id = nullif(current_setting('app.user_id', true), '')::uuid);
 
+-- M22 shared-read: a site-scoped collaborator (no membership in the owning org)
+-- may READ the metadata of sites shared with them, for the "Shared with me"
+-- surface. Self-read style, keyed on app.user_id via a non-expired site_shares
+-- grant. SELECT-only and PERMISSIVE — therefore OR-combined with the other
+-- permissive policies but still AND-gated by the RESTRICTIVE sites_site_scope
+-- policy (M19), so it CANNOT widen a site-scoped read. On bare-tenant/agent/
+-- enroll paths app.user_id is unset → the subquery matches nothing. It only adds
+-- visibility under InUserTx (the self-read context with no site_scope gate).
+CREATE POLICY sites_shared_read ON sites
+    FOR SELECT
+    USING (EXISTS (
+        SELECT 1 FROM site_shares s
+        WHERE s.site_id = sites.id
+          AND s.user_id = nullif(current_setting('app.user_id', true), '')::uuid
+          AND (s.expires_at IS NULL OR s.expires_at > now())
+    ));
+
 -- ---------------------------------------------------------------------------
 -- invitations  (M19 — org + site invitation, tokenized)
 -- ---------------------------------------------------------------------------
@@ -3445,12 +3429,8 @@ CREATE TABLE invitations (
     client_id        uuid        NULL
 );
 
--- m66: composite FK so deleting a client cascades pending client invitations.
-ALTER TABLE invitations
-    ADD CONSTRAINT invitations_client_tenant_fkey
-    FOREIGN KEY (client_id, tenant_id)
-    REFERENCES clients (id, tenant_id)
-    ON DELETE CASCADE;
+-- The m66 composite FK (client_id, tenant_id) → clients is declared with the
+-- clients table, further down, because clients is created after this one.
 
 CREATE INDEX invitations_tenant_id_idx ON invitations (tenant_id);
 CREATE INDEX invitations_email_idx ON invitations (email);
@@ -5123,6 +5103,13 @@ ALTER TABLE sites
 CREATE INDEX sites_client_idx ON sites (client_id)
     WHERE client_id IS NOT NULL;
 
+-- m66: composite FK so deleting a client cascades pending client invitations.
+ALTER TABLE invitations
+    ADD CONSTRAINT invitations_client_tenant_fkey
+    FOREIGN KEY (client_id, tenant_id)
+    REFERENCES clients (id, tenant_id)
+    ON DELETE CASCADE;
+
 -- RLS mirrors m36: tenant isolation + agent path. No site_scope RESTRICTIVE
 -- policy — a site-scoped collaborator must never enumerate the client roster;
 -- org access is gated in-app via RequireOrgScope + PermClientRead/Manage.
@@ -5137,19 +5124,8 @@ CREATE POLICY clients_agent ON clients
     USING      (current_setting('app.agent', true) = 'on')
     WITH CHECK (current_setting('app.agent', true) = 'on');
 
--- m66 clients_member_read — tables referenced INSIDE a policy expression are
--- subject to their own RLS. sites_client_read JOINs clients, and under
--- InUserTx (no app.tenant_id) clients_tenant_isolation hides every row, which
--- would leave portal principals with zero sites. SELECT-only; admits exactly
--- the clients rows of the caller's own memberships.
-CREATE POLICY clients_member_read ON clients
-    FOR SELECT
-    USING (EXISTS (
-        SELECT 1 FROM client_members cm
-        WHERE cm.client_id = clients.id
-          AND cm.tenant_id = clients.tenant_id
-          AND cm.user_id   = nullif(current_setting('app.user_id', true), '')::uuid
-    ));
+-- clients_member_read (m66) reads client_members, so it is declared after that
+-- table, further down.
 
 -- m64: client-level timezone governs report send-time (decision 6).
 -- IANA names validated app-side (time.LoadLocation → UTC fallback on failure).
@@ -5298,6 +5274,39 @@ CREATE POLICY client_members_agent ON client_members
 CREATE POLICY client_members_self_read ON client_members
     FOR SELECT
     USING (user_id = nullif(current_setting('app.user_id', true), '')::uuid);
+
+-- m66 clients_member_read — tables referenced INSIDE a policy expression are
+-- subject to their own RLS. sites_client_read JOINs clients, and under
+-- InUserTx (no app.tenant_id) clients_tenant_isolation hides every row, which
+-- would leave portal principals with zero sites. SELECT-only; admits exactly
+-- the clients rows of the caller's own memberships.
+CREATE POLICY clients_member_read ON clients
+    FOR SELECT
+    USING (EXISTS (
+        SELECT 1 FROM client_members cm
+        WHERE cm.client_id = clients.id
+          AND cm.tenant_id = clients.tenant_id
+          AND cm.user_id   = nullif(current_setting('app.user_id', true), '')::uuid
+    ));
+
+-- m66 sites_client_read — PERMISSIVE SELECT-only policy. Mirrors sites_shared_read.
+-- Under InUserTx (auth-time client-member expansion) there is no app.tenant_id,
+-- so sites_tenant_isolation hides every row. This policy lets a client member
+-- read site rows for sites belonging to their client only. Still AND-gated by
+-- the RESTRICTIVE sites_site_scope policy (m19). archived_at gate ensures
+-- members of an archived client lose access instantly.
+CREATE POLICY sites_client_read ON sites
+    FOR SELECT
+    USING (EXISTS (
+        SELECT 1
+        FROM client_members cm
+        JOIN clients cl
+          ON cl.id = cm.client_id AND cl.tenant_id = cm.tenant_id
+        WHERE cm.client_id = sites.client_id
+          AND cm.tenant_id = sites.tenant_id
+          AND cm.user_id   = nullif(current_setting('app.user_id', true), '')::uuid
+          AND cl.archived_at IS NULL
+    ));
 
 -- ---------------------------------------------------------------------------
 -- site_object_cache_config -- M68: per-site object cache connection config.
