@@ -759,6 +759,10 @@ func TestGH408_M116AppliesTwiceAndDoesNotBlockBoot(t *testing.T) {
 	pool := startPostgres(t)
 	admin := connectAdmin(t, pool)
 	defer admin.Close()
+	// owner re-applies the migration itself, AS wpmgr_owner — the real boot
+	// migrator's role, not the bootstrap superuser connectAdmin returns.
+	owner := connectOwner(t, pool)
+	defer owner.Close()
 	ctx := context.Background()
 
 	const version = "20260818000000_m116_tenant_object_reclaim"
@@ -766,7 +770,7 @@ func TestGH408_M116AppliesTwiceAndDoesNotBlockBoot(t *testing.T) {
 		if _, err := admin.Exec(ctx, `DELETE FROM schema_migrations WHERE version = $1`, version); err != nil {
 			t.Fatalf("unmark m116: %v", err)
 		}
-		if err := admin.Migrate(ctx); err != nil {
+		if err := owner.Migrate(ctx); err != nil {
 			t.Fatalf("re-apply m116 (round %d) failed. Migrations run inside main() and a failure "+
 				"takes the control plane down: %v", i+1, err)
 		}

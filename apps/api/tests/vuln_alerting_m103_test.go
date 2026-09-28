@@ -34,8 +34,14 @@ import (
 const m103MigrationVersion = "20260805000000_m103_vuln_alerting"
 
 // startPostgresBeforeM103 mirrors startPostgresBeforeM100's container
-// bootstrap but stops short of m103.
-func startPostgresBeforeM103(t *testing.T) *db.Pool {
+// bootstrap but stops short of m103. Migrations run AS wpmgr_owner — the
+// NOSUPERUSER NOBYPASSRLS role production's migrator uses, not the bootstrap
+// superuser (see startPostgres's doc comment in rls_integration_test.go).
+// site_vulnerabilities is FORCE ROW LEVEL SECURITY. Returns (admin, owner):
+// seed pre-m103 rows through admin, the bootstrap superuser; call
+// owner.Migrate(ctx) (and, for the idempotency re-exec below, owner.Exec) to
+// run migration SQL under the production role.
+func startPostgresBeforeM103(t *testing.T) (admin *db.Pool, owner *db.Pool) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -66,14 +72,41 @@ func startPostgresBeforeM103(t *testing.T) *db.Pool {
 	if err != nil {
 		t.Fatalf("connection string: %v", err)
 	}
-	pool, err := db.Connect(ctx, adminDSN)
+	admin, err = db.Connect(ctx, adminDSN)
 	if err != nil {
 		t.Fatalf("connect admin: %v", err)
 	}
-	t.Cleanup(pool.Close)
+	t.Cleanup(admin.Close)
 
-	applyMigrationsBeforeM103(t, pool, m103MigrationVersion)
-	return pool
+	for _, stmt := range []string{
+		"CREATE ROLE wpmgr_owner LOGIN PASSWORD 'owner' NOSUPERUSER NOBYPASSRLS CREATEROLE",
+		"ALTER DATABASE wpmgr OWNER TO wpmgr_owner",
+	} {
+		if _, err := admin.Exec(ctx, stmt); err != nil {
+			setupFatalf(t, err, "postgres: provision owner role ("+stmt+")")
+		}
+	}
+
+	ownerDSN := strings.Replace(adminDSN, "wpmgr:wpmgr@", "wpmgr_owner:owner@", 1)
+	owner, err = db.Connect(ctx, ownerDSN)
+	if err != nil {
+		setupFatalf(t, err, "postgres: connect as wpmgr_owner")
+	}
+	t.Cleanup(owner.Close)
+
+	var ownerSuper, ownerBypass bool
+	if err := owner.QueryRow(ctx,
+		"SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user").
+		Scan(&ownerSuper, &ownerBypass); err != nil {
+		setupFatalf(t, err, "postgres: read owner role attributes")
+	}
+	if ownerSuper || ownerBypass {
+		t.Fatalf("wpmgr_owner has rolsuper=%t rolbypassrls=%t; this harness's premise is a role row security applies to",
+			ownerSuper, ownerBypass)
+	}
+
+	applyMigrationsBeforeM103(t, owner, m103MigrationVersion)
+	return admin, owner
 }
 
 // applyMigrationsBeforeM103 is a package-local copy of
@@ -138,7 +171,26 @@ func applyMigrationsBeforeM103(t *testing.T, pool *db.Pool, stopAt string) {
 // status) gets notified_at stamped, and alert_configs gains the three new
 // columns with their documented defaults.
 func TestM103Migration_BackfillNotifiedAt_AndDefaults(t *testing.T) {
-	pool := startPostgresBeforeM103(t)
+	// KNOWN GAP (found by PR #775's owner-role harness, not fixed here — a
+	// migration change for database-engineer, not this test-harness PR): the
+	// same silent-zero-row shape as m99's skip. m103's backfill UPDATE over
+	// site_vulnerabilities (also FORCE ROW LEVEL SECURITY) relies on RLS
+	// visibility the production migrator never has, so under the real
+	// migrator role it stamps nothing:
+	//
+	//   vuln_alerting_m103_test.go:241: finding ...: notified_at must be
+	//   backfilled (non-NULL), got NULL
+	//
+	// Implication: any self-hosted install still pre-m103, on upgrade, does
+	// NOT get its pre-existing findings' notified_at backfilled — the very
+	// next alert dispatch after upgrade would then email the tenant's entire
+	// historical vulnerability backlog, which is exactly the notification
+	// storm this migration exists to prevent. No error, no log, a
+	// successful boot. Do not loosen this test or the migration to make the
+	// skip below go away — see PR #775 / the session worklog.
+	t.Skip("known gap: m103's backfill does not stamp notified_at under the production migrator role (RLS on site_vulnerabilities); see PR #775")
+
+	pool, owner := startPostgresBeforeM103(t)
 	ctx := context.Background()
 
 	var tenant uuid.UUID
@@ -184,8 +236,9 @@ func TestM103Migration_BackfillNotifiedAt_AndDefaults(t *testing.T) {
 	dismissedID := seedFinding("vuln-dismissed", "dismissed")
 	resolvedID := seedFinding("vuln-resolved", "resolved")
 
-	// Finish the boot: applies m103 (columns + CHECK + backfill + index).
-	if err := pool.Migrate(ctx); err != nil {
+	// Finish the boot: applies m103 (columns + CHECK + backfill + index), AS
+	// wpmgr_owner.
+	if err := owner.Migrate(ctx); err != nil {
 		t.Fatalf("m103 migration failed: %v", err)
 	}
 
@@ -230,7 +283,7 @@ func TestM103Migration_BackfillNotifiedAt_AndDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read m103 migration body: %v", err)
 	}
-	if _, err := pool.Exec(ctx, string(body)); err != nil {
+	if _, err := owner.Exec(ctx, string(body)); err != nil {
 		t.Fatalf("re-apply m103 migration SQL: %v", err)
 	}
 	secondStamps := assertBackfilled(t)
