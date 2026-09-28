@@ -2,6 +2,8 @@ package site
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -127,28 +129,73 @@ func TestFromAgentMetadataExtrasIncludesKeystoreStatusAlone(t *testing.T) {
 // TestFromAgentKeystoreStatusDropsUnrecognizedValuesAndBounds proves the
 // allowlist/bounds fromAgentKeystoreStatus applies before anything is stored:
 // an unrecognized state/key_source/item value is dropped rather than stored
-// (it must never reach the Site response's typed enum), and the item map and
-// unreadable list are capped.
+// (it must never reach the Site response's typed enum); the item map and the
+// unreadable list are actually capped at keystoreItemMax when fed MORE than
+// that many entries; and an item/unreadable key longer than
+// keystoreItemKeyMax runes is truncated rather than stored whole.
 func TestFromAgentKeystoreStatusDropsUnrecognizedValuesAndBounds(t *testing.T) {
-	got := fromAgentKeystoreStatus(&agentpkg.KeystoreStatus{
-		State:     "definitely_not_a_real_state",
-		KeySource: "also_bogus",
-		Items: map[string]string{
-			"age_identity": "unreadable",   // kept: recognized value
-			"junk_key":     "also_garbage", // dropped: value not in the vocabulary
-		},
-		Unreadable: []string{"age_identity", "age_identity", "  "},
+	t.Run("unrecognized values dropped", func(t *testing.T) {
+		got := fromAgentKeystoreStatus(&agentpkg.KeystoreStatus{
+			State:     "definitely_not_a_real_state",
+			KeySource: "also_bogus",
+			Items: map[string]string{
+				"age_identity": "unreadable",   // kept: recognized value
+				"junk_key":     "also_garbage", // dropped: value not in the vocabulary
+			},
+			Unreadable: []string{"age_identity", "age_identity", "  "},
+		})
+		if got.State != "" {
+			t.Fatalf("unrecognized state must be dropped, got %q", got.State)
+		}
+		if got.KeySource != "" {
+			t.Fatalf("unrecognized key_source must be dropped, got %q", got.KeySource)
+		}
+		if len(got.Items) != 1 || got.Items["age_identity"] != "unreadable" {
+			t.Fatalf("items must keep only recognized values, got %+v", got.Items)
+		}
+		if len(got.Unreadable) != 1 || got.Unreadable[0] != "age_identity" {
+			t.Fatalf("unreadable must dedupe and drop blanks, got %+v", got.Unreadable)
+		}
 	})
-	if got.State != "" {
-		t.Fatalf("unrecognized state must be dropped, got %q", got.State)
-	}
-	if got.KeySource != "" {
-		t.Fatalf("unrecognized key_source must be dropped, got %q", got.KeySource)
-	}
-	if len(got.Items) != 1 || got.Items["age_identity"] != "unreadable" {
-		t.Fatalf("items must keep only recognized values, got %+v", got.Items)
-	}
-	if len(got.Unreadable) != 1 || got.Unreadable[0] != "age_identity" {
-		t.Fatalf("unreadable must dedupe and drop blanks, got %+v", got.Unreadable)
-	}
+
+	// Actually exceed keystoreItemMax so the cap is exercised, not merely
+	// stated. Every entry uses a recognized value ("ok") so the total kept
+	// is deterministic regardless of Go's randomized map iteration order.
+	t.Run("items and unreadable are capped at keystoreItemMax", func(t *testing.T) {
+		items := make(map[string]string, keystoreItemMax+5)
+		unreadable := make([]string, 0, keystoreItemMax+5)
+		for i := 0; i < keystoreItemMax+5; i++ {
+			items[fmt.Sprintf("item_%02d", i)] = "ok"
+			unreadable = append(unreadable, fmt.Sprintf("unreadable_%02d", i))
+		}
+		got := fromAgentKeystoreStatus(&agentpkg.KeystoreStatus{Items: items, Unreadable: unreadable})
+		if len(got.Items) != keystoreItemMax {
+			t.Fatalf("items must be capped at %d, got %d", keystoreItemMax, len(got.Items))
+		}
+		if len(got.Unreadable) != keystoreItemMax {
+			t.Fatalf("unreadable must be capped at %d, got %d", keystoreItemMax, len(got.Unreadable))
+		}
+	})
+
+	t.Run("a key longer than keystoreItemKeyMax runes is truncated, not stored whole", func(t *testing.T) {
+		longKey := strings.Repeat("k", keystoreItemKeyMax+10)
+		got := fromAgentKeystoreStatus(&agentpkg.KeystoreStatus{
+			Items:      map[string]string{longKey: "ok"},
+			Unreadable: []string{longKey},
+		})
+		if len(got.Items) != 1 {
+			t.Fatalf("the oversized item key must be kept (truncated), got %+v", got.Items)
+		}
+		for k := range got.Items {
+			if n := len([]rune(k)); n != keystoreItemKeyMax {
+				t.Fatalf("item key must be truncated to %d runes, got %d runes (%q)", keystoreItemKeyMax, n, k)
+			}
+		}
+		if len(got.Unreadable) != 1 {
+			t.Fatalf("the oversized unreadable key must be kept (truncated), got %+v", got.Unreadable)
+		}
+		if n := len([]rune(got.Unreadable[0])); n != keystoreItemKeyMax {
+			t.Fatalf("unreadable key must be truncated to %d runes, got %d runes (%q)", keystoreItemKeyMax, n, got.Unreadable[0])
+		}
+	})
 }
