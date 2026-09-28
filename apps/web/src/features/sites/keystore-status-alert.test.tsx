@@ -195,8 +195,10 @@ describe("KeystoreStatusAlert: copy branches (item 2)", () => {
   // PR #778 item 1 (Greptile review). Before this fix, describeUnreadableItems
   // took `status.unreadable` directly and fell back to the no-detail copy the
   // moment that list wasn't a usable array, even when `status.items` still
-  // named exactly which items were unreadable. These three pin the fallback:
-  // list missing, list malformed, and list/map disagreement (list wins).
+  // named exactly which items were unreadable. These three pin the fallback
+  // to items alone when the list is unusable: missing, malformed as an
+  // object, and malformed as a string. The union with a *usable* list is
+  // pinned separately below.
   it("derives the unreadable set from items when the unreadable list is missing but items is usable", async () => {
     renderAlert(
       siteWithKeystore({
@@ -240,16 +242,20 @@ describe("KeystoreStatusAlert: copy branches (item 2)", () => {
     ).toBeInTheDocument();
   });
 
-  it("prefers the unreadable list over items when the two disagree", async () => {
+  // PR #778 P1 (Greptile). The old rule preferred the `unreadable` list and
+  // ignored `items` the moment the list was non-empty, which threw away real
+  // detail whenever the two sources named different items. The resolved set
+  // is now the union of both: everything either source calls unreadable gets
+  // named, never fewer.
+  it("unions the two sources: list names email_secret, items names connection keys, both are named", async () => {
     renderAlert(
       siteWithKeystore({
         state: "unreadable",
-        // items says only email_secret is unreadable; the list says
-        // site_keypair is too. The list is the field the control plane
-        // populates deliberately for this purpose, so it wins: the heading
-        // names connection keys, not just email credentials.
-        items: { age_identity: "ok", email_secret: "unreadable" },
-        unreadable: ["email_secret", "site_keypair"],
+        // list names only email_secret; items separately marks site_keypair
+        // (connection keys) unreadable but not email_secret. Neither source
+        // alone has both; the union must.
+        items: { age_identity: "ok", email_secret: "ok", site_keypair: "unreadable" },
+        unreadable: ["email_secret"],
       }),
     );
     expect(
@@ -257,12 +263,26 @@ describe("KeystoreStatusAlert: copy branches (item 2)", () => {
     ).toBeInTheDocument();
   });
 
-  // PR #778 item 3 (CodeRabbit). `backupsAffected` used to read
-  // `status.items?.age_identity` directly instead of the same resolved set
-  // `describeUnreadableItems` uses. These two pin that both statements are
-  // now computed from one resolved set (`resolveUnreadableKeys`), per the
-  // list-wins rule already pinned above: the `unreadable` list wins over
-  // `items` when both are present.
+  it("names an item present in both sources only once", async () => {
+    renderAlert(
+      siteWithKeystore({
+        state: "unreadable",
+        items: { age_identity: "ok", email_secret: "unreadable" },
+        unreadable: ["email_secret"],
+      }),
+    );
+    // Singular phrasing proves the union deduplicated rather than naming
+    // "email credentials" twice (which formatList would otherwise join with
+    // "and", producing a garbled, doubled heading).
+    expect(
+      await screen.findByText("This site's email credentials cannot be read."),
+    ).toBeInTheDocument();
+  });
+
+  // PR #778 item 3 (CodeRabbit) plus the item-1 P1 fix above. `backupsAffected`
+  // is computed from the same resolved (unioned) set `describeUnreadableItems`
+  // uses, so it can never disagree with the heading's own item list, and it
+  // can never miss an item that only one of the two sources named.
   it("says backups cannot run when the unreadable list names age_identity and the items map is missing entirely", async () => {
     renderAlert(
       siteWithKeystore({
@@ -273,17 +293,18 @@ describe("KeystoreStatusAlert: copy branches (item 2)", () => {
     expect(await screen.findByText("Backups cannot run for this site.")).toBeInTheDocument();
   });
 
-  it("does NOT say backups cannot run when the list omits age_identity even though items marks it unreadable, per the list-wins rule", async () => {
+  it("says backups cannot run when the list omits age_identity but items still marks it unreadable, per the union rule", async () => {
     renderAlert(
       siteWithKeystore({
         state: "unreadable",
+        // The list is non-empty and usable, but omits age_identity; only
+        // `items` names it. The old "list wins" rule dropped it here and
+        // showed no backup warning at all, which is the wrong failure for a
+        // warning about backups not running.
         items: { age_identity: "unreadable", email_secret: "ok" },
         unreadable: ["email_secret"],
       }),
     );
-    expect(
-      await screen.findByText("This site's email credentials cannot be read."),
-    ).toBeInTheDocument();
-    expect(screen.queryByText("Backups cannot run for this site.")).not.toBeInTheDocument();
+    expect(await screen.findByText("Backups cannot run for this site.")).toBeInTheDocument();
   });
 });

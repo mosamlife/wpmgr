@@ -54,22 +54,37 @@ const UNREADABLE_ITEM_LABELS: Record<string, string> = {
 // PR #778 item 1 (Greptile review). `status.unreadable` is a convenience list
 // that is supposed to mirror the "unreadable" entries in `status.items`, but
 // a push can arrive with a usable `items` map and an `unreadable` field that
-// is missing or malformed (not an array, since the tolerant decode on the CP
-// side means the wire shape isn't guaranteed even though the generated type
-// says `Array<string>`). Preferring the list and silently giving up when it
-// isn't usable threw away detail the `items` map still had.
+// disagrees with it, is missing, or is malformed (not an array, since the
+// tolerant decode on the CP side means the wire shape isn't guaranteed even
+// though the generated type says `Array<string>`). Preferring one source and
+// discarding the other threw away real detail: a report whose `unreadable`
+// list omitted an item that `items` still marked "unreadable" showed no
+// warning for it at all, which is the wrong failure for an alert whose job is
+// to warn about backups not running.
 //
-// Resolves the actual set of unreadable item keys: the `unreadable` list when
-// it is a non-empty array, otherwise the `items` entries whose value is
-// "unreadable". When both are present and disagree, the list wins, since it
-// is the field the control plane populates deliberately for this purpose
-// rather than a byproduct of the per-item map.
+// Resolves the actual set of unreadable item keys as the union of the usable
+// `unreadable` list entries and the `items` entries whose value is
+// "unreadable", de-duplicated and in first-seen order so the rendered copy
+// stays stable across renders. Under-warning is never acceptable here: any
+// source naming an item as unreadable is enough to name it.
 function resolveUnreadableKeys(status: SiteKeystoreStatus | undefined): string[] {
   const list = status?.unreadable;
-  if (Array.isArray(list) && list.length > 0) return list;
+  const fromList = Array.isArray(list) ? list : [];
   const items = status?.items;
-  if (!items || typeof items !== "object") return [];
-  return Object.keys(items).filter((key) => items[key] === "unreadable");
+  const fromItems =
+    items && typeof items === "object"
+      ? Object.keys(items).filter((key) => items[key] === "unreadable")
+      : [];
+
+  const seen = new Set<string>();
+  const union: string[] = [];
+  for (const key of [...fromList, ...fromItems]) {
+    if (!seen.has(key)) {
+      seen.add(key);
+      union.push(key);
+    }
+  }
+  return union;
 }
 
 // Returns null when there is no usable item detail to name (neither the
