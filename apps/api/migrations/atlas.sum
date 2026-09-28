@@ -1,4 +1,4 @@
-h1:ajg1sdyUxJQLcGhDjI2H/4LFNKM+9huxXZf5faPweiw=
+h1:R4hKxplcfiz+059B8fHDViDaoSktYwypxa/b6kQu3IA=
 20260527115454_initial.sql h1:WfgbwGaDre3ilGSUpQWqeGW9gLACxOAIXvyRENhSX6w=
 20260527130000_auth_multitenancy.sql h1:dbQRjlWWYbkuHrqKHqZTPt1Z8Txoo58fe/Mr9HW/Plk=
 20260527172114_m2_site_registry.sql h1:RxL0mxr9jcC85gh8pcYnG0ge3IXy4+sGpLHS8YHMDDw=
@@ -146,3 +146,4 @@ h1:ajg1sdyUxJQLcGhDjI2H/4LFNKM+9huxXZf5faPweiw=
 20260907000000_m136_mcp_grant_oauth_scopes.sql h1:+QhMKuXhPjkIpPlf2uzzExx54HlR6qyE2puYUyHGIX4=
 20260907120000_m140_mcp_client_registered_scopes_prefill.sql h1:ASW2u2PIo/hBt6UcvHCni3rLNy+oMZiNwBNZdT84nMs=
 20260908000000_m137_mcp_client_registered_scopes.sql h1:ZKUcqAKoRKVEA+FL9SG6+CFk/80SVEeXvpfk7eBeRJg=
+20260909000000_m138_font_transcode_results_cascade.sql h1:TuTaMvgE99wwlF4E7My9MLAehBJ9D4jUdTNsCx8/m98=
