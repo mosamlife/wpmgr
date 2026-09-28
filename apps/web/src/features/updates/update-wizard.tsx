@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 
 import { Button } from "@/components/ui/button";
@@ -224,14 +224,14 @@ function WizardForm({
 
   const options = useMemo(() => componentOptions(sites), [sites]);
 
-  // GH #763: `sites` is live data — a refetch while the wizard is open (see
-  // use-sites-live.ts) recomputes `options` above with the SAME WizardForm
-  // instance still mounted, because the form only remounts on target change
-  // (targetKey, at the top of this file), not on a sites refetch. Without
-  // this, a key ticked while its item had an update stays in `selectedSlugs`
-  // after the item updates elsewhere and drops out of `options`/hasUpdate,
-  // and buildItems() below posts it anyway even though no checkbox on screen
-  // is still ticked for it.
+  // GH #763 / bot review of #766: `sites` is live data — a refetch while the
+  // wizard is open (see use-sites-live.ts) recomputes `options` above with
+  // the SAME WizardForm instance still mounted, because the form only
+  // remounts on target change (targetKey, at the top of this file), not on a
+  // sites refetch. Without this, a key ticked while its item had an update
+  // stays in `selectedSlugs` after the item updates elsewhere and drops out
+  // of `options`/hasUpdate, and buildItems() below posts it anyway even
+  // though no checkbox on screen is still ticked for it.
   //
   // The rule: drop a selected key when its item is no longer listed at all,
   // or when it transitioned from having an update to not having one. Keep a
@@ -248,36 +248,47 @@ function WizardForm({
   // until its item transitions to having an update and then losing it again
   // while still selected; that transition matches the same as it would for
   // any other key.
-  const prevOptionsRef = useRef<ComponentOption[]>(options);
-  useEffect(() => {
-    const prevOptions = prevOptionsRef.current;
-    prevOptionsRef.current = options;
-    if (prevOptions === options) return;
-
+  //
+  // This used to run in a `useEffect`, which corrects `selectedSlugs` only on
+  // the render AFTER the one that first shows the refetched `options` — so a
+  // render is committed (paintable, and submittable) with the new options on
+  // screen but the stale key still counted, for the whole window between that
+  // commit and the effect's flush. React's documented "adjust state while
+  // rendering" pattern closes that window: compare against a previous-options
+  // snapshot held in STATE (never a ref — mutating a ref during render is
+  // exactly what Strict Mode's double-render is designed to catch) and, when
+  // it has changed, prune synchronously in THIS render, before anything below
+  // reads the selection.
+  const [prevOptions, setPrevOptions] = useState<ComponentOption[]>(options);
+  let effectiveSelectedSlugs = selectedSlugs;
+  if (prevOptions !== options) {
     const prevByKey = new Map(
       prevOptions.map((o) => [`${o.type}:${o.slug}`, o]),
     );
     const nextByKey = new Map(options.map((o) => [`${o.type}:${o.slug}`, o]));
 
-    setSelectedSlugs((prev) => {
-      let changed = false;
-      const next = new Set(prev);
-      for (const key of prev) {
-        const nextOpt = nextByKey.get(key);
-        if (!nextOpt) {
-          next.delete(key);
-          changed = true;
-          continue;
-        }
-        const prevOpt = prevByKey.get(key);
-        if (prevOpt?.hasUpdate && !nextOpt.hasUpdate) {
-          next.delete(key);
-          changed = true;
-        }
+    let changed = false;
+    const pruned = new Set(selectedSlugs);
+    for (const key of selectedSlugs) {
+      const nextOpt = nextByKey.get(key);
+      if (!nextOpt) {
+        pruned.delete(key);
+        changed = true;
+        continue;
       }
-      return changed ? next : prev;
-    });
-  }, [options]);
+      const prevOpt = prevByKey.get(key);
+      if (prevOpt?.hasUpdate && !nextOpt.hasUpdate) {
+        pruned.delete(key);
+        changed = true;
+      }
+    }
+
+    setPrevOptions(options);
+    if (changed) {
+      setSelectedSlugs(pruned);
+      effectiveSelectedSlugs = pruned;
+    }
+  }
 
   const pluginOptions = useMemo(
     () => options.filter((o) => o.type === "plugin"),
@@ -316,7 +327,7 @@ function WizardForm({
 
   const allActiveUpdatableSelected =
     activeUpdatableKeys.length > 0 &&
-    activeUpdatableKeys.every((key) => selectedSlugs.has(key));
+    activeUpdatableKeys.every((key) => effectiveSelectedSlugs.has(key));
 
   function toggleSelectAll() {
     setSelectedSlugs((prev) => {
@@ -333,7 +344,7 @@ function WizardForm({
   function buildItems(): UpdateItem[] {
     const items: UpdateItem[] = [];
     if (updateCore) items.push({ type: "core", version: "latest" });
-    for (const key of selectedSlugs) {
+    for (const key of effectiveSelectedSlugs) {
       const opt = options.find((o) => `${o.type}:${o.slug}` === key);
       if (opt) items.push({ type: opt.type, slug: opt.slug, version: "latest" });
     }
@@ -530,7 +541,7 @@ function WizardForm({
                       >
                         <Checkbox
                           id={id}
-                          checked={selectedSlugs.has(key)}
+                          checked={effectiveSelectedSlugs.has(key)}
                           onChange={() => toggleSlug(key)}
                         />
                         <span className="font-medium">{opt.label}</span>
