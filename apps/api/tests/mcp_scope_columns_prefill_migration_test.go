@@ -335,8 +335,12 @@ func requireScopeColumnEndState(t *testing.T, admin *db.Pool, table, column stri
 		t.Fatalf("read %s.%s: %v", table, column, err)
 	}
 	if dataType != "ARRAY" || nullable != "NO" || def != nil {
-		t.Errorf("%s.%s: data_type=%s is_nullable=%s default=%v; want ARRAY, NO, no default",
-			table, column, dataType, nullable, def)
+		shown := "none"
+		if def != nil {
+			shown = *def
+		}
+		t.Errorf("%s.%s: data_type=%s is_nullable=%s default=%s; want ARRAY, NO, no default",
+			table, column, dataType, nullable, shown)
 	}
 
 	for _, name := range constraints {
