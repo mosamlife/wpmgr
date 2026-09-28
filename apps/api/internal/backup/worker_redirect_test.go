@@ -73,7 +73,7 @@ func TestBackupWorker_RedirectFailsSnapshotOnFirstAttempt(t *testing.T) {
 	if got.Status != StatusFailed {
 		t.Fatalf("snapshot status = %q, want %q after one attempt", got.Status, StatusFailed)
 	}
-	for _, want := range []string{"Backup not started.", "https://www.example.com", "Reconnect the site"} {
+	for _, want := range []string{"Backup not started.", "https://www.example.com", "updates to https://www.example.com automatically"} {
 		if !strings.Contains(got.Error, want) {
 			t.Errorf("snapshot error %q does not contain %q", got.Error, want)
 		}
