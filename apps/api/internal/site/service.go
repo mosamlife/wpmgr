@@ -560,14 +560,17 @@ func fromAgentComponents(cs []agentpkg.Component) []Component {
 }
 
 // fromAgentMetadataExtras lifts the optional sparse-metadata expansion fields
-// (host_flags / disk / user_count / admin_count / keystore_status) from the
-// agent.Metadata DTO onto the site domain's MetadataExtras struct. Returns nil
-// when the agent sent nothing (old agent; the sink does not overwrite
-// previously-stored values in that case — see ApplyMetadata).
+// (host_flags / disk / user_count / admin_count / roles / keystore_status)
+// from the agent.Metadata DTO onto the site domain's MetadataExtras struct.
+// Returns nil only when the agent sent none of them at all: there is no
+// delta/merge semantics to preserve by returning nil, because every push
+// REWRITES the whole stored components document (see buildInventoryPayload) —
+// a nil here simply means this push's inventory document omits these keys.
 //
 // KeystoreStatus is included in this nil check (GH #753) so a STATUS-ONLY push
-// — the admin_init/cron probe re-reporting a broken keystore with none of the
-// other sparse-metadata fields changed — is never dropped for looking empty.
+// — the 30-minute cron cadence or a CP-triggered recheck re-reporting a
+// keystore with none of the other sparse-metadata fields changed — is never
+// dropped for looking empty.
 func fromAgentMetadataExtras(m agentpkg.Metadata) *MetadataExtras {
 	if m.HostFlags == nil && m.Disk == nil && m.UserCount == 0 && m.AdminCount == 0 &&
 		len(m.Roles) == 0 && m.KeystoreStatus == nil {

@@ -63,14 +63,20 @@ const codeRunnerInFlight = "runner_in_flight"
 // produce (the agent previously threw instead of refusing cleanly).
 const codeKeystoreUnreadable = "keystore_unreadable"
 
-// keystoreUnreadableOperatorMessage is FIXED, CP-authored copy substituted for
-// a keystore_unreadable refusal instead of forwarding the agent's own
-// resp.Detail verbatim. Two reasons: this is also the sentence the agent's own
-// wp-admin notice shows (GH #753 slice 1), so the dashboard and wp-admin never
-// disagree about the wording; and the code, not the wire text, is the stable
-// contract — a future agent release can reword its own detail without this
-// control plane's operator-facing copy silently drifting with it.
-const keystoreUnreadableOperatorMessage = "this site cannot read its backup key. Most often this happens when the site was moved to another host, or the security keys in wp-config.php were changed. To fix it, put back the previous values of the security keys in wp-config.php (AUTH_KEY, SECURE_AUTH_KEY, LOGGED_IN_KEY, NONCE_KEY, AUTH_SALT, SECURE_AUTH_SALT, LOGGED_IN_SALT and NONCE_SALT). Backups already taken are not affected."
+// keystoreUnreadableOperatorMessage is FIXED, neutral, CP-authored copy
+// substituted for a keystore_unreadable refusal — the agent's own resp.Detail
+// is NEVER forwarded here. This message also reaches the backup-failure
+// email and the schedule-run error (both flow through the same FailSnapshot
+// msg), which are outbound control-plane channels, so it deliberately
+// prescribes no remedy: the correct fix depends on which key source is
+// pinned (salts vs. a file/constant pin) and on which envelope failed, that
+// diagnosis lives agent-side, and forwarding site-supplied prose into an
+// outbound email would be a phishing surface. It also makes no claim about
+// which backups are or are not affected, since that is not knowable from
+// this refusal alone. It names the condition and sends the operator to the
+// site's own WordPress admin, which has the agent's own state-specific
+// notice and steps.
+const keystoreUnreadableOperatorMessage = "Backup not started: the agent on this site cannot read its backup key. Open this site's WordPress admin for the exact steps."
 
 // Audit action names for the backup/restore lifecycle.
 const (
@@ -452,12 +458,13 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupArgs]) err
 			return nil
 		}
 		if resp.Code == codeKeystoreUnreadable {
-			// GH #753: fail immediately with fixed operator copy — never
-			// retried (w.fail returns nil so River does not requeue it), and
-			// never the generic stall/"stopped responding" watchdog message,
-			// because the agent already refused before doing any work; a
-			// retry a few seconds later cannot make the key readable.
-			return w.fail(ctx, snap, "agent refused the backup: "+keystoreUnreadableOperatorMessage)
+			// GH #753: fail immediately with the fixed, neutral operator
+			// copy — never retried (w.fail returns nil so River does not
+			// requeue it), and never the generic stall/"stopped responding"
+			// watchdog message, because the agent already refused before
+			// doing any work; a retry a few seconds later cannot make the
+			// key readable.
+			return w.fail(ctx, snap, keystoreUnreadableOperatorMessage)
 		}
 		return w.fail(ctx, snap, "agent refused the backup: "+resp.Detail)
 	}
