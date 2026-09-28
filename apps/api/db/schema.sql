@@ -4292,11 +4292,18 @@ CREATE TABLE IF NOT EXISTS font_transcode_results (
     updated_at     timestamptz NOT NULL DEFAULT now(),
     -- negative = true marks a source font that cannot be transcoded, with
     -- error_detail saying why; woff2_key stays NULL on such a row.
-    PRIMARY KEY (source_hash, tenant_id)
+    PRIMARY KEY (source_hash, tenant_id),
+    -- m138: a row is removed with its site and with its organisation.
+    CONSTRAINT font_transcode_results_tenant_fk FOREIGN KEY (tenant_id) REFERENCES tenants (id) ON DELETE CASCADE,
+    CONSTRAINT font_transcode_results_site_fk   FOREIGN KEY (site_id)   REFERENCES sites   (id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS font_transcode_results_site_id_idx
     ON font_transcode_results (tenant_id, site_id);
+
+-- m138: serves the site_id cascade.
+CREATE INDEX IF NOT EXISTS font_transcode_results_site_idx
+    ON font_transcode_results (site_id);
 
 ALTER TABLE font_transcode_results ENABLE ROW LEVEL SECURITY;
 ALTER TABLE font_transcode_results FORCE ROW LEVEL SECURITY;
