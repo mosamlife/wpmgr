@@ -685,8 +685,8 @@ func (s splitGateStore) IsSuperadmin(ctx context.Context, id uuid.UUID) (bool, e
 	return s.superadmin.IsSuperadmin(ctx, id)
 }
 
-func (s splitGateStore) IsSoleLiveTenantOwner(ctx context.Context, id uuid.UUID) (bool, error) {
-	return s.owner.IsSoleLiveTenantOwner(ctx, id)
+func (s splitGateStore) SoleLiveTenantOwnedBy(ctx context.Context, id uuid.UUID) (uuid.UUID, error) {
+	return s.owner.SoleLiveTenantOwnedBy(ctx, id)
 }
 
 // closedAppPool opens a second wpmgr_app pool on the same container and closes

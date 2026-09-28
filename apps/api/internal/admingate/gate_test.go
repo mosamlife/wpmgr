@@ -28,9 +28,15 @@ func (f *fakeStore) IsSuperadmin(context.Context, uuid.UUID) (bool, error) {
 	return f.superadmin, f.superadminErr
 }
 
-func (f *fakeStore) IsSoleLiveTenantOwner(context.Context, uuid.UUID) (bool, error) {
+// soleTenantID is the organisation the fake store names when soleOwner is set.
+var soleTenantID = uuid.MustParse("5a1e0000-0000-4000-8000-000000000001")
+
+func (f *fakeStore) SoleLiveTenantOwnedBy(context.Context, uuid.UUID) (uuid.UUID, error) {
 	f.calls++
-	return f.soleOwner, f.soleOwnerErr
+	if !f.soleOwner {
+		return uuid.Nil, f.soleOwnerErr
+	}
+	return soleTenantID, f.soleOwnerErr
 }
 
 func withPrincipal(p domain.Principal) context.Context {

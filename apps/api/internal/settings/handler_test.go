@@ -44,9 +44,16 @@ func (f *fakeInstanceGate) IsSuperadmin(context.Context, uuid.UUID) (bool, error
 	return f.superadmin, f.superadminErr
 }
 
-func (f *fakeInstanceGate) IsSoleLiveTenantOwner(context.Context, uuid.UUID) (bool, error) {
+// gateSoleTenantID is the organisation fakeInstanceGate names when soleOwner is
+// set: the only live organisation, which the caller owns.
+var gateSoleTenantID = uuid.MustParse("5a1e0000-0000-4000-8000-0000000000a1")
+
+func (f *fakeInstanceGate) SoleLiveTenantOwnedBy(context.Context, uuid.UUID) (uuid.UUID, error) {
 	f.soleOwnerCalls++
-	return f.soleOwner, f.soleOwnerErr
+	if !f.soleOwner {
+		return uuid.Nil, f.soleOwnerErr
+	}
+	return gateSoleTenantID, f.soleOwnerErr
 }
 
 var _ admingate.Store = (*fakeInstanceGate)(nil)

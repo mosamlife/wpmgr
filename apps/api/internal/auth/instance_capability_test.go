@@ -30,8 +30,11 @@ func (f fakeInstanceStore) IsSuperadmin(context.Context, uuid.UUID) (bool, error
 	return f.superadmin, f.superadminErr
 }
 
-func (f fakeInstanceStore) IsSoleLiveTenantOwner(context.Context, uuid.UUID) (bool, error) {
-	return f.soleOwner, f.soleOwnerErr
+func (f fakeInstanceStore) SoleLiveTenantOwnedBy(context.Context, uuid.UUID) (uuid.UUID, error) {
+	if !f.soleOwner {
+		return uuid.Nil, f.soleOwnerErr
+	}
+	return uuid.New(), f.soleOwnerErr
 }
 
 func TestSetInstanceCapabilities_EqualsTheRouteDecision(t *testing.T) {
