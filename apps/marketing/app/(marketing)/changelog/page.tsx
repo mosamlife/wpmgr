@@ -50,6 +50,30 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.164",
+    date: "2026-09-28",
+    summary:
+      "The update wizard keeps selections in sync with live site data, agent router log lines are escaped for readability, an instance SMTP change is recorded even if the client disconnects, and font transcode results are removed with their site and organisation.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "The plugin and theme update wizard now drops a selection whose item is no longer listed, or that had an update and no longer does, in the same render that site data refreshes, so the count shown and the request sent always match what the operator sees.",
+      },
+      {
+        tag: "Fixed",
+        text: "Font transcode results are removed with their site and organisation. Rows belonging to a soft-deleted organisation stay until that organisation is purged.",
+      },
+      {
+        tag: "Fixed",
+        text: "Router log lines that carry an exception message now escape control characters, so a command failure is always one readable line in the site's debug log. The response sent to the control plane is unchanged. Agent 0.61.151; sites get it when the plugin updates.",
+      },
+      {
+        tag: "Fixed",
+        text: "An instance SMTP change is now recorded in the audit trail even if the client disconnects right after saving. Both audit records are written on a context that is not canceled when the request ends, bounded to five seconds; a record that cannot be written is logged.",
+      },
+    ],
+  },
+  {
     version: "0.61.163",
     date: "2026-09-28",
     summary:

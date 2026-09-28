@@ -4,7 +4,7 @@ Tags: backup, security, performance, updates, site management
 Requires at least: 6.2
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 0.61.150
+Stable tag: 0.61.151
 License: MIT
 License URI: https://opensource.org/licenses/MIT
 
@@ -286,6 +286,9 @@ This plugin ships two minified JavaScript files. Their human-readable source and
 
 The entries below summarize the notable changes since 0.31.1. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
 
+= 0.61.151 =
+* Fixed: a router log line that carries an exception message now escapes control characters, so a command failure is always one readable line in the debug log, instead of one that could break across lines or lose part of its own text. What is sent back to the control plane is unchanged.
+
 = 0.61.150 =
 * Fixed: a command that fails now reports back what broke: the kind of error, where in the plugin it was thrown, and a short reason, instead of a generic failure message. The reason passes through a redactor that removes recognised key material and absolute paths, and is withheld entirely if that cannot be done safely. The same failure is written to this site's debug log on one line, with recognised key material redacted and the path kept, so a failure can be diagnosed from the dashboard or the log without reproducing it.
 * Added: a new content-update command can change the title and/or body of an existing post or page by id. It keeps a retained copy of what it overwrites before writing, refuses to touch a document built in the block editor, and requires a fingerprint of the content it expects to replace, so a conflicting write is reported as a conflict rather than silently applied. Nothing in the dashboard uses this yet.
@@ -461,6 +464,9 @@ The entries below summarize the notable changes since 0.31.1. This project ships
 * New: WOFF2 font transcoding. TTF, OTF and WOFF are converted on the control plane; the flag defaults to off.
 
 == Upgrade Notice ==
+
+= 0.61.151 =
+Router log lines now escape control characters, so a command failure always reads as one line in the debug log instead of one that could break apart. What is sent to the control plane is unchanged.
 
 = 0.61.150 =
 Command failures are now diagnosable from the dashboard: the kind of error, where it was thrown, and a redacted reason, plus a matching line in the site's debug log. Also adds a content-update command for changing an existing post's title or body; nothing in the dashboard uses it yet.
