@@ -389,6 +389,80 @@ final class BackupCommandTest extends TestCase
     }
 
     /**
+     * GH #753. When the stored backup key no longer opens under the site's
+     * encryption key, the backup is refused in plain words with a stable
+     * code, before any preflight row, dedup claim or scratch directory, and
+     * the unreadable key is left exactly as it is.
+     */
+    public function test_unreadable_age_identity_refuses_with_keystore_unreadable_code(): void
+    {
+        $keyPath = $this->scratchDir . '/master.key';
+        file_put_contents($keyPath, random_bytes(32));
+
+        $iv     = random_bytes(12);
+        $tag    = '';
+        $ct     = openssl_encrypt(random_bytes(32), 'aes-256-gcm', random_bytes(32), OPENSSL_RAW_DATA, $iv, $tag, '', 16);
+        $this->assertIsString($ct);
+        $sealed = base64_encode($iv . $tag . $ct);
+
+        $options = [
+            \WPMgr\Agent\Keystore::OPTION_MASTER_KEY_SOURCE => ['source' => 'file', 'path' => $keyPath],
+            \WPMgr\Agent\Keystore::OPTION_AGE_IDENTITY      => $sealed,
+        ];
+        $writes = [];
+        Functions\when('get_option')->alias(static function ($name, $default = false) use (&$options) {
+            return $options[$name] ?? $default;
+        });
+        foreach (['update_option', 'add_option', 'delete_option', 'set_transient', 'wp_schedule_single_event'] as $fn) {
+            Functions\when($fn)->alias(static function ($name) use (&$writes, $fn) {
+                $writes[] = $fn . ':' . (is_string($name) ? $name : (string) json_encode($name));
+                return true;
+            });
+        }
+
+        // Any database access (preflight row, dedup claim) would reach this spy.
+        $dbCalls = [];
+        $previousWpdb = $GLOBALS['wpdb'] ?? null;
+        $GLOBALS['wpdb'] = new class ($dbCalls) {
+            public string $prefix = 'wp_';
+            /** @var list<string> */
+            private array $calls;
+            /** @param list<string> $calls */
+            public function __construct(array &$calls)
+            {
+                $this->calls = &$calls;
+            }
+            /** @param array<int,mixed> $args */
+            public function __call(string $method, array $args): bool
+            {
+                $this->calls[] = $method;
+                return false;
+            }
+        };
+
+        try {
+            $keystore = new \WPMgr\Agent\Keystore();
+            $cmd      = new BackupCommand(new AgeIdentity($keystore));
+            $res      = $cmd->execute([], $this->acceptorParams($this->identity['recipient']));
+        } finally {
+            $GLOBALS['wpdb'] = $previousWpdb;
+        }
+
+        $this->assertFalse($res['ok']);
+        $this->assertSame('keystore_unreadable', $res['code'] ?? null);
+        $this->assertStringStartsWith('Backup not started: this site cannot read its backup key.', $res['detail']);
+        $this->assertStringContainsString('Most often', $res['detail']);
+        $this->assertStringNotContainsString('ciphertext authentication failed', $res['detail']);
+        if (!EncryptAndUpload::ENCRYPT_CHUNKS) {
+            $this->assertStringContainsString('Backups already taken are not affected.', $res['detail']);
+        }
+        $this->assertSame([], $dbCalls, 'The refusal must come before any database work.');
+        $this->assertSame([], $writes, 'The refusal must not write anything.');
+        $this->assertSame($sealed, $options[\WPMgr\Agent\Keystore::OPTION_AGE_IDENTITY]);
+        $this->assertSame(['master.key'], array_values(array_diff(scandir($this->scratchDir) ?: [], ['.', '..'])));
+    }
+
+    /**
      * Recursively remove a directory tree (scratch dir cleanup).
      */
     private function rrmdir(string $dir): void

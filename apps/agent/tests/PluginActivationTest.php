@@ -111,8 +111,140 @@ final class PluginActivationTest extends TestCase
         });
     }
 
+    /** @var list<string> Key files created by pinToNewKeyFile(), removed in tear_down. */
+    private array $keyFiles = [];
+
+    /**
+     * Pin the master-key source to a real 32-byte key file. A file pin, not
+     * the salts: salt constants other tests define leak across the suite.
+     */
+    private function pinToNewKeyFile(): void
+    {
+        $path = sys_get_temp_dir() . '/wpmgr-agent-activation-' . bin2hex(random_bytes(8)) . '.key';
+        file_put_contents($path, random_bytes(32));
+        $this->keyFiles[] = $path;
+        $this->options[Keystore::OPTION_MASTER_KEY_SOURCE] = ['source' => 'file', 'path' => $path];
+    }
+
+    /** An AES-256-GCM envelope in the keystore's layout, sealed under a random key that is not this site's. */
+    private function sealUnderForeignKey(string $plaintext): string
+    {
+        $iv  = random_bytes(12);
+        $tag = '';
+        $ct  = openssl_encrypt($plaintext, 'aes-256-gcm', random_bytes(32), OPENSSL_RAW_DATA, $iv, $tag, '', 16);
+        $this->assertIsString($ct);
+
+        return base64_encode($iv . $tag . $ct);
+    }
+
+    /**
+     * GH #753. After a host move the site keypair is regenerated under the new
+     * key on reconnect, while the backup key is still sealed under the old
+     * one. Activation must flag that state in plain words, and must leave the
+     * unreadable backup key exactly as it is rather than replace it.
+     */
+    public function test_activation_flags_age_identity_sealed_under_a_different_key(): void
+    {
+        $this->pinToNewKeyFile();
+        (new Keystore())->generateSiteKeypair();
+        $sealed = $this->sealUnderForeignKey(random_bytes(32));
+        $this->options[Keystore::OPTION_AGE_IDENTITY] = $sealed;
+        $this->options[Plugin::OPTION_KEYSTORE_ERROR] = 'stale notice from an earlier run';
+
+        Plugin::boot()->activate();
+
+        $this->assertArrayHasKey(
+            Plugin::OPTION_KEYSTORE_ERROR,
+            $this->options,
+            'An unreadable backup key must leave a notice set.'
+        );
+        $message = $this->options[Plugin::OPTION_KEYSTORE_ERROR];
+        $this->assertIsString($message);
+        $this->assertStringContainsString('The backup key saved on this site cannot be opened', $message);
+        $this->assertStringContainsString('Most often', $message);
+        $this->assertStringContainsString('put back the encryption key file', $message);
+        $this->assertStringContainsString('backups of this site will fail', $message);
+        $this->assertStringNotContainsString('WPMGR_AGENT_KEY_FILE', $message);
+        $this->assertSame('unreadable', $this->options[Plugin::OPTION_KEYSTORE_ERROR_KIND] ?? null);
+        $this->assertSame(
+            $sealed,
+            $this->options[Keystore::OPTION_AGE_IDENTITY],
+            'The unreadable backup key must never be regenerated or replaced.'
+        );
+    }
+
+    /** Over-fire guard: a keystore whose stored keys all open clears a stale notice. */
+    public function test_activation_clears_the_notice_when_every_stored_key_opens(): void
+    {
+        $this->pinToNewKeyFile();
+        (new Keystore())->generateSiteKeypair();
+        $this->options[Plugin::OPTION_KEYSTORE_ERROR]      = 'stale notice from an earlier run';
+        $this->options[Plugin::OPTION_KEYSTORE_ERROR_KIND] = 'unreadable';
+
+        Plugin::boot()->activate();
+
+        $this->assertArrayNotHasKey(Plugin::OPTION_KEYSTORE_ERROR, $this->options);
+        $this->assertArrayNotHasKey(Plugin::OPTION_KEYSTORE_ERROR_KIND, $this->options);
+        // The absent backup key was generated, under the key that opens the rest.
+        $this->assertArrayHasKey(Keystore::OPTION_AGE_IDENTITY, $this->options);
+        $this->assertSame(Keystore::PROBE_OK, (new Keystore())->probe()['state']);
+    }
+
+    /**
+     * An already-broken site is flagged on an admin load, without
+     * re-activation, and the probe runs at most once per throttle window.
+     */
+    public function test_admin_load_flags_unreadable_keys_at_most_once_per_window(): void
+    {
+        $this->pinToNewKeyFile();
+        (new Keystore())->generateSiteKeypair();
+        $this->options[Keystore::OPTION_AGE_IDENTITY] = $this->sealUnderForeignKey(random_bytes(32));
+
+        $transients = [];
+        Functions\when('current_user_can')->justReturn(true);
+        Functions\when('get_transient')->alias(static function ($name) use (&$transients) {
+            return $transients[$name] ?? false;
+        });
+        Functions\when('set_transient')->alias(static function ($name, $value) use (&$transients) {
+            $transients[$name] = $value;
+            return true;
+        });
+
+        $plugin = Plugin::boot();
+        $plugin->ensureKeystoreReady();
+
+        $this->assertArrayHasKey(Plugin::TRANSIENT_KEYSTORE_PROBE, $transients);
+        $this->assertSame('unreadable', $this->options[Plugin::OPTION_KEYSTORE_ERROR_KIND] ?? null);
+
+        // Inside the window, with no notice set, nothing is probed again.
+        unset($this->options[Plugin::OPTION_KEYSTORE_ERROR], $this->options[Plugin::OPTION_KEYSTORE_ERROR_KIND]);
+        $plugin->ensureKeystoreReady();
+        $this->assertArrayNotHasKey(Plugin::OPTION_KEYSTORE_ERROR, $this->options);
+    }
+
+    /** A user who cannot manage options never triggers the admin-load probe. */
+    public function test_admin_load_probe_is_limited_to_users_who_manage_options(): void
+    {
+        $this->pinToNewKeyFile();
+        (new Keystore())->generateSiteKeypair();
+        $this->options[Keystore::OPTION_AGE_IDENTITY] = $this->sealUnderForeignKey(random_bytes(32));
+        Functions\when('current_user_can')->justReturn(false);
+        Functions\when('get_transient')->justReturn(false);
+        Functions\when('set_transient')->justReturn(true);
+
+        Plugin::boot()->ensureKeystoreReady();
+
+        $this->assertArrayNotHasKey(Plugin::OPTION_KEYSTORE_ERROR, $this->options);
+    }
+
     protected function tear_down(): void
     {
+        foreach ($this->keyFiles as $file) {
+            if (is_file($file)) {
+                @unlink($file);
+            }
+        }
+        $this->keyFiles = [];
         // Reset the Plugin singleton so this test's constructed instance (with its
         // Keystore and Brain Monkey stubs) does not leak into subsequent tests.
         Plugin::resetForTesting();
