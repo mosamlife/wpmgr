@@ -19,6 +19,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -31,33 +32,67 @@ import (
 type instanceEvent struct {
 	actor  uuid.UUID
 	action string
+	ctx    appendContext
 }
 
+// appendContext is what an append saw of the context it ran on.
+type appendContext struct {
+	principal   uuid.UUID // the user the context's principal names, if any
+	deadline    time.Time
+	hasDeadline bool
+}
+
+func observe(ctx context.Context) appendContext {
+	var a appendContext
+	if p, ok := domain.PrincipalFromContext(ctx); ok {
+		a.principal = p.UserID
+	}
+	a.deadline, a.hasDeadline = ctx.Deadline()
+	return a
+}
+
+// Both fakes refuse to append on a cancelled context, as the real ones do:
+// each opens its own transaction, and beginning one on a cancelled context
+// fails before anything is written.
 type fakeSMTPService struct {
 	updateCalls    int
+	afterUpdate    func() // runs once the relay row counts as written
 	instanceEvents []instanceEvent
+	droppedEvents  int
 }
 
 func (f *fakeSMTPService) Get(context.Context) (SMTPSettings, error) { return SMTPSettings{}, nil }
 
 func (f *fakeSMTPService) Update(_ context.Context, in SMTPUpdate, _ uuid.UUID) (SMTPSettings, error) {
 	f.updateCalls++
+	if f.afterUpdate != nil {
+		f.afterUpdate()
+	}
 	return SMTPSettings{Enabled: in.Enabled, Host: in.Host, TLSMode: in.TLSMode}, nil
 }
 
 func (f *fakeSMTPService) SendTest(context.Context, string) error { return nil }
 
-func (f *fakeSMTPService) RecordInstanceEvent(_ context.Context, actorID uuid.UUID, action string, _ map[string]any) {
-	f.instanceEvents = append(f.instanceEvents, instanceEvent{actor: actorID, action: action})
+func (f *fakeSMTPService) RecordInstanceEvent(ctx context.Context, actorID uuid.UUID, action string, _ map[string]any) {
+	if ctx.Err() != nil {
+		f.droppedEvents++
+		return
+	}
+	f.instanceEvents = append(f.instanceEvents, instanceEvent{actor: actorID, action: action, ctx: observe(ctx)})
 }
 
 type fakeTenantRecorder struct {
-	err    error
-	events []audit.Event
+	err      error
+	events   []audit.Event
+	contexts []appendContext
 }
 
-func (f *fakeTenantRecorder) Record(_ context.Context, e audit.Event) (audit.Entry, error) {
+func (f *fakeTenantRecorder) Record(ctx context.Context, e audit.Event) (audit.Entry, error) {
+	if err := ctx.Err(); err != nil {
+		return audit.Entry{}, err
+	}
 	f.events = append(f.events, e)
+	f.contexts = append(f.contexts, observe(ctx))
 	return audit.Entry{}, f.err
 }
 
@@ -76,9 +111,14 @@ func auditEngine(gate admingate.Store, svc *fakeSMTPService, rec *fakeTenantReco
 
 func putAs(t *testing.T, e *gin.Engine, p domain.Principal) int {
 	t.Helper()
+	return putWithContext(t, e, context.Background(), p)
+}
+
+func putWithContext(t *testing.T, e *gin.Engine, ctx context.Context, p domain.Principal) int {
+	t.Helper()
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/settings/smtp", strings.NewReader(auditPutBody))
 	req.Header.Set("Content-Type", "application/json")
-	req = req.WithContext(domain.WithPrincipal(req.Context(), p))
+	req = req.WithContext(domain.WithPrincipal(ctx, p))
 	w := httptest.NewRecorder()
 	e.ServeHTTP(w, req)
 	return w.Code
@@ -178,6 +218,54 @@ func TestSMTPPutAudit_FailedOrganisationAppendIsLogged(t *testing.T) {
 	requireInstanceEvent(t, svc, p.UserID)
 	if out := buf.String(); !strings.Contains(out, "organisation audit record failed") || !strings.Contains(out, gateSoleTenantID.String()) {
 		t.Errorf("failed organisation append was not logged; log output: %q", out)
+	}
+}
+
+// A client that disconnects after the save still leaves the change recorded.
+// The request context is cancelled once the relay row is written and before
+// either append runs; both appends still happen, as the acting user, on a
+// context that keeps the request's values and carries a bound of its own.
+func TestSMTPPutAudit_CancelledRequestStillRecordsBothTrails(t *testing.T) {
+	reqCtx, cancelReq := context.WithCancel(context.Background())
+	defer cancelReq()
+	svc := &fakeSMTPService{afterUpdate: cancelReq}
+	rec := &fakeTenantRecorder{}
+	e := auditEngine(&fakeInstanceGate{soleOwner: true}, svc, rec, nil)
+	p := principalWithTenant(uuid.Nil)
+
+	if status := putWithContext(t, e, reqCtx, p); status != http.StatusOK {
+		t.Fatalf("PUT: got %d, want 200", status)
+	}
+	// Every deadline the handler set was set before now, so none may be later
+	// than one bound past now.
+	limit := time.Now().Add(auditAppendTimeout)
+	if reqCtx.Err() == nil {
+		t.Fatal("the request context was never cancelled, so this test proves nothing")
+	}
+
+	if svc.droppedEvents != 0 {
+		t.Errorf("instance trail appends attempted on a cancelled context = %d, want 0", svc.droppedEvents)
+	}
+	requireInstanceEvent(t, svc, p.UserID)
+	if len(rec.events) != 1 {
+		t.Fatalf("organisation audit records = %d, want 1", len(rec.events))
+	}
+	if got := rec.events[0]; got.TenantID != gateSoleTenantID || got.ActorID != p.UserID.String() {
+		t.Errorf("organisation audit record = %+v, want tenant %s actor %s", got, gateSoleTenantID, p.UserID)
+	}
+
+	for name, c := range map[string]appendContext{
+		"instance trail":     svc.instanceEvents[0].ctx,
+		"organisation trail": rec.contexts[0],
+	} {
+		if c.principal != p.UserID {
+			t.Errorf("%s append context names principal %s, want the request's %s", name, c.principal, p.UserID)
+		}
+		if !c.hasDeadline {
+			t.Errorf("%s append context has no deadline; a stuck database could hold the request forever", name)
+		} else if c.deadline.After(limit) {
+			t.Errorf("%s append deadline %s is more than %s past the request (limit %s)", name, c.deadline, auditAppendTimeout, limit)
+		}
 	}
 }
 

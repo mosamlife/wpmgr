@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -151,6 +152,25 @@ func (h *Handler) put(c *gin.Context) {
 // AuditActionUpdate is the audit action every successful PUT records.
 const AuditActionUpdate = "smtp.settings.update"
 
+// auditAppendTimeout bounds the audit appends of one successful PUT, together.
+//
+// The appends run after the relay row has committed, on a context detached
+// from the request's cancellation (see recordUpdate), so a client that
+// disconnects after the save still leaves the change recorded. Detached alone
+// would be unbounded: a wedged database would hold this handler for as long as
+// the socket took to fail. The bound has to sit between two things:
+//
+//   - The healthy path is two short transactions, about a dozen round trips
+//     in all counting the pool's acquire-time ping, each under 10 ms on an
+//     established pooled connection (the measurement db.SessionCleanupTimeout
+//     is sized from). On top of that sits any wait for a pool connection and,
+//     for the organisation append, for that organisation's audit chain lock
+//     behind a concurrent append. 5 s is over forty times the healthy path's
+//     ceiling.
+//   - The default graceful-shutdown budget is 15 s. 5 s stays well inside it,
+//     so these appends cannot be what makes a drain overrun.
+const auditAppendTimeout = 5 * time.Second
+
 // recordUpdate records a successful PUT. The relay belongs to the install, so
 // its trail does too:
 //
@@ -167,7 +187,13 @@ const AuditActionUpdate = "smtp.settings.update"
 // Best-effort in both cases: the relay row is already written, so a failed
 // append is logged rather than reported as a failure of a change that did
 // happen.
-func (h *Handler) recordUpdate(ctx context.Context, p domain.Principal, authority admingate.Authority, out SMTPSettings) {
+//
+// Both appends run on a context that keeps the request's values but not its
+// cancellation, bounded by auditAppendTimeout: the change is saved by the time
+// this runs, so a client that disconnects now must not cost it its record.
+func (h *Handler) recordUpdate(reqCtx context.Context, p domain.Principal, authority admingate.Authority, out SMTPSettings) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(reqCtx), auditAppendTimeout)
+	defer cancel()
 	meta := map[string]any{
 		"enabled":  out.Enabled,
 		"host":     out.Host,
