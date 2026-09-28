@@ -8,7 +8,7 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ### Added
 
-- Opt-in login admission budgets for POST /auth/login. WPMGR_AUTH_LOGIN_MODE=enforce refuses a sign in attempt that is over budget with 429 too_many_attempts and a Retry-After header. observe remains the default and refuses nothing (#718).
+- Opt-in login admission budgets for POST /auth/login. WPMGR_AUTH_LOGIN_MODE=enforce refuses a sign in attempt that is over the pair, source, or source /48 budget with 429 too_many_attempts and a Retry-After header, but never over the account budget alone. observe remains the default and refuses nothing on budget grounds; a separate verification-concurrency limit still answers 503 server_busy with a Retry-After header in either mode (#718).
 
 ### Changed
 

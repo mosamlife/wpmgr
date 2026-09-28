@@ -151,14 +151,27 @@ the error when it refuses one.
 
 ### Login admission: `WPMGR_AUTH_LOGIN_MODE` {#login-admission}
 
-Login admission control for `POST /auth/login` evaluates a set of budgets
-(source address, account, source `/48`) and can refuse an attempt that is over
-one of them. Two modes:
+Login admission control for `POST /auth/login` evaluates budgets keyed on the
+source address paired with the account, on the source address alone, and on
+the source `/48`; in `enforce` mode it can refuse an attempt that is over one
+of those three. It also evaluates a budget keyed on the account alone, but
+that one only logs and never refuses, in either mode, so `enforce` does not
+stop a distributed guessing attempt against one account spread across many
+source addresses. Two modes:
 
 | Value | Behavior |
 |-------|----------|
-| `observe` (default) | Evaluates every budget and logs what `enforce` would have refused, but refuses nothing. An install that has never set this variable runs `observe`. Safe to leave on; it changes no status, body or header. |
-| `enforce` | Must be asked for by name. Refuses an attempt over budget with `429 too_many_attempts` and a `Retry-After` header. |
+| `observe` (default) | Evaluates every budget and logs what `enforce` would have refused, but refuses nothing on budget grounds; safe to leave on. An install that has never set this variable runs `observe`. |
+| `enforce` | Must be asked for by name. Refuses an attempt over the pair, source, or source `/48` budget with `429 too_many_attempts` and a `Retry-After` header. The account-only budget is still logged but never refuses. |
+
+Independent of the budgets and mode above, `POST /auth/login` also bounds how
+many sign-in attempts may verify a password at the same time within one
+process. When that bound is saturated, the attempt is answered with `503`,
+error code `server_busy`, and a `Retry-After` header, in every mode including
+the default `observe`. Seeing that response on `/auth/login` means sign-ins
+are arriving faster than this process is willing to verify passwords right
+now, not that any budget was exceeded; retry after the interval in the
+header.
 
 Budgets are **per process**: each `api` instance keeps its own counters, so a
 deployment running N instances admits up to N times each budget across the
@@ -469,9 +482,11 @@ Grafana then ships with the WPMgr dashboards pre-provisioned. See
   config, see [Reverse proxy: paths that must reach the API](#proxy-paths)
   for the four root-mounted paths an `/api/`-only rule will miss.
 - **Login admission control (`WPMGR_AUTH_LOGIN_MODE`) is opt-in.** `observe`
-  is the default and refuses nothing; `enforce` refuses sign-in attempts over
-  budget, and is only as safe as the `WPMGR_AUTH_PROXY_HOPS` value and the
-  API-port bind above being correct. See
+  is the default and refuses nothing on budget grounds, though the
+  verification-concurrency limit can still answer `503` in either mode;
+  `enforce` additionally refuses sign-in attempts over the pair, source, or
+  source `/48` budget (never the account alone), and is only as safe as the
+  `WPMGR_AUTH_PROXY_HOPS` value and the API-port bind above being correct. See
   [Login admission](#login-admission).
 - **First-run ownership requires the provisioning claim.** The dashboard Sign
   Up form cannot create the first account. `POST /auth/register` only grants
