@@ -448,11 +448,29 @@ func TestM143FiresOnPreexistingDuplicatesUnderOwnerRole(t *testing.T) {
 	assertBackupSnapshotsForceIntact(t, pool)
 }
 
+// m143EarlyReturnGuard is the exact text of m143's probe/early-return check
+// (20260728120000_m143_backup_chain_gen_dedup_prefill.sql). Kept as a
+// standalone constant so TestM143LateRunAfterM96AlreadyApplied's mutation can
+// assert it actually matched before stripping it — see stripOnce.
+const m143EarlyReturnGuard = `    IF to_regclass('public.backup_snapshots_chain_gen_completed_uidx') IS NOT NULL THEN
+        RETURN;
+    END IF;
+`
+
 // TestM143LateRunAfterM96AlreadyApplied covers the "LATE RUN" case m143's own
 // doc comment claims: on a database that reached head WITHOUT m143 (m96 ran
 // its own original code on a clean table and created the index itself), m143
-// arriving afterward must be a pure no-op — no error, no data change — since
-// its probe finds the index already present.
+// arriving afterward must be a pure no-op — no error, no data change, NO LOCK
+// TAKEN — since its probe finds the index already present.
+//
+// Proof structure (see migration_late_run_lock_test.go's doc comment for the
+// shared helpers): a second connection holds ROW EXCLUSIVE on
+// backup_snapshots throughout. First, an IN-MEMORY copy of m143 with its
+// early-return check stripped is run against that hold and must fail. Then
+// the REAL, unmutated m143 is run late via owner.Migrate and must finish well
+// inside the bound a lock wait would blow, and the real file is re-applied in
+// its own explicit transaction to prove pg_locks shows nothing against
+// backup_snapshots for that backend before commit.
 func TestM143LateRunAfterM96AlreadyApplied(t *testing.T) {
 	pool, owner := startPostgresBeforeM96(t)
 	ctx := context.Background()
@@ -482,18 +500,37 @@ func TestM143LateRunAfterM96AlreadyApplied(t *testing.T) {
 	seedGH168Snapshot(t, pool, tenant, siteID, gen0ID, gen0ID, 0, backup.StatusCompleted, false,
 		archiveDeltaEntries(0, "m143-lr-fl0", "m143-lr-part0"), now)
 
+	body, err := fs.ReadFile(migrations.FS, m143MigrationVersion+".sql")
+	if err != nil {
+		t.Fatalf("read m143 migration body: %v", err)
+	}
+	mutated := stripOnce(t, string(body), m143EarlyReturnGuard)
+
+	release := holdRowExclusiveOpen(t, owner, "backup_snapshots", "updated_at")
+	defer release()
+
+	// Fires: without the guard, m143 would take AccessExclusiveLock (via its
+	// NO FORCE ROW LEVEL SECURITY toggle) on backup_snapshots and block
+	// behind the held ROW EXCLUSIVE until its own 5s lock_timeout fires.
+	mutatedMigrationMustBlockOrError(t, owner, mutated)
+
 	before := backupSnapshotsChecksum(t, pool)
 
-	// m143 arrives late: unmark and migrate again.
+	// Does not over-fire: the REAL m143 arrives late (unmark and migrate
+	// again) and must finish fast despite the lock still held above.
 	scopePrefillUnmark(t, owner, m143MigrationVersion)
-	if err := owner.Migrate(ctx); err != nil {
-		t.Fatalf("late m143 run: %v", err)
-	}
+	assertMigrateStaysUnderLockBound(t, owner, ctx)
 
 	after := backupSnapshotsChecksum(t, pool)
 	if before != after {
 		t.Fatalf("m143's late run changed backup_snapshots data: before=%s after=%s", before, after)
 	}
+
+	// Re-apply the real file directly and prove it took no lock on
+	// backup_snapshots at all, still with the ROW EXCLUSIVE holder open.
+	assertFileTakesNoLockOnRelation(t, owner, "public.backup_snapshots", string(body))
+
+	release()
 	assertBackupSnapshotsForceIntact(t, pool)
 }
 

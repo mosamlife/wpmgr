@@ -424,11 +424,31 @@ func TestM141FiresOnPreexistingDuplicatesUnderOwnerRole(t *testing.T) {
 	assertUpdateTasksForceIntact(t, pool)
 }
 
+// m141EarlyReturnGuard is the exact text of m141's probe/early-return check
+// (20260720120000_m141_update_tasks_inflight_dedup_prefill.sql). Kept as a
+// standalone constant so TestM141LateRunAfterM88AlreadyApplied's mutation can
+// assert it actually matched before stripping it — see stripOnce.
+const m141EarlyReturnGuard = `    IF to_regclass('public.update_tasks_inflight_target_idx') IS NOT NULL THEN
+        RETURN;
+    END IF;
+`
+
 // TestM141LateRunAfterM88AlreadyApplied covers the "LATE RUN" case m141's own
 // doc comment claims: on a database that reached head WITHOUT m141 (m88 ran
 // its own original code on a clean table and created the index itself), m141
-// arriving afterward must be a pure no-op — no error, no data change — since
-// its probe finds the index already present.
+// arriving afterward must be a pure no-op — no error, no data change, NO LOCK
+// TAKEN — since its probe finds the index already present.
+//
+// Proof structure (see migration_late_run_lock_test.go's doc comment for the
+// shared helpers): a second connection holds ROW EXCLUSIVE on update_tasks
+// throughout. First, an IN-MEMORY copy of m141 with its early-return check
+// stripped is run against that hold and must fail (the guard is load-bearing:
+// this is what a security reviewer measured taking AccessExclusiveLock and
+// timing out against a live writer). Then the REAL, unmutated m141 is run
+// late via owner.Migrate and must finish well inside the bound a lock wait
+// would blow, and the real file is re-applied in its own explicit transaction
+// to prove pg_locks shows nothing against update_tasks for that backend
+// before commit.
 func TestM141LateRunAfterM88AlreadyApplied(t *testing.T) {
 	pool, owner := startPostgresBeforeM88(t)
 	ctx := context.Background()
@@ -448,25 +468,62 @@ func TestM141LateRunAfterM88AlreadyApplied(t *testing.T) {
 		t.Fatal("update_tasks_inflight_target_idx should already exist from m88")
 	}
 
+	// A REAL row in the target table — the gap this test used to have: an
+	// empty-table checksum compares equal no matter what a broken late run
+	// does, so it could never fail on data-corruption grounds.
 	tenant := seedTenant(t, pool, "m141-laterun")
-	if _, err := pool.Exec(ctx,
-		`INSERT INTO update_runs (tenant_id, status) VALUES ($1, 'running')`, tenant,
-	); err != nil {
+	var siteID uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO sites (tenant_id, url, name) VALUES ($1, $2, $3) RETURNING id`,
+		tenant, "https://m141-laterun.example.com", "m141 laterun site",
+	).Scan(&siteID); err != nil {
+		t.Fatalf("seed site: %v", err)
+	}
+	var runID uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO update_runs (tenant_id, status) VALUES ($1, 'running') RETURNING id`, tenant,
+	).Scan(&runID); err != nil {
 		t.Fatalf("seed run: %v", err)
 	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO update_tasks (run_id, tenant_id, site_id, target_type, target_slug, status)
+		 VALUES ($1, $2, $3, 'plugin', 'akismet', 'pending')`,
+		runID, tenant, siteID,
+	); err != nil {
+		t.Fatalf("seed a real in-flight task: %v", err)
+	}
+
+	body, err := fs.ReadFile(migrations.FS, m141MigrationVersion+".sql")
+	if err != nil {
+		t.Fatalf("read m141 migration body: %v", err)
+	}
+	mutated := stripOnce(t, string(body), m141EarlyReturnGuard)
+
+	release := holdRowExclusiveOpen(t, owner, "update_tasks", "updated_at")
+	defer release()
+
+	// Fires: without the guard, m141 would take AccessExclusiveLock (via its
+	// NO FORCE ROW LEVEL SECURITY toggle) on update_tasks and block behind the
+	// held ROW EXCLUSIVE until its own 5s lock_timeout fires.
+	mutatedMigrationMustBlockOrError(t, owner, mutated)
 
 	before := updateTasksChecksum(t, pool)
 
-	// m141 arrives late: unmark and migrate again.
+	// Does not over-fire: the REAL m141 arrives late (unmark and migrate
+	// again) and must finish fast despite the lock still held above.
 	scopePrefillUnmark(t, owner, m141MigrationVersion)
-	if err := owner.Migrate(ctx); err != nil {
-		t.Fatalf("late m141 run: %v", err)
-	}
+	assertMigrateStaysUnderLockBound(t, owner, ctx)
 
 	after := updateTasksChecksum(t, pool)
 	if before != after {
 		t.Fatalf("m141's late run changed update_tasks data: before=%s after=%s", before, after)
 	}
+
+	// Re-apply the real file directly and prove it took no lock on
+	// update_tasks at all, still with the ROW EXCLUSIVE holder open.
+	assertFileTakesNoLockOnRelation(t, owner, "public.update_tasks", string(body))
+
+	release()
 	assertUpdateTasksForceIntact(t, pool)
 }
 

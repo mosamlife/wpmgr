@@ -405,13 +405,46 @@ func TestM145FiresLeavingNotifiedAtNullUnderOwnerRole(t *testing.T) {
 	assertSiteVulnerabilitiesForceIntact(t, pool)
 }
 
+// m145EarlyReturnGuardOpen and m145EarlyReturnGuardClose bracket the exact
+// text of m145's probe/early-return check
+// (20260804120000_m145_vuln_notified_at_prefill.sql) — an IF NOT EXISTS (...)
+// THEN ... END IF wrapper rather than m141/m143's early RETURN, since m145's
+// body is two ALTER statements with nothing to run once the column exists.
+// Kept as standalone constants so TestM145LateRunAfterM103AlreadyApplied's
+// mutation can assert each actually matched before stripping it — see
+// stripOnce. Stripping both unconditionally exposes the two ALTER TABLE
+// statements inside BEGIN...END, which is still valid PL/pgSQL.
+const m145EarlyReturnGuardOpen = `    IF NOT EXISTS (
+        SELECT 1 FROM pg_attribute
+        WHERE attrelid = 'public.site_vulnerabilities'::regclass
+          AND attname  = 'notified_at'
+          AND NOT attisdropped
+    ) THEN
+`
+const m145EarlyReturnGuardClose = `    END IF;
+`
+
 // TestM145LateRunAfterM103AlreadyApplied covers the "LATE RUN" case m145's
 // own doc comment claims: on a database that reached head WITHOUT m145 (m103
 // ran its own original code on an empty table and added the column itself),
-// m145 arriving afterward must be a pure no-op — no error, no data change —
-// since its probe finds the column already present. In particular, a NULL
-// notified_at written by a genuinely NEW finding after that first migration
-// must stay NULL: m145's late run must not re-scan the table and stamp it.
+// m145 arriving afterward must be a pure no-op — no error, no data change, NO
+// LOCK TAKEN — since its probe finds the column already present. In
+// particular, a NULL notified_at written by a genuinely NEW finding after
+// that first migration must stay NULL, and a pre-existing, already-notified
+// (non-NULL) finding must keep its exact stamp: m145's late run must not
+// re-scan the table at all.
+//
+// Proof structure (see migration_late_run_lock_test.go's doc comment for the
+// shared helpers): a second connection holds ROW EXCLUSIVE on
+// site_vulnerabilities throughout. First, an IN-MEMORY copy of m145 with its
+// guard stripped is run against that hold and must fail — unlike m141/m143 it
+// sets no lock_timeout of its own, so without the guard it would otherwise
+// hang until the holder releases (which nothing does before this call
+// returns), and the shared helper's own bound is what turns that into a red
+// result. Then the REAL, unmutated m145 is run late via owner.Migrate and
+// must finish well inside the bound a lock wait would blow, and the real file
+// is re-applied in its own explicit transaction to prove pg_locks shows
+// nothing against site_vulnerabilities for that backend before commit.
 func TestM145LateRunAfterM103AlreadyApplied(t *testing.T) {
 	pool, owner := startPostgresBeforeM103(t)
 	ctx := context.Background()
@@ -453,13 +486,44 @@ func TestM145LateRunAfterM103AlreadyApplied(t *testing.T) {
 		t.Fatalf("new post-migration finding notified_at = %v, want NULL", *notifiedAt)
 	}
 
+	// A SECOND finding, already notified (non-NULL), inserted directly via the
+	// bootstrap superuser pool with an explicit stamp — as if an earlier
+	// dispatch had already claimed it. A converged late run must leave this
+	// exact value untouched too, not just the NULL one above.
+	notifiedStamp := time.Now().Add(-24 * time.Hour).UTC().Truncate(time.Microsecond)
+	var alreadyNotifiedID uuid.UUID
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO site_vulnerabilities
+			(tenant_id, site_id, vuln_id, kind, slug, name, installed_version, severity, title, status, notified_at)
+		VALUES ($1, $2, 'm145-lr-vuln-notified', 'plugin', 'm145-lr-vuln-notified', 'seed', '1.0.0', 'high', 'seed finding', 'open', $3)
+		RETURNING id`,
+		tenant, siteID, notifiedStamp,
+	).Scan(&alreadyNotifiedID); err != nil {
+		t.Fatalf("seed already-notified finding: %v", err)
+	}
+
+	body, err := fs.ReadFile(migrations.FS, m145MigrationVersion+".sql")
+	if err != nil {
+		t.Fatalf("read m145 migration body: %v", err)
+	}
+	mutated := stripOnce(t, string(body), m145EarlyReturnGuardOpen)
+	mutated = stripOnce(t, mutated, m145EarlyReturnGuardClose)
+
+	release := holdRowExclusiveOpen(t, owner, "site_vulnerabilities", "last_seen")
+	defer release()
+
+	// Fires: without the guard, m145 would attempt its ADD COLUMN
+	// unconditionally, which needs the same conflicting table-level lock the
+	// held ROW EXCLUSIVE holds, and (having no lock_timeout of its own) would
+	// hang past the shared helper's bound.
+	mutatedMigrationMustBlockOrError(t, owner, mutated)
+
 	before := siteVulnerabilitiesChecksum(t, pool)
 
-	// m145 arrives late: unmark and migrate again.
+	// Does not over-fire: the REAL m145 arrives late (unmark and migrate
+	// again) and must finish fast despite the lock still held above.
 	scopePrefillUnmark(t, owner, m145MigrationVersion)
-	if err := owner.Migrate(ctx); err != nil {
-		t.Fatalf("late m145 run: %v", err)
-	}
+	assertMigrateStaysUnderLockBound(t, owner, ctx)
 
 	after := siteVulnerabilitiesChecksum(t, pool)
 	if before != after {
@@ -471,6 +535,19 @@ func TestM145LateRunAfterM103AlreadyApplied(t *testing.T) {
 	if notifiedAt != nil {
 		t.Fatalf("m145's late run stamped a post-migration NULL notified_at = %v, want it to stay NULL", *notifiedAt)
 	}
+	var afterNotifiedStamp time.Time
+	if err := pool.QueryRow(ctx, `SELECT notified_at FROM site_vulnerabilities WHERE id = $1`, alreadyNotifiedID).Scan(&afterNotifiedStamp); err != nil {
+		t.Fatalf("query notified_at for the already-notified finding after late run: %v", err)
+	}
+	if !afterNotifiedStamp.Equal(notifiedStamp) {
+		t.Fatalf("m145's late run changed an already-notified finding's stamp: before=%v after=%v", notifiedStamp, afterNotifiedStamp)
+	}
+
+	// Re-apply the real file directly and prove it took no lock on
+	// site_vulnerabilities at all, still with the ROW EXCLUSIVE holder open.
+	assertFileTakesNoLockOnRelation(t, owner, "public.site_vulnerabilities", string(body))
+
+	release()
 	assertSiteVulnerabilitiesForceIntact(t, pool)
 }
 
