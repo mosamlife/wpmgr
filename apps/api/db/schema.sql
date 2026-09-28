@@ -1,49 +1,32 @@
--- WPMgr database schema — sqlc's input, and a reading copy of the end state.
+-- WPMgr database schema: a declarative mirror of apps/api/migrations.
 --
--- THIS FILE IS NOT AUTHORITATIVE, AND CALLING IT THE SINGLE SOURCE OF TRUTH
--- (as this line did until GH #470) is what made the drift below dangerous.
--- apps/api/migrations/*.sql is what actually runs, in lexical order, inside
--- main() at boot. This file is consumed by sqlc for query codegen and by Atlas
--- for migration diffing, and it lagged the migrations until the
--- reconciliation below.
+-- WHAT THIS FILE IS. It states the end state the migrations produce, as plain
+-- CREATE statements. sqlc parses it to type the queries in db/query/ and to
+-- generate internal/db/sqlc. The server never executes it: the files in
+-- apps/api/migrations/ are what run, in lexical order, inside main() at boot,
+-- and every real database is built from those alone.
 --
--- The lag is not cosmetic when the missing statement is a POLICY. Grepping
--- this file to decide whether a table is tenant- or site-scoped returns
--- nothing for a table that is in fact protected, and "no policy found" reads
--- as "unprotected" — the opposite of the truth, in the direction that costs a
--- tenant boundary. GH #470 declared 11 RESTRICTIVE site_scope policies here
--- that had been live in every database since m19 and were absent from this
--- file.
+-- KEEPING IT TRUE. Every new migration updates this file in the same commit,
+-- so the two keep describing the same schema: the tables, columns,
+-- constraints, indexes, functions, triggers and RLS policies the migration
+-- adds, changes or drops. Write the end state, not the steps that reached it.
+-- The file loads top to bottom into an empty database (with the wpmgr_app
+-- role present, as the first migration provisions it), so a statement goes
+-- below everything it references.
 --
--- THE RECONCILIATION IS DONE, up to m137. The 23 tables that were missing
--- are declared here now, with their 54 live policies (13 of them RESTRICTIVE
--- site_scope gates), and so are the columns, column comments and foreign-key
--- names the migrations had and this file did not. Where this file declared
--- something no migration ever created, the migrations won and it was removed.
---
--- The check is the strong one: `ptah-compat migrate diff --env local` replays
--- every migration and this file on a throwaway database and compares the two
--- catalogs, policies and function bodies included. A migration file in its
--- output is a difference between them.
---
--- SO: DO NOT USE THIS FILE TO ANSWER "is this table site-scoped".
---
--- And do not use apps/api/db/rls-cross-tenant-policies.txt or
--- scripts/check-rls-cross-tenant.sh for it either. Both deliberately EXCLUDE
--- restrictive policies — a restrictive policy can only narrow, never grant, so
--- it is outside what a cross-tenant *grant* audit is about — and every
--- site_scope gate is restrictive. Asking them yields no answer, which is the
--- same shape of wrong as asking this file: silence read as "not protected".
---
--- The only authority is the migrations, and the only reliable check is a live
--- catalog on a database with all of them applied:
+-- NOTHING CHECKS THIS AUTOMATICALLY YET. A migration that forgets to update
+-- this file still builds, still generates and still passes CI. So when a
+-- security question turns on the answer, such as "is this table site-scoped"
+-- or "does this table force RLS", the migrations are the authority, not this
+-- file. The most direct answer is a live catalog on a database with every
+-- migration applied:
 --
 --   SELECT tablename, policyname, permissive, cmd
 --     FROM pg_policies
 --    WHERE schemaname = 'public' AND policyname LIKE '%site\_scope%'
 --    ORDER BY tablename;
 --
--- or, against the source, grep BOTH the quoted schema-qualified form the
+-- Against the source, grep BOTH the quoted, schema-qualified form the
 -- migrations use and the bare form this file uses:
 --
 --   grep -rhoE 'CREATE POLICY "?[a-z_0-9]+_site_scope[a-z_0-9]*"?' \
@@ -54,12 +37,16 @@
 -- which is the opposite of the truth. A search that finds nothing must refuse,
 -- not answer.)
 --
--- Nothing currently guards the site_scope gates against being dropped or
--- weakened. That is a real and separate invariant — it is what m112 exists for
--- — and it wants its own guard.
+-- Do not use apps/api/db/rls-cross-tenant-policies.txt or
+-- scripts/check-rls-cross-tenant.sh for that question either. Both
+-- deliberately EXCLUDE restrictive policies — a restrictive policy can only
+-- narrow, never grant, so it is outside what a cross-tenant *grant* audit is
+-- about — and every site_scope gate is restrictive. Asking them yields no
+-- answer, and silence reads as "not protected".
 --
--- Keep it declarative: it describes the desired end state of the schema, not
--- incremental changes.
+-- Nothing currently guards the site_scope gates as a set against being
+-- dropped or weakened. That is a real and separate invariant — it is what m112
+-- exists for — and it wants its own guard.
 --
 -- Multi-tenancy is enforced at the database layer via Postgres Row-Level
 -- Security (RLS). Every tenant-scoped table has RLS enabled with a policy
