@@ -125,7 +125,7 @@ export function BackupsSection({
   siteId: string;
   canOperate: boolean;
 }) {
-  // GH #753 slice 1b — shares the sitesKeys.detail(siteId) query the site
+  // GH #753 slice 1b: shares the sitesKeys.detail(siteId) query the site
   // detail layout already fetched (30s staleTime, see lib/query-client.ts),
   // so this is a cache read in the common case, not a second request.
   const { data: site } = useSite(siteId);

@@ -415,13 +415,13 @@ export const SiteSchema = {
 export const SiteKeystoreStatusSchema = {
   type: "object",
   description:
-    'GH #753 — trial-decrypt probe result for the site\'s on-disk agent\nkeystore (Keystore::probe()), pushed on plugin activation, on\nadmin_init for manage_options users (throttled), and on every\nmetadata cycle. Absent on the Site response means no connected\nagent has ever reported one (a pre-#753 agent, or no push yet);\nthat is also carried explicitly as state=not_reported so a\nstatus-only metadata push is never confused with "ok". Never\ncontains key material, a key-check value, an error detail or a\nfile path.\n',
+    "GH #753 — trial-decrypt probe result for the site's on-disk agent\nkeystore (Keystore::probe()). It arrives with the agent's ordinary\nmetadata push — the 30-minute cron cadence, or a CP-triggered\nrecheck — never on admin_init: the agent's admin_init check only\nrecords a local wp-admin notice and sends nothing to the control\nplane from that path.\n\nAbsent on the Site response only before this site's first metadata\nsync. A pre-#753 agent that has since synced at least once gets\nstate=not_reported instead, never absent and never ok, so an old\nagent's silence can never read as a healthy keystore. Every\nmetadata push replaces the previously stored status outright — it\nis not a delta — so not_reported also covers any later push whose\nlatest probe carried no recognised result; a prior good report does\nnot survive a bad one. Never contains key material, a key-check\nvalue, an error detail or a file path.\n",
   properties: {
     state: {
       type: "string",
       enum: ["ok", "unreadable", "key_unavailable", "not_reported"],
       description:
-        'ok = every stored item decrypted under the resolved master key.\nunreadable = the master key resolved but one or more stored\nitems did not decrypt under it (the common "site moved host, or\nthe wp-config.php security keys changed" case).\nkey_unavailable = the master key itself could not be resolved.\nnot_reported = no agent has ever pushed a probe result for this\nsite.\n',
+        'ok = every stored item decrypted under the resolved master key.\nunreadable = the master key resolved but one or more stored\nitems did not decrypt under it (the common "site moved host, or\nthe wp-config.php security keys changed" case).\nkey_unavailable = the master key itself could not be resolved.\nnot_reported = the latest metadata push carried no recognised\nprobe result — a pre-#753 agent that has synced at least once,\nor a later push whose probe result the control plane did not\nrecognise. Every push replaces the previous status outright, so\nthis is never a delta against an earlier report.\n',
     },
     key_source: {
       type: "string",

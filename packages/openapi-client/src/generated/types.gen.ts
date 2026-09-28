@@ -306,14 +306,21 @@ export type Site = {
 
 /**
  * GH #753 — trial-decrypt probe result for the site's on-disk agent
- * keystore (Keystore::probe()), pushed on plugin activation, on
- * admin_init for manage_options users (throttled), and on every
- * metadata cycle. Absent on the Site response means no connected
- * agent has ever reported one (a pre-#753 agent, or no push yet);
- * that is also carried explicitly as state=not_reported so a
- * status-only metadata push is never confused with "ok". Never
- * contains key material, a key-check value, an error detail or a
- * file path.
+ * keystore (Keystore::probe()). It arrives with the agent's ordinary
+ * metadata push — the 30-minute cron cadence, or a CP-triggered
+ * recheck — never on admin_init: the agent's admin_init check only
+ * records a local wp-admin notice and sends nothing to the control
+ * plane from that path.
+ *
+ * Absent on the Site response only before this site's first metadata
+ * sync. A pre-#753 agent that has since synced at least once gets
+ * state=not_reported instead, never absent and never ok, so an old
+ * agent's silence can never read as a healthy keystore. Every
+ * metadata push replaces the previously stored status outright — it
+ * is not a delta — so not_reported also covers any later push whose
+ * latest probe carried no recognised result; a prior good report does
+ * not survive a bad one. Never contains key material, a key-check
+ * value, an error detail or a file path.
  *
  */
 export type SiteKeystoreStatus = {
@@ -323,8 +330,11 @@ export type SiteKeystoreStatus = {
    * items did not decrypt under it (the common "site moved host, or
    * the wp-config.php security keys changed" case).
    * key_unavailable = the master key itself could not be resolved.
-   * not_reported = no agent has ever pushed a probe result for this
-   * site.
+   * not_reported = the latest metadata push carried no recognised
+   * probe result — a pre-#753 agent that has synced at least once,
+   * or a later push whose probe result the control plane did not
+   * recognise. Every push replaces the previous status outright, so
+   * this is never a delta against an earlier report.
    *
    */
   state?: "ok" | "unreadable" | "key_unavailable" | "not_reported";
