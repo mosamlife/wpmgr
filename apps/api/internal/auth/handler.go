@@ -69,10 +69,11 @@ type Handler struct {
 	// session record. NOT optional in effect: unset makes socialStart refuse
 	// rather than issue a handshake nobody signed. See social_handshake.go.
 	handshake *handshakeCodec
-	// loginGate is the GH #718 Phase 0 login admission control: it measures the
-	// per-source and per-account budgets without applying them, and bounds how
-	// many argon2id verifications run at once. Unset removes BOTH, which is a
-	// wiring failure and not a mode — LogAdmissionStartup says so at boot.
+	// loginGate is the GH #718 login admission control: it evaluates the
+	// per-source and per-pair budgets (applying them in enforce mode), and
+	// bounds how many argon2id verifications run at once. Unset removes BOTH,
+	// which is a wiring failure and not a mode — LogAdmissionStartup says so at
+	// boot.
 	loginGate *LoginGate
 	// instanceGate answers Me.can_manage_instance_email, wired via
 	// SetInstanceAuthorityGate. It is read by admingate.CanManageInstanceEmail,
@@ -195,30 +196,41 @@ func (h *Handler) login(c *gin.Context) {
 		return
 	}
 
-	// GH #718 Phase 0 — login admission control.
+	// GH #718 — login admission control.
 	//
 	// Placed here, and not inside Service.Login, for two reasons. It has to run
 	// BEFORE any account lookup so it cannot branch on whether the account
-	// exists (that is what keeps it from becoming an enumeration oracle), and
+	// exists (that is what keeps a refusal from becoming an enumeration
+	// oracle: it is decided, and answered, with no account looked at), and
 	// Service.Login's signature has to stay exactly as it is because seven
 	// service-level tests call it directly.
 	//
-	// Observe measures and returns nothing. AcquireVerify is the only part that
-	// can change what the caller sees, and only when this process already has
-	// as many password verifications in flight as it is willing to run.
+	// limiterAddrSource, not clientAddr: the address decides a refusal, so it
+	// must be the entry the infrastructure appended. TestDecisionSitesUseLimiter
+	// Addr pins this site to it.
 	addr, fromChain := h.limiterAddrSource(c)
-	h.loginGate.Observe(c.Request.Context(), loginAttempt{
+	admission, refusal := h.loginGate.Admit(c.Request.Context(), loginAttempt{
 		Addr:      addr,
 		FromChain: fromChain,
 		Hops:      h.effectiveProxyHops(),
 		Email:     body.Email,
 	})
+	if refusal != nil {
+		// Enforce mode, over the pair, source or source /48 budget. Nothing
+		// was charged and no account was looked up. No audit row is written:
+		// the gate's WARN line is the record of a refused attempt.
+		c.Header("Retry-After", strconv.Itoa(refusal.retryAfterSeconds()))
+		httpx.Error(c, refusal.domainError())
+		return
+	}
 
 	releaseVerify, admitted := h.loginGate.AcquireVerify(c.Request.Context())
 	if !admitted {
 		// Saturation, not a limit: no account was looked at and nothing about
 		// this caller decided it. Retry-After is short because the condition it
-		// describes clears in the time one verification takes.
+		// describes clears in the time one verification takes. The attempt was
+		// refused, so it gives back what admission charged.
+		admission.giveBack()
 		c.Header("Retry-After", "2")
 		httpx.Error(c, domain.ServiceUnavailable("server_busy", "server is busy verifying sign-ins; retry shortly"))
 		return
@@ -250,6 +262,9 @@ func (h *Handler) login(c *gin.Context) {
 		httpx.Error(c, err)
 		return
 	}
+	// The password verified. A successful sign-in costs no budget, so a
+	// shared connection's budget is spent only by the attempts that failed.
+	admission.giveBack()
 
 	// ADR-056 Phase 3: two-factor enforcement.
 	// INVARIANT: a 2FA-enabled user must NEVER receive a full session without

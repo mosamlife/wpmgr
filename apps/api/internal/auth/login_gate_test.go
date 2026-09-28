@@ -209,7 +209,7 @@ func TestOverBudgetAttemptChargesNothing(t *testing.T) {
 
 	// Exhaust the pair budget exactly.
 	for i := 0; i < loginPairBudget; i++ {
-		g.Observe(context.Background(), loginAttempt{Addr: addr, FromChain: true, Hops: 2, Email: "a@example.test"})
+		g.Admit(context.Background(), loginAttempt{Addr: addr, FromChain: true, Hops: 2, Email: "a@example.test"})
 	}
 	srcKey := srcKeyFor(addr)
 	acctH := g.AccountDigest("a@example.test")
@@ -225,7 +225,7 @@ func TestOverBudgetAttemptChargesNothing(t *testing.T) {
 
 	// 50 more on the same pair. Every one is over the pair budget.
 	for i := 0; i < 50; i++ {
-		g.Observe(context.Background(), loginAttempt{Addr: addr, FromChain: true, Hops: 2, Email: "a@example.test"})
+		g.Admit(context.Background(), loginAttempt{Addr: addr, FromChain: true, Hops: 2, Email: "a@example.test"})
 	}
 
 	if got := g.src.buckets[srcKey].lim.TokensAt(now); got != srcTokens {
@@ -405,7 +405,7 @@ func TestObservationIsInvisibleToTheCaller(t *testing.T) {
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
 		c.Request = httptest.NewRequest(http.MethodPost, "/auth/login", nil)
-		g.Observe(context.Background(), loginAttempt{Addr: netip.MustParseAddr(simulatedClient), FromChain: true, Hops: 2, Email: email})
+		g.Admit(context.Background(), loginAttempt{Addr: netip.MustParseAddr(simulatedClient), FromChain: true, Hops: 2, Email: email})
 		if c.Writer.Written() {
 			t.Errorf("Observe wrote to the response for email %q", email)
 		}
