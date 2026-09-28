@@ -359,8 +359,8 @@ final class Router
         // "/var/www/site", the unrelated "/var/www/site2/secret" would come out
         // as "2/secret" — a surviving path fragment that the absolute-path
         // redaction below can no longer catch, because its leading "/" is gone.
-        // Requiring the separator leaves such a path fully absolute, so it
-        // reaches that redaction and is dropped whole.
+        // Requiring the separator leaves such a path fully absolute, so the
+        // absolute-path redaction still recognises it from its root.
         // Both separators, because the needle has to match the message as PHP
         // wrote it. On Windows a root arrives as "C:\wp\site" and the message
         // carries backslashes, so a '/'-only needle never matches and the whole
