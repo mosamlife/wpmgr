@@ -122,6 +122,7 @@ use WPMgr\Agent\Support\AgeIdentity;
 use WPMgr\Agent\Support\ConnectionFinisher;
 use WPMgr\Agent\Support\DebugLog;
 use WPMgr\Agent\Support\ErrorMonitor;
+use WPMgr\Agent\Support\KeystoreHealth;
 use WPMgr\Agent\Support\LoginBrand;
 use WPMgr\Agent\Support\LoginProtection;
 use WPMgr\Agent\Support\LongRunningJob;
@@ -143,6 +144,23 @@ final class Plugin
      * so admin pages can surface a fix-it notice and a lazy retry can run.
      */
     public const OPTION_KEYSTORE_ERROR = 'wpmgr_agent_keystore_error';
+
+    /**
+     * Which kind of keystore problem OPTION_KEYSTORE_ERROR describes (one of
+     * the KeystoreHealth::KIND_* values), so the notice headline names the
+     * actual state instead of a generic "setup incomplete".
+     */
+    public const OPTION_KEYSTORE_ERROR_KIND = 'wpmgr_agent_keystore_error_kind';
+
+    /**
+     * Transient that throttles the admin-load keystore probe on a site with
+     * no notice set, so an admin page view reads the stored keys at most once
+     * per KEYSTORE_PROBE_INTERVAL.
+     */
+    public const TRANSIENT_KEYSTORE_PROBE = 'wpmgr_agent_keystore_probed';
+
+    /** Seconds between admin-load keystore probes while no notice is set. */
+    private const KEYSTORE_PROBE_INTERVAL = 900;
 
     /**
      * Highest agent version this site has already confirmed to the control
@@ -1179,122 +1197,111 @@ final class Plugin
     }
 
     /**
-     * Best-effort keystore initialization: ensure the site keypair exists.
-     * Returns true on success. Never throws; on failure it persists an error
-     * flag so the admin can be notified and a retry can run later.
+     * Best-effort keystore initialization. Returns true when the keystore is
+     * ready. Never throws; on failure it persists an error flag so the admin
+     * can be notified and a retry can run later.
+     *
+     * It starts from a read-only probe of every stored key:
+     *   - When anything stored cannot be opened (or the key cannot be
+     *     loaded), it records a notice naming what cannot be read and stops.
+     *     It never replaces, regenerates or deletes a stored key it cannot
+     *     read. The one thing it still creates is a backup key that is
+     *     ABSENT, and only when the site keypair opens under the current key,
+     *     which shows that key is the one this site uses now. If creating it
+     *     fails, it still records the unreadable-keys notice, never the
+     *     setup-failure one.
+     *   - Otherwise it generates only what is ABSENT (the site keypair, the
+     *     backup key) and clears the notice.
      *
      * @return bool Whether the keystore is ready.
      */
     private function setupKeystore(): bool
     {
         try {
-            // Generate the site's own Ed25519 keypair on first activation only.
-            // getSiteKeypair() also exercises master-key decryption, so a bad
-            // key source surfaces here rather than at request time.
-            if ($this->keystore->getSiteKeypair() === null) {
+            $probe = $this->keystore->probe();
+            if ($probe['state'] !== Keystore::PROBE_OK) {
+                if ($probe['state'] === Keystore::PROBE_UNREADABLE
+                    && $probe['items']['age_identity'] === Keystore::ITEM_ABSENT
+                    && KeystoreHealth::backupKeyUsable($probe)
+                ) {
+                    try {
+                        (new AgeIdentity($this->keystore))->ensureRecipient();
+                    } catch (\Throwable $e) {
+                        // The backup key changed after the probe (another
+                        // request stored one), or storing it failed. The
+                        // stored keys still do not all open, so the notice
+                        // below is the one that applies; the next admin load
+                        // retries setup and re-probes.
+                    }
+                }
+                KeystoreHealth::flag($probe);
+
+                return false;
+            }
+
+            // Generate the site's own Ed25519 keypair when none is stored.
+            if ($probe['items']['site_keypair'] === Keystore::ITEM_ABSENT) {
                 $this->keystore->generateSiteKeypair();
             }
 
             // Provision the site's age backup-encryption identity (PRIVATE key
-            // stored encrypted; only the PUBLIC recipient is ever shared). Doing
-            // it here means the recipient is available to the admin/CP before the
-            // first backup, and the private key is generated long before any
-            // backup command can run.
-            if (!$this->keystore->hasAgeIdentity()) {
+            // stored encrypted; only the PUBLIC recipient is ever shared) when
+            // none is stored. Doing it here means the recipient is available to
+            // the admin/CP before the first backup.
+            if ($probe['items']['age_identity'] === Keystore::ITEM_ABSENT) {
                 (new AgeIdentity($this->keystore))->ensureRecipient();
             }
 
             delete_option(self::OPTION_KEYSTORE_ERROR);
+            delete_option(self::OPTION_KEYSTORE_ERROR_KIND);
 
             return true;
         } catch (\Throwable $e) {
-            update_option(self::OPTION_KEYSTORE_ERROR, $this->keystoreErrorMessage($e), false);
+            update_option(self::OPTION_KEYSTORE_ERROR, KeystoreHealth::setupFailureNotice($e), false);
+            update_option(self::OPTION_KEYSTORE_ERROR_KIND, KeystoreHealth::KIND_SETUP, false);
 
             return false;
         }
     }
 
     /**
-     * Build a cause-specific, plain-text admin message for a keystore setup
-     * failure. Distinguishes three situations rather than showing one fixed
-     * opaque message for every failure (GH #257):
+     * Admin-load keystore check. Bound to admin_init; runs only for users who
+     * can manage options.
      *
-     *   (a) A required crypto PHP extension (sodium or openssl) is missing.
-     *   (b) A previously-pinned master-key source has become unavailable (an
-     *       operator removed WPMGR_AGENT_KEY_FILE, edited/removed wp-config
-     *       salts, or deleted a key file/option) — the underlying
-     *       RuntimeException message from the pinned-source honour block in
-     *       Keystore::resolveMasterKey() already names the specific cause, so
-     *       it is surfaced directly instead of a generic message.
-     *   (c) First-time establishment failure: every tier (constant, salts,
-     *       every file candidate, AND the database fallback) was unusable.
-     *       Only reachable when WPMGR_AGENT_DISABLE_DB_KEY is defined (the
-     *       operator opted out of the last-resort tier) or the database
-     *       write itself failed.
-     *
-     * The return value is plain text (no markup); renderKeystoreNotice()
-     * escapes it with esc_html() at the point of output.
-     *
-     * @param \Throwable $e The exception caught while setting up the keystore.
-     * @return string Human-readable failure message.
-     */
-    private function keystoreErrorMessage(\Throwable $e): string
-    {
-        $suffix = ' The plugin is active but inactive until this is resolved.';
-
-        // (a) Missing crypto extension. Checked independently of $e's content
-        // (a missing extension typically surfaces as an "undefined function"
-        // \Error rather than a message that names the extension).
-        $missingExtensions = [];
-        if (!extension_loaded('sodium')) {
-            $missingExtensions[] = 'sodium';
-        }
-        if (!extension_loaded('openssl')) {
-            $missingExtensions[] = 'openssl';
-        }
-        if ($missingExtensions !== []) {
-            $plural = count($missingExtensions) > 1;
-            return 'WPMgr Agent requires the PHP ' . implode(' and ', $missingExtensions)
-                . ' extension' . ($plural ? 's' : '') . ', which ' . ($plural ? 'are' : 'is')
-                . ' not available on this server. Ask your host to enable '
-                . ($plural ? 'them' : 'it') . '.' . $suffix;
-        }
-
-        $message = $e->getMessage();
-
-        // (b) Pinned-source drift: every honour-block RuntimeException in
-        // Keystore::resolveMasterKey() names the source in its message and
-        // contains the word "pinned".
-        if (strpos($message, 'pinned') !== false) {
-            return 'WPMgr Agent could not re-establish its encryption key: ' . $message . $suffix;
-        }
-
-        // (c) First-time establishment failure (every tier, including the
-        // database fallback, was unusable).
-        return 'WPMgr Agent could not establish its encryption key. Define WPMGR_AGENT_KEY_FILE '
-            . 'in wp-config.php pointing to a writable path, ensure your wp-config.php secret salts '
-            . '(AUTH_KEY, ...) are set, or (if WPMGR_AGENT_DISABLE_DB_KEY is defined) remove that '
-            . 'constant so the database-stored fallback key can be used.' . $suffix;
-    }
-
-    /**
-     * Lazily retry keystore setup on admin loads when a prior attempt failed.
-     * Bound to admin_init.
+     * While a notice is set it retries setup on every admin load, so fixing
+     * the cause (putting back the previous wp-config.php security keys, say)
+     * clears the notice on the next page view. While no notice is set it runs
+     * the read-only probe at most once per KEYSTORE_PROBE_INTERVAL, so a site
+     * whose stored keys stopped opening after a plugin update is flagged
+     * without re-activation. That probe only records a notice; it never
+     * generates or changes a key.
      *
      * @return void
      */
     public function ensureKeystoreReady(): void
     {
-        if (get_option(self::OPTION_KEYSTORE_ERROR) === false) {
+        if (!function_exists('current_user_can') || !current_user_can('manage_options')) {
             return;
         }
 
-        $this->setupKeystore();
+        if (get_option(self::OPTION_KEYSTORE_ERROR) !== false) {
+            $this->setupKeystore();
+            return;
+        }
+
+        if (function_exists('get_transient') && get_transient(self::TRANSIENT_KEYSTORE_PROBE) !== false) {
+            return;
+        }
+        if (function_exists('set_transient')) {
+            set_transient(self::TRANSIENT_KEYSTORE_PROBE, time(), self::KEYSTORE_PROBE_INTERVAL);
+        }
+
+        KeystoreHealth::flag($this->keystore->probe());
     }
 
     /**
-     * Render the persistent keystore-failure admin notice, if any.
-     * Bound to admin_notices.
+     * Render the persistent keystore admin notice, if any, with a headline
+     * that names the recorded state. Bound to admin_notices.
      *
      * @return void
      */
@@ -1309,7 +1316,7 @@ final class Plugin
         }
 
         echo '<div class="notice notice-error"><p><strong>'
-            . esc_html('WPMgr Agent: setup incomplete.') . '</strong> '
+            . esc_html(KeystoreHealth::headline(get_option(self::OPTION_KEYSTORE_ERROR_KIND))) . '</strong> '
             . esc_html($message) . '</p></div>';
     }
 
