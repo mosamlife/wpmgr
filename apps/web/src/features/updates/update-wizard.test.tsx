@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { screen, fireEvent, within, waitFor } from "@testing-library/react";
 import type { Site, UpdateRunCreate } from "@wpmgr/api";
@@ -684,5 +685,189 @@ describe("UpdateWizard — PR #752 Select all / Deselect all (GH #680)", () => {
     expect(
       screen.queryByRole("button", { name: /select all/i }),
     ).not.toBeInTheDocument();
+  });
+});
+
+// GH #763 — a selection survives after its update disappears and is still
+// sent. `WizardForm` is keyed on `targetKey(target)` only (see the top of
+// update-wizard.tsx), so a live sites refetch while the wizard is open
+// (use-sites-live.ts:59 invalidates the list on cardinality/state-change
+// events) swaps the `sites` prop on the SAME mounted form rather than
+// remounting it — exactly like `routes/_authed/sites/index.tsx` passing a
+// freshly-fetched `selectedSites` array into `sites=` on every render. This
+// harness reproduces that prop swap directly: `sites` lives in local state,
+// a button swaps it to a new array (the "refetch"), and `target` never
+// changes across the swap, so the wizard's remount key doesn't change
+// either — the precise condition the bug needs.
+function RefetchHarness({
+  target,
+  initialSites,
+  nextSites,
+}: {
+  target: WizardTarget;
+  initialSites: Site[];
+  nextSites: Site[];
+}) {
+  const [sites, setSites] = useState(initialSites);
+  return (
+    <>
+      <button type="button" onClick={() => setSites(nextSites)}>
+        Simulate live refetch
+      </button>
+      <UpdateWizard open target={target} sites={sites} onClose={() => {}} />
+    </>
+  );
+}
+
+describe("UpdateWizard — GH #763 a selection survives after its update disappears", () => {
+  const TARGET: WizardTarget = {
+    kind: "sites",
+    siteIds: ["site-a"],
+    updateKind: "plugins",
+  };
+
+  beforeEach(() => {
+    createUpdateRunMock.mockReset();
+    createUpdateRunMock.mockResolvedValue({
+      data: { id: "run-1" },
+      error: undefined,
+      response: { status: 201 },
+    });
+  });
+
+  it("drops a selected item that loses its update on a live refetch: not counted, not posted, while a still-updatable sibling is", async () => {
+    const before = buildSite({
+      id: "site-a",
+      components: {
+        plugins: [
+          {
+            slug: "woo",
+            name: "Woo",
+            version: "8.0",
+            available_update: { new_version: "8.1" },
+          },
+          {
+            slug: "yoast",
+            name: "Yoast",
+            version: "20",
+            available_update: { new_version: "21" },
+          },
+        ],
+        themes: [],
+      },
+    });
+    // Same site, refetched: Woo's update landed some other way (or the
+    // advisory expired) and it no longer reports one. Yoast is untouched.
+    const after = buildSite({
+      id: "site-a",
+      components: {
+        plugins: [
+          { slug: "woo", name: "Woo", version: "8.1" },
+          {
+            slug: "yoast",
+            name: "Yoast",
+            version: "20",
+            available_update: { new_version: "21" },
+          },
+        ],
+        themes: [],
+      },
+    });
+
+    renderWithProviders(
+      <RefetchHarness target={TARGET} initialSites={[before]} nextSites={[after]} />,
+      { withRouter: true },
+    );
+
+    await screen.findByRole("tab", { name: /plugins/i });
+    fireEvent.click(checkboxFor("Woo"));
+    fireEvent.click(checkboxFor("Yoast"));
+    expect(screen.getByText("2 items will be previewed.")).toBeInTheDocument();
+
+    // The refetch trigger lives outside the Dialog's portal, so Radix marks
+    // it `aria-hidden` while the dialog is open (correctly, for a real
+    // screen reader) — `getByText` rather than `getByRole` reaches it here,
+    // same as production reaching it via a query invalidate, not a click.
+    fireEvent.click(screen.getByText(/simulate live refetch/i));
+
+    // Woo drops out of the default "with updates" filter (it has none any
+    // more) AND out of the count — before the fix it stayed counted while
+    // invisible.
+    expect(screen.queryByText("Woo")).not.toBeInTheDocument();
+    expect(screen.getByText("1 item will be previewed.")).toBeInTheDocument();
+
+    // Confirms it, rather than just its filtered visibility: still unticked
+    // even under "Show all".
+    fireEvent.click(screen.getByRole("button", { name: "Show all" }));
+    expect(checkboxFor("Woo").checked).toBe(false);
+    expect(checkboxFor("Yoast").checked).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: /preview 1 update/i }));
+    await waitFor(() => expect(createUpdateRunMock).toHaveBeenCalledTimes(1));
+    const [{ body }] = createUpdateRunMock.mock.calls[0] as [
+      { body: UpdateRunCreate },
+    ];
+    expect(body.items).toEqual([
+      { type: "plugin", slug: "yoast", version: "latest" },
+    ]);
+  });
+
+  it("keeps a deliberately-ticked up-to-date row selected across the same kind of refetch", async () => {
+    const before = buildSite({
+      id: "site-a",
+      components: {
+        plugins: [
+          {
+            slug: "woo",
+            name: "Woo",
+            version: "8.0",
+            available_update: { new_version: "8.1" },
+          },
+          // Up to date from the start — only selectable by hand, via "Show
+          // all", same as the PR #752 tests.
+          { slug: "akismet", name: "Akismet", version: "5.3" },
+        ],
+        themes: [],
+      },
+    });
+    // Woo's update disappears; Akismet's up-to-date status is unchanged.
+    const after = buildSite({
+      id: "site-a",
+      components: {
+        plugins: [
+          { slug: "woo", name: "Woo", version: "8.1" },
+          { slug: "akismet", name: "Akismet", version: "5.3" },
+        ],
+        themes: [],
+      },
+    });
+
+    renderWithProviders(
+      <RefetchHarness target={TARGET} initialSites={[before]} nextSites={[after]} />,
+      { withRouter: true },
+    );
+
+    await screen.findByRole("tab", { name: /plugins/i });
+    fireEvent.click(checkboxFor("Woo"));
+    fireEvent.click(screen.getByRole("button", { name: "Show all" }));
+    fireEvent.click(checkboxFor("Akismet"));
+    expect(screen.getByText("2 items will be previewed.")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText(/simulate live refetch/i));
+
+    // Woo (lost its update) is dropped; Akismet (was already up to date,
+    // still is) survives — the count reflects exactly Akismet.
+    expect(checkboxFor("Woo").checked).toBe(false);
+    expect(checkboxFor("Akismet").checked).toBe(true);
+    expect(screen.getByText("1 item will be previewed.")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /preview 1 update/i }));
+    await waitFor(() => expect(createUpdateRunMock).toHaveBeenCalledTimes(1));
+    const [{ body }] = createUpdateRunMock.mock.calls[0] as [
+      { body: UpdateRunCreate },
+    ];
+    expect(body.items).toEqual([
+      { type: "plugin", slug: "akismet", version: "latest" },
+    ]);
   });
 });
