@@ -13,8 +13,10 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent\Commands;
 
+use WPMgr\Agent\Keystore;
 use WPMgr\Agent\Security\SiteRoles;
 use WPMgr\Agent\Support\AgeIdentity;
+use WPMgr\Agent\Support\KeystoreHealth;
 
 /**
  * Builds the site metadata payload.
@@ -42,6 +44,8 @@ final class MetadataCommand implements CommandInterface
 
     /**
      * Effect: collects the plugin/theme/core inventory and the site's public backup recipient.
+     * It also records the agent's own keystore admin notice when stored keys cannot be read;
+     * it changes nothing on the site.
      *
      * @return CommandEffect
      */
@@ -93,6 +97,7 @@ final class MetadataCommand implements CommandInterface
      *     themes:array<int,array{slug:string,name:string,version:string,active:bool,available_update:?array{new_version:string,package:?string,tested:?string,requires_php:?string}}>,
      *     core_update:?array{new_version:string,current_version:string},
      *     roles:list<array{slug:string,name:string}>,
+     *     keystore?:array{state:string,key_source:string,items:array<string,string>,unreadable:list<string>},
      *     age_recipient?:string
      * }
      */
@@ -127,17 +132,39 @@ final class MetadataCommand implements CommandInterface
             // Always present (an empty list when the registry is unreadable).
             'roles'        => SiteRoles::collect(),
         ];
-        // Surface the agent's age PUBLIC recipient so the CP can register it on
-        // sites.age_recipient (M4 backups refuse otherwise). Best-effort: a
-        // failing ensureRecipient just leaves the key absent for this push.
         if ($this->ageIdentity !== null) {
+            // Keystore status: whether each stored key still opens under this
+            // site's encryption key (absent / ok / unreadable per item), the
+            // overall state and the key source NAME. Never key material, a
+            // key-check value or a file path. Collecting it also records the
+            // admin notice when something cannot be read, so a site whose
+            // keys stopped opening is flagged by the 30-minute metadata cron
+            // without anyone re-activating the plugin.
+            $probe = null;
             try {
-                $recipient = $this->ageIdentity->ensureRecipient();
-                if ($recipient !== '') {
-                    $payload['age_recipient'] = $recipient;
-                }
+                $probe = $this->ageIdentity->probeKeystore();
+                $payload['keystore'] = KeystoreHealth::status($probe);
+                KeystoreHealth::flag($probe);
             } catch (\Throwable $e) {
                 // Swallow — telemetry must not fail the sync.
+            }
+
+            // Surface the agent's age PUBLIC recipient so the CP can register
+            // it on sites.age_recipient (M4 backups refuse otherwise). Read it
+            // when it opens; generate one only on a keystore with nothing
+            // unreadable in it, never in place of a key that cannot be read.
+            $ageReadable = $probe === null
+                || ($probe['items']['age_identity'] ?? '') === Keystore::ITEM_OK
+                || $probe['state'] === Keystore::PROBE_OK;
+            if ($ageReadable) {
+                try {
+                    $recipient = $this->ageIdentity->ensureRecipient();
+                    if ($recipient !== '') {
+                        $payload['age_recipient'] = $recipient;
+                    }
+                } catch (\Throwable $e) {
+                    // Swallow — telemetry must not fail the sync.
+                }
             }
         }
 

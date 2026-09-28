@@ -46,6 +46,7 @@ use WPMgr\Agent\Schema;
 use WPMgr\Agent\Support\AgeIdentity;
 use WPMgr\Agent\Support\ConnectionFinisher;
 use WPMgr\Agent\Support\DebugLog;
+use WPMgr\Agent\Support\KeystoreHealth;
 use WPMgr\Agent\Support\LongRunningJob;
 
 /**
@@ -195,7 +196,15 @@ final class BackupCommand implements CommandInterface
         if ($recipient === '') {
             return $this->refuse('missing age recipient');
         }
-        if (!$this->identity->recipientMatches($recipient)) {
+        // The recipient check reads the backup key. When the keystore cannot
+        // open it, refuse here, in plain words and with a stable code, before
+        // any preflight row, dedup claim or scratch directory exists.
+        try {
+            $recipientMatches = $this->identity->recipientMatches($recipient);
+        } catch (\Throwable $e) {
+            return $this->refuse(KeystoreHealth::backupRefusal($this->identity->probeKeystore()), 'keystore_unreadable');
+        }
+        if (!$recipientMatches) {
             return $this->refuse('age recipient mismatch');
         }
 

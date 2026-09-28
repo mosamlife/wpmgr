@@ -455,6 +455,7 @@ final class Lifecycle
             Settings::OPTION_LAST_HEARTBEAT,
             Settings::OPTION_LAST_METADATA,
             Plugin::OPTION_KEYSTORE_ERROR,
+            Plugin::OPTION_KEYSTORE_ERROR_KIND,
             Plugin::OPTION_LAST_DIAGNOSTICS_AT,
             Admin::OPTION_CONNECTION_KEY,
             Schema::OPTION_DB_VERSION,

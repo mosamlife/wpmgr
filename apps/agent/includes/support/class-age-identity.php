@@ -46,6 +46,17 @@ class AgeIdentity
     }
 
     /**
+     * Read-only health check of the keystore this identity lives in. See
+     * Keystore::probe(): it never writes, never generates and never throws.
+     *
+     * @return array{state:string,key_source:string,items:array<string,string>,unreadable:list<string>,detail:string}
+     */
+    public function probeKeystore(): array
+    {
+        return $this->keystore->probe();
+    }
+
+    /**
      * Ensure an age identity exists, generating + storing one if absent.
      * Returns this site's PUBLIC recipient ("age1...").
      *
