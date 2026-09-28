@@ -511,8 +511,9 @@ func TestM143LateRunAfterM96AlreadyApplied(t *testing.T) {
 
 	// Fires: without the guard, m143 would take AccessExclusiveLock (via its
 	// NO FORCE ROW LEVEL SECURITY toggle) on backup_snapshots and block
-	// behind the held ROW EXCLUSIVE until its own 5s lock_timeout fires.
-	mutatedMigrationMustBlockOrError(t, owner, mutated)
+	// behind the held ROW EXCLUSIVE until its own 5s lock_timeout fires —
+	// SQLSTATE 55P03.
+	mutatedMigrationMustBlockOrError(t, owner, mutated, sqlStateLockNotAvailable)
 
 	before := backupSnapshotsChecksum(t, pool)
 

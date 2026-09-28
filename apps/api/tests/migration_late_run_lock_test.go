@@ -13,12 +13,13 @@ package tests
 //
 // THE PROOF, PER TEST:
 //  1. hold ROW EXCLUSIVE on the target table from a second connection, in an
-//     open (uncommitted) transaction — assertHeldLockConflicts below.
+//     open (uncommitted) transaction — holdRowExclusiveOpen below.
 //  2. fires: run an IN-MEMORY copy of the migration's SQL with its
 //     early-return/probe check stripped (never the committed file — see
 //     CLAUDE.md's routing table; editing an applied migration is
 //     database-engineer's territory) against the same held lock, and require
-//     it to fail — mutatedMigrationMustBlockOrError.
+//     it to fail with a specific, expected SQLSTATE —
+//     mutatedMigrationMustBlockOrError.
 //  3. does-not-over-fire: run the REAL migration late, through owner.Migrate,
 //     and require it to finish well inside the bound a lock wait would blow —
 //     assertMigrateStaysUnderLockBound.
@@ -30,12 +31,29 @@ package tests
 // so step 2 is not optional: it is what makes steps 3 and 4 mean anything.
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 )
+
+// sqlStateLockNotAvailable is Postgres's SQLSTATE for a lock_timeout abort
+// (55P03) — the expected proof for m141 and m143, which set their own 5s
+// lock_timeout inside the guard-stripped body before touching the table.
+const sqlStateLockNotAvailable = "55P03"
+
+// sqlStateDuplicateColumn is Postgres's SQLSTATE for "column already exists"
+// (42701) — the expected proof for m145. m145 sets no lock_timeout of its
+// own, and its guard-stripped body is a bare
+// `ALTER TABLE ... ADD COLUMN notified_at` with no IF NOT EXISTS: once the
+// target column already exists (as it does by the time this fires check
+// runs — m103 added it first), that ADD COLUMN fails on the duplicate
+// column, not on the held lock.
+const sqlStateDuplicateColumn = "42701"
 
 // lateRunLockBound is the wall-clock ceiling for the REAL (unmutated) late
 // run of a converged prefill while a concurrent ROW EXCLUSIVE holder is open
@@ -147,15 +165,32 @@ func assertFileTakesNoLockOnRelation(t *testing.T, pool *db.Pool, relation, body
 // mutatedMigrationMustBlockOrError runs mutatedBody (an IN-MEMORY copy of a
 // migration's SQL with its early-return/probe check stripped — never the
 // committed file) as a single implicit-transaction statement, bounded by
-// mutatedMigrationBound, and fails the test if it succeeds. Meant to be
-// called while a holdRowExclusiveOpen on the migration's target table is
-// open: without its guard, the migration takes a real conflicting lock on
-// that table, which either times out on the migration's own lock_timeout
-// (m141/m143, 5s) or hangs until this call's own bound cancels it (m145,
-// which sets none) — red either way. This is the fires half of the proof; the
-// callers' own assertMigrateStaysUnderLockBound / assertFileTakesNoLockOnRelation
-// calls against the REAL file are the does-not-over-fire half.
-func mutatedMigrationMustBlockOrError(t *testing.T, pool *db.Pool, mutatedBody string) {
+// mutatedMigrationBound, and fails the test unless it fails with EXACTLY
+// wantSQLState. Meant to be called while a holdRowExclusiveOpen on the
+// migration's target table is open.
+//
+// Accepting any non-nil error here is not a proof: for m145, once the target
+// column already exists, the guard-stripped body is a bare
+// `ADD COLUMN notified_at` with no IF NOT EXISTS, which fails with
+// sqlStateDuplicateColumn (42701) whether or not any lock is held at all —
+// that check would pass just as well with holdRowExclusiveOpen's real
+// ROW EXCLUSIVE swapped for a non-locking no-op, which proves nothing about
+// the guard being load-bearing against contention.
+//
+// m141 and m143 set their own 5s lock_timeout inside the guard-stripped body
+// and are expected to fail with sqlStateLockNotAvailable (55P03); if this
+// call's own mutatedMigrationBound context deadline fires first instead
+// (this harness's cancellation racing the migration's own lock_timeout), a
+// wrapped context.DeadlineExceeded is accepted in its place as the same
+// proof of blocking. m145 sets no lock_timeout of its own, so
+// sqlStateDuplicateColumn is the only accepted proof for it — the honest one:
+// without its guard, a late run aborts the boot on a column that already
+// exists.
+//
+// This is the fires half of the proof; the callers' own
+// assertMigrateStaysUnderLockBound / assertFileTakesNoLockOnRelation calls
+// against the REAL file are the does-not-over-fire half.
+func mutatedMigrationMustBlockOrError(t *testing.T, pool *db.Pool, mutatedBody, wantSQLState string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), mutatedMigrationBound)
 	defer cancel()
@@ -166,7 +201,16 @@ func mutatedMigrationMustBlockOrError(t *testing.T, pool *db.Pool, mutatedBody s
 		t.Fatalf("mutated migration (early-return check stripped) SUCCEEDED in %s despite a concurrent "+
 			"ROW EXCLUSIVE holder on its target table; the guard is not proven load-bearing", elapsed)
 	}
-	t.Logf("mutated migration correctly failed after %s (guard-is-load-bearing proof, want a lock timeout or a cancelled statement): %v", elapsed, err)
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == wantSQLState {
+		t.Logf("mutated migration correctly failed after %s with SQLSTATE %s, the expected proof (guard-is-load-bearing): %v", elapsed, pgErr.Code, err)
+		return
+	}
+	if wantSQLState == sqlStateLockNotAvailable && errors.Is(err, context.DeadlineExceeded) {
+		t.Logf("mutated migration correctly failed after %s via this harness's own context deadline, standing in for the %s lock_timeout it raced against (guard-is-load-bearing): %v", elapsed, wantSQLState, err)
+		return
+	}
+	t.Fatalf("mutated migration failed after %s, but not with the expected proof (want SQLSTATE %s): %v", elapsed, wantSQLState, err)
 }
 
 // stripOnce removes exactly one occurrence of needle from body and fails the

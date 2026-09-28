@@ -437,11 +437,14 @@ const m145EarlyReturnGuardClose = `    END IF;
 // Proof structure (see migration_late_run_lock_test.go's doc comment for the
 // shared helpers): a second connection holds ROW EXCLUSIVE on
 // site_vulnerabilities throughout. First, an IN-MEMORY copy of m145 with its
-// guard stripped is run against that hold and must fail — unlike m141/m143 it
-// sets no lock_timeout of its own, so without the guard it would otherwise
-// hang until the holder releases (which nothing does before this call
-// returns), and the shared helper's own bound is what turns that into a red
-// result. Then the REAL, unmutated m145 is run late via owner.Migrate and
+// guard stripped is run against that hold and must fail — unlike m141/m143,
+// m145 sets no lock_timeout of its own, so this is not a lock-contention
+// proof: by this point in the test m103 has already added notified_at for
+// real, so the guard-stripped body's bare `ADD COLUMN notified_at` (no IF NOT
+// EXISTS) fails on the column already existing, SQLSTATE 42701, whether or
+// not the ROW EXCLUSIVE holder is even open. That is still the honest proof
+// for m145: without its guard, a late run aborts the boot on an existing
+// column. Then the REAL, unmutated m145 is run late via owner.Migrate and
 // must finish well inside the bound a lock wait would blow, and the real file
 // is re-applied in its own explicit transaction to prove pg_locks shows
 // nothing against site_vulnerabilities for that backend before commit.
@@ -513,10 +516,10 @@ func TestM145LateRunAfterM103AlreadyApplied(t *testing.T) {
 	defer release()
 
 	// Fires: without the guard, m145 would attempt its ADD COLUMN
-	// unconditionally, which needs the same conflicting table-level lock the
-	// held ROW EXCLUSIVE holds, and (having no lock_timeout of its own) would
-	// hang past the shared helper's bound.
-	mutatedMigrationMustBlockOrError(t, owner, mutated)
+	// unconditionally. notified_at already exists (m103 added it above), so
+	// this fails with SQLSTATE 42701 (column already exists) — the honest
+	// proof for m145, which is not about the held lock at all.
+	mutatedMigrationMustBlockOrError(t, owner, mutated, sqlStateDuplicateColumn)
 
 	before := siteVulnerabilitiesChecksum(t, pool)
 
