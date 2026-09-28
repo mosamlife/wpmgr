@@ -130,7 +130,7 @@ async function submitLogin() {
 }
 
 function signInButton() {
-  return screen.getByRole("button", { name: "Sign in" }) as HTMLButtonElement;
+  return screen.getByRole("button", { name: "Sign in" });
 }
 
 /** The role="status" pause panel's text, or null if it isn't rendered. */
@@ -170,9 +170,13 @@ afterEach(() => {
 
 describe("LoginPage - 429 too_many_attempts (GH #718 Phase 1)", () => {
   it("shows the paused message for the refused scope and disables Sign in", async () => {
+    // Header and body deliberately DISAGREE (42 vs 99): the header is the
+    // contract (packages/openapi.yaml) and must win over the body restating
+    // a different number, per use-auth.ts's clamp chain. A build that reads
+    // only the body (or only the default) would show 99 or 30 here instead.
     mock429(
       { "Retry-After": "42" },
-      { code: "too_many_attempts", message: "too many sign-in attempts", details: { scope: "pair", retry_after_seconds: 42 } },
+      { code: "too_many_attempts", message: "too many sign-in attempts", details: { scope: "pair", retry_after_seconds: 99 } },
     );
     renderLoginPage();
     await waitForForm();
@@ -184,7 +188,8 @@ describe("LoginPage - 429 too_many_attempts (GH #718 Phase 1)", () => {
     expect(pauseText()).toContain("Too many sign-in attempts for this account.");
     expect(pauseText()).toContain("Try again in");
     expect(pauseText()).toContain("42");
-    expect(signInButton().disabled).toBe(true);
+    expect(pauseText()).not.toContain("99");
+    expect(signInButton()).toBeDisabled();
     // The raw machine code must never reach the DOM.
     expect(alertText()).not.toContain("too_many_attempts");
     expect(document.body.textContent).not.toContain("too_many_attempts");
@@ -217,7 +222,7 @@ describe("LoginPage - 429 too_many_attempts (GH #718 Phase 1)", () => {
 
     await submitLogin();
     expect(pauseText()).toContain("Try again in");
-    expect(signInButton().disabled).toBe(true);
+    expect(signInButton()).toBeDisabled();
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(2100);
@@ -227,7 +232,7 @@ describe("LoginPage - 429 too_many_attempts (GH #718 Phase 1)", () => {
     // unmounting -- unmounting it would let `serverError` show the raw
     // LoginRateLimitedError.message ("too_many_attempts") underneath.
     expect(pauseText()).toContain("You can try again now.");
-    expect(signInButton().disabled).toBe(false);
+    expect(signInButton()).not.toBeDisabled();
     expect(alertText()).not.toContain("too_many_attempts");
     expect(document.body.textContent).not.toContain("too_many_attempts");
   });
@@ -306,7 +311,7 @@ describe("LoginPage - 429 too_many_attempts (GH #718 Phase 1)", () => {
 
     expect(screen.queryByRole("status")).toBeNull();
     expect(alertText()).toMatch(/invalid email or password/i);
-    expect(signInButton().disabled).toBe(false);
+    expect(signInButton()).not.toBeDisabled();
   });
 
   it("Forgot password stays usable during the pause", async () => {
@@ -321,7 +326,7 @@ describe("LoginPage - 429 too_many_attempts (GH #718 Phase 1)", () => {
 
     await submitLogin();
 
-    expect(signInButton().disabled).toBe(true);
+    expect(signInButton()).toBeDisabled();
     const forgot = screen.getByRole("link", { name: "Forgot password?" });
     expect(forgot).toHaveAttribute("href", "/forgot-password");
     expect(forgot).not.toHaveAttribute("aria-disabled");
