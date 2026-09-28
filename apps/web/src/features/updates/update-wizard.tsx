@@ -239,9 +239,15 @@ function WizardForm({
   // operator may deliberately tick an up-to-date row under "Show all" (see
   // the PR #752 tests), and that pick must survive an unrelated refetch.
   // Comparing hasUpdate true -> false across the PREVIOUS and CURRENT options
-  // (rather than remembering "why" a key was picked) gets both right: a
-  // deliberately-picked up-to-date row is hasUpdate:false in both snapshots,
-  // so it never matches the drop condition.
+  // (rather than remembering "why" a key was picked) gets the common case
+  // right without remembering intent. But "previous" means the render just
+  // before this one, not the render the key was ticked on: the drop
+  // condition is "this key's item had an update one snapshot ago and does
+  // not now", and it fires on that transition regardless of what the key was
+  // originally picked for. A deliberately-picked up-to-date row is safe only
+  // until its item transitions to having an update and then losing it again
+  // while still selected; that transition matches the same as it would for
+  // any other key.
   const prevOptionsRef = useRef<ComponentOption[]>(options);
   useEffect(() => {
     const prevOptions = prevOptionsRef.current;
