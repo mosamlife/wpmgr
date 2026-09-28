@@ -48,7 +48,7 @@ const SUPERADMIN_BASE: Me = {
 };
 
 function renderSidebarAs(me: Me) {
-  mockedMe.mockReturnValue(mockQueryResult({ data: me }) as ReturnType<typeof useMe>);
+  mockedMe.mockReturnValue(mockQueryResult({ data: me }));
   return renderWithProviders(
     <ShellContext.Provider value={SHELL}>
       <Sidebar />
