@@ -466,6 +466,114 @@ final class RouterTest extends TestCase
 	}
 
 	/**
+	 * #754: EACH redaction pass fails closed on its own. One pass at a time is
+	 * made to fail exactly as the engine does — its helper returns null, which
+	 * is what preg_replace and preg_replace_callback return on an engine
+	 * failure — while every other pass runs normally. Each input carries
+	 * something only that pass redacts, so a pass that kept its input on
+	 * failure would put it on the wire.
+	 *
+	 * @return void
+	 */
+	public function test_each_redaction_pass_fails_closed_on_its_own(): void
+	{
+		$cases = array(
+			'pass 1'    => array(
+				'pregCallbackOrNull',
+				static function ( string $pattern ): bool {
+					return true;
+				},
+				'Keystore: cannot unwrap Quuv2rC/E4vYuaEw/i55soD7zlzCIHHFipbimo2QHGo',
+				'i55soD7zlzCIHHFipbimo2QHGo',
+			),
+			'path rule' => array(
+				'pregOrNull',
+				static function ( string $pattern ): bool {
+					return strpos( $pattern, '<redacted>' ) !== false;
+				},
+				'cannot open /home/customer-acme/private/backup-dir',
+				'customer-acme',
+			),
+			'pass 2'    => array(
+				'pregOrNull',
+				static function ( string $pattern ): bool {
+					return strpos( $pattern, '<redacted>' ) === false;
+				},
+				'Keystore: bad key AKIAJ7Q2ZK4XN8PLW3RD6YTBVC5MHGFS9UEO1I0A',
+				'AKIAJ7Q2ZK4XN8PLW3RD6YTBVC5MHGFS9UEO1I0A',
+			),
+		);
+
+		foreach ( $cases as $label => $case ) {
+			list( $helper, $isTarget, $message, $secret ) = $case;
+
+			// Control: with nothing forced, the pass redacts the secret itself.
+			$this->assertStringNotContainsString(
+				$secret,
+				$this->wireBlob( $this->dispatchThrowing( new \RuntimeException( $message ) ) ),
+				$label . ' does not redact its own fixture'
+			);
+
+			$fired  = 0;
+			$handle = \Patchwork\redefine(
+				Router::class . '::' . $helper,
+				static function ( string $pattern ) use ( $isTarget, &$fired ) {
+					if ( $isTarget( $pattern ) ) {
+						++$fired;
+						return null;
+					}
+					return \Patchwork\relay();
+				}
+			);
+
+			try {
+				$response = $this->dispatchThrowing( new \RuntimeException( $message ) );
+			} finally {
+				\Patchwork\restore( $handle );
+			}
+
+			$this->assertGreaterThan( 0, $fired, $label . ': the forced failure never reached that pass' );
+			$this->assertSame(
+				'Command execution failed: RuntimeException: (reason withheld: redaction could not complete)',
+				$response->get_error_message(),
+				$label . ' did not withhold the reason'
+			);
+			$this->assertStringNotContainsString( $secret, $this->wireBlob( $response ), $label . ' leaked' );
+		}
+	}
+
+	/**
+	 * #754: the two redaction helpers themselves return null — never their
+	 * input — when the engine gives up. Driven with a pattern that cannot
+	 * complete within the engine's default limits, and the failure is
+	 * confirmed from preg_last_error() so the test cannot pass on a match.
+	 *
+	 * @return void
+	 */
+	public function test_redaction_helpers_return_null_when_the_engine_gives_up(): void
+	{
+		$pattern = '~(a+)+$~';
+		$subject = str_repeat( 'a', 40 ) . 'b';
+
+		$callback = new \ReflectionMethod( Router::class, 'pregCallbackOrNull' );
+		$this->assertNull(
+			$callback->invoke(
+				null,
+				$pattern,
+				static function ( array $m ): string {
+					return '';
+				},
+				$subject
+			)
+		);
+		$this->assertNotSame( PREG_NO_ERROR, preg_last_error(), 'the engine did not give up; the test proves nothing' );
+
+		$plain = new \ReflectionMethod( Router::class, 'pregOrNull' );
+		$this->assertNull( $plain->invoke( null, $pattern, '', $subject ) );
+		$this->assertNotSame( PREG_NO_ERROR, preg_last_error(), 'the engine did not give up; the test proves nothing' );
+	}
+
+	/**
 	 * #754: split positions chosen rather than left to the encoding. Each case puts a '/' at
 	 * a position chosen to split a 44-character standard-base64 key into two
 	 * pieces that are each BELOW the 32-character threshold — the exact shape
