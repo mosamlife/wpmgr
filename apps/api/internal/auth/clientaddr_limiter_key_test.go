@@ -18,8 +18,9 @@ package auth
 //  2. The registered route — TestResetPasswordRouteKeysOnAppendedClient drives
 //     the real gin route through h.Register into the real Service and the real
 //     limiter, so the wiring is covered and not just the helper.
-//  3. TestDecisionSitesUseLimiterAddr parses the source and pins that all four
-//     decision sites call limiterAddr. Layer 2 cannot reach the three 2FA sites
+//  3. TestDecisionSitesUseLimiterAddr parses the source and pins that every
+//     decision site calls limiterAddr (or, for the login admission gate in
+//     login_gate.go, limiterAddrSource). Layer 2 cannot reach the three 2FA sites
 //     without a database (their limiter sits behind a challenge lookup), so
 //     without this a revert of those three would be silent.
 //
@@ -465,10 +466,22 @@ func TestTwoFAPerIPLimiterKeysOnAppendedClient(t *testing.T) {
 	}
 }
 
-// decisionSites are the handlers whose address feeds a rate-limit decision.
-var decisionSites = map[string][]string{
-	"handler.go":       {"resetPassword"},
-	"twofa_handler.go": {"twoFATOTPComplete", "twoFARecoveryComplete", "twoFAWebAuthnFinish"},
+// decisionSites are the handlers whose address feeds a rate-limit decision,
+// each mapped to the helper it must derive that address with.
+//
+// login is pinned to limiterAddrSource, which returns limiterAddr's address
+// plus how it was obtained. GH #718 reported the login endpoint unthrottled;
+// its budgets refuse on this address, so it must never be clientAddr.
+var decisionSites = map[string]map[string]string{
+	"handler.go": {
+		"resetPassword": "limiterAddr",
+		"login":         "limiterAddrSource",
+	},
+	"twofa_handler.go": {
+		"twoFATOTPComplete":     "limiterAddr",
+		"twoFARecoveryComplete": "limiterAddr",
+		"twoFAWebAuthnFinish":   "limiterAddr",
+	},
 }
 
 // TestDecisionSitesUseLimiterAddr pins the wiring of every decision site,
@@ -485,14 +498,18 @@ func TestDecisionSitesUseLimiterAddr(t *testing.T) {
 		if err != nil {
 			t.Fatalf("parse %s: %v", file, err)
 		}
-		want := map[string]bool{}
-		for _, fn := range funcs {
-			want[fn] = true
+		want := map[string]string{}
+		for fn, helper := range funcs {
+			want[fn] = helper
 		}
 
 		for _, decl := range f.Decls {
 			fd, ok := decl.(*ast.FuncDecl)
-			if !ok || fd.Name == nil || !want[fd.Name.Name] {
+			if !ok || fd.Name == nil {
+				continue
+			}
+			helper, ok := want[fd.Name.Name]
+			if !ok {
 				continue
 			}
 			delete(want, fd.Name.Name)
@@ -500,7 +517,7 @@ func TestDecisionSitesUseLimiterAddr(t *testing.T) {
 
 			var uses []string
 			note := func(name string) {
-				if name == "limiterAddr" || name == "clientAddr" {
+				if name == "limiterAddr" || name == "limiterAddrSource" || name == "clientAddr" {
 					uses = append(uses, name)
 				}
 			}
@@ -518,15 +535,19 @@ func TestDecisionSitesUseLimiterAddr(t *testing.T) {
 				return true
 			})
 
+			found := false
 			for _, u := range uses {
 				if u == "clientAddr" {
-					t.Errorf("%s: %s calls clientAddr; a decision site must use limiterAddr, "+
-						"because clientAddr resolves an entry the caller supplies", file, fd.Name.Name)
+					t.Errorf("%s: %s calls clientAddr; a decision site must use %s, "+
+						"because clientAddr resolves an entry the caller supplies", file, fd.Name.Name, helper)
+				}
+				if u == helper {
+					found = true
 				}
 			}
-			if len(uses) == 0 {
-				t.Errorf("%s: %s derives no address at all; expected a limiterAddr call",
-					file, fd.Name.Name)
+			if !found {
+				t.Errorf("%s: %s does not call %s; its address decides a refusal and must come from it (saw %v)",
+					file, fd.Name.Name, helper, uses)
 			}
 		}
 
@@ -536,7 +557,7 @@ func TestDecisionSitesUseLimiterAddr(t *testing.T) {
 		}
 	}
 
-	if checked != 4 {
-		t.Fatalf("checked %d decision sites, want 4; the pin is not covering what it claims", checked)
+	if checked != 5 {
+		t.Fatalf("checked %d decision sites, want 5; the pin is not covering what it claims", checked)
 	}
 }

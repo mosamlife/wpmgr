@@ -2,8 +2,8 @@ import { createFileRoute, redirect, useNavigate, Link } from "@tanstack/react-ro
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { AlertCircle, AlertTriangle, MailCheck } from "lucide-react";
-import { useState } from "react";
+import { AlertCircle, AlertTriangle, MailCheck, Timer } from "lucide-react";
+import { useState, useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { getMe } from "@wpmgr/api";
 
@@ -25,6 +25,7 @@ import {
   useLogin,
   useResendVerification,
   EmailNotVerifiedError,
+  LoginRateLimitedError,
   authKeys,
 } from "@/features/auth/use-auth";
 
@@ -73,6 +74,27 @@ const loginSchema = z.object({
 
 type LoginValues = z.infer<typeof loginSchema>;
 
+// Maps a LoginRateLimitedError's `scope` (login_gate.go's wireScope: "pair" |
+// "source" | "network") to the static half of the paused-sign-in message.
+// Never mentions whether the account exists -- the gate itself cannot tell,
+// and neither can this message. Exported (module-level, pure) so the copy is
+// pinned in a unit test without mounting the whole route, mirroring
+// `getErrorMessage` in 2fa-challenge.tsx. Kept separate from the countdown
+// half (below) so the render tree can put the live-ticking number in its own
+// node without string surgery.
+export function loginRateLimitReason(scope: string): string {
+  if (scope === "pair") return "Too many sign-in attempts for this account.";
+  if (scope === "network") return "Too many sign-in attempts from your network.";
+  return "Too many sign-in attempts.";
+}
+
+/** The full sentence, e.g. "Too many sign-in attempts. Try again in 42 seconds." */
+export function loginRateLimitMessage(scope: string, secondsRemaining: number): string {
+  const seconds = Math.max(0, secondsRemaining);
+  const noun = seconds === 1 ? "second" : "seconds";
+  return `${loginRateLimitReason(scope)} Try again in ${seconds} ${noun}.`;
+}
+
 function LoginPage() {
   const navigate = useNavigate();
   const search = Route.useSearch();
@@ -82,6 +104,36 @@ function LoginPage() {
   // Tracks when login failed because the email is not yet verified.
   const [unverifiedEmail, setUnverifiedEmail] = useState<string | null>(null);
   const [resendSent, setResendSent] = useState(false);
+  // GH #718 Phase 1 -- set when the login admission gate refuses an attempt
+  // (429 too_many_attempts). `rateLimitDeadline` is a fixed point in time
+  // (Date.now() + the server's Retry-After), not a countdown of seconds to
+  // decrement: a chain of 1s timeouts drifts behind real time in a
+  // throttled background tab, where a deadline does not, because every tick
+  // recomputes the remainder from the clock instead of trusting the last
+  // tick's arithmetic. `secondsLeft` is that recomputed remainder, purely
+  // for display. `rateLimitScope` outlives the countdown on purpose: it is
+  // only cleared on the next submit, so the panel below can swap from the
+  // countdown to a neutral "you can try again" message at 0 instead of
+  // disappearing and letting `serverError` show through underneath.
+  const [rateLimitScope, setRateLimitScope] = useState<string | null>(null);
+  const [rateLimitDeadline, setRateLimitDeadline] = useState<number | null>(null);
+  const [secondsLeft, setSecondsLeft] = useState(0);
+  const isRateLimited = rateLimitScope !== null;
+  const isPaused = isRateLimited && secondsLeft > 0;
+
+  useEffect(() => {
+    if (rateLimitDeadline === null) return;
+    const tick = () => {
+      const remaining = Math.max(0, Math.ceil((rateLimitDeadline - Date.now()) / 1000));
+      setSecondsLeft(remaining);
+      return remaining;
+    };
+    if (tick() <= 0) return;
+    const id = window.setInterval(() => {
+      if (tick() <= 0) window.clearInterval(id);
+    }, 250);
+    return () => window.clearInterval(id);
+  }, [rateLimitDeadline]);
 
   // Narrowed once, here, and used for every navigation on this page: the
   // password path, the 2FA hand-off and the provider handshake all land the
@@ -100,9 +152,14 @@ function LoginPage() {
   });
 
   const onSubmit = handleSubmit(async (values) => {
-    // Clear any previous unverified state when the user tries again.
+    // Clear any previous unverified/rate-limit state when the user tries
+    // again -- a fresh attempt starts from a clean slate rather than
+    // carrying the last one's leftover banner while the new one is pending.
     setUnverifiedEmail(null);
     setResendSent(false);
+    setRateLimitScope(null);
+    setRateLimitDeadline(null);
+    setSecondsLeft(0);
 
     await loginMutation.mutateAsync(values, {
       onSuccess: (result) => {
@@ -144,8 +201,24 @@ function LoginPage() {
       onError: (err) => {
         if (err instanceof EmailNotVerifiedError) {
           setUnverifiedEmail(values.email);
+        } else if (err instanceof LoginRateLimitedError) {
+          // Set the deadline and the initial `secondsLeft` together so the
+          // first paint already shows the right number -- the ticking
+          // effect above only refines it from there, it does not originate
+          // it, so there is no frame where the countdown reads 0 before the
+          // clock-driven tick corrects it.
+          setRateLimitScope(err.scope);
+          setRateLimitDeadline(Date.now() + err.retryAfterSeconds * 1000);
+          setSecondsLeft(err.retryAfterSeconds);
         }
       },
+    }).catch(() => {
+      // `onError` above is where every failure is actually handled (it is
+      // what sets the state each branch above reads); `mutateAsync` rejects
+      // its own returned promise on top of calling `onError`, and nothing
+      // downstream of this `await` needs that rejection, so left uncaught it
+      // is only an unhandled promise rejection on every failed sign-in
+      // attempt (any of invalid-credentials, unverified email, or a 429).
     });
   });
 
@@ -173,7 +246,7 @@ function LoginPage() {
     (loginMutation.isError && loginMutation.error instanceof EmailNotVerifiedError);
 
   const serverError =
-    loginMutation.isError && !isEmailNotVerified
+    loginMutation.isError && !isEmailNotVerified && !isRateLimited
       ? loginMutation.error.message
       : null;
 
@@ -236,6 +309,49 @@ function LoginPage() {
                     )
                   ) : null}
                 </div>
+              </div>
+            ) : null}
+
+            {isRateLimited ? (
+              // role="status" (implicit aria-live="polite") so the pause is
+              // announced once, calmly, when it appears -- never role="alert"
+              // (assertive), and never every second. The nested
+              // aria-live="off" span is what stops the per-second re-render:
+              // a descendant's own aria-live overrides the ancestor's for
+              // mutations that originate inside it (WAI-ARIA "computing the
+              // live region politeness"), so the ticking number is silently
+              // dropped from live announcements while the sentence around it
+              // was already spoken once, on mount.
+              //
+              // At 0 this swaps to a neutral confirmation rather than
+              // unmounting: the mutation's own error is still
+              // LoginRateLimitedError at that point (nothing new has been
+              // submitted), and `serverError` below permanently excludes
+              // that error, so unmounting this panel would leave nothing in
+              // its place while the raw "too_many_attempts" code sat right
+              // behind it, ready to show through.
+              <div
+                role="status"
+                className="flex items-start gap-2.5 rounded-md border border-[var(--color-warning)]/40 bg-[var(--color-warning-subtle)] px-3 py-2.5"
+              >
+                <Timer
+                  aria-hidden="true"
+                  className="mt-0.5 size-4 shrink-0 text-[var(--color-warning-subtle-fg)]"
+                />
+                {isPaused ? (
+                  <p className="text-sm leading-relaxed text-[var(--color-warning-subtle-fg)]">
+                    {rateLimitScope ? loginRateLimitReason(rateLimitScope) : ""}
+                    {" Try again in "}
+                    <span aria-live="off" className="font-mono tabular-nums">
+                      {secondsLeft}
+                    </span>
+                    {secondsLeft === 1 ? " second." : " seconds."}
+                  </p>
+                ) : (
+                  <p className="text-sm leading-relaxed text-[var(--color-warning-subtle-fg)]">
+                    You can try again now.
+                  </p>
+                )}
               </div>
             ) : null}
 
@@ -343,7 +459,7 @@ function LoginPage() {
             <Button
               type="submit"
               className="w-full"
-              disabled={isSubmitting || loginMutation.isPending}
+              disabled={isSubmitting || loginMutation.isPending || isPaused}
             >
               Sign in
             </Button>
