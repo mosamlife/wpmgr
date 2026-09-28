@@ -72,6 +72,7 @@ func TestCanManageInstanceEmail(t *testing.T) {
 		{"superadmin with no active organisation", withPrincipal(userPrincipal(uuid.Nil)), &fakeStore{superadmin: true}, false, true, true},
 		{"sole live organisation owner", withPrincipal(userPrincipal(uuid.New())), &fakeStore{soleOwner: true}, false, true, true},
 		{"neither fact", withPrincipal(userPrincipal(uuid.New())), &fakeStore{}, false, false, true},
+		{"no active organisation and neither fact", withPrincipal(userPrincipal(uuid.Nil)), &fakeStore{}, false, false, true},
 		{"superadmin read error", withPrincipal(userPrincipal(uuid.New())), &fakeStore{superadminErr: errors.New("boom"), soleOwner: true}, false, false, true},
 		{"organisation count read error", withPrincipal(userPrincipal(uuid.New())), &fakeStore{soleOwner: true, soleOwnerErr: errors.New("boom")}, false, false, true},
 		{"nil store", withPrincipal(userPrincipal(uuid.New())), nil, true, false, false},
@@ -91,6 +92,37 @@ func TestCanManageInstanceEmail(t *testing.T) {
 			}
 			if tc.store != nil && !tc.wantReads && tc.store.calls != 0 {
 				t.Errorf("store read %d times; want 0 for a principal refused before the store", tc.store.calls)
+			}
+		})
+	}
+}
+
+// The decision reports the arm that admitted. For the owner arm the
+// organisation is the one the store's statement named, whatever organisation
+// the request has active.
+func TestInstanceEmailAuthority_ReportsTheAdmittingArm(t *testing.T) {
+	cases := []struct {
+		name       string
+		tenant     uuid.UUID
+		store      *fakeStore
+		wantArm    Arm
+		wantTenant uuid.UUID
+	}{
+		{"superadmin", uuid.New(), &fakeStore{superadmin: true}, ArmSuperadmin, uuid.Nil},
+		{"superadmin who also owns the sole organisation", uuid.New(), &fakeStore{superadmin: true, soleOwner: true}, ArmSuperadmin, uuid.Nil},
+		{"sole owner, another organisation active", uuid.New(), &fakeStore{soleOwner: true}, ArmSoleLiveTenantOwner, soleTenantID},
+		{"sole owner, no active organisation", uuid.Nil, &fakeStore{soleOwner: true}, ArmSoleLiveTenantOwner, soleTenantID},
+		{"neither fact, no active organisation", uuid.Nil, &fakeStore{}, ArmNone, uuid.Nil},
+		{"organisation count read error", uuid.Nil, &fakeStore{soleOwner: true, soleOwnerErr: errors.New("boom")}, ArmNone, uuid.Nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := InstanceEmailAuthority(withPrincipal(userPrincipal(tc.tenant)), tc.store)
+			if got.Arm != tc.wantArm || got.TenantID != tc.wantTenant {
+				t.Errorf("InstanceEmailAuthority = %+v, want arm %d tenant %s", got, tc.wantArm, tc.wantTenant)
+			}
+			if got.Admitted() != (tc.wantArm != ArmNone) {
+				t.Errorf("Admitted() = %v for arm %d", got.Admitted(), got.Arm)
 			}
 		})
 	}

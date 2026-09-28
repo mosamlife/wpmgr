@@ -55,6 +55,7 @@ func TestSetInstanceCapabilities_EqualsTheRouteDecision(t *testing.T) {
 		{"superadmin, active organisation", orgUser(uuid.New()), fakeInstanceStore{superadmin: true}, true},
 		{"sole organisation owner", orgUser(uuid.New()), fakeInstanceStore{soleOwner: true}, true},
 		{"organisation member without authority", orgUser(uuid.New()), fakeInstanceStore{}, false},
+		{"no active organisation and no authority", orgUser(uuid.Nil), fakeInstanceStore{}, false},
 		{"site-scoped superadmin", siteUser, fakeInstanceStore{superadmin: true}, false},
 		{"superadmin read error", orgUser(uuid.New()), fakeInstanceStore{superadminErr: errors.New("boom"), soleOwner: true}, false},
 		{"organisation count read error", orgUser(uuid.New()), fakeInstanceStore{soleOwner: true, soleOwnerErr: errors.New("boom")}, false},
