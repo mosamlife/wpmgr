@@ -99,6 +99,29 @@ export class LoginRateLimitedError extends Error {
   }
 }
 
+// The gate never asks a caller to wait longer than its own window
+// (apps/api/internal/auth/login_gate.go:147, loginWindow = 15 * time.Minute)
+// and never for less than a second (packages/openapi/openapi.yaml's
+// Retry-After header schema: `minimum: 1`). Used to clamp both the header
+// and the body's retry_after_seconds before either reaches the page.
+const LOGIN_RATE_LIMIT_MIN_SECONDS = 1;
+const LOGIN_RATE_LIMIT_MAX_SECONDS = 900;
+const LOGIN_RATE_LIMIT_DEFAULT_SECONDS = 30;
+
+/**
+ * Accepts only a whole number of seconds inside the gate's own window;
+ * everything else (NaN from an HTTP-date, a fraction, zero, negative, or
+ * absurdly large) returns undefined so the caller falls through to the next
+ * source, then to the fixed default.
+ */
+function clampRetryAfterSeconds(value: number | undefined): number | undefined {
+  if (value === undefined || !Number.isInteger(value)) return undefined;
+  if (value < LOGIN_RATE_LIMIT_MIN_SECONDS || value > LOGIN_RATE_LIMIT_MAX_SECONDS) {
+    return undefined;
+  }
+  return value;
+}
+
 /**
  * Result of a login attempt. Either the session is fully established (me
  * present) or the server requires a second factor (challenge present).
@@ -128,15 +151,25 @@ export function useLogin(): UseMutationResult<LoginResult, Error, LoginRequest> 
         // response headers it doesn't recognise. `scope` picks the wording;
         // an unrecognised or missing scope reads as "source" rather than
         // failing to render a message at all.
-        const headerSeconds = Number(response.headers.get("Retry-After"));
+        //
+        // Both values are untrusted past the header line itself: only a
+        // whole number of seconds inside the gate's own window
+        // (apps/api/internal/auth/login_gate.go:147, loginWindow = 15
+        // minutes = 900s, the longest the server ever asks anyone to wait)
+        // is accepted. An HTTP-date, "1.5", a negative number or something
+        // absurdly large falls through to the body value, and if that is
+        // equally malformed, to a fixed default — never straight to the
+        // page.
+        const headerRaw = response.headers.get("Retry-After");
+        const headerSeconds = headerRaw === null ? undefined : Number(headerRaw);
         const bodySeconds =
           typeof error?.details?.["retry_after_seconds"] === "number"
             ? (error.details["retry_after_seconds"] as number)
             : undefined;
         const retryAfterSeconds =
-          Number.isFinite(headerSeconds) && headerSeconds > 0
-            ? headerSeconds
-            : (bodySeconds ?? 30);
+          clampRetryAfterSeconds(headerSeconds) ??
+          clampRetryAfterSeconds(bodySeconds) ??
+          LOGIN_RATE_LIMIT_DEFAULT_SECONDS;
         const scope =
           typeof error?.details?.["scope"] === "string"
             ? (error.details["scope"] as string)
