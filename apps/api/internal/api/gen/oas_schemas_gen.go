@@ -18497,6 +18497,7 @@ func (s *ErrorHeaders) SetResponse(val Error) {
 }
 
 func (*ErrorHeaders) checkAgentMirrorNowRes() {}
+func (*ErrorHeaders) loginRes()               {}
 
 type ExportSiteEmailLogForbidden Error
 
