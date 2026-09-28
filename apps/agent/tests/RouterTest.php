@@ -369,22 +369,29 @@ final class RouterTest extends TestCase
 	}
 
 	/**
-	 * #754: '+' can sit in a path component after the first, and the path is
-	 * still dropped whole rather than leaving everything after the '+'.
+	 * #754: '+' is a path character in every component, the first one after
+	 * the root included, and the path is still dropped whole rather than
+	 * leaving everything after the '+'.
 	 *
 	 * @return void
 	 */
 	public function test_absolute_path_with_a_plus_is_dropped_whole(): void
 	{
-		$response = $this->dispatchThrowing(
-			new \RuntimeException( 'cannot open /srv/sites/acme+co/private/backup-dir' )
+		$paths = array(
+			'/srv/sites/acme+co/private/backup-dir',
+			'/+x/private/backup-dir',
 		);
 
-		$this->assertSame(
-			'Command execution failed: RuntimeException: cannot open <path>',
-			$response->get_error_message()
-		);
-		$this->assertStringNotContainsString( 'private/backup-dir', $this->wireBlob( $response ) );
+		foreach ( $paths as $path ) {
+			$response = $this->dispatchThrowing( new \RuntimeException( 'cannot open ' . $path ) );
+
+			$this->assertSame(
+				'Command execution failed: RuntimeException: cannot open <path>',
+				$response->get_error_message(),
+				$path . ' was not dropped whole'
+			);
+			$this->assertStringNotContainsString( 'private/backup-dir', $this->wireBlob( $response ) );
+		}
 	}
 
 	/**

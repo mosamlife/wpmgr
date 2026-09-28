@@ -417,8 +417,8 @@ final class Router
         // redaction never cuts an absolute path short: that rule reaches at
         // least as far along the path as it would with no redaction in it, and
         // the remainder goes with it rather than surviving as a relative-looking
-        // tail. Neither rule can stop part-way: each either completes or the
-        // whole reason is withheld.
+        // tail. Neither pass can be abandoned part-way through the message:
+        // each completes, or the whole reason is withheld.
         $msg = self::pregCallbackOrNull(
             '~[A-Za-z0-9+/=_\-]{32,}~',
             static function (array $m): string {
@@ -436,8 +436,8 @@ final class Router
 
         // Anything STILL absolute is outside the WordPress tree: redact it,
         // from its root through every character that follows it and can sit
-        // in a path here — letters, digits, '_', '.', '-', both separators,
-        // "<redacted>", and '+' after the first component. Covers POSIX (/a/b)
+        // in a path here — letters, digits, '_', '.', '-', '+', both
+        // separators, and "<redacted>". Covers POSIX (/a/b)
         // and Windows (C:\a\b). The negative lookbehind keeps "and/or" and
         // "HTTP 500" intact. "<redacted>" is accepted as a path component for
         // the reason given above pass 1.
@@ -450,7 +450,7 @@ final class Router
         // Every quantifier is possessive: each piece has exactly one way to
         // match, so the rule has nothing to backtrack over.
         $msg = self::pregOrNull(
-            '~(?<![A-Za-z0-9_.\-])(?:[A-Za-z]:[\\\\/]|/)(?:[A-Za-z0-9_.\-]++|<redacted>)++(?:[A-Za-z0-9_.+\-/\\\\]++|<redacted>)*+~',
+            '~(?<![A-Za-z0-9_.\-])(?:[A-Za-z]:[\\\\/]|/)(?:[A-Za-z0-9_.+\-]++|<redacted>)++(?:[A-Za-z0-9_.+\-/\\\\]++|<redacted>)*+~',
             '<path>',
             $msg
         );
