@@ -129,6 +129,44 @@ final class RouterCommandFailureLogTest extends TestCase
 	}
 
 	/**
+	 * #764: escapeControlChars() itself fails closed, independently of
+	 * logReason()'s own withheld-message case above. A mutant that made
+	 * escapeControlChars() return its input on a PCRE engine failure — or
+	 * that dropped the "?? self::LOG_LINE_WITHHELD" guarding either of its
+	 * call sites — would let a raw control byte, one able to start a forged
+	 * log line or hide text from a terminal, reach the log untouched.
+	 *
+	 * Forced the same way the test above forces logReason()'s passes to
+	 * fail: pcre.jit off and a backtrack budget of 1, so any regex that has
+	 * to actually match something exhausts it and preg_replace_callback()
+	 * returns null. The message here is short enough that logReason()'s own
+	 * two passes have nothing to match (no run anywhere near 32 characters)
+	 * and hand the ESC straight through unchanged, so escapeControlChars()
+	 * — and only escapeControlChars() — is what is put under test here.
+	 *
+	 * The withheld marker must replace the WHOLE line, not just the reason:
+	 * the command name and every other field are lost along with it, which
+	 * is what distinguishes this from the reason-only withholding above.
+	 */
+	public function test_debug_log_withholds_the_whole_line_when_escaping_cannot_complete(): void
+	{
+		$run = $this->runInSubprocess(
+			true,
+			"before\x1Bafter",
+			"ini_set('pcre.jit', '0'); ini_set('pcre.backtrack_limit', '1');"
+		);
+
+		$this->assertSame( 0, $run['status'], 'subprocess failed: ' . $run['stdout'] . $run['stderr'] );
+		$this->assertStringContainsString(
+			'WPMgr Agent: log line withheld (control-character escaping could not complete).',
+			$run['log']
+		);
+		$this->assertStringNotContainsString( "\x1B", $run['log'], 'a raw control byte reached the log' );
+		$this->assertStringNotContainsString( 'before', $run['log'], 'the withheld marker must replace the whole line' );
+		$this->assertStringNotContainsString( 'command=boom', $run['log'], 'the withheld marker must replace the whole line, not just the reason' );
+	}
+
+	/**
 	 * #754: one failure is ONE log line, whatever line breaks the message
 	 * carries. They are written as the visible sequences \n and \r\n, so the
 	 * whole text survives and nothing in the message can start a line of its
@@ -281,10 +319,81 @@ final class RouterCommandFailureLogTest extends TestCase
 	}
 
 	/**
+	 * #764: every test above pins one representative member per range — NUL
+	 * for C0, NEL for C1, and so on. That leaves a narrowed range undetected:
+	 * a mutant that escaped only NEL out of all of U+0080-U+009F, or that
+	 * dropped FS/GS/RS (0x1C-0x1E) from the C0 branch, would still pass every
+	 * test above it. This test drives every other member through the same
+	 * real log path in one message, so no member of a range can be quietly
+	 * dropped from the escaped class without a mismatch showing up here.
+	 *
+	 * Covers: C0 0x01-0x08, 0x0B, 0x0C, 0x0E-0x1F (0x00, 0x09, 0x0A and 0x0D
+	 * are excluded — NUL, LF and CR already have their own tests above and
+	 * fold differently; tab is asserted separately, below, to NOT escape),
+	 * DEL, every one of the 32 C1 controls U+0080-U+009F, and both Unicode
+	 * separators U+2028 and U+2029. Each character sits between two 'A'
+	 * markers so a character that was dropped instead of escaped would run
+	 * two markers together rather than silently vanishing from the count.
+	 */
+	public function test_debug_log_escapes_every_member_of_every_control_class(): void
+	{
+		$chars    = [];
+		$expected = [];
+
+		foreach ( array_merge( range( 0x01, 0x08 ), [ 0x0B, 0x0C ], range( 0x0E, 0x1F ), [ 0x7F ] ) as $ord ) {
+			$chars[]    = chr( $ord );
+			$expected[] = sprintf( '\\x%02X', $ord );
+		}
+
+		for ( $ord = 0x80; $ord <= 0x9F; $ord++ ) {
+			$chars[]    = "\xC2" . chr( $ord );
+			$expected[] = sprintf( '\\u{%04X}', $ord );
+		}
+
+		$chars[]    = "\xE2\x80\xA8"; // U+2028 LINE SEPARATOR.
+		$expected[] = '\u{2028}';
+		$chars[]    = "\xE2\x80\xA9"; // U+2029 PARAGRAPH SEPARATOR.
+		$expected[] = '\u{2029}';
+
+		$raw  = 'A' . implode( 'A', $chars ) . 'A';
+		$want = 'A' . implode( 'A', $expected ) . 'A';
+
+		$run = $this->runInSubprocess( true, $raw );
+
+		$this->assertSame( 0, $run['status'], 'subprocess failed: ' . $run['stdout'] . $run['stderr'] );
+
+		$lines = array_values(
+			array_filter(
+				preg_split( '/\R/', $run['log'] ) ?: [],
+				static function ( string $line ): bool {
+					return trim( $line ) !== '';
+				}
+			)
+		);
+
+		$this->assertCount( 1, $lines, 'expected exactly one log line, got ' . count( $lines ) . ":\n" . $run['log'] );
+		$this->assertStringContainsString( 'reason=' . $want, $lines[0] );
+
+		foreach ( $chars as $raw_char ) {
+			$this->assertStringNotContainsString( $raw_char, $lines[0], 'a raw control byte reached the log' );
+		}
+	}
+
+	/**
+	 * #764: tab is the one C0 character escapeControlChars() must leave
+	 * alone. Pinned on its own so a mutant that widens the escaped class to
+	 * include it cannot hide inside the "every other member" battery above,
+	 * which deliberately excludes it.
+	 */
+	public function test_debug_log_leaves_tab_unescaped(): void
+	{
+		$this->assertClassEscaped( "before\tafter", "before\tafter" );
+	}
+
+	/**
 	 * Drive one message through the real command-failure log path and assert
-	 * the log holds exactly one line in which $expectedEscaped appears and
-	 * the raw character does not — i.e. escaped, not stripped, and nothing
-	 * else on the line was disturbed.
+	 * the log holds exactly one line containing 'reason=' followed by
+	 * $expectedEscaped.
 	 *
 	 * @param string $raw             Message containing the character(s) under test,
 	 *                                always "before<char>after".

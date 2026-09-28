@@ -184,11 +184,17 @@ final class Router
             // without giving an attacker any cryptographic oracle beyond what they
             // already get from the 403 itself.
             $category = $this->classifyTokenError($e->getMessage());
-            \WPMgr\Agent\Support\DebugLog::write(
-                self::escapeControlChars(
-                    'WPMgr Agent: command authorize failed: command=' . $command . ' category=' . $category . ' reason=' . $e->getMessage()
-                ) ?? self::LOG_LINE_WITHHELD
-            );
+            // Build and escape the line only when the channel would actually
+            // write it — escapeControlChars() runs a preg pass over the whole
+            // line, and there is no reason to pay for that on a production
+            // install with debug logging off.
+            if (\WPMgr\Agent\Support\DebugLog::isEnabled()) {
+                \WPMgr\Agent\Support\DebugLog::write(
+                    self::escapeControlChars(
+                        'WPMgr Agent: command authorize failed: command=' . $command . ' category=' . $category . ' reason=' . $e->getMessage()
+                    ) ?? self::LOG_LINE_WITHHELD
+                );
+            }
             return $this->forbidden($category);
         }
 
@@ -296,14 +302,21 @@ final class Router
             // line is written as a visible escape by escapeControlChars(): the
             // text survives, and nothing in it can start a log line of its own
             // or make part of a real one disappear.
-            \WPMgr\Agent\Support\DebugLog::write(
-                self::escapeControlChars(
-                    'WPMgr Agent: command failed: command=' . $name
-                    . ' class=' . $class
-                    . ' at=' . $location
-                    . ' reason=' . self::logReason($e->getMessage())
-                ) ?? self::LOG_LINE_WITHHELD
-            );
+            // Build and escape the line only when the channel would actually
+            // write it — logReason() and escapeControlChars() each run preg
+            // passes over the whole line, and a huge control-heavy message
+            // must not pay for that on a production install with debug
+            // logging off.
+            if (\WPMgr\Agent\Support\DebugLog::isEnabled()) {
+                \WPMgr\Agent\Support\DebugLog::write(
+                    self::escapeControlChars(
+                        'WPMgr Agent: command failed: command=' . $name
+                        . ' class=' . $class
+                        . ' at=' . $location
+                        . ' reason=' . self::logReason($e->getMessage())
+                    ) ?? self::LOG_LINE_WITHHELD
+                );
+            }
 
             // The response is transmitted, stored by the control plane and
             // rendered in a dashboard, so it gets a REDACTED, length-capped
@@ -796,17 +809,16 @@ final class Router
     /**
      * The exception message as the local debug log line records it.
      *
-     * Contract: key material is redacted by the same two passes the response
-     * uses — pass 1 and pass 2 of redactReason(), in that order — and nothing
-     * else about the message is changed here (control characters are the
-     * caller's job; see escapeControlChars()). An ordinary path, absolute ones
-     * included, stays as thrown: it is the site owner's own diagnostic, and
-     * PHP writes it to the same log. But a path SEGMENT shaped like encoded
-     * key material — a long case-mixed run carrying a digit, '+' or '=', or a
-     * long case-mixed run that contains a '/' — is redacted exactly as
-     * isEncodedRun() decides for the response, so a path keeps its directory
-     * and loses only that segment. If either pass cannot complete, the line
-     * carries REASON_WITHHELD in place of the message.
+     * Contract: this is the same key-material redaction the response gets
+     * from redactReason() — its two passes, in the same order — minus the
+     * step in between that collapses a whole absolute path. So a path stays
+     * as thrown, absolute ones included: it is the site owner's own
+     * diagnostic, and PHP writes it to the same log. A path SEGMENT shaped
+     * like encoded key material is redacted, exactly as it would be from the
+     * response; everything else in the path is kept. Control characters are
+     * not this function's job; see escapeControlChars(). If either pass
+     * cannot complete, the line carries REASON_WITHHELD in place of the
+     * message.
      *
      * @param string $msg Raw exception message.
      * @return string
