@@ -6,6 +6,15 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ## [Unreleased]
 
+## [0.61.164] - 2026-09-28
+
+### Fixed
+
+- The plugin and theme update wizard now drops a selection whose item is no longer listed, or that had an update and no longer does, in the same render that site data refreshes, so the count shown and the request sent always match what the operator sees (#766).
+- Font transcode results are removed with their site and organisation. Rows belonging to a soft-deleted organisation stay until that organisation is purged (#768).
+- Router log lines that carry an exception message now escape control characters, so a command failure is always one readable line in the site's debug log. The response sent to the control plane is unchanged (#769). **Requires updating the plugin to pick up the fix.**
+- An instance SMTP change is now recorded in the audit trail even if the client disconnects right after saving. Both audit records are written on a context that is not canceled when the request ends, bounded to five seconds; a record that cannot be written is logged (#771).
+
 ## [0.61.163] - 2026-09-28
 
 ### Added
