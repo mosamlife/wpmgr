@@ -29,6 +29,15 @@ import type { Site } from "@wpmgr/api";
 // `key_unavailable`, which blocks every item including it). Otherwise the
 // alert names what's actually unreadable in plain words.
 //
+// A push can also carry state=unreadable with no usable `items`/`unreadable`
+// detail at all (an agent that sends the state but a malformed items/
+// unreadable shape the control plane couldn't parse; see the tolerant decode
+// in apps/api/internal/agent/handler.go). That case cannot be scored against
+// `items.age_identity`, so it must not silently fall through to the
+// backups-are-fine branch: it renders its own heading, which says plainly
+// that this report doesn't say which items are affected, including whether
+// backups are among them.
+//
 // Deliberately no mechanism in the copy beyond the WordPress security-key
 // (salts) cause, which is only offered when `key_source` says the master key
 // is actually pinned by salts, never asserted for any other source, and no
@@ -42,12 +51,15 @@ const UNREADABLE_ITEM_LABELS: Record<string, string> = {
   email_connection_secrets: "email credentials",
 };
 
-function describeUnreadableItems(unreadable: string[] | undefined): string {
+// Returns null when there is no usable item detail to name (the "no items
+// map" case), so the caller can fall back to a heading that doesn't pretend
+// to know what's affected.
+function describeUnreadableItems(unreadable: string[] | undefined): string | null {
+  if (!unreadable || unreadable.length === 0) return null;
   const labels = new Set<string>();
-  for (const key of unreadable ?? []) {
-    labels.add(UNREADABLE_ITEM_LABELS[key] ?? "some stored credentials");
+  for (const key of unreadable) {
+    labels.add(UNREADABLE_ITEM_LABELS[key] ?? "other stored credentials");
   }
-  if (labels.size === 0) return "some stored credentials";
   return formatList(Array.from(labels));
 }
 
@@ -68,10 +80,13 @@ export function KeystoreStatusAlert({ site }: { site: Site }) {
   const backupsAffected =
     state === "key_unavailable" || status?.items?.age_identity === "unreadable";
   const saltsSuspected = status?.key_source === "salts";
+  const unreadableItems = describeUnreadableItems(status?.unreadable);
 
   const heading = backupsAffected
     ? "Backups cannot run for this site."
-    : `This site's ${describeUnreadableItems(status?.unreadable)} cannot be read.`;
+    : unreadableItems
+      ? `This site's ${unreadableItems} cannot be read.`
+      : "This site has stored credentials that cannot be read, and it is not known whether backups are affected.";
 
   return (
     <div

@@ -172,4 +172,23 @@ describe("KeystoreStatusAlert: copy branches (item 2)", () => {
     ).toBeInTheDocument();
     expect(screen.queryByText("Backups cannot run for this site.")).not.toBeInTheDocument();
   });
+
+  // PR #778 item 2. With no `items` map at all (the agent sent state=unreadable
+  // but the items/unreadable detail didn't parse), the old copy fell through to
+  // describeUnreadableItems' empty-set fallback and rendered the ungrammatical
+  // "This site's some stored credentials cannot be read.", while backupsAffected
+  // silently defaulted to false, i.e. under-warning: it never said backups'
+  // status was actually unknown. This pins the fixed copy: grammatical, and it
+  // says plainly that whether backups are affected isn't known, never that they
+  // still run.
+  it("says plainly that backup impact is unknown when state is unreadable with no items map at all", async () => {
+    renderAlert(siteWithKeystore({ state: "unreadable" }));
+    expect(
+      await screen.findByText(
+        "This site has stored credentials that cannot be read, and it is not known whether backups are affected.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/some stored credentials/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Backups cannot run for this site.")).not.toBeInTheDocument();
+  });
 });

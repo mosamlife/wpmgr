@@ -1492,6 +1492,39 @@ export const AgentMetadataSchema = {
         $ref: "#/components/schemas/SiteComponent",
       },
     },
+    keystore: {
+      type: ["object", "null"],
+      description:
+        "GH #753 — the agent's Keystore::probe() trial-decrypt result,\nreplayed on the ordinary metadata push. Optional; an agent that\npredates #753, or one that sends nothing this push, simply omits\nit and the control plane records state=not_reported rather than\ninferring a healthy keystore from silence.\n\nEvery field here is optional and tolerantly decoded: a malformed\nor unexpected shape (e.g. a value this project's agent never\nsends, or `items`/`unreadable` in a shape that doesn't parse) is\nignored field-by-field rather than rejecting the whole metadata\npush, and the control plane separately allowlists `state` and\n`key_source` against the vocabulary described on\nSiteKeystoreStatus before storing them — this schema does not\nitself enforce that vocabulary, since the handler doesn't either.\n",
+      properties: {
+        state: {
+          type: "string",
+          description:
+            "See SiteKeystoreStatus.state for the vocabulary the control\nplane recognises (ok, unreadable, key_unavailable). Any other\nvalue, or a value in an unparseable shape, is ignored and\nstored as not_reported.\n",
+        },
+        key_source: {
+          type: "string",
+          description:
+            "See SiteKeystoreStatus.key_source for the vocabulary the\ncontrol plane recognises (constant, salts, file, db,\nunknown). Any other or unparseable value is ignored.\n",
+        },
+        items: {
+          type: "object",
+          description:
+            'Per-item probe result, one entry per stored envelope. Each\nvalue is expected to be "absent", "ok" or "unreadable"\n(SiteKeystoreStatus.items), but an unrecognised value is\ndropped rather than rejected. A shape this cannot parse as an\nobject (including PHP\'s empty-array `[]`) is ignored and the\nwhole map is left unset.\n',
+          additionalProperties: {
+            type: "string",
+          },
+        },
+        unreadable: {
+          type: "array",
+          description:
+            "Convenience list of currently-unreadable item keys. A shape\nthis cannot parse as an array is ignored and the list is left\nunset.\n",
+          items: {
+            type: "string",
+          },
+        },
+      },
+    },
   },
 } as const;
 

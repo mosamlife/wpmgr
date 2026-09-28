@@ -6293,6 +6293,18 @@ type AgentMetadata struct {
 	AgentSelfUpdate OptNilAgentMetadataAgentSelfUpdate `json:"agent_self_update"`
 	Plugins         []SiteComponent                    `json:"plugins"`
 	Themes          []SiteComponent                    `json:"themes"`
+	// GH #753 — the agent's Keystore::probe() trial-decrypt result, replayed on the ordinary metadata
+	// push. Optional; an agent that predates #753, or one that sends nothing this push, simply omits it
+	// and the control plane records state=not_reported rather than inferring a healthy keystore from
+	// silence.
+	//
+	// Every field here is optional and tolerantly decoded: a malformed or unexpected shape (e.g. a value
+	// this project's agent never sends, or `items`/`unreadable` in a shape that doesn't parse) is ignored
+	// field-by-field rather than rejecting the whole metadata push, and the control plane separately
+	// allowlists `state` and `key_source` against the vocabulary described on SiteKeystoreStatus before
+	// storing them — this schema does not itself enforce that vocabulary, since the handler doesn't
+	// either.
+	Keystore OptNilAgentMetadataKeystore `json:"keystore"`
 }
 
 // GetWpVersion returns the value of WpVersion.
@@ -6375,6 +6387,11 @@ func (s *AgentMetadata) GetThemes() []SiteComponent {
 	return s.Themes
 }
 
+// GetKeystore returns the value of Keystore.
+func (s *AgentMetadata) GetKeystore() OptNilAgentMetadataKeystore {
+	return s.Keystore
+}
+
 // SetWpVersion sets the value of WpVersion.
 func (s *AgentMetadata) SetWpVersion(val OptString) {
 	s.WpVersion = val
@@ -6453,6 +6470,11 @@ func (s *AgentMetadata) SetPlugins(val []SiteComponent) {
 // SetThemes sets the value of Themes.
 func (s *AgentMetadata) SetThemes(val []SiteComponent) {
 	s.Themes = val
+}
+
+// SetKeystore sets the value of Keystore.
+func (s *AgentMetadata) SetKeystore(val OptNilAgentMetadataKeystore) {
+	s.Keystore = val
 }
 
 // The outcome of the agent's last self-update apply, replayed on the next metadata push. This is the
@@ -6702,6 +6724,90 @@ func (s *AgentMetadataHostFlags) SetIsRuncloud(val OptBool) {
 // SetIsCloudways sets the value of IsCloudways.
 func (s *AgentMetadataHostFlags) SetIsCloudways(val OptBool) {
 	s.IsCloudways = val
+}
+
+// GH #753 — the agent's Keystore::probe() trial-decrypt result, replayed on the ordinary metadata
+// push. Optional; an agent that predates #753, or one that sends nothing this push, simply omits it
+// and the control plane records state=not_reported rather than inferring a healthy keystore from
+// silence.
+//
+// Every field here is optional and tolerantly decoded: a malformed or unexpected shape (e.g. a value
+// this project's agent never sends, or `items`/`unreadable` in a shape that doesn't parse) is ignored
+// field-by-field rather than rejecting the whole metadata push, and the control plane separately
+// allowlists `state` and `key_source` against the vocabulary described on SiteKeystoreStatus before
+// storing them — this schema does not itself enforce that vocabulary, since the handler doesn't
+// either.
+type AgentMetadataKeystore struct {
+	// See SiteKeystoreStatus.state for the vocabulary the control plane recognises (ok, unreadable,
+	// key_unavailable). Any other value, or a value in an unparseable shape, is ignored and stored as
+	// not_reported.
+	State OptString `json:"state"`
+	// See SiteKeystoreStatus.key_source for the vocabulary the control plane recognises (constant, salts,
+	// file, db, unknown). Any other or unparseable value is ignored.
+	KeySource OptString `json:"key_source"`
+	// Per-item probe result, one entry per stored envelope. Each value is expected to be "absent", "ok" or
+	// "unreadable" (SiteKeystoreStatus.items), but an unrecognised value is dropped rather than rejected.
+	// A shape this cannot parse as an object (including PHP's empty-array `[]`) is ignored and the whole
+	// map is left unset.
+	Items OptAgentMetadataKeystoreItems `json:"items"`
+	// Convenience list of currently-unreadable item keys. A shape this cannot parse as an array is ignored
+	// and the list is left unset.
+	Unreadable []string `json:"unreadable"`
+}
+
+// GetState returns the value of State.
+func (s *AgentMetadataKeystore) GetState() OptString {
+	return s.State
+}
+
+// GetKeySource returns the value of KeySource.
+func (s *AgentMetadataKeystore) GetKeySource() OptString {
+	return s.KeySource
+}
+
+// GetItems returns the value of Items.
+func (s *AgentMetadataKeystore) GetItems() OptAgentMetadataKeystoreItems {
+	return s.Items
+}
+
+// GetUnreadable returns the value of Unreadable.
+func (s *AgentMetadataKeystore) GetUnreadable() []string {
+	return s.Unreadable
+}
+
+// SetState sets the value of State.
+func (s *AgentMetadataKeystore) SetState(val OptString) {
+	s.State = val
+}
+
+// SetKeySource sets the value of KeySource.
+func (s *AgentMetadataKeystore) SetKeySource(val OptString) {
+	s.KeySource = val
+}
+
+// SetItems sets the value of Items.
+func (s *AgentMetadataKeystore) SetItems(val OptAgentMetadataKeystoreItems) {
+	s.Items = val
+}
+
+// SetUnreadable sets the value of Unreadable.
+func (s *AgentMetadataKeystore) SetUnreadable(val []string) {
+	s.Unreadable = val
+}
+
+// Per-item probe result, one entry per stored envelope. Each value is expected to be "absent", "ok" or
+// "unreadable" (SiteKeystoreStatus.items), but an unrecognised value is dropped rather than rejected.
+// A shape this cannot parse as an object (including PHP's empty-array `[]`) is ignored and the whole
+// map is left unset.
+type AgentMetadataKeystoreItems map[string]string
+
+func (s *AgentMetadataKeystoreItems) init() AgentMetadataKeystoreItems {
+	m := *s
+	if m == nil {
+		m = map[string]string{}
+		*s = m
+	}
+	return m
 }
 
 type AgentMetadataRolesItem struct {
@@ -30129,6 +30235,52 @@ func (o OptAgentMediaPresignOKUploads) Or(d AgentMediaPresignOKUploads) AgentMed
 	return d
 }
 
+// NewOptAgentMetadataKeystoreItems returns new OptAgentMetadataKeystoreItems with value set to v.
+func NewOptAgentMetadataKeystoreItems(v AgentMetadataKeystoreItems) OptAgentMetadataKeystoreItems {
+	return OptAgentMetadataKeystoreItems{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAgentMetadataKeystoreItems is optional AgentMetadataKeystoreItems.
+type OptAgentMetadataKeystoreItems struct {
+	Value AgentMetadataKeystoreItems
+	Set   bool
+}
+
+// IsSet returns true if OptAgentMetadataKeystoreItems was set.
+func (o OptAgentMetadataKeystoreItems) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAgentMetadataKeystoreItems) Reset() {
+	var v AgentMetadataKeystoreItems
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAgentMetadataKeystoreItems) SetTo(v AgentMetadataKeystoreItems) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAgentMetadataKeystoreItems) Get() (v AgentMetadataKeystoreItems, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAgentMetadataKeystoreItems) Or(d AgentMetadataKeystoreItems) AgentMetadataKeystoreItems {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptAlertConfigUpdateVulnMinSeverity returns new OptAlertConfigUpdateVulnMinSeverity with value set to v.
 func NewOptAlertConfigUpdateVulnMinSeverity(v AlertConfigUpdateVulnMinSeverity) OptAlertConfigUpdateVulnMinSeverity {
 	return OptAlertConfigUpdateVulnMinSeverity{
@@ -33523,6 +33675,74 @@ func (o OptNilAgentMetadataHostFlags) Get() (v AgentMetadataHostFlags, ok bool) 
 
 // Or returns value if set, or given parameter if does not.
 func (o OptNilAgentMetadataHostFlags) Or(d AgentMetadataHostFlags) AgentMetadataHostFlags {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptNilAgentMetadataKeystore returns new OptNilAgentMetadataKeystore with value set to v.
+func NewOptNilAgentMetadataKeystore(v AgentMetadataKeystore) OptNilAgentMetadataKeystore {
+	return OptNilAgentMetadataKeystore{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilAgentMetadataKeystore is optional nullable AgentMetadataKeystore.
+type OptNilAgentMetadataKeystore struct {
+	Value AgentMetadataKeystore
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilAgentMetadataKeystore was set.
+func (o OptNilAgentMetadataKeystore) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilAgentMetadataKeystore) Reset() {
+	var v AgentMetadataKeystore
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilAgentMetadataKeystore) SetTo(v AgentMetadataKeystore) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilAgentMetadataKeystore) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilAgentMetadataKeystore) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v AgentMetadataKeystore
+	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilAgentMetadataKeystore) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilAgentMetadataKeystore) Get() (v AgentMetadataKeystore, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilAgentMetadataKeystore) Or(d AgentMetadataKeystore) AgentMetadataKeystore {
 	if v, ok := o.Get(); ok {
 		return v
 	}

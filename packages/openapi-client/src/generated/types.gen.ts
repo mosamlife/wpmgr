@@ -987,6 +987,59 @@ export type AgentMetadata = {
   } | null;
   plugins?: Array<SiteComponent>;
   themes?: Array<SiteComponent>;
+  /**
+   * GH #753 — the agent's Keystore::probe() trial-decrypt result,
+   * replayed on the ordinary metadata push. Optional; an agent that
+   * predates #753, or one that sends nothing this push, simply omits
+   * it and the control plane records state=not_reported rather than
+   * inferring a healthy keystore from silence.
+   *
+   * Every field here is optional and tolerantly decoded: a malformed
+   * or unexpected shape (e.g. a value this project's agent never
+   * sends, or `items`/`unreadable` in a shape that doesn't parse) is
+   * ignored field-by-field rather than rejecting the whole metadata
+   * push, and the control plane separately allowlists `state` and
+   * `key_source` against the vocabulary described on
+   * SiteKeystoreStatus before storing them — this schema does not
+   * itself enforce that vocabulary, since the handler doesn't either.
+   *
+   */
+  keystore?: {
+    /**
+     * See SiteKeystoreStatus.state for the vocabulary the control
+     * plane recognises (ok, unreadable, key_unavailable). Any other
+     * value, or a value in an unparseable shape, is ignored and
+     * stored as not_reported.
+     *
+     */
+    state?: string;
+    /**
+     * See SiteKeystoreStatus.key_source for the vocabulary the
+     * control plane recognises (constant, salts, file, db,
+     * unknown). Any other or unparseable value is ignored.
+     *
+     */
+    key_source?: string;
+    /**
+     * Per-item probe result, one entry per stored envelope. Each
+     * value is expected to be "absent", "ok" or "unreadable"
+     * (SiteKeystoreStatus.items), but an unrecognised value is
+     * dropped rather than rejected. A shape this cannot parse as an
+     * object (including PHP's empty-array `[]`) is ignored and the
+     * whole map is left unset.
+     *
+     */
+    items?: {
+      [key: string]: string;
+    };
+    /**
+     * Convenience list of currently-unreadable item keys. A shape
+     * this cannot parse as an array is ignored and the list is left
+     * unset.
+     *
+     */
+    unreadable?: Array<string>;
+  } | null;
 };
 
 export type SiteCreate = {
