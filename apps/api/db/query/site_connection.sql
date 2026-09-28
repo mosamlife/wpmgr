@@ -156,6 +156,32 @@ WHERE sites.id = @id AND sites.tenant_id = @tenant_id
   AND sites.connection_state = 'pending_enrollment'
 RETURNING *;
 
+-- name: AdoptSiteURL :one
+-- Replaces a site's stored address with a new one, compare-and-set on the
+-- address the caller last read. Matches only when the site is still in the
+-- tenant, still holds "from", and is in an enrolled state (connected, degraded
+-- or disconnected); a pending, revoked or archived site is never re-addressed
+-- here. A non-matching site, a changed address, or another site in the same
+-- tenant already holding "to" all yield pgx.ErrNoRows and leave the row as it
+-- was. The NOT EXISTS guard sees only rows the caller's RLS scope can see, and
+-- it cannot see a concurrent uncommitted write, so sites_tenant_id_url_key
+-- remains the authority: a caller must also treat a unique violation on that
+-- index as "address in use". Returns the url now stored.
+-- "to" and "from" are reserved words, so they are bound with sqlc.arg('...')
+-- rather than the @name shorthand, which does not parse for them.
+UPDATE sites
+SET url = sqlc.arg('to')::text, updated_at = now()
+WHERE sites.id = @id AND sites.tenant_id = @tenant_id
+  AND sites.url = sqlc.arg('from')::text
+  AND sites.connection_state IN ('connected', 'degraded', 'disconnected')
+  AND NOT EXISTS (
+      SELECT 1 FROM sites o
+      WHERE o.tenant_id = sites.tenant_id
+        AND o.url = sqlc.arg('to')::text
+        AND o.id <> sites.id
+  )
+RETURNING url;
+
 -- name: CreatePendingSite :one
 -- Site-first "Add site" flow (ADR-041): create the sites row in
 -- pending_enrollment BEFORE the agent enrolls, so the enrollment code can be
