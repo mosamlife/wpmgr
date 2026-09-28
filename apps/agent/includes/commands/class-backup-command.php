@@ -196,15 +196,18 @@ final class BackupCommand implements CommandInterface
         if ($recipient === '') {
             return $this->refuse('missing age recipient');
         }
-        // The recipient check reads the backup key. When it fails, refuse
-        // here, before any preflight row, dedup claim or scratch directory
-        // exists: in plain words with the keystore_unreadable code when the
-        // keystore explains the failure, and without that code otherwise.
+        // The recipient check reads the backup key, and creates it when none
+        // is stored only if the keystore shows the current key is live. When
+        // it fails, refuse here, before any preflight row, dedup claim or
+        // scratch directory exists: in plain words with the
+        // keystore_unreadable code when the keystore explains the failure
+        // (the backup key cannot be read, or none is stored and none may be
+        // created), and without that code otherwise.
         try {
             $recipientMatches = $this->identity->recipientMatches($recipient);
         } catch (\Throwable $e) {
             $probe = $this->identity->probeKeystore();
-            if (KeystoreHealth::backupKeyUnreadable($probe)) {
+            if (!KeystoreHealth::backupKeyUsable($probe)) {
                 return $this->refuse(KeystoreHealth::backupRefusal($probe), 'keystore_unreadable');
             }
 

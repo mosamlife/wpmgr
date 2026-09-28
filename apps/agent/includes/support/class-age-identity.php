@@ -60,12 +60,24 @@ class AgeIdentity
      * Ensure an age identity exists, generating + storing one if absent.
      * Returns this site's PUBLIC recipient ("age1...").
      *
+     * This is the only place a backup key is created. It creates one only
+     * when none is stored and a keystore probe taken just before shows the
+     * current key is the one this site uses now (KeystoreHealth::backupKeyUsable):
+     * every stored key opens, or the site keypair opens. Otherwise it throws
+     * and stores nothing.
+     *
      * @return string The site's age recipient.
+     * @throws \RuntimeException When no backup key is stored and none may be created.
      */
     public function ensureRecipient(): string
     {
         $secret = $this->keystore->getAgeIdentity();
         if ($secret === null) {
+            if (!KeystoreHealth::backupKeyUsable($this->keystore->probe())) {
+                throw new \RuntimeException(
+                    'WPMgr Agent: no backup key is stored, and none is created while the saved keys do not open.'
+                );
+            }
             $pair   = $this->age->generateIdentity();
             $this->keystore->storeAgeIdentity($pair['secret']);
             $recipient = $pair['recipient'];
@@ -101,7 +113,8 @@ class AgeIdentity
 
     /**
      * Constant-time check that a CP-supplied recipient matches this site's own.
-     * Generates the identity if none exists yet so a first backup can proceed.
+     * Generates the identity if none exists yet so a first backup can proceed,
+     * under the same rule as ensureRecipient(), which throws when it may not.
      *
      * @param string $candidate Recipient from the CP command.
      * @return bool True when the candidate equals this site's recipient.

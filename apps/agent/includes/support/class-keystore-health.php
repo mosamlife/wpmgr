@@ -121,19 +121,6 @@ final class KeystoreHealth
     }
 
     /**
-     * Whether a failure to read the backup key is explained by the keystore:
-     * the key cannot be loaded, or the stored backup key does not open.
-     *
-     * @param array{state:string,key_source:string,items:array<string,string>,unreadable:list<string>,detail:string} $probe Keystore::probe() result.
-     * @return bool
-     */
-    public static function backupKeyUnreadable(array $probe): bool
-    {
-        return $probe['state'] === Keystore::PROBE_KEY_UNAVAILABLE
-            || ($probe['items']['age_identity'] ?? '') === Keystore::ITEM_UNREADABLE;
-    }
-
-    /**
      * The bold headline shown in front of the stored notice.
      *
      * @param mixed $kind Stored notice kind; anything unrecognised reads as setup.
@@ -237,7 +224,9 @@ final class KeystoreHealth
 
     /**
      * Detail for a backup the agent refused because its backup key cannot be
-     * read. Reaches the dashboard as the failed snapshot's error.
+     * read, or because none is stored and none may be created while the
+     * saved keys do not open. Reaches the dashboard as the failed snapshot's
+     * error.
      *
      * @param array{state:string,key_source:string,items:array<string,string>,unreadable:list<string>,detail:string} $probe Keystore::probe() result.
      * @return string Plain text.
@@ -262,6 +251,13 @@ final class KeystoreHealth
             }
 
             return $text;
+        }
+
+        if (($probe['items']['age_identity'] ?? '') === Keystore::ITEM_ABSENT
+            && $probe['state'] === Keystore::PROBE_UNREADABLE
+        ) {
+            return 'Backup not started: this site has no backup key yet, and it does not create one while '
+                . 'the keys saved on it do not open. ' . self::unreadableNotice($probe);
         }
 
         return 'Backup not started: this site could not read its backup key.';

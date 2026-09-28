@@ -1207,7 +1207,9 @@ final class Plugin
      *     It never replaces, regenerates or deletes a stored key it cannot
      *     read. The one thing it still creates is a backup key that is
      *     ABSENT, and only when the site keypair opens under the current key,
-     *     which shows that key is the one this site uses now.
+     *     which shows that key is the one this site uses now. If creating it
+     *     fails, it still records the unreadable-keys notice, never the
+     *     setup-failure one.
      *   - Otherwise it generates only what is ABSENT (the site keypair, the
      *     backup key) and clears the notice.
      *
@@ -1222,7 +1224,15 @@ final class Plugin
                     && $probe['items']['age_identity'] === Keystore::ITEM_ABSENT
                     && KeystoreHealth::backupKeyUsable($probe)
                 ) {
-                    (new AgeIdentity($this->keystore))->ensureRecipient();
+                    try {
+                        (new AgeIdentity($this->keystore))->ensureRecipient();
+                    } catch (\Throwable $e) {
+                        // The backup key changed after the probe (another
+                        // request stored one), or storing it failed. The
+                        // stored keys still do not all open, so the notice
+                        // below is the one that applies; the next admin load
+                        // retries setup and re-probes.
+                    }
                 }
                 KeystoreHealth::flag($probe);
 
