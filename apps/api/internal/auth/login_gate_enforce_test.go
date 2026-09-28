@@ -435,6 +435,34 @@ func TestObserveRefusesNothingAtAnyScope(t *testing.T) {
 	}
 }
 
+// TestConcurrentAttemptsCannotOvershootTheBoundary: query and charge are one
+// step under the gate lock, so however many attempts arrive at once, exactly
+// the budget is admitted.
+func TestConcurrentAttemptsCannotOvershootTheBoundary(t *testing.T) {
+	g, _ := newEnforceGate(t)
+	a := loginAttempt{Addr: netip.MustParseAddr(simulatedClient), FromChain: true, Hops: 2, Email: "target@example.test"}
+	const racers = 200
+	results := make(chan bool, racers)
+	start := make(chan struct{})
+	for i := 0; i < racers; i++ {
+		go func() {
+			<-start
+			_, r := g.Admit(context.Background(), a)
+			results <- r == nil
+		}()
+	}
+	close(start)
+	admitted := 0
+	for i := 0; i < racers; i++ {
+		if <-results {
+			admitted++
+		}
+	}
+	if admitted != loginPairBudget {
+		t.Errorf("%d of %d concurrent attempts admitted, want exactly %d", admitted, racers, loginPairBudget)
+	}
+}
+
 // TestUnresolvedSourceIsNeverRefused pins the addrUnresolved rule under
 // enforce: every client of a deployment whose peer address does not parse is
 // on one key, so refusing on it would refuse all of them, and its pair would
