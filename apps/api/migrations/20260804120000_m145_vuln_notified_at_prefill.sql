@@ -36,6 +36,10 @@
 -- m103, m145 changes nothing: every notified_at value, NULL or not, stays as
 -- it was.
 --
+-- LOCK WAIT. When it adds the column, this file waits at most five seconds for
+-- its lock on site_vulnerabilities, and a timeout rolls the file back and fails
+-- the boot with the previous revision left serving.
+--
 -- END STATE IS m103's. notified_at timestamptz, nullable, no default.
 -- db/schema.sql already describes this end state and is not changed.
 --
@@ -51,6 +55,8 @@ BEGIN
           AND attname  = 'notified_at'
           AND NOT attisdropped
     ) THEN
+        PERFORM set_config('lock_timeout', '5s', true);
+
         ALTER TABLE "public"."site_vulnerabilities"
             ADD COLUMN "notified_at" timestamptz DEFAULT now();
 
