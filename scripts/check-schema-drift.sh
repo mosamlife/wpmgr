@@ -86,7 +86,7 @@ resolve_ptah_compat() {
 }
 
 PTAH_COMPAT="$(resolve_ptah_compat)" ||
-  broken "no ptah-compat binary. Install it: go install ptah.run/cmd/ptah-compat@<version>"
+  broken "no ptah-compat binary. Install it: go install ptah.run/cmd/ptah-compat@v0.10.0"
 
 [ -n "${ATLAS_DEV_URL:-}" ] ||
   broken "ATLAS_DEV_URL is not set. It names the throwaway dev database the diff replays on."

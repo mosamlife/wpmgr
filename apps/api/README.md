@@ -161,7 +161,7 @@ indexes. Nothing is appended by hand.
 ```bash
 # Install the version CI pins (the "Install ptah-compat" step in
 # .github/workflows/ci.yml):
-go install ptah.run/cmd/ptah-compat@<version>
+go install ptah.run/cmd/ptah-compat@v0.10.0
 
 # A throwaway dev Postgres is required for diffing. The migrations create
 # roles, so declare that whole dev server disposable:
