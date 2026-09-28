@@ -35,9 +35,8 @@
 --
 -- RLS is unchanged. tenant_isolation, agent_access and
 -- font_transcode_results_site_scope (m54, m132) stay exactly as they are.
--- Cascaded deletes are issued by PostgreSQL's referential-integrity machinery
--- as the table owner with FORCE ROW LEVEL SECURITY suspended, which is how the
--- font_results cascade already works, so no policy is needed for them.
+-- The cascade is carried out by PostgreSQL's referential-integrity machinery,
+-- the same way the font_results cascade already is, and needs no policy change.
 --
 -- THE ORDER OF OPERATIONS, AND THE LOCKS
 --
@@ -65,9 +64,13 @@
 --      this file runs as the owner, so app.agent is set to 'on' for this
 --      transaction (the permissive agent_access / sites_agent policies) and
 --      app.site_scope is cleared (the restrictive *_site_scope policies pass
---      when it is not 'on'). Without that the owner would see no rows at all:
---      the DELETE would remove nothing and step 4 would then refuse to
---      validate. Both settings are restored before the block ends.
+--      when it is not 'on'). Without that the owner sees no rows at all, the
+--      DELETE removes nothing, and step 4 does NOT fail: run as a
+--      non-superuser owner on PostgreSQL 16, the constraints are recorded as
+--      validated while the rows they forbid are still in the table. So this
+--      step is the only thing that removes those rows; do not drop the
+--      settings on the grounds that validation would catch it. Both settings
+--      are restored before the block ends.
 --
 --   3. Index site_id, so the cascade on a site delete finds that site's rows
 --      without reading the whole table. The existing index leads with
