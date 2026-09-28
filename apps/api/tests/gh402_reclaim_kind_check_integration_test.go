@@ -193,6 +193,12 @@ func TestGH402_M115_ClosesTheKindSetOnAnExistingDatabase(t *testing.T) {
 	pool := startPostgres(t)
 	admin := connectAdmin(t, pool)
 	defer admin.Close()
+	// owner re-applies the migration itself, AS wpmgr_owner — the real boot
+	// migrator's role, not the bootstrap superuser connectAdmin returns; admin
+	// stays for the seed/tamper steps, which need to bypass site_object_reclaim's
+	// FORCE RLS with no GUC in scope.
+	owner := connectOwner(t, pool)
+	defer owner.Close()
 	ctx := context.Background()
 
 	gh402DropKindCheck(t, admin)
@@ -209,7 +215,7 @@ func TestGH402_M115_ClosesTheKindSetOnAnExistingDatabase(t *testing.T) {
 	}
 
 	// Boot the migrator the way the server does.
-	if err := admin.Migrate(ctx); err != nil {
+	if err := owner.Migrate(ctx); err != nil {
 		t.Fatalf("boot migration failed with a pre-existing bad row present. m115 must be NOT "+
 			"VALID: validating it takes the control plane down on exactly the databases that "+
 			"have the problem: %v", err)
@@ -253,6 +259,8 @@ func TestGH402_M115_IsANoOpAndReRunnable(t *testing.T) {
 	pool := startPostgres(t)
 	admin := connectAdmin(t, pool)
 	defer admin.Close()
+	owner := connectOwner(t, pool)
+	defer owner.Close()
 	ctx := context.Background()
 
 	for i := 0; i < 2; i++ {
@@ -260,7 +268,7 @@ func TestGH402_M115_IsANoOpAndReRunnable(t *testing.T) {
 			`DELETE FROM schema_migrations WHERE version = $1`, gh402M115Version); err != nil {
 			t.Fatalf("unmark m115: %v", err)
 		}
-		if err := admin.Migrate(ctx); err != nil {
+		if err := owner.Migrate(ctx); err != nil {
 			t.Fatalf("re-apply m115 (round %d): %v", i+1, err)
 		}
 		if !gh402KindCheckExists(t, admin) {
