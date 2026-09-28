@@ -212,6 +212,13 @@ function LoginPage() {
           setSecondsLeft(err.retryAfterSeconds);
         }
       },
+    }).catch(() => {
+      // `onError` above is where every failure is actually handled (it is
+      // what sets the state each branch above reads); `mutateAsync` rejects
+      // its own returned promise on top of calling `onError`, and nothing
+      // downstream of this `await` needs that rejection, so left uncaught it
+      // is only an unhandled promise rejection on every failed sign-in
+      // attempt (any of invalid-credentials, unverified email, or a 429).
     });
   });
 
