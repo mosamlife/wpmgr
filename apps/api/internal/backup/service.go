@@ -534,7 +534,10 @@ func (s *Service) CreateBackup(ctx context.Context, tenantID, siteID, createdBy 
 		return Snapshot{}, domain.Validation("site_not_enrolled", "the site is not enrolled; only enrolled sites can be backed up")
 	}
 	if si.AgeRecipient == "" {
-		return Snapshot{}, domain.Validation("age_recipient_missing", "the site has no age recipient set; configure backup encryption (PUT the backup schedule with a recipient or set it on the site) before backing up")
+		// The recipient is set automatically from the agent's own metadata push
+		// (site.ApplyAgentMetadata) — there is no operator-facing field that
+		// sets it directly, so the fix here is a working connection, not a form.
+		return Snapshot{}, domain.Validation("age_recipient_missing", "the site has no backup encryption key yet; it is set automatically on the agent's next metadata sync. If this persists, check this site's WordPress admin for the cause")
 	}
 
 	// In-flight guard: reject a manual backup if one is already pending/running.

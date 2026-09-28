@@ -622,4 +622,81 @@ final class KeystoreMasterKeyTest extends TestCase
         $this->assertTrue($threw, 'Expected the final master-key establishment throw.');
         $this->assertArrayNotHasKey(Keystore::OPTION_DB_MASTER_KEY, $this->options);
     }
+
+    /**
+     * Unpinned, with items stored and no existing key anywhere: a key a
+     * request would establish now is new and cannot open what is stored, so
+     * the probe reports every stored item unreadable. It asks WordPress for
+     * the uploads directory without letting it create one, and writes
+     * nothing.
+     */
+    public function test_unpinned_probe_with_no_existing_key_reports_every_stored_item_unreadable(): void
+    {
+        @unlink($this->absParent() . '/.wpmgr-agent-master.key');
+        $uploads       = sys_get_temp_dir() . '/wpmgr-probe-no-uploads-' . bin2hex(random_bytes(6));
+        $uploadDirArgs = [];
+        Functions\when('wp_upload_dir')->alias(static function (...$args) use (&$uploadDirArgs, $uploads) {
+            $uploadDirArgs[] = $args;
+            return ['basedir' => $uploads];
+        });
+        $this->options[Keystore::OPTION_AGE_IDENTITY] = base64_encode(random_bytes(60));
+        $this->options[Keystore::OPTION_EMAIL_SECRET] = base64_encode(random_bytes(60));
+        $before = $this->options;
+
+        $this->assertFalse(defined('WPMGR_AGENT_KEY_FILE'), 'Precondition: no key-file constant in this process.');
+        $this->assertFalse(defined('AUTH_KEY'), 'Precondition: no salts in this process.');
+
+        $probe = (new Keystore())->probe();
+
+        $this->assertSame(Keystore::PROBE_UNREADABLE, $probe['state']);
+        $this->assertSame('', $probe['key_source']);
+        $this->assertSame(['age_identity', 'email_secret'], $probe['unreadable']);
+        $this->assertSame(Keystore::ITEM_ABSENT, $probe['items']['site_keypair']);
+        $this->assertSame($before, $this->options, 'probe() changed an option.');
+        $this->assertNotSame([], $uploadDirArgs, 'Precondition: the uploads lookup ran.');
+        foreach ($uploadDirArgs as $args) {
+            $this->assertFalse($args[1] ?? true, 'wp_upload_dir() was allowed to create a directory.');
+        }
+        $this->assertDirectoryDoesNotExist($uploads);
+        $this->assertFileDoesNotExist($this->absParent() . '/.wpmgr-agent-master.key');
+    }
+
+    /**
+     * Unpinned, with items stored under the salt-derived key: the probe finds
+     * that key, so every stored item opens, and it still writes no pin (and
+     * nothing else). Resolving the key the normal way would pin 'salts'.
+     */
+    public function test_unpinned_probe_that_finds_the_salts_key_writes_no_pin(): void
+    {
+        @unlink($this->absParent() . '/.wpmgr-agent-master.key');
+        $this->defineRealSalts();
+        $keystore = new Keystore();
+        $keystore->generateSiteKeypair();
+        $keystore->storeAgeIdentity(random_bytes(32));
+        $this->assertSame(
+            ['source' => 'salts'],
+            $this->options[Keystore::OPTION_MASTER_KEY_SOURCE] ?? null,
+            'Precondition: the items were sealed under the salt-derived key.'
+        );
+        unset($this->options[Keystore::OPTION_MASTER_KEY_SOURCE]);
+        $before = $this->options;
+
+        $writes = [];
+        foreach (['update_option', 'add_option', 'delete_option', 'update_site_option', 'set_transient'] as $fn) {
+            Functions\when($fn)->alias(static function ($name) use (&$writes, $fn) {
+                $writes[] = $fn . ':' . (string) $name;
+                return true;
+            });
+        }
+
+        $probe = (new Keystore())->probe();
+
+        $this->assertSame(Keystore::PROBE_OK, $probe['state'], 'Precondition: the probe found the salt-derived key.');
+        $this->assertSame(Keystore::ITEM_OK, $probe['items']['site_keypair']);
+        $this->assertSame(Keystore::ITEM_OK, $probe['items']['age_identity']);
+        $this->assertSame('', $probe['key_source']);
+        $this->assertSame([], $writes, 'probe() attempted a write.');
+        $this->assertArrayNotHasKey(Keystore::OPTION_MASTER_KEY_SOURCE, $this->options, 'probe() wrote a pin.');
+        $this->assertSame($before, $this->options, 'probe() changed an option.');
+    }
 }

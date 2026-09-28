@@ -154,6 +154,46 @@ final class Keystore implements EmailKeystoreInterface
      */
     private const SALT_MIN_VALUE_BYTES = 32;
 
+    /** probe() state: every stored item opens under the master key, or nothing is stored yet. */
+    public const PROBE_OK = 'ok';
+
+    /** probe() state: the master key loads, but at least one stored item does not open under it. */
+    public const PROBE_UNREADABLE = 'unreadable';
+
+    /** probe() state: items are stored, but the pinned master-key source cannot produce the key. */
+    public const PROBE_KEY_UNAVAILABLE = 'key_unavailable';
+
+    /** probe() per-item state: nothing is stored for this item. */
+    public const ITEM_ABSENT = 'absent';
+
+    /** probe() per-item state: the stored item opens under the master key. */
+    public const ITEM_OK = 'ok';
+
+    /** probe() per-item state: the stored item does not open under the master key. */
+    public const ITEM_UNREADABLE = 'unreadable';
+
+    /**
+     * Every stored envelope probe() checks, keyed by the stable item name its
+     * result reports.
+     *
+     * @var array<string,string>
+     */
+    private const PROBE_ITEMS = [
+        'site_keypair'             => self::OPTION_SITE_KEYPAIR,
+        'cp_public_key'            => self::OPTION_CP_PUBLIC_KEY,
+        'age_identity'             => self::OPTION_AGE_IDENTITY,
+        'email_secret'             => self::OPTION_EMAIL_SECRET,
+        'email_connection_secrets' => self::OPTION_EMAIL_CONN_SECRETS,
+    ];
+
+    /**
+     * Master-key source names probe() may report. Anything else stored in the
+     * source marker is reported as 'unknown'.
+     *
+     * @var list<string>
+     */
+    private const KNOWN_SOURCES = ['constant', 'salts', 'file', 'db'];
+
     /** Cached resolved master key for the lifetime of this request. */
     private ?string $cachedKey = null;
 
@@ -199,32 +239,179 @@ final class Keystore implements EmailKeystoreInterface
      */
     public function decrypt(string $envelope): string
     {
-        $raw = base64_decode($envelope, true);
-        if ($raw === false || strlen($raw) < 28) {
+        $parts = $this->splitEnvelope($envelope);
+        if ($parts === null) {
             throw new \RuntimeException('WPMgr Agent: malformed ciphertext envelope.');
         }
 
-        $iv         = substr($raw, 0, 12);
-        $tag        = substr($raw, 12, 16);
-        $ciphertext = substr($raw, 28);
-
-        $key = $this->masterKey();
-
-        $plaintext = openssl_decrypt(
-            $ciphertext,
-            'aes-256-gcm',
-            $key,
-            OPENSSL_RAW_DATA,
-            $iv,
-            $tag
-        );
-
-        if ($plaintext === false) {
+        $plaintext = $this->openParts($parts, $this->masterKey());
+        if ($plaintext === null) {
             // GCM tag mismatch => tampered or wrong key. Do not leak details.
             throw new \RuntimeException('WPMgr Agent: ciphertext authentication failed.');
         }
 
         return $plaintext;
+    }
+
+    /**
+     * Check, without changing anything, whether every stored envelope still
+     * opens under this install's master key.
+     *
+     * Read-only by contract: it never writes an option or a file, never pins
+     * a master-key source, never generates, replaces or deletes a key, and
+     * never throws. Recovered plaintext is wiped as soon as it has been
+     * checked. The master key is resolved only when something is stored, and
+     * only from sources that already exist.
+     *
+     * States:
+     *   - PROBE_OK: every stored item opens, or nothing is stored yet.
+     *   - PROBE_UNREADABLE: the key loads, but at least one stored item does
+     *     not open under it (the key differs from the one it was sealed with,
+     *     or the item is damaged).
+     *   - PROBE_KEY_UNAVAILABLE: items are stored, but the key cannot be
+     *     loaded; 'detail' carries the reason.
+     *
+     * The result never contains key material or anything derived from it.
+     *
+     * @return array{state:string,key_source:string,items:array<string,string>,unreadable:list<string>,detail:string}
+     */
+    public function probe(): array
+    {
+        $result = [
+            'state'      => self::PROBE_OK,
+            'key_source' => '',
+            'items'      => [],
+            'unreadable' => [],
+            'detail'     => '',
+        ];
+
+        try {
+            $pinned = $this->pinnedSource();
+            if ($pinned !== null) {
+                $result['key_source'] = in_array($pinned['source'], self::KNOWN_SOURCES, true)
+                    ? $pinned['source']
+                    : 'unknown';
+            }
+
+            $stored = [];
+            foreach (self::PROBE_ITEMS as $name => $option) {
+                $value = get_option($option);
+                if (is_string($value) && $value !== '') {
+                    $stored[$name]           = $value;
+                    $result['items'][$name] = self::ITEM_OK;
+                } else {
+                    $result['items'][$name] = self::ITEM_ABSENT;
+                }
+            }
+            if ($stored === []) {
+                return $result;
+            }
+
+            try {
+                $key = $this->existingMasterKey($pinned);
+            } catch (\Throwable $e) {
+                return $this->probeAllUnreadable($result, $stored, self::PROBE_KEY_UNAVAILABLE, $e->getMessage());
+            }
+            if ($key === null) {
+                // No source is pinned and no existing key was found: any key a
+                // request would now establish is new, and cannot open what is
+                // already stored.
+                return $this->probeAllUnreadable($result, $stored, self::PROBE_UNREADABLE, '');
+            }
+
+            foreach ($stored as $name => $envelope) {
+                $parts     = $this->splitEnvelope($envelope);
+                $plaintext = $parts !== null ? $this->openParts($parts, $key) : null;
+                if ($plaintext === null) {
+                    $result['items'][$name] = self::ITEM_UNREADABLE;
+                    $result['unreadable'][] = $name;
+                    continue;
+                }
+                SecureMemory::wipe($plaintext);
+            }
+            SecureMemory::wipe($key);
+
+            if ($result['unreadable'] !== []) {
+                $result['state'] = self::PROBE_UNREADABLE;
+            }
+
+            return $result;
+        } catch (\Throwable $e) {
+            // A missing crypto extension or a failing option read: nothing
+            // stored can be confirmed readable.
+            $result['state']  = self::PROBE_KEY_UNAVAILABLE;
+            $result['detail'] = $e->getMessage();
+            foreach ($result['items'] as $name => $state) {
+                if ($state !== self::ITEM_ABSENT) {
+                    $result['items'][$name] = self::ITEM_UNREADABLE;
+                    $result['unreadable'][] = $name;
+                }
+            }
+
+            return $result;
+        }
+    }
+
+    /**
+     * Mark every stored item unreadable and set the probe state.
+     *
+     * @param array{state:string,key_source:string,items:array<string,string>,unreadable:list<string>,detail:string} $result Probe result so far.
+     * @param array<string,string> $stored Stored envelopes by item name.
+     * @param string               $state  PROBE_UNREADABLE or PROBE_KEY_UNAVAILABLE.
+     * @param string               $detail Reason, when the key could not be loaded.
+     * @return array{state:string,key_source:string,items:array<string,string>,unreadable:list<string>,detail:string}
+     */
+    private function probeAllUnreadable(array $result, array $stored, string $state, string $detail): array
+    {
+        foreach (array_keys($stored) as $name) {
+            $result['items'][$name] = self::ITEM_UNREADABLE;
+            $result['unreadable'][] = $name;
+        }
+        $result['state']  = $state;
+        $result['detail'] = $detail;
+
+        return $result;
+    }
+
+    /**
+     * Split a base64 envelope into iv, tag and ciphertext.
+     *
+     * @param string $envelope Base64-encoded iv||tag||ciphertext.
+     * @return array{iv:string,tag:string,ciphertext:string}|null Null when malformed.
+     */
+    private function splitEnvelope(string $envelope): ?array
+    {
+        $raw = base64_decode($envelope, true);
+        if ($raw === false || strlen($raw) < 28) {
+            return null;
+        }
+
+        return [
+            'iv'         => substr($raw, 0, 12),
+            'tag'        => substr($raw, 12, 16),
+            'ciphertext' => substr($raw, 28),
+        ];
+    }
+
+    /**
+     * AES-256-GCM open of a split envelope under the given key.
+     *
+     * @param array{iv:string,tag:string,ciphertext:string} $parts Split envelope.
+     * @param string                                        $key   32-byte key.
+     * @return string|null Plaintext, or null when authentication fails.
+     */
+    private function openParts(array $parts, string $key): ?string
+    {
+        $plaintext = openssl_decrypt(
+            $parts['ciphertext'],
+            'aes-256-gcm',
+            $key,
+            OPENSSL_RAW_DATA,
+            $parts['iv'],
+            $parts['tag']
+        );
+
+        return $plaintext === false ? null : $plaintext;
     }
 
     /**
@@ -487,51 +674,7 @@ final class Keystore implements EmailKeystoreInterface
         // under this install's real key (site keypair, age backup identity,
         // stored control-plane public key, ...).
         if ($pinned !== null) {
-            switch ($pinned['source']) {
-                case 'constant':
-                    $key = $this->keyFromConstant();
-                    if ($key !== null) {
-                        return $key;
-                    }
-                    throw new \RuntimeException(
-                        'WPMgr Agent: pinned WPMGR_AGENT_KEY_FILE master key is no longer available '
-                        . '(the constant was removed or its file is missing).'
-                    );
-                case 'salts':
-                    $key = $this->keyFromSalts();
-                    if ($key !== null) {
-                        return $key;
-                    }
-                    throw new \RuntimeException(
-                        'WPMgr Agent: pinned salt-derived master key is no longer available '
-                        . '(wp-config salts changed or were removed).'
-                    );
-                case 'file':
-                    $path = isset($pinned['path']) && is_string($pinned['path']) ? $pinned['path'] : '';
-                    $key  = $path !== '' ? $this->readKeyFile($path) : null;
-                    if ($key !== null) {
-                        return $key;
-                    }
-                    throw new \RuntimeException('WPMgr Agent: pinned master key file is missing or invalid.');
-                case 'db':
-                    $key = $this->readDatabaseKey();
-                    if ($key !== null) {
-                        return $key;
-                    }
-                    throw new \RuntimeException(
-                        'WPMgr Agent: pinned database-stored master key is missing or corrupt.'
-                    );
-                default:
-                    // An unrecognised pinned source (corrupt marker, hand
-                    // edit, or a foreign/future value) fails closed like
-                    // every recognised case above: silently re-discovering
-                    // could mint or derive a DIFFERENT key and re-key an
-                    // install that already has ciphertext under the
-                    // original one.
-                    throw new \RuntimeException(
-                        'WPMgr Agent: master-key source marker is corrupt or unrecognised.'
-                    );
-            }
+            return $this->keyForPinnedSource($pinned, true);
         }
 
         // First run (or unpinned legacy install): discover a source in order.
@@ -593,6 +736,104 @@ final class Keystore implements EmailKeystoreInterface
     }
 
     /**
+     * The master key this install already has, resolved without creating,
+     * pinning or writing anything. Used by probe().
+     *
+     * With a pinned source it returns that source's key or throws the same
+     * message resolveMasterKey() would. Without one it looks, in discovery
+     * order, only at sources that already exist (the WPMGR_AGENT_KEY_FILE
+     * file, an existing key file, the salts, the database-stored key) and
+     * returns null when none does.
+     *
+     * @param array{source:string,path?:string}|null $pinned Pinned source marker.
+     * @return string|null 32 raw bytes, or null when unpinned and nothing exists.
+     * @throws \RuntimeException When the pinned source cannot produce the key.
+     */
+    private function existingMasterKey(?array $pinned): ?string
+    {
+        if ($pinned !== null) {
+            return $this->keyForPinnedSource($pinned, false);
+        }
+
+        $key = $this->keyFromConstant(false);
+        if ($key !== null) {
+            return $key;
+        }
+        foreach ($this->existingKeyFilePaths() as $existing) {
+            $key = $this->readKeyFile($existing);
+            if ($key !== null) {
+                return $key;
+            }
+        }
+        $key = $this->keyFromSalts();
+        if ($key !== null) {
+            return $key;
+        }
+
+        return $this->readDatabaseKey();
+    }
+
+    /**
+     * Resolve the key for an already-pinned source. Every case either returns
+     * the ORIGINAL key or throws; none is allowed to fall through to fresh
+     * discovery, which would derive a different key and permanently orphan
+     * everything already encrypted under this install's real key.
+     *
+     * @param array{source:string,path?:string} $pinned    Pinned source marker.
+     * @param bool                              $mayCreate Whether the constant source may create its key file.
+     * @return string 32 raw bytes.
+     * @throws \RuntimeException When the pinned source cannot produce the key.
+     */
+    private function keyForPinnedSource(array $pinned, bool $mayCreate): string
+    {
+        switch ($pinned['source']) {
+            case 'constant':
+                $key = $this->keyFromConstant($mayCreate);
+                if ($key !== null) {
+                    return $key;
+                }
+                throw new \RuntimeException(
+                    'WPMgr Agent: pinned WPMGR_AGENT_KEY_FILE master key is no longer available '
+                    . '(the constant was removed or its file is missing).'
+                );
+            case 'salts':
+                $key = $this->keyFromSalts();
+                if ($key !== null) {
+                    return $key;
+                }
+                throw new \RuntimeException(
+                    'WPMgr Agent: pinned salt-derived master key is no longer available '
+                    . '(wp-config salts changed or were removed).'
+                );
+            case 'file':
+                $path = isset($pinned['path']) && is_string($pinned['path']) ? $pinned['path'] : '';
+                $key  = $path !== '' ? $this->readKeyFile($path) : null;
+                if ($key !== null) {
+                    return $key;
+                }
+                throw new \RuntimeException('WPMgr Agent: pinned master key file is missing or invalid.');
+            case 'db':
+                $key = $this->readDatabaseKey();
+                if ($key !== null) {
+                    return $key;
+                }
+                throw new \RuntimeException(
+                    'WPMgr Agent: pinned database-stored master key is missing or corrupt.'
+                );
+            default:
+                // An unrecognised pinned source (corrupt marker, hand
+                // edit, or a foreign/future value) fails closed like
+                // every recognised case above: silently re-discovering
+                // could mint or derive a DIFFERENT key and re-key an
+                // install that already has ciphertext under the
+                // original one.
+                throw new \RuntimeException(
+                    'WPMgr Agent: master-key source marker is corrupt or unrecognised.'
+                );
+        }
+    }
+
+    /**
      * Read the pinned master-key source marker, if present and well-formed.
      *
      * @return array{source:string,path?:string}|null
@@ -628,10 +869,12 @@ final class Keystore implements EmailKeystoreInterface
      * Obtain a 32-byte key from the WPMGR_AGENT_KEY_FILE constant path, reading
      * it if present or creating it 0600 if its directory is writable.
      *
+     * @param bool $mayCreate Whether a missing file may be created. False for
+     *                        probe(), which never writes.
      * @return string|null 32 raw bytes, or null if the constant is undefined or
      *                      the file is unusable.
      */
-    private function keyFromConstant(): ?string
+    private function keyFromConstant(bool $mayCreate = true): ?string
     {
         if (!defined('WPMGR_AGENT_KEY_FILE')) {
             return null;
@@ -642,7 +885,7 @@ final class Keystore implements EmailKeystoreInterface
         }
 
         $existing = $this->readKeyFile($path);
-        if ($existing !== null) {
+        if ($existing !== null || !$mayCreate) {
             return $existing;
         }
 
@@ -961,14 +1204,16 @@ final class Keystore implements EmailKeystoreInterface
     /**
      * Resolve the WordPress uploads base directory, or null if unavailable.
      *
+     * @param bool $createDir Whether wp_upload_dir() may create this month's
+     *                        uploads directory. False on the read-only paths.
      * @return string|null
      */
-    private function uploadsBaseDir(): ?string
+    private function uploadsBaseDir(bool $createDir = true): ?string
     {
         if (!function_exists('wp_upload_dir')) {
             return null;
         }
-        $info = wp_upload_dir();
+        $info = wp_upload_dir(null, $createDir);
         if (is_array($info) && isset($info['basedir']) && is_string($info['basedir']) && $info['basedir'] !== '') {
             return $info['basedir'];
         }
@@ -1015,7 +1260,7 @@ final class Keystore implements EmailKeystoreInterface
     {
         $paths = [];
 
-        $uploadBase = $this->uploadsBaseDir();
+        $uploadBase = $this->uploadsBaseDir(false);
         if ($uploadBase !== null) {
             $paths[] = rtrim($uploadBase, '/\\') . '/wpmgr-agent/master.key';
         }
