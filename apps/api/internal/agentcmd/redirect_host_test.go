@@ -40,15 +40,23 @@ func TestSameHostHTTPSUpgrade_ComparesTheDialledForm(t *testing.T) {
 		{"http://bücher.de/p", "https://xn--bcher-kva.de/p"},
 		{"http://[::1]:8080/p", "https://[::1]:8080/p"},
 		{"http://127.0.0.1:8080/p", "https://127.0.0.1:8080/p"},
+		// An all-ASCII host is dialled as written, so a label IDNA would
+		// refuse still names the same host.
+		{"http://my_site.test/p", "https://MY_SITE.test/p"},
 	} {
 		if _, ok := sameHostHTTPSUpgrade(mustParse(c.from), c.loc); !ok {
 			t.Errorf("sameHostHTTPSUpgrade(%q, %q) refused a same-host upgrade", c.from, c.loc)
 		}
 	}
 
-	// A host IDNA refuses is never the same host, so no retry is sent.
-	if _, ok := sameHostHTTPSUpgrade(mustParse("http://my_site.test/p"), "https://my_site.test/p"); ok {
-		t.Error("sameHostHTTPSUpgrade followed an upgrade for a host that does not convert")
+	// A non-ASCII host IDNA refuses is never the same host, so no retry is
+	// sent.
+	refused := mustParse("http://bü_cher.test/p")
+	if refused == nil {
+		t.Fatal("precondition: http://bü_cher.test/p must parse")
+	}
+	if _, ok := sameHostHTTPSUpgrade(refused, "https://bü_cher.test/p"); ok {
+		t.Error("sameHostHTTPSUpgrade followed an upgrade for a non-ASCII host that does not convert")
 	}
 }
 
