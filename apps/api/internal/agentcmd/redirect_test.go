@@ -166,8 +166,9 @@ func TestPostRaw_RefusesRedirectWithTypedError(t *testing.T) {
 				if want := targetBase + backupRoute; re.To != want {
 					t.Errorf("To = %q, want %q", re.To, want)
 				}
-				if re.SuggestedSiteURL != targetBase {
-					t.Errorf("SuggestedSiteURL = %q, want %q", re.SuggestedSiteURL, targetBase)
+				// Another port is never an address the saved one may become.
+				if re.SuggestedSiteURL != "" {
+					t.Errorf("SuggestedSiteURL = %q, want empty for a target on another port", re.SuggestedSiteURL)
 				}
 				if re.From != siteURL+backupRoute {
 					t.Errorf("From = %q, want %q", re.From, siteURL+backupRoute)
@@ -189,7 +190,7 @@ func TestPostRaw_RefusesRedirectWithTypedError(t *testing.T) {
 		}
 	}
 
-	t.Run("http to https on the same host", func(t *testing.T) {
+	t.Run("http to https on another port is not followed", func(t *testing.T) {
 		target := newAgentLikeServer(t, true)
 		origin := newRedirectingServer(t, false, http.StatusMovedPermanently, func() string { return target.srv.URL + backupRoute })
 
@@ -199,8 +200,8 @@ func TestPostRaw_RefusesRedirectWithTypedError(t *testing.T) {
 		if !ok {
 			t.Fatalf("want *RedirectError, got %T: %v", err, err)
 		}
-		if re.SuggestedSiteURL != target.srv.URL {
-			t.Errorf("SuggestedSiteURL = %q, want the https address %q", re.SuggestedSiteURL, target.srv.URL)
+		if re.SuggestedSiteURL != "" {
+			t.Errorf("SuggestedSiteURL = %q, want empty for an https address on another port", re.SuggestedSiteURL)
 		}
 		if n := target.hits.Load(); n != 0 {
 			t.Errorf("https target received %d requests, want 0", n)
@@ -227,7 +228,7 @@ func TestPostRaw_RefusesRedirectWithTypedError(t *testing.T) {
 		if n := target.hits.Load(); n != 0 {
 			t.Errorf("http target received %d requests, want 0", n)
 		}
-		if msg := re.OperatorMessage("Backup"); !strings.Contains(msg, "HTTPS") || strings.Contains(msg, "Reconnect") {
+		if msg := re.OperatorMessage("Backup"); !strings.Contains(msg, "drops HTTPS") || strings.Contains(msg, "updates to") {
 			t.Errorf("downgrade message %q should name HTTPS and not offer the downgraded address", msg)
 		}
 		assertNotMisread(t, err)
@@ -294,8 +295,12 @@ func TestPostRaw_RefusesRedirectWithTypedError(t *testing.T) {
 		if !ok {
 			t.Fatalf("want *RedirectError, got %T: %v", err, err)
 		}
-		if want := origin.srv.URL + "/blog"; re.SuggestedSiteURL != want {
-			t.Errorf("SuggestedSiteURL = %q, want %q", re.SuggestedSiteURL, want)
+		if want := origin.srv.URL + "/blog" + backupRoute; re.To != want {
+			t.Errorf("To = %q, want %q", re.To, want)
+		}
+		// Another path is never an address the saved one may become.
+		if re.SuggestedSiteURL != "" {
+			t.Errorf("SuggestedSiteURL = %q, want empty for another path", re.SuggestedSiteURL)
 		}
 		if n := origin.hits.Load(); n != 1 {
 			t.Errorf("origin received %d requests, want exactly 1", n)
@@ -313,7 +318,7 @@ func TestPostRaw_RefusesRedirectWithTypedError(t *testing.T) {
 			if re.To != "" || re.SuggestedSiteURL != "" {
 				t.Errorf("Location %q: To=%q Suggested=%q, want both empty", loc, re.To, re.SuggestedSiteURL)
 			}
-			if msg := re.OperatorMessage("Backup"); !strings.Contains(msg, "no usable target") {
+			if msg := re.OperatorMessage("Backup"); !strings.Contains(msg, "names no usable address") {
 				t.Errorf("Location %q: message %q", loc, msg)
 			}
 			assertNotMisread(t, err)
@@ -367,7 +372,7 @@ func TestNewRedirectError_ApexAndWww(t *testing.T) {
 		Header:     http.Header{"Location": {"https://www.example.com" + backupRoute}},
 		Request:    req,
 	})
-	want := "Backup not started. https://example.com redirects to https://www.example.com, and commands are sent only to the site's saved address. Reconnect the site to update its address to https://www.example.com."
+	want := "Backup not started. https://example.com redirects to https://www.example.com, so no command was sent. If WordPress on the site reports https://www.example.com as its address, the saved address updates to https://www.example.com automatically at the site's next daily check-in."
 	if got := re.OperatorMessage("Backup"); got != want {
 		t.Errorf("OperatorMessage:\n got %q\nwant %q", got, want)
 	}

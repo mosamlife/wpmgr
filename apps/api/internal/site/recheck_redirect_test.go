@@ -58,7 +58,7 @@ func TestRecheckSiteURLRedirects502(t *testing.T) {
 	if body.Code != "site_url_redirects" {
 		t.Errorf("code = %q, want site_url_redirects", body.Code)
 	}
-	if !strings.Contains(body.Message, "https://www.example.com") || !strings.Contains(body.Message, "Reconnect") {
+	if !strings.Contains(body.Message, "https://www.example.com") || !strings.Contains(body.Message, "updates to https://www.example.com automatically") {
 		t.Errorf("message %q should name the target and the remedy", body.Message)
 	}
 	want := map[string]string{

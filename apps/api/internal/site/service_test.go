@@ -82,6 +82,12 @@ func (f *fakeRepo) SetAgeRecipientIfUnset(_ context.Context, tenantID, siteID uu
 	return Site{ID: siteID, TenantID: tenantID, AgeRecipient: recipient}, true, nil
 }
 
+// AdoptSiteURL: the address-adoption write is proved against the database by
+// the integration suite; unit tests here never reach it.
+func (f *fakeRepo) AdoptSiteURL(_ context.Context, _, _ uuid.UUID, _, _ string) (bool, error) {
+	return false, nil
+}
+
 func (f *fakeRepo) CreatePairingCode(_ context.Context, in CreatePairingCodeInput, codeHash string, expiresAt time.Time) (PairingCode, error) {
 	return PairingCode{ID: uuid.New(), TenantID: in.TenantID, ExpiresAt: expiresAt}, nil
 }
