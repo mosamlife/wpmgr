@@ -739,6 +739,35 @@ jobs:
           PTAH_DEV_SERVER_DISPOSABLE: "1"
         run: scripts/check-schema-drift.sh
 
+      # The self-test runs a stub, so it cannot tell whether ptah-compat still
+      # sees a policy change. This removes one policy from a copy of schema.sql
+      # and expects the guard to report it as drift (exit 1). It catches a
+      # ptah-compat bump that stops diffing policies.
+      - name: The drift check reports a removed policy
+        env:
+          ATLAS_DEV_URL: postgres://postgres:postgres@localhost:5432/dev?sslmode=disable
+          PTAH_DEV_SERVER_DISPOSABLE: "1"
+        run: |
+          work="$(mktemp -d)"
+          mkdir -p "$work/db"
+          cp apps/api/atlas.hcl "$work/"
+          cp apps/api/db/schema.sql "$work/db/"
+          cp -R apps/api/migrations "$work/"
+          sed -i '/^CREATE POLICY plugin_signatures_read /,/;$/d' "$work/db/schema.sql"
+          if grep -q 'plugin_signatures_read' "$work/db/schema.sql"; then
+            echo "the policy is still in the copy; the sed pattern no longer matches schema.sql"
+            exit 1
+          fi
+          status=0
+          WPMGR_SCHEMA_DRIFT_API_DIR="$work" scripts/check-schema-drift.sh > "$work/out.txt" 2>&1 || status=$?
+          cat "$work/out.txt"
+          if [ "$status" -ne 1 ]; then
+            echo "expected exit 1 (drift), got $status"
+            exit 1
+          fi
+          grep -q 'plugin_signatures_read' "$work/out.txt" ||
+            { echo "the guard reported drift, but not the removed policy"; exit 1; }
+
   # ---- nginx routing (infra/nginx/nginx.conf) ----
   # `nginx -t` only checks syntax; it does not catch a public Go route with no
   # matching nginx location (GH #175 — self-hosted RUM ingest 405'd on every
