@@ -193,6 +193,34 @@ describe("UpdateTasksTable: GH #210 site-down-recovery condition", () => {
   });
 });
 
+// GH #755 round 2 (T4, N4): an agent self-update redirect comes back
+// `skipped`, not `failed`/`rolled_back`. Before isRedirectFailure had its own
+// status set this fell through to the generic truncated-detail cell instead
+// of the non-truncating alert treatment every other redirect-failure variant
+// gets.
+describe("UpdateTasksTable: GH #755 round 2 redirect-failure condition on a skipped agent self-update task", () => {
+  it("renders the full server detail in a non-truncated role=alert element for a skipped agent self-update task", () => {
+    const longDetail =
+      "Agent self-update not started. https://example.com redirects to https://www.example.com, so no command was sent. If WordPress on the site reports https://www.example.com as its address, the saved address updates to https://www.example.com automatically at the site's next daily check-in.";
+    const task = buildTask({
+      id: "task-agent-redirect",
+      target_type: "agent",
+      target_slug: "agent",
+      status: "skipped",
+      detail: longDetail,
+      error:
+        "agent_self_update command: https://example.com redirects to https://www.example.com/wp-json/wpmgr/v1/command/agent_self_update (HTTP 301); commands are sent only to the site's saved address, so the redirect was not followed",
+    });
+
+    renderWithProviders(<UpdateTasksTable tasks={[task]} />);
+
+    const row = screen.getByTestId("update-task-row");
+    const callout = within(row).getByRole("alert");
+    expect(callout).toHaveTextContent(longDetail);
+    expect(callout.className).not.toContain("truncate");
+  });
+});
+
 // ---------------------------------------------------------------------------
 // GH #336 - per-task retry selection
 //

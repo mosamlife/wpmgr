@@ -5,6 +5,7 @@ import { makeUpdateTask, serverRetryFields } from "@/test/update-task-fixtures";
 
 import {
   isSiteDownRecovery,
+  isRedirectFailure,
   isTerminalRunStatus,
   isAgentNotEligible,
   haltReason,
@@ -139,6 +140,66 @@ describe("isSiteDownRecovery", () => {
   it("is false when detail/error is empty on a terminal status", () => {
     expect(isSiteDownRecovery("failed", undefined, undefined)).toBe(false);
     expect(isSiteDownRecovery("rolled_back", "", "")).toBe(false);
+  });
+});
+
+// GH #755 round 2: pure-logic coverage for the redirect-failure detector
+// against the server's five composed-copy variants (N4: an agent self-update
+// redirect comes back `skipped`, not `failed`/`rolled_back`, so it must not
+// fall through to the generic truncated-detail treatment).
+//   A  (target the saved address will move to)
+//   D  (the site redirects its command address back to itself)
+//   B1 (redirect to another path on the site)
+//   B2 (redirect that drops HTTPS)
+//   C  (a redirect that names no usable address)
+const REDIRECT_COPY_A =
+  "https://example.com redirects to https://www.example.com, so no command was sent. If WordPress on the site reports https://www.example.com as its address, the saved address updates to https://www.example.com automatically at the site's next daily check-in.";
+const REDIRECT_COPY_D =
+  "https://example.com redirects its command address back to itself (HTTP 301), so no command was sent. Exempt /wp-json/wpmgr/ from the redirect on the site or its CDN.";
+const REDIRECT_COPY_B1 =
+  "https://example.com redirects to https://staging.example.com/wp-json/wpmgr/v1/command/metadata, so no command was sent. Exempt /wp-json/wpmgr/ from the redirect on the site or its CDN.";
+const REDIRECT_COPY_B2 =
+  "https://example.com redirects to http://example.com/wp-json/wpmgr/v1/command/metadata, which drops HTTPS, so no command was sent. Exempt /wp-json/wpmgr/ from the redirect on the site or its CDN.";
+const REDIRECT_COPY_C =
+  "https://example.com answered with a redirect (HTTP 302) that names no usable address, so no command was sent. Exempt /wp-json/wpmgr/ from the redirect on the site or its CDN.";
+
+describe("isRedirectFailure", () => {
+  it.each([
+    ["A", REDIRECT_COPY_A],
+    ["D", REDIRECT_COPY_D],
+    ["B1", REDIRECT_COPY_B1],
+    ["B2", REDIRECT_COPY_B2],
+    ["C", REDIRECT_COPY_C],
+  ])("is true for a failed task whose detail is copy %s", (_label, copy) => {
+    expect(isRedirectFailure("failed", `Update not started. ${copy}`, undefined)).toBe(true);
+  });
+
+  it("is true for a skipped agent self-update task (N4): status skipped, not failed/rolled_back", () => {
+    expect(
+      isRedirectFailure(
+        "skipped",
+        `Agent self-update not started. ${REDIRECT_COPY_A}`,
+        "agent_self_update command: https://example.com redirects to https://www.example.com/wp-json/wpmgr/v1/command/agent_self_update (HTTP 301); commands are sent only to the site's saved address, so the redirect was not followed",
+      ),
+    ).toBe(true);
+  });
+
+  it("is false for a site-down-recovery detail (distinct condition, must not cross-fire)", () => {
+    expect(
+      isRedirectFailure(
+        "rolled_back",
+        "The site went down site-wide; automatic filesystem recovery was attempted.",
+        undefined,
+      ),
+    ).toBe(false);
+  });
+
+  it("is false for an ordinary dry-run command failure", () => {
+    expect(isRedirectFailure("failed", "dry-run command failed", undefined)).toBe(false);
+  });
+
+  it("is false for a succeeded task even if the detail text happens to be copy A", () => {
+    expect(isRedirectFailure("succeeded", REDIRECT_COPY_A, undefined)).toBe(false);
   });
 });
 
