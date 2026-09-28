@@ -1,16 +1,105 @@
 // Package siteaddr holds the one rule for when two spellings of a site
 // address name the same WordPress install, and when a reported address may
-// replace a stored one. It is a leaf (standard library only) so that the site
-// package, which decides enrollment and push-time adoption, and the agentcmd
-// package, which suggests an address on a refused redirect, apply the same
-// function rather than two copies of it.
+// replace a stored one. It is a leaf (the standard library and
+// golang.org/x/net/idna only) so that the site package, which decides
+// enrollment and push-time adoption, and the agentcmd package, which suggests
+// an address on a refused redirect, apply the same function rather than two
+// copies of it.
 package siteaddr
 
 import (
 	"net"
 	"net/url"
 	"strings"
+
+	"golang.org/x/net/idna"
 )
+
+// HostKey is host in the ASCII form a resolver is asked for: an IP literal
+// lowercased as written, and any other host through IDNA's lookup profile
+// (UTS #46 mapping, then Punycode), which is the conversion net/http applies
+// before it dials a non-ASCII host. ok is false when the host is empty or
+// does not convert (a label IDNA refuses, such as one holding "_"), and a
+// caller treats that as "not the same host".
+func HostKey(host string) (string, bool) {
+	if host == "" {
+		return "", false
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return asciiLower(host)
+	}
+	ascii, err := idna.Lookup.ToASCII(host)
+	if err != nil || ascii == "" {
+		return "", false
+	}
+	return asciiLower(ascii)
+}
+
+// asciiLower lowercases A to Z only, and refuses a string holding any byte
+// outside ASCII.
+func asciiLower(s string) (string, bool) {
+	b := []byte(s)
+	for i, c := range b {
+		switch {
+		case c >= 0x80:
+			return "", false
+		case c >= 'A' && c <= 'Z':
+			b[i] = c + ('a' - 'A')
+		}
+	}
+	return string(b), true
+}
+
+// SameHost reports whether a and b name the same host once each is reduced
+// to its HostKey. Unicode case folding is never used: two spellings it
+// treats as equal can convert to different registrable domains (a capital
+// sharp s maps to "ss", a small one to its own Punycode label), and a
+// request is dialled by the converted form. A host that does not convert is
+// the same as nothing.
+func SameHost(a, b string) bool {
+	ka, okA := HostKey(a)
+	kb, okB := HostKey(b)
+	return okA && okB && ka == kb
+}
+
+// PlanStrict is Plan with each host compared by HostKey: it answers Same or
+// Adopt only when Plan does and the reported host, as it would be dialled, is
+// the stored host (Same, or an https upgrade) or the stored host's "www."
+// sibling (a host change), both taken through HostKey. Anything else, a host
+// that does not convert included, is Mismatch. The address it returns to
+// store is Plan's, built from the stored spelling.
+//
+// Push-time adoption and a refused redirect's suggestion use it. Enrollment
+// keeps Plan.
+func PlanStrict(stored, reported string) PlanResult {
+	p := Plan(stored, reported)
+	if p.Decision == Mismatch {
+		return p
+	}
+	s, su, okS := Parse(stored)
+	r, ru, okR := Parse(reported)
+	if !okS || !okR {
+		// Plan's own fallback: the two strings are identical.
+		return p
+	}
+	ks, okKS := HostKey(su.Hostname())
+	kr, okKR := HostKey(ru.Hostname())
+	if !okKS || !okKR {
+		return PlanResult{Decision: Mismatch}
+	}
+	want := ks
+	if s.Host != r.Host {
+		sibling, ok := WWWSibling(ks)
+		if !ok {
+			return PlanResult{Decision: Mismatch}
+		}
+		want = sibling
+	}
+	if kr != want {
+		return PlanResult{Decision: Mismatch}
+	}
+	return p
+}
 
 // Address is a site URL reduced to the parts that decide whether two
 // spellings name the same WordPress install: the scheme, the lowercased host,

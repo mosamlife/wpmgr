@@ -53,10 +53,10 @@ type RedirectError struct {
 	To string
 	// SuggestedSiteURL is the address the saved one would become. It is set
 	// only when To ends with exactly this command's route and the site address
-	// that leaves is one siteaddr.Plan adopts over the saved address (a
+	// that leaves is one siteaddr.PlanStrict adopts over the saved address (a
 	// leading "www." toggle and/or an http to https upgrade, on the same port
-	// and path), and it is that Plan's To: the value enrollment and an agent
-	// push would store. Empty otherwise.
+	// and path, with hosts compared in their ASCII form), and it is that
+	// plan's To: the value an agent push would store. Empty otherwise.
 	SuggestedSiteURL string
 }
 
@@ -89,8 +89,12 @@ func (e *RedirectError) Explanation() string {
 	target, plan := e.plan()
 	switch {
 	case target != "" && plan.Decision == siteaddr.Adopt:
-		return fmt.Sprintf("%s redirects to %s, so no command was sent. If WordPress on the site reports %s as its address, the saved address updates to %s automatically at the site's next daily check-in.",
-			from, target, target, target)
+		// plan.To, not target, is what would be stored: target may carry a
+		// default port or another spelling of the host. Whether another site
+		// in the workspace already holds plan.To is not known here, so the
+		// copy states that condition rather than promising the update.
+		return fmt.Sprintf("%s redirects to %s, so no command was sent. If WordPress on the site reports %s as its address, the saved address updates to %s automatically at a later check-in from the site. That update does not happen while another site in this workspace uses %s: if one does, remove or change the duplicate site.",
+			from, target, plan.To, plan.To, plan.To)
 	case e.SelfRedirect():
 		return fmt.Sprintf("%s redirects its command address back to itself (HTTP %d), so no command was sent. %s",
 			from, e.Status, exemptAdvice)
@@ -119,13 +123,13 @@ func (e *RedirectError) SelfRedirect() bool {
 
 // plan returns the site address the redirect target names (To with this
 // command's route removed; "" when To does not end with exactly that route)
-// and what siteaddr.Plan decides for it against the saved address.
+// and what siteaddr.PlanStrict decides for it against the saved address.
 func (e *RedirectError) plan() (string, siteaddr.PlanResult) {
 	target, ok := trimCommandSuffix(e.To, e.Command)
 	if !ok || target == "" {
 		return "", siteaddr.PlanResult{Decision: siteaddr.Mismatch}
 	}
-	return target, siteaddr.Plan(e.fromSite(), target)
+	return target, siteaddr.PlanStrict(e.fromSite(), target)
 }
 
 // SavedSiteURL is the site address the command was sent to: From with the
@@ -160,6 +164,18 @@ func (c *Client) CommandRedirectTarget(ctx context.Context, siteID uuid.UUID, si
 		return "", false
 	}
 	return re.SuggestedSiteURL, true
+}
+
+// CommandPingOK sends one signed ping to exactly siteURL and reports whether
+// the agent answered it with a 2xx carrying ok: true. A redirect, any other
+// status and a transport failure are false. Called with an https address, it
+// can follow no redirect at all (only an http address is ever upgraded). It
+// implements site.CommandRedirectProber.
+func (c *Client) CommandPingOK(ctx context.Context, siteID uuid.UUID, siteURL string) bool {
+	ctx, cancel := context.WithTimeout(ctx, commandRedirectProbeTimeout)
+	defer cancel()
+	out, err := c.Ping(ctx, siteID, siteURL)
+	return err == nil && out.OK
 }
 
 // AsRedirect reports whether err is, or wraps, a *RedirectError, and returns
@@ -208,6 +224,11 @@ func newRedirectError(command, endpoint string, resp *http.Response) *RedirectEr
 // http and the target is the same host, port, path and query over https. It
 // returns the resolved target when it is.
 //
+// The host matches only when both hostnames reduce to the same ASCII form
+// (siteaddr.SameHost: IDNA lookup conversion, then an ASCII-only lowercase
+// compare), the form the retry is dialled by. A hostname that does not
+// convert never matches.
+//
 // The port matches when both are the scheme defaults (from's is "" or "80",
 // the target's is "" or "443"), or both are explicit, equal and not defaults.
 // The target may carry no userinfo, and a fragment only when it is from's.
@@ -222,7 +243,7 @@ func sameHostHTTPSUpgrade(from *url.URL, loc string) (*url.URL, bool) {
 	if err != nil || target.Scheme != "https" {
 		return nil, false
 	}
-	if target.Hostname() == "" || !strings.EqualFold(from.Hostname(), target.Hostname()) {
+	if !siteaddr.SameHost(from.Hostname(), target.Hostname()) {
 		return nil, false
 	}
 	fromPort, toPort := from.Port(), target.Port()
