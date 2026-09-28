@@ -14,8 +14,8 @@ package tests
 // an owner-role API key, or promoted themselves. 702ed45 closed both of those
 // doors, because they WERE the privilege escalation. So after 702ed45 a
 // zero-owner org is unrecoverable without direct database access, and every
-// owner-only capability (tenant:manage, smtp:manage, billing:manage,
-// audit:manage, org delete/restore) is permanently dead for that tenant.
+// owner-only capability (tenant:manage, billing:manage, audit:manage, org
+// delete/restore) is permanently dead for that tenant.
 //
 // WHAT THIS FILE PINS
 //   - Concurrent demotes can never leave zero owners (2-owner and 3-owner orgs).
