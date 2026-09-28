@@ -287,6 +287,32 @@ export class AgentUnreachableError extends Error {
 }
 
 /**
+ * Named error for the 502 `site_url_redirects` path (GH #755 slice 1): the
+ * site answered its command address with a redirect, so the saved address is
+ * wrong and no command was sent. `message` is the FULL server-composed text
+ * (names the redirect target and, when one applies, the "Reconnect the site"
+ * remedy) — callers must render it verbatim, never substitute a generic
+ * "Couldn't reach agent" string. `to`/`suggestedUrl`/`from` are the sanitised
+ * fields off `details`, exposed for a caller that wants to render the target
+ * as its own element (e.g. a future Reconnect action) rather than parsing it
+ * back out of the prose.
+ */
+export class SiteUrlRedirectsError extends Error {
+  readonly code = "site_url_redirects" as const;
+  readonly to?: string;
+  readonly suggestedUrl?: string;
+  readonly from?: string;
+  constructor(message: string, details?: Record<string, unknown>) {
+    super(message);
+    this.name = "SiteUrlRedirectsError";
+    this.to = typeof details?.to === "string" ? details.to : undefined;
+    this.suggestedUrl =
+      typeof details?.suggested_url === "string" ? details.suggested_url : undefined;
+    this.from = typeof details?.from === "string" ? details.from : undefined;
+  }
+}
+
+/**
  * Force an immediate liveness refresh for a connected/degraded site.
  *
  * POST /api/v1/sites/:id/recheck
@@ -301,6 +327,11 @@ export class AgentUnreachableError extends Error {
  *         toast and leave the badge unchanged (we do NOT flip it to
  *         disconnected — that is the CP's responsibility after its own
  *         threshold elapses).
+ *   502 { code: "site_url_redirects" } — the site's saved address now
+ *         redirects, so the signed command was refused before it was sent
+ *         (GH #755 slice 1). This IS an actionable failure — surfaced as a
+ *         typed `SiteUrlRedirectsError` carrying the server's full message
+ *         so the call site can show it verbatim instead of a generic label.
  *
  * Any other non-2xx (network error, 5xx) is re-thrown so Query surfaces it
  * in the normal mutation-error channel.
@@ -323,6 +354,13 @@ export function useRecheckConnection(): UseMutationResult<
       // distinguish it from a genuine transport failure.
       if (response?.status === 502 && isApiErrorShape(error) && error.code === "agent_unreachable") {
         throw new AgentUnreachableError();
+      }
+      // 502 with site_url_redirects: the server's `message` already names the
+      // target and the remedy in full (agentcmd.RedirectError.Explanation on
+      // the control plane) — pass it through verbatim rather than mapping to
+      // toError's generic fallback text.
+      if (response?.status === 502 && isApiErrorShape(error) && error.code === "site_url_redirects") {
+        throw new SiteUrlRedirectsError(error.message, error.details);
       }
       if (error) throw toError(error, "Could not reach the agent");
       if (!data) throw new Error("Empty response from recheck");

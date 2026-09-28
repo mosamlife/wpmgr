@@ -225,3 +225,31 @@ export const SITE_DOWN_RECOVERY_LABEL = "Site down, recovery attempted";
  * detected from `error` alone. */
 export const SITE_DOWN_RECOVERY_FALLBACK_DETAIL =
   "The site went down site-wide during this update. Automatic filesystem recovery was attempted; manual filesystem recovery may be required.";
+
+// GH #755 slice 1 — DISPLAY ONLY, same discipline as isSiteDownRecovery
+// above: this reads the control plane's own composed prose
+// (agentcmd.RedirectError.OperatorMessage on the API) to pick a rendering
+// treatment, never a safety or retry decision (that stays server-side, on
+// `retryable`/`retry_class`). Matches every one of the four Explanation()
+// variants the redirect error can produce: "<site> redirects to <target>,
+// ...", "<site> redirects to <target>, which drops HTTPS, ...", "The site
+// redirected its command address to <target>...", and "The site answered its
+// command address with a redirect ...".
+const REDIRECT_FAILURE_PATTERN =
+  /redirect(?:s|ed)? (?:to|its command address)|answered its command address with a redirect/i;
+
+/**
+ * True when a terminal task's detail/error names the GH #755 "site's saved
+ * address redirects" condition. Unlike isSiteDownRecovery this is not a
+ * severe/destructive condition — it is a config mismatch with a stated
+ * remedy — so it gets its own (non-destructive) rendering treatment, never
+ * folded into the site-down-recovery copy.
+ */
+export function isRedirectFailure(
+  status: string,
+  detail?: string,
+  error?: string,
+): boolean {
+  if (!SITE_DOWN_RECOVERY_STATUSES.has(status)) return false;
+  return REDIRECT_FAILURE_PATTERN.test(`${detail ?? ""} ${error ?? ""}`);
+}
