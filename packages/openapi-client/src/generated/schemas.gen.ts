@@ -396,6 +396,9 @@ export const SiteSchema = {
       description:
         'GH #414 — RFC 3339 timestamp of the last uptime probe that actually ran\nagainst this site (site_uptime_status.last_probed_at), i.e. the "as of" for\n`health_status`. Absent when the site has never been probed.\n\nRead this WITH `health_status`, never instead of it. The uptime prober is\nwhat refreshes `health_status`, and pausing monitoring stops the prober — so\na paused site\'s `health_status` freezes at its last value while this stamp\nstops advancing. A paused site whose server died an hour ago therefore still\nreports `health_status: healthy`, and this field is the only thing that says\nhow old that verdict is. Render it as "as of <time>" rather than implying now.\n',
     },
+    keystore_status: {
+      $ref: "#/components/schemas/SiteKeystoreStatus",
+    },
     created_at: {
       type: "string",
       format: "date-time",
@@ -405,6 +408,42 @@ export const SiteSchema = {
       format: "date-time",
       description:
         "The site row's mtime: bumped by heartbeats, agent metadata pushes and\nhealth_status changes. Deliberately NOT bumped by monitoring pause/resume\nwrites (GH #414 Phase 1), so pausing a site does not make its inventory look\nfreshly synced. It is the inventory freshness stamp, not the health one —\nuse health_checked_at for health_status.\n",
+    },
+  },
+} as const;
+
+export const SiteKeystoreStatusSchema = {
+  type: "object",
+  description:
+    'GH #753 — trial-decrypt probe result for the site\'s on-disk agent\nkeystore (Keystore::probe()), pushed on plugin activation, on\nadmin_init for manage_options users (throttled), and on every\nmetadata cycle. Absent on the Site response means no connected\nagent has ever reported one (a pre-#753 agent, or no push yet);\nthat is also carried explicitly as state=not_reported so a\nstatus-only metadata push is never confused with "ok". Never\ncontains key material, a key-check value, an error detail or a\nfile path.\n',
+  properties: {
+    state: {
+      type: "string",
+      enum: ["ok", "unreadable", "key_unavailable", "not_reported"],
+      description:
+        'ok = every stored item decrypted under the resolved master key.\nunreadable = the master key resolved but one or more stored\nitems did not decrypt under it (the common "site moved host, or\nthe wp-config.php security keys changed" case).\nkey_unavailable = the master key itself could not be resolved.\nnot_reported = no agent has ever pushed a probe result for this\nsite.\n',
+    },
+    key_source: {
+      type: "string",
+      enum: ["constant", "salts", "file", "db", "unknown"],
+      description:
+        "Which tier pinned the master key, mirroring the agent's own\npin. Absent when no source is pinned yet.\n",
+    },
+    items: {
+      type: "object",
+      description:
+        'Per-item probe result, one entry per stored envelope (e.g.\nsite_keypair, cp_public_key, age_identity, email_secret,\nemail_connection_secrets). Each value is "absent", "ok" or\n"unreadable".\n',
+      additionalProperties: {
+        type: "string",
+      },
+    },
+    unreadable: {
+      type: "array",
+      items: {
+        type: "string",
+      },
+      description:
+        'Convenience list of the item keys currently unreadable;\nmirrors the "unreadable" entries in `items`.\n',
     },
   },
 } as const;

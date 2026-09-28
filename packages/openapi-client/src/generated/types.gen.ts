@@ -291,6 +291,7 @@ export type Site = {
    *
    */
   health_checked_at?: string;
+  keystore_status?: SiteKeystoreStatus;
   created_at: string;
   /**
    * The site row's mtime: bumped by heartbeats, agent metadata pushes and
@@ -301,6 +302,54 @@ export type Site = {
    *
    */
   updated_at: string;
+};
+
+/**
+ * GH #753 — trial-decrypt probe result for the site's on-disk agent
+ * keystore (Keystore::probe()), pushed on plugin activation, on
+ * admin_init for manage_options users (throttled), and on every
+ * metadata cycle. Absent on the Site response means no connected
+ * agent has ever reported one (a pre-#753 agent, or no push yet);
+ * that is also carried explicitly as state=not_reported so a
+ * status-only metadata push is never confused with "ok". Never
+ * contains key material, a key-check value, an error detail or a
+ * file path.
+ *
+ */
+export type SiteKeystoreStatus = {
+  /**
+   * ok = every stored item decrypted under the resolved master key.
+   * unreadable = the master key resolved but one or more stored
+   * items did not decrypt under it (the common "site moved host, or
+   * the wp-config.php security keys changed" case).
+   * key_unavailable = the master key itself could not be resolved.
+   * not_reported = no agent has ever pushed a probe result for this
+   * site.
+   *
+   */
+  state?: "ok" | "unreadable" | "key_unavailable" | "not_reported";
+  /**
+   * Which tier pinned the master key, mirroring the agent's own
+   * pin. Absent when no source is pinned yet.
+   *
+   */
+  key_source?: "constant" | "salts" | "file" | "db" | "unknown";
+  /**
+   * Per-item probe result, one entry per stored envelope (e.g.
+   * site_keypair, cp_public_key, age_identity, email_secret,
+   * email_connection_secrets). Each value is "absent", "ok" or
+   * "unreadable".
+   *
+   */
+  items?: {
+    [key: string]: string;
+  };
+  /**
+   * Convenience list of the item keys currently unreadable;
+   * mirrors the "unreadable" entries in `items`.
+   *
+   */
+  unreadable?: Array<string>;
 };
 
 /**
