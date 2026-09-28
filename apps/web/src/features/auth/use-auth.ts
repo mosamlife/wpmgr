@@ -429,7 +429,8 @@ export function isSuperadminAllowedPath(pathname: string): boolean {
   return (
     pathname.startsWith("/admin") ||
     pathname === "/settings/account" ||
-    pathname === "/settings/security"
+    pathname === "/settings/security" ||
+    pathname === "/settings/smtp"
   );
 }
 
@@ -464,6 +465,18 @@ export function activeRole(
 export function isOrgScoped(me: Me | null | undefined): boolean {
   if (!me?.active_tenant_id) return false;
   return me.memberships.some((m) => m.tenant_id === me.active_tenant_id);
+}
+
+/**
+ * Whether the signed-in user may manage the instance-wide SMTP relay (GET,
+ * PUT and POST /test under /api/v1/settings/smtp). Read directly from
+ * `me.can_manage_instance_email`, which the server computes from the exact
+ * same decision that gates those routes — never re-derive this from role or
+ * scope in the browser. Absent (older API, or a pre-session Me response)
+ * resolves to false, refused rather than defaulted open.
+ */
+export function canManageInstanceEmail(me: Me | null | undefined): boolean {
+  return me?.can_manage_instance_email === true;
 }
 
 /** Whether the user may manage API keys / members (owner or admin). */
