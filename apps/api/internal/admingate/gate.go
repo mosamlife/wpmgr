@@ -1,9 +1,10 @@
-// Package admingate holds the ONE definition of who may run an install-level
-// agent-mirror check, plus the narrow database reads that decision needs.
+// Package admingate holds the ONE definition of instance-level authority (who
+// may act on install-wide state rather than on one organisation's), plus the
+// narrow database reads that decision needs.
 //
 // Why this is its own package (GH #322).
 //
-// The decision is asked in two places that live in different packages and
+// The decision is asked in several places that live in different packages and
 // cannot import each other cleanly:
 //
 //	internal/admin        the ROUTE GATE on POST /api/v1/admin/agent-mirror/check.
@@ -11,8 +12,12 @@
 //	internal/agentrelease the CAPABILITY FLAG agent_mirror.can_check_now on
 //	                      GET /api/v1/fleet/agents. Answers "should the dashboard
 //	                      show this viewer a Check now button".
+//	internal/settings     the ROUTE GATE on /api/v1/settings/smtp (GET, PUT and
+//	                      POST /test). The instance SMTP relay is one row for the
+//	                      whole install, so it is instance configuration, not an
+//	                      organisation setting, and a tenant role does not reach it.
 //
-// Those two answers MUST be the same answer. If they are computed separately
+// Those answers MUST be the same answer. If they are computed separately
 // they can drift, and every way they can drift is a bug an operator sees: a
 // button that always 403s, or a permission nobody is ever offered (which is
 // precisely the state GH #322 was left in after 0.61.123 widened the gate with
@@ -129,38 +134,36 @@ func (s PoolStore) IsSoleLiveTenantOwner(ctx context.Context, userID uuid.UUID) 
 	return allowed, nil
 }
 
-// CanRunAgentMirrorCheck is THE decision: may the principal carried on ctx
-// trigger an immediate upstream agent-release mirror check on this install?
-// It admits:
+// HasInstanceAuthority is THE decision: does the principal carried on ctx hold
+// instance-level authority on this install? It admits:
 //
 //	users.is_superadmin = true
 //	OR the caller is an owner of the only live organisation on this install.
 //
-// Why the second arm exists (GH #322). The superadmin gate on this action is
-// there so that one tenant cannot spend another tenant's share of the install's
-// shared, unauthenticated upstream request budget. On an install with exactly
-// one organisation there is no other tenant for that to protect, and what is
-// left is the mechanics without the reason: set WPMGR_SUPERADMIN_EMAILS,
+// Why the second arm exists (GH #322). Instance-level authority separates the
+// operator of an install from its tenants: on an install with several
+// organisations, no tenant role reaches install-wide state. On an install with
+// exactly one organisation there is no other tenant to separate from, and what
+// is left is the mechanics without the reason: set WPMGR_SUPERADMIN_EMAILS,
 // restart, then discover that the seeder is additive only and never demotes, so
 // getting back out means a manual UPDATE against users and another restart.
-// That is a lot of platform-operator ceremony for someone checking whether
-// their own fleet's agent reference is current.
+// That is a lot of platform-operator ceremony for a self-hosted owner managing
+// their own install.
 //
 // THE PROPERTY THAT MUST NOT BE LOST: the owner NEVER becomes a superadmin
 // under this. No env var, no restart, no is_superadmin flag written anywhere,
 // and no Sites-page redirect (the web app's isSuperadminAllowedPath guard in
 // routes/_authed.tsx redirects superadmins AWAY from tenant pages, which is why
-// the admin console remains the superadmin's route to this action and why the
-// Sites-page button is only ever seen by the owner arm). This admits one
-// request on one route, and reveals one boolean on one dashboard field. A
-// second organisation appearing on the install closes the path again on the
-// very next request, with no migration and nothing to clean up, because the
-// count is read at request time and is never cached.
+// the admin console remains the superadmin's route to the agent-mirror check
+// and why the Sites-page button is only ever seen by the owner arm). Each caller
+// admits the specific routes it gates and nothing else. A second organisation
+// appearing on the install closes the owner arm again on the very next request,
+// with no migration and nothing to clean up, because the count is read at
+// request time and is never cached.
 //
 // An API-key principal is refused even when the key belongs to the owner of the
-// only organisation. This is an install-level action against a shared upstream
-// budget and the audit record wants a human. Neither store read is performed
-// for a non-user principal.
+// only organisation. Install-level actions want a human in the audit record.
+// Neither store read is performed for a non-user principal.
 //
 // Fail closed: an error reading either fact is a refusal, never an allow, and
 // a failed is_superadmin read does NOT fall through to the widened arm (that
@@ -168,7 +171,7 @@ func (s PoolStore) IsSoleLiveTenantOwner(ctx context.Context, userID uuid.UUID) 
 //
 // store may be nil (the decision is not wired on this install), which is also
 // a refusal.
-func CanRunAgentMirrorCheck(ctx context.Context, store Store) bool {
+func HasInstanceAuthority(ctx context.Context, store Store) bool {
 	if store == nil {
 		return false
 	}
@@ -188,4 +191,12 @@ func CanRunAgentMirrorCheck(ctx context.Context, store Store) bool {
 		return false
 	}
 	return allowed
+}
+
+// CanRunAgentMirrorCheck answers whether the principal carried on ctx may
+// trigger an immediate upstream agent-release mirror check on this install. It
+// is exactly HasInstanceAuthority; the name is kept so the admin route gate and
+// the fleet capability flag read as asking the question they ask.
+func CanRunAgentMirrorCheck(ctx context.Context, store Store) bool {
+	return HasInstanceAuthority(ctx, store)
 }

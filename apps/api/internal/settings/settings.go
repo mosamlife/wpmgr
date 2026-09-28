@@ -2,7 +2,8 @@
 // Phase 1): GET (masked), PUT (age-encrypts the password on write), and a
 // send-test that reuses the mailer's SSRF-guarded transport. The single
 // smtp_settings row is instance-global, so reads/writes run under app.agent='on'
-// (Pool.InAgentTx); the real access control is the PermSMTPManage HTTP gate.
+// (Pool.InAgentTx); the real access control is the instance-authority HTTP gate
+// on every route (see Handler).
 package settings
 
 import (

@@ -1099,7 +1099,9 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	mailerSvc := mailer.NewService(emailResolver, emailRenderer, pool, cfg.PublicBaseURL, supportEmail, logger)
 	sendEmailWorker := mailer.NewSendEmailWorker(mailerSvc)
 	smtpSettingsSvc := settings.NewService(settings.NewRepo(pool), siteDestAgeID, mailerSvc, logger)
-	smtpSettingsH := settings.NewHandler(smtpSettingsSvc, auditRec)
+	// The SMTP relay is install-wide, so its routes are gated on instance-level
+	// authority, read through the same admingate.Store the admin console uses.
+	smtpSettingsH := settings.NewHandler(smtpSettingsSvc, auditRec, admingate.NewPoolStore(pool))
 
 	// m59 — per-site email management. Shares the same age identity as the
 	// instance SMTP settings (siteDestAgeID). The agent command client is wired

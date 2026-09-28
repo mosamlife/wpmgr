@@ -5,31 +5,58 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/admingate"
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/authz"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 	"github.com/mosamlife/wpmgr/apps/api/internal/server/httpx"
 )
 
-// Handler serves the instance SMTP settings under /api/v1/settings/smtp. Reads
-// are admin+ (to render the masked form); writes + send-test are owner-only
-// (PermSMTPManage). RequireOrgScope() blocks site-scoped collaborators.
+// Handler serves the instance SMTP settings under /api/v1/settings/smtp.
+//
+// The smtp_settings row is one row for the whole install, so every route here
+// (GET, PUT and POST /test) requires instance-level authority as decided by
+// admingate.HasInstanceAuthority: a superadmin, or the owner of the only live
+// organisation on the install. A role inside an organisation does not qualify
+// on its own. RequireOrgScope() additionally blocks site-scoped principals.
 type Handler struct {
 	svc   *Service
 	audit *audit.Recorder
+	gate  admingate.Store
 }
 
-// NewHandler builds the settings Handler.
-func NewHandler(svc *Service, rec *audit.Recorder) *Handler {
-	return &Handler{svc: svc, audit: rec}
+// NewHandler builds the settings Handler. gate answers the instance-authority
+// reads; a nil gate refuses every request.
+func NewHandler(svc *Service, rec *audit.Recorder, gate admingate.Store) *Handler {
+	return &Handler{svc: svc, audit: rec, gate: gate}
 }
 
 // Register mounts the SMTP settings routes.
 func (h *Handler) Register(r *gin.RouterGroup) {
-	g := r.Group("/settings/smtp", authz.RequireOrgScope())
-	g.GET("", authz.RequireRole(authz.RoleAdmin), h.get)
-	g.PUT("", authz.RequirePermission(authz.PermSMTPManage), h.put)
-	g.POST("/test", authz.RequirePermission(authz.PermSMTPManage), h.test)
+	g := r.Group("/settings/smtp", authz.RequireOrgScope(), requireInstanceAuthority(h.gate))
+	g.GET("", h.get)
+	g.PUT("", h.put)
+	g.POST("/test", h.test)
+}
+
+// InstanceAuthorityRequiredCode is the error code of the single refusal every
+// refusing path of this gate emits. The message is identical on every path too,
+// so a refusal does not reveal which fact was missing.
+const InstanceAuthorityRequiredCode = "instance_authority_required"
+
+// requireInstanceAuthority refuses the request unless admingate grants
+// instance-level authority. The decision, including its fail-closed handling
+// of store errors, is admingate's; this only maps a refusal to one 403.
+func requireInstanceAuthority(store admingate.Store) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !admingate.HasInstanceAuthority(c.Request.Context(), store) {
+			httpx.Error(c, domain.Forbidden(InstanceAuthorityRequiredCode,
+				"instance-level access is required to manage the SMTP relay"))
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
 }
 
 func (h *Handler) get(c *gin.Context) {
