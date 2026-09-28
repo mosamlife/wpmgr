@@ -272,6 +272,7 @@ export type {
   SiteComponent,
   SiteComponents,
   SiteTags,
+  SiteKeystoreStatus,
   PairingCode,
   PairingCodeCreate,
   // updates

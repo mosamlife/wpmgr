@@ -291,6 +291,7 @@ export type Site = {
    *
    */
   health_checked_at?: string;
+  keystore_status?: SiteKeystoreStatus;
   created_at: string;
   /**
    * The site row's mtime: bumped by heartbeats, agent metadata pushes and
@@ -301,6 +302,64 @@ export type Site = {
    *
    */
   updated_at: string;
+};
+
+/**
+ * GH #753 — trial-decrypt probe result for the site's on-disk agent
+ * keystore (Keystore::probe()). It arrives with the agent's ordinary
+ * metadata push — the 30-minute cron cadence, or a CP-triggered
+ * recheck — never on admin_init: the agent's admin_init check only
+ * records a local wp-admin notice and sends nothing to the control
+ * plane from that path.
+ *
+ * Absent on the Site response only before this site's first metadata
+ * sync. A pre-#753 agent that has since synced at least once gets
+ * state=not_reported instead, never absent and never ok, so an old
+ * agent's silence can never read as a healthy keystore. Every
+ * metadata push replaces the previously stored status outright — it
+ * is not a delta — so not_reported also covers any later push whose
+ * latest probe carried no recognised result; a prior good report does
+ * not survive a bad one. Never contains key material, a key-check
+ * value, an error detail or a file path.
+ *
+ */
+export type SiteKeystoreStatus = {
+  /**
+   * ok = every stored item decrypted under the resolved master key.
+   * unreadable = the master key resolved but one or more stored
+   * items did not decrypt under it (the common "site moved host, or
+   * the wp-config.php security keys changed" case).
+   * key_unavailable = the master key itself could not be resolved.
+   * not_reported = the latest metadata push carried no recognised
+   * probe result — a pre-#753 agent that has synced at least once,
+   * or a later push whose probe result the control plane did not
+   * recognise. Every push replaces the previous status outright, so
+   * this is never a delta against an earlier report.
+   *
+   */
+  state?: "ok" | "unreadable" | "key_unavailable" | "not_reported";
+  /**
+   * Which tier pinned the master key, mirroring the agent's own
+   * pin. Absent when no source is pinned yet.
+   *
+   */
+  key_source?: "constant" | "salts" | "file" | "db" | "unknown";
+  /**
+   * Per-item probe result, one entry per stored envelope (e.g.
+   * site_keypair, cp_public_key, age_identity, email_secret,
+   * email_connection_secrets). Each value is "absent", "ok" or
+   * "unreadable".
+   *
+   */
+  items?: {
+    [key: string]: string;
+  };
+  /**
+   * Convenience list of the item keys currently unreadable;
+   * mirrors the "unreadable" entries in `items`.
+   *
+   */
+  unreadable?: Array<string>;
 };
 
 /**
@@ -928,6 +987,59 @@ export type AgentMetadata = {
   } | null;
   plugins?: Array<SiteComponent>;
   themes?: Array<SiteComponent>;
+  /**
+   * GH #753 — the agent's Keystore::probe() trial-decrypt result,
+   * replayed on the ordinary metadata push. Optional; an agent that
+   * predates #753, or one that sends nothing this push, simply omits
+   * it and the control plane records state=not_reported rather than
+   * inferring a healthy keystore from silence.
+   *
+   * Every field here is optional and tolerantly decoded: a malformed
+   * or unexpected shape (e.g. a value this project's agent never
+   * sends, or `items`/`unreadable` in a shape that doesn't parse) is
+   * ignored field-by-field rather than rejecting the whole metadata
+   * push, and the control plane separately allowlists `state` and
+   * `key_source` against the vocabulary described on
+   * SiteKeystoreStatus before storing them — this schema does not
+   * itself enforce that vocabulary, since the handler doesn't either.
+   *
+   */
+  keystore?: {
+    /**
+     * See SiteKeystoreStatus.state for the vocabulary the control
+     * plane recognises (ok, unreadable, key_unavailable). Any other
+     * value, or a value in an unparseable shape, is ignored and
+     * stored as not_reported.
+     *
+     */
+    state?: string;
+    /**
+     * See SiteKeystoreStatus.key_source for the vocabulary the
+     * control plane recognises (constant, salts, file, db,
+     * unknown). Any other or unparseable value is ignored.
+     *
+     */
+    key_source?: string;
+    /**
+     * Per-item probe result, one entry per stored envelope. Each
+     * value is expected to be "absent", "ok" or "unreadable"
+     * (SiteKeystoreStatus.items), but an unrecognised value is
+     * dropped rather than rejected. A shape this cannot parse as an
+     * object (including PHP's empty-array `[]`) is ignored and the
+     * whole map is left unset.
+     *
+     */
+    items?: {
+      [key: string]: string;
+    };
+    /**
+     * Convenience list of currently-unreadable item keys. A shape
+     * this cannot parse as an array is ignored and the list is left
+     * unset.
+     *
+     */
+    unreadable?: Array<string>;
+  } | null;
 };
 
 export type SiteCreate = {

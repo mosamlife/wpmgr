@@ -4,6 +4,8 @@ import type { ReactNode } from "react";
 import { BackupChip, VulnSeverityChip } from "@/components/status";
 import { Sparkline } from "@/components/charts";
 import { useBackups } from "@/features/backups/use-backups";
+import { useSite } from "@/features/sites/use-sites";
+import { KeystoreStatusAlert } from "@/features/sites/keystore-status-alert";
 import { useSiteUptime } from "@/features/monitoring/use-uptime";
 import { HealthTab as DiagnosticsHealth } from "@/features/health/health-tab";
 import {
@@ -43,9 +45,14 @@ export const Route = createFileRoute("/_authed/sites/$siteId/health")({
 
 function HealthTab() {
   const { siteId } = Route.useParams();
+  // GH #753 slice 1b: shares the sitesKeys.detail(siteId) query the site
+  // detail layout already fetched (30s staleTime, see lib/query-client.ts),
+  // so this is a cache read in the common case, not a second request.
+  const { data: site } = useSite(siteId);
 
   return (
     <section className="space-y-6 px-4 pb-8 pt-6 sm:px-6">
+      {site ? <KeystoreStatusAlert site={site} /> : null}
       <div className="rounded-lg border border-border bg-card">
         <div
           className={cn(

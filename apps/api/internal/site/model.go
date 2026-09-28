@@ -567,6 +567,32 @@ type MetadataExtras struct {
 	// `roles` key of the same JSONB inventory document. nil when the agent did
 	// not report it; readers must treat nil as "unknown", never as "none".
 	Roles []SiteRole `json:"roles,omitempty"`
+	// KeystoreStatus is the agent's on-disk keystore trial-decrypt probe (GH
+	// #753), stored under the `keystore_status` key. nil when the agent did
+	// not report it; readers must treat nil as "not reported", never as "ok".
+	KeystoreStatus *KeystoreStatus `json:"keystore_status,omitempty"`
+}
+
+// KeystoreStatus mirrors the agent's Keystore::probe() trial-decrypt result
+// (GH #753), round-tripped through the JSONB inventory column under the
+// `keystore_status` key, a sibling of host_flags/disk/roles. Never carries key
+// material, a key-check value, an error detail or a file path — the agent
+// enforces that before it ever reaches this control plane.
+type KeystoreStatus struct {
+	// State is one of ok|unreadable|key_unavailable, allowlisted at write time
+	// (fromAgentKeystoreStatus); an unrecognized value is dropped rather than
+	// stored, so it can never reach the Site response's typed enum.
+	State string `json:"state,omitempty"`
+	// KeySource is the tier that pinned the master key
+	// (constant|salts|file|db|unknown), or "" when nothing is pinned yet.
+	KeySource string `json:"key_source,omitempty"`
+	// Items is the per-envelope probe result, one entry per stored envelope
+	// (e.g. site_keypair, cp_public_key, age_identity, email_secret,
+	// email_connection_secrets). Each value is "absent", "ok" or "unreadable".
+	Items map[string]string `json:"items,omitempty"`
+	// Unreadable is the convenience list of item keys currently unreadable;
+	// mirrors the "unreadable" entries in Items.
+	Unreadable []string `json:"unreadable,omitempty"`
 }
 
 // SiteRole is one WordPress role that exists on a site: the slug the security
