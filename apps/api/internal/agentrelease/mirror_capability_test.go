@@ -60,9 +60,12 @@ func (f *fakeCheckGate) IsSuperadmin(context.Context, uuid.UUID) (bool, error) {
 	return f.superadmin, f.superadminErr
 }
 
-func (f *fakeCheckGate) IsSoleLiveTenantOwner(context.Context, uuid.UUID) (bool, error) {
+func (f *fakeCheckGate) SoleLiveTenantOwnedBy(context.Context, uuid.UUID) (uuid.UUID, error) {
 	f.soleOwnerCalls++
-	return f.soleOwner, f.soleOwnerErr
+	if !f.soleOwner {
+		return uuid.Nil, f.soleOwnerErr
+	}
+	return uuid.New(), f.soleOwnerErr
 }
 
 var _ admingate.Store = (*fakeCheckGate)(nil)

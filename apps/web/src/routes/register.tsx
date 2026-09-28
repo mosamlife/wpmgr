@@ -3,7 +3,9 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, AlertTriangle, CheckCircle2, Sparkles } from "lucide-react";
+import { getMe } from "@wpmgr/api";
 
 import { AuthLayout } from "@/components/layout/auth-layout";
 import { SocialButtons, ensureSignInMethods } from "@/features/auth/social-buttons";
@@ -17,7 +19,12 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { ensureMe, useRegister, useResendVerification } from "@/features/auth/use-auth";
+import {
+  authKeys,
+  ensureMe,
+  useRegister,
+  useResendVerification,
+} from "@/features/auth/use-auth";
 import { planCatalogEntry } from "@/features/billing/plan-catalog";
 import { stashPendingPlan } from "@/features/billing/pending-plan";
 import type { BillingCurrency, CheckoutTierId } from "@/features/billing/use-billing";
@@ -70,6 +77,7 @@ type RegisterValues = z.infer<typeof registerSchema>;
 
 function RegisterPage() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const search = Route.useSearch();
   const chosenPlan: CheckoutTierId | undefined = search.plan;
   const chosenCurrency: BillingCurrency | undefined = search.currency;
@@ -107,18 +115,37 @@ function RegisterPage() {
               stashPendingPlan({ plan: chosenPlan, currency: chosenCurrency });
             }
             setPendingEmail(values.email);
-          } else if (result.me?.desired_plan && result.me.hosted) {
-            // First-account bootstrap path (session established immediately)
-            // with a captured paid-plan intent on a hosted instance: skip
-            // straight to checkout instead of landing on an empty Sites page.
-            void navigate({
-              to: "/welcome/checkout",
-              search: { plan: result.me.desired_plan, currency: chosenCurrency },
-            });
-          } else {
-            // First-account path, no paid intent (or self-hosted): go into the app.
-            void navigate({ to: "/sites" });
+            return;
           }
+
+          // First-account bootstrap path: the backend established a session
+          // immediately. Force a fresh /auth/me so middleware-resolved
+          // fields are present (the register response Me may not carry them
+          // yet) before navigating — same mechanism as the password-login
+          // path (see login.tsx).
+          void queryClient
+            .fetchQuery({
+              queryKey: authKeys.me,
+              queryFn: async () => {
+                const { data } = await getMe();
+                return data ?? null;
+              },
+              staleTime: 0,
+            })
+            .then(() => {
+              if (result.me?.desired_plan && result.me.hosted) {
+                // Captured paid-plan intent on a hosted instance: skip
+                // straight to checkout instead of landing on an empty Sites
+                // page.
+                void navigate({
+                  to: "/welcome/checkout",
+                  search: { plan: result.me.desired_plan, currency: chosenCurrency },
+                });
+              } else {
+                // No paid intent (or self-hosted): go into the app.
+                void navigate({ to: "/sites" });
+              }
+            });
         },
         onError: () => {},
       },
