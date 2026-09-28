@@ -33,6 +33,14 @@ final class KeystoreTest extends TestCase
         $this->keyFile = sys_get_temp_dir() . '/wpmgr-agent-test-' . bin2hex(random_bytes(8)) . '.key';
         if (!defined('WPMGR_AGENT_KEY_FILE')) {
             define('WPMGR_AGENT_KEY_FILE', $this->keyFile);
+            // Other test classes later in the same process can recreate this
+            // file through the constant, after this class's last tear_down.
+            $constantFile = $this->keyFile;
+            register_shutdown_function(static function () use ($constantFile): void {
+                if (is_file($constantFile)) {
+                    @unlink($constantFile);
+                }
+            });
         }
 
         $this->options = [];
@@ -50,6 +58,17 @@ final class KeystoreTest extends TestCase
     {
         if (is_file($this->keyFile)) {
             @unlink($this->keyFile);
+        }
+        // WPMGR_AGENT_KEY_FILE is defined once per process, from the first
+        // test's path; later tests recreate that file through the constant.
+        // Remove it when this class named it, so no key file outlives the run.
+        $constantFile = defined('WPMGR_AGENT_KEY_FILE') ? (string) constant('WPMGR_AGENT_KEY_FILE') : '';
+        if ($constantFile !== ''
+            && dirname($constantFile) === rtrim(sys_get_temp_dir(), '/')
+            && strpos(basename($constantFile), 'wpmgr-agent-test-') === 0
+            && is_file($constantFile)
+        ) {
+            @unlink($constantFile);
         }
         foreach ($this->pinnedKeyFiles as $file) {
             if (is_file($file)) {

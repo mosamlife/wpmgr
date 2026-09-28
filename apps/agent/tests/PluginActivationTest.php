@@ -240,6 +240,44 @@ final class PluginActivationTest extends TestCase
     }
 
     /**
+     * Another request stores a backup key sealed under a different key
+     * between setup's probe and its creation of the absent backup key, so
+     * creating it throws. Setup must still record the unreadable-keys notice,
+     * not the setup-failure one, and must leave the racing key as it is.
+     */
+    public function test_activation_records_the_unreadable_notice_when_creating_the_backup_key_races(): void
+    {
+        $this->pinToNewKeyFile();
+        (new Keystore())->generateSiteKeypair();
+        $this->options[Keystore::OPTION_EMAIL_SECRET] = $this->sealUnderForeignKey('smtp-password');
+        $racing = $this->sealUnderForeignKey(random_bytes(32));
+
+        $ageReads = 0;
+        Functions\when('get_option')->alias(function ($name, $default = false) use (&$ageReads, $racing) {
+            if ($name === Keystore::OPTION_AGE_IDENTITY && !array_key_exists($name, $this->options)) {
+                // The probe reads first and sees no backup key; by the time
+                // setup reads it again, another request has stored one.
+                ++$ageReads;
+                if ($ageReads > 1) {
+                    $this->options[$name] = $racing;
+                    return $racing;
+                }
+            }
+            return $this->options[$name] ?? $default;
+        });
+
+        Plugin::boot()->activate();
+
+        $this->assertSame(2, $ageReads, 'Precondition: the backup key changed between the probe and its creation.');
+        $this->assertSame('unreadable', $this->options[Plugin::OPTION_KEYSTORE_ERROR_KIND] ?? null);
+        $message = $this->options[Plugin::OPTION_KEYSTORE_ERROR] ?? null;
+        $this->assertIsString($message);
+        $this->assertStringStartsWith('The email credentials saved on this site cannot be opened', $message);
+        $this->assertStringNotContainsString('could not establish its encryption key', $message);
+        $this->assertSame($racing, $this->options[Keystore::OPTION_AGE_IDENTITY]);
+    }
+
+    /**
      * No backup key is created while the site keypair does not open: the
      * current key is not shown to be the live one.
      */

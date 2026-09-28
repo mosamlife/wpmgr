@@ -660,4 +660,43 @@ final class KeystoreMasterKeyTest extends TestCase
         $this->assertDirectoryDoesNotExist($uploads);
         $this->assertFileDoesNotExist($this->absParent() . '/.wpmgr-agent-master.key');
     }
+
+    /**
+     * Unpinned, with items stored under the salt-derived key: the probe finds
+     * that key, so every stored item opens, and it still writes no pin (and
+     * nothing else). Resolving the key the normal way would pin 'salts'.
+     */
+    public function test_unpinned_probe_that_finds_the_salts_key_writes_no_pin(): void
+    {
+        @unlink($this->absParent() . '/.wpmgr-agent-master.key');
+        $this->defineRealSalts();
+        $keystore = new Keystore();
+        $keystore->generateSiteKeypair();
+        $keystore->storeAgeIdentity(random_bytes(32));
+        $this->assertSame(
+            ['source' => 'salts'],
+            $this->options[Keystore::OPTION_MASTER_KEY_SOURCE] ?? null,
+            'Precondition: the items were sealed under the salt-derived key.'
+        );
+        unset($this->options[Keystore::OPTION_MASTER_KEY_SOURCE]);
+        $before = $this->options;
+
+        $writes = [];
+        foreach (['update_option', 'add_option', 'delete_option', 'update_site_option', 'set_transient'] as $fn) {
+            Functions\when($fn)->alias(static function ($name) use (&$writes, $fn) {
+                $writes[] = $fn . ':' . (string) $name;
+                return true;
+            });
+        }
+
+        $probe = (new Keystore())->probe();
+
+        $this->assertSame(Keystore::PROBE_OK, $probe['state'], 'Precondition: the probe found the salt-derived key.');
+        $this->assertSame(Keystore::ITEM_OK, $probe['items']['site_keypair']);
+        $this->assertSame(Keystore::ITEM_OK, $probe['items']['age_identity']);
+        $this->assertSame('', $probe['key_source']);
+        $this->assertSame([], $writes, 'probe() attempted a write.');
+        $this->assertArrayNotHasKey(Keystore::OPTION_MASTER_KEY_SOURCE, $this->options, 'probe() wrote a pin.');
+        $this->assertSame($before, $this->options, 'probe() changed an option.');
+    }
 }
