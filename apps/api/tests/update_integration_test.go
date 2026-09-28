@@ -445,8 +445,16 @@ func startUpdateRiver(t *testing.T, pool *db.Pool, worker *update.Worker) *river
 	if _, err := migrator.Migrate(ctx, rivermigrate.DirectionUp, nil); err != nil {
 		t.Fatalf("river migrate: %v", err)
 	}
+	// River's tables (and their id sequences) are created by the container
+	// superuser here, not by wpmgr_owner (the role startPostgres's own schema
+	// migration ran as), so wpmgr_owner's m1 ALTER DEFAULT PRIVILEGES never
+	// covers them: grant the app role access explicitly, tables AND
+	// sequences, the same as TestRiverDualSchemaIsolation already does.
 	if _, err := admin.Exec(ctx, "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO wpmgr_app"); err != nil {
 		t.Fatalf("grant river tables: %v", err)
+	}
+	if _, err := admin.Exec(ctx, "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO wpmgr_app"); err != nil {
+		t.Fatalf("grant river sequences: %v", err)
 	}
 
 	workers := river.NewWorkers()
