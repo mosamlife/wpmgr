@@ -898,8 +898,10 @@ final class Router
     /**
      * Absolute filesystem roots whose prefix may be stripped, longest first.
      *
-     * A blank or filesystem-root value is rejected rather than used: stripping
-     * '' or '/' as a prefix matches everything, which is the same class of
+     * A blank or filesystem-root value is rejected rather than used: '', '.',
+     * '/' and a bare drive root such as 'D:\' or 'D:/'. Stripping a filesystem
+     * root as a prefix matches every absolute path on that filesystem and
+     * leaves each as a relative-looking remainder, which is the same class of
      * defect as an empty base-path fallback. The plugin's own directory is
      * self-resolved from __DIR__ so this works with or without the constant.
      *
@@ -918,8 +920,9 @@ final class Router
             if (!is_string($value)) {
                 continue;
             }
+            // '/' trims to ''; a drive root ('D:\', 'D:/') trims to 'D:'.
             $value = rtrim($value, '/\\');
-            if ($value === '' || $value === '.') {
+            if ($value === '' || $value === '.' || preg_match('/^[A-Za-z]:$/', $value) === 1) {
                 continue;
             }
             $roots[] = $value;

@@ -161,6 +161,36 @@ final class RouterCommandFailureLogTest extends TestCase
 	}
 
 	/**
+	 * #754: a WordPress install at a Windows drive root has ABSPATH 'D:\'. That
+	 * is a filesystem root, not a known root: it must not be stripped from the
+	 * message, or every path on the drive would reach the response as a
+	 * relative-looking remainder the absolute-path rule no longer recognises.
+	 * Both separators, as the message may carry either.
+	 *
+	 * Run in a child process because ABSPATH is a constant this process has
+	 * already defined.
+	 */
+	public function test_a_drive_root_abspath_is_not_a_known_root(): void
+	{
+		$run = $this->runInSubprocess(
+			false,
+			'cannot open D:\\Users\\JohnSmith\\private\\backup or D:/Users/JohnSmith/private/backup',
+			'',
+			"define('ABSPATH', 'D:\\\\');"
+		);
+
+		$this->assertSame( 0, $run['status'], 'subprocess failed: ' . $run['stdout'] . $run['stderr'] );
+
+		$response = json_decode( $run['stdout'], true );
+		$this->assertIsArray( $response, 'no JSON response: ' . $run['stdout'] . $run['stderr'] );
+		$this->assertSame(
+			'Command execution failed: RuntimeException: cannot open <path> or <path>',
+			$response['message'] ?? null
+		);
+		$this->assertStringNotContainsString( 'JohnSmith', $run['stdout'] );
+	}
+
+	/**
 	 * Control: with debug disabled the log stays empty. A production install
 	 * must not start writing on every command failure.
 	 */
@@ -183,9 +213,11 @@ final class RouterCommandFailureLogTest extends TestCase
 	 * @param bool   $debug   Whether to define WPMGR_DEBUG.
 	 * @param string $message Exception message the command throws.
 	 * @param string $before  PHP run just before the command is dispatched.
+	 * @param string $prelude PHP run before the test bootstrap, e.g. to define
+	 *                        a constant the bootstrap would otherwise define.
 	 * @return array{status:int,stdout:string,stderr:string,log:string}
 	 */
-	private function runInSubprocess( bool $debug, string $message, string $before = '' ): array
+	private function runInSubprocess( bool $debug, string $message, string $before = '', string $prelude = '' ): array
 	{
 		$logPath    = sys_get_temp_dir() . '/wpmgr_router_log_' . uniqid( '', true ) . '.log';
 		$scriptPath = sys_get_temp_dir() . '/wpmgr_router_log_' . uniqid( '', true ) . '.php';
@@ -203,6 +235,7 @@ final class RouterCommandFailureLogTest extends TestCase
 declare(strict_types=1);
 
 {$defineLine}
+{$prelude}
 
 ini_set('log_errors', '1');
 ini_set('error_log', '{$logEscaped}');
