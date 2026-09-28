@@ -102,10 +102,13 @@ It refuses instead of printing `0` because an empty result and a real answer of
 zero are indistinguishable in a bare `wc -l`, and here the wrong reading of `0`
 is "nothing is site-scoped", which is how a tenant boundary gets waved through.
 
-`apps/api/db/schema.sql` calls itself the single source of truth and **is not**.
-Run `site_scope_count apps/api/db/schema.sql` as well and compare: it returns
-materially fewer policies than the migrations do. The migrations are
-authoritative.
+`apps/api/db/schema.sql` calls itself the single source of truth and **is
+not** — that's the migrations. `schema.sql` is sqlc's input, and as of #762 it
+is in step with the migrations, but nothing checks that automatically (#759):
+run `site_scope_count apps/api/db/schema.sql` as well and compare, and treat a
+gap as drift rather than assuming it. Every new migration must update
+`schema.sql` in the same commit and re-hash `apps/api/migrations/atlas.sum`
+(`atlas migrate hash`). The migrations are authoritative.
 
 **The GUC is set in `internal/db/db.go`, never by a handler.** `InTenantTx`,
 `InTenantTxAsUser`, `InUserTx`, `InScopedTenantTx` (the site-collaborator path),
