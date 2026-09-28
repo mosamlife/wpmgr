@@ -153,6 +153,24 @@ final class KeystoreTest extends TestCase
         $this->assertSame(Keystore::ITEM_ABSENT, $probe['items']['email_secret']);
     }
 
+    /** A stored value that is not a well-formed envelope does not open, so it is unreadable, never ok. */
+    public function test_probe_reports_a_malformed_envelope_as_unreadable(): void
+    {
+        $this->pinToNewKeyFile();
+        $keystore = new Keystore();
+        $keystore->generateSiteKeypair();
+        $this->options[Keystore::OPTION_AGE_IDENTITY] = 'not-an-envelope';
+        $this->options[Keystore::OPTION_EMAIL_SECRET] = base64_encode('too short');
+
+        $probe = (new Keystore())->probe();
+
+        $this->assertSame(Keystore::PROBE_UNREADABLE, $probe['state']);
+        $this->assertSame(['age_identity', 'email_secret'], $probe['unreadable']);
+        $this->assertSame(Keystore::ITEM_OK, $probe['items']['site_keypair']);
+        $this->assertSame(Keystore::ITEM_UNREADABLE, $probe['items']['age_identity']);
+        $this->assertSame(Keystore::ITEM_UNREADABLE, $probe['items']['email_secret']);
+    }
+
     public function test_probe_reports_key_unavailable_when_the_pinned_source_is_gone(): void
     {
         $this->options[Keystore::OPTION_MASTER_KEY_SOURCE] = [

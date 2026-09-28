@@ -440,12 +440,32 @@ final class BackupCommandTest extends TestCase
             }
         };
 
+        // Where the scratch directory would be created. The base exists, so a
+        // scratch directory made too early is observed here, not masked by a
+        // failing mkdir of the base.
+        if (!defined('WP_CONTENT_DIR')) {
+            define('WP_CONTENT_DIR', sys_get_temp_dir() . '/wpmgr-shared-wp-content');
+        }
+        $runsBase = WP_CONTENT_DIR . '/wpmgr-agent/runs';
+        if (!is_dir($runsBase)) {
+            mkdir($runsBase, 0700, true);
+        }
+        $snapshotId = bin2hex(random_bytes(4)) . '-' . bin2hex(random_bytes(2)) . '-' . bin2hex(random_bytes(2))
+            . '-' . bin2hex(random_bytes(2)) . '-' . bin2hex(random_bytes(6));
+        $scratch = $runsBase . '/' . $snapshotId;
+        $params  = $this->acceptorParams($this->identity['recipient']);
+        $params['snapshot_id'] = $snapshotId;
+
         try {
             $keystore = new \WPMgr\Agent\Keystore();
             $cmd      = new BackupCommand(new AgeIdentity($keystore));
-            $res      = $cmd->execute([], $this->acceptorParams($this->identity['recipient']));
+            $res      = $cmd->execute([], $params);
         } finally {
             $GLOBALS['wpdb'] = $previousWpdb;
+            $scratchExisted = is_dir($scratch);
+            if ($scratchExisted) {
+                @rmdir($scratch);
+            }
         }
 
         $this->assertFalse($res['ok']);
@@ -459,7 +479,49 @@ final class BackupCommandTest extends TestCase
         $this->assertSame([], $dbCalls, 'The refusal must come before any database work.');
         $this->assertSame([], $writes, 'The refusal must not write anything.');
         $this->assertSame($sealed, $options[\WPMgr\Agent\Keystore::OPTION_AGE_IDENTITY]);
-        $this->assertSame(['master.key'], array_values(array_diff(scandir($this->scratchDir) ?: [], ['.', '..'])));
+        $this->assertFalse($scratchExisted, 'The refusal must come before the scratch directory is created.');
+    }
+
+    /**
+     * A recipient check that fails for a reason the keystore does not
+     * explain (every stored key opens) is refused without the
+     * keystore_unreadable code, so it is not reported as a keystore problem.
+     */
+    public function test_recipient_check_failure_on_a_healthy_keystore_is_not_keystore_unreadable(): void
+    {
+        $identity = new class extends AgeIdentity {
+            public function __construct()
+            {
+            }
+
+            public function recipientMatches(string $candidate): bool
+            {
+                throw new \RuntimeException('recipient derivation failed');
+            }
+
+            public function probeKeystore(): array
+            {
+                return [
+                    'state'      => \WPMgr\Agent\Keystore::PROBE_OK,
+                    'key_source' => 'salts',
+                    'items'      => [
+                        'site_keypair'             => 'ok',
+                        'cp_public_key'            => 'ok',
+                        'age_identity'             => 'ok',
+                        'email_secret'             => 'absent',
+                        'email_connection_secrets' => 'absent',
+                    ],
+                    'unreadable' => [],
+                    'detail'     => '',
+                ];
+            }
+        };
+
+        $res = (new BackupCommand($identity))->execute([], $this->acceptorParams($this->identity['recipient']));
+
+        $this->assertFalse($res['ok']);
+        $this->assertArrayNotHasKey('code', $res);
+        $this->assertSame('Backup not started: this site could not check its backup key.', $res['detail']);
     }
 
     /**

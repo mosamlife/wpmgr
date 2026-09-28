@@ -827,6 +827,78 @@ PHP;
         $this->assertIsString($options[\WPMgr\Agent\Plugin::OPTION_KEYSTORE_ERROR] ?? null);
     }
 
+    /** An AES-256-GCM envelope in the keystore's layout, sealed under a random key that is not this site's. */
+    private function sealUnderForeignKey(string $plaintext): string
+    {
+        $iv  = random_bytes(12);
+        $tag = '';
+        $ct  = openssl_encrypt($plaintext, 'aes-256-gcm', random_bytes(32), OPENSSL_RAW_DATA, $iv, $tag, '', 16);
+        $this->assertIsString($ct);
+
+        return base64_encode($iv . $tag . $ct);
+    }
+
+    /**
+     * No backup key is stored and the site keypair opens under the current
+     * key, so that key is the live one: metadata creates the backup key and
+     * sends its recipient, even though the email secret does not open.
+     */
+    public function test_collect_creates_an_absent_backup_key_when_the_keypair_opens(): void
+    {
+        $keyPath = sys_get_temp_dir() . '/wpmgr-agent-metadata-' . bin2hex(random_bytes(8)) . '.key';
+        file_put_contents($keyPath, random_bytes(32));
+        $options = [
+            \WPMgr\Agent\Keystore::OPTION_MASTER_KEY_SOURCE => ['source' => 'file', 'path' => $keyPath],
+        ];
+        $this->stubInventory($options);
+
+        try {
+            (new \WPMgr\Agent\Keystore())->generateSiteKeypair();
+            $email = $this->sealUnderForeignKey('smtp-password');
+            $options[\WPMgr\Agent\Keystore::OPTION_EMAIL_SECRET] = $email;
+
+            $identity = new \WPMgr\Agent\Support\AgeIdentity(new \WPMgr\Agent\Keystore());
+            $data     = (new MetadataCommand($identity))->collect();
+            $stored   = $identity->recipient();
+        } finally {
+            @unlink($keyPath);
+        }
+
+        $this->assertSame(['email_secret'], $data['keystore']['unreadable'] ?? null);
+        $this->assertArrayHasKey(\WPMgr\Agent\Keystore::OPTION_AGE_IDENTITY, $options, 'The absent backup key must be created.');
+        $this->assertStringStartsWith('age1', $data['age_recipient'] ?? '');
+        $this->assertSame($stored, $data['age_recipient']);
+        $this->assertSame($email, $options[\WPMgr\Agent\Keystore::OPTION_EMAIL_SECRET]);
+    }
+
+    /**
+     * No backup key is stored and the site keypair does not open: the
+     * current key is not shown to be the live one, so no backup key is
+     * created and no recipient is sent.
+     */
+    public function test_collect_creates_no_backup_key_when_the_keypair_does_not_open(): void
+    {
+        $keyPath = sys_get_temp_dir() . '/wpmgr-agent-metadata-' . bin2hex(random_bytes(8)) . '.key';
+        file_put_contents($keyPath, random_bytes(32));
+        $keypair = $this->sealUnderForeignKey(random_bytes(96));
+        $options = [
+            \WPMgr\Agent\Keystore::OPTION_MASTER_KEY_SOURCE => ['source' => 'file', 'path' => $keyPath],
+            \WPMgr\Agent\Keystore::OPTION_SITE_KEYPAIR      => $keypair,
+        ];
+        $this->stubInventory($options);
+
+        try {
+            $data = (new MetadataCommand(new \WPMgr\Agent\Support\AgeIdentity(new \WPMgr\Agent\Keystore())))->collect();
+        } finally {
+            @unlink($keyPath);
+        }
+
+        $this->assertSame(['site_keypair'], $data['keystore']['unreadable'] ?? null);
+        $this->assertArrayNotHasKey('age_recipient', $data);
+        $this->assertArrayNotHasKey(\WPMgr\Agent\Keystore::OPTION_AGE_IDENTITY, $options, 'No backup key may be created.');
+        $this->assertSame($keypair, $options[\WPMgr\Agent\Keystore::OPTION_SITE_KEYPAIR]);
+    }
+
     /** Over-fire guard: a healthy keystore reports ok and still sends the recipient. */
     public function test_collect_reports_ok_keystore_and_keeps_the_recipient(): void
     {

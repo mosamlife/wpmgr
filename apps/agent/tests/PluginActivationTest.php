@@ -142,12 +142,17 @@ final class PluginActivationTest extends TestCase
      * key on reconnect, while the backup key is still sealed under the old
      * one. Activation must flag that state in plain words, and must leave the
      * unreadable backup key exactly as it is rather than replace it.
+     *
+     * The keypair opens under the current key, so the notice must not tell
+     * the operator to put the previous key back: that would make the keypair
+     * unreadable and the next notice would loop.
      */
     public function test_activation_flags_age_identity_sealed_under_a_different_key(): void
     {
         $this->pinToNewKeyFile();
         (new Keystore())->generateSiteKeypair();
-        $sealed = $this->sealUnderForeignKey(random_bytes(32));
+        $keypair = $this->options[Keystore::OPTION_SITE_KEYPAIR];
+        $sealed  = $this->sealUnderForeignKey(random_bytes(32));
         $this->options[Keystore::OPTION_AGE_IDENTITY] = $sealed;
         $this->options[Plugin::OPTION_KEYSTORE_ERROR] = 'stale notice from an earlier run';
 
@@ -161,16 +166,141 @@ final class PluginActivationTest extends TestCase
         $message = $this->options[Plugin::OPTION_KEYSTORE_ERROR];
         $this->assertIsString($message);
         $this->assertStringContainsString('The backup key saved on this site cannot be opened', $message);
-        $this->assertStringContainsString('Most often', $message);
-        $this->assertStringContainsString('put back the encryption key file', $message);
-        $this->assertStringContainsString('backups of this site will fail', $message);
+        $this->assertStringContainsString('Other keys saved on this site do open with the current key', $message);
+        $this->assertStringContainsString('Do not put back the previous key file', $message);
+        $this->assertStringContainsString('Backups of this site cannot run until the backup key is reset.', $message);
+        $this->assertStringNotContainsString('To fix it, put back', $message);
         $this->assertStringNotContainsString('WPMGR_AGENT_KEY_FILE', $message);
+        if (!\WPMgr\Agent\Backup\EncryptAndUpload::ENCRYPT_CHUNKS) {
+            $this->assertStringContainsString('Backups already taken do not need this key and are not affected.', $message);
+        }
         $this->assertSame('unreadable', $this->options[Plugin::OPTION_KEYSTORE_ERROR_KIND] ?? null);
         $this->assertSame(
             $sealed,
             $this->options[Keystore::OPTION_AGE_IDENTITY],
             'The unreadable backup key must never be regenerated or replaced.'
         );
+        $this->assertSame($keypair, $this->options[Keystore::OPTION_SITE_KEYPAIR]);
+    }
+
+    /**
+     * When nothing stored opens under the current key, putting back the
+     * previous key is the fix, and nothing new is created under a key that
+     * does not open what is already there.
+     */
+    public function test_activation_advises_putting_back_the_key_when_nothing_opens(): void
+    {
+        $this->pinToNewKeyFile();
+        $keypair = $this->sealUnderForeignKey(random_bytes(96));
+        $sealed  = $this->sealUnderForeignKey(random_bytes(32));
+        $this->options[Keystore::OPTION_SITE_KEYPAIR] = $keypair;
+        $this->options[Keystore::OPTION_AGE_IDENTITY] = $sealed;
+
+        Plugin::boot()->activate();
+
+        $message = $this->options[Plugin::OPTION_KEYSTORE_ERROR] ?? null;
+        $this->assertIsString($message);
+        $this->assertStringStartsWith('The backup key and the connection keys saved on this site cannot be opened', $message);
+        $this->assertStringContainsString('Most often', $message);
+        $this->assertStringContainsString('To fix it, put back the encryption key file this site used before.', $message);
+        $this->assertStringContainsString('If you cannot, reconnect this site in WPMgr to replace its connection keys.', $message);
+        $this->assertStringContainsString('Until the backup key can be read, backups of this site will fail.', $message);
+        $this->assertStringNotContainsString('Do not put back', $message);
+        $this->assertSame('unreadable', $this->options[Plugin::OPTION_KEYSTORE_ERROR_KIND] ?? null);
+        $this->assertSame($keypair, $this->options[Keystore::OPTION_SITE_KEYPAIR]);
+        $this->assertSame($sealed, $this->options[Keystore::OPTION_AGE_IDENTITY]);
+    }
+
+    /**
+     * A missing backup key is created when the site keypair opens under the
+     * current key, even though another stored item does not open. The item
+     * that does not open is left exactly as it is.
+     */
+    public function test_activation_creates_an_absent_backup_key_when_the_keypair_opens(): void
+    {
+        $this->pinToNewKeyFile();
+        (new Keystore())->generateSiteKeypair();
+        $email = $this->sealUnderForeignKey('smtp-password');
+        $this->options[Keystore::OPTION_EMAIL_SECRET] = $email;
+
+        Plugin::boot()->activate();
+
+        $this->assertArrayHasKey(Keystore::OPTION_AGE_IDENTITY, $this->options, 'The absent backup key must be created.');
+        $probe = (new Keystore())->probe();
+        $this->assertSame(Keystore::ITEM_OK, $probe['items']['age_identity'], 'The new backup key must open under the current key.');
+        $this->assertSame(['email_secret'], $probe['unreadable']);
+        $this->assertSame($email, $this->options[Keystore::OPTION_EMAIL_SECRET]);
+
+        $message = $this->options[Plugin::OPTION_KEYSTORE_ERROR] ?? null;
+        $this->assertIsString($message);
+        $this->assertStringStartsWith('The email credentials saved on this site cannot be opened', $message);
+        $this->assertStringContainsString('Save the email settings again in WPMgr to replace the email credentials.', $message);
+        $this->assertStringNotContainsString('backup key', $message);
+        $this->assertSame('unreadable', $this->options[Plugin::OPTION_KEYSTORE_ERROR_KIND] ?? null);
+    }
+
+    /**
+     * No backup key is created while the site keypair does not open: the
+     * current key is not shown to be the live one.
+     */
+    public function test_activation_creates_nothing_when_the_keypair_does_not_open(): void
+    {
+        $this->pinToNewKeyFile();
+        $keypair = $this->sealUnderForeignKey(random_bytes(96));
+        $this->options[Keystore::OPTION_SITE_KEYPAIR] = $keypair;
+
+        Plugin::boot()->activate();
+
+        $this->assertArrayNotHasKey(Keystore::OPTION_AGE_IDENTITY, $this->options);
+        $this->assertSame($keypair, $this->options[Keystore::OPTION_SITE_KEYPAIR]);
+        $this->assertSame('unreadable', $this->options[Plugin::OPTION_KEYSTORE_ERROR_KIND] ?? null);
+    }
+
+    /**
+     * Items are stored but the pinned key file is gone. Activation must
+     * record the key-unavailable notice and create nothing: no key, no
+     * keypair, no backup key.
+     */
+    public function test_activation_on_an_unloadable_key_creates_nothing(): void
+    {
+        $missing = sys_get_temp_dir() . '/wpmgr-agent-activation-missing-' . bin2hex(random_bytes(8)) . '.key';
+        $this->options[Keystore::OPTION_MASTER_KEY_SOURCE] = ['source' => 'file', 'path' => $missing];
+        $keypair = $this->sealUnderForeignKey(random_bytes(96));
+        $this->options[Keystore::OPTION_SITE_KEYPAIR] = $keypair;
+
+        Plugin::boot()->activate();
+
+        $this->assertSame('key_unavailable', $this->options[Plugin::OPTION_KEYSTORE_ERROR_KIND] ?? null);
+        $message = $this->options[Plugin::OPTION_KEYSTORE_ERROR] ?? null;
+        $this->assertIsString($message);
+        $this->assertStringStartsWith('The file the key is kept in is missing or damaged', $message);
+        $this->assertStringContainsString('To fix it, put back the key file this site used before.', $message);
+        $this->assertStringNotContainsString('WPMgr Agent', $message, 'The headline already names the plugin.');
+        $this->assertStringNotContainsString('(', $message);
+        $this->assertSame($keypair, $this->options[Keystore::OPTION_SITE_KEYPAIR]);
+        $this->assertArrayNotHasKey(Keystore::OPTION_AGE_IDENTITY, $this->options);
+        $this->assertFileDoesNotExist($missing);
+    }
+
+    /**
+     * Once the cause is fixed, the next admin load clears the notice. Setup
+     * re-runs on every admin load while a notice is set.
+     */
+    public function test_admin_load_clears_the_notice_once_every_stored_key_opens(): void
+    {
+        $this->pinToNewKeyFile();
+        (new Keystore())->generateSiteKeypair();
+        (new \WPMgr\Agent\Support\AgeIdentity(new Keystore()))->ensureRecipient();
+        $this->options[Plugin::OPTION_KEYSTORE_ERROR]      = 'The backup key saved on this site cannot be opened.';
+        $this->options[Plugin::OPTION_KEYSTORE_ERROR_KIND] = 'unreadable';
+        Functions\when('current_user_can')->justReturn(true);
+        Functions\when('get_transient')->justReturn(time());
+        Functions\when('set_transient')->justReturn(true);
+
+        Plugin::boot()->ensureKeystoreReady();
+
+        $this->assertArrayNotHasKey(Plugin::OPTION_KEYSTORE_ERROR, $this->options);
+        $this->assertArrayNotHasKey(Plugin::OPTION_KEYSTORE_ERROR_KIND, $this->options);
     }
 
     /** Over-fire guard: a keystore whose stored keys all open clears a stale notice. */
