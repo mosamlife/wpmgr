@@ -151,8 +151,8 @@ func TestSrcAndAcctScopesAreObserved(t *testing.T) {
 		e := loginHandlerForTest(t, g, 2)
 		for i := 0; i < loginSrcBudget+5; i++ {
 			w := postLogin(e, simulatedClient, fmt.Sprintf("user%d[at]example.test", i))
-			if w.Code == http.StatusServiceUnavailable {
-				t.Fatalf("attempt %d shed in observe mode", i+1)
+			if w.Code == http.StatusServiceUnavailable || w.Code == http.StatusTooManyRequests {
+				t.Fatalf("attempt %d refused in observe mode: %d", i+1, w.Code)
 			}
 		}
 		if out := logs.String(); !strings.Contains(out, loginScopeSrc+`"`) {
@@ -165,8 +165,8 @@ func TestSrcAndAcctScopesAreObserved(t *testing.T) {
 		e := loginHandlerForTest(t, g, 2)
 		for i := 0; i < loginAcctBudget+5; i++ {
 			w := postLogin(e, fmt.Sprintf("198.51.100.%d", i%250), httpEmailA)
-			if w.Code == http.StatusServiceUnavailable {
-				t.Fatalf("attempt %d shed in observe mode", i+1)
+			if w.Code == http.StatusServiceUnavailable || w.Code == http.StatusTooManyRequests {
+				t.Fatalf("attempt %d refused in observe mode: %d", i+1, w.Code)
 			}
 		}
 		out := logs.String()
@@ -186,8 +186,8 @@ func TestSrcAndAcctScopesAreObserved(t *testing.T) {
 		for i := 0; i < loginSrc48Budget+5; i++ {
 			client := fmt.Sprintf("2001:db8:abcd:%x::1", i%0xffff)
 			w := postLogin(e, client, fmt.Sprintf("v6user%d[at]example.test", i))
-			if w.Code == http.StatusServiceUnavailable {
-				t.Fatalf("attempt %d shed in observe mode", i+1)
+			if w.Code == http.StatusServiceUnavailable || w.Code == http.StatusTooManyRequests {
+				t.Fatalf("attempt %d refused in observe mode: %d", i+1, w.Code)
 			}
 		}
 		if out := logs.String(); !strings.Contains(out, loginScopeSrc48+`"`) {
@@ -552,7 +552,8 @@ func TestBucketMapIsCapped(t *testing.T) {
 	b := newKeyedBudget("test", 10)
 	now := time.Now()
 	for i := 0; i < loginBucketCap*2; i++ {
-		b.query(netip.AddrFrom4([4]byte{byte(i >> 24), byte(i >> 16), byte(i >> 8), byte(i)}).String(), now)
+		// charge, not query: only an admitted attempt creates an entry.
+		b.charge(netip.AddrFrom4([4]byte{byte(i >> 24), byte(i >> 16), byte(i >> 8), byte(i)}).String(), now)
 		if got := b.size(); got > loginBucketCap {
 			t.Fatalf("map grew to %d entries, past the %d cap, after %d keys", got, loginBucketCap, i+1)
 		}
@@ -570,8 +571,7 @@ func TestParseLoginMode(t *testing.T) {
 	}{
 		{"", LoginModeObserve, false},
 		{"observe", LoginModeObserve, false},
-		// Refused in Phase 0 on purpose; see TestEnforceIsNotConfigurableInPhase0.
-		{"enforce", "", true},
+		{"enforce", LoginModeEnforce, false},
 		{"Observe", "", true},
 		{"off", "", true},
 		{"true", "", true},
@@ -671,19 +671,21 @@ func TestNewLoginGateRefusesAWeakSecretAndAnUnknownMode(t *testing.T) {
 //
 // It also pins the second half of the same defect: a mode that stops
 // StartModeReminder from warning must be a mode that actually enforces.
+//
+// Both modes must be accepted and both must be exercised: the guard fails if
+// either is missing, so it cannot pass by checking only the easy half.
 func TestStartupLineCannotClaimEnforcementItDoesNotDo(t *testing.T) {
-	// Every string worth asking about, including the one Phase 1 will add.
-	// Whatever ParseLoginMode accepts is what gets exercised, so the day
-	// "enforce" starts being accepted this guard starts checking it.
+	// Every string worth asking about. Whatever ParseLoginMode accepts is what
+	// gets exercised.
 	candidates := []string{"", "observe", "enforce"}
 
-	accepted := 0
+	exercised := map[LoginMode]bool{}
 	for _, raw := range candidates {
 		mode, err := ParseLoginMode(raw)
 		if err != nil {
 			continue // Not configurable, so no operator can be misled by it.
 		}
-		accepted++
+		exercised[mode] = true
 
 		t.Run("mode="+string(mode), func(t *testing.T) {
 			g, _ := newTestGate(t, mode, 64)
@@ -700,7 +702,7 @@ func TestStartupLineCannotClaimEnforcementItDoesNotDo(t *testing.T) {
 					continue
 				}
 				// The verify bound is 64 and these are sequential, so a 503
-				// here could only come from budget enforcement.
+				// or a 429 here could only come from budget enforcement.
 				if w.Code == http.StatusServiceUnavailable || w.Code == http.StatusTooManyRequests {
 					refusedForBudget = true
 				}
@@ -742,20 +744,10 @@ func TestStartupLineCannotClaimEnforcementItDoesNotDo(t *testing.T) {
 		})
 	}
 
-	if accepted == 0 {
-		t.Fatal("ParseLoginMode accepted no mode at all; this guard checked nothing")
-	}
-}
-
-// TestEnforceIsNotConfigurableInPhase0 pins the narrow fact the guard above
-// depends on, with the reason attached, so the day it changes the change is
-// deliberate.
-func TestEnforceIsNotConfigurableInPhase0(t *testing.T) {
-	if _, err := ParseLoginMode("enforce"); err == nil {
-		t.Error("ParseLoginMode accepted \"enforce\" while Observe still refuses nothing; that mode would assert enforcement, silence the reminder, and enforce nothing")
-	}
-	if _, err := ParseLoginMode("observe"); err != nil {
-		t.Errorf("ParseLoginMode rejected the documented default: %v", err)
+	for _, m := range []LoginMode{LoginModeObserve, LoginModeEnforce} {
+		if !exercised[m] {
+			t.Errorf("mode %q was not accepted by ParseLoginMode, so the guard never checked the startup line against it", m)
+		}
 	}
 }
 
