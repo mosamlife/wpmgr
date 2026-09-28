@@ -809,16 +809,24 @@ final class Router
     /**
      * The exception message as the local debug log line records it.
      *
-     * Contract: this is the same key-material redaction the response gets
-     * from redactReason() — its two passes, in the same order — minus the
-     * step in between that collapses a whole absolute path. So a path stays
-     * as thrown, absolute ones included: it is the site owner's own
-     * diagnostic, and PHP writes it to the same log. A path SEGMENT shaped
-     * like encoded key material is redacted, exactly as it would be from the
-     * response; everything else in the path is kept. Control characters are
-     * not this function's job; see escapeControlChars(). If either pass
-     * cannot complete, the line carries REASON_WITHHELD in place of the
-     * message.
+     * Contract: the log runs the SAME key-material passes the response gets
+     * from redactReason() — redactEncodedRuns() then redactOpaqueRuns(), in
+     * that order — minus the absolute-path rule that sits between them there
+     * and collapses a whole path to "<path>". Without that rule, a path
+     * stays as thrown here, absolute ones included: it is the site owner's
+     * own diagnostic, and PHP writes it to the same log.
+     *
+     * That "stays as thrown" is a default, not a guarantee, and the two
+     * passes decide it the same way they decide it for the response: over
+     * the whole '/'-joined run, not one path segment at a time (see
+     * isEncodedRun()). When a run is judged to be encoded material, the
+     * WHOLE run is redacted — every path segment inside it, not only the
+     * part that made it qualify — because pass 1's alphabet includes '/' and
+     * treats a path and the token appended to it as one candidate. A run
+     * that is not judged encoded material is left exactly as thrown. Control
+     * characters are not this function's job; see escapeControlChars(). If
+     * either pass cannot complete, the line carries REASON_WITHHELD in place
+     * of the message.
      *
      * @param string $msg Raw exception message.
      * @return string

@@ -132,9 +132,13 @@ final class RouterCommandFailureLogTest extends TestCase
 	 * #764: escapeControlChars() itself fails closed, independently of
 	 * logReason()'s own withheld-message case above. A mutant that made
 	 * escapeControlChars() return its input on a PCRE engine failure — or
-	 * that dropped the "?? self::LOG_LINE_WITHHELD" guarding either of its
-	 * call sites — would let a raw control byte, one able to start a forged
-	 * log line or hide text from a terminal, reach the log untouched.
+	 * that dropped the "?? self::LOG_LINE_WITHHELD" guarding the dispatch()
+	 * call site — would let a raw control byte, one able to start a forged
+	 * log line or hide text from a terminal, reach the log untouched. This
+	 * covers the dispatch()/command-failure call site only; the
+	 * authorizeCommand() call site's own "?? self::LOG_LINE_WITHHELD" is
+	 * covered separately below, by
+	 * test_authorize_failure_log_line_withholds_the_whole_line_when_escaping_cannot_complete().
 	 *
 	 * Forced the same way the test above forces logReason()'s passes to
 	 * fail: pcre.jit off and a backtrack budget of 1, so any regex that has
@@ -243,6 +247,159 @@ final class RouterCommandFailureLogTest extends TestCase
 		// a log-only fix would leave an operator without debug enabled with
 		// nothing at all.
 		$this->assertStringContainsString( 'ciphertext authentication failed', $run['stdout'] );
+	}
+
+	/**
+	 * #764: the dispatch()/command-failure call site must not even build, let
+	 * alone escape, the log line when debug logging is off. Counters on
+	 * escapeControlChars() and logReason() prove the negative directly: a
+	 * mutant that removed dispatch()'s DebugLog::isEnabled() gate would still
+	 * write nothing to error_log() (nothing is listening on a production
+	 * install with debugging off), so the empty-log assertion above cannot by
+	 * itself catch that mutant — only the call count can.
+	 */
+	public function test_dispatch_gate_skips_building_and_escaping_when_debug_is_disabled(): void
+	{
+		$run = $this->runDispatchGateProbeInSubprocess( 'Keystore: ciphertext authentication failed.' );
+
+		$this->assertSame( 0, $run['status'], 'subprocess failed: ' . $run['stdout'] . $run['stderr'] );
+		$this->assertSame( '', trim( $run['log'] ), 'debug log must stay empty when debugging is off' );
+		$this->assertStringContainsString( 'escapeControlChars_calls=0', $run['stdout'] );
+		$this->assertStringContainsString( 'logReason_calls=0', $run['stdout'] );
+	}
+
+	/**
+	 * Drive handleCommand() -> dispatch() in a child process with debug OFF,
+	 * counting calls to escapeControlChars() and logReason() via Patchwork,
+	 * restored in finally inside the subprocess script (Patchwork
+	 * redefinitions leak across tests, so the fake stays self-contained even
+	 * though this process exits right after). A dedicated probe rather than
+	 * adding a counter to runInSubprocess(): every existing caller of
+	 * runInSubprocess() parses $run['stdout'] as the bare JSON response body,
+	 * and prefixing counters onto that stdout would corrupt every one of
+	 * those decodes.
+	 *
+	 * @param string $message Exception message the command throws.
+	 * @return array{status:int,stdout:string,stderr:string,log:string}
+	 */
+	private function runDispatchGateProbeInSubprocess( string $message ): array
+	{
+		$logPath    = sys_get_temp_dir() . '/wpmgr_router_gate_log_' . uniqid( '', true ) . '.log';
+		$scriptPath = sys_get_temp_dir() . '/wpmgr_router_gate_log_' . uniqid( '', true ) . '.php';
+
+		$this->temp[] = $logPath;
+		$this->temp[] = $scriptPath;
+
+		$bootstrap  = addslashes( __DIR__ . '/bootstrap.php' );
+		$logEscaped = addslashes( $logPath );
+		$msgB64     = base64_encode( $message );
+
+		$script = <<<PHP
+<?php
+declare(strict_types=1);
+
+// debug intentionally OFF
+
+ini_set('log_errors', '1');
+ini_set('error_log', '{$logEscaped}');
+
+require '{$bootstrap}';
+
+\$escapeCalls = 0;
+\$escapeHandle = \\Patchwork\\redefine(
+    'WPMgr\\Agent\\Router::escapeControlChars',
+    function (string \$line) use (&\$escapeCalls) {
+        \$escapeCalls++;
+        return \\Patchwork\\relay();
+    }
+);
+
+\$reasonCalls = 0;
+\$reasonHandle = \\Patchwork\\redefine(
+    'WPMgr\\Agent\\Router::logReason',
+    function (string \$msg) use (&\$reasonCalls) {
+        \$reasonCalls++;
+        return \\Patchwork\\relay();
+    }
+);
+
+\$command = new class implements \\WPMgr\\Agent\\Commands\\CommandInterface {
+    public function name(): string
+    {
+        return 'boom';
+    }
+
+    public function effect(): \\WPMgr\\Agent\\Commands\\CommandEffect
+    {
+        return \\WPMgr\\Agent\\Commands\\CommandEffect::Read;
+    }
+
+    public function repeatability(): \\WPMgr\\Agent\\Commands\\CommandRepeatability
+    {
+        return \\WPMgr\\Agent\\Commands\\CommandRepeatability::Idempotent;
+    }
+
+    /** @param array<string,mixed> \$claims @param array<string,mixed> \$params @return array<string,mixed> */
+    public function execute(array \$claims, array \$params): array
+    {
+        throw new \\RuntimeException(base64_decode('{$msgB64}'));
+    }
+};
+
+\$rc        = new \\ReflectionClass(\\WPMgr\\Agent\\Connector::class);
+\$connector = \$rc->newInstanceWithoutConstructor();
+\$router    = new \\WPMgr\\Agent\\Router(\$connector, [\$command]);
+
+\$request = new \\WP_REST_Request(
+    [
+        'command'      => 'boom',
+        'wpmgr_claims' => ['sub' => 'site-uuid', 'cmd' => 'boom'],
+    ]
+);
+
+try {
+    \$response = \$router->handleCommand(\$request);
+} finally {
+    \\Patchwork\\restore(\$escapeHandle);
+    \\Patchwork\\restore(\$reasonHandle);
+}
+
+if (!(\$response instanceof \\WP_Error)) {
+    fwrite(STDERR, "expected WP_Error\\n");
+    exit(2);
+}
+
+echo "escapeControlChars_calls={\$escapeCalls}\\n";
+echo "logReason_calls={\$reasonCalls}\\n";
+PHP;
+
+		file_put_contents( $scriptPath, $script );
+
+		$descriptors = [
+			1 => [ 'pipe', 'w' ],
+			2 => [ 'pipe', 'w' ],
+		];
+
+		$process = proc_open(
+			[ PHP_BINARY, '-d', 'memory_limit=1G', $scriptPath ],
+			$descriptors,
+			$pipes
+		);
+
+		$this->assertIsResource( $process, 'could not start the subprocess' );
+
+		$stdout = (string) stream_get_contents( $pipes[1] );
+		$stderr = (string) stream_get_contents( $pipes[2] );
+		fclose( $pipes[1] );
+		fclose( $pipes[2] );
+		$status = proc_close( $process );
+
+		return [
+			'status' => $status,
+			'stdout' => $stdout,
+			'stderr' => $stderr,
+			'log'    => is_file( $logPath ) ? (string) file_get_contents( $logPath ) : '',
+		];
 	}
 
 	// -------------------------------------------------------------------------
@@ -580,18 +737,101 @@ PHP;
 	}
 
 	/**
+	 * #764: escapeControlChars() fails closed at the authorizeCommand() call
+	 * site too, independently of the dispatch()/command-failure call site
+	 * proved above by test_debug_log_withholds_the_whole_line_when_escaping_cannot_complete().
+	 * That test only drives handleCommand() -> dispatch(); it says nothing
+	 * about authorizeCommand()'s own "?? self::LOG_LINE_WITHHELD", which
+	 * guards a separate call site with a separate mutation surface. A mutant
+	 * that made escapeControlChars() return its input on a PCRE engine
+	 * failure, or that dropped authorizeCommand()'s own "??
+	 * self::LOG_LINE_WITHHELD", would let a raw control byte reach the log
+	 * from this call site untouched while the dispatch-side test above stays
+	 * green.
+	 *
+	 * Forced the same way: pcre.jit off and a backtrack budget of 1, so
+	 * preg_replace_callback() inside escapeControlChars() exhausts its
+	 * budget and returns null. The command carries the same single ESC byte
+	 * test_authorize_failure_log_line_escapes_control_characters() uses, so
+	 * this is the direct failure-mode counterpart of that test.
+	 *
+	 * The withheld marker must replace the WHOLE line: the command name and
+	 * the category are lost along with it, not just the reason, because
+	 * authorizeCommand() escapes the whole assembled line in one call.
+	 */
+	public function test_authorize_failure_log_line_withholds_the_whole_line_when_escaping_cannot_complete(): void
+	{
+		$run = $this->runAuthorizeInSubprocess(
+			"boom\x1Bcmd",
+			true,
+			"ini_set('pcre.jit', '0'); ini_set('pcre.backtrack_limit', '1');"
+		);
+
+		$this->assertSame( 0, $run['status'], 'subprocess failed: ' . $run['stdout'] . $run['stderr'] );
+
+		$lines = array_values(
+			array_filter(
+				preg_split( '/\R/', $run['log'] ) ?: [],
+				static function ( string $line ): bool {
+					return trim( $line ) !== '';
+				}
+			)
+		);
+
+		$this->assertCount( 1, $lines, 'expected exactly one log line, got ' . count( $lines ) . ":\n" . $run['log'] );
+		$this->assertStringContainsString(
+			'WPMgr Agent: log line withheld (control-character escaping could not complete).',
+			$lines[0]
+		);
+		$this->assertStringNotContainsString( "\x1B", $run['log'], 'a raw control byte reached the log' );
+		$this->assertStringNotContainsString( 'boom', $lines[0], 'the withheld marker must replace the whole line' );
+		$this->assertStringNotContainsString(
+			'command authorize failed',
+			$lines[0],
+			'the withheld marker must replace the whole line, not just the reason'
+		);
+	}
+
+	/**
+	 * #764: the authorize call site must not even build, let alone escape,
+	 * the log line when debug logging is off. A counter on escapeControlChars()
+	 * proves the negative directly: a mutant that removed
+	 * authorizeCommand()'s DebugLog::isEnabled() gate would still write
+	 * nothing to error_log() (nothing is listening), so asserting an empty
+	 * log alone cannot catch it — it must be caught here, by the call count.
+	 */
+	public function test_authorize_gate_skips_escaping_when_debug_is_disabled(): void
+	{
+		$run = $this->runAuthorizeInSubprocess( 'boom', false );
+
+		$this->assertSame( 0, $run['status'], 'subprocess failed: ' . $run['stdout'] . $run['stderr'] );
+		$this->assertSame( '', trim( $run['log'] ), 'debug log must stay empty when debugging is off' );
+		$this->assertStringContainsString( 'escapeControlChars_calls=0', $run['stdout'] );
+	}
+
+	/**
 	 * Drive Router::authorizeCommand() in a child PHP process with a bearer
 	 * token malformed enough (one segment, no dots) that Connector::verify()
 	 * throws before touching the keystore, so the real authorizeCommand()
 	 * catch block — and its DebugLog::write() call — runs without any of the
 	 * signing/enrolment setup the happy path needs.
 	 *
+	 * Instruments escapeControlChars() with a Patchwork counter, restored in
+	 * finally inside the subprocess script — the subprocess exits right after,
+	 * so nothing leaks across tests, but restoring anyway keeps the fake
+	 * self-contained rather than relying on process exit to undo it. The
+	 * count is reported on stdout as "escapeControlChars_calls=N" so a test
+	 * that never enables debug logging (and so never gets a log line to
+	 * inspect) still has something to assert on.
+	 *
 	 * @param string $command Command name passed to authorizeCommand(); not
 	 *                        run through the real route's sanitize_callback
 	 *                        here, see the calling test's docblock.
+	 * @param bool   $debug   Whether to define WPMGR_DEBUG.
+	 * @param string $before  PHP run just before authorizeCommand() is called.
 	 * @return array{status:int,stdout:string,stderr:string,log:string}
 	 */
-	private function runAuthorizeInSubprocess( string $command ): array
+	private function runAuthorizeInSubprocess( string $command, bool $debug = true, string $before = '' ): array
 	{
 		$logPath    = sys_get_temp_dir() . '/wpmgr_router_authz_log_' . uniqid( '', true ) . '.log';
 		$scriptPath = sys_get_temp_dir() . '/wpmgr_router_authz_log_' . uniqid( '', true ) . '.php';
@@ -602,17 +842,27 @@ PHP;
 		$bootstrap  = addslashes( __DIR__ . '/bootstrap.php' );
 		$logEscaped = addslashes( $logPath );
 		$cmdB64     = base64_encode( $command );
+		$defineLine = $debug ? "define('WPMGR_DEBUG', true);" : '// debug intentionally OFF';
 
 		$script = <<<PHP
 <?php
 declare(strict_types=1);
 
-define('WPMGR_DEBUG', true);
+{$defineLine}
 
 ini_set('log_errors', '1');
 ini_set('error_log', '{$logEscaped}');
 
 require '{$bootstrap}';
+
+\$escapeCalls = 0;
+\$escapeHandle = \\Patchwork\\redefine(
+    'WPMgr\\Agent\\Router::escapeControlChars',
+    function (string \$line) use (&\$escapeCalls) {
+        \$escapeCalls++;
+        return \\Patchwork\\relay();
+    }
+);
 
 \$rc        = new \\ReflectionClass(\\WPMgr\\Agent\\Connector::class);
 \$connector = \$rc->newInstanceWithoutConstructor();
@@ -623,13 +873,20 @@ require '{$bootstrap}';
 \$request = new \\WP_REST_Request(['command' => \$command]);
 \$request->set_header('authorization', 'Bearer x');
 
-\$result = \$router->authorizeCommand(\$request, \$command);
+{$before}
+
+try {
+    \$result = \$router->authorizeCommand(\$request, \$command);
+} finally {
+    \\Patchwork\\restore(\$escapeHandle);
+}
 
 if (!(\$result instanceof \\WP_Error)) {
     fwrite(STDERR, "expected WP_Error\\n");
     exit(2);
 }
 
+echo "escapeControlChars_calls={\$escapeCalls}\\n";
 echo 'ok';
 PHP;
 
