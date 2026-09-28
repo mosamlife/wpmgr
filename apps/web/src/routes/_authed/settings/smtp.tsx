@@ -17,7 +17,7 @@ import {
 import { PageError } from "@/components/feedback";
 import { PageHeader } from "@/components/shared/page-header";
 import { toast } from "@/components/toast";
-import { useMe, canManage } from "@/features/auth/use-auth";
+import { useMe, canManageInstanceEmail } from "@/features/auth/use-auth";
 import {
   useSmtp,
   usePutSmtp,
@@ -62,7 +62,7 @@ const testSchema = z.object({
 
 function SmtpSettingsPage() {
   const { data: me } = useMe();
-  const manage = canManage(me);
+  const capable = canManageInstanceEmail(me);
 
   const {
     data: smtp,
@@ -70,7 +70,34 @@ function SmtpSettingsPage() {
     isError,
     error,
     refetch,
-  } = useSmtp();
+  } = useSmtp({ enabled: capable });
+
+  // Only an instance administrator (a superadmin, or the owner of the
+  // install's only organisation) may reach this page at all — the server
+  // gate covers GET as well as PUT/POST, so there is no read-only view for
+  // anyone else. Say so plainly rather than firing a request that can only
+  // 403 and rendering the generic load-failure state with a Retry that can
+  // never succeed.
+  if (!capable) {
+    return (
+      <section
+        aria-labelledby="smtp-heading"
+        className="max-w-2xl space-y-6"
+      >
+        <PageHeader
+          title="Email / SMTP"
+          subline="Configure the outgoing mail relay for password-reset and notification emails."
+        />
+        <p
+          role="alert"
+          className="rounded-xl border border-[var(--color-border)] p-4 text-sm text-[var(--color-muted-foreground)]"
+        >
+          Only the instance administrator can change these settings. Ask
+          your instance administrator to make changes.
+        </p>
+      </section>
+    );
+  }
 
   if (isPending) {
     return (
@@ -124,18 +151,8 @@ function SmtpSettingsPage() {
         subline="Configure the outgoing mail relay for password-reset and notification emails."
       />
 
-      {!manage ? (
-        <p
-          role="alert"
-          className="rounded-xl border border-[var(--color-border)] p-4 text-sm text-[var(--color-muted-foreground)]"
-        >
-          You need the owner role to edit SMTP settings. Contact the account
-          owner to make changes.
-        </p>
-      ) : null}
-
-      <SmtpConfigCard key={smtp.updated_at} smtp={smtp} readOnly={!manage} />
-      <TestEmailCard disabled={!manage || !smtp.enabled} />
+      <SmtpConfigCard key={smtp.updated_at} smtp={smtp} readOnly={false} />
+      <TestEmailCard disabled={!smtp.enabled} />
       <DeliverabilityCard />
     </section>
   );

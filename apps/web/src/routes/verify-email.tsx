@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
   AlertTriangle,
@@ -10,6 +11,7 @@ import {
   Loader2,
   MailCheck,
 } from "lucide-react";
+import { getMe } from "@wpmgr/api";
 
 import { AuthLayout } from "@/components/layout/auth-layout";
 import { Button } from "@/components/ui/button";
@@ -23,6 +25,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import {
+  authKeys,
   useVerifyEmail,
   useResendVerification,
 } from "@/features/auth/use-auth";
@@ -125,6 +128,7 @@ function ResendForm({ defaultEmail }: { defaultEmail?: string }) {
 
 function VerifyWithToken({ token }: { token: string }) {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const verifyMutation = useVerifyEmail();
   // Guard so StrictMode double-invoke doesn't fire two requests.
   const firedRef = useRef(false);
@@ -138,22 +142,37 @@ function VerifyWithToken({ token }: { token: string }) {
       {
         onSuccess: (result) => {
           if (result.status === 200) {
-            // Session is now live (me is in the query cache). A hosted
-            // instance where this account captured a paid-plan intent at
-            // signup (Me.desired_plan, single-use — see use-auth.ts) skips
-            // straight to checkout instead of an empty Sites page. The
-            // local same-browser stash only ever supplies a `?currency=`
-            // hint here; `desired_plan`+`hosted` alone decide whether to go.
+            // Session is now live. Force a fresh /auth/me so
+            // middleware-resolved fields are present (the verify-email
+            // response Me may not carry them yet) before navigating — same
+            // mechanism as the password-login path (see login.tsx). A
+            // hosted instance where this account captured a paid-plan
+            // intent at signup (Me.desired_plan, single-use — see
+            // use-auth.ts) skips straight to checkout instead of an empty
+            // Sites page. The local same-browser stash only ever supplies a
+            // `?currency=` hint here; `desired_plan`+`hosted` alone decide
+            // whether to go.
             const me = result.me;
-            if (me?.desired_plan && me.hosted) {
-              const stash = readPendingPlan();
-              void navigate({
-                to: "/welcome/checkout",
-                search: { plan: me.desired_plan, currency: stash?.currency },
+            void queryClient
+              .fetchQuery({
+                queryKey: authKeys.me,
+                queryFn: async () => {
+                  const { data } = await getMe();
+                  return data ?? null;
+                },
+                staleTime: 0,
+              })
+              .then(() => {
+                if (me?.desired_plan && me.hosted) {
+                  const stash = readPendingPlan();
+                  void navigate({
+                    to: "/welcome/checkout",
+                    search: { plan: me.desired_plan, currency: stash?.currency },
+                  });
+                } else {
+                  void navigate({ to: "/sites" });
+                }
               });
-            } else {
-              void navigate({ to: "/sites" });
-            }
           }
           // 410/429 handled by rendering below.
         },

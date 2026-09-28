@@ -1,9 +1,10 @@
-// Package admingate holds the ONE definition of who may run an install-level
-// agent-mirror check, plus the narrow database reads that decision needs.
+// Package admingate holds the ONE definition of instance-level authority (who
+// may act on install-wide state rather than on one organisation's), plus the
+// narrow database reads that decision needs.
 //
 // Why this is its own package (GH #322).
 //
-// The decision is asked in two places that live in different packages and
+// The decision is asked in several places that live in different packages and
 // cannot import each other cleanly:
 //
 //	internal/admin        the ROUTE GATE on POST /api/v1/admin/agent-mirror/check.
@@ -11,8 +12,15 @@
 //	internal/agentrelease the CAPABILITY FLAG agent_mirror.can_check_now on
 //	                      GET /api/v1/fleet/agents. Answers "should the dashboard
 //	                      show this viewer a Check now button".
+//	internal/settings     the ROUTE GATE on /api/v1/settings/smtp (GET, PUT and
+//	                      POST /test). The instance SMTP relay is one row for the
+//	                      whole install, so it is instance configuration, not an
+//	                      organisation setting, and a tenant role does not reach it.
+//	internal/auth         the CAPABILITY FLAG can_manage_instance_email on the Me
+//	                      response. Both it and the settings gate call
+//	                      CanManageInstanceEmail.
 //
-// Those two answers MUST be the same answer. If they are computed separately
+// Those answers MUST be the same answer. If they are computed separately
 // they can drift, and every way they can drift is a bug an operator sees: a
 // button that always 403s, or a permission nobody is ever offered (which is
 // precisely the state GH #322 was left in after 0.61.123 widened the gate with
@@ -24,6 +32,7 @@ package admingate
 
 import (
 	"context"
+	"errors"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -40,11 +49,13 @@ import (
 type Store interface {
 	// IsSuperadmin reports users.is_superadmin for the given user.
 	IsSuperadmin(ctx context.Context, userID uuid.UUID) (bool, error)
-	// IsSoleLiveTenantOwner reports whether this install has exactly one live
-	// organisation AND the given user is an owner of a live organisation.
+	// SoleLiveTenantOwnedBy returns the id of the only live organisation on
+	// this install when the given user is an owner of it, and uuid.Nil
+	// otherwise (more than one live organisation, or the user owns none).
 	// Both facts come from one statement, so they cannot be read a moment
-	// apart and cannot disagree.
-	IsSoleLiveTenantOwner(ctx context.Context, userID uuid.UUID) (bool, error)
+	// apart and cannot disagree, and the id returned is the organisation that
+	// statement found, never one named by the request.
+	SoleLiveTenantOwnedBy(ctx context.Context, userID uuid.UUID) (uuid.UUID, error)
 }
 
 // isSuperadminSQL is a targeted single-column read against users, which has no
@@ -58,7 +69,8 @@ const isSuperadminSQL = `SELECT is_superadmin FROM users WHERE id = $1`
 //
 // If the count is 1 and the caller owns some live organisation, then the
 // organisation they own IS that one; no third read is needed to tie them
-// together.
+// together. The statement returns that organisation's id, and no row when
+// either fact is false.
 //
 // role = 'owner' is exact, not a ladder: memberships.role is constrained to
 // ('owner', 'admin', 'operator', 'viewer') by memberships_role_check, and
@@ -86,15 +98,14 @@ const isSuperadminSQL = `SELECT is_superadmin FROM users WHERE id = $1`
 //     deleted_at, the count is read fresh on the next request, and this
 //     decision returns to refusing. There is nothing cached to invalidate.
 const soleLiveTenantOwnerSQL = `
-SELECT (SELECT count(*) FROM tenants WHERE deleted_at IS NULL) = 1
-   AND EXISTS (
-           SELECT 1
-           FROM memberships m
-           JOIN tenants t ON t.id = m.tenant_id
-           WHERE m.user_id = $1
-             AND m.role = 'owner'
-             AND t.deleted_at IS NULL
-       )`
+SELECT t.id
+FROM memberships m
+JOIN tenants t ON t.id = m.tenant_id
+WHERE m.user_id = $1
+  AND m.role = 'owner'
+  AND t.deleted_at IS NULL
+  AND (SELECT count(*) FROM tenants WHERE deleted_at IS NULL) = 1
+LIMIT 1`
 
 // PoolStore is the production Store, reading Postgres directly.
 type PoolStore struct{ pool *db.Pool }
@@ -110,57 +121,89 @@ func (s PoolStore) IsSuperadmin(ctx context.Context, userID uuid.UUID) (bool, er
 	return isSA, nil
 }
 
-// IsSoleLiveTenantOwner runs soleLiveTenantOwnerSQL under InUserTx. That is
+// SoleLiveTenantOwnedBy runs soleLiveTenantOwnerSQL under InUserTx. That is
 // required, not incidental: memberships is under FORCE RLS and the only policy
 // that lets a principal read its OWN membership rows across tenants is
 // memberships_self_read, which keys on the app.user_id GUC that InUserTx sets.
-// On the bare pool the EXISTS would silently see zero rows and the answer would
-// be wrong in the REFUSING direction, which on the capability-flag caller means
-// a button that never appears for the one person GH #322 built it for. tenants
-// carries no RLS, so the count sees every row.
-func (s PoolStore) IsSoleLiveTenantOwner(ctx context.Context, userID uuid.UUID) (bool, error) {
-	var allowed bool
+// On the bare pool the membership read would silently see zero rows and the
+// answer would be wrong in the REFUSING direction, which on the capability-flag
+// caller means a button that never appears for the one person GH #322 built it
+// for. tenants carries no RLS, so the count sees every row.
+func (s PoolStore) SoleLiveTenantOwnedBy(ctx context.Context, userID uuid.UUID) (uuid.UUID, error) {
+	var tenantID uuid.UUID
 	err := s.pool.InUserTx(ctx, userID, func(tx pgx.Tx) error {
-		return tx.QueryRow(ctx, soleLiveTenantOwnerSQL, userID).Scan(&allowed)
+		err := tx.QueryRow(ctx, soleLiveTenantOwnerSQL, userID).Scan(&tenantID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			tenantID = uuid.Nil
+			return nil
+		}
+		return err
 	})
 	if err != nil {
-		return false, err
+		return uuid.Nil, err
 	}
-	return allowed, nil
+	return tenantID, nil
 }
 
-// CanRunAgentMirrorCheck is THE decision: may the principal carried on ctx
-// trigger an immediate upstream agent-release mirror check on this install?
-// It admits:
+// Arm names the fact that admitted a caller to instance-level authority.
+type Arm int
+
+const (
+	// ArmNone means the caller was not admitted.
+	ArmNone Arm = iota
+	// ArmSuperadmin means users.is_superadmin admitted the caller.
+	ArmSuperadmin
+	// ArmSoleLiveTenantOwner means the caller owns the only live organisation
+	// on this install.
+	ArmSoleLiveTenantOwner
+)
+
+// Authority is the outcome of the instance-authority decision together with
+// the fact that decided it. A caller that needs to know which arm admitted
+// (the SMTP settings audit trail does) reads it from the decision itself
+// rather than deriving it a second time.
+type Authority struct {
+	Arm Arm
+	// TenantID is set only for ArmSoleLiveTenantOwner: the only live
+	// organisation, which the caller owns, as found by the statement that
+	// admitted them. It is never taken from the request's active
+	// organisation. It is uuid.Nil for every other arm.
+	TenantID uuid.UUID
+}
+
+// Admitted reports whether the decision granted instance-level authority.
+func (a Authority) Admitted() bool { return a.Arm != ArmNone }
+
+// HasInstanceAuthority is THE decision: does the principal carried on ctx hold
+// instance-level authority on this install? It admits:
 //
 //	users.is_superadmin = true
 //	OR the caller is an owner of the only live organisation on this install.
 //
-// Why the second arm exists (GH #322). The superadmin gate on this action is
-// there so that one tenant cannot spend another tenant's share of the install's
-// shared, unauthenticated upstream request budget. On an install with exactly
-// one organisation there is no other tenant for that to protect, and what is
-// left is the mechanics without the reason: set WPMGR_SUPERADMIN_EMAILS,
+// Why the second arm exists (GH #322). Instance-level authority separates the
+// operator of an install from its tenants: on an install with several
+// organisations, no tenant role reaches install-wide state. On an install with
+// exactly one organisation there is no other tenant to separate from, and what
+// is left is the mechanics without the reason: set WPMGR_SUPERADMIN_EMAILS,
 // restart, then discover that the seeder is additive only and never demotes, so
 // getting back out means a manual UPDATE against users and another restart.
-// That is a lot of platform-operator ceremony for someone checking whether
-// their own fleet's agent reference is current.
+// That is a lot of platform-operator ceremony for a self-hosted owner managing
+// their own install.
 //
 // THE PROPERTY THAT MUST NOT BE LOST: the owner NEVER becomes a superadmin
 // under this. No env var, no restart, no is_superadmin flag written anywhere,
 // and no Sites-page redirect (the web app's isSuperadminAllowedPath guard in
 // routes/_authed.tsx redirects superadmins AWAY from tenant pages, which is why
-// the admin console remains the superadmin's route to this action and why the
-// Sites-page button is only ever seen by the owner arm). This admits one
-// request on one route, and reveals one boolean on one dashboard field. A
-// second organisation appearing on the install closes the path again on the
-// very next request, with no migration and nothing to clean up, because the
-// count is read at request time and is never cached.
+// the admin console remains the superadmin's route to the agent-mirror check
+// and why the Sites-page button is only ever seen by the owner arm). Each caller
+// admits the specific routes it gates and nothing else. A second organisation
+// appearing on the install closes the owner arm again on the very next request,
+// with no migration and nothing to clean up, because the count is read at
+// request time and is never cached.
 //
 // An API-key principal is refused even when the key belongs to the owner of the
-// only organisation. This is an install-level action against a shared upstream
-// budget and the audit record wants a human. Neither store read is performed
-// for a non-user principal.
+// only organisation. Install-level actions want a human in the audit record.
+// Neither store read is performed for a non-user principal.
 //
 // Fail closed: an error reading either fact is a refusal, never an allow, and
 // a failed is_superadmin read does NOT fall through to the widened arm (that
@@ -168,24 +211,76 @@ func (s PoolStore) IsSoleLiveTenantOwner(ctx context.Context, userID uuid.UUID) 
 //
 // store may be nil (the decision is not wired on this install), which is also
 // a refusal.
-func CanRunAgentMirrorCheck(ctx context.Context, store Store) bool {
+func HasInstanceAuthority(ctx context.Context, store Store) bool {
+	return ResolveInstanceAuthority(ctx, store).Admitted()
+}
+
+// ResolveInstanceAuthority is the decision HasInstanceAuthority reports,
+// returned with the arm that admitted. The superadmin arm is consulted first,
+// so a superadmin who also owns the only live organisation is reported as
+// ArmSuperadmin.
+func ResolveInstanceAuthority(ctx context.Context, store Store) Authority {
 	if store == nil {
-		return false
+		return Authority{}
 	}
 	p, ok := domain.PrincipalFromContext(ctx)
 	if !ok || p.Type != domain.PrincipalUser {
-		return false
+		return Authority{}
 	}
 	isSA, err := store.IsSuperadmin(ctx, p.UserID)
 	if err != nil {
-		return false
+		return Authority{}
 	}
 	if isSA {
-		return true
+		return Authority{Arm: ArmSuperadmin}
 	}
-	allowed, err := store.IsSoleLiveTenantOwner(ctx, p.UserID)
-	if err != nil {
-		return false
+	tenantID, err := store.SoleLiveTenantOwnedBy(ctx, p.UserID)
+	if err != nil || tenantID == uuid.Nil {
+		return Authority{}
 	}
-	return allowed
+	return Authority{Arm: ArmSoleLiveTenantOwner, TenantID: tenantID}
+}
+
+// CanRunAgentMirrorCheck answers whether the principal carried on ctx may
+// trigger an immediate upstream agent-release mirror check on this install. It
+// is exactly HasInstanceAuthority; the name is kept so the admin route gate and
+// the fleet capability flag read as asking the question they ask.
+func CanRunAgentMirrorCheck(ctx context.Context, store Store) bool {
+	return HasInstanceAuthority(ctx, store)
+}
+
+// CanManageInstanceEmail is THE decision behind the instance SMTP settings: may
+// the principal carried on ctx read, change and test the install-wide relay?
+// It is HasInstanceAuthority for a principal that is not site-constrained.
+//
+// Two callers, one answer:
+//
+//	internal/settings the ROUTE GATE on /api/v1/settings/smtp (GET, PUT and
+//	                  POST /test).
+//	internal/auth     the CAPABILITY FLAG can_manage_instance_email on the Me
+//	                  response, which tells the dashboard whether to offer the
+//	                  page at all.
+//
+// The site-constraint arm is here, and not only in authz.RequireOrgScope in
+// front of the route, so that the flag reflects the whole gate. A superadmin
+// whose active session is a site-scoped collaboration is refused by the route,
+// so the flag must be false for them too, or the dashboard would offer a page
+// that always answers 403.
+//
+// No active organisation is NOT a refusal. Instance authority is a property of
+// the person, not of the organisation they are looking at, so an operator with
+// no membership anywhere is admitted exactly like one who has one.
+func CanManageInstanceEmail(ctx context.Context, store Store) bool {
+	return InstanceEmailAuthority(ctx, store).Admitted()
+}
+
+// InstanceEmailAuthority is the decision CanManageInstanceEmail reports,
+// returned with the arm that admitted. The settings route gate calls it so the
+// handler behind the gate knows which arm admitted without asking again.
+func InstanceEmailAuthority(ctx context.Context, store Store) Authority {
+	p, ok := domain.PrincipalFromContext(ctx)
+	if !ok || p.IsSiteConstrained() {
+		return Authority{}
+	}
+	return ResolveInstanceAuthority(ctx, store)
 }

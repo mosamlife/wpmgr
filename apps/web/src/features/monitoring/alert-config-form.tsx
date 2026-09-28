@@ -25,6 +25,7 @@ import {
   usePutAlertConfig,
 } from "@/features/monitoring/use-uptime";
 import { useEmailNotifySettings } from "@/features/email/use-email";
+import { useMe, canManageInstanceEmail } from "@/features/auth/use-auth";
 import type { AlertConfigUpdate } from "@wpmgr/api";
 
 // Tenant alert-channel editor (operator+). One shared channel, email
@@ -105,6 +106,8 @@ export function AlertConfigForm() {
   const emailSettingsQuery = useEmailNotifySettings();
   const instanceMailerConfigured =
     emailSettingsQuery.data?.instance_mailer_configured ?? true;
+  const { data: me } = useMe();
+  const canConfigureSmtp = canManageInstanceEmail(me);
 
   const {
     register,
@@ -205,12 +208,16 @@ export function AlertConfigForm() {
                   </span>{" "}
                   Alerts cannot be delivered by email until instance-level SMTP
                   is set up. Webhook delivery is unaffected.{" "}
-                  <Link
-                    to="/settings/smtp"
-                    className="font-medium text-[var(--color-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-ring)]"
-                  >
-                    Configure SMTP
-                  </Link>
+                  {canConfigureSmtp ? (
+                    <Link
+                      to="/settings/smtp"
+                      className="font-medium text-[var(--color-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-ring)]"
+                    >
+                      Configure SMTP
+                    </Link>
+                  ) : (
+                    "Ask your instance administrator to configure it."
+                  )}
                 </div>
               </div>
             ) : null}

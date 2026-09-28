@@ -25356,6 +25356,14 @@ type Me struct {
 	// the real check server-side and return 402 byo_destination_required when denied.
 	// Restoring/downloading an existing backup is never gated by this or any other check.
 	ManagedStorageAllowed OptBool `json:"managed_storage_allowed"`
+	// Whether the signed-in user may manage the install-wide SMTP relay (GET, PUT and POST /test under
+	// /api/v1/settings/smtp). Computed by the same decision that gates those routes, so it is true exactly
+	// when they would admit this caller: instance-level authority (a superadmin, or the owner of the only
+	// live organisation on the install) and a principal that is not site-scoped. An active organisation is
+	// not required. False whenever that decision cannot be made. Present on GET and PATCH /auth/me;
+	// responses built before the session exists (login, register, 2FA and OIDC completion) omit it, and
+	// clients read it from the GET /auth/me that follows.
+	CanManageInstanceEmail OptBool `json:"can_manage_instance_email"`
 	// The M16 Phase 0 "sign up into a plan" hint captured at registration (RegisterRequest.plan),
 	// single-use: present ONLY in the direct response to POST /auth/verify-email (read off the
 	// just-consumed verification token) or the first-run bootstrap response of POST /auth/register —
@@ -25405,6 +25413,11 @@ func (s *Me) GetManagedStorageAllowed() OptBool {
 	return s.ManagedStorageAllowed
 }
 
+// GetCanManageInstanceEmail returns the value of CanManageInstanceEmail.
+func (s *Me) GetCanManageInstanceEmail() OptBool {
+	return s.CanManageInstanceEmail
+}
+
 // GetDesiredPlan returns the value of DesiredPlan.
 func (s *Me) GetDesiredPlan() OptMeDesiredPlan {
 	return s.DesiredPlan
@@ -25448,6 +25461,11 @@ func (s *Me) SetHosted(val OptBool) {
 // SetManagedStorageAllowed sets the value of ManagedStorageAllowed.
 func (s *Me) SetManagedStorageAllowed(val OptBool) {
 	s.ManagedStorageAllowed = val
+}
+
+// SetCanManageInstanceEmail sets the value of CanManageInstanceEmail.
+func (s *Me) SetCanManageInstanceEmail(val OptBool) {
+	s.CanManageInstanceEmail = val
 }
 
 // SetDesiredPlan sets the value of DesiredPlan.

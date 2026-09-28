@@ -11,7 +11,12 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
-import { useMe, isOrgScoped, activeRole } from "@/features/auth/use-auth";
+import {
+  useMe,
+  isOrgScoped,
+  activeRole,
+  canManageInstanceEmail,
+} from "@/features/auth/use-auth";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/_authed/settings")({
@@ -32,6 +37,13 @@ interface SettingsNavItem {
   ownerOnly?: boolean;
   /** When true, only a hosted instance (me.hosted) shows this item. */
   hostedOnly?: boolean;
+  /**
+   * When true, only a principal the server reports as having
+   * instance-level SMTP authority (`me.can_manage_instance_email`) sees this
+   * item — a superadmin, or the owner of the install's only organisation.
+   * Not `orgOnly`: a superadmin with no organisation must still see it.
+   */
+  instanceEmailOnly?: boolean;
 }
 
 export const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
@@ -47,7 +59,7 @@ export const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
   { label: "Billing",       to: "/settings/billing",      icon: CreditCard,   orgOnly: true, ownerOnly: true, hostedOnly: true },
   { label: "API keys",      to: "/settings/api-keys",     icon: KeyRound,     orgOnly: true },
   { label: "Tags",          to: "/settings/tags",         icon: Tag,          orgOnly: true },
-  { label: "Email / SMTP",  to: "/settings/smtp",         icon: Mail,         orgOnly: true },
+  { label: "Email / SMTP",  to: "/settings/smtp",         icon: Mail,         instanceEmailOnly: true },
   { label: "Members",       to: "/settings/members",      icon: Users,        orgOnly: true },
 ];
 
@@ -60,6 +72,7 @@ function SettingsLayout() {
   const orgScoped = isOrgScoped(me);
   const isOwner = activeRole(me) === "owner";
   const hosted = me?.hosted === true;
+  const emailCapable = canManageInstanceEmail(me);
   const location = useLocation();
   const pathname = location.pathname;
 
@@ -70,6 +83,7 @@ function SettingsLayout() {
     if (item.orgOnly && !orgScoped) return false;
     if (item.ownerOnly && !isOwner) return false;
     if (item.hostedOnly && !hosted) return false;
+    if (item.instanceEmailOnly && !emailCapable) return false;
     return true;
   });
 

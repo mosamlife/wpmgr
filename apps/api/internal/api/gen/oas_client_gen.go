@@ -1993,8 +1993,7 @@ type Invoker interface {
 	GetSiteUptime(ctx context.Context, params GetSiteUptimeParams) (GetSiteUptimeRes, error)
 	// GetSmtpSettings invokes getSmtpSettings operation.
 	//
-	// Org-scoped (blocks site-scoped collaborators). Reads require admin+; the stored password/secret is
-	// never returned in plaintext.
+	// Requires instance-level authority. The stored password/secret is never returned in plaintext.
 	//
 	// GET /api/v1/settings/smtp
 	GetSmtpSettings(ctx context.Context) (GetSmtpSettingsRes, error)
@@ -3408,9 +3407,9 @@ type Invoker interface {
 	SearchSiteFiles(ctx context.Context, params SearchSiteFilesParams) (SearchSiteFilesRes, error)
 	// SendSmtpTestEmail invokes sendSmtpTestEmail operation.
 	//
-	// Requires the `smtp.manage` permission (owner-only). A send failure is returned as
-	// `200 {ok:false, message}` — the scrubbed reason string never contains internal IPs/hostnames —
-	// rather than a 4xx/5xx, so the UI can show it inline.
+	// Requires instance-level authority. A send failure is returned as `200 {ok:false, message}` — the
+	// scrubbed reason string never contains internal IPs/hostnames — rather than a 4xx/5xx, so the UI
+	// can show it inline.
 	//
 	// POST /api/v1/settings/smtp/test
 	SendSmtpTestEmail(ctx context.Context, request *SendSmtpTestEmailReq) (SendSmtpTestEmailRes, error)
@@ -3690,7 +3689,7 @@ type Invoker interface {
 	UpdateSiteFilesSettings(ctx context.Context, request *UpdateFileManagerSettingsRequest, params UpdateSiteFilesSettingsParams) (UpdateSiteFilesSettingsRes, error)
 	// UpdateSmtpSettings invokes updateSmtpSettings operation.
 	//
-	// Requires the `smtp.manage` permission (owner-only).
+	// Requires instance-level authority.
 	//
 	// PUT /api/v1/settings/smtp
 	UpdateSmtpSettings(ctx context.Context, request *SmtpSettingsUpdate) (UpdateSmtpSettingsRes, error)
@@ -24971,8 +24970,7 @@ func (c *Client) sendGetSiteUptime(ctx context.Context, params GetSiteUptimePara
 
 // GetSmtpSettings invokes getSmtpSettings operation.
 //
-// Org-scoped (blocks site-scoped collaborators). Reads require admin+; the stored password/secret is
-// never returned in plaintext.
+// Requires instance-level authority. The stored password/secret is never returned in plaintext.
 //
 // GET /api/v1/settings/smtp
 func (c *Client) GetSmtpSettings(ctx context.Context) (GetSmtpSettingsRes, error) {
@@ -42096,9 +42094,9 @@ func (c *Client) sendSearchSiteFiles(ctx context.Context, params SearchSiteFiles
 
 // SendSmtpTestEmail invokes sendSmtpTestEmail operation.
 //
-// Requires the `smtp.manage` permission (owner-only). A send failure is returned as
-// `200 {ok:false, message}` — the scrubbed reason string never contains internal IPs/hostnames —
-// rather than a 4xx/5xx, so the UI can show it inline.
+// Requires instance-level authority. A send failure is returned as `200 {ok:false, message}` — the
+// scrubbed reason string never contains internal IPs/hostnames — rather than a 4xx/5xx, so the UI
+// can show it inline.
 //
 // POST /api/v1/settings/smtp/test
 func (c *Client) SendSmtpTestEmail(ctx context.Context, request *SendSmtpTestEmailReq) (SendSmtpTestEmailRes, error) {
@@ -45440,7 +45438,7 @@ func (c *Client) sendUpdateSiteFilesSettings(ctx context.Context, request *Updat
 
 // UpdateSmtpSettings invokes updateSmtpSettings operation.
 //
-// Requires the `smtp.manage` permission (owner-only).
+// Requires instance-level authority.
 //
 // PUT /api/v1/settings/smtp
 func (c *Client) UpdateSmtpSettings(ctx context.Context, request *SmtpSettingsUpdate) (UpdateSmtpSettingsRes, error) {

@@ -19,6 +19,7 @@ import { PageError } from "@/components/feedback";
 import { relativeTime } from "@/lib/utils";
 import type { PutEmailNotifySettingsRequest } from "@wpmgr/api";
 import { useEmailNotifySettings, usePutEmailNotifySettings } from "./use-email";
+import { useMe, canManageInstanceEmail } from "@/features/auth/use-auth";
 
 // ---------------------------------------------------------------------------
 // Email notifications card (m62; digest cadence fixed 2026-07 — issue #123)
@@ -176,6 +177,7 @@ function RecipientChipInput({
 export function EmailNotifySettingsCard() {
   const settingsQuery = useEmailNotifySettings();
   const save = usePutEmailNotifySettings();
+  const { data: me } = useMe();
 
   const s = settingsQuery.data;
 
@@ -245,6 +247,7 @@ export function EmailNotifySettingsCard() {
   }
 
   const instanceMailerConfigured = s?.instance_mailer_configured ?? false;
+  const canConfigureSmtp = canManageInstanceEmail(me);
 
   // GH #381: WPMgr can only detect a delivery failure on a site that is
   // either routed through WPMgr (any agent version) or new enough to report
@@ -290,12 +293,16 @@ export function EmailNotifySettingsCard() {
               <span className="font-medium">Instance mailer not configured.</span>{" "}
               Alerts and digests cannot be delivered until instance-level SMTP is set
               up.{" "}
-              <Link
-                to="/settings/smtp"
-                className="font-medium text-[var(--color-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-ring)]"
-              >
-                Configure SMTP
-              </Link>
+              {canConfigureSmtp ? (
+                <Link
+                  to="/settings/smtp"
+                  className="font-medium text-[var(--color-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-ring)]"
+                >
+                  Configure SMTP
+                </Link>
+              ) : (
+                "Ask your instance administrator to configure it."
+              )}
             </div>
           </div>
         ) : null}
