@@ -47,12 +47,17 @@ import (
 const sqlStateLockNotAvailable = "55P03"
 
 // sqlStateDuplicateColumn is Postgres's SQLSTATE for "column already exists"
-// (42701) — the expected proof for m145. m145 sets no lock_timeout of its
-// own, and its guard-stripped body is a bare
-// `ALTER TABLE ... ADD COLUMN notified_at` with no IF NOT EXISTS: once the
-// target column already exists (as it does by the time this fires check
-// runs — m103 added it first), that ADD COLUMN fails on the duplicate
-// column, not on the held lock.
+// (42701) — the expected proof for m145's guard-stripped fires check. PR #780
+// gave m145 its own 5s lock_timeout inside the guard, and that PERFORM line
+// survives the strip (only the IF NOT EXISTS/END IF wrapper is removed), but
+// the fires check runs before any lock is held, so it never comes into play:
+// the guard-stripped body is a bare `ALTER TABLE ... ADD COLUMN notified_at`
+// with no IF NOT EXISTS, and once the target column already exists (as it
+// does by the time this fires check runs — m103 added it first), that ADD
+// COLUMN fails on the duplicate column, not on any lock wait. m145's OWN
+// lock_timeout is proven load-bearing separately, against the real,
+// unmutated file, by vuln_alerting_m103_test.go's
+// TestM145RealLockTimeoutBoundsEarlyRunWait.
 const sqlStateDuplicateColumn = "42701"
 
 // lateRunLockBound is the wall-clock ceiling for the REAL (unmutated) late
@@ -188,10 +193,13 @@ func assertFileTakesNoLockOnRelation(t *testing.T, pool *db.Pool, relation, body
 // call's own mutatedMigrationBound context deadline fires first instead
 // (this harness's cancellation racing the migration's own lock_timeout), a
 // wrapped context.DeadlineExceeded is accepted in its place as the same
-// proof of blocking. m145 sets no lock_timeout of its own, so
-// sqlStateDuplicateColumn is the only accepted proof for it — the honest one:
-// without its guard, a late run aborts the boot on a column that already
-// exists.
+// proof of blocking. m145 (PR #780) sets a 5s lock_timeout too, but its
+// caller in vuln_alerting_m103_test.go deliberately runs this check before
+// any lock is held, so sqlStateDuplicateColumn is the only accepted proof for
+// it — the honest one: without its guard, a late run aborts the boot on a
+// column that already exists. m145's own lock_timeout is proven load-bearing
+// separately, against the real file, by
+// TestM145RealLockTimeoutBoundsEarlyRunWait.
 //
 // This is the fires half of the proof; the callers' own
 // assertMigrateStaysUnderLockBound / assertFileTakesNoLockOnRelation calls

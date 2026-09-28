@@ -13,6 +13,7 @@ package tests
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"sort"
 	"strings"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
@@ -439,15 +441,19 @@ const m145EarlyReturnGuardClose = `    END IF;
 // is run and must fail — unlike m141/m143, this is not a lock-contention
 // proof. By this point in the test m103 has already added notified_at for
 // real, so the guard-stripped body's bare `ADD COLUMN notified_at` (no IF NOT
-// EXISTS) fails on the column already existing, SQLSTATE 42701. m145 sets no
-// lock_timeout of its own, so this check runs before any lock is held: the
-// point is the state-based failure, not a lock wait this migration has no
-// mechanism to time out of. Then a second connection holds ROW EXCLUSIVE on
-// site_vulnerabilities, and the REAL, unmutated m145 is run late via
-// owner.Migrate and must finish well inside the bound a lock wait would
-// blow, and the real file is re-applied in its own explicit transaction to
-// prove pg_locks shows nothing against site_vulnerabilities for that backend
-// before commit.
+// EXISTS) fails on the column already existing, SQLSTATE 42701. PR #780 gave
+// m145 its own 5s lock_timeout, but only inside the guard's THEN branch — the
+// stripped body still carries that PERFORM line unconditionally (only the IF
+// NOT EXISTS/END IF wrapper is removed, see m145EarlyReturnGuardOpen/Close
+// below), and this check runs before any lock is held, so it never comes
+// into play here: the point is the state-based 42701 failure, not a lock
+// wait. TestM145RealLockTimeoutBoundsEarlyRunWait below is the lock-bound
+// proof, against the real, unmutated file. Then a second connection holds
+// ROW EXCLUSIVE on site_vulnerabilities, and the REAL, unmutated m145 is run
+// late via owner.Migrate and must finish well inside the bound a lock wait
+// would blow, and the real file is re-applied in its own explicit
+// transaction to prove pg_locks shows nothing against site_vulnerabilities
+// for that backend before commit.
 func TestM145LateRunAfterM103AlreadyApplied(t *testing.T) {
 	pool, owner := startPostgresBeforeM103(t)
 	ctx := context.Background()
@@ -515,12 +521,14 @@ func TestM145LateRunAfterM103AlreadyApplied(t *testing.T) {
 	// Fires: without the guard, m145 would attempt its ADD COLUMN
 	// unconditionally. notified_at already exists (m103 added it above), so
 	// this fails with SQLSTATE 42701 (column already exists) — the honest
-	// proof for m145, which is not about a held lock at all. Deliberately
-	// run BEFORE holdRowExclusiveOpen below: m145 sets no lock_timeout of
-	// its own, so against a real conflicting hold the ADD COLUMN would just
-	// block on ACCESS EXCLUSIVE until this harness's own context deadline
-	// cancelled it, which is a weaker, lock-shaped proof that masks the
-	// actual, state-based failure this migration has to survive.
+	// proof for m145, which is not about a held lock at all. Deliberately run
+	// BEFORE holdRowExclusiveOpen below: m145's guard-stripped body still
+	// carries the PERFORM set_config('lock_timeout', '5s', true) line PR #780
+	// added (only the IF NOT EXISTS/END IF wrapper is stripped), so against a
+	// real conflicting hold the ADD COLUMN would now abort with
+	// sqlStateLockNotAvailable (55P03) inside 5s rather than hang — still a
+	// weaker, lock-shaped proof that masks the actual, state-based failure
+	// this migration has to survive.
 	mutatedMigrationMustBlockOrError(t, owner, mutated, sqlStateDuplicateColumn)
 
 	release := holdRowExclusiveOpen(t, owner, "site_vulnerabilities", "last_seen")
@@ -556,6 +564,123 @@ func TestM145LateRunAfterM103AlreadyApplied(t *testing.T) {
 	assertFileTakesNoLockOnRelation(t, owner, "public.site_vulnerabilities", string(body))
 
 	release()
+	assertSiteVulnerabilitiesForceIntact(t, pool)
+}
+
+// TestM145RealLockTimeoutBoundsEarlyRunWait is PR #780's direct proof: on a
+// database that has run neither m145 nor m103 (notified_at does not exist
+// yet), with a second connection holding ROW EXCLUSIVE on
+// site_vulnerabilities, the REAL, unmutated m145 file — run through
+// owner.Migrate, the exact path and role production uses — must not hang
+// waiting for the ACCESS EXCLUSIVE its own ADD COLUMN needs. Its own
+// `PERFORM set_config('lock_timeout', '5s', true)` (inside the guard, ahead
+// of the ALTER TABLE) must abort it with SQLSTATE 55P03 in roughly five to
+// seven seconds; the migration's own transaction must then have rolled back
+// in full (notified_at still absent, m145 not recorded in schema_migrations);
+// and a retry after the hold releases must succeed and backfill the seeded
+// row.
+//
+// Unlike TestM145LateRunAfterM103AlreadyApplied's mutated-body fires check —
+// state-based (42701), deliberately run before any lock is held, against a
+// database where m103 already added the column — this test mutates nothing.
+// It runs the real embedded file through the real boot path on the one state
+// where the column genuinely does not exist yet, so the ALTER TABLE genuinely
+// contends for the lock and PR #780's lock_timeout is the only thing that can
+// end the wait.
+func TestM145RealLockTimeoutBoundsEarlyRunWait(t *testing.T) {
+	pool, owner := startPostgresBeforeM103(t) // migrated up to, not including, m145
+	ctx := context.Background()
+
+	var tenant uuid.UUID
+	if err := pool.QueryRow(ctx, `INSERT INTO tenants (name, slug) VALUES ($1, $1) RETURNING id`,
+		"m145-lockwait-"+uuid.NewString()[:8]).Scan(&tenant); err != nil {
+		t.Fatalf("seed tenant: %v", err)
+	}
+	var siteID uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO sites (tenant_id, url, name) VALUES ($1, $2, 'seed') RETURNING id`,
+		tenant, "https://m145-lockwait.example.com").Scan(&siteID); err != nil {
+		t.Fatalf("seed site: %v", err)
+	}
+	var findingID uuid.UUID
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO site_vulnerabilities
+			(tenant_id, site_id, vuln_id, kind, slug, name, installed_version, severity, title, status)
+		VALUES ($1, $2, 'm145-lockwait-vuln', 'plugin', 'm145-lockwait-vuln', 'seed', '1.0.0', 'high', 'seed finding', 'open')
+		RETURNING id`,
+		tenant, siteID,
+	).Scan(&findingID); err != nil {
+		t.Fatalf("seed finding: %v", err)
+	}
+
+	release := holdRowExclusiveOpen(t, owner, "site_vulnerabilities", "last_seen")
+	defer release()
+
+	start := time.Now()
+	err := owner.Migrate(ctx)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatalf("Migrate succeeded in %s despite a concurrent ROW EXCLUSIVE holder on site_vulnerabilities; "+
+			"m145's ADD COLUMN should have contended for ACCESS EXCLUSIVE and its 5s lock_timeout should have aborted it", elapsed)
+	}
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != sqlStateLockNotAvailable {
+		t.Fatalf("Migrate failed after %s, but not with SQLSTATE %s (lock_not_available): %v", elapsed, sqlStateLockNotAvailable, err)
+	}
+	t.Logf("Migrate correctly aborted after %s with SQLSTATE %s (guard-is-load-bearing): %v", elapsed, pgErr.Code, err)
+
+	// "Roughly five to seven seconds": generous slack either side of m145's
+	// exact 5s lock_timeout for scheduler jitter under testcontainers, while
+	// still nowhere near what a genuine hang (no lock_timeout at all) would
+	// look like.
+	const (
+		wantMin = 4500 * time.Millisecond
+		wantMax = 8 * time.Second
+	)
+	if elapsed < wantMin || elapsed > wantMax {
+		t.Fatalf("Migrate aborted after %s, want roughly %s-%s (m145's own 5s lock_timeout)", elapsed, wantMin, wantMax)
+	}
+
+	// The migration's own transaction must have rolled back in full: no
+	// partial column, and m145 not recorded applied.
+	var columnExists bool
+	if err := pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM pg_attribute
+			WHERE attrelid = 'public.site_vulnerabilities'::regclass
+			  AND attname  = 'notified_at'
+			  AND NOT attisdropped
+		)`).Scan(&columnExists); err != nil {
+		t.Fatalf("check notified_at column: %v", err)
+	}
+	if columnExists {
+		t.Fatalf("notified_at exists after the lock_timeout abort; m145's transaction should have rolled back entirely")
+	}
+	var m145Recorded bool
+	if err := pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = $1)`, m145MigrationVersion,
+	).Scan(&m145Recorded); err != nil {
+		t.Fatalf("check schema_migrations: %v", err)
+	}
+	if m145Recorded {
+		t.Fatalf("m145 is recorded applied in schema_migrations despite aborting on the lock_timeout")
+	}
+
+	// Release the hold and retry: must now succeed and backfill the seeded
+	// row (explicit release before the defer's no-op second call, so the
+	// retry below runs unheld).
+	release()
+
+	if err := owner.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate after releasing the hold: %v", err)
+	}
+	var notifiedAt *time.Time
+	if err := pool.QueryRow(ctx, `SELECT notified_at FROM site_vulnerabilities WHERE id = $1`, findingID).Scan(&notifiedAt); err != nil {
+		t.Fatalf("query notified_at after the retry: %v", err)
+	}
+	if notifiedAt == nil {
+		t.Fatalf("expected notified_at to be backfilled once m145 succeeds on retry, got NULL")
+	}
 	assertSiteVulnerabilitiesForceIntact(t, pool)
 }
 
