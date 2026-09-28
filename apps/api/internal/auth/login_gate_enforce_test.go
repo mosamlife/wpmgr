@@ -328,8 +328,8 @@ func TestFinishKeepsWhatWasNotGivenBack(t *testing.T) {
 // TestShedAttemptsLeaveEveryMapAsItWas: an attempt the verification bound sheds
 // must charge nothing and create nothing. If it created bucket entries, a
 // caller at zero budget could keep adding them while the bound is saturated
-// until each map's cap evicted the oldest entries, its own exhausted pair
-// among them, which would come back with a full budget.
+// and force evictions at each map's cap, and an evicted key comes back with a
+// full budget.
 func TestShedAttemptsLeaveEveryMapAsItWas(t *testing.T) {
 	const victim = "victim[at]example.test"
 
@@ -389,11 +389,12 @@ func TestShedAttemptsLeaveEveryMapAsItWas(t *testing.T) {
 		for i := 0; i < loginPairBudget; i++ {
 			assertAdmitted(t, postLogin(e, simulatedClient, victim), "draining the pair")
 		}
-		// Fill the pair map to its cap with entries seen later, so the drained
-		// pair is the least recently seen: the first one an eviction takes.
+		// Fill the pair map to its cap with entries drained later, so each
+		// holds fewer tokens than the drained pair: the pair is the first
+		// entry an eviction takes.
 		clock = gateEpoch.Add(time.Second)
 		for i := 0; g.pair.size() < loginBucketCap; i++ {
-			keptCharge(t, g.pair, fmt.Sprintf("filler-%d", i), clock)
+			drainedKept(t, g.pair, fmt.Sprintf("filler-%d", i), clock)
 		}
 
 		clock = gateEpoch.Add(2 * time.Second)
@@ -476,9 +477,8 @@ func assertOnlyFailuresRemain(t *testing.T, g *LoginGate) {
 // every map exactly as it found it. Its charge is given back, and an entry the
 // charge created must go with it; creating one must not evict anything either.
 // Otherwise one account whose password the caller knows, signed into from a
-// fresh /64 each time, adds entries without limit, and at each map's cap the
-// eviction removes the oldest, other keys' drained buckets among them, which
-// come back full.
+// fresh /64 each time, adds entries without limit and forces evictions at each
+// map's cap, and an evicted key comes back with a full budget.
 func TestSuccessfulSignInsLeaveEveryMapAsItWas(t *testing.T) {
 	const (
 		victim = "victim[at]example.test"
@@ -538,10 +538,7 @@ func TestSuccessfulSignInsLeaveEveryMapAsItWas(t *testing.T) {
 		const drainedSource = "198.51.100.7"
 
 		// One source drains the victim pair first and then the rest of its own
-		// budget, each at its own instant. Every entry after that is seen
-		// later, so the drained pair is strictly the least recently seen entry
-		// in the pair map and the drained source strictly the least recently
-		// seen in the source map: the first an eviction takes, not one of a tie.
+		// budget, each at its own instant.
 		for i := 0; i < loginPairBudget; i++ {
 			assertAdmitted(t, postLogin(e, drainedSource, victim), "draining the pair")
 		}
@@ -550,11 +547,15 @@ func TestSuccessfulSignInsLeaveEveryMapAsItWas(t *testing.T) {
 			assertAdmitted(t, postLogin(e, drainedSource, fmt.Sprintf("drain%d[at]example.test", i)), "draining the source")
 		}
 		// Fill every refusing scope's map to its cap with failed attempts'
-		// entries.
+		// entries, drained later than the victims, so each holds fewer tokens
+		// than they do. An eviction in the source map would take the drained
+		// source first. One in the pair map would take the drained pair as
+		// soon as the pairs the source was drained with were gone, and the
+		// sign-ins below outnumber those many times over.
 		clock = gateEpoch.Add(time.Second)
 		for _, b := range []*keyedBudget{g.pair, g.src, g.src48} {
 			for i := 0; b.size() < loginBucketCap; i++ {
-				keptCharge(t, b, fmt.Sprintf("filler-%d", i), clock)
+				drainedKept(t, b, fmt.Sprintf("filler-%d", i), clock)
 			}
 		}
 		at := gateEpoch.Add(2 * time.Second)
