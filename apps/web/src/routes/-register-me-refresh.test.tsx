@@ -95,7 +95,7 @@ beforeEach(() => {
     data: { providers: [], sso: false },
     error: undefined,
     response: new Response(),
-  } as unknown as Awaited<ReturnType<typeof listSocialProviders>>);
+  });
 });
 
 describe("RegisterPage — forces a fresh /auth/me after bootstrap register (can_manage_instance_email regression)", () => {
@@ -104,12 +104,12 @@ describe("RegisterPage — forces a fresh /auth/me after bootstrap register (can
       data: BOOTSTRAP_OWNER_NO_CAPABILITY,
       error: undefined,
       response: new Response(null, { status: 200 }),
-    } as unknown as Awaited<ReturnType<typeof register>>);
+    });
     mockedGetMe.mockResolvedValue({
       data: { ...BOOTSTRAP_OWNER_NO_CAPABILITY, can_manage_instance_email: true },
       error: undefined,
       response: new Response(),
-    } as unknown as Awaited<ReturnType<typeof getMe>>);
+    });
     mockedClientGet.mockResolvedValue({
       data: {
         enabled: false,
@@ -125,7 +125,7 @@ describe("RegisterPage — forces a fresh /auth/me after bootstrap register (can
       },
       error: undefined,
       response: new Response(),
-    } as unknown as Awaited<ReturnType<typeof client.get>>);
+    });
 
     const queryClient = createTestQueryClient();
     // Unauthenticated — register.tsx's own beforeLoad redirects to /sites

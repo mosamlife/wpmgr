@@ -96,12 +96,12 @@ describe("VerifyEmailPage — forces a fresh /auth/me after verify (can_manage_i
       data: VERIFIED_OWNER_NO_CAPABILITY,
       error: undefined,
       response: new Response(null, { status: 200 }),
-    } as unknown as Awaited<ReturnType<typeof client.post>>);
+    });
     mockedGetMe.mockResolvedValue({
       data: { ...VERIFIED_OWNER_NO_CAPABILITY, can_manage_instance_email: true },
       error: undefined,
       response: new Response(),
-    } as unknown as Awaited<ReturnType<typeof getMe>>);
+    });
     mockedClientGet.mockResolvedValue({
       data: {
         enabled: false,
@@ -117,7 +117,7 @@ describe("VerifyEmailPage — forces a fresh /auth/me after verify (can_manage_i
       },
       error: undefined,
       response: new Response(),
-    } as unknown as Awaited<ReturnType<typeof client.get>>);
+    });
 
     const queryClient = createTestQueryClient();
     const router = buildVerifyEmailRouter(queryClient);
