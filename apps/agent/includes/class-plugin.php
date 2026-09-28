@@ -1205,8 +1205,9 @@ final class Plugin
      *   - When anything stored cannot be opened (or the key cannot be
      *     loaded), it records a notice naming what cannot be read and stops.
      *     It never replaces, regenerates or deletes a stored key it cannot
-     *     read, and it creates nothing new under a key that does not open what
-     *     is already there.
+     *     read. The one thing it still creates is a backup key that is
+     *     ABSENT, and only when the site keypair opens under the current key,
+     *     which shows that key is the one this site uses now.
      *   - Otherwise it generates only what is ABSENT (the site keypair, the
      *     backup key) and clears the notice.
      *
@@ -1217,6 +1218,12 @@ final class Plugin
         try {
             $probe = $this->keystore->probe();
             if ($probe['state'] !== Keystore::PROBE_OK) {
+                if ($probe['state'] === Keystore::PROBE_UNREADABLE
+                    && $probe['items']['age_identity'] === Keystore::ITEM_ABSENT
+                    && KeystoreHealth::backupKeyUsable($probe)
+                ) {
+                    (new AgeIdentity($this->keystore))->ensureRecipient();
+                }
                 KeystoreHealth::flag($probe);
 
                 return false;

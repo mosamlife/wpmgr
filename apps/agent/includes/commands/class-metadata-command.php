@@ -13,7 +13,6 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent\Commands;
 
-use WPMgr\Agent\Keystore;
 use WPMgr\Agent\Security\SiteRoles;
 use WPMgr\Agent\Support\AgeIdentity;
 use WPMgr\Agent\Support\KeystoreHealth;
@@ -151,11 +150,10 @@ final class MetadataCommand implements CommandInterface
 
             // Surface the agent's age PUBLIC recipient so the CP can register
             // it on sites.age_recipient (M4 backups refuse otherwise). Read it
-            // when it opens; generate one only on a keystore with nothing
-            // unreadable in it, never in place of a key that cannot be read.
-            $ageReadable = $probe === null
-                || ($probe['items']['age_identity'] ?? '') === Keystore::ITEM_OK
-                || $probe['state'] === Keystore::PROBE_OK;
+            // when it opens. Generate one only when none is stored and the
+            // current key is shown to be the live one, never in place of a
+            // key that cannot be read.
+            $ageReadable = $probe === null || KeystoreHealth::backupKeyUsable($probe);
             if ($ageReadable) {
                 try {
                     $recipient = $this->ageIdentity->ensureRecipient();

@@ -38,6 +38,13 @@ final class KeystoreHealth
     /** Appended to every notice that leaves the agent unable to work. */
     private const INACTIVE_SUFFIX = ' The plugin is active but inactive until this is resolved.';
 
+    /** Replacement step for unreadable email credentials. */
+    private const EMAIL_REMEDY = ' Save the email settings again in WPMgr to replace the email credentials.';
+
+    /** What an unreadable backup key means once putting back an earlier key is ruled out. */
+    private const BACKUP_KEY_RESET = ' Backups of this site cannot run until the backup key is reset.'
+        . ' A way to reset it from WPMgr is coming in an update.';
+
     /** The eight wp-config.php security keys, in the order wp-config.php lists them. */
     private const SALT_NAMES = 'AUTH_KEY, SECURE_AUTH_KEY, LOGGED_IN_KEY, NONCE_KEY, AUTH_SALT, '
         . 'SECURE_AUTH_SALT, LOGGED_IN_SALT and NONCE_SALT';
@@ -79,12 +86,51 @@ final class KeystoreHealth
             return;
         }
 
-        update_option(
-            Plugin::OPTION_KEYSTORE_ERROR,
-            self::setupFailureNotice(new \RuntimeException($probe['detail'])),
-            false
-        );
+        update_option(Plugin::OPTION_KEYSTORE_ERROR, self::keyUnavailableNotice($probe), false);
         update_option(Plugin::OPTION_KEYSTORE_ERROR_KIND, self::KIND_KEY_UNAVAILABLE, false);
+    }
+
+    /**
+     * Whether the backup key may be read, or created when none is stored,
+     * under the key this site loads now.
+     *
+     * True when the stored backup key opens. Also true when no backup key is
+     * stored and the current key is shown to be the live one: every stored
+     * item opens, or the site keypair opens under it. Never true for a backup
+     * key that is stored but does not open, and never true while the key
+     * cannot be loaded.
+     *
+     * @param array{state:string,key_source:string,items:array<string,string>,unreadable:list<string>,detail:string} $probe Keystore::probe() result.
+     * @return bool
+     */
+    public static function backupKeyUsable(array $probe): bool
+    {
+        $backupKey = $probe['items']['age_identity'] ?? '';
+        if ($backupKey === Keystore::ITEM_OK) {
+            return true;
+        }
+        if ($backupKey !== Keystore::ITEM_ABSENT) {
+            return false;
+        }
+        if ($probe['state'] === Keystore::PROBE_OK) {
+            return true;
+        }
+
+        return $probe['state'] === Keystore::PROBE_UNREADABLE
+            && ($probe['items']['site_keypair'] ?? '') === Keystore::ITEM_OK;
+    }
+
+    /**
+     * Whether a failure to read the backup key is explained by the keystore:
+     * the key cannot be loaded, or the stored backup key does not open.
+     *
+     * @param array{state:string,key_source:string,items:array<string,string>,unreadable:list<string>,detail:string} $probe Keystore::probe() result.
+     * @return bool
+     */
+    public static function backupKeyUnreadable(array $probe): bool
+    {
+        return $probe['state'] === Keystore::PROBE_KEY_UNAVAILABLE
+            || ($probe['items']['age_identity'] ?? '') === Keystore::ITEM_UNREADABLE;
     }
 
     /**
@@ -113,25 +159,52 @@ final class KeystoreHealth
      * says backups already taken are unaffected only when backup chunks are
      * stored unencrypted, which is read from EncryptAndUpload, not assumed.
      *
+     * The advice depends on what still opens:
+     *   - Something stored opens under the current key: the current key is
+     *     the live one, so putting back an earlier key would break what opens
+     *     now. Each unreadable item gets its own replacement step instead.
+     *   - Nothing stored opens: putting back the earlier key is the fix.
+     *   - No key source is recorded: there is no earlier key to name, so each
+     *     unreadable item gets its own replacement step.
+     *
      * @param array{state:string,key_source:string,items:array<string,string>,unreadable:list<string>,detail:string} $probe Keystore::probe() result.
      * @return string Plain text.
      */
     public static function unreadableNotice(array $probe): string
     {
         $unreadable = $probe['unreadable'];
+        $source     = $probe['key_source'];
         $backupKey  = in_array('age_identity', $unreadable, true);
         $connection = array_intersect(['site_keypair', 'cp_public_key'], $unreadable) !== [];
         $email      = array_intersect(['email_secret', 'email_connection_secrets'], $unreadable) !== [];
+        $what       = self::describe($backupKey, $connection, $email);
 
-        $text = ucfirst(self::describe($backupKey, $connection, $email))
-            . ' saved on this site cannot be opened with its current encryption key. '
-            . self::likelyCause($probe['key_source']) . ' ' . self::remedy($probe['key_source']);
+        $text = ucfirst($what) . ' saved on this site cannot be opened with its current encryption key.';
 
+        if (self::somethingOpens($probe) || $source === '') {
+            $text .= ' ' . self::replaceCause($probe, $what, $backupKey && !$connection && !$email);
+            if ($connection) {
+                $text .= ' Reconnect this site in WPMgr to replace its connection keys.';
+            }
+            if ($email) {
+                $text .= self::EMAIL_REMEDY;
+            }
+            if ($backupKey) {
+                $text .= self::BACKUP_KEY_RESET;
+                if (!self::chunksEncrypted()) {
+                    $text .= ' Backups already taken do not need this key and are not affected.';
+                }
+            }
+
+            return $text;
+        }
+
+        $text .= ' ' . self::likelyCause($source) . ' ' . self::remedy($source);
         if ($connection) {
             $text .= ' If you cannot, reconnect this site in WPMgr to replace its connection keys.';
         }
         if ($email) {
-            $text .= ' Save the email settings again in WPMgr to replace the email credentials.';
+            $text .= self::EMAIL_REMEDY;
         }
         if ($backupKey) {
             $text .= ' Until the backup key can be read, backups of this site will fail.';
@@ -144,6 +217,25 @@ final class KeystoreHealth
     }
 
     /**
+     * Notice body for "items are stored, but the key cannot be loaded": what
+     * is wrong with the pinned source and how to put it back.
+     *
+     * @param array{state:string,key_source:string,items:array<string,string>,unreadable:list<string>,detail:string} $probe Keystore::probe() result.
+     * @return string Plain text.
+     */
+    public static function keyUnavailableNotice(array $probe): string
+    {
+        $missing = self::missingExtensionsNotice();
+        if ($missing !== '') {
+            return $missing;
+        }
+
+        return self::keyUnavailableCause($probe['key_source'])
+            . ', so none of the keys saved on this site can be opened. '
+            . self::keyUnavailableRemedy($probe['key_source']) . self::INACTIVE_SUFFIX;
+    }
+
+    /**
      * Detail for a backup the agent refused because its backup key cannot be
      * read. Reaches the dashboard as the failed snapshot's error.
      *
@@ -153,13 +245,18 @@ final class KeystoreHealth
     public static function backupRefusal(array $probe): string
     {
         if ($probe['state'] === Keystore::PROBE_KEY_UNAVAILABLE) {
-            return 'Backup not started: this site cannot load its encryption key ('
-                . self::stripPrefix($probe['detail']) . ').';
+            return 'Backup not started: this site cannot load its encryption key. '
+                . self::keyUnavailableCause($probe['key_source']) . '. '
+                . self::keyUnavailableRemedy($probe['key_source']);
         }
 
         if (($probe['items']['age_identity'] ?? '') === Keystore::ITEM_UNREADABLE) {
-            $text = 'Backup not started: this site cannot read its backup key. '
-                . self::likelyCause($probe['key_source']) . ' ' . self::remedy($probe['key_source']);
+            $text = 'Backup not started: this site cannot read its backup key.';
+            if (self::somethingOpens($probe) || $probe['key_source'] === '') {
+                $text .= ' ' . self::replaceCause($probe, 'the backup key', true) . self::BACKUP_KEY_RESET;
+            } else {
+                $text .= ' ' . self::likelyCause($probe['key_source']) . ' ' . self::remedy($probe['key_source']);
+            }
             if (!self::chunksEncrypted()) {
                 $text .= ' Backups already taken are not affected.';
             }
@@ -187,19 +284,9 @@ final class KeystoreHealth
         // (a) Missing crypto extension. Checked independently of $e's content
         // (a missing extension typically surfaces as an "undefined function"
         // \Error rather than a message that names the extension).
-        $missingExtensions = [];
-        if (!extension_loaded('sodium')) {
-            $missingExtensions[] = 'sodium';
-        }
-        if (!extension_loaded('openssl')) {
-            $missingExtensions[] = 'openssl';
-        }
-        if ($missingExtensions !== []) {
-            $plural = count($missingExtensions) > 1;
-            return 'WPMgr Agent requires the PHP ' . implode(' and ', $missingExtensions)
-                . ' extension' . ($plural ? 's' : '') . ', which ' . ($plural ? 'are' : 'is')
-                . ' not available on this server. Ask your host to enable '
-                . ($plural ? 'them' : 'it') . '.' . self::INACTIVE_SUFFIX;
+        $missing = self::missingExtensionsNotice();
+        if ($missing !== '') {
+            return $missing;
         }
 
         $message = $e->getMessage();
@@ -207,7 +294,8 @@ final class KeystoreHealth
         // (b) Pinned-source drift: every pinned-source failure the Keystore
         // throws names the source and contains the word "pinned".
         if (strpos($message, 'pinned') !== false) {
-            return 'WPMgr Agent could not re-establish its encryption key: ' . $message . self::INACTIVE_SUFFIX;
+            return 'WPMgr Agent could not re-establish its encryption key: ' . self::stripPrefix($message) . '.'
+                . self::INACTIVE_SUFFIX;
         }
 
         // (c) First-time establishment failure.
@@ -215,6 +303,128 @@ final class KeystoreHealth
             . 'in wp-config.php pointing to a writable path, ensure your wp-config.php secret salts '
             . '(AUTH_KEY, ...) are set, or (if WPMGR_AGENT_DISABLE_DB_KEY is defined) remove that '
             . 'constant so the database-stored fallback key can be used.' . self::INACTIVE_SUFFIX;
+    }
+
+    /**
+     * The missing-crypto-extension notice, or '' when sodium and openssl are
+     * both loaded.
+     *
+     * @return string Plain text.
+     */
+    private static function missingExtensionsNotice(): string
+    {
+        $missingExtensions = [];
+        if (!extension_loaded('sodium')) {
+            $missingExtensions[] = 'sodium';
+        }
+        if (!extension_loaded('openssl')) {
+            $missingExtensions[] = 'openssl';
+        }
+        if ($missingExtensions === []) {
+            return '';
+        }
+        $plural = count($missingExtensions) > 1;
+
+        return 'WPMgr Agent requires the PHP ' . implode(' and ', $missingExtensions)
+            . ' extension' . ($plural ? 's' : '') . ', which ' . ($plural ? 'are' : 'is')
+            . ' not available on this server. Ask your host to enable '
+            . ($plural ? 'them' : 'it') . '.' . self::INACTIVE_SUFFIX;
+    }
+
+    /**
+     * Whether at least one stored item opens under the current key, which
+     * shows the current key is the one this site is using now.
+     *
+     * @param array{state:string,key_source:string,items:array<string,string>,unreadable:list<string>,detail:string} $probe Keystore::probe() result.
+     * @return bool
+     */
+    private static function somethingOpens(array $probe): bool
+    {
+        return in_array(Keystore::ITEM_OK, $probe['items'], true);
+    }
+
+    /**
+     * Cause sentence when the unreadable items have to be replaced rather
+     * than recovered by putting back an earlier key.
+     *
+     * @param array{state:string,key_source:string,items:array<string,string>,unreadable:list<string>,detail:string} $probe    Keystore::probe() result.
+     * @param string                                                                                                    $what     The unreadable items in plain words.
+     * @param bool                                                                                                      $singular Whether $what is a single item.
+     * @return string
+     */
+    private static function replaceCause(array $probe, string $what, bool $singular): string
+    {
+        $source = $probe['key_source'];
+        if (!self::somethingOpens($probe)) {
+            return 'No earlier encryption key is recorded for this site, so ' . $what . ' cannot be recovered and '
+                . ($singular ? 'has' : 'have') . ' to be replaced. Most often this happens when the plugin was '
+                . 'deleted and installed again, or the site was moved to another host.';
+        }
+
+        if ($source === 'salts') {
+            $previous = "the site's previous security keys in wp-config.php, before the site was moved to "
+                . 'another host or those keys were changed';
+            $keep     = ' Do not put back the previous security keys: what opens now would stop opening.';
+        } elseif ($source === 'file' || $source === 'constant') {
+            $previous = "the site's previous encryption key file, before the site was moved to another host "
+                . 'or that file was replaced';
+            $keep     = ' Do not put back the previous key file: what opens now would stop opening.';
+        } else {
+            $previous = "the site's previous encryption key, before the site was moved to another host";
+            $keep     = '';
+        }
+
+        return 'Other keys saved on this site do open with the current key, so ' . $what . ' '
+            . ($singular ? 'was' : 'were') . ' most likely saved under ' . $previous . '.' . $keep;
+    }
+
+    /**
+     * What is wrong with the pinned source when the key cannot be loaded, as
+     * a sentence without its final full stop.
+     *
+     * @param string $keySource Pinned source name.
+     * @return string
+     */
+    private static function keyUnavailableCause(string $keySource): string
+    {
+        switch ($keySource) {
+            case 'salts':
+                return 'The security keys in wp-config.php that the key is made from are missing or no longer usable';
+            case 'constant':
+                return 'The key file named by WPMGR_AGENT_KEY_FILE in wp-config.php is missing, or that constant was removed';
+            case 'file':
+                return 'The file the key is kept in is missing or damaged';
+            case 'db':
+                return 'The key stored in the database is missing or damaged';
+            case 'unknown':
+                return 'The record of where the key is kept is damaged';
+            default:
+                return 'The key could not be loaded';
+        }
+    }
+
+    /**
+     * How to put the pinned source back when the key cannot be loaded.
+     *
+     * @param string $keySource Pinned source name.
+     * @return string
+     */
+    private static function keyUnavailableRemedy(string $keySource): string
+    {
+        switch ($keySource) {
+            case 'salts':
+                return 'To fix it, put back the previous values of the security keys in wp-config.php: '
+                    . self::SALT_NAMES . '.';
+            case 'constant':
+                return 'To fix it, put back that constant and the key file it names.';
+            case 'file':
+                return 'To fix it, put back the key file this site used before.';
+            case 'db':
+            case 'unknown':
+                return 'To fix it, restore the database this site used before.';
+            default:
+                return 'To fix it, try again later, and if it keeps failing ask your host to check the PHP error log.';
+        }
     }
 
     /**
@@ -276,8 +486,8 @@ final class KeystoreHealth
     private static function remedy(string $keySource): string
     {
         if ($keySource === 'salts') {
-            return 'To fix it, put back the previous values of the security keys in wp-config.php ('
-                . self::SALT_NAMES . ').';
+            return 'To fix it, put back the previous values of the security keys in wp-config.php: '
+                . self::SALT_NAMES . '.';
         }
         if ($keySource === 'file' || $keySource === 'constant') {
             return 'To fix it, put back the encryption key file this site used before.';

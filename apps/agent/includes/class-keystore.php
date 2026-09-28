@@ -1204,14 +1204,16 @@ final class Keystore implements EmailKeystoreInterface
     /**
      * Resolve the WordPress uploads base directory, or null if unavailable.
      *
+     * @param bool $createDir Whether wp_upload_dir() may create this month's
+     *                        uploads directory. False on the read-only paths.
      * @return string|null
      */
-    private function uploadsBaseDir(): ?string
+    private function uploadsBaseDir(bool $createDir = true): ?string
     {
         if (!function_exists('wp_upload_dir')) {
             return null;
         }
-        $info = wp_upload_dir();
+        $info = wp_upload_dir(null, $createDir);
         if (is_array($info) && isset($info['basedir']) && is_string($info['basedir']) && $info['basedir'] !== '') {
             return $info['basedir'];
         }
@@ -1258,7 +1260,7 @@ final class Keystore implements EmailKeystoreInterface
     {
         $paths = [];
 
-        $uploadBase = $this->uploadsBaseDir();
+        $uploadBase = $this->uploadsBaseDir(false);
         if ($uploadBase !== null) {
             $paths[] = rtrim($uploadBase, '/\\') . '/wpmgr-agent/master.key';
         }
