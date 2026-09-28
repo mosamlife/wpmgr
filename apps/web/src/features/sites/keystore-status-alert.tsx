@@ -98,10 +98,18 @@ export function KeystoreStatusAlert({ site }: { site: Site }) {
   if (state !== "unreadable" && state !== "key_unavailable") return null;
 
   const adminUrl = `${stripTrailingSlash(site.url)}/wp-admin/`;
+  // PR #778 item 3 (CodeRabbit). `backupsAffected` used to read
+  // `status.items?.age_identity` directly, independent of the resolved set
+  // above. A report whose `unreadable` list named age_identity but whose
+  // `items` map was missing or omitted it then named the backup key as
+  // unreadable in the heading while this flag stayed false, so the two
+  // sentences contradicted each other. Both must be computed from the same
+  // resolved set.
+  const resolvedUnreadable = resolveUnreadableKeys(status);
   const backupsAffected =
-    state === "key_unavailable" || status?.items?.age_identity === "unreadable";
+    state === "key_unavailable" || resolvedUnreadable.includes("age_identity");
   const saltsSuspected = status?.key_source === "salts";
-  const unreadableItems = describeUnreadableItems(resolveUnreadableKeys(status));
+  const unreadableItems = describeUnreadableItems(resolvedUnreadable);
 
   const heading = backupsAffected
     ? "Backups cannot run for this site."

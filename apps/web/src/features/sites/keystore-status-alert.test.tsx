@@ -256,4 +256,34 @@ describe("KeystoreStatusAlert: copy branches (item 2)", () => {
       await screen.findByText("This site's email credentials and connection keys cannot be read."),
     ).toBeInTheDocument();
   });
+
+  // PR #778 item 3 (CodeRabbit). `backupsAffected` used to read
+  // `status.items?.age_identity` directly instead of the same resolved set
+  // `describeUnreadableItems` uses. These two pin that both statements are
+  // now computed from one resolved set (`resolveUnreadableKeys`), per the
+  // list-wins rule already pinned above: the `unreadable` list wins over
+  // `items` when both are present.
+  it("says backups cannot run when the unreadable list names age_identity and the items map is missing entirely", async () => {
+    renderAlert(
+      siteWithKeystore({
+        state: "unreadable",
+        unreadable: ["age_identity"],
+      }),
+    );
+    expect(await screen.findByText("Backups cannot run for this site.")).toBeInTheDocument();
+  });
+
+  it("does NOT say backups cannot run when the list omits age_identity even though items marks it unreadable, per the list-wins rule", async () => {
+    renderAlert(
+      siteWithKeystore({
+        state: "unreadable",
+        items: { age_identity: "unreadable", email_secret: "ok" },
+        unreadable: ["email_secret"],
+      }),
+    );
+    expect(
+      await screen.findByText("This site's email credentials cannot be read."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Backups cannot run for this site.")).not.toBeInTheDocument();
+  });
 });
