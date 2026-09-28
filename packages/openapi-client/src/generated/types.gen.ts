@@ -8726,6 +8726,11 @@ export type LoginErrors = {
    * Validation failed
    */
   422: Error;
+  /**
+   * too_many_attempts - login admission control refused the attempt (only when WPMGR_AUTH_LOGIN_MODE=enforce). Decided before any account lookup, so the response is the same whether or not the account exists. details.scope names the budget: "pair" (this connection against this account), "source" (this connection across all accounts) or "network" (this IPv6 /48 across all accounts). details.retry_after_seconds matches the Retry-After header. A refused attempt is not counted against any budget.
+   *
+   */
+  429: Error;
 };
 
 export type LoginError = LoginErrors[keyof LoginErrors];
