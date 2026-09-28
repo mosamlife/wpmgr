@@ -44,8 +44,9 @@
 -- other instances may still be serving, so every lock below is held until the
 -- file commits.
 --
---   0. Bound every wait: SET LOCAL lock_timeout and statement_timeout. See
---      THE TIMEOUTS below for the values and what happens when one fires.
+--   0. Bound every wait: set lock_timeout and statement_timeout for this
+--      transaction only. See THE TIMEOUTS below for the values and what
+--      happens when one fires.
 --
 --   1. LOCK tenants, sites, font_transcode_results IN SHARE ROW EXCLUSIVE MODE.
 --      This is the lock ADD CONSTRAINT ... FOREIGN KEY takes on the table it
@@ -96,10 +97,22 @@
 --
 -- THE TIMEOUTS
 --
--- The file opens with SET LOCAL lock_timeout = '2s' and SET LOCAL
--- statement_timeout = '10s'. SET LOCAL scopes both to this file's
--- transaction: they end with it and reach no other migration and no other
+-- The file opens by setting lock_timeout = '2s' and statement_timeout = '10s'
+-- with set_config(..., true), which is SET LOCAL: both are scoped to this
+-- file's transaction, end with it, and reach no other migration and no other
 -- connection.
+--
+-- Steps 0 and 1 are written as DO blocks rather than as bare SET LOCAL and
+-- LOCK TABLE so that the file also runs statement by statement, outside a
+-- transaction block, as schema tooling does when it replays migrations into a
+-- throwaway database. There each statement is its own transaction, so the
+-- settings and the lock end with the statement that took them, and the file
+-- carries no locking guarantee; its guarantees are made under migrate.go's
+-- single transaction only. Under that transaction the two forms are
+-- equivalent: the settings and the lock hold until the file commits. The
+-- settings are in their own block, ahead of the lock's, because a statement's
+-- statement_timeout is fixed when the statement starts; the separate block is
+-- what puts step 1 under the ten-second bound as well as the two-second one.
 --
 -- lock_timeout bounds step 1. LOCK takes the three tables one after another;
 -- while it waits for one it already holds the ones before it, and every write
@@ -139,11 +152,19 @@
 -- added only when a constraint of that name is absent. A database built from a
 -- fresh schema reaches the same end state as one migrated here.
 
-SET LOCAL lock_timeout = '2s';
-SET LOCAL statement_timeout = '10s';
+DO $$
+BEGIN
+    PERFORM set_config('lock_timeout', '2s', true);
+    PERFORM set_config('statement_timeout', '10s', true);
+END;
+$$;
 
-LOCK TABLE "public"."tenants", "public"."sites", "public"."font_transcode_results"
-    IN SHARE ROW EXCLUSIVE MODE;
+DO $$
+BEGIN
+    LOCK TABLE "public"."tenants", "public"."sites", "public"."font_transcode_results"
+        IN SHARE ROW EXCLUSIVE MODE;
+END;
+$$;
 
 DO $$
 DECLARE
