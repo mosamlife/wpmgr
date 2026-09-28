@@ -131,6 +131,94 @@ type metadataDTO struct {
 	// indistinguishable between "the apply never ran" and "the apply ran and
 	// the upgrade failed", which are different incidents with different fixes.
 	AgentSelfUpdate *agentSelfUpdateResultDTO `json:"agent_self_update,omitempty"`
+
+	// Keystore is the agent's Keystore::probe() trial-decrypt result (GH
+	// #753). It arrives on the ordinary metadata push — the 30-minute cron
+	// cadence, or a CP-triggered recheck — never on admin_init: the agent's
+	// ensureKeystoreReady only records a local wp-admin notice there and
+	// sends nothing to the control plane from that path.
+	//
+	// Absent only before this site's first metadata sync. An agent that
+	// predates #753 but HAS synced at least once still gets a keystore
+	// field: the site domain records that as "not reported", never as
+	// absent and never as "ok" — an old agent's silence must never read as
+	// a healthy keystore. not_reported also covers every later push whose
+	// LATEST probe carried no recognised state: every push rewrites the
+	// whole stored components document, so this is not a delta and a prior
+	// good report does not survive a bad one.
+	//
+	// Never carries key material, a key-check value, an error detail or a
+	// file path; that is enforced agent-side.
+	Keystore *keystoreStatusDTO `json:"keystore,omitempty"`
+}
+
+// keystoreStatusDTO mirrors the agent's Keystore::probe() result (GH #753).
+// Tolerantly decoded like every other agent-reported field: this comes from a
+// live WordPress install and a malformed object here must never fail the
+// metadata sync. Struct tags alone are not tolerant enough for this one — a
+// plain field-typed decode still errors on a shape encoding/json cannot
+// coerce (e.g. "items" as PHP's empty-array `[]` instead of `{}`, or the
+// whole "keystore" value sent as a string/number/array) — so UnmarshalJSON
+// below decodes field-by-field and degrades instead of erroring.
+type keystoreStatusDTO struct {
+	State      flexString            `json:"state"`
+	KeySource  flexString            `json:"key_source"`
+	Items      map[string]flexString `json:"items"`
+	Unreadable []flexString          `json:"unreadable"`
+}
+
+// UnmarshalJSON gives keystoreStatusDTO a best-effort, field-by-field decode.
+// A live WordPress install can send this in shapes a plain struct decode
+// rejects outright — PHP's json_encode(array()) renders an empty array as
+// `[]`, not `{}`, so "items":[] and "unreadable":{} both occur in the wild,
+// and a malformed agent build can send the whole "keystore" value as a
+// string, a number or an array rather than an object. None of that may fail
+// the metadata push and drop plugins/themes/age_recipient with it, so every
+// field this cannot make sense of is left at its zero value rather than
+// erroring; downstream that reads as keystore "not_reported", never as an
+// error.
+func (k *keystoreStatusDTO) UnmarshalJSON(b []byte) error {
+	b = bytes.TrimSpace(b)
+	if len(b) == 0 || string(b) == "null" {
+		return nil
+	}
+	if b[0] != '{' {
+		// The "keystore" value itself is not an object (string/number/bool/
+		// array): degrade to a zero-value probe rather than fail the push.
+		return nil
+	}
+	var raw map[string]json.RawMessage
+	if json.Unmarshal(b, &raw) != nil {
+		// Malformed object body: degrade rather than fail the push.
+		return nil
+	}
+	if v, ok := raw["state"]; ok {
+		_ = json.Unmarshal(v, &k.State)
+	}
+	if v, ok := raw["key_source"]; ok {
+		_ = json.Unmarshal(v, &k.KeySource)
+	}
+	if v, ok := raw["items"]; ok {
+		if v = bytes.TrimSpace(v); len(v) > 0 && v[0] == '{' {
+			var items map[string]flexString
+			if json.Unmarshal(v, &items) == nil {
+				k.Items = items
+			}
+		}
+		// Any other shape (PHP's empty-array "[]", a string, a number):
+		// leave Items nil rather than fail.
+	}
+	if v, ok := raw["unreadable"]; ok {
+		if v = bytes.TrimSpace(v); len(v) > 0 && v[0] == '[' {
+			var unreadable []flexString
+			if json.Unmarshal(v, &unreadable) == nil {
+				k.Unreadable = unreadable
+			}
+		}
+		// Any other shape (an object, a string, a number): leave Unreadable
+		// nil rather than fail.
+	}
+	return nil
 }
 
 // agentSelfUpdateResultDTO is the apply-beat outcome the agent records on disk
@@ -320,6 +408,25 @@ func (d metadataDTO) toMetadata() Metadata {
 		}
 		m.Roles = roles
 	}
+	// The agent's keystore probe (GH #753). Present whenever the metadata
+	// collector had keystore access when it ran (cron push, enroll); absent
+	// from an agent old enough to predate the probe.
+	if d.Keystore != nil {
+		items := make(map[string]string, len(d.Keystore.Items))
+		for k, v := range d.Keystore.Items {
+			items[k] = string(v)
+		}
+		unreadable := make([]string, 0, len(d.Keystore.Unreadable))
+		for _, u := range d.Keystore.Unreadable {
+			unreadable = append(unreadable, string(u))
+		}
+		m.KeystoreStatus = &KeystoreStatus{
+			State:      string(d.Keystore.State),
+			KeySource:  string(d.Keystore.KeySource),
+			Items:      items,
+			Unreadable: unreadable,
+		}
+	}
 	// The agent's account of its last apply beat. A record with no status says
 	// nothing, so it is dropped here rather than persisted as an empty shell.
 	if d.AgentSelfUpdate != nil && strings.TrimSpace(string(d.AgentSelfUpdate.Status)) != "" {
@@ -397,6 +504,27 @@ type Metadata struct {
 	// beat. nil when the site never staged one, or when the agent predates the
 	// channel entirely.
 	AgentSelfUpdate *AgentSelfUpdateResult
+	// KeystoreStatus is the agent's Keystore::probe() result (GH #753). nil
+	// when the agent did not report it (too old, or the metadata collector
+	// had no keystore access on this push) — the site domain surfaces that
+	// absence explicitly as "not reported", never as "ok".
+	KeystoreStatus *KeystoreStatus
+}
+
+// KeystoreStatus mirrors the agent's Keystore::probe() trial-decrypt result.
+// It never carries key material, a key-check value, an error detail or a file
+// path — the agent enforces that; this type just carries what it sent.
+type KeystoreStatus struct {
+	// State is one of ok|unreadable|key_unavailable, as reported by the agent.
+	State string
+	// KeySource is the tier that pinned the master key (constant|salts|file|
+	// db|unknown), or "" when nothing is pinned yet.
+	KeySource string
+	// Items is the per-envelope probe result (e.g. "age_identity": "unreadable").
+	Items map[string]string
+	// Unreadable is the convenience list of item keys currently unreadable;
+	// mirrors the "unreadable" entries in Items.
+	Unreadable []string
 }
 
 // AgentSelfUpdateResult is the apply-beat outcome an agent replays on its next

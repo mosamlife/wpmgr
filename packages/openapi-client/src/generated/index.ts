@@ -2456,6 +2456,7 @@ export {
   type SiteHardeningConfig,
   type SiteId,
   type SiteInvitation,
+  type SiteKeystoreStatus,
   type SiteLifecycleReason,
   type SiteList,
   type SiteLoginBrand,
