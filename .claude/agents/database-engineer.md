@@ -100,13 +100,19 @@ they kept appearing.
 ### 3. `db/schema.sql` is not authoritative for RLS
 
 Its first line calls itself "single source of truth". It is not: it is sqlc's
-input, and it is well behind the migrations. Run the grep above against
-`apps/api/db/schema.sql` as well as `apps/api/migrations/*.sql` and compare the
-two counts yourself; expect the migrations to lead by a wide margin. An
-agent that greps `schema.sql` to decide whether a table is site-scoped will
-conclude it is unprotected, which is the opposite of the truth. **The migrations
-are authoritative.** Grep both the quoted, schema-qualified form the migrations
-use and the bare form `schema.sql` uses, or you will miss half of them.
+input. #762 resynced it with the migrations, so it now loads into an empty
+database in one pass. Run the grep above against `apps/api/db/schema.sql` as
+well as `apps/api/migrations/*.sql` and compare the two counts yourself; expect
+them to agree, and treat a gap as a signal something drifted rather than
+assuming the gap is stale. Every new migration must update `schema.sql` in the
+same commit **and** re-hash `apps/api/migrations/atlas.sum`
+(`atlas migrate hash`) — nothing checks either against the migrations
+automatically yet (#759), so a migration that skips both still builds, still
+generates and still passes CI. An agent that greps `schema.sql` alone to decide
+whether a table is site-scoped is trusting a file nothing verifies. **The
+migrations are authoritative.** Grep both the quoted, schema-qualified form the
+migrations use and the bare form `schema.sql` uses, or you will miss half of
+them.
 
 ### 4. Deletion and reclamation take the lock the rest of the codebase takes
 

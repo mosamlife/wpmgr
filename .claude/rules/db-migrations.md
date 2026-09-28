@@ -55,8 +55,9 @@ closed in handlers before anyone asked why they kept appearing.
 
 ## `db/schema.sql` is not authoritative for RLS
 
-Its first line calls itself the single source of truth. It is sqlc's input, and
-it is well behind the migrations:
+Its first line calls itself the single source of truth. It is sqlc's input,
+and as of #762 it is in step with the migrations: it loads into an empty
+database in one pass.
 
 ```sh
 site_scope_count() {
@@ -69,9 +70,12 @@ site_scope_count apps/api/migrations/*.sql
 site_scope_count apps/api/db/schema.sql
 ```
 
-Run both in the turn you need the figures. Expect the migrations to return the
-larger number by a wide margin, not by one or two; if the two ever agree, prove
-the drift actually closed rather than assuming it.
+Run both in the turn you need the figures; expect them to agree. Nothing
+checks `schema.sql` against the migrations automatically yet (#759), so treat
+any gap as drift, not noise, and find which migration caused it. Every new
+migration must update `schema.sql` in the same commit and re-hash
+`apps/api/migrations/atlas.sum` (`atlas migrate hash`), or the two fall out of
+step with nothing to catch it.
 
 The wrapper exists because the bare pipeline ends in `wc -l`, which prints `0`
 and exits `0` when the pattern matches nothing. On this page, `0` is not a
@@ -80,9 +84,10 @@ mangled paste produces, and it reads as "this table has no site-scope policy",
 which is the exact wrong conclusion the paragraph below warns about. An empty
 search here has to refuse rather than answer.
 
-Grepping `schema.sql` to decide whether a table is site-scoped concludes it is
-unprotected, which is the opposite of the truth. Grep both the quoted,
-schema-qualified form the migrations use and the bare form `schema.sql` uses.
+Grepping `schema.sql` alone answers a security question nothing has verified:
+for RLS, the migrations are the authority regardless of what `schema.sql`
+currently shows. Grep both the quoted, schema-qualified form the migrations
+use and the bare form `schema.sql` uses.
 
 ## Deletes take the lock; cascades destroy the record
 
