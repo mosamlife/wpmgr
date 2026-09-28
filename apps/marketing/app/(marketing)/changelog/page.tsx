@@ -50,6 +50,54 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.163",
+    date: "2026-09-28",
+    summary:
+      "Select all in the update wizard, agent commands now declare their own effect and repeatability, and instance SMTP settings require instance-level authority.",
+    items: [
+      {
+        tag: "Added",
+        text: "Every agent command now declares two facts about itself: what a successful run does to the site (read, write or destructive) and whether running it again is safe (idempotent, repeatable or unsafe). A command that declares neither is refused at build time.",
+      },
+      {
+        tag: "Added",
+        text: "A new content_update command changes the title and/or body of an existing post or page by id, the agent's first command that writes post content. It keeps a retained copy of what it overwrites before writing, refuses a document built in the block editor outright, and requires a fingerprint of the content the caller believes it is replacing, so a conflicting write is reported as a conflict rather than silently applied.",
+      },
+      {
+        tag: "Added",
+        text: "The plugin and theme update wizard has a Select all button next to its existing controls. It selects every option in the active tab that has an available update, and turns into Deselect all once everything available in that tab is selected; selections on the other tab are left untouched.",
+      },
+      {
+        tag: "Changed",
+        text: "Instance SMTP settings, the Email / SMTP page and its underlying API, now require instance-level authority: a superadmin, or the owner of the only organisation on the install. On an install with more than one organisation, configure a superadmin to manage SMTP.",
+      },
+      {
+        tag: "Fixed",
+        text: "Restoring a file from the agent's media quarantine no longer overwrites a file that has since been recreated at the same path, and a file the restore declines to move is no longer removed from quarantine afterwards. Requires updating the plugin to pick up the fix.",
+      },
+      {
+        tag: "Fixed",
+        text: "The agent's page cache now keeps every path it builds inside the cache root. Requires updating the plugin to pick up the fix.",
+      },
+      {
+        tag: "Fixed",
+        text: "The agent's pre-update snapshot now distinguishes a source directory that did not exist from a snapshot that could not be taken, so a rollback is no longer skipped when one was available or attempted when there was nothing to restore. Requires updating the plugin to pick up the fix.",
+      },
+      {
+        tag: "Fixed",
+        text: "A command that fails now reports its exception class, where in the plugin it was thrown, and a short, redacted reason, instead of a generic failure, so a failure is diagnosable from the dashboard without reproducing it. Requires updating the plugin to pick up the fix.",
+      },
+      {
+        tag: "Fixed",
+        text: "The database schema file is brought back in step with the migrations. Four generated backup-schedule queries named columns a migration had already dropped; those queries now match the database.",
+      },
+      {
+        tag: "Fixed",
+        text: "Migrations that add required scope columns to MCP grants and OAuth clients now apply cleanly to a database that already has MCP connections. Upgrading from 0.61.160 or earlier applies them automatically.",
+      },
+    ],
+  },
+  {
     version: "0.61.160",
     date: "2026-09-05",
     summary:
