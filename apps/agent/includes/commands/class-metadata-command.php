@@ -13,6 +13,7 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent\Commands;
 
+use WPMgr\Agent\Keystore;
 use WPMgr\Agent\Security\SiteRoles;
 use WPMgr\Agent\Support\AgeIdentity;
 use WPMgr\Agent\Support\KeystoreHealth;
@@ -139,11 +140,13 @@ final class MetadataCommand implements CommandInterface
             // admin notice when something cannot be read, so a site whose
             // keys stopped opening is flagged by the 30-minute metadata cron
             // without anyone re-activating the plugin.
+            //
+            // The status reported is the keystore as it stands after this
+            // collection has run, so it is recorded below, after any backup
+            // key the recipient step creates.
             $probe = null;
             try {
                 $probe = $this->ageIdentity->probeKeystore();
-                $payload['keystore'] = KeystoreHealth::status($probe);
-                KeystoreHealth::flag($probe);
             } catch (\Throwable $e) {
                 // Swallow — telemetry must not fail the sync.
             }
@@ -155,11 +158,30 @@ final class MetadataCommand implements CommandInterface
             // key that cannot be read.
             $ageReadable = $probe === null || KeystoreHealth::backupKeyUsable($probe);
             if ($ageReadable) {
+                $backupKeyWasAbsent = $probe === null
+                    || ($probe['items']['age_identity'] ?? '') === Keystore::ITEM_ABSENT;
                 try {
                     $recipient = $this->ageIdentity->ensureRecipient();
                     if ($recipient !== '') {
                         $payload['age_recipient'] = $recipient;
                     }
+                    // ensureRecipient() may just have created the backup key.
+                    // Probe again so the first push reports it present rather
+                    // than absent until the next one. When a backup key was
+                    // already stored nothing could have changed, and the first
+                    // probe stands.
+                    if ($backupKeyWasAbsent) {
+                        $probe = $this->ageIdentity->probeKeystore();
+                    }
+                } catch (\Throwable $e) {
+                    // Swallow — telemetry must not fail the sync.
+                }
+            }
+
+            if ($probe !== null) {
+                try {
+                    $payload['keystore'] = KeystoreHealth::status($probe);
+                    KeystoreHealth::flag($probe);
                 } catch (\Throwable $e) {
                     // Swallow — telemetry must not fail the sync.
                 }

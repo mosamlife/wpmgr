@@ -872,6 +872,38 @@ PHP;
     }
 
     /**
+     * GH #753. On the first collection that creates the backup key, the
+     * pushed keystore status is the one after the creation: the backup key
+     * reads ok and the state is ok, not absent until the next push.
+     */
+    public function test_collect_reports_the_backup_key_created_in_the_same_collection(): void
+    {
+        $keyPath = sys_get_temp_dir() . '/wpmgr-agent-metadata-' . bin2hex(random_bytes(8)) . '.key';
+        file_put_contents($keyPath, random_bytes(32));
+        $options = [
+            \WPMgr\Agent\Keystore::OPTION_MASTER_KEY_SOURCE => ['source' => 'file', 'path' => $keyPath],
+        ];
+        $this->stubInventory($options);
+
+        try {
+            (new \WPMgr\Agent\Keystore())->generateSiteKeypair();
+            $this->assertArrayNotHasKey(\WPMgr\Agent\Keystore::OPTION_AGE_IDENTITY, $options, 'Precondition: no backup key is stored.');
+
+            $data = (new MetadataCommand(new \WPMgr\Agent\Support\AgeIdentity(new \WPMgr\Agent\Keystore())))->collect();
+        } finally {
+            @unlink($keyPath);
+        }
+
+        $this->assertArrayHasKey(\WPMgr\Agent\Keystore::OPTION_AGE_IDENTITY, $options, 'The absent backup key must be created.');
+        $this->assertStringStartsWith('age1', $data['age_recipient'] ?? '');
+        $this->assertSame('ok', $data['keystore']['state'] ?? null);
+        $this->assertSame('ok', $data['keystore']['items']['age_identity'] ?? null);
+        $this->assertSame('ok', $data['keystore']['items']['site_keypair'] ?? null);
+        $this->assertSame([], $data['keystore']['unreadable'] ?? null);
+        $this->assertArrayNotHasKey(\WPMgr\Agent\Plugin::OPTION_KEYSTORE_ERROR, $options);
+    }
+
+    /**
      * No backup key is stored and the site keypair does not open: the
      * current key is not shown to be the live one, so no backup key is
      * created and no recipient is sent.
