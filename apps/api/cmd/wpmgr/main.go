@@ -1099,7 +1099,10 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	mailerSvc := mailer.NewService(emailResolver, emailRenderer, pool, cfg.PublicBaseURL, supportEmail, logger)
 	sendEmailWorker := mailer.NewSendEmailWorker(mailerSvc)
 	smtpSettingsSvc := settings.NewService(settings.NewRepo(pool), siteDestAgeID, mailerSvc, logger)
-	smtpSettingsH := settings.NewHandler(smtpSettingsSvc, auditRec)
+	// The SMTP relay is install-wide, so its routes are gated on instance-level
+	// authority, read through the same admingate.Store the admin console uses.
+	// authH.SetInstanceAuthorityGate below wires the matching Me capability.
+	smtpSettingsH := settings.NewHandler(smtpSettingsSvc, auditRec, admingate.NewPoolStore(pool))
 
 	// m59 — per-site email management. Shares the same age identity as the
 	// instance SMTP settings (siteDestAgeID). The agent command client is wired
@@ -2866,6 +2869,11 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// no-ops to true when WPMGR_HOSTED is off, so this wiring is safe to leave
 	// on unconditionally, exactly like SetHosted above.
 	authH.SetManagedStorageResolver(billingSvc)
+	// Me.can_manage_instance_email: the same admingate.Store over the same
+	// pool that smtpSettingsH's route gate reads, through the same
+	// admingate.CanManageInstanceEmail, so the dashboard offers the instance
+	// email settings exactly when /api/v1/settings/smtp would admit.
+	authH.SetInstanceAuthorityGate(admingate.NewPoolStore(pool))
 
 	filesH := files.NewHandler(filesSvc, auditRec)
 

@@ -1621,6 +1621,11 @@ export const MeSchema = {
       description:
         "Whether the active tenant's plan currently permits routing a NEW backup to CP-managed storage (M16 Phase B). Always true on a self-hosted or hosted-billing-disabled instance, and true for every paid plan; false only for a free-plan tenant under WPMGR_HOSTED. This is a coarse, role-safe display signal for the operator-facing /destinations page (which any operator can view, unlike the owner-only /billing summary) — it is NOT the authoritative gate; the backup-run endpoints enforce the real check server-side and return 402 byo_destination_required when denied. Restoring/downloading an existing backup is never gated by this or any other check.\n",
     },
+    can_manage_instance_email: {
+      type: "boolean",
+      description:
+        "Whether the signed-in user may manage the install-wide SMTP relay (GET, PUT and POST /test under /api/v1/settings/smtp). Computed by the same decision that gates those routes, so it is true exactly when they would admit this caller: instance-level authority (a superadmin, or the owner of the only live organisation on the install) and a principal that is not site-scoped. An active organisation is not required. False whenever that decision cannot be made. Present on GET and PATCH /auth/me; responses built before the session exists (login, register, 2FA and OIDC completion) omit it, and clients read it from the GET /auth/me that follows.\n",
+    },
     desired_plan: {
       type: "string",
       enum: ["starter", "agency", "scale"],

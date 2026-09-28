@@ -2300,8 +2300,8 @@ export const updateSiteDestination = <ThrowOnError extends boolean = false>(
 /**
  * Get the instance-wide SMTP settings (masked)
  *
- * Org-scoped (blocks site-scoped collaborators). Reads require admin+;
- * the stored password/secret is never returned in plaintext.
+ * Requires instance-level authority. The stored password/secret is never
+ * returned in plaintext.
  *
  */
 export const getSmtpSettings = <ThrowOnError extends boolean = false>(
@@ -2316,7 +2316,7 @@ export const getSmtpSettings = <ThrowOnError extends boolean = false>(
 /**
  * Update the instance-wide SMTP settings
  *
- * Requires the `smtp.manage` permission (owner-only).
+ * Requires instance-level authority.
  */
 export const updateSmtpSettings = <ThrowOnError extends boolean = false>(
   options: Options<UpdateSmtpSettingsData, ThrowOnError>,
@@ -2337,7 +2337,7 @@ export const updateSmtpSettings = <ThrowOnError extends boolean = false>(
 /**
  * Send a test email through the stored SMTP config
  *
- * Requires the `smtp.manage` permission (owner-only). A send failure is
+ * Requires instance-level authority. A send failure is
  * returned as `200 {ok:false, message}` — the scrubbed reason string
  * never contains internal IPs/hostnames — rather than a 4xx/5xx, so the
  * UI can show it inline.

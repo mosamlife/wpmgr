@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/admingate"
 	"github.com/mosamlife/wpmgr/apps/api/internal/api/gen"
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/authz"
@@ -73,6 +74,26 @@ type Handler struct {
 	// many argon2id verifications run at once. Unset removes BOTH, which is a
 	// wiring failure and not a mode — LogAdmissionStartup says so at boot.
 	loginGate *LoginGate
+	// instanceGate answers Me.can_manage_instance_email, wired via
+	// SetInstanceAuthorityGate. It is read by admingate.CanManageInstanceEmail,
+	// the same function that gates /api/v1/settings/smtp, so the dashboard is
+	// offered the instance email settings exactly when those routes would
+	// admit the caller. Nil until wired, which reports false.
+	instanceGate admingate.Store
+}
+
+// SetInstanceAuthorityGate wires the store behind Me.can_manage_instance_email.
+// Call it once at boot with the same kind of admingate.Store the settings
+// handler's route gate is built from.
+func (h *Handler) SetInstanceAuthorityGate(store admingate.Store) {
+	h.instanceGate = store
+}
+
+// setInstanceCapabilities fills the Me fields that describe what the caller
+// may do on the install as a whole. ctx must carry the resolved principal.
+// Every refusal, including a store error and an unwired store, is false.
+func (h *Handler) setInstanceCapabilities(ctx context.Context, me *gen.Me) {
+	me.CanManageInstanceEmail = gen.NewOptBool(admingate.CanManageInstanceEmail(ctx, h.instanceGate))
 }
 
 // NewHandler builds an auth Handler.
@@ -545,6 +566,7 @@ func (h *Handler) me(c *gin.Context) {
 	out := toMe(u, memberships, p.TenantID, h.hosted, h.managedStorageAllowed(c.Request.Context(), p.TenantID), "")
 	// m66 — portal principal: enrich Me with scope, role, and portal branding.
 	enrichMePortal(c.Request.Context(), &out, p, h.svc.repo)
+	h.setInstanceCapabilities(c.Request.Context(), &out)
 	c.JSON(http.StatusOK, &out)
 }
 
@@ -581,6 +603,7 @@ func (h *Handler) updateProfile(c *gin.Context) {
 	// context editor would go read-only until a hard reload. An absent field
 	// must never read as a denied permission.
 	enrichMePortal(c.Request.Context(), &out, p, h.svc.repo)
+	h.setInstanceCapabilities(c.Request.Context(), &out)
 	c.JSON(http.StatusOK, &out)
 }
 
