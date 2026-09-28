@@ -129,6 +129,48 @@ final class RouterCommandFailureLogTest extends TestCase
 	}
 
 	/**
+	 * #764: escapeControlChars() itself fails closed, independently of
+	 * logReason()'s own withheld-message case above. A mutant that made
+	 * escapeControlChars() return its input on a PCRE engine failure — or
+	 * that dropped the "?? self::LOG_LINE_WITHHELD" guarding the dispatch()
+	 * call site — would let a raw control byte, one able to start a forged
+	 * log line or hide text from a terminal, reach the log untouched. This
+	 * covers the dispatch()/command-failure call site only; the
+	 * authorizeCommand() call site's own "?? self::LOG_LINE_WITHHELD" is
+	 * covered separately below, by
+	 * test_authorize_failure_log_line_withholds_the_whole_line_when_escaping_cannot_complete().
+	 *
+	 * Forced the same way the test above forces logReason()'s passes to
+	 * fail: pcre.jit off and a backtrack budget of 1, so any regex that has
+	 * to actually match something exhausts it and preg_replace_callback()
+	 * returns null. The message here is short enough that logReason()'s own
+	 * two passes have nothing to match (no run anywhere near 32 characters)
+	 * and hand the ESC straight through unchanged, so escapeControlChars()
+	 * — and only escapeControlChars() — is what is put under test here.
+	 *
+	 * The withheld marker must replace the WHOLE line, not just the reason:
+	 * the command name and every other field are lost along with it, which
+	 * is what distinguishes this from the reason-only withholding above.
+	 */
+	public function test_debug_log_withholds_the_whole_line_when_escaping_cannot_complete(): void
+	{
+		$run = $this->runInSubprocess(
+			true,
+			"before\x1Bafter",
+			"ini_set('pcre.jit', '0'); ini_set('pcre.backtrack_limit', '1');"
+		);
+
+		$this->assertSame( 0, $run['status'], 'subprocess failed: ' . $run['stdout'] . $run['stderr'] );
+		$this->assertStringContainsString(
+			'WPMgr Agent: log line withheld (control-character escaping could not complete).',
+			$run['log']
+		);
+		$this->assertStringNotContainsString( "\x1B", $run['log'], 'a raw control byte reached the log' );
+		$this->assertStringNotContainsString( 'before', $run['log'], 'the withheld marker must replace the whole line' );
+		$this->assertStringNotContainsString( 'command=boom', $run['log'], 'the withheld marker must replace the whole line, not just the reason' );
+	}
+
+	/**
 	 * #754: one failure is ONE log line, whatever line breaks the message
 	 * carries. They are written as the visible sequences \n and \r\n, so the
 	 * whole text survives and nothing in the message can start a line of its
@@ -208,6 +250,403 @@ final class RouterCommandFailureLogTest extends TestCase
 	}
 
 	/**
+	 * #764: the dispatch()/command-failure call site must not even build, let
+	 * alone escape, the log line when debug logging is off. Counters on
+	 * escapeControlChars() and logReason() prove the negative directly: a
+	 * mutant that removed dispatch()'s DebugLog::isEnabled() gate would still
+	 * write nothing to error_log() (nothing is listening on a production
+	 * install with debugging off), so the empty-log assertion above cannot by
+	 * itself catch that mutant — only the call count can.
+	 */
+	public function test_dispatch_gate_skips_building_and_escaping_when_debug_is_disabled(): void
+	{
+		$run = $this->runDispatchGateProbeInSubprocess( 'Keystore: ciphertext authentication failed.' );
+
+		$this->assertSame( 0, $run['status'], 'subprocess failed: ' . $run['stdout'] . $run['stderr'] );
+		$this->assertSame( '', trim( $run['log'] ), 'debug log must stay empty when debugging is off' );
+		$this->assertStringContainsString( 'escapeControlChars_calls=0', $run['stdout'] );
+		$this->assertStringContainsString( 'logReason_calls=0', $run['stdout'] );
+	}
+
+	/**
+	 * Drive handleCommand() -> dispatch() in a child process with debug OFF,
+	 * counting calls to escapeControlChars() and logReason() via Patchwork,
+	 * restored in finally inside the subprocess script (Patchwork
+	 * redefinitions leak across tests, so the fake stays self-contained even
+	 * though this process exits right after). A dedicated probe rather than
+	 * adding a counter to runInSubprocess(): every existing caller of
+	 * runInSubprocess() parses $run['stdout'] as the bare JSON response body,
+	 * and prefixing counters onto that stdout would corrupt every one of
+	 * those decodes.
+	 *
+	 * @param string $message Exception message the command throws.
+	 * @return array{status:int,stdout:string,stderr:string,log:string}
+	 */
+	private function runDispatchGateProbeInSubprocess( string $message ): array
+	{
+		$logPath    = sys_get_temp_dir() . '/wpmgr_router_gate_log_' . uniqid( '', true ) . '.log';
+		$scriptPath = sys_get_temp_dir() . '/wpmgr_router_gate_log_' . uniqid( '', true ) . '.php';
+
+		$this->temp[] = $logPath;
+		$this->temp[] = $scriptPath;
+
+		$bootstrap  = addslashes( __DIR__ . '/bootstrap.php' );
+		$logEscaped = addslashes( $logPath );
+		$msgB64     = base64_encode( $message );
+
+		$script = <<<PHP
+<?php
+declare(strict_types=1);
+
+// debug intentionally OFF
+
+ini_set('log_errors', '1');
+ini_set('error_log', '{$logEscaped}');
+
+require '{$bootstrap}';
+
+\$escapeCalls = 0;
+\$escapeHandle = \\Patchwork\\redefine(
+    'WPMgr\\Agent\\Router::escapeControlChars',
+    function (string \$line) use (&\$escapeCalls) {
+        \$escapeCalls++;
+        return \\Patchwork\\relay();
+    }
+);
+
+\$reasonCalls = 0;
+\$reasonHandle = \\Patchwork\\redefine(
+    'WPMgr\\Agent\\Router::logReason',
+    function (string \$msg) use (&\$reasonCalls) {
+        \$reasonCalls++;
+        return \\Patchwork\\relay();
+    }
+);
+
+\$command = new class implements \\WPMgr\\Agent\\Commands\\CommandInterface {
+    public function name(): string
+    {
+        return 'boom';
+    }
+
+    public function effect(): \\WPMgr\\Agent\\Commands\\CommandEffect
+    {
+        return \\WPMgr\\Agent\\Commands\\CommandEffect::Read;
+    }
+
+    public function repeatability(): \\WPMgr\\Agent\\Commands\\CommandRepeatability
+    {
+        return \\WPMgr\\Agent\\Commands\\CommandRepeatability::Idempotent;
+    }
+
+    /** @param array<string,mixed> \$claims @param array<string,mixed> \$params @return array<string,mixed> */
+    public function execute(array \$claims, array \$params): array
+    {
+        throw new \\RuntimeException(base64_decode('{$msgB64}'));
+    }
+};
+
+\$rc        = new \\ReflectionClass(\\WPMgr\\Agent\\Connector::class);
+\$connector = \$rc->newInstanceWithoutConstructor();
+\$router    = new \\WPMgr\\Agent\\Router(\$connector, [\$command]);
+
+\$request = new \\WP_REST_Request(
+    [
+        'command'      => 'boom',
+        'wpmgr_claims' => ['sub' => 'site-uuid', 'cmd' => 'boom'],
+    ]
+);
+
+try {
+    \$response = \$router->handleCommand(\$request);
+} finally {
+    \\Patchwork\\restore(\$escapeHandle);
+    \\Patchwork\\restore(\$reasonHandle);
+}
+
+if (!(\$response instanceof \\WP_Error)) {
+    fwrite(STDERR, "expected WP_Error\\n");
+    exit(2);
+}
+
+echo "escapeControlChars_calls={\$escapeCalls}\\n";
+echo "logReason_calls={\$reasonCalls}\\n";
+PHP;
+
+		file_put_contents( $scriptPath, $script );
+
+		$descriptors = [
+			1 => [ 'pipe', 'w' ],
+			2 => [ 'pipe', 'w' ],
+		];
+
+		$process = proc_open(
+			[ PHP_BINARY, '-d', 'memory_limit=1G', $scriptPath ],
+			$descriptors,
+			$pipes
+		);
+
+		$this->assertIsResource( $process, 'could not start the subprocess' );
+
+		$stdout = (string) stream_get_contents( $pipes[1] );
+		$stderr = (string) stream_get_contents( $pipes[2] );
+		fclose( $pipes[1] );
+		fclose( $pipes[2] );
+		$status = proc_close( $process );
+
+		return [
+			'status' => $status,
+			'stdout' => $stdout,
+			'stderr' => $stderr,
+			'log'    => is_file( $logPath ) ? (string) file_get_contents( $logPath ) : '',
+		];
+	}
+
+	// -------------------------------------------------------------------------
+	// #764: every control character other than tab is escaped, not just CR/LF.
+	// One test per character class, each asserting exactly one log line with
+	// the character escaped and the text either side of it intact — nothing
+	// after it lost, which is the NUL case's own failure mode under a raw
+	// error_log() call.
+	// -------------------------------------------------------------------------
+
+	public function test_debug_log_escapes_nul(): void
+	{
+		$this->assertClassEscaped( "before\x00after", 'before\x00after' );
+	}
+
+	public function test_debug_log_escapes_vertical_tab(): void
+	{
+		$this->assertClassEscaped( "before\x0Bafter", 'before\x0Bafter' );
+	}
+
+	public function test_debug_log_escapes_form_feed(): void
+	{
+		$this->assertClassEscaped( "before\x0Cafter", 'before\x0Cafter' );
+	}
+
+	/**
+	 * An ESC-initiated CSI sequence (here, "set foreground red"): the whole
+	 * sequence's ESC byte is escaped, which is enough to stop a terminal from
+	 * acting on it. The literal bytes that follow ESC are ordinary printable
+	 * ASCII and are not themselves control characters, so they survive as-is.
+	 */
+	public function test_debug_log_escapes_escape_sequence(): void
+	{
+		$this->assertClassEscaped( "before\x1B[31mafter", 'before\x1B[31mafter' );
+	}
+
+	public function test_debug_log_escapes_del(): void
+	{
+		$this->assertClassEscaped( "before\x7Fafter", 'before\x7Fafter' );
+	}
+
+	/**
+	 * NEL, U+0085 — a C1 control some readers treat as a line break in its own
+	 * right, encoded here as it would arrive in a valid UTF-8 message: the
+	 * two bytes \xC2\x85.
+	 */
+	public function test_debug_log_escapes_nel(): void
+	{
+		$this->assertClassEscaped( "before\xC2\x85after", 'before\u{0085}after' );
+	}
+
+	public function test_debug_log_escapes_line_separator(): void
+	{
+		$this->assertClassEscaped( "before\xE2\x80\xA8after", 'before\u{2028}after' );
+	}
+
+	public function test_debug_log_escapes_paragraph_separator(): void
+	{
+		$this->assertClassEscaped( "before\xE2\x80\xA9after", 'before\u{2029}after' );
+	}
+
+	/**
+	 * #764 follow-up (PR #769, Greptile finding): the C1 branch above only
+	 * matches a C1 control in its valid two-byte UTF-8 encoding, \xC2
+	 * followed by 0x80-0x9F. A LONE byte in that numeric range — no \xC2
+	 * lead byte before it — is not that sequence and, before this test,
+	 * passed straight through unescaped even though some terminals and log
+	 * readers still act on it directly. 0x85 is NEL; asserted individually,
+	 * rather than only as part of the invalid-byte-run test below, because
+	 * NEL is the specific C1 control the file's own escapeControlChars()
+	 * docblock calls out as "itself a line break to some readers".
+	 */
+	public function test_debug_log_escapes_lone_invalid_nel_byte(): void
+	{
+		$this->assertClassEscaped( "before\x85after", 'before\x85after' );
+	}
+
+	/**
+	 * #764 follow-up: same defect, a different C1 control — 0x9B, an 8-bit
+	 * CSI (Control Sequence Introducer) introducer some terminals treat the
+	 * same as the two-byte ESC-'[' sequence already covered by
+	 * test_debug_log_escapes_escape_sequence(). A lone 0x9B is not valid
+	 * UTF-8 on its own, so this also exercises the fix's invalid-line branch
+	 * on a byte that is not simply "any byte >= 0x80" but a control byte
+	 * specifically.
+	 */
+	public function test_debug_log_escapes_lone_invalid_csi_byte(): void
+	{
+		$this->assertClassEscaped( "before\x9Bafter", 'before\x9Bafter' );
+	}
+
+	/**
+	 * #764 follow-up: an overlong encoding (here, \xC0\x80, an invalid
+	 * two-byte re-encoding of NUL that a strict UTF-8 decoder must reject) is
+	 * invalid UTF-8 for a different reason than a lone C1 byte, and must land
+	 * in the same fail-safe branch. Both bytes are escaped individually.
+	 */
+	public function test_debug_log_escapes_overlong_encoding(): void
+	{
+		$this->assertClassEscaped( "before\xC0\x80after", 'before\xC0\x80after' );
+	}
+
+	/**
+	 * Control for the fix above: a line that IS valid UTF-8 must not take the
+	 * invalid-line branch, so ordinary multi-byte text — CJK and an emoji
+	 * (itself a 4-byte UTF-8 sequence) — reaches the log completely
+	 * unchanged, exactly as it did before this fix. Without this test, a
+	 * broken version of the fix that always escaped every byte >= 0x80,
+	 * valid line or not, would still pass every test above it.
+	 */
+	public function test_debug_log_leaves_valid_multibyte_text_unescaped(): void
+	{
+		$this->assertClassEscaped( 'beforeこんにちは世界🔑after', 'beforeこんにちは世界🔑after' );
+	}
+
+	/**
+	 * A line that mixes valid multi-byte text with one invalid byte fails
+	 * UTF-8 validation as a WHOLE line, so — per the "simplest and safe"
+	 * fix — every byte >= 0x80 on it is escaped, including bytes that are
+	 * individually part of what would otherwise be a legitimate CJK
+	 * sequence. This is deliberate fail-safe behaviour, not a bug: a line
+	 * that failed validation cannot be trusted to parse correctly
+	 * byte-by-byte, so nothing on it above 0x7F is passed through raw.
+	 */
+	public function test_debug_log_escapes_every_byte_on_a_line_that_fails_utf8_validation(): void
+	{
+		$this->assertClassEscaped(
+			"before\xE6\x97\xA5\x85after",
+			'before\xE6\x97\xA5\x85after'
+		);
+	}
+
+	/**
+	 * Regression: CR and LF still fold to the two-character sequences \r and
+	 * \n exactly as before #764, byte-identical to what
+	 * test_a_multiline_message_is_logged_as_one_line already proves for a
+	 * full multi-line message. This is the same check restated against the
+	 * single-character corpus the rest of this battery uses, so a future
+	 * change to escapeControlChars() that regresses folding fails right next
+	 * to the class it broke.
+	 */
+	public function test_debug_log_still_folds_cr_and_lf(): void
+	{
+		$this->assertClassEscaped( "before\r\nafter", 'before\r\nafter' );
+	}
+
+	/**
+	 * #764: every test above pins one representative member per range — NUL
+	 * for C0, NEL for C1, and so on. That leaves a narrowed range undetected:
+	 * a mutant that escaped only NEL out of all of U+0080-U+009F, or that
+	 * dropped FS/GS/RS (0x1C-0x1E) from the C0 branch, would still pass every
+	 * test above it. This test drives every other member through the same
+	 * real log path in one message, so no member of a range can be quietly
+	 * dropped from the escaped class without a mismatch showing up here.
+	 *
+	 * Covers: C0 0x01-0x08, 0x0B, 0x0C, 0x0E-0x1F (0x00, 0x09, 0x0A and 0x0D
+	 * are excluded — NUL, LF and CR already have their own tests above and
+	 * fold differently; tab is asserted separately, below, to NOT escape),
+	 * DEL, every one of the 32 C1 controls U+0080-U+009F, and both Unicode
+	 * separators U+2028 and U+2029. Each character sits between two 'A'
+	 * markers so a character that was dropped instead of escaped would run
+	 * two markers together rather than silently vanishing from the count.
+	 */
+	public function test_debug_log_escapes_every_member_of_every_control_class(): void
+	{
+		$chars    = [];
+		$expected = [];
+
+		foreach ( array_merge( range( 0x01, 0x08 ), [ 0x0B, 0x0C ], range( 0x0E, 0x1F ), [ 0x7F ] ) as $ord ) {
+			$chars[]    = chr( $ord );
+			$expected[] = sprintf( '\\x%02X', $ord );
+		}
+
+		for ( $ord = 0x80; $ord <= 0x9F; $ord++ ) {
+			$chars[]    = "\xC2" . chr( $ord );
+			$expected[] = sprintf( '\\u{%04X}', $ord );
+		}
+
+		$chars[]    = "\xE2\x80\xA8"; // U+2028 LINE SEPARATOR.
+		$expected[] = '\u{2028}';
+		$chars[]    = "\xE2\x80\xA9"; // U+2029 PARAGRAPH SEPARATOR.
+		$expected[] = '\u{2029}';
+
+		$raw  = 'A' . implode( 'A', $chars ) . 'A';
+		$want = 'A' . implode( 'A', $expected ) . 'A';
+
+		$run = $this->runInSubprocess( true, $raw );
+
+		$this->assertSame( 0, $run['status'], 'subprocess failed: ' . $run['stdout'] . $run['stderr'] );
+
+		$lines = array_values(
+			array_filter(
+				preg_split( '/\R/', $run['log'] ) ?: [],
+				static function ( string $line ): bool {
+					return trim( $line ) !== '';
+				}
+			)
+		);
+
+		$this->assertCount( 1, $lines, 'expected exactly one log line, got ' . count( $lines ) . ":\n" . $run['log'] );
+		$this->assertStringContainsString( 'reason=' . $want, $lines[0] );
+
+		foreach ( $chars as $raw_char ) {
+			$this->assertStringNotContainsString( $raw_char, $lines[0], 'a raw control byte reached the log' );
+		}
+	}
+
+	/**
+	 * #764: tab is the one C0 character escapeControlChars() must leave
+	 * alone. Pinned on its own so a mutant that widens the escaped class to
+	 * include it cannot hide inside the "every other member" battery above,
+	 * which deliberately excludes it.
+	 */
+	public function test_debug_log_leaves_tab_unescaped(): void
+	{
+		$this->assertClassEscaped( "before\tafter", "before\tafter" );
+	}
+
+	/**
+	 * Drive one message through the real command-failure log path and assert
+	 * the log holds exactly one line containing 'reason=' followed by
+	 * $expectedEscaped.
+	 *
+	 * @param string $raw             Message containing the character(s) under test,
+	 *                                always "before<char>after".
+	 * @param string $expectedEscaped What the log line's reason= holds instead,
+	 *                                always "before<escaped form>after".
+	 */
+	private function assertClassEscaped( string $raw, string $expectedEscaped ): void {
+		$run = $this->runInSubprocess( true, $raw );
+
+		$this->assertSame( 0, $run['status'], 'subprocess failed: ' . $run['stdout'] . $run['stderr'] );
+
+		$lines = array_values(
+			array_filter(
+				preg_split( '/\R/', $run['log'] ) ?: [],
+				static function ( string $line ): bool {
+					return trim( $line ) !== '';
+				}
+			)
+		);
+
+		$this->assertCount( 1, $lines, 'expected exactly one log line, got ' . count( $lines ) . ":\n" . $run['log'] );
+		$this->assertStringContainsString( 'reason=' . $expectedEscaped, $lines[0] );
+	}
+
+	/**
 	 * Drive Router::handleCommand() in a child PHP process.
 	 *
 	 * @param bool   $debug   Whether to define WPMGR_DEBUG.
@@ -227,7 +666,14 @@ final class RouterCommandFailureLogTest extends TestCase
 
 		$bootstrap  = addslashes( __DIR__ . '/bootstrap.php' );
 		$logEscaped = addslashes( $logPath );
-		$msgEscaped = addslashes( $message );
+		// base64, not addslashes(): the message can carry a raw NUL, DEL, or a
+		// multi-byte UTF-8 sequence, none of which addslashes() round-trips
+		// correctly through a single-quoted PHP literal (addslashes() turns a
+		// raw NUL into the two-character text "\0", which single-quoted PHP
+		// does not turn back into a NUL byte). base64 carries any byte
+		// sequence unchanged, so the child decodes exactly what this process
+		// encoded.
+		$msgB64     = base64_encode( $message );
 		$defineLine = $debug ? "define('WPMGR_DEBUG', true);" : '// debug intentionally OFF';
 
 		$script = <<<PHP
@@ -261,7 +707,7 @@ require '{$bootstrap}';
     /** @param array<string,mixed> \$claims @param array<string,mixed> \$params @return array<string,mixed> */
     public function execute(array \$claims, array \$params): array
     {
-        throw new \\RuntimeException('{$msgEscaped}');
+        throw new \\RuntimeException(base64_decode('{$msgB64}'));
     }
 };
 
@@ -292,6 +738,227 @@ echo json_encode(
         'data'    => \$response->get_error_data(),
     ]
 );
+PHP;
+
+		file_put_contents( $scriptPath, $script );
+
+		$descriptors = [
+			1 => [ 'pipe', 'w' ],
+			2 => [ 'pipe', 'w' ],
+		];
+
+		$process = proc_open(
+			[ PHP_BINARY, '-d', 'memory_limit=1G', $scriptPath ],
+			$descriptors,
+			$pipes
+		);
+
+		$this->assertIsResource( $process, 'could not start the subprocess' );
+
+		$stdout = (string) stream_get_contents( $pipes[1] );
+		$stderr = (string) stream_get_contents( $pipes[2] );
+		fclose( $pipes[1] );
+		fclose( $pipes[2] );
+		$status = proc_close( $process );
+
+		return [
+			'status' => $status,
+			'stdout' => $stdout,
+			'stderr' => $stderr,
+			'log'    => is_file( $logPath ) ? (string) file_get_contents( $logPath ) : '',
+		];
+	}
+
+	/**
+	 * #764: the authorize-failure log line shares escapeControlChars() with
+	 * the command-failure line, so it must escape too. Connector's own
+	 * verifyCommand() only ever throws from a small closed set of fixed
+	 * category messages (see includes/class-connector.php) — never one built
+	 * from request content — so there is no real request that puts a control
+	 * character into the exception message on this path. What DOES reach this
+	 * exact log line un-sanitized in this test, deliberately, is the $command
+	 * argument: Router::authorizeCommand() is exercised directly here rather
+	 * than through the real REST dispatch, so it is not protected by the
+	 * {command} route's [a-z0-9_.]+ pattern or WordPress's sanitize_callback
+	 * pass the way a real request is (see registerRoutes()). That makes this
+	 * a defense-in-depth proof of the same kind already used elsewhere in
+	 * Router (see the manage_options check in authorizeCommand()): the log
+	 * line escapes what it is given, regardless of whether another layer
+	 * would also have stopped it.
+	 */
+	public function test_authorize_failure_log_line_escapes_control_characters(): void
+	{
+		$run = $this->runAuthorizeInSubprocess( "boom\x1Bcmd" );
+
+		$this->assertSame( 0, $run['status'], 'subprocess failed: ' . $run['stdout'] . $run['stderr'] );
+
+		$lines = array_values(
+			array_filter(
+				preg_split( '/\R/', $run['log'] ) ?: [],
+				static function ( string $line ): bool {
+					return trim( $line ) !== '';
+				}
+			)
+		);
+
+		$this->assertCount( 1, $lines, 'expected exactly one log line, got ' . count( $lines ) . ":\n" . $run['log'] );
+		$this->assertStringContainsString( 'WPMgr Agent: command authorize failed:', $lines[0] );
+		$this->assertStringContainsString( 'command=boom\x1Bcmd', $lines[0] );
+		$this->assertStringContainsString( 'reason=WPMgr Agent: malformed token.', $lines[0] );
+	}
+
+	/**
+	 * #764: escapeControlChars() fails closed at the authorizeCommand() call
+	 * site too, independently of the dispatch()/command-failure call site
+	 * proved above by test_debug_log_withholds_the_whole_line_when_escaping_cannot_complete().
+	 * That test only drives handleCommand() -> dispatch(); it says nothing
+	 * about authorizeCommand()'s own "?? self::LOG_LINE_WITHHELD", which
+	 * guards a separate call site with a separate mutation surface. A mutant
+	 * that made escapeControlChars() return its input on a PCRE engine
+	 * failure, or that dropped authorizeCommand()'s own "??
+	 * self::LOG_LINE_WITHHELD", would let a raw control byte reach the log
+	 * from this call site untouched while the dispatch-side test above stays
+	 * green.
+	 *
+	 * Forced the same way: pcre.jit off and a backtrack budget of 1, so
+	 * preg_replace_callback() inside escapeControlChars() exhausts its
+	 * budget and returns null. The command carries the same single ESC byte
+	 * test_authorize_failure_log_line_escapes_control_characters() uses, so
+	 * this is the direct failure-mode counterpart of that test.
+	 *
+	 * The withheld marker must replace the WHOLE line: the command name and
+	 * the category are lost along with it, not just the reason, because
+	 * authorizeCommand() escapes the whole assembled line in one call.
+	 */
+	public function test_authorize_failure_log_line_withholds_the_whole_line_when_escaping_cannot_complete(): void
+	{
+		$run = $this->runAuthorizeInSubprocess(
+			"boom\x1Bcmd",
+			true,
+			"ini_set('pcre.jit', '0'); ini_set('pcre.backtrack_limit', '1');"
+		);
+
+		$this->assertSame( 0, $run['status'], 'subprocess failed: ' . $run['stdout'] . $run['stderr'] );
+
+		$lines = array_values(
+			array_filter(
+				preg_split( '/\R/', $run['log'] ) ?: [],
+				static function ( string $line ): bool {
+					return trim( $line ) !== '';
+				}
+			)
+		);
+
+		$this->assertCount( 1, $lines, 'expected exactly one log line, got ' . count( $lines ) . ":\n" . $run['log'] );
+		$this->assertStringContainsString(
+			'WPMgr Agent: log line withheld (control-character escaping could not complete).',
+			$lines[0]
+		);
+		$this->assertStringNotContainsString( "\x1B", $run['log'], 'a raw control byte reached the log' );
+		$this->assertStringNotContainsString( 'boom', $lines[0], 'the withheld marker must replace the whole line' );
+		$this->assertStringNotContainsString(
+			'command authorize failed',
+			$lines[0],
+			'the withheld marker must replace the whole line, not just the reason'
+		);
+	}
+
+	/**
+	 * #764: the authorize call site must not even build, let alone escape,
+	 * the log line when debug logging is off. A counter on escapeControlChars()
+	 * proves the negative directly: a mutant that removed
+	 * authorizeCommand()'s DebugLog::isEnabled() gate would still write
+	 * nothing to error_log() (nothing is listening), so asserting an empty
+	 * log alone cannot catch it — it must be caught here, by the call count.
+	 */
+	public function test_authorize_gate_skips_escaping_when_debug_is_disabled(): void
+	{
+		$run = $this->runAuthorizeInSubprocess( 'boom', false );
+
+		$this->assertSame( 0, $run['status'], 'subprocess failed: ' . $run['stdout'] . $run['stderr'] );
+		$this->assertSame( '', trim( $run['log'] ), 'debug log must stay empty when debugging is off' );
+		$this->assertStringContainsString( 'escapeControlChars_calls=0', $run['stdout'] );
+	}
+
+	/**
+	 * Drive Router::authorizeCommand() in a child PHP process with a bearer
+	 * token malformed enough (one segment, no dots) that Connector::verify()
+	 * throws before touching the keystore, so the real authorizeCommand()
+	 * catch block — and its DebugLog::write() call — runs without any of the
+	 * signing/enrolment setup the happy path needs.
+	 *
+	 * Instruments escapeControlChars() with a Patchwork counter, restored in
+	 * finally inside the subprocess script — the subprocess exits right after,
+	 * so nothing leaks across tests, but restoring anyway keeps the fake
+	 * self-contained rather than relying on process exit to undo it. The
+	 * count is reported on stdout as "escapeControlChars_calls=N" so a test
+	 * that never enables debug logging (and so never gets a log line to
+	 * inspect) still has something to assert on.
+	 *
+	 * @param string $command Command name passed to authorizeCommand(); not
+	 *                        run through the real route's sanitize_callback
+	 *                        here, see the calling test's docblock.
+	 * @param bool   $debug   Whether to define WPMGR_DEBUG.
+	 * @param string $before  PHP run just before authorizeCommand() is called.
+	 * @return array{status:int,stdout:string,stderr:string,log:string}
+	 */
+	private function runAuthorizeInSubprocess( string $command, bool $debug = true, string $before = '' ): array
+	{
+		$logPath    = sys_get_temp_dir() . '/wpmgr_router_authz_log_' . uniqid( '', true ) . '.log';
+		$scriptPath = sys_get_temp_dir() . '/wpmgr_router_authz_log_' . uniqid( '', true ) . '.php';
+
+		$this->temp[] = $logPath;
+		$this->temp[] = $scriptPath;
+
+		$bootstrap  = addslashes( __DIR__ . '/bootstrap.php' );
+		$logEscaped = addslashes( $logPath );
+		$cmdB64     = base64_encode( $command );
+		$defineLine = $debug ? "define('WPMGR_DEBUG', true);" : '// debug intentionally OFF';
+
+		$script = <<<PHP
+<?php
+declare(strict_types=1);
+
+{$defineLine}
+
+ini_set('log_errors', '1');
+ini_set('error_log', '{$logEscaped}');
+
+require '{$bootstrap}';
+
+\$escapeCalls = 0;
+\$escapeHandle = \\Patchwork\\redefine(
+    'WPMgr\\Agent\\Router::escapeControlChars',
+    function (string \$line) use (&\$escapeCalls) {
+        \$escapeCalls++;
+        return \\Patchwork\\relay();
+    }
+);
+
+\$rc        = new \\ReflectionClass(\\WPMgr\\Agent\\Connector::class);
+\$connector = \$rc->newInstanceWithoutConstructor();
+\$router    = new \\WPMgr\\Agent\\Router(\$connector, []);
+
+\$command = base64_decode('{$cmdB64}');
+
+\$request = new \\WP_REST_Request(['command' => \$command]);
+\$request->set_header('authorization', 'Bearer x');
+
+{$before}
+
+try {
+    \$result = \$router->authorizeCommand(\$request, \$command);
+} finally {
+    \\Patchwork\\restore(\$escapeHandle);
+}
+
+if (!(\$result instanceof \\WP_Error)) {
+    fwrite(STDERR, "expected WP_Error\\n");
+    exit(2);
+}
+
+echo "escapeControlChars_calls={\$escapeCalls}\\n";
+echo 'ok';
 PHP;
 
 		file_put_contents( $scriptPath, $script );

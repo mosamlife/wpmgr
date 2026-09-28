@@ -26,6 +26,24 @@ if (!defined('ABSPATH')) {
 final class DebugLog
 {
     /**
+     * Whether this channel would write at all: WordPress debug logging is on
+     * (WP_DEBUG && WP_DEBUG_LOG) or the agent's own WPMGR_DEBUG constant is
+     * truthy. Callers with an expensive message to build — formatting,
+     * escaping — check this first, so that work only ever happens when the
+     * result would actually be written.
+     *
+     * @return bool
+     */
+    public static function isEnabled(): bool
+    {
+        $wpDebug = defined('WP_DEBUG') && WP_DEBUG
+            && defined('WP_DEBUG_LOG') && WP_DEBUG_LOG;
+        $agentDebug = defined('WPMGR_DEBUG') && WPMGR_DEBUG;
+
+        return $wpDebug || $agentDebug;
+    }
+
+    /**
      * Write a diagnostic line, but only when debugging is enabled.
      *
      * @param string $message Pre-formatted diagnostic message.
@@ -33,11 +51,7 @@ final class DebugLog
      */
     public static function write(string $message): void
     {
-        $wpDebug = defined('WP_DEBUG') && WP_DEBUG
-            && defined('WP_DEBUG_LOG') && WP_DEBUG_LOG;
-        $agentDebug = defined('WPMGR_DEBUG') && WPMGR_DEBUG;
-
-        if (!$wpDebug && !$agentDebug) {
+        if (!self::isEnabled()) {
             return;
         }
 
