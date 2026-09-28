@@ -256,7 +256,18 @@ services:
     ports:
       # Host port is env-overridable (default 8081 to dodge the common 8080
       # collision); container side stays 8080 to match WPMGR_HTTP_ADDR.
-      - "${WPMGR_API_PORT:-8081}:8080"
+      #
+      # Bound to loopback ONLY. WPMGR_AUTH_PROXY_HOPS=1 (.env.example) assumes
+      # the bundled nginx (the `web` service) is the only thing that ever
+      # appends to X-Forwarded-For before a request reaches the api. A caller
+      # that reached this port directly on a non-loopback bind would choose its
+      # own X-Forwarded-For and, under WPMGR_AUTH_LOGIN_MODE=enforce, spend or
+      # drain someone else's login-admission budget. Nothing in this repo
+      # documents a need to reach the api from another host without going
+      # through nginx first, so there is no override variable here — an
+      # operator who deliberately wants that topology edits this file (and
+      # must then also revisit WPMGR_AUTH_PROXY_HOPS, see .env.example).
+      - "127.0.0.1:${WPMGR_API_PORT:-8081}:8080"
     # Make `dex.localhost` (the OIDC issuer host) resolve to the host gateway so
     # the api container reaches the same published Dex (:5556) that the browser
     # reaches via loopback. Keeps the issuer string identical on both sides.
