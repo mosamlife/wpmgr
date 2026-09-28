@@ -15544,10 +15544,10 @@ export type RecheckSiteErrors = {
    */
   429: Error;
   /**
-   * agent_unreachable — could not reach the site agent, or
-   * site_url_redirects — the site answered its command address with a
-   * redirect; `details` carries `from`, `to` and, when the target names
-   * an address the site can be reconnected to, `suggested_url`.
+   * agent_unreachable: could not reach the site agent. site_url_redirects:
+   * the site answered its command address with a redirect, so no command
+   * was sent; `details` carries `from`, `to` and, when the saved address
+   * will update to the target automatically, `suggested_url`.
    *
    */
   502: Error;
