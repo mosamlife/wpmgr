@@ -1011,22 +1011,24 @@ describe("UpdateWizard — PR #766 adversarial review of the #763 fix", () => {
     ]);
   });
 
-  // Pins the "no longer listed" branch (update-wizard.tsx:261-265). Without
-  // it, a key whose item vanished from `options` entirely (not merely lost
-  // its update) is never removed from `selectedSlugs` — so if that item's
-  // entry later comes back, it comes back ticked, with no click of the
-  // operator's behind it.
-  it("does not resurrect a selection for an item that disappeared entirely and later reappeared", async () => {
+  // Pins the "no longer listed" branch (update-wizard.tsx:267-271). This is
+  // the only branch that can drop a key whose item vanished from `options`
+  // entirely WHILE UP TO DATE (hasUpdate already false, not transitioning
+  // true -> false) — the hasUpdate-comparison branch below it never fires for
+  // that key, on the way out or the way back in, so nothing else in the
+  // effect would catch it. Without it, a hand-ticked up-to-date row whose
+  // entry disappears entirely and later comes back is still selected once it
+  // reappears, with no click of the operator's behind it, and gets posted
+  // even though `buildItems` had correctly excluded it (as not currently
+  // listed) for every render while it was gone.
+  it("does not resurrect a hand-ticked up-to-date row whose entry disappeared entirely and later reappeared", async () => {
     const before = buildSite({
       id: "site-a",
       components: {
         plugins: [
-          {
-            slug: "woo",
-            name: "Woo",
-            version: "8.0",
-            available_update: { new_version: "8.1" },
-          },
+          // Up to date from the start — only selectable by hand, via "Show
+          // all", same as the PR #752 tests.
+          { slug: "woo", name: "Woo", version: "8.1" },
           {
             slug: "yoast",
             name: "Yoast",
@@ -1037,8 +1039,9 @@ describe("UpdateWizard — PR #766 adversarial review of the #763 fix", () => {
         themes: [],
       },
     });
-    // Woo drops out of the report entirely — gone from `options`, not merely
-    // "up to date" (e.g. deactivated, or the agent stopped reporting it).
+    // Woo's entry drops out of the report entirely — gone from `options`,
+    // not merely re-reported as up to date (e.g. deactivated, or the agent
+    // stopped reporting it).
     const wooGone = buildSite({
       id: "site-a",
       components: {
@@ -1053,26 +1056,8 @@ describe("UpdateWizard — PR #766 adversarial review of the #763 fix", () => {
         themes: [],
       },
     });
-    const wooBack = buildSite({
-      id: "site-a",
-      components: {
-        plugins: [
-          {
-            slug: "woo",
-            name: "Woo",
-            version: "8.0",
-            available_update: { new_version: "8.1" },
-          },
-          {
-            slug: "yoast",
-            name: "Yoast",
-            version: "20",
-            available_update: { new_version: "21" },
-          },
-        ],
-        themes: [],
-      },
-    });
+    // Woo's entry comes back, still up to date, unchanged from `before`.
+    const wooBack = before;
 
     renderWithProviders(
       <MultiRefetchHarness
@@ -1083,11 +1068,13 @@ describe("UpdateWizard — PR #766 adversarial review of the #763 fix", () => {
     );
 
     await screen.findByRole("tab", { name: /plugins/i });
+    fireEvent.click(screen.getByRole("button", { name: "Show all" }));
     fireEvent.click(checkboxFor("Woo"));
     fireEvent.click(checkboxFor("Yoast"));
     expect(screen.getByText("2 items will be previewed.")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByText(/simulate live refetch/i)); // Woo vanishes entirely
+    fireEvent.click(screen.getByText(/simulate live refetch/i)); // Woo's entry vanishes entirely
+    expect(screen.queryByText("Woo")).not.toBeInTheDocument();
     expect(screen.getByText("1 item will be previewed.")).toBeInTheDocument();
 
     fireEvent.click(screen.getByText(/simulate live refetch/i)); // Woo's entry comes back
