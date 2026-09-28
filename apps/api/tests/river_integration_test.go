@@ -91,31 +91,29 @@ func TestRiverWiringAndHealthJob(t *testing.T) {
 	pool := startPostgres(t)
 	ctx := context.Background()
 
-	// Migrate River's own schema as the owner (mirrors main.migrateRiver).
-	admin := connectAdmin(t, pool)
-	defer admin.Close()
-	migrator, err := rivermigrate.New(riverpgxv5.New(admin.Pool), nil)
+	// Migrate River's own schema as the owner (mirrors main.migrateRiver,
+	// which runs migrateRiver on the migration-owner pool, not the bootstrap
+	// superuser).
+	owner := connectOwner(t, pool)
+	defer owner.Close()
+	migrator, err := rivermigrate.New(riverpgxv5.New(owner.Pool), nil)
 	if err != nil {
 		t.Fatalf("river migrator: %v", err)
 	}
 	if _, err := migrator.Migrate(ctx, rivermigrate.DirectionUp, nil); err != nil {
 		t.Fatalf("river migrate: %v", err)
 	}
-	// River's tables (and their id sequences) are created by the container
-	// superuser here, not by wpmgr_owner (the role startPostgres's own schema
-	// migration ran as), so wpmgr_owner's m1 ALTER DEFAULT PRIVILEGES never
-	// covers them: grant the app role access explicitly, tables AND
-	// sequences, the same as TestRiverDualSchemaIsolation already does.
-	// Missing the sequence grant here specifically produced "permission
-	// denied for sequence river_job_id_seq" once schema migration stopped
-	// running as this same superuser (see rls_integration_test.go's
-	// startPostgres doc comment).
-	if _, err := admin.Exec(ctx, "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO wpmgr_app"); err != nil {
-		t.Fatalf("grant river tables: %v", err)
-	}
-	if _, err := admin.Exec(ctx, "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO wpmgr_app"); err != nil {
-		t.Fatalf("grant river sequences: %v", err)
-	}
+	// River's tables (and their id sequences) are created by wpmgr_owner here
+	// — the same role startPostgres's own schema migration ran as — so m1's
+	// ALTER DEFAULT PRIVILEGES already covers them: wpmgr_app gets
+	// SELECT/INSERT/UPDATE/DELETE on the tables and USAGE/SELECT on their
+	// sequences with no explicit grant needed.
+
+	// admin is still needed below to backdate last_seen_at out-of-band; that
+	// tamper must bypass RLS entirely, which wpmgr_owner (NOSUPERUSER
+	// NOBYPASSRLS) cannot do.
+	admin := connectAdmin(t, pool)
+	defer admin.Close()
 
 	// Seed a stale enrolled site.
 	tenant := seedTenant(t, pool, "river-health")
