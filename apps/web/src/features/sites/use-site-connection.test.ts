@@ -132,7 +132,7 @@ beforeEach(() => {
 });
 
 describe("useRecheckConnection, real hook against a faked transport (GH #755)", () => {
-  it("502 site_url_redirects rejects with a SiteUrlRedirectsError carrying the full server message and target (regression: revert the `error.code === \"site_url_redirects\"` branch, or its guard, and this goes red, because the message would collapse to toError's generic \"Could not reach the agent\" fallback instead of naming https://www.example.com)", async () => {
+  it("502 site_url_redirects rejects with a SiteUrlRedirectsError carrying the full server message and target (regression: revert the `error.code === \"site_url_redirects\"` branch, or its guard, and this goes red because caught stops being a SiteUrlRedirectsError instance, so err.to and err.suggestedUrl are undefined too; the message itself still names https://www.example.com, since toError's fallback also reads it off error.message)", async () => {
     postMock.mockResolvedValue({
       data: undefined,
       error: {

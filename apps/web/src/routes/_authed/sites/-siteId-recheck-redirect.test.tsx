@@ -12,6 +12,10 @@ import {
   usePauseMonitoring,
   useResumeMonitoring,
 } from "@/features/sites/use-site-monitoring";
+// Real, unmocked export: `use-site-connection` itself is never mocked in this
+// file (only the `@wpmgr/api` wire boundary is), so this is the exact class
+// the hook's mutationFn throws.
+import { SiteUrlRedirectsError } from "@/features/sites/use-site-connection";
 import { toast } from "@/components/toast";
 
 // GH #755 round 2 (T2, the required router-rendered test). Every earlier
@@ -144,9 +148,10 @@ describe("SiteShell re-check: renders the server's redirect copy verbatim (GH #7
       response: { status: 502 },
     });
 
-    renderWithProviders(<SiteShell site={buildSite()} siteId="site-1" />, {
-      withRouter: true,
-    });
+    const { queryClient } = renderWithProviders(
+      <SiteShell site={buildSite()} siteId="site-1" />,
+      { withRouter: true },
+    );
 
     await clickRecheck();
 
@@ -160,6 +165,17 @@ describe("SiteShell re-check: renders the server's redirect copy verbatim (GH #7
 
     // Nothing rendered on screen names the retired remedy either.
     expect(document.body.textContent).not.toContain("Reconnect");
+
+    // The rendered copy alone can't tell a SiteUrlRedirectsError from
+    // toError's generic 502 fallback: the server always fills `message`, so
+    // both paths produce the same toast text (see use-site-connection.ts).
+    // Read the actual rejection off the mutation cache instead, which is the
+    // one place the branch under test (error.code === "site_url_redirects")
+    // is still observable: remove it and this goes red even though the toast
+    // above still passes.
+    const mutations = queryClient.getMutationCache().getAll();
+    expect(mutations).toHaveLength(1);
+    expect(mutations[0]?.state.error).toBeInstanceOf(SiteUrlRedirectsError);
   });
 
   it("shows the full server message for copy D (the site redirects its command address back to itself), with no Reconnect wording anywhere", async () => {
@@ -178,9 +194,10 @@ describe("SiteShell re-check: renders the server's redirect copy verbatim (GH #7
       response: { status: 502 },
     });
 
-    renderWithProviders(<SiteShell site={buildSite()} siteId="site-1" />, {
-      withRouter: true,
-    });
+    const { queryClient } = renderWithProviders(
+      <SiteShell site={buildSite()} siteId="site-1" />,
+      { withRouter: true },
+    );
 
     await clickRecheck();
 
@@ -191,5 +208,11 @@ describe("SiteShell re-check: renders the server's redirect copy verbatim (GH #7
     expect(opts?.description).toContain("so no command was sent");
     expect(opts?.description).not.toContain("Reconnect");
     expect(document.body.textContent).not.toContain("Reconnect");
+
+    // See the copy-A case above for why the rendered toast alone can't catch
+    // a regression here.
+    const mutations = queryClient.getMutationCache().getAll();
+    expect(mutations).toHaveLength(1);
+    expect(mutations[0]?.state.error).toBeInstanceOf(SiteUrlRedirectsError);
   });
 });
