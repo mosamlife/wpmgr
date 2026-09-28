@@ -293,7 +293,10 @@ func TestEveryRefusalLogsAWarnWithoutTheEmail(t *testing.T) {
 	}
 
 	var warns int
-	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+	for _, line := range strings.Split(logs.String(), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
 		var rec map[string]any
 		if err := json.Unmarshal([]byte(line), &rec); err != nil {
 			t.Fatalf("log line is not JSON: %v (%q)", err, line)
