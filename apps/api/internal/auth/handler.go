@@ -225,11 +225,13 @@ func (h *Handler) login(c *gin.Context) {
 		httpx.Error(c, refusal.domainError())
 		return
 	}
-	// Admitted, holding a verification slot. Releasing is idempotent, so the
-	// explicit release below can free the slot before the session and
-	// two-factor work that follows a successful verify, while this still
-	// covers every path that returns first.
-	defer admission.releaseVerify()
+	// Admitted, holding a verification slot and a charge. finish settles
+	// whatever charge has not been given back as kept (a failed attempt) and
+	// frees the slot. It is idempotent, so the explicit calls below can free
+	// the slot before the session and two-factor work that follows a
+	// successful verify, while this still covers every path that returns
+	// first, a panic included.
+	defer admission.finish()
 
 	res, err := h.svc.Login(c.Request.Context(), body.Email, body.Password)
 	// Hand the slot back before the session store and the trusted-device
@@ -248,15 +250,19 @@ func (h *Handler) login(c *gin.Context) {
 	// holding 19 MiB of argon2id state per queued attempt while doing it. But
 	// it means a 503 here does not prove CPU saturation, and an operator
 	// diagnosing one should look at database latency too.
-	admission.releaseVerify()
 	if err != nil {
+		// The attempt failed and keeps its charge.
+		admission.finish()
 		httpx.Error(c, err)
 		return
 	}
-	// The password verified. A successful sign-in costs no budget, so a
-	// shared connection's budget is spent only by the attempts that failed.
-	// TestLoginGivesTheChargeBackOnSuccess pins this call in place.
+	// The password verified. A successful sign-in costs no budget and leaves
+	// no bucket entry behind, so a shared connection's budget, and every map,
+	// is spent only by the attempts that failed. giveBack must come BEFORE
+	// finish: finish keeps whatever has not been given back by then.
+	// TestLoginGivesTheChargeBackOnSuccess pins both.
 	admission.giveBack()
+	admission.finish()
 
 	// ADR-056 Phase 3: two-factor enforcement.
 	// INVARIANT: a 2FA-enabled user must NEVER receive a full session without

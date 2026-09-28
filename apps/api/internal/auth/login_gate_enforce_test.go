@@ -222,10 +222,21 @@ func TestRefusedAttemptsChargeNothing(t *testing.T) {
 	assertAdmitted(t, postLogin(e, office, "colleague[at]example.test"), "a colleague on the same connection")
 }
 
+// successfulAttempt runs one attempt through Admit and completes it the way
+// h.login completes a password that verified: giveBack, then finish. It returns
+// the refusal, if Admit refused.
+func successfulAttempt(g *LoginGate, a loginAttempt) *loginRefusal {
+	ad, r := g.Admit(context.Background(), a)
+	ad.giveBack()
+	ad.finish()
+	return r
+}
+
 // TestSuccessGivesTheChargeBack pins the outcome that must not count against a
 // budget at the gate: a password that verified. The handler's half of it, that
-// h.login actually makes the call, is TestLoginGivesTheChargeBackOnSuccess, and
-// the database-backed proof through the real router is in apps/api/tests.
+// h.login actually makes the call and in the right order, is
+// TestLoginGivesTheChargeBackOnSuccess, and the database-backed proof through
+// the real router is in apps/api/tests.
 func TestSuccessGivesTheChargeBack(t *testing.T) {
 	g, _ := newEnforceGate(t)
 	addr := netip.MustParseAddr(simulatedClient)
@@ -233,19 +244,21 @@ func TestSuccessGivesTheChargeBack(t *testing.T) {
 
 	// Many more successful sign-ins than any budget: none may be refused.
 	for i := 0; i < loginSrc48Budget*2; i++ {
-		ad, refusal := g.Admit(context.Background(), a)
-		if refusal != nil {
+		if refusal := successfulAttempt(g, a); refusal != nil {
 			t.Fatalf("sign-in %d refused (%s) although every earlier one succeeded", i+1, refusal.scope)
 		}
-		ad.releaseVerify()
-		ad.giveBack()
 	}
 	srcKey := srcKeyFor(addr)
 	if got := g.src.tokensAt(srcKey, gateEpoch); got != loginSrcBudget {
 		t.Errorf("source scope has %.1f tokens after only successes, want %d", got, loginSrcBudget)
 	}
+	for _, b := range []*keyedBudget{g.pair, g.src, g.src48, g.acct} {
+		if got := b.size(); got != 0 {
+			t.Errorf("%s map holds %d entries after only successful sign-ins, want 0", b.scope, got)
+		}
+	}
 	if got := g.verify.inFlight(); got != 0 {
-		t.Errorf("%d verification slots still held after every admission released its own", got)
+		t.Errorf("%d verification slots still held after every admission finished", got)
 	}
 }
 
@@ -265,7 +278,6 @@ func TestGiveBackIsIdempotent(t *testing.T) {
 	if r != nil {
 		t.Fatalf("first attempt refused: %+v", r)
 	}
-	first.releaseVerify()
 	// A second attempt on the same keys, which fails and so stays charged.
 	if r := failedAttempt(g, a); r != nil {
 		t.Fatalf("second attempt refused: %+v", r)
@@ -273,6 +285,7 @@ func TestGiveBackIsIdempotent(t *testing.T) {
 
 	first.giveBack()
 	first.giveBack()
+	first.finish()
 
 	for _, c := range []struct {
 		name string
@@ -283,6 +296,32 @@ func TestGiveBackIsIdempotent(t *testing.T) {
 			t.Errorf("%s scope has %.1f tokens, want %.1f: the second giveBack returned a token the other attempt's charge had taken",
 				c.name, got, want)
 		}
+		// The entry the first attempt created carries the second's kept
+		// charge, so the first's give-back must not have removed it.
+		if got := c.b.size(); got != 1 {
+			t.Errorf("%s map holds %d entries, want 1 (the failed attempt's)", c.name, got)
+		}
+	}
+}
+
+// TestFinishKeepsWhatWasNotGivenBack: finish settles as kept, so a giveBack
+// after it returns nothing. That is why h.login must give back BEFORE it
+// finishes, and why TestLoginGivesTheChargeBackOnSuccess pins the order.
+func TestFinishKeepsWhatWasNotGivenBack(t *testing.T) {
+	g, _ := newEnforceGate(t)
+	addr := netip.MustParseAddr(simulatedClient)
+	a := loginAttempt{Addr: addr, FromChain: true, Hops: 2, Email: "person@example.test"}
+	ad, r := g.Admit(context.Background(), a)
+	if r != nil {
+		t.Fatalf("refused: %+v", r)
+	}
+	ad.finish()
+	ad.giveBack()
+	if got, want := g.src.tokensAt(srcKeyFor(addr), gateEpoch), float64(loginSrcBudget-1); got != want {
+		t.Errorf("source scope has %.1f tokens after finish then giveBack, want %.1f", got, want)
+	}
+	if got := g.verify.inFlight(); got != 0 {
+		t.Errorf("finish left %d verification slots held", got)
 	}
 }
 
@@ -384,7 +423,7 @@ func TestShedAttemptsLeaveEveryMapAsItWas(t *testing.T) {
 		// pair is the least recently seen: the first one an eviction takes.
 		clock = gateEpoch.Add(time.Second)
 		for i := 0; g.pair.size() < loginBucketCap; i++ {
-			g.pair.charge(fmt.Sprintf("filler-%d", i), clock)
+			keptCharge(t, g.pair, fmt.Sprintf("filler-%d", i), clock)
 		}
 
 		clock = gateEpoch.Add(2 * time.Second)

@@ -62,7 +62,7 @@ func loginHandlerForTest(t *testing.T, g *LoginGate, hops int) *gin.Engine {
 // leaves a verification slot held and starves the attempts after it.
 func failedAttempt(g *LoginGate, a loginAttempt) *loginRefusal {
 	ad, r := g.Admit(context.Background(), a)
-	ad.releaseVerify()
+	ad.finish()
 	return r
 }
 
@@ -558,14 +558,26 @@ func TestLimiterAddrSourceGradesTheAddress(t *testing.T) {
 // Memory bound, mode, and wiring.
 // ---------------------------------------------------------------------------
 
+// keptCharge charges key and settles the charge as kept, which is what a
+// failed attempt leaves in one scope: a permanent entry.
+func keptCharge(t *testing.T, b *keyedBudget, key string, now time.Time) {
+	t.Helper()
+	bk, ok := b.charge(key, now)
+	if !ok {
+		t.Fatalf("%s: could not charge %q", b.scope, key)
+	}
+	b.settle(key, bk, now, false)
+}
+
 // TestBucketMapIsCapped watches the memory bound actually hold. A cap nobody
 // has seen bind is not known to bind.
 func TestBucketMapIsCapped(t *testing.T) {
 	b := newKeyedBudget("test", 10)
 	now := time.Now()
 	for i := 0; i < loginBucketCap*2; i++ {
-		// charge, not query: only an admitted attempt creates an entry.
-		b.charge(netip.AddrFrom4([4]byte{byte(i >> 24), byte(i >> 16), byte(i >> 8), byte(i)}).String(), now)
+		// A failed attempt's charge, not a query: only a kept charge makes an
+		// entry permanent.
+		keptCharge(t, b, netip.AddrFrom4([4]byte{byte(i >> 24), byte(i >> 16), byte(i >> 8), byte(i)}).String(), now)
 		if got := b.size(); got > loginBucketCap {
 			t.Fatalf("map grew to %d entries, past the %d cap, after %d keys", got, loginBucketCap, i+1)
 		}

@@ -17,8 +17,9 @@ import (
 //
 // The rule it checks: in h.login's top-level statements, after the one that
 // calls h.svc.Login, an unconditional giveBack() call comes before any
-// statement that can return, other than the error check. That is "every
-// successful sign-in gives its charge back" stated over the source.
+// statement that can return, other than the error check, and before any
+// finish() call outside it. That is "every successful sign-in gives its charge
+// back, before finish keeps it" stated over the source.
 func TestLoginGivesTheChargeBackOnSuccess(t *testing.T) {
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, "handler.go", nil, 0)
@@ -103,6 +104,13 @@ func TestLoginGivesTheChargeBackOnSuccess(t *testing.T) {
 		}
 		if isErrCheck(s) {
 			continue
+		}
+		// finish settles whatever has not been given back as kept, so a
+		// finish on the success path before giveBack would leave the
+		// successful sign-in charged and its bucket entries in the maps.
+		if callsMethod(s, "", "finish") {
+			t.Fatalf("h.login calls finish (line %d) after a successful Service.Login and before giveBack: finish keeps the charge, so the giveBack after it returns nothing",
+				fset.Position(s.Pos()).Line)
 		}
 		if returns(s) {
 			t.Fatalf("h.login can return after a successful Service.Login (line %d) without calling giveBack: a successful sign-in would stay charged, and a shared connection would be refused after enough of them",

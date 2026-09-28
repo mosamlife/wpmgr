@@ -58,10 +58,13 @@ import (
 // WHAT A BUDGET COUNTS.
 //
 //   - A REFUSED ATTEMPT CHARGES NOTHING, in any scope. See Admit.
-//   - A SUCCESSFUL SIGN-IN CHARGES NOTHING. An admitted attempt is charged up
-//     front, so concurrent attempts cannot all see the same last token, and
-//     the charge is given back when the password verifies. What remains
-//     charged is failed attempts. See loginAdmission.
+//   - A SUCCESSFUL SIGN-IN CHARGES NOTHING AND LEAVES NOTHING. An admitted
+//     attempt is charged up front, so concurrent attempts cannot all see the
+//     same last token, and the charge is given back when the password
+//     verifies. A bucket entry the charge created is removed with it, and
+//     nothing is evicted to make room for one, so a successful sign-in leaves
+//     every map exactly as it found it. What remains charged, and what remains
+//     in the maps, is failed attempts. See loginAdmission and loginBucketCap.
 //   - An attempt shed by the concurrency bound charges nothing and creates no
 //     bucket entry: the verification slot is taken before anything is
 //     charged, so a shed attempt never reaches the charge. It leaves every
@@ -176,12 +179,18 @@ const (
 	// (internal/mcp/register_limit.go:96-100). Reaching it is a memory bound
 	// being enforced, not an error.
 	//
-	// Entries are created only when an attempt is finally admitted: past every
-	// refusing budget AND holding a verification slot. A refused attempt and a
-	// shed attempt add no entry and so evict none. The rate at which one
-	// source can add entries is therefore bounded by the rate its own budget
-	// admits failed attempts, plus the sign-ins it completes with a correct
-	// password.
+	// It bounds the PERMANENT entries, and entries become permanent only by
+	// failed attempts: an entry stays in the map only once a failed attempt's
+	// charge on it has been kept. A refused attempt and a shed attempt create
+	// nothing. A successful sign-in creates only a provisional entry, removed
+	// again when its charge is given back, and it never sweeps or evicts
+	// anything. So a source adds entries, and evicts others, only as fast as
+	// its own failure budget admits failed attempts.
+	//
+	// Provisional entries sit outside the cap and are bounded separately: one
+	// exists only while an admission that charged it is unfinished, and every
+	// unfinished admission holds a verification slot. So a map holds at most
+	// loginBucketCap entries plus the verification bound.
 	loginBucketCap = 4096
 
 	// loginBucketIdle is how long an untouched bucket survives a sweep. It must
@@ -404,10 +413,13 @@ type verdict struct {
 	overCount int
 }
 
-// chargedKey is one token an admitted attempt took, so it can be given back.
+// chargedKey is one token an admitted attempt took, so it can be settled. bk
+// is the bucket the token came from: settling applies only while the map still
+// holds that same bucket under key.
 type chargedKey struct {
 	b   *keyedBudget
 	key string
+	bk  *loginBucket
 }
 
 // loginAdmission is what an admitted attempt holds: its verification slot and
@@ -415,9 +427,18 @@ type chargedKey struct {
 //
 // An attempt is charged at admission rather than after its outcome is known,
 // because charging afterwards would let every attempt in flight at once see
-// the same last token. The charge is given back when the password verifies,
-// because a successful sign-in must not count against a budget. What stays
-// charged is failed attempts, which is what the budgets are denominated in.
+// the same last token. Its charge is SETTLED when the outcome is known, in one
+// of two ways, and the order matters:
+//
+//   - giveBack, when the password verified. Every token is returned, and a
+//     bucket entry that exists only because of this attempt is removed, so a
+//     successful sign-in leaves every map exactly as it found it.
+//   - finish, always, last. Whatever giveBack did not return stays charged:
+//     the attempt failed, and failed attempts are what the budgets are
+//     denominated in. finish also frees the verification slot.
+//
+// So a success calls giveBack and then finish, and a failure calls finish
+// alone. A giveBack after finish returns nothing: the charge was already kept.
 // (An attempt the concurrency bound sheds is never charged at all; see Admit.)
 //
 // A nil *loginAdmission is valid, holds no slot and gives nothing back; that
@@ -426,33 +447,54 @@ type loginAdmission struct {
 	g       *LoginGate
 	charged []chargedKey
 	// release frees the verification slot. Idempotent (verifySemaphore.acquire
-	// wraps it in a sync.Once), so the handler can free the slot early and
-	// still hold a deferred release for the paths that return first.
+	// wraps it in a sync.Once), so the handler can finish early and still hold
+	// a deferred finish for the paths that return first.
 	release func()
 }
 
-// releaseVerify frees this admission's verification slot. Idempotent and
-// nil-safe.
-func (ad *loginAdmission) releaseVerify() {
-	if ad == nil || ad.release == nil {
+// finish settles every charge this admission still holds as KEPT, then frees
+// its verification slot. Idempotent and nil-safe, so the handler can call it
+// explicitly and again by defer.
+//
+// The charge is settled before the slot is freed. That is what bounds the
+// provisional entries (see loginBucketCap) by the verification bound: an entry
+// is provisional only while an admission that charged it is unfinished, and an
+// unfinished admission holds a slot.
+func (ad *loginAdmission) finish() {
+	if ad == nil {
 		return
 	}
-	ad.release()
+	ad.settle(false)
+	if ad.release != nil {
+		ad.release()
+	}
 }
 
-// giveBack returns every token this admission took. Idempotent: a second call
-// finds nothing left to return, so a caller can reach it on more than one path.
+// giveBack returns every token this admission took, and removes each bucket
+// entry that exists only because of it. Call it when the password verified,
+// and before finish. Idempotent: a second call finds nothing left to return.
 // TestGiveBackIsIdempotent pins that against a bucket another attempt has
 // charged in between, where a second return would erase that attempt's charge.
 func (ad *loginAdmission) giveBack() {
-	if ad == nil || ad.g == nil || len(ad.charged) == 0 {
+	if ad == nil {
+		return
+	}
+	ad.settle(true)
+}
+
+// settle finishes every charge still held, as given back (success) or as kept.
+func (ad *loginAdmission) settle(success bool) {
+	if ad.g == nil {
 		return
 	}
 	ad.g.mu.Lock()
 	defer ad.g.mu.Unlock()
+	if len(ad.charged) == 0 {
+		return
+	}
 	now := ad.g.now()
 	for _, c := range ad.charged {
-		c.b.giveBack(c.key, now)
+		c.b.settle(c.key, c.bk, now, success)
 	}
 	ad.charged = nil
 }
@@ -523,9 +565,9 @@ func (r *loginRefusal) domainError() *domain.Error {
 //
 // It returns an admission when the attempt may proceed and a refusal when it
 // may not; exactly one of the two is non-nil, except for a nil gate, which
-// returns neither. The caller must release the admission's slot once the
-// password has been checked, and give its charge back when the password
-// verified; see loginAdmission.
+// returns neither. Once the password has been checked the caller must give the
+// charge back if it verified, and then finish the admission in every case; see
+// loginAdmission.
 //
 // THE DECISION, in order, all under one lock:
 //
@@ -537,7 +579,9 @@ func (r *loginRefusal) domainError() *domain.Error {
 //     503, in every mode.
 //  3. Only now, when admission is final, is anything charged. An attempt that
 //     observe mode (or a degraded address) let through over budget is not
-//     charged: there is no token to take.
+//     charged: there is no token to take. A key with no bucket gets a
+//     provisional one, which evicts nothing and stays only if the attempt
+//     fails (see loginBucketCap).
 //
 // A REFUSED ATTEMPT COSTS NOTHING, IN ANY SCOPE.
 //
@@ -610,8 +654,8 @@ func (g *LoginGate) Admit(ctx context.Context, a loginAttempt) (*loginAdmission,
 		// ---- 3. The single mutation site. Reached only when admission is
 		// final and nothing refusing was over, in either mode. ----
 		charge := func(b *keyedBudget, key string) {
-			if b.charge(key, now) {
-				ad.charged = append(ad.charged, chargedKey{b: b, key: key})
+			if bk, ok := b.charge(key, now); ok {
+				ad.charged = append(ad.charged, chargedKey{b: b, key: key, bk: bk})
 			}
 		}
 		charge(g.pair, pairKey)
@@ -952,9 +996,17 @@ func maskTo(a netip.Addr, bits int) string {
 // ---------------------------------------------------------------------------
 
 // keyedBudget is one scope. Its own mutex guards the map for the test-facing
-// readers; Admit and loginAdmission.giveBack additionally hold the gate's
-// mutex across a whole evaluation, which is what makes a query and the charge
-// that follows it one step.
+// readers; Admit and loginAdmission.settle additionally hold the gate's mutex
+// across a whole evaluation, which is what makes a query and the charge that
+// follows it one step.
+//
+// An entry is PROVISIONAL while no charge on it has been kept (kept == 0):
+// every charge it carries belongs to an admission that has not finished. A
+// provisional entry does not count against loginBucketCap, is never evicted
+// and never swept, and is removed by the give-back that settles its last
+// pending charge. It becomes permanent when a failed attempt's charge on it is
+// kept, and only then can it cause an eviction. Every entry in the map has
+// pending > 0 or kept > 0.
 type keyedBudget struct {
 	scope string
 	limit int
@@ -970,6 +1022,10 @@ type loginBucket struct {
 	// the key is charged again (which only happens when it has budget). It
 	// drives the logging latch, never a decision.
 	overCount int
+	// pending counts charges on this bucket held by admissions that have not
+	// finished. kept counts charges that stayed because their attempt failed.
+	pending int
+	kept    int
 }
 
 func newKeyedBudget(scope string, limit int) *keyedBudget {
@@ -1015,37 +1071,71 @@ func (b *keyedBudget) query(key string, now time.Time) verdict {
 	return v
 }
 
-// charge takes one token for key, creating its bucket if it has none, and
-// resets the logging latch because a key with a token to spare is by
-// definition no longer over budget. It reports whether a token was taken.
+// charge takes one token for key, creating a provisional bucket if it has none,
+// and resets the logging latch because a key with a token to spare is by
+// definition no longer over budget. It returns the bucket charged, which the
+// charge must later be settled against, and whether a token was taken.
+//
+// It never sweeps and never evicts. The attempt's outcome is not known yet,
+// and a successful one must leave every other entry exactly as it was; making
+// room is paid for by a failed attempt, when its charge is kept (see settle).
 //
 // Called only by Admit, under the gate mutex and only after query found a
 // token, so false is not expected; it is reported rather than assumed so a
-// token that was not taken is never given back.
-func (b *keyedBudget) charge(key string, now time.Time) bool {
+// token that was not taken is never settled.
+func (b *keyedBudget) charge(key string, now time.Time) (*loginBucket, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	bk, ok := b.buckets[key]
-	if !ok {
-		b.sweepLocked(now)
+	bk, existed := b.buckets[key]
+	if !existed {
 		bk = &loginBucket{lim: newWindowBucket(b.limit, loginWindow, now)}
 		b.buckets[key] = bk
 	}
 	bk.seen = now
 	if !bk.lim.take(now) {
-		return false
+		if !existed {
+			delete(b.buckets, key)
+		}
+		return nil, false
 	}
+	bk.pending++
 	bk.overCount = 0
-	return true
+	return bk, true
 }
 
-// giveBack returns one token to key. A bucket that has been swept since the
-// charge is not recreated: a swept key already reads as a full budget.
-func (b *keyedBudget) giveBack(key string, now time.Time) {
+// settle finishes one charge taken on bk under key.
+//
+// success returns the token, and removes the entry if nothing but finished
+// successes ever charged it (pending and kept both zero). Such an entry is at
+// its whole budget, since every token taken from it was given back, so
+// removing it changes no budget: it leaves the map as it was before the first
+// of those attempts was admitted.
+//
+// Otherwise the charge is kept. The first kept charge makes the entry
+// permanent, which is the only point at which an entry starts to count
+// against loginBucketCap, and so the only point at which the map sweeps.
+//
+// A bucket that has left the map since the charge (evicted, or swept) is not
+// touched, even if another attempt has since created a new bucket under the
+// same key: those are that attempt's tokens, not this one's, and a key with no
+// bucket already reads as its whole budget.
+func (b *keyedBudget) settle(key string, bk *loginBucket, now time.Time, success bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if bk, ok := b.buckets[key]; ok {
+	if bk == nil || b.buckets[key] != bk {
+		return
+	}
+	bk.pending--
+	if success {
 		bk.lim.give(now)
+		if bk.pending == 0 && bk.kept == 0 {
+			delete(b.buckets, key)
+		}
+		return
+	}
+	bk.kept++
+	if bk.kept == 1 {
+		b.sweepLocked(now, bk)
 	}
 }
 
@@ -1068,30 +1158,50 @@ func (b *keyedBudget) size() int {
 	return len(b.buckets)
 }
 
-// sweepLocked drops idle entries, and if the map is still at its cap drops the
-// least recently seen until it is not.
+// sweepLocked runs when a failed attempt's charge makes entry permanent. It
+// drops idle entries, and if more than loginBucketCap entries are then
+// permanent, drops the least recently seen permanent entry other than entry
+// itself until no more are.
+//
+// It never touches an entry with a pending charge in the idle pass, and never
+// evicts a provisional one: those belong to attempts still in flight, and a
+// provisional entry leaves by its own give-back or becomes permanent by its
+// own failure.
+//
+// An idle entry is at its whole budget, so dropping one changes no budget: a
+// token is taken only by charge, which also stamps seen, so an entry unseen
+// for loginBucketIdle has refilled for at least loginWindow since its last
+// take, and that refills any bucket.
 //
 // EVICTION IS FAIL-OPEN BY CONSTRUCTION: an evicted key comes back as a fresh,
-// full bucket. What bounds that is that entries are created only by attempts
-// whose admission is final (see Admit): never by a refused attempt and never by
-// a shed one. So filling a scope's map needs as many admitted attempts as it
-// has entries, and each of those was either charged against the source's own
-// budget or completed with a correct password.
-func (b *keyedBudget) sweepLocked(now time.Time) {
+// full bucket. What bounds that is that an entry is permanent only once a
+// failed attempt's charge on it has been kept: never because of a refused
+// attempt, a shed one or a successful one. So evicting anything takes failed
+// attempts, and a source can make them only as fast as its own failure budget
+// admits them.
+func (b *keyedBudget) sweepLocked(now time.Time, entry *loginBucket) {
 	for k, bk := range b.buckets {
-		if now.Sub(bk.seen) > loginBucketIdle {
+		if bk.pending == 0 && now.Sub(bk.seen) > loginBucketIdle {
 			delete(b.buckets, k)
 		}
 	}
-	for len(b.buckets) >= loginBucketCap {
+	for {
+		permanent := 0
 		oldestKey := ""
 		var oldest time.Time
 		for k, bk := range b.buckets {
+			if bk.kept == 0 {
+				continue
+			}
+			permanent++
+			if bk == entry {
+				continue
+			}
 			if oldestKey == "" || bk.seen.Before(oldest) {
 				oldestKey, oldest = k, bk.seen
 			}
 		}
-		if oldestKey == "" {
+		if permanent <= loginBucketCap || oldestKey == "" {
 			return
 		}
 		delete(b.buckets, oldestKey)
