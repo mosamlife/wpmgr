@@ -202,6 +202,52 @@ func TestFontTranscodeResultsCascade(t *testing.T) {
 		}
 	})
 
+	t.Run("org_purge_removes_rows_via_tenant_fk_alone", func(t *testing.T) {
+		// The two subtests above cannot tell font_transcode_results_tenant_fk
+		// apart from font_transcode_results_site_fk: in each, the row's site
+		// belongs to the SAME organisation being deleted/purged, so purging
+		// tenantA also deletes siteA (tenants -> sites cascade), which by
+		// itself removes the row via site_fk -- tenant_fk is never the thing
+		// doing the work, and dropping it from a scratch copy leaves every
+		// other subtest here green.
+		//
+		// This case seeds a row naming organisation A (tenant_id) but a SITE
+		// THAT BELONGS TO ORGANISATION B (site_id). Nothing in the schema
+		// requires the two to agree -- font_transcode_results carries two
+		// independent foreign keys, not a composite one -- and this insert
+		// goes through the admin (superuser) connection, which bypasses RLS
+		// entirely, exactly like every other seed in this file. Purging
+		// tenantA never touches siteB or tenantB, so the row can be removed
+		// ONLY by font_transcode_results_tenant_fk's own CASCADE. If that FK
+		// is missing, the row survives the purge.
+		tenantA := seedTenant(t, pool, "ftr-purgetfk-a-"+uuid.NewString()[:8])
+		tenantB := seedTenant(t, pool, "ftr-purgetfk-b-"+uuid.NewString()[:8])
+		siteB := ftrSeedSite(t, admin, tenantB)
+
+		hash := "hash-purgetfk-" + uuid.NewString()
+		ftrSeedTranscodeResult(t, admin, tenantA, siteB, hash)
+
+		purged, err := sqlc.New(pool.Pool).AdminPurgeTenant(ctx, tenantA)
+		if err != nil {
+			t.Fatalf("admin_purge_tenant: %v", err)
+		}
+		if !purged {
+			t.Fatal("admin_purge_tenant should have purged tenantA")
+		}
+
+		if ftrTranscodeResultExists(t, admin, tenantA, hash) {
+			t.Fatal("a font_transcode_results row naming the purged organisation must be gone even when its site_id names a DIFFERENT, still-live organisation's site (m138 tenant_id FK, ON DELETE CASCADE) -- the site_fk cascade cannot be what did this, because siteB was never deleted")
+		}
+
+		var siteBExists bool
+		if err := admin.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM sites WHERE id = $1)`, siteB).Scan(&siteBExists); err != nil {
+			t.Fatalf("check siteB survives: %v", err)
+		}
+		if !siteBExists {
+			t.Fatal("tenantB's site must survive tenantA's purge -- if it did not, this case is not isolating tenant_fk either")
+		}
+	})
+
 	t.Run("org_soft_delete_keeps_rows_until_purge", func(t *testing.T) {
 		tenant := seedTenant(t, pool, "ftr-soft-"+uuid.NewString()[:8])
 		siteID := ftrSeedSite(t, admin, tenant)
