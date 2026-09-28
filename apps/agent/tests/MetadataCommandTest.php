@@ -827,6 +827,21 @@ PHP;
         $this->assertIsString($options[\WPMgr\Agent\Plugin::OPTION_KEYSTORE_ERROR] ?? null);
     }
 
+    /** A real AgeIdentity over $keystore that counts the keystore probes metadata takes. */
+    private function probeCountingIdentity(\WPMgr\Agent\Keystore $keystore): \WPMgr\Agent\Support\AgeIdentity
+    {
+        return new class ($keystore) extends \WPMgr\Agent\Support\AgeIdentity {
+            public int $probes = 0;
+
+            public function probeKeystore(): array
+            {
+                ++$this->probes;
+
+                return parent::probeKeystore();
+            }
+        };
+    }
+
     /** An AES-256-GCM envelope in the keystore's layout, sealed under a random key that is not this site's. */
     private function sealUnderForeignKey(string $plaintext): string
     {
@@ -889,7 +904,8 @@ PHP;
             (new \WPMgr\Agent\Keystore())->generateSiteKeypair();
             $this->assertArrayNotHasKey(\WPMgr\Agent\Keystore::OPTION_AGE_IDENTITY, $options, 'Precondition: no backup key is stored.');
 
-            $data = (new MetadataCommand(new \WPMgr\Agent\Support\AgeIdentity(new \WPMgr\Agent\Keystore())))->collect();
+            $identity = $this->probeCountingIdentity(new \WPMgr\Agent\Keystore());
+            $data     = (new MetadataCommand($identity))->collect();
         } finally {
             @unlink($keyPath);
         }
@@ -901,6 +917,7 @@ PHP;
         $this->assertSame('ok', $data['keystore']['items']['site_keypair'] ?? null);
         $this->assertSame([], $data['keystore']['unreadable'] ?? null);
         $this->assertArrayNotHasKey(\WPMgr\Agent\Plugin::OPTION_KEYSTORE_ERROR, $options);
+        $this->assertSame(2, $identity->probes, 'Probe again after the backup key is created.');
     }
 
     /**
@@ -944,7 +961,7 @@ PHP;
         try {
             $keystore = new \WPMgr\Agent\Keystore();
             $keystore->generateSiteKeypair();
-            $identity  = new \WPMgr\Agent\Support\AgeIdentity($keystore);
+            $identity  = $this->probeCountingIdentity($keystore);
             $recipient = $identity->ensureRecipient();
 
             $data = (new MetadataCommand($identity))->collect();
@@ -955,6 +972,7 @@ PHP;
         $this->assertSame('ok', $data['keystore']['state'] ?? null);
         $this->assertSame([], $data['keystore']['unreadable'] ?? null);
         $this->assertSame($recipient, $data['age_recipient'] ?? null);
+        $this->assertSame(1, $identity->probes, 'A backup key was already stored, so nothing could change: probe once.');
         $this->assertArrayNotHasKey(\WPMgr\Agent\Plugin::OPTION_KEYSTORE_ERROR, $options);
         $this->assertSame(['state', 'key_source', 'items', 'unreadable'], array_keys($data['keystore']));
     }
