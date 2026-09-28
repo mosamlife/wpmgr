@@ -65,11 +65,11 @@ final class RouterCommandFailureLogTest extends TestCase
 
 	/**
 	 * #754: the local log is the site owner's own file, so it may hold what the
-	 * response may not — here, the RAW message including an absolute path. This
-	 * is the asymmetry the fix depends on, so it is asserted rather than
-	 * assumed: full truth locally, redacted on the wire.
+	 * response may not — here, an absolute path. This is the asymmetry the fix
+	 * depends on, so it is asserted rather than assumed: paths as thrown
+	 * locally, redacted on the wire.
 	 */
-	public function test_debug_log_keeps_the_raw_detail_the_response_redacts(): void
+	public function test_debug_log_keeps_the_path_detail_the_response_redacts(): void
 	{
 		$secret = '/home/customer123/public_html/wp-content/uploads/wpmgr/staging';
 		$run    = $this->runInSubprocess( true, 'cannot create staging dir: ' . $secret );
@@ -83,6 +83,49 @@ final class RouterCommandFailureLogTest extends TestCase
 		$this->assertStringNotContainsString( $secret, $run['stdout'] );
 		$this->assertStringNotContainsString( 'customer123', $run['stdout'] );
 		$this->assertStringContainsString( 'cannot create staging dir', $run['stdout'] );
+	}
+
+	/**
+	 * #754: key material never reaches the log, which can be readable over the
+	 * web; paths do, because they are the site owner's own diagnostic. A padded
+	 * standard-base64 key and an access-key-shaped token are redacted from the
+	 * logged line, and an absolute path outside every known root survives.
+	 */
+	public function test_debug_log_redacts_key_material_but_keeps_paths(): void
+	{
+		$padded = 'JpXsrsvpkJ4QU9D43mEqo/DWxzeE2nX9GPs/Zi7BpTA=';
+		$akia   = 'AKIAJ7Q2ZK4XN8PLW3RD6YTBVC5MHGFS9UEO1I0A';
+		$path   = '/home/customer123/public_html/private/backup-dir';
+
+		$run = $this->runInSubprocess( true, 'unwrap failed for ' . $padded . ' and ' . $akia . ' at ' . $path );
+
+		$this->assertSame( 0, $run['status'], 'subprocess failed: ' . $run['stdout'] . $run['stderr'] );
+		$this->assertStringContainsString( 'WPMgr Agent: command failed:', $run['log'] );
+		$this->assertStringNotContainsString( $padded, $run['log'] );
+		$this->assertStringNotContainsString( 'JpXsrsvpkJ4QU9D43mEqo', $run['log'] );
+		$this->assertStringNotContainsString( $akia, $run['log'] );
+		$this->assertStringContainsString( 'reason=unwrap failed for <redacted> and <redacted> at ' . $path, $run['log'] );
+	}
+
+	/**
+	 * #754: the log line fails closed like the response. When a key-material
+	 * pass cannot complete, the line carries the withheld marker in place of
+	 * the message, never the message unredacted.
+	 */
+	public function test_debug_log_withholds_the_message_when_a_pass_cannot_complete(): void
+	{
+		$padded = 'JpXsrsvpkJ4QU9D43mEqo/DWxzeE2nX9GPs/Zi7BpTA=';
+
+		$run = $this->runInSubprocess(
+			true,
+			'unwrap failed for ' . $padded,
+			"ini_set('pcre.jit', '0'); ini_set('pcre.backtrack_limit', '1');"
+		);
+
+		$this->assertSame( 0, $run['status'], 'subprocess failed: ' . $run['stdout'] . $run['stderr'] );
+		$this->assertStringContainsString( 'reason=(reason withheld: redaction could not complete)', $run['log'] );
+		$this->assertStringNotContainsString( 'JpXsrsvpkJ4QU9D43mEqo', $run['log'] );
+		$this->assertStringContainsString( 'command=boom', $run['log'] );
 	}
 
 	/**
@@ -139,9 +182,10 @@ final class RouterCommandFailureLogTest extends TestCase
 	 *
 	 * @param bool   $debug   Whether to define WPMGR_DEBUG.
 	 * @param string $message Exception message the command throws.
+	 * @param string $before  PHP run just before the command is dispatched.
 	 * @return array{status:int,stdout:string,stderr:string,log:string}
 	 */
-	private function runInSubprocess( bool $debug, string $message ): array
+	private function runInSubprocess( bool $debug, string $message, string $before = '' ): array
 	{
 		$logPath    = sys_get_temp_dir() . '/wpmgr_router_log_' . uniqid( '', true ) . '.log';
 		$scriptPath = sys_get_temp_dir() . '/wpmgr_router_log_' . uniqid( '', true ) . '.php';
@@ -198,6 +242,8 @@ require '{$bootstrap}';
         'wpmgr_claims' => ['sub' => 'site-uuid', 'cmd' => 'boom'],
     ]
 );
+
+{$before}
 
 \$response = \$router->handleCommand(\$request);
 

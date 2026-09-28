@@ -63,9 +63,10 @@ final class Router
 
     /**
      * What a command-failure response carries in place of the reason when a
-     * redaction pass in redactReason() cannot complete. The response still
-     * names the exception class and the relative location; only the message
-     * is withheld, and the local debug log still has it in full.
+     * redaction pass in redactReason() cannot complete, and what the local
+     * log line carries in place of the message when logReason() cannot. The
+     * response still names the exception class and the relative location;
+     * only the message is withheld.
      */
     private const REASON_WITHHELD = '(reason withheld: redaction could not complete)';
 
@@ -270,20 +271,23 @@ final class Router
             $class    = self::exceptionClass($e);
             $location = self::validUtf8(self::relativeSourcePath($e->getFile()) . ':' . $e->getLine());
 
-            // The local log is the site owner's own debug.log on their own
-            // server, so it carries full detail, including the raw message and
-            // the absolute file path PHP reports. That one line is what turns a
-            // weeks-long investigation into a minute.
+            // The local log is the site owner's own debug.log, so it carries
+            // more than the response: the command, the class, the location and
+            // the message with its paths as thrown, absolute ones included.
+            // Key material is redacted from it by the same passes the response
+            // uses (see logReason()), because a debug.log can be readable over
+            // the web. That one line is what turns a weeks-long investigation
+            // into a minute.
             //
-            // One failure is one log line. Line breaks in the message are
-            // written as the two-character sequences \r and \n: the full text
-            // survives, and nothing in it can start a log line of its own.
+            // One failure is one log line. Line breaks in it are written as the
+            // two-character sequences \r and \n: the text survives, and nothing
+            // in it can start a log line of its own.
             \WPMgr\Agent\Support\DebugLog::write(
                 self::foldLineBreaks(
                     'WPMgr Agent: command failed: command=' . $name
                     . ' class=' . $class
                     . ' at=' . $location
-                    . ' reason=' . $e->getMessage()
+                    . ' reason=' . self::logReason($e->getMessage())
                 )
             );
 
@@ -611,8 +615,9 @@ final class Router
         // '='. Caught here: a case-mixed path that carries a digit, '+' or '=',
         // a long case-mixed path with a '/' in it, and any run that ends in
         // '='; isEncodedRun() gives the exact lengths. The second is the
-        // cheaper error — a redacted identifier is still intact in the local
-        // debug log; key material in a dashboard is not recoverable from.
+        // cheaper error — a redacted identifier costs one diagnostic; key
+        // material in a dashboard or a web-readable log is not recoverable
+        // from.
         //
         // A redacted run that starts with '/' keeps that '/', and the
         // absolute-path rule below takes "<redacted>" as a path component. So a
@@ -621,17 +626,7 @@ final class Router
         // the remainder goes with it rather than surviving as a relative-looking
         // tail. Neither pass can be abandoned part-way through the message:
         // each completes, or the whole reason is withheld.
-        $msg = self::pregCallbackOrNull(
-            '~[A-Za-z0-9+/=_\-]{32,}~',
-            static function (array $m): string {
-                if (!self::isEncodedRun($m[0])) {
-                    return $m[0];
-                }
-
-                return ($m[0][0] === '/' ? '/' : '') . '<redacted>';
-            },
-            $msg
-        );
+        $msg = self::redactEncodedRuns($msg);
         if ($msg === null) {
             return self::REASON_WITHHELD;
         }
@@ -663,8 +658,8 @@ final class Router
         // Pass 2 — long opaque runs over the slash-free alphabet: the shape of
         // a key, token, hash or ciphertext. Threshold-only, with no "looks
         // random" refinement, and that asymmetry is deliberate — a false
-        // positive costs one long identifier that is still intact in the local
-        // debug log, a false negative puts key material in a dashboard.
+        // positive costs one long identifier, a false negative puts key
+        // material in a dashboard.
         //
         // '/' is deliberately NOT in this class. It was, and it ate any
         // relative path longer than the threshold
@@ -675,7 +670,7 @@ final class Router
         // Both passes are a backstop, not a boundary. The boundary is that a
         // command must not put a secret in an exception message in the first
         // place.
-        $msg = self::pregOrNull('~[A-Za-z0-9+=_\-]{32,}~', '<redacted>', $msg);
+        $msg = self::redactOpaqueRuns($msg);
         if ($msg === null) {
             return self::REASON_WITHHELD;
         }
@@ -685,6 +680,62 @@ final class Router
         }
 
         return self::clamp($msg, self::MAX_REASON_CHARS);
+    }
+
+    /**
+     * Pass 1 of redactReason(): the standard-base64 run decision. The comment
+     * above its call there says why it exists and why it runs where it does.
+     *
+     * @param string $msg Message.
+     * @return string|null Null when the pass did not complete.
+     */
+    private static function redactEncodedRuns(string $msg): ?string
+    {
+        return self::pregCallbackOrNull(
+            '~[A-Za-z0-9+/=_\-]{32,}~',
+            static function (array $m): string {
+                if (!self::isEncodedRun($m[0])) {
+                    return $m[0];
+                }
+
+                return ($m[0][0] === '/' ? '/' : '') . '<redacted>';
+            },
+            $msg
+        );
+    }
+
+    /**
+     * Pass 2 of redactReason(): long opaque runs over the slash-free alphabet.
+     *
+     * @param string $msg Message.
+     * @return string|null Null when the pass did not complete.
+     */
+    private static function redactOpaqueRuns(string $msg): ?string
+    {
+        return self::pregOrNull('~[A-Za-z0-9+=_\-]{32,}~', '<redacted>', $msg);
+    }
+
+    /**
+     * The exception message as the local debug log line records it.
+     *
+     * Contract: key material is redacted by the same two passes the response
+     * uses — pass 1 and pass 2 of redactReason(), in that order — and nothing
+     * else is changed. Paths, absolute ones included, stay as thrown: they are
+     * the site owner's own diagnostic, and PHP writes them to the same log. If
+     * either pass cannot complete, the line carries REASON_WITHHELD in place of
+     * the message.
+     *
+     * @param string $msg Raw exception message.
+     * @return string
+     */
+    private static function logReason(string $msg): string
+    {
+        $msg = self::redactEncodedRuns($msg);
+        if ($msg === null) {
+            return self::REASON_WITHHELD;
+        }
+
+        return self::redactOpaqueRuns($msg) ?? self::REASON_WITHHELD;
     }
 
     /**
