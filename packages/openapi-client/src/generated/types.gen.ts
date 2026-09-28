@@ -825,6 +825,15 @@ export type AgentMetadata = {
    */
   agent_version?: string;
   /**
+   * The site's WordPress home_url as the agent reads it (GH #755).
+   * Optional. The control plane may adopt it as the site's saved
+   * address, but only under the same equivalence rule enrollment
+   * applies: a leading "www." toggle and/or an http to https upgrade,
+   * on the same host, port and path. Anything else is ignored.
+   *
+   */
+  home_url?: string;
+  /**
    * The agent's per-site age PUBLIC recipient ("age1..."), stored so
    * backups can be triggered without a separate registration call.
    * Empty or missing leaves the stored recipient unchanged.

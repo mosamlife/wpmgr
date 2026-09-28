@@ -16675,6 +16675,12 @@ func (s *AgentMetadata) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
+		if s.HomeURL.Set {
+			e.FieldStart("home_url")
+			s.HomeURL.Encode(e)
+		}
+	}
+	{
 		if s.AgeRecipient.Set {
 			e.FieldStart("age_recipient")
 			s.AgeRecipient.Encode(e)
@@ -16748,23 +16754,24 @@ func (s *AgentMetadata) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfAgentMetadata = [16]string{
+var jsonFieldsNameOfAgentMetadata = [17]string{
 	0:  "wp_version",
 	1:  "php_version",
 	2:  "server_info",
 	3:  "multisite",
 	4:  "active_theme",
 	5:  "agent_version",
-	6:  "age_recipient",
-	7:  "user_count",
-	8:  "admin_count",
-	9:  "roles",
-	10: "core_update",
-	11: "host_flags",
-	12: "disk",
-	13: "agent_self_update",
-	14: "plugins",
-	15: "themes",
+	6:  "home_url",
+	7:  "age_recipient",
+	8:  "user_count",
+	9:  "admin_count",
+	10: "roles",
+	11: "core_update",
+	12: "host_flags",
+	13: "disk",
+	14: "agent_self_update",
+	15: "plugins",
+	16: "themes",
 }
 
 // Decode decodes AgentMetadata from json.
@@ -16834,6 +16841,16 @@ func (s *AgentMetadata) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"agent_version\"")
+			}
+		case "home_url":
+			if err := func() error {
+				s.HomeURL.Reset()
+				if err := s.HomeURL.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"home_url\"")
 			}
 		case "age_recipient":
 			if err := func() error {

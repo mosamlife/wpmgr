@@ -1316,6 +1316,11 @@ export const AgentMetadataSchema = {
       type: "string",
       description: "The WPMgr agent plugin version.",
     },
+    home_url: {
+      type: "string",
+      description:
+        "The site's WordPress home_url as the agent reads it (GH #755).\nOptional. The control plane may adopt it as the site's saved\naddress, but only under the same equivalence rule enrollment\napplies: a leading \"www.\" toggle and/or an http to https upgrade,\non the same host, port and path. Anything else is ignored.\n",
+    },
     age_recipient: {
       type: "string",
       description:
