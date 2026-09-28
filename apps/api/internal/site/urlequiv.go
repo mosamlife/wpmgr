@@ -32,8 +32,14 @@ func parseSiteAddress(raw string) (siteAddress, *url.URL, bool) { return siteadd
 // wwwSibling is siteaddr.WWWSibling.
 func wwwSibling(host string) (string, bool) { return siteaddr.WWWSibling(host) }
 
-// planEnrollURL is siteaddr.Plan.
+// planEnrollURL is siteaddr.Plan: the rule enrollment applies.
 func planEnrollURL(stored, reported string) enrollURLPlan { return siteaddr.Plan(stored, reported) }
+
+// planReportedURL is siteaddr.PlanStrict: the rule push-time adoption
+// applies, with hosts compared in the ASCII form they are dialled by.
+func planReportedURL(stored, reported string) enrollURLPlan {
+	return siteaddr.PlanStrict(stored, reported)
+}
 
 // siteURLVariants is siteaddr.Variants.
 func siteURLVariants(raw string) []string { return siteaddr.Variants(raw) }

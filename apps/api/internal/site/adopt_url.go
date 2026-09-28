@@ -18,20 +18,22 @@ import (
 // diagnostics push passes its own source, "agent_diagnostics".
 const urlSourceAgentMetadata = "agent_metadata"
 
-// CommandRedirectProber asks whether a site's saved address redirects its
-// command route, and where to. agentcmd.Client implements it with one signed
-// ping sent to the saved address.
+// CommandRedirectProber confirms an address change with one signed ping.
+// agentcmd.Client implements it.
 type CommandRedirectProber interface {
 	// CommandRedirectTarget returns redirected=true when the command sent to
 	// siteURL was answered with a redirect that was not followed, and the
 	// address the saved one would become (RedirectError.SuggestedSiteURL,
 	// which is empty when the redirect names no adoptable address).
 	CommandRedirectTarget(ctx context.Context, siteID uuid.UUID, siteURL string) (suggested string, redirected bool)
+	// CommandPingOK reports whether a signed ping sent to exactly siteURL was
+	// answered with a 2xx by the agent. A redirect is false.
+	CommandPingOK(ctx context.Context, siteID uuid.UUID, siteURL string) bool
 }
 
 // SetCommandRedirectProber wires the prober AdoptReportedURL needs before it
-// adopts a host change. Without one, a host change is never adopted after
-// enrollment; an http to https upgrade on the same host still is.
+// adopts any address change. Without one, no address change is adopted after
+// enrollment.
 func (s *Service) SetCommandRedirectProber(p CommandRedirectProber) { s.redirectProber = p }
 
 // AdoptReportedURL decides whether the address an enrolled site's agent
@@ -40,14 +42,22 @@ func (s *Service) SetCommandRedirectProber(p CommandRedirectProber) { s.redirect
 // failure is logged and returned for the caller to drop, so it can never fail
 // the push that carried the address.
 //
-// The rule is siteaddr.Plan, the one enrollment applies: only a leading
-// "www." toggle and/or an http to https upgrade, on the same port and path.
-// A scheme-only upgrade is written directly. A host change (the "www."
-// toggle) is written only when a signed ping to the saved address is
-// redirected right now to exactly the planned address. Because the scheme
-// only ever goes up, and a host change needs the saved address to redirect
-// there at the moment of the push, two installs cannot flip the address back
-// and forth.
+// The rule is siteaddr.PlanStrict: enrollment's rule (only a leading "www."
+// toggle and/or an http to https upgrade, on the same port and path) with
+// hosts compared in the ASCII form they are dialled by. Nothing is written
+// without a signed ping confirming it at the moment of the push:
+//
+//   - A host change (the "www." toggle) is written only when a ping to the
+//     saved address is redirected to exactly the planned address.
+//   - A scheme-only upgrade is written only when a ping to the https form of
+//     the saved host is answered with a 2xx. A failure or a redirect leaves
+//     the saved address as it is.
+//
+// Each (site, planned address) is probed at most once per adoptProbeWindow,
+// so an address the site reports but does not serve costs one ping a day,
+// not one per push. Because the scheme only ever goes up, and a host change
+// needs the saved address to redirect there at the moment of the push, two
+// installs cannot flip the address back and forth.
 func (s *Service) AdoptReportedURL(ctx context.Context, tenantID, siteID uuid.UUID, reported, source, agentVersion string) error {
 	_, err := s.adoptReportedURL(ctx, tenantID, siteID, reported, source, agentVersion)
 	return err
@@ -77,7 +87,7 @@ func (s *Service) adoptReportedURL(ctx context.Context, tenantID, siteID uuid.UU
 		return false, nil
 	}
 
-	plan := planEnrollURL(st.URL, reported)
+	plan := planReportedURL(st.URL, reported)
 	switch plan.Decision {
 	case enrollURLSame:
 		return false, nil
@@ -95,18 +105,28 @@ func (s *Service) adoptReportedURL(ctx context.Context, tenantID, siteID uuid.UU
 	if !okS || !okT {
 		return false, nil
 	}
+	if s.redirectProber == nil {
+		log.Info("adopt reported address: not adopted: no prober to confirm the change",
+			slog.String("saved", st.URL), slog.String("to", plan.To))
+		return false, nil
+	}
+	if !s.probeLimiter().allow(probeKey{site: siteID, address: plan.To}, s.now()) {
+		// Not Info: it would repeat on every push inside the window.
+		log.Debug("adopt reported address: not adopted: this address was probed within the last day",
+			slog.String("saved", st.URL), slog.String("to", plan.To))
+		return false, nil
+	}
 	if saved.Host != to.Host {
-		if s.redirectProber == nil {
-			log.Info("adopt reported address: not adopted: no redirect prober to confirm a host change",
-				slog.String("saved", st.URL), slog.String("to", plan.To))
-			return false, nil
-		}
 		suggested, redirected := s.redirectProber.CommandRedirectTarget(ctx, siteID, st.URL)
 		if !redirected || suggested != plan.To {
 			log.Info("adopt reported address: not adopted: saved address does not redirect to the reported address",
 				slog.String("saved", st.URL), slog.String("to", plan.To))
 			return false, nil
 		}
+	} else if !s.redirectProber.CommandPingOK(ctx, siteID, plan.To) {
+		log.Info("adopt reported address: not adopted: the https address did not answer a signed ping with a 2xx",
+			slog.String("saved", st.URL), slog.String("to", plan.To))
+		return false, nil
 	}
 
 	adopted, err := s.repo.AdoptSiteURL(ctx, tenantID, siteID, st.URL, plan.To)

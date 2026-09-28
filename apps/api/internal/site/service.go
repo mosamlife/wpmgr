@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -44,10 +45,14 @@ type Service struct {
 	// entry is skipped, never that the event goes unreported — the structured
 	// log line is unconditional.
 	audit *audit.Recorder
-	// redirectProber confirms a host change before AdoptReportedURL writes
-	// it. Optional: nil means a host change is never adopted after
+	// redirectProber confirms an address change before AdoptReportedURL
+	// writes it. Optional: nil means no address change is adopted after
 	// enrollment.
 	redirectProber CommandRedirectProber
+	// adoptProbes limits AdoptReportedURL to one probe per 24h per (site,
+	// reported address). In memory and bounded; a restart resets it.
+	adoptProbes     *probeLimiter
+	adoptProbesOnce sync.Once
 }
 
 // SetAuditRecorder wires the hash-chained audit recorder. Call once at boot;

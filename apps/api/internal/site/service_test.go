@@ -82,8 +82,9 @@ func (f *fakeRepo) SetAgeRecipientIfUnset(_ context.Context, tenantID, siteID uu
 	return Site{ID: siteID, TenantID: tenantID, AgeRecipient: recipient}, true, nil
 }
 
-// AdoptSiteURL: the address-adoption write is proved against the database by
-// the integration suite; unit tests here never reach it.
+// AdoptSiteURL: this fake never adopts. The write itself runs only against a
+// real database; apps/api/tests/gh755_push_address_integration_test.go is
+// where the push-time adoption path is to be proved end to end.
 func (f *fakeRepo) AdoptSiteURL(_ context.Context, _, _ uuid.UUID, _, _ string) (bool, error) {
 	return false, nil
 }
