@@ -44,15 +44,23 @@
 -- other instances may still be serving, so every lock below is held until the
 -- file commits.
 --
+--   0. Bound every wait: SET LOCAL lock_timeout and statement_timeout. See
+--      THE TIMEOUTS below for the values and what happens when one fires.
+--
 --   1. LOCK tenants, sites, font_transcode_results IN SHARE ROW EXCLUSIVE MODE.
 --      This is the lock ADD CONSTRAINT ... FOREIGN KEY takes on the table it
 --      alters and on the table it references, so it is no stronger than what
 --      step 4 would take anyway; it is only taken earlier. Taking it first is
 --      what makes steps 2 to 4 one consistent picture: without it a site
 --      deleted, or a row inserted, between the clean-up and the ADD CONSTRAINT
---      would leave a row the constraint refuses, the constraint would fail its
---      validation, and the control plane would fail to boot. SHARE ROW
---      EXCLUSIVE blocks writes to the three tables and does not block reads.
+--      would leave a row the constraint forbids. What happens next depends on
+--      the role that runs this file. As a superuser, the validation sees the
+--      row, fails, and the control plane fails to boot. As a non-superuser
+--      owner, the validation is subject to FORCE ROW LEVEL SECURITY and does
+--      not see the row (see step 2), so the constraint is recorded as
+--      validated while the row it forbids stays in the table, and nothing
+--      reports it. The lock rules out both. SHARE ROW EXCLUSIVE blocks writes
+--      to the three tables and does not block reads.
 --      The order (tenants, sites, then the child) is the order an organisation
 --      purge's cascade takes them in, so the two cannot deadlock on each other.
 --
@@ -86,6 +94,43 @@
 -- constraint and probes the referenced primary key for each row; the table
 -- holds one row per distinct font file per organisation.
 --
+-- THE TIMEOUTS
+--
+-- The file opens with SET LOCAL lock_timeout = '2s' and SET LOCAL
+-- statement_timeout = '10s'. SET LOCAL scopes both to this file's
+-- transaction: they end with it and reach no other migration and no other
+-- connection.
+--
+-- lock_timeout bounds step 1. LOCK takes the three tables one after another;
+-- while it waits for one it already holds the ones before it, and every write
+-- that arrives for the table it is waiting on queues behind it. With no bound,
+-- one open transaction that has written a sites row would stall every write
+-- to tenants and to sites on the running control plane for as long as that
+-- transaction stayed open. PostgreSQL applies lock_timeout to each lock
+-- acquisition separately, so the three together hold writers back for at
+-- most six seconds. Ordinary transactions that write these tables are short;
+-- two seconds lets a boot wait those out and refuses to wait on anything
+-- longer, a long-running job or a session left idle in a transaction, which
+-- is exactly the stall this bound exists to prevent.
+--
+-- statement_timeout bounds each statement once the locks are held, when every
+-- write to the three tables waits on this file. Steps 2 to 4 each read
+-- font_transcode_results, which holds one row per distinct font file per
+-- organisation, and probe a primary key per row. Ten seconds is ample for
+-- that, and if a statement ever needs longer, failing the migration is the
+-- intended outcome rather than holding writes to tenants and sites for longer.
+-- The timeout also counts lock waits, and step 1's worst case sits inside it.
+--
+-- WHEN A TIMEOUT FIRES. The statement fails (SQLSTATE 55P03 for the lock
+-- wait, 57014 for the statement), the transaction rolls back, nothing in this
+-- file persists, and schema_migrations gets no row for it. cmd/wpmgr applies
+-- migrations before it listens, so the process exits without serving: a new
+-- revision never becomes ready, and the instances already serving keep
+-- serving (on Cloud Run the deploy fails and traffic stays on the previous
+-- revision). The next boot runs this file again from the start, and since
+-- every step is safe to repeat (below), a later boot, once the long
+-- transaction has ended, applies it.
+--
 -- CONVERGENCE AND IDEMPOTENCY
 --
 -- No earlier version of this change was ever applied anywhere, so there is no
@@ -93,6 +138,9 @@
 -- nothing on a second run, the index is IF NOT EXISTS, and each constraint is
 -- added only when a constraint of that name is absent. A database built from a
 -- fresh schema reaches the same end state as one migrated here.
+
+SET LOCAL lock_timeout = '2s';
+SET LOCAL statement_timeout = '10s';
 
 LOCK TABLE "public"."tenants", "public"."sites", "public"."font_transcode_results"
     IN SHARE ROW EXCLUSIVE MODE;
