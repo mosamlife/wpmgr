@@ -124,20 +124,21 @@ func planEnrollURL(stored, reported string) enrollURLPlan {
 		host = sibling
 	}
 
+	return enrollURLPlan{Decision: enrollURLAdopt, To: joinSiteAddress(r.Scheme, host, s.Port, su.EscapedPath())}
+}
+
+// joinSiteAddress builds an address from its parts. The host is written as
+// given (an internationalised host keeps its form rather than being
+// percent-encoded), bracketed when it is an IPv6 literal.
+func joinSiteAddress(scheme, host, port, escapedPath string) string {
 	hostPart := host
 	if strings.Contains(host, ":") { // IPv6 literal
 		hostPart = "[" + host + "]"
 	}
-	if s.Port != "" {
-		hostPart += ":" + s.Port
+	if port != "" {
+		hostPart += ":" + port
 	}
-	to := url.URL{
-		Scheme:  r.Scheme,
-		Host:    hostPart,
-		Path:    su.Path,
-		RawPath: su.RawPath,
-	}
-	return enrollURLPlan{Decision: enrollURLAdopt, To: to.String()}
+	return scheme + "://" + hostPart + escapedPath
 }
 
 // siteURLVariants lists the spellings the mint-time duplicate check treats as
@@ -169,14 +170,7 @@ func siteURLVariants(raw string) []string {
 	path := strings.TrimRight(u.EscapedPath(), "/")
 	for _, scheme := range schemes {
 		for _, host := range hosts {
-			hostPart := host
-			if strings.Contains(host, ":") {
-				hostPart = "[" + host + "]"
-			}
-			if a.Port != "" {
-				hostPart += ":" + a.Port
-			}
-			base := scheme + "://" + hostPart + path
+			base := joinSiteAddress(scheme, host, a.Port, path)
 			add(base)
 			add(base + "/")
 		}
