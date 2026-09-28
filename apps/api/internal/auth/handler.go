@@ -216,29 +216,20 @@ func (h *Handler) login(c *gin.Context) {
 		Email:     body.Email,
 	})
 	if refusal != nil {
-		// Enforce mode, over the pair, source or source /48 budget. Nothing
-		// was charged and no account was looked up. No audit row is written:
-		// the gate's WARN line is the record of a refused attempt.
+		// Either a budget refused it (enforce mode: 429 too_many_attempts), or
+		// the verification bound shed it (any mode: 503 server_busy, which is
+		// saturation and says nothing about this caller). Either way nothing
+		// was charged, no bucket entry was created and no account was looked
+		// up. No audit row is written: the gate's log line is the record.
 		c.Header("Retry-After", strconv.Itoa(refusal.retryAfterSeconds()))
 		httpx.Error(c, refusal.domainError())
 		return
 	}
-
-	releaseVerify, admitted := h.loginGate.AcquireVerify(c.Request.Context())
-	if !admitted {
-		// Saturation, not a limit: no account was looked at and nothing about
-		// this caller decided it. Retry-After is short because the condition it
-		// describes clears in the time one verification takes. The attempt was
-		// refused, so it gives back what admission charged.
-		admission.giveBack()
-		c.Header("Retry-After", "2")
-		httpx.Error(c, domain.ServiceUnavailable("server_busy", "server is busy verifying sign-ins; retry shortly"))
-		return
-	}
-	// Idempotent, so the explicit release below can free the slot before the
-	// session and two-factor work that follows a successful verify, while this
-	// still covers every path that returns first.
-	defer releaseVerify()
+	// Admitted, holding a verification slot. Releasing is idempotent, so the
+	// explicit release below can free the slot before the session and
+	// two-factor work that follows a successful verify, while this still
+	// covers every path that returns first.
+	defer admission.releaseVerify()
 
 	res, err := h.svc.Login(c.Request.Context(), body.Email, body.Password)
 	// Hand the slot back before the session store and the trusted-device
@@ -257,13 +248,14 @@ func (h *Handler) login(c *gin.Context) {
 	// holding 19 MiB of argon2id state per queued attempt while doing it. But
 	// it means a 503 here does not prove CPU saturation, and an operator
 	// diagnosing one should look at database latency too.
-	releaseVerify()
+	admission.releaseVerify()
 	if err != nil {
 		httpx.Error(c, err)
 		return
 	}
 	// The password verified. A successful sign-in costs no budget, so a
 	// shared connection's budget is spent only by the attempts that failed.
+	// TestLoginGivesTheChargeBackOnSuccess pins this call in place.
 	admission.giveBack()
 
 	// ADR-056 Phase 3: two-factor enforcement.
@@ -762,16 +754,16 @@ func (h *Handler) limiterAddr(c *gin.Context) netip.Addr {
 // address was read FROM THE FORWARDED CHAIN at the configured hop position
 // (true) or came from the peer-address fallback (false).
 //
-// The flag grades a degraded address. It is not itself a decision, and Phase 0
-// only logs it, but it is the signal that distinguishes the two ways an address
-// arrives, which the caller-visible behaviour cannot:
+// The flag grades a degraded address. It is the signal that distinguishes the
+// two ways an address arrives, which the caller-visible behaviour cannot:
 //
 //   - hops > 0 and fromChain=false means the chain was SHORTER than
 //     WPMGR_AUTH_PROXY_HOPS claims. Either the hop count is wrong or this
 //     process is reachable without the proxies it is configured for. Every
-//     affected client collapses onto one key, and an enforcing phase would
-//     refuse them together. An operator cannot see this from inside the
-//     process any other way, which is why it is logged.
+//     affected client collapses onto one key, so the login gate never refuses
+//     on it (loginAttempt.refusable) and logs the would-refuse at WARN
+//     instead. An operator cannot see this from inside the process any other
+//     way, which is why it is logged.
 //   - hops == 0 also reports false, because nothing was read from a chain —
 //     but there is nothing degraded about it: the peer address IS the
 //     configured source in that topology. loginAttempt.addrSource is where the

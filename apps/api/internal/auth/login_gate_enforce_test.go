@@ -222,10 +222,11 @@ func TestRefusedAttemptsChargeNothing(t *testing.T) {
 	assertAdmitted(t, postLogin(e, office, "colleague[at]example.test"), "a colleague on the same connection")
 }
 
-// TestSuccessAndShedGiveTheChargeBack pins the other two outcomes that must not
-// count against a budget: a password that verified, and an attempt the
-// concurrency bound shed before any password was checked.
-func TestSuccessAndShedGiveTheChargeBack(t *testing.T) {
+// TestSuccessGivesTheChargeBack pins the outcome that must not count against a
+// budget at the gate: a password that verified. The handler's half of it, that
+// h.login actually makes the call, is TestLoginGivesTheChargeBackOnSuccess, and
+// the database-backed proof through the real router is in apps/api/tests.
+func TestSuccessGivesTheChargeBack(t *testing.T) {
 	g, _ := newEnforceGate(t)
 	addr := netip.MustParseAddr(simulatedClient)
 	a := loginAttempt{Addr: addr, FromChain: true, Hops: 2, Email: "person@example.test"}
@@ -236,35 +237,176 @@ func TestSuccessAndShedGiveTheChargeBack(t *testing.T) {
 		if refusal != nil {
 			t.Fatalf("sign-in %d refused (%s) although every earlier one succeeded", i+1, refusal.scope)
 		}
+		ad.releaseVerify()
 		ad.giveBack()
-		ad.giveBack() // idempotent: a second call returns nothing more
 	}
 	srcKey := srcKeyFor(addr)
 	if got := g.src.tokensAt(srcKey, gateEpoch); got != loginSrcBudget {
 		t.Errorf("source scope has %.1f tokens after only successes, want %d", got, loginSrcBudget)
 	}
+	if got := g.verify.inFlight(); got != 0 {
+		t.Errorf("%d verification slots still held after every admission released its own", got)
+	}
+}
 
-	// Through the handler: a shed attempt gives its charge back.
-	e := loginHandlerForTest(t, g, 2)
-	var releases []func()
-	for i := 0; i < g.verify.capacity(); i++ {
-		r, ok := g.verify.acquire()
-		if !ok {
-			t.Fatalf("could not occupy verify slot %d", i+1)
+// TestGiveBackIsIdempotent: a second giveBack must return nothing. It is
+// checked against a bucket another attempt charged in between, because that is
+// the only state in which a second return is visible: against a bucket already
+// at its budget the cap in give() would hide it.
+func TestGiveBackIsIdempotent(t *testing.T) {
+	g, _ := newEnforceGate(t)
+	addr := netip.MustParseAddr(simulatedClient)
+	a := loginAttempt{Addr: addr, FromChain: true, Hops: 2, Email: "person@example.test"}
+	srcKey := srcKeyFor(addr)
+	acctH := g.AccountDigest(a.Email)
+	pairKey := srcKey + "|" + acctH
+
+	first, r := g.Admit(context.Background(), a)
+	if r != nil {
+		t.Fatalf("first attempt refused: %+v", r)
+	}
+	first.releaseVerify()
+	// A second attempt on the same keys, which fails and so stays charged.
+	if r := failedAttempt(g, a); r != nil {
+		t.Fatalf("second attempt refused: %+v", r)
+	}
+
+	first.giveBack()
+	first.giveBack()
+
+	for _, c := range []struct {
+		name string
+		b    *keyedBudget
+		key  string
+	}{{"pair", g.pair, pairKey}, {"source", g.src, srcKey}, {"account", g.acct, acctH}} {
+		if got, want := c.b.tokensAt(c.key, gateEpoch), float64(c.b.limit-1); got != want {
+			t.Errorf("%s scope has %.1f tokens, want %.1f: the second giveBack returned a token the other attempt's charge had taken",
+				c.name, got, want)
 		}
-		releases = append(releases, r)
 	}
-	for i := 0; i < loginSrcBudget*2; i++ {
-		if w := postLogin(e, simulatedClient, httpEmailA); w.Code != http.StatusServiceUnavailable {
-			t.Fatalf("shed attempt %d: status %d, want 503", i+1, w.Code)
+}
+
+// TestShedAttemptsLeaveEveryMapAsItWas: an attempt the verification bound sheds
+// must charge nothing and create nothing. If it created bucket entries, a
+// caller at zero budget could keep adding them while the bound is saturated
+// until each map's cap evicted the oldest entries, its own exhausted pair
+// among them, which would come back with a full budget.
+func TestShedAttemptsLeaveEveryMapAsItWas(t *testing.T) {
+	const victim = "victim[at]example.test"
+
+	occupy := func(t *testing.T, g *LoginGate) (release func()) {
+		t.Helper()
+		var rs []func()
+		for i := 0; i < g.verify.capacity(); i++ {
+			r, ok := g.verify.acquire()
+			if !ok {
+				t.Fatalf("could not occupy verify slot %d", i+1)
+			}
+			rs = append(rs, r)
+		}
+		return func() {
+			for _, r := range rs {
+				r()
+			}
 		}
 	}
-	for _, r := range releases {
-		r()
+	type snap struct {
+		sizes  [4]int
+		tokens map[string]float64
 	}
-	if got := g.src.tokensAt(srcKey, gateEpoch); got != loginSrcBudget {
-		t.Errorf("source scope has %.1f tokens after only shed attempts, want %d", got, loginSrcBudget)
+	snapshot := func(g *LoginGate, now time.Time) snap {
+		s := snap{tokens: map[string]float64{}}
+		for i, b := range []*keyedBudget{g.pair, g.src, g.src48, g.acct} {
+			b.mu.Lock()
+			s.sizes[i] = len(b.buckets)
+			for k, bk := range b.buckets {
+				s.tokens[b.scope+" "+k] = bk.lim.TokensAt(now)
+			}
+			b.mu.Unlock()
+		}
+		return s
 	}
+
+	t.Run("sizes and tokens unchanged", func(t *testing.T) {
+		g, _ := newEnforceGate(t)
+		e := loginHandlerForTest(t, g, 2)
+		// Existing state to disturb: a drained pair, and a v6 client.
+		for i := 0; i < loginPairBudget; i++ {
+			assertAdmitted(t, postLogin(e, simulatedClient, victim), "warm-up")
+		}
+		assertAdmitted(t, postLogin(e, "2001:db8:1:2::1", httpEmailA), "v6 warm-up")
+		before := snapshot(g, gateEpoch)
+
+		release := occupy(t, g)
+		shed := 0
+		for i := 0; i < 200; i++ {
+			for _, try := range []struct{ client, email string }{
+				{simulatedClient, fmt.Sprintf("new%d[at]example.test", i)},            // new pair, new account
+				{fmt.Sprintf("198.51.100.%d", i%250+1), httpEmailA},                    // new source
+				{fmt.Sprintf("2001:db8:%x:1::1", i+100), fmt.Sprintf("v6-%d[at]x", i)}, // new /64 and /48
+				{"2001:db8:1:2::1", httpEmailA},                                       // existing keys
+			} {
+				w := postLogin(e, try.client, try.email)
+				if w.Code != http.StatusServiceUnavailable {
+					t.Fatalf("shed attempt from %s: status %d, want 503 (%s)", try.client, w.Code, w.Body.String())
+				}
+				shed++
+			}
+		}
+		release()
+
+		after := snapshot(g, gateEpoch)
+		if after.sizes != before.sizes {
+			t.Errorf("%d shed attempts changed the map sizes [pair src src48 acct] from %v to %v", shed, before.sizes, after.sizes)
+		}
+		for k, v := range before.tokens {
+			if got, ok := after.tokens[k]; !ok || got != v {
+				t.Errorf("%s: %.2f tokens before the shed attempts, %.2f (present=%v) after", k, v, got, ok)
+			}
+		}
+		for k := range after.tokens {
+			if _, ok := before.tokens[k]; !ok {
+				t.Errorf("a shed attempt created %s", k)
+			}
+		}
+	})
+
+	t.Run("at the cap they cannot evict an exhausted pair", func(t *testing.T) {
+		g, _ := newEnforceGate(t)
+		clock := gateEpoch
+		g.now = func() time.Time { return clock }
+		e := loginHandlerForTest(t, g, 2)
+
+		for i := 0; i < loginPairBudget; i++ {
+			assertAdmitted(t, postLogin(e, simulatedClient, victim), "draining the pair")
+		}
+		// Fill the pair map to its cap with entries seen later, so the drained
+		// pair is the least recently seen: the first one an eviction takes.
+		clock = gateEpoch.Add(time.Second)
+		for i := 0; g.pair.size() < loginBucketCap; i++ {
+			g.pair.charge(fmt.Sprintf("filler-%d", i), clock)
+		}
+
+		clock = gateEpoch.Add(2 * time.Second)
+		release := occupy(t, g)
+		for i := 0; i < 200; i++ {
+			if w := postLogin(e, simulatedClient, fmt.Sprintf("churn%d[at]example.test", i)); w.Code != http.StatusServiceUnavailable {
+				t.Fatalf("churn attempt %d: status %d, want 503", i+1, w.Code)
+			}
+		}
+		release()
+
+		if got := g.pair.size(); got != loginBucketCap {
+			t.Errorf("pair map holds %d entries after shed attempts, want %d (unchanged)", got, loginBucketCap)
+		}
+		w := postLogin(e, simulatedClient, victim)
+		if w.Code != http.StatusTooManyRequests {
+			t.Fatalf("the drained pair was admitted again (%d) after shed attempts at the cap: it was evicted and came back full", w.Code)
+		}
+		if r := decodeRefusal(t, w); r.Details.Scope != "pair" {
+			t.Errorf("refused on %q, want pair", r.Details.Scope)
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -355,7 +497,7 @@ func TestRefusalIsDecidedWithoutAnyAccountLookup(t *testing.T) {
 	const unknown = "nobody-registered-this@example.test"
 	exhaustPair := func(email string) {
 		for i := 0; i < loginPairBudget; i++ {
-			if _, r := g.Admit(context.Background(), loginAttempt{Addr: netip.MustParseAddr(simulatedClient), FromChain: true, Hops: 2, Email: email}); r != nil {
+			if r := failedAttempt(g, loginAttempt{Addr: netip.MustParseAddr(simulatedClient), FromChain: true, Hops: 2, Email: email}); r != nil {
 				t.Fatalf("warm-up refused early: %s", r.scope)
 			}
 		}
@@ -391,7 +533,7 @@ func TestRefusalIsDecidedWithoutAnyAccountLookup(t *testing.T) {
 		// Exhaust a second address's source budget on throwaway accounts.
 		other := netip.MustParseAddr(simulatedOtherClient)
 		for i := 0; i < loginSrcBudget; i++ {
-			g.Admit(context.Background(), loginAttempt{Addr: other, FromChain: true, Hops: 2, Email: fmt.Sprintf("t%d@example.test", i)})
+			failedAttempt(g, loginAttempt{Addr: other, FromChain: true, Hops: 2, Email: fmt.Sprintf("t%d@example.test", i)})
 		}
 		compare(t, postLogin(e, simulatedOtherClient, existing), postLogin(e, simulatedOtherClient, unknown))
 	})
@@ -447,7 +589,7 @@ func TestConcurrentAttemptsCannotOvershootTheBoundary(t *testing.T) {
 	for i := 0; i < racers; i++ {
 		go func() {
 			<-start
-			_, r := g.Admit(context.Background(), a)
+			r := failedAttempt(g, a)
 			results <- r == nil
 		}()
 	}
@@ -471,11 +613,212 @@ func TestUnresolvedSourceIsNeverRefused(t *testing.T) {
 	g, logs := newEnforceGate(t)
 	a := loginAttempt{Hops: 2, Email: "someone@example.test"}
 	for i := 0; i < loginSrcBudget*2; i++ {
-		if _, r := g.Admit(context.Background(), a); r != nil {
+		if r := failedAttempt(g, a); r != nil {
 			t.Fatalf("attempt %d from an unresolved source was refused (%s)", i+1, r.scope)
 		}
 	}
-	if !strings.Contains(logs.String(), "source address is unresolved") {
-		t.Errorf("a would-refuse on an unresolved source was not logged.\nlog:\n%s", logs.String())
+	assertDegradedWarn(t, logs, "unresolved")
+}
+
+// assertDegradedWarn requires at least one not-refused line for addrSource at
+// WARN, sampled rather than one per attempt, and no refusal line at all.
+func assertDegradedWarn(t *testing.T, logs *bytes.Buffer, addrSource string) {
+	t.Helper()
+	warns := 0
+	for _, line := range strings.Split(logs.String(), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("log line is not JSON: %v (%q)", err, line)
+		}
+		msg, _ := rec["msg"].(string)
+		if msg == "login admission: refused" {
+			t.Errorf("a refusal was logged for a %s address: %s", addrSource, line)
+			continue
+		}
+		if !strings.Contains(msg, "source address is degraded") {
+			continue
+		}
+		warns++
+		if rec["level"] != "WARN" {
+			t.Errorf("degraded-address line at %v, want WARN", rec["level"])
+		}
+		if rec["addr_source"] != addrSource {
+			t.Errorf("degraded-address line addr_source = %v, want %s", rec["addr_source"], addrSource)
+		}
+		if addrSource == "peer_fallback" && rec["remedy"] == nil {
+			t.Errorf("peer_fallback line carries no remedy: %s", line)
+		}
+	}
+	if warns == 0 {
+		t.Errorf("no WARN for a would-refuse on a %s address; the misconfiguration is invisible.\nlog:\n%s", addrSource, logs.String())
+	}
+}
+
+// postLoginVia sends one attempt with an exact X-Forwarded-For value (empty
+// for none) from an exact peer.
+func postLoginVia(e *gin.Engine, xff, peer, email string) *httptest.ResponseRecorder {
+	body, _ := json.Marshal(loginBody{Email: email, Password: "irrelevant"})
+	req := httptest.NewRequest(http.MethodPost, "/auth/login", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	if xff != "" {
+		req.Header.Set("X-Forwarded-For", xff)
+	}
+	req.RemoteAddr = peer
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, req)
+	return w
+}
+
+// TestPeerFallbackIsNeverRefused: with WPMGR_AUTH_PROXY_HOPS at 2 and a chain
+// shorter than that, every attempt is keyed on the TCP peer. Every client on
+// that path shares the key, so refusing on it would let a stranger lock an
+// account's owner out from anywhere. It must be measured, logged at WARN, and
+// admitted, in enforce mode, however far over budget it goes.
+func TestPeerFallbackIsNeverRefused(t *testing.T) {
+	const victim = "victim[at]example.test"
+	const peer = "10.9.9.9"
+	for _, shape := range []struct{ name, xff string }{
+		{"one entry for two hops", "198.51.100.66"},
+		{"no chain at all", ""},
+	} {
+		t.Run(shape.name, func(t *testing.T) {
+			g, logs := newEnforceGate(t)
+			e := loginHandlerForTest(t, g, 2)
+			const attempts = loginSrcBudget * 3
+			for i := 0; i < attempts; i++ {
+				assertAdmitted(t, postLoginVia(e, shape.xff, peer+":4444", victim), fmt.Sprintf("stranger attempt %d", i+1))
+			}
+			// Control: the shared key really is past both refusing budgets, so
+			// the admissions above are not vacuous.
+			peerKey := srcKeyFor(netip.MustParseAddr(peer))
+			if left := g.pair.tokensAt(peerKey+"|"+g.AccountDigest(victim), gateEpoch); left >= 1 {
+				t.Fatalf("control: the pair still has %.1f tokens; the attempts were not keyed on the peer", left)
+			}
+			if left := g.src.tokensAt(peerKey, gateEpoch); left >= 1 {
+				t.Fatalf("control: the source still has %.1f tokens", left)
+			}
+			// The owner, arriving the same way from somewhere else.
+			assertAdmitted(t, postLoginVia(e, "203.0.113.50", peer+":5555", victim), "the owner on the same path")
+			assertDegradedWarn(t, logs, "peer_fallback")
+			if n := strings.Count(logs.String(), "source address is degraded"); n >= attempts {
+				t.Errorf("%d degraded-address lines for %d attempts; the line is not sampled", n, attempts)
+			}
+		})
+	}
+}
+
+// TestConfiguredPeerIsStillRefused is the other side of the fallback rule: with
+// the hop count at 0 the peer IS the configured source, nothing about it is
+// degraded, and enforce refuses on it like any other key.
+func TestConfiguredPeerIsStillRefused(t *testing.T) {
+	g, _ := newEnforceGate(t)
+	e := loginHandlerForTest(t, g, 0)
+	for i := 0; i < loginPairBudget; i++ {
+		assertAdmitted(t, postLoginVia(e, "", simulatedClient+":4444", httpEmailA), fmt.Sprintf("attempt %d", i+1))
+	}
+	assertRefused(t, postLoginVia(e, "", simulatedClient+":4444", httpEmailA), "pair", loginPairBudget)
+}
+
+// TestRetryAfterCoversTheLongestWait: when more than one refusing scope is
+// over, Retry-After must be the longest wait among them and the scope must be
+// that one. Answering the first scope checked would tell a client to come back
+// before the other has room, and it would be refused again.
+//
+// The source is charged 50 at t0, the pair drained at t0+7s, the source drained
+// at t0+95s. At that instant the pair has room in about 2s and the source in
+// about 10s.
+func TestRetryAfterCoversTheLongestWait(t *testing.T) {
+	g, _ := newEnforceGate(t)
+	clock := gateEpoch
+	g.now = func() time.Time { return clock }
+	e := loginHandlerForTest(t, g, 2)
+	const victim = "victim[at]example.test"
+
+	for i := 0; i < 50; i++ {
+		assertAdmitted(t, postLogin(e, simulatedClient, fmt.Sprintf("other%d[at]example.test", i)), "t0 source charge")
+	}
+	clock = gateEpoch.Add(7 * time.Second)
+	for i := 0; i < loginPairBudget; i++ {
+		assertAdmitted(t, postLogin(e, simulatedClient, victim), "t0+7s pair drain")
+	}
+	clock = gateEpoch.Add(95 * time.Second)
+	drained := false
+	for i := 0; i <= loginSrcBudget; i++ {
+		if postLogin(e, simulatedClient, fmt.Sprintf("late%d[at]example.test", i)).Code == http.StatusTooManyRequests {
+			drained = true
+			break
+		}
+	}
+	if !drained {
+		t.Fatal("control: the source never refused")
+	}
+
+	srcKey := srcKeyFor(netip.MustParseAddr(simulatedClient))
+	pairWait := g.pair.buckets[srcKey+"|"+g.AccountDigest(victim)].lim.shortfall(clock)
+	srcWait := g.src.buckets[srcKey].lim.shortfall(clock)
+	// Control: both are over, and the longer wait is NOT the first scope
+	// checked, so choosing the first scope would give the wrong answer.
+	if pairWait <= 0 || srcWait <= pairWait {
+		t.Fatalf("control: want both scopes over with the source waiting longer; pair %v, source %v", pairWait, srcWait)
+	}
+
+	w := postLogin(e, simulatedClient, victim)
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("status %d, want 429", w.Code)
+	}
+	secs, _ := strconv.Atoi(w.Header().Get("Retry-After"))
+	if want := int(math.Ceil(srcWait.Seconds())); secs != want {
+		t.Errorf("Retry-After = %d, want %d (the source's wait; the pair's is %v)", secs, want, pairWait)
+	}
+	if r := decodeRefusal(t, w); r.Details.Scope != "source" || r.Details.RetryAfterSeconds != secs {
+		t.Errorf("details = %+v, want scope source and retry_after_seconds %d", r.Details, secs)
+	}
+
+	// The contract a client relies on: waiting exactly Retry-After is enough.
+	clock = clock.Add(time.Duration(secs) * time.Second)
+	assertAdmitted(t, postLogin(e, simulatedClient, victim), "retry after exactly Retry-After")
+}
+
+// TestIdleSweepNeverResetsADrainedPairWithinTheWindow pins loginBucketIdle
+// against loginWindow. Any new key runs the sweep; if the idle time were
+// shorter than the window, that sweep would drop a drained pair whose window is
+// still running and it would come back with its whole budget.
+func TestIdleSweepNeverResetsADrainedPairWithinTheWindow(t *testing.T) {
+	if loginBucketIdle < loginWindow {
+		t.Fatalf("loginBucketIdle (%s) is shorter than loginWindow (%s)", loginBucketIdle, loginWindow)
+	}
+	for _, after := range []time.Duration{2 * time.Minute, loginWindow / 2, loginWindow - time.Second} {
+		t.Run(after.String(), func(t *testing.T) {
+			g, _ := newEnforceGate(t)
+			clock := gateEpoch
+			g.now = func() time.Time { return clock }
+			e := loginHandlerForTest(t, g, 2)
+			for i := 0; i < loginPairBudget; i++ {
+				assertAdmitted(t, postLogin(e, simulatedClient, httpEmailA), "draining the pair")
+			}
+
+			clock = gateEpoch.Add(after)
+			// A new key, from another client against another account: this runs
+			// the sweep and touches nothing of the drained pair.
+			assertAdmitted(t, postLogin(e, simulatedOtherClient, httpEmailB), "a new key")
+
+			pairKey := srcKeyFor(netip.MustParseAddr(simulatedClient)) + "|" + g.AccountDigest(httpEmailA)
+			want := after.Seconds() * float64(loginPairBudget) / loginWindow.Seconds()
+			if got := g.pair.tokensAt(pairKey, clock); math.Abs(got-want) > 1e-6 {
+				t.Fatalf("drained pair holds %.3f tokens %s later, want %.3f from refill alone: the sweep reset it", got, after, want)
+			}
+			admitted := 0
+			for i := 0; i < loginPairBudget; i++ {
+				if postLogin(e, simulatedClient, httpEmailA).Code != http.StatusTooManyRequests {
+					admitted++
+				}
+			}
+			if admitted != int(want) {
+				t.Errorf("%d attempts admitted on the drained pair %s later, want %d", admitted, after, int(want))
+			}
+		})
 	}
 }

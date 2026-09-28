@@ -35,7 +35,8 @@ import (
 //     - observe evaluates every budget, logs what enforce would have refused,
 //       and refuses nothing. The caller sees no difference at all.
 //     - enforce refuses an attempt that is over the pair, source or source /48
-//       budget with 429 too_many_attempts and a Retry-After in seconds.
+//       budget with 429 too_many_attempts and a Retry-After in seconds. It
+//       never refuses on a degraded source address; see addrUnresolved.
 //
 //  2. A CONCURRENCY BOUND on the password verification itself, in force in
 //     every mode. It is not a rate limit and it is not keyed on anything the
@@ -61,8 +62,10 @@ import (
 //     front, so concurrent attempts cannot all see the same last token, and
 //     the charge is given back when the password verifies. What remains
 //     charged is failed attempts. See loginAdmission.
-//   - An attempt shed by the concurrency bound charges nothing either: it was
-//     refused, it just was not refused by a budget.
+//   - An attempt shed by the concurrency bound charges nothing and creates no
+//     bucket entry: the verification slot is taken before anything is
+//     charged, so a shed attempt never reaches the charge. It leaves every
+//     map exactly as it found it.
 //
 // BUDGETS ARE PER PROCESS. Each instance keeps its own buckets, so a
 // deployment running N instances admits up to N times each budget across the
@@ -171,16 +174,25 @@ const (
 	// loginBucketCap bounds each scope's map so a caller varying its key cannot
 	// grow it without limit. Mirrors registerPeerCap
 	// (internal/mcp/register_limit.go:96-100). Reaching it is a memory bound
-	// being enforced, not an error. Entries are created only when an admitted
-	// attempt is charged, never by a refused one, so the rate at which any one
-	// source can add entries is itself bounded by that source's budget.
+	// being enforced, not an error.
+	//
+	// Entries are created only when an attempt is finally admitted: past every
+	// refusing budget AND holding a verification slot. A refused attempt and a
+	// shed attempt add no entry and so evict none. The rate at which one
+	// source can add entries is therefore bounded by the rate its own budget
+	// admits failed attempts, plus the sign-ins it completes with a correct
+	// password.
 	loginBucketCap = 4096
 
-	// loginBucketIdle is how long an untouched bucket survives a sweep. It is
-	// deliberately longer than loginWindow: a bucket swept while its window is
-	// still running would be handed back full, which resets the very budget it
-	// is recording.
+	// loginBucketIdle is how long an untouched bucket survives a sweep. It must
+	// be at least loginWindow: a bucket swept while its window is still running
+	// would be handed back full, which resets the very budget it is recording.
+	// TestIdleSweepNeverResetsADrainedPairWithinTheWindow pins it.
 	loginBucketIdle = 30 * time.Minute
+
+	// verifyShedRetryAfter is the Retry-After on a shed attempt. Short, because
+	// the condition it describes clears in the time one verification takes.
+	verifyShedRetryAfter = 2 * time.Second
 
 	// loginOverLogEvery re-states a scope that is STILL over budget once every
 	// this many further attempts, on top of the line its first crossing wrote.
@@ -214,13 +226,24 @@ const (
 // not be resolved at all. Such attempts share one bucket rather than being
 // skipped, so they are still measured.
 //
-// An attempt on this key is NEVER refused by a budget, in any mode. An address
-// is unresolved only when the peer address itself does not parse, which is a
-// property of the deployment and not something a caller chooses, and in such a
-// deployment every client is on this key. Refusing on it would refuse the whole
-// fleet together, and its pair scope would be keyed on the account alone,
-// which is the lockout this design exists to avoid. The concurrency bound
-// still applies, and a would-refuse on this key is logged at WARN.
+// A BUDGET NEVER REFUSES ON A DEGRADED SOURCE ADDRESS, in any mode. There are
+// two kinds, told apart by loginAttempt.addrSource:
+//
+//   - unresolved: the peer address itself does not parse.
+//   - peer_fallback: WPMGR_AUTH_PROXY_HOPS says proxies append to
+//     X-Forwarded-For, but the chain was shorter than that, so the address
+//     is the TCP peer rather than the entry the proxies appended.
+//
+// Both are properties of the deployment, not choices a caller makes, and in
+// both every client arriving that way shares one key. Refusing on that key
+// would refuse all of them together, and its pair scope would be keyed on the
+// account alone, which is the lockout this design exists to avoid. A short
+// chain constrains nobody who wants to avoid it, either: a longer one is keyed
+// on its own entries instead. So an attempt on a degraded address is measured
+// and charged like any other and admitted even when a refusing scope is over
+// budget. The concurrency bound still applies, and the would-refuse is logged
+// at WARN, sampled like every other over-budget line, with addr_source on it so
+// an operator can see the misconfiguration. loginAttempt.refusable decides.
 const addrUnresolved = "\x00unresolved"
 
 // loginAttempt is what the handler hands the gate. It is everything the gate is
@@ -246,9 +269,9 @@ type loginAttempt struct {
 // The distinction that matters is peer_fallback: it means the forwarded chain
 // was shorter than WPMGR_AUTH_PROXY_HOPS claims, so either the hop count is
 // wrong or this process is reachable without the proxies it is configured for.
-// Either way every client behind that path collapses onto one key, and in
-// enforce mode they are refused together; the refusal line carries this value
-// so that collapse is visible.
+// Either way every client behind that path collapses onto one key, which is why
+// no budget refuses on it (see addrUnresolved); the would-refuse line carries
+// this value so that collapse is visible.
 func (a loginAttempt) addrSource() string {
 	switch {
 	case !a.Addr.IsValid():
@@ -259,6 +282,20 @@ func (a loginAttempt) addrSource() string {
 		return "chain"
 	default:
 		return "peer_fallback"
+	}
+}
+
+// refusable reports whether a budget may refuse an attempt keyed on this
+// address. Only an address read where the configured topology says the client
+// is qualifies: the chain entry at the hop position, or the peer when nothing
+// appends. Anything else is degraded (see addrUnresolved), and a source added
+// here later is degraded until someone decides otherwise.
+func (a loginAttempt) refusable() bool {
+	switch a.addrSource() {
+	case "chain", "peer_configured":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -373,24 +410,40 @@ type chargedKey struct {
 	key string
 }
 
-// loginAdmission is what an admitted attempt holds: the tokens it was charged.
+// loginAdmission is what an admitted attempt holds: its verification slot and
+// the tokens it was charged.
 //
 // An attempt is charged at admission rather than after its outcome is known,
 // because charging afterwards would let every attempt in flight at once see
-// the same last token. The charge is then given back for the outcomes that
-// must not count against a budget: a password that verified, and an attempt
-// the concurrency bound shed before any password was checked. What stays
+// the same last token. The charge is given back when the password verifies,
+// because a successful sign-in must not count against a budget. What stays
 // charged is failed attempts, which is what the budgets are denominated in.
+// (An attempt the concurrency bound sheds is never charged at all; see Admit.)
 //
-// A nil *loginAdmission is valid and gives nothing back; that is what a nil
-// gate and an over-budget observe-mode attempt return.
+// A nil *loginAdmission is valid, holds no slot and gives nothing back; that
+// is what a nil gate returns.
 type loginAdmission struct {
 	g       *LoginGate
 	charged []chargedKey
+	// release frees the verification slot. Idempotent (verifySemaphore.acquire
+	// wraps it in a sync.Once), so the handler can free the slot early and
+	// still hold a deferred release for the paths that return first.
+	release func()
+}
+
+// releaseVerify frees this admission's verification slot. Idempotent and
+// nil-safe.
+func (ad *loginAdmission) releaseVerify() {
+	if ad == nil || ad.release == nil {
+		return
+	}
+	ad.release()
 }
 
 // giveBack returns every token this admission took. Idempotent: a second call
 // finds nothing left to return, so a caller can reach it on more than one path.
+// TestGiveBackIsIdempotent pins that against a bucket another attempt has
+// charged in between, where a second return would erase that attempt's charge.
 func (ad *loginAdmission) giveBack() {
 	if ad == nil || ad.g == nil || len(ad.charged) == 0 {
 		return
@@ -404,13 +457,17 @@ func (ad *loginAdmission) giveBack() {
 	ad.charged = nil
 }
 
-// loginRefusal is an enforce-mode refusal. It carries only what the caller is
-// told: which kind of budget refused, and how long until it has room again.
-// Nothing in it depends on the account, beyond the account string the caller
-// itself submitted.
+// loginRefusal is an attempt Admit did not admit: either an enforce-mode budget
+// refusal (429), or, in any mode, the verification bound shedding it (503). It
+// carries only what the caller is told: which kind of limit refused, and how
+// long until it has room again. Nothing in it depends on the account, beyond
+// the account string the caller itself submitted.
 type loginRefusal struct {
 	scope      string
 	retryAfter time.Duration
+	// shed is set when the verification bound refused the attempt rather than
+	// a budget. scope is empty then.
+	shed bool
 }
 
 // retryAfterSeconds is the Retry-After value: whole seconds, rounded UP, and
@@ -438,9 +495,14 @@ func (r *loginRefusal) wireScope() string {
 	}
 }
 
-// domainError is the 429 body. The message names the kind of limit so a
-// person behind a shared connection is told it is the connection, not them.
+// domainError is the response body. For a budget refusal it is the 429, and
+// its message names the kind of limit so a person behind a shared connection
+// is told it is the connection, not them. A shed attempt is a 503 that says
+// nothing about the caller, because nothing about the caller decided it.
 func (r *loginRefusal) domainError() *domain.Error {
+	if r.shed {
+		return domain.ServiceUnavailable("server_busy", "server is busy verifying sign-ins; retry shortly")
+	}
 	var msg string
 	switch r.scope {
 	case loginScopePair:
@@ -456,22 +518,31 @@ func (r *loginRefusal) domainError() *domain.Error {
 	})
 }
 
-// Admit evaluates every budget for one attempt and decides whether it goes
-// ahead.
+// Admit evaluates every budget for one attempt, takes its verification slot,
+// and decides whether it goes ahead.
 //
-// It returns an admission (possibly nil) when the attempt may proceed, and a
-// refusal when it may not. Only enforce mode ever returns a refusal. The
-// caller must give the admission back when the password verifies or the
-// attempt is shed; see loginAdmission.
+// It returns an admission when the attempt may proceed and a refusal when it
+// may not; exactly one of the two is non-nil, except for a nil gate, which
+// returns neither. The caller must release the admission's slot once the
+// password has been checked, and give its charge back when the password
+// verified; see loginAdmission.
 //
-// THE DECISION. The pair, source and source /48 scopes refuse. The account
-// scope is a signal and never refuses: an attempt over only the account
-// budget is admitted and charged like any other, and a line is logged.
+// THE DECISION, in order, all under one lock:
+//
+//  1. Every scope is QUERIED. In enforce mode, an attempt over the pair,
+//     source or source /48 budget, keyed on an address a refusal may be keyed
+//     on (loginAttempt.refusable), is refused with 429. The account scope is a
+//     signal and never refuses.
+//  2. A verification slot is taken. If none is free the attempt is shed with
+//     503, in every mode.
+//  3. Only now, when admission is final, is anything charged. An attempt that
+//     observe mode (or a degraded address) let through over budget is not
+//     charged: there is no token to take.
 //
 // A REFUSED ATTEMPT COSTS NOTHING, IN ANY SCOPE.
 //
-// Every scope is QUERIED first, at one instant, and only if no refusing scope
-// is over budget are they all charged. This is the shape internal/mcp's
+// Every scope is queried at one instant, and only if no refusing scope is over
+// budget are they all charged. This is the shape internal/mcp's
 // registrationLimiter.allow arrived at after the reserve-then-release shape
 // let a peer that was already over its own budget keep draining the shared one
 // on every request it was refused for: being rejected was free and fast, so
@@ -479,8 +550,19 @@ func (r *loginRefusal) domainError() *domain.Error {
 // from a shared connection is refused on the pair and does not also empty the
 // source budget everyone else on that connection signs in against.
 //
-// The query and the charge happen under one lock, so the boundary is exact:
-// two concurrent attempts cannot both be admitted on the last token.
+// A SHED ATTEMPT COSTS NOTHING EITHER, AND CREATES NOTHING.
+//
+// The slot is taken before the charge, so an attempt the bound sheds never
+// charged a token and never created a bucket entry. Charging first and giving
+// the tokens back would still leave the entries behind: at zero net budget a
+// caller could then add entries until each map's cap evicts the oldest,
+// including its own exhausted buckets, which come back full. A budget refusal
+// never takes a slot, so being refused spends none of the shared capacity the
+// bound protects.
+//
+// The query, the slot and the charge happen under one lock, so the boundary is
+// exact: two concurrent attempts cannot both be admitted on the last token.
+// Taking the slot there is safe because it never blocks.
 //
 // Observe mode runs the same evaluation and the same accounting, so what it
 // logs as a would-refuse is what enforce would refuse, and then admits.
@@ -498,7 +580,7 @@ func (g *LoginGate) Admit(ctx context.Context, a loginAttempt) (*loginAdmission,
 	g.mu.Lock()
 	now := g.now()
 
-	// ---- QUERY ONLY. Nothing is charged until every refusing scope passed. ----
+	// ---- 1. QUERY ONLY. Nothing is charged or created here. ----
 	var over []verdict
 	check := func(b *keyedBudget, key string) {
 		if v := b.query(key, now); v.overBudget {
@@ -512,11 +594,21 @@ func (g *LoginGate) Admit(ctx context.Context, a loginAttempt) (*loginAdmission,
 	}
 	acctV := g.acct.query(acctH, now)
 
+	refuse := len(over) > 0 && g.mode == LoginModeEnforce && a.refusable()
+
 	var ad *loginAdmission
-	if len(over) == 0 {
-		// ---- The single mutation site. Reached only when nothing refusing was
-		// over, in either mode. ----
-		ad = &loginAdmission{g: g}
+	shed := false
+	if !refuse {
+		// ---- 2. The verification slot, before anything is charged. ----
+		if release, ok := g.verify.acquire(); ok {
+			ad = &loginAdmission{g: g, release: release}
+		} else {
+			shed = true
+		}
+	}
+	if ad != nil && len(over) == 0 {
+		// ---- 3. The single mutation site. Reached only when admission is
+		// final and nothing refusing was over, in either mode. ----
 		charge := func(b *keyedBudget, key string) {
 			if b.charge(key, now) {
 				ad.charged = append(ad.charged, chargedKey{b: b, key: key})
@@ -553,46 +645,72 @@ func (g *LoginGate) Admit(ctx context.Context, a loginAttempt) (*loginAdmission,
 		)
 	}
 
-	if len(over) == 0 {
-		return ad, nil
+	if refuse {
+		return nil, g.refuse(ctx, a, over, srcKey, src48Key, hasSrc48, acctH)
 	}
 
-	if g.mode != LoginModeEnforce || !a.Addr.IsValid() {
-		// Not refused: observe mode, or a source that could not be resolved
-		// (see addrUnresolved). Nothing was charged. Observe logs at INFO
-		// because there it is a measurement; an unresolved source under
-		// enforce logs at WARN because there it is a limit not being applied.
-		msg, level := "login admission: would refuse (observe mode; request was admitted)", slog.LevelInfo
-		if g.mode == LoginModeEnforce {
-			msg, level = "login admission: would refuse, but the source address is unresolved (request was admitted)", slog.LevelWarn
-		}
-		for _, v := range over {
-			if !v.worthLogging {
-				continue
-			}
-			g.log().Log(ctx, level, msg,
-				"mode", string(g.mode),
-				"scope", v.scope,
-				"key", v.key,
-				"limit", v.limit,
-				"window", loginWindow.String(),
-				"retry_after_seconds", int(v.retryAfter.Round(time.Second).Seconds()),
-				"acct_h", acctH,
-				"over_budget_attempts", v.overCount,
-				"log_sampling", fmt.Sprintf("first crossing, then 1 in %d", loginOverLogEvery),
-				"addr_source", a.addrSource(),
-				"proxy_hops", a.Hops,
-				"enforced", false,
-			)
-		}
-		return nil, nil
+	if len(over) > 0 {
+		g.logNotRefused(ctx, a, over, acctH, shed)
 	}
 
-	// ---- Enforce: refuse. ----
-	//
-	// The caller is told about the scope that will stay closed longest, since
-	// that is what Retry-After has to cover; on a tie, the widest, so a person
-	// behind a shared connection is told it is the connection.
+	if shed {
+		return nil, &loginRefusal{shed: true, retryAfter: verifyShedRetryAfter}
+	}
+	return ad, nil
+}
+
+// logNotRefused writes the line for an attempt that was over a refusing budget
+// and was not refused for it: observe mode, or a degraded source address (see
+// addrUnresolved). Nothing was charged for it.
+//
+// Observe logs at INFO because there it is a measurement. A degraded address
+// under enforce logs at WARN because there it is a limit not being applied,
+// and the likely cause is a hop count that does not match what sits in front
+// of this process. Both are sampled per key (see loginOverLogEvery): neither
+// is a refusal, and a degraded key is one every client on that path shares, so
+// an unsampled line would be one per sign-in attempt.
+func (g *LoginGate) logNotRefused(ctx context.Context, a loginAttempt, over []verdict, acctH string, shed bool) {
+	msg, level := "login admission: would refuse (observe mode; not refused)", slog.LevelInfo
+	if g.mode == LoginModeEnforce {
+		msg, level = "login admission: would refuse, but the source address is degraded and no budget refuses on it (not refused)", slog.LevelWarn
+	}
+	outcome := "admitted"
+	if shed {
+		outcome = "shed by the verification bound"
+	}
+	for _, v := range over {
+		if !v.worthLogging {
+			continue
+		}
+		attrs := []any{
+			"mode", string(g.mode),
+			"scope", v.scope,
+			"key", v.key,
+			"limit", v.limit,
+			"window", loginWindow.String(),
+			"retry_after_seconds", int(v.retryAfter.Round(time.Second).Seconds()),
+			"acct_h", acctH,
+			"over_budget_attempts", v.overCount,
+			"log_sampling", fmt.Sprintf("first crossing, then 1 in %d", loginOverLogEvery),
+			"addr_source", a.addrSource(),
+			"proxy_hops", a.Hops,
+			"enforced", false,
+			"outcome", outcome,
+		}
+		if a.addrSource() == "peer_fallback" {
+			attrs = append(attrs, "remedy", "the X-Forwarded-For chain was shorter than WPMGR_AUTH_PROXY_HOPS; set it to the number of proxies that append to the chain, and serve this process only through them")
+		}
+		g.log().Log(ctx, level, msg, attrs...)
+	}
+}
+
+// refuse builds an enforce-mode budget refusal and writes its WARN.
+//
+// The caller is told about the scope that will stay closed longest, since that
+// is what Retry-After has to cover; on a tie, the widest, so a person behind a
+// shared connection is told it is the connection.
+// TestRetryAfterCoversTheLongestWait pins the choice.
+func (g *LoginGate) refuse(ctx context.Context, a loginAttempt, over []verdict, srcKey, src48Key string, hasSrc48 bool, acctH string) *loginRefusal {
 	lead := over[0]
 	scopes := make([]string, 0, len(over))
 	for _, v := range over {
@@ -625,7 +743,7 @@ func (g *LoginGate) Admit(ctx context.Context, a loginAttempt) (*loginAdmission,
 		"enforced", true,
 	)
 	g.log().WarnContext(ctx, "login admission: refused", attrs...)
-	return nil, r
+	return r
 }
 
 // scopeWidth orders the refusing scopes from narrowest to widest.
@@ -660,25 +778,6 @@ func (g *LoginGate) AccountDigest(email string) string {
 	// oversized submitted address costs one hash and retains nothing.
 	_, _ = mac.Write([]byte(normalizeEmail(email)))
 	return hex.EncodeToString(mac.Sum(nil))[:16]
-}
-
-// AcquireVerify takes a slot for one password verification.
-//
-// THIS ENFORCES, in every mode. It is not keyed on the caller and it is not a
-// budget: it refuses only when this process already has maxConcurrentVerify
-// verifications running, which is genuine saturation. Under that condition the
-// alternative to shedding is not "serve everyone" — it is every request slowing
-// down together while argon2id's memory footprint multiplies, which is how a
-// login endpoint takes the rest of the process with it.
-//
-// The returned release is idempotent, so a caller may release early (to free
-// the slot before the session work that follows a successful verify) and still
-// hold a deferred release for the paths that return first.
-func (g *LoginGate) AcquireVerify(ctx context.Context) (release func(), ok bool) {
-	if g == nil || g.verify == nil {
-		return func() {}, true
-	}
-	return g.verify.acquire()
 }
 
 // StartModeReminder logs a WARN every five minutes for as long as the mode is
@@ -728,16 +827,21 @@ func (h *Handler) SetLoginGate(g *LoginGate) { h.loginGate = g }
 //
 // Every part of this is optional at the type level and injected after
 // construction, which is the house style — and the failure mode of that style
-// is silence. cmd/wpmgr/main.go:2275 is a single unconditional call that hands
-// the auth service its rate limiter; a refactor that moved or dropped that call
-// would remove a throttle with every test still green, because a nil limiter
-// reads as "no limit configured" and nothing anywhere says so. The same is true
-// of a nil *LoginGate.
+// is silence. In cmd/wpmgr/main.go the auth service receives its rate limiter
+// through a single unconditional authSvc.SetMailer call; a refactor that moved
+// or dropped that call would remove a throttle with every test still green,
+// because a nil limiter reads as "no limit configured" and nothing anywhere
+// says so. The same is true of a nil *LoginGate.
 //
-// So the numbers below are read back out of the live objects rather than from
-// the constants, and gate_wired/verify_bound_wired report what the Handler
-// actually holds. An operator who sees gate_wired=false has been told, in the
-// first screen of the log, that the code they think is running is not.
+// So the budgets and the verification bound below are read back out of the
+// live objects the gate holds, and gate_wired/verify_bound_wired report what
+// the Handler actually holds. An operator who sees gate_wired=false has been
+// told, in the first screen of the log, that the code they think is running is
+// not.
+//
+// refusing_scopes is printed only in enforce mode, where it is true. Observe
+// prints the same scopes as would_refuse_scopes instead, because nothing
+// refuses there.
 func (h *Handler) LogAdmissionStartup(logger *slog.Logger) {
 	if logger == nil {
 		logger = slog.Default()
@@ -768,14 +872,24 @@ func (h *Handler) LogAdmissionStartup(logger *slog.Logger) {
 		// ParseLoginMode accepts and fails if this field and the observed
 		// behaviour ever disagree, in either direction.
 		"budgets_enforced", g.mode == LoginModeEnforce,
-		"refusing_scopes", strings.Join([]string{loginScopePair, loginScopeSrc, loginScopeSrc48}, ","),
-		"signal_only_scopes", loginScopeAcct,
+	)
+	budgetScopes := strings.Join([]string{g.pair.scope, g.src.scope, g.src48.scope}, ",")
+	if g.mode == LoginModeEnforce {
+		attrs = append(attrs,
+			"refusing_scopes", budgetScopes,
+			"not_refused_on", "unresolved and peer_fallback source addresses (logged at WARN instead)",
+		)
+	} else {
+		attrs = append(attrs, "would_refuse_scopes", budgetScopes)
+	}
+	attrs = append(attrs,
+		"signal_only_scopes", g.acct.scope,
 		"over_budget", "429 too_many_attempts with Retry-After (enforce mode only)",
 		"window", loginWindow.String(),
-		loginScopePair, loginPairBudget,
-		loginScopeSrc, loginSrcBudget,
-		loginScopeSrc48, loginSrc48Budget,
-		loginScopeAcct, loginAcctBudget,
+		g.pair.scope, g.pair.limit,
+		g.src.scope, g.src.limit,
+		g.src48.scope, g.src48.limit,
+		g.acct.scope, g.acct.limit,
 		// Each instance keeps its own buckets, so N instances admit up to N
 		// times each budget. Said here so nobody reads these numbers as
 		// fleet-wide.
@@ -783,7 +897,7 @@ func (h *Handler) LogAdmissionStartup(logger *slog.Logger) {
 		"bucket_cap_per_scope", loginBucketCap,
 		"verify_bound_wired", g.verify != nil,
 		"max_concurrent_password_verifications", g.verify.capacity(),
-		"over_verify_bound", "503 server_busy, Retry-After: 2",
+		"over_verify_bound", fmt.Sprintf("503 server_busy, Retry-After: %d", int(verifyShedRetryAfter.Seconds())),
 	)
 	logger.Info("login admission control", attrs...)
 }
@@ -958,10 +1072,11 @@ func (b *keyedBudget) size() int {
 // least recently seen until it is not.
 //
 // EVICTION IS FAIL-OPEN BY CONSTRUCTION: an evicted key comes back as a fresh,
-// full bucket. What bounds that is that entries are created only by admitted
-// attempts (see query), so filling a scope's map needs as many admitted
-// attempts as it has entries, and each of those was charged against the
-// source's own budget.
+// full bucket. What bounds that is that entries are created only by attempts
+// whose admission is final (see Admit): never by a refused attempt and never by
+// a shed one. So filling a scope's map needs as many admitted attempts as it
+// has entries, and each of those was either charged against the source's own
+// budget or completed with a correct password.
 func (b *keyedBudget) sweepLocked(now time.Time) {
 	for k, bk := range b.buckets {
 		if now.Sub(bk.seen) > loginBucketIdle {
@@ -1102,11 +1217,28 @@ func newVerifySemaphore(max int) *verifySemaphore {
 	return &verifySemaphore{slots: make(chan struct{}, max)}
 }
 
-// acquire takes a slot without blocking, or reports that the process is
-// saturated. Non-blocking on purpose: queueing here would convert a CPU
-// shortage into unbounded latency and an unbounded queue, and a caller waiting
-// 30 seconds for a sign-in has already given up.
+// acquire takes a slot for one password verification without blocking, or
+// reports that the process is saturated.
+//
+// THIS ENFORCES, in every mode. It is not keyed on the caller and it is not a
+// budget: it refuses only when this process already has as many verifications
+// running as it is willing to run at once, which is genuine saturation. Under
+// that condition the alternative to shedding is not "serve everyone" — it is
+// every request slowing down together while argon2id's memory footprint
+// multiplies, which is how a login endpoint takes the rest of the process with
+// it.
+//
+// Non-blocking on purpose: queueing here would convert a CPU shortage into
+// unbounded latency and an unbounded queue, and a caller waiting 30 seconds for
+// a sign-in has already given up. That is also what makes it safe to call
+// under the gate mutex, which is where Admit calls it.
+//
+// The returned release is idempotent. A nil semaphore bounds nothing, matching
+// a nil gate.
 func (s *verifySemaphore) acquire() (release func(), ok bool) {
+	if s == nil {
+		return func() {}, true
+	}
 	select {
 	case s.slots <- struct{}{}:
 		var once sync.Once
