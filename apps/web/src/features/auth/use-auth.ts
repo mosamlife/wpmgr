@@ -79,6 +79,50 @@ export class EmailNotVerifiedError extends Error {
 }
 
 /**
+ * Raised when POST /auth/login is refused by the GH #718 login admission
+ * gate (429 too_many_attempts, WPMGR_AUTH_LOGIN_MODE=enforce only). Carries
+ * exactly what the caller is told, per login_gate.go's domainError: which
+ * budget refused (`scope`, one of "pair" | "source" | "network") and how
+ * long to wait. Nothing here depends on whether the account exists — the
+ * gate decides before any account lookup, so this error looks identical for
+ * a real address and a fabricated one.
+ */
+export class LoginRateLimitedError extends Error {
+  readonly scope: string;
+  readonly retryAfterSeconds: number;
+
+  constructor(scope: string, retryAfterSeconds: number) {
+    super("too_many_attempts");
+    this.name = "LoginRateLimitedError";
+    this.scope = scope;
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
+}
+
+// The gate never asks a caller to wait longer than its own window
+// (apps/api/internal/auth/login_gate.go:147, loginWindow = 15 * time.Minute)
+// and never for less than a second (packages/openapi/openapi.yaml's
+// Retry-After header schema: `minimum: 1`). Used to clamp both the header
+// and the body's retry_after_seconds before either reaches the page.
+const LOGIN_RATE_LIMIT_MIN_SECONDS = 1;
+const LOGIN_RATE_LIMIT_MAX_SECONDS = 900;
+const LOGIN_RATE_LIMIT_DEFAULT_SECONDS = 30;
+
+/**
+ * Accepts only a whole number of seconds inside the gate's own window;
+ * everything else (NaN from an HTTP-date, a fraction, zero, negative, or
+ * absurdly large) returns undefined so the caller falls through to the next
+ * source, then to the fixed default.
+ */
+function clampRetryAfterSeconds(value: number | undefined): number | undefined {
+  if (value === undefined || !Number.isInteger(value)) return undefined;
+  if (value < LOGIN_RATE_LIMIT_MIN_SECONDS || value > LOGIN_RATE_LIMIT_MAX_SECONDS) {
+    return undefined;
+  }
+  return value;
+}
+
+/**
  * Result of a login attempt. Either the session is fully established (me
  * present) or the server requires a second factor (challenge present).
  */
@@ -97,6 +141,40 @@ export function useLogin(): UseMutationResult<LoginResult, Error, LoginRequest> 
       const { data, error, response } = await login({ body });
       if (response?.status === 401) {
         throw new UnauthorizedError("Invalid email or password");
+      }
+      if (response?.status === 429) {
+        // GH #718 Phase 1 — login admission control. The header is the
+        // contract (packages/openapi/openapi.yaml: "Retry-After ... Whole
+        // seconds to wait before retrying"); the body's
+        // details.retry_after_seconds is the same number restated, kept as
+        // a fallback in case a proxy in front of this install strips
+        // response headers it doesn't recognise. `scope` picks the wording;
+        // an unrecognised or missing scope reads as "source" rather than
+        // failing to render a message at all.
+        //
+        // Both values are untrusted past the header line itself: only a
+        // whole number of seconds inside the gate's own window
+        // (apps/api/internal/auth/login_gate.go:147, loginWindow = 15
+        // minutes = 900s, the longest the server ever asks anyone to wait)
+        // is accepted. An HTTP-date, "1.5", a negative number or something
+        // absurdly large falls through to the body value, and if that is
+        // equally malformed, to a fixed default — never straight to the
+        // page.
+        const headerRaw = response.headers.get("Retry-After");
+        const headerSeconds = headerRaw === null ? undefined : Number(headerRaw);
+        const bodySeconds =
+          typeof error?.details?.["retry_after_seconds"] === "number"
+            ? error.details["retry_after_seconds"]
+            : undefined;
+        const retryAfterSeconds =
+          clampRetryAfterSeconds(headerSeconds) ??
+          clampRetryAfterSeconds(bodySeconds) ??
+          LOGIN_RATE_LIMIT_DEFAULT_SECONDS;
+        const scope =
+          typeof error?.details?.["scope"] === "string"
+            ? error.details["scope"]
+            : "source";
+        throw new LoginRateLimitedError(scope, retryAfterSeconds);
       }
       if (response?.status === 403) {
         // Try to read the body code; if enumeration-safe backend always returns
