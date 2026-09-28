@@ -375,35 +375,47 @@ final class Router
         // Deciding encoded material first means a token is disposed of whole,
         // and the path rule only ever sees what is genuinely a path.
         //
-        // The decision is a shape test on the whole run: encoded material only
-        // when the run is substantially case-MIXED and carries a digit or one
-        // of base64's own symbols, over the same 32-character budget (slashes
-        // excluded from the count). That predicate is chosen for what it CANNOT
-        // match. Every path, table name, option key and command name this plugin
-        // emits is single-case, so none of them can satisfy it, and
+        // The decision is a shape test on the whole run, set out in
+        // isEncodedRun(): a run that ends in base64 padding is always encoded
+        // material; otherwise it is only when the run is substantially
+        // case-MIXED and carries a digit or one of base64's own symbols, over
+        // the same 32-character budget (slashes excluded from the count). That
+        // predicate is chosen for what it CANNOT match. Every path, table name,
+        // option key and command name this plugin emits is single-case and none
+        // ends in '=', so none of them can satisfy it, and
         // "wp-content/uploads/wpmgr/keystore" survives whole — which is the
         // diagnostic this change exists to deliver, and which an earlier attempt
         // destroyed by simply adding '/' to the alphabet below.
         //
-        // Stated honestly in both directions: a run that is not case-mixed is
-        // not caught here, and a case-mixed path is caught. The second is the
-        // cheaper error — a redacted identifier is still intact in the local
-        // debug log; key material in a dashboard is not recoverable from. An
-        // absolute path that is case-mixed comes out as <redacted> rather than
-        // <path>; both disclose nothing, only the label differs.
+        // Stated honestly in both directions. Not caught here: an unpadded run
+        // that is not case-mixed, or that carries no digit and neither '+' nor
+        // '='. Caught here: a case-mixed path that carries a digit, '+' or '='.
+        // The second is the cheaper error — a redacted identifier is still intact in the
+        // local debug log; key material in a dashboard is not recoverable from.
+        //
+        // A redacted run that starts with '/' keeps that '/', and the
+        // absolute-path rule below treats "<redacted>" as part of a path. So an
+        // absolute path that carries such a run — at its start or after a '.'
+        // part-way along — is still reduced to <path> whole: its remainder
+        // goes with it rather than surviving as a relative-looking tail.
         $msg = self::pregCallbackOrKeep(
             '~[A-Za-z0-9+/=_\-]{32,}~',
             static function (array $m): string {
-                return self::isEncodedRun($m[0]) ? '<redacted>' : $m[0];
+                if (!self::isEncodedRun($m[0])) {
+                    return $m[0];
+                }
+
+                return ($m[0][0] === '/' ? '/' : '') . '<redacted>';
             },
             $msg
         );
 
         // Anything STILL absolute is outside the WordPress tree: drop it whole.
         // Covers POSIX (/a/b) and Windows (C:\a\b). The negative lookbehind
-        // keeps "and/or" and "HTTP 500" intact.
+        // keeps "and/or" and "HTTP 500" intact. "<redacted>" is accepted as a
+        // path component for the reason given above pass 1.
         $msg = self::pregOrKeep(
-            '~(?<![A-Za-z0-9_.\-])(?:[A-Za-z]:[\\\\/]|/)[A-Za-z0-9_.\-]+[A-Za-z0-9_.\-/\\\\]*~',
+            '~(?<![A-Za-z0-9_.\-])(?:[A-Za-z]:[\\\\/]|/)(?:[A-Za-z0-9_.\-]|<redacted>)+(?:[A-Za-z0-9_.\-/\\\\]|<redacted>)*~',
             '<path>',
             $msg
         );
@@ -436,9 +448,18 @@ final class Router
      * Decide whether a run over the standard-base64 alphabet is encoded
      * material rather than a path.
      *
-     * Case-mixed AND carrying a digit or a base64 symbol, over a 32-character
-     * budget that ignores '/'. Single-case runs — which is every path, table
-     * name, option key and command name this plugin emits — never qualify.
+     * Two ways to qualify. A run that ends in base64 padding ('=') qualifies
+     * whatever its case mix, so a padded key — a 32-byte key encodes to 44
+     * characters ending in '=' — is caught whenever it stands as its own run.
+     * Any other run qualifies only when it is case-mixed (at least
+     * MIN_MIXED_CASE letters of each case) AND carries a digit, '+' or '=',
+     * over a 32-character budget that ignores '/'.
+     *
+     * What that leaves uncaught is an unpadded run with fewer than
+     * MIN_MIXED_CASE letters of either case, or with no digit and neither '+'
+     * nor '='; an unpadded key can take either shape. Single-case runs — which
+     * is every path, table name, option key and command name this plugin
+     * emits, none of which ends in '=' — never qualify.
      *
      * Byte-oriented by design, like every pattern in redactReason(): a
      * multibyte-aware test would have to trust the message to be valid UTF-8,
@@ -449,6 +470,14 @@ final class Router
      */
     private static function isEncodedRun(string $run): bool
     {
+        // Padding first, and before any count: nothing this plugin names ends
+        // in '=', and the case-mix gate below is a likelihood, not a
+        // guarantee — a padded key with fewer than MIN_MIXED_CASE letters of
+        // one case would fail it.
+        if (substr($run, -1) === '=') {
+            return true;
+        }
+
         $len   = 0;
         $upper = 0;
         $lower = 0;
@@ -473,9 +502,9 @@ final class Router
             return false;
         }
 
-        // A digit, or one of base64's two non-alphanumeric symbols. The second
-        // clause is what makes a padded 32-byte key deterministic rather than
-        // likely: base64 of 32 bytes is always 44 characters ending in '='.
+        // A digit, or '+' or '=' anywhere in the run. Only the padding check
+        // above is decisive on its own; this clause, like the gate before it,
+        // is a likelihood.
         return $digit >= 1 || strpbrk($run, '+=') !== false;
     }
 

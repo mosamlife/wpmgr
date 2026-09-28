@@ -223,48 +223,151 @@ final class RouterTest extends TestCase
 	 * a rule whose alphabet stops at the separator sees two sub-threshold
 	 * pieces instead of one token.
 	 *
-	 * Driven over many random keys, not one sample, because whether a '/'
-	 * lands inside a given encoding is chance: a single fixed key can pass by
-	 * luck and prove nothing.
+	 * Fixed vectors, each a real encoding of random bytes carrying at least one
+	 * '/', chosen by shape so that every clause of the decision is exercised:
+	 * a padded key whatever its case mix, and an unpadded key through the
+	 * case-mix gate with a digit or with '+'. Fixed rather than drawn per run,
+	 * so the outcome cannot vary between runs of correct code.
 	 *
 	 * @return void
 	 */
 	public function test_redaction_catches_standard_base64_key_material(): void
 	{
-		$shapes = array(
+		$caught = array(
 			// The DB-fallback master key: base64_encode() of 32 raw bytes.
-			'master key'   => static function (): string {
-				return base64_encode( random_bytes( 32 ) );
-			},
+			'padded key'                          => 'JpXsrsvpkJ4QU9D43mEqo/DWxzeE2nX9GPs/Zi7BpTA=',
+			// Padding alone decides these two: each fails the case-mix gate.
+			'padded key, four upper-case letters' => '8wghyLbmBwxzgguxz6gptdaajh43m/mbka0o/bcVoAs=',
+			'padded key, five lower-case letters' => 'G/2H5NR4J/PoUT4eKnVGSH8M63CCUOzF7IW7A9If/NQ=',
+			// No digit and no '+': only its padding marks it as encoded.
+			'padded key, no digit and no plus'    => 'EOprBcOgQoHKDaJbHLiw/gRpaeUsqQhdspbTZaWzwoE=',
 			// The age header: the same 32 bytes with padding stripped.
-			'age header'   => static function (): string {
-				return rtrim( base64_encode( random_bytes( 32 ) ), '=' );
-			},
+			'unpadded key with a digit'           => 'Quuv2rC/E4vYuaEw/i55soD7zlzCIHHFipbimo2QHGo',
+			// No digit: only its '+' marks it as encoded.
+			'unpadded key, plus and no digit'     => 'lXsoS/nsflSfFisFl/boKcLKEqsv/ZKSJXfiUZzbW+Q',
 			// The at-rest envelope: iv . tag . ciphertext, ~92 raw bytes.
-			'envelope'     => static function (): string {
-				return base64_encode( random_bytes( 92 ) );
-			},
+			'envelope'                            => '5bz9N3ww7Ce8KKPuh/EsRN75w/udeH1odTVrBbKuJBaI0bSATp/YJfEYUVAiwJTNZ1XLTBmQxsb/ZCdqE45NwXf3sTLBAbKQl/4SxCEdBZiVklsftCaJzXgtSTg=',
 		);
 
-		foreach ( $shapes as $label => $make ) {
-			for ( $i = 0; $i < 40; $i++ ) {
-				$secret = $make();
-				$wire   = $this->wireBlob(
-					$this->dispatchThrowing( new \RuntimeException( 'Keystore: cannot unwrap ' . $secret ) )
-				);
+		foreach ( $caught as $label => $secret ) {
+			$response = $this->dispatchThrowing( new \RuntimeException( 'Keystore: cannot unwrap ' . $secret ) );
 
-				$this->assertStringNotContainsString(
-					$secret,
-					$wire,
-					sprintf( '%s survived redaction whole: %s', $label, $secret )
-				);
-				$this->assertStringContainsString( '<redacted>', $wire, $label . ' was not redacted' );
-			}
+			$this->assertSame(
+				'Command execution failed: RuntimeException: Keystore: cannot unwrap <redacted>',
+				$response->get_error_message(),
+				$label . ' was not redacted whole'
+			);
+			$this->assertStringNotContainsString( $secret, $this->wireBlob( $response ), $label . ' survived' );
 		}
 	}
 
 	/**
-	 * #754: the same thing without relying on chance. Each case puts a '/' at
+	 * #754: a key that begins with '/' reads as an absolute path. It keeps
+	 * that '/' through the encoded-run pass, so the path rule takes the whole
+	 * token and it comes out as <path> — nothing of it survives either way.
+	 *
+	 * @return void
+	 */
+	public function test_redaction_of_a_key_that_begins_with_a_slash(): void
+	{
+		$secret   = '/Yqrl3ycUTaJu5GEh0j/Ka7RUh/CYrOE9BHrzNBqBLwLCKSzk9Av7eE3IQ4yIZ+RwkGnilkYC1aietfEYsIxPQfKF2aK6LVCN8A7eLtRW6oK577rvuIPQrxkbvo=';
+		$response = $this->dispatchThrowing( new \RuntimeException( 'Keystore: cannot unwrap ' . $secret ) );
+
+		$this->assertSame(
+			'Command execution failed: RuntimeException: Keystore: cannot unwrap <path>',
+			$response->get_error_message()
+		);
+		$this->assertStringNotContainsString( 'Yqrl3ycUTaJu5GEh0j', $this->wireBlob( $response ) );
+	}
+
+	/**
+	 * #754: the stated limit of the encoded-run pass, pinned as a contract. An
+	 * UNPADDED key with no digit and neither '+' nor '=' does not qualify as
+	 * encoded, and a '/' inside it keeps every piece below the slash-free
+	 * threshold, so it comes through. Each of these is a real encoding of
+	 * random bytes.
+	 *
+	 * If a change starts catching these, that is a deliberate widening: move
+	 * them to the caught set above and update the comments in redactReason()
+	 * and isEncodedRun() that name this shape as uncaught.
+	 *
+	 * @return void
+	 */
+	public function test_redaction_limit_unpadded_key_with_no_digit_plus_or_equals(): void
+	{
+		$uncaught = array(
+			'XBdOdyJ/XJllQvQIAjsdcQ/PyiiRcOOiwYxMukFVQlI',
+			'uDjBQFxylLNWjnhpokxYJoDgoWRHuZ/iWvaQuOfOZlc',
+		);
+
+		foreach ( $uncaught as $key ) {
+			$this->assertSame( 0, preg_match( '~[0-9+=]~', $key ), 'fixture must carry no digit, + or =' );
+
+			$response = $this->dispatchThrowing( new \RuntimeException( 'Keystore: cannot unwrap ' . $key ) );
+
+			$this->assertSame(
+				'Command execution failed: RuntimeException: Keystore: cannot unwrap ' . $key,
+				$response->get_error_message()
+			);
+		}
+	}
+
+	/**
+	 * #754: encoded material is decided BEFORE the absolute-path rule. Here a
+	 * '/' follows a '+', which the path rule's lookbehind accepts as a path
+	 * start, so under the other order that rule rewrites the key's tail to
+	 * <path> and the head of the key survives, now below every threshold.
+	 *
+	 * @return void
+	 */
+	public function test_encoded_run_is_decided_before_the_path_rule(): void
+	{
+		$response = $this->dispatchThrowing(
+			new \RuntimeException( 'Keystore: cannot unwrap aG7kQ2pXvR8nZtL4yB6c+/sEwD3fUhJ9KrTgNxVbPq0=' )
+		);
+
+		$this->assertSame(
+			'Command execution failed: RuntimeException: Keystore: cannot unwrap <redacted>',
+			$response->get_error_message()
+		);
+		$this->assertStringNotContainsString( 'aG7kQ2pXvR8nZtL4yB6c', $this->wireBlob( $response ) );
+	}
+
+	/**
+	 * #754: an absolute path outside the WordPress tree that carries a
+	 * case-mixed segment with a digit — the shape the encoded-run pass
+	 * redacts — must still go whole. The pass stops at a '.', so without the
+	 * path rule taking the redaction as part of the path, the remainder would
+	 * survive as a relative-looking tail the path rule no longer recognises.
+	 *
+	 * @return void
+	 */
+	public function test_case_mixed_absolute_path_leaves_no_tail(): void
+	{
+		$cases = array(
+			'/home/AcmeCorpHosting2024/Public_HTML/Sites/client-site.com/private/backup-dir' => 'private/backup-dir',
+			'/Users/JohnSmithDev2026/Library/CloudStorage/Dropbox.old/Client/secret'         => 'Client/secret',
+			// The case-mixed run starts after a '.' part-way along the path.
+			'/home/ab.cd/AcmeCorpHosting2024/Public_HTML/Sites/client-site.com/private/x'   => 'private/x',
+			// A drive-letter root with forward slashes, as PHP on Windows reports it.
+			'C:/Users/JohnSmithDev2026/Library/CloudStorage/Dropbox.old/Client/secret'       => 'Client/secret',
+		);
+
+		foreach ( $cases as $path => $tail ) {
+			$response = $this->dispatchThrowing( new \RuntimeException( 'cannot open ' . $path ) );
+			$wire     = $this->wireBlob( $response );
+
+			$this->assertSame(
+				'Command execution failed: RuntimeException: cannot open <path>',
+				$response->get_error_message(),
+				$path . ' was not dropped whole'
+			);
+			$this->assertStringNotContainsString( $tail, $wire, $path . ' left its tail behind' );
+		}
+	}
+
+	/**
+	 * #754: split positions chosen rather than left to the encoding. Each case puts a '/' at
 	 * a position chosen to split a 44-character standard-base64 key into two
 	 * pieces that are each BELOW the 32-character threshold — the exact shape
 	 * that a slash-free alphabet cannot see.
@@ -329,8 +432,12 @@ final class RouterTest extends TestCase
 			'wp-content/uploads/wpmgr/keystore.json',
 			'wp-content/uploads/wpmgr/restore-staging/files',
 			'wp-content/plugins/wpmgr-agent/includes/class-router.php',
+			'wp-content/plugins/wpmgr-agent/includes/commands/class-agent-self-update-command.php',
 			'wp-content/uploads/wpmgr/snapshots/2026-09-18-full',
 			'wp_wpmgr_command_log',
+			'wp_wpmgr_backup_chunks',
+			'wpmgr_agent_enrollment_state',
+			'wpmgr_agent_reenroll',
 			'objectcache.apply_config',
 		);
 
@@ -383,6 +490,32 @@ final class RouterTest extends TestCase
 
 		$this->assertStringNotContainsString( $abspath, $message );
 		$this->assertStringContainsString( 'wp-content/uploads/wpmgr/snapshots', $message );
+	}
+
+	/**
+	 * #754: a known root written with Windows separators is stripped too, so
+	 * the root-relative remainder survives rather than the whole path falling
+	 * through to the absolute-path rule. The root here is the test ABSPATH
+	 * with every '/' written as '\', which is the form the backslash needle
+	 * matches.
+	 *
+	 * @return void
+	 */
+	public function test_backslash_root_is_stripped_to_a_root_relative_path(): void
+	{
+		$abspath = rtrim( (string) constant( 'ABSPATH' ), '/\\' );
+		$winroot = str_replace( '/', '\\', $abspath );
+
+		$response = $this->dispatchThrowing(
+			new \RuntimeException( 'snapshots directory is not writable: ' . $winroot . '\\wp-content\\uploads\\wpmgr\\snapshots' )
+		);
+
+		$message = $response->get_error_message();
+
+		$this->assertStringContainsString( 'wp-content\\uploads\\wpmgr\\snapshots', $message );
+		$this->assertStringNotContainsString( $winroot, $message );
+		$this->assertStringNotContainsString( 'wpmgr_wp_abspath', $message );
+		$this->assertStringNotContainsString( '<path>', $message );
 	}
 
 	/**
