@@ -52,6 +52,32 @@ var chainBrokenErrorCodes = map[string]bool{
 // takes the existing terminal-failure path.
 const codeRunnerInFlight = "runner_in_flight"
 
+// codeKeystoreUnreadable (GH #753) is the STABLE machine-readable refusal code
+// the agent sets on BackupResponse.Code when Keystore::probe() found the
+// site's stored backup key unreadable under the resolved master key — the
+// "site moved host, or the wp-config.php security keys changed" case. The
+// agent refuses BEFORE any preflight row, dedup claim, scratch directory or
+// write (class-backup-command.php), so this always reaches Work() as a clean
+// ok=false response, never a transport error, and never the eventual
+// stall-watchdog "stopped responding" message that reaching this bug used to
+// produce (the agent previously threw instead of refusing cleanly).
+const codeKeystoreUnreadable = "keystore_unreadable"
+
+// keystoreUnreadableOperatorMessage is FIXED, neutral, CP-authored copy
+// substituted for a keystore_unreadable refusal — the agent's own resp.Detail
+// is NEVER forwarded here. This message also reaches the backup-failure
+// email and the schedule-run error (both flow through the same FailSnapshot
+// msg), which are outbound control-plane channels, so it deliberately
+// prescribes no remedy: the correct fix depends on which key source is
+// pinned (salts vs. a file/constant pin) and on which envelope failed, that
+// diagnosis lives agent-side, and forwarding site-supplied prose into an
+// outbound email would be a phishing surface. It also makes no claim about
+// which backups are or are not affected, since that is not knowable from
+// this refusal alone. It names the condition and sends the operator to the
+// site's own WordPress admin, which has the agent's own state-specific
+// notice and steps.
+const keystoreUnreadableOperatorMessage = "Backup not started: the agent on this site cannot read its backup key. Open this site's WordPress admin for the exact steps."
+
 // Audit action names for the backup/restore lifecycle.
 const (
 	ActionBackupStarted    = "backup.started"
@@ -430,6 +456,15 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupArgs]) err
 				slog.String("tenant_id", snap.TenantID.String()),
 				slog.String("detail", resp.Detail))
 			return nil
+		}
+		if resp.Code == codeKeystoreUnreadable {
+			// GH #753: fail immediately with the fixed, neutral operator
+			// copy — never retried (w.fail returns nil so River does not
+			// requeue it), and never the generic stall/"stopped responding"
+			// watchdog message, because the agent already refused before
+			// doing any work; a retry a few seconds later cannot make the
+			// key readable.
+			return w.fail(ctx, snap, keystoreUnreadableOperatorMessage)
 		}
 		return w.fail(ctx, snap, "agent refused the backup: "+resp.Detail)
 	}

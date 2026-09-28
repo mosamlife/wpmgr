@@ -765,9 +765,10 @@ func toAPI(s Site) gen.Site {
 
 	if len(s.Components) > 0 {
 		var comp struct {
-			Plugins    []Component `json:"plugins"`
-			Themes     []Component `json:"themes"`
-			CoreUpdate *CoreUpdate `json:"core_update,omitempty"`
+			Plugins        []Component     `json:"plugins"`
+			Themes         []Component     `json:"themes"`
+			CoreUpdate     *CoreUpdate     `json:"core_update,omitempty"`
+			KeystoreStatus *KeystoreStatus `json:"keystore_status,omitempty"`
 		}
 		if json.Unmarshal(s.Components, &comp) == nil {
 			// M27 updates_available: the same actionableUpdate predicate as
@@ -808,9 +809,71 @@ func toAPI(s Site) gen.Site {
 				}
 				out.Components = gen.NewOptSiteComponents(sc)
 			}
+
+			// GH #753 — the agent's keystore trial-decrypt probe. The site has
+			// synced metadata at least once (we are inside `len(s.Components) >
+			// 0`), so a missing keystore_status key means an agent older than
+			// #753 is running, not "healthy" — surfaced explicitly as
+			// not_reported rather than left absent, so the dashboard never has
+			// to guess which case a bare absence means.
+			ks := gen.SiteKeystoreStatus{}
+			if comp.KeystoreStatus != nil {
+				if st, ok := keystoreStateToAPI(comp.KeystoreStatus.State); ok {
+					ks.State = gen.NewOptSiteKeystoreStatusState(st)
+				} else {
+					ks.State = gen.NewOptSiteKeystoreStatusState(gen.SiteKeystoreStatusStateNotReported)
+				}
+				if src, ok := keystoreKeySourceToAPI(comp.KeystoreStatus.KeySource); ok {
+					ks.KeySource = gen.NewOptSiteKeystoreStatusKeySource(src)
+				}
+				if len(comp.KeystoreStatus.Items) > 0 {
+					ks.Items = gen.NewOptSiteKeystoreStatusItems(gen.SiteKeystoreStatusItems(comp.KeystoreStatus.Items))
+				}
+				if len(comp.KeystoreStatus.Unreadable) > 0 {
+					ks.Unreadable = comp.KeystoreStatus.Unreadable
+				}
+			} else {
+				ks.State = gen.NewOptSiteKeystoreStatusState(gen.SiteKeystoreStatusStateNotReported)
+			}
+			out.KeystoreStatus = gen.NewOptSiteKeystoreStatus(ks)
 		}
 	}
 	return out
+}
+
+// keystoreStateToAPI and keystoreKeySourceToAPI map the stored keystore probe
+// strings (already allowlisted at write time by fromAgentKeystoreStatus) onto
+// the typed wire enums. An unrecognized value can only arise from data written
+// before that allowlist existed; ok=false then, so the caller falls back to
+// not_reported rather than risking an invalid enum on the wire.
+func keystoreStateToAPI(s string) (gen.SiteKeystoreStatusState, bool) {
+	switch s {
+	case "ok":
+		return gen.SiteKeystoreStatusStateOk, true
+	case "unreadable":
+		return gen.SiteKeystoreStatusStateUnreadable, true
+	case "key_unavailable":
+		return gen.SiteKeystoreStatusStateKeyUnavailable, true
+	default:
+		return "", false
+	}
+}
+
+func keystoreKeySourceToAPI(s string) (gen.SiteKeystoreStatusKeySource, bool) {
+	switch s {
+	case "constant":
+		return gen.SiteKeystoreStatusKeySourceConstant, true
+	case "salts":
+		return gen.SiteKeystoreStatusKeySourceSalts, true
+	case "file":
+		return gen.SiteKeystoreStatusKeySourceFile, true
+	case "db":
+		return gen.SiteKeystoreStatusKeySourceDb, true
+	case "unknown":
+		return gen.SiteKeystoreStatusKeySourceUnknown, true
+	default:
+		return "", false
+	}
 }
 
 func toAPIComponents(cs []Component) []gen.SiteComponent {

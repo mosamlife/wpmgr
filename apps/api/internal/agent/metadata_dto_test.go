@@ -326,3 +326,60 @@ func TestMetadataDTORolesTolerateJunk(t *testing.T) {
 		t.Fatalf("nameless role must fall back to its slug: %+v", m.Roles[1])
 	}
 }
+
+// ---------------------------------------------------------------------------
+// GH #753 — the agent's keystore trial-decrypt probe
+// ---------------------------------------------------------------------------
+
+// TestMetadataDTOKeystoreOldAgentOmitsField proves an agent that predates the
+// keystore probe (GH #753) yields a NIL KeystoreStatus, not a zero-value one:
+// the site domain must be able to tell "never reported" apart from "reported
+// and empty".
+func TestMetadataDTOKeystoreOldAgentOmitsField(t *testing.T) {
+	var dto metadataDTO
+	if err := json.Unmarshal([]byte(`{"wp_version":"6.4.3"}`), &dto); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if m := dto.toMetadata(); m.KeystoreStatus != nil {
+		t.Fatalf("absent keystore key must decode as nil, got %+v", m.KeystoreStatus)
+	}
+}
+
+// TestMetadataDTOKeystoreNewAgentDecodes proves the exact shape
+// Keystore::probe() emits (GH #753 slice 1 report) decodes into
+// agentpkg.KeystoreStatus with every field intact.
+func TestMetadataDTOKeystoreNewAgentDecodes(t *testing.T) {
+	body := []byte(`{
+		"wp_version":"6.8",
+		"keystore":{
+			"state":"unreadable",
+			"key_source":"salts",
+			"items":{
+				"site_keypair":"ok",
+				"cp_public_key":"ok",
+				"age_identity":"unreadable",
+				"email_secret":"absent",
+				"email_connection_secrets":"absent"
+			},
+			"unreadable":["age_identity"]
+		}
+	}`)
+	var dto metadataDTO
+	if err := json.Unmarshal(body, &dto); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	m := dto.toMetadata()
+	if m.KeystoreStatus == nil {
+		t.Fatal("keystore key present in the payload must decode into a non-nil KeystoreStatus")
+	}
+	ks := m.KeystoreStatus
+	if ks.State != "unreadable" || ks.KeySource != "salts" {
+		t.Fatalf("state/key_source not decoded: %+v", ks)
+	}
+	if len(ks.Items) != 5 || ks.Items["age_identity"] != "unreadable" || ks.Items["site_keypair"] != "ok" {
+		t.Fatalf("items not decoded: %+v", ks.Items)
+	}
+	if len(ks.Unreadable) != 1 || ks.Unreadable[0] != "age_identity" {
+		t.Fatalf("unreadable list not decoded: %+v", ks.Unreadable)
+	}
+}
