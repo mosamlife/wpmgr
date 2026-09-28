@@ -183,6 +183,11 @@ func (w *ScanRunWorker) Work(ctx context.Context, job *river.Job[ScanRunArgs]) e
 	// 5. Call agent (DoOnce — JWT jti single-use; River retries mint fresh JWT).
 	resp, err := w.cmd.Scan(ctx, a.SiteID, si.URL, req)
 	if err != nil {
+		// A redirect means the site's saved address is wrong. It is terminal
+		// (a retry is refused the same way) and it is not an old agent.
+		if re, ok := agentcmd.AsRedirect(err); ok {
+			return w.fail(ctx, run, re.OperatorMessage("Scan"))
+		}
 		errMsg := err.Error()
 		// A 404 from the REST layer means the agent is too old to have the scan route.
 		if strings.Contains(errMsg, "status 404") {

@@ -411,6 +411,13 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupArgs]) err
 		resp, err = w.cmd.Backup(ctx, snap.SiteID, si.URL, req)
 	}
 	if err != nil {
+		// A redirect means the site's saved address is not where the site
+		// serves the agent. Every retry is refused the same way, so it is a
+		// terminal failure now, named plainly, not a retry that ends in the
+		// watchdog's generic stall message.
+		if re, ok := agentcmd.AsRedirect(err); ok {
+			return w.fail(ctx, snap, re.OperatorMessage("Backup"))
+		}
 		// Transport/SSRF/agent-reject: retryable infra error.
 		return fmt.Errorf("backup command to agent failed: %w", err)
 	}
@@ -695,6 +702,20 @@ func (w *RestoreWorker) Work(ctx context.Context, job *river.Job[RestoreArgs]) e
 	}
 
 	resp, err := w.cmd.Restore(ctx, snap.SiteID, si.URL, plan)
+	if re, ok := agentcmd.AsRedirect(err); ok {
+		// Terminal, like an agent refusal: the command never reached the
+		// agent, and every retry is refused the same way.
+		msg := re.OperatorMessage("Restore")
+		w.recordAudit(ctx, snap, ActionRestoreFailed, map[string]any{
+			"restore_id": restoreID,
+			"error":      msg,
+		})
+		_, _ = w.svc.RecordProgress(ctx, snap.TenantID, snap.ID, "failed", map[string]any{
+			"restore_id": restoreID,
+			"error":      msg,
+		})
+		return nil
+	}
 	if err != nil {
 		// Transport / SSRF / agent-reject: retryable infra error. Surface the
 		// in-flight failure on the SSE channel so the UI does not hang waiting

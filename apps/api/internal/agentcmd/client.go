@@ -359,6 +359,10 @@ const (
 	// agent-shaped JSON (captive portal, generic maintenance splash), so the
 	// URL is reachable, but not by our agent.
 	ReasonNotAgentShaped ReachabilityReason = "not_agent_shaped"
+	// ReasonRedirected: the site answered the command address with a 3xx
+	// redirect. The command was not re-sent to the target; the site's saved
+	// address is not where it serves the agent.
+	ReasonRedirected ReachabilityReason = "redirected"
 	// ReasonUnreachable is the catch-all transport failure (connection
 	// refused, DNS failure, SSRF-blocked, JWT-mint failure, etc) that does
 	// not match any of the more specific classifications above.
@@ -396,6 +400,11 @@ func (c *Client) VerifyReachableWithReason(ctx context.Context, siteID uuid.UUID
 	out, pingErr := c.Ping(ctx, siteID, siteURL)
 	if pingErr == nil && out.OK {
 		return true, false, ReasonAlive, nil
+	}
+	// A redirect is settled here, before any text match: it is not an old
+	// agent, and the metadata fallback would be refused the same way.
+	if _, ok := AsRedirect(pingErr); ok {
+		return false, false, ReasonRedirected, nil
 	}
 
 	// Fall back to the metadata command when ping looks like an old agent
@@ -463,6 +472,9 @@ func extractHTTPStatus(err error) (status int, ok bool) {
 func classifyTransportErr(err error) ReachabilityReason {
 	if err == nil {
 		return ReasonUnreachable
+	}
+	if _, ok := AsRedirect(err); ok {
+		return ReasonRedirected
 	}
 	if status, ok := extractHTTPStatus(err); ok {
 		switch {

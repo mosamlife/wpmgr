@@ -62,24 +62,34 @@ func (e *RedirectError) Downgrade() bool {
 
 // OperatorMessage is the plain-language failure text for an operator. action
 // names what did not happen, capitalised (e.g. "Backup", "Restore",
-// "Update"). It names the redirect target and the remedy.
+// "Update"): "<action> not started. <Explanation>".
 func (e *RedirectError) OperatorMessage(action string) string {
+	return action + " not started. " + e.Explanation()
+}
+
+// Explanation says what the redirect was and what fixes it, naming the
+// target: the part of OperatorMessage after its lead-in.
+func (e *RedirectError) Explanation() string {
 	from := e.fromSite()
 	switch {
 	case e.SuggestedSiteURL != "":
-		return fmt.Sprintf("%s not started. %s redirects to %s, and commands are sent only to the site's saved address. Reconnect the site to update its address to %s.",
-			action, from, e.SuggestedSiteURL, e.SuggestedSiteURL)
+		return fmt.Sprintf("%s redirects to %s, and commands are sent only to the site's saved address. Reconnect the site to update its address to %s.",
+			from, e.SuggestedSiteURL, e.SuggestedSiteURL)
 	case e.Downgrade():
-		return fmt.Sprintf("%s not started. %s redirects to %s, which drops HTTPS, and commands are never sent over a downgraded connection. Serve the site's REST API (/wp-json/wpmgr/) over HTTPS without a redirect.",
-			action, from, e.To)
+		return fmt.Sprintf("%s redirects to %s, which drops HTTPS, and commands are never sent over a downgraded connection. Serve the site's REST API (/wp-json/wpmgr/) over HTTPS without a redirect.",
+			from, e.To)
 	case e.To != "":
-		return fmt.Sprintf("%s not started. The site redirected its command address to %s. A redirect rule on the site or its CDN is catching /wp-json/wpmgr/; exempt it.",
-			action, e.To)
+		return fmt.Sprintf("The site redirected its command address to %s. A redirect rule on the site or its CDN is catching /wp-json/wpmgr/; exempt it.",
+			e.To)
 	default:
-		return fmt.Sprintf("%s not started. The site answered its command address with a redirect (HTTP %d) and no usable target. A redirect rule on the site or its CDN is catching /wp-json/wpmgr/; exempt it.",
-			action, e.Status)
+		return fmt.Sprintf("The site answered its command address with a redirect (HTTP %d) and no usable target. A redirect rule on the site or its CDN is catching /wp-json/wpmgr/; exempt it.",
+			e.Status)
 	}
 }
+
+// SavedSiteURL is the site address the command was sent to: From with the
+// command route removed.
+func (e *RedirectError) SavedSiteURL() string { return e.fromSite() }
 
 // fromSite is From with the command route removed: the saved site address as
 // the operator knows it.
