@@ -753,6 +753,231 @@ PHP;
     }
 
     /**
+     * Stub the WordPress inventory reads collect() makes, backed by an
+     * in-memory option store.
+     *
+     * @param array<string,mixed> $options Option store (by reference).
+     */
+    private function stubInventory(array &$options): void
+    {
+        Functions\when('get_bloginfo')->justReturn('6.5.2');
+        Functions\when('is_multisite')->justReturn(false);
+        Functions\when('get_option')->alias(static function ($name, $default = false) use (&$options) {
+            if ($name === 'active_plugins') {
+                return [];
+            }
+            return $options[$name] ?? $default;
+        });
+        Functions\when('update_option')->alias(static function ($name, $value) use (&$options) {
+            $options[$name] = $value;
+            return true;
+        });
+        Functions\when('get_site_option')->alias(static fn ($name, $default = false) => $default);
+        Functions\when('get_plugins')->justReturn([]);
+        Functions\when('wp_get_themes')->justReturn([]);
+        Functions\when('get_stylesheet')->justReturn('twentytwentyfour');
+        Functions\when('get_site_transient')->justReturn(false);
+        Functions\when('get_core_updates')->justReturn([]);
+    }
+
+    /**
+     * GH #753. Metadata reports the keystore status item by item, records the
+     * admin notice, and omits the backup recipient when the backup key
+     * cannot be read, rather than generating a new one in its place.
+     */
+    public function test_collect_reports_keystore_status_when_the_backup_key_does_not_open(): void
+    {
+        $keyPath = sys_get_temp_dir() . '/wpmgr-agent-metadata-' . bin2hex(random_bytes(8)) . '.key';
+        file_put_contents($keyPath, random_bytes(32));
+        $options = [
+            \WPMgr\Agent\Keystore::OPTION_MASTER_KEY_SOURCE => ['source' => 'file', 'path' => $keyPath],
+        ];
+        $this->stubInventory($options);
+
+        try {
+            $keystore = new \WPMgr\Agent\Keystore();
+            $keystore->generateSiteKeypair();
+            $iv  = random_bytes(12);
+            $tag = '';
+            $ct  = openssl_encrypt(random_bytes(32), 'aes-256-gcm', random_bytes(32), OPENSSL_RAW_DATA, $iv, $tag, '', 16);
+            $this->assertIsString($ct);
+            $sealed = base64_encode($iv . $tag . $ct);
+            $options[\WPMgr\Agent\Keystore::OPTION_AGE_IDENTITY] = $sealed;
+
+            $data = (new MetadataCommand(new \WPMgr\Agent\Support\AgeIdentity(new \WPMgr\Agent\Keystore())))->collect();
+        } finally {
+            @unlink($keyPath);
+        }
+
+        $this->assertSame([
+            'state'      => 'unreadable',
+            'key_source' => 'file',
+            'items'      => [
+                'site_keypair'             => 'ok',
+                'cp_public_key'            => 'absent',
+                'age_identity'             => 'unreadable',
+                'email_secret'             => 'absent',
+                'email_connection_secrets' => 'absent',
+            ],
+            'unreadable' => ['age_identity'],
+        ], $data['keystore'] ?? null);
+        $this->assertArrayNotHasKey('age_recipient', $data);
+        $this->assertSame($sealed, $options[\WPMgr\Agent\Keystore::OPTION_AGE_IDENTITY], 'The backup key must not be replaced.');
+        $this->assertSame('unreadable', $options[\WPMgr\Agent\Plugin::OPTION_KEYSTORE_ERROR_KIND] ?? null);
+        $this->assertIsString($options[\WPMgr\Agent\Plugin::OPTION_KEYSTORE_ERROR] ?? null);
+    }
+
+    /** A real AgeIdentity over $keystore that counts the keystore probes metadata takes. */
+    private function probeCountingIdentity(\WPMgr\Agent\Keystore $keystore): \WPMgr\Agent\Support\AgeIdentity
+    {
+        return new class ($keystore) extends \WPMgr\Agent\Support\AgeIdentity {
+            public int $probes = 0;
+
+            public function probeKeystore(): array
+            {
+                ++$this->probes;
+
+                return parent::probeKeystore();
+            }
+        };
+    }
+
+    /** An AES-256-GCM envelope in the keystore's layout, sealed under a random key that is not this site's. */
+    private function sealUnderForeignKey(string $plaintext): string
+    {
+        $iv  = random_bytes(12);
+        $tag = '';
+        $ct  = openssl_encrypt($plaintext, 'aes-256-gcm', random_bytes(32), OPENSSL_RAW_DATA, $iv, $tag, '', 16);
+        $this->assertIsString($ct);
+
+        return base64_encode($iv . $tag . $ct);
+    }
+
+    /**
+     * No backup key is stored and the site keypair opens under the current
+     * key, so that key is the live one: metadata creates the backup key and
+     * sends its recipient, even though the email secret does not open.
+     */
+    public function test_collect_creates_an_absent_backup_key_when_the_keypair_opens(): void
+    {
+        $keyPath = sys_get_temp_dir() . '/wpmgr-agent-metadata-' . bin2hex(random_bytes(8)) . '.key';
+        file_put_contents($keyPath, random_bytes(32));
+        $options = [
+            \WPMgr\Agent\Keystore::OPTION_MASTER_KEY_SOURCE => ['source' => 'file', 'path' => $keyPath],
+        ];
+        $this->stubInventory($options);
+
+        try {
+            (new \WPMgr\Agent\Keystore())->generateSiteKeypair();
+            $email = $this->sealUnderForeignKey('smtp-password');
+            $options[\WPMgr\Agent\Keystore::OPTION_EMAIL_SECRET] = $email;
+
+            $identity = new \WPMgr\Agent\Support\AgeIdentity(new \WPMgr\Agent\Keystore());
+            $data     = (new MetadataCommand($identity))->collect();
+            $stored   = $identity->recipient();
+        } finally {
+            @unlink($keyPath);
+        }
+
+        $this->assertSame(['email_secret'], $data['keystore']['unreadable'] ?? null);
+        $this->assertArrayHasKey(\WPMgr\Agent\Keystore::OPTION_AGE_IDENTITY, $options, 'The absent backup key must be created.');
+        $this->assertStringStartsWith('age1', $data['age_recipient'] ?? '');
+        $this->assertSame($stored, $data['age_recipient']);
+        $this->assertSame($email, $options[\WPMgr\Agent\Keystore::OPTION_EMAIL_SECRET]);
+    }
+
+    /**
+     * GH #753. On the first collection that creates the backup key, the
+     * pushed keystore status is the one after the creation: the backup key
+     * reads ok and the state is ok, not absent until the next push.
+     */
+    public function test_collect_reports_the_backup_key_created_in_the_same_collection(): void
+    {
+        $keyPath = sys_get_temp_dir() . '/wpmgr-agent-metadata-' . bin2hex(random_bytes(8)) . '.key';
+        file_put_contents($keyPath, random_bytes(32));
+        $options = [
+            \WPMgr\Agent\Keystore::OPTION_MASTER_KEY_SOURCE => ['source' => 'file', 'path' => $keyPath],
+        ];
+        $this->stubInventory($options);
+
+        try {
+            (new \WPMgr\Agent\Keystore())->generateSiteKeypair();
+            $this->assertArrayNotHasKey(\WPMgr\Agent\Keystore::OPTION_AGE_IDENTITY, $options, 'Precondition: no backup key is stored.');
+
+            $identity = $this->probeCountingIdentity(new \WPMgr\Agent\Keystore());
+            $data     = (new MetadataCommand($identity))->collect();
+        } finally {
+            @unlink($keyPath);
+        }
+
+        $this->assertArrayHasKey(\WPMgr\Agent\Keystore::OPTION_AGE_IDENTITY, $options, 'The absent backup key must be created.');
+        $this->assertStringStartsWith('age1', $data['age_recipient'] ?? '');
+        $this->assertSame('ok', $data['keystore']['state'] ?? null);
+        $this->assertSame('ok', $data['keystore']['items']['age_identity'] ?? null);
+        $this->assertSame('ok', $data['keystore']['items']['site_keypair'] ?? null);
+        $this->assertSame([], $data['keystore']['unreadable'] ?? null);
+        $this->assertArrayNotHasKey(\WPMgr\Agent\Plugin::OPTION_KEYSTORE_ERROR, $options);
+        $this->assertSame(2, $identity->probes, 'Probe again after the backup key is created.');
+    }
+
+    /**
+     * No backup key is stored and the site keypair does not open: the
+     * current key is not shown to be the live one, so no backup key is
+     * created and no recipient is sent.
+     */
+    public function test_collect_creates_no_backup_key_when_the_keypair_does_not_open(): void
+    {
+        $keyPath = sys_get_temp_dir() . '/wpmgr-agent-metadata-' . bin2hex(random_bytes(8)) . '.key';
+        file_put_contents($keyPath, random_bytes(32));
+        $keypair = $this->sealUnderForeignKey(random_bytes(96));
+        $options = [
+            \WPMgr\Agent\Keystore::OPTION_MASTER_KEY_SOURCE => ['source' => 'file', 'path' => $keyPath],
+            \WPMgr\Agent\Keystore::OPTION_SITE_KEYPAIR      => $keypair,
+        ];
+        $this->stubInventory($options);
+
+        try {
+            $data = (new MetadataCommand(new \WPMgr\Agent\Support\AgeIdentity(new \WPMgr\Agent\Keystore())))->collect();
+        } finally {
+            @unlink($keyPath);
+        }
+
+        $this->assertSame(['site_keypair'], $data['keystore']['unreadable'] ?? null);
+        $this->assertArrayNotHasKey('age_recipient', $data);
+        $this->assertArrayNotHasKey(\WPMgr\Agent\Keystore::OPTION_AGE_IDENTITY, $options, 'No backup key may be created.');
+        $this->assertSame($keypair, $options[\WPMgr\Agent\Keystore::OPTION_SITE_KEYPAIR]);
+    }
+
+    /** Over-fire guard: a healthy keystore reports ok and still sends the recipient. */
+    public function test_collect_reports_ok_keystore_and_keeps_the_recipient(): void
+    {
+        $keyPath = sys_get_temp_dir() . '/wpmgr-agent-metadata-' . bin2hex(random_bytes(8)) . '.key';
+        file_put_contents($keyPath, random_bytes(32));
+        $options = [
+            \WPMgr\Agent\Keystore::OPTION_MASTER_KEY_SOURCE => ['source' => 'file', 'path' => $keyPath],
+        ];
+        $this->stubInventory($options);
+
+        try {
+            $keystore = new \WPMgr\Agent\Keystore();
+            $keystore->generateSiteKeypair();
+            $identity  = $this->probeCountingIdentity($keystore);
+            $recipient = $identity->ensureRecipient();
+
+            $data = (new MetadataCommand($identity))->collect();
+        } finally {
+            @unlink($keyPath);
+        }
+
+        $this->assertSame('ok', $data['keystore']['state'] ?? null);
+        $this->assertSame([], $data['keystore']['unreadable'] ?? null);
+        $this->assertSame($recipient, $data['age_recipient'] ?? null);
+        $this->assertSame(1, $identity->probes, 'A backup key was already stored, so nothing could change: probe once.');
+        $this->assertArrayNotHasKey(\WPMgr\Agent\Plugin::OPTION_KEYSTORE_ERROR, $options);
+        $this->assertSame(['state', 'key_source', 'items', 'unreadable'], array_keys($data['keystore']));
+    }
+
+    /**
      * Durable, environment-independent regression guard: no matter what a
      * future edit does to hostFlags() (or adds beside it), an absolute
      * out-of-webroot filesystem probe like `/var/lib/runcloud` must never be
