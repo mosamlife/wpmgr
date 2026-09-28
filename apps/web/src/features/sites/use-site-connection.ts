@@ -291,7 +291,7 @@ export class AgentUnreachableError extends Error {
  * answered its command address with a redirect, so the saved address is
  * wrong and no command was sent. `message` is the FULL server-composed text,
  * naming the redirect target and, when one applies, that the saved address
- * will update to it automatically at the site's next daily check-in.
+ * will update to it automatically at a later check-in from the site.
  * Callers must render it verbatim, never substitute a generic "Couldn't
  * reach agent" string. `to`/`from` are the sanitised fields off `details`,
  * exposed for a caller that wants to render the target as its own element

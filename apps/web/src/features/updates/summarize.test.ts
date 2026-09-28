@@ -153,7 +153,7 @@ describe("isSiteDownRecovery", () => {
 //   B2 (redirect that drops HTTPS)
 //   C  (a redirect that names no usable address)
 const REDIRECT_COPY_A =
-  "https://example.com redirects to https://www.example.com, so no command was sent. If WordPress on the site reports https://www.example.com as its address, the saved address updates to https://www.example.com automatically at the site's next daily check-in.";
+  "https://example.com redirects to https://www.example.com, so no command was sent. If WordPress on the site reports https://www.example.com as its address, the saved address updates to https://www.example.com automatically at a later check-in from the site. That update does not happen while another site in this workspace uses https://www.example.com: if one does, remove or change the duplicate site.";
 const REDIRECT_COPY_D =
   "https://example.com redirects its command address back to itself (HTTP 301), so no command was sent. Exempt /wp-json/wpmgr/ from the redirect on the site or its CDN.";
 const REDIRECT_COPY_B1 =

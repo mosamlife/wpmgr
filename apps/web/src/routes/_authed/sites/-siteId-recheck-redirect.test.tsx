@@ -133,7 +133,7 @@ async function clickRecheck() {
 describe("SiteShell re-check: renders the server's redirect copy verbatim (GH #755 round 2)", () => {
   it("shows the full server message for copy A (target the saved address will move to), with no Reconnect wording anywhere", async () => {
     const message =
-      "Couldn't reach the agent. https://example.com redirects to https://www.example.com, so no command was sent. If WordPress on the site reports https://www.example.com as its address, the saved address updates to https://www.example.com automatically at the site's next daily check-in.";
+      "Couldn't reach the agent. https://example.com redirects to https://www.example.com, so no command was sent. If WordPress on the site reports https://www.example.com as its address, the saved address updates to https://www.example.com automatically at a later check-in from the site. That update does not happen while another site in this workspace uses https://www.example.com: if one does, remove or change the duplicate site.";
     postMock.mockResolvedValue({
       data: undefined,
       error: {

@@ -201,7 +201,7 @@ describe("UpdateTasksTable: GH #210 site-down-recovery condition", () => {
 describe("UpdateTasksTable: GH #755 round 2 redirect-failure condition on a skipped agent self-update task", () => {
   it("renders the full server detail in a non-truncated role=alert element for a skipped agent self-update task", () => {
     const longDetail =
-      "Agent self-update not started. https://example.com redirects to https://www.example.com, so no command was sent. If WordPress on the site reports https://www.example.com as its address, the saved address updates to https://www.example.com automatically at the site's next daily check-in.";
+      "Agent self-update not started. https://example.com redirects to https://www.example.com, so no command was sent. If WordPress on the site reports https://www.example.com as its address, the saved address updates to https://www.example.com automatically at a later check-in from the site. That update does not happen while another site in this workspace uses https://www.example.com: if one does, remove or change the duplicate site.";
     const task = buildTask({
       id: "task-agent-redirect",
       target_type: "agent",

@@ -66,7 +66,7 @@ describe("AgentUnreachableError", () => {
 describe("SiteUrlRedirectsError", () => {
   it("carries the server's message VERBATIM, never a generic 'could not reach' substitute", () => {
     const err = new SiteUrlRedirectsError(
-      "Couldn't reach the agent. https://example.com redirects to https://www.example.com, so no command was sent. If WordPress on the site reports https://www.example.com as its address, the saved address updates to https://www.example.com automatically at the site's next daily check-in.",
+      "Couldn't reach the agent. https://example.com redirects to https://www.example.com, so no command was sent. If WordPress on the site reports https://www.example.com as its address, the saved address updates to https://www.example.com automatically at a later check-in from the site. That update does not happen while another site in this workspace uses https://www.example.com: if one does, remove or change the duplicate site.",
       { from: "https://example.com", to: "https://www.example.com/wp-json/wpmgr/v1/command/metadata", suggested_url: "https://www.example.com" },
     );
     expect(err.message).toContain("https://www.example.com");
@@ -138,7 +138,7 @@ describe("useRecheckConnection, real hook against a faked transport (GH #755)", 
       error: {
         code: "site_url_redirects",
         message:
-          "Couldn't reach the agent. https://example.com redirects to https://www.example.com, so no command was sent. If WordPress on the site reports https://www.example.com as its address, the saved address updates to https://www.example.com automatically at the site's next daily check-in.",
+          "Couldn't reach the agent. https://example.com redirects to https://www.example.com, so no command was sent. If WordPress on the site reports https://www.example.com as its address, the saved address updates to https://www.example.com automatically at a later check-in from the site. That update does not happen while another site in this workspace uses https://www.example.com: if one does, remove or change the duplicate site.",
         details: {
           from: "https://example.com",
           to: "https://www.example.com/wp-json/wpmgr/v1/command/metadata",
