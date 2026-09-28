@@ -52,6 +52,26 @@ var chainBrokenErrorCodes = map[string]bool{
 // takes the existing terminal-failure path.
 const codeRunnerInFlight = "runner_in_flight"
 
+// codeKeystoreUnreadable (GH #753) is the STABLE machine-readable refusal code
+// the agent sets on BackupResponse.Code when Keystore::probe() found the
+// site's stored backup key unreadable under the resolved master key — the
+// "site moved host, or the wp-config.php security keys changed" case. The
+// agent refuses BEFORE any preflight row, dedup claim, scratch directory or
+// write (class-backup-command.php), so this always reaches Work() as a clean
+// ok=false response, never a transport error, and never the eventual
+// stall-watchdog "stopped responding" message that reaching this bug used to
+// produce (the agent previously threw instead of refusing cleanly).
+const codeKeystoreUnreadable = "keystore_unreadable"
+
+// keystoreUnreadableOperatorMessage is FIXED, CP-authored copy substituted for
+// a keystore_unreadable refusal instead of forwarding the agent's own
+// resp.Detail verbatim. Two reasons: this is also the sentence the agent's own
+// wp-admin notice shows (GH #753 slice 1), so the dashboard and wp-admin never
+// disagree about the wording; and the code, not the wire text, is the stable
+// contract — a future agent release can reword its own detail without this
+// control plane's operator-facing copy silently drifting with it.
+const keystoreUnreadableOperatorMessage = "this site cannot read its backup key. Most often this happens when the site was moved to another host, or the security keys in wp-config.php were changed. To fix it, put back the previous values of the security keys in wp-config.php (AUTH_KEY, SECURE_AUTH_KEY, LOGGED_IN_KEY, NONCE_KEY, AUTH_SALT, SECURE_AUTH_SALT, LOGGED_IN_SALT and NONCE_SALT). Backups already taken are not affected."
+
 // Audit action names for the backup/restore lifecycle.
 const (
 	ActionBackupStarted    = "backup.started"
@@ -430,6 +450,14 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupArgs]) err
 				slog.String("tenant_id", snap.TenantID.String()),
 				slog.String("detail", resp.Detail))
 			return nil
+		}
+		if resp.Code == codeKeystoreUnreadable {
+			// GH #753: fail immediately with fixed operator copy — never
+			// retried (w.fail returns nil so River does not requeue it), and
+			// never the generic stall/"stopped responding" watchdog message,
+			// because the agent already refused before doing any work; a
+			// retry a few seconds later cannot make the key readable.
+			return w.fail(ctx, snap, "agent refused the backup: "+keystoreUnreadableOperatorMessage)
 		}
 		return w.fail(ctx, snap, "agent refused the backup: "+resp.Detail)
 	}
