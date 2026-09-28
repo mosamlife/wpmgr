@@ -176,10 +176,10 @@ func (s *Service) Update(ctx context.Context, in SMTPUpdate, updatedBy uuid.UUID
 	return toDTO(row), nil
 }
 
-// RecordInstanceEvent records an instance-settings change made by a caller
-// with no active organisation (see Handler.recordUpdate). Best-effort: a
-// failure is logged and not returned, because the change it describes has
-// already been written.
+// RecordInstanceEvent records an instance-settings change in system_audit_log,
+// the instance trail. Every admitted change is recorded here, whoever made it
+// (see Handler.recordUpdate). Best-effort: a failure is logged and not
+// returned, because the change it describes has already been written.
 //
 // system_audit_log has no target columns, so the target a tenant audit row
 // carries in target_type/target_id is written into the metadata instead.
