@@ -326,6 +326,33 @@ func connectAdmin(t *testing.T, app *db.Pool) *db.Pool {
 	return pool
 }
 
+// connectOwner opens a pool for the most recently started container AS
+// wpmgr_owner — the same NOSUPERUSER NOBYPASSRLS role production's migrator
+// uses (see startPostgres's doc comment above) — rather than the bootstrap
+// superuser connectAdmin returns. startPostgres already created wpmgr_owner
+// and handed it the database; that role and its password ('owner') persist
+// in the container after startPostgres's own owner connection closes, so this
+// just derives the same DSN startPostgres itself used. Used by tests that
+// re-run a migration file against an already-migrated database (idempotency
+// / boot-safety checks): re-applying it as the bootstrap superuser would not
+// reproduce the RLS exposure the real migrator has, exactly the gap this
+// harness change (#775) exists to close.
+func connectOwner(t *testing.T, app *db.Pool) *db.Pool {
+	t.Helper()
+	adminDSNsMu.Lock()
+	adminDSN, ok := adminDSNs[app]
+	adminDSNsMu.Unlock()
+	if !ok {
+		t.Fatal("SETUP FAILURE (test helper misuse, not the test's own assertion): connectOwner called with a pool startPostgres never returned")
+	}
+	ownerDSN := strings.Replace(adminDSN, "wpmgr:wpmgr@", "wpmgr_owner:owner@", 1)
+	pool, err := db.Connect(context.Background(), ownerDSN)
+	if err != nil {
+		setupFatalf(t, err, "postgres: connectOwner reconnect as wpmgr_owner")
+	}
+	return pool
+}
+
 // seedTenant inserts a tenant row directly (tenants are not RLS-scoped).
 func seedTenant(t testing.TB, pool *db.Pool, slug string) uuid.UUID {
 	t.Helper()
