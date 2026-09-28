@@ -3,13 +3,11 @@
 // migrations are applied the way a managed-Postgres install applies them: by a
 // role that owns the tables and is neither a superuser nor BYPASSRLS.
 //
-// Every other migration test in this package migrates as the container's
-// bootstrap superuser. That role is not what production uses, and a migration
-// that works as a superuser can fail as the owner. So these tests provision a
-// NOSUPERUSER NOBYPASSRLS owner, hand it the database, run every migration as
-// that role, seed rows as wpmgr_app through the transaction helpers that set the
-// GUCs the tables' policies require, and then boot the real migrator
-// (db.Pool.Migrate) as the owner, exactly as cmd/wpmgr does.
+// So these tests provision a NOSUPERUSER NOBYPASSRLS owner, hand it the
+// database, run every migration as that role, seed rows as wpmgr_app through
+// the transaction helpers that set the GUCs the tables' policies require, and
+// then boot the real migrator (db.Pool.Migrate) as the owner, exactly as
+// cmd/wpmgr does with WPMGR_DB_MIGRATION_DSN.
 //
 // m139 and m140 are the migrations that fill the two columns ahead of m136 and
 // m137. "Without them" is simulated by recording them in schema_migrations

@@ -8,11 +8,10 @@
 -- its own statements become no-ops apart from the three CHECK constraints it
 -- adds, which every filled row satisfies.
 --
--- WHY. m137 adds the column nullable, fills it with an UPDATE, and then arms
--- NOT NULL. On a table that already holds rows the UPDATE is not guaranteed to
--- reach them under the role that applies migrations in production, and the
--- NOT NULL then fails with 23502 and stops the boot. Filling the rows as part
--- of adding the column reaches every row regardless of the applying role.
+-- WHY. The contract is that m137 applies to a table that already holds rows.
+-- Filling every existing row in the statement that adds the column meets it:
+-- the NOT NULL m137 arms then holds before m137 runs, whatever role applies
+-- the migrations.
 --
 -- THE VALUE IS m137's, UNCHANGED. ARRAY['mcp:read']::text[] is exactly what
 -- m137's backfill writes for an existing client (m137 DECISION 7): the only
