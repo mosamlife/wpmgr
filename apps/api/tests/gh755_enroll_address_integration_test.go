@@ -494,19 +494,24 @@ func TestReEnrollAddressGate_RequiresOrgScopedSiteWriter(t *testing.T) {
 	}
 
 	otherTenant := seedTenant(t, env.pool, "gh755-gate-other")
+	// Real users, so a caller that got past the gate would mint a code rather
+	// than fail on the history row's user reference.
+	collabA := gh755SeedUser(t, env.pool, "gate-collab-a@example.test")
+	collabB := gh755SeedUser(t, env.pool, "gate-collab-b@example.test")
+	viewer := gh755SeedUser(t, env.pool, "gate-viewer@example.test")
 	callers := []struct {
 		name string
 		p    domain.Principal
 		want int
 	}{
 		{"site-scoped collaborator on another site", domain.Principal{
-			Type: domain.PrincipalUser, UserID: uuid.New(), TenantID: tenant, Role: "operator",
+			Type: domain.PrincipalUser, UserID: collabA, TenantID: tenant, Role: "operator",
 			Scope: domain.ScopeSite, AllowedSiteIDs: []uuid.UUID{otherSite}}, http.StatusForbidden},
 		{"site-scoped collaborator shared this site", domain.Principal{
-			Type: domain.PrincipalUser, UserID: uuid.New(), TenantID: tenant, Role: "operator",
+			Type: domain.PrincipalUser, UserID: collabB, TenantID: tenant, Role: "operator",
 			Scope: domain.ScopeSite, AllowedSiteIDs: []uuid.UUID{id}}, http.StatusForbidden},
 		{"org viewer", domain.Principal{
-			Type: domain.PrincipalUser, UserID: uuid.New(), TenantID: tenant, Role: "viewer",
+			Type: domain.PrincipalUser, UserID: viewer, TenantID: tenant, Role: "viewer",
 			Scope: domain.ScopeOrg}, http.StatusForbidden},
 		{"owner of another tenant", gh755Owner(otherTenant, gh755SeedUser(t, env.pool, "gate-other@example.test")), http.StatusNotFound},
 	}
