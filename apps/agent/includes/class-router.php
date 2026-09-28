@@ -378,8 +378,8 @@ final class Router
         // The decision is a shape test on the whole run, set out in
         // isEncodedRun(): a run that ends in base64 padding is always encoded
         // material; otherwise it is only when the run is substantially
-        // case-MIXED and carries a digit or one of base64's own symbols, over
-        // the same 32-character budget (slashes excluded from the count). That
+        // case-MIXED and carries a digit, '+' or '=', over the same
+        // 32-character budget (slashes excluded from the count). That
         // predicate is chosen for what it CANNOT match. Every path, table name,
         // option key and command name this plugin emits is single-case and none
         // ends in '=', so none of them can satisfy it, and
@@ -389,15 +389,18 @@ final class Router
         //
         // Stated honestly in both directions. Not caught here: an unpadded run
         // that is not case-mixed, or that carries no digit and neither '+' nor
-        // '='. Caught here: a case-mixed path that carries a digit, '+' or '='.
-        // The second is the cheaper error — a redacted identifier is still intact in the
-        // local debug log; key material in a dashboard is not recoverable from.
+        // '=', or that falls under the budget once its slashes are set aside.
+        // Caught here: a case-mixed path that carries a digit, '+' or '='. The
+        // second is the cheaper error — a redacted identifier is still intact
+        // in the local debug log; key material in a dashboard is not
+        // recoverable from.
         //
         // A redacted run that starts with '/' keeps that '/', and the
-        // absolute-path rule below treats "<redacted>" as part of a path. So an
-        // absolute path that carries such a run — at its start or after a '.'
-        // part-way along — is still reduced to <path> whole: its remainder
-        // goes with it rather than surviving as a relative-looking tail.
+        // absolute-path rule below takes "<redacted>" as a path component. So a
+        // redaction never cuts an absolute path short: that rule reaches at
+        // least as far along the path as it would with no redaction in it, and
+        // the remainder goes with it rather than surviving as a relative-looking
+        // tail.
         $msg = self::pregCallbackOrKeep(
             '~[A-Za-z0-9+/=_\-]{32,}~',
             static function (array $m): string {
@@ -457,7 +460,8 @@ final class Router
      *
      * What that leaves uncaught is an unpadded run with fewer than
      * MIN_MIXED_CASE letters of either case, or with no digit and neither '+'
-     * nor '='; an unpadded key can take either shape. Single-case runs — which
+     * nor '=', or with fewer than 32 characters once '/' is set aside; an
+     * unpadded key can take any of those shapes. Single-case runs — which
      * is every path, table name, option key and command name this plugin
      * emits, none of which ends in '=' — never qualify.
      *

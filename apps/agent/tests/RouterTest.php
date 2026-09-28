@@ -339,6 +339,8 @@ final class RouterTest extends TestCase
 	 * redacts — must still go whole. The pass stops at a '.', so without the
 	 * path rule taking the redaction as part of the path, the remainder would
 	 * survive as a relative-looking tail the path rule no longer recognises.
+	 * Covers the segment at the path's start, after a '.' part-way along, and
+	 * under a drive-letter root.
 	 *
 	 * @return void
 	 */
