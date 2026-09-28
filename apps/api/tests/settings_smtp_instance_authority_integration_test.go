@@ -8,12 +8,16 @@ package tests
 // qualifies only as a superadmin, or as the owner of the only live organisation
 // on the install. A role inside one organisation of several does not qualify.
 //
-// Everything under test is reached through the REAL gin engine and the REAL
-// middleware.Authenticate -> authz.RequireAuth/RequireTenant chain that
-// internal/server/server.go mounts the settings routes behind, then the real
-// settings.Handler.Register (RequireOrgScope + the instance-authority gate),
-// over the pool startPostgres returns: wpmgr_app, NOSUPERUSER, NOBYPASSRLS. The
-// gate store is the production admingate.PoolStore over that same pool.
+// Everything under test is reached through the REAL router: server.New builds
+// the engine, so the settings routes sit on whichever group server.go mounts
+// them on, behind the session load and middleware.Authenticate it puts in
+// front of every group, then the real settings.Handler.Register
+// (RequireOrgScope + the instance-authority gate). GET /auth/me is served by the
+// same engine, so the can_manage_instance_email capability is read through the
+// real auth handler. All of it runs over the pool startPostgres returns:
+// wpmgr_app, NOSUPERUSER, NOBYPASSRLS. The gate store is the production
+// admingate.PoolStore over that same pool, handed to both the settings handler
+// and the auth handler exactly as cmd/wpmgr does.
 //
 // Reads that observe the database go through the production transaction
 // helpers as wpmgr_app, and each one asserts the connected role inside its own
@@ -35,6 +39,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -50,11 +56,15 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/auth"
 	"github.com/mosamlife/wpmgr/apps/api/internal/authz"
+	"github.com/mosamlife/wpmgr/apps/api/internal/config"
 	"github.com/mosamlife/wpmgr/apps/api/internal/cryptbox"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 	"github.com/mosamlife/wpmgr/apps/api/internal/middleware"
+	"github.com/mosamlife/wpmgr/apps/api/internal/server"
 	"github.com/mosamlife/wpmgr/apps/api/internal/settings"
+	"github.com/mosamlife/wpmgr/apps/api/internal/site"
+	"github.com/mosamlife/wpmgr/apps/api/internal/tenant"
 )
 
 // ---------------------------------------------------------------------------
@@ -96,18 +106,36 @@ func newSMTPIAStack(t *testing.T) *smtpIAStack {
 	}
 }
 
-// engine mounts the settings routes behind the same chain server.go uses for
-// the v1 group, with the given gate store.
+// engine builds the production router with server.New. Deps carries the
+// handlers server.New registers unconditionally, plus the settings handler and
+// an auth handler wired with the given gate store, the way cmd/wpmgr wires
+// both. Every optional handler is left nil, which server.New skips.
 func (s *smtpIAStack) engine(t *testing.T, gate admingate.Store) *gin.Engine {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
+	clock := domain.SystemClock{}
+	validator := domain.NewValidator()
 	keys := apikey.NewService(s.pool)
-	authn := middleware.NewAuthenticator(s.sessions, s.authSvc, keys, s.pool)
-	e := gin.New()
-	e.Use(authn.Authenticate())
-	v1 := e.Group("/api/v1")
-	v1.Use(authz.RequireAuth(), authz.RequireTenant())
-	settings.NewHandler(s.svc, s.rec, gate).Register(v1)
+	authH := auth.NewHandler(s.authSvc, s.sessions, nil, nil)
+	authH.SetInstanceAuthorityGate(gate)
+	srv := server.New(server.Deps{
+		Config:    config.Config{},
+		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Pool:      s.pool,
+		Sessions:  s.sessions,
+		Auth:      middleware.NewAuthenticator(s.sessions, s.authSvc, keys, s.pool),
+		AuthH:     authH,
+		MembersH:  auth.NewMembersHandler(s.authSvc, nil),
+		APIKeyH:   apikey.NewHandler(keys, s.rec),
+		AuditH:    audit.NewHandler(s.rec),
+		TenantH:   tenant.NewHandler(tenant.NewService(tenant.NewRepo(s.pool), validator, clock), s.rec),
+		SiteH:     site.NewHandler(site.NewService(site.NewRepo(s.pool), validator, clock), s.rec, ""),
+		SettingsH: settings.NewHandler(s.svc, s.rec, gate),
+	})
+	e, ok := srv.Handler().(*gin.Engine)
+	if !ok {
+		t.Fatalf("server.Handler() is %T, want *gin.Engine", srv.Handler())
+	}
 	return e
 }
 
@@ -295,6 +323,96 @@ func requireAllAdmitted(t *testing.T, s *smtpIAStack, e *gin.Engine, ctx context
 	}
 }
 
+// requireCapability asserts that GET /auth/me, served by the same engine,
+// reports can_manage_instance_email and that it equals want. An absent field
+// fails: absence must never be what a test reads as false.
+func requireCapability(t *testing.T, e *gin.Engine, ctx context.Context, want bool) {
+	t.Helper()
+	r := smtpIADo(e, ctx, http.MethodGet, "/auth/me", "")
+	if r.status != http.StatusOK {
+		t.Fatalf("GET /auth/me: got %d (%s); want 200", r.status, r.body)
+	}
+	var me struct {
+		CanManageInstanceEmail *bool `json:"can_manage_instance_email"`
+	}
+	if err := json.Unmarshal([]byte(r.body), &me); err != nil {
+		t.Fatalf("decode /auth/me: %v (%s)", err, r.body)
+	}
+	if me.CanManageInstanceEmail == nil {
+		t.Fatalf("GET /auth/me omitted can_manage_instance_email: %s", r.body)
+	}
+	if *me.CanManageInstanceEmail != want {
+		t.Errorf("can_manage_instance_email = %v, want %v (it must equal the route gate's decision)",
+			*me.CanManageInstanceEmail, want)
+	}
+}
+
+// smtpIADoKey sends a request authenticated by an API key, with no session.
+func smtpIADoKey(e *gin.Engine, token, method, path, body string) smtpIAResp {
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	e.ServeHTTP(w, req)
+	var env struct {
+		Code string `json:"code"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &env)
+	return smtpIAResp{status: w.Code, code: env.Code, body: w.Body.String()}
+}
+
+// systemAuditUpdates counts system_audit_log rows recording an SMTP settings
+// update by actorID with the nil tenant id. Read through InUserTx as the actor,
+// the helper the writer uses.
+func (s *smtpIAStack) systemAuditUpdates(t *testing.T, actorID uuid.UUID) int {
+	t.Helper()
+	ctx := context.Background()
+	var n int
+	err := s.pool.InUserTx(ctx, actorID, func(tx pgx.Tx) error {
+		requireAppRoleInTx(t, ctx, tx)
+		return tx.QueryRow(ctx, `
+			SELECT count(*) FROM system_audit_log
+			WHERE action = $1 AND actor_type = 'user' AND actor_id = $2
+			  AND tenant_id = '00000000-0000-0000-0000-000000000000'
+			  AND metadata->>'host' = 'relay-b.example.test'
+			  AND metadata->>'target_type' = 'smtp_settings'`,
+			settings.AuditActionUpdate, actorID).Scan(&n)
+	})
+	if err != nil {
+		t.Fatalf("read system_audit_log: %v", err)
+	}
+	return n
+}
+
+// tenantAuditUpdates counts audit_log rows in tenantID recording an SMTP
+// settings update by actorID, read through InTenantTx.
+func (s *smtpIAStack) tenantAuditUpdates(t *testing.T, tenantID, actorID uuid.UUID) int {
+	t.Helper()
+	ctx := context.Background()
+	var n int
+	err := s.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		requireAppRoleInTx(t, ctx, tx)
+		return tx.QueryRow(ctx, `
+			SELECT count(*) FROM audit_log
+			WHERE tenant_id = $1 AND action = $2 AND actor_type = 'user' AND actor_id = $3`,
+			tenantID, settings.AuditActionUpdate, actorID.String()).Scan(&n)
+	})
+	if err != nil {
+		t.Fatalf("read audit_log: %v", err)
+	}
+	return n
+}
+
+// seedUserOnly creates a user with no membership anywhere.
+func seedUserOnly(t *testing.T, repo *auth.Repo, email string) auth.User {
+	t.Helper()
+	u, err := repo.CreateUser(context.Background(), email, "", email, "", "")
+	if err != nil {
+		t.Fatalf("create user %s: %v", email, err)
+	}
+	return u
+}
+
 // ---------------------------------------------------------------------------
 // Multi-organisation install
 // ---------------------------------------------------------------------------
@@ -307,8 +425,18 @@ func TestSMTPSettings_MultiTenantInstall_InstanceAuthority(t *testing.T) {
 	tenantA := seedTenant(t, s.pool, "smtp-ia-a-"+sfx)
 	tenantB := seedTenant(t, s.pool, "smtp-ia-b-"+sfx)
 	ownerA := seedUserMembership(t, s.authRepo, "smtp-ia-owner-a-"+sfx+"@example.com", tenantA, authz.RoleOwner)
+	adminA := seedUserMembership(t, s.authRepo, "smtp-ia-admin-a-"+sfx+"@example.com", tenantA, authz.RoleAdmin)
 	superU := seedUserMembership(t, s.authRepo, "smtp-ia-super-"+sfx+"@example.com", tenantB, authz.RoleViewer)
 	s.makeSuperadmin(t, superU.ID)
+	// The operator of a multi-organisation install: a superadmin who belongs
+	// to no organisation, so every request carries no active tenant.
+	loneSuper := seedUserOnly(t, s.authRepo, "smtp-ia-lone-super-"+sfx+"@example.com")
+	s.makeSuperadmin(t, loneSuper.ID)
+	// A superadmin whose active session is a site collaboration in tenantA:
+	// site-scoped, with no membership there.
+	siteSuper := seedUserOnly(t, s.authRepo, "smtp-ia-site-super-"+sfx+"@example.com")
+	s.makeSuperadmin(t, siteSuper.ID)
+	seedSiteShare(t, s.adminDB, tenantA, seedSite(t, s.pool, tenantA, "https://smtp-ia-"+sfx+".example.test"), siteSuper.ID, "viewer")
 	s.seedRelay(t, superU.ID)
 
 	// THE PREMISE, asserted rather than assumed: more than one live
@@ -329,15 +457,90 @@ func TestSMTPSettings_MultiTenantInstall_InstanceAuthority(t *testing.T) {
 		if !found {
 			t.Fatal("PREMISE FAILED: no smtp_settings row to protect; an empty-vs-empty comparison proves nothing")
 		}
-		requireAllRefused(t, e, s.session(t, ownerA.ID, tenantA))
+		ctx := s.session(t, ownerA.ID, tenantA)
+		requireAllRefused(t, e, ctx)
 		after, _ := s.smtpRow(t)
 		if after != before {
 			t.Errorf("smtp_settings changed under refused requests:\nbefore %s\nafter  %s", before, after)
 		}
+		requireCapability(t, e, ctx, false)
 	})
 
-	t.Run("superadmin is admitted on GET, PUT and POST /test", func(t *testing.T) {
-		requireAllAdmitted(t, s, e, s.session(t, superU.ID, tenantB))
+	t.Run("organisation admin is refused", func(t *testing.T) {
+		before, _ := s.smtpRow(t)
+		ctx := s.session(t, adminA.ID, tenantA)
+		requireAllRefused(t, e, ctx)
+		if after, _ := s.smtpRow(t); after != before {
+			t.Errorf("smtp_settings changed under refused requests")
+		}
+		requireCapability(t, e, ctx, false)
+	})
+
+	t.Run("API key is refused, even an owner-role key", func(t *testing.T) {
+		created, err := apikey.NewService(s.pool).Create(context.Background(), tenantA, "smtp-ia-key", authz.RoleOwner)
+		if err != nil {
+			t.Fatalf("create API key: %v", err)
+		}
+		before, _ := s.smtpRow(t)
+		for _, c := range []struct{ method, path, body string }{
+			{http.MethodGet, smtpPath, ""},
+			{http.MethodPut, smtpPath, smtpPutBody},
+			{http.MethodPost, smtpTestPath, smtpTestBody},
+		} {
+			r := smtpIADoKey(e, created.Token, c.method, c.path, c.body)
+			if r.status != http.StatusForbidden || r.code != settings.InstanceAuthorityRequiredCode {
+				t.Errorf("%s %s with an API key: got %d %q (%s); want 403 %q",
+					c.method, c.path, r.status, r.code, r.body, settings.InstanceAuthorityRequiredCode)
+			}
+		}
+		if after, _ := s.smtpRow(t); after != before {
+			t.Errorf("smtp_settings changed under refused requests")
+		}
+		// Me is a session resource: a key is never offered the capability.
+		if r := smtpIADoKey(e, created.Token, http.MethodGet, "/auth/me", ""); r.status != http.StatusUnauthorized {
+			t.Errorf("GET /auth/me with an API key: got %d (%s); want 401", r.status, r.body)
+		}
+	})
+
+	t.Run("site-scoped principal is refused, even a superadmin", func(t *testing.T) {
+		before, _ := s.smtpRow(t)
+		ctx := s.session(t, siteSuper.ID, tenantA)
+		for _, c := range []struct{ method, path, body string }{
+			{http.MethodGet, smtpPath, ""},
+			{http.MethodPut, smtpPath, smtpPutBody},
+			{http.MethodPost, smtpTestPath, smtpTestBody},
+		} {
+			r := smtpIADo(e, ctx, c.method, c.path, c.body)
+			if r.status != http.StatusForbidden || r.code != "org_scope_required" {
+				t.Errorf("%s %s site-scoped: got %d %q (%s); want 403 org_scope_required",
+					c.method, c.path, r.status, r.code, r.body)
+			}
+		}
+		if after, _ := s.smtpRow(t); after != before {
+			t.Errorf("smtp_settings changed under refused requests")
+		}
+		requireCapability(t, e, ctx, false)
+	})
+
+	t.Run("superadmin with a membership is admitted on GET, PUT and POST /test", func(t *testing.T) {
+		ctx := s.session(t, superU.ID, tenantB)
+		requireCapability(t, e, ctx, true)
+		requireAllAdmitted(t, s, e, ctx)
+		if n := s.tenantAuditUpdates(t, tenantB, superU.ID); n < 1 {
+			t.Errorf("PUT with an active organisation left %d audit_log rows in it; want at least 1", n)
+		}
+	})
+
+	t.Run("superadmin with no membership and no active organisation is admitted and audited", func(t *testing.T) {
+		ctx := s.session(t, loneSuper.ID, uuid.Nil)
+		requireCapability(t, e, ctx, true)
+		if n := s.systemAuditUpdates(t, loneSuper.ID); n != 0 {
+			t.Fatalf("PREMISE FAILED: %d system_audit_log rows for this actor before any PUT", n)
+		}
+		requireAllAdmitted(t, s, e, ctx)
+		if n := s.systemAuditUpdates(t, loneSuper.ID); n != 1 {
+			t.Errorf("PUT with no active organisation left %d system_audit_log rows naming the actor; want 1", n)
+		}
 	})
 }
 
@@ -366,15 +569,66 @@ func TestSMTPSettings_SingleTenantInstall_InstanceAuthority(t *testing.T) {
 	}
 
 	t.Run("sole owner is admitted on GET, PUT and POST /test with no superadmin configured", func(t *testing.T) {
-		requireAllAdmitted(t, s, e, s.session(t, owner.ID, tenant))
+		ctx := s.session(t, owner.ID, tenant)
+		requireCapability(t, e, ctx, true)
+		requireAllAdmitted(t, s, e, ctx)
+		if n := s.tenantAuditUpdates(t, tenant, owner.ID); n < 1 {
+			t.Errorf("PUT by the sole owner left %d audit_log rows in their organisation; want at least 1", n)
+		}
 	})
 
 	t.Run("admin of the sole organisation is refused", func(t *testing.T) {
 		before, _ := s.smtpRow(t)
-		requireAllRefused(t, e, s.session(t, adminU.ID, tenant))
+		ctx := s.session(t, adminU.ID, tenant)
+		requireAllRefused(t, e, ctx)
 		if after, _ := s.smtpRow(t); after != before {
 			t.Errorf("smtp_settings changed under refused requests:\nbefore %s\nafter  %s", before, after)
 		}
+		requireCapability(t, e, ctx, false)
+	})
+
+	t.Run("owner-role API key of the sole organisation is refused", func(t *testing.T) {
+		created, err := apikey.NewService(s.pool).Create(context.Background(), tenant, "smtp-ia-solo-key", authz.RoleOwner)
+		if err != nil {
+			t.Fatalf("create API key: %v", err)
+		}
+		before, _ := s.smtpRow(t)
+		for _, c := range []struct{ method, path, body string }{
+			{http.MethodGet, smtpPath, ""},
+			{http.MethodPut, smtpPath, smtpPutBody},
+			{http.MethodPost, smtpTestPath, smtpTestBody},
+		} {
+			r := smtpIADoKey(e, created.Token, c.method, c.path, c.body)
+			if r.status != http.StatusForbidden || r.code != settings.InstanceAuthorityRequiredCode {
+				t.Errorf("%s %s with an API key: got %d %q (%s); want 403 %q",
+					c.method, c.path, r.status, r.code, r.body, settings.InstanceAuthorityRequiredCode)
+			}
+		}
+		if after, _ := s.smtpRow(t); after != before {
+			t.Errorf("smtp_settings changed under refused requests")
+		}
+	})
+
+	t.Run("site collaborator in the sole organisation is refused", func(t *testing.T) {
+		collab := seedUserOnly(t, s.authRepo, "smtp-ia-solo-collab-"+sfx+"@example.com")
+		seedSiteShare(t, s.adminDB, tenant, seedSite(t, s.pool, tenant, "https://smtp-ia-solo-"+sfx+".example.test"), collab.ID, "viewer")
+		before, _ := s.smtpRow(t)
+		ctx := s.session(t, collab.ID, tenant)
+		for _, c := range []struct{ method, path, body string }{
+			{http.MethodGet, smtpPath, ""},
+			{http.MethodPut, smtpPath, smtpPutBody},
+			{http.MethodPost, smtpTestPath, smtpTestBody},
+		} {
+			r := smtpIADo(e, ctx, c.method, c.path, c.body)
+			if r.status != http.StatusForbidden || r.code != "org_scope_required" {
+				t.Errorf("%s %s site-scoped: got %d %q (%s); want 403 org_scope_required",
+					c.method, c.path, r.status, r.code, r.body)
+			}
+		}
+		if after, _ := s.smtpRow(t); after != before {
+			t.Errorf("smtp_settings changed under refused requests")
+		}
+		requireCapability(t, e, ctx, false)
 	})
 
 	// Fail closed. failing is the production PoolStore over a pool that has
@@ -385,19 +639,23 @@ func TestSMTPSettings_SingleTenantInstall_InstanceAuthority(t *testing.T) {
 	t.Run("organisation count read failing refuses the sole owner", func(t *testing.T) {
 		before, _ := s.smtpRow(t)
 		ee := s.engine(t, splitGateStore{superadmin: healthy, owner: failing})
-		requireAllRefused(t, ee, s.session(t, owner.ID, tenant))
+		ctx := s.session(t, owner.ID, tenant)
+		requireAllRefused(t, ee, ctx)
 		if after, _ := s.smtpRow(t); after != before {
 			t.Errorf("smtp_settings changed under refused requests")
 		}
+		requireCapability(t, ee, ctx, false)
 	})
 
 	t.Run("superadmin read failing refuses and does not fall through to the owner arm", func(t *testing.T) {
 		before, _ := s.smtpRow(t)
 		ee := s.engine(t, splitGateStore{superadmin: failing, owner: healthy})
-		requireAllRefused(t, ee, s.session(t, owner.ID, tenant))
+		ctx := s.session(t, owner.ID, tenant)
+		requireAllRefused(t, ee, ctx)
 		if after, _ := s.smtpRow(t); after != before {
 			t.Errorf("smtp_settings changed under refused requests")
 		}
+		requireCapability(t, ee, ctx, false)
 	})
 
 	// Runs last: it creates the second organisation.
@@ -407,10 +665,12 @@ func TestSMTPSettings_SingleTenantInstall_InstanceAuthority(t *testing.T) {
 			t.Fatalf("PREMISE FAILED: %d live organisations after seeding a second, want 2", n)
 		}
 		before, _ := s.smtpRow(t)
-		requireAllRefused(t, e, s.session(t, owner.ID, tenant))
+		ctx := s.session(t, owner.ID, tenant)
+		requireAllRefused(t, e, ctx)
 		if after, _ := s.smtpRow(t); after != before {
 			t.Errorf("smtp_settings changed under refused requests")
 		}
+		requireCapability(t, e, ctx, false)
 	})
 }
 
