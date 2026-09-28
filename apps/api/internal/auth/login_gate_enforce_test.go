@@ -537,15 +537,20 @@ func TestSuccessfulSignInsLeaveEveryMapAsItWas(t *testing.T) {
 		e := loginHandlerForTest(t, g, 2)
 		const drainedSource = "198.51.100.7"
 
+		// One source drains the victim pair first and then the rest of its own
+		// budget, each at its own instant. Every entry after that is seen
+		// later, so the drained pair is strictly the least recently seen entry
+		// in the pair map and the drained source strictly the least recently
+		// seen in the source map: the first an eviction takes, not one of a tie.
 		for i := 0; i < loginPairBudget; i++ {
-			assertAdmitted(t, postLogin(e, simulatedClient, victim), "draining the pair")
+			assertAdmitted(t, postLogin(e, drainedSource, victim), "draining the pair")
 		}
-		for i := 0; i < loginSrcBudget; i++ {
+		clock = gateEpoch.Add(500 * time.Millisecond)
+		for i := loginPairBudget; i < loginSrcBudget; i++ {
 			assertAdmitted(t, postLogin(e, drainedSource, fmt.Sprintf("drain%d[at]example.test", i)), "draining the source")
 		}
-		// Fill every refusing scope's map to its cap with failed attempts' entries
-		// seen later, so the drained pair and source are the least recently
-		// seen: the first an eviction takes.
+		// Fill every refusing scope's map to its cap with failed attempts'
+		// entries.
 		clock = gateEpoch.Add(time.Second)
 		for _, b := range []*keyedBudget{g.pair, g.src, g.src48} {
 			for i := 0; b.size() < loginBucketCap; i++ {
@@ -565,12 +570,15 @@ func TestSuccessfulSignInsLeaveEveryMapAsItWas(t *testing.T) {
 		assertSameMaps(t, fmt.Sprintf("%d successful sign-ins at the cap", n), before, snapshotGate(g, at))
 		assertOnlyFailuresRemain(t, g)
 
-		w := postLogin(e, simulatedClient, victim)
+		// Both the pair and the source are over here, and the pair waits
+		// longer (drained 500ms earlier, on a budget a sixth the size), so a
+		// refusal on "source" means the drained pair came back full.
+		w := postLogin(e, drainedSource, victim)
 		if w.Code != http.StatusTooManyRequests {
-			t.Fatalf("the drained pair was admitted again (%d) after successful sign-ins at the cap: it was evicted and came back full", w.Code)
+			t.Fatalf("the victim pair was admitted (%d) after successful sign-ins at the cap", w.Code)
 		}
 		if r := decodeRefusal(t, w); r.Details.Scope != "pair" {
-			t.Errorf("drained pair refused on %q, want pair", r.Details.Scope)
+			t.Fatalf("victim refused on %q, want pair: the drained pair was evicted and came back full", r.Details.Scope)
 		}
 		w = postLogin(e, drainedSource, "someone-new[at]example.test")
 		if w.Code != http.StatusTooManyRequests {
