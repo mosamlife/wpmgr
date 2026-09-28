@@ -349,23 +349,6 @@ func TestShedAttemptsLeaveEveryMapAsItWas(t *testing.T) {
 			}
 		}
 	}
-	type snap struct {
-		sizes  [4]int
-		tokens map[string]float64
-	}
-	snapshot := func(g *LoginGate, now time.Time) snap {
-		s := snap{tokens: map[string]float64{}}
-		for i, b := range []*keyedBudget{g.pair, g.src, g.src48, g.acct} {
-			b.mu.Lock()
-			s.sizes[i] = len(b.buckets)
-			for k, bk := range b.buckets {
-				s.tokens[b.scope+" "+k] = bk.lim.TokensAt(now)
-			}
-			b.mu.Unlock()
-		}
-		return s
-	}
-
 	t.Run("sizes and tokens unchanged", func(t *testing.T) {
 		g, _ := newEnforceGate(t)
 		e := loginHandlerForTest(t, g, 2)
@@ -374,16 +357,16 @@ func TestShedAttemptsLeaveEveryMapAsItWas(t *testing.T) {
 			assertAdmitted(t, postLogin(e, simulatedClient, victim), "warm-up")
 		}
 		assertAdmitted(t, postLogin(e, "2001:db8:1:2::1", httpEmailA), "v6 warm-up")
-		before := snapshot(g, gateEpoch)
+		before := snapshotGate(g, gateEpoch)
 
 		release := occupy(t, g)
 		shed := 0
 		for i := 0; i < 200; i++ {
 			for _, try := range []struct{ client, email string }{
-				{simulatedClient, fmt.Sprintf("new%d[at]example.test", i)},            // new pair, new account
+				{simulatedClient, fmt.Sprintf("new%d[at]example.test", i)},             // new pair, new account
 				{fmt.Sprintf("198.51.100.%d", i%250+1), httpEmailA},                    // new source
 				{fmt.Sprintf("2001:db8:%x:1::1", i+100), fmt.Sprintf("v6-%d[at]x", i)}, // new /64 and /48
-				{"2001:db8:1:2::1", httpEmailA},                                       // existing keys
+				{"2001:db8:1:2::1", httpEmailA},                                        // existing keys
 			} {
 				w := postLogin(e, try.client, try.email)
 				if w.Code != http.StatusServiceUnavailable {
@@ -394,20 +377,7 @@ func TestShedAttemptsLeaveEveryMapAsItWas(t *testing.T) {
 		}
 		release()
 
-		after := snapshot(g, gateEpoch)
-		if after.sizes != before.sizes {
-			t.Errorf("%d shed attempts changed the map sizes [pair src src48 acct] from %v to %v", shed, before.sizes, after.sizes)
-		}
-		for k, v := range before.tokens {
-			if got, ok := after.tokens[k]; !ok || got != v {
-				t.Errorf("%s: %.2f tokens before the shed attempts, %.2f (present=%v) after", k, v, got, ok)
-			}
-		}
-		for k := range after.tokens {
-			if _, ok := before.tokens[k]; !ok {
-				t.Errorf("a shed attempt created %s", k)
-			}
-		}
+		assertSameMaps(t, fmt.Sprintf("%d shed attempts", shed), before, snapshotGate(g, gateEpoch))
 	})
 
 	t.Run("at the cap they cannot evict an exhausted pair", func(t *testing.T) {
@@ -445,6 +415,214 @@ func TestShedAttemptsLeaveEveryMapAsItWas(t *testing.T) {
 		if r := decodeRefusal(t, w); r.Details.Scope != "pair" {
 			t.Errorf("refused on %q, want pair", r.Details.Scope)
 		}
+	})
+}
+
+// gateSnap is every entry of every scope's map, with its tokens at one instant.
+type gateSnap struct {
+	sizes  [4]int
+	tokens map[string]float64
+}
+
+func snapshotGate(g *LoginGate, now time.Time) gateSnap {
+	s := gateSnap{tokens: map[string]float64{}}
+	for i, b := range []*keyedBudget{g.pair, g.src, g.src48, g.acct} {
+		b.mu.Lock()
+		s.sizes[i] = len(b.buckets)
+		for k, bk := range b.buckets {
+			s.tokens[b.scope+" "+k] = bk.lim.TokensAt(now)
+		}
+		b.mu.Unlock()
+	}
+	return s
+}
+
+// assertSameMaps requires after to hold exactly the entries before held, each
+// with exactly the same tokens.
+func assertSameMaps(t *testing.T, what string, before, after gateSnap) {
+	t.Helper()
+	if after.sizes != before.sizes {
+		t.Errorf("%s changed the map sizes [pair src src48 acct] from %v to %v", what, before.sizes, after.sizes)
+	}
+	for k, v := range before.tokens {
+		if got, ok := after.tokens[k]; !ok || got != v {
+			t.Errorf("%s: %s held %.2f tokens before, %.2f (present=%v) after", what, k, v, got, ok)
+		}
+	}
+	for k := range after.tokens {
+		if _, ok := before.tokens[k]; !ok {
+			t.Errorf("%s created %s", what, k)
+		}
+	}
+}
+
+// assertOnlyFailuresRemain requires every entry in every map to carry a kept
+// charge and no pending one: once every admission has finished, an entry exists
+// only because a failed attempt left it.
+func assertOnlyFailuresRemain(t *testing.T, g *LoginGate) {
+	t.Helper()
+	for _, b := range []*keyedBudget{g.pair, g.src, g.src48, g.acct} {
+		b.mu.Lock()
+		for k, bk := range b.buckets {
+			if bk.pending != 0 || bk.kept == 0 {
+				t.Errorf("%s %s: pending %d, kept %d; want no pending charge and at least one kept", b.scope, k, bk.pending, bk.kept)
+			}
+		}
+		b.mu.Unlock()
+	}
+}
+
+// TestSuccessfulSignInsLeaveEveryMapAsItWas: a successful sign-in must leave
+// every map exactly as it found it. Its charge is given back, and an entry the
+// charge created must go with it; creating one must not evict anything either.
+// Otherwise one account whose password the caller knows, signed into from a
+// fresh /64 each time, adds entries without limit, and at each map's cap the
+// eviction removes the oldest, other keys' drained buckets among them, which
+// come back full.
+func TestSuccessfulSignInsLeaveEveryMapAsItWas(t *testing.T) {
+	const (
+		victim = "victim[at]example.test"
+		mine   = "mine@example.test"
+	)
+	// v6 addresses: distinct /64s inside one /48.
+	in48 := func(prefix string, i int) netip.Addr {
+		return netip.MustParseAddr(fmt.Sprintf("%s:%x::1", prefix, i))
+	}
+	success := func(t *testing.T, g *LoginGate, addr netip.Addr, email string) {
+		t.Helper()
+		if r := successfulAttempt(g, loginAttempt{Addr: addr, FromChain: true, Hops: 2, Email: email}); r != nil {
+			t.Fatalf("successful sign-in from %s refused (%s)", addr, r.scope)
+		}
+	}
+
+	t.Run("sizes and tokens unchanged", func(t *testing.T) {
+		g, _ := newEnforceGate(t)
+		e := loginHandlerForTest(t, g, 2)
+		// Existing state to disturb: a drained pair, a v6 client whose /48 the
+		// sign-ins below share, and a failed attempt on the account they use.
+		for i := 0; i < loginPairBudget; i++ {
+			assertAdmitted(t, postLogin(e, simulatedClient, victim), "warm-up")
+		}
+		assertAdmitted(t, postLogin(e, "2001:db8:1:2::1", httpEmailA), "v6 warm-up")
+		if r := failedAttempt(g, loginAttempt{Addr: netip.MustParseAddr(simulatedOtherClient), FromChain: true, Hops: 2, Email: mine}); r != nil {
+			t.Fatalf("warm-up failure refused: %+v", r)
+		}
+		before := snapshotGate(g, gateEpoch)
+
+		// More sign-ins than the /48 budget, each from its own /64: one /48
+		// with an entry already, one without. Then the existing keys.
+		n := 0
+		for i := 0; i < loginSrc48Budget*2; i++ {
+			success(t, g, in48("2001:db8:1", i+0x100), mine)
+			success(t, g, in48("2001:db8:2", i), mine)
+			n += 2
+		}
+		for i := 0; i < loginSrcBudget*2; i++ {
+			success(t, g, netip.MustParseAddr("2001:db8:1:2::1"), httpEmailA)
+			success(t, g, netip.MustParseAddr(simulatedOtherClient), mine)
+			n += 2
+		}
+
+		assertSameMaps(t, fmt.Sprintf("%d successful sign-ins", n), before, snapshotGate(g, gateEpoch))
+		assertOnlyFailuresRemain(t, g)
+		if got := g.verify.inFlight(); got != 0 {
+			t.Errorf("%d verification slots still held", got)
+		}
+	})
+
+	t.Run("at the cap they cannot evict a drained pair or source", func(t *testing.T) {
+		g, _ := newEnforceGate(t)
+		clock := gateEpoch
+		g.now = func() time.Time { return clock }
+		e := loginHandlerForTest(t, g, 2)
+		const drainedSource = "198.51.100.7"
+
+		for i := 0; i < loginPairBudget; i++ {
+			assertAdmitted(t, postLogin(e, simulatedClient, victim), "draining the pair")
+		}
+		for i := 0; i < loginSrcBudget; i++ {
+			assertAdmitted(t, postLogin(e, drainedSource, fmt.Sprintf("drain%d[at]example.test", i)), "draining the source")
+		}
+		// Fill every refusing scope's map to its cap with failed attempts' entries
+		// seen later, so the drained pair and source are the least recently
+		// seen: the first an eviction takes.
+		clock = gateEpoch.Add(time.Second)
+		for _, b := range []*keyedBudget{g.pair, g.src, g.src48} {
+			for i := 0; b.size() < loginBucketCap; i++ {
+				keptCharge(t, b, fmt.Sprintf("filler-%d", i), clock)
+			}
+		}
+		at := gateEpoch.Add(2 * time.Second)
+		before := snapshotGate(g, at)
+
+		clock = gateEpoch.Add(2 * time.Second)
+		n := 0
+		for i := 0; i < loginBucketCap*2; i++ {
+			success(t, g, in48("2001:db8:9", i), mine)
+			n++
+		}
+
+		assertSameMaps(t, fmt.Sprintf("%d successful sign-ins at the cap", n), before, snapshotGate(g, at))
+		assertOnlyFailuresRemain(t, g)
+
+		w := postLogin(e, simulatedClient, victim)
+		if w.Code != http.StatusTooManyRequests {
+			t.Fatalf("the drained pair was admitted again (%d) after successful sign-ins at the cap: it was evicted and came back full", w.Code)
+		}
+		if r := decodeRefusal(t, w); r.Details.Scope != "pair" {
+			t.Errorf("drained pair refused on %q, want pair", r.Details.Scope)
+		}
+		w = postLogin(e, drainedSource, "someone-new[at]example.test")
+		if w.Code != http.StatusTooManyRequests {
+			t.Fatalf("the drained source was admitted again (%d) after successful sign-ins at the cap: it was evicted and came back full", w.Code)
+		}
+		if r := decodeRefusal(t, w); r.Details.Scope != "source" {
+			t.Errorf("drained source refused on %q, want source", r.Details.Scope)
+		}
+	})
+
+	t.Run("interleaved on one new key", func(t *testing.T) {
+		g, _ := newEnforceGate(t)
+		addr := netip.MustParseAddr(simulatedClient)
+		a := loginAttempt{Addr: addr, FromChain: true, Hops: 2, Email: mine}
+
+		// Two successes in flight on the same new keys, finishing in either
+		// order: nothing may remain.
+		for _, firstDone := range []bool{true, false} {
+			x, r1 := g.Admit(context.Background(), a)
+			y, r2 := g.Admit(context.Background(), a)
+			if r1 != nil || r2 != nil {
+				t.Fatalf("refused: %+v %+v", r1, r2)
+			}
+			if !firstDone {
+				x, y = y, x
+			}
+			x.giveBack()
+			x.finish()
+			y.giveBack()
+			y.finish()
+			for _, b := range []*keyedBudget{g.pair, g.src, g.acct} {
+				if got := b.size(); got != 0 {
+					t.Errorf("%s map holds %d entries after two interleaved successes, want 0", b.scope, got)
+				}
+			}
+		}
+
+		// A success and a failure in flight on the same new keys: the failure's
+		// charge stays, on an entry the success created.
+		x, _ := g.Admit(context.Background(), a)
+		y, _ := g.Admit(context.Background(), a)
+		y.finish()
+		x.giveBack()
+		x.finish()
+		srcKey := srcKeyFor(addr)
+		if got, want := g.src.tokensAt(srcKey, gateEpoch), float64(loginSrcBudget-1); got != want {
+			t.Errorf("source holds %.1f tokens, want %.1f: the failure's charge must stay", got, want)
+		}
+		if got := g.src.size(); got != 1 {
+			t.Errorf("source map holds %d entries, want 1 (the failure's)", got)
+		}
+		assertOnlyFailuresRemain(t, g)
 	})
 }
 
@@ -775,6 +953,20 @@ func TestConfiguredPeerIsStillRefused(t *testing.T) {
 // The source is charged 50 at t0, the pair drained at t0+7s, the source drained
 // at t0+95s. At that instant the pair has room in about 2s and the source in
 // about 10s.
+// shortfallOf is how long key's bucket waits for a token at now. A missing
+// bucket fails the calling test on its own, rather than dereferencing nil and
+// taking every later test in the binary down with it.
+func shortfallOf(t *testing.T, b *keyedBudget, key string, now time.Time) time.Duration {
+	t.Helper()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	bk, ok := b.buckets[key]
+	if !ok {
+		t.Fatalf("%s has no bucket for %q", b.scope, key)
+	}
+	return bk.lim.shortfall(now)
+}
+
 func TestRetryAfterCoversTheLongestWait(t *testing.T) {
 	g, _ := newEnforceGate(t)
 	clock := gateEpoch
@@ -802,8 +994,8 @@ func TestRetryAfterCoversTheLongestWait(t *testing.T) {
 	}
 
 	srcKey := srcKeyFor(netip.MustParseAddr(simulatedClient))
-	pairWait := g.pair.buckets[srcKey+"|"+g.AccountDigest(victim)].lim.shortfall(clock)
-	srcWait := g.src.buckets[srcKey].lim.shortfall(clock)
+	pairWait := shortfallOf(t, g.pair, srcKey+"|"+g.AccountDigest(victim), clock)
+	srcWait := shortfallOf(t, g.src, srcKey, clock)
 	// Control: both are over, and the longer wait is NOT the first scope
 	// checked, so choosing the first scope would give the wrong answer.
 	if pairWait <= 0 || srcWait <= pairWait {

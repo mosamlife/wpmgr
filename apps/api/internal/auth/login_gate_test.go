@@ -215,6 +215,20 @@ func TestSrcAndAcctScopesAreObserved(t *testing.T) {
 // it is over, the src and acct scopes must stop being charged — otherwise the
 // noise from one flooding pair empties the scopes that are there to measure
 // everything else.
+// tokensOf is key's tokens at now, requiring the bucket to exist: tokensAt reads
+// a missing bucket as a full budget, which would let a comparison of two reads
+// pass over a bucket that is not there at all.
+func tokensOf(t *testing.T, b *keyedBudget, key string, now time.Time) float64 {
+	t.Helper()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	bk, ok := b.buckets[key]
+	if !ok {
+		t.Fatalf("%s has no bucket for %q", b.scope, key)
+	}
+	return bk.lim.TokensAt(now)
+}
+
 func TestOverBudgetAttemptChargesNothing(t *testing.T) {
 	g, _ := newTestGate(t, LoginModeObserve, 8)
 	addr := netip.MustParseAddr(simulatedClient)
@@ -232,18 +246,18 @@ func TestOverBudgetAttemptChargesNothing(t *testing.T) {
 	if beforeSrc.overBudget || beforeAcct.overBudget {
 		t.Fatalf("precondition: src/acct should still have budget after %d attempts", loginPairBudget)
 	}
-	srcTokens := g.src.buckets[srcKey].lim.TokensAt(now)
-	acctTokens := g.acct.buckets[acctH].lim.TokensAt(now)
+	srcTokens := tokensOf(t, g.src, srcKey, now)
+	acctTokens := tokensOf(t, g.acct, acctH, now)
 
 	// 50 more on the same pair. Every one is over the pair budget.
 	for i := 0; i < 50; i++ {
 		failedAttempt(g, loginAttempt{Addr: addr, FromChain: true, Hops: 2, Email: "a@example.test"})
 	}
 
-	if got := g.src.buckets[srcKey].lim.TokensAt(now); got != srcTokens {
+	if got := tokensOf(t, g.src, srcKey, now); got != srcTokens {
 		t.Errorf("src scope was charged for pair-over-budget attempts: tokens %v -> %v", srcTokens, got)
 	}
-	if got := g.acct.buckets[acctH].lim.TokensAt(now); got != acctTokens {
+	if got := tokensOf(t, g.acct, acctH, now); got != acctTokens {
 		t.Errorf("acct scope was charged for pair-over-budget attempts: tokens %v -> %v", acctTokens, got)
 	}
 }
