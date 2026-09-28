@@ -72190,6 +72190,12 @@ func (s *Me) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
+		if s.CanManageInstanceEmail.Set {
+			e.FieldStart("can_manage_instance_email")
+			s.CanManageInstanceEmail.Encode(e)
+		}
+	}
+	{
 		if s.DesiredPlan.Set {
 			e.FieldStart("desired_plan")
 			s.DesiredPlan.Encode(e)
@@ -72197,7 +72203,7 @@ func (s *Me) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfMe = [9]string{
+var jsonFieldsNameOfMe = [10]string{
 	0: "user",
 	1: "memberships",
 	2: "active_tenant_id",
@@ -72206,7 +72212,8 @@ var jsonFieldsNameOfMe = [9]string{
 	5: "portal",
 	6: "hosted",
 	7: "managed_storage_allowed",
-	8: "desired_plan",
+	8: "can_manage_instance_email",
+	9: "desired_plan",
 }
 
 // Decode decodes Me from json.
@@ -72305,6 +72312,16 @@ func (s *Me) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"managed_storage_allowed\"")
+			}
+		case "can_manage_instance_email":
+			if err := func() error {
+				s.CanManageInstanceEmail.Reset()
+				if err := s.CanManageInstanceEmail.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"can_manage_instance_email\"")
 			}
 		case "desired_plan":
 			if err := func() error {

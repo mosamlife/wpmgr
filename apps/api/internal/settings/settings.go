@@ -8,6 +8,7 @@ package settings
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/mail"
 	"strings"
@@ -18,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"log/slog"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/cryptbox"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
@@ -92,6 +94,26 @@ func (r *Repo) Upsert(ctx context.Context, p sqlc.UpsertSMTPSettingsParams) (sql
 	return row, err
 }
 
+// RecordSystemAudit appends one event to system_audit_log, the audit trail for
+// events that belong to no organisation, with the nil tenant id and an empty
+// tenant name (the values every other writer of that table uses for "no
+// organisation"). It runs under InUserTx as the acting user.
+func (r *Repo) RecordSystemAudit(ctx context.Context, actorID uuid.UUID, action string, meta []byte) error {
+	if len(meta) == 0 {
+		meta = []byte("{}")
+	}
+	return r.pool.InUserTx(ctx, actorID, func(tx pgx.Tx) error {
+		return sqlc.New(tx).InsertSystemAuditEvent(ctx, sqlc.InsertSystemAuditEventParams{
+			ActorType:  audit.ActorUser,
+			ActorID:    pgUUID(actorID),
+			Action:     action,
+			TenantID:   uuid.Nil,
+			TenantName: "",
+			Metadata:   meta,
+		})
+	})
+}
+
 // Service holds the SMTP config business logic.
 type Service struct {
 	repo   *Repo
@@ -152,6 +174,30 @@ func (s *Service) Update(ctx context.Context, in SMTPUpdate, updatedBy uuid.UUID
 		return SMTPSettings{}, domain.Internal("smtp_write", "could not save SMTP settings")
 	}
 	return toDTO(row), nil
+}
+
+// RecordInstanceEvent records an instance-settings change made by a caller
+// with no active organisation (see Handler.recordUpdate). Best-effort: a
+// failure is logged and not returned, because the change it describes has
+// already been written.
+//
+// system_audit_log has no target columns, so the target a tenant audit row
+// carries in target_type/target_id is written into the metadata instead.
+func (s *Service) RecordInstanceEvent(ctx context.Context, actorID uuid.UUID, action string, meta map[string]any) {
+	m := make(map[string]any, len(meta)+2)
+	for k, v := range meta {
+		m[k] = v
+	}
+	m["target_type"] = "smtp_settings"
+	m["target_id"] = "instance"
+	payload, err := json.Marshal(m)
+	if err != nil {
+		payload = []byte("{}")
+	}
+	if err := s.repo.RecordSystemAudit(ctx, actorID, action, payload); err != nil {
+		s.log.ErrorContext(ctx, "system audit record failed",
+			slog.String("action", action), slog.String("actor_id", actorID.String()), slog.Any("error", err))
+	}
 }
 
 // SendTest sends the branded test email through the STORED, enabled config. It

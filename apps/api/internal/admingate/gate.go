@@ -16,6 +16,9 @@
 //	                      POST /test). The instance SMTP relay is one row for the
 //	                      whole install, so it is instance configuration, not an
 //	                      organisation setting, and a tenant role does not reach it.
+//	internal/auth         the CAPABILITY FLAG can_manage_instance_email on the Me
+//	                      response. Both it and the settings gate call
+//	                      CanManageInstanceEmail.
 //
 // Those answers MUST be the same answer. If they are computed separately
 // they can drift, and every way they can drift is a bug an operator sees: a
@@ -198,5 +201,34 @@ func HasInstanceAuthority(ctx context.Context, store Store) bool {
 // is exactly HasInstanceAuthority; the name is kept so the admin route gate and
 // the fleet capability flag read as asking the question they ask.
 func CanRunAgentMirrorCheck(ctx context.Context, store Store) bool {
+	return HasInstanceAuthority(ctx, store)
+}
+
+// CanManageInstanceEmail is THE decision behind the instance SMTP settings: may
+// the principal carried on ctx read, change and test the install-wide relay?
+// It is HasInstanceAuthority for a principal that is not site-constrained.
+//
+// Two callers, one answer:
+//
+//	internal/settings the ROUTE GATE on /api/v1/settings/smtp (GET, PUT and
+//	                  POST /test).
+//	internal/auth     the CAPABILITY FLAG can_manage_instance_email on the Me
+//	                  response, which tells the dashboard whether to offer the
+//	                  page at all.
+//
+// The site-constraint arm is here, and not only in authz.RequireOrgScope in
+// front of the route, so that the flag reflects the whole gate. A superadmin
+// whose active session is a site-scoped collaboration is refused by the route,
+// so the flag must be false for them too, or the dashboard would offer a page
+// that always answers 403.
+//
+// No active organisation is NOT a refusal. Instance authority is a property of
+// the person, not of the organisation they are looking at, so an operator with
+// no membership anywhere is admitted exactly like one who has one.
+func CanManageInstanceEmail(ctx context.Context, store Store) bool {
+	p, ok := domain.PrincipalFromContext(ctx)
+	if !ok || p.IsSiteConstrained() {
+		return false
+	}
 	return HasInstanceAuthority(ctx, store)
 }
