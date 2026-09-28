@@ -14,6 +14,10 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 - The bundled infra/docker-compose.yml now publishes the API port (WPMGR_API_PORT) to loopback only, not every interface. An operator whose own reverse proxy runs on another host or in a separate Docker network should point it at the bundled nginx (WPMGR_WEB_PORT) instead; reaching the API port directly from off the host now requires deliberately rebinding it and setting WPMGR_AUTH_PROXY_HOPS to match the real proxy chain (#718).
 
+### Fixed
+
+- The agent now checks whether each key it has stored still opens under the site's current encryption key. When some do not, WordPress admin shows a notice naming which keys cannot be read and what to do about it, and a backup is refused with a clear keystore_unreadable explanation instead of failing later. Status is reported to the dashboard with the agent's metadata, and a missing backup key is created only while the site's own keys open (#753). Agent 0.61.152.
+
 ## [0.61.164] - 2026-09-28
 
 ### Fixed
