@@ -64,7 +64,11 @@ func DefaultConfig() Config {
 
 // Client is an SSRF-hardened HTTP client with retries and tracing.
 type Client struct {
-	http        *http.Client
+	http *http.Client
+	// once shares http's Transport and Timeout but never follows a redirect:
+	// DoOnce uses it, so a request sent through DoOnce reaches exactly one
+	// URL, the one the caller built.
+	once        *http.Client
 	maxRetries  int
 	backoffBase time.Duration
 }
@@ -136,15 +140,26 @@ func New(cfg Config) *Client {
 		base.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // test-only escape hatch
 	}
 
+	transport := otelhttp.NewTransport(base)
 	return &Client{
 		http: &http.Client{
 			Timeout:   cfg.Timeout,
-			Transport: otelhttp.NewTransport(base),
+			Transport: transport,
+		},
+		once: &http.Client{
+			Timeout:       cfg.Timeout,
+			Transport:     transport,
+			CheckRedirect: refuseRedirect,
 		},
 		maxRetries:  cfg.MaxRetries,
 		backoffBase: cfg.BackoffBase,
 	}
 }
+
+// refuseRedirect is DoOnce's redirect policy: never follow. Returning
+// http.ErrUseLastResponse hands the 3xx response itself back to the caller,
+// with its Location header intact, instead of issuing a second request.
+func refuseRedirect(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 
 // HTTPClient exposes the underlying *http.Client for callers that need it (e.g.
 // a single non-retried probe). The SSRF transport is preserved.
@@ -201,17 +216,24 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 	return nil, lastErr
 }
 
-// DoOnce sends the request EXACTLY ONCE — no automatic retries on network
-// errors or 5xx. Use this for non-idempotent calls whose payload is single-use
-// (e.g. CP→agent signed commands, where the JWT's jti is consumed on the
-// agent's first receive; an auto-retry of the same JWT would be a legitimate
-// cross-request replay from the agent's POV and reject with 403). The SSRF
-// dialer + bounded timeout + otelhttp still apply.
+// DoOnce sends the request EXACTLY ONCE, to exactly the URL it names: no
+// automatic retries on network errors or 5xx, and no redirect following. Use
+// this for non-idempotent calls whose payload is single-use (e.g. CP→agent
+// signed commands, where the JWT's jti is consumed on the agent's first
+// receive; an auto-retry of the same JWT would be a legitimate cross-request
+// replay from the agent's POV and reject with 403). The SSRF dialer + bounded
+// timeout + otelhttp still apply.
+//
+// A 3xx answer is returned to the caller as the response, with its Location
+// header, and nothing is sent to the Location. Following it would send the
+// request, and any credential it carries, a second time and to an address the
+// caller did not choose; a caller that sees a 3xx decides what it means.
 //
 // Callers that want retries should do it at the right semantic layer (e.g.
-// mint a fresh JWT in the next River job attempt).
+// mint a fresh JWT in the next River job attempt). Do and HTTPClient keep the
+// standard redirect-following behaviour.
 func (c *Client) DoOnce(req *http.Request) (*http.Response, error) {
-	return c.http.Do(req)
+	return c.once.Do(req)
 }
 
 // IsSSRFBlocked reports whether err is (or wraps) an SSRF prohibition: a

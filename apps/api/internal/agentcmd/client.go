@@ -857,8 +857,9 @@ func (c *Client) post(ctx context.Context, siteID uuid.UUID, siteURL, command st
 // body to the named command endpoint at siteURL, and returns the raw 2xx
 // response body. Callers needing typed decoding go through post(); callers
 // that want to pass the body straight to a downstream ingester (diagnostics)
-// use postRaw directly. A non-2xx response is wrapped in the canonical
-// "rejected by agent: status NNN body=…" error format.
+// use postRaw directly. A 3xx response is returned as a *RedirectError; any
+// other non-2xx response is wrapped in the canonical "rejected by agent:
+// status NNN body=…" error format.
 func (c *Client) postRaw(ctx context.Context, siteID uuid.UUID, siteURL, command string, body any) ([]byte, error) {
 	endpoint, err := joinCommandURL(siteURL, command)
 	if err != nil {
@@ -890,11 +891,18 @@ func (c *Client) postRaw(ctx context.Context, siteID uuid.UUID, siteURL, command
 	// request would re-present the same JWT and the agent would (correctly) 403
 	// with token_replay. Retries belong at the River job layer, which mints a
 	// FRESH jti on the next attempt.
+	//
+	// DoOnce also never follows a redirect. A 3xx means the saved site address
+	// is not where the site serves the agent: the command is not re-sent to
+	// the Location, and the caller gets a typed *RedirectError naming it.
 	resp, err := c.http.DoOnce(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("%s command transport: %w", command, err)
 	}
 	defer func() { _, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxRespBody)); _ = resp.Body.Close() }()
+	if isRedirectStatus(resp.StatusCode) {
+		return nil, newRedirectError(command, endpoint, resp)
+	}
 
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxRespBody))
 	if err != nil {
