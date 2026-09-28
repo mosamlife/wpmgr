@@ -57,11 +57,11 @@ const RELEASES: ChangeEntry[] = [
     items: [
       {
         tag: "Added",
-        text: "Every agent command now declares two facts about itself: what a successful run does to the site (read, write or destructive) and whether running it again is safe (idempotent, repeatable or unsafe). A command that declares neither is refused at build time.",
+        text: "Every agent command now declares two facts about itself: what a successful run does to the site (read, write or destructive) and whether running it again is safe (idempotent, repeatable or unsafe). A command that declares neither is refused at build time. Agent 0.61.149; sites get it when the plugin updates.",
       },
       {
         tag: "Added",
-        text: "A new content_update command changes the title and/or body of an existing post or page by id, the agent's first command that writes post content. It keeps a retained copy of what it overwrites before writing, refuses a document built in the block editor outright, and requires a fingerprint of the content the caller believes it is replacing, so a conflicting write is reported as a conflict rather than silently applied.",
+        text: "A new content_update command changes the title and/or body of an existing post or page by id, the agent's first command that writes post content. It keeps a retained copy of what it overwrites before writing, refuses a document built in the block editor outright, and requires a fingerprint of the content the caller believes it is replacing, so a conflicting write is reported as a conflict rather than silently applied. Agent 0.61.150; sites get it when the plugin updates.",
       },
       {
         tag: "Added",
