@@ -296,6 +296,9 @@ func (r *pgRepo) ConsumeSiteBoundCode(ctx context.Context, codeHash, consumedFro
 			return err
 		}
 		out = ConsumeResult{Site: toModel(row), SiteBound: true, URL: urlOut}
+		if consumed.CreatedBy.Valid {
+			out.CodeCreatedBy = uuid.UUID(consumed.CreatedBy.Bytes)
+		}
 		return nil
 	})
 	return out, err

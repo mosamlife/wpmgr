@@ -401,12 +401,6 @@ func (c *Client) VerifyReachableWithReason(ctx context.Context, siteID uuid.UUID
 	if pingErr == nil && out.OK {
 		return true, false, ReasonAlive, nil
 	}
-	// A redirect is settled here, before any text match: it is not an old
-	// agent, and the metadata fallback would be refused the same way.
-	if _, ok := AsRedirect(pingErr); ok {
-		return false, false, ReasonRedirected, nil
-	}
-
 	// Fall back to the metadata command when ping looks like an old agent
 	// (404/400 unknown command) or when something answered 2xx without the
 	// agent-shaped ok field (captive portal, generic maintenance page): the
@@ -869,9 +863,11 @@ func (c *Client) post(ctx context.Context, siteID uuid.UUID, siteURL, command st
 // body to the named command endpoint at siteURL, and returns the raw 2xx
 // response body. Callers needing typed decoding go through post(); callers
 // that want to pass the body straight to a downstream ingester (diagnostics)
-// use postRaw directly. A 3xx response is returned as a *RedirectError; any
-// other non-2xx response is wrapped in the canonical "rejected by agent:
-// status NNN body=…" error format.
+// use postRaw directly. A redirect from the saved http address to the same
+// host, port and path over https is followed once, with the same request and
+// token; any other 3xx, and any 3xx answering that retry, is returned as a
+// *RedirectError. Any other non-2xx response is wrapped in the canonical
+// "rejected by agent: status NNN body=…" error format.
 func (c *Client) postRaw(ctx context.Context, siteID uuid.UUID, siteURL, command string, body any) ([]byte, error) {
 	endpoint, err := joinCommandURL(siteURL, command)
 	if err != nil {
@@ -904,12 +900,38 @@ func (c *Client) postRaw(ctx context.Context, siteID uuid.UUID, siteURL, command
 	// with token_replay. Retries belong at the River job layer, which mints a
 	// FRESH jti on the next attempt.
 	//
-	// DoOnce also never follows a redirect. A 3xx means the saved site address
-	// is not where the site serves the agent: the command is not re-sent to
-	// the Location, and the caller gets a typed *RedirectError naming it.
+	// DoOnce reaches exactly one URL per call and hands a 3xx back unfollowed.
+	// The single redirect a command follows is decided here: when the saved
+	// http address redirects to the same host, port and path over https
+	// (sameHostHTTPSUpgrade), the same POST, body and token are sent once to
+	// that https URL. The token is not re-minted: its claims carry no URL, so
+	// it is as valid at the https address as at the saved one, and should the
+	// redirected hop have consumed its jti, the agent refuses the retry as a
+	// replay, which fails like any other rejection. The retry URL is https, so it can never qualify
+	// again: at most two sends, and a downgrade is never followed. Any other
+	// 3xx, and any 3xx answering the retry, is returned as a typed
+	// *RedirectError naming the saved address.
 	resp, err := c.http.DoOnce(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("%s command transport: %w", command, err)
+	}
+	if isRedirectStatus(resp.StatusCode) {
+		if target, ok := sameHostHTTPSUpgrade(httpReq.URL, resp.Header.Get("Location")); ok {
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxRespBody))
+			_ = resp.Body.Close()
+			target.Fragment, target.RawFragment = "", ""
+			retry, rerr := http.NewRequestWithContext(ctx, http.MethodPost, target.String(), bytes.NewReader(payload))
+			if rerr != nil {
+				return nil, fmt.Errorf("build %s request: %w", command, rerr)
+			}
+			retry.Header.Set("Content-Type", "application/json")
+			retry.Header.Set("Accept", "application/json")
+			retry.Header.Set("Authorization", "Bearer "+token)
+			resp, err = c.http.DoOnce(retry)
+			if err != nil {
+				return nil, fmt.Errorf("%s command transport: %w", command, err)
+			}
+		}
 	}
 	defer func() { _, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxRespBody)); _ = resp.Body.Close() }()
 	if isRedirectStatus(resp.StatusCode) {

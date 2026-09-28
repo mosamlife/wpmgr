@@ -6,6 +6,9 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"unicode"
+
+	"github.com/mosamlife/wpmgr/apps/api/internal/siteaddr"
 )
 
 // maxRedirectTargetLen caps how much of a site-supplied Location is kept. The
@@ -14,10 +17,16 @@ import (
 const maxRedirectTargetLen = 256
 
 // RedirectError is returned by every signed command when the site answered
-// the command POST with a 3xx redirect. The command was sent once, to the
-// site's saved address, and was NOT re-sent to the redirect target: a signed
-// command goes only to the saved address, so a redirect means the saved
-// address is not the one the site serves the agent on.
+// the command POST with a 3xx redirect that was not followed. A signed command
+// goes only to the site's saved address; the one exception is a redirect from
+// the saved http address to the same host, port and path over https, which is
+// followed once (sameHostHTTPSUpgrade). Any other redirect, and any redirect
+// answering that https retry, ends the command here.
+//
+// A redirect is terminal whatever its status, 302 and 307 included: a
+// temporary redirect that is not a same-host https upgrade fails at once with
+// this error rather than having the job layer re-send a signed command into
+// it, and the operator can re-run the action once the redirect is fixed.
 //
 // All URL fields are sanitised before they are stored here: http(s) only, no
 // userinfo, no query, no fragment, at most maxRedirectTargetLen bytes. They
@@ -38,10 +47,12 @@ type RedirectError struct {
 	// To is the resolved redirect target. Empty when the site sent no
 	// Location, or one that is not an absolute http(s) URL after resolution.
 	To string
-	// SuggestedSiteURL is the site address the redirect points at: To with the
-	// command route suffix removed. Set only when To ends with exactly this
-	// command's route and the redirect does not downgrade https to http;
-	// empty otherwise.
+	// SuggestedSiteURL is the address the saved one would become. It is set
+	// only when To ends with exactly this command's route and the site address
+	// that leaves is one siteaddr.Plan adopts over the saved address (a
+	// leading "www." toggle and/or an http to https upgrade, on the same port
+	// and path), and it is that Plan's To: the value enrollment and an agent
+	// push would store. Empty otherwise.
 	SuggestedSiteURL string
 }
 
@@ -71,20 +82,46 @@ func (e *RedirectError) OperatorMessage(action string) string {
 // target: the part of OperatorMessage after its lead-in.
 func (e *RedirectError) Explanation() string {
 	from := e.fromSite()
+	target, plan := e.plan()
 	switch {
-	case e.SuggestedSiteURL != "":
-		return fmt.Sprintf("%s redirects to %s, and commands are sent only to the site's saved address. Reconnect the site to update its address to %s.",
-			from, e.SuggestedSiteURL, e.SuggestedSiteURL)
-	case e.Downgrade():
-		return fmt.Sprintf("%s redirects to %s, which drops HTTPS, and commands are never sent over a downgraded connection. Serve the site's REST API (/wp-json/wpmgr/) over HTTPS without a redirect.",
-			from, e.To)
+	case target != "" && plan.Decision == siteaddr.Adopt:
+		return fmt.Sprintf("%s redirects to %s, so no command was sent. If WordPress on the site reports %s as its address, the saved address updates to %s automatically at the site's next daily check-in.",
+			from, target, target, target)
+	case e.SelfRedirect():
+		return fmt.Sprintf("%s redirects its command address back to itself (HTTP %d), so no command was sent. %s",
+			from, e.Status, exemptAdvice)
+	case e.To != "" && e.Downgrade():
+		return fmt.Sprintf("%s redirects to %s, which drops HTTPS, so no command was sent. %s",
+			from, e.To, exemptAdvice)
 	case e.To != "":
-		return fmt.Sprintf("The site redirected its command address to %s. A redirect rule on the site or its CDN is catching /wp-json/wpmgr/; exempt it.",
-			e.To)
+		return fmt.Sprintf("%s redirects to %s, so no command was sent. %s",
+			from, e.To, exemptAdvice)
 	default:
-		return fmt.Sprintf("The site answered its command address with a redirect (HTTP %d) and no usable target. A redirect rule on the site or its CDN is catching /wp-json/wpmgr/; exempt it.",
-			e.Status)
+		return fmt.Sprintf("%s answered with a redirect (HTTP %d) that names no usable address, so no command was sent. %s",
+			from, e.Status, exemptAdvice)
 	}
+}
+
+// exemptAdvice is the fix for every redirect whose target is not an address
+// the saved one may become.
+const exemptAdvice = "Exempt /wp-json/wpmgr/ from the redirect on the site or its CDN."
+
+// SelfRedirect reports whether the redirect target names the saved site
+// address itself: the command route redirects back to the same install.
+func (e *RedirectError) SelfRedirect() bool {
+	target, plan := e.plan()
+	return target != "" && plan.Decision == siteaddr.Same
+}
+
+// plan returns the site address the redirect target names (To with this
+// command's route removed; "" when To does not end with exactly that route)
+// and what siteaddr.Plan decides for it against the saved address.
+func (e *RedirectError) plan() (string, siteaddr.PlanResult) {
+	target, ok := trimCommandSuffix(e.To, e.Command)
+	if !ok || target == "" {
+		return "", siteaddr.PlanResult{Decision: siteaddr.Mismatch}
+	}
+	return target, siteaddr.Plan(e.fromSite(), target)
 }
 
 // SavedSiteURL is the site address the command was sent to: From with the
@@ -135,12 +172,55 @@ func newRedirectError(command, endpoint string, resp *http.Response) *RedirectEr
 			}
 		}
 	}
-	if re.To != "" && !re.Downgrade() {
-		if site, ok := trimCommandSuffix(re.To, command); ok {
-			re.SuggestedSiteURL = site
-		}
+	if target, plan := re.plan(); target != "" && plan.Decision == siteaddr.Adopt {
+		re.SuggestedSiteURL = plan.To
 	}
 	return re
+}
+
+// sameHostHTTPSUpgrade reports whether loc, the Location of a 3xx answer to a
+// request for from, is the one redirect a signed command follows: from is
+// http and the target is the same host, port, path and query over https. It
+// returns the resolved target when it is.
+//
+// The port matches when both are the scheme defaults (from's is "" or "80",
+// the target's is "" or "443"), or both are explicit, equal and not defaults.
+// The target may carry no userinfo, and a fragment only when it is from's.
+// Because from must be http and the target is always https, a request built
+// from the target can never qualify again, so at most one redirect is ever
+// followed, and a downgrade never is.
+func sameHostHTTPSUpgrade(from *url.URL, loc string) (*url.URL, bool) {
+	if from == nil || from.Scheme != "http" || loc == "" {
+		return nil, false
+	}
+	target, err := from.Parse(loc)
+	if err != nil || target.Scheme != "https" {
+		return nil, false
+	}
+	if target.Hostname() == "" || !strings.EqualFold(from.Hostname(), target.Hostname()) {
+		return nil, false
+	}
+	fromPort, toPort := from.Port(), target.Port()
+	fromDefault := fromPort == "" || fromPort == "80"
+	toDefault := toPort == "" || toPort == "443"
+	bothDefault := fromDefault && toDefault
+	sameExplicit := !fromDefault && !toDefault && fromPort == toPort
+	if !bothDefault && !sameExplicit {
+		return nil, false
+	}
+	if target.User != nil {
+		return nil, false
+	}
+	if target.EscapedPath() != from.EscapedPath() {
+		return nil, false
+	}
+	if target.RawQuery != from.RawQuery || target.ForceQuery != from.ForceQuery {
+		return nil, false
+	}
+	if target.Fragment != "" && target.Fragment != from.Fragment {
+		return nil, false
+	}
+	return target, true
 }
 
 // mustParse parses raw, returning nil on error.
@@ -156,28 +236,45 @@ func mustParse(raw string) *url.URL {
 // an absolute http(s) URL with no userinfo, query or fragment, at most
 // maxRedirectTargetLen bytes. A longer URL is cut back to its origin; one
 // whose origin alone is too long, or that is not absolute http(s), becomes "".
+//
+// The value is written as scheme://host[:port] followed by the escaped path,
+// the form siteaddr.Join writes an adopted address in, so an
+// internationalised host keeps its form rather than being percent-encoded. A
+// host holding a space, a control or format character, or any other
+// non-graphic character becomes "", so the value cannot disguise itself when
+// shown.
 func sanitizeRedirectURL(u *url.URL) string {
 	if u == nil {
 		return ""
 	}
 	scheme := strings.ToLower(u.Scheme)
-	if (scheme != "http" && scheme != "https") || u.Host == "" {
+	if (scheme != "http" && scheme != "https") || u.Host == "" || u.Hostname() == "" {
 		return ""
 	}
-	clean := url.URL{
-		Scheme: scheme,
-		Host:   strings.ToLower(u.Host),
-		Path:   u.Path,
+	host := strings.ToLower(u.Host)
+	for _, r := range host {
+		if !unicode.IsGraphic(r) || unicode.IsSpace(r) || unicode.Is(unicode.Cf, r) {
+			return ""
+		}
 	}
-	s := clean.String()
-	if len(s) <= maxRedirectTargetLen {
+	origin := scheme + "://" + host
+	if s := origin + escapedPath(u); len(s) <= maxRedirectTargetLen {
 		return s
 	}
-	clean.Path = ""
-	if s = clean.String(); len(s) <= maxRedirectTargetLen {
-		return s
+	if len(origin) <= maxRedirectTargetLen {
+		return origin
 	}
 	return ""
+}
+
+// escapedPath is u's path as it is written in a URL, with the leading slash a
+// URL with a host requires.
+func escapedPath(u *url.URL) string {
+	p := u.EscapedPath()
+	if p != "" && !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	return p
 }
 
 // trimCommandSuffix removes the command route (/wp-json/wpmgr/v1/command/<cmd>)
@@ -195,5 +292,5 @@ func trimCommandSuffix(commandURL, command string) (string, bool) {
 	}
 	u.Path = strings.TrimRight(strings.TrimSuffix(path, suffix), "/")
 	u.RawPath = ""
-	return u.String(), true
+	return u.Scheme + "://" + u.Host + escapedPath(u), true
 }

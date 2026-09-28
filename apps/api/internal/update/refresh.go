@@ -137,11 +137,6 @@ func isOldAgentRouteMissing(err error) bool {
 	if err == nil {
 		return false
 	}
-	// A redirect is a wrong saved address, never an old agent, whatever the
-	// redirect target answered.
-	if _, ok := agentcmd.AsRedirect(err); ok {
-		return false
-	}
 	m := agentStatusRE.FindStringSubmatch(err.Error())
 	if len(m) < 2 {
 		return false

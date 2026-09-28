@@ -207,6 +207,10 @@ type ConsumeResult struct {
 	// URL reports what the consume did with the address the agent reported
 	// (EnrollInput.URL) against the site's stored address.
 	URL EnrollURLOutcome
+	// CodeCreatedBy is the user who issued the consumed pairing code; uuid.Nil
+	// when the code records none (the user was since deleted, or the code
+	// predates the column being set).
+	CodeCreatedBy uuid.UUID
 }
 
 // EnrollURLResult names what a site-bound enrollment did with the address its

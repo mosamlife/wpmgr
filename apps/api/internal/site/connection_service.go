@@ -224,27 +224,41 @@ func (s *connService) ConsumeEnrollmentCode(ctx context.Context, in ConsumeEnrol
 // agent-reported address: site.url_changed when it was adopted,
 // site.url_mismatch when the stored address was kept although the agent
 // reported another one. An equal address, or none, records nothing.
+//
+// Both rows carry initiated_by, the user who issued the consumed code, when
+// the code names one. The actor stays ActorSystem: enrollment chose the
+// address, the user did not.
 func (s *connService) recordEnrollURLAudit(ctx context.Context, res ConsumeResult) {
 	u := res.URL
+	var meta map[string]any
+	action := ""
 	switch u.Result {
 	case EnrollURLAdopted:
-		s.recordAudit(ctx, res.Site.TenantID, res.Site.ID, audit.ActorSystem, uuid.Nil, audit.ActionSiteURLChanged, map[string]any{
+		action = audit.ActionSiteURLChanged
+		meta = map[string]any{
 			"from":   u.Stored,
 			"to":     u.To,
 			"source": urlSourceAgentEnrollment,
-		})
+		}
 	case EnrollURLMismatch, EnrollURLInUse:
 		reason := "not_equivalent"
 		if u.Result == EnrollURLInUse {
 			reason = "address_in_use"
 		}
-		s.recordAudit(ctx, res.Site.TenantID, res.Site.ID, audit.ActorSystem, uuid.Nil, audit.ActionSiteURLMismatch, map[string]any{
+		action = audit.ActionSiteURLMismatch
+		meta = map[string]any{
 			"stored":         u.Stored,
 			"agent_reported": sanitizeReportedURL(u.Reported),
 			"source":         urlSourceAgentEnrollment,
 			"reason":         reason,
-		})
+		}
+	default:
+		return
 	}
+	if res.CodeCreatedBy != uuid.Nil {
+		meta["initiated_by"] = res.CodeCreatedBy.String()
+	}
+	s.recordAudit(ctx, res.Site.TenantID, res.Site.ID, audit.ActorSystem, uuid.Nil, action, meta)
 }
 
 // ---- RecordHeartbeat -----------------------------------------------------
