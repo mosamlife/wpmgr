@@ -462,6 +462,77 @@ PHP;
 	}
 
 	/**
+	 * #764 follow-up (PR #769, Greptile finding): the C1 branch above only
+	 * matches a C1 control in its valid two-byte UTF-8 encoding, \xC2
+	 * followed by 0x80-0x9F. A LONE byte in that numeric range — no \xC2
+	 * lead byte before it — is not that sequence and, before this test,
+	 * passed straight through unescaped even though some terminals and log
+	 * readers still act on it directly. 0x85 is NEL; asserted individually,
+	 * rather than only as part of the invalid-byte-run test below, because
+	 * NEL is the specific C1 control the file's own escapeControlChars()
+	 * docblock calls out as "itself a line break to some readers".
+	 */
+	public function test_debug_log_escapes_lone_invalid_nel_byte(): void
+	{
+		$this->assertClassEscaped( "before\x85after", 'before\x85after' );
+	}
+
+	/**
+	 * #764 follow-up: same defect, a different C1 control — 0x9B, an 8-bit
+	 * CSI (Control Sequence Introducer) introducer some terminals treat the
+	 * same as the two-byte ESC-'[' sequence already covered by
+	 * test_debug_log_escapes_escape_sequence(). A lone 0x9B is not valid
+	 * UTF-8 on its own, so this also exercises the fix's invalid-line branch
+	 * on a byte that is not simply "any byte >= 0x80" but a control byte
+	 * specifically.
+	 */
+	public function test_debug_log_escapes_lone_invalid_csi_byte(): void
+	{
+		$this->assertClassEscaped( "before\x9Bafter", 'before\x9Bafter' );
+	}
+
+	/**
+	 * #764 follow-up: an overlong encoding (here, \xC0\x80, an invalid
+	 * two-byte re-encoding of NUL that a strict UTF-8 decoder must reject) is
+	 * invalid UTF-8 for a different reason than a lone C1 byte, and must land
+	 * in the same fail-safe branch. Both bytes are escaped individually.
+	 */
+	public function test_debug_log_escapes_overlong_encoding(): void
+	{
+		$this->assertClassEscaped( "before\xC0\x80after", 'before\xC0\x80after' );
+	}
+
+	/**
+	 * Control for the fix above: a line that IS valid UTF-8 must not take the
+	 * invalid-line branch, so ordinary multi-byte text — CJK and an emoji
+	 * (itself a 4-byte UTF-8 sequence) — reaches the log completely
+	 * unchanged, exactly as it did before this fix. Without this test, a
+	 * broken version of the fix that always escaped every byte >= 0x80,
+	 * valid line or not, would still pass every test above it.
+	 */
+	public function test_debug_log_leaves_valid_multibyte_text_unescaped(): void
+	{
+		$this->assertClassEscaped( 'beforeこんにちは世界🔑after', 'beforeこんにちは世界🔑after' );
+	}
+
+	/**
+	 * A line that mixes valid multi-byte text with one invalid byte fails
+	 * UTF-8 validation as a WHOLE line, so — per the "simplest and safe"
+	 * fix — every byte >= 0x80 on it is escaped, including bytes that are
+	 * individually part of what would otherwise be a legitimate CJK
+	 * sequence. This is deliberate fail-safe behaviour, not a bug: a line
+	 * that failed validation cannot be trusted to parse correctly
+	 * byte-by-byte, so nothing on it above 0x7F is passed through raw.
+	 */
+	public function test_debug_log_escapes_every_byte_on_a_line_that_fails_utf8_validation(): void
+	{
+		$this->assertClassEscaped(
+			"before\xE6\x97\xA5\x85after",
+			'before\xE6\x97\xA5\x85after'
+		);
+	}
+
+	/**
 	 * Regression: CR and LF still fold to the two-character sequences \r and
 	 * \n exactly as before #764, byte-identical to what
 	 * test_a_multiline_message_is_logged_as_one_line already proves for a

@@ -528,6 +528,22 @@ final class Router
      * multi-byte alternatives only match their exact lead-byte-and-successor
      * shape.
      *
+     * A C1 control only matches the pattern above in its valid two-byte UTF-8
+     * encoding, \xC2 followed by 0x80-0x9F. A lone invalid byte in that same
+     * numeric range — e.g. a bare 0x85 (NEL) or 0x9B (an 8-bit CSI
+     * introducer), neither preceded by a \xC2 lead byte — is not that
+     * sequence and would otherwise pass through unescaped, and some
+     * terminals and log readers act on such a byte directly regardless of
+     * whether the surrounding text is valid UTF-8. So $line is checked for
+     * UTF-8 validity first (the same preg_match('//u', ...) idiom
+     * validUtf8() uses); on an invalid line every byte >= 0x80 is escaped as
+     * \xHH, in addition to the C0/C1/separator classes above — including any
+     * byte that is part of what would otherwise be a legitimate multi-byte
+     * sequence elsewhere on that same line, since a line that failed
+     * validation cannot be trusted to parse correctly byte-by-byte at all.
+     * A line that IS valid UTF-8 never takes this branch, so ordinary
+     * multi-byte text (CJK, emoji) is left untouched exactly as before.
+     *
      * Fails closed like the redaction passes it sits next to: null when the
      * pass cannot complete, so the caller can withhold a fixed marker instead
      * of writing a line this function was unable to make safe.
@@ -539,13 +555,19 @@ final class Router
     {
         $line = self::foldLineBreaks($line);
 
+        $pattern = preg_match('//u', $line) === 1
+            ? '/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]|\xC2[\x80-\x9F]|\xE2\x80[\xA8\xA9]/'
+            : '/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]|\xC2[\x80-\x9F]|\xE2\x80[\xA8\xA9]|[\x80-\xFF]/';
+
         return self::pregCallbackOrNull(
-            '/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]|\xC2[\x80-\x9F]|\xE2\x80[\xA8\xA9]/',
+            $pattern,
             static function (array $m): string {
                 $seq = $m[0];
 
                 if (strlen($seq) === 1) {
-                    // C0 control (tab, CR, LF excepted) or DEL.
+                    // C0 control (tab, CR, LF excepted), DEL, or — on a line
+                    // that failed UTF-8 validation only — any other single
+                    // byte >= 0x80 caught by the catch-all alternative.
                     return sprintf('\\x%02X', ord($seq));
                 }
 
