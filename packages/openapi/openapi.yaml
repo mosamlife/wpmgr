@@ -14715,6 +14715,14 @@ components:
         agent_version:
           type: string
           description: The WPMgr agent plugin version.
+        home_url:
+          type: string
+          description: |
+            The site's WordPress home_url as the agent reads it (GH #755).
+            Optional. The control plane may adopt it as the site's saved
+            address, but only under the same equivalence rule enrollment
+            applies: a leading "www." toggle and/or an http to https upgrade,
+            on the same host, port and path. Anything else is ignored.
         age_recipient:
           type: string
           description: |
