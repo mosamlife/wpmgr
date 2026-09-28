@@ -17,9 +17,10 @@ func TestSameHost(t *testing.T) {
 		{"bücher.de", "xn--bcher-kva.de", true},
 		{"::1", "::1", true},
 		{"127.0.0.1", "127.0.0.1", true},
-		{"straße.de", "straẞe.de", false}, // fold equal; xn--strae-oqa.de vs strasse.de
-		{"σ.gr", "ς.gr", false},           // fold equal; xn--4xa.gr vs xn--3xa.gr
-		{"my_site.test", "my_site.test", false},
+		{"straße.de", "straẞe.de", false},         // fold equal; xn--strae-oqa.de vs strasse.de
+		{"σ.gr", "ς.gr", false},                   // fold equal; xn--4xa.gr vs xn--3xa.gr
+		{"İstanbul.test", "istanbul.test", false}, // Unicode lowercase equal; xn--istanbul-o0e.test vs istanbul.test
+		{"my_site.test", "MY_SITE.test", true},    // ASCII: dialled as written, no IDNA validation
 		{"", "", false},
 	}
 	for _, c := range cases {
@@ -42,9 +43,9 @@ func TestPlanStrict(t *testing.T) {
 		{"http://example.com", "https://example.com/", Adopt, Adopt, "https://example.com"},
 		{"https://bücher.de", "https://www.bücher.de", Adopt, Adopt, "https://www.bücher.de"},
 		{"https://example.com", "https://EXAMPLE.com", Same, Same, ""},
-		{"https://straße.de", "https://straẞe.de", Same, Mismatch, ""},
-		{"http://straße.de", "https://www.straẞe.de", Adopt, Mismatch, ""},
-		{"http://my_site.test", "https://my_site.test", Adopt, Mismatch, ""},
+		{"https://straße.de", "https://straẞe.de", Mismatch, Mismatch, ""},
+		{"http://straße.de", "https://www.straẞe.de", Mismatch, Mismatch, ""},
+		{"http://my_site.test", "https://my_site.test", Adopt, Adopt, "https://my_site.test"},
 		{"https://example.com", "https://staging.example.com", Mismatch, Mismatch, ""},
 	}
 	for _, c := range cases {
