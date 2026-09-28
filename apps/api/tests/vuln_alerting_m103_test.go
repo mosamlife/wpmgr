@@ -435,19 +435,19 @@ const m145EarlyReturnGuardClose = `    END IF;
 // re-scan the table at all.
 //
 // Proof structure (see migration_late_run_lock_test.go's doc comment for the
-// shared helpers): a second connection holds ROW EXCLUSIVE on
-// site_vulnerabilities throughout. First, an IN-MEMORY copy of m145 with its
-// guard stripped is run against that hold and must fail — unlike m141/m143,
-// m145 sets no lock_timeout of its own, so this is not a lock-contention
-// proof: by this point in the test m103 has already added notified_at for
+// shared helpers): first, an IN-MEMORY copy of m145 with its guard stripped
+// is run and must fail — unlike m141/m143, this is not a lock-contention
+// proof. By this point in the test m103 has already added notified_at for
 // real, so the guard-stripped body's bare `ADD COLUMN notified_at` (no IF NOT
-// EXISTS) fails on the column already existing, SQLSTATE 42701, whether or
-// not the ROW EXCLUSIVE holder is even open. That is still the honest proof
-// for m145: without its guard, a late run aborts the boot on an existing
-// column. Then the REAL, unmutated m145 is run late via owner.Migrate and
-// must finish well inside the bound a lock wait would blow, and the real file
-// is re-applied in its own explicit transaction to prove pg_locks shows
-// nothing against site_vulnerabilities for that backend before commit.
+// EXISTS) fails on the column already existing, SQLSTATE 42701. m145 sets no
+// lock_timeout of its own, so this check runs before any lock is held: the
+// point is the state-based failure, not a lock wait this migration has no
+// mechanism to time out of. Then a second connection holds ROW EXCLUSIVE on
+// site_vulnerabilities, and the REAL, unmutated m145 is run late via
+// owner.Migrate and must finish well inside the bound a lock wait would
+// blow, and the real file is re-applied in its own explicit transaction to
+// prove pg_locks shows nothing against site_vulnerabilities for that backend
+// before commit.
 func TestM145LateRunAfterM103AlreadyApplied(t *testing.T) {
 	pool, owner := startPostgresBeforeM103(t)
 	ctx := context.Background()
@@ -512,14 +512,19 @@ func TestM145LateRunAfterM103AlreadyApplied(t *testing.T) {
 	mutated := stripOnce(t, string(body), m145EarlyReturnGuardOpen)
 	mutated = stripOnce(t, mutated, m145EarlyReturnGuardClose)
 
-	release := holdRowExclusiveOpen(t, owner, "site_vulnerabilities", "last_seen")
-	defer release()
-
 	// Fires: without the guard, m145 would attempt its ADD COLUMN
 	// unconditionally. notified_at already exists (m103 added it above), so
 	// this fails with SQLSTATE 42701 (column already exists) — the honest
-	// proof for m145, which is not about the held lock at all.
+	// proof for m145, which is not about a held lock at all. Deliberately
+	// run BEFORE holdRowExclusiveOpen below: m145 sets no lock_timeout of
+	// its own, so against a real conflicting hold the ADD COLUMN would just
+	// block on ACCESS EXCLUSIVE until this harness's own context deadline
+	// cancelled it, which is a weaker, lock-shaped proof that masks the
+	// actual, state-based failure this migration has to survive.
 	mutatedMigrationMustBlockOrError(t, owner, mutated, sqlStateDuplicateColumn)
+
+	release := holdRowExclusiveOpen(t, owner, "site_vulnerabilities", "last_seen")
+	defer release()
 
 	before := siteVulnerabilitiesChecksum(t, pool)
 
