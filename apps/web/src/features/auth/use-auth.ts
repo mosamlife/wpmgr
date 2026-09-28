@@ -164,7 +164,7 @@ export function useLogin(): UseMutationResult<LoginResult, Error, LoginRequest> 
         const headerSeconds = headerRaw === null ? undefined : Number(headerRaw);
         const bodySeconds =
           typeof error?.details?.["retry_after_seconds"] === "number"
-            ? (error.details["retry_after_seconds"] as number)
+            ? error.details["retry_after_seconds"]
             : undefined;
         const retryAfterSeconds =
           clampRetryAfterSeconds(headerSeconds) ??
@@ -172,7 +172,7 @@ export function useLogin(): UseMutationResult<LoginResult, Error, LoginRequest> 
           LOGIN_RATE_LIMIT_DEFAULT_SECONDS;
         const scope =
           typeof error?.details?.["scope"] === "string"
-            ? (error.details["scope"] as string)
+            ? error.details["scope"]
             : "source";
         throw new LoginRateLimitedError(scope, retryAfterSeconds);
       }
