@@ -369,6 +369,96 @@ final class RouterTest extends TestCase
 	}
 
 	/**
+	 * #754: '+' can sit in a path component after the first, and the path is
+	 * still dropped whole rather than leaving everything after the '+'.
+	 *
+	 * @return void
+	 */
+	public function test_absolute_path_with_a_plus_is_dropped_whole(): void
+	{
+		$response = $this->dispatchThrowing(
+			new \RuntimeException( 'cannot open /srv/sites/acme+co/private/backup-dir' )
+		);
+
+		$this->assertSame(
+			'Command execution failed: RuntimeException: cannot open <path>',
+			$response->get_error_message()
+		);
+		$this->assertStringNotContainsString( 'private/backup-dir', $this->wireBlob( $response ) );
+	}
+
+	/**
+	 * #754: a long run of path characters must not stop the absolute-path rule
+	 * from matching. Every absolute path in the message has to be redacted at
+	 * any length, including one that is not the long run itself. Lengths on
+	 * both sides of where an engine limit could otherwise be met, with the
+	 * JIT on or off.
+	 *
+	 * @return void
+	 */
+	public function test_long_path_run_does_not_leak_other_paths(): void
+	{
+		foreach ( array( 1024, 12500, 250000 ) as $repeats ) {
+			$response = $this->dispatchThrowing(
+				new \RuntimeException(
+					'cannot open /home/customer-acme/private/backup-dir: checksum /' . str_repeat( 'deadbeef', $repeats )
+				)
+			);
+			$wire = $this->wireBlob( $response );
+
+			$this->assertSame(
+				'Command execution failed: RuntimeException: cannot open <path>: checksum <path>',
+				$response->get_error_message(),
+				sprintf( 'a %d-character run changed the redaction', 8 * $repeats )
+			);
+			$this->assertStringNotContainsString( 'customer-acme', $wire );
+			$this->assertStringNotContainsString( '/home/', $wire );
+			$this->assertStringNotContainsString( 'private/backup-dir', $wire );
+		}
+	}
+
+	/**
+	 * #754: the redaction fails CLOSED. When a redaction pass cannot complete,
+	 * the reason is withheld outright; the message as it stood before that
+	 * pass never reaches the response. The class and location still do.
+	 *
+	 * The engine is forced to give up by a backtrack limit too small for any
+	 * pattern to complete; both settings are restored whatever happens.
+	 *
+	 * @return void
+	 */
+	public function test_redaction_withholds_the_reason_when_a_pass_cannot_complete(): void
+	{
+		$jit   = (string) ini_get( 'pcre.jit' );
+		$limit = (string) ini_get( 'pcre.backtrack_limit' );
+
+		try {
+			ini_set( 'pcre.jit', '0' );
+			ini_set( 'pcre.backtrack_limit', '1' );
+
+			$response = $this->dispatchThrowing(
+				new \RuntimeException( 'cannot open /home/customer-acme/private/backup-dir' )
+			);
+		} finally {
+			ini_set( 'pcre.jit', $jit );
+			ini_set( 'pcre.backtrack_limit', $limit );
+		}
+
+		$wire = $this->wireBlob( $response );
+
+		$this->assertSame(
+			'Command execution failed: RuntimeException: (reason withheld: redaction could not complete)',
+			$response->get_error_message()
+		);
+		$this->assertStringNotContainsString( 'customer-acme', $wire );
+		$this->assertStringNotContainsString( 'private/backup-dir', $wire );
+
+		$data = $response->get_error_data();
+		$this->assertSame( 'RuntimeException', $data['exception'] ?? null );
+		$this->assertMatchesRegularExpression( '~^[^/].*:\d+$~', (string) ( $data['at'] ?? '' ) );
+	}
+
+	/**
 	 * #754: split positions chosen rather than left to the encoding. Each case puts a '/' at
 	 * a position chosen to split a 44-character standard-base64 key into two
 	 * pieces that are each BELOW the 32-character threshold — the exact shape
@@ -710,12 +800,16 @@ final class RouterTest extends TestCase
 	 */
 	private function wireBlob( \WP_Error $error ): string
 	{
+		// Unescaped slashes, so a needle that contains '/' can match: with the
+		// default escaping every '/' becomes '\/' and a not-contains assertion
+		// on a path could never fail.
 		return (string) json_encode(
 			[
 				'code'    => $error->get_error_code(),
 				'message' => $error->get_error_message(),
 				'data'    => $error->get_error_data(),
-			]
+			],
+			JSON_UNESCAPED_SLASHES
 		);
 	}
 

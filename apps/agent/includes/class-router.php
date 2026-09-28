@@ -42,6 +42,14 @@ final class Router
      */
     private const MIN_MIXED_CASE = 6;
 
+    /**
+     * What a command-failure response carries in place of the reason when a
+     * redaction pass in redactReason() cannot complete. The response still
+     * names the exception class and the relative location; only the message
+     * is withheld, and the local debug log still has it in full.
+     */
+    private const REASON_WITHHELD = '(reason withheld: redaction could not complete)';
+
     private Connector $connector;
 
     /** @var array<string,CommandInterface> Map of command name => handler. */
@@ -323,14 +331,23 @@ final class Router
      * then decided BEFORE that path redaction, so a token that contains a
      * separator is disposed of whole rather than partly rewritten.
      *
+     * Fails closed. If any of the three redaction passes cannot complete, the
+     * caller gets REASON_WITHHELD in place of the whole reason — never the
+     * message as it stood before that pass, and never a partly redacted one.
+     *
      * @param string $msg Raw exception message.
-     * @return string Redacted, single-line, length-capped message.
+     * @return string Redacted, single-line, length-capped message, or
+     *                REASON_WITHHELD.
      */
     private static function redactReason(string $msg): string
     {
         // One line: a reason is not a stack trace. Patterns here are deliberately
         // byte-oriented (no /u): on invalid UTF-8 a /u pattern returns null and
         // would silently erase the whole message.
+        //
+        // These two only reshape whitespace, so they may keep their input if
+        // the engine bails: every redaction pass after them still runs, and
+        // those fail closed.
         $msg = self::pregOrKeep('/[\x00-\x1F\x7F]+/', ' ', $msg);
         $msg = trim(self::pregOrKeep('/\s+/', ' ', $msg));
 
@@ -390,18 +407,19 @@ final class Router
         // Stated honestly in both directions. Not caught here: an unpadded run
         // that is not case-mixed, or that carries no digit and neither '+' nor
         // '=', or that falls under the budget once its slashes are set aside.
-        // Caught here: a case-mixed path that carries a digit, '+' or '='. The
-        // second is the cheaper error — a redacted identifier is still intact
-        // in the local debug log; key material in a dashboard is not
-        // recoverable from.
+        // Caught here: a case-mixed path that carries a digit, '+' or '=', and
+        // any run that ends in '='. The second is the cheaper error — a
+        // redacted identifier is still intact in the local debug log; key
+        // material in a dashboard is not recoverable from.
         //
         // A redacted run that starts with '/' keeps that '/', and the
         // absolute-path rule below takes "<redacted>" as a path component. So a
         // redaction never cuts an absolute path short: that rule reaches at
         // least as far along the path as it would with no redaction in it, and
         // the remainder goes with it rather than surviving as a relative-looking
-        // tail.
-        $msg = self::pregCallbackOrKeep(
+        // tail. Neither rule can stop part-way: each either completes or the
+        // whole reason is withheld.
+        $msg = self::pregCallbackOrNull(
             '~[A-Za-z0-9+/=_\-]{32,}~',
             static function (array $m): string {
                 if (!self::isEncodedRun($m[0])) {
@@ -412,16 +430,33 @@ final class Router
             },
             $msg
         );
+        if ($msg === null) {
+            return self::REASON_WITHHELD;
+        }
 
-        // Anything STILL absolute is outside the WordPress tree: drop it whole.
-        // Covers POSIX (/a/b) and Windows (C:\a\b). The negative lookbehind
-        // keeps "and/or" and "HTTP 500" intact. "<redacted>" is accepted as a
-        // path component for the reason given above pass 1.
-        $msg = self::pregOrKeep(
-            '~(?<![A-Za-z0-9_.\-])(?:[A-Za-z]:[\\\\/]|/)(?:[A-Za-z0-9_.\-]|<redacted>)+(?:[A-Za-z0-9_.\-/\\\\]|<redacted>)*~',
+        // Anything STILL absolute is outside the WordPress tree: redact it,
+        // from its root through every character that follows it and can sit
+        // in a path here — letters, digits, '_', '.', '-', both separators,
+        // "<redacted>", and '+' after the first component. Covers POSIX (/a/b)
+        // and Windows (C:\a\b). The negative lookbehind keeps "and/or" and
+        // "HTTP 500" intact. "<redacted>" is accepted as a path component for
+        // the reason given above pass 1.
+        //
+        // Stated as a limit: a component that carries any other character, a
+        // space for one, ends the match there, and the rest of that path is
+        // not recognised as absolute and survives. A space cannot be accepted
+        // without also eating the prose that surrounds a path.
+        //
+        // Every quantifier is possessive: each piece has exactly one way to
+        // match, so the rule has nothing to backtrack over.
+        $msg = self::pregOrNull(
+            '~(?<![A-Za-z0-9_.\-])(?:[A-Za-z]:[\\\\/]|/)(?:[A-Za-z0-9_.\-]++|<redacted>)++(?:[A-Za-z0-9_.+\-/\\\\]++|<redacted>)*+~',
             '<path>',
             $msg
         );
+        if ($msg === null) {
+            return self::REASON_WITHHELD;
+        }
 
         // Pass 2 — long opaque runs over the slash-free alphabet: the shape of
         // a key, token, hash or ciphertext. Threshold-only, with no "looks
@@ -438,7 +473,10 @@ final class Router
         // Both passes are a backstop, not a boundary. The boundary is that a
         // command must not put a secret in an exception message in the first
         // place.
-        $msg = self::pregOrKeep('~[A-Za-z0-9+=_\-]{32,}~', '<redacted>', $msg);
+        $msg = self::pregOrNull('~[A-Za-z0-9+=_\-]{32,}~', '<redacted>', $msg);
+        if ($msg === null) {
+            return self::REASON_WITHHELD;
+        }
 
         if ($msg === '') {
             return '(no message)';
@@ -461,9 +499,10 @@ final class Router
      * What that leaves uncaught is an unpadded run with fewer than
      * MIN_MIXED_CASE letters of either case, or with no digit and neither '+'
      * nor '=', or with fewer than 32 characters once '/' is set aside; an
-     * unpadded key can take any of those shapes. Single-case runs — which
-     * is every path, table name, option key and command name this plugin
-     * emits, none of which ends in '=' — never qualify.
+     * unpadded key can take any of those shapes. A single-case run qualifies
+     * only through the padding branch. Every path, table name, option key and
+     * command name this plugin emits is single-case and none ends in '=', so
+     * none of them qualifies.
      *
      * Byte-oriented by design, like every pattern in redactReason(): a
      * multibyte-aware test would have to trust the message to be valid UTF-8,
@@ -513,24 +552,44 @@ final class Router
     }
 
     /**
-     * preg_replace_callback that keeps the subject when the engine bails, the
-     * same contract as pregOrKeep().
+     * preg_replace_callback for a REDACTION pass: null when the engine bails,
+     * so the caller withholds the reason instead of sending what the pass was
+     * meant to redact.
      *
      * @param string               $pattern  Pattern.
      * @param callable(array<int,string>):string $callback Per-match decision.
      * @param string               $subject  Subject.
-     * @return string
+     * @return string|null Null when the pass did not complete.
      */
-    private static function pregCallbackOrKeep(string $pattern, callable $callback, string $subject): string
+    private static function pregCallbackOrNull(string $pattern, callable $callback, string $subject): ?string
     {
         $out = preg_replace_callback($pattern, $callback, $subject);
 
-        return is_string($out) ? $out : $subject;
+        return is_string($out) ? $out : null;
+    }
+
+    /**
+     * preg_replace for a REDACTION pass: null when the engine bails, so the
+     * caller withholds the reason instead of sending what the pass was meant
+     * to redact.
+     *
+     * @param string $pattern     Pattern.
+     * @param string $replacement Replacement.
+     * @param string $subject     Subject.
+     * @return string|null Null when the pass did not complete.
+     */
+    private static function pregOrNull(string $pattern, string $replacement, string $subject): ?string
+    {
+        $out = preg_replace($pattern, $replacement, $subject);
+
+        return is_string($out) ? $out : null;
     }
 
     /**
      * preg_replace that keeps the subject when the engine bails (null return on
-     * a backtrack limit or malformed input) instead of erasing it.
+     * a backtrack limit or malformed input) instead of erasing it. Only for
+     * steps that redact nothing themselves: whitespace reshaping ahead of the
+     * redaction passes, and trimming a clamped result that is already redacted.
      *
      * @param string $pattern     Pattern.
      * @param string $replacement Replacement.
