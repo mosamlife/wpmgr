@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { Profiler, useState } from "react";
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { screen, fireEvent, within, waitFor } from "@testing-library/react";
 import type { Site, UpdateRunCreate } from "@wpmgr/api";
@@ -1082,6 +1082,154 @@ describe("UpdateWizard — PR #766 adversarial review of the #763 fix", () => {
     expect(checkboxFor("Woo").checked).toBe(false);
     expect(screen.getByText("1 item will be previewed.")).toBeInTheDocument();
 
+    fireEvent.click(screen.getByRole("button", { name: /preview 1 update/i }));
+    await waitFor(() => expect(createUpdateRunMock).toHaveBeenCalledTimes(1));
+    const [{ body }] = createUpdateRunMock.mock.calls[0] as [
+      { body: UpdateRunCreate },
+    ];
+    expect(body.items).toEqual([
+      { type: "plugin", slug: "yoast", version: "latest" },
+    ]);
+  });
+});
+
+// Bot review of PR #766 (Greptile ~update-wizard.tsx:262, CodeRabbit
+// ~update-wizard.tsx:280): the prune used to run in a `useEffect`, so a
+// refetch could COMMIT — paint, and be clickable — with the new `options` on
+// screen while `selectedSlugs` still counted the stale key, for the whole
+// window between that commit and the effect's corrective second one. An
+// operator who submitted in that window POSTed the stale item.
+//
+// A plain `fireEvent` + assertion can't see that window: RTL's `fireEvent`
+// wraps in `act()`, which flushes every effect-triggered commit before
+// `fireEvent` returns, so by the time any assertion runs, state has already
+// fully settled — in BOTH the buggy effect-based implementation and the
+// fixed one. That's why the #763/#766 tests above pass unmodified either
+// way and don't, by themselves, pin this fix. `Profiler`'s `onRender` fires
+// once per COMMIT of its subtree, including the intermediate one the effect
+// used to leave broken, so it's the one hook here that can see it.
+function ProfiledRefetchHarness({
+  target,
+  initialSites,
+  nextSites,
+  onCommit,
+}: {
+  target: WizardTarget;
+  initialSites: Site[];
+  nextSites: Site[];
+  onCommit: () => void;
+}) {
+  const [sites, setSites] = useState(initialSites);
+  return (
+    <>
+      <button type="button" onClick={() => setSites(nextSites)}>
+        Simulate live refetch
+      </button>
+      <Profiler id="wizard-render-track" onRender={onCommit}>
+        <UpdateWizard open target={target} sites={sites} onClose={() => {}} />
+      </Profiler>
+    </>
+  );
+}
+
+describe("UpdateWizard — bot review of #766: pruning is synchronous with the render", () => {
+  const TARGET: WizardTarget = {
+    kind: "sites",
+    siteIds: ["site-a"],
+    updateKind: "plugins",
+  };
+
+  beforeEach(() => {
+    createUpdateRunMock.mockReset();
+    createUpdateRunMock.mockResolvedValue({
+      data: { id: "run-1" },
+      error: undefined,
+      response: { status: 201 },
+    });
+  });
+
+  it("never commits a render whose visible count still includes a slug this same refetch drops, and the eventual POST excludes it too", async () => {
+    const before = buildSite({
+      id: "site-a",
+      components: {
+        plugins: [
+          {
+            slug: "woo",
+            name: "Woo",
+            version: "8.0",
+            available_update: { new_version: "8.1" },
+          },
+          {
+            slug: "yoast",
+            name: "Yoast",
+            version: "20",
+            available_update: { new_version: "21" },
+          },
+        ],
+        themes: [],
+      },
+    });
+    // Same site, refetched: Woo's update is gone. Yoast is untouched. Same
+    // shape as the GH #763 tests above, but this test looks INSIDE the
+    // refetch's commit(s) rather than only at the settled end state.
+    const after = buildSite({
+      id: "site-a",
+      components: {
+        plugins: [
+          { slug: "woo", name: "Woo", version: "8.1" },
+          {
+            slug: "yoast",
+            name: "Yoast",
+            version: "20",
+            available_update: { new_version: "21" },
+          },
+        ],
+        themes: [],
+      },
+    });
+
+    const counts: number[] = [];
+    function captureCount() {
+      // Reads the SAME DOM the operator would see at this exact commit —
+      // not the settled end state. `buildItems()`/the submit-button label
+      // are both derived from `effectiveSelectedSlugs` in the same render,
+      // so this count is exactly what a click at this commit would post.
+      // `document.body`, not `container`: Radix's `DialogContent` portals
+      // its content to `document.body`, outside the RTL render container.
+      const match = document.body.textContent?.match(/(\d+) items? will be/);
+      if (match) counts.push(Number(match[1]));
+    }
+
+    renderWithProviders(
+      <ProfiledRefetchHarness
+        target={TARGET}
+        initialSites={[before]}
+        nextSites={[after]}
+        onCommit={captureCount}
+      />,
+      { withRouter: true },
+    );
+
+    await screen.findByRole("tab", { name: /plugins/i });
+    fireEvent.click(checkboxFor("Woo"));
+    fireEvent.click(checkboxFor("Yoast"));
+    expect(screen.getByText("2 items will be previewed.")).toBeInTheDocument();
+
+    // Only care about commits the refetch itself produces from here on.
+    counts.length = 0;
+    fireEvent.click(screen.getByText(/simulate live refetch/i));
+
+    // The refetch actually re-rendered the profiled subtree...
+    expect(counts.length).toBeGreaterThan(0);
+    // ...and EVERY one of those commits already excludes Woo — not just the
+    // last one. Before the fix, the first commit in this list is 2 (options
+    // already show Woo without an update, but the effect pruning it hasn't
+    // run yet) and only a LATER commit corrects it to 1.
+    expect(counts).toEqual(counts.map(() => 1));
+
+    // What settles on screen, and what a real submit posts, also excludes
+    // it — same proof shape as the #763 tests above.
+    expect(screen.getByText("1 item will be previewed.")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /preview 1 update/i }));
     await waitFor(() => expect(createUpdateRunMock).toHaveBeenCalledTimes(1));
     const [{ body }] = createUpdateRunMock.mock.calls[0] as [
