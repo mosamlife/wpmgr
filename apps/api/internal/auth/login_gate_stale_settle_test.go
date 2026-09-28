@@ -27,9 +27,10 @@ func TestStaleSettleLeavesARecreatedBucketAlone(t *testing.T) {
 	if !ok {
 		t.Fatal("A could not charge")
 	}
-	// Failed attempts on other keys, all seen later, fill the map past the cap:
-	// key is the least recently seen permanent entry and is evicted.
-	t1 := t0.Add(time.Second)
+	// A window later key has refilled to its whole budget. Failed attempts on
+	// other keys then fill the map past the cap, each leaving its entry a token
+	// short: key is the fullest permanent entry and is evicted.
+	t1 := t0.Add(loginWindow)
 	for i := 0; i < loginBucketCap; i++ {
 		keptCharge(t, b, fmt.Sprintf("filler-%d", i), t1)
 	}
@@ -41,7 +42,7 @@ func TestStaleSettleLeavesARecreatedBucketAlone(t *testing.T) {
 	}
 
 	// Admission B charges key: a new, provisional bucket.
-	t2 := t0.Add(2 * time.Second)
+	t2 := t1.Add(time.Second)
 	bkB, ok := b.charge(key, t2)
 	if !ok || bkB == bkA {
 		t.Fatal("precondition: B did not get a new bucket")

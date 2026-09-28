@@ -184,8 +184,15 @@ const (
 	// charge on it has been kept. A refused attempt and a shed attempt create
 	// nothing. A successful sign-in creates only a provisional entry, removed
 	// again when its charge is given back, and it never sweeps or evicts
-	// anything. So a source adds entries, and evicts others, only as fast as
-	// its own failure budget admits failed attempts.
+	// anything.
+	//
+	// At the cap, the entry evicted is the permanent one holding the most
+	// tokens (see evictionVictimLocked). An entry that has refilled to its
+	// whole budget records nothing, so evicting it changes no budget. An entry
+	// with tokens spent is evicted only when every other permanent entry in
+	// the scope, bar the one just made permanent, has spent at least as many:
+	// adding entries to the map cannot hand a drained key back its budget
+	// while any fuller entry remains to be evicted instead.
 	//
 	// Provisional entries sit outside the cap and are bounded separately: one
 	// exists only while an admission that charged it is unfinished, and every
@@ -599,8 +606,8 @@ func (r *loginRefusal) domainError() *domain.Error {
 // The slot is taken before the charge, so an attempt the bound sheds never
 // charged a token and never created a bucket entry. Charging first and giving
 // the tokens back would still leave the entries behind: at zero net budget a
-// caller could then add entries until each map's cap evicts the oldest,
-// including its own exhausted buckets, which come back full. A budget refusal
+// caller could then add entries to every map and force evictions from it at
+// the cap. A shed attempt leaves every map as it found it. A budget refusal
 // never takes a slot, so being refused spends none of the shared capacity the
 // bound protects.
 //
@@ -1160,52 +1167,70 @@ func (b *keyedBudget) size() int {
 
 // sweepLocked runs when a failed attempt's charge makes entry permanent. It
 // drops idle entries, and if more than loginBucketCap entries are then
-// permanent, drops the least recently seen permanent entry other than entry
-// itself until no more are.
+// permanent, evicts the one evictionVictimLocked names until no more are.
+// Only one entry becomes permanent per call, so that is at most one eviction.
 //
 // It never touches an entry with a pending charge in the idle pass, and never
 // evicts a provisional one: those belong to attempts still in flight, and a
 // provisional entry leaves by its own give-back or becomes permanent by its
-// own failure.
+// own failure. It never evicts entry itself.
 //
 // An idle entry is at its whole budget, so dropping one changes no budget: a
 // token is taken only by charge, which also stamps seen, so an entry unseen
 // for loginBucketIdle has refilled for at least loginWindow since its last
 // take, and that refills any bucket.
 //
-// EVICTION IS FAIL-OPEN BY CONSTRUCTION: an evicted key comes back as a fresh,
-// full bucket. What bounds that is that an entry is permanent only once a
-// failed attempt's charge on it has been kept: never because of a refused
-// attempt, a shed one or a successful one. So evicting anything takes failed
-// attempts, and a source can make them only as fast as its own failure budget
-// admits them.
+// Cost: the idle pass is one pass over the map, which holds at most
+// loginBucketCap permanent entries plus the verification bound's provisional
+// ones. The eviction scan is a second such pass, and runs only when the map
+// is over the cap.
 func (b *keyedBudget) sweepLocked(now time.Time, entry *loginBucket) {
+	permanent := 0
 	for k, bk := range b.buckets {
 		if bk.pending == 0 && now.Sub(bk.seen) > loginBucketIdle {
 			delete(b.buckets, k)
+			continue
+		}
+		if bk.kept > 0 {
+			permanent++
 		}
 	}
-	for {
-		permanent := 0
-		oldestKey := ""
-		var oldest time.Time
-		for k, bk := range b.buckets {
-			if bk.kept == 0 {
-				continue
-			}
-			permanent++
-			if bk == entry {
-				continue
-			}
-			if oldestKey == "" || bk.seen.Before(oldest) {
-				oldestKey, oldest = k, bk.seen
-			}
-		}
-		if permanent <= loginBucketCap || oldestKey == "" {
+	for ; permanent > loginBucketCap; permanent-- {
+		victim := b.evictionVictimLocked(now, entry)
+		if victim == "" {
 			return
 		}
-		delete(b.buckets, oldestKey)
+		delete(b.buckets, victim)
 	}
+}
+
+// evictionVictimLocked names the entry sweepLocked evicts at the cap: the
+// permanent entry with the most tokens at now, as windowBucket.TokensAt counts
+// them (refill included), and among entries with equally many the least
+// recently seen. It never names entry, the one whose charge is being made
+// permanent, and never a provisional entry. It returns "" when no other
+// permanent entry exists.
+//
+// What that guarantees a caller: evicting a key hands it back a whole budget,
+// so the key evicted is the one for which that changes the least. An entry at
+// its whole budget changes nothing. An entry with tokens spent is evicted only
+// if no permanent entry other than entry holds more tokens than it does.
+//
+// One pass over the map; b.mu must be held.
+func (b *keyedBudget) evictionVictimLocked(now time.Time, entry *loginBucket) string {
+	victim := ""
+	var most float64
+	var seen time.Time
+	for k, bk := range b.buckets {
+		if bk.kept == 0 || bk == entry {
+			continue
+		}
+		t := bk.lim.TokensAt(now)
+		if victim == "" || t > most || (t == most && bk.seen.Before(seen)) {
+			victim, most, seen = k, t, bk.seen
+		}
+	}
+	return victim
 }
 
 // ---------------------------------------------------------------------------
