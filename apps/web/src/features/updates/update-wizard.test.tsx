@@ -1,3 +1,4 @@
+import { Profiler, useState } from "react";
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { screen, fireEvent, within, waitFor } from "@testing-library/react";
 import type { Site, UpdateRunCreate } from "@wpmgr/api";
@@ -684,5 +685,558 @@ describe("UpdateWizard — PR #752 Select all / Deselect all (GH #680)", () => {
     expect(
       screen.queryByRole("button", { name: /select all/i }),
     ).not.toBeInTheDocument();
+  });
+});
+
+// GH #763 — a selection survives after its update disappears and is still
+// sent. `WizardForm` is keyed on `targetKey(target)` only (see the top of
+// update-wizard.tsx), so a live sites refetch while the wizard is open
+// (use-sites-live.ts:59 invalidates the list on cardinality/state-change
+// events) swaps the `sites` prop on the SAME mounted form rather than
+// remounting it — exactly like `routes/_authed/sites/index.tsx` passing a
+// freshly-fetched `selectedSites` array into `sites=` on every render. This
+// harness reproduces that prop swap directly: `sites` lives in local state,
+// a button swaps it to a new array (the "refetch"), and `target` never
+// changes across the swap, so the wizard's remount key doesn't change
+// either — the precise condition the bug needs.
+function RefetchHarness({
+  target,
+  initialSites,
+  nextSites,
+}: {
+  target: WizardTarget;
+  initialSites: Site[];
+  nextSites: Site[];
+}) {
+  const [sites, setSites] = useState(initialSites);
+  return (
+    <>
+      <button type="button" onClick={() => setSites(nextSites)}>
+        Simulate live refetch
+      </button>
+      <UpdateWizard open target={target} sites={sites} onClose={() => {}} />
+    </>
+  );
+}
+
+describe("UpdateWizard — GH #763 a selection survives after its update disappears", () => {
+  const TARGET: WizardTarget = {
+    kind: "sites",
+    siteIds: ["site-a"],
+    updateKind: "plugins",
+  };
+
+  beforeEach(() => {
+    createUpdateRunMock.mockReset();
+    createUpdateRunMock.mockResolvedValue({
+      data: { id: "run-1" },
+      error: undefined,
+      response: { status: 201 },
+    });
+  });
+
+  it("drops a selected item that loses its update on a live refetch: not counted, not posted, while a still-updatable sibling is", async () => {
+    const before = buildSite({
+      id: "site-a",
+      components: {
+        plugins: [
+          {
+            slug: "woo",
+            name: "Woo",
+            version: "8.0",
+            available_update: { new_version: "8.1" },
+          },
+          {
+            slug: "yoast",
+            name: "Yoast",
+            version: "20",
+            available_update: { new_version: "21" },
+          },
+        ],
+        themes: [],
+      },
+    });
+    // Same site, refetched: Woo's update landed some other way (or the
+    // advisory expired) and it no longer reports one. Yoast is untouched.
+    const after = buildSite({
+      id: "site-a",
+      components: {
+        plugins: [
+          { slug: "woo", name: "Woo", version: "8.1" },
+          {
+            slug: "yoast",
+            name: "Yoast",
+            version: "20",
+            available_update: { new_version: "21" },
+          },
+        ],
+        themes: [],
+      },
+    });
+
+    renderWithProviders(
+      <RefetchHarness target={TARGET} initialSites={[before]} nextSites={[after]} />,
+      { withRouter: true },
+    );
+
+    await screen.findByRole("tab", { name: /plugins/i });
+    fireEvent.click(checkboxFor("Woo"));
+    fireEvent.click(checkboxFor("Yoast"));
+    expect(screen.getByText("2 items will be previewed.")).toBeInTheDocument();
+
+    // The refetch trigger lives outside the Dialog's portal, so Radix marks
+    // it `aria-hidden` while the dialog is open (correctly, for a real
+    // screen reader) — `getByText` rather than `getByRole` reaches it here,
+    // same as production reaching it via a query invalidate, not a click.
+    fireEvent.click(screen.getByText(/simulate live refetch/i));
+
+    // Woo drops out of the default "with updates" filter (it has none any
+    // more) AND out of the count — before the fix it stayed counted while
+    // invisible.
+    expect(screen.queryByText("Woo")).not.toBeInTheDocument();
+    expect(screen.getByText("1 item will be previewed.")).toBeInTheDocument();
+
+    // Confirms it, rather than just its filtered visibility: still unticked
+    // even under "Show all".
+    fireEvent.click(screen.getByRole("button", { name: "Show all" }));
+    expect(checkboxFor("Woo").checked).toBe(false);
+    expect(checkboxFor("Yoast").checked).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: /preview 1 update/i }));
+    await waitFor(() => expect(createUpdateRunMock).toHaveBeenCalledTimes(1));
+    const [{ body }] = createUpdateRunMock.mock.calls[0] as [
+      { body: UpdateRunCreate },
+    ];
+    expect(body.items).toEqual([
+      { type: "plugin", slug: "yoast", version: "latest" },
+    ]);
+  });
+
+  it("keeps a deliberately-ticked up-to-date row selected across the same kind of refetch", async () => {
+    const before = buildSite({
+      id: "site-a",
+      components: {
+        plugins: [
+          {
+            slug: "woo",
+            name: "Woo",
+            version: "8.0",
+            available_update: { new_version: "8.1" },
+          },
+          // Up to date from the start — only selectable by hand, via "Show
+          // all", same as the PR #752 tests.
+          { slug: "akismet", name: "Akismet", version: "5.3" },
+        ],
+        themes: [],
+      },
+    });
+    // Woo's update disappears; Akismet's up-to-date status is unchanged.
+    const after = buildSite({
+      id: "site-a",
+      components: {
+        plugins: [
+          { slug: "woo", name: "Woo", version: "8.1" },
+          { slug: "akismet", name: "Akismet", version: "5.3" },
+        ],
+        themes: [],
+      },
+    });
+
+    renderWithProviders(
+      <RefetchHarness target={TARGET} initialSites={[before]} nextSites={[after]} />,
+      { withRouter: true },
+    );
+
+    await screen.findByRole("tab", { name: /plugins/i });
+    fireEvent.click(checkboxFor("Woo"));
+    fireEvent.click(screen.getByRole("button", { name: "Show all" }));
+    fireEvent.click(checkboxFor("Akismet"));
+    expect(screen.getByText("2 items will be previewed.")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText(/simulate live refetch/i));
+
+    // Woo (lost its update) is dropped; Akismet (was already up to date,
+    // still is) survives — the count reflects exactly Akismet.
+    expect(checkboxFor("Woo").checked).toBe(false);
+    expect(checkboxFor("Akismet").checked).toBe(true);
+    expect(screen.getByText("1 item will be previewed.")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /preview 1 update/i }));
+    await waitFor(() => expect(createUpdateRunMock).toHaveBeenCalledTimes(1));
+    const [{ body }] = createUpdateRunMock.mock.calls[0] as [
+      { body: UpdateRunCreate },
+    ];
+    expect(body.items).toEqual([
+      { type: "plugin", slug: "akismet", version: "latest" },
+    ]);
+  });
+});
+
+// Adversarial review of PR #766 (GH #763). `RefetchHarness` above swaps
+// `sites` exactly once, which is enough to pin "loses its update, stays
+// dropped" but not these two: both need a SECOND swap, because the bug only
+// shows up on the comparison after the first swap has already happened.
+function MultiRefetchHarness({
+  target,
+  snapshots,
+}: {
+  target: WizardTarget;
+  snapshots: Site[][];
+}) {
+  const [i, setI] = useState(0);
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setI((n) => Math.min(n + 1, snapshots.length - 1))}
+      >
+        Simulate live refetch
+      </button>
+      <UpdateWizard
+        open
+        target={target}
+        sites={snapshots[i] ?? []}
+        onClose={() => {}}
+      />
+    </>
+  );
+}
+
+describe("UpdateWizard — PR #766 adversarial review of the #763 fix", () => {
+  const TARGET: WizardTarget = {
+    kind: "sites",
+    siteIds: ["site-a"],
+    updateKind: "plugins",
+  };
+
+  beforeEach(() => {
+    createUpdateRunMock.mockReset();
+    createUpdateRunMock.mockResolvedValue({
+      data: { id: "run-1" },
+      error: undefined,
+      response: { status: 201 },
+    });
+  });
+
+  // Pins the `prevOptionsRef.current = options` assignment in update-wizard.tsx.
+  // Without it, every later comparison runs against the snapshot from when the
+  // wizard first opened, never against the render just before it — so an
+  // update that arrives only AFTER the wizard is open, gets ticked, and then
+  // disappears again looks (against that stale mount-time snapshot, where
+  // this item never had an update to begin with) like it never had an update
+  // to lose, and the tick survives.
+  it("drops an item whose update arrived after the wizard opened, was ticked, then disappeared again", async () => {
+    const openedWithout = buildSite({
+      id: "site-a",
+      components: {
+        plugins: [
+          { slug: "woo", name: "Woo", version: "8.1" },
+          {
+            slug: "yoast",
+            name: "Yoast",
+            version: "20",
+            available_update: { new_version: "21" },
+          },
+        ],
+        themes: [],
+      },
+    });
+    const gainedUpdate = buildSite({
+      id: "site-a",
+      components: {
+        plugins: [
+          {
+            slug: "woo",
+            name: "Woo",
+            version: "8.0",
+            available_update: { new_version: "8.1" },
+          },
+          {
+            slug: "yoast",
+            name: "Yoast",
+            version: "20",
+            available_update: { new_version: "21" },
+          },
+        ],
+        themes: [],
+      },
+    });
+    const lostItAgain = buildSite({
+      id: "site-a",
+      components: {
+        plugins: [
+          { slug: "woo", name: "Woo", version: "8.1" },
+          {
+            slug: "yoast",
+            name: "Yoast",
+            version: "20",
+            available_update: { new_version: "21" },
+          },
+        ],
+        themes: [],
+      },
+    });
+
+    renderWithProviders(
+      <MultiRefetchHarness
+        target={TARGET}
+        snapshots={[[openedWithout], [gainedUpdate], [lostItAgain]]}
+      />,
+      { withRouter: true },
+    );
+
+    await screen.findByRole("tab", { name: /plugins/i });
+    fireEvent.click(screen.getByText(/simulate live refetch/i)); // Woo's update arrives
+    fireEvent.click(checkboxFor("Woo"));
+    fireEvent.click(checkboxFor("Yoast"));
+    expect(screen.getByText("2 items will be previewed.")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText(/simulate live refetch/i)); // Woo's update lands elsewhere
+    expect(screen.queryByText("Woo")).not.toBeInTheDocument();
+    expect(screen.getByText("1 item will be previewed.")).toBeInTheDocument();
+
+    // Confirms it, rather than just its filtered visibility: still unticked
+    // even under "Show all".
+    fireEvent.click(screen.getByRole("button", { name: "Show all" }));
+    expect(checkboxFor("Woo").checked).toBe(false);
+    expect(checkboxFor("Yoast").checked).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: /preview 1 update/i }));
+    await waitFor(() => expect(createUpdateRunMock).toHaveBeenCalledTimes(1));
+    const [{ body }] = createUpdateRunMock.mock.calls[0] as [
+      { body: UpdateRunCreate },
+    ];
+    expect(body.items).toEqual([
+      { type: "plugin", slug: "yoast", version: "latest" },
+    ]);
+  });
+
+  // Pins the "no longer listed" branch (the `if (!nextOpt)` branch in
+  // update-wizard.tsx). This is
+  // the only branch that can drop a key whose item vanished from `options`
+  // entirely WHILE UP TO DATE (hasUpdate already false, not transitioning
+  // true -> false) — the hasUpdate-comparison branch below it never fires for
+  // that key, on the way out or the way back in, so nothing else in the
+  // effect would catch it. Without it, a hand-ticked up-to-date row whose
+  // entry disappears entirely and later comes back is still selected once it
+  // reappears, with no click of the operator's behind it, and gets posted
+  // even though `buildItems` had correctly excluded it (as not currently
+  // listed) for every render while it was gone.
+  it("does not resurrect a hand-ticked up-to-date row whose entry disappeared entirely and later reappeared", async () => {
+    const before = buildSite({
+      id: "site-a",
+      components: {
+        plugins: [
+          // Up to date from the start — only selectable by hand, via "Show
+          // all", same as the PR #752 tests.
+          { slug: "woo", name: "Woo", version: "8.1" },
+          {
+            slug: "yoast",
+            name: "Yoast",
+            version: "20",
+            available_update: { new_version: "21" },
+          },
+        ],
+        themes: [],
+      },
+    });
+    // Woo's entry drops out of the report entirely — gone from `options`,
+    // not merely re-reported as up to date (e.g. deactivated, or the agent
+    // stopped reporting it).
+    const wooGone = buildSite({
+      id: "site-a",
+      components: {
+        plugins: [
+          {
+            slug: "yoast",
+            name: "Yoast",
+            version: "20",
+            available_update: { new_version: "21" },
+          },
+        ],
+        themes: [],
+      },
+    });
+    // Woo's entry comes back, still up to date, unchanged from `before`.
+    const wooBack = before;
+
+    renderWithProviders(
+      <MultiRefetchHarness
+        target={TARGET}
+        snapshots={[[before], [wooGone], [wooBack]]}
+      />,
+      { withRouter: true },
+    );
+
+    await screen.findByRole("tab", { name: /plugins/i });
+    fireEvent.click(screen.getByRole("button", { name: "Show all" }));
+    fireEvent.click(checkboxFor("Woo"));
+    fireEvent.click(checkboxFor("Yoast"));
+    expect(screen.getByText("2 items will be previewed.")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText(/simulate live refetch/i)); // Woo's entry vanishes entirely
+    expect(screen.queryByText("Woo")).not.toBeInTheDocument();
+    expect(screen.getByText("1 item will be previewed.")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText(/simulate live refetch/i)); // Woo's entry comes back
+    expect(checkboxFor("Woo").checked).toBe(false);
+    expect(screen.getByText("1 item will be previewed.")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /preview 1 update/i }));
+    await waitFor(() => expect(createUpdateRunMock).toHaveBeenCalledTimes(1));
+    const [{ body }] = createUpdateRunMock.mock.calls[0] as [
+      { body: UpdateRunCreate },
+    ];
+    expect(body.items).toEqual([
+      { type: "plugin", slug: "yoast", version: "latest" },
+    ]);
+  });
+});
+
+// Bot review of PR #766 (Greptile ~update-wizard.tsx:262, CodeRabbit
+// ~update-wizard.tsx:280): the prune used to run in a `useEffect`, so a
+// refetch could COMMIT — paint, and be clickable — with the new `options` on
+// screen while `selectedSlugs` still counted the stale key, for the whole
+// window between that commit and the effect's corrective second one. An
+// operator who submitted in that window POSTed the stale item.
+//
+// A plain `fireEvent` + assertion can't see that window: RTL's `fireEvent`
+// wraps in `act()`, which flushes every effect-triggered commit before
+// `fireEvent` returns, so by the time any assertion runs, state has already
+// fully settled — in BOTH the buggy effect-based implementation and the
+// fixed one. That's why the #763/#766 tests above pass unmodified either
+// way and don't, by themselves, pin this fix. `Profiler`'s `onRender` fires
+// once per COMMIT of its subtree, including the intermediate one the effect
+// used to leave broken, so it's the one hook here that can see it.
+function ProfiledRefetchHarness({
+  target,
+  initialSites,
+  nextSites,
+  onCommit,
+}: {
+  target: WizardTarget;
+  initialSites: Site[];
+  nextSites: Site[];
+  onCommit: () => void;
+}) {
+  const [sites, setSites] = useState(initialSites);
+  return (
+    <>
+      <button type="button" onClick={() => setSites(nextSites)}>
+        Simulate live refetch
+      </button>
+      <Profiler id="wizard-render-track" onRender={onCommit}>
+        <UpdateWizard open target={target} sites={sites} onClose={() => {}} />
+      </Profiler>
+    </>
+  );
+}
+
+describe("UpdateWizard — bot review of #766: pruning is synchronous with the render", () => {
+  const TARGET: WizardTarget = {
+    kind: "sites",
+    siteIds: ["site-a"],
+    updateKind: "plugins",
+  };
+
+  beforeEach(() => {
+    createUpdateRunMock.mockReset();
+    createUpdateRunMock.mockResolvedValue({
+      data: { id: "run-1" },
+      error: undefined,
+      response: { status: 201 },
+    });
+  });
+
+  it("never commits a render whose visible count still includes a slug this same refetch drops, and the eventual POST excludes it too", async () => {
+    const before = buildSite({
+      id: "site-a",
+      components: {
+        plugins: [
+          {
+            slug: "woo",
+            name: "Woo",
+            version: "8.0",
+            available_update: { new_version: "8.1" },
+          },
+          {
+            slug: "yoast",
+            name: "Yoast",
+            version: "20",
+            available_update: { new_version: "21" },
+          },
+        ],
+        themes: [],
+      },
+    });
+    // Same site, refetched: Woo's update is gone. Yoast is untouched. Same
+    // shape as the GH #763 tests above, but this test looks INSIDE the
+    // refetch's commit(s) rather than only at the settled end state.
+    const after = buildSite({
+      id: "site-a",
+      components: {
+        plugins: [
+          { slug: "woo", name: "Woo", version: "8.1" },
+          {
+            slug: "yoast",
+            name: "Yoast",
+            version: "20",
+            available_update: { new_version: "21" },
+          },
+        ],
+        themes: [],
+      },
+    });
+
+    const counts: number[] = [];
+    function captureCount() {
+      // Reads the SAME DOM the operator would see at this exact commit —
+      // not the settled end state. `buildItems()`/the submit-button label
+      // are both derived from `effectiveSelectedSlugs` in the same render,
+      // so this count is exactly what a click at this commit would post.
+      // `document.body`, not `container`: Radix's `DialogContent` portals
+      // its content to `document.body`, outside the RTL render container.
+      const match = document.body.textContent?.match(/(\d+) items? will be/);
+      if (match) counts.push(Number(match[1]));
+    }
+
+    renderWithProviders(
+      <ProfiledRefetchHarness
+        target={TARGET}
+        initialSites={[before]}
+        nextSites={[after]}
+        onCommit={captureCount}
+      />,
+      { withRouter: true },
+    );
+
+    await screen.findByRole("tab", { name: /plugins/i });
+    fireEvent.click(checkboxFor("Woo"));
+    fireEvent.click(checkboxFor("Yoast"));
+    expect(screen.getByText("2 items will be previewed.")).toBeInTheDocument();
+
+    // Only care about commits the refetch itself produces from here on.
+    counts.length = 0;
+    fireEvent.click(screen.getByText(/simulate live refetch/i));
+
+    // The refetch actually re-rendered the profiled subtree...
+    expect(counts.length).toBeGreaterThan(0);
+    // ...and EVERY one of those commits already excludes Woo — not just the
+    // last one. Before the fix, the first commit in this list is 2 (options
+    // already show Woo without an update, but the effect pruning it hasn't
+    // run yet) and only a LATER commit corrects it to 1.
+    expect(counts).toEqual(counts.map(() => 1));
+
+    // What settles on screen, and what a real submit posts, also excludes
+    // it — same proof shape as the #763 tests above.
+    expect(screen.getByText("1 item will be previewed.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /preview 1 update/i }));
+    await waitFor(() => expect(createUpdateRunMock).toHaveBeenCalledTimes(1));
+    const [{ body }] = createUpdateRunMock.mock.calls[0] as [
+      { body: UpdateRunCreate },
+    ];
+    expect(body.items).toEqual([
+      { type: "plugin", slug: "yoast", version: "latest" },
+    ]);
   });
 });
