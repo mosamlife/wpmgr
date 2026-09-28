@@ -154,7 +154,6 @@ var orgLevelPerms = map[Permission]struct{}{
 	PermAuditRead:     {},
 	PermAuditManage:   {},
 	PermTenantManage:  {},
-	PermSMTPManage:    {},
 	PermBillingManage: {},
 	// ADR-064 Decision 6 / m123: a site-scoped collaborator must never author
 	// organisation (layer 2) context, regardless of the role granted on the one

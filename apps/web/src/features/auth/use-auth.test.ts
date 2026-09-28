@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { isSuperadminAllowedPath, canWriteSiteContext } from "./use-auth";
+import {
+  isSuperadminAllowedPath,
+  canWriteSiteContext,
+  canManageInstanceEmail,
+} from "./use-auth";
 import type { Me } from "@wpmgr/api";
 
 // A superadmin has no org and is pinned to /admin by the _authed gate, EXCEPT
@@ -17,6 +21,22 @@ describe("isSuperadminAllowedPath", () => {
     expect(isSuperadminAllowedPath("/settings/security")).toBe(true);
   });
 
+  // Instance SMTP capability gating (5ae87b71): the settings allow-list
+  // grew exactly one entry, /settings/smtp — the exact string, admitted
+  // regardless of the actual capability (this function only names a
+  // PATH a superadmin may attempt to reach; the page itself refuses a
+  // superadmin the server does not admit via can_manage_instance_email).
+  it("allows /settings/smtp (the instance SMTP relay)", () => {
+    expect(isSuperadminAllowedPath("/settings/smtp")).toBe(true);
+  });
+
+  it("admits /settings/smtp exactly, and nothing merely prefixed by it", () => {
+    // A prefix-match bug here would silently open every /settings/smtp*
+    // path, not just the one route the server actually gates this way.
+    expect(isSuperadminAllowedPath("/settings/smtp-other")).toBe(false);
+    expect(isSuperadminAllowedPath("/settings/smtp/anything")).toBe(false);
+  });
+
   it("still keeps the superadmin OUT of the tenant-scoped shell", () => {
     expect(isSuperadminAllowedPath("/")).toBe(false);
     expect(isSuperadminAllowedPath("/sites")).toBe(false);
@@ -25,6 +45,34 @@ describe("isSuperadminAllowedPath", () => {
     expect(isSuperadminAllowedPath("/settings/organization")).toBe(false);
     expect(isSuperadminAllowedPath("/settings/billing")).toBe(false);
     expect(isSuperadminAllowedPath("/settings/members")).toBe(false);
+  });
+});
+
+// Instance SMTP capability gating (5ae87b71): canManageInstanceEmail reads
+// me.can_manage_instance_email directly and nothing else — the server
+// computes it from the same decision that gates GET/PUT
+// /api/v1/settings/smtp, so the client must never re-derive it from role or
+// org state.
+describe("canManageInstanceEmail", () => {
+  it("is true only when the server reports can_manage_instance_email: true", () => {
+    expect(
+      canManageInstanceEmail({ can_manage_instance_email: true } as unknown as Me),
+    ).toBe(true);
+  });
+
+  it("is false when the server reports can_manage_instance_email: false", () => {
+    expect(
+      canManageInstanceEmail({ can_manage_instance_email: false } as unknown as Me),
+    ).toBe(false);
+  });
+
+  it("is false when the field is absent (older API, or a pre-session Me response) — refused, never defaulted open", () => {
+    expect(canManageInstanceEmail({ memberships: [] } as unknown as Me)).toBe(false);
+  });
+
+  it("is false for a null/undefined me", () => {
+    expect(canManageInstanceEmail(null)).toBe(false);
+    expect(canManageInstanceEmail(undefined)).toBe(false);
   });
 });
 

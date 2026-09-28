@@ -59,8 +59,15 @@ export const smtpKeys = {
 // Hooks
 // ---------------------------------------------------------------------------
 
-/** GET /api/v1/settings/smtp */
-export function useSmtp(): UseQueryResult<SmtpSettings, Error> {
+/**
+ * GET /api/v1/settings/smtp. The route requires instance-level authority, so
+ * callers that already know the signed-in user lacks
+ * `me.can_manage_instance_email` should pass `enabled: false` rather than
+ * let this fire a request that can only 403.
+ */
+export function useSmtp(
+  options: { enabled?: boolean } = {},
+): UseQueryResult<SmtpSettings, Error> {
   return useQuery({
     queryKey: smtpKeys.detail(),
     queryFn: async () => {
@@ -72,6 +79,7 @@ export function useSmtp(): UseQueryResult<SmtpSettings, Error> {
     },
     staleTime: 60_000,
     retry: false,
+    enabled: options.enabled ?? true,
   });
 }
 

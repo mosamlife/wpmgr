@@ -2111,13 +2111,19 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
   # --- ADR-045 instance SMTP settings ------------------------------------------
+  # Every route below requires instance-level authority: a superadmin, or the
+  # owner of the only live organisation on the install. An active organisation
+  # is not required. A caller without that authority gets
+  # 403 instance_authority_required; a site-scoped principal gets
+  # 403 org_scope_required. Me.can_manage_instance_email reports the same
+  # decision for the signed-in user.
   /api/v1/settings/smtp:
     get:
       operationId: getSmtpSettings
       summary: Get the instance-wide SMTP settings (masked)
       description: |
-        Org-scoped (blocks site-scoped collaborators). Reads require admin+;
-        the stored password/secret is never returned in plaintext.
+        Requires instance-level authority. The stored password/secret is never
+        returned in plaintext.
       tags: [settings]
       responses:
         "200":
@@ -2129,11 +2135,15 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/Forbidden"
+          description: instance_authority_required (or org_scope_required for a site-scoped principal)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
     put:
       operationId: updateSmtpSettings
       summary: Update the instance-wide SMTP settings
-      description: Requires the `smtp.manage` permission (owner-only).
+      description: Requires instance-level authority.
       tags: [settings]
       requestBody:
         required: true
@@ -2151,7 +2161,11 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/Forbidden"
+          description: instance_authority_required (or org_scope_required for a site-scoped principal)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "422":
           $ref: "#/components/responses/UnprocessableEntity"
   /api/v1/settings/smtp/test:
@@ -2159,7 +2173,7 @@ paths:
       operationId: sendSmtpTestEmail
       summary: Send a test email through the stored SMTP config
       description: |
-        Requires the `smtp.manage` permission (owner-only). A send failure is
+        Requires instance-level authority. A send failure is
         returned as `200 {ok:false, message}` — the scrubbed reason string
         never contains internal IPs/hostnames — rather than a 4xx/5xx, so the
         UI can show it inline.
@@ -2191,7 +2205,11 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/Forbidden"
+          description: instance_authority_required (or org_scope_required for a site-scoped principal)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /api/v1/audit:
     get:
       operationId: listAudit
@@ -14925,6 +14943,19 @@ components:
             check server-side and return 402 byo_destination_required when
             denied. Restoring/downloading an existing backup is never gated
             by this or any other check.
+        can_manage_instance_email:
+          type: boolean
+          description: >
+            Whether the signed-in user may manage the install-wide SMTP relay
+            (GET, PUT and POST /test under /api/v1/settings/smtp). Computed by
+            the same decision that gates those routes, so it is true exactly
+            when they would admit this caller: instance-level authority
+            (a superadmin, or the owner of the only live organisation on the
+            install) and a principal that is not site-scoped. An active
+            organisation is not required. False whenever that decision cannot
+            be made. Present on GET and PATCH /auth/me; responses built before
+            the session exists (login, register, 2FA and OIDC completion) omit
+            it, and clients read it from the GET /auth/me that follows.
         desired_plan:
           type: string
           enum: [starter, agency, scale]
