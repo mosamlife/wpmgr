@@ -117,8 +117,15 @@ RETURNING *;
 -- connected in one statement. The generation was already advanced at re-enroll
 -- mint time (BeginSiteReEnrollment), so we do not bump it here. Mirrors the
 -- legacy AttachAgentToSite but driving connection_state.
+--
+-- url is optional. NULL keeps the stored address. A non-NULL value is written
+-- only when no other site in the same tenant already holds it, so an address
+-- conflict leaves the stored url in place and the enrollment still succeeds
+-- instead of failing on sites_tenant_id_url_key. The caller learns whether the
+-- address was adopted by comparing the returned url with the one it passed.
+-- Deciding WHICH address may be passed is the caller's job, not this query's.
 UPDATE sites
-SET agent_public_key = $3,
+SET agent_public_key = @agent_public_key,
     connection_state = 'connected',
     status           = 'active',
     health_status    = 'healthy',
@@ -126,15 +133,27 @@ SET agent_public_key = $3,
     last_seen_at     = now(),
     disconnected_at  = NULL,
     disconnected_reason = NULL,
-    wp_version       = $4,
-    php_version      = $5,
+    wp_version       = @wp_version,
+    php_version      = @php_version,
+    url              = CASE
+        WHEN sqlc.narg('url')::text IS NOT NULL
+         AND NOT EXISTS (
+             SELECT 1 FROM sites AS other
+             WHERE other.tenant_id = sites.tenant_id
+               AND other.url = sqlc.narg('url')::text
+               AND other.id <> sites.id
+         )
+        THEN sqlc.narg('url')::text
+        ELSE url
+    END,
     updated_at       = now()
 -- Defense-in-depth (Phase 6 review, finding E): consume only from
 -- 'pending_enrollment'. A code is bound to a site BeginReEnrollment already moved
 -- to pending_enrollment, so this holds on the happy path; the guard stops a
 -- stale-but-valid code from forcing a connected/degraded/revoked/archived site
 -- back to 'connected' out of sequence (a loser yields ErrNoRows like an expired code).
-WHERE id = $1 AND tenant_id = $2 AND connection_state = 'pending_enrollment'
+WHERE sites.id = @id AND sites.tenant_id = @tenant_id
+  AND sites.connection_state = 'pending_enrollment'
 RETURNING *;
 
 -- name: CreatePendingSite :one
@@ -152,6 +171,19 @@ RETURNING *;
 -- site_id + connection_state instead of hitting the unique-index violation.
 SELECT id, connection_state FROM sites
 WHERE tenant_id = $1 AND url = $2
+LIMIT 1;
+
+-- name: GetSiteByAnyURL :one
+-- Variant-aware URL-dedup check before MintEnrollmentCode. The caller passes
+-- every spelling it treats as the same site (for example with and without a
+-- leading "www.", http and https), in priority order. Tenant-scoped and, like
+-- GetSiteByURLForMint, includes ALL states so the caller can answer a
+-- structured 409. When several variants exist, the one listed first in urls
+-- wins, so passing the exact URL first reports an exact match ahead of a
+-- variant. Served by sites_tenant_id_url_key.
+SELECT id, url, connection_state FROM sites
+WHERE tenant_id = @tenant_id AND url = ANY(@urls::text[])
+ORDER BY array_position(@urls::text[], url), id
 LIMIT 1;
 
 -- ---------------------------------------------------------------------------

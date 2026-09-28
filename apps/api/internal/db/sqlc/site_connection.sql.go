@@ -80,7 +80,7 @@ func (q *Queries) ArchiveSite(ctx context.Context, arg ArchiveSiteParams) (Site,
 
 const attachAgentAndConnect = `-- name: AttachAgentAndConnect :one
 UPDATE sites
-SET agent_public_key = $3,
+SET agent_public_key = $1,
     connection_state = 'connected',
     status           = 'active',
     health_status    = 'healthy',
@@ -88,19 +88,32 @@ SET agent_public_key = $3,
     last_seen_at     = now(),
     disconnected_at  = NULL,
     disconnected_reason = NULL,
-    wp_version       = $4,
-    php_version      = $5,
+    wp_version       = $2,
+    php_version      = $3,
+    url              = CASE
+        WHEN $4::text IS NOT NULL
+         AND NOT EXISTS (
+             SELECT 1 FROM sites AS other
+             WHERE other.tenant_id = sites.tenant_id
+               AND other.url = $4::text
+               AND other.id <> sites.id
+         )
+        THEN $4::text
+        ELSE url
+    END,
     updated_at       = now()
-WHERE id = $1 AND tenant_id = $2 AND connection_state = 'pending_enrollment'
+WHERE sites.id = $5 AND sites.tenant_id = $6
+  AND sites.connection_state = 'pending_enrollment'
 RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, components_updated_at, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, created_at, updated_at
 `
 
 type AttachAgentAndConnectParams struct {
-	ID             uuid.UUID `json:"id"`
-	TenantID       uuid.UUID `json:"tenant_id"`
 	AgentPublicKey string    `json:"agent_public_key"`
 	WpVersion      string    `json:"wp_version"`
 	PhpVersion     string    `json:"php_version"`
+	Url            *string   `json:"url"`
+	ID             uuid.UUID `json:"id"`
+	TenantID       uuid.UUID `json:"tenant_id"`
 }
 
 // Enroll path (app.enroll GUC): the site-first consume transition. Stores the
@@ -108,6 +121,13 @@ type AttachAgentAndConnectParams struct {
 // connected in one statement. The generation was already advanced at re-enroll
 // mint time (BeginSiteReEnrollment), so we do not bump it here. Mirrors the
 // legacy AttachAgentToSite but driving connection_state.
+//
+// url is optional. NULL keeps the stored address. A non-NULL value is written
+// only when no other site in the same tenant already holds it, so an address
+// conflict leaves the stored url in place and the enrollment still succeeds
+// instead of failing on sites_tenant_id_url_key. The caller learns whether the
+// address was adopted by comparing the returned url with the one it passed.
+// Deciding WHICH address may be passed is the caller's job, not this query's.
 // Defense-in-depth (Phase 6 review, finding E): consume only from
 // 'pending_enrollment'. A code is bound to a site BeginReEnrollment already moved
 // to pending_enrollment, so this holds on the happy path; the guard stops a
@@ -115,11 +135,12 @@ type AttachAgentAndConnectParams struct {
 // back to 'connected' out of sequence (a loser yields ErrNoRows like an expired code).
 func (q *Queries) AttachAgentAndConnect(ctx context.Context, arg AttachAgentAndConnectParams) (Site, error) {
 	row := q.db.QueryRow(ctx, attachAgentAndConnect,
-		arg.ID,
-		arg.TenantID,
 		arg.AgentPublicKey,
 		arg.WpVersion,
 		arg.PhpVersion,
+		arg.Url,
+		arg.ID,
+		arg.TenantID,
 	)
 	var i Site
 	err := row.Scan(
@@ -329,6 +350,38 @@ func (q *Queries) DeleteCancellableSite(ctx context.Context, arg DeleteCancellab
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const getSiteByAnyURL = `-- name: GetSiteByAnyURL :one
+SELECT id, url, connection_state FROM sites
+WHERE tenant_id = $1 AND url = ANY($2::text[])
+ORDER BY array_position($2::text[], url), id
+LIMIT 1
+`
+
+type GetSiteByAnyURLParams struct {
+	TenantID uuid.UUID `json:"tenant_id"`
+	Urls     []string  `json:"urls"`
+}
+
+type GetSiteByAnyURLRow struct {
+	ID              uuid.UUID `json:"id"`
+	Url             string    `json:"url"`
+	ConnectionState string    `json:"connection_state"`
+}
+
+// Variant-aware URL-dedup check before MintEnrollmentCode. The caller passes
+// every spelling it treats as the same site (for example with and without a
+// leading "www.", http and https), in priority order. Tenant-scoped and, like
+// GetSiteByURLForMint, includes ALL states so the caller can answer a
+// structured 409. When several variants exist, the one listed first in urls
+// wins, so passing the exact URL first reports an exact match ahead of a
+// variant. Served by sites_tenant_id_url_key.
+func (q *Queries) GetSiteByAnyURL(ctx context.Context, arg GetSiteByAnyURLParams) (GetSiteByAnyURLRow, error) {
+	row := q.db.QueryRow(ctx, getSiteByAnyURL, arg.TenantID, arg.Urls)
+	var i GetSiteByAnyURLRow
+	err := row.Scan(&i.ID, &i.Url, &i.ConnectionState)
+	return i, err
 }
 
 const getSiteByURLForMint = `-- name: GetSiteByURLForMint :one
