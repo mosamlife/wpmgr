@@ -154,7 +154,7 @@ func (f *fakeRepo) PairingCodeSiteID(_ context.Context, _ string) (uuid.UUID, bo
 	return uuid.Nil, false, nil
 }
 
-func (f *fakeRepo) GetSiteByURL(_ context.Context, _ uuid.UUID, _ string) (SiteURLHit, bool, error) {
+func (f *fakeRepo) GetSiteByAnyURL(_ context.Context, _ uuid.UUID, _ []string) (SiteURLHit, bool, error) {
 	return SiteURLHit{}, false, nil
 }
 
