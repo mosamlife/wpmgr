@@ -780,7 +780,7 @@ func TestRetryAfterCoversTheLongestWait(t *testing.T) {
 		t.Errorf("Retry-After = %d, want %d (the source's wait; the pair's is %v)", secs, want, pairWait)
 	}
 	if r := decodeRefusal(t, w); r.Details.Scope != "source" || r.Details.RetryAfterSeconds != secs {
-		t.Errorf("details = %+v, want scope source and retry_after_seconds %d", r.Details, secs)
+		t.Errorf("details = %+v, want scope source and retry_after_seconds equal to the header's %d", r.Details, secs)
 	}
 
 	// The contract a client relies on: waiting exactly Retry-After is enough.
@@ -793,8 +793,10 @@ func TestRetryAfterCoversTheLongestWait(t *testing.T) {
 // shorter than the window, that sweep would drop a drained pair whose window is
 // still running and it would come back with its whole budget.
 func TestIdleSweepNeverResetsADrainedPairWithinTheWindow(t *testing.T) {
+	// Errorf, not Fatalf: the behavioural half below must also run, and fail,
+	// when the constant is wrong.
 	if loginBucketIdle < loginWindow {
-		t.Fatalf("loginBucketIdle (%s) is shorter than loginWindow (%s)", loginBucketIdle, loginWindow)
+		t.Errorf("loginBucketIdle (%s) is shorter than loginWindow (%s)", loginBucketIdle, loginWindow)
 	}
 	for _, after := range []time.Duration{2 * time.Minute, loginWindow / 2, loginWindow - time.Second} {
 		t.Run(after.String(), func(t *testing.T) {
