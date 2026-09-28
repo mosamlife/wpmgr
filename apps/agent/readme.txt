@@ -287,7 +287,7 @@ This plugin ships two minified JavaScript files. Their human-readable source and
 The entries below summarize the notable changes since 0.31.1. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
 
 = 0.61.152 =
-* Fixed: the plugin now checks whether each key it has stored still opens under this site's current encryption key. If some do not, the WordPress admin screen shows a notice naming which keys cannot be read and what to do about it, and a backup is refused with a clear explanation instead of failing later. Status is reported to the dashboard along with the rest of this site's metadata. A missing backup key is only created while this site's own keys still open.
+* Fixed: the plugin now checks whether each key it has stored still opens under this site's current encryption key. If some do not, the WordPress admin screen shows a notice naming which keys cannot be read and what to do about it. When the backup key cannot be used, a backup is refused with a clear explanation instead of failing later. Status is reported to the dashboard along with the rest of this site's metadata. A missing backup key is only created while this site's own keys still open.
 
 = 0.61.151 =
 * Fixed: a router log line that carries an exception message now escapes control characters, so a command failure is always one readable line in the debug log, instead of one that could break across lines or lose part of its own text. What is sent back to the control plane is unchanged.
@@ -469,7 +469,7 @@ The entries below summarize the notable changes since 0.31.1. This project ships
 == Upgrade Notice ==
 
 = 0.61.152 =
-Detects when a stored key no longer opens, shows an admin notice naming which and what to do, and refuses a backup with a clear reason instead of failing later.
+Detects when a stored key no longer opens, shows an admin notice naming which and what to do, and refuses a backup with a clear reason when the backup key cannot be used.
 
 = 0.61.151 =
 Router log lines now escape control characters, so a command failure always reads as one line in the debug log instead of one that could break apart. What is sent to the control plane is unchanged.

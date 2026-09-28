@@ -16,7 +16,7 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ### Fixed
 
-- The agent now checks whether each key it has stored still opens under the site's current encryption key. When some do not, WordPress admin shows a notice naming which keys cannot be read and what to do about it, and a backup is refused with a clear keystore_unreadable explanation instead of failing later. Status is reported to the dashboard with the agent's metadata, and a missing backup key is created only while the site's own keys open (#753). Agent 0.61.152.
+- The agent now checks whether each key it has stored still opens under the site's current encryption key. When some do not, WordPress admin shows a notice naming which keys cannot be read and what to do about it. When the backup key cannot be used, a backup is refused with a clear keystore_unreadable explanation instead of failing later. Status is reported to the dashboard with the agent's metadata, and a missing backup key is created only while the site's own keys open (#753). Agent 0.61.152.
 
 ## [0.61.164] - 2026-09-28
 
