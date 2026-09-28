@@ -687,9 +687,15 @@ func TestPeerFallbackIsNeverRefused(t *testing.T) {
 		t.Run(shape.name, func(t *testing.T) {
 			g, logs := newEnforceGate(t)
 			e := loginHandlerForTest(t, g, 2)
-			const attempts = loginSrcBudget * 3
-			for i := 0; i < attempts; i++ {
-				assertAdmitted(t, postLoginVia(e, shape.xff, peer+":4444", victim), fmt.Sprintf("stranger attempt %d", i+1))
+			// Past the pair budget on the victim, then past the source budget
+			// across other accounts. (An attempt over the pair charges nothing,
+			// so the first loop alone leaves the source with budget.)
+			const attempts = loginPairBudget*3 + loginSrcBudget*2
+			for i := 0; i < loginPairBudget*3; i++ {
+				assertAdmitted(t, postLoginVia(e, shape.xff, peer+":4444", victim), fmt.Sprintf("stranger attempt %d on the victim", i+1))
+			}
+			for i := 0; i < loginSrcBudget*2; i++ {
+				assertAdmitted(t, postLoginVia(e, shape.xff, peer+":4444", fmt.Sprintf("spray%d[at]example.test", i)), fmt.Sprintf("stranger attempt %d across accounts", i+1))
 			}
 			// Control: the shared key really is past both refusing budgets, so
 			// the admissions above are not vacuous.
