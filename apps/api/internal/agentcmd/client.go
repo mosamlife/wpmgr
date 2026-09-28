@@ -21,6 +21,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/httpclient"
+	"github.com/mosamlife/wpmgr/apps/api/internal/siteaddr"
 )
 
 // commandPathFormat is the agent's signed-command REST route (class-router.php).
@@ -958,7 +959,8 @@ func (c *Client) postRaw(ctx context.Context, siteID uuid.UUID, siteURL, command
 }
 
 // joinCommandURL builds {siteURL}/wp-json/wpmgr/v1/command/{command}, tolerating
-// a trailing slash on the site URL and rejecting a non-http(s) scheme.
+// a trailing slash on the site URL (siteaddr.NormalizePath, the same path form
+// the address rule compares) and rejecting a non-http(s) scheme.
 func joinCommandURL(siteURL, command string) (string, error) {
 	u, err := url.Parse(strings.TrimSpace(siteURL))
 	if err != nil {
@@ -970,7 +972,7 @@ func joinCommandURL(siteURL, command string) (string, error) {
 	if u.Host == "" {
 		return "", fmt.Errorf("site url has no host")
 	}
-	u.Path = strings.TrimRight(u.Path, "/") + fmt.Sprintf(commandPathFormat, command)
+	u.Path = siteaddr.NormalizePath(u.Path) + fmt.Sprintf(commandPathFormat, command)
 	u.RawQuery = ""
 	u.Fragment = ""
 	return u.String(), nil

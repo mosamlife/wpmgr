@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/mosamlife/wpmgr/apps/api/internal/siteaddr"
 )
 
 func TestPlanEnrollURL(t *testing.T) {
@@ -37,6 +39,13 @@ func TestPlanEnrollURL(t *testing.T) {
 		{"ipv4 upgrade", "http://192.0.2.10", "https://192.0.2.10", enrollURLAdopt, "https://192.0.2.10"},
 		{"ipv6 upgrade", "http://[2001:db8::1]", "https://[2001:db8::1]", enrollURLAdopt, "https://[2001:db8::1]"},
 		{"idn www toggle, same form", "https://bücher.example", "https://www.bücher.example", enrollURLAdopt, "https://www.bücher.example"},
+		// A host is adopted in its own spelling with only its ASCII letters
+		// lowercased, so it dials the key that was compared.
+		{"capital dotted I upgrade keeps its spelling", "http://İstanbul.test", "https://İstanbul.test", enrollURLAdopt, "https://İstanbul.test"},
+		{"capital dotted I www toggle", "https://İstanbul.test", "https://www.İstanbul.test", enrollURLAdopt, "https://www.İstanbul.test"},
+		{"capital sharp s upgrade keeps its spelling", "http://STRAẞE.test", "https://STRAẞE.test", enrollURLAdopt, "https://straẞe.test"},
+		{"capital sharp s www toggle", "https://STRAẞE.test", "https://www.STRAẞE.test", enrollURLAdopt, "https://www.straẞe.test"},
+		{"underscore label upgrade", "http://my_site.test", "https://my_site.test", enrollURLAdopt, "https://my_site.test"},
 
 		// Flagged: anything else keeps the stored address.
 		{"https to http downgrade", "https://example.com", "http://example.com", enrollURLMismatch, ""},
@@ -62,6 +71,14 @@ func TestPlanEnrollURL(t *testing.T) {
 		{"reported other scheme", "https://example.com", "ftp://www.example.com", enrollURLMismatch, ""},
 		{"reported empty", "https://example.com", "", enrollURLMismatch, ""},
 		{"stored unparseable", "not a url", "https://www.example.com", enrollURLMismatch, ""},
+		// Equal only under Unicode lowercasing: another name, or one kept
+		// apart rather than guessed at.
+		{"dotted I vs its Unicode lowercase", "http://İstanbul.test", "https://istanbul.test", enrollURLMismatch, ""},
+		{"dotted I www vs its Unicode lowercase", "https://İstanbul.test", "https://www.istanbul.test", enrollURLMismatch, ""},
+		{"sharp s vs its Unicode lowercase", "https://STRAẞE.test", "https://straße.test", enrollURLMismatch, ""},
+		{"sharp s upgrade vs its Unicode lowercase", "http://STRAẞE.test", "https://straße.test", enrollURLMismatch, ""},
+		{"non-ASCII letter case only", "https://BÜCHER.de", "https://bücher.de", enrollURLMismatch, ""},
+		{"fullwidth www label", "https://ＷＷＷ.example.test", "https://www.ＷＷＷ.example.test", enrollURLMismatch, ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -92,6 +109,18 @@ func TestPlanEnrollURL(t *testing.T) {
 			}
 			if s.Scheme == "https" && a.Scheme != "https" {
 				t.Fatalf("adopted a downgrade: %q", got.To)
+			}
+			// The adopted address dials the stored host's key (a scheme-only
+			// change) or that key's www sibling (a host change).
+			su, _ := url.Parse(c.stored)
+			tu, _ := url.Parse(got.To)
+			want, okW := siteaddr.HostKey(su.Hostname())
+			if a.Host != s.Host {
+				want, okW = siteaddr.WWWSibling(want)
+			}
+			key, okK := siteaddr.HostKey(tu.Hostname())
+			if !okW || !okK || key != want {
+				t.Fatalf("adopted address %q dials %q, compared %q", got.To, key, want)
 			}
 		})
 	}
