@@ -79,6 +79,12 @@ func TestGH402_M114_ConvergesADatabaseThatAppliedThePreReviewM113(t *testing.T) 
 	pool := startPostgres(t)
 	admin := connectAdmin(t, pool)
 	defer admin.Close()
+	// owner re-applies the migration itself, AS wpmgr_owner — the real boot
+	// migrator's role, not the bootstrap superuser connectAdmin returns; admin
+	// stays for the regress/seed/tamper steps, which need to bypass
+	// site_object_reclaim's FORCE RLS with no GUC in scope.
+	owner := connectOwner(t, pool)
+	defer owner.Close()
 	ctx := context.Background()
 
 	gh402RegressToPreReviewM113(t, admin)
@@ -91,7 +97,7 @@ func TestGH402_M114_ConvergesADatabaseThatAppliedThePreReviewM113(t *testing.T) 
 
 	// Boot the server's migrator, exactly as cmd/wpmgr does on startup. m113 is
 	// still recorded as applied and is skipped; m114 is not, and runs.
-	if err := admin.Migrate(ctx); err != nil {
+	if err := owner.Migrate(ctx); err != nil {
 		t.Fatalf("boot migration: %v", err)
 	}
 
@@ -131,6 +137,8 @@ func TestGH402_M114_IsANoOpOnAHealthyDatabase(t *testing.T) {
 	pool := startPostgres(t)
 	admin := connectAdmin(t, pool)
 	defer admin.Close()
+	owner := connectOwner(t, pool)
+	defer owner.Close()
 	ctx := context.Background()
 
 	// startPostgres already applied everything, m114 included. Re-running it
@@ -140,7 +148,7 @@ func TestGH402_M114_IsANoOpOnAHealthyDatabase(t *testing.T) {
 			`DELETE FROM schema_migrations WHERE version = $1`, gh402M114Version); err != nil {
 			t.Fatalf("unmark m114: %v", err)
 		}
-		if err := admin.Migrate(ctx); err != nil {
+		if err := owner.Migrate(ctx); err != nil {
 			t.Fatalf("re-apply m114 (round %d): %v", i+1, err)
 		}
 		if gh402TenantFKExists(t, admin) {
