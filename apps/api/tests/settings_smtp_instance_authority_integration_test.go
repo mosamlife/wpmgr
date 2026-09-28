@@ -256,9 +256,18 @@ type smtpIAResp struct {
 }
 
 func smtpIADo(e *gin.Engine, ctx context.Context, method, path, body string) smtpIAResp {
+	return smtpIADoAs(e, ctx, "", method, path, body)
+}
+
+// smtpIADoAs is smtpIADo with an X-Tenant-ID header naming tenantHeader, when
+// it is not empty.
+func smtpIADoAs(e *gin.Engine, ctx context.Context, tenantHeader, method, path, body string) smtpIAResp {
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(method, path, strings.NewReader(body)).WithContext(ctx)
 	req.Header.Set("Content-Type", "application/json")
+	if tenantHeader != "" {
+		req.Header.Set(middleware.HeaderTenantOverride, tenantHeader)
+	}
 	e.ServeHTTP(w, req)
 	var env struct {
 		Code string `json:"code"`
@@ -279,12 +288,18 @@ const (
 // requireAllRefused asserts GET, PUT and POST /test all answer the gate's 403.
 func requireAllRefused(t *testing.T, e *gin.Engine, ctx context.Context) {
 	t.Helper()
+	requireAllRefusedAs(t, e, ctx, "")
+}
+
+// requireAllRefusedAs is requireAllRefused with an X-Tenant-ID header.
+func requireAllRefusedAs(t *testing.T, e *gin.Engine, ctx context.Context, tenantHeader string) {
+	t.Helper()
 	for _, c := range []struct{ method, path, body string }{
 		{http.MethodGet, smtpPath, ""},
 		{http.MethodPut, smtpPath, smtpPutBody},
 		{http.MethodPost, smtpTestPath, smtpTestBody},
 	} {
-		r := smtpIADo(e, ctx, c.method, c.path, c.body)
+		r := smtpIADoAs(e, ctx, tenantHeader, c.method, c.path, c.body)
 		if r.status != http.StatusForbidden || r.code != settings.InstanceAuthorityRequiredCode {
 			t.Errorf("%s %s: got %d %q (%s); want 403 %q",
 				c.method, c.path, r.status, r.code, r.body, settings.InstanceAuthorityRequiredCode)
@@ -296,12 +311,18 @@ func requireAllRefused(t *testing.T, e *gin.Engine, ctx context.Context) {
 // succeed, and that the PUT really wrote the row.
 func requireAllAdmitted(t *testing.T, s *smtpIAStack, e *gin.Engine, ctx context.Context) {
 	t.Helper()
+	requireAllAdmittedAs(t, s, e, ctx, "")
+}
+
+// requireAllAdmittedAs is requireAllAdmitted with an X-Tenant-ID header.
+func requireAllAdmittedAs(t *testing.T, s *smtpIAStack, e *gin.Engine, ctx context.Context, tenantHeader string) {
+	t.Helper()
 	before, _ := s.smtpRow(t)
 
-	if r := smtpIADo(e, ctx, http.MethodGet, smtpPath, ""); r.status != http.StatusOK {
+	if r := smtpIADoAs(e, ctx, tenantHeader, http.MethodGet, smtpPath, ""); r.status != http.StatusOK {
 		t.Errorf("GET: got %d %q (%s); want 200", r.status, r.code, r.body)
 	}
-	r := smtpIADo(e, ctx, http.MethodPut, smtpPath, smtpPutBody)
+	r := smtpIADoAs(e, ctx, tenantHeader, http.MethodPut, smtpPath, smtpPutBody)
 	if r.status != http.StatusOK {
 		t.Errorf("PUT: got %d %q (%s); want 200", r.status, r.code, r.body)
 	}
@@ -312,7 +333,7 @@ func requireAllAdmitted(t *testing.T, s *smtpIAStack, e *gin.Engine, ctx context
 	// The handler answers 200 with {ok, message}; the stored config is disabled,
 	// so ok is false and nothing is sent. Seeing that shape proves the request
 	// reached the handler.
-	tr := smtpIADo(e, ctx, http.MethodPost, smtpTestPath, smtpTestBody)
+	tr := smtpIADoAs(e, ctx, tenantHeader, http.MethodPost, smtpTestPath, smtpTestBody)
 	var res struct {
 		OK      *bool  `json:"ok"`
 		Message string `json:"message"`
@@ -328,7 +349,13 @@ func requireAllAdmitted(t *testing.T, s *smtpIAStack, e *gin.Engine, ctx context
 // fails: absence must never be what a test reads as false.
 func requireCapability(t *testing.T, e *gin.Engine, ctx context.Context, want bool) {
 	t.Helper()
-	r := smtpIADo(e, ctx, http.MethodGet, "/auth/me", "")
+	requireCapabilityAs(t, e, ctx, "", want)
+}
+
+// requireCapabilityAs is requireCapability with an X-Tenant-ID header.
+func requireCapabilityAs(t *testing.T, e *gin.Engine, ctx context.Context, tenantHeader string, want bool) {
+	t.Helper()
+	r := smtpIADoAs(e, ctx, tenantHeader, http.MethodGet, "/auth/me", "")
 	if r.status != http.StatusOK {
 		t.Fatalf("GET /auth/me: got %d (%s); want 200", r.status, r.body)
 	}
@@ -522,12 +549,19 @@ func TestSMTPSettings_MultiTenantInstall_InstanceAuthority(t *testing.T) {
 		requireCapability(t, e, ctx, false)
 	})
 
-	t.Run("superadmin with a membership is admitted on GET, PUT and POST /test", func(t *testing.T) {
+	// The instance trail records a superadmin's change; the organisation the
+	// superadmin has active (here one where they are only a viewer) does not.
+	t.Run("superadmin with a membership is admitted and recorded in the instance trail only", func(t *testing.T) {
 		ctx := s.session(t, superU.ID, tenantB)
 		requireCapability(t, e, ctx, true)
+		sysBefore := s.systemAuditUpdates(t, superU.ID)
+		orgBefore := s.tenantAuditUpdates(t, tenantB, superU.ID)
 		requireAllAdmitted(t, s, e, ctx)
-		if n := s.tenantAuditUpdates(t, tenantB, superU.ID); n < 1 {
-			t.Errorf("PUT with an active organisation left %d audit_log rows in it; want at least 1", n)
+		if n := s.systemAuditUpdates(t, superU.ID); n != sysBefore+1 {
+			t.Errorf("system_audit_log rows for the superadmin went %d -> %d; want exactly one more", sysBefore, n)
+		}
+		if n := s.tenantAuditUpdates(t, tenantB, superU.ID); n != orgBefore {
+			t.Errorf("audit_log rows in the superadmin's active organisation went %d -> %d; want unchanged", orgBefore, n)
 		}
 	})
 
@@ -571,9 +605,54 @@ func TestSMTPSettings_SingleTenantInstall_InstanceAuthority(t *testing.T) {
 	t.Run("sole owner is admitted on GET, PUT and POST /test with no superadmin configured", func(t *testing.T) {
 		ctx := s.session(t, owner.ID, tenant)
 		requireCapability(t, e, ctx, true)
+		sysBefore := s.systemAuditUpdates(t, owner.ID)
+		orgBefore := s.tenantAuditUpdates(t, tenant, owner.ID)
 		requireAllAdmitted(t, s, e, ctx)
-		if n := s.tenantAuditUpdates(t, tenant, owner.ID); n < 1 {
-			t.Errorf("PUT by the sole owner left %d audit_log rows in their organisation; want at least 1", n)
+		if n := s.systemAuditUpdates(t, owner.ID); n != sysBefore+1 {
+			t.Errorf("system_audit_log rows for the sole owner went %d -> %d; want exactly one more", sysBefore, n)
+		}
+		if n := s.tenantAuditUpdates(t, tenant, owner.ID); n != orgBefore+1 {
+			t.Errorf("audit_log rows in the sole organisation went %d -> %d; want exactly one more", orgBefore, n)
+		}
+	})
+
+	// The organisation that records the owner's change is the one the owner
+	// was admitted for, whatever organisation the request names.
+	t.Run("sole owner naming an unknown organisation is recorded in both trails", func(t *testing.T) {
+		ctx := s.session(t, owner.ID, tenant)
+		unknown := uuid.NewString()
+		requireCapabilityAs(t, e, ctx, unknown, true)
+		sysBefore := s.systemAuditUpdates(t, owner.ID)
+		orgBefore := s.tenantAuditUpdates(t, tenant, owner.ID)
+		requireAllAdmittedAs(t, s, e, ctx, unknown)
+		if n := s.systemAuditUpdates(t, owner.ID); n != sysBefore+1 {
+			t.Errorf("system_audit_log rows for the sole owner went %d -> %d; want exactly one more", sysBefore, n)
+		}
+		if n := s.tenantAuditUpdates(t, tenant, owner.ID); n != orgBefore+1 {
+			t.Errorf("audit_log rows in the sole organisation went %d -> %d; want exactly one more", orgBefore, n)
+		}
+	})
+
+	// A signed-in user with no membership anywhere and no superadmin flag
+	// holds no instance authority, with or without an organisation named.
+	t.Run("user with no organisation and no instance authority is refused", func(t *testing.T) {
+		stranger := seedUserOnly(t, s.authRepo, "smtp-ia-solo-stranger-"+sfx+"@example.com")
+		if isSA, err := admingate.NewPoolStore(s.pool).IsSuperadmin(context.Background(), stranger.ID); err != nil || isSA {
+			t.Fatalf("PREMISE FAILED: IsSuperadmin(stranger) = %v, %v; want false, nil", isSA, err)
+		}
+		for _, tc := range []struct{ name, header string }{
+			{"plain session", ""},
+			{"naming the sole organisation", tenant.String()},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				before, _ := s.smtpRow(t)
+				ctx := s.session(t, stranger.ID, uuid.Nil)
+				requireAllRefusedAs(t, e, ctx, tc.header)
+				if after, _ := s.smtpRow(t); after != before {
+					t.Errorf("smtp_settings changed under refused requests")
+				}
+				requireCapabilityAs(t, e, ctx, tc.header, false)
+			})
 		}
 	})
 
