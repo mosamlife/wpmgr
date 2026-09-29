@@ -2965,7 +2965,9 @@ type Querier interface {
 	// has a provider pinned, and either a stored subscription id, or, for Stripe
 	// only, a stored customer id with no subscription id. The second half finds a
 	// Stripe subscription whose activation never reached this database; the
-	// caller looks it up by the returned customer id and nothing else.
+	// caller looks it up by the returned customer id and nothing else. plan_status
+	// is returned so the caller can also look up a Stripe tenant whose stored
+	// subscription is no longer live.
 	//
 	// Soft-deleted tenants are included, so a subscription still live on a
 	// deleted workspace is found. Not paginated, ordered by id.
