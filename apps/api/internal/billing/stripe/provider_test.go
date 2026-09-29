@@ -26,6 +26,8 @@ func testConfig() Config {
 		PriceStarter:  "price_starter",
 		PriceAgency:   "price_agency",
 		PriceScale:    "price_scale",
+
+		PortalConfigurationID: "bpc_wpmgr",
 	}
 }
 

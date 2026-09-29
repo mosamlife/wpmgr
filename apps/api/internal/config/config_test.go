@@ -106,6 +106,20 @@ func TestLoadUpdateApplyHTTPTimeoutEnv(t *testing.T) {
 	}
 }
 
+// TestLoadStripePortalConfigurationEnv proves
+// WPMGR_BILLING_STRIPE_PORTAL_CONFIGURATION binds to
+// Billing.Stripe.PortalConfiguration.
+func TestLoadStripePortalConfigurationEnv(t *testing.T) {
+	t.Setenv("WPMGR_BILLING_STRIPE_PORTAL_CONFIGURATION", "bpc_test_123")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Billing.Stripe.PortalConfiguration; got != "bpc_test_123" {
+		t.Fatalf("Billing.Stripe.PortalConfiguration = %q, want bpc_test_123", got)
+	}
+}
+
 // TestLoadAgentMirrorDefaults is the GH #302 off-by-default lock. The upstream
 // agent-release mirror is the one job that fetches from the public internet and
 // writes a binary into the operator's own storage, so merging it must change
@@ -344,12 +358,75 @@ func TestValidateHostedWithNoBillingProviderIsLegal(t *testing.T) {
 func TestValidateHostedWithFullStripeConfigIsLegal(t *testing.T) {
 	cfg := Config{Auth: AuthConfig{SessionSecret: strings.Repeat("a", 32)}}
 	cfg.Hosted.Enabled = true
-	cfg.Billing.Stripe = StripeConfig{
-		SecretKey: "sk_live_x", WebhookSecret: "whsec_x",
-		PriceStarter: "price_1", PriceAgency: "price_2", PriceScale: "price_3",
-	}
+	cfg.Billing.Stripe = fullStripeConfig()
 	if issues := Validate(cfg); len(issues) != 0 {
 		t.Fatalf("Validate() with a fully-configured Stripe returned issues: %+v", issues)
+	}
+}
+
+func fullStripeConfig() StripeConfig {
+	return StripeConfig{
+		SecretKey: "rk_live_x", WebhookSecret: "whsec_x",
+		PriceStarter: "price_1", PriceAgency: "price_2", PriceScale: "price_3",
+		PortalConfiguration: "bpc_x",
+	}
+}
+
+// TestValidateHostedStripe_PortalConfigurationRequired proves the portal
+// configuration is one of the all-or-nothing Stripe fields: a config with
+// everything else set is refused without it.
+func TestValidateHostedStripe_PortalConfigurationRequired(t *testing.T) {
+	cfg := Config{Auth: AuthConfig{SessionSecret: strings.Repeat("a", 32)}}
+	cfg.Hosted.Enabled = true
+	cfg.Billing.Stripe = fullStripeConfig()
+	cfg.Billing.Stripe.PortalConfiguration = ""
+	issues := Validate(cfg)
+	if len(issues) != 1 || issues[0].Name != "WPMGR_BILLING_STRIPE_PORTAL_CONFIGURATION" {
+		t.Fatalf("Validate() without the portal configuration = %+v, want exactly one issue naming it", issues)
+	}
+}
+
+// TestValidateHostedStripe_LiveSecretKeyRefused proves a full live secret key
+// is refused when hosted, while live and test restricted keys and a test
+// secret key pass.
+func TestValidateHostedStripe_LiveSecretKeyRefused(t *testing.T) {
+	for key, wantRefused := range map[string]bool{
+		"sk_live_abc": true,
+		"rk_live_abc": false,
+		"rk_test_abc": false,
+		"sk_test_abc": false,
+	} {
+		cfg := Config{Auth: AuthConfig{SessionSecret: strings.Repeat("a", 32)}}
+		cfg.Hosted.Enabled = true
+		cfg.Billing.Stripe = fullStripeConfig()
+		cfg.Billing.Stripe.SecretKey = key
+		issues := Validate(cfg)
+		refused := len(issues) == 1 && issues[0].Name == "WPMGR_BILLING_STRIPE_SECRET_KEY"
+		if refused != wantRefused || (!wantRefused && len(issues) != 0) {
+			t.Errorf("key %s: issues = %+v, want refused=%v", key, issues, wantRefused)
+		}
+	}
+}
+
+// TestAdvisories_StripeSetWhileNotHosted proves Stripe variables on an
+// instance without hosted billing raise an advisory, and do not when hosted.
+func TestAdvisories_StripeSetWhileNotHosted(t *testing.T) {
+	has := func(cfg Config) bool {
+		for _, is := range Advisories(cfg) {
+			if strings.Contains(is.Reason, "WPMGR_HOSTED is off") {
+				return true
+			}
+		}
+		return false
+	}
+	cfg := Config{Auth: AuthConfig{SessionSecret: strings.Repeat("a", 32)}}
+	cfg.Billing.Stripe = fullStripeConfig()
+	if !has(cfg) {
+		t.Fatal("Stripe variables set with hosted off raised no advisory")
+	}
+	cfg.Hosted.Enabled = true
+	if has(cfg) {
+		t.Fatal("hosted on raised the not-hosted Stripe advisory")
 	}
 }
 
@@ -361,11 +438,11 @@ func TestValidateHostedWithFullStripeConfigIsLegal(t *testing.T) {
 func TestValidateHostedWithPartialStripeConfigIsRejected(t *testing.T) {
 	cfg := Config{Auth: AuthConfig{SessionSecret: strings.Repeat("a", 32)}}
 	cfg.Hosted.Enabled = true
-	cfg.Billing.Stripe = StripeConfig{SecretKey: "sk_live_x"} // only one of five fields set
+	cfg.Billing.Stripe = StripeConfig{SecretKey: "rk_live_x"} // only one of six fields set
 
 	issues := Validate(cfg)
-	if len(issues) != 4 {
-		t.Fatalf("Validate() with a partial Stripe config returned %d issues, want 4 (the four unset fields): %+v", len(issues), issues)
+	if len(issues) != 5 {
+		t.Fatalf("Validate() with a partial Stripe config returned %d issues, want 5 (the five unset fields): %+v", len(issues), issues)
 	}
 	for _, is := range issues {
 		if is.Name == "WPMGR_BILLING_STRIPE_SECRET_KEY" {
