@@ -123,10 +123,10 @@ const (
 		"with no ?, #, backslash, encoded slash or backslash, and no . or .. path segment"
 	msgArgURLNotOnSite = "the url must be on this site's own host and under its own path; see " +
 		"site_url in fleet_sites_list"
-	msgArgURLTooLong  = "url too long: the address rebuilt on this site's own scheme, host and port " +
+	msgArgURLTooLong = "url too long: the address rebuilt on this site's own scheme, host and port " +
 		"would exceed 2048 bytes"
-	msgTieOtherSite   = "this url belongs to a different site in this connection's scope; use that site's id"
-	msgTieWritePort   = "more than one site in this connection's scope uses this host on different " +
+	msgTieOtherSite = "this url belongs to a different site in this connection's scope; use that site's id"
+	msgTieWritePort = "more than one site in this connection's scope uses this host on different " +
 		"ports; write this site's port in the url (see site_url in fleet_sites_list; when it shows " +
 		"none, the port is 443 for https and 80 for http)"
 	msgTieSameAddress = "more than one site in this connection's scope has this same address, so a " +

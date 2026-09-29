@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -17,10 +18,59 @@ import (
 // cacheToolNames are the two tools behind the write-tools switch.
 var cacheToolNames = []string{ToolSiteCachePurgeRequest, ToolSiteCachePurgeRequestStatus}
 
+// switchedHandler serves a Service whose request rail is installed (a store
+// implementing it, a recorder and a context resolver), switched as asked.
 func switchedHandler(on bool) *TransportHandler {
-	svc := NewService(&fakeStore{}).withAuditRecorder(&capturingRecorder{})
-	svc.SetWriteToolsEnabled(on)
+	svc := NewService(newRailFake()).withAuditRecorder(&capturingRecorder{}).
+		WithContextResolver(emptyContextResolver())
+	if err := svc.SetWriteToolsEnabled(on); err != nil {
+		panic("switchedHandler: " + err.Error())
+	}
 	return NewTransportHandler(svc, slog.New(slog.NewTextHandler(io.Discard, nil)), "test")
+}
+
+// TestWriteToolsSwitch_CannotTurnOnWithoutTheRail: the switch refuses to turn
+// the request tools on for a Service missing any part of the rail, stays off,
+// and the tools stay absent. With every part present it turns on. This is
+// what stops main.go switching on tools that would answer every call with an
+// internal failure.
+func TestWriteToolsSwitch_CannotTurnOnWithoutTheRail(t *testing.T) {
+	auth := authWith(NewCapabilitySet(AllCapabilities()), uuid.New())
+	listed := func(svc *Service) bool {
+		for _, d := range visibleTools(svc.liveRegistry(), auth) {
+			if d.Name == ToolSiteCachePurgeRequest {
+				return true
+			}
+		}
+		return false
+	}
+	cases := map[string]*Service{
+		"store has no rail": NewService(&fakeStore{}).withAuditRecorder(&capturingRecorder{}).
+			WithContextResolver(emptyContextResolver()),
+		"no audit recorder":   NewService(newRailFake()).WithContextResolver(emptyContextResolver()),
+		"no context resolver": NewService(newRailFake()).withAuditRecorder(&capturingRecorder{}),
+	}
+	for name, svc := range cases {
+		err := svc.SetWriteToolsEnabled(true)
+		if !errors.Is(err, ErrWriteToolsUnavailable) {
+			t.Errorf("%s: SetWriteToolsEnabled(true) = %v, want ErrWriteToolsUnavailable", name, err)
+		}
+		if svc.WriteToolsEnabled() || listed(svc) {
+			t.Errorf("%s: the request tools are on without their rail", name)
+		}
+	}
+	ok := NewService(newRailFake()).withAuditRecorder(&capturingRecorder{}).
+		WithContextResolver(emptyContextResolver())
+	if err := ok.SetWriteToolsEnabled(true); err != nil {
+		t.Fatalf("a complete rail refused: %v", err)
+	}
+	if !ok.WriteToolsEnabled() || !listed(ok) {
+		t.Fatal("a complete rail switched on is not serving the tools")
+	}
+	// A copy made afterwards without a recorder cannot serve them either.
+	if stripped := ok.WithAudit(nil); stripped.WriteToolsEnabled() || listed(stripped) {
+		t.Fatal("a copy with no recorder still serves the request tools")
+	}
 }
 
 func callFor(name string) jsonrpcRequest {
