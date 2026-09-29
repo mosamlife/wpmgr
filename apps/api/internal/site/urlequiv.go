@@ -32,18 +32,19 @@ func parseSiteAddress(raw string) (siteAddress, *url.URL, bool) { return siteadd
 // wwwSibling is siteaddr.WWWSibling.
 func wwwSibling(host string) (string, bool) { return siteaddr.WWWSibling(host) }
 
-// planEnrollURL is siteaddr.Plan: the rule enrollment applies. Its hosts are
-// compared with only their ASCII letters lowercased, and an address it
-// adopts dials the stored host's key or that key's "www." sibling; anything
-// else is a mismatch, which keeps the stored address.
+// planEnrollURL is siteaddr.Plan: the rule enrollment applies. Two spellings
+// of a host with one HostKey are the same address; an address it adopts
+// dials the stored host's key or that key's "www." sibling; anything else is
+// a mismatch, which keeps the stored address.
 func planEnrollURL(stored, reported string) enrollURLPlan { return siteaddr.Plan(stored, reported) }
 
-// sameSiteAddress is siteaddr.SameAddress: one address once normalised, a
-// trailing slash included.
+// sameSiteAddress is siteaddr.SameAddress: one address once normalised (a
+// trailing slash never makes two differ), with hosts that have one HostKey
+// the same host.
 func sameSiteAddress(a, b string) bool { return siteaddr.SameAddress(a, b) }
 
 // planReportedURL is siteaddr.PlanStrict: the rule push-time adoption
-// applies, with hosts compared in the ASCII form they are dialled by.
+// applies, which is Plan with a Same only for a host that has a HostKey.
 func planReportedURL(stored, reported string) enrollURLPlan {
 	return siteaddr.PlanStrict(stored, reported)
 }

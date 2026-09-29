@@ -43,9 +43,11 @@ func (s *Service) SetCommandRedirectProber(p CommandRedirectProber) { s.redirect
 // the push that carried the address.
 //
 // The rule is siteaddr.PlanStrict: enrollment's rule (only a leading "www."
-// toggle and/or an http to https upgrade, on the same port and path) with
-// hosts compared in the ASCII form they are dialled by. Nothing is written
-// without a signed ping confirming it at the moment of the push:
+// toggle and/or an http to https upgrade, on the same port and path, with the
+// adopted address dialling the host that was compared; a spelling of the
+// saved host with the same HostKey is the saved address, and changes
+// nothing). Nothing is written without a signed ping confirming it at the
+// moment of the push:
 //
 //   - A host change (the "www." toggle) is written only when a ping to the
 //     saved address is redirected to the planned address (siteaddr.SameAddress:

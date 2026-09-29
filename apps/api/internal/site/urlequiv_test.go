@@ -24,6 +24,9 @@ func TestPlanEnrollURL(t *testing.T) {
 		{"explicit default https port", "https://example.com", "https://example.com:443/", enrollURLSame, ""},
 		{"explicit default http port", "http://example.com:80", "http://example.com", enrollURLSame, ""},
 		{"subdirectory trailing slash", "https://example.com/blog/", "https://example.com/blog", enrollURLSame, ""},
+		// Hosts spelt differently that dial one HostKey are one host.
+		{"non-ASCII letter case only", "https://BÜCHER.de", "https://bücher.de", enrollURLSame, ""},
+		{"idn unicode vs punycode", "https://bücher.example", "https://xn--bcher-kva.example", enrollURLSame, ""},
 
 		// Adopted: a leading www. and/or http to https, same port and path.
 		{"apex to www", "https://example.com", "https://www.example.com", enrollURLAdopt, "https://www.example.com"},
@@ -64,7 +67,6 @@ func TestPlanEnrollURL(t *testing.T) {
 		{"ip literal www", "https://192.0.2.10", "https://www.192.0.2.10", enrollURLMismatch, ""},
 		{"single-label host www", "http://intranet", "http://www.intranet", enrollURLMismatch, ""},
 		{"trailing-dot host", "https://example.com", "https://example.com.", enrollURLMismatch, ""},
-		{"idn unicode vs punycode", "https://bücher.example", "https://xn--bcher-kva.example", enrollURLMismatch, ""},
 		{"reported userinfo", "https://example.com", "https://user:pass@www.example.com", enrollURLMismatch, ""},
 		{"reported query", "https://example.com", "https://www.example.com/?p=1", enrollURLMismatch, ""},
 		{"reported fragment", "https://example.com", "https://www.example.com/#x", enrollURLMismatch, ""},
@@ -77,7 +79,6 @@ func TestPlanEnrollURL(t *testing.T) {
 		{"dotted I www vs its Unicode lowercase", "https://İstanbul.test", "https://www.istanbul.test", enrollURLMismatch, ""},
 		{"sharp s vs its Unicode lowercase", "https://STRAẞE.test", "https://straße.test", enrollURLMismatch, ""},
 		{"sharp s upgrade vs its Unicode lowercase", "http://STRAẞE.test", "https://straße.test", enrollURLMismatch, ""},
-		{"non-ASCII letter case only", "https://BÜCHER.de", "https://bücher.de", enrollURLMismatch, ""},
 		{"fullwidth www label", "https://ＷＷＷ.example.test", "https://www.ＷＷＷ.example.test", enrollURLMismatch, ""},
 	}
 	for _, c := range cases {

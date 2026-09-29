@@ -116,6 +116,10 @@ const exemptAdvice = "Exempt /wp-json/wpmgr/ from the redirect on the site or it
 
 // SelfRedirect reports whether the redirect target names the saved site
 // address itself: the command route redirects back to the same install.
+// siteaddr.PlanStrict decides it, so a target whose host is spelt
+// differently but dials the same HostKey ("https://bücher.de" for a saved
+// "https://BÜCHER.de") is the saved address, and one whose host only
+// Unicode lowercasing matches is not.
 func (e *RedirectError) SelfRedirect() bool {
 	target, plan := e.plan()
 	return target != "" && plan.Decision == siteaddr.Same
