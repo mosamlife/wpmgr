@@ -16,8 +16,11 @@ package tests
 // same engine, so the can_manage_instance_email capability is read through the
 // real auth handler. All of it runs over the pool startPostgres returns:
 // wpmgr_app, NOSUPERUSER, NOBYPASSRLS. The gate store is the production
-// admingate.PoolStore over that same pool, handed to both the settings handler
-// and the auth handler exactly as cmd/wpmgr does.
+// admingate.InstanceEmailPoolStore over that same pool, built self-hosted and
+// handed to both the settings handler and the auth handler exactly as cmd/wpmgr
+// does. No test here bootstraps, so install_owner stays empty and the
+// install-owner arm admits nobody; settings_smtp_install_owner_integration_test.go
+// covers that arm.
 //
 // Reads that observe the database go through the production transaction
 // helpers as wpmgr_app, and each one asserts the connected role inside its own
@@ -110,7 +113,7 @@ func newSMTPIAStack(t *testing.T) *smtpIAStack {
 // handlers server.New registers unconditionally, plus the settings handler and
 // an auth handler wired with the given gate store, the way cmd/wpmgr wires
 // both. Every optional handler is left nil, which server.New skips.
-func (s *smtpIAStack) engine(t *testing.T, gate admingate.Store) *gin.Engine {
+func (s *smtpIAStack) engine(t *testing.T, gate admingate.InstanceEmailStore) *gin.Engine {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	clock := domain.SystemClock{}
@@ -446,7 +449,7 @@ func seedUserOnly(t *testing.T, repo *auth.Repo, email string) auth.User {
 
 func TestSMTPSettings_MultiTenantInstall_InstanceAuthority(t *testing.T) {
 	s := newSMTPIAStack(t)
-	e := s.engine(t, admingate.NewPoolStore(s.pool))
+	e := s.engine(t, admingate.NewInstanceEmailPoolStore(s.pool, false))
 
 	sfx := uuid.NewString()[:8]
 	tenantA := seedTenant(t, s.pool, "smtp-ia-a-"+sfx)
@@ -584,7 +587,7 @@ func TestSMTPSettings_MultiTenantInstall_InstanceAuthority(t *testing.T) {
 
 func TestSMTPSettings_SingleTenantInstall_InstanceAuthority(t *testing.T) {
 	s := newSMTPIAStack(t)
-	e := s.engine(t, admingate.NewPoolStore(s.pool))
+	e := s.engine(t, admingate.NewInstanceEmailPoolStore(s.pool, false))
 
 	sfx := uuid.NewString()[:8]
 	tenant := seedTenant(t, s.pool, "smtp-ia-solo-"+sfx)
@@ -739,6 +742,12 @@ func TestSMTPSettings_SingleTenantInstall_InstanceAuthority(t *testing.T) {
 
 	// Runs last: it creates the second organisation.
 	t.Run("a second organisation refuses the same owner on the next request", func(t *testing.T) {
+		// This owner was seeded, not bootstrapped, so the install-owner arm
+		// (live on this self-hosted store) must not be what admits or refuses
+		// them here.
+		if _, _, _, found := s.installOwnerRow(t); found {
+			t.Fatal("PREMISE FAILED: install_owner has a row; this test's owner was never bootstrapped")
+		}
 		seedTenant(t, s.pool, "smtp-ia-second-"+sfx)
 		if n := s.liveTenantCount(t, tenant); n != 2 {
 			t.Fatalf("PREMISE FAILED: %d live organisations after seeding a second, want 2", n)
@@ -753,11 +762,14 @@ func TestSMTPSettings_SingleTenantInstall_InstanceAuthority(t *testing.T) {
 	})
 }
 
-// splitGateStore answers each admingate.Store read from a different store, so
-// one read can fail while the other is healthy.
+// splitGateStore answers each admingate.InstanceEmailStore read from a
+// different store, so one read can fail while the others are healthy.
+// installOwner may be nil, which answers "not the install owner" on a hosted
+// install, so the arm is never read.
 type splitGateStore struct {
-	superadmin admingate.Store
-	owner      admingate.Store
+	superadmin   admingate.Store
+	owner        admingate.Store
+	installOwner admingate.InstanceEmailStore
 }
 
 func (s splitGateStore) IsSuperadmin(ctx context.Context, id uuid.UUID) (bool, error) {
@@ -766,6 +778,17 @@ func (s splitGateStore) IsSuperadmin(ctx context.Context, id uuid.UUID) (bool, e
 
 func (s splitGateStore) SoleLiveTenantOwnedBy(ctx context.Context, id uuid.UUID) (uuid.UUID, error) {
 	return s.owner.SoleLiveTenantOwnedBy(ctx, id)
+}
+
+func (s splitGateStore) SelfHosted() bool {
+	return s.installOwner != nil && s.installOwner.SelfHosted()
+}
+
+func (s splitGateStore) InstallOwnerAuditTenant(ctx context.Context, id uuid.UUID) (bool, uuid.UUID, error) {
+	if s.installOwner == nil {
+		return false, uuid.Nil, nil
+	}
+	return s.installOwner.InstallOwnerAuditTenant(ctx, id)
 }
 
 // closedAppPool opens a second wpmgr_app pool on the same container and closes

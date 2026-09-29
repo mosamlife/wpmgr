@@ -517,6 +517,14 @@ type HibpBreachCache struct {
 	FetchedAt time.Time `json:"fetched_at"`
 }
 
+type InstallOwner struct {
+	Singleton  bool      `json:"singleton"`
+	UserID     uuid.UUID `json:"user_id"`
+	TenantID   uuid.UUID `json:"tenant_id"`
+	Source     string    `json:"source"`
+	RecordedAt time.Time `json:"recorded_at"`
+}
+
 type InstanceSetting struct {
 	Key       string    `json:"key"`
 	ValueEnc  []byte    `json:"value_enc"`

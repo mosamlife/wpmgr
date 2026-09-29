@@ -946,6 +946,31 @@ CREATE TABLE system_audit_log (
 
 CREATE INDEX system_audit_log_tenant_id_idx ON system_audit_log (tenant_id, occurred_at);
 
+-- ---------------------------------------------------------------------------
+-- install_owner  (m147)
+-- ---------------------------------------------------------------------------
+-- At most one row: the user who ran first-run bootstrap on this install, and
+-- the organisation bootstrap created with it. Written inside the bootstrap
+-- transaction, or backfilled by m147 from the earliest surviving bootstrap
+-- audit_log row.
+--
+-- No foreign keys: deleting the user or the organisation leaves the row naming
+-- an id that no longer exists, which records that nobody inherits it. No RLS:
+-- the row is install-global, like users, tenants and system_audit_log. The
+-- privileges below are the guard: wpmgr_app may read the row and insert it
+-- once (the singleton key refuses a second), and can never change or remove
+-- it. That holds when wpmgr_app is also the table owner.
+CREATE TABLE install_owner (
+    singleton   boolean     PRIMARY KEY DEFAULT true CHECK (singleton),
+    user_id     uuid        NOT NULL,
+    tenant_id   uuid        NOT NULL,
+    source      text        NOT NULL CHECK (source IN ('bootstrap', 'backfill')),
+    recorded_at timestamptz NOT NULL DEFAULT now()
+);
+
+GRANT SELECT, INSERT ON install_owner TO wpmgr_app;
+REVOKE UPDATE, DELETE, TRUNCATE ON install_owner FROM wpmgr_app;
+
 -- admin_purge_tenant (M93): SECURITY DEFINER helper for internal/org.PurgeWorker
 -- — the grace-window destructive purge of a POPULATED tenant (Lane B). Modeled
 -- on admin_delete_empty_tenant above but WITHOUT the emptiness guard: it is

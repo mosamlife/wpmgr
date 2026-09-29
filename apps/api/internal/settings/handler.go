@@ -33,9 +33,12 @@ type tenantAuditRecorder interface {
 //
 // The smtp_settings row is one row for the whole install, so every route here
 // (GET, PUT and POST /test) requires instance-level authority as decided by
-// admingate.CanManageInstanceEmail: a superadmin, or the owner of the only live
-// organisation on the install. A role inside an organisation does not qualify
-// on its own. RequireOrgScope() additionally blocks site-scoped principals.
+// admingate.CanManageInstanceEmail: a superadmin, the owner of the only live
+// organisation on the install, or, on a self-hosted install, the account
+// recorded as having set up the install, while that account is active and
+// owns at least one live organisation. A role inside an organisation does
+// not qualify on its own. RequireOrgScope() additionally blocks site-scoped
+// principals.
 //
 // Instance authority is not tied to an organisation, so internal/server mounts
 // these routes on the authenticated group that does not require an active
@@ -43,13 +46,13 @@ type tenantAuditRecorder interface {
 type Handler struct {
 	svc   smtpService
 	audit tenantAuditRecorder
-	gate  admingate.Store
+	gate  admingate.InstanceEmailStore
 	log   *slog.Logger
 }
 
 // NewHandler builds the settings Handler. gate answers the instance-authority
 // reads; a nil gate refuses every request.
-func NewHandler(svc *Service, rec *audit.Recorder, gate admingate.Store) *Handler {
+func NewHandler(svc *Service, rec *audit.Recorder, gate admingate.InstanceEmailStore) *Handler {
 	h := &Handler{gate: gate, log: slog.Default()}
 	// Assigned only when non-nil, so a nil pointer never becomes a non-nil
 	// interface value that the nil checks below would call through.
@@ -93,7 +96,7 @@ func refuseInstanceAuthority(c *gin.Context) {
 // hands the admitting decision to the handler, which routes the audit record
 // by it. The Me response's can_manage_instance_email reads the same decision,
 // so the dashboard is offered this page exactly when these routes would admit.
-func requireInstanceAuthority(store admingate.Store) gin.HandlerFunc {
+func requireInstanceAuthority(store admingate.InstanceEmailStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		a := admingate.InstanceEmailAuthority(c.Request.Context(), store)
 		if !a.Admitted() {
@@ -178,11 +181,21 @@ const auditAppendTimeout = 5 * time.Second
 //     whichever arm admitted the caller and whatever organisation the request
 //     had active.
 //   - When the caller was admitted as the owner of the only live organisation,
-//     the change is also appended to that organisation's hash-chained
-//     audit_log, so its owner reads it where they read everything else. The
-//     organisation is the one the admitting decision named, never the
-//     request's active organisation. A superadmin's change is recorded in the
-//     instance trail only.
+//     or as the install owner, the change is also appended to the audit_log of
+//     the organisation the admitting decision named, so its owner reads it
+//     where they read everything else. That organisation is never the
+//     request's active one. For the install owner it is the organisation
+//     created with them at bootstrap while they still own it and it is live,
+//     otherwise the live organisation they own with the lowest id, so it is
+//     always one whose owners include the actor. An install owner who owns no
+//     live organisation is not admitted at all. The install-owner arm fires
+//     only when the caller is not a superadmin; a superadmin may still exist
+//     elsewhere on the install. Because only the admin console shows the
+//     instance trail, a non-superadmin install owner cannot read it there, so
+//     the organisation copy is where they see their own change. A superadmin's
+//     change is recorded in the instance trail only.
+//   - Both records carry admitted_as, the arm that admitted the caller, so the
+//     instance trail tells a superadmin's change from an owner's.
 //
 // Best-effort in both cases: the relay row is already written, so a failed
 // append is logged rather than reported as a failure of a change that did
@@ -195,14 +208,16 @@ func (h *Handler) recordUpdate(reqCtx context.Context, p domain.Principal, autho
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(reqCtx), auditAppendTimeout)
 	defer cancel()
 	meta := map[string]any{
-		"enabled":  out.Enabled,
-		"host":     out.Host,
-		"tls_mode": out.TLSMode,
+		"enabled":     out.Enabled,
+		"host":        out.Host,
+		"tls_mode":    out.TLSMode,
+		"admitted_as": authority.Arm.String(),
 	}
 	if h.svc != nil {
 		h.svc.RecordInstanceEvent(ctx, p.UserID, AuditActionUpdate, meta)
 	}
-	if authority.Arm != admingate.ArmSoleLiveTenantOwner || authority.TenantID == uuid.Nil || h.audit == nil {
+	if (authority.Arm != admingate.ArmSoleLiveTenantOwner && authority.Arm != admingate.ArmInstallOwner) ||
+		authority.TenantID == uuid.Nil || h.audit == nil {
 		return
 	}
 	if _, err := h.audit.Record(ctx, audit.Event{

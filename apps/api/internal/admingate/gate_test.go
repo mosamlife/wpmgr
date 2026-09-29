@@ -21,7 +21,31 @@ type fakeStore struct {
 	soleOwner     bool
 	soleOwnerErr  error
 	calls         int
+
+	// The install-owner facts. selfHosted false is the hosted answer, the
+	// same default the production store's zero value has.
+	selfHosted        bool
+	installOwner      bool
+	installHome       uuid.UUID
+	installOwnerErr   error
+	installOwnerCalls int
 }
+
+func (f *fakeStore) SelfHosted() bool { return f.selfHosted }
+
+func (f *fakeStore) InstallOwnerAuditTenant(context.Context, uuid.UUID) (bool, uuid.UUID, error) {
+	f.calls++
+	f.installOwnerCalls++
+	if f.installOwnerErr != nil {
+		return false, uuid.Nil, f.installOwnerErr
+	}
+	if !f.installOwner {
+		return false, uuid.Nil, nil
+	}
+	return true, f.installHome, nil
+}
+
+var _ InstanceEmailStore = (*fakeStore)(nil)
 
 func (f *fakeStore) IsSuperadmin(context.Context, uuid.UUID) (bool, error) {
 	f.calls++
@@ -83,7 +107,7 @@ func TestCanManageInstanceEmail(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			var store Store
+			var store InstanceEmailStore
 			if !tc.nilStore {
 				store = tc.store
 			}

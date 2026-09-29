@@ -46,9 +46,16 @@ func (g mountGate) SoleLiveTenantOwnedBy(context.Context, uuid.UUID) (uuid.UUID,
 	return uuid.Nil, nil
 }
 
-var _ admingate.Store = mountGate{}
+// SelfHosted is false (hosted), so the install-owner arm is never read.
+func (g mountGate) SelfHosted() bool { return false }
 
-func settingsMountEngine(t *testing.T, gate admingate.Store) *gin.Engine {
+func (g mountGate) InstallOwnerAuditTenant(context.Context, uuid.UUID) (bool, uuid.UUID, error) {
+	return false, uuid.Nil, nil
+}
+
+var _ admingate.InstanceEmailStore = mountGate{}
+
+func settingsMountEngine(t *testing.T, gate admingate.InstanceEmailStore) *gin.Engine {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	sessions := auth.NewSessionManagerWithStore(scs.New(), false)

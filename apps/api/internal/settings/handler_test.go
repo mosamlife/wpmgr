@@ -37,6 +37,23 @@ type fakeInstanceGate struct {
 
 	superadminCalls int
 	soleOwnerCalls  int
+
+	// The install-owner facts. selfHosted false is the hosted answer.
+	selfHosted        bool
+	installOwner      bool
+	installHome       uuid.UUID
+	installOwnerErr   error
+	installOwnerCalls int
+}
+
+func (f *fakeInstanceGate) SelfHosted() bool { return f.selfHosted }
+
+func (f *fakeInstanceGate) InstallOwnerAuditTenant(context.Context, uuid.UUID) (bool, uuid.UUID, error) {
+	f.installOwnerCalls++
+	if f.installOwnerErr != nil {
+		return false, uuid.Nil, f.installOwnerErr
+	}
+	return f.installOwner, f.installHome, nil
 }
 
 func (f *fakeInstanceGate) IsSuperadmin(context.Context, uuid.UUID) (bool, error) {
@@ -56,7 +73,7 @@ func (f *fakeInstanceGate) SoleLiveTenantOwnedBy(context.Context, uuid.UUID) (uu
 	return gateSoleTenantID, f.soleOwnerErr
 }
 
-var _ admingate.Store = (*fakeInstanceGate)(nil)
+var _ admingate.InstanceEmailStore = (*fakeInstanceGate)(nil)
 
 // pastTheGateCode is what PUT and POST /test answer once the gate has let a
 // request through carrying a non-JSON body.
@@ -74,7 +91,7 @@ var allRoutes = append([]struct{ method, path string }{
 	{http.MethodGet, "/api/v1/settings/smtp"},
 }, writeRoutes...)
 
-func gatedSettingsEngine(gate admingate.Store) *gin.Engine {
+func gatedSettingsEngine(gate admingate.InstanceEmailStore) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	NewHandler(nil, nil, gate).Register(r.Group("/api/v1"))
