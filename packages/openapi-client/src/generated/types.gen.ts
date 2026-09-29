@@ -1404,7 +1404,7 @@ export type BillingSummary = {
     | "comped";
   current_period_end?: string;
   /**
-   * The tenant's payment provider (e.g. "stripe"). Empty before the tenant's first checkout. From the first checkout onward this is the provisional or final provider: it can still move to a different registered provider through a later checkout's provider-switch rules (see POST /billing/checkout's 409 billing_provider_locked) until a subscription is stored, and is fixed from then on.
+   * The tenant's payment provider (e.g. "stripe"). Empty before the tenant's first checkout. From the first checkout onward this is the provisional or final provider: it can still move to a different registered provider through a later checkout's provider-switch rules (see POST /billing/checkout's 409 billing_provider_locked). A live or pending stored subscription blocks the switch (409 billing_subscription_exists or billing_subscription_pending), but a stored canceled subscription does not — this can still move even after a subscription has been stored.
    */
   provider?: string;
   /**
@@ -1436,7 +1436,7 @@ export type BillingCheckoutRequest = {
    */
   tier: "starter" | "agency" | "scale";
   /**
-   * Preferred payment provider. Honored, including a switch away from the tenant's current provider, whenever the provider-switch rules allow it — see this endpoint's 409 billing_provider_locked. A caller can never end up with two live subscriptions across providers: an existing pending or live subscription is refused with 409 billing_subscription_pending first. An unknown name is rejected. Omit to use the instance default.
+   * Preferred payment provider. Honored, including a switch away from the tenant's current provider, whenever the provider-switch rules allow it — see this endpoint's 409 billing_provider_locked. A caller can never end up with two live subscriptions across providers: a stored live subscription (active, trialing, past_due or paused) is refused with 409 billing_subscription_exists first, and a stored subscription id still settling from a prior checkout is refused with 409 billing_subscription_pending. A comped workspace is refused with 409 billing_comped. An unknown name is rejected. Omit to use the instance default.
    */
   provider?: string;
   /**
@@ -11090,7 +11090,7 @@ export type CreateBillingCheckoutErrors = {
    */
   403: Error;
   /**
-   * billing_subscription_pending — the tenant already has a subscription that is pending or live with its current provider; a background refresh has been enqueued, poll `GET /billing`. billing_provider_locked — the requested provider cannot be bound right now; `details.reason` is one of `needs_support` (switching away from Razorpay is not self-serve in this release), `pending_at_provider` (something is still pending with the tenant's current provider) or `provider_changed` (the tenant's provider or stored customer changed during the request — retry). billing_checkout_superseded — a newer checkout session for this tenant was created before this one could be returned, and this one was expired as a result; start again.
+   * billing_comped — this workspace is on a complimentary plan; no provider call is made. billing_subscription_exists — the tenant already has a live subscription (active, trialing, past_due or paused) with its current provider; manage it from the billing portal instead. billing_subscription_pending — the tenant's status is `none` but a subscription id is still stored, settling from a prior checkout; a background refresh has been enqueued, poll `GET /billing`. billing_provider_locked — the requested provider cannot be bound right now; `details.reason` is one of `needs_support` (switching away from Razorpay is not self-serve in this release), `pending_at_provider` (something is still pending with the tenant's current provider) or `provider_changed` (the tenant's provider or stored customer changed during the request — retry). billing_checkout_superseded — a newer checkout session for this tenant was created before this one could be returned, and this one was expired as a result; start again.
    */
   409: Error;
   /**
@@ -11210,7 +11210,11 @@ export type ConfirmBillingCheckoutErrors = {
    */
   403: Error;
   /**
-   * session_id does not resolve to a completed subscription-mode Checkout Session for this tenant's own stored payment-provider customer.
+   * billing_checkout_session_not_found — session_id resolves to a Checkout Session that belongs to another workspace.
+   */
+  404: Error;
+  /**
+   * billing_checkout_not_confirmable — session_id does not resolve to a completed subscription-mode Checkout Session for this tenant's own stored payment-provider customer (an unrecognized session id, one still open or expired, a non-subscription-mode session, or one whose customer does not match the tenant's stored payment-provider customer). This is distinct from the 404 above, which is only the cross-tenant case.
    */
   422: Error;
 };
