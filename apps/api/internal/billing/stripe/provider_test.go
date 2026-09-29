@@ -28,6 +28,9 @@ func testConfig() Config {
 		PriceScale:    "price_scale",
 
 		PortalConfigurationID: "bpc_wpmgr",
+		// Mirrors config.StripeConfig's own default (true) — the same value
+		// a boot with WPMGR_BILLING_STRIPE_TAX_ID_REQUIRED unset would carry.
+		TaxIDRequired: true,
 	}
 }
 

@@ -411,9 +411,15 @@ func isLoopbackHost(host string) bool {
 	return h == "localhost" || h == "127.0.0.1" || h == "::1" || h == "[::1]" || strings.HasSuffix(h, ".localhost")
 }
 
-// validateStripeConfig checks internal consistency of the five Stripe
-// fields: either all empty (Stripe simply is not this instance's provider —
-// legal) or all five present.
+// validateStripeConfig checks internal consistency of the six Stripe fields
+// in stripeConfigFields: either all empty (Stripe simply is not this
+// instance's provider — legal) or all six present.
+//
+// TaxIDRequired is deliberately NOT one of them: it is a plain bool (koanf
+// accepts "true"/"false", matching every other WPMGR_*_ENABLED-style flag in
+// this package), it defaults to true, and it is a legal setting regardless of
+// whether the rest of Stripe is configured — there is nothing to refuse it
+// against.
 func validateStripeConfig(s StripeConfig) []Issue {
 	fields := stripeConfigFields(s)
 	if !stripeConfigAnySet(s) {

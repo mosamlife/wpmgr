@@ -120,6 +120,46 @@ func TestLoadStripePortalConfigurationEnv(t *testing.T) {
 	}
 }
 
+// TestLoadStripeTaxIDRequired proves WPMGR_BILLING_STRIPE_TAX_ID_REQUIRED
+// binds to Billing.Stripe.TaxIDRequired, and that an install with the
+// variable entirely unset defaults to true — today's behaviour — so
+// upgrading to this config never changes an existing deployment's checkout.
+//
+// The default case deliberately does NOT set the env var to "", the way
+// TestLoadHostedDefaultDisabled does for WPMGR_HOSTED: koanf's weakly typed
+// decode turns an empty string into false regardless of the configured
+// default (the same quirk Load's own proxy-hops comment documents for a
+// blank WPMGR_AUTH_PROXY_HOPS), so setting it empty here would silently
+// test "false", not "default true". Leaving the variable absent from the
+// environment is what actually exercises the default.
+func TestLoadStripeTaxIDRequired(t *testing.T) {
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Billing.Stripe.TaxIDRequired {
+		t.Fatal("Billing.Stripe.TaxIDRequired should default to true when the env var is unset")
+	}
+
+	t.Setenv("WPMGR_BILLING_STRIPE_TAX_ID_REQUIRED", "false")
+	cfg, err = Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Billing.Stripe.TaxIDRequired {
+		t.Fatal("Billing.Stripe.TaxIDRequired should be false when WPMGR_BILLING_STRIPE_TAX_ID_REQUIRED=false")
+	}
+
+	t.Setenv("WPMGR_BILLING_STRIPE_TAX_ID_REQUIRED", "true")
+	cfg, err = Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Billing.Stripe.TaxIDRequired {
+		t.Fatal("Billing.Stripe.TaxIDRequired should be true when WPMGR_BILLING_STRIPE_TAX_ID_REQUIRED=true")
+	}
+}
+
 // TestLoadAgentMirrorDefaults is the GH #302 off-by-default lock. The upstream
 // agent-release mirror is the one job that fetches from the public internet and
 // writes a binary into the operator's own storage, so merging it must change

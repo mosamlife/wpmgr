@@ -40,6 +40,20 @@ the infra side alone.
 4. **A version number is pinned, never `:latest`.** Secret Manager keeps every
    version; Cloud Run is told the exact version number so a later, unrelated
    rotation can never silently reach this service.
+5. **`WPMGR_BILLING_STRIPE_TAX_ID_REQUIRED` is optional and defaults to
+   `true`.** At the default, Checkout blocks completion until the buyer
+   supplies a tax ID everywhere Stripe supports requiring one — the right
+   setting for a B2B-only launch. Set it to `false` to also sell to
+   individual consumers who have no business tax number to give, which
+   covers India and roughly 100 other countries: tax ID collection stays
+   enabled and offered, it just stops blocking checkout completion when the
+   buyer has none. Setting it `false` also means Checkout can complete a sale
+   to a consumer in the UK, the EU or India without first registering with
+   that jurisdiction's tax authority, and doing so creates a tax registration
+   obligation there starting from that first consumer sale. Confirm the
+   entity is ready to register and remit in the jurisdictions it will now
+   sell into before flipping it, not after the first consumer has already
+   paid.
 
 ## 1. Restricted key
 

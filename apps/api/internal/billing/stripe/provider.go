@@ -50,6 +50,14 @@ type Config struct {
 	// would fall back to the account's default configuration, which on a
 	// shared account belongs to no single product.
 	PortalConfigurationID string
+	// TaxIDRequired controls whether a Checkout Session REQUIRES a tax ID
+	// before it can complete, everywhere Stripe supports requiring one (see
+	// checkoutSessionParams). true (config.StripeConfig's default) preserves
+	// the original if_supported behavior; false sends required=never while
+	// leaving collection enabled, so a buyer with no business tax number —
+	// an individual in India, or in roughly 100 other countries — can still
+	// complete checkout.
+	TaxIDRequired bool
 	// HTTPClient overrides the Stripe SDK's default HTTP client. Nil uses the
 	// SDK default. Exposed for tests (never used to change TLS/security
 	// behavior — only to point at a test double).
@@ -82,6 +90,8 @@ type Provider struct {
 	portalConfigID  string
 	priceToPlan     map[string]billing.Tier
 	planToPrice     map[billing.Tier]string
+	// taxIDRequired mirrors Config.TaxIDRequired.
+	taxIDRequired bool
 	// now is the clock checkout expiry is computed from. Tests replace it.
 	now func() time.Time
 }
@@ -99,6 +109,7 @@ func New(cfg Config) *Provider {
 		webhookSecret:   cfg.WebhookSecret,
 		portalReturnURL: cfg.PortalReturnURL,
 		portalConfigID:  cfg.PortalConfigurationID,
+		taxIDRequired:   cfg.TaxIDRequired,
 		now:             time.Now,
 		priceToPlan: map[string]billing.Tier{
 			cfg.PriceStarter: billing.TierStarter,
@@ -156,8 +167,14 @@ func (p *Provider) CreateCheckout(ctx context.Context, in billing.CheckoutInput)
 //   - the session is created on the stored customer, never by email;
 //   - card is the only payment method type;
 //   - tax is calculated automatically, a billing address is required, the
-//     customer's address and name are saved back, and a tax ID is collected
-//     and required where Stripe supports requiring one;
+//     customer's address and name are saved back, and a tax ID is collected,
+//     required where Stripe supports requiring one UNLESS p.taxIDRequired is
+//     false (Config.TaxIDRequired), in which case collection stays enabled
+//     but required is sent as "never";
+//   - Adaptive Pricing is explicitly OFF for this session, regardless of the
+//     shared Stripe account's dashboard default: WPMgr's rule is US$ for
+//     every customer, never Stripe's own per-session currency conversion
+//     (which carries its own conversion fee);
 //   - the session and the resulting subscription carry the tenant id and
 //     app=wpmgr, which is how events are recognised as WPMgr's on an account
 //     shared with other products;
@@ -167,6 +184,10 @@ func (p *Provider) checkoutSessionParams(in billing.CheckoutInput, price string)
 	meta := func() map[string]string {
 		return map[string]string{tenantMetadataKey: tenantID, appMetadataKey: appMetadataValue}
 	}
+	taxIDRequired := string(stripesdk.CheckoutSessionTaxIDCollectionRequiredIfSupported)
+	if !p.taxIDRequired {
+		taxIDRequired = string(stripesdk.CheckoutSessionTaxIDCollectionRequiredNever)
+	}
 	return &stripesdk.CheckoutSessionCreateParams{
 		Mode:               stripesdk.String(string(stripesdk.CheckoutSessionModeSubscription)),
 		SuccessURL:         stripesdk.String(in.SuccessURL),
@@ -175,7 +196,10 @@ func (p *Provider) checkoutSessionParams(in billing.CheckoutInput, price string)
 		Customer:           stripesdk.String(in.ProviderCustomerID),
 		Metadata:           meta(),
 		PaymentMethodTypes: []*string{stripesdk.String("card")},
-		AutomaticTax:       &stripesdk.CheckoutSessionCreateAutomaticTaxParams{Enabled: stripesdk.Bool(true)},
+		// Per-session override, never the account-wide dashboard default:
+		// WPMgr charges US$ for every customer.
+		AdaptivePricing: &stripesdk.CheckoutSessionCreateAdaptivePricingParams{Enabled: stripesdk.Bool(false)},
+		AutomaticTax:    &stripesdk.CheckoutSessionCreateAutomaticTaxParams{Enabled: stripesdk.Bool(true)},
 		BillingAddressCollection: stripesdk.String(
 			string(stripesdk.CheckoutSessionBillingAddressCollectionRequired)),
 		CustomerUpdate: &stripesdk.CheckoutSessionCreateCustomerUpdateParams{
@@ -184,7 +208,7 @@ func (p *Provider) checkoutSessionParams(in billing.CheckoutInput, price string)
 		},
 		TaxIDCollection: &stripesdk.CheckoutSessionCreateTaxIDCollectionParams{
 			Enabled:  stripesdk.Bool(true),
-			Required: stripesdk.String(string(stripesdk.CheckoutSessionTaxIDCollectionRequiredIfSupported)),
+			Required: stripesdk.String(taxIDRequired),
 		},
 		ExpiresAt: stripesdk.Int64(p.now().Add(checkoutSessionLifetime).Unix()),
 		LineItems: []*stripesdk.CheckoutSessionCreateLineItemParams{

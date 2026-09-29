@@ -76,6 +76,7 @@ func TestCheckoutSessionParams_TaxCardOnlyAndMetadata(t *testing.T) {
 		"customer":                                     "cus_A",
 		"mode":                                         "subscription",
 		"client_reference_id":                          tenant.String(),
+		"adaptive_pricing[enabled]":                    "false",
 		"automatic_tax[enabled]":                       "true",
 		"billing_address_collection":                   "required",
 		"customer_update[address]":                     "auto",
@@ -99,6 +100,66 @@ func TestCheckoutSessionParams_TaxCardOnlyAndMetadata(t *testing.T) {
 		if f.Has(k) {
 			t.Errorf("%s must not be sent, got %q", k, f.Get(k))
 		}
+	}
+}
+
+// TestCheckoutSessionParams_AdaptivePricingAlwaysOff proves every Checkout
+// Session this adapter creates explicitly turns Adaptive Pricing OFF for
+// that one session — never an account-wide setting — so a shared Stripe
+// account's dashboard default (Adaptive Pricing on) can never let Stripe
+// Checkout offer a non-USD currency, with its own conversion fee, to a
+// WPMgr customer. WPMgr's rule is US$ for everyone.
+func TestCheckoutSessionParams_AdaptivePricingAlwaysOff(t *testing.T) {
+	forms := &formRecorder{}
+	p, _ := newRecordingProvider(func(r *http.Request) (int, string) {
+		forms.record(r)
+		return 200, `{"id":"cs_1","object":"checkout.session","url":"https://checkout.test/cs_1"}`
+	})
+	_, err := p.CreateCheckout(context.Background(), billing.CheckoutInput{
+		TenantID: uuid.New(), Plan: billing.TierStarter, CustomerEmail: "owner@example.com",
+		ProviderCustomerID: "cus_A", SuccessURL: "https://s", CancelURL: "https://c",
+	})
+	if err != nil {
+		t.Fatalf("CreateCheckout: %v", err)
+	}
+	f := forms.last("/v1/checkout/sessions")
+	if f == nil {
+		t.Fatal("no checkout session create request was sent")
+	}
+	if got := f.Get("adaptive_pricing[enabled]"); got != "false" {
+		t.Fatalf("adaptive_pricing[enabled] = %q, want false", got)
+	}
+}
+
+// TestCheckoutSessionParams_TaxIDRequired_TogglesWithConfig proves
+// Config.TaxIDRequired drives tax_id_collection.required: true (the
+// default) sends if_supported, false sends never — WITHOUT ever disabling
+// collection itself, so a tax ID stays offered either way.
+func TestCheckoutSessionParams_TaxIDRequired_TogglesWithConfig(t *testing.T) {
+	tests := []struct {
+		name          string
+		taxIDRequired bool
+		wantRequired  string
+	}{
+		{"required by default", true, string(stripesdk.CheckoutSessionTaxIDCollectionRequiredIfSupported)},
+		{"required disabled", false, string(stripesdk.CheckoutSessionTaxIDCollectionRequiredNever)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testConfig()
+			cfg.TaxIDRequired = tt.taxIDRequired
+			p := New(cfg)
+			params := p.checkoutSessionParams(billing.CheckoutInput{
+				TenantID: uuid.New(), Plan: billing.TierStarter,
+				ProviderCustomerID: "cus_A", SuccessURL: "https://s", CancelURL: "https://c",
+			}, "price_starter")
+			if params.TaxIDCollection == nil || params.TaxIDCollection.Enabled == nil || !*params.TaxIDCollection.Enabled {
+				t.Fatal("tax_id_collection.enabled must stay true regardless of TaxIDRequired")
+			}
+			if params.TaxIDCollection.Required == nil || *params.TaxIDCollection.Required != tt.wantRequired {
+				t.Fatalf("tax_id_collection.required = %v, want %q", params.TaxIDCollection.Required, tt.wantRequired)
+			}
+		})
 	}
 }
 

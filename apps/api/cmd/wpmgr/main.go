@@ -679,6 +679,10 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		PortalReturnURL: cfg.PublicBaseURL + "/billing",
 		// WPMgr's own portal configuration; required by Configured().
 		PortalConfigurationID: cfg.Billing.Stripe.PortalConfiguration,
+		// Default true keeps today's behaviour; an operator selling to
+		// individual consumers with no business tax number sets
+		// WPMGR_BILLING_STRIPE_TAX_ID_REQUIRED=false.
+		TaxIDRequired: cfg.Billing.Stripe.TaxIDRequired,
 		// A dedicated client with a whole-request deadline, so one Stripe
 		// call can never outlive the billing worker's own bound.
 		HTTPClient: &http.Client{Timeout: 10 * time.Second},

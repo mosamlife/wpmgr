@@ -84,6 +84,17 @@ type StripeConfig struct {
 	// configuration, so portal sessions never use the account default. Env:
 	// WPMGR_BILLING_STRIPE_PORTAL_CONFIGURATION.
 	PortalConfiguration string `koanf:"portal_configuration"`
+	// TaxIDRequired controls whether a Checkout Session REQUIRES a tax ID
+	// before it can complete, everywhere Stripe supports requiring one.
+	// Default true keeps today's behaviour (if_supported). An individual buyer
+	// in India, or in roughly 100 other countries, has no business tax number
+	// to give, so setting this false lets that purchase complete: tax ID
+	// collection stays enabled and offered, it just stops blocking checkout.
+	// Env: WPMGR_BILLING_STRIPE_TAX_ID_REQUIRED. Not part of the all-or-
+	// nothing set validateStripeConfig enforces — it carries its own default
+	// and is legal at any value regardless of whether the rest of Stripe is
+	// configured.
+	TaxIDRequired bool `koanf:"tax_id_required"`
 }
 
 // RazorpayConfig holds the Razorpay adapter's credentials and its
@@ -934,6 +945,10 @@ func defaults() map[string]any {
 
 		// WPMGR_BILLING_STRIPE_PORTAL_CONFIGURATION.
 		"billing.stripe.portal_configuration": "",
+
+		// WPMGR_BILLING_STRIPE_TAX_ID_REQUIRED. Default true keeps today's
+		// behaviour (tax ID required where Stripe supports requiring one).
+		"billing.stripe.tax_id_required": true,
 	}
 }
 
