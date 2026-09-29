@@ -37,11 +37,15 @@ var chainBrokenErrorCodes = map[string]bool{
 // single-flight dedup guard refuses a dispatch because a runner for this
 // exact snapshot is ALREADY in flight (class-backup-command.php /
 // class-restore-command.php: "runner already in flight for this
-// snapshot/restore"). This can legitimately happen on a slow host (e.g.
-// OpenLiteSpeed without fastcgi_finish_request): the agent's synchronous ack
-// takes long enough that the CP's HTTP round-trip times out and returns a
-// transport error, River retries the job with a fresh dispatch, and THAT
-// retry hits the still-running original run's guard.
+// snapshot/restore"). For a backup this can legitimately happen on a slow
+// host (e.g. OpenLiteSpeed without fastcgi_finish_request): the agent's
+// synchronous ack takes long enough that the CP's HTTP round-trip times out
+// and returns a transport error, River retries the job with a fresh
+// dispatch, and THAT retry hits the still-running original run's guard. A
+// restore job is not retried and dispatches once, and the agent keys its
+// restore guard on the snapshot and the restore_id the CP mints for that
+// one dispatch, so for a restore the code arrives only if that same
+// dispatch reaches the site twice.
 //
 // BackupWorker.Work and RestoreWorker.Work key ONLY on this exact Code value
 // — never on the free-form Detail/Log text, which is not a stable contract —
@@ -636,6 +640,15 @@ func (RestoreArgs) Kind() string { return "backup_restore" }
 // failed restore is not retried automatically; the operator retries it.
 const restoreMaxAttempts = 1
 
+// restoreInterruptedMessage is the error a restore run records when its job
+// reaches a later attempt: the first attempt ended without finishing the run.
+const restoreInterruptedMessage = "The restore was interrupted before it finished and was not retried. Start it again from the backup."
+
+// restorePlanFailedMessage is the error a restore run records when the control
+// plane cannot build its plan. The underlying error goes to the log, not to
+// the run.
+const restorePlanFailedMessage = "WPMgr could not prepare this restore."
+
 // InsertOpts sets the attempt limit on every backup_restore job, whichever
 // path inserts it. River applies an insert-time MaxAttempts before this one,
 // so an enqueuer must leave MaxAttempts unset (EnqueueRestore passes nil).
@@ -725,13 +738,31 @@ func (w *RestoreWorker) Work(ctx context.Context, job *river.Job[RestoreArgs]) e
 
 	// RestoreArgs.InsertOpts limits a restore job to one attempt. A job
 	// inserted with a higher limit (queued before that limit existed) can
-	// still reach a later attempt; it is cancelled here, before anything is
-	// sent to the site. Its run was already finalised by the first attempt.
+	// still reach a later attempt, and it does so only when an earlier
+	// attempt ended without finishing, for example because the process
+	// stopped during it. Its run can therefore still be queued or running.
+	// Nothing is sent to the site: the run is marked failed and the job is
+	// cancelled. A run that already finished keeps its status, because
+	// MarkRestoreRunStatus never changes a finished run.
 	if job.JobRow != nil && job.Attempt > restoreMaxAttempts {
-		w.logger.Warn("restore job reached a second attempt; cancelling without dispatch",
+		w.logger.Warn("restore job reached a second attempt; failing its run without dispatch",
 			slog.String("snapshot_id", a.SnapshotID.String()),
 			slog.String("tenant_id", a.TenantID.String()),
+			slog.String("restore_run_id", a.RestoreRunID.String()),
 			slog.Int("attempt", job.Attempt))
+		if w.svc.restoreRuns != nil && a.RestoreRunID != uuid.Nil {
+			if err := w.svc.restoreRuns.MarkRestoreRunStatus(ctx, MarkRestoreRunStatusInput{
+				TenantID:    a.TenantID,
+				RunID:       a.RestoreRunID,
+				Status:      RestoreStatusFailed,
+				Error:       restoreInterruptedMessage,
+				SetFinished: true,
+			}); err != nil {
+				w.logger.Warn("restore run could not be marked failed",
+					slog.String("restore_run_id", a.RestoreRunID.String()),
+					slog.Any("error", err))
+			}
+		}
 		return river.JobCancel(fmt.Errorf("restore job attempt %d: a failed restore is not retried automatically", job.Attempt))
 	}
 	sel := RestoreSelection{
@@ -761,13 +792,20 @@ func (w *RestoreWorker) Work(ctx context.Context, job *river.Job[RestoreArgs]) e
 
 	plan, snap, si, err := w.svc.PlanRestore(ctx, a.TenantID, a.SnapshotID, sel, restoreID, progressEndpoint)
 	if err != nil {
-		// If the plan fails we still try to finalize the run as failed.
+		// The control plane could not build the plan; nothing was sent to the
+		// site. The run records the control plane's wording, and the
+		// underlying error goes to the log and the cancelled job.
+		w.logger.Warn("restore plan failed",
+			slog.String("snapshot_id", a.SnapshotID.String()),
+			slog.String("tenant_id", a.TenantID.String()),
+			slog.String("restore_run_id", runID.String()),
+			slog.Any("error", err))
 		if w.svc.restoreRuns != nil && runID != uuid.Nil {
 			_ = w.svc.restoreRuns.MarkRestoreRunStatus(ctx, MarkRestoreRunStatusInput{
 				TenantID:    a.TenantID,
 				RunID:       runID,
 				Status:      RestoreStatusFailed,
-				Error:       err.Error(),
+				Error:       restorePlanFailedMessage,
 				SetFinished: true,
 			})
 		}

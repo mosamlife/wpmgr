@@ -405,6 +405,14 @@ func restoreJob(tenantID, snapshotID uuid.UUID, attempt, max int) *river.Job[Res
 	return job
 }
 
+// restoreJobForRun is restoreJob with the restore run's id threaded in, as
+// CreateRestore enqueues it.
+func restoreJobForRun(tenantID, snapshotID, runID uuid.UUID, attempt, max int) *river.Job[RestoreArgs] {
+	job := restoreJob(tenantID, snapshotID, attempt, max)
+	job.Args.RestoreRunID = runID
+	return job
+}
+
 // TestRestoreArgs_InsertOptsLimitsToOneAttempt: every backup_restore job is
 // inserted with MaxAttempts 1. River reads this through
 // JobArgsWithInsertOpts, and an insert-time MaxAttempts would override it, so
@@ -510,14 +518,55 @@ func TestRestoreWorker_AgentFailedIsTerminal(t *testing.T) {
 }
 
 // TestRestoreWorker_LaterAttemptCancelsWithoutDispatch: a restore job that
-// reaches a second attempt (one inserted with a higher limit) is cancelled
-// before anything is sent to the site, and leaves the run alone.
+// reaches a second attempt (one inserted with a higher limit) sends nothing to
+// the site, marks its queued or running run failed with the control plane's
+// wording, and is cancelled. The repo's refusal to change a finished run is
+// proved against Postgres in TestGH791_RestoreLaterAttemptFailsRun.
 func TestRestoreWorker_LaterAttemptCancelsWithoutDispatch(t *testing.T) {
+	const want = "The restore was interrupted before it finished and was not retried. Start it again from the backup."
+	for _, status := range []string{RestoreStatusQueued, RestoreStatusRunning} {
+		t.Run(status, func(t *testing.T) {
+			_, runStore, tenantID, snapshotID, svc := newRestoreWorkerFixture(t)
+			runStore.active.Status = status
+			runID := runStore.active.ID
+			hub := NewHub()
+			svc.SetHub(hub)
+			ch, unsub := hub.Subscribe(snapshotID)
+			defer unsub()
+			cmd := &errCommander{err: restoreTransportErr()}
+
+			err := NewRestoreWorker(svc, cmd, nil, nil, "https://cp.example.com", 0).Work(context.Background(), restoreJobForRun(tenantID, snapshotID, runID, 2, 25))
+			assertJobCancel(t, err)
+			if cmd.calls != 0 {
+				t.Errorf("restore command sent %d times on a second attempt, want 0", cmd.calls)
+			}
+			if len(runStore.statusCalls) != 1 {
+				t.Fatalf("restore run status calls = %+v, want exactly one", runStore.statusCalls)
+			}
+			got := runStore.statusCalls[0]
+			if got.RunID != runID || got.TenantID != tenantID {
+				t.Errorf("status call targets run %s tenant %s, want run %s tenant %s", got.RunID, got.TenantID, runID, tenantID)
+			}
+			if got.Status != RestoreStatusFailed || !got.SetFinished || got.SetStarted {
+				t.Errorf("status call = %+v, want failed with finished_at set and started_at untouched", got)
+			}
+			if got.Error != want {
+				t.Errorf("restore run error = %q, want %q", got.Error, want)
+			}
+			if len(runStore.eventCalls) != 0 {
+				t.Errorf("run events appended on a cancelled attempt: %+v", runStore.eventCalls)
+			}
+			if evs := drain(ch); len(evs) != 0 {
+				t.Errorf("published %v on a cancelled attempt, want nothing", phasesOf(evs))
+			}
+		})
+	}
+}
+
+// TestRestoreWorker_LaterAttemptWithoutRunID: a later attempt with no run id
+// has no run to finish; it is still cancelled with nothing sent.
+func TestRestoreWorker_LaterAttemptWithoutRunID(t *testing.T) {
 	_, runStore, tenantID, snapshotID, svc := newRestoreWorkerFixture(t)
-	hub := NewHub()
-	svc.SetHub(hub)
-	ch, unsub := hub.Subscribe(snapshotID)
-	defer unsub()
 	cmd := &errCommander{err: restoreTransportErr()}
 
 	err := NewRestoreWorker(svc, cmd, nil, nil, "https://cp.example.com", 0).Work(context.Background(), restoreJob(tenantID, snapshotID, 2, 25))
@@ -526,10 +575,7 @@ func TestRestoreWorker_LaterAttemptCancelsWithoutDispatch(t *testing.T) {
 		t.Errorf("restore command sent %d times on a second attempt, want 0", cmd.calls)
 	}
 	if len(runStore.statusCalls) != 0 || len(runStore.eventCalls) != 0 {
-		t.Errorf("run touched on a cancelled attempt: status %+v, events %+v", runStore.statusCalls, runStore.eventCalls)
-	}
-	if evs := drain(ch); len(evs) != 0 {
-		t.Errorf("published %v on a cancelled attempt, want nothing", phasesOf(evs))
+		t.Errorf("run touched without a run id: status %+v, events %+v", runStore.statusCalls, runStore.eventCalls)
 	}
 }
 
@@ -543,6 +589,44 @@ func TestRestoreWorker_PlanErrorCancels(t *testing.T) {
 	assertJobCancel(t, err)
 	if cmd.calls != 0 {
 		t.Errorf("restore command sent %d times for an unplannable restore, want 0", cmd.calls)
+	}
+}
+
+// TestRestoreWorker_PlanErrorFailsRun: a planning error finishes the run as
+// failed with the control plane's wording. The run never records the raw Go
+// error, and never the connection copy, because nothing reached the site.
+func TestRestoreWorker_PlanErrorFailsRun(t *testing.T) {
+	_, runStore, tenantID, _, svc := newRestoreWorkerFixture(t)
+	runID := runStore.active.ID
+	missingSnapshot := uuid.New()
+	cmd := &errCommander{}
+
+	err := NewRestoreWorker(svc, cmd, nil, nil, "https://cp.example.com", 0).Work(context.Background(), restoreJobForRun(tenantID, missingSnapshot, runID, 1, 1))
+	assertJobCancel(t, err)
+	if cmd.calls != 0 {
+		t.Errorf("restore command sent %d times for an unplannable restore, want 0", cmd.calls)
+	}
+	// The worker marks the run running before it plans, then finishes it.
+	if n := len(runStore.statusCalls); n != 2 {
+		t.Fatalf("restore run status calls = %+v, want running then failed", runStore.statusCalls)
+	}
+	if first := runStore.statusCalls[0]; first.Status != RestoreStatusRunning || !first.SetStarted {
+		t.Errorf("first status call = %+v, want running with started_at set", first)
+	}
+	last := runStore.statusCalls[1]
+	if last.RunID != runID || last.TenantID != tenantID {
+		t.Errorf("final status call targets run %s tenant %s, want run %s tenant %s", last.RunID, last.TenantID, runID, tenantID)
+	}
+	if last.Status != RestoreStatusFailed || !last.SetFinished {
+		t.Errorf("final status call = %+v, want failed with finished_at set", last)
+	}
+	if want := "WPMgr could not prepare this restore."; last.Error != want {
+		t.Errorf("restore run error = %q, want %q", last.Error, want)
+	}
+	for _, leak := range []string{err.Error(), missingSnapshot.String(), "Could not connect to the site"} {
+		if strings.Contains(last.Error, leak) {
+			t.Errorf("restore run error %q contains %q", last.Error, leak)
+		}
 	}
 }
 
