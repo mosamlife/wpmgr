@@ -4,11 +4,18 @@
 // placeholders: they must be filled in with real business details before
 // these pages go live. See the review note at the bottom of each legal page.
 
-/** The legal entity that operates the WPMgr hosted service. */
+/**
+ * The legal entity that operates the WPMgr hosted service. Jayso Labs, LLC is
+ * the seller and merchant of record for card payments (processed by Stripe,
+ * see {@link STRIPE}); it also holds the account these pages describe.
+ * `address` and `jurisdiction` are placeholders pending confirmation of the
+ * entity's registered address and state of formation -- do not publish these
+ * pages until an owner or counsel fills them in.
+ */
 export const COMPANY = {
-  legalName: "WPMgr - WordPress Manager",
-  address: "Ahmedabad, Gujarat, India",
-  jurisdiction: "the courts of Ahmedabad, Gujarat, India",
+  legalName: "Jayso Labs, LLC",
+  address: "[Jayso Labs, LLC registered address -- confirm before publishing]",
+  jurisdiction: "[Jayso Labs, LLC state of formation -- confirm before publishing]",
   supportEmail: "support@wpmgr.app",
 } as const;
 
@@ -22,31 +29,15 @@ export const LEGAL_EFFECTIVE_DATE = "June 1, 2026";
 export const LEGAL_CONTACT_HREF = `mailto:${COMPANY.supportEmail}`;
 
 /**
- * WPMgr offers three payment providers, chosen by the customer at checkout:
- * Razorpay, Stripe, and Paddle. The merchant-of-record role differs by
- * provider:
- *
- * - Stripe and Razorpay process payments on behalf of {@link COMPANY}, which
- *   is the seller and merchant of record for those sales. WPMgr handles its
- *   own tax collection and invoicing for these payments (Razorpay covers
- *   Indian GST and INR billing; Stripe covers international card payments)
- *   and issues refunds directly to the original payment method.
- * - Paddle.com Market Ltd remains the merchant of record for sales it
- *   processes. Paddle is the seller on the customer's card statement for
- *   those sales and handles billing, invoicing, tax collection and
- *   remittance, and refunds for them.
- *
- * Stripe and Razorpay are payment processors only; they are not merchants of
+ * By default, every customer pays by card in US dollars, processed by
+ * Stripe. {@link COMPANY} is the seller and merchant of record for these
+ * payments; Stripe is the payment processor only and is not the merchant of
  * record.
+ *
+ * Customers in India can instead choose Razorpay, which charges in Indian
+ * rupees and also supports UPI and RuPay. The seller entity for the
+ * Razorpay route is confirmed separately and is not yet reflected here.
  */
-export const PADDLE = {
-  legalName: "Paddle.com Market Ltd",
-  shortName: "Paddle",
-  role: "Merchant of Record",
-  website: "https://www.paddle.com",
-} as const;
-
-/** Payment processor for Stripe-processed sales; not the merchant of record. */
 export const STRIPE = {
   legalName: "Stripe, Inc.",
   shortName: "Stripe",
@@ -54,7 +45,7 @@ export const STRIPE = {
   website: "https://stripe.com",
 } as const;
 
-/** Payment processor for Razorpay-processed sales; not the merchant of record. */
+/** Optional payment processor for Indian customers; not the merchant of record. */
 export const RAZORPAY = {
   legalName: "Razorpay Software Private Limited",
   shortName: "Razorpay",

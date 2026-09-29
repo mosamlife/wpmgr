@@ -65,7 +65,7 @@ const TIERS: PricingTier[] = [
     sites: 10,
     audience: "For freelancers and small portfolios",
     features: [
-      "50 GB managed backup storage",
+      "10 GB managed backup storage",
       "Daily backups",
       "The full feature set, nothing gated",
     ],
@@ -84,7 +84,7 @@ const TIERS: PricingTier[] = [
     audience: "The core plan for agencies",
     mostPopular: true,
     features: [
-      "250 GB managed backup storage",
+      "100 GB managed backup storage",
       "Hourly backups",
       "The full feature set, nothing gated",
     ],
@@ -102,7 +102,7 @@ const TIERS: PricingTier[] = [
     sites: 200,
     audience: "For large fleets",
     features: [
-      "1 TB managed backup storage",
+      "500 GB managed backup storage",
       "Hourly backups",
       "The full feature set, nothing gated",
     ],
@@ -121,7 +121,7 @@ export const PRICING_TIERS: PricingTier[] = TIERS.map((tier) => ({
 }));
 
 export const PRICING_NOTE =
-  "Self-hosting the control plane is free and unlimited forever under the AGPL-3.0 license, with no site limit and no feature gating. Annual billing on the hosted plans is coming soon; every plan above is billed monthly today.";
+  "Prices exclude applicable taxes. Self-hosting the control plane is free and unlimited forever under the AGPL-3.0 license, with no site limit and no feature gating. Annual billing on the hosted plans is coming soon; every plan above is billed monthly today.";
 
 export const PRICING_FAQ: FaqItem[] = [
   {
@@ -130,7 +130,7 @@ export const PRICING_FAQ: FaqItem[] = [
   },
   {
     q: "Can I change plans later?",
-    a: "Yes. You can upgrade or downgrade at any time from the dashboard billing page. Upgrades take effect immediately and are prorated for the rest of the billing period. Downgrades take effect at the start of your next billing period, so you keep your current plan's limits until then.",
+    a: "Yes. You can upgrade or downgrade at any time from the dashboard billing page. Both take effect immediately: an upgrade is charged the prorated difference right away, and a downgrade credits your unused time toward your next invoice.",
   },
   {
     q: "Is there a free trial?",
@@ -138,7 +138,7 @@ export const PRICING_FAQ: FaqItem[] = [
   },
   {
     q: "What payment methods do you accept?",
-    a: "You choose your payment provider at checkout: Razorpay, Stripe, or Paddle. For Razorpay and Stripe, WPMgr is the seller and handles its own invoicing and tax directly (Razorpay covers Indian GST and INR, Stripe covers international cards). For Paddle, Paddle is the merchant of record and handles invoicing and tax for that sale. All three accept major credit and debit cards, and Razorpay and Paddle also support a range of local payment methods.",
+    a: "By default you pay by card in US dollars, processed by Stripe; Jayso Labs, LLC is the seller. Customers in India can instead choose Razorpay, which charges in Indian rupees and also supports UPI and RuPay. Prices exclude applicable taxes, which are calculated and added at checkout where they apply.",
   },
   {
     q: "What is your refund policy?",
