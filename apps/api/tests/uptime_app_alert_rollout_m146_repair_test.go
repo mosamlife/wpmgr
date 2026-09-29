@@ -158,11 +158,11 @@ func alertConfigsAppAlertsEnabledDefault(t *testing.T, pool *db.Pool) string {
 	return def
 }
 
-// replaceOnce replaces exactly one occurrence of old with new in body and
+// replaceOnceM146 replaces exactly one occurrence of old with new in body and
 // fails the test if old was not found exactly once — the positive control
 // for a mutation that must stay syntactically valid SQL (stripOnce, its
 // sibling in migration_late_run_lock_test.go, only ever removes text).
-func replaceOnce(t *testing.T, body, old, new string) string {
+func replaceOnceM146(t *testing.T, body, old, new string) string {
 	t.Helper()
 	if strings.Count(body, old) != 1 {
 		t.Fatalf("expected exactly one occurrence of substring in migration body; the wording likely changed — update this test's copy:\n%s", old)
@@ -451,7 +451,7 @@ func TestM146MutationDropsCutoffPredicate_TurnsOffRecentlySavedRow(t *testing.T)
 	if err != nil {
 		t.Fatalf("read m146 migration body: %v", err)
 	}
-	mutated := replaceOnce(t, string(body),
+	mutated := replaceOnceM146(t, string(body),
 		"            WHERE app_alerts_enabled\n              AND updated_at <= v_cutoff;\n",
 		"            WHERE app_alerts_enabled;\n",
 	)
