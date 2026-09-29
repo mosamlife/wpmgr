@@ -785,9 +785,11 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		logger.Warn("WPMGR_AGENT_SIGNING_PRIVATE_KEY is empty: CP->agent update commands are disabled")
 		commander = disabledCommander{}
 	}
-	// GH #755: an agent push may report a www toggle of the saved address; the
-	// site service adopts it only when a signed ping to the saved address is
-	// redirected there right now. Without a signer a host change is never
+	// GH #755: an agent push may report a "www." toggle and/or an https
+	// upgrade of the saved address. The site service adopts a host change only
+	// when a signed ping to the saved address is redirected there right now,
+	// and an https upgrade of the same host only when a signed ping to the
+	// https address is answered with a 2xx. Without a signer neither is
 	// adopted after enrollment.
 	if cmdSigner != nil {
 		siteSvc.SetCommandRedirectProber(agentcmd.NewClient(ssrfClient, cmdSigner))

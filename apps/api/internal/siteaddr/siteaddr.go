@@ -80,16 +80,29 @@ func addressHostKey(address string) (string, bool) {
 // refused redirect makes is built with it.
 func NormalizePath(p string) string { return strings.TrimRight(p, "/") }
 
-// SameAddress reports whether a and b are one site address once each is
-// normalised by Parse (scheme and the ASCII letters of the host lowercased, a
-// default port dropped, the path through NormalizePath): "https://x.test/"
-// and "https://x.test" are the same address, "https://x.test/blog" is not.
-// An address Parse refuses is the same as nothing. It is the comparison Plan
-// answers Same by.
+// SameAddress reports whether a and b are one site address: the same scheme,
+// port and path once each is normalised by Parse (scheme lowercased, a
+// default port dropped, the path through NormalizePath), and the same host,
+// which is the same spelling once its ASCII letters are lowercased, or two
+// spellings with one HostKey, since those dial the same host.
+// "https://x.test/" and "https://x.test" are the same address, and so are
+// "https://BÜCHER.de" and "https://bücher.de"; "https://x.test/blog" is not,
+// and neither are "https://İstanbul.test" and "https://istanbul.test", whose
+// keys differ. An address Parse refuses is the same as nothing. It is the
+// comparison Plan answers Same by.
 func SameAddress(a, b string) bool {
-	x, _, okA := Parse(a)
-	y, _, okB := Parse(b)
-	return okA && okB && x == y
+	x, xu, okA := Parse(a)
+	y, yu, okB := Parse(b)
+	return okA && okB && sameAddress(x, xu, y, yu)
+}
+
+// sameAddress is SameAddress for two addresses Parse accepted, each with the
+// URL Parse returned for it.
+func sameAddress(x Address, xu *url.URL, y Address, yu *url.URL) bool {
+	if x.Scheme != y.Scheme || x.Port != y.Port || x.Path != y.Path {
+		return false
+	}
+	return x.Host == y.Host || SameHost(xu.Hostname(), yu.Hostname())
 }
 
 // SameHost reports whether a and b name the same host once each is reduced
@@ -104,49 +117,25 @@ func SameHost(a, b string) bool {
 	return okA && okB && ka == kb
 }
 
-// PlanStrict is Plan with each host compared by HostKey: it answers Same or
-// Adopt only when Plan does and the reported host, as it would be dialled, is
-// the stored host (Same, or an https upgrade) or the stored host's "www."
-// sibling (a host change), both taken through HostKey. Anything else, a host
-// that does not convert included, is Mismatch. The address it returns to
-// store is Plan's, built from the stored spelling, and dials the key the
-// reported host was compared with (Plan asserts it, and PlanStrict checks it
-// again against its own expected key).
+// PlanStrict is Plan, except that it answers Same only for a host that has a
+// HostKey: two equal spellings of a non-ASCII host that does not convert name
+// no host a request can be dialled to, and are Mismatch. Every other answer
+// is Plan's. Plan is the one place the dialled host is enforced: its Adopt
+// returns an address that dials the stored host's key (a scheme-only change)
+// or that key's "www." sibling (a host change), and the reported host has
+// that same key.
 //
-// Push-time adoption and a refused redirect's suggestion use it. Enrollment
-// uses Plan, which applies the same ASCII-only lowercasing and the same
-// assertion on the address it returns.
+// Push-time adoption and a refused redirect's suggestion and self-redirect
+// check use it. Enrollment uses Plan.
 func PlanStrict(stored, reported string) PlanResult {
 	p := Plan(stored, reported)
-	if p.Decision == Mismatch {
+	if p.Decision != Same {
 		return p
 	}
-	s, su, okS := Parse(stored)
-	r, ru, okR := Parse(reported)
-	if !okS || !okR {
-		// Plan's own fallback: the two strings are identical.
-		return p
-	}
-	ks, okKS := HostKey(su.Hostname())
-	kr, okKR := HostKey(ru.Hostname())
-	if !okKS || !okKR {
+	_, su, okS := Parse(stored)
+	_, ru, okR := Parse(reported)
+	if okS && okR && !SameHost(su.Hostname(), ru.Hostname()) {
 		return PlanResult{Decision: Mismatch}
-	}
-	want := ks
-	if s.Host != r.Host {
-		sibling, ok := WWWSibling(ks)
-		if !ok {
-			return PlanResult{Decision: Mismatch}
-		}
-		want = sibling
-	}
-	if kr != want {
-		return PlanResult{Decision: Mismatch}
-	}
-	if p.Decision == Adopt {
-		if got, ok := addressHostKey(p.To); !ok || got != want {
-			return PlanResult{Decision: Mismatch}
-		}
 	}
 	return p
 }
@@ -218,8 +207,9 @@ func WWWSibling(host string) (string, bool) {
 type Decision int
 
 const (
-	// Same: the two addresses are equal once normalised. Nothing
-	// changes.
+	// Same: the two addresses are one address (SameAddress): equal once
+	// normalised, or differing only in the spelling of a host that dials
+	// the same HostKey. Nothing changes.
 	Same Decision = iota
 	// Adopt: the reported address differs from the stored one only by
 	// a leading "www." and/or an http to https upgrade, on the same port and
@@ -244,25 +234,26 @@ type PlanResult struct {
 // toggle and/or an http to https upgrade, on the same port and path. A
 // downgrade from https to http, another host or subdomain, another port and
 // another path are never adopted. Same is SameAddress: a trailing slash never
-// makes two addresses differ.
+// makes two addresses differ, and neither does a spelling of the host that
+// dials the same HostKey ("https://BÜCHER.de" and "https://bücher.de").
 //
-// Hosts are compared with only their ASCII letters lowercased. Before it
-// answers Adopt, Plan checks that the address it returns dials, by HostKey,
-// the stored host's key (a scheme-only change) or the "www." sibling of that
-// key (a host change); any other key, or a host that does not convert, is
-// Mismatch. So the host that is stored, and pinged to confirm the change, is
-// always the host that was compared. To keeps the stored address's path as
-// written, a trailing slash included.
+// For Adopt, hosts are compared with only their ASCII letters lowercased.
+// Before it answers Adopt, Plan checks that the address it returns dials, by
+// HostKey, the stored host's key (a scheme-only change) or the "www." sibling
+// of that key (a host change); any other key, or a host that does not
+// convert, is Mismatch. So the host that is stored, and pinged to confirm the
+// change, is always the host that was compared. To keeps the stored address's
+// path as written, a trailing slash included.
 func Plan(stored, reported string) PlanResult {
 	s, su, okS := Parse(stored)
-	r, _, okR := Parse(reported)
+	r, ru, okR := Parse(reported)
 	if !okS || !okR {
 		if strings.TrimSpace(stored) == strings.TrimSpace(reported) {
 			return PlanResult{Decision: Same}
 		}
 		return PlanResult{Decision: Mismatch}
 	}
-	if s == r {
+	if sameAddress(s, su, r, ru) {
 		return PlanResult{Decision: Same}
 	}
 	if s.Port != r.Port || s.Path != r.Path {
