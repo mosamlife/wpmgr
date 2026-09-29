@@ -217,6 +217,45 @@ export function isSnapshotStalled(
   return Boolean(snapshot.stalled_at) && snapshot.status === "running";
 }
 
+/**
+ * GH #791 — `backup_snapshots.attempt_error` (m148): the control plane's
+ * description of the most recent failed attempt to reach the agent while
+ * the snapshot is still `running` and being retried. `error` keeps meaning
+ * the FINAL failure reason only (the router ruling for #791 deliberately
+ * split these into two columns so an API consumer or the MCP read tools
+ * never mistake a running-but-retrying row for a failed one).
+ *
+ * Not yet on the generated `BackupSnapshot` type — the OpenAPI contract for
+ * this field lands with the rest of the #791 backend slice. Read it the same
+ * way `use-backups.ts`'s `useCreateRestore` reads `restore_run_id` off the
+ * 202 body: the field is present on the wire ahead of the generated client
+ * catching up, so a narrow runtime-checked read (never a blind `as`) stands
+ * in until `BackupSnapshot` itself carries it — replace this with a plain
+ * `snapshot.attempt_error` read once it does.
+ */
+export function snapshotAttemptError(snapshot: BackupSnapshot): string | null {
+  const raw = snapshot as unknown as Record<string, unknown>;
+  return str(raw.attempt_error);
+}
+
+/**
+ * GH #791 — true only while a snapshot is genuinely still `running` AND the
+ * control plane has recorded an `attempt_error` for it: the backup has not
+ * yet been accepted by the agent (or was accepted and then lost contact
+ * again) and River is retrying the dispatch. Distinct from
+ * `isSnapshotStalled`: a stall means the run WAS making progress and has
+ * gone quiet; a retry means the run has never gotten past the initial
+ * dispatch. Gated on `status === "running"` for the same reason
+ * `isSnapshotStalled` is — a terminal snapshot never shows this, even if a
+ * stale `attempt_error` were somehow still present.
+ */
+export function isSnapshotRetrying(
+  snapshot: Pick<BackupSnapshot, "status"> & { attempt_error?: unknown },
+): boolean {
+  if (snapshot.status !== "running") return false;
+  return str(snapshot.attempt_error) !== null;
+}
+
 export interface FormattedProgress {
   phase: PhaseId;
   /** Render-ready phase label. */
@@ -333,7 +372,13 @@ export function formatProgress(snapshot: BackupSnapshot): FormattedProgress {
     chunksTotal,
     bytesDone: num(detail.bytes_written) ?? num(detail.bytes_done),
     isTerminal: TERMINAL_PHASES.has(phase) || snapshot.status === "completed" || snapshot.status === "failed",
-    errorMessage: str(detail.message),
+    // GH #791 — FailSnapshot publishes the failure reason on the wire as
+    // `phase_detail.error` (service.go), not `phase_detail.message`; this
+    // card has never actually surfaced a live failure reason because of the
+    // field-name mismatch (the #791 design's "second bug"). Keep `.message`
+    // as the primary read (some other producer may still use it) and fall
+    // back to `.error` so the CP's real published field is read.
+    errorMessage: str(detail.message) ?? str(detail.error),
   };
 }
 

@@ -32,7 +32,14 @@ import { useNow } from "@/lib/use-now";
 
 import { LiveIndicator } from "@/components/shared/live-indicator";
 
-import { buildStepperPhases, formatProgress, isRestorePhase, isSnapshotStalled } from "./format-progress";
+import {
+  buildStepperPhases,
+  formatProgress,
+  isRestorePhase,
+  isSnapshotRetrying,
+  isSnapshotStalled,
+  snapshotAttemptError,
+} from "./format-progress";
 import { PhaseStepper } from "./phase-stepper";
 import { StalledHint } from "./stalled-hint";
 import { formatElapsed, useEta, useEtaSamples } from "./use-eta";
@@ -161,9 +168,15 @@ export function SnapshotProgressCard({ snapshot }: { snapshot: BackupSnapshot })
             </div>
           ) : null}
 
-          {/* GH #279 — calm "taking longer than expected" hint. Only while
-              still running; never for a terminal snapshot. */}
-          {isSnapshotStalled(snapshot) ? <StalledHint /> : null}
+          {/* GH #279/#791 — calm "taking longer than expected" / "retrying"
+              hint. Only while still running; never for a terminal snapshot.
+              Retrying (an attempt_error is on file) takes priority over the
+              plain stall hint — see stalled-hint.tsx's module doc. */}
+          {isSnapshotRetrying(snapshot) ? (
+            <StalledHint lastError={snapshotAttemptError(snapshot)} />
+          ) : isSnapshotStalled(snapshot) ? (
+            <StalledHint />
+          ) : null}
 
           {/* Current file (during archiving) or current artifact (during encrypt/upload). */}
           {fp.currentFile ? (

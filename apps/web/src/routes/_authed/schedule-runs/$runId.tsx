@@ -179,6 +179,25 @@ function ScheduleRunDetailView({ run }: { run: ScheduleRun }) {
         </div>
       ) : null}
 
+      {/* GH #791 — the run is still being retried; show the last attempt's
+          error (never the final `error` field, which stays empty while
+          running). */}
+      {run.status === "running" && run.attempt_error ? (
+        <div
+          role="status"
+          className="flex items-center gap-3 rounded-md border border-border bg-muted/30 p-3"
+        >
+          <StatusChip
+            tone={SCHEDULE_STATUS_TONE.running}
+            label={SCHEDULE_STATUS_LABEL.running}
+            pulse
+          />
+          <span className="text-sm text-warning-subtle-fg">
+            Last error: {run.attempt_error}
+          </span>
+        </div>
+      ) : null}
+
       {run.status === "skipped" ? (
         <div
           role="status"
@@ -251,7 +270,12 @@ function ScheduleRunDetailView({ run }: { run: ScheduleRun }) {
               },
               {
                 label: "Error",
-                value: run.error ?? "–",
+                value:
+                  run.status === "running"
+                    ? run.attempt_error
+                      ? `Last error: ${run.attempt_error}`
+                      : "–"
+                    : (run.error ?? "–"),
               },
             ]}
           />
