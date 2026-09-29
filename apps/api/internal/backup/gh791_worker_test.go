@@ -336,6 +336,61 @@ func TestRecordAttemptError_TerminalSnapshotPublishesNothing(t *testing.T) {
 	}
 }
 
+// statusRecordingRunStore records every run status write the service makes.
+type statusRecordingRunStore struct {
+	*fakeScheduleRunStore
+	statusInputs []SetScheduleRunStatusInput
+}
+
+func (s *statusRecordingRunStore) SetScheduleRunStatusBySnapshot(ctx context.Context, tenantID, snapshotID uuid.UUID, in SetScheduleRunStatusInput) (ScheduleRun, error) {
+	s.statusInputs = append(s.statusInputs, in)
+	return s.fakeScheduleRunStore.SetScheduleRunStatusBySnapshot(ctx, tenantID, snapshotID, in)
+}
+
+// TestProgressWatchdog_HardFailSendsLastError: when the watchdog hard-fails a
+// backup that holds an attempt error, the SSE 'failed' frame and the schedule
+// run both carry the combined reason with the last error, not the bare stall
+// message.
+func TestProgressWatchdog_HardFailSendsLastError(t *testing.T) {
+	repo := newWatchdogFakeRepo()
+	tenantID, siteID, snapID := uuid.New(), uuid.New(), uuid.New()
+	const lastErr = "The site did not answer in time."
+	repo.setSnapshot(Snapshot{ID: snapID, TenantID: tenantID, SiteID: siteID, Status: StatusRunning, AttemptError: lastErr})
+	repo.stalledFeed = []StalledSnapshot{{ID: snapID, TenantID: tenantID, SiteID: siteID, Hard: true}}
+
+	hub := NewHub()
+	svc := newWatchdogTestService(repo, hub)
+	sid := snapID
+	runs := &statusRecordingRunStore{fakeScheduleRunStore: &fakeScheduleRunStore{rows: []ScheduleRun{{
+		ID: uuid.New(), TenantID: tenantID, SiteID: siteID, SnapshotID: &sid, Status: ScheduleRunStatusRunning, Kind: "full",
+	}}}}
+	svc.scheduleRuns = runs
+	ch, unsub := hub.Subscribe(snapID)
+	defer unsub()
+
+	if err := NewProgressWatchdogWorker(svc, time.Minute, time.Hour, nil).Work(context.Background(), nil); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+
+	want := stallTimeoutMsg + ". Last error: " + lastErr
+	if got := repo.mustGet(t, snapID); got.Status != StatusFailed || got.Error != want {
+		t.Fatalf("snapshot = (%q, %q), want (failed, %q)", got.Status, got.Error, want)
+	}
+	evs := drain(ch)
+	if len(evs) != 1 || evs[0].Phase != "failed" {
+		t.Fatalf("events = %v, want exactly one 'failed'", phasesOf(evs))
+	}
+	if e, _ := evs[0].PhaseDetail["error"].(string); e != want {
+		t.Errorf("SSE 'failed' error = %q, want %q", e, want)
+	}
+	if len(runs.statusInputs) != 1 || runs.statusInputs[0].Status != ScheduleRunStatusFailed || runs.statusInputs[0].Error == nil {
+		t.Fatalf("schedule run status writes = %+v, want one 'failed' with an error", runs.statusInputs)
+	}
+	if e := *runs.statusInputs[0].Error; e != want {
+		t.Errorf("schedule run error = %q, want %q", e, want)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Restore worker
 // ---------------------------------------------------------------------------
