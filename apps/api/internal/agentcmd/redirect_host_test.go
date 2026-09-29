@@ -123,32 +123,49 @@ func TestRedirectExplanation_AdoptStatesTheDuplicateCondition(t *testing.T) {
 
 // TestCommandPingOK: true only for a 2xx the agent answered with ok: true; a
 // redirect, including a same-host upgrade offered by an https address, is
-// false and nothing is sent to its target.
+// false and nothing is sent to its target. answered is true for a 2xx and a
+// redirect whose target was read, and false for any other status and for a
+// transport failure.
 func TestCommandPingOK(t *testing.T) {
 	c := realCommandClient(t)
 	ctx := context.Background()
 
 	agent := newAgentLikeServer(t, true)
-	if !c.CommandPingOK(ctx, uuid.New(), agent.srv.URL) {
-		t.Error("CommandPingOK = false for an agent answering 2xx ok:true")
+	if ok, answered := c.CommandPingOK(ctx, uuid.New(), agent.srv.URL); !ok || !answered {
+		t.Errorf("CommandPingOK = %v, %v for an agent answering 2xx ok:true, want true, true", ok, answered)
 	}
 
 	target := newAgentLikeServer(t, true)
 	origin := newRedirectingServer(t, true, http.StatusMovedPermanently, func() string { return target.srv.URL + pingRoute })
-	if c.CommandPingOK(ctx, uuid.New(), origin.srv.URL) {
-		t.Error("CommandPingOK = true for a redirect")
+	if ok, answered := c.CommandPingOK(ctx, uuid.New(), origin.srv.URL); ok || !answered {
+		t.Errorf("CommandPingOK = %v, %v for a redirect, want false, true", ok, answered)
 	}
 	if n := target.hits.Load(); n != 0 {
 		t.Errorf("redirect target received %d requests, want 0", n)
 	}
 
 	notAgent := httpServerAnswering(t, http.StatusOK, `{"ok":false}`)
-	if c.CommandPingOK(ctx, uuid.New(), notAgent) {
-		t.Error("CommandPingOK = true for a 2xx without ok:true")
+	if ok, answered := c.CommandPingOK(ctx, uuid.New(), notAgent); ok || !answered {
+		t.Errorf("CommandPingOK = %v, %v for a 2xx without ok:true, want false, true", ok, answered)
 	}
 	failing := httpServerAnswering(t, http.StatusInternalServerError, `{}`)
-	if c.CommandPingOK(ctx, uuid.New(), failing) {
-		t.Error("CommandPingOK = true for a 5xx")
+	if ok, answered := c.CommandPingOK(ctx, uuid.New(), failing); ok || answered {
+		t.Errorf("CommandPingOK = %v, %v for a 5xx, want false, false", ok, answered)
+	}
+	closed := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	gone := closed.URL
+	closed.Close()
+	if ok, answered := c.CommandPingOK(ctx, uuid.New(), gone); ok || answered {
+		t.Errorf("CommandPingOK = %v, %v for a transport failure, want false, false", ok, answered)
+	}
+	if _, redirected, answered := c.CommandRedirectTarget(ctx, uuid.New(), gone); redirected || answered {
+		t.Errorf("CommandRedirectTarget = %v, %v for a transport failure, want false, false", redirected, answered)
+	}
+	if _, redirected, answered := c.CommandRedirectTarget(ctx, uuid.New(), agent.srv.URL); redirected || !answered {
+		t.Errorf("CommandRedirectTarget = %v, %v for a 2xx, want false, true", redirected, answered)
+	}
+	if _, redirected, answered := c.CommandRedirectTarget(ctx, uuid.New(), origin.srv.URL); !redirected || !answered {
+		t.Errorf("CommandRedirectTarget = %v, %v for a redirect, want true, true", redirected, answered)
 	}
 }
 

@@ -36,14 +36,14 @@ func (p *blockingProber) wait(ctx context.Context) {
 	}
 }
 
-func (p *blockingProber) CommandRedirectTarget(ctx context.Context, _ uuid.UUID, _ string) (string, bool) {
+func (p *blockingProber) CommandRedirectTarget(ctx context.Context, _ uuid.UUID, _ string) (string, bool, bool) {
 	p.wait(ctx)
-	return "", false
+	return "", false, false
 }
 
-func (p *blockingProber) CommandPingOK(ctx context.Context, _ uuid.UUID, _ string) bool {
+func (p *blockingProber) CommandPingOK(ctx context.Context, _ uuid.UUID, _ string) (bool, bool) {
 	p.wait(ctx)
-	return false
+	return false, false
 }
 
 func (p *blockingProber) callCount() int {

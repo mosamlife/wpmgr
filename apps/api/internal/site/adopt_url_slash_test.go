@@ -82,7 +82,7 @@ func TestAdoptReportedURL_TrailingSlashFollowsTheRedirect(t *testing.T) {
 			ctx := context.Background()
 			client, doer := redirectingClient(t, c.location)
 
-			suggested, redirected := client.CommandRedirectTarget(ctx, uuid.New(), c.saved)
+			suggested, redirected, _ := client.CommandRedirectTarget(ctx, uuid.New(), c.saved)
 			if !redirected || suggested != c.suggested {
 				t.Fatalf("CommandRedirectTarget(%q) = %q %v, want %q true", c.saved, suggested, redirected, c.suggested)
 			}

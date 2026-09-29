@@ -31,23 +31,32 @@ func (r *adoptRepo) AdoptSiteURL(_ context.Context, _, _ uuid.UUID, _, to string
 	return r.adoptResult, nil
 }
 
-// fakeProber answers both probes from fixed values and counts them.
+// fakeProber answers both probes from fixed values and counts them. Every
+// answer is definitive unless unanswered is set, which models a transport
+// failure or a timeout.
 type fakeProber struct {
 	suggested     string
 	redirected    bool
 	pingOK        bool
+	unanswered    bool
 	redirectCalls []string
 	pingCalls     []string
 }
 
-func (p *fakeProber) CommandRedirectTarget(_ context.Context, _ uuid.UUID, siteURL string) (string, bool) {
+func (p *fakeProber) CommandRedirectTarget(_ context.Context, _ uuid.UUID, siteURL string) (string, bool, bool) {
 	p.redirectCalls = append(p.redirectCalls, siteURL)
-	return p.suggested, p.redirected
+	if p.unanswered {
+		return "", false, false
+	}
+	return p.suggested, p.redirected, true
 }
 
-func (p *fakeProber) CommandPingOK(_ context.Context, _ uuid.UUID, siteURL string) bool {
+func (p *fakeProber) CommandPingOK(_ context.Context, _ uuid.UUID, siteURL string) (bool, bool) {
 	p.pingCalls = append(p.pingCalls, siteURL)
-	return p.pingOK
+	if p.unanswered {
+		return false, false
+	}
+	return p.pingOK, true
 }
 
 type manualClock struct{ t time.Time }
@@ -161,10 +170,20 @@ func TestAdoptReportedURL_ProbesAtMostOncePerDay(t *testing.T) {
 	}
 }
 
-// TestProbeLimiter_Window: one probe per key per window, measured from the
-// last allowed probe.
+// probeOnce is one whole probe through the limiter: begin at now and, when
+// allowed, finish at now with hold.
+func probeOnce(l *probeLimiter, k probeKey, now time.Time, hold time.Duration) bool {
+	if !l.begin(k, now) {
+		return false
+	}
+	l.finish(k, now, hold)
+	return true
+}
+
+// TestProbeLimiter_Window: after a probe, a key is refused for the hold its
+// outcome recorded, measured from the end of that probe.
 func TestProbeLimiter_Window(t *testing.T) {
-	l := newProbeLimiter(24*time.Hour, 8)
+	l := newProbeLimiter(8)
 	k := probeKey{site: uuid.New(), address: "https://www.example.com"}
 	t0 := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 	steps := []struct {
@@ -179,9 +198,30 @@ func TestProbeLimiter_Window(t *testing.T) {
 		{48 * time.Hour, true},
 	}
 	for _, s := range steps {
-		if got := l.allow(k, t0.Add(s.at)); got != s.want {
-			t.Errorf("allow at +%v = %v, want %v", s.at, got, s.want)
+		if got := probeOnce(l, k, t0.Add(s.at), adoptProbeWindow); got != s.want {
+			t.Errorf("probe at +%v allowed = %v, want %v", s.at, got, s.want)
 		}
+	}
+}
+
+// TestProbeLimiter_OneProbeInFlight: while a key is being probed, it is
+// refused, whatever its last hold; the hold is recorded only by finish.
+func TestProbeLimiter_OneProbeInFlight(t *testing.T) {
+	l := newProbeLimiter(8)
+	k := probeKey{site: uuid.New(), address: "https://www.example.com"}
+	t0 := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	if !l.begin(k, t0) {
+		t.Fatal("first probe refused")
+	}
+	if l.begin(k, t0.Add(48*time.Hour)) {
+		t.Fatal("a second probe was allowed while the first is in flight")
+	}
+	l.finish(k, t0.Add(time.Minute), adoptProbeBackoff)
+	if l.begin(k, t0.Add(time.Minute+adoptProbeBackoff-time.Nanosecond)) {
+		t.Fatal("allowed inside the hold finish recorded")
+	}
+	if !l.begin(k, t0.Add(time.Minute+adoptProbeBackoff)) {
+		t.Fatal("refused once the hold finish recorded had ended")
 	}
 }
 
@@ -193,9 +233,9 @@ func TestProbeLimiter_Bound(t *testing.T) {
 	site := uuid.New()
 	key := func(i int) probeKey { return probeKey{site: site, address: fmt.Sprintf("https://www.s%d.test", i)} }
 
-	l := newProbeLimiter(24*time.Hour, 3)
+	l := newProbeLimiter(3)
 	for i := 1; i <= 4; i++ {
-		if !l.allow(key(i), t0) {
+		if !probeOnce(l, key(i), t0, adoptProbeWindow) {
 			t.Fatalf("first probe of key %d refused", i)
 		}
 	}
@@ -203,11 +243,11 @@ func TestProbeLimiter_Bound(t *testing.T) {
 		t.Fatalf("len = %d, want 3", n)
 	}
 	for i := 2; i <= 4; i++ {
-		if l.allow(key(i), t0) {
+		if probeOnce(l, key(i), t0, adoptProbeWindow) {
 			t.Errorf("key %d allowed again inside its window", i)
 		}
 	}
-	if !l.allow(key(1), t0) {
+	if !probeOnce(l, key(1), t0, adoptProbeWindow) {
 		t.Error("the evicted key 1 was refused; it is no longer remembered")
 	}
 	if n := l.len(); n != 3 {
@@ -216,9 +256,87 @@ func TestProbeLimiter_Bound(t *testing.T) {
 
 	svcLimiter := (&Service{}).probeLimiter()
 	for i := 0; i < adoptProbeCapacity+50; i++ {
-		svcLimiter.allow(key(i), t0)
+		probeOnce(svcLimiter, key(i), t0, adoptProbeWindow)
 	}
 	if n := svcLimiter.len(); n != adoptProbeCapacity {
 		t.Errorf("service limiter len = %d, want the capacity %d", n, adoptProbeCapacity)
+	}
+}
+
+// TestAdoptReportedURL_TimeoutHoldsForAnHour: a probe that got no answer (a
+// timeout or a transport failure) holds the address back for an hour, not a
+// day: refused at 30m, probed again at 1h. It covers both probes.
+func TestAdoptReportedURL_TimeoutHoldsForAnHour(t *testing.T) {
+	ctx := context.Background()
+	t0 := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name, saved, reported string
+		calls                 func(*fakeProber) int
+	}{
+		{"https ping", "http://example.com", "https://example.com", func(p *fakeProber) int { return len(p.pingCalls) }},
+		{"www redirect probe", "https://example.com", "https://www.example.com", func(p *fakeProber) int { return len(p.redirectCalls) }},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			clk := &manualClock{t: t0}
+			prober := &fakeProber{unanswered: true}
+			svc, repo := newAdoptService(c.saved, prober, clk)
+			tenant, site := uuid.New(), uuid.New()
+			push := func(at time.Duration) {
+				t.Helper()
+				clk.t = t0.Add(at)
+				if adopted, err := svc.adoptReportedURL(ctx, tenant, site, c.reported, "test", ""); adopted || err != nil {
+					t.Fatalf("at +%v: adopted=%v err=%v, want not adopted", at, adopted, err)
+				}
+			}
+			push(0)
+			push(30 * time.Minute)
+			if n := c.calls(prober); n != 1 {
+				t.Fatalf("probes by +30m after a timeout = %d, want 1", n)
+			}
+			push(time.Hour)
+			if n := c.calls(prober); n != 2 {
+				t.Fatalf("probes by +1h after a timeout = %d, want 2", n)
+			}
+			if len(repo.adoptCalls) != 0 {
+				t.Errorf("address written: %v", repo.adoptCalls)
+			}
+		})
+	}
+}
+
+// TestAdoptReportedURL_DefinitiveNoHoldsForADay: a definitive answer that
+// adopts nothing (the saved address answers a 2xx, so it redirects nowhere)
+// holds the address back for 24h, including after an earlier timeout's
+// shorter hold.
+func TestAdoptReportedURL_DefinitiveNoHoldsForADay(t *testing.T) {
+	ctx := context.Background()
+	t0 := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	clk := &manualClock{t: t0}
+	prober := &fakeProber{unanswered: true}
+	svc, _ := newAdoptService("https://example.com", prober, clk)
+	tenant, site := uuid.New(), uuid.New()
+	push := func(at time.Duration) {
+		t.Helper()
+		clk.t = t0.Add(at)
+		if adopted, err := svc.adoptReportedURL(ctx, tenant, site, "https://www.example.com", "test", ""); adopted || err != nil {
+			t.Fatalf("at +%v: adopted=%v err=%v, want not adopted", at, adopted, err)
+		}
+	}
+	push(0)
+	// The site answers from here on: a 2xx, no redirect.
+	prober.unanswered = false
+	push(time.Hour)
+	if n := len(prober.redirectCalls); n != 2 {
+		t.Fatalf("probes by +1h = %d, want 2 (the timeout held for an hour)", n)
+	}
+	push(2 * time.Hour)
+	push(time.Hour + 24*time.Hour - time.Nanosecond)
+	if n := len(prober.redirectCalls); n != 2 {
+		t.Fatalf("probes inside the day after a definitive no = %d, want 2", n)
+	}
+	push(time.Hour + 24*time.Hour)
+	if n := len(prober.redirectCalls); n != 3 {
+		t.Fatalf("probes once the day had passed = %d, want 3", n)
 	}
 }

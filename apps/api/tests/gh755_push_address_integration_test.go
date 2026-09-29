@@ -129,7 +129,7 @@ func (p *gh755FakeProber) setRedirect(savedURL, suggested string, redirected boo
 	p.redirectTo[savedURL] = redirectAnswer{suggested: suggested, redirected: redirected}
 }
 
-func (p *gh755FakeProber) CommandRedirectTarget(_ context.Context, _ uuid.UUID, siteURL string) (string, bool) {
+func (p *gh755FakeProber) CommandRedirectTarget(_ context.Context, _ uuid.UUID, siteURL string) (string, bool, bool) {
 	p.mu.Lock()
 	p.redirectCalls = append(p.redirectCalls, siteURL)
 	ans := p.redirectTo[siteURL]
@@ -138,10 +138,10 @@ func (p *gh755FakeProber) CommandRedirectTarget(_ context.Context, _ uuid.UUID, 
 	if hook != nil {
 		hook()
 	}
-	return ans.suggested, ans.redirected
+	return ans.suggested, ans.redirected, true
 }
 
-func (p *gh755FakeProber) CommandPingOK(_ context.Context, _ uuid.UUID, siteURL string) bool {
+func (p *gh755FakeProber) CommandPingOK(_ context.Context, _ uuid.UUID, siteURL string) (bool, bool) {
 	p.mu.Lock()
 	p.pingCalls = append(p.pingCalls, siteURL)
 	ok := p.pingOK[siteURL]
@@ -150,7 +150,7 @@ func (p *gh755FakeProber) CommandPingOK(_ context.Context, _ uuid.UUID, siteURL 
 	if hook != nil {
 		hook()
 	}
-	return ok
+	return ok, true
 }
 
 func (p *gh755FakeProber) calls(t *testing.T) (ping, redirect int) {
@@ -954,14 +954,14 @@ func (p *gh755SlowProber) wait(ctx context.Context) {
 	}
 }
 
-func (p *gh755SlowProber) CommandRedirectTarget(ctx context.Context, _ uuid.UUID, _ string) (string, bool) {
+func (p *gh755SlowProber) CommandRedirectTarget(ctx context.Context, _ uuid.UUID, _ string) (string, bool, bool) {
 	p.wait(ctx)
-	return "", false
+	return "", false, false
 }
 
-func (p *gh755SlowProber) CommandPingOK(ctx context.Context, _ uuid.UUID, _ string) bool {
+func (p *gh755SlowProber) CommandPingOK(ctx context.Context, _ uuid.UUID, _ string) (bool, bool) {
 	p.wait(ctx)
-	return false
+	return false, false
 }
 
 func TestGH755Push_AdoptionNeverHoldsThePush(t *testing.T) {
