@@ -38,8 +38,16 @@
 -- LATE RUN. The runner applies every unapplied version, including one that
 -- sorts before versions already applied, so on a database already past m100
 -- this file runs at the next boot. It reads m99's applied_at from
--- schema_migrations, so the window it repairs is the same whenever it runs,
--- and it refuses to run when that row is missing rather than guess.
+-- schema_migrations, so the window it repairs is the same whenever it runs.
+--
+-- OUTSIDE THE SERVER'S RUNNER. `atlas migrate apply` records versions in its
+-- own table, not in schema_migrations. When schema_migrations does not exist,
+-- or holds no row for m99, the file has no applied_at to bound the window
+-- with: that path either ran m99 in the same run, with nothing to repair, or
+-- never used this runner. The file then raises a NOTICE that no repair was
+-- needed outside the server's migration runner and returns before it lifts
+-- FORCE or locks any of the three tables. It changes nothing, and every later
+-- migration applies after it.
 --
 -- RE-RUN. Running the file again changes nothing: every repaired row already
 -- equals its raw aggregate, so no count is strictly larger, and every site it
@@ -51,7 +59,11 @@
 -- the repair. The file waits at most five seconds for each lock, and the
 -- repair runs for at most 120 seconds. Either limit rolls the file back
 -- whole, with FORCE and every row as they were, and fails the boot with the
--- previous revision left serving; the next boot tries again.
+-- previous revision left serving. A lock timeout is transient, and the next
+-- boot tries again. A statement timeout that comes from the volume of raw
+-- checks the repair reads is not: the same rows meet the same cap, so it
+-- fails the same way on every boot. The 120-second cap is sized far above
+-- this repair's expected work.
 --
 -- END STATE. No table, column, index or policy changes. The three tables keep
 -- ENABLE and FORCE ROW LEVEL SECURITY and every policy; the check at the end
@@ -66,12 +78,18 @@ DECLARE
     v_day    date;
     v_bound  timestamptz;
 BEGIN
+    IF to_regclass('schema_migrations') IS NULL THEN
+        RAISE NOTICE 'm144: no schema_migrations table, so no repair was needed outside the server''s migration runner';
+        RETURN;
+    END IF;
+
     SELECT applied_at INTO v_cutoff
     FROM schema_migrations
     WHERE version = '20260801000000_m99_uptime_rollup';
 
     IF v_cutoff IS NULL THEN
-        RAISE EXCEPTION 'm144: schema_migrations has no row for 20260801000000_m99_uptime_rollup, so the repair window is unknown';
+        RAISE NOTICE 'm144: schema_migrations has no row for 20260801000000_m99_uptime_rollup, so no repair was needed outside the server''s migration runner';
+        RETURN;
     END IF;
 
     v_day   := (v_cutoff AT TIME ZONE 'UTC')::date;
