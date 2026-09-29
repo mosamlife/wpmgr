@@ -1358,7 +1358,7 @@ export const AgentMetadataSchema = {
     home_url: {
       type: "string",
       description:
-        "The site's WordPress home_url as the agent reads it (GH #755).\nOptional. The control plane may adopt it as the site's saved\naddress, but only under the same equivalence rule enrollment\napplies: a leading \"www.\" toggle and/or an http to https upgrade,\non the same host, port and path. Anything else is ignored.\n",
+        'The site\'s WordPress home_url as the agent reads it (GH #755).\nOptional. The control plane adopts the reported address as the\nsite\'s saved address only in two cases, each confirmed by a\nsigned ping at the moment of adoption: the reported address\nnames the same host upgraded from http to https, confirmed by a\nsigned ping to the https form; or the reported address is the\n"www." sibling of the saved address, confirmed by a signed ping\nto the SAVED address that comes back redirected to it. Host\ncomparison in both cases is by the host that is dialled, not a\nnormalized apex or registrable domain. Anything else (a\ndifferent host with no "www." relationship, a changed port or\npath, a downgrade to http) is ignored. Adoption runs as a\nseparate, best-effort step after the rest of this push has been\napplied, not during it; a refusal or failure never fails the\npush.\n',
     },
     age_recipient: {
       type: "string",
@@ -13176,6 +13176,42 @@ export const MediaSettingsSchema = {
     auto_target_quality: {
       type: "string",
       description: "e.g. balanced | high | max",
+    },
+  },
+} as const;
+
+export const SiteUrlRedirectsErrorSchema = {
+  type: "object",
+  required: ["code", "message", "details"],
+  description:
+    'The POST /recheck 502 body when the site answered its command\naddress with a redirect (code "site_url_redirects"), so no command\nwas sent.\n',
+  properties: {
+    code: {
+      type: "string",
+      enum: ["site_url_redirects"],
+    },
+    message: {
+      type: "string",
+      description: "Human-readable error description.",
+    },
+    details: {
+      type: "object",
+      required: ["from", "to"],
+      properties: {
+        from: {
+          type: "string",
+          description: "The saved site address the command was sent to.",
+        },
+        to: {
+          type: "string",
+          description: "The address the command request was redirected to.",
+        },
+        suggested_url: {
+          type: "string",
+          description:
+            "Present only when the saved address will update to this\ntarget automatically, from a later signed check-in\nconfirming the redirect still holds. Informational; the\ncaller does not act on it directly.\n",
+        },
+      },
     },
   },
 } as const;

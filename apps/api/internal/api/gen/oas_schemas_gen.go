@@ -6267,10 +6267,15 @@ type AgentMetadata struct {
 	ActiveTheme OptString `json:"active_theme"`
 	// The WPMgr agent plugin version.
 	AgentVersion OptString `json:"agent_version"`
-	// The site's WordPress home_url as the agent reads it (GH #755). Optional. The control plane may adopt
-	// it as the site's saved address, but only under the same equivalence rule enrollment applies: a
-	// leading "www." toggle and/or an http to https upgrade, on the same host, port and path. Anything
-	// else is ignored.
+	// The site's WordPress home_url as the agent reads it (GH #755). Optional. The control plane adopts
+	// the reported address as the site's saved address only in two cases, each confirmed by a signed ping
+	// at the moment of adoption: the reported address names the same host upgraded from http to https,
+	// confirmed by a signed ping to the https form; or the reported address is the "www." sibling of the
+	// saved address, confirmed by a signed ping to the SAVED address that comes back redirected to it.
+	// Host comparison in both cases is by the host that is dialled, not a normalized apex or registrable
+	// domain. Anything else (a different host with no "www." relationship, a changed port or path, a
+	// downgrade to http) is ignored. Adoption runs as a separate, best-effort step after the rest of this
+	// push has been applied, not during it; a refusal or failure never fails the push.
 	HomeURL OptString `json:"home_url"`
 	// The agent's per-site age PUBLIC recipient ("age1..."), stored so backups can be triggered without a
 	// separate registration call. Empty or missing leaves the stored recipient unchanged.
@@ -42034,7 +42039,72 @@ func (s *RecheckResponse) SetRecovered(val bool) {
 
 func (*RecheckResponse) recheckSiteRes() {}
 
-type RecheckSiteBadGateway Error
+// RecheckSiteBadGateway represents sum type.
+type RecheckSiteBadGateway struct {
+	// Type selects the active sum variant, switch on this field.
+	Type                  RecheckSiteBadGatewayType
+	Error                 Error
+	SiteUrlRedirectsError SiteUrlRedirectsError
+}
+
+// RecheckSiteBadGatewayType is oneOf type of RecheckSiteBadGateway.
+type RecheckSiteBadGatewayType string
+
+// Possible values for RecheckSiteBadGatewayType.
+const (
+	ErrorRecheckSiteBadGateway                 RecheckSiteBadGatewayType = "agent_unreachable"
+	SiteUrlRedirectsErrorRecheckSiteBadGateway RecheckSiteBadGatewayType = "site_url_redirects"
+)
+
+// IsError reports whether RecheckSiteBadGateway is Error.
+func (s RecheckSiteBadGateway) IsError() bool { return s.Type == ErrorRecheckSiteBadGateway }
+
+// IsSiteUrlRedirectsError reports whether RecheckSiteBadGateway is SiteUrlRedirectsError.
+func (s RecheckSiteBadGateway) IsSiteUrlRedirectsError() bool {
+	return s.Type == SiteUrlRedirectsErrorRecheckSiteBadGateway
+}
+
+// SetError sets RecheckSiteBadGateway to Error.
+func (s *RecheckSiteBadGateway) SetError(v Error) {
+	s.Type = ErrorRecheckSiteBadGateway
+	s.Error = v
+}
+
+// GetError returns Error and true boolean if RecheckSiteBadGateway is Error.
+func (s RecheckSiteBadGateway) GetError() (v Error, ok bool) {
+	if !s.IsError() {
+		return v, false
+	}
+	return s.Error, true
+}
+
+// NewErrorRecheckSiteBadGateway returns new RecheckSiteBadGateway from Error.
+func NewErrorRecheckSiteBadGateway(v Error) RecheckSiteBadGateway {
+	var s RecheckSiteBadGateway
+	s.SetError(v)
+	return s
+}
+
+// SetSiteUrlRedirectsError sets RecheckSiteBadGateway to SiteUrlRedirectsError.
+func (s *RecheckSiteBadGateway) SetSiteUrlRedirectsError(v SiteUrlRedirectsError) {
+	s.Type = SiteUrlRedirectsErrorRecheckSiteBadGateway
+	s.SiteUrlRedirectsError = v
+}
+
+// GetSiteUrlRedirectsError returns SiteUrlRedirectsError and true boolean if RecheckSiteBadGateway is SiteUrlRedirectsError.
+func (s RecheckSiteBadGateway) GetSiteUrlRedirectsError() (v SiteUrlRedirectsError, ok bool) {
+	if !s.IsSiteUrlRedirectsError() {
+		return v, false
+	}
+	return s.SiteUrlRedirectsError, true
+}
+
+// NewSiteUrlRedirectsErrorRecheckSiteBadGateway returns new RecheckSiteBadGateway from SiteUrlRedirectsError.
+func NewSiteUrlRedirectsErrorRecheckSiteBadGateway(v SiteUrlRedirectsError) RecheckSiteBadGateway {
+	var s RecheckSiteBadGateway
+	s.SetSiteUrlRedirectsError(v)
+	return s
+}
 
 func (*RecheckSiteBadGateway) recheckSiteRes() {}
 
@@ -51907,6 +51977,120 @@ func (s *SiteTags) GetTags() []string {
 // SetTags sets the value of Tags.
 func (s *SiteTags) SetTags(val []string) {
 	s.Tags = val
+}
+
+// The POST /recheck 502 body when the site answered its command address with a redirect (code
+// "site_url_redirects"), so no command was sent.
+// Ref: #/components/schemas/SiteUrlRedirectsError
+type SiteUrlRedirectsError struct {
+	Code SiteUrlRedirectsErrorCode `json:"code"`
+	// Human-readable error description.
+	Message string                       `json:"message"`
+	Details SiteUrlRedirectsErrorDetails `json:"details"`
+}
+
+// GetCode returns the value of Code.
+func (s *SiteUrlRedirectsError) GetCode() SiteUrlRedirectsErrorCode {
+	return s.Code
+}
+
+// GetMessage returns the value of Message.
+func (s *SiteUrlRedirectsError) GetMessage() string {
+	return s.Message
+}
+
+// GetDetails returns the value of Details.
+func (s *SiteUrlRedirectsError) GetDetails() SiteUrlRedirectsErrorDetails {
+	return s.Details
+}
+
+// SetCode sets the value of Code.
+func (s *SiteUrlRedirectsError) SetCode(val SiteUrlRedirectsErrorCode) {
+	s.Code = val
+}
+
+// SetMessage sets the value of Message.
+func (s *SiteUrlRedirectsError) SetMessage(val string) {
+	s.Message = val
+}
+
+// SetDetails sets the value of Details.
+func (s *SiteUrlRedirectsError) SetDetails(val SiteUrlRedirectsErrorDetails) {
+	s.Details = val
+}
+
+type SiteUrlRedirectsErrorCode string
+
+const (
+	SiteUrlRedirectsErrorCodeSiteURLRedirects SiteUrlRedirectsErrorCode = "site_url_redirects"
+)
+
+// AllValues returns all SiteUrlRedirectsErrorCode values.
+func (SiteUrlRedirectsErrorCode) AllValues() []SiteUrlRedirectsErrorCode {
+	return []SiteUrlRedirectsErrorCode{
+		SiteUrlRedirectsErrorCodeSiteURLRedirects,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s SiteUrlRedirectsErrorCode) MarshalText() ([]byte, error) {
+	switch s {
+	case SiteUrlRedirectsErrorCodeSiteURLRedirects:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *SiteUrlRedirectsErrorCode) UnmarshalText(data []byte) error {
+	switch SiteUrlRedirectsErrorCode(data) {
+	case SiteUrlRedirectsErrorCodeSiteURLRedirects:
+		*s = SiteUrlRedirectsErrorCodeSiteURLRedirects
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type SiteUrlRedirectsErrorDetails struct {
+	// The saved site address the command was sent to.
+	From string `json:"from"`
+	// The address the command request was redirected to.
+	To string `json:"to"`
+	// Present only when the saved address will update to this target automatically, from a later signed
+	// check-in confirming the redirect still holds. Informational; the caller does not act on it directly.
+	SuggestedURL OptString `json:"suggested_url"`
+}
+
+// GetFrom returns the value of From.
+func (s *SiteUrlRedirectsErrorDetails) GetFrom() string {
+	return s.From
+}
+
+// GetTo returns the value of To.
+func (s *SiteUrlRedirectsErrorDetails) GetTo() string {
+	return s.To
+}
+
+// GetSuggestedURL returns the value of SuggestedURL.
+func (s *SiteUrlRedirectsErrorDetails) GetSuggestedURL() OptString {
+	return s.SuggestedURL
+}
+
+// SetFrom sets the value of From.
+func (s *SiteUrlRedirectsErrorDetails) SetFrom(val string) {
+	s.From = val
+}
+
+// SetTo sets the value of To.
+func (s *SiteUrlRedirectsErrorDetails) SetTo(val string) {
+	s.To = val
+}
+
+// SetSuggestedURL sets the value of SuggestedURL.
+func (s *SiteUrlRedirectsErrorDetails) SetSuggestedURL(val OptString) {
+	s.SuggestedURL = val
 }
 
 // Ref: #/components/schemas/SiteVulnerabilitiesResponse

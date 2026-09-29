@@ -885,10 +885,20 @@ export type AgentMetadata = {
   agent_version?: string;
   /**
    * The site's WordPress home_url as the agent reads it (GH #755).
-   * Optional. The control plane may adopt it as the site's saved
-   * address, but only under the same equivalence rule enrollment
-   * applies: a leading "www." toggle and/or an http to https upgrade,
-   * on the same host, port and path. Anything else is ignored.
+   * Optional. The control plane adopts the reported address as the
+   * site's saved address only in two cases, each confirmed by a
+   * signed ping at the moment of adoption: the reported address
+   * names the same host upgraded from http to https, confirmed by a
+   * signed ping to the https form; or the reported address is the
+   * "www." sibling of the saved address, confirmed by a signed ping
+   * to the SAVED address that comes back redirected to it. Host
+   * comparison in both cases is by the host that is dialled, not a
+   * normalized apex or registrable domain. Anything else (a
+   * different host with no "www." relationship, a changed port or
+   * path, a downgrade to http) is ignored. Adoption runs as a
+   * separate, best-effort step after the rest of this push has been
+   * applied, not during it; a refusal or failure never fails the
+   * push.
    *
    */
   home_url?: string;
@@ -7742,6 +7752,38 @@ export type MediaSettings = {
    * e.g. balanced | high | max
    */
   auto_target_quality: string;
+};
+
+/**
+ * The POST /recheck 502 body when the site answered its command
+ * address with a redirect (code "site_url_redirects"), so no command
+ * was sent.
+ *
+ */
+export type SiteUrlRedirectsError = {
+  code: "site_url_redirects";
+  /**
+   * Human-readable error description.
+   */
+  message: string;
+  details: {
+    /**
+     * The saved site address the command was sent to.
+     */
+    from: string;
+    /**
+     * The address the command request was redirected to.
+     */
+    to: string;
+    /**
+     * Present only when the saved address will update to this
+     * target automatically, from a later signed check-in
+     * confirming the redirect still holds. Informational; the
+     * caller does not act on it directly.
+     *
+     */
+    suggested_url?: string;
+  };
 };
 
 export type RecheckResponse = {
@@ -15670,13 +15712,21 @@ export type RecheckSiteErrors = {
    */
   429: Error;
   /**
-   * agent_unreachable: could not reach the site agent. site_url_redirects:
-   * the site answered its command address with a redirect, so no command
-   * was sent; `details` carries `from`, `to` and, when the saved address
-   * will update to the target automatically, `suggested_url`.
+   * agent_unreachable: could not reach the site agent, plain `Error`
+   * with no `details`. site_url_redirects: the site answered its
+   * command address with a redirect, so no command was sent; see
+   * `SiteUrlRedirectsError` for the `details` shape (`from`, `to`
+   * and, when the saved address will update to the target
+   * automatically, `suggested_url`).
    *
    */
-  502: Error;
+  502:
+    | ({
+        code: "agent_unreachable";
+      } & Error)
+    | ({
+        code: "site_url_redirects";
+      } & SiteUrlRedirectsError);
   /**
    * recheck_disabled or lifecycle_disabled — re-check is not available on this control plane
    */

@@ -2478,6 +2478,7 @@ export {
   type SiteTagList,
   type SiteTags,
   type SiteTagUpdate,
+  type SiteUrlRedirectsError,
   type SiteVulnerabilitiesResponse,
   type SmtpSettings,
   type SmtpSettingsUpdate,
