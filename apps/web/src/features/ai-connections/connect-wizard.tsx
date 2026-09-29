@@ -13,10 +13,12 @@ import { CopyableMono } from "@/components/shared/copyable-mono";
 import { cn } from "@/lib/utils";
 import {
   CAPABILITY_DESCRIPTIONS,
-  CONFERRABLE_CAPABILITIES,
+  CONFERRABLE_READS,
   KNOWN_CAPABILITIES,
+  capabilityKind,
   capabilityLabel,
 } from "./capabilities";
+import { CachePurgeCapabilityBox } from "./cache-purge-capability-box";
 
 import {
   CLIENT_TABLE_VERIFIED_AT,
@@ -200,11 +202,18 @@ function unbuiltRailNote(steps: readonly SpecStepDef[]): string {
  * capability no grant can hold.
  *
  * BOTH ARE DERIVED FROM THE VOCABULARY, NOT WRITTEN OUT. "Read everything" is
- * every conferrable capability, so a capability added to CONFERRABLE_CAPABILITIES
- * joins it by construction rather than by somebody remembering. Writing the
- * seven names here would be a second copy of the list that capabilities.ts
- * exists to prevent, and its failure mode is a preset called "read everything"
- * that quietly stops meaning it.
+ * every conferrable READ, so a capability added to CONFERRABLE_READS joins it
+ * by construction rather than by somebody remembering. Writing the six names
+ * here would be a second copy of the list that capabilities.ts exists to
+ * prevent, and its failure mode is a preset called "read everything" that
+ * quietly stops meaning it.
+ *
+ * NEITHER PRESET MAY INCLUDE THE WRITE. `mcp.cache.purge` needs its own
+ * per-call approval (ADR-061 option B) and is never pre-ticked and never part
+ * of a preset (design v7 S2.1, ruling 33): CONFERRABLE_READS is the reads-only
+ * list precisely so a preset built from it cannot pick the write row up the
+ * way CONFERRABLE_CAPABILITIES (every name the picker may offer at all,
+ * including the write) would.
  */
 const CAPABILITY_PRESETS = [
   {
@@ -221,7 +230,7 @@ const CAPABILITY_PRESETS = [
   {
     id: "read-everything",
     label: "Read everything",
-    capabilities: CONFERRABLE_CAPABILITIES as readonly string[],
+    capabilities: CONFERRABLE_READS as readonly string[],
     description: "Every read this connection could be given. It still cannot change anything.",
   },
 ] as const;
@@ -421,7 +430,16 @@ const SPEC_STEPS: readonly SpecStepDef[] = [
   { n: 1, rail: "Start", heading: "Start a connection", built: true },
   { n: 2, rail: "Client", heading: "Name it, pick the AI client", built: true },
   { n: 3, rail: "Sites", heading: "Choose which sites", built: true },
-  { n: 4, rail: "Capabilities", heading: "Choose what it may do", built: true },
+  // TOKEN PATH ONLY (#694). Before a method is chosen this still renders --
+  // specStepAvailability treats a path-only step as "built" while `method` is
+  // null, exactly like steps 8 to 10 -- so every operator answers it once.
+  // But on browser sign-in this wizard has no channel to hand the answer to
+  // the client's own approval screen (see the step's own footnote), so once
+  // "browser sign-in" is chosen the rail must stop claiming this step is
+  // done: an answer the wizard admits it discarded is not a completed step.
+  // Before this fix the rail kept marking it done regardless of the method,
+  // which is the defect #694 named.
+  { n: 4, rail: "Capabilities", heading: "Choose what it may do", built: true, onlyOnMethod: "token" },
   { n: 5, rail: "Auth", heading: "Choose how it authenticates", built: true },
   { n: 6, rail: "Setup", heading: "Get the setup artefact", built: true },
   // BROWSER SIGN-IN ONLY. There is no approval screen on the token path at
@@ -946,7 +964,7 @@ export function ConnectWizard({
       {currentLocal === CAPABILITY_LOCAL_STEP && client !== null ? (
         <Section
           specN={4}
-          hint="Every capability here is read-only. Nothing on this list can change WordPress content or configuration."
+          hint="Reads below never change anything. The one row under “Changes it can ask for” only ever asks: nothing runs without your separate approval for that request."
         >
           <div className="space-y-3">
             {/* STEP 3 IS BEHIND THE OPERATOR, so "already given" is a true
@@ -1026,8 +1044,14 @@ export function ConnectWizard({
               </p>
             </div>
             <ul className="space-y-2">
-              {KNOWN_CAPABILITIES.map((cap) => {
-                const conferrable = (CONFERRABLE_CAPABILITIES as readonly string[]).includes(cap);
+              {/* READS ONLY. The write row (mcp.cache.purge) never renders in
+                  this list -- it gets its own bordered box below, visibly
+                  distinct and never pre-ticked (design v7 S2.1). Filtering by
+                  CAPABILITY_KIND here, rather than by a written-out name,
+                  means a future read added to the vocabulary joins this list
+                  by construction and a future write does not. */}
+              {KNOWN_CAPABILITIES.filter((cap) => capabilityKind(cap) === "read").map((cap) => {
+                const conferrable = (CONFERRABLE_READS as readonly string[]).includes(cap);
                 const checked = capabilities.includes(cap);
                 return (
                   <li key={cap}>
@@ -1072,32 +1096,43 @@ export function ConnectWizard({
               })}
             </ul>
             <p className="text-xs text-[var(--color-muted-foreground)]">
-              These are all read-only. No capability on this screen can change WordPress
-              content or configuration, whichever ones you pick.
+              Every row above this line is read-only. No capability on this screen can change
+              WordPress content or configuration, whichever ones you pick.
             </p>
-            {/* The same forward conditional step 3's footnote carries, for the
-                same reason and about the same step-5 answer. Two steps whose
-                answers travel differently by path must both say so, or the one
-                that stays silent reads as the one that always travels.
 
-                THE BROWSER SIGN-IN HALF NAMES WHAT THE CONNECTION ENDS UP
-                WITH, RATHER THAN CLAIMING THE QUESTION IS ASKED ELSEWHERE. It
-                used to say permissions were "settled there instead", which was
-                true only while POST /api/v1/oauth/mcp/consent had no capability
-                field. It has one now (dto.go's approvalRequestDTO.Capabilities)
-                and this app does not yet send it, so an OMITTED field is what
-                reaches the server; service.go:871 resolves that through
-                resolveGrantCapabilities to DefaultGrantCapabilities(), which
-                policy.go:273 defines as exactly CapSitesRead. Naming that
-                outcome is a fact the operator can check against the connection
-                afterwards. "Permissions are chosen on the approval screen" was
-                a promise about a control that screen does not have. */}
+            {/* THE ONE WRITE ROW, IN ITS OWN BOX. Never mixed into the reads
+                list above, never pre-ticked, and never part of either preset
+                -- see CachePurgeCapabilityBox and CONFERRABLE_READS. */}
+            <CachePurgeCapabilityBox
+              checked={capabilities.includes("mcp.cache.purge")}
+              disabled={mintInFlight}
+              onChange={(next) =>
+                setCapabilities((current) =>
+                  next
+                    ? current.includes("mcp.cache.purge")
+                      ? current
+                      : [...current, "mcp.cache.purge"]
+                    : current.filter((c) => c !== "mcp.cache.purge"),
+                )
+              }
+            />
+
+            {/* THIS IS THE #694 FIX'S OTHER HALF (see SPEC_STEPS' n:4 entry,
+                onlyOnMethod: "token"). Before this pass the footnote claimed
+                the browser sign-in connection ends up "able to read your
+                sites and nothing else, whatever you pick here" -- true while
+                POST /api/v1/oauth/mcp/consent's capability section did not
+                exist, and it does now (see consent-screen.tsx). What stays
+                true, and is worth restating here rather than leaving silent,
+                is that THIS WIZARD'S OWN STEP 4 ANSWER never reaches that
+                screen: the client opens it directly, and it asks the reads
+                and the cache-clear row again from scratch. */}
             <p className="text-xs text-[var(--color-muted-foreground)]">
-              Where this answer goes depends on step 5. With a connection token it is sent with
-              the mint request and is what the connection holds. With browser sign-in your client
-              opens the approval screen itself, so this wizard has no way to hand it your answer:
-              that connection is created able to read your sites and nothing else, whatever you
-              pick here.
+              This selection is sent with the connection token when you choose that sign-in
+              method at step 5, and is exactly what the connection holds. Browser sign-in does
+              not use this wizard's step 4 at all: your client opens a separate approval screen,
+              which asks for the reads and the cache-clear row again, and this page's answer here
+              plays no part in that connection's permissions.
             </p>
             {/* NO PRIVATE REFUSAL PANEL HERE. `capabilitiesRequest.refusal` is
                 the exact string `stepGate`'s CAPABILITY_LOCAL_STEP branch
@@ -1184,11 +1219,11 @@ export function ConnectWizard({
           -- not this app -- starts the flow. Nothing is persisted to fake it.
 
           SO THE SCREEN'S JOB IS TO SAY WHAT TO EXPECT AND WHAT TO CHOOSE. The
-          capability sentence is the one already verified against the server:
-          this app sends no capabilities on the consent path, an omitted field
-          resolves through resolveGrantCapabilities to
-          DefaultGrantCapabilities(), and policy.go:273 defines that as
-          CapSitesRead alone.
+          capability sentence now names the consent screen's own picker
+          (consent-screen.tsx, design v7 S2.2): that screen sends an explicit
+          `capabilities` list of its own, built from the same
+          CachePurgeCapabilityBox this wizard uses, so it is a real permissions
+          section rather than a promise this wizard cannot see through.
 
           NO WAITING STATE, DELIBERATELY. We do not drive this flow and cannot
           observe it: a spinner here would be this screen pretending to watch
@@ -1214,8 +1249,9 @@ export function ConnectWizard({
                   steps 3 and 4 are not carried there, so it asks again and you answer it there.
                 </li>
                 <li>
-                  It has no permissions control. Approving without narrowing anything creates a
-                  connection able to read your sites and nothing else.
+                  It has its own permissions section, with the same reads and the one
+                  cache-clear row you saw at step 4. Nothing you chose there carries over:
+                  choose again on that screen.
                 </li>
                 <li>
                   Declining creates nothing. No credential exists and no grant is written, and you

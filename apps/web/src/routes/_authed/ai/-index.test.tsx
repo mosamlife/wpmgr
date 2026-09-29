@@ -220,11 +220,12 @@ describe("/ai's static surfaces", () => {
 describe("what a connection can and cannot do", () => {
   beforeEach(() => stubFetch(() => json({ connections: [] })));
 
-  it("states the lead, and states that nothing is implicit", async () => {
+  it("states the lead, the cache-clear allowance, and that nothing is implicit", async () => {
     renderPage();
     expect(
       await screen.findByText(
         "A connection lets one AI client read your fleet, limited to the sites you name. " +
+          "If you allow it, it can also ask you to clear their cache. " +
           "Nothing about it is implicit.",
       ),
     ).toBeInTheDocument();
@@ -235,6 +236,12 @@ describe("what a connection can and cannot do", () => {
     expect(await screen.findByText("What a connection can do")).toBeInTheDocument();
     expect(screen.getByText("Read the sites you put in its scope")).toBeInTheDocument();
     expect(screen.getByText("Report what it found, with its sources")).toBeInTheDocument();
+    // The one write in the nine-name vocabulary (mcp.cache.purge): it says
+    // "ask", not "propose", and it says approval is required in the same
+    // sentence rather than as a separate, easy-to-miss caveat.
+    expect(
+      screen.getByText("Ask you to clear a site's cache, if you allow it. Nothing runs until you approve it."),
+    ).toBeInTheDocument();
   });
 
   it("names all four things it can never do, each on its own", async () => {
@@ -265,10 +272,14 @@ describe("what a connection can and cannot do", () => {
   it("claims no capability the server does not have", async () => {
     // THE GUARD AGAINST A FIDELITY PASS. The design deck draws a "propose
     // changes" capability and a "Produce a change set for you to review" line.
-    // apps/api/internal/mcp/policy.go's vocabulary is eight names and every one
-    // ends in `.read`; m131's CHECK admits only those eight, so no grant can
-    // hold a propose capability and no screen may imply one. Restoring either
-    // string off the deck turns this red.
+    // apps/api/internal/mcp/policy.go's vocabulary is nine names now
+    // (tracka-cache-purge design v7 added mcp.cache.purge, the first that does
+    // not end in `.read`), and m131 plus its follow-on CHECK admit exactly
+    // those nine, so no grant can hold a propose capability and no screen may
+    // imply one. The one write name is disclosed on this screen as something
+    // the connection can ASK for, gated on a person approving each request
+    // (ADR-061 option B) -- never as something it can propose or apply.
+    // Restoring either forbidden string off the deck turns this red.
     renderPage();
     await screen.findByText("What a connection can do");
     expect(screen.queryByText(/produce a change set/i)).not.toBeInTheDocument();
@@ -337,9 +348,21 @@ describe("revoke", () => {
     // NOT "will no longer have access". The cascade kills the tokens and the
     // grant is re-checked per request, so there is no expiry delay to imply.
     await waitFor(() =>
-      expect(screen.getByText(/stops working on its/i)).toBeInTheDocument(),
+      expect(screen.getByText(/stops working at its/i)).toBeInTheDocument(),
     );
     expect(screen.getByText(/next request/i)).toBeInTheDocument();
+  });
+
+  it("says its waiting AI cache-clear requests are withdrawn, not silently dropped", async () => {
+    // design v7 S2.5: the revoke cascade withdraws waiting requests, leaves an
+    // approved-but-unstarted one to not run, and lets an already-started one
+    // finish. All three are distinct claims and the copy has to make them.
+    stubFetch(() => json({ connections: [ROW] }));
+    renderPage();
+    await screen.findByText("Fleet manager");
+    fireEvent.click(screen.getByRole("button", { name: /^revoke$/i }));
+    expect(await screen.findByText(/withdrawn/i)).toBeInTheDocument();
+    expect(screen.getByText(/there is no un-revoke/i)).toBeInTheDocument();
   });
 
   it("does not carry a failed revoke from one connection to the next", async () => {

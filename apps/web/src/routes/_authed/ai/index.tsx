@@ -172,11 +172,26 @@ function AiConnectionsPage() {
         // request, so the client stops working on its NEXT request rather than
         // at some token expiry. "Will no longer have access" would let an
         // operator assume a delay that does not exist.
+        //
+        // THE WITHDRAWN SENTENCE (design v7 S2.5). The revoke cascade closes
+        // this connection's own waiting AI cache-clear requests inside the
+        // same transaction: a request still waiting is withdrawn outright, one
+        // that was approved but has not yet been claimed by the dispatch
+        // worker will not run, and one that had already started is left to
+        // finish rather than interrupted mid-clear. Every clause here is exact
+        // for the same reason the tokens sentence above is exact -- an
+        // operator revoking mid-incident needs the true boundary, not a
+        // reassuring approximation of it.
         consequencesBody={
           <>
             <p>
-              The client stops working on its <strong>next request</strong>, not at some later
-              expiry. Its access tokens are killed at the same time.
+              It stops working at its <strong>next request</strong>, not at some later expiry.
+              Its access tokens are killed at the same time.
+            </p>
+            <p>
+              Any of its AI cache-clear requests that are still waiting are withdrawn. One that
+              was approved but has not started will not run. One that has already started
+              finishes. There is no un-revoke.
             </p>
             <p>
               The connection stays in this list afterwards so you can still see when it was last

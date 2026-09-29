@@ -12,19 +12,22 @@ import { cn } from "@/lib/utils";
 //
 // EVERY LINE HERE IS TRUE OF THE SHIPPED SYSTEM. That is the only rule this
 // file has, and it is the one that is easy to break on a later fidelity pass.
-// The design deck also draws a "propose changes" capability and a "Produce a
-// change set for you to review" line. Neither exists:
-// apps/api/internal/mcp/policy.go's vocabulary is eight capability names and
-// every one of them ends in `.read`, and the m131 CHECK admits only those
-// eight, so no grant can be minted holding a propose capability. Copying those
-// two strings off the deck would put a capability claim on this screen that the
-// server would refuse -- which is worse than saying nothing, because an
+//
+// THE VOCABULARY HAS BEEN NINE NAMES SINCE M135, AND ONE OF THEM IS NOT A
+// READ (tracka-cache-purge design v7, ADR-061 option B). `mcp.cache.purge`
+// lets a connection ASK to clear a site's cache; it never clears anything by
+// itself. The design deck also draws a "propose changes" capability and a
+// "Produce a change set for you to review" line, and neither of those exists:
+// this screen says "ask", never "propose", because asking is bounded by a
+// human approving each specific request and a change set is not. Copying
+// either string off the deck would put a capability claim on this screen the
+// server does not honour -- which is worse than saying nothing, because an
 // operator reading it would calibrate their trust against a feature that does
 // not exist. connection-contract.test.tsx fails if either reappears.
 //
 // The NEGATIVE half is not softened for the same reason, pointing the other
-// way: "it cannot approve or apply anything by itself" is true today and is the
-// entire point of the screen.
+// way: "it cannot approve its own change" is true today, including for the
+// one capability that can ask for one, and is the entire point of the screen.
 
 /** Heading over the positive half. Asserted verbatim by the tests. */
 export const CONTRACT_CAN_HEADING = "What a connection can do";
@@ -33,20 +36,26 @@ export const CONTRACT_CAN_HEADING = "What a connection can do";
 export const CONTRACT_CANNOT_HEADING = "What it can never do";
 
 /**
- * The lead sentence.
+ * The lead sentence (design v7 S2.3, connection-contract.tsx :42-44).
  *
- * The second sentence is the load-bearing half: it is what tells an operator
+ * The last sentence is the load-bearing one: it is what tells an operator
  * that an unstated permission is not a granted one. The deck's version of the
  * first sentence claims the connection can "propose changes to the sites you
- * name"; that clause is cut, because it is not true (see the file comment).
+ * name"; that clause is cut, because it is not true (see the file comment) --
+ * the middle sentence below says "ask", never "propose", for the same reason.
  */
 export const CONTRACT_LEAD =
   "A connection lets one AI client read your fleet, limited to the sites you name. " +
+  "If you allow it, it can also ask you to clear their cache. " +
   "Nothing about it is implicit.";
 
 export const CONTRACT_CAN: readonly string[] = [
   "Read the sites you put in its scope",
   "Report what it found, with its sources",
+  // "Ask", not "propose" -- CONTRACT_FORBIDDEN below still refuses "propose"
+  // outright, and this line is why it can stay green: asking is bounded by a
+  // person approving the specific request, which is the whole difference.
+  "Ask you to clear a site's cache, if you allow it. Nothing runs until you approve it.",
 ];
 
 export const CONTRACT_CANNOT: readonly string[] = [
