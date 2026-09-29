@@ -3,10 +3,11 @@
 --
 -- WHAT IT GUARANTEES. After this file, install_owner holds at most one row,
 -- naming the user who ran first-run bootstrap and the organisation bootstrap
--- created with it. wpmgr_app may read the row and may insert it once; it can
--- never change it, delete it or empty the table. The control plane records the
--- row inside the bootstrap transaction from now on; this file backfills it for
--- installs bootstrapped before that.
+-- created with it. wpmgr_app may read the row and may insert it once; no
+-- statement the control plane issues can change it, delete it or empty the
+-- table. PRIVILEGES below says what that does not cover. The control plane
+-- records the row inside the bootstrap transaction from now on; this file
+-- backfills it for installs bootstrapped before that.
 --
 -- WHY A TABLE. Until now nothing durable named that account. The only proof is
 -- the audit_log row bootstrap writes: action 'auth.register', actor_id =
@@ -29,13 +30,25 @@
 -- and DELETE on every new table; SELECT and INSERT are granted again here by
 -- name so they hold whichever role runs this file. UPDATE, DELETE and
 -- TRUNCATE are revoked, and the singleton primary key refuses a second row.
--- That holds when wpmgr_app is also the table owner (single-DSN installs): an
--- owner's privileges are revocable like anyone's.
+-- The REVOKE binds the statements the control plane issues, and it does so
+-- on single-DSN installs too, where wpmgr_app also owns the table. It does
+-- not bind a role that owns the table and acts on purpose: an owner can give
+-- itself back any privilege on its own table, so an operator running SQL by
+-- hand as the owner can still change the row. That is no wider than the trust
+-- the owner already holds, since the same role can turn off row level
+-- security on every table it owns.
 --
--- BACKFILL. The EARLIEST bootstrap audit row is taken first (LIMIT 1), and only
--- then is its actor id checked. Its user is recorded even if that user has
--- since been deleted, so the next-earliest account never inherits the
--- authority. If the earliest row's actor id is not a uuid, nothing is recorded.
+-- BACKFILL. The EARLIEST bootstrap audit row that still exists is taken first
+-- (LIMIT 1), and only then is its actor id checked. Its user is recorded even
+-- if that user has since been deleted, so a later account does not inherit
+-- the authority from a deleted first account whose bootstrap row survives.
+-- The row has to survive, though. If the first organisation was purged before
+-- this version (purging clears its audit_log) and the install was later
+-- bootstrapped again, the earliest surviving row is the later bootstrap's,
+-- and that later account is recorded. The outcome therefore depends on when
+-- the re-bootstrap happened: from this version on, bootstrap inserts with ON
+-- CONFLICT DO NOTHING, so a re-bootstrap after the row exists records nothing.
+-- If the earliest row's actor id is not a uuid, nothing is recorded.
 -- If there is no bootstrap row at all (it was never written, or it went with
 -- the first organisation: deleting or purging an organisation clears its
 -- audit_log), nothing is recorded, and the install-owner authority stays with
