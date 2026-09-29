@@ -24,6 +24,10 @@ const maxCommandErrorBody = 8 << 10 // 8 KiB
 // that threw during dispatch (class-router.php's catch-all handler).
 const commandFailedCode = "wpmgr_command_failed"
 
+// wordPressFatalCode is the error code WordPress's fatal-error handler puts
+// in its JSON body when a REST request crashes PHP.
+const wordPressFatalCode = "internal_server_error"
+
 // CommandError is the typed result of a non-2xx response to a signed CP->agent
 // command (see postRaw). It always carries the byte-identical legacy message
 // (Error()) the pre-existing regex-based classifiers depend on, plus, when the
@@ -571,13 +575,16 @@ func DescribeAttemptError(err error) string {
 			}
 		case ce.Status == 404:
 			return "The site did not find the WPMgr agent (HTTP 404). Check that the plugin is active."
-		case ce.Status == 500:
-			// Covers both an agent-shaped 500 that failed AgentFailed() (a
-			// data.command mismatch, say) and a plain WordPress fatal
-			// (out-of-memory, time limit) with no wpmgr body at all — from the
-			// HTTP status alone the two are indistinguishable, and both are a
-			// WordPress-level crash rather than a proxy or host in front of it.
+		case ce.Status == 500 && ce.Code == wordPressFatalCode:
+			// WordPress's fatal-error handler answers a REST request with
+			// this code: the site's PHP crashed (out of memory, a time
+			// limit) before the agent could answer.
 			return "WordPress on the site hit a critical error (HTTP 500)."
+		case ce.Status == 500:
+			// Any other 500: a web server's own error page, a body with
+			// output in front of the JSON, or an agent-shaped body that
+			// failed AgentFailed(). None of these can be attributed.
+			return "The site returned a server error (HTTP 500)."
 		case ce.Status >= 500:
 			return fmt.Sprintf("The site returned a server error (HTTP %d) that did not come from the WPMgr agent.", ce.Status)
 		default:
