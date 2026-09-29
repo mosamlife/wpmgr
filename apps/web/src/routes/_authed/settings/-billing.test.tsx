@@ -679,3 +679,92 @@ describe("Cancel subscription vs Manage billing", () => {
     expect(window.location.href).toBe("https://billing.stripe.com/p/session_abc");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Cancel now (3.6/5.10) — past_due-on-Stripe-only immediate cancel, separate
+// from the period-end "Cancel subscription" dialog above. Regression guard
+// for `showCancelNow` (settings/billing.tsx) and `performCancelNow`'s
+// `{ when: "now" }` body (the only thing that distinguishes this call from an
+// accidental period-end cancel — see cancel.go:97's 422
+// billing_cancel_now_not_allowed for every OTHER combination).
+// ---------------------------------------------------------------------------
+
+describe("Cancel now", () => {
+  it("shows Cancel now for a past_due Stripe subscription, and confirming posts { when: \"now\" }", async () => {
+    mockedUseBilling.mockReturnValue(
+      mockQueryResult<BillingInfo | null>({
+        data: billingFixture({
+          plan: "starter",
+          plan_status: "past_due",
+          provider: "stripe",
+          portal_available: true,
+        }),
+      }),
+    );
+    const cancelNowMutateAsync = vi.fn(
+      (): Promise<CancelSubscriptionResult> => Promise.resolve({ ok: true }),
+    );
+    mockedUseCancelBillingSubscription.mockReturnValue(
+      mockMutationResult<CancelSubscriptionResult, CancelSubscriptionVariables | void>({
+        mutateAsync: cancelNowMutateAsync,
+      }),
+    );
+
+    renderBillingPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel now" }));
+
+    const confirmInput = await screen.findByLabelText(/type/i);
+    fireEvent.change(confirmInput, { target: { value: "Starter" } });
+
+    // The trigger button is aria-hidden while the modal Radix dialog is open
+    // (see the "Cancel subscription vs Manage billing" describe block's
+    // identical note), so this uniquely resolves to the dialog's own confirm
+    // button.
+    fireEvent.click(screen.getByRole("button", { name: "Cancel now" }));
+
+    await waitFor(() => expect(cancelNowMutateAsync).toHaveBeenCalledTimes(1));
+    // The exact body Cancel now must send -- an empty-body call would be a
+    // period-end cancel instead, which the server does not refuse the same
+    // way, so this has to be the one wire assertion that can't drift silently.
+    expect(cancelNowMutateAsync).toHaveBeenCalledWith({ when: "now" });
+
+    expect(mockedToastSuccess).toHaveBeenCalledWith("Your subscription has been cancelled");
+  });
+
+  it("shows no Cancel now button for an active Stripe subscription", async () => {
+    mockedUseBilling.mockReturnValue(
+      mockQueryResult<BillingInfo | null>({
+        data: billingFixture({
+          plan: "starter",
+          plan_status: "active",
+          provider: "stripe",
+          portal_available: true,
+        }),
+      }),
+    );
+
+    renderBillingPage();
+
+    await screen.findByRole("button", { name: "Manage billing" });
+    expect(screen.queryByRole("button", { name: "Cancel now" })).not.toBeInTheDocument();
+  });
+
+  it("shows no Cancel now button for a past_due Razorpay subscription (Cancel now is Stripe-only -- cancel.go's ImmediateCanceller has no Razorpay implementation)", async () => {
+    mockedUseBilling.mockReturnValue(
+      mockQueryResult<BillingInfo | null>({
+        data: billingFixture({
+          plan: "starter",
+          plan_status: "past_due",
+          provider: "razorpay",
+          portal_available: false,
+        }),
+      }),
+    );
+
+    renderBillingPage();
+
+    await screen.findByRole("heading", { name: "Billing" });
+    expect(screen.queryByRole("button", { name: "Cancel now" })).not.toBeInTheDocument();
+  });
+});
