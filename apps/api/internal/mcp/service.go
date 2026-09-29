@@ -2579,6 +2579,19 @@ func (s *Service) RevokeConnection(ctx context.Context, p domain.Principal, gran
 			if err := s.requireRecorder(); err != nil {
 				return err
 			}
+			// THE AI REQUEST CASCADE, IN THIS TRANSACTION AND UNCONDITIONAL.
+			// Every waiting request this connection made is withdrawn and
+			// every approved one not yet reserved is closed as not sent, in
+			// the same commit as the revocation. There is no hook and no
+			// switch: a revoke always runs it, whether or not the request
+			// worker or write tools are on, because requests can exist from
+			// before a switch-off. After commit nothing this connection asked
+			// for can still be approved or sent, except a clear already
+			// reserved, which has started.
+			withdrawn, notSent, err := s.store.CloseAssistantRequestsForGrantTx(ctx, tx, p.TenantID, grantID)
+			if err != nil {
+				return err
+			}
 			// THE ACTOR IS WHICHEVER CREDENTIAL AUTHENTICATED, resolved by
 			// audit.ActorFor rather than hardcoded.
 			//
@@ -2593,6 +2606,42 @@ func (s *Service) RevokeConnection(ctx context.Context, p domain.Principal, gran
 			// no user and, because the name join is gated on actor_type, to no
 			// name either.
 			actorType, actorID := audit.ActorFor(p)
+			// One row per closed request, with the revoker as the actor (an
+			// API key is recorded as the key, never as a nil user), before
+			// the revoke's own row.
+			for _, id := range withdrawn {
+				if _, aerr := s.audit.RecordInTx(ctx, tx, audit.Event{
+					TenantID:   p.TenantID,
+					ActorType:  actorType,
+					ActorID:    actorID,
+					Action:     audit.ActionAssistantRequestWithdrawn,
+					TargetType: "assistant_cache_purge_request",
+					TargetID:   id.String(),
+					Metadata: map[string]any{
+						"reason":               "connection_revoked",
+						"proposed_by_grant_id": grantID.String(),
+					},
+				}); aerr != nil {
+					return aerr
+				}
+			}
+			for _, id := range notSent {
+				if _, aerr := s.audit.RecordInTx(ctx, tx, audit.Event{
+					TenantID:   p.TenantID,
+					ActorType:  actorType,
+					ActorID:    actorID,
+					Action:     audit.ActionAssistantRequestNotSent,
+					TargetType: "assistant_cache_purge_request",
+					TargetID:   id.String(),
+					Metadata: map[string]any{
+						"reason":               "grant_inactive",
+						"closed_by":            "connection_revoked",
+						"proposed_by_grant_id": grantID.String(),
+					},
+				}); aerr != nil {
+					return aerr
+				}
+			}
 			_, aerr := s.audit.RecordInTx(ctx, tx, audit.Event{
 				TenantID:   p.TenantID,
 				ActorType:  actorType,

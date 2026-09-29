@@ -181,6 +181,18 @@ type Store interface {
 	// pgx.ErrNoRows -- nothing was written, so nothing should be attributed.
 	// May be nil.
 	RevokeGrantWithTokens(ctx context.Context, principal domain.Principal, grantID uuid.UUID, onRevoked func(tx pgx.Tx, row sqlc.RevokeMCPGrantWithTokensInTenantTxRow) error) (sqlc.RevokeMCPGrantWithTokensInTenantTxRow, error)
+
+	// CloseAssistantRequestsForGrantTx is the revoke cascade over the
+	// connection's AI requests, on the revoke's OWN transaction: every waiting
+	// request becomes 'withdrawn' (naming no decider), and every approved
+	// request not yet reserved is closed as not sent with reason
+	// grant_inactive (its approver stays recorded). A request already
+	// reserved is left alone: that clear has started.
+	//
+	// RevokeConnection calls it unconditionally inside onRevoked. Nothing is
+	// wired from outside, so no configuration can leave it out, and the
+	// revocation and the closes commit together or not at all.
+	CloseAssistantRequestsForGrantTx(ctx context.Context, tx pgx.Tx, tenantID, grantID uuid.UUID) (withdrawn, notSent []uuid.UUID, err error)
 }
 
 // Repo is the live Store. Every method names the tx helper it runs under, and

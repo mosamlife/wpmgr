@@ -47,8 +47,8 @@ type ContextResolver interface {
 // ORGANISATION SCOPE, NOT A SITE. Both shipped tools answer questions about
 // the fleet, so there is no site whose overrides could apply; uuid.Nil is
 // Resolve's organisation-scope resolution (see resolver.go), which reads the
-// org layer and does not touch a site row at all. Site context applies when
-// the assistant acts on a named site, and no such tool exists yet.
+// org layer and does not touch a site row at all. A tool that acts on a named
+// site resolves at site scope instead: see ForbiddenByContext.
 //
 // EVERY FAILURE PATH HERE REFUSES. There is no branch that returns "" with a
 // nil error on a load failure, a nil resolver, or an over-budget context, and

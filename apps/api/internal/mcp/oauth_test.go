@@ -164,6 +164,14 @@ type fakeStore struct {
 	// test can assert the repo is handed the principal (and therefore reaches
 	// RunTenantTx's site-scope dispatch) rather than a bare tenant id.
 	revokePrincipals []domain.Principal
+
+	// The revoke cascade: what CloseAssistantRequestsForGrantTx reports
+	// closing, the error it returns instead, and how often it ran.
+	cascadeWithdrawn []uuid.UUID
+	cascadeNotSent   []uuid.UUID
+	cascadeErr       error
+	cascadeCalls     int
+
 	// listPrincipals does the same for the list path.
 	listPrincipals []domain.Principal
 
@@ -641,6 +649,19 @@ func (f *fakeStore) RevokeGrantWithTokens(
 		}
 	}
 	return f.revokeRow, nil
+}
+
+// CloseAssistantRequestsForGrantTx is the cascade's fake: it reports the
+// configured ids, or cascadeErr.
+func (f *fakeStore) CloseAssistantRequestsForGrantTx(_ context.Context, _ pgx.Tx, _, _ uuid.UUID) ([]uuid.UUID, []uuid.UUID, error) {
+	f.note("CloseAssistantRequestsForGrantTx")
+	f.mu.Lock()
+	f.cascadeCalls++
+	f.mu.Unlock()
+	if f.cascadeErr != nil {
+		return nil, nil, f.cascadeErr
+	}
+	return f.cascadeWithdrawn, f.cascadeNotSent, nil
 }
 
 // ---------------------------------------------------------------------------
