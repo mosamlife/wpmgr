@@ -13,6 +13,7 @@ package tests
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"sort"
 	"strings"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
@@ -32,6 +34,14 @@ import (
 // m103MigrationVersion is the embedded migration filename (sans .sql) that
 // adds vulnerability-alerting columns and backfills notified_at.
 const m103MigrationVersion = "20260805000000_m103_vuln_alerting"
+
+// m145MigrationVersion is m145, PR #775's prefill that runs ahead of m103 and
+// adds notified_at itself, filled for every pre-existing row in the same
+// ADD COLUMN statement (which reads no rows, so no RLS policy applies to it).
+// The harness below stops short of THIS version (not m103's, which now sorts
+// after it) so the test can seed pre-existing rows before either migration
+// runs.
+const m145MigrationVersion = "20260804120000_m145_vuln_notified_at_prefill"
 
 // startPostgresBeforeM103 mirrors startPostgresBeforeM100's container
 // bootstrap but stops short of m103. Migrations run AS wpmgr_owner — the
@@ -105,8 +115,40 @@ func startPostgresBeforeM103(t *testing.T) (admin *db.Pool, owner *db.Pool) {
 			ownerSuper, ownerBypass)
 	}
 
-	applyMigrationsBeforeM103(t, owner, m103MigrationVersion)
+	applyMigrationsBeforeM103(t, owner, m145MigrationVersion)
 	return admin, owner
+}
+
+// assertSiteVulnerabilitiesForceIntact fails the test unless
+// site_vulnerabilities still carries both relrowsecurity and
+// relforcerowsecurity. m145 never toggles FORCE on this table (it is a pure
+// ADD COLUMN, which reads no rows), but this is the same check the other two
+// prefills' tests run, kept here for symmetry.
+func assertSiteVulnerabilitiesForceIntact(t *testing.T, pool *db.Pool) {
+	t.Helper()
+	ctx := context.Background()
+	var rowsec, forcesec bool
+	if err := pool.QueryRow(ctx,
+		`SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE oid = 'public.site_vulnerabilities'::regclass`,
+	).Scan(&rowsec, &forcesec); err != nil {
+		t.Fatalf("read site_vulnerabilities pg_class: %v", err)
+	}
+	if !rowsec || !forcesec {
+		t.Fatalf("site_vulnerabilities relrowsecurity=%t relforcerowsecurity=%t, want true, true", rowsec, forcesec)
+	}
+}
+
+// siteVulnerabilitiesChecksum returns a deterministic hash of every
+// site_vulnerabilities row, used to prove a migration run touched no data.
+func siteVulnerabilitiesChecksum(t *testing.T, pool *db.Pool) string {
+	t.Helper()
+	var sum string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT md5(coalesce(string_agg(row(v.*)::text, '|' ORDER BY v.id), '')) FROM site_vulnerabilities v`,
+	).Scan(&sum); err != nil {
+		t.Fatalf("checksum site_vulnerabilities: %v", err)
+	}
+	return sum
 }
 
 // applyMigrationsBeforeM103 is a package-local copy of
@@ -171,25 +213,13 @@ func applyMigrationsBeforeM103(t *testing.T, pool *db.Pool, stopAt string) {
 // status) gets notified_at stamped, and alert_configs gains the three new
 // columns with their documented defaults.
 func TestM103Migration_BackfillNotifiedAt_AndDefaults(t *testing.T) {
-	// KNOWN GAP (found by PR #775's owner-role harness, not fixed here — a
-	// migration change for database-engineer, not this test-harness PR): the
-	// same silent-zero-row shape as m99's skip. m103's backfill UPDATE over
-	// site_vulnerabilities (also FORCE ROW LEVEL SECURITY) relies on RLS
-	// visibility the production migrator never has, so under the real
-	// migrator role it stamps nothing:
-	//
-	//   vuln_alerting_m103_test.go:241: finding ...: notified_at must be
-	//   backfilled (non-NULL), got NULL
-	//
-	// Implication: any self-hosted install still pre-m103, on upgrade, does
-	// NOT get its pre-existing findings' notified_at backfilled — the very
-	// next alert dispatch after upgrade would then email the tenant's entire
-	// historical vulnerability backlog, which is exactly the notification
-	// storm this migration exists to prevent. No error, no log, a
-	// successful boot. Do not loosen this test or the migration to make the
-	// skip below go away — see PR #775 / the session worklog.
-	t.Skip("known gap: m103's backfill does not stamp notified_at under the production migrator role (RLS on site_vulnerabilities); see PR #775")
-
+	// Fixed by PR #775/#780's m145: it runs ahead of m103 (the harness now
+	// stops before m145, not m103 — see m145MigrationVersion), adds
+	// notified_at itself and fills every pre-existing row in the same ADD
+	// COLUMN statement, which reads no rows so no RLS policy applies to it.
+	// m103 then finds the column already present with nothing NULL among the
+	// rows that existed before it, so its own ADD COLUMN IF NOT EXISTS and
+	// backfill UPDATE both change nothing.
 	pool, owner := startPostgresBeforeM103(t)
 	ctx := context.Background()
 
@@ -292,6 +322,369 @@ func TestM103Migration_BackfillNotifiedAt_AndDefaults(t *testing.T) {
 			t.Fatalf("finding %s: notified_at changed on re-apply (%v -> %v); backfill must be idempotent", id, first, secondStamps[id])
 		}
 	}
+
+	assertSiteVulnerabilitiesForceIntact(t, pool)
+}
+
+// TestM145FiresLeavingNotifiedAtNullUnderOwnerRole is the fires proof for
+// m145: with m145 recorded as applied but never actually run (a binary that
+// predates PR #775's fix, exactly as production saw it), m103 must reproduce
+// the original silent failure: it boots cleanly, but notified_at stays NULL
+// for a pre-existing finding, because its own backfill UPDATE cannot see the
+// row under FORCE ROW LEVEL SECURITY and no app.* GUC. Unmarking m145 and
+// migrating again does NOT backfill it, because m145's probe only checks
+// whether notified_at exists; m103's earlier ADD COLUMN already committed, so
+// the column is present and m145 no-ops. This test pins that unresolved gap,
+// spelled out in the comment below.
+func TestM145FiresLeavingNotifiedAtNullUnderOwnerRole(t *testing.T) {
+	pool, owner := startPostgresBeforeM103(t)
+	ctx := context.Background()
+
+	var tenant uuid.UUID
+	if err := pool.QueryRow(ctx, `INSERT INTO tenants (name, slug) VALUES ($1, $1) RETURNING id`,
+		"m145-fires-"+uuid.NewString()[:8]).Scan(&tenant); err != nil {
+		t.Fatalf("seed tenant: %v", err)
+	}
+	var siteID uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO sites (tenant_id, url, name) VALUES ($1, $2, 'seed') RETURNING id`,
+		tenant, "https://m145-fires.example.com").Scan(&siteID); err != nil {
+		t.Fatalf("seed site: %v", err)
+	}
+	var findingID uuid.UUID
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO site_vulnerabilities
+			(tenant_id, site_id, vuln_id, kind, slug, name, installed_version, severity, title, status)
+		VALUES ($1, $2, 'm145-fires-vuln', 'plugin', 'm145-fires-vuln', 'seed', '1.0.0', 'high', 'seed finding', 'open')
+		RETURNING id`,
+		tenant, siteID,
+	).Scan(&findingID); err != nil {
+		t.Fatalf("seed finding: %v", err)
+	}
+
+	// Simulate the stale binary: m145 recorded as applied, never run. Unlike
+	// m88/m96, m103's own statements never fail outright — the boot must
+	// succeed while silently leaving the pre-existing row unbackfilled.
+	scopePrefillMark(t, owner, m145MigrationVersion)
+	if err := owner.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate with m145 withheld: %v (want a clean boot, per the original silent-failure shape)", err)
+	}
+
+	var notifiedAt *time.Time
+	if err := pool.QueryRow(ctx, `SELECT notified_at FROM site_vulnerabilities WHERE id = $1`, findingID).Scan(&notifiedAt); err != nil {
+		t.Fatalf("query notified_at: %v", err)
+	}
+	if notifiedAt != nil {
+		t.Fatalf("expected notified_at to stay NULL when m145 is skipped (the exact stale-binary failure), got %v", *notifiedAt)
+	}
+
+	// UNCONVERGED GAP (found by this test, not fixed here — a migration
+	// change for database-engineer, not this test-harness PR): unlike m141
+	// and m143, m145 cannot actually repair this state. m103's ADD COLUMN
+	// above already committed (the boot above did not error), so m103 is now
+	// recorded applied and will never re-run. Unmarking and re-running m145
+	// only lets ITS OWN probe run again — and that probe is "does the column
+	// exist", which is now true (m103 added it), so m145 no-ops and
+	// notified_at stays NULL forever. This is not the artificial harness
+	// state: any self-hosted install that already ran a pre-#775 binary's
+	// m103 under the production migrator role is in exactly this state today
+	// — m103 applied, notified_at NULL on every pre-existing finding — and
+	// upgrading to a binary carrying m145 does NOT backfill it, because
+	// m145's guard cannot distinguish "column missing" from "column present
+	// but never filled". Contrast m141/m143: there the first Migrate() call
+	// above ERRORS (23505), so the target migration's transaction rolls back
+	// and it is never recorded applied, leaving the prefill free to run
+	// first on retry. m103's failure mode is silent success, which commits
+	// before the prefill ever gets a second chance.
+	scopePrefillUnmark(t, owner, m145MigrationVersion)
+	if err := owner.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate with m145 present: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT notified_at FROM site_vulnerabilities WHERE id = $1`, findingID).Scan(&notifiedAt); err != nil {
+		t.Fatalf("query notified_at after fix: %v", err)
+	}
+	if notifiedAt != nil {
+		t.Fatalf("m145 unexpectedly backfilled notified_at (%v) after m103 had already committed its own ADD COLUMN; "+
+			"if this now fails, m145 was changed to fix the gap documented above — update this test, don't just relax it", *notifiedAt)
+	}
+	assertSiteVulnerabilitiesForceIntact(t, pool)
+}
+
+// m145EarlyReturnGuardOpen and m145EarlyReturnGuardClose bracket the exact
+// text of m145's probe/early-return check
+// (20260804120000_m145_vuln_notified_at_prefill.sql) — an IF NOT EXISTS (...)
+// THEN ... END IF wrapper rather than m141/m143's early RETURN, since m145's
+// body is two ALTER statements with nothing to run once the column exists.
+// Kept as standalone constants so TestM145LateRunAfterM103AlreadyApplied's
+// mutation can assert each actually matched before stripping it — see
+// stripOnce. Stripping both unconditionally exposes the two ALTER TABLE
+// statements inside BEGIN...END, which is still valid PL/pgSQL.
+const m145EarlyReturnGuardOpen = `    IF NOT EXISTS (
+        SELECT 1 FROM pg_attribute
+        WHERE attrelid = 'public.site_vulnerabilities'::regclass
+          AND attname  = 'notified_at'
+          AND NOT attisdropped
+    ) THEN
+`
+const m145EarlyReturnGuardClose = `    END IF;
+`
+
+// TestM145LateRunAfterM103AlreadyApplied covers the "LATE RUN" case m145's
+// own doc comment claims: on a database that reached head WITHOUT m145 (m103
+// ran its own original code on an empty table and added the column itself),
+// m145 arriving afterward must be a pure no-op — no error, no data change, NO
+// LOCK TAKEN — since its probe finds the column already present. In
+// particular, a NULL notified_at written by a genuinely NEW finding after
+// that first migration must stay NULL, and a pre-existing, already-notified
+// (non-NULL) finding must keep its exact stamp: m145's late run must not
+// re-scan the table at all.
+//
+// Proof structure (see migration_late_run_lock_test.go's doc comment for the
+// shared helpers): first, an IN-MEMORY copy of m145 with its guard stripped
+// is run and must fail — unlike m141/m143, this is not a lock-contention
+// proof. By this point in the test m103 has already added notified_at for
+// real, so the guard-stripped body's bare `ADD COLUMN notified_at` (no IF NOT
+// EXISTS) fails on the column already existing, SQLSTATE 42701. PR #780 gave
+// m145 its own 5s lock_timeout, but only inside the guard's THEN branch — the
+// stripped body still carries that PERFORM line unconditionally (only the IF
+// NOT EXISTS/END IF wrapper is removed, see m145EarlyReturnGuardOpen/Close
+// below), and this check runs before any lock is held, so it never comes
+// into play here: the point is the state-based 42701 failure, not a lock
+// wait. TestM145RealLockTimeoutBoundsEarlyRunWait below is the lock-bound
+// proof, against the real, unmutated file. Then a second connection holds
+// ROW EXCLUSIVE on site_vulnerabilities, and the REAL, unmutated m145 is run
+// late via owner.Migrate and must finish well inside the bound a lock wait
+// would blow, and the real file is re-applied in its own explicit
+// transaction to prove pg_locks shows nothing against site_vulnerabilities
+// for that backend before commit.
+func TestM145LateRunAfterM103AlreadyApplied(t *testing.T) {
+	pool, owner := startPostgresBeforeM103(t)
+	ctx := context.Background()
+
+	// Reach head with m145 withheld: m103 runs unaided on an empty table.
+	scopePrefillMark(t, owner, m145MigrationVersion)
+	if err := owner.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate to head with m145 withheld: %v", err)
+	}
+
+	var tenant uuid.UUID
+	if err := pool.QueryRow(ctx, `INSERT INTO tenants (name, slug) VALUES ($1, $1) RETURNING id`,
+		"m145-laterun-"+uuid.NewString()[:8]).Scan(&tenant); err != nil {
+		t.Fatalf("seed tenant: %v", err)
+	}
+	var siteID uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO sites (tenant_id, url, name) VALUES ($1, $2, 'seed') RETURNING id`,
+		tenant, "https://m145-laterun.example.com").Scan(&siteID); err != nil {
+		t.Fatalf("seed site: %v", err)
+	}
+	// A finding inserted AFTER migration to head: notified_at must default to
+	// NULL (a genuinely new, not-yet-alerted finding).
+	var findingID uuid.UUID
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO site_vulnerabilities
+			(tenant_id, site_id, vuln_id, kind, slug, name, installed_version, severity, title, status)
+		VALUES ($1, $2, 'm145-lr-vuln', 'plugin', 'm145-lr-vuln', 'seed', '1.0.0', 'high', 'seed finding', 'open')
+		RETURNING id`,
+		tenant, siteID,
+	).Scan(&findingID); err != nil {
+		t.Fatalf("seed finding: %v", err)
+	}
+	var notifiedAt *time.Time
+	if err := pool.QueryRow(ctx, `SELECT notified_at FROM site_vulnerabilities WHERE id = $1`, findingID).Scan(&notifiedAt); err != nil {
+		t.Fatalf("query notified_at: %v", err)
+	}
+	if notifiedAt != nil {
+		t.Fatalf("new post-migration finding notified_at = %v, want NULL", *notifiedAt)
+	}
+
+	// A SECOND finding, already notified (non-NULL), inserted directly via the
+	// bootstrap superuser pool with an explicit stamp — as if an earlier
+	// dispatch had already claimed it. A converged late run must leave this
+	// exact value untouched too, not just the NULL one above.
+	notifiedStamp := time.Now().Add(-24 * time.Hour).UTC().Truncate(time.Microsecond)
+	var alreadyNotifiedID uuid.UUID
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO site_vulnerabilities
+			(tenant_id, site_id, vuln_id, kind, slug, name, installed_version, severity, title, status, notified_at)
+		VALUES ($1, $2, 'm145-lr-vuln-notified', 'plugin', 'm145-lr-vuln-notified', 'seed', '1.0.0', 'high', 'seed finding', 'open', $3)
+		RETURNING id`,
+		tenant, siteID, notifiedStamp,
+	).Scan(&alreadyNotifiedID); err != nil {
+		t.Fatalf("seed already-notified finding: %v", err)
+	}
+
+	body, err := fs.ReadFile(migrations.FS, m145MigrationVersion+".sql")
+	if err != nil {
+		t.Fatalf("read m145 migration body: %v", err)
+	}
+	mutated := stripOnce(t, string(body), m145EarlyReturnGuardOpen)
+	mutated = stripOnce(t, mutated, m145EarlyReturnGuardClose)
+
+	// Fires: without the guard, m145 would attempt its ADD COLUMN
+	// unconditionally. notified_at already exists (m103 added it above), so
+	// this fails with SQLSTATE 42701 (column already exists) — the honest
+	// proof for m145, which is not about a held lock at all. Deliberately run
+	// BEFORE holdRowExclusiveOpen below: m145's guard-stripped body still
+	// carries the PERFORM set_config('lock_timeout', '5s', true) line PR #780
+	// added (only the IF NOT EXISTS/END IF wrapper is stripped), so against a
+	// real conflicting hold the ADD COLUMN would now abort with
+	// sqlStateLockNotAvailable (55P03) inside 5s rather than hang — still a
+	// weaker, lock-shaped proof that masks the actual, state-based failure
+	// this migration has to survive.
+	mutatedMigrationMustBlockOrError(t, owner, mutated, sqlStateDuplicateColumn)
+
+	release := holdRowExclusiveOpen(t, owner, "site_vulnerabilities", "last_seen")
+	defer release()
+
+	before := siteVulnerabilitiesChecksum(t, pool)
+
+	// Does not over-fire: the REAL m145 arrives late (unmark and migrate
+	// again) and must finish fast despite the lock still held above.
+	scopePrefillUnmark(t, owner, m145MigrationVersion)
+	assertMigrateStaysUnderLockBound(t, owner, ctx)
+
+	after := siteVulnerabilitiesChecksum(t, pool)
+	if before != after {
+		t.Fatalf("m145's late run changed site_vulnerabilities data: before=%s after=%s", before, after)
+	}
+	if err := pool.QueryRow(ctx, `SELECT notified_at FROM site_vulnerabilities WHERE id = $1`, findingID).Scan(&notifiedAt); err != nil {
+		t.Fatalf("query notified_at after late run: %v", err)
+	}
+	if notifiedAt != nil {
+		t.Fatalf("m145's late run stamped a post-migration NULL notified_at = %v, want it to stay NULL", *notifiedAt)
+	}
+	var afterNotifiedStamp time.Time
+	if err := pool.QueryRow(ctx, `SELECT notified_at FROM site_vulnerabilities WHERE id = $1`, alreadyNotifiedID).Scan(&afterNotifiedStamp); err != nil {
+		t.Fatalf("query notified_at for the already-notified finding after late run: %v", err)
+	}
+	if !afterNotifiedStamp.Equal(notifiedStamp) {
+		t.Fatalf("m145's late run changed an already-notified finding's stamp: before=%v after=%v", notifiedStamp, afterNotifiedStamp)
+	}
+
+	// Re-apply the real file directly and prove it took no lock on
+	// site_vulnerabilities at all, still with the ROW EXCLUSIVE holder open.
+	assertFileTakesNoLockOnRelation(t, owner, "public.site_vulnerabilities", string(body))
+
+	release()
+	assertSiteVulnerabilitiesForceIntact(t, pool)
+}
+
+// TestM145RealLockTimeoutBoundsEarlyRunWait is PR #780's direct proof: on a
+// database that has run neither m145 nor m103 (notified_at does not exist
+// yet), with a second connection holding ROW EXCLUSIVE on
+// site_vulnerabilities, the REAL, unmutated m145 file — run through
+// owner.Migrate, the exact path and role production uses — must not hang
+// waiting for the ACCESS EXCLUSIVE its own ADD COLUMN needs. Its own
+// `PERFORM set_config('lock_timeout', '5s', true)` (inside the guard, ahead
+// of the ALTER TABLE) must abort it with SQLSTATE 55P03 in roughly five to
+// seven seconds; the migration's own transaction must then have rolled back
+// in full (notified_at still absent, m145 not recorded in schema_migrations);
+// and a retry after the hold releases must succeed and backfill the seeded
+// row.
+//
+// Unlike TestM145LateRunAfterM103AlreadyApplied's mutated-body fires check —
+// state-based (42701), deliberately run before any lock is held, against a
+// database where m103 already added the column — this test mutates nothing.
+// It runs the real embedded file through the real boot path on the one state
+// where the column genuinely does not exist yet, so the ALTER TABLE genuinely
+// contends for the lock and PR #780's lock_timeout is the only thing that can
+// end the wait.
+func TestM145RealLockTimeoutBoundsEarlyRunWait(t *testing.T) {
+	pool, owner := startPostgresBeforeM103(t) // migrated up to, not including, m145
+	ctx := context.Background()
+
+	var tenant uuid.UUID
+	if err := pool.QueryRow(ctx, `INSERT INTO tenants (name, slug) VALUES ($1, $1) RETURNING id`,
+		"m145-lockwait-"+uuid.NewString()[:8]).Scan(&tenant); err != nil {
+		t.Fatalf("seed tenant: %v", err)
+	}
+	var siteID uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO sites (tenant_id, url, name) VALUES ($1, $2, 'seed') RETURNING id`,
+		tenant, "https://m145-lockwait.example.com").Scan(&siteID); err != nil {
+		t.Fatalf("seed site: %v", err)
+	}
+	var findingID uuid.UUID
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO site_vulnerabilities
+			(tenant_id, site_id, vuln_id, kind, slug, name, installed_version, severity, title, status)
+		VALUES ($1, $2, 'm145-lockwait-vuln', 'plugin', 'm145-lockwait-vuln', 'seed', '1.0.0', 'high', 'seed finding', 'open')
+		RETURNING id`,
+		tenant, siteID,
+	).Scan(&findingID); err != nil {
+		t.Fatalf("seed finding: %v", err)
+	}
+
+	release := holdRowExclusiveOpen(t, owner, "site_vulnerabilities", "last_seen")
+	defer release()
+
+	start := time.Now()
+	err := owner.Migrate(ctx)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatalf("Migrate succeeded in %s despite a concurrent ROW EXCLUSIVE holder on site_vulnerabilities; "+
+			"m145's ADD COLUMN should have contended for ACCESS EXCLUSIVE and its 5s lock_timeout should have aborted it", elapsed)
+	}
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != sqlStateLockNotAvailable {
+		t.Fatalf("Migrate failed after %s, but not with SQLSTATE %s (lock_not_available): %v", elapsed, sqlStateLockNotAvailable, err)
+	}
+	t.Logf("Migrate correctly aborted after %s with SQLSTATE %s (guard-is-load-bearing): %v", elapsed, pgErr.Code, err)
+
+	// "Roughly five to seven seconds": generous slack either side of m145's
+	// exact 5s lock_timeout for scheduler jitter under testcontainers, while
+	// still nowhere near what a genuine hang (no lock_timeout at all) would
+	// look like.
+	const (
+		wantMin = 4500 * time.Millisecond
+		wantMax = 8 * time.Second
+	)
+	if elapsed < wantMin || elapsed > wantMax {
+		t.Fatalf("Migrate aborted after %s, want roughly %s-%s (m145's own 5s lock_timeout)", elapsed, wantMin, wantMax)
+	}
+
+	// The migration's own transaction must have rolled back in full: no
+	// partial column, and m145 not recorded applied.
+	var columnExists bool
+	if err := pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM pg_attribute
+			WHERE attrelid = 'public.site_vulnerabilities'::regclass
+			  AND attname  = 'notified_at'
+			  AND NOT attisdropped
+		)`).Scan(&columnExists); err != nil {
+		t.Fatalf("check notified_at column: %v", err)
+	}
+	if columnExists {
+		t.Fatalf("notified_at exists after the lock_timeout abort; m145's transaction should have rolled back entirely")
+	}
+	var m145Recorded bool
+	if err := pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = $1)`, m145MigrationVersion,
+	).Scan(&m145Recorded); err != nil {
+		t.Fatalf("check schema_migrations: %v", err)
+	}
+	if m145Recorded {
+		t.Fatalf("m145 is recorded applied in schema_migrations despite aborting on the lock_timeout")
+	}
+
+	// Release the hold and retry: must now succeed and backfill the seeded
+	// row (explicit release before the defer's no-op second call, so the
+	// retry below runs unheld).
+	release()
+
+	if err := owner.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate after releasing the hold: %v", err)
+	}
+	var notifiedAt *time.Time
+	if err := pool.QueryRow(ctx, `SELECT notified_at FROM site_vulnerabilities WHERE id = $1`, findingID).Scan(&notifiedAt); err != nil {
+		t.Fatalf("query notified_at after the retry: %v", err)
+	}
+	if notifiedAt == nil {
+		t.Fatalf("expected notified_at to be backfilled once m145 succeeds on retry, got NULL")
+	}
+	assertSiteVulnerabilitiesForceIntact(t, pool)
 }
 
 // TestM103_NewFindingAfterMigration_NotBackfilled proves new-enrollment first
