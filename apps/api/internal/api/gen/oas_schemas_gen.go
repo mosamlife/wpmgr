@@ -13128,6 +13128,10 @@ type ClearAdminAccountBillingProviderNotFound Error
 
 func (*ClearAdminAccountBillingProviderNotFound) clearAdminAccountBillingProviderRes() {}
 
+type ClearAdminAccountBillingProviderNotImplemented Error
+
+func (*ClearAdminAccountBillingProviderNotImplemented) clearAdminAccountBillingProviderRes() {}
+
 type ClearAdminAccountBillingProviderServiceUnavailable Error
 
 func (*ClearAdminAccountBillingProviderServiceUnavailable) clearAdminAccountBillingProviderRes() {}

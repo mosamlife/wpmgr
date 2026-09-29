@@ -12294,6 +12294,10 @@ export type ClearAdminAccountBillingProviderErrors = {
    */
   422: Error;
   /**
+   * billing_clear_pin_unavailable — clearing a payment-provider pin is not available in this release. Every request gets this answer and nothing is changed.
+   */
+  501: Error;
+  /**
    * The billing-admin panel is not configured on this instance
    */
   503: Error;

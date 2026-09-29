@@ -3854,6 +3854,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "501":
+          description: >-
+            billing_clear_pin_unavailable — clearing a payment-provider pin
+            is not available in this release. Every request gets this
+            answer and nothing is changed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "503":
           description: The billing-admin panel is not configured on this instance
           content:

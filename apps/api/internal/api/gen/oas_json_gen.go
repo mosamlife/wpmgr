@@ -34355,6 +34355,44 @@ func (s *ClearAdminAccountBillingProviderNotFound) UnmarshalJSON(data []byte) er
 	return s.Decode(d)
 }
 
+// Encode encodes ClearAdminAccountBillingProviderNotImplemented as json.
+func (s *ClearAdminAccountBillingProviderNotImplemented) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes ClearAdminAccountBillingProviderNotImplemented from json.
+func (s *ClearAdminAccountBillingProviderNotImplemented) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode ClearAdminAccountBillingProviderNotImplemented to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = ClearAdminAccountBillingProviderNotImplemented(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *ClearAdminAccountBillingProviderNotImplemented) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *ClearAdminAccountBillingProviderNotImplemented) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
 // Encode encodes ClearAdminAccountBillingProviderServiceUnavailable as json.
 func (s *ClearAdminAccountBillingProviderServiceUnavailable) Encode(e *jx.Encoder) {
 	unwrapped := (*Error)(s)
