@@ -48,8 +48,15 @@ export interface UseCheckoutFlowOptions {
 export interface UseCheckoutFlowResult {
   provider: BillingProvider;
   setProvider: (provider: BillingProvider) => void;
-  /** Starts a checkout for `tier` using the currently selected provider. */
-  startCheckout: (tier: CheckoutTierId) => void;
+  /**
+   * Starts a checkout for `tier` using the currently selected provider, or
+   * `providerOverride` when given. Pass the override whenever a caller also
+   * calls `setProvider` and starts checkout in the same handler tick — the
+   * `provider` state update from `setProvider` has not committed yet, so
+   * `startCheckout` would otherwise read the stale, pre-update value (e.g.
+   * the decline banner's "Pay with Razorpay" action in welcome.checkout.tsx).
+   */
+  startCheckout: (tier: CheckoutTierId, providerOverride?: BillingProvider) => void;
   /** True while the checkout POST (or the Razorpay modal it opens) is in flight. */
   isStarting: boolean;
   /** The checkout POST's error, if the most recent attempt failed. Carries `code`/`reason` — see mapBillingCheckoutError. */
@@ -100,14 +107,15 @@ export function useCheckoutFlow(options: UseCheckoutFlowOptions): UseCheckoutFlo
       });
   }
 
-  function startCheckout(tier: CheckoutTierId) {
+  function startCheckout(tier: CheckoutTierId, providerOverride?: BillingProvider) {
+    const effectiveProvider = providerOverride ?? provider;
     checkout.mutate(
       {
         tier,
-        provider,
+        provider: effectiveProvider,
         // Razorpay is INR-only (decision 17) — no user-facing currency
         // choice any more (5.10, Z5).
-        currency: provider === "razorpay" ? "INR" : undefined,
+        currency: effectiveProvider === "razorpay" ? "INR" : undefined,
       },
       {
         onSuccess: (result) => {

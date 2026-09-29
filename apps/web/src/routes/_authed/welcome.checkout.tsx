@@ -198,8 +198,12 @@ function WelcomeCheckoutContent({
           "razorpay",
         )}
         onPayWithRazorpay={() => {
+          // Pass the provider explicitly: setProvider's state update has not
+          // committed by the time startCheckout runs in this same handler,
+          // so reading the hook's `provider` state here would still see
+          // "stripe" (see use-checkout-flow.ts's startCheckout doc).
           setProvider("razorpay");
-          startCheckout(tier);
+          startCheckout(tier, "razorpay");
         }}
       />
 

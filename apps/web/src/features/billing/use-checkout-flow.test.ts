@@ -157,6 +157,39 @@ describe("useCheckoutFlow — Stripe path", () => {
 // Razorpay path
 // ---------------------------------------------------------------------------
 
+describe("useCheckoutFlow — providerOverride (same-handler-tick setProvider + startCheckout)", () => {
+  it("posts provider: 'razorpay' when a caller sets the provider and starts checkout inside the same handler, as the decline banner's onPayWithRazorpay does", () => {
+    // Regression: `setProvider("razorpay")` followed synchronously by
+    // `startCheckout(tier)` in one handler used to post `provider: "stripe"`
+    // — `startCheckout`'s closure still read the pre-update `provider`
+    // state, since the setProvider update had not committed yet. Passing
+    // the provider explicitly is the fix; this reproduces the exact
+    // same-tick shape (a single `act`, mirroring one React event handler),
+    // unlike the Razorpay-path tests above which flush state across two
+    // separate `act` calls and would not have caught this.
+    const mutateMock = fireOnSuccess<CheckoutResult, CreateCheckoutVariables>({
+      razorpay: { subscription_id: "sub_1", key_id: "rzp_1", currency: "INR", amount: 1500 },
+    });
+    mockedUseCreateBillingCheckout.mockReturnValue(
+      mockMutationResult<CheckoutResult, CreateCheckoutVariables>({ mutate: mutateMock }),
+    );
+
+    const { result } = renderHook(() => useCheckoutFlow({ onCheckoutSuccess: vi.fn() }));
+
+    expect(result.current.provider).toBe("stripe");
+
+    act(() => {
+      result.current.setProvider("razorpay");
+      result.current.startCheckout("starter", "razorpay");
+    });
+
+    expect(mutateMock).toHaveBeenCalledWith(
+      { tier: "starter", provider: "razorpay", currency: "INR" },
+      expect.anything(),
+    );
+  });
+});
+
 describe("useCheckoutFlow — Razorpay path", () => {
   it("posts the selected provider/currency, opens the Checkout.js modal with the subscription's key/id/amount/currency, and on handler success verifies then calls onCheckoutSuccess", async () => {
     const mutateMock = fireOnSuccess<CheckoutResult, CreateCheckoutVariables>({
