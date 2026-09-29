@@ -232,6 +232,20 @@ const (
 	// site_uptime_status seed to probes from before m99 was applied.
 	m144StatusCutoffClause = "    WHERE \"probed_at\" < v_cutoff\n"
 
+	// m144NoM99RowSkipBlock is the IF v_cutoff IS NULL ... END IF; block
+	// (plus its trailing blank line) that skips the whole repair — never
+	// lifting FORCE or taking a lock on any of the three tables — when
+	// schema_migrations exists but carries no row for m99. Deleting it is
+	// the fires proof that TestM144SkipsOutsideServerRunner_NoM99Row's "no
+	// ACCESS EXCLUSIVE lock taken" assertion is load-bearing: without it,
+	// v_cutoff stays NULL, but the ALTER TABLE statements below run anyway.
+	m144NoM99RowSkipBlock = `    IF v_cutoff IS NULL THEN
+        RAISE NOTICE 'm144: repair skipped: schema_migrations has no row for 20260801000000_m99_uptime_rollup, so m99 was not applied by the server''s migration runner and its apply time is unknown; days before m99 are not rebuilt';
+        RETURN;
+    END IF;
+
+`
+
 	// m144EarliestProbeTenantOrderBy is the array_agg ORDER BY (its closing
 	// ")[1]" stays attached once this is replaced) that stamps a mixed-tenant
 	// day's row with the tenant of its EARLIEST probe — the same tenant
@@ -286,6 +300,43 @@ func assertUptimeRollupTablesForceIntact(t *testing.T, pool *db.Pool) {
 	if n != 3 {
 		t.Fatalf("FORCE ROW LEVEL SECURITY intact on %d/3 of site_uptime_probes/site_uptime_daily/site_uptime_status, want 3", n)
 	}
+}
+
+// m144AccessExclusiveLockCount runs body (m144's own SQL — the real,
+// unmutated file, or an in-memory mutated copy) inside a fresh explicit
+// transaction on pool, counts this backend's ACCESS EXCLUSIVE locks on
+// site_uptime_probes/site_uptime_daily/site_uptime_status in pg_locks, then
+// rolls the transaction back — nothing body does is ever committed — and
+// returns the count. Mirrors migration_late_run_lock_test.go's own
+// assertFileTakesNoLockOnRelation, generalized to ACCESS EXCLUSIVE mode
+// specifically and to all three tables at once, since m144's skip path must
+// take none of its own ALTER TABLE ... NO FORCE ROW LEVEL SECURITY locks
+// (each of which is ACCESS EXCLUSIVE) rather than merely "no lock on one
+// relation".
+func m144AccessExclusiveLockCount(t *testing.T, pool *db.Pool, body string) int {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin explicit tx to apply m144's body: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, body); err != nil {
+		t.Fatalf("apply m144's body inside an explicit tx: %v", err)
+	}
+	var n int
+	if err := tx.QueryRow(ctx, `
+		SELECT count(*) FROM pg_locks
+		WHERE pid = pg_backend_pid()
+		  AND mode = 'AccessExclusiveLock'
+		  AND relation IN (
+		      'public.site_uptime_probes'::regclass,
+		      'public.site_uptime_daily'::regclass,
+		      'public.site_uptime_status'::regclass
+		  )`).Scan(&n); err != nil {
+		t.Fatalf("read pg_locks for the uptime rollup tables: %v", err)
+	}
+	return n
 }
 
 // siteUptimeDailyChecksum returns a deterministic hash of every
@@ -1134,9 +1185,21 @@ func TestM144SkipsOutsideServerRunner_NoSchemaMigrationsTable(t *testing.T) {
 
 	tenant := seedTenant(t, admin, "m144-no-tracking-table")
 	siteID := seedSiteFor(t, admin, tenant, "https://m144-no-tracking-table.example.com")
+
+	// Truncated to the microsecond (see uptime_rollup_backfill_test.go's own
+	// fix for why an untruncated time.Now() cannot round-trip a Postgres
+	// timestamptz) and anchored to today with anchorToToday, so a probe
+	// seeded as "SQL now() minus an hour" and the Go-computed day bucket
+	// asserted on below agree even when the suite runs in the hour after UTC
+	// midnight — the same hazard uptime_rollup_backfill_test.go's own fix
+	// covers, and which a bare `now() - interval '1 hour'` seed compared
+	// against a fresh time.Now().Truncate(24h) does not.
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	today := now.Truncate(24 * time.Hour)
+	probedAt := anchorToToday(now.Add(-1*time.Hour), today)
 	if _, err := admin.Exec(ctx,
-		`INSERT INTO site_uptime_probes (tenant_id, site_id, probed_at, up, total_ms) VALUES ($1, $2, now() - interval '1 hour', true, 30)`,
-		tenant, siteID); err != nil {
+		`INSERT INTO site_uptime_probes (tenant_id, site_id, probed_at, up, total_ms) VALUES ($1, $2, $3, true, 30)`,
+		tenant, siteID, probedAt); err != nil {
 		t.Fatalf("seed raw probe: %v", err)
 	}
 
@@ -1170,11 +1233,26 @@ func TestM144SkipsOutsideServerRunner_NoSchemaMigrationsTable(t *testing.T) {
 	}
 	assertUptimeRollupTablesForceIntact(t, admin)
 
+	// Lock assertion: the skip path takes NO ACCESS EXCLUSIVE lock on any of
+	// the three tables (mirrors migration_late_run_lock_test.go's own
+	// pg_locks-based proofs). schema_migrations is still absent here, so
+	// this re-runs the same skip path a second time, inside its own
+	// rolled-back transaction — no side effects carry forward.
+	if n := m144AccessExclusiveLockCount(t, owner, readM144Body(t)); n != 0 {
+		t.Fatalf("m144's no-schema_migrations-table skip took %d ACCESS EXCLUSIVE lock(s) on the uptime rollup tables, want 0", n)
+	}
+	t.Logf("real m144 correctly took 0 ACCESS EXCLUSIVE locks on the uptime rollup tables on the no-table skip path")
+
 	// Restore proof: with schema_migrations back and m99's applied_at row
 	// present — the state startPostgresBeforeM144 actually left it in — the
 	// REAL repair (called the same direct way) runs and backfills the
-	// seeded probe.
-	if _, err := admin.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
+	// seeded probe. Recreated as OWNER (wpmgr_owner), exactly as the
+	// server's own runner creates it (internal/db/migrate.go): recreating it
+	// as admin, the bootstrap superuser, would leave the table owned by a
+	// role m144 itself has no privilege on, and the repair below would fail
+	// with "permission denied for table schema_migrations" the moment it
+	// tries to SELECT applied_at from it as wpmgr_owner.
+	if _, err := owner.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
 		version    text        PRIMARY KEY,
 		applied_at timestamptz NOT NULL DEFAULT now()
 	)`); err != nil {
@@ -1188,9 +1266,111 @@ func TestM144SkipsOutsideServerRunner_NoSchemaMigrationsTable(t *testing.T) {
 	if _, err := owner.Exec(ctx, readM144Body(t)); err != nil {
 		t.Fatalf("m144 body failed with schema_migrations present: %v", err)
 	}
-	up, total, _, _, found := queryDailyBucket(t, admin, siteID, time.Now().UTC().Truncate(24*time.Hour))
+	up, total, _, _, found := queryDailyBucket(t, admin, siteID, today)
 	if !found || up != 1 || total != 1 {
 		t.Fatalf("after restoring schema_migrations and m99's row: up=%d total=%d found=%v, want 1/1 backfilled", up, total, found)
 	}
 	assertUptimeRollupTablesForceIntact(t, admin)
+}
+
+// ---------------------------------------------------------------------------
+// 10. Skip path: schema_migrations exists but has no m99 row, m144 changes
+//     nothing and takes NO lock.
+// ---------------------------------------------------------------------------
+
+// TestM144SkipsOutsideServerRunner_NoM99Row is
+// TestM144SkipsOutsideServerRunner_NoSchemaMigrationsTable's sibling for the
+// OTHER outside-the-runner skip: schema_migrations exists — every other
+// migration up to m144 applied normally, through startPostgresBeforeM144's
+// own bootstrap — but carries no row for m99, the shape atlas's own
+// out-of-order refusal and non-linear exec-order leave behind (see m144's own
+// migration comment). m144 raises its NOTICE and returns before touching a
+// row or taking a lock on any of the three tables, even though a raw probe
+// exists that a real repair would otherwise aggregate.
+//
+// Also the fires proof for the "no m99 row" RETURN block itself
+// (m144NoM99RowSkipBlock): an in-memory copy with that block deleted
+// proceeds past the skip — v_cutoff stays NULL, which the ALTER TABLE
+// statements that follow don't depend on — and DOES take ACCESS EXCLUSIVE
+// locks on all three tables, proving the "no lock taken" assertion below is
+// load-bearing rather than vacuous.
+func TestM144SkipsOutsideServerRunner_NoM99Row(t *testing.T) {
+	pool, owner := startPostgresBeforeM144(t)
+	ctx := context.Background()
+
+	tenant := seedTenant(t, pool, "m144-no-m99-row")
+	siteID := seedSiteFor(t, pool, tenant, "https://m144-no-m99-row.example.com")
+
+	// Truncated to the microsecond and anchored to today with anchorToToday
+	// — see TestM144SkipsOutsideServerRunner_NoSchemaMigrationsTable's own
+	// comment for why.
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	today := now.Truncate(24 * time.Hour)
+	probedAt := anchorToToday(now.Add(-1*time.Hour), today)
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO site_uptime_probes (tenant_id, site_id, probed_at, up, total_ms) VALUES ($1, $2, $3, true, 30)`,
+		tenant, siteID, probedAt); err != nil {
+		t.Fatalf("seed raw probe: %v", err)
+	}
+
+	// schema_migrations exists (startPostgresBeforeM144's own bootstrap
+	// applied m99 for real, through the owner role, and inserted its row)
+	// but drop JUST m99's row: the "table present, no m99 row" skip.
+	if _, err := pool.Exec(ctx,
+		`DELETE FROM schema_migrations WHERE version = $1`, m99MigrationVersion); err != nil {
+		t.Fatalf("delete m99's schema_migrations row: %v", err)
+	}
+
+	if _, err := owner.Exec(ctx, readM144Body(t)); err != nil {
+		t.Fatalf("m144 body failed with schema_migrations present but no m99 row, want a clean no-op: %v", err)
+	}
+
+	var dailyCount, statusCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM site_uptime_daily WHERE site_id = $1`, siteID).Scan(&dailyCount); err != nil {
+		t.Fatalf("count site_uptime_daily: %v", err)
+	}
+	if dailyCount != 0 {
+		t.Fatalf("site_uptime_daily has %d row(s) after m144 ran with no m99 row, want 0 (should have skipped before touching anything)", dailyCount)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM site_uptime_status WHERE site_id = $1`, siteID).Scan(&statusCount); err != nil {
+		t.Fatalf("count site_uptime_status: %v", err)
+	}
+	if statusCount != 0 {
+		t.Fatalf("site_uptime_status has %d row(s) after m144 ran with no m99 row, want 0", statusCount)
+	}
+	assertUptimeRollupTablesForceIntact(t, pool)
+
+	// DOES NOT OVER-FIRE: the real skip path takes NO ACCESS EXCLUSIVE lock
+	// on any of the three tables.
+	if n := m144AccessExclusiveLockCount(t, owner, readM144Body(t)); n != 0 {
+		t.Fatalf("m144's no-m99-row skip took %d ACCESS EXCLUSIVE lock(s) on the uptime rollup tables, want 0", n)
+	}
+	t.Logf("real m144 correctly took 0 ACCESS EXCLUSIVE locks on the uptime rollup tables on the no-m99-row skip path")
+
+	// FIRES: an in-memory copy of m144 with the "no m99 row" RETURN block
+	// deleted proceeds past the skip and DOES take ACCESS EXCLUSIVE locks on
+	// all three tables.
+	mutated := stripOnce(t, readM144Body(t), m144NoM99RowSkipBlock)
+	if n := m144AccessExclusiveLockCount(t, owner, mutated); n == 0 {
+		t.Fatal("block-stripped m144 (no-m99-row RETURN removed) took 0 ACCESS EXCLUSIVE locks; expected it to proceed past the skip and lock all three tables (this mutation must fire for the proof above to mean anything)")
+	} else {
+		t.Logf("block-stripped m144 correctly took %d ACCESS EXCLUSIVE lock(s) on the uptime rollup tables (guard-is-load-bearing)", n)
+	}
+
+	// Restore proof: with m99's row back — the state startPostgresBeforeM144
+	// actually left it in — the REAL repair runs and backfills the seeded
+	// probe.
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT (version) DO NOTHING`,
+		m99MigrationVersion); err != nil {
+		t.Fatalf("re-seed m99's applied_at row: %v", err)
+	}
+	if err := owner.Migrate(ctx); err != nil {
+		t.Fatalf("m144 migration: %v", err)
+	}
+	up, total, _, _, found := queryDailyBucket(t, pool, siteID, today)
+	if !found || up != 1 || total != 1 {
+		t.Fatalf("after restoring m99's row: up=%d total=%d found=%v, want 1/1 backfilled", up, total, found)
+	}
+	assertUptimeRollupTablesForceIntact(t, pool)
 }
