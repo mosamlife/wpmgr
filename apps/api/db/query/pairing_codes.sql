@@ -48,13 +48,15 @@ WHERE code_hash = $1;
 -- IP. Exactly one concurrent caller wins (the conditional UPDATE is the lock);
 -- a loser gets pgx.ErrNoRows. Returns the resolved tenant_id + site_id so the
 -- caller can transition the bound site. NULL site_id ⇒ legacy create-at-enroll.
+-- created_by is the user who minted the code. It is nullable: callers must
+-- handle NULL (for one, the FK is ON DELETE SET NULL).
 UPDATE pairing_codes
 SET consumed_at      = now(),
     consumed_from_ip = $2
 WHERE code_hash = $1
   AND consumed_at IS NULL
   AND expires_at > now()
-RETURNING id, tenant_id, site_id, site_name, tags;
+RETURNING id, tenant_id, site_id, site_name, tags, created_by;
 
 -- ---------------------------------------------------------------------------
 -- M100 — GH #230 "rich tags": keep an unredeemed code's tags in sync with a

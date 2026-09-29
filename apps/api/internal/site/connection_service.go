@@ -127,13 +127,22 @@ func (s *connService) MintEnrollmentCode(ctx context.Context, in MintEnrollmentI
 	// so we can return a structured 409 carrying site_id + connection_state
 	// instead of a bare unique-index violation. The web uses these fields to
 	// decide whether to offer "Cancel and re-add", "Reconnect", or nothing.
-	if hit, found, lookupErr := s.repo.GetSiteByURL(ctx, in.TenantID, in.URL); lookupErr != nil {
+	// The lookup covers the spellings of the same address (http or https,
+	// with or without a leading "www.", with or without a trailing slash), so
+	// a site added under one of them is not added a second time under another;
+	// details.url names the address the existing site is stored under.
+	if hit, found, lookupErr := s.repo.GetSiteByAnyURL(ctx, in.TenantID, siteURLVariants(in.URL)); lookupErr != nil {
 		return EnrollmentCode{}, lookupErr
 	} else if found {
-		return EnrollmentCode{}, domain.Conflict("site_url_exists", "a site with this URL already exists for this tenant").
+		msg := "a site with this URL already exists for this tenant"
+		if hit.URL != in.URL {
+			msg = "a site at an equivalent URL already exists for this tenant"
+		}
+		return EnrollmentCode{}, domain.Conflict("site_url_exists", msg).
 			WithDetails(map[string]any{
 				"site_id":          hit.ID.String(),
 				"connection_state": string(hit.ConnectionState),
+				"url":              hit.URL,
 			})
 	}
 
@@ -181,7 +190,12 @@ func (s *connService) publishCreated(ctx context.Context, tenantID uuid.UUID, st
 // ---- ConsumeEnrollmentCode (agent /enroll, site-bound) -------------------
 
 func (s *connService) ConsumeEnrollmentCode(ctx context.Context, in ConsumeEnrollmentInput) (Site, error) {
+	// The agent's reported address (its home_url) goes to the consume, which
+	// adopts it only when it differs from the stored address by a leading
+	// "www." and/or an http to https upgrade on the same port and path
+	// (planEnrollURL), and keeps the stored address otherwise.
 	res, err := s.repo.ConsumeSiteBoundCode(ctx, in.CodeHash, in.ConsumedFromIP, EnrollInput{
+		URL:            in.SiteURL,
 		AgentPublicKey: in.AgentPublicKey,
 		WPVersion:      in.Meta.WPVersion,
 		PHPVersion:     in.Meta.PHPVersion,
@@ -194,6 +208,7 @@ func (s *connService) ConsumeEnrollmentCode(ctx context.Context, in ConsumeEnrol
 		"url":        res.Site.URL,
 		"generation": res.Site.ConnectionGeneration,
 	})
+	s.recordEnrollURLAudit(ctx, res)
 	s.recordAudit(ctx, res.Site.TenantID, res.Site.ID, audit.ActorSystem, uuid.Nil, audit.ActionSiteConnected, nil)
 	s.publishStateChange(ctx, res.Site.TenantID, res.Site.ID, EventSiteStateChanged, StatePendingEnrollment, StateConnected, res.Site, map[string]any{"enrolled": true})
 	// Best-effort post-enroll hook (e.g. trigger a first-time screenshot capture).
@@ -203,6 +218,47 @@ func (s *connService) ConsumeEnrollmentCode(ctx context.Context, in ConsumeEnrol
 		go s.onEnrollHook(ctx, res.Site.TenantID, res.Site.ID, res.Site.URL)
 	}
 	return res.Site, nil
+}
+
+// recordEnrollURLAudit records what a site-bound enrollment did with the
+// agent-reported address: site.url_changed when it was adopted,
+// site.url_mismatch when the stored address was kept although the agent
+// reported another one. An equal address, or none, records nothing.
+//
+// Both rows carry initiated_by, the user who issued the consumed code, when
+// the code names one. The actor stays ActorSystem: enrollment chose the
+// address, the user did not.
+func (s *connService) recordEnrollURLAudit(ctx context.Context, res ConsumeResult) {
+	u := res.URL
+	var meta map[string]any
+	action := ""
+	switch u.Result {
+	case EnrollURLAdopted:
+		action = audit.ActionSiteURLChanged
+		meta = map[string]any{
+			"from":   u.Stored,
+			"to":     u.To,
+			"source": urlSourceAgentEnrollment,
+		}
+	case EnrollURLMismatch, EnrollURLInUse:
+		reason := "not_equivalent"
+		if u.Result == EnrollURLInUse {
+			reason = "address_in_use"
+		}
+		action = audit.ActionSiteURLMismatch
+		meta = map[string]any{
+			"stored":         u.Stored,
+			"agent_reported": sanitizeReportedURL(u.Reported),
+			"source":         urlSourceAgentEnrollment,
+			"reason":         reason,
+		}
+	default:
+		return
+	}
+	if res.CodeCreatedBy != uuid.Nil {
+		meta["initiated_by"] = res.CodeCreatedBy.String()
+	}
+	s.recordAudit(ctx, res.Site.TenantID, res.Site.ID, audit.ActorSystem, uuid.Nil, action, meta)
 }
 
 // ---- RecordHeartbeat -----------------------------------------------------

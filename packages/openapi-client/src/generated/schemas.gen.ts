@@ -1355,6 +1355,11 @@ export const AgentMetadataSchema = {
       type: "string",
       description: "The WPMgr agent plugin version.",
     },
+    home_url: {
+      type: "string",
+      description:
+        'The site\'s WordPress home_url as the agent reads it (GH #755).\nOptional; malformed or oversized reports are ignored. A\nreported address is queued as a background job that runs\nafter the rest of this push has been applied, never during\nit, and adopts the address as the site\'s saved address only\nin two cases, each confirmed there by a signed ping: the\nreported address names the same host upgraded from http to\nhttps, confirmed by a signed ping to the https form that\nanswers with a 2xx; or the reported address is the "www."\nsibling of the saved address, confirmed by a signed ping to\nthe SAVED address that comes back redirected to it. Host\ncomparison in both cases is by the host that is dialled, not a\nnormalized apex or registrable domain. Anything else (a\ndifferent host with no "www." relationship, a changed port or\npath, a downgrade to http) is ignored. A refusal or a job\nfailure never fails this push.\n',
+    },
     age_recipient: {
       type: "string",
       description:
@@ -13171,6 +13176,59 @@ export const MediaSettingsSchema = {
     auto_target_quality: {
       type: "string",
       description: "e.g. balanced | high | max",
+    },
+  },
+} as const;
+
+export const AgentUnreachableErrorSchema = {
+  type: "object",
+  required: ["code", "message"],
+  description:
+    'The POST /recheck 502 body when the control plane could not reach\nthe site\'s agent (code "agent_unreachable"). No `details`; a\ndedicated schema, not the general-purpose `Error`, so its `code`\nenum keeps this branch and `SiteUrlRedirectsError` mutually\nexclusive under `oneOf`.\n',
+  properties: {
+    code: {
+      type: "string",
+      enum: ["agent_unreachable"],
+    },
+    message: {
+      type: "string",
+      description: "Human-readable error description.",
+    },
+  },
+} as const;
+
+export const SiteUrlRedirectsErrorSchema = {
+  type: "object",
+  required: ["code", "message", "details"],
+  description:
+    'The POST /recheck 502 body when the site answered its command\naddress with a redirect (code "site_url_redirects"), so no command\nwas sent.\n',
+  properties: {
+    code: {
+      type: "string",
+      enum: ["site_url_redirects"],
+    },
+    message: {
+      type: "string",
+      description: "Human-readable error description.",
+    },
+    details: {
+      type: "object",
+      required: ["from", "to"],
+      properties: {
+        from: {
+          type: "string",
+          description: "The saved site address the command was sent to.",
+        },
+        to: {
+          type: "string",
+          description: "The address the command request was redirected to.",
+        },
+        suggested_url: {
+          type: "string",
+          description:
+            'Present only when the redirect target is an address the\nadoption rule would adopt over the saved one (a\nsame-host http to https upgrade, or the "www." sibling of\nthe saved address). Not a promise that the saved address\nwill change: that still needs a later agent push\nreporting this address and a signed probe confirming it,\nrun as a background job. Informational; the caller does\nnot act on it directly.\n',
+        },
+      },
     },
   },
 } as const;

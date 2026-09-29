@@ -684,6 +684,9 @@ func (w *Worker) yieldContendedClaim(ctx context.Context, a TaskArgs, task Task)
 func (w *Worker) runDry(ctx context.Context, task Task, siteURL string, item agentcmd.UpdateItem) error {
 	resp, err := w.cmd.Update(ctx, task.SiteID, siteURL, agentcmd.UpdateRequest{DryRun: true, Snapshot: false, Items: []agentcmd.UpdateItem{item}})
 	if err != nil {
+		if re, ok := agentcmd.AsRedirect(err); ok {
+			return w.finish(ctx, task, TaskFailed, task.FromVersion, "", re.OperatorMessage("Dry run"), err.Error())
+		}
 		return w.finish(ctx, task, TaskFailed, task.FromVersion, "", "dry-run command failed", err.Error())
 	}
 	// A 200 only means the transport worked. resp.OK is the agent's own verdict on
@@ -725,6 +728,9 @@ func (w *Worker) runDry(ctx context.Context, task Task, siteURL string, item age
 func (w *Worker) runApply(ctx context.Context, task Task, siteURL string, item agentcmd.UpdateItem) error {
 	resp, err := w.cmd.Update(ctx, task.SiteID, siteURL, agentcmd.UpdateRequest{DryRun: false, Snapshot: true, Items: []agentcmd.UpdateItem{item}})
 	if err != nil {
+		if re, ok := agentcmd.AsRedirect(err); ok {
+			return w.finish(ctx, task, TaskFailed, task.FromVersion, "", re.OperatorMessage("Update"), err.Error())
+		}
 		return w.finish(ctx, task, TaskFailed, task.FromVersion, "", "update command failed", err.Error())
 	}
 	res := firstResult(resp.Results)

@@ -884,6 +884,26 @@ export type AgentMetadata = {
    */
   agent_version?: string;
   /**
+   * The site's WordPress home_url as the agent reads it (GH #755).
+   * Optional; malformed or oversized reports are ignored. A
+   * reported address is queued as a background job that runs
+   * after the rest of this push has been applied, never during
+   * it, and adopts the address as the site's saved address only
+   * in two cases, each confirmed there by a signed ping: the
+   * reported address names the same host upgraded from http to
+   * https, confirmed by a signed ping to the https form that
+   * answers with a 2xx; or the reported address is the "www."
+   * sibling of the saved address, confirmed by a signed ping to
+   * the SAVED address that comes back redirected to it. Host
+   * comparison in both cases is by the host that is dialled, not a
+   * normalized apex or registrable domain. Anything else (a
+   * different host with no "www." relationship, a changed port or
+   * path, a downgrade to http) is ignored. A refusal or a job
+   * failure never fails this push.
+   *
+   */
+  home_url?: string;
+  /**
    * The agent's per-site age PUBLIC recipient ("age1..."), stored so
    * backups can be triggered without a separate registration call.
    * Empty or missing leaves the stored recipient unchanged.
@@ -7733,6 +7753,58 @@ export type MediaSettings = {
    * e.g. balanced | high | max
    */
   auto_target_quality: string;
+};
+
+/**
+ * The POST /recheck 502 body when the control plane could not reach
+ * the site's agent (code "agent_unreachable"). No `details`; a
+ * dedicated schema, not the general-purpose `Error`, so its `code`
+ * enum keeps this branch and `SiteUrlRedirectsError` mutually
+ * exclusive under `oneOf`.
+ *
+ */
+export type AgentUnreachableError = {
+  code: "agent_unreachable";
+  /**
+   * Human-readable error description.
+   */
+  message: string;
+};
+
+/**
+ * The POST /recheck 502 body when the site answered its command
+ * address with a redirect (code "site_url_redirects"), so no command
+ * was sent.
+ *
+ */
+export type SiteUrlRedirectsError = {
+  code: "site_url_redirects";
+  /**
+   * Human-readable error description.
+   */
+  message: string;
+  details: {
+    /**
+     * The saved site address the command was sent to.
+     */
+    from: string;
+    /**
+     * The address the command request was redirected to.
+     */
+    to: string;
+    /**
+     * Present only when the redirect target is an address the
+     * adoption rule would adopt over the saved one (a
+     * same-host http to https upgrade, or the "www." sibling of
+     * the saved address). Not a promise that the saved address
+     * will change: that still needs a later agent push
+     * reporting this address and a signed probe confirming it,
+     * run as a background job. Informational; the caller does
+     * not act on it directly.
+     *
+     */
+    suggested_url?: string;
+  };
 };
 
 export type RecheckResponse = {
@@ -15661,9 +15733,21 @@ export type RecheckSiteErrors = {
    */
   429: Error;
   /**
-   * agent_unreachable — could not reach the site agent
+   * agent_unreachable: could not reach the site agent; see
+   * `AgentUnreachableError`, no `details`. site_url_redirects: the
+   * site answered its command address with a redirect, so no
+   * command was sent; see `SiteUrlRedirectsError` for the
+   * `details` shape (`from`, `to` and, when the redirect target is
+   * an address the adoption rule would adopt, `suggested_url`).
+   *
    */
-  502: Error;
+  502:
+    | ({
+        code: "agent_unreachable";
+      } & AgentUnreachableError)
+    | ({
+        code: "site_url_redirects";
+      } & SiteUrlRedirectsError);
   /**
    * recheck_disabled or lifecycle_disabled — re-check is not available on this control plane
    */

@@ -82,6 +82,13 @@ func (f *fakeRepo) SetAgeRecipientIfUnset(_ context.Context, tenantID, siteID uu
 	return Site{ID: siteID, TenantID: tenantID, AgeRecipient: recipient}, true, nil
 }
 
+// AdoptSiteURL: this fake never adopts. The write itself runs only against a
+// real database; apps/api/tests/gh755_push_address_integration_test.go is
+// where the push-time adoption path is to be proved end to end.
+func (f *fakeRepo) AdoptSiteURL(_ context.Context, _, _ uuid.UUID, _, _ string) (bool, error) {
+	return false, nil
+}
+
 func (f *fakeRepo) CreatePairingCode(_ context.Context, in CreatePairingCodeInput, codeHash string, expiresAt time.Time) (PairingCode, error) {
 	return PairingCode{ID: uuid.New(), TenantID: in.TenantID, ExpiresAt: expiresAt}, nil
 }
@@ -154,7 +161,7 @@ func (f *fakeRepo) PairingCodeSiteID(_ context.Context, _ string) (uuid.UUID, bo
 	return uuid.Nil, false, nil
 }
 
-func (f *fakeRepo) GetSiteByURL(_ context.Context, _ uuid.UUID, _ string) (SiteURLHit, bool, error) {
+func (f *fakeRepo) GetSiteByAnyURL(_ context.Context, _ uuid.UUID, _ []string) (SiteURLHit, bool, error) {
 	return SiteURLHit{}, false, nil
 }
 
