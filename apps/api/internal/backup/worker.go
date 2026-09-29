@@ -42,10 +42,9 @@ var chainBrokenErrorCodes = map[string]bool{
 // synchronous ack takes long enough that the CP's HTTP round-trip times out
 // and returns a transport error, River retries the job with a fresh
 // dispatch, and THAT retry hits the still-running original run's guard. A
-// restore job is not retried and dispatches once, and the agent keys its
-// restore guard on the snapshot and the restore_id the CP mints for that
-// one dispatch, so for a restore the code arrives only if that same
-// dispatch reaches the site twice.
+// failed restore is not retried automatically (the operator retries it), so
+// that River-retry path does not apply to restores; RestoreWorker.Work still
+// treats the code as benign if a restore refusal carries it.
 //
 // BackupWorker.Work and RestoreWorker.Work key ONLY on this exact Code value
 // — never on the free-form Detail/Log text, which is not a stable contract —
