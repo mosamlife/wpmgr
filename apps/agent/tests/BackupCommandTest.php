@@ -389,6 +389,227 @@ final class BackupCommandTest extends TestCase
     }
 
     /**
+     * GH #753. When the stored backup key no longer opens under the site's
+     * encryption key, the backup is refused in plain words with a stable
+     * code, before any preflight row, dedup claim or scratch directory, and
+     * the unreadable key is left exactly as it is.
+     */
+    public function test_unreadable_age_identity_refuses_with_keystore_unreadable_code(): void
+    {
+        $keyPath = $this->scratchDir . '/master.key';
+        file_put_contents($keyPath, random_bytes(32));
+
+        $iv     = random_bytes(12);
+        $tag    = '';
+        $ct     = openssl_encrypt(random_bytes(32), 'aes-256-gcm', random_bytes(32), OPENSSL_RAW_DATA, $iv, $tag, '', 16);
+        $this->assertIsString($ct);
+        $sealed = base64_encode($iv . $tag . $ct);
+
+        $options = [
+            \WPMgr\Agent\Keystore::OPTION_MASTER_KEY_SOURCE => ['source' => 'file', 'path' => $keyPath],
+            \WPMgr\Agent\Keystore::OPTION_AGE_IDENTITY      => $sealed,
+        ];
+        $writes = [];
+        Functions\when('get_option')->alias(static function ($name, $default = false) use (&$options) {
+            return $options[$name] ?? $default;
+        });
+        foreach (['update_option', 'add_option', 'delete_option', 'set_transient', 'wp_schedule_single_event'] as $fn) {
+            Functions\when($fn)->alias(static function ($name) use (&$writes, $fn) {
+                $writes[] = $fn . ':' . (is_string($name) ? $name : (string) json_encode($name));
+                return true;
+            });
+        }
+
+        // Any database access (preflight row, dedup claim) would reach this spy.
+        $dbCalls = [];
+        $previousWpdb = $GLOBALS['wpdb'] ?? null;
+        $GLOBALS['wpdb'] = new class ($dbCalls) {
+            public string $prefix = 'wp_';
+            /** @var list<string> */
+            private array $calls;
+            /** @param list<string> $calls */
+            public function __construct(array &$calls)
+            {
+                $this->calls = &$calls;
+            }
+            /** @param array<int,mixed> $args */
+            public function __call(string $method, array $args): bool
+            {
+                $this->calls[] = $method;
+                return false;
+            }
+        };
+
+        // Where the scratch directory would be created. The base exists, so a
+        // scratch directory made too early is observed here, not masked by a
+        // failing mkdir of the base.
+        if (!defined('WP_CONTENT_DIR')) {
+            define('WP_CONTENT_DIR', sys_get_temp_dir() . '/wpmgr-shared-wp-content');
+        }
+        $runsBase = WP_CONTENT_DIR . '/wpmgr-agent/runs';
+        if (!is_dir($runsBase)) {
+            mkdir($runsBase, 0700, true);
+        }
+        $snapshotId = bin2hex(random_bytes(4)) . '-' . bin2hex(random_bytes(2)) . '-' . bin2hex(random_bytes(2))
+            . '-' . bin2hex(random_bytes(2)) . '-' . bin2hex(random_bytes(6));
+        $scratch = $runsBase . '/' . $snapshotId;
+        $params  = $this->acceptorParams($this->identity['recipient']);
+        $params['snapshot_id'] = $snapshotId;
+
+        try {
+            $keystore = new \WPMgr\Agent\Keystore();
+            $cmd      = new BackupCommand(new AgeIdentity($keystore));
+            $res      = $cmd->execute([], $params);
+        } finally {
+            $GLOBALS['wpdb'] = $previousWpdb;
+            $scratchExisted = is_dir($scratch);
+            if ($scratchExisted) {
+                @rmdir($scratch);
+            }
+        }
+
+        $this->assertFalse($res['ok']);
+        $this->assertSame('keystore_unreadable', $res['code'] ?? null);
+        $this->assertStringStartsWith('Backup not started: this site cannot read its backup key.', $res['detail']);
+        $this->assertStringContainsString('Most often', $res['detail']);
+        $this->assertStringNotContainsString('ciphertext authentication failed', $res['detail']);
+        if (!EncryptAndUpload::ENCRYPT_CHUNKS) {
+            $this->assertStringContainsString('Backups already taken are not affected.', $res['detail']);
+        }
+        $this->assertSame([], $dbCalls, 'The refusal must come before any database work.');
+        $this->assertSame([], $writes, 'The refusal must not write anything.');
+        $this->assertSame($sealed, $options[\WPMgr\Agent\Keystore::OPTION_AGE_IDENTITY]);
+        $this->assertFalse($scratchExisted, 'The refusal must come before the scratch directory is created.');
+    }
+
+    /**
+     * No backup key is stored and the site keypair does not open under the
+     * current key. The backup command's recipient check must not create a
+     * backup key: it refuses with the keystore_unreadable code, names what
+     * does not open, and writes nothing.
+     */
+    public function test_absent_backup_key_is_not_created_when_the_keypair_does_not_open(): void
+    {
+        $keyPath = $this->scratchDir . '/master.key';
+        file_put_contents($keyPath, random_bytes(32));
+
+        $iv      = random_bytes(12);
+        $tag     = '';
+        $ct      = openssl_encrypt(random_bytes(96), 'aes-256-gcm', random_bytes(32), OPENSSL_RAW_DATA, $iv, $tag, '', 16);
+        $this->assertIsString($ct);
+        $keypair = base64_encode($iv . $tag . $ct);
+
+        $options = [
+            \WPMgr\Agent\Keystore::OPTION_MASTER_KEY_SOURCE => ['source' => 'file', 'path' => $keyPath],
+            \WPMgr\Agent\Keystore::OPTION_SITE_KEYPAIR      => $keypair,
+        ];
+        $writes = [];
+        Functions\when('get_option')->alias(static function ($name, $default = false) use (&$options) {
+            return $options[$name] ?? $default;
+        });
+        foreach (['update_option', 'add_option', 'delete_option', 'set_transient', 'wp_schedule_single_event'] as $fn) {
+            Functions\when($fn)->alias(static function ($name, $value = null) use (&$writes, &$options, $fn) {
+                $writes[] = $fn . ':' . (is_string($name) ? $name : (string) json_encode($name));
+                if ($fn === 'update_option' && is_string($name)) {
+                    $options[$name] = $value;
+                }
+                return true;
+            });
+        }
+
+        $res = (new BackupCommand(new AgeIdentity(new \WPMgr\Agent\Keystore())))
+            ->execute([], $this->acceptorParams($this->identity['recipient']));
+
+        $this->assertArrayNotHasKey(
+            \WPMgr\Agent\Keystore::OPTION_AGE_IDENTITY,
+            $options,
+            'No backup key may be created while the site keypair does not open.'
+        );
+        $this->assertSame([], $writes, 'The refusal must not write anything.');
+        $this->assertFalse($res['ok']);
+        $this->assertSame('keystore_unreadable', $res['code'] ?? null);
+        $this->assertStringStartsWith(
+            'Backup not started: this site has no backup key yet, and it does not create one while the keys saved on it do not open.',
+            $res['detail']
+        );
+        $this->assertStringContainsString('The connection keys saved on this site cannot be opened', $res['detail']);
+        $this->assertSame($keypair, $options[\WPMgr\Agent\Keystore::OPTION_SITE_KEYPAIR]);
+    }
+
+    /**
+     * Over-fire guard: no backup key is stored and the site keypair opens, so
+     * the recipient check creates the backup key (a first backup can
+     * proceed) and it opens under the current key.
+     */
+    public function test_absent_backup_key_is_created_when_the_keypair_opens(): void
+    {
+        $keyPath = $this->scratchDir . '/master.key';
+        file_put_contents($keyPath, random_bytes(32));
+        $options = [
+            \WPMgr\Agent\Keystore::OPTION_MASTER_KEY_SOURCE => ['source' => 'file', 'path' => $keyPath],
+        ];
+        Functions\when('get_option')->alias(static function ($name, $default = false) use (&$options) {
+            return $options[$name] ?? $default;
+        });
+        Functions\when('update_option')->alias(static function ($name, $value) use (&$options) {
+            $options[$name] = $value;
+            return true;
+        });
+        (new \WPMgr\Agent\Keystore())->generateSiteKeypair();
+
+        $identity = new AgeIdentity(new \WPMgr\Agent\Keystore());
+        $res      = (new BackupCommand($identity))->execute([], $this->acceptorParams($this->identity['recipient']));
+
+        $this->assertArrayHasKey(\WPMgr\Agent\Keystore::OPTION_AGE_IDENTITY, $options, 'The absent backup key must be created.');
+        $this->assertSame(\WPMgr\Agent\Keystore::PROBE_OK, (new \WPMgr\Agent\Keystore())->probe()['state']);
+        $this->assertStringStartsWith('age1', $identity->recipient());
+        // The command's recipient is another site's, so the check itself refuses.
+        $this->assertSame('age recipient mismatch', $res['detail']);
+    }
+
+    /**
+     * A recipient check that fails for a reason the keystore does not
+     * explain (every stored key opens) is refused without the
+     * keystore_unreadable code, so it is not reported as a keystore problem.
+     */
+    public function test_recipient_check_failure_on_a_healthy_keystore_is_not_keystore_unreadable(): void
+    {
+        $identity = new class extends AgeIdentity {
+            public function __construct()
+            {
+            }
+
+            public function recipientMatches(string $candidate): bool
+            {
+                throw new \RuntimeException('recipient derivation failed');
+            }
+
+            public function probeKeystore(): array
+            {
+                return [
+                    'state'      => \WPMgr\Agent\Keystore::PROBE_OK,
+                    'key_source' => 'salts',
+                    'items'      => [
+                        'site_keypair'             => 'ok',
+                        'cp_public_key'            => 'ok',
+                        'age_identity'             => 'ok',
+                        'email_secret'             => 'absent',
+                        'email_connection_secrets' => 'absent',
+                    ],
+                    'unreadable' => [],
+                    'detail'     => '',
+                ];
+            }
+        };
+
+        $res = (new BackupCommand($identity))->execute([], $this->acceptorParams($this->identity['recipient']));
+
+        $this->assertFalse($res['ok']);
+        $this->assertArrayNotHasKey('code', $res);
+        $this->assertSame('Backup not started: this site could not check its backup key.', $res['detail']);
+    }
+
+    /**
      * Recursively remove a directory tree (scratch dir cleanup).
      */
     private function rrmdir(string $dir): void

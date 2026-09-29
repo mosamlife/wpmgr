@@ -396,6 +396,9 @@ export const SiteSchema = {
       description:
         'GH #414 — RFC 3339 timestamp of the last uptime probe that actually ran\nagainst this site (site_uptime_status.last_probed_at), i.e. the "as of" for\n`health_status`. Absent when the site has never been probed.\n\nRead this WITH `health_status`, never instead of it. The uptime prober is\nwhat refreshes `health_status`, and pausing monitoring stops the prober — so\na paused site\'s `health_status` freezes at its last value while this stamp\nstops advancing. A paused site whose server died an hour ago therefore still\nreports `health_status: healthy`, and this field is the only thing that says\nhow old that verdict is. Render it as "as of <time>" rather than implying now.\n',
     },
+    keystore_status: {
+      $ref: "#/components/schemas/SiteKeystoreStatus",
+    },
     created_at: {
       type: "string",
       format: "date-time",
@@ -405,6 +408,42 @@ export const SiteSchema = {
       format: "date-time",
       description:
         "The site row's mtime: bumped by heartbeats, agent metadata pushes and\nhealth_status changes. Deliberately NOT bumped by monitoring pause/resume\nwrites (GH #414 Phase 1), so pausing a site does not make its inventory look\nfreshly synced. It is the inventory freshness stamp, not the health one —\nuse health_checked_at for health_status.\n",
+    },
+  },
+} as const;
+
+export const SiteKeystoreStatusSchema = {
+  type: "object",
+  description:
+    "GH #753 — trial-decrypt probe result for the site's on-disk agent\nkeystore (Keystore::probe()). It arrives with the agent's ordinary\nmetadata push — the 30-minute cron cadence, or a CP-triggered\nrecheck — never on admin_init: the agent's admin_init check only\nrecords a local wp-admin notice and sends nothing to the control\nplane from that path.\n\nAbsent on the Site response only before this site's first metadata\nsync. A pre-#753 agent that has since synced at least once gets\nstate=not_reported instead, never absent and never ok, so an old\nagent's silence can never read as a healthy keystore. Every\nmetadata push replaces the previously stored status outright — it\nis not a delta — so not_reported also covers any later push whose\nlatest probe carried no recognised result; a prior good report does\nnot survive a bad one. Never contains key material, a key-check\nvalue, an error detail or a file path.\n",
+  properties: {
+    state: {
+      type: "string",
+      enum: ["ok", "unreadable", "key_unavailable", "not_reported"],
+      description:
+        'ok = every stored item decrypted under the resolved master key.\nunreadable = the master key resolved but one or more stored\nitems did not decrypt under it (the common "site moved host, or\nthe wp-config.php security keys changed" case).\nkey_unavailable = the master key itself could not be resolved.\nnot_reported = the latest metadata push carried no recognised\nprobe result — a pre-#753 agent that has synced at least once,\nor a later push whose probe result the control plane did not\nrecognise. Every push replaces the previous status outright, so\nthis is never a delta against an earlier report.\n',
+    },
+    key_source: {
+      type: "string",
+      enum: ["constant", "salts", "file", "db", "unknown"],
+      description:
+        "Which tier pinned the master key, mirroring the agent's own\npin. Absent when no source is pinned yet.\n",
+    },
+    items: {
+      type: "object",
+      description:
+        'Per-item probe result, one entry per stored envelope (e.g.\nsite_keypair, cp_public_key, age_identity, email_secret,\nemail_connection_secrets). Each value is "absent", "ok" or\n"unreadable".\n',
+      additionalProperties: {
+        type: "string",
+      },
+    },
+    unreadable: {
+      type: "array",
+      items: {
+        type: "string",
+      },
+      description:
+        'Convenience list of the item keys currently unreadable;\nmirrors the "unreadable" entries in `items`.\n',
     },
   },
 } as const;
@@ -1456,6 +1495,39 @@ export const AgentMetadataSchema = {
       type: "array",
       items: {
         $ref: "#/components/schemas/SiteComponent",
+      },
+    },
+    keystore: {
+      type: ["object", "null"],
+      description:
+        "GH #753 — the agent's Keystore::probe() trial-decrypt result,\nreplayed on the ordinary metadata push. Optional; an agent that\npredates #753, or one that sends nothing this push, simply omits\nit and the control plane records state=not_reported rather than\ninferring a healthy keystore from silence.\n\nEvery field here is optional and tolerantly decoded: a malformed\nor unexpected shape (e.g. a value this project's agent never\nsends, or `items`/`unreadable` in a shape that doesn't parse) is\nignored field-by-field rather than rejecting the whole metadata\npush, and the control plane separately allowlists `state` and\n`key_source` against the vocabulary described on\nSiteKeystoreStatus before storing them — this schema does not\nitself enforce that vocabulary, since the handler doesn't either.\n",
+      properties: {
+        state: {
+          type: "string",
+          description:
+            "See SiteKeystoreStatus.state for the vocabulary the control\nplane recognises (ok, unreadable, key_unavailable). Any other\nvalue, or a value in an unparseable shape, is ignored and\nstored as not_reported.\n",
+        },
+        key_source: {
+          type: "string",
+          description:
+            "See SiteKeystoreStatus.key_source for the vocabulary the\ncontrol plane recognises (constant, salts, file, db,\nunknown). Any other or unparseable value is ignored.\n",
+        },
+        items: {
+          type: "object",
+          description:
+            'Per-item probe result, one entry per stored envelope. Each\nvalue is expected to be "absent", "ok" or "unreadable"\n(SiteKeystoreStatus.items), but an unrecognised value is\ndropped rather than rejected. A shape this cannot parse as an\nobject (including PHP\'s empty-array `[]`) is ignored and the\nwhole map is left unset.\n',
+          additionalProperties: {
+            type: "string",
+          },
+        },
+        unreadable: {
+          type: "array",
+          description:
+            "Convenience list of currently-unreadable item keys. A shape\nthis cannot parse as an array is ignored and the list is left\nunset.\n",
+          items: {
+            type: "string",
+          },
+        },
       },
     },
   },

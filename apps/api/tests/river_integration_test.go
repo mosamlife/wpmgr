@@ -91,22 +91,29 @@ func TestRiverWiringAndHealthJob(t *testing.T) {
 	pool := startPostgres(t)
 	ctx := context.Background()
 
-	// Migrate River's own schema as the owner (mirrors main.migrateRiver).
-	admin := connectAdmin(t, pool)
-	defer admin.Close()
-	migrator, err := rivermigrate.New(riverpgxv5.New(admin.Pool), nil)
+	// Migrate River's own schema as the owner (mirrors main.migrateRiver,
+	// which runs migrateRiver on the migration-owner pool, not the bootstrap
+	// superuser).
+	owner := connectOwner(t, pool)
+	defer owner.Close()
+	migrator, err := rivermigrate.New(riverpgxv5.New(owner.Pool), nil)
 	if err != nil {
 		t.Fatalf("river migrator: %v", err)
 	}
 	if _, err := migrator.Migrate(ctx, rivermigrate.DirectionUp, nil); err != nil {
 		t.Fatalf("river migrate: %v", err)
 	}
-	// River's tables are created by the owner; grant the app role access (in
-	// prod the migration owner's ALTER DEFAULT PRIVILEGES covers this — here the
-	// container superuser created them, so grant explicitly).
-	if _, err := admin.Exec(ctx, "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO wpmgr_app"); err != nil {
-		t.Fatalf("grant river tables: %v", err)
-	}
+	// River's tables (and their id sequences) are created by wpmgr_owner here
+	// — the same role startPostgres's own schema migration ran as — so m1's
+	// ALTER DEFAULT PRIVILEGES already covers them: wpmgr_app gets
+	// SELECT/INSERT/UPDATE/DELETE on the tables and USAGE/SELECT on their
+	// sequences with no explicit grant needed.
+
+	// admin is still needed below to backdate last_seen_at out-of-band; that
+	// tamper must bypass RLS entirely, which wpmgr_owner (NOSUPERUSER
+	// NOBYPASSRLS) cannot do.
+	admin := connectAdmin(t, pool)
+	defer admin.Close()
 
 	// Seed a stale enrolled site.
 	tenant := seedTenant(t, pool, "river-health")
@@ -175,27 +182,38 @@ func TestRiverDualSchemaIsolation(t *testing.T) {
 	pool := startPostgres(t)
 	ctx := context.Background()
 
-	admin := connectAdmin(t, pool)
-	defer admin.Close()
+	// Migrate River's own public-schema tables as the owner (mirrors
+	// main.migrateRiver, which runs on the migration-owner pool, not the
+	// bootstrap superuser).
+	owner := connectOwner(t, pool)
+	defer owner.Close()
 
-	migrator, err := rivermigrate.New(riverpgxv5.New(admin.Pool), nil)
+	migrator, err := rivermigrate.New(riverpgxv5.New(owner.Pool), nil)
 	if err != nil {
 		t.Fatalf("river migrator: %v", err)
 	}
 	if _, err := migrator.Migrate(ctx, rivermigrate.DirectionUp, nil); err != nil {
 		t.Fatalf("river migrate public: %v", err)
 	}
-	if _, err := admin.Exec(ctx, "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO wpmgr_app"); err != nil {
-		t.Fatalf("grant public river tables: %v", err)
-	}
-	if _, err := admin.Exec(ctx, "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO wpmgr_app"); err != nil {
-		t.Fatalf("grant public river sequences: %v", err)
-	}
+	// River's tables (and their id sequences) are created by wpmgr_owner here
+	// — the same role startPostgres's own schema migration ran as — so m1's
+	// ALTER DEFAULT PRIVILEGES already covers them: wpmgr_app gets
+	// SELECT/INSERT/UPDATE/DELETE on the tables and USAGE/SELECT on their
+	// sequences with no explicit grant needed.
 
+	// EnsureSchema also runs on the owner pool here, mirroring
+	// cmd/wpmgr/main.go:313 and cmd/media-encoder/main.go:122, which both
+	// pass the migration-owner pool (migPool.Pool), never the bootstrap
+	// superuser.
 	const mediaSchema = "media_encoder"
-	if err := riverutil.EnsureSchema(ctx, admin.Pool, mediaSchema, "wpmgr_app"); err != nil {
+	if err := riverutil.EnsureSchema(ctx, owner.Pool, mediaSchema, "wpmgr_app"); err != nil {
 		t.Fatalf("ensure media schema: %v", err)
 	}
+
+	// admin is only needed below, to read across both schemas for the test's
+	// own assertions — genuine out-of-band inspection, not migration setup.
+	admin := connectAdmin(t, pool)
+	defer admin.Close()
 
 	defaultClient, err := river.NewClient(riverpgxv5.New(pool.Pool), &river.Config{
 		SkipUnknownJobCheck: true,
@@ -280,8 +298,13 @@ func TestRiverMediaSchemaSelfHealsOnBoot(t *testing.T) {
 	}
 
 	// Mirror exactly what cmd/wpmgr/main.go's run() and cmd/media-encoder's
-	// run() both do unconditionally at boot.
-	if err := riverutil.EnsureSchema(ctx, admin.Pool, cfg.River.MediaSchema, "wpmgr_app"); err != nil {
+	// run() both do unconditionally at boot: EnsureSchema runs on the
+	// migration-owner pool (migPool.Pool in both binaries), never the
+	// bootstrap superuser. admin above/below is only for the test's own
+	// read-only countRiverJobs checks.
+	owner := connectOwner(t, pool)
+	defer owner.Close()
+	if err := riverutil.EnsureSchema(ctx, owner.Pool, cfg.River.MediaSchema, "wpmgr_app"); err != nil {
 		t.Fatalf("ensure media schema from config default: %v", err)
 	}
 

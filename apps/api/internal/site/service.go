@@ -578,18 +578,27 @@ func fromAgentComponents(cs []agentpkg.Component) []Component {
 }
 
 // fromAgentMetadataExtras lifts the optional sparse-metadata expansion fields
-// (host_flags / disk / user_count / admin_count) from the agent.Metadata DTO
-// onto the site domain's MetadataExtras struct. Returns nil when the agent
-// sent nothing (old agent; the sink does not overwrite previously-stored
-// values in that case — see ApplyMetadata).
+// (host_flags / disk / user_count / admin_count / roles / keystore_status)
+// from the agent.Metadata DTO onto the site domain's MetadataExtras struct.
+// Returns nil only when the agent sent none of them at all: there is no
+// delta/merge semantics to preserve by returning nil, because every push
+// REWRITES the whole stored components document (see buildInventoryPayload) —
+// a nil here simply means this push's inventory document omits these keys.
+//
+// KeystoreStatus is included in this nil check (GH #753) so a STATUS-ONLY push
+// — the 30-minute cron cadence or a CP-triggered recheck re-reporting a
+// keystore with none of the other sparse-metadata fields changed — is never
+// dropped for looking empty.
 func fromAgentMetadataExtras(m agentpkg.Metadata) *MetadataExtras {
-	if m.HostFlags == nil && m.Disk == nil && m.UserCount == 0 && m.AdminCount == 0 && len(m.Roles) == 0 {
+	if m.HostFlags == nil && m.Disk == nil && m.UserCount == 0 && m.AdminCount == 0 &&
+		len(m.Roles) == 0 && m.KeystoreStatus == nil {
 		return nil
 	}
 	x := &MetadataExtras{
-		UserCount:  m.UserCount,
-		AdminCount: m.AdminCount,
-		Roles:      fromAgentSiteRoles(m.Roles),
+		UserCount:      m.UserCount,
+		AdminCount:     m.AdminCount,
+		Roles:          fromAgentSiteRoles(m.Roles),
+		KeystoreStatus: fromAgentKeystoreStatus(m.KeystoreStatus),
 	}
 	if m.HostFlags != nil {
 		x.HostFlags = &HostFlags{
@@ -611,6 +620,91 @@ func fromAgentMetadataExtras(m agentpkg.Metadata) *MetadataExtras {
 		}
 	}
 	return x
+}
+
+// keystoreItemMax bounds how many per-envelope entries a keystore probe result
+// may carry, and how many keys the "unreadable" convenience list may name. The
+// agent's own probe covers a fixed, small set of envelopes (site_keypair,
+// cp_public_key, age_identity, email_secret, email_connection_secrets); this
+// is the control plane's independent floor so a forged or corrupted push
+// cannot grow either collection without limit.
+const keystoreItemMax = 32
+
+// keystoreItemKeyMax bounds the length of one item/unreadable key name.
+const keystoreItemKeyMax = 64
+
+// keystoreStateValues, keystoreKeySourceValues and keystoreItemValues are the
+// vocabularies Keystore::probe() actually emits. An agent-reported value
+// outside its vocabulary is dropped rather than stored: forwarding it
+// unchecked would let a forged or future-agent value reach the Site
+// response's typed enum fields as if it were one of the values those enums
+// declare.
+var keystoreStateValues = map[string]struct{}{
+	"ok": {}, "unreadable": {}, "key_unavailable": {},
+}
+var keystoreKeySourceValues = map[string]struct{}{
+	"constant": {}, "salts": {}, "file": {}, "db": {}, "unknown": {},
+}
+var keystoreItemValues = map[string]struct{}{
+	"absent": {}, "ok": {}, "unreadable": {},
+}
+
+// fromAgentKeystoreStatus bounds and allowlists the agent's keystore probe
+// result (GH #753) before it is stored. Returns nil when the agent sent
+// nothing, which the caller (fromAgentMetadataExtras) must not confuse with
+// an empty-but-present probe.
+func fromAgentKeystoreStatus(k *agentpkg.KeystoreStatus) *KeystoreStatus {
+	if k == nil {
+		return nil
+	}
+	out := &KeystoreStatus{}
+	if _, ok := keystoreStateValues[k.State]; ok {
+		out.State = k.State
+	}
+	if _, ok := keystoreKeySourceValues[k.KeySource]; ok {
+		out.KeySource = k.KeySource
+	}
+	if len(k.Items) > 0 {
+		items := make(map[string]string, min(len(k.Items), keystoreItemMax))
+		for key, val := range k.Items {
+			if len(items) >= keystoreItemMax {
+				break
+			}
+			key = truncateRunes(strings.TrimSpace(key), keystoreItemKeyMax)
+			if key == "" {
+				continue
+			}
+			if _, ok := keystoreItemValues[val]; !ok {
+				continue
+			}
+			items[key] = val
+		}
+		if len(items) > 0 {
+			out.Items = items
+		}
+	}
+	if len(k.Unreadable) > 0 {
+		unreadable := make([]string, 0, min(len(k.Unreadable), keystoreItemMax))
+		seen := make(map[string]struct{}, len(unreadable))
+		for _, key := range k.Unreadable {
+			if len(unreadable) >= keystoreItemMax {
+				break
+			}
+			key = truncateRunes(strings.TrimSpace(key), keystoreItemKeyMax)
+			if key == "" {
+				continue
+			}
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+			unreadable = append(unreadable, key)
+		}
+		if len(unreadable) > 0 {
+			out.Unreadable = unreadable
+		}
+	}
+	return out
 }
 
 // maxSiteRoles bounds how many WordPress roles are persisted for one site.
@@ -908,6 +1002,14 @@ func buildInventoryPayload(m Metadata) map[string]any {
 		// substituting the five default roles behind the operator's back.
 		if len(m.Extras.Roles) > 0 {
 			payload["roles"] = m.Extras.Roles
+		}
+		// GH #753 — the agent's on-disk keystore trial-decrypt probe, a sibling
+		// key to plugins/themes. Absent when the agent did not report it (an
+		// agent older than #753, or a push where the metadata collector had no
+		// keystore access), which the Site response reads as "not reported"
+		// rather than substituting "ok" behind the operator's back.
+		if m.Extras.KeystoreStatus != nil {
+			payload["keystore_status"] = m.Extras.KeystoreStatus
 		}
 	}
 	// The agent's account of its last self-update apply beat, stored as a

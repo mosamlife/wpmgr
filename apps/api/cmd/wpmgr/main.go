@@ -2854,10 +2854,10 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	if err := authH.SetHandshakeSecret(cfg.Auth.SessionSecret); err != nil {
 		return fmt.Errorf("social handshake key: %w", err)
 	}
-	// GH #718 Phase 0 — login admission control. Fatal on a bad mode rather
-	// than a fallback: "observe" and "off" are not the same thing, and an
-	// operator who typed the mode wrong must find out here and not from an
-	// endpoint that quietly stopped measuring.
+	// GH #718 — login admission control. Fatal on a bad mode rather than a
+	// fallback: "observe" and "off" are not the same thing, and an operator
+	// who typed the mode wrong must find out here and not from an endpoint
+	// that quietly stopped measuring or enforcing.
 	loginMode, err := auth.ParseLoginMode(cfg.Auth.LoginMode)
 	if err != nil {
 		return err

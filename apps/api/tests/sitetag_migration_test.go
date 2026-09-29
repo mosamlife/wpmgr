@@ -34,10 +34,15 @@ import (
 const m100MigrationVersion = "20260802000000_m100_site_tags_registry"
 
 // startPostgresBeforeM100 mirrors startPostgresBeforeM99's container
-// bootstrap but stops short of m100, using the bootstrap superuser
-// connection directly (this test is about migration/backfill correctness,
-// not RLS — RLS on site_tags is covered separately by TestSiteTagsRLS).
-func startPostgresBeforeM100(t *testing.T) *db.Pool {
+// bootstrap but stops short of m100. Migrations run AS wpmgr_owner — the
+// NOSUPERUSER NOBYPASSRLS role production's migrator uses, not the bootstrap
+// superuser (see startPostgres's doc comment in rls_integration_test.go).
+// site_tags is FORCE ROW LEVEL SECURITY (RLS correctness itself is covered
+// separately by TestSiteTagsRLS). Returns (admin, owner): seed pre-m100 rows
+// through admin, the bootstrap superuser; call owner.Migrate(ctx) (and, for
+// the idempotency re-exec below, owner.Exec) to run migration SQL under the
+// production role.
+func startPostgresBeforeM100(t *testing.T) (admin *db.Pool, owner *db.Pool) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -68,14 +73,41 @@ func startPostgresBeforeM100(t *testing.T) *db.Pool {
 	if err != nil {
 		t.Fatalf("connection string: %v", err)
 	}
-	pool, err := db.Connect(ctx, adminDSN)
+	admin, err = db.Connect(ctx, adminDSN)
 	if err != nil {
 		t.Fatalf("connect admin: %v", err)
 	}
-	t.Cleanup(pool.Close)
+	t.Cleanup(admin.Close)
 
-	applyMigrationsBeforeM100(t, pool, m100MigrationVersion)
-	return pool
+	for _, stmt := range []string{
+		"CREATE ROLE wpmgr_owner LOGIN PASSWORD 'owner' NOSUPERUSER NOBYPASSRLS CREATEROLE",
+		"ALTER DATABASE wpmgr OWNER TO wpmgr_owner",
+	} {
+		if _, err := admin.Exec(ctx, stmt); err != nil {
+			setupFatalf(t, err, "postgres: provision owner role ("+stmt+")")
+		}
+	}
+
+	ownerDSN := strings.Replace(adminDSN, "wpmgr:wpmgr@", "wpmgr_owner:owner@", 1)
+	owner, err = db.Connect(ctx, ownerDSN)
+	if err != nil {
+		setupFatalf(t, err, "postgres: connect as wpmgr_owner")
+	}
+	t.Cleanup(owner.Close)
+
+	var ownerSuper, ownerBypass bool
+	if err := owner.QueryRow(ctx,
+		"SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user").
+		Scan(&ownerSuper, &ownerBypass); err != nil {
+		setupFatalf(t, err, "postgres: read owner role attributes")
+	}
+	if ownerSuper || ownerBypass {
+		t.Fatalf("wpmgr_owner has rolsuper=%t rolbypassrls=%t; this harness's premise is a role row security applies to",
+			ownerSuper, ownerBypass)
+	}
+
+	applyMigrationsBeforeM100(t, owner, m100MigrationVersion)
+	return admin, owner
 }
 
 // applyMigrationsBeforeM100 is a package-local copy of
@@ -138,7 +170,7 @@ func applyMigrationsBeforeM100(t *testing.T, pool *db.Pool, stopAt string) {
 // TestM100Migration_BackfillMatchesExpected_AndIdempotent is the ship-level
 // regression test.
 func TestM100Migration_BackfillMatchesExpected_AndIdempotent(t *testing.T) {
-	pool := startPostgresBeforeM100(t)
+	pool, owner := startPostgresBeforeM100(t)
 	ctx := context.Background()
 
 	var tenantA, tenantB uuid.UUID
@@ -191,8 +223,9 @@ func TestM100Migration_BackfillMatchesExpected_AndIdempotent(t *testing.T) {
 		t.Fatalf("seed site B1: %v", err)
 	}
 
-	// Finish the boot: applies m100 (table creation + RLS + backfill).
-	if err := pool.Migrate(ctx); err != nil {
+	// Finish the boot: applies m100 (table creation + RLS + backfill), AS
+	// wpmgr_owner.
+	if err := owner.Migrate(ctx); err != nil {
 		t.Fatalf("m100 migration failed: %v", err)
 	}
 
@@ -236,7 +269,7 @@ func TestM100Migration_BackfillMatchesExpected_AndIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read m100 migration body: %v", err)
 	}
-	if _, err := pool.Exec(ctx, string(body)); err != nil {
+	if _, err := owner.Exec(ctx, string(body)); err != nil {
 		t.Fatalf("re-apply m100 migration SQL: %v", err)
 	}
 	assertRegistry(t)
@@ -263,7 +296,7 @@ func TestM100Migration_BackfillMatchesExpected_AndIdempotent(t *testing.T) {
 // registry (they remain on sites.tags/pairing_codes.tags, harmless), while
 // every other, valid-length tag is still backfilled normally.
 func TestM100Migration_OverLengthTagSkipped_MigrationSucceeds(t *testing.T) {
-	pool := startPostgresBeforeM100(t)
+	pool, owner := startPostgresBeforeM100(t)
 	ctx := context.Background()
 
 	var tenant uuid.UUID
@@ -289,7 +322,7 @@ func TestM100Migration_OverLengthTagSkipped_MigrationSucceeds(t *testing.T) {
 	}
 
 	// The migration must APPLY SUCCESSFULLY — this is the CRITICAL assertion.
-	if err := pool.Migrate(ctx); err != nil {
+	if err := owner.Migrate(ctx); err != nil {
 		t.Fatalf("m100 migration must succeed even with a pre-existing over-length tag, got: %v", err)
 	}
 

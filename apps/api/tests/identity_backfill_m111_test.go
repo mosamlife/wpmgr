@@ -30,10 +30,15 @@ import (
 const m111MigrationVersion = "20260813000000_m111_identity_backfill_repair"
 
 // startPostgresBeforeM111 boots a container and applies everything up to but
-// not including m111, using the bootstrap superuser connection directly: this
-// test is about backfill correctness, and user_identities carries no RLS by
-// design (a user spans tenants).
-func startPostgresBeforeM111(t *testing.T) *db.Pool {
+// not including m111 AS wpmgr_owner — the NOSUPERUSER NOBYPASSRLS role
+// production's migrator uses, not the bootstrap superuser (see startPostgres's
+// doc comment in rls_integration_test.go). users/user_identities carry no RLS
+// by design (a user spans tenants), so this file's role change is about
+// harness consistency with the rest of the package, not an expected RLS gap.
+// Returns (admin, owner): seed pre-m111 rows through admin, the bootstrap
+// superuser; call owner.Migrate(ctx) (and, for the idempotency re-exec,
+// owner.Exec) to run migration SQL under the production role.
+func startPostgresBeforeM111(t *testing.T) (admin *db.Pool, owner *db.Pool) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -64,14 +69,41 @@ func startPostgresBeforeM111(t *testing.T) *db.Pool {
 	if err != nil {
 		t.Fatalf("connection string: %v", err)
 	}
-	pool, err := db.Connect(ctx, adminDSN)
+	admin, err = db.Connect(ctx, adminDSN)
 	if err != nil {
 		t.Fatalf("connect admin: %v", err)
 	}
-	t.Cleanup(pool.Close)
+	t.Cleanup(admin.Close)
 
-	applyMigrationsBeforeM111(t, pool, m111MigrationVersion)
-	return pool
+	for _, stmt := range []string{
+		"CREATE ROLE wpmgr_owner LOGIN PASSWORD 'owner' NOSUPERUSER NOBYPASSRLS CREATEROLE",
+		"ALTER DATABASE wpmgr OWNER TO wpmgr_owner",
+	} {
+		if _, err := admin.Exec(ctx, stmt); err != nil {
+			setupFatalf(t, err, "postgres: provision owner role ("+stmt+")")
+		}
+	}
+
+	ownerDSN := strings.Replace(adminDSN, "wpmgr:wpmgr@", "wpmgr_owner:owner@", 1)
+	owner, err = db.Connect(ctx, ownerDSN)
+	if err != nil {
+		setupFatalf(t, err, "postgres: connect as wpmgr_owner")
+	}
+	t.Cleanup(owner.Close)
+
+	var ownerSuper, ownerBypass bool
+	if err := owner.QueryRow(ctx,
+		"SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user").
+		Scan(&ownerSuper, &ownerBypass); err != nil {
+		setupFatalf(t, err, "postgres: read owner role attributes")
+	}
+	if ownerSuper || ownerBypass {
+		t.Fatalf("wpmgr_owner has rolsuper=%t rolbypassrls=%t; this harness's premise is a role row security applies to",
+			ownerSuper, ownerBypass)
+	}
+
+	applyMigrationsBeforeM111(t, owner, m111MigrationVersion)
+	return admin, owner
 }
 
 // applyMigrationsBeforeM111 walks the embedded FS in the same lexical order the
@@ -168,7 +200,7 @@ func identitySubjectsFor(t *testing.T, pool *db.Pool, userID uuid.UUID) []string
 // backfill gap: m110 could only see the rows that existed when it ran, and
 // schema_migrations guarantees it never looks again.
 func TestM111Migration_RepairsTheRollbackWindow(t *testing.T) {
-	pool := startPostgresBeforeM111(t)
+	pool, owner := startPostgresBeforeM111(t)
 	ctx := context.Background()
 
 	// m110 has run by this point, so anything seeded now is exactly what a
@@ -199,8 +231,8 @@ func TestM111Migration_RepairsTheRollbackWindow(t *testing.T) {
 		}
 	}
 
-	// Finish the boot: applies m111.
-	if err := pool.Migrate(ctx); err != nil {
+	// Finish the boot: applies m111, AS wpmgr_owner.
+	if err := owner.Migrate(ctx); err != nil {
 		t.Fatalf("m111 must apply cleanly: %v", err)
 	}
 
@@ -230,7 +262,7 @@ func TestM111Migration_RepairsTheRollbackWindow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read m111 body: %v", err)
 	}
-	if _, err := pool.Exec(ctx, string(body)); err != nil {
+	if _, err := owner.Exec(ctx, string(body)); err != nil {
 		t.Fatalf("re-apply m111: %v", err)
 	}
 	assert(t)
@@ -247,10 +279,10 @@ func TestM111Migration_RepairsTheRollbackWindow(t *testing.T) {
 // The identity key still carries issuer after m111, which is what stops a
 // subject minted by two different providers from resolving to one account.
 func TestM111Migration_IdentityKeyStillIncludesIssuer(t *testing.T) {
-	pool := startPostgresBeforeM111(t)
+	pool, owner := startPostgresBeforeM111(t)
 	ctx := context.Background()
 
-	if err := pool.Migrate(ctx); err != nil {
+	if err := owner.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 

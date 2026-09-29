@@ -372,6 +372,24 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "429":
+          description: >
+            too_many_attempts - login admission control refused the attempt
+            (only when WPMGR_AUTH_LOGIN_MODE=enforce). Decided before any
+            account lookup, so the response is the same whether or not the
+            account exists. details.scope names the budget: "pair" (this
+            connection against this account), "source" (this connection
+            across all accounts) or "network" (this IPv6 /48 across all
+            accounts). details.retry_after_seconds matches the Retry-After
+            header. A refused attempt is not counted against any budget.
+          headers:
+            Retry-After:
+              schema: { type: integer, minimum: 1 }
+              description: Whole seconds to wait before retrying.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /auth/logout:
     post:
       operationId: logout
@@ -14059,6 +14077,8 @@ components:
             stops advancing. A paused site whose server died an hour ago therefore still
             reports `health_status: healthy`, and this field is the only thing that says
             how old that verdict is. Render it as "as of <time>" rather than implying now.
+        keystore_status:
+          $ref: "#/components/schemas/SiteKeystoreStatus"
         created_at:
           type: string
           format: date-time
@@ -14071,6 +14091,62 @@ components:
             writes (GH #414 Phase 1), so pausing a site does not make its inventory look
             freshly synced. It is the inventory freshness stamp, not the health one —
             use health_checked_at for health_status.
+    SiteKeystoreStatus:
+      type: object
+      description: |
+        GH #753 — trial-decrypt probe result for the site's on-disk agent
+        keystore (Keystore::probe()). It arrives with the agent's ordinary
+        metadata push — the 30-minute cron cadence, or a CP-triggered
+        recheck — never on admin_init: the agent's admin_init check only
+        records a local wp-admin notice and sends nothing to the control
+        plane from that path.
+
+        Absent on the Site response only before this site's first metadata
+        sync. A pre-#753 agent that has since synced at least once gets
+        state=not_reported instead, never absent and never ok, so an old
+        agent's silence can never read as a healthy keystore. Every
+        metadata push replaces the previously stored status outright — it
+        is not a delta — so not_reported also covers any later push whose
+        latest probe carried no recognised result; a prior good report does
+        not survive a bad one. Never contains key material, a key-check
+        value, an error detail or a file path.
+      properties:
+        state:
+          type: string
+          enum: [ok, unreadable, key_unavailable, not_reported]
+          description: |
+            ok = every stored item decrypted under the resolved master key.
+            unreadable = the master key resolved but one or more stored
+            items did not decrypt under it (the common "site moved host, or
+            the wp-config.php security keys changed" case).
+            key_unavailable = the master key itself could not be resolved.
+            not_reported = the latest metadata push carried no recognised
+            probe result — a pre-#753 agent that has synced at least once,
+            or a later push whose probe result the control plane did not
+            recognise. Every push replaces the previous status outright, so
+            this is never a delta against an earlier report.
+        key_source:
+          type: string
+          enum: [constant, salts, file, db, unknown]
+          description: |
+            Which tier pinned the master key, mirroring the agent's own
+            pin. Absent when no source is pinned yet.
+        items:
+          type: object
+          description: |
+            Per-item probe result, one entry per stored envelope (e.g.
+            site_keypair, cp_public_key, age_identity, email_secret,
+            email_connection_secrets). Each value is "absent", "ok" or
+            "unreadable".
+          additionalProperties:
+            type: string
+        unreadable:
+          type: array
+          items:
+            type: string
+          description: |
+            Convenience list of the item keys currently unreadable;
+            mirrors the "unreadable" entries in `items`.
     SiteComponents:
       type: object
       description: Installed plugin/theme inventory pushed by the agent.
@@ -14827,6 +14903,56 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/SiteComponent"
+        keystore:
+          type: [object, "null"]
+          description: |
+            GH #753 — the agent's Keystore::probe() trial-decrypt result,
+            replayed on the ordinary metadata push. Optional; an agent that
+            predates #753, or one that sends nothing this push, simply omits
+            it and the control plane records state=not_reported rather than
+            inferring a healthy keystore from silence.
+
+            Every field here is optional and tolerantly decoded: a malformed
+            or unexpected shape (e.g. a value this project's agent never
+            sends, or `items`/`unreadable` in a shape that doesn't parse) is
+            ignored field-by-field rather than rejecting the whole metadata
+            push, and the control plane separately allowlists `state` and
+            `key_source` against the vocabulary described on
+            SiteKeystoreStatus before storing them — this schema does not
+            itself enforce that vocabulary, since the handler doesn't either.
+          properties:
+            state:
+              type: string
+              description: |
+                See SiteKeystoreStatus.state for the vocabulary the control
+                plane recognises (ok, unreadable, key_unavailable). Any other
+                value, or a value in an unparseable shape, is ignored and
+                stored as not_reported.
+            key_source:
+              type: string
+              description: |
+                See SiteKeystoreStatus.key_source for the vocabulary the
+                control plane recognises (constant, salts, file, db,
+                unknown). Any other or unparseable value is ignored.
+            items:
+              type: object
+              description: |
+                Per-item probe result, one entry per stored envelope. Each
+                value is expected to be "absent", "ok" or "unreadable"
+                (SiteKeystoreStatus.items), but an unrecognised value is
+                dropped rather than rejected. A shape this cannot parse as an
+                object (including PHP's empty-array `[]`) is ignored and the
+                whole map is left unset.
+              additionalProperties:
+                type: string
+            unreadable:
+              type: array
+              description: |
+                Convenience list of currently-unreadable item keys. A shape
+                this cannot parse as an array is ignored and the list is left
+                unset.
+              items:
+                type: string
     SiteCreate:
       type: object
       required: [url, name]

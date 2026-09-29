@@ -12715,6 +12715,24 @@ func (s *Site) Validate() error {
 			Error: err,
 		})
 	}
+	if err := func() error {
+		if value, ok := s.KeystoreStatus.Get(); ok {
+			if err := func() error {
+				if err := value.Validate(); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "keystore_status",
+			Error: err,
+		})
+	}
 	if len(failures) > 0 {
 		return &validate.Error{Fields: failures}
 	}
@@ -13964,6 +13982,86 @@ func (s SiteInvitationStatus) Validate() error {
 	case "expired":
 		return nil
 	case "revoked":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
+}
+
+func (s *SiteKeystoreStatus) Validate() error {
+	if s == nil {
+		return validate.ErrNilPointer
+	}
+
+	var failures []validate.FieldError
+	if err := func() error {
+		if value, ok := s.State.Get(); ok {
+			if err := func() error {
+				if err := value.Validate(); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "state",
+			Error: err,
+		})
+	}
+	if err := func() error {
+		if value, ok := s.KeySource.Get(); ok {
+			if err := func() error {
+				if err := value.Validate(); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "key_source",
+			Error: err,
+		})
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+	return nil
+}
+
+func (s SiteKeystoreStatusKeySource) Validate() error {
+	switch s {
+	case "constant":
+		return nil
+	case "salts":
+		return nil
+	case "file":
+		return nil
+	case "db":
+		return nil
+	case "unknown":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
+}
+
+func (s SiteKeystoreStatusState) Validate() error {
+	switch s {
+	case "ok":
+		return nil
+	case "unreadable":
+		return nil
+	case "key_unavailable":
+		return nil
+	case "not_reported":
 		return nil
 	default:
 		return errors.Errorf("invalid value: %v", s)
