@@ -250,23 +250,39 @@ export interface CancelSubscriptionResult {
 }
 
 /**
- * POST /api/v1/billing/cancel (owner-only). Cancels the tenant's subscription
- * AT THE END OF THE CURRENT BILLING PERIOD, never immediately — the
- * provider's webhook then drives the non-destructive plan=free downgrade,
- * exactly like a natural expiry. Only relevant when `portal_available` is
- * false (e.g. Razorpay, which has no hosted billing-management portal to
- * cancel through instead).
+ * POST /api/v1/billing/cancel's optional body (openapi.yaml
+ * BillingCancelRequest). Omitted, or `{}`/`undefined` passed as the
+ * mutation's variables, means the default: cancel AT THE END OF THE CURRENT
+ * BILLING PERIOD. `{ when: "now" }` is Cancel now — ends the subscription at
+ * once, refused (422 billing_cancel_now_not_allowed) unless the tenant is
+ * past_due on Stripe (apps/api/internal/billing/cancel.go:97).
+ */
+export interface CancelSubscriptionVariables {
+  when?: "now";
+}
+
+/**
+ * POST /api/v1/billing/cancel (owner-only). Either way, the provider's
+ * webhook (or, for Cancel now, the refresh it enqueues) drives the actual
+ * plan/status change — this response never carries it, so the caller polls
+ * GET /billing rather than trusting `{ ok: true }` as the new state.
+ *
+ * Period-end (the default) is only relevant when `portal_available` is false
+ * (e.g. Razorpay, which has no hosted billing-management portal to cancel
+ * through instead). Cancel now is offered independently of that — see
+ * settings/billing.tsx's `showCancelNow`.
  */
 export function useCancelBillingSubscription(): UseMutationResult<
   CancelSubscriptionResult,
   Error,
-  void
+  CancelSubscriptionVariables | void
 > {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async () => {
+    mutationFn: async (vars) => {
       const result = await client.post<{ 200: CancelSubscriptionResult }>({
         url: "/api/v1/billing/cancel",
+        ...(vars?.when === "now" ? { body: { when: "now" } } : {}),
       });
       if (result.error) throw toError(result.error);
       if (!result.data) throw new Error("Empty response");

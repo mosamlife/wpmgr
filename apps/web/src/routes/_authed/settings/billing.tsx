@@ -206,11 +206,25 @@ function BillingContent({
   const portal = useCreateBillingPortal();
   const cancel = useCancelBillingSubscription();
   const [cancelOpen, setCancelOpen] = useState(false);
+  // Separate mutation instance from `cancel` above: Cancel now (immediate,
+  // past_due-only) and Cancel subscription (period-end) are two independent
+  // dialogs that can each be opened/closed/retried without one's pending/
+  // error state bleeding into the other's.
+  const cancelNow = useCancelBillingSubscription();
+  const [cancelNowOpen, setCancelNowOpen] = useState(false);
 
   // Lifted here (rather than owned by PlanTiersGrid alone) so the decline
   // banner's "Pay with Razorpay" action (3.3) can select the provider the
   // tier buttons below then use.
-  const checkoutFlow = useCheckoutFlow({ onCheckoutSuccess });
+  //
+  // initialProvider: a workspace already pinned to Razorpay (billing.provider
+  // — the server-confirmed pin, never a guess) starts the picker on Razorpay
+  // rather than the instance default of Stripe, so its very first render
+  // already offers the provider this tenant can actually pay with (5.10).
+  const checkoutFlow = useCheckoutFlow({
+    onCheckoutSuccess,
+    initialProvider: billing.provider === "razorpay" ? "razorpay" : undefined,
+  });
 
   const openPortal = () => {
     portal.mutate(undefined, {
@@ -232,11 +246,30 @@ function BillingContent({
     }
   }
 
+  async function performCancelNow() {
+    try {
+      await cancelNow.mutateAsync({ when: "now" });
+      setCancelNowOpen(false);
+      toast.success("Your subscription has been cancelled");
+    } catch {
+      // Error surfaces inside the confirm dialog via the mutation state.
+    }
+  }
+
   // "Do NOT show both": a tenant either has a hosted portal (Stripe) or
   // doesn't (Razorpay), never both. A free-plan tenant with no portal has no
   // subscription to cancel either, so neither action renders for it.
   const showManageBilling = billing.portal_available;
   const showCancelSubscription = !billing.portal_available && billing.plan !== "free";
+  // Cancel now (3.6/5.10): only past_due, and only on Stripe (the only
+  // provider whose Service.CancelSubscriptionNow the CP implements — see
+  // apps/api/internal/billing/cancel.go's ImmediateCanceller). Independent of
+  // showManageBilling/showCancelSubscription above — a past-due Stripe
+  // subscription still has a portal (so shows "Manage billing"), but the
+  // portal has no immediate-cancel action of its own, so this button is
+  // additive rather than a third mutually-exclusive branch.
+  const showCancelNow =
+    billing.plan_status === "past_due" && billing.provider === "stripe";
 
   return (
     <section className="max-w-3xl space-y-6">
@@ -290,25 +323,37 @@ function BillingContent({
               ) : null}
             </CardDescription>
           </div>
-          {showManageBilling ? (
+          {showManageBilling || showCancelSubscription || showCancelNow ? (
             <div className="flex flex-col items-end gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                disabled={portal.isPending}
-                onClick={openPortal}
-              >
-                {portal.isPending ? "Opening…" : "Manage billing"}
-              </Button>
+              {showManageBilling ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={portal.isPending}
+                  onClick={openPortal}
+                >
+                  {portal.isPending ? "Opening…" : "Manage billing"}
+                </Button>
+              ) : showCancelSubscription ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setCancelOpen(true)}
+                >
+                  Cancel subscription
+                </Button>
+              ) : null}
+              {showCancelNow ? (
+                <Button
+                  type="button"
+                  variant="destructive"
+                  size="sm"
+                  onClick={() => setCancelNowOpen(true)}
+                >
+                  Cancel now
+                </Button>
+              ) : null}
             </div>
-          ) : showCancelSubscription ? (
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setCancelOpen(true)}
-            >
-              Cancel subscription
-            </Button>
           ) : null}
         </CardHeader>
         <CardContent className="space-y-4">
@@ -355,6 +400,26 @@ function BillingContent({
         isPending={cancel.isPending}
         errorMessage={cancel.isError ? cancel.error.message : null}
       />
+
+      <DestructiveConfirm
+        open={cancelNowOpen}
+        onClose={() => setCancelNowOpen(false)}
+        onConfirm={performCancelNow}
+        title="Cancel now"
+        consequencesBody={
+          <>
+            Your {planLabel(billing.plan)} subscription ends immediately —
+            not at the end of the current billing period. This workspace
+            moves to the Free plan right away. Nothing you have already
+            backed up or configured is deleted.
+          </>
+        }
+        resourceName={planLabel(billing.plan)}
+        confirmLabel="Cancel now"
+        cancelLabel="Keep subscription"
+        isPending={cancelNow.isPending}
+        errorMessage={cancelNow.isError ? cancelNow.error.message : null}
+      />
     </section>
   );
 }
@@ -399,6 +464,7 @@ function PlanTiersGrid({
         onProviderChange={setProvider}
         availableProviders={billing.available_providers}
         likelyIndian={likelyIndian}
+        pinnedProvider={billing.provider}
       />
 
       <BillingTaxCopy />

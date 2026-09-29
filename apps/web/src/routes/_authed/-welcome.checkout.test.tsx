@@ -290,6 +290,42 @@ describe("WelcomeCheckoutPage — auto-starts checkout once on mount", () => {
   });
 });
 
+describe("WelcomeCheckoutPage — decline return (?checkout=cancel)", () => {
+  it("renders the Indian-decline banner's 'Pay with Razorpay' action and starts a Razorpay checkout for THIS tier/currency, not whatever Stripe was mid-flight for", async () => {
+    mockedUseBilling.mockReturnValue(
+      mockQueryResult<BillingInfo | null>({
+        data: billingFixture({ available_providers: ["stripe", "razorpay"] }),
+      }),
+    );
+    const mutateMock = vi.fn();
+    mockedUseCreateBillingCheckout.mockReturnValue(
+      mockMutationResult<CheckoutResult, CreateCheckoutVariables>({ mutate: mutateMock }),
+    );
+
+    renderWelcomeCheckout(
+      "/welcome/checkout?plan=scale&checkout=cancel&currency=INR",
+    );
+
+    // A decline return skips the auto-start effect's own checkout call —
+    // this test only cares about the button's own explicit call below.
+    await waitFor(() => expect(mutateMock).toHaveBeenCalledTimes(1));
+    mutateMock.mockClear();
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Pay with Razorpay" }),
+    );
+
+    // MUST fail if welcome.checkout.tsx's onPayWithRazorpay handler regresses
+    // to `startCheckout(tier)` (reading the not-yet-committed `provider`
+    // state instead of passing the "razorpay" override explicitly) — that
+    // regression posts { provider: "stripe", currency: undefined } instead.
+    expect(mutateMock).toHaveBeenCalledWith(
+      { tier: "scale", provider: "razorpay", currency: "INR" },
+      expect.anything(),
+    );
+  });
+});
+
 describe("WelcomeCheckoutPage — Skip for now", () => {
   it("clears the stash and navigates to /sites without ever starting a checkout call from the click", async () => {
     const mutateMock = vi.fn();

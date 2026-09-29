@@ -11,21 +11,33 @@ import type { BillingProvider } from "./use-billing";
 // when `availableProviders` includes razorpay AND (`likelyIndian` OR the
 // tenant is already pinned to razorpay) — everyone else sees no picker at
 // all and pays by card.
+//
+// "Already pinned to razorpay" reads `pinnedProvider` (the server's
+// `summary.provider`, i.e. what this workspace is actually billed through
+// today), never `provider` (the picker's own in-progress selection). Those
+// two used to be the same field, which hid the picker the moment a
+// Razorpay-pinned operator outside India merely clicked "Card ($)" to look
+// at it — nothing showed Razorpay again to switch back and pay. A
+// server-confirmed pin must stay visible regardless of what the control is
+// currently set to.
 
 export function PaymentMethodPicker({
   provider,
   onProviderChange,
   availableProviders,
   likelyIndian,
+  pinnedProvider,
 }: {
   provider: BillingProvider;
   onProviderChange: (provider: BillingProvider) => void;
   availableProviders: readonly BillingProvider[];
   likelyIndian: boolean;
+  /** The workspace's server-confirmed provider (`BillingInfo.provider`), if any — distinct from `provider`, the picker's own current selection. */
+  pinnedProvider?: string;
 }) {
   const showRazorpay =
     availableProviders.includes("razorpay") &&
-    (likelyIndian || provider === "razorpay");
+    (likelyIndian || pinnedProvider === "razorpay");
 
   if (!showRazorpay) return null;
 

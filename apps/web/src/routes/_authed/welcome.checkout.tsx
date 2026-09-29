@@ -41,6 +41,14 @@ import { mapBillingCheckoutError } from "@/features/billing/billing-checkout-err
 const checkoutSearchSchema = z.object({
   plan: z.enum(["starter", "agency", "scale"]).optional().catch(undefined),
   currency: z.enum(["USD", "INR"]).optional().catch(undefined),
+  // Mirrors routes/_authed/billing.tsx's compatibility-redirect schema.
+  // Today's provider return URLs always land on /billing (which forwards to
+  // /settings/billing) rather than back here — see that file's module doc —
+  // so this is defensive: it lets this screen render the same decline
+  // (`CheckoutReturnBanner`) copy, with the same "Pay with Razorpay" escape
+  // hatch, for any future or manual `?checkout=cancel` return that lands on
+  // this route instead.
+  checkout: z.enum(["success", "cancel"]).optional().catch(undefined),
 });
 
 /**
@@ -108,16 +116,23 @@ function WelcomeCheckoutPage() {
   if (!resolved.tier) return null;
 
   return (
-    <WelcomeCheckoutContent tier={resolved.tier} currencyHint={resolved.currency} />
+    <WelcomeCheckoutContent
+      tier={resolved.tier}
+      currencyHint={resolved.currency}
+      checkoutParam={search.checkout}
+    />
   );
 }
 
 function WelcomeCheckoutContent({
   tier,
   currencyHint,
+  checkoutParam,
 }: {
   tier: CheckoutTierId;
   currencyHint: BillingCurrency | undefined;
+  /** `?checkout=` as the URL carried it in — see checkoutSearchSchema's doc. */
+  checkoutParam: "success" | "cancel" | undefined;
 }) {
   const navigate = useNavigate();
   const entry = planCatalogEntry(tier);
@@ -125,9 +140,14 @@ function WelcomeCheckoutContent({
   // never fires two checkout-creation calls (same pattern as
   // verify-email.tsx's own `firedRef`).
   const firedRef = useRef(false);
-  const [checkoutStatus, setCheckoutStatus] = useState<"success" | undefined>(
-    undefined,
-  );
+  // Seeded from the URL (a decline return landing directly on this route —
+  // see checkoutSearchSchema's doc) but otherwise driven by the in-page
+  // Razorpay success callback below, which is the only source of "success"
+  // this screen ever sees itself (Stripe's own hosted-redirect success path
+  // leaves this page entirely).
+  const [checkoutStatus, setCheckoutStatus] = useState<
+    "success" | "cancel" | undefined
+  >(() => checkoutParam);
   const wasFinalizingRef = useRef(false);
 
   const billing = useBilling({ enabled: true });
@@ -168,7 +188,7 @@ function WelcomeCheckoutContent({
     wasFinalizingRef.current = checkoutReturn.finalizing;
     if (
       shouldDropIntoSitesAfterCheckout({
-        status: checkoutStatus,
+        status: checkoutStatus === "success" ? "success" : undefined,
         wasFinalizing,
         isFinalizing: checkoutReturn.finalizing,
       })
@@ -233,6 +253,7 @@ function WelcomeCheckoutContent({
             onProviderChange={setProvider}
             availableProviders={billing.data?.available_providers ?? []}
             likelyIndian={likelyIndian}
+            pinnedProvider={billing.data?.provider}
           />
 
           <BillingTaxCopy />
