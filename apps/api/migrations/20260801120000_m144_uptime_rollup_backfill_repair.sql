@@ -54,10 +54,10 @@
 -- m99 was applied.
 --
 -- For operators who apply migrations with atlas, on a database atlas has
--- already taken past m100, per atlas's `--exec-order` help: the default,
--- `linear`, refuses m144 as out of order and applies nothing; `linear-skip`
--- skips m144 without applying it, so no NOTICE is raised; `non-linear`
--- applies m144, and the repair is then skipped as above.
+-- already taken past m100: the default `--exec-order linear` fails with
+-- "added out of order" and applies nothing; `linear-skip` applies nothing,
+-- leaves m144 pending out of order, and exits 0; `non-linear` applies m144,
+-- and the repair is then skipped as above. atlas does not print the NOTICE.
 --
 -- RE-RUN. Running the file again changes nothing: every repaired row already
 -- equals its raw aggregate, so no count is strictly larger, and every site it
