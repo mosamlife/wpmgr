@@ -283,8 +283,8 @@ a per-organisation one, and only an account with instance-level authority may
 view, change, or test it. On a self-hosted install, that authority belongs to:
 
 - any account listed in `WPMGR_SUPERADMIN_EMAILS`;
-- on an install with exactly one organisation, that organisation's owner;
-- the install owner: the first account ever to complete setup (see
+- on an install with exactly one live organisation, that organisation's owner;
+- the install owner: the account recorded when the install was set up (see
   [First-run notes](#first-run-notes) below), for as long as that account is
   active and is an owner of at least one live organisation; an organisation in
   its deletion grace period does not count.
@@ -293,11 +293,16 @@ view, change, or test it. On a self-hosted install, that authority belongs to:
 owning a live organisation again restores it on the next request, even after
 a period of owning none. If the install drops back to exactly one live
 organisation, that organisation's owner is admitted through the sole-owner
-rule above regardless of who the install owner is. The install owner itself
-is fixed at the first successful setup and is never replaced: if that account
-is deleted, disabled, or ends up owning no live organisation, a later account
-that completes setup is still never recorded as the install owner. Recover
+rule above regardless of who the install owner is. Once an account is
+recorded as the install owner it is never replaced: if that account is
+deleted, disabled, or ends up owning no live organisation, a later account
+that completes setup is still not recorded as the install owner. Recover
 access with `WPMGR_SUPERADMIN_EMAILS`.
+
+**No install owner recorded.** Until an account is recorded, this arm admits
+nobody — there is no fallback to the earliest user or owner. The next
+successful setup records its account. `WPMGR_SUPERADMIN_EMAILS` is the remedy
+until then; superadmins are admitted through their own arm, not this one.
 
 Hosted installs are not affected: this whole section describes self-hosted
 behaviour only.
@@ -521,10 +526,12 @@ Grafana then ships with the WPMgr dashboards pre-provisioned. See
   body field, and is deliberately absent from `openapi.yaml`, so no generated
   client (including the dashboard) can send it. That value lives in `.env`
   under that key, generated once by `scripts/init-env.sh` and never rotated
-  by a re-run. On a self-hosted install, the account that completes this claim
-  also holds the install-wide email relay authority described in
-  [Instance email (SMTP) authority](#instance-email-authority) above, for as
-  long as it keeps owning an organisation.
+  by a re-run. On a self-hosted install, the account recorded as having
+  completed this claim also holds the install-wide email relay authority
+  described in [Instance email (SMTP) authority](#instance-email-authority)
+  above, for as long as it stays active and keeps owning a live organisation.
+  A setup run again after an account is already recorded is refused; it does
+  not move that authority.
 
   You never need to look up or paste that value yourself. `scripts/init-env.sh`
   (and the quickstart-selfhost.sh curl-pipe path) prints the exact claim
