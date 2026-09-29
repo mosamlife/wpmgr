@@ -25775,10 +25775,14 @@ func (s *BackupEventPhase) Decode(d *jx.Decoder) error {
 		*s = BackupEventPhaseCompleted
 	case BackupEventPhaseFailed:
 		*s = BackupEventPhaseFailed
+	case BackupEventPhaseStarted:
+		*s = BackupEventPhaseStarted
 	case BackupEventPhaseStalled:
 		*s = BackupEventPhaseStalled
 	case BackupEventPhaseResumed:
 		*s = BackupEventPhaseResumed
+	case BackupEventPhaseRetrying:
+		*s = BackupEventPhaseRetrying
 	default:
 		*s = BackupEventPhase(v)
 	}
@@ -27641,6 +27645,12 @@ func (s *BackupSnapshot) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
+		if s.AttemptError.Set {
+			e.FieldStart("attempt_error")
+			s.AttemptError.Encode(e)
+		}
+	}
+	{
 		if s.Progress.Set {
 			e.FieldStart("progress")
 			s.Progress.Encode(e)
@@ -27716,7 +27726,7 @@ func (s *BackupSnapshot) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfBackupSnapshot = [24]string{
+var jsonFieldsNameOfBackupSnapshot = [25]string{
 	0:  "id",
 	1:  "tenant_id",
 	2:  "site_id",
@@ -27728,19 +27738,20 @@ var jsonFieldsNameOfBackupSnapshot = [24]string{
 	8:  "chunk_count",
 	9:  "archived",
 	10: "error",
-	11: "progress",
-	12: "progress_updated_at",
-	13: "stalled_at",
-	14: "started_at",
-	15: "finished_at",
-	16: "created_at",
-	17: "updated_at",
-	18: "is_incremental",
-	19: "generation",
-	20: "chain_id",
-	21: "parent_snapshot_id",
-	22: "base_snapshot_id",
-	23: "locked",
+	11: "attempt_error",
+	12: "progress",
+	13: "progress_updated_at",
+	14: "stalled_at",
+	15: "started_at",
+	16: "finished_at",
+	17: "created_at",
+	18: "updated_at",
+	19: "is_incremental",
+	20: "generation",
+	21: "chain_id",
+	22: "parent_snapshot_id",
+	23: "base_snapshot_id",
+	24: "locked",
 }
 
 // Decode decodes BackupSnapshot from json.
@@ -27748,7 +27759,7 @@ func (s *BackupSnapshot) Decode(d *jx.Decoder) error {
 	if s == nil {
 		return errors.New("invalid: unable to decode BackupSnapshot to nil")
 	}
-	var requiredBitSet [3]uint8
+	var requiredBitSet [4]uint8
 
 	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
 		switch string(k) {
@@ -27868,6 +27879,16 @@ func (s *BackupSnapshot) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"error\"")
 			}
+		case "attempt_error":
+			if err := func() error {
+				s.AttemptError.Reset()
+				if err := s.AttemptError.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"attempt_error\"")
+			}
 		case "progress":
 			if err := func() error {
 				s.Progress.Reset()
@@ -27919,7 +27940,7 @@ func (s *BackupSnapshot) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"finished_at\"")
 			}
 		case "created_at":
-			requiredBitSet[2] |= 1 << 0
+			requiredBitSet[2] |= 1 << 1
 			if err := func() error {
 				v, err := json.DecodeDateTime(d)
 				s.CreatedAt = v
@@ -27931,7 +27952,7 @@ func (s *BackupSnapshot) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"created_at\"")
 			}
 		case "updated_at":
-			requiredBitSet[2] |= 1 << 1
+			requiredBitSet[2] |= 1 << 2
 			if err := func() error {
 				v, err := json.DecodeDateTime(d)
 				s.UpdatedAt = v
@@ -28011,10 +28032,11 @@ func (s *BackupSnapshot) Decode(d *jx.Decoder) error {
 	}
 	// Validate required fields.
 	var failures []validate.FieldError
-	for i, mask := range [3]uint8{
+	for i, mask := range [4]uint8{
 		0b00110111,
 		0b00000000,
-		0b00000011,
+		0b00000110,
+		0b00000000,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.
@@ -38362,6 +38384,12 @@ func (s *CreateRestoreAccepted) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
+		if s.AttemptError.Set {
+			e.FieldStart("attempt_error")
+			s.AttemptError.Encode(e)
+		}
+	}
+	{
 		if s.Progress.Set {
 			e.FieldStart("progress")
 			s.Progress.Encode(e)
@@ -38443,7 +38471,7 @@ func (s *CreateRestoreAccepted) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfCreateRestoreAccepted = [25]string{
+var jsonFieldsNameOfCreateRestoreAccepted = [26]string{
 	0:  "id",
 	1:  "tenant_id",
 	2:  "site_id",
@@ -38455,20 +38483,21 @@ var jsonFieldsNameOfCreateRestoreAccepted = [25]string{
 	8:  "chunk_count",
 	9:  "archived",
 	10: "error",
-	11: "progress",
-	12: "progress_updated_at",
-	13: "stalled_at",
-	14: "started_at",
-	15: "finished_at",
-	16: "created_at",
-	17: "updated_at",
-	18: "is_incremental",
-	19: "generation",
-	20: "chain_id",
-	21: "parent_snapshot_id",
-	22: "base_snapshot_id",
-	23: "locked",
-	24: "restore_run_id",
+	11: "attempt_error",
+	12: "progress",
+	13: "progress_updated_at",
+	14: "stalled_at",
+	15: "started_at",
+	16: "finished_at",
+	17: "created_at",
+	18: "updated_at",
+	19: "is_incremental",
+	20: "generation",
+	21: "chain_id",
+	22: "parent_snapshot_id",
+	23: "base_snapshot_id",
+	24: "locked",
+	25: "restore_run_id",
 }
 
 // Decode decodes CreateRestoreAccepted from json.
@@ -38596,6 +38625,16 @@ func (s *CreateRestoreAccepted) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"error\"")
 			}
+		case "attempt_error":
+			if err := func() error {
+				s.AttemptError.Reset()
+				if err := s.AttemptError.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"attempt_error\"")
+			}
 		case "progress":
 			if err := func() error {
 				s.Progress.Reset()
@@ -38647,7 +38686,7 @@ func (s *CreateRestoreAccepted) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"finished_at\"")
 			}
 		case "created_at":
-			requiredBitSet[2] |= 1 << 0
+			requiredBitSet[2] |= 1 << 1
 			if err := func() error {
 				v, err := json.DecodeDateTime(d)
 				s.CreatedAt = v
@@ -38659,7 +38698,7 @@ func (s *CreateRestoreAccepted) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"created_at\"")
 			}
 		case "updated_at":
-			requiredBitSet[2] |= 1 << 1
+			requiredBitSet[2] |= 1 << 2
 			if err := func() error {
 				v, err := json.DecodeDateTime(d)
 				s.UpdatedAt = v
@@ -38752,7 +38791,7 @@ func (s *CreateRestoreAccepted) Decode(d *jx.Decoder) error {
 	for i, mask := range [4]uint8{
 		0b00110111,
 		0b00000000,
-		0b00000011,
+		0b00000110,
 		0b00000000,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
@@ -107817,6 +107856,12 @@ func (s *ScheduleRun) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
+		if s.AttemptError.Set {
+			e.FieldStart("attempt_error")
+			s.AttemptError.Encode(e)
+		}
+	}
+	{
 		if s.TriggeredBy.Set {
 			e.FieldStart("triggered_by")
 			s.TriggeredBy.Encode(e)
@@ -107852,7 +107897,7 @@ func (s *ScheduleRun) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfScheduleRun = [14]string{
+var jsonFieldsNameOfScheduleRun = [15]string{
 	0:  "id",
 	1:  "site_id",
 	2:  "schedule_id",
@@ -107861,12 +107906,13 @@ var jsonFieldsNameOfScheduleRun = [14]string{
 	5:  "status",
 	6:  "kind",
 	7:  "error",
-	8:  "triggered_by",
-	9:  "triggered_by_email",
-	10: "triggered_by_name",
-	11: "created_at",
-	12: "started_at",
-	13: "finished_at",
+	8:  "attempt_error",
+	9:  "triggered_by",
+	10: "triggered_by_email",
+	11: "triggered_by_name",
+	12: "created_at",
+	13: "started_at",
+	14: "finished_at",
 }
 
 // Decode decodes ScheduleRun from json.
@@ -107966,6 +108012,16 @@ func (s *ScheduleRun) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"error\"")
 			}
+		case "attempt_error":
+			if err := func() error {
+				s.AttemptError.Reset()
+				if err := s.AttemptError.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"attempt_error\"")
+			}
 		case "triggered_by":
 			if err := func() error {
 				s.TriggeredBy.Reset()
@@ -107997,7 +108053,7 @@ func (s *ScheduleRun) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"triggered_by_name\"")
 			}
 		case "created_at":
-			requiredBitSet[1] |= 1 << 3
+			requiredBitSet[1] |= 1 << 4
 			if err := func() error {
 				v, err := json.DecodeDateTime(d)
 				s.CreatedAt = v
@@ -108039,7 +108095,7 @@ func (s *ScheduleRun) Decode(d *jx.Decoder) error {
 	var failures []validate.FieldError
 	for i, mask := range [2]uint8{
 		0b01110111,
-		0b00001000,
+		0b00010000,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.

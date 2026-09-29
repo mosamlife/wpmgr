@@ -61,6 +61,19 @@ type ScheduleRunStore interface {
 	// because the scheduler writes across tenants before narrowing to a single
 	// tenant for the snapshot creation step.
 	AgentUpsertScheduleRun(ctx context.Context, in UpsertScheduleRunInput) (ScheduleRun, error)
+
+	// SetScheduleRunAttemptErrorBySnapshot (GH #791) mirrors
+	// SetSnapshotAttemptError onto the run linked to the snapshot, guarded on
+	// status='running' by the underlying query — it never changes status and
+	// never touches a queued/terminal run. Returns rows-affected: 1 =
+	// recorded, 0 = no running run is linked (e.g. a manual backup).
+	// Tenant-scoped.
+	SetScheduleRunAttemptErrorBySnapshot(ctx context.Context, tenantID, snapshotID uuid.UUID, msg string) (int64, error)
+	// ClearScheduleRunAttemptErrorBySnapshot (GH #791) is the run-side half of
+	// the proof-of-life clear. Matches only a running run with an outstanding
+	// attempt error. Returns rows-affected: 1 = cleared, 0 = nothing to clear.
+	// Tenant-scoped.
+	ClearScheduleRunAttemptErrorBySnapshot(ctx context.Context, tenantID, snapshotID uuid.UUID) (int64, error)
 }
 
 // UpsertScheduleRunInput carries the parameters for inserting / updating a
@@ -114,6 +127,7 @@ func toScheduleRun(r sqlc.BackupScheduleRun) ScheduleRun {
 		TriggeredBy:  r.TriggeredBy,
 		CreatedAt:    r.CreatedAt,
 		UpdatedAt:    r.UpdatedAt,
+		AttemptError: r.AttemptError,
 	}
 	if r.SnapshotID.Valid {
 		id := uuid.UUID(r.SnapshotID.Bytes)
@@ -320,6 +334,49 @@ func (r *ScheduleRunRepo) ListScheduleRunsBySite(ctx context.Context, tenantID, 
 		out = []ScheduleRun{}
 	}
 	return out, err
+}
+
+// ---------------------------------------------------------------------------
+// SetScheduleRunAttemptErrorBySnapshot / ClearScheduleRunAttemptErrorBySnapshot
+// ---------------------------------------------------------------------------
+
+// SetScheduleRunAttemptErrorBySnapshot (GH #791) is tenant-scoped; the
+// underlying query's status='running' guard is the entire contract — see the
+// ScheduleRunStore interface doc.
+func (r *ScheduleRunRepo) SetScheduleRunAttemptErrorBySnapshot(ctx context.Context, tenantID, snapshotID uuid.UUID, msg string) (int64, error) {
+	var n int64
+	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		rows, err := sqlc.New(tx).SetScheduleRunAttemptErrorBySnapshot(ctx, sqlc.SetScheduleRunAttemptErrorBySnapshotParams{
+			AttemptError: msg,
+			SnapshotID:   pgtype.UUID{Bytes: snapshotID, Valid: true},
+			TenantID:     tenantID,
+		})
+		if err != nil {
+			return domain.Internal("schedule_run_attempt_error_set_failed", "failed to record schedule run attempt error").WithCause(err)
+		}
+		n = rows
+		return nil
+	})
+	return n, err
+}
+
+// ClearScheduleRunAttemptErrorBySnapshot (GH #791) is tenant-scoped; matches
+// only a running run with an outstanding attempt error — see the
+// ScheduleRunStore interface doc.
+func (r *ScheduleRunRepo) ClearScheduleRunAttemptErrorBySnapshot(ctx context.Context, tenantID, snapshotID uuid.UUID) (int64, error) {
+	var n int64
+	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		rows, err := sqlc.New(tx).ClearScheduleRunAttemptErrorBySnapshot(ctx, sqlc.ClearScheduleRunAttemptErrorBySnapshotParams{
+			SnapshotID: pgtype.UUID{Bytes: snapshotID, Valid: true},
+			TenantID:   tenantID,
+		})
+		if err != nil {
+			return domain.Internal("schedule_run_attempt_error_clear_failed", "failed to clear schedule run attempt error").WithCause(err)
+		}
+		n = rows
+		return nil
+	})
+	return n, err
 }
 
 // ---------------------------------------------------------------------------

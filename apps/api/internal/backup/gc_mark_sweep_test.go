@@ -411,6 +411,9 @@ func (r *gcFakeRepo) MarkSnapshotStalled(context.Context, uuid.UUID, uuid.UUID) 
 func (r *gcFakeRepo) ClearSnapshotStalled(context.Context, uuid.UUID, uuid.UUID) (bool, error) {
 	panic("unused")
 }
+func (r *gcFakeRepo) SetSnapshotAttemptError(context.Context, uuid.UUID, uuid.UUID, string) (int64, error) {
+	panic("unused")
+}
 func (r *gcFakeRepo) GetLatestCompletedSnapshot(context.Context, uuid.UUID, uuid.UUID) (Snapshot, error) {
 	panic("unused")
 }

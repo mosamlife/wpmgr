@@ -2125,10 +2125,19 @@ export type BackupEvent = {
     | "submitting_manifest"
     | "completed"
     | "failed"
+    | "started"
     | "stalled"
-    | "resumed";
+    | "resumed"
+    | "retrying";
   /**
    * Pass-through of the agent's POST /progress payload (e.g. chunk counters).
+   * For `retrying`, a control-plane hint that a backup command could not
+   * be delivered to the site and will be retried automatically,
+   * `phase_detail.error` carries the reason in the control plane's own
+   * words (the same text as `attempt_error`). A restore is never
+   * retried automatically, so it never sends `retrying`; a failed
+   * restore sends `failed`.
+   *
    */
   phase_detail?: {
     [key: string]: unknown;
@@ -2166,7 +2175,20 @@ export type BackupSnapshot = {
    * Kept by the monthly-archive retention rule.
    */
   archived?: boolean;
+  /**
+   * Why the backup failed. Set only once `status` is `failed`; a
+   * running backup's retry reason is `attempt_error`, never this field.
+   *
+   */
   error?: string;
+  /**
+   * While `status` is `running`: why the last attempt to start the
+   * backup on the site failed, in the control plane's own words, while
+   * it retries automatically. Cleared as soon as the site responds.
+   * Absent when no attempt is failing.
+   *
+   */
+  attempt_error?: string;
   /**
    * M5.6 / ADR-032 phpbu runner progress. Empty `{}` until the runner posts
    * its first phase. Shape:
@@ -2828,6 +2850,13 @@ export type ScheduleRun = {
    * Human-readable error message when status is `failed`.
    */
   error?: string;
+  /**
+   * While `status` is `running`: why the last attempt to start the
+   * backup on the site failed, while the control plane retries it
+   * automatically. Absent when no attempt is failing.
+   *
+   */
+  attempt_error?: string;
   /**
    * Actor that triggered this run (`schedule` for automatic fires; user UUID for manual).
    */

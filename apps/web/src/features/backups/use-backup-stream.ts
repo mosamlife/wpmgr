@@ -5,6 +5,7 @@ import type { BackupSnapshotDetail } from "@wpmgr/api";
 
 import { BUILD_VERSION } from "@/lib/build";
 import { backupsKeys } from "./use-backups";
+import { scheduleKeys } from "./use-schedule-runs";
 
 // M5.6 — live backup-snapshot progress via Server-Sent Events. Mirrors the
 // proven M3 `useRunEventStream` pattern from `features/updates/use-updates.ts`:
@@ -73,6 +74,13 @@ export const backupEventSchema = z.object({
     // must never be treated as a real pipeline phase.
     "stalled",
     "resumed",
+    // GH #791 — another CP hint, not a pipeline phase: emitted whenever the
+    // control plane records a fresh `attempt_error` while retrying the
+    // initial command dispatch (status stays "running"). Carries no
+    // `phase_detail` counters either, and for the same reason as
+    // stalled/resumed must never be treated as a real pipeline phase — see
+    // `WIDE_REFETCH_PHASES` below.
+    "retrying",
   ]),
   phase_detail: z.record(z.string(), z.unknown()),
   status: z.enum(["pending", "running", "completed", "failed"]),
@@ -98,6 +106,44 @@ const STALL_HINT_PHASES: ReadonlySet<BackupEvent["phase"]> = new Set([
 
 export function isStallHintPhase(phase: BackupEvent["phase"]): boolean {
   return STALL_HINT_PHASES.has(phase);
+}
+
+/**
+ * GH #791 — "retrying" (a hint) and "failed" (a real terminal phase) both
+ * mean more than this snapshot's own detail cache can be stale: a command
+ * failure can end a run — and its linked schedule run — on the very first
+ * attempt, and either frame also changes the row this snapshot shows in its
+ * site's snapshot list. Both additionally invalidate the list and
+ * schedule-run query families, not just the detail cache the "stalled"/
+ * "resumed" hints (and the normal per-phase patch below) already handle.
+ */
+const WIDE_REFETCH_PHASES: ReadonlySet<BackupEvent["phase"]> = new Set([
+  "retrying",
+  "failed",
+]);
+
+/**
+ * GH #791 adv-review nit 10 — `backupsKeys.all` (`["backups"]`) is the
+ * prefix for every backups query, including this tenant's OTHER sites'
+ * lists and the backup-settings queries (`backupsKeys.backupSettingsContentsFor`
+ * etc. — see `use-backups.ts`). Invalidating it on every retry/failure frame
+ * refetched all of that unrelated cached state. Scope to exactly what a
+ * command-failure frame can actually change: this snapshot's own detail,
+ * the snapshot list for ITS site (read off the cached detail we already
+ * hold), and the schedule-run family.
+ */
+function invalidateWide(
+  queryClient: ReturnType<typeof useQueryClient>,
+  snapshotId: string,
+): void {
+  void queryClient.invalidateQueries({ queryKey: backupsKeys.detail(snapshotId) });
+  const siteId = queryClient.getQueryData<BackupSnapshotDetail>(
+    backupsKeys.detail(snapshotId),
+  )?.snapshot.site_id;
+  if (siteId) {
+    void queryClient.invalidateQueries({ queryKey: backupsKeys.listFor(siteId) });
+  }
+  void queryClient.invalidateQueries({ queryKey: scheduleKeys.all });
 }
 
 /**
@@ -226,6 +272,14 @@ export function useBackupStream(snapshotId: string): BackupStreamState {
         return;
       }
 
+      // GH #791 — "retrying" is a hint like stalled/resumed (no real phase
+      // to patch), but a wider set of cached views can be stale — see
+      // `WIDE_REFETCH_PHASES` above.
+      if (parsed.phase === "retrying") {
+        invalidateWide(queryClient, snapshotId);
+        return;
+      }
+
       queryClient.setQueryData<BackupSnapshotDetail>(
         backupsKeys.detail(snapshotId),
         (prev) => {
@@ -241,6 +295,17 @@ export function useBackupStream(snapshotId: string): BackupStreamState {
           };
         },
       );
+
+      // GH #791 — a command-failure classification can end a run on the
+      // FIRST attempt (see `AgentFailed()` in the design): the linked
+      // schedule run finalises alongside this snapshot, and the site's
+      // snapshot list row changes too. The patch above already updates this
+      // snapshot's own detail cache immediately; also pull the truth for the
+      // wider set of views that just went stale (scoped — see
+      // `invalidateWide`'s doc above).
+      if (WIDE_REFETCH_PHASES.has(parsed.phase)) {
+        invalidateWide(queryClient, snapshotId);
+      }
 
       // NOTE — we DO NOT auto-close on terminal status. A snapshot is a
       // long-lived entity that can have restore events overlaid on top of a
