@@ -552,16 +552,21 @@ const fakeLaterSchemaMigrationsVersion = "20260810120001_test_fake_later_signal"
 // the fresh_install/column-default repair.
 //
 // This test cannot also prove the schema_migrations clause is load-bearing
-// by mutation: v_live only ever changes the alert_configs UPDATE's WHERE
-// clause between "every enabled row" and "every enabled row not saved since
-// m108", and with no row saved since m108 in scope anywhere, those two
-// predicates select the identical set. Any row that WOULD distinguish them
-// (one saved after the cutoff) itself satisfies the third signal
-// (TestM146LateRun_SavedSinceM108Signal_KeepsRecentTurnsOffStale) regardless
-// of this one, so a fires/does-not-fire proof isolated to the
+// by mutation, and none is attempted here: v_live only ever changes the
+// alert_configs UPDATE's WHERE clause between "every enabled row" and "every
+// enabled row not saved since m108", and with no row saved since m108 in
+// scope anywhere, those two predicates select the identical set - so
+// stripping this clause in this scenario cannot change the outcome. Any row
+// that WOULD distinguish them (one saved after the cutoff) itself satisfies
+// the third signal
+// (TestM146LateRun_SavedSinceM108Signal_KeepsRecentTurnsOffStale's own
+// mutation proof, TestM146MutationDropsThirdSignalClause_...) regardless of
+// this clause, so a fires/does-not-fire proof isolated to the
 // schema_migrations clause alone is not constructible against the current
-// three-signal body. Verified by actually stripping the clause and
-// re-running this test's own scenario: the result did not change.
+// three-signal body without also disabling the third clause - at which
+// point the proof would no longer isolate this one. See this PR's test
+// report for the reasoning in full; flagged there rather than asserted here
+// as something this file has watched fail.
 func TestM146LateRun_LaterVersionSignal_TurnsOffStaleRow(t *testing.T) {
 	admin, owner := startPostgresBeforeM108(t)
 	ctx := context.Background()
