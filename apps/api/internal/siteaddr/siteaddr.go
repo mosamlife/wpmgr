@@ -310,8 +310,11 @@ func Join(scheme, host, port, escapedPath string) string {
 // Variants lists the spellings the mint-time duplicate check treats as
 // the same site as raw: raw itself first, then every combination of http or
 // https, with or without the leading "www.", with or without a trailing
-// slash, on the same port and path. The order is the lookup's priority, so an
-// exact match is reported ahead of a variant.
+// slash, on the same port and path. On a scheme's default port each
+// combination is listed with the port omitted and then written out (":80"
+// for http, ":443" for https), so "https://example.com" and
+// "https://example.com:443" find each other. The order is the lookup's
+// priority, so an exact match is reported ahead of a variant.
 func Variants(raw string) []string {
 	out := []string{raw}
 	a, u, ok := Parse(raw)
@@ -341,5 +344,22 @@ func Variants(raw string) []string {
 			add(base + "/")
 		}
 	}
+	if a.Port == "" {
+		for _, scheme := range schemes {
+			for _, host := range hosts {
+				base := Join(scheme, host, defaultPort(scheme), path)
+				add(base)
+				add(base + "/")
+			}
+		}
+	}
 	return out
+}
+
+// defaultPort is the port a scheme Parse accepts uses when none is written.
+func defaultPort(scheme string) string {
+	if scheme == "https" {
+		return "443"
+	}
+	return "80"
 }
