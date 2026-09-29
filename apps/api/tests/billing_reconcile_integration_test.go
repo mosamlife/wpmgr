@@ -31,14 +31,16 @@ func TestBillingReconcile_UpgradeAppliesImmediately(t *testing.T) {
 		ID: "sub_recon_up", CustomerID: "cus_recon_up", Plan: billing.TierAgency, PlanResolved: true,
 		Status: billing.StatusActive, CurrentPeriodEnd: time.Now().Add(30 * 24 * time.Hour),
 	}
-	svc := newTestBillingService(pool, fp)
+	h := newBillingHarness(t, pool, fp)
+	svc := h.svc
 
 	result, err := svc.Reconcile(ctx)
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	if result.Checked != 1 || result.Repaired != 1 {
-		t.Fatalf("Reconcile result = %+v, want Checked=1 Repaired=1", result)
+	h.drain(t)
+	if result.Checked != 1 || result.Enqueued != 1 {
+		t.Fatalf("Reconcile result = %+v, want Checked=1 Enqueued=1", result)
 	}
 
 	plan, status := getTenantPlanStatus(t, pool, tenant)
@@ -72,15 +74,20 @@ func TestBillingReconcile_DowngradeGoesThroughGradedLadderNonDestructively(t *te
 	}
 
 	fp := newFakeProvider("fake")
-	fp.subscriptions["sub_recon_down"] = billing.Subscription{ID: "sub_recon_down", CustomerID: "cus_recon_down", Status: billing.StatusCanceled}
-	svc := newTestBillingService(pool, fp)
+	fp.subscriptions["sub_recon_down"] = billing.Subscription{
+		ID: "sub_recon_down", CustomerID: "cus_recon_down", Status: billing.StatusCanceled,
+		Plan: billing.TierAgency, PlanResolved: true,
+	}
+	h := newBillingHarness(t, pool, fp)
+	svc := h.svc
 
 	result, err := svc.Reconcile(ctx)
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	if result.Repaired != 1 {
-		t.Fatalf("Repaired = %d, want 1", result.Repaired)
+	h.drain(t)
+	if result.Enqueued != 1 {
+		t.Fatalf("Enqueued = %d, want 1", result.Enqueued)
 	}
 
 	plan, status := getTenantPlanStatus(t, pool, tenant)
@@ -110,7 +117,7 @@ func TestBillingReconcile_DowngradeGoesThroughGradedLadderNonDestructively(t *te
 }
 
 // TestBillingReconcile_NoDriftIsANoOp proves a tenant whose stored state
-// already matches the provider is left untouched (Repaired=0) — the sweep
+// already matches the provider is left untouched — the sweep
 // must not re-audit/re-invalidate-cache for every already-correct tenant on
 // every run.
 func TestBillingReconcile_NoDriftIsANoOp(t *testing.T) {
@@ -125,14 +132,23 @@ func TestBillingReconcile_NoDriftIsANoOp(t *testing.T) {
 		ID: "sub_recon_same", CustomerID: "cus_recon_same", Plan: billing.TierStarter, PlanResolved: true,
 		Status: billing.StatusActive, CurrentPeriodEnd: time.Now().Add(30 * 24 * time.Hour),
 	}
-	svc := newTestBillingService(pool, fp)
+	h := newBillingHarness(t, pool, fp)
+	svc := h.svc
 
 	result, err := svc.Reconcile(ctx)
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	if result.Checked != 1 || result.Repaired != 0 {
-		t.Fatalf("Reconcile result = %+v, want Checked=1 Repaired=0 (no drift)", result)
+	h.drain(t)
+	if result.Checked != 1 || result.Enqueued != 1 {
+		t.Fatalf("Reconcile result = %+v, want Checked=1 Enqueued=1", result)
+	}
+	plan, status := getTenantPlanStatus(t, pool, tenant)
+	if plan != string(billing.TierStarter) || status != "active" {
+		t.Fatalf("no-drift tenant changed: plan=%s status=%s, want starter/active", plan, status)
+	}
+	if n := countBillingJobs(t, pool, "billing_audit"); n != 0 {
+		t.Fatalf("billing_audit jobs = %d, want 0: an unchanged state records no audit", n)
 	}
 }
 
@@ -149,12 +165,14 @@ func TestBillingReconcile_CompedTenantNeverListed(t *testing.T) {
 
 	fp := newFakeProvider("fake")
 	fp.subscriptions["sub_recon_comped"] = billing.Subscription{ID: "sub_recon_comped", Status: billing.StatusCanceled}
-	svc := newTestBillingService(pool, fp)
+	h := newBillingHarness(t, pool, fp)
+	svc := h.svc
 
 	result, err := svc.Reconcile(ctx)
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
+	h.drain(t)
 	if result.Checked != 0 {
 		t.Fatalf("Checked = %d, want 0 — a comped tenant must never even be listed for reconcile", result.Checked)
 	}

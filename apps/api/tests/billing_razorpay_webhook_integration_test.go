@@ -67,8 +67,8 @@ func TestRazorpayWebhook_ResolvesProviderAndActivatesTenant(t *testing.T) {
 		BaseURL:        srv.URL,
 	})
 
-	svc := billing.New(pool, nil, true, domain.SystemClock{}, slog.Default())
-	svc.SetProviders(billing.NewRegistry(rzp), "razorpay")
+	h := newBillingHarness(t, pool, rzp)
+	svc := h.svc
 
 	payload := fmt.Sprintf(`{
 		"subscription": {"entity": {
@@ -86,6 +86,7 @@ func TestRazorpayWebhook_ResolvesProviderAndActivatesTenant(t *testing.T) {
 	if err := svc.ProcessWebhook(ctx, "razorpay", body, headers); err != nil {
 		t.Fatalf("ProcessWebhook(razorpay): %v", err)
 	}
+	h.drain(t)
 
 	plan, status := getTenantPlanStatus(t, pool, tenant)
 	if plan != string(billing.TierStarter) || status != "active" {
