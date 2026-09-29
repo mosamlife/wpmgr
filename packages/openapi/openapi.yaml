@@ -2131,7 +2131,7 @@ paths:
   # --- ADR-045 instance SMTP settings ------------------------------------------
   # Every route below requires instance-level authority: a superadmin, the
   # owner of the only live organisation on the install, or, on a self-hosted
-  # install, the account that completed first-run setup, while that account
+  # install, the account recorded as having set it up, while that account
   # is active and owns (holds an 'owner' membership in) at least one live
   # organisation. An active organisation is not required. A caller without
   # that authority gets 403 instance_authority_required; a site-scoped
@@ -15079,8 +15079,8 @@ components:
             the same decision that gates those routes, so it is true exactly
             when they would admit this caller: instance-level authority
             (a superadmin, the owner of the only live organisation on the
-            install, or, on a self-hosted install, the account that completed
-            first-run setup, while it is active and owns at least one live
+            install, or, on a self-hosted install, the account recorded as
+            having set it up, while it is active and owns at least one live
             organisation) and a principal that is not site-scoped. An active
             organisation is not required. False whenever that decision cannot
             be made. Present on GET and PATCH /auth/me; responses built before
