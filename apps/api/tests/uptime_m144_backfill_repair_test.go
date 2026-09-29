@@ -35,6 +35,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/testcontainers/testcontainers-go"
@@ -216,7 +217,51 @@ const (
 	// stripped) that refuses to replace a site_uptime_daily row unless the
 	// fresh raw aggregate holds strictly more checks than it already does.
 	m144MonotoneGuardClause = "\n    WHERE EXCLUDED.\"total_checks\" > \"site_uptime_daily\".\"total_checks\""
+
+	// m144DailyBoundClause is the WHERE clause (its trailing newline stays
+	// attached to GROUP BY once this is stripped) that keeps the
+	// site_uptime_daily repair inside the pre-cutover window. Dropping it
+	// alone (leaving the ON CONFLICT monotone guard in place) still lets a
+	// day AFTER the one m99 was applied get overwritten whenever its raw
+	// count happens to exceed its existing rollup — the monotone guard says
+	// nothing about which day a row belongs to.
+	m144DailyBoundClause = "    WHERE \"probed_at\" < v_bound\n"
+
+	// m144StatusCutoffClause is the WHERE clause (its trailing newline stays
+	// attached to ORDER BY once this is stripped) that keeps the
+	// site_uptime_status seed to probes from before m99 was applied.
+	m144StatusCutoffClause = "    WHERE \"probed_at\" < v_cutoff\n"
+
+	// m144EarliestProbeTenantOrderBy is the array_agg ORDER BY (its closing
+	// ")[1]" stays attached once this is replaced) that stamps a mixed-tenant
+	// day's row with the tenant of its EARLIEST probe — the same tenant
+	// metrics.pgStore.UpsertRollup would itself have stamped had it run that
+	// day.
+	m144EarliestProbeTenantOrderBy = `"probed_at", "id"`
+
+	// m144DailyGroupByClause is m144's own (site_id, day)-only grouping.
+	// Replacing it with m99's own three-column grouping (which also groups
+	// by tenant_id — see m99's migration) makes a mixed-tenant day propose
+	// the same (site_id, day) conflict target twice within one INSERT.
+	m144DailyGroupByClause = `GROUP BY "site_id", (("probed_at" AT TIME ZONE 'UTC')::date)`
 )
+
+// replaceOnce replaces exactly one occurrence of needle with replacement in
+// body and fails the test if needle was not found — replaceOnce's own
+// positive control, mirroring stripOnce's: if a later edit to the real
+// migration's wording makes this silently match zero times, the fires proof
+// would otherwise mutate nothing and pass for the wrong reason.
+func replaceOnce(t *testing.T, body, needle, replacement string) string {
+	t.Helper()
+	if !strings.Contains(body, needle) {
+		t.Fatalf("expected substring not found in migration body; the guard text likely changed — update this test's copy:\n%s", needle)
+	}
+	mutated := strings.Replace(body, needle, replacement, 1)
+	if mutated == body {
+		t.Fatalf("replacing the guard text made no change to the migration body")
+	}
+	return mutated
+}
 
 // assertUptimeRollupTablesForceIntact fails the test unless
 // site_uptime_probes, site_uptime_daily and site_uptime_status all still
@@ -815,4 +860,337 @@ func TestM144FiresWhenNeverRun_PreCutoverDaysStayMissing(t *testing.T) {
 		t.Fatalf("after m144 runs: up=%d total=%d found=%v, want 1/1 backfilled", up, total, found)
 	}
 	assertUptimeRollupTablesForceIntact(t, pool)
+}
+
+// ---------------------------------------------------------------------------
+// 6. Later day: m144's window bound, not just its ON CONFLICT monotone
+//    guard, is what keeps it from touching days after the one m99 applied.
+// ---------------------------------------------------------------------------
+
+// TestM144LeavesLaterDayAlone_WithFewerRollupChecksThanRaw proves m144 never
+// touches a day AFTER the one m99 was applied, even when that day's raw
+// probe count is HIGHER than its existing rollup — the shape of an ordinary
+// missed rollup sweep, not the GC-pruned shape
+// TestM144GuardDoesNotReplaceRowWithMoreChecksThanRaw covers. Without
+// m144DailyBoundClause, the ON CONFLICT monotone guard alone (fresh
+// total_checks > existing total_checks) would happily "repair" this day
+// too, which is wrong: it is not m144's window to touch at all.
+func TestM144LeavesLaterDayAlone_WithFewerRollupChecksThanRaw(t *testing.T) {
+	pool, owner := startPostgresBeforeM144(t)
+	ctx := context.Background()
+
+	tenant := seedTenant(t, pool, "m144-laterday")
+	siteID := seedSiteFor(t, pool, tenant, "https://m144-laterday.example.com")
+
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	later := today.Add(24 * time.Hour)
+
+	for i := 0; i < 5; i++ {
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO site_uptime_probes (tenant_id, site_id, probed_at, up, total_ms) VALUES ($1, $2, $3, true, 50)`,
+			tenant, siteID, later.Add(time.Duration(i)*time.Hour)); err != nil {
+			t.Fatalf("seed later-day raw probe %d: %v", i, err)
+		}
+	}
+	// A missed-rollup-shaped row: fewer checks (3) than the 5 raw probes
+	// above, which is what a skipped sweep or two looks like — the raw
+	// count here is intentionally the LARGER one, so this row is exactly
+	// the shape the ON CONFLICT monotone guard alone would replace.
+	plant := func() {
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO site_uptime_daily (tenant_id, site_id, day, up_checks, total_checks, sum_latency_ms, latency_samples)
+			 VALUES ($1, $2, $3, 3, 3, 150, 3)
+			 ON CONFLICT (site_id, day) DO UPDATE SET
+			   up_checks = 3, total_checks = 3, sum_latency_ms = 150, latency_samples = 3`,
+			tenant, siteID, later); err != nil {
+			t.Fatalf("plant later-day rollup: %v", err)
+		}
+	}
+	plant()
+
+	// FIRES: an in-memory copy of m144 with the daily window bound stripped
+	// (its ON CONFLICT monotone guard left intact) still overwrites the
+	// later day, because raw (5) > existing (3) satisfies that guard too.
+	mutated := stripOnce(t, readM144Body(t), m144DailyBoundClause)
+	if _, err := owner.Exec(ctx, mutated); err != nil {
+		t.Fatalf("apply bound-stripped m144: %v", err)
+	}
+	if _, total, _, _, _ := queryDailyBucket(t, pool, siteID, later); total != 5 {
+		t.Fatalf("bound-stripped m144 left later-day total_checks=%d, want 5 (it must overwrite the planted row for this to be a real proof)", total)
+	}
+	t.Logf("bound-stripped m144 correctly touched the later day (guard-is-load-bearing)")
+
+	// Restore the planted state and run the REAL file: the later day must
+	// survive unchanged.
+	plant()
+	if err := owner.Migrate(ctx); err != nil {
+		t.Fatalf("m144 migration: %v", err)
+	}
+	up, total, samples, sumMs, found := queryDailyBucket(t, pool, siteID, later)
+	if !found {
+		t.Fatal("later-day row disappeared after real m144")
+	}
+	if up != 3 || total != 3 || samples != 3 || sumMs != 150 {
+		t.Fatalf("real m144 touched a day after its window: up=%d total=%d samples=%d sum=%v, want unchanged 3/3/150/3",
+			up, total, samples, sumMs)
+	}
+	assertUptimeRollupTablesForceIntact(t, pool)
+}
+
+// ---------------------------------------------------------------------------
+// 7. Status cutoff: a site probed only AFTER v_cutoff gets no status row.
+// ---------------------------------------------------------------------------
+
+// TestM144StatusCutoff_ProbesAfterCutoffGetNoStatusRow proves m144's status
+// seed respects v_cutoff, not "any known probe": a site whose only raw probe
+// was recorded strictly AFTER the instant m99 was applied gets no status row
+// out of m144. Backfilling one would be wrong — that probe is the probe
+// worker's own job to stamp, and m144 doing it here could race (or silently
+// duplicate, since ON CONFLICT DO NOTHING never overwrites) whatever the
+// worker writes for it.
+func TestM144StatusCutoff_ProbesAfterCutoffGetNoStatusRow(t *testing.T) {
+	pool, owner := startPostgresBeforeM144(t)
+	ctx := context.Background()
+
+	tenant := seedTenant(t, pool, "m144-status-cutoff")
+	siteID := seedSiteFor(t, pool, tenant, "https://m144-status-cutoff.example.com")
+
+	afterCutoff := time.Now().UTC().Add(1 * time.Hour)
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO site_uptime_probes (tenant_id, site_id, probed_at, up, total_ms) VALUES ($1, $2, $3, true, 40)`,
+		tenant, siteID, afterCutoff); err != nil {
+		t.Fatalf("seed after-cutoff raw probe: %v", err)
+	}
+
+	// FIRES: an in-memory copy of m144 with the status cutoff stripped seeds
+	// a status row from this after-cutoff-only probe anyway.
+	mutated := stripOnce(t, readM144Body(t), m144StatusCutoffClause)
+	if _, err := owner.Exec(ctx, mutated); err != nil {
+		t.Fatalf("apply cutoff-stripped m144: %v", err)
+	}
+	if _, _, found := queryStatusRow(t, pool, siteID); !found {
+		t.Fatal("cutoff-stripped m144 left no status row; expected it to seed one from the after-cutoff probe (this mutation must fire for the proof below to mean anything)")
+	}
+	t.Logf("cutoff-stripped m144 correctly seeded a status row from an after-cutoff-only probe (guard-is-load-bearing)")
+
+	// Clean the mutant's write and run the REAL file: no status row.
+	if _, err := pool.Exec(ctx, `DELETE FROM site_uptime_status WHERE site_id = $1`, siteID); err != nil {
+		t.Fatalf("clean up mutant status row: %v", err)
+	}
+	if err := owner.Migrate(ctx); err != nil {
+		t.Fatalf("m144 migration: %v", err)
+	}
+	if _, _, found := queryStatusRow(t, pool, siteID); found {
+		t.Fatal("real m144 seeded a status row for a site whose only probe is after v_cutoff, want none")
+	}
+	assertUptimeRollupTablesForceIntact(t, pool)
+}
+
+// ---------------------------------------------------------------------------
+// 8. Multi-tenant: one row per (site, day), stamped with the day's EARLIEST
+//    probe's tenant, and never leaked across sites.
+// ---------------------------------------------------------------------------
+
+// TestM144MultiTenant_StampsEarliestProbesTenant_NeverLeaksAcrossSites covers
+// a site transferred between tenants mid-day: its raw probes for one day
+// carry tenant A early and tenant B late, as a live transfer would leave
+// them. m144's own GROUP BY has no tenant_id in it (unlike m99's), so a
+// mixed-tenant day still proposes exactly one (site_id, day) row, and the
+// array_agg ORDER BY "probed_at", "id" picks that day's EARLIEST probe's
+// tenant for it — the same tenant metrics.pgStore.UpsertRollup would have
+// stamped had it run that day. A second, single-tenant site in tenant B
+// alone must never see tenant A on its own row.
+func TestM144MultiTenant_StampsEarliestProbesTenant_NeverLeaksAcrossSites(t *testing.T) {
+	pool, owner := startPostgresBeforeM144(t)
+	ctx := context.Background()
+
+	tenantA := seedTenant(t, pool, "m144-multitenant-a")
+	tenantB := seedTenant(t, pool, "m144-multitenant-b")
+	// earlyTenant is guaranteed NOT to be the lexically lower of the two
+	// UUIDs, so "stamp every row with the lowest tenant id" (the first
+	// planted mutation below) is guaranteed to disagree with the correct
+	// answer instead of passing by a coin-flip on how uuid.New() happened to
+	// order tenantA/tenantB.
+	earlyTenant, lateTenant := tenantA, tenantB
+	if earlyTenant.String() < lateTenant.String() {
+		earlyTenant, lateTenant = lateTenant, earlyTenant
+	}
+
+	transferredSite := seedSiteFor(t, pool, lateTenant, "https://m144-transferred.example.com")
+	tenantBOnlySite := seedSiteFor(t, pool, lateTenant, "https://m144-tenant-b-only.example.com")
+
+	yesterday := time.Now().UTC().Truncate(24 * time.Hour).Add(-24 * time.Hour)
+
+	seedProbe := func(tenant, siteID uuid.UUID, at time.Time) {
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO site_uptime_probes (tenant_id, site_id, probed_at, up, total_ms) VALUES ($1, $2, $3, true, 50)`,
+			tenant, siteID, at); err != nil {
+			t.Fatalf("seed probe: %v", err)
+		}
+	}
+	// transferredSite, yesterday: 2 checks under earlyTenant, then 3 under
+	// lateTenant — as if the site moved tenants partway through the day.
+	seedProbe(earlyTenant, transferredSite, yesterday.Add(1*time.Hour))
+	seedProbe(earlyTenant, transferredSite, yesterday.Add(2*time.Hour))
+	seedProbe(lateTenant, transferredSite, yesterday.Add(3*time.Hour))
+	seedProbe(lateTenant, transferredSite, yesterday.Add(4*time.Hour))
+	seedProbe(lateTenant, transferredSite, yesterday.Add(5*time.Hour))
+	// tenantBOnlySite, yesterday: lateTenant only.
+	seedProbe(lateTenant, tenantBOnlySite, yesterday.Add(1*time.Hour))
+	seedProbe(lateTenant, tenantBOnlySite, yesterday.Add(2*time.Hour))
+
+	queryDailyTenant := func(siteID uuid.UUID) (tenant uuid.UUID, total int64, found bool) {
+		t.Helper()
+		err := pool.QueryRow(ctx,
+			`SELECT tenant_id, total_checks FROM site_uptime_daily WHERE site_id = $1 AND day = $2`,
+			siteID, yesterday).Scan(&tenant, &total)
+		if err != nil {
+			if err == pgx.ErrNoRows {
+				return uuid.Nil, 0, false
+			}
+			t.Fatalf("query daily tenant for %s: %v", siteID, err)
+		}
+		return tenant, total, true
+	}
+
+	// FIRES #1: an in-memory copy of m144 that picks the LOWEST tenant_id
+	// per group instead of the earliest probe's disagrees with the correct
+	// answer on the transferred site (guaranteed by the earlyTenant/
+	// lateTenant ordering above).
+	mutatedLowest := replaceOnce(t, readM144Body(t), m144EarliestProbeTenantOrderBy, `"tenant_id"`)
+	if _, err := owner.Exec(ctx, mutatedLowest); err != nil {
+		t.Fatalf("apply lowest-tenant-id m144: %v", err)
+	}
+	if gotTenant, _, found := queryDailyTenant(transferredSite); !found || gotTenant != lateTenant {
+		t.Fatalf("lowest-tenant-id m144 produced tenant=%v found=%v, want lateTenant=%v (it must disagree with the correct answer for this to be a real proof)",
+			gotTenant, found, lateTenant)
+	}
+	t.Logf("lowest-tenant-id m144 correctly stamped the wrong tenant (guard-is-load-bearing)")
+	if _, err := pool.Exec(ctx,
+		`DELETE FROM site_uptime_daily WHERE site_id IN ($1, $2) AND day = $3`,
+		transferredSite, tenantBOnlySite, yesterday); err != nil {
+		t.Fatalf("clean up mutant daily rows: %v", err)
+	}
+
+	// FIRES #2: an in-memory copy of m144 grouped like m99 (also by
+	// tenant_id) proposes the transferred site's day twice within one
+	// INSERT, which ON CONFLICT DO UPDATE refuses outright rather than
+	// picking one silently.
+	mutatedGrouped := replaceOnce(t, readM144Body(t), m144DailyGroupByClause,
+		`GROUP BY "tenant_id", "site_id", (("probed_at" AT TIME ZONE 'UTC')::date)`)
+	_, groupErr := owner.Exec(ctx, mutatedGrouped)
+	if groupErr == nil {
+		t.Fatal("tenant-grouped m144 succeeded on a mixed-tenant day; expected the ON CONFLICT DO UPDATE double-affect error")
+	}
+	const wantConflictErr = "ON CONFLICT DO UPDATE command cannot affect row a second time"
+	if !strings.Contains(groupErr.Error(), wantConflictErr) {
+		t.Fatalf("tenant-grouped m144 failed, but not with the expected ON CONFLICT error (want %q): %v", wantConflictErr, groupErr)
+	}
+	t.Logf("tenant-grouped m144 correctly hit the ON CONFLICT double-affect error (guard-is-load-bearing): %v", groupErr)
+
+	// Restore proof: the REAL file gives exactly one row per (site, day),
+	// stamped with the EARLIEST probe's tenant, and never leaks across
+	// sites.
+	if err := owner.Migrate(ctx); err != nil {
+		t.Fatalf("m144 migration: %v", err)
+	}
+	gotTenant, total, found := queryDailyTenant(transferredSite)
+	if !found {
+		t.Fatal("transferred site's day row missing after m144")
+	}
+	if total != 5 {
+		t.Fatalf("transferred site: total_checks=%d, want 5 (one row covering both tenants' probes)", total)
+	}
+	if gotTenant != earlyTenant {
+		t.Fatalf("transferred site: tenant_id=%v, want earlyTenant=%v (the day's earliest probe's tenant)", gotTenant, earlyTenant)
+	}
+	otherTenant, otherTotal, otherFound := queryDailyTenant(tenantBOnlySite)
+	if !otherFound {
+		t.Fatal("tenant-B-only site's day row missing after m144")
+	}
+	if otherTotal != 2 {
+		t.Fatalf("tenant-B-only site: total_checks=%d, want 2", otherTotal)
+	}
+	if otherTenant != lateTenant {
+		t.Fatalf("tenant-B-only site: tenant_id=%v, want lateTenant=%v, and specifically must never be earlyTenant=%v (a single-tenant site must never pick up another site's tenant)",
+			otherTenant, lateTenant, earlyTenant)
+	}
+	assertUptimeRollupTablesForceIntact(t, pool)
+}
+
+// ---------------------------------------------------------------------------
+// 9. Skip path: no schema_migrations table at all, m144 changes nothing.
+// ---------------------------------------------------------------------------
+
+// TestM144SkipsOutsideServerRunner_NoSchemaMigrationsTable proves m144's
+// OUTSIDE THE SERVER'S RUNNER skip: applied the way atlas (or any runner
+// that does not use schema_migrations) would — with that table never
+// present at all — m144 raises its NOTICE and returns before touching a
+// single row or lifting FORCE on any of the three tables, even though raw
+// probes exist that a real repair would otherwise aggregate.
+func TestM144SkipsOutsideServerRunner_NoSchemaMigrationsTable(t *testing.T) {
+	admin, owner := startPostgresBeforeM144(t)
+	ctx := context.Background()
+
+	tenant := seedTenant(t, admin, "m144-no-tracking-table")
+	siteID := seedSiteFor(t, admin, tenant, "https://m144-no-tracking-table.example.com")
+	if _, err := admin.Exec(ctx,
+		`INSERT INTO site_uptime_probes (tenant_id, site_id, probed_at, up, total_ms) VALUES ($1, $2, now() - interval '1 hour', true, 30)`,
+		tenant, siteID); err != nil {
+		t.Fatalf("seed raw probe: %v", err)
+	}
+
+	// Simulate a runner that does not use schema_migrations at all (atlas
+	// records its own applied versions in its own table): drop it. Nothing
+	// else about the schema changes — every OTHER migration up to m144 is
+	// already applied, from startPostgresBeforeM144's own bootstrap.
+	if _, err := admin.Exec(ctx, `DROP TABLE schema_migrations`); err != nil {
+		t.Fatalf("drop schema_migrations: %v", err)
+	}
+
+	// Call the file directly (never through owner.Migrate, which would
+	// itself try to recreate schema_migrations as part of the server's own
+	// runner — the exact thing this test needs to NOT be present).
+	if _, err := owner.Exec(ctx, readM144Body(t)); err != nil {
+		t.Fatalf("m144 body failed with no schema_migrations table present, want a clean no-op: %v", err)
+	}
+
+	var dailyCount, statusCount int
+	if err := admin.QueryRow(ctx, `SELECT count(*) FROM site_uptime_daily WHERE site_id = $1`, siteID).Scan(&dailyCount); err != nil {
+		t.Fatalf("count site_uptime_daily: %v", err)
+	}
+	if dailyCount != 0 {
+		t.Fatalf("site_uptime_daily has %d row(s) after m144 ran with no schema_migrations table, want 0 (should have skipped before touching anything)", dailyCount)
+	}
+	if err := admin.QueryRow(ctx, `SELECT count(*) FROM site_uptime_status WHERE site_id = $1`, siteID).Scan(&statusCount); err != nil {
+		t.Fatalf("count site_uptime_status: %v", err)
+	}
+	if statusCount != 0 {
+		t.Fatalf("site_uptime_status has %d row(s) after m144 ran with no schema_migrations table, want 0", statusCount)
+	}
+	assertUptimeRollupTablesForceIntact(t, admin)
+
+	// Restore proof: with schema_migrations back and m99's applied_at row
+	// present — the state startPostgresBeforeM144 actually left it in — the
+	// REAL repair (called the same direct way) runs and backfills the
+	// seeded probe.
+	if _, err := admin.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
+		version    text        PRIMARY KEY,
+		applied_at timestamptz NOT NULL DEFAULT now()
+	)`); err != nil {
+		t.Fatalf("recreate schema_migrations: %v", err)
+	}
+	if _, err := admin.Exec(ctx,
+		`INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT (version) DO NOTHING`,
+		m99MigrationVersion); err != nil {
+		t.Fatalf("re-seed m99's applied_at row: %v", err)
+	}
+	if _, err := owner.Exec(ctx, readM144Body(t)); err != nil {
+		t.Fatalf("m144 body failed with schema_migrations present: %v", err)
+	}
+	up, total, _, _, found := queryDailyBucket(t, admin, siteID, time.Now().UTC().Truncate(24*time.Hour))
+	if !found || up != 1 || total != 1 {
+		t.Fatalf("after restoring schema_migrations and m99's row: up=%d total=%d found=%v, want 1/1 backfilled", up, total, found)
+	}
+	assertUptimeRollupTablesForceIntact(t, admin)
 }
