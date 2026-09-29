@@ -43,16 +43,21 @@
 -- if that user has since been deleted, so a later account does not inherit
 -- the authority from a deleted first account whose bootstrap row survives.
 -- The row has to survive, though. If the first organisation was purged before
--- this version (purging clears its audit_log) and the install was later
--- bootstrapped again, the earliest surviving row is the later bootstrap's,
--- and that later account is recorded. The outcome therefore depends on when
--- the re-bootstrap happened: from this version on, bootstrap inserts with ON
--- CONFLICT DO NOTHING, so a re-bootstrap after the row exists records nothing.
--- If the earliest row's actor id is not a uuid, nothing is recorded.
--- If there is no bootstrap row at all (it was never written, or it went with
--- the first organisation: deleting or purging an organisation clears its
--- audit_log), nothing is recorded, and the install-owner authority stays with
--- nobody until an operator configures a superadmin.
+-- the upgrade to this version (purging clears its audit_log) and the install
+-- was bootstrapped again, the later account is recorded either way: by this
+-- backfill when the re-bootstrap came before the upgrade, or by that setup
+-- into the empty table when it came after. If the purge came after the
+-- upgrade, the row already exists and a re-bootstrap records nothing, because
+-- bootstrap inserts with ON CONFLICT DO NOTHING. What decides the outcome is
+-- when the purge happened relative to the upgrade, not when the re-bootstrap
+-- happened.
+-- If the earliest row's actor id is not a uuid, or there is no bootstrap row
+-- at all (it was never written, or it went with the first organisation:
+-- deleting or purging an organisation clears its audit_log), nothing is
+-- recorded. An empty table is filled by the next successful setup, which
+-- records its account. Until then the install-owner arm admits nobody.
+-- Superadmins (WPMGR_SUPERADMIN_EMAILS) are admitted by their own arm, not
+-- this one, and are the remedy in the meantime.
 --
 -- audit_log is FORCE ROW LEVEL SECURITY, and the production migrator is a
 -- NOSUPERUSER NOBYPASSRLS table owner with no app.* setting in scope, so a
