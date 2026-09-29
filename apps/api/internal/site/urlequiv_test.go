@@ -138,6 +138,14 @@ func TestSiteURLVariants(t *testing.T) {
 		"http://example.com/",
 		"http://www.example.com",
 		"http://www.example.com/",
+		"https://example.com:443",
+		"https://example.com:443/",
+		"https://www.example.com:443",
+		"https://www.example.com:443/",
+		"http://example.com:80",
+		"http://example.com:80/",
+		"http://www.example.com:80",
+		"http://www.example.com:80/",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("variants:\n got %q\nwant %q", got, want)
