@@ -17,12 +17,16 @@ the infra side alone.
 1. **Order matters (risk 22).** An image that boots without
    `WPMGR_BILLING_STRIPE_PORTAL_CONFIGURATION` set fails config validation by
    design — that is the intended, safe failure. A checkout against a Stripe
-   account whose Tax setting is not yet active does **not** fail: a sandbox
-   probe confirms the session is still created, with
-   `automatic_tax.status=requires_location_inputs`, and with zero tax
-   registrations on the account nothing is charged on it. Activate Stripe Tax
-   for the head office (§6) before the account needs to start collecting tax
-   — that is a launch-readiness step, not something checkout itself enforces.
+   account whose Tax setting is not yet active does **not** fail. A sandbox
+   run confirmed this at the invoice, not only at the checkout session: with
+   Stripe Tax `status:pending` and zero registrations on the account
+   (`stripe get /v1/tax/settings`), the Checkout Session still came back with
+   `automatic_tax.status=requires_location_inputs`, and the invoice for the
+   subscription it produced charged $0 tax, with
+   `taxability_reason:not_collecting` (checked on the invoice object with the
+   Stripe CLI after the subscription activated). Activate Stripe Tax for the
+   head office (§6) before the account needs to start collecting tax — that
+   is a launch-readiness step; checkout itself does not enforce it.
 2. **The six `WPMGR_BILLING_STRIPE_*` variables are all-or-nothing.** Today's
    code (`validateStripeConfig`) enforces five of them together:
    `WPMGR_BILLING_STRIPE_SECRET_KEY`, `WPMGR_BILLING_STRIPE_WEBHOOK_SECRET`,
@@ -339,18 +343,38 @@ against Stripe test mode, without touching any shared environment.
 
 ### 10.1 Postgres
 
-Run Postgres for the duration of this session only, and remove it when done
-— nothing here should persist between runs:
+Run Postgres for the duration of this session only, and remove it (and its
+volume) when done — nothing here should persist between runs. Mount
+`infra/postgres/init` and set the app role's own credentials, the same way
+`infra/docker-compose.yml:28-34` provisions it, so the API connects as
+`wpmgr_app` rather than as the Postgres superuser:
 
 ```
 docker run -d --name wpmgr-billing-e2e -p 5433:5432 \
-  -e POSTGRES_PASSWORD=wpmgr -e POSTGRES_DB=wpmgr postgres:16
+  -v "$(pwd)/infra/postgres/init:/docker-entrypoint-initdb.d:ro" \
+  -e POSTGRES_USER=wpmgr -e POSTGRES_PASSWORD=wpmgr -e POSTGRES_DB=wpmgr \
+  -e WPMGR_DB_APP_USER=wpmgr_app -e WPMGR_DB_APP_PASSWORD=<a local password> \
+  postgres:16
 ```
 
-Point the API at it, run migrations, exercise the flow, then:
+Run migrations with the owner role (`POSTGRES_USER`/`POSTGRES_PASSWORD`
+above), then point the API at the app role instead —
+`WPMGR_DB_HOST=localhost`, `WPMGR_DB_PORT=5433`, `WPMGR_DB_NAME=wpmgr`,
+`WPMGR_DB_USER=wpmgr_app`, `WPMGR_DB_PASSWORD=<the same local password>` —
+and leave `WPMGR_ALLOW_RLS_BYPASS_ROLE` unset, so the API boots with the RLS
+bypass off, the same as every other environment.
+
+The API also keeps sessions in Redis, so start one for the run:
 
 ```
-docker rm -f wpmgr-billing-e2e
+docker run -d --name wpmgr-billing-e2e-redis -p 6380:6379 redis:7-alpine
+```
+
+Point `WPMGR_REDIS_ADDR=localhost:6380` at it, exercise the flow, then remove
+both containers and their volumes:
+
+```
+docker rm -f -v wpmgr-billing-e2e wpmgr-billing-e2e-redis
 ```
 
 ### 10.2 Sandbox key
@@ -367,21 +391,38 @@ set -a && source ~/.wpmgr/secrets/stripe-sandbox.env && set +a
 
 ### 10.3 Webhook forwarding
 
-Forward Stripe test-mode events to the API running locally:
+The API needs `WPMGR_BILLING_STRIPE_WEBHOOK_SECRET` at boot, so capture it
+**before** starting the API, not after. Write it straight into a mode-600
+file with the variable name attached, without the value passing through the
+terminal:
 
 ```
-stripe listen --forward-to http://localhost:<api port>/webhooks/billing/stripe
-```
-
-Capture the signing secret it prints into its own mode-600 file rather than
-exporting it inline in a shell history entry:
-
-```
-stripe listen --print-secret > ~/.wpmgr/secrets/stripe-sandbox-whsec.env
+printf 'WPMGR_BILLING_STRIPE_WEBHOOK_SECRET=%s\n' "$(stripe listen --print-secret)" \
+  > ~/.wpmgr/secrets/stripe-sandbox-whsec.env
 chmod 600 ~/.wpmgr/secrets/stripe-sandbox-whsec.env
 ```
 
-### 10.4 Test cards
+Source it the same way as §10.2's key, then start the API. Only once the API
+is running, start forwarding test-mode events to it:
+
+```
+set -a && source ~/.wpmgr/secrets/stripe-sandbox-whsec.env && set +a
+# start the API here
+stripe listen --forward-to http://localhost:<api port>/webhooks/billing/stripe
+```
+
+### 10.4 User and org
+
+Self-serve registration (`POST /auth/register`) requires email verification
+before it completes, so it does not work in a disposable local run with no
+mail delivery configured. Register the local test user through the
+bootstrap-claim path instead: set `WPMGR_BOOTSTRAP_CLAIM_SECRET` to a value
+generated for this run only, then present it on `POST /auth/register` as the
+`X-Wpmgr-Bootstrap-Claim` header. Create the org the rest of this section
+exercises with `POST /api/v1/orgs` on the resulting session. Never reuse a
+real environment's claim secret for this.
+
+### 10.5 Test cards
 
 Run checkout with each of:
 
@@ -391,7 +432,7 @@ Run checkout with each of:
   e-mandate, so the checkout flow must carry the customer through that extra
   authentication step rather than completing immediately.
 
-### 10.5 A foreign event
+### 10.6 A foreign event
 
 Trigger an event type outside the endpoint's subscribed list (§4), to confirm
 the intake handler behaves correctly on an event it does not expect rather
@@ -400,3 +441,6 @@ than only ever having been exercised against its own subscribed set:
 ```
 stripe trigger charge.refunded
 ```
+
+Expect HTTP 200, with no billing ledger row, no `billing_apply` job, and no
+alert. The API logs "belongs to another product; not recorded" for it.
