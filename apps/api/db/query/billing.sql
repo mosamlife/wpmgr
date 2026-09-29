@@ -42,28 +42,103 @@ FROM tenants
 WHERE id = @tenant_id;
 
 -- name: FindTenantByProviderCustomer :one
--- The "unknown tenant" fallback attribution path: resolves a tenant from
--- (provider, provider_customer_id) when a webhook event's payload carries no
--- tenant metadata (e.g. an invoice/charge event whose subscription was not
--- expanded). Returns pgx.ErrNoRows when no tenant matches — the caller then
--- treats the event as "unknown customer" (record + warn, change nothing).
+-- SUPERSEDED by FindTenantsByProviderCustomer below, and kept only while
+-- internal/billing still calls it. Delete it in the change that moves that
+-- caller. New code must not call it: when more than one tenant carries the
+-- customer id (allowed for every provider but Stripe) it returns one of them
+-- and hides the others, so a caller cannot tell "exactly one" from "several".
 SELECT id FROM tenants
 WHERE billing_provider = @billing_provider
   AND provider_customer_id = @provider_customer_id;
 
--- name: SetTenantBillingProviderIfUnset :execrows
--- "One tenant = one provider at a time (set at first checkout)": this only
--- ever writes when billing_provider is still NULL, so a tenant can never be
--- silently re-pointed at a different provider by a later checkout attempt.
+-- name: FindTenantsByProviderCustomer :many
+-- Every tenant pinned to @billing_provider whose stored customer id is
+-- @provider_customer_id, ordered by id. Webhook attribution and ownership
+-- classification use it when an event names a customer but no tenant.
 --
--- SUPERSEDED by BindCheckoutProvider below. Kept only while the current
--- checkout code still calls it; delete it in the change that moves that
--- caller to BindCheckoutProvider. New code must not call it.
+-- The caller decides on the number of rows: none, exactly one, or more than
+-- one, and must treat each case explicitly. A Stripe customer id names at most
+-- one tenant (tenants_stripe_customer_key); other providers' customer ids are
+-- not unique, so more than one row is a real result there.
+--
+-- Soft-deleted tenants are included on purpose: an event for a deleted
+-- workspace must still resolve to it so the caller can alert. tenants has no
+-- row security, so this runs on the plain pool or inside any transaction.
+SELECT id FROM tenants
+WHERE billing_provider = @billing_provider::text
+  AND provider_customer_id = @provider_customer_id::text
+ORDER BY id;
+
+-- name: LockTenantBilling :exec
+-- Takes the per-tenant billing advisory lock for the rest of the calling
+-- transaction. Every writer of a tenant's billing state (webhook apply,
+-- reconcile, checkout binding, cancel, the org-delete billing check and
+-- operator billing writes) serialises on this one key, so the key lives here
+-- and nowhere else: a caller that spelled it differently would stop
+-- serialising with the others without any error. Must run inside a
+-- transaction; outside one the lock is released at once.
+SELECT pg_advisory_xact_lock(hashtext('wpmgr_billing:' || (sqlc.arg(tenant_id)::uuid)::text));
+
+-- name: SetCancelRequested :execrows
+-- Records a cancel the caller has just asked the provider for, when the
+-- provider will not report it back as a schedule. Two uses, chosen by
+-- @cancel_now:
+--
+--   * @cancel_now = true: the Cancel-now marker. Only for a Stripe tenant
+--     whose status is still 'past_due'. Sets cancel_at to the transaction's
+--     now(), so every later read sees a cancel_at at or before its own now().
+--
+--   * @cancel_now = false: the local period-end cancel flag. Only for a
+--     Razorpay tenant with a live status ('active', 'trialing', 'past_due' or
+--     'paused'). cancel_at becomes @cancel_at when that is strictly in the
+--     future at the moment of the write, and NULL otherwise, so this form
+--     never stores a cancel_at in the past.
+--
+-- Both set cancel_at_period_end to true. Both write only while the stored
+-- subscription id is still @provider_subscription_id, the one the caller
+-- cancelled, so a late write can never mark a subscription that replaced it.
+-- The caller holds LockTenantBilling. 0 rows means nothing was written: the
+-- tenant, its provider, its status or its subscription no longer match.
 UPDATE tenants
-SET billing_provider = @billing_provider
-WHERE id = @tenant_id AND billing_provider IS NULL;
+SET cancel_at_period_end = true,
+    cancel_at = CASE
+        WHEN @cancel_now::boolean THEN now()
+        WHEN sqlc.narg(cancel_at)::timestamptz > clock_timestamp()
+            THEN sqlc.narg(cancel_at)::timestamptz
+        ELSE NULL
+    END,
+    updated_at = now()
+WHERE id = @tenant_id
+  AND provider_subscription_id = @provider_subscription_id::text
+  AND CASE
+        WHEN @cancel_now::boolean
+            THEN billing_provider = 'stripe' AND plan_status = 'past_due'
+        ELSE billing_provider = 'razorpay'
+             AND plan_status IN ('active', 'trialing', 'past_due', 'paused')
+      END;
+
+-- name: ListTenantsForReconcile :many
+-- The daily reconcile sweep's tenant set: every tenant that is not comped and
+-- has a provider pinned, and either a stored subscription id, or, for Stripe
+-- only, a stored customer id with no subscription id. The second half finds a
+-- Stripe subscription whose activation never reached this database; the
+-- caller looks it up by the returned customer id and nothing else.
+--
+-- Soft-deleted tenants are included, so a subscription still live on a
+-- deleted workspace is found. Not paginated, ordered by id.
+SELECT id, billing_provider, provider_customer_id, provider_subscription_id
+FROM tenants
+WHERE billing_provider IS NOT NULL
+  AND plan_status <> 'comped'
+  AND (provider_subscription_id IS NOT NULL
+       OR (billing_provider = 'stripe' AND provider_customer_id IS NOT NULL))
+ORDER BY id;
 
 -- name: ListTenantsWithProviderSubscription :many
+-- SUPERSEDED by ListTenantsForReconcile above, and kept only while the
+-- reconcile sweep still calls it. Delete it in the change that moves that
+-- caller.
+--
 -- The M16 Phase B daily reconcile sweep's tenant set: every tenant with a
 -- live provider subscription reference, excluding comped tenants (immune to
 -- any provider-driven mutation, webhook or reconcile alike) and any tenant
@@ -78,6 +153,12 @@ WHERE provider_subscription_id IS NOT NULL
 ORDER BY id;
 
 -- name: ApplyBillingSubscriptionState :exec
+-- SUPERSEDED by ApplyBillingSubscriptionStateForProvider below, and kept
+-- only while internal/billing still calls it. Delete it in the change that
+-- moves that caller. New code must not call it: it writes no cancel fields,
+-- does not check the pinned provider, reports no row count, and replaces a
+-- stored customer id.
+--
 -- Persists the state machine's resolved next tenantBillingProfile
 -- (nextBillingState in state_machine.go). provider_customer_id is only
 -- overwritten when a non-empty value is supplied (COALESCE over NULLIF)
@@ -91,6 +172,32 @@ SET plan                     = @plan,
     provider_subscription_id  = @provider_subscription_id,
     provider_customer_id      = COALESCE(NULLIF(@provider_customer_id::text, ''), provider_customer_id)
 WHERE id = @tenant_id;
+
+-- name: ApplyBillingSubscriptionStateForProvider :execrows
+-- Persists the state machine's resolved next billing state for one tenant,
+-- including the cancel schedule (cancel_at_period_end, cancel_at). The caller
+-- holds LockTenantBilling.
+--
+-- It writes only while the tenant is still pinned to @billing_provider, the
+-- provider whose subscription was just read. The caller requires exactly 1
+-- row: 0 rows means the pin moved (or the tenant is gone) and nothing was
+-- written.
+--
+-- provider_customer_id is write-once: a stored value is always kept, and
+-- @provider_customer_id (ignored when empty) only fills a NULL. A new customer
+-- id is stored only by BindCheckoutProvider, never by an apply.
+UPDATE tenants
+SET plan                     = @plan,
+    plan_status              = @plan_status,
+    grace_until              = @grace_until,
+    current_period_end       = @current_period_end,
+    provider_subscription_id = @provider_subscription_id,
+    provider_customer_id     = COALESCE(provider_customer_id, NULLIF(@provider_customer_id::text, '')),
+    cancel_at_period_end     = @cancel_at_period_end,
+    cancel_at                = @cancel_at,
+    updated_at               = now()
+WHERE id = @tenant_id
+  AND billing_provider = @billing_provider::text;
 
 -- name: BindCheckoutProvider :one
 -- The single write that binds a tenant to the payment provider a checkout
@@ -206,25 +313,3 @@ UPDATE billing_events SET processed_at = now() WHERE id = @id;
 SELECT suspended_at, suspended_reason
 FROM tenants
 WHERE id = @tenant_id;
-
--- name: LastProcessedBillingEventOccurredAtForTenant :one
--- The out-of-order guard: the newest occurred_at among this tenant's ALREADY
--- APPLIED events (processed_at IS NOT NULL), excluding the event currently
--- being processed. A provider's webhook delivery order is not guaranteed to
--- match event creation order (Stripe documents this explicitly), so a fresh
--- event whose occurred_at is OLDER than this must be ledgered but must NOT be
--- allowed to overwrite a later state the tenant has already reached.
---
--- Deliberately NOT a bare aggregate (SELECT max(occurred_at) ...): sqlc infers
--- an aggregate over occurred_at (a NOT NULL column) as itself NOT NULL, which
--- is wrong for the empty-result-set case (max() over zero rows is NULL) and
--- would panic the row.Scan on this tenant's very first processed event. A
--- plain ORDER BY ... LIMIT 1 instead returns zero rows in that case, which the
--- caller handles the normal way (errors.Is(err, pgx.ErrNoRows)).
-SELECT occurred_at
-FROM billing_events
-WHERE tenant_id = @tenant_id
-  AND processed_at IS NOT NULL
-  AND id != @exclude_id
-ORDER BY occurred_at DESC
-LIMIT 1;
