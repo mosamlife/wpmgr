@@ -722,17 +722,28 @@ func TestStripeConfirm_BindsToTenantAndCustomer(t *testing.T) {
 		return s.ID
 	}
 	good := add("cus_A", "subscription", "complete", r.tenant.String(), "sub_NEW")
-	bad := map[string]string{
-		"other tenant":   add("cus_A", "subscription", "complete", uuid.NewString(), "sub_NEW"),
-		"other customer": add("cus_B", "subscription", "complete", r.tenant.String(), "sub_NEW"),
-		"payment mode":   add("cus_A", "payment", "complete", r.tenant.String(), ""),
-		"still open":     add("cus_A", "subscription", "open", r.tenant.String(), "sub_NEW"),
+	// A fixed order, and every case checked, so no refusal can hide behind
+	// another one's failure.
+	bad := []struct {
+		name     string
+		id       string
+		wantKind domain.Kind
+		wantCode string
+	}{
+		{"other tenant", add("cus_A", "subscription", "complete", uuid.NewString(), "sub_NEW"),
+			domain.KindNotFound, "billing_checkout_session_not_found"},
+		{"other customer", add("cus_B", "subscription", "complete", r.tenant.String(), "sub_NEW"),
+			domain.KindValidation, "billing_checkout_not_confirmable"},
+		{"payment mode", add("cus_A", "payment", "complete", r.tenant.String(), ""),
+			domain.KindValidation, "billing_checkout_not_confirmable"},
+		{"still open", add("cus_A", "subscription", "open", r.tenant.String(), "sub_NEW"),
+			domain.KindValidation, "billing_checkout_not_confirmable"},
 	}
-	for name, id := range bad {
-		_, err := r.h.svc.ConfirmCheckout(r.baseCtx, r.tenant, id)
+	for _, tc := range bad {
+		_, err := r.h.svc.ConfirmCheckout(r.baseCtx, r.tenant, tc.id)
 		de, ok := domain.AsDomain(err)
-		if !ok || de.Kind != domain.KindValidation {
-			t.Fatalf("%s: err = %v, want 422", name, err)
+		if !ok || de.Kind != tc.wantKind || de.Code != tc.wantCode {
+			t.Errorf("%s: err = %v, want %v %s", tc.name, err, tc.wantKind, tc.wantCode)
 		}
 	}
 	if _, err := r.h.svc.ConfirmCheckout(r.baseCtx, r.tenant, "../x"); err == nil {
