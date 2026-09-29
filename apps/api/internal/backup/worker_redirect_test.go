@@ -89,17 +89,31 @@ func TestBackupWorker_RedirectFailsSnapshotOnFirstAttempt(t *testing.T) {
 // attempt (never a retry), with exactly one Restore call, and the active
 // restore_run finalized as failed.
 //
-// The restore run's own audit trail — the AppendRestoreEvent row
+// The restore run's own EVENT row — AppendRestoreEvent, which
 // persistRestoreRunEvent writes right alongside MarkRestoreRunStatus — is
 // asserted directly below by its recorded action (Phase) and outcome
 // (Status/Detail), via fakeRestoreRunStore.eventCalls. An earlier version of
 // this test inferred that row was written only by argument: because
 // w.recordAudit and RecordProgress("failed", ...) are unconditional and
 // adjacent in worker.go's source, proving RecordProgress ran (via
-// statusCalls) was treated as proof the audit trail also did. That is a
+// statusCalls) was treated as proof the event row also did. That is a
 // structural argument, not a content check, and it would not have caught a
 // change that persisted the wrong phase, status or detail into the event row
 // while still calling MarkRestoreRunStatus correctly.
+//
+// That EVENT row is NOT the audit trail. It is restore_run_events, the
+// per-run phase log RecordProgress fans out to the UI's SSE channel — a
+// different mechanism from the tenant-wide, hash-chained audit_log worker.go
+// calls via w.recordAudit(ctx, snap, ActionRestoreFailed, ...) a few lines
+// above the RecordProgress call this test does observe. This test passes nil
+// for RestoreWorker's audit recorder (NewRestoreWorker's third argument
+// below), so that recordAudit call is a no-op (the `w.audit == nil` guard in
+// RestoreWorker.recordAudit) and asserting the event row's content proves
+// nothing about it: a build that persisted the wrong action, target or
+// metadata into audit_log — or dropped the call entirely — would still pass
+// every assertion here. Closing that gap needs RestoreWorker.audit to accept
+// a test double in place of the concrete *audit.Recorder it takes today,
+// which is a production-code change outside this test-only pass.
 func TestRestoreWorker_RedirectFailsOnFirstAttempt(t *testing.T) {
 	repo, runStore, tenantID, snapshotID, svc := newRestoreWorkerFixture(t)
 	cmd := &redirectCommander{}
@@ -125,14 +139,15 @@ func TestRestoreWorker_RedirectFailsOnFirstAttempt(t *testing.T) {
 		t.Error("FailSnapshot must not be called on the backup snapshot for a redirect")
 	}
 
-	// The restore run's audit trail: the AppendRestoreEvent row's action
-	// (Phase) and outcome (Status, and the operator message in Detail) must
-	// be the redirect failure, by content — not merely called. The dispatch
-	// also writes an unconditional "preflight" event before ever contacting
-	// the agent, so the terminal one under test is the LAST call, not the
-	// only one.
+	// The restore run's EVENT row (restore_run_events, NOT audit_log — see
+	// the doc comment above): the AppendRestoreEvent row's action (Phase) and
+	// outcome (Status, and the operator message in Detail) must be the
+	// redirect failure, by content — not merely called. The dispatch also
+	// writes an unconditional "preflight" event before ever contacting the
+	// agent, so the terminal one under test is the LAST call, not the only
+	// one.
 	if len(runStore.eventCalls) != 2 {
-		t.Fatalf("expected exactly 2 AppendRestoreEvent calls (preflight, then the redirect audit entry), got %d: %+v", len(runStore.eventCalls), runStore.eventCalls)
+		t.Fatalf("expected exactly 2 AppendRestoreEvent calls (preflight, then the redirect failure event), got %d: %+v", len(runStore.eventCalls), runStore.eventCalls)
 	}
 	ev := runStore.eventCalls[len(runStore.eventCalls)-1]
 	if ev.Phase != "failed" {
