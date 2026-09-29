@@ -313,11 +313,15 @@ export function parseConsentContext(raw: unknown): ConsentContext {
 // Scope vocabulary
 // ---------------------------------------------------------------------------
 
-// recognisedScopes in apps/api/internal/mcp/scope.go holds exactly one entry.
-// The read-only surface is the entire security claim of the feature (m124
-// obligation 5): the surface is read-only because no write tool is exposed, not
-// because a column says so.
+// recognisedScopes in apps/api/internal/mcp/scope.go holds two entries
+// (model.go:35, :46): ScopeRead ("mcp:read"), the fleet-read surface, and
+// ScopeCache ("mcp:cache"), seated by m150, which confers CapCachePurge and
+// nothing else (policy.go's scopeCapabilities). Granting mcp:read changes
+// nothing on a site; granting mcp:cache lets the connection ASK to clear one
+// -- every clear still waits on a person approving that one request in WPMgr
+// (ADR-061 option B, "no automation may ever approve").
 export const SCOPE_READ = "mcp:read";
+export const SCOPE_CACHE = "mcp:cache";
 
 export interface ScopeCopy {
   readonly token: string;
@@ -334,6 +338,14 @@ export interface ScopeCopy {
  * ParseRequestedScopes refuses on the request side: it would let the operator
  * consent to a scope set that is not the one the client asked for, and neither
  * party would learn they disagreed.
+ *
+ * SCOPE_CACHE is deliberately absent from this function's non-fallback branch.
+ * It is a recognised scope (see allScopesRecognised) but it is never rendered
+ * as one of these generic bullets: design v7 S2.2 gives it its own bordered
+ * box, shared verbatim with the wizard's step 4 (CachePurgeCapabilityBox), so
+ * that the one write permission in this vocabulary is never described twice by
+ * two different components that could drift apart. The consent screen filters
+ * SCOPE_CACHE out before calling this, the same way PermissionsBlock does.
  */
 export function describeScope(token: string): ScopeCopy {
   if (token === SCOPE_READ) {
@@ -352,7 +364,9 @@ export function describeScope(token: string): ScopeCopy {
   };
 }
 
-/** True when every requested scope is one this screen can describe truthfully. */
+/** True when every requested scope is one this screen can describe truthfully,
+ *  whether by describeScope's own bullet (SCOPE_READ) or by its own dedicated
+ *  section (SCOPE_CACHE). */
 export function allScopesRecognised(scopes: readonly string[]): boolean {
-  return scopes.every((s) => s === SCOPE_READ);
+  return scopes.every((s) => s === SCOPE_READ || s === SCOPE_CACHE);
 }

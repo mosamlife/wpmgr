@@ -11,8 +11,10 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 
 import {
+  allCapabilityEffectsKnown,
   allScopesRecognised,
   describeScope,
+  SCOPE_CACHE,
   type ConsentContext,
   type SelfAsserted,
 } from "./consent-context";
@@ -27,6 +29,7 @@ import {
   type SiteScopeMode,
 } from "./site-scope";
 import { SiteEnforcementBox } from "./site-enforcement-box";
+import { CachePurgeCapabilityBox } from "@/features/ai-connections/cache-purge-capability-box";
 
 // The consent screen (design Step 7).
 //
@@ -157,18 +160,26 @@ function SelfAssertedSite({ value }: { value: SelfAsserted }) {
 }
 
 // ---------------------------------------------------------------------------
-// Checklist items 2, 3 and 4: what it may read, what it may propose, and that
+// Checklist items 2, 3 and 4: what it may read, what it may ask for, and that
 // it cannot approve anything
 //
-// The "may propose" third of that checklist item has no section below: no
-// capability in the shipped vocabulary does anything but read (the capability
-// CHECK constraint admits only members ending `.read`; see migration m131),
-// so there is nothing to disclose here and adding placeholder copy for it
-// would be a false capability claim.
+// "Ask", not "propose". mcp.cache.purge (design v7, ADR-061 option B) is the
+// vocabulary's one member that is not a read: calling its tool writes a
+// pending request and changes nothing by itself. It is rendered below in its
+// own bordered box (design v7 S2.2 "the same write box and label as 2.1"),
+// never folded into the read bullets above it and never pre-ticked, so the
+// two are never mistaken for one another on this screen.
 // ---------------------------------------------------------------------------
 
 function PermissionsBlock({ consent }: { consent: ConsentContext }) {
   const recognised = allScopesRecognised(consent.scopes);
+  // The generic bullets below describe only the read scope. mcp:cache gets
+  // its own section (CachePurgeCapabilityBox), never a bullet from
+  // describeScope, so the one write permission in this vocabulary is never
+  // described in two places that could drift apart. See describeScope's note.
+  const readScopes = consent.scopes.filter((s) => s !== SCOPE_CACHE);
+  const askedToClearCache = consent.scopes.includes(SCOPE_CACHE);
+  const capabilitiesOk = allCapabilityEffectsKnown(consent.conferrableCapabilities);
   return (
     <section
       aria-labelledby="consent-permissions-heading"
@@ -179,7 +190,7 @@ function PermissionsBlock({ consent }: { consent: ConsentContext }) {
       </h2>
 
       <ul className="mt-3 space-y-3">
-        {consent.scopes.map((token) => {
+        {readScopes.map((token) => {
           const copy = describeScope(token);
           return (
             <li key={token}>
@@ -189,6 +200,31 @@ function PermissionsBlock({ consent }: { consent: ConsentContext }) {
           );
         })}
       </ul>
+
+      {/* design v7 S2.2: "the page shows the same write box and label as
+          2.1." checked and disabled -- this screen approves or denies the
+          scope the client's OAuth request already named, the same way the
+          read bullets above are a statement of what is granted rather than a
+          picker; there is no wire field this mutation sends that would let an
+          unticked box narrow the grant, so a live checkbox here would show a
+          control that does nothing, which is worse than none. */}
+      {askedToClearCache && (
+        <div className="mt-4" data-testid="consent-cache-capability">
+          <CachePurgeCapabilityBox checked onChange={() => {}} disabled />
+        </div>
+      )}
+
+      {!capabilitiesOk && (
+        <p
+          role="alert"
+          data-testid="consent-unknown-capability-effect"
+          className="mt-4 flex items-start gap-2 rounded-md border border-[var(--color-destructive)]/30 p-3 text-sm text-[var(--color-destructive)]"
+        >
+          <AlertTriangle aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
+          This client asked for a permission whose effect this dashboard does not
+          recognise, so we cannot tell you what approving it would allow. Do not approve it.
+        </p>
+      )}
 
       {/* THE NEGATIVE HALF, GIVEN THE SAME WEIGHT AS THE POSITIVE HALF.
           A user who believes an AI has write access declines something safe; a
@@ -202,7 +238,15 @@ function PermissionsBlock({ consent }: { consent: ConsentContext }) {
               It cannot change anything.
             </span>{" "}
             No updates, no installs, no activations, no deletions, no edits to any site, and no
-            changes to this dashboard or your organisation. This connection is read-only.
+            changes to this dashboard or your organisation.{" "}
+            {askedToClearCache
+              ? // "Read-only" would be false the moment mcp:cache is granted: the
+                // connection can ask to clear a cache. What stays true, and what
+                // this sentence says instead, is that asking is the only thing it
+                // can do beyond reading, and asking changes nothing by itself.
+                "The one exception is the cache-clear box above: even that only " +
+                "creates a request, and nothing runs until you approve it."
+              : "This connection is read-only."}
           </li>
           <li>
             <span className="font-medium text-[var(--color-foreground)]">
@@ -597,6 +641,10 @@ export function ConsentScreen({
 
   const scopeOk = isScopeApprovable(scope);
   const scopesOk = allScopesRecognised(consent.scopes);
+  // design v7 S2.2: "An unknown effect disables Approve." A capability this
+  // screen cannot describe the honest consequence of must never be behind a
+  // live Approve button, independent of the scope-recognition gate above.
+  const capabilitiesOk = allCapabilityEffectsKnown(consent.conferrableCapabilities);
 
   // THE PAYLOAD THE SUBMIT PATH WOULD ACTUALLY SEND, resolved once and shared
   // with the approve gate, so the button and the request cannot disagree.
@@ -620,7 +668,7 @@ export function ConsentScreen({
     return resolveTagIds(selectedTagNames, tags);
   }, [mode, tags, selectedTagNames]);
 
-  const canApprove = scopeOk && scopesOk && tagPayload !== null && !isApproving;
+  const canApprove = scopeOk && scopesOk && capabilitiesOk && tagPayload !== null && !isApproving;
 
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
