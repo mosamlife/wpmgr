@@ -2243,7 +2243,14 @@ export const BillingMetersSchema = {
 
 export const BillingSummarySchema = {
   type: "object",
-  required: ["plan", "plan_status", "meters", "portal_available"],
+  required: [
+    "plan",
+    "plan_status",
+    "meters",
+    "portal_available",
+    "cancel_at_period_end",
+    "available_providers",
+  ],
   properties: {
     plan: {
       type: "string",
@@ -2270,7 +2277,18 @@ export const BillingSummarySchema = {
     provider: {
       type: "string",
       description:
-        "The tenant's payment provider (e.g. \"stripe\"). Empty until the tenant's first checkout.",
+        "The tenant's payment provider (e.g. \"stripe\"). Empty before the tenant's first checkout. From the first checkout onward this is the provisional or final provider: it can still move to a different registered provider through a later checkout's provider-switch rules (see POST /billing/checkout's 409 billing_provider_locked) until a subscription is stored, and is fixed from then on.",
+    },
+    cancel_at_period_end: {
+      type: "boolean",
+      description:
+        "True once cancellation is scheduled, whether for the current period's end or via an immediate Cancel now.",
+    },
+    cancel_at: {
+      type: "string",
+      format: "date-time",
+      description:
+        "Set once cancellation is scheduled. Equal to current_period_end for a period-end cancel; a past instant marks an immediate Cancel now.",
     },
     grace_until: {
       type: "string",
@@ -2285,6 +2303,15 @@ export const BillingSummarySchema = {
       type: "boolean",
       description:
         "True once the tenant has a payment-provider customer id — i.e. POST /billing/portal will succeed rather than 409.",
+    },
+    available_providers: {
+      type: "array",
+      description:
+        "Payment providers registered on this instance, stripe first when more than one is registered. Drives whether a non-default provider (e.g. Razorpay) is offered at checkout.",
+      items: {
+        type: "string",
+        enum: ["stripe", "razorpay"],
+      },
     },
   },
 } as const;
@@ -2302,12 +2329,12 @@ export const BillingCheckoutRequestSchema = {
     provider: {
       type: "string",
       description:
-        "Preferred payment provider. Consulted only on a tenant's first-ever checkout: once a tenant is pinned to a provider that pinning always wins, so a returning customer can never split a subscription across two providers. An unknown name is rejected. Omit to use the instance default.",
+        "Preferred payment provider. Honored, including a switch away from the tenant's current provider, whenever the provider-switch rules allow it — see this endpoint's 409 billing_provider_locked. A caller can never end up with two live subscriptions across providers: an existing pending or live subscription is refused with 409 billing_subscription_pending first. An unknown name is rejected. Omit to use the instance default.",
     },
     currency: {
       type: "string",
       description:
-        "Preferred billing currency, passed to the provider when it creates the checkout. Selects among the prices the server already knows for the requested tier; it can never set an amount. Omit for the provider default.",
+        "Preferred billing currency, passed to the provider when it creates the checkout. Selects among the prices the server already knows for the requested tier; it can never set an amount. Razorpay: INR only — omitted means INR, and a request for any other currency is refused with 400 billing_invalid_currency. Stripe ignores this field and always charges US$.",
     },
   },
 } as const;
@@ -2320,6 +2347,31 @@ export const BillingCheckoutResponseSchema = {
       type: "string",
       format: "uri",
       description: "Redirect the browser here to complete checkout.",
+    },
+  },
+} as const;
+
+export const BillingCheckoutConfirmRequestSchema = {
+  type: "object",
+  required: ["session_id"],
+  properties: {
+    session_id: {
+      type: "string",
+      description:
+        "The Checkout Session id returned in the success-URL query string after a Stripe checkout redirect.",
+    },
+  },
+} as const;
+
+export const BillingCancelRequestSchema = {
+  type: "object",
+  properties: {
+    when: {
+      type: "string",
+      enum: ["period_end", "now"],
+      default: "period_end",
+      description:
+        "`now` cancels immediately and is refused (422) unless the subscription's status is past_due and its provider is stripe; omit, or send period_end, for the default end-of-period cancellation.",
     },
   },
 } as const;
@@ -3078,6 +3130,32 @@ export const AdminForceStateRequestSchema = {
     },
     reason: {
       type: "string",
+    },
+  },
+} as const;
+
+export const AdminClearBillingProviderRequestSchema = {
+  type: "object",
+  required: ["reason"],
+  properties: {
+    reason: {
+      type: "string",
+    },
+    razorpay_subscription_ids: {
+      type: "array",
+      default: [],
+      items: {
+        type: "string",
+        pattern: "^sub_[A-Za-z0-9]+$",
+      },
+      description:
+        "Razorpay subscription ids found by a manual Dashboard lookup for this tenant (may be empty if none were found). Only consulted when the tenant is currently pinned to Razorpay; an id that does not match ^sub_[A-Za-z0-9]+$ is refused with 400 billing_invalid_subscription_id before any provider call.",
+    },
+    razorpay_lookup_confirmed: {
+      type: "boolean",
+      default: false,
+      description:
+        "Confirms the operator searched the Razorpay Dashboard for this tenant's subscriptions before submitting razorpay_subscription_ids. Required (true) to clear a Razorpay-pinned tenant; otherwise the clear is refused with 409 billing_provider_locked (details.reason = razorpay_lookup_unconfirmed).",
     },
   },
 } as const;

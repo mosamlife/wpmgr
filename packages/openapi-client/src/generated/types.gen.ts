@@ -1404,9 +1404,17 @@ export type BillingSummary = {
     | "comped";
   current_period_end?: string;
   /**
-   * The tenant's payment provider (e.g. "stripe"). Empty until the tenant's first checkout.
+   * The tenant's payment provider (e.g. "stripe"). Empty before the tenant's first checkout. From the first checkout onward this is the provisional or final provider: it can still move to a different registered provider through a later checkout's provider-switch rules (see POST /billing/checkout's 409 billing_provider_locked) until a subscription is stored, and is fixed from then on.
    */
   provider?: string;
+  /**
+   * True once cancellation is scheduled, whether for the current period's end or via an immediate Cancel now.
+   */
+  cancel_at_period_end: boolean;
+  /**
+   * Set once cancellation is scheduled. Equal to current_period_end for a period-end cancel; a past instant marks an immediate Cancel now.
+   */
+  cancel_at?: string;
   /**
    * Set only while plan_status is past_due: paid limits continue until this instant, after which the tenant falls back to free.
    */
@@ -1416,6 +1424,10 @@ export type BillingSummary = {
    * True once the tenant has a payment-provider customer id — i.e. POST /billing/portal will succeed rather than 409.
    */
   portal_available: boolean;
+  /**
+   * Payment providers registered on this instance, stripe first when more than one is registered. Drives whether a non-default provider (e.g. Razorpay) is offered at checkout.
+   */
+  available_providers: Array<"stripe" | "razorpay">;
 };
 
 export type BillingCheckoutRequest = {
@@ -1424,11 +1436,11 @@ export type BillingCheckoutRequest = {
    */
   tier: "starter" | "agency" | "scale";
   /**
-   * Preferred payment provider. Consulted only on a tenant's first-ever checkout: once a tenant is pinned to a provider that pinning always wins, so a returning customer can never split a subscription across two providers. An unknown name is rejected. Omit to use the instance default.
+   * Preferred payment provider. Honored, including a switch away from the tenant's current provider, whenever the provider-switch rules allow it — see this endpoint's 409 billing_provider_locked. A caller can never end up with two live subscriptions across providers: an existing pending or live subscription is refused with 409 billing_subscription_pending first. An unknown name is rejected. Omit to use the instance default.
    */
   provider?: string;
   /**
-   * Preferred billing currency, passed to the provider when it creates the checkout. Selects among the prices the server already knows for the requested tier; it can never set an amount. Omit for the provider default.
+   * Preferred billing currency, passed to the provider when it creates the checkout. Selects among the prices the server already knows for the requested tier; it can never set an amount. Razorpay: INR only — omitted means INR, and a request for any other currency is refused with 400 billing_invalid_currency. Stripe ignores this field and always charges US$.
    */
   currency?: string;
 };
@@ -1438,6 +1450,20 @@ export type BillingCheckoutResponse = {
    * Redirect the browser here to complete checkout.
    */
   url: string;
+};
+
+export type BillingCheckoutConfirmRequest = {
+  /**
+   * The Checkout Session id returned in the success-URL query string after a Stripe checkout redirect.
+   */
+  session_id: string;
+};
+
+export type BillingCancelRequest = {
+  /**
+   * `now` cancels immediately and is refused (422) unless the subscription's status is past_due and its provider is stripe; omit, or send period_end, for the default end-of-period cancellation.
+   */
+  when?: "period_end" | "now";
 };
 
 export type BillingPortalResponse = {
@@ -1738,6 +1764,18 @@ export type AdminForceStateRequest = {
     | "paused"
     | "comped";
   reason: string;
+};
+
+export type AdminClearBillingProviderRequest = {
+  reason: string;
+  /**
+   * Razorpay subscription ids found by a manual Dashboard lookup for this tenant (may be empty if none were found). Only consulted when the tenant is currently pinned to Razorpay; an id that does not match ^sub_[A-Za-z0-9]+$ is refused with 400 billing_invalid_subscription_id before any provider call.
+   */
+  razorpay_subscription_ids?: Array<string>;
+  /**
+   * Confirms the operator searched the Razorpay Dashboard for this tenant's subscriptions before submitting razorpay_subscription_ids. Required (true) to clear a Razorpay-pinned tenant; otherwise the clear is refused with 409 billing_provider_locked (details.reason = razorpay_lookup_unconfirmed).
+   */
+  razorpay_lookup_confirmed?: boolean;
 };
 
 /**
@@ -11040,13 +11078,21 @@ export type CreateBillingCheckoutData = {
 
 export type CreateBillingCheckoutErrors = {
   /**
+   * billing_invalid_currency — currency was set to something other than INR for a Razorpay checkout (Razorpay is INR-only; Stripe ignores this field).
+   */
+  400: Error;
+  /**
    * Not authenticated
    */
   401: Error;
   /**
-   * Insufficient permission
+   * Insufficient permission — the owner role is required. A caller that is authenticated but is not a signed-in human (an API key or MCP principal) is refused the same way, with code billing_human_required.
    */
   403: Error;
+  /**
+   * billing_subscription_pending — the tenant already has a subscription that is pending or live with its current provider; a background refresh has been enqueued, poll `GET /billing`. billing_provider_locked — the requested provider cannot be bound right now; `details.reason` is one of `needs_support` (switching away from Razorpay is not self-serve in this release), `pending_at_provider` (something is still pending with the tenant's current provider) or `provider_changed` (the tenant's provider or stored customer changed during the request — retry). billing_checkout_superseded — a newer checkout session for this tenant was created before this one could be returned, and this one was expired as a result; start again.
+   */
+  409: Error;
   /**
    * tier is not one of starter, agency, scale
    */
@@ -11083,7 +11129,7 @@ export type CreateBillingPortalErrors = {
    */
   401: Error;
   /**
-   * Insufficient permission
+   * Insufficient permission — the owner role is required. A caller that is authenticated but is not a signed-in human (an API key or MCP principal) is refused the same way, with code billing_human_required.
    */
   403: Error;
   /**
@@ -11147,8 +11193,51 @@ export type VerifyBillingCheckoutCallbackResponses = {
 export type VerifyBillingCheckoutCallbackResponse =
   VerifyBillingCheckoutCallbackResponses[keyof VerifyBillingCheckoutCallbackResponses];
 
+export type ConfirmBillingCheckoutData = {
+  body: BillingCheckoutConfirmRequest;
+  path?: never;
+  query?: never;
+  url: "/api/v1/billing/checkout/confirm";
+};
+
+export type ConfirmBillingCheckoutErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission — the owner role is required. A caller that is authenticated but is not a signed-in human (an API key or MCP principal) is refused the same way, with code billing_human_required.
+   */
+  403: Error;
+  /**
+   * session_id does not resolve to a completed subscription-mode Checkout Session for this tenant's own stored payment-provider customer.
+   */
+  422: Error;
+};
+
+export type ConfirmBillingCheckoutError =
+  ConfirmBillingCheckoutErrors[keyof ConfirmBillingCheckoutErrors];
+
+export type ConfirmBillingCheckoutResponses = {
+  /**
+   * The session was verified; a background refresh was enqueued (or the plan change had already landed via the webhook).
+   */
+  200: {
+    ok: boolean;
+  };
+  /**
+   * The session was verified and a background refresh was enqueued; the plan change has not landed yet. Poll `GET /billing`.
+   */
+  202: {
+    ok: boolean;
+  };
+};
+
+export type ConfirmBillingCheckoutResponse =
+  ConfirmBillingCheckoutResponses[keyof ConfirmBillingCheckoutResponses];
+
 export type CancelBillingSubscriptionData = {
-  body?: never;
+  body?: BillingCancelRequest;
   path?: never;
   query?: never;
   url: "/api/v1/billing/cancel";
@@ -11160,9 +11249,13 @@ export type CancelBillingSubscriptionErrors = {
    */
   401: Error;
   /**
-   * Insufficient permission
+   * Insufficient permission — the owner role is required. A caller that is authenticated but is not a signed-in human (an API key or MCP principal) is refused the same way, with code billing_human_required.
    */
   403: Error;
+  /**
+   * when is not one of period_end, now; or now was requested while the subscription is not past_due, or its provider is not stripe.
+   */
+  422: Error;
 };
 
 export type CancelBillingSubscriptionError =
@@ -12161,6 +12254,59 @@ export type ForceAdminAccountStateResponses = {
 
 export type ForceAdminAccountStateResponse =
   ForceAdminAccountStateResponses[keyof ForceAdminAccountStateResponses];
+
+export type ClearAdminAccountBillingProviderData = {
+  body: AdminClearBillingProviderRequest;
+  path: {
+    id: string;
+  };
+  query?: never;
+  url: "/api/v1/admin/accounts/{id}/billing-provider";
+};
+
+export type ClearAdminAccountBillingProviderErrors = {
+  /**
+   * billing_invalid_subscription_id — an id in razorpay_subscription_ids does not match ^sub_[A-Za-z0-9]+$.
+   */
+  400: Error;
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Caller is not a superadmin
+   */
+  403: Error;
+  /**
+   * No tenant exists with this id
+   */
+  404: Error;
+  /**
+   * The tenant is comped, or its subscription is not in a clearable state (canceled, or none with no stored subscription id); or billing_provider_locked, meaning the pre-clear provider check found something the caller must resolve first — `details.reason` is one of `pending_at_provider` (something is still pending or live with the tenant's current Stripe customer), `provider_changed` (the tenant's provider or stored customer changed during the check — retry), `razorpay_lookup_unconfirmed` (razorpay_lookup_confirmed was not sent as true), `razorpay_not_canceled` (a named Razorpay subscription id is not canceled) or `razorpay_wrong_tenant` (a named Razorpay subscription id belongs to a different tenant, or carries no tenant at all).
+   */
+  409: Error;
+  /**
+   * reason is empty
+   */
+  422: Error;
+  /**
+   * The billing-admin panel is not configured on this instance
+   */
+  503: Error;
+};
+
+export type ClearAdminAccountBillingProviderError =
+  ClearAdminAccountBillingProviderErrors[keyof ClearAdminAccountBillingProviderErrors];
+
+export type ClearAdminAccountBillingProviderResponses = {
+  /**
+   * Payment-provider pin cleared
+   */
+  200: AdminBillingAck;
+};
+
+export type ClearAdminAccountBillingProviderResponse =
+  ClearAdminAccountBillingProviderResponses[keyof ClearAdminAccountBillingProviderResponses];
 
 export type GetAdminRevenueData = {
   body?: never;
