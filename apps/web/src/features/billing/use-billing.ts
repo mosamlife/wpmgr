@@ -189,7 +189,7 @@ export function useCreateBillingCheckout(): UseMutationResult<
           | undefined;
         const reason =
           typeof raw?.details?.["reason"] === "string"
-            ? (raw.details["reason"] as string)
+            ? raw.details["reason"]
             : undefined;
         throw new BillingCheckoutError(
           toError(result.error).message,
