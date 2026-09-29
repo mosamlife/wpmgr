@@ -30,9 +30,10 @@
 // Two decisions, not one. The agent-mirror pair asks ResolveInstanceAuthority
 // (superadmin, or owner of the only live organisation). The instance-email pair
 // asks InstanceEmailAuthority, which is that decision plus one more arm: on a
-// self-hosted install, the account that set the install up (ArmInstallOwner).
-// The extra arm is reachable only through InstanceEmailStore, a wider interface
-// the agent-mirror callers never hold, so it cannot leak into their answer.
+// self-hosted install, the account recorded as having set up the install
+// (ArmInstallOwner). The extra arm is reachable only through
+// InstanceEmailStore, a wider interface the agent-mirror callers never hold,
+// so it cannot leak into their answer.
 //
 // Nothing in this package is cached. See Store's doc for why that matters.
 package admingate
@@ -165,9 +166,9 @@ const (
 	// ArmSoleLiveTenantOwner means the caller owns the only live organisation
 	// on this install.
 	ArmSoleLiveTenantOwner
-	// ArmInstallOwner means the caller is the account recorded in
-	// install_owner as having set up this install, on an install that is not
-	// hosted. Only InstanceEmailAuthority returns it.
+	// ArmInstallOwner means the caller is the account recorded as having set
+	// up the install (in install_owner), on an install that is not hosted.
+	// Only InstanceEmailAuthority returns it.
 	ArmInstallOwner
 )
 
@@ -346,21 +347,22 @@ func CanManageInstanceEmail(ctx context.Context, store InstanceEmailStore) bool 
 //
 //	users.is_superadmin = true                        ArmSuperadmin
 //	OR the caller owns the only live organisation     ArmSoleLiveTenantOwner
-//	OR, on a self-hosted install only, the caller is
-//	   the account recorded as having set it up       ArmInstallOwner
+//	OR, on a self-hosted install only, the account
+//	   recorded as having set up the install          ArmInstallOwner
 //
 // The first two are ResolveInstanceAuthority, unchanged. The third is last so
 // that a caller admitted before it existed keeps the arm it was admitted
 // under, and with it the audit routing it had.
 //
 // ArmInstallOwner (owner ruling, 2026-09-29). On a self-hosted install the
-// person who set the install up keeps the instance relay when a second
-// organisation appears. On hosted, where organisations belong to different
-// customers, nobody does. The authority belongs to the account recorded in
-// install_owner, not to a role: another owner of the same organisation does
-// not hold it, nobody inherits it when that account is deleted, and a
-// disabled account is refused. Where no install owner was ever recorded the
-// arm admits nobody, and WPMGR_SUPERADMIN_EMAILS is the remedy.
+// account recorded as having set up the install keeps the instance relay
+// when a second organisation appears. On hosted, where organisations belong
+// to different customers, nobody does. The authority belongs to the account
+// recorded in install_owner, not to a role: another owner of the same
+// organisation does not hold it, nobody inherits it when that account is
+// deleted, and a disabled account is refused. Where no install owner was
+// ever recorded the arm admits nobody, and WPMGR_SUPERADMIN_EMAILS is the
+// remedy.
 //
 // The arm also requires the recorded account to hold an 'owner' membership in
 // at least one live organisation right now. An install owner who has been

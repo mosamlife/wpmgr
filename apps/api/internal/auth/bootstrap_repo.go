@@ -115,10 +115,10 @@ func OwnershipEstablishedInTx(ctx context.Context, tx pgx.Tx) (bool, error) {
 // the second caller does not read at all until the first has committed — and
 // then reads one, not zero.
 //
-// It returns domain.Forbidden("registration_closed") when the install already
-// has a user. That is the same error the caller returns for every other refusal
-// on this path, deliberately: an unauthenticated caller learns "no" and nothing
-// else about the install's state.
+// It returns domain.Forbidden("registration_closed") when any organisation on
+// the install already has an owner. That is the same error the caller returns
+// for every other refusal on this path, deliberately: an unauthenticated
+// caller learns "no" and nothing else about the install's state.
 //
 // RLS: memberships is FORCE ROW LEVEL SECURITY with a WITH CHECK on
 // app.tenant_id, so the membership INSERT is only legal once the new tenant is
