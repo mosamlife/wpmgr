@@ -64,7 +64,11 @@ func DefaultConfig() Config {
 
 // Client is an SSRF-hardened HTTP client with retries and tracing.
 type Client struct {
-	http        *http.Client
+	http *http.Client
+	// once shares http's Transport and Timeout but never follows a redirect:
+	// DoOnce uses it, so a request sent through DoOnce reaches exactly one
+	// URL, the one the caller built.
+	once        *http.Client
 	maxRetries  int
 	backoffBase time.Duration
 }
@@ -136,15 +140,74 @@ func New(cfg Config) *Client {
 		base.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // test-only escape hatch
 	}
 
+	transport := otelhttp.NewTransport(base)
 	return &Client{
 		http: &http.Client{
 			Timeout:   cfg.Timeout,
-			Transport: otelhttp.NewTransport(base),
+			Transport: transport,
+		},
+		once: &http.Client{
+			Timeout:       cfg.Timeout,
+			Transport:     stashLocation{rt: transport},
+			CheckRedirect: refuseRedirect,
 		},
 		maxRetries:  cfg.MaxRetries,
 		backoffBase: cfg.BackoffBase,
 	}
 }
+
+// refuseRedirect is DoOnce's redirect policy: never follow. Returning
+// http.ErrUseLastResponse hands the 3xx response itself back to the caller
+// instead of issuing a second request.
+//
+// stashLocation already hides every 3xx Location from http.Client, so this
+// policy is not reached in normal operation. It stays as a deliberate
+// backstop for the credential-safety rule that DoOnce never sends a request,
+// and the credential it carries, to an address the caller did not choose.
+func refuseRedirect(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+
+// stashedLocationHeader is where stashLocation keeps a 3xx Location while the
+// response passes through http.Client. DoOnce moves it back.
+const stashedLocationHeader = "X-Wpmgr-Stashed-Location"
+
+// stashLocation is the once client's transport wrapper. On a 3xx it moves the
+// Location header to stashedLocationHeader, replacing any value the server
+// sent under that name, so http.Client sees no Location and returns the
+// response as it is. Without it http.Client parses Location before consulting
+// CheckRedirect, and a malformed one (e.g. "http://[::1") comes back as a
+// transport error with the response discarded instead of as the 3xx it was.
+type stashLocation struct{ rt http.RoundTripper }
+
+// RoundTrip implements http.RoundTripper.
+func (s stashLocation) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := s.rt.RoundTrip(req)
+	if err != nil || resp == nil {
+		return resp, err
+	}
+	if isRedirectStatus(resp.StatusCode) {
+		delete(resp.Header, stashedLocationHeader)
+		if loc, ok := resp.Header["Location"]; ok {
+			resp.Header[stashedLocationHeader] = loc
+			delete(resp.Header, "Location")
+		}
+	}
+	return resp, nil
+}
+
+// restoreLocation undoes stashLocation on a 3xx response: the stashed value
+// goes back under Location, verbatim, and the stash header is removed.
+func restoreLocation(resp *http.Response) {
+	if resp == nil || !isRedirectStatus(resp.StatusCode) {
+		return
+	}
+	if loc, ok := resp.Header[stashedLocationHeader]; ok {
+		resp.Header["Location"] = loc
+		delete(resp.Header, stashedLocationHeader)
+	}
+}
+
+// isRedirectStatus reports whether code is a 3xx.
+func isRedirectStatus(code int) bool { return code >= 300 && code < 400 }
 
 // HTTPClient exposes the underlying *http.Client for callers that need it (e.g.
 // a single non-retried probe). The SSRF transport is preserved.
@@ -201,17 +264,32 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 	return nil, lastErr
 }
 
-// DoOnce sends the request EXACTLY ONCE — no automatic retries on network
-// errors or 5xx. Use this for non-idempotent calls whose payload is single-use
-// (e.g. CP→agent signed commands, where the JWT's jti is consumed on the
-// agent's first receive; an auto-retry of the same JWT would be a legitimate
-// cross-request replay from the agent's POV and reject with 403). The SSRF
-// dialer + bounded timeout + otelhttp still apply.
+// DoOnce sends the request EXACTLY ONCE, to exactly the URL it names: no
+// automatic retries on network errors or 5xx, and no redirect following. Use
+// this for non-idempotent calls whose payload is single-use (e.g. CP→agent
+// signed commands, where the JWT's jti is consumed on the agent's first
+// receive; an auto-retry of the same JWT would be a legitimate cross-request
+// replay from the agent's POV and reject with 403). The SSRF dialer + bounded
+// timeout + otelhttp still apply.
+//
+// A 3xx answer is returned to the caller as the response, with its Location
+// header exactly as the server sent it (a malformed one included), and
+// nothing is sent to the Location: each call reaches exactly one URL.
+// Following a redirect would send the request, and any credential it
+// carries, a second time and to an address the caller did not choose; a
+// caller that sees a 3xx decides what it means, and one that chooses to send
+// again does so with its own second call.
 //
 // Callers that want retries should do it at the right semantic layer (e.g.
-// mint a fresh JWT in the next River job attempt).
+// mint a fresh JWT in the next River job attempt). Do and HTTPClient keep the
+// standard redirect-following behaviour.
 func (c *Client) DoOnce(req *http.Request) (*http.Response, error) {
-	return c.http.Do(req)
+	resp, err := c.once.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	restoreLocation(resp)
+	return resp, nil
 }
 
 // IsSSRFBlocked reports whether err is (or wraps) an SSRF prohibition: a

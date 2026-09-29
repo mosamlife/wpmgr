@@ -36,7 +36,7 @@ SET consumed_at      = now(),
 WHERE code_hash = $1
   AND consumed_at IS NULL
   AND expires_at > now()
-RETURNING id, tenant_id, site_id, site_name, tags
+RETURNING id, tenant_id, site_id, site_name, tags, created_by
 `
 
 type ConsumeSiteBoundPairingCodeParams struct {
@@ -45,11 +45,12 @@ type ConsumeSiteBoundPairingCodeParams struct {
 }
 
 type ConsumeSiteBoundPairingCodeRow struct {
-	ID       uuid.UUID   `json:"id"`
-	TenantID uuid.UUID   `json:"tenant_id"`
-	SiteID   pgtype.UUID `json:"site_id"`
-	SiteName string      `json:"site_name"`
-	Tags     []string    `json:"tags"`
+	ID        uuid.UUID   `json:"id"`
+	TenantID  uuid.UUID   `json:"tenant_id"`
+	SiteID    pgtype.UUID `json:"site_id"`
+	SiteName  string      `json:"site_name"`
+	Tags      []string    `json:"tags"`
+	CreatedBy pgtype.UUID `json:"created_by"`
 }
 
 // Enroll path (app.enroll GUC): the ATOMIC single-use consume. Marks the code
@@ -57,6 +58,8 @@ type ConsumeSiteBoundPairingCodeRow struct {
 // IP. Exactly one concurrent caller wins (the conditional UPDATE is the lock);
 // a loser gets pgx.ErrNoRows. Returns the resolved tenant_id + site_id so the
 // caller can transition the bound site. NULL site_id ⇒ legacy create-at-enroll.
+// created_by is the user who minted the code. It is nullable: callers must
+// handle NULL (for one, the FK is ON DELETE SET NULL).
 func (q *Queries) ConsumeSiteBoundPairingCode(ctx context.Context, arg ConsumeSiteBoundPairingCodeParams) (ConsumeSiteBoundPairingCodeRow, error) {
 	row := q.db.QueryRow(ctx, consumeSiteBoundPairingCode, arg.CodeHash, arg.ConsumedFromIp)
 	var i ConsumeSiteBoundPairingCodeRow
@@ -66,6 +69,7 @@ func (q *Queries) ConsumeSiteBoundPairingCode(ctx context.Context, arg ConsumeSi
 		&i.SiteID,
 		&i.SiteName,
 		&i.Tags,
+		&i.CreatedBy,
 	)
 	return i, err
 }

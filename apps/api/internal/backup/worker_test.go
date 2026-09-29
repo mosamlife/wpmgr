@@ -109,6 +109,11 @@ type fakeRestoreRunStore struct {
 	active      RestoreRun
 	hasActive   bool
 	statusCalls []MarkRestoreRunStatusInput
+	// eventCalls records every AppendRestoreEvent call verbatim, so a test can
+	// assert the restore run's own audit trail (phase/status/detail) by
+	// content instead of inferring it merely happened from source-adjacency to
+	// another call this fake DOES capture.
+	eventCalls []AppendRestoreEventInput
 }
 
 func (f *fakeRestoreRunStore) CreateRestoreRun(_ context.Context, _ CreateRestoreRunInput) (RestoreRun, error) {
@@ -126,7 +131,8 @@ func (f *fakeRestoreRunStore) ActiveRestoreRunForSnapshot(_ context.Context, _, 
 	}
 	return f.active, nil
 }
-func (f *fakeRestoreRunStore) AppendRestoreEvent(_ context.Context, _ AppendRestoreEventInput) (RestoreRunEvent, error) {
+func (f *fakeRestoreRunStore) AppendRestoreEvent(_ context.Context, in AppendRestoreEventInput) (RestoreRunEvent, error) {
+	f.eventCalls = append(f.eventCalls, in)
 	return RestoreRunEvent{}, nil
 }
 func (f *fakeRestoreRunStore) UpdateRestoreRunPhase(_ context.Context, _, _ uuid.UUID, _ string) error {

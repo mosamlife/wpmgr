@@ -30,7 +30,7 @@ type stateRepo struct {
 	gen     map[uuid.UUID]int32
 	// attrs holds optional per-site extra attributes for DeleteCancellable checks.
 	attrs   map[uuid.UUID]siteAttrs
-	// urlHits simulates existing rows returned by GetSiteByURL (keyed by url).
+	// urlHits simulates existing rows returned by GetSiteByAnyURL (keyed by url).
 	urlHits map[string]SiteURLHit
 }
 
@@ -126,11 +126,16 @@ func (r *stateRepo) DeleteCancellable(_ context.Context, _, siteID uuid.UUID) (i
 	return 1, nil
 }
 
-func (r *stateRepo) GetSiteByURL(_ context.Context, _ uuid.UUID, url string) (SiteURLHit, bool, error) {
+func (r *stateRepo) GetSiteByAnyURL(_ context.Context, _ uuid.UUID, urls []string) (SiteURLHit, bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if hit, ok := r.urlHits[url]; ok {
-		return hit, true, nil
+	for _, url := range urls {
+		if hit, ok := r.urlHits[url]; ok {
+			if hit.URL == "" {
+				hit.URL = url
+			}
+			return hit, true, nil
+		}
 	}
 	return SiteURLHit{}, false, nil
 }

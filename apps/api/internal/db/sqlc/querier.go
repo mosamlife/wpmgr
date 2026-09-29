@@ -205,6 +205,19 @@ type Querier interface {
 	// audit entry: a conflict that repeats on every sign-in must not write an audit
 	// entry on every sign-in.
 	AdoptLegacyIdentity(ctx context.Context, arg AdoptLegacyIdentityParams) (int64, error)
+	// Replaces a site's stored address with a new one, compare-and-set on the
+	// address the caller last read. Matches only when the site is still in the
+	// tenant, still holds "from", and is in an enrolled state (connected, degraded
+	// or disconnected); a pending, revoked or archived site is never re-addressed
+	// here. A non-matching site, a changed address, or another site in the same
+	// tenant already holding "to" all yield pgx.ErrNoRows and leave the row as it
+	// was. The NOT EXISTS guard sees only rows the caller's RLS scope can see, and
+	// it cannot see a concurrent uncommitted write, so sites_tenant_id_url_key
+	// remains the authority: a caller must also treat a unique violation on that
+	// index as "address in use". Returns the url now stored.
+	// "to" and "from" are reserved words, so they are bound with sqlc.arg('...')
+	// rather than the @name shorthand, which does not parse for them.
+	AdoptSiteURL(ctx context.Context, arg AdoptSiteURLParams) (string, error)
 	// Records that a scheduled backup was enqueued and advances next_run_at. The
 	// scheduler resolves the tenant from the due-row first, then advances within
 	// that tenant's scope (the per-tenant isolation policy permits the UPDATE).
@@ -236,6 +249,13 @@ type Querier interface {
 	// connected in one statement. The generation was already advanced at re-enroll
 	// mint time (BeginSiteReEnrollment), so we do not bump it here. Mirrors the
 	// legacy AttachAgentToSite but driving connection_state.
+	//
+	// url is optional. NULL keeps the stored address. A non-NULL value is written
+	// only when no other site in the same tenant already holds it, so an address
+	// conflict leaves the stored url in place and the enrollment still succeeds
+	// instead of failing on sites_tenant_id_url_key. The caller learns whether the
+	// address was adopted by comparing the returned url with the one it passed.
+	// Deciding WHICH address may be passed is the caller's job, not this query's.
 	// Defense-in-depth (Phase 6 review, finding E): consume only from
 	// 'pending_enrollment'. A code is bound to a site BeginReEnrollment already moved
 	// to pending_enrollment, so this holds on the happy path; the guard stops a
@@ -452,6 +472,8 @@ type Querier interface {
 	// IP. Exactly one concurrent caller wins (the conditional UPDATE is the lock);
 	// a loser gets pgx.ErrNoRows. Returns the resolved tenant_id + site_id so the
 	// caller can transition the bound site. NULL site_id ⇒ legacy create-at-enroll.
+	// created_by is the user who minted the code. It is nullable: callers must
+	// handle NULL (for one, the FK is ON DELETE SET NULL).
 	ConsumeSiteBoundPairingCode(ctx context.Context, arg ConsumeSiteBoundPairingCodeParams) (ConsumeSiteBoundPairingCodeRow, error)
 	// Mark a challenge used on successful verification.
 	ConsumeTwoFactorChallenge(ctx context.Context, id uuid.UUID) (TwoFactorChallenge, error)
@@ -1627,6 +1649,14 @@ type Querier interface {
 	// Agent-auth path (app.agent GUC). Resolve a site by its agent public key.
 	// ---------------------------------------------------------------------------
 	GetSiteByAgentKey(ctx context.Context, agentPublicKey string) (Site, error)
+	// Variant-aware URL-dedup check before MintEnrollmentCode. The caller passes
+	// every spelling it treats as the same site (for example with and without a
+	// leading "www.", http and https), in priority order. Tenant-scoped and, like
+	// GetSiteByURLForMint, includes ALL states so the caller can answer a
+	// structured 409. When several variants exist, the one listed first in urls
+	// wins, so passing the exact URL first reports an exact match ahead of a
+	// variant. Served by sites_tenant_id_url_key.
+	GetSiteByAnyURL(ctx context.Context, arg GetSiteByAnyURLParams) (GetSiteByAnyURLRow, error)
 	// ---------------------------------------------------------------------------
 	// Enrollment path (app.enroll GUC). These run before any tenant scope exists.
 	// ---------------------------------------------------------------------------

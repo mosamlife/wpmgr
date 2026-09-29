@@ -1010,6 +1010,11 @@ func (s *Service) ResendEmail(ctx context.Context, tenantID, siteID, logID uuid.
 
 	res, err := s.agent.ResendEmail(ctx, siteID, siteURL, req)
 	if err != nil {
+		if re, ok := agentcmd.AsRedirect(err); ok {
+			// Checked before the text match below: a redirect is a wrong saved
+			// address, not an old plugin, whatever the redirected page said.
+			return ResendResult{OK: false, Detail: re.OperatorMessage("Resend")}, nil
+		}
 		return ResendResult{OK: false, Detail: resendFailureMessage(err.Error())}, nil
 	}
 	// DELIBERATE: the agent's ok=false is propagated as this call's OK rather than

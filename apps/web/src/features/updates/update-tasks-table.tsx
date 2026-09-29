@@ -15,6 +15,7 @@ import { VersionArrow } from "@/components/shared/version-arrow";
 import { TaskStatusBadge } from "@/features/updates/update-status";
 import {
   isSiteDownRecovery,
+  isRedirectFailure,
   SITE_DOWN_RECOVERY_FALLBACK_DETAIL,
 } from "@/features/updates/summarize";
 import {
@@ -141,6 +142,11 @@ function UpdateTaskRow({
   // NEVER a safety or selection authority: whether a task may be retried is
   // the server's `retryable` field and nothing else.
   const siteDown = isSiteDownRecovery(task.status, task.detail, task.error);
+  // GH #755 slice 1: a redirect failure's task.detail is the full operator
+  // message (names the target + remedy), not the short generic status string
+  // this cell otherwise truncates to one line — never clip it.
+  const redirectFailure =
+    !siteDown && isRedirectFailure(task.status, task.detail, task.error);
   // GH #255 Phase 2: an armed agent task has no detail text until beat 3
   // resolves it (nothing has happened on the site yet beyond scheduling the
   // cron event that will apply the upgrade), so the generic empty-cell
@@ -219,6 +225,13 @@ function UpdateTaskRow({
                   className="mt-0.5 size-3.5 shrink-0"
                 />
                 <span>{task.detail ?? SITE_DOWN_RECOVERY_FALLBACK_DETAIL}</span>
+              </span>
+            ) : redirectFailure ? (
+              // GH #755 slice 1: an actionable config mismatch, not a
+              // destructive condition — its own non-truncating treatment,
+              // distinct from the site-down alert above.
+              <span role="alert" className="whitespace-normal text-warning-subtle-fg">
+                {task.detail}
               </span>
             ) : (
               <span

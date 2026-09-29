@@ -225,3 +225,44 @@ export const SITE_DOWN_RECOVERY_LABEL = "Site down, recovery attempted";
  * detected from `error` alone. */
 export const SITE_DOWN_RECOVERY_FALLBACK_DETAIL =
   "The site went down site-wide during this update. Automatic filesystem recovery was attempted; manual filesystem recovery may be required.";
+
+// GH #755 round 2, DISPLAY ONLY, same discipline as isSiteDownRecovery
+// above: this reads the control plane's own composed prose to pick a
+// rendering treatment, never a safety or retry decision (that stays
+// server-side, on `retryable`/`retry_class`). An agent self-update redirect
+// comes back `skipped`, not `failed`/`rolled_back` (Part A7 on the API), so
+// this condition gets its own status set rather than reusing
+// SITE_DOWN_RECOVERY_STATUSES, which would otherwise gate that row out and
+// leave it on the generic truncated copy.
+const REDIRECT_FAILURE_STATUSES = new Set(["failed", "rolled_back", "skipped"]);
+
+// The task `error` field is the Go Error() text; its tail is stable across
+// every redirect shape, so match it directly. `detail` is the operator
+// sentence the control plane composes, which always names a redirect and
+// ends "... so no command was sent." Matches every one of the five variants:
+//   A  (target the saved address will move to)
+//   D  (the site redirects its command address back to itself)
+//   B1 (redirect to another path on the site)
+//   B2 (redirect that drops HTTPS)
+//   C  (a redirect that names no usable address)
+const REDIRECT_ERROR_TAIL_PATTERN =
+  /commands are sent only to the site's saved address, so the redirect was not followed/;
+const REDIRECT_DETAIL_PATTERN = /\bredirect[\s\S]*\bso no command was sent\b/i;
+
+/**
+ * True when a terminal task's detail/error names the GH #755 "site's saved
+ * address redirects" condition. Unlike isSiteDownRecovery this is not a
+ * severe/destructive condition, it is a config mismatch with a stated
+ * remedy, so it gets its own (non-destructive) rendering treatment, never
+ * folded into the site-down-recovery copy.
+ */
+export function isRedirectFailure(
+  status: string,
+  detail?: string,
+  error?: string,
+): boolean {
+  if (!REDIRECT_FAILURE_STATUSES.has(status)) return false;
+  if (error && REDIRECT_ERROR_TAIL_PATTERN.test(error)) return true;
+  if (detail && REDIRECT_DETAIL_PATTERN.test(detail)) return true;
+  return false;
+}
