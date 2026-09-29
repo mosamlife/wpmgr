@@ -284,7 +284,7 @@ view, change, or test it. On a self-hosted install, that authority belongs to:
 
 - any account listed in `WPMGR_SUPERADMIN_EMAILS`;
 - on an install with exactly one live organisation, that organisation's owner;
-- the install owner: the account recorded when the install was set up (see
+- the install owner: the account recorded as having set up the install (see
   [First-run notes](#first-run-notes) below), for as long as that account is
   active and is an owner of at least one live organisation; an organisation in
   its deletion grace period does not count.
@@ -300,9 +300,11 @@ that completes setup is still not recorded as the install owner. Recover
 access with `WPMGR_SUPERADMIN_EMAILS`.
 
 **No install owner recorded.** Until an account is recorded, this arm admits
-nobody — there is no fallback to the earliest user or owner. The next
-successful setup records its account. `WPMGR_SUPERADMIN_EMAILS` is the remedy
-until then; superadmins are admitted through their own arm, not this one.
+nobody — there is no fallback to the earliest user or owner. Setup reopens
+only once no organisation on the install has an owner; the next successful
+setup then records its account. On an install that still has owners, this
+empty state persists indefinitely, and `WPMGR_SUPERADMIN_EMAILS` is the
+remedy. Superadmins are admitted through their own arm, not this one.
 
 Hosted installs are not affected: this whole section describes self-hosted
 behaviour only.
@@ -530,8 +532,8 @@ Grafana then ships with the WPMgr dashboards pre-provisioned. See
   completed this claim also holds the install-wide email relay authority
   described in [Instance email (SMTP) authority](#instance-email-authority)
   above, for as long as it stays active and keeps owning a live organisation.
-  A setup run again after an account is already recorded is refused; it does
-  not move that authority.
+  An account that completes setup after one is already recorded is not
+  recorded, and does not gain that authority.
 
   You never need to look up or paste that value yourself. `scripts/init-env.sh`
   (and the quickstart-selfhost.sh curl-pipe path) prints the exact claim
