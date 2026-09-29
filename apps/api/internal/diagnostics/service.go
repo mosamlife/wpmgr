@@ -44,11 +44,12 @@ type Service struct {
 }
 
 // ReportedURLSink receives the site address the agent reports in the http
-// category (home_url). The site service implements it and decides whether
-// the address replaces the saved one. Optional: nil means the address is
-// ignored.
+// category (home_url). The site service implements it: it queues a job that
+// decides whether the address replaces the saved one, and returns without
+// probing the site, so the push is never held up. Optional: nil means the
+// address is ignored.
 type ReportedURLSink interface {
-	AdoptReportedURL(ctx context.Context, tenantID, siteID uuid.UUID, reported, source, agentVersion string) error
+	EnqueueAdoptReportedURL(ctx context.Context, tenantID, siteID uuid.UUID, reported, source, agentVersion string) error
 }
 
 // reportedURLSource names the diagnostics push on the site.url_changed audit
@@ -263,9 +264,9 @@ func (s *Service) IngestDiagnostics(ctx context.Context, tenantID, siteID uuid.U
 		}
 
 		// The http category carries the site's WordPress home_url. Hand it to
-		// the site service, which decides whether it replaces the saved
-		// address. Best-effort: neither a decode failure nor a refusal nor an
-		// error may fail the ingest.
+		// the site service, which queues the decision whether it replaces the
+		// saved address. Best-effort: neither a decode failure nor an enqueue
+		// failure may fail the ingest.
 		if cat == CategoryHTTP {
 			s.ingestReportedURL(ctx, tenantID, siteID, payload)
 		}
@@ -274,7 +275,8 @@ func (s *Service) IngestDiagnostics(ctx context.Context, tenantID, siteID uuid.U
 }
 
 // ingestReportedURL passes the http category's home_url, when present, to
-// the reported-address sink. Every failure is dropped.
+// the reported-address sink, which only queues it. Every failure is dropped
+// (the sink logs it).
 func (s *Service) ingestReportedURL(ctx context.Context, tenantID, siteID uuid.UUID, payload json.RawMessage) {
 	if s.reportedURL == nil {
 		return
@@ -285,7 +287,7 @@ func (s *Service) ingestReportedURL(ctx context.Context, tenantID, siteID uuid.U
 	if err := json.Unmarshal(payload, &body); err != nil || body.HomeURL == "" {
 		return
 	}
-	_ = s.reportedURL.AdoptReportedURL(ctx, tenantID, siteID, body.HomeURL, reportedURLSource, "")
+	_ = s.reportedURL.EnqueueAdoptReportedURL(ctx, tenantID, siteID, body.HomeURL, reportedURLSource, "")
 }
 
 // LatestBySite returns a map keyed by category string. Categories the agent

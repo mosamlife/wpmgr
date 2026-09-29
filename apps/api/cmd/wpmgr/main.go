@@ -1526,6 +1526,10 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// pays one near-empty index read a minute.
 	siteAutoResumeWorker := site.NewAutoResumeWorker(
 		site.NewAutoResumer(siteRepo, auditRec, logger), logger)
+	// GH #755: an address an agent push reports is adopted by this job, off
+	// the push, so the signed probe that confirms it never holds a push up.
+	// The enqueuer is wired onto siteSvc once riverClient is up.
+	siteAdoptURLWorker := site.NewAdoptReportedURLWorker(siteSvc)
 	// SSE endpoint + the dedicated LISTEN listener.
 	siteEventsH := siteevents.NewHandler(pool, siteEventsHub)
 	siteEventsListener := siteevents.NewListener(pool, siteEventsHub, logger)
@@ -1975,6 +1979,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		siteSweepWorker:          siteSweepWorker,
 		siteEventPruneWorker:     siteEventPruneWorker,
 		siteAutoResumeWorker:     siteAutoResumeWorker,
+		siteAdoptURLWorker:       siteAdoptURLWorker,
 		updateWorker:             updateWorker,
 		updateReaperWorker:       updateReaperWorker,
 		updateDispatchWorker:     updateDispatchWorker,
@@ -2070,6 +2075,8 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// enqueuer. Wire them after the client is up. The same enqueuer also serves
 	// the post-update inventory-refresh path (via the update Worker) and the
 	// operator-facing refresh route on the site handler (via siteRefreshAdapter).
+	// GH #755: agent pushes queue a reported address for siteAdoptURLWorker.
+	siteSvc.SetAdoptURLEnqueuer(site.NewRiverAdoptURLEnqueuer(riverClient))
 	updateEnqueuer := update.NewRiverEnqueuer(riverClient)
 	updateSvc := update.NewService(updateRepo, sitesLookup, updateEnqueuer, validator, clock)
 	updateH := update.NewHandler(updateSvc, updateHub, auditRec)
@@ -2408,7 +2415,8 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// RecordDBSizeHistoryFromDiagnostics.
 	diagnosticsSvc.SetDBSizeHistorySink(perfRepo)
 	// GH #755: the daily diagnostics push's http.home_url goes to the site
-	// service, which decides whether it replaces the saved address.
+	// service, which queues the job that decides whether it replaces the
+	// saved address.
 	diagnosticsSvc.SetReportedURLSink(siteSvc)
 	// M28 — offline IP -> hosting-provider resolver. Self-disables (no-op) if the
 	// embedded DB-IP ASN database fails to open; never blocks boot.
@@ -3372,7 +3380,9 @@ type riverDeps struct {
 	siteSweepWorker      *site.SweepWorker
 	siteEventPruneWorker *site.EventPruneWorker
 	siteAutoResumeWorker *site.AutoResumeWorker
-	updateWorker         *update.Worker
+	// GH #755: adopts an agent-reported address off the push (always wired).
+	siteAdoptURLWorker *site.AdoptReportedURLWorker
+	updateWorker       *update.Worker
 	// #131 follow-up — periodic reaper for update_tasks stuck in
 	// pending/running past the stale-task threshold (always wired).
 	updateReaperWorker *update.ReaperWorker
@@ -3581,6 +3591,9 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 	// resume instant must un-pause those sites on the way back up rather than
 	// leaving them dark for up to another interval, and the sweep is idempotent
 	// so an extra run at boot costs one index read.
+	if d.siteAdoptURLWorker != nil {
+		river.AddWorker(workers, d.siteAdoptURLWorker)
+	}
 	if d.siteAutoResumeWorker != nil {
 		river.AddWorker(workers, d.siteAutoResumeWorker)
 		periodics = append(periodics, river.NewPeriodicJob(

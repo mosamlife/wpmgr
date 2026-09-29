@@ -53,6 +53,10 @@ type Service struct {
 	// reported address). In memory and bounded; a restart resets it.
 	adoptProbes     *probeLimiter
 	adoptProbesOnce sync.Once
+	// adoptQueue receives the addresses agent pushes report; its job runs
+	// AdoptReportedURL off the push. Optional: nil means a reported address
+	// is not adopted after enrollment.
+	adoptQueue AdoptURLEnqueuer
 }
 
 // SetAuditRecorder wires the hash-chained audit recorder. Call once at boot;
@@ -425,14 +429,11 @@ func (s *Service) ApplyAgentMetadata(ctx context.Context, tenantID, siteID uuid.
 		}
 		out = updated
 	}
-	// The agent's WordPress address. Best-effort: a refusal or failure never
-	// fails the metadata push (AdoptReportedURL logs it).
+	// The agent's WordPress address, queued for AdoptReportedURL so its
+	// signed probe never holds up the push. An enqueue failure is logged
+	// and never fails the metadata push.
 	if m.HomeURL != "" {
-		if adopted, _ := s.adoptReportedURL(ctx, tenantID, siteID, m.HomeURL, urlSourceAgentMetadata, m.AgentVersion); adopted {
-			if reloaded, gerr := s.repo.Get(ctx, tenantID, siteID); gerr == nil {
-				out = reloaded
-			}
-		}
+		_ = s.EnqueueAdoptReportedURL(ctx, tenantID, siteID, m.HomeURL, urlSourceAgentMetadata, m.AgentVersion)
 	}
 	return toAPI(out), nil
 }

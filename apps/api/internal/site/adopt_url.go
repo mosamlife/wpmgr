@@ -37,17 +37,19 @@ type CommandRedirectProber interface {
 func (s *Service) SetCommandRedirectProber(p CommandRedirectProber) { s.redirectProber = p }
 
 // AdoptReportedURL decides whether the address an enrolled site's agent
-// reports (its WordPress home_url) replaces the saved address. It is
-// best-effort: a refusal is logged, never returned, and a load or write
-// failure is logged and returned for the caller to drop, so it can never fail
-// the push that carried the address.
+// reports (its WordPress home_url) replaces the saved address. Agent pushes
+// never call it: they queue an AdoptReportedURLArgs job
+// (EnqueueAdoptReportedURL), whose worker calls it with its own timeout, so
+// the signed probe below never holds up a push. It is best-effort: a refusal
+// is logged, never returned, and a load or write failure is logged and
+// returned, so the job retries it.
 //
 // The rule is siteaddr.PlanStrict: enrollment's rule (only a leading "www."
 // toggle and/or an http to https upgrade, on the same port and path, with the
 // adopted address dialling the host that was compared; a spelling of the
 // saved host with the same HostKey is the saved address, and changes
-// nothing). Nothing is written without a signed ping confirming it at the
-// moment of the push:
+// nothing). Nothing is written without a signed ping confirming it when the
+// job runs:
 //
 //   - A host change (the "www." toggle) is written only when a ping to the
 //     saved address is redirected to the planned address (siteaddr.SameAddress:
@@ -60,8 +62,8 @@ func (s *Service) SetCommandRedirectProber(p CommandRedirectProber) { s.redirect
 // Each (site, planned address) is probed at most once per adoptProbeWindow,
 // so an address the site reports but does not serve costs one ping a day,
 // not one per push. Because the scheme only ever goes up, and a host change
-// needs the saved address to redirect there at the moment of the push, two
-// installs cannot flip the address back and forth.
+// needs the saved address to redirect there when the job runs, two installs
+// cannot flip the address back and forth.
 func (s *Service) AdoptReportedURL(ctx context.Context, tenantID, siteID uuid.UUID, reported, source, agentVersion string) error {
 	_, err := s.adoptReportedURL(ctx, tenantID, siteID, reported, source, agentVersion)
 	return err
