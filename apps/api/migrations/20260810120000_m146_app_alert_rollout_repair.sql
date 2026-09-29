@@ -24,13 +24,16 @@
 -- m108 only when no app alert state exists, no version after this one is
 -- recorded, and no alert_configs row has an updated_at later than m108's
 -- applied_at. Then every alert_configs row with app alerting on carries m108's
--- default, so every such row is turned off. When any of the three holds, the
--- application ran after m108, and only rows whose updated_at is no later than
--- m108's applied_at are turned off. The third signal covers a deployment that
--- stopped at a release whose newest version was m108 and never evaluated an
--- app alert: it records neither of the other two. updated_at changes only
--- when a user saves the alert settings, so a row saved since m108 keeps what
--- was saved.
+-- default, so every such row is turned off. When any of the three holds, only
+-- rows whose updated_at is no later than m108's applied_at are turned off.
+-- When none of the three holds, no row is later than that applied_at, so the
+-- two branches turn off the same rows. The third signal covers a deployment
+-- that stopped at a release whose newest version was m108 and never evaluated
+-- an app alert: it records neither of the other two. updated_at changes only
+-- when a user saves the alert settings, so a row saved after m108 is kept as
+-- saved. The one exception is a save the previous release makes during a
+-- same-boot upgrade, between the start of m108 and this file: that row keeps
+-- m108's "on" default, and the tenant can turn it off in the alert settings.
 --
 -- ORDINAL. 20260810120000 sorts after m108 (20260810000000) and before m109
 -- (20260811000000), so on a database that has not yet run m108 it applies in
