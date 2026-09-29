@@ -117,7 +117,10 @@ function resolveTriggeredBy(run: ScheduleRun): ReactNode {
   return "schedule";
 }
 
-function ScheduleRunDetailView({ run }: { run: ScheduleRun }) {
+/** Exported for `-runId.attempt-error.test.tsx` — mirrors `SiteShell`'s
+ * pattern of testing the prop-driven view directly rather than navigating
+ * the full router. */
+export function ScheduleRunDetailView({ run }: { run: ScheduleRun }) {
   const terminal = isScheduleRunTerminal(run.status);
 
   // Resolve the originating site for the back-link.
@@ -269,13 +272,13 @@ function ScheduleRunDetailView({ run }: { run: ScheduleRun }) {
                 ),
               },
               {
+                // GH #791 adv-review finding 11 — a running run's last
+                // attempt error is already shown once, above, in the
+                // status banner; repeating it here as "Last error: X" made
+                // the same text appear twice on the page. This row stays
+                // for the terminal `error` field only.
                 label: "Error",
-                value:
-                  run.status === "running"
-                    ? run.attempt_error
-                      ? `Last error: ${run.attempt_error}`
-                      : "–"
-                    : (run.error ?? "–"),
+                value: run.status === "running" ? "–" : (run.error ?? "–"),
               },
             ]}
           />

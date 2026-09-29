@@ -122,12 +122,27 @@ const WIDE_REFETCH_PHASES: ReadonlySet<BackupEvent["phase"]> = new Set([
   "failed",
 ]);
 
+/**
+ * GH #791 adv-review nit 10 — `backupsKeys.all` (`["backups"]`) is the
+ * prefix for every backups query, including this tenant's OTHER sites'
+ * lists and the backup-settings queries (`backupsKeys.backupSettingsContentsFor`
+ * etc. — see `use-backups.ts`). Invalidating it on every retry/failure frame
+ * refetched all of that unrelated cached state. Scope to exactly what a
+ * command-failure frame can actually change: this snapshot's own detail,
+ * the snapshot list for ITS site (read off the cached detail we already
+ * hold), and the schedule-run family.
+ */
 function invalidateWide(
   queryClient: ReturnType<typeof useQueryClient>,
   snapshotId: string,
 ): void {
   void queryClient.invalidateQueries({ queryKey: backupsKeys.detail(snapshotId) });
-  void queryClient.invalidateQueries({ queryKey: backupsKeys.all });
+  const siteId = queryClient.getQueryData<BackupSnapshotDetail>(
+    backupsKeys.detail(snapshotId),
+  )?.snapshot.site_id;
+  if (siteId) {
+    void queryClient.invalidateQueries({ queryKey: backupsKeys.listFor(siteId) });
+  }
   void queryClient.invalidateQueries({ queryKey: scheduleKeys.all });
 }
 
@@ -286,10 +301,10 @@ export function useBackupStream(snapshotId: string): BackupStreamState {
       // schedule run finalises alongside this snapshot, and the site's
       // snapshot list row changes too. The patch above already updates this
       // snapshot's own detail cache immediately; also pull the truth for the
-      // wider set of views that just went stale.
+      // wider set of views that just went stale (scoped — see
+      // `invalidateWide`'s doc above).
       if (WIDE_REFETCH_PHASES.has(parsed.phase)) {
-        void queryClient.invalidateQueries({ queryKey: backupsKeys.all });
-        void queryClient.invalidateQueries({ queryKey: scheduleKeys.all });
+        invalidateWide(queryClient, snapshotId);
       }
 
       // NOTE — we DO NOT auto-close on terminal status. A snapshot is a

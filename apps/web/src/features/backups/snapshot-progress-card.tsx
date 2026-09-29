@@ -173,7 +173,10 @@ export function SnapshotProgressCard({ snapshot }: { snapshot: BackupSnapshot })
               Retrying (an attempt_error is on file) takes priority over the
               plain stall hint — see stalled-hint.tsx's module doc. */}
           {isSnapshotRetrying(snapshot) ? (
-            <StalledHint lastError={snapshotAttemptError(snapshot)} />
+            <StalledHint
+              lastError={snapshotAttemptError(snapshot)}
+              hasProgress={fp.phase !== "queued"}
+            />
           ) : isSnapshotStalled(snapshot) ? (
             <StalledHint />
           ) : null}

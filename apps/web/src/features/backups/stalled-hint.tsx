@@ -16,6 +16,15 @@
  *     a transient failure and keeps retrying. See `format-progress.ts`'s
  *     `isSnapshotRetrying`.
  *
+ * The "retrying" copy has two forms, chosen by `hasProgress`: a dispatch
+ * that has never reached the runner reads "hasn't started on the site yet";
+ * once real progress exists (the runner got in, then the CP lost contact
+ * again on a later attempt), saying "hasn't started" beside a live file
+ * counter would contradict what's on screen, so that case drops to
+ * "Retrying automatically." alone. Adversarial review caught the
+ * contradiction with a real route showing archiving progress alongside the
+ * "hasn't started" copy.
+ *
  * Deliberately a CALM status hint either way, not an error: no destructive
  * color, no icon, no side-stripe border — it shares styling with the rest of
  * the app's subtle "medium" status language (see
@@ -36,6 +45,7 @@ const RETRYING_COPY =
 export function StalledHint({
   compact = false,
   lastError = null,
+  hasProgress = false,
 }: {
   compact?: boolean;
   /**
@@ -44,12 +54,26 @@ export function StalledHint({
    * of the plain "stalled" copy — see module doc above.
    */
   lastError?: string | null;
+  /**
+   * GH #791 adv-review finding 4 — true once the snapshot has emitted any
+   * real phase beyond `queued` (see `format-progress.ts`'s
+   * `formatProgress().phase`), i.e. the runner DID reach the site at some
+   * point before the CP lost contact again on a later attempt. "This backup
+   * hasn't started on the site yet" is false in that case, so it's dropped
+   * and only "Retrying automatically." plus the last error remains.
+   */
+  hasProgress?: boolean;
 }) {
   const textClass = cn("text-warning-subtle-fg", compact ? "text-[10px]" : "text-xs");
 
   if (lastError) {
     if (compact) {
       return <p className={textClass}>Retrying. Last error: {lastError}</p>;
+    }
+    if (hasProgress) {
+      return (
+        <p className={textClass}>Retrying automatically. Last error: {lastError}</p>
+      );
     }
     return (
       <div className="space-y-0.5">

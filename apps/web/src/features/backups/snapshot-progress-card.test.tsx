@@ -110,4 +110,34 @@ describe("SnapshotProgressCard — GH #791 retrying indicator", () => {
     expect(screen.getByText(RETRYING_TEXT)).toBeInTheDocument();
     expect(screen.queryByText(HINT_TEXT)).not.toBeInTheDocument();
   });
+
+  // GH #791 adv-review finding 4 — "This backup hasn't started on the site
+  // yet" is false once real progress exists: the runner DID reach the site
+  // (phase moved past "queued") before the CP lost contact again on a later
+  // attempt. Adversarial review reproduced this through the real route with
+  // archiving progress at 1200/5000 files showing beside the "hasn't
+  // started" copy.
+  const PROGRESS_CONTRADICTION_TEXT = /hasn't started on the site yet/i;
+  const RETRYING_WITH_PROGRESS_TEXT =
+    /^Retrying automatically\. Last error: The site did not answer in time\.$/;
+
+  it("drops 'hasn't started on the site yet' once the snapshot has real progress", () => {
+    const snapshot: BackupSnapshot = {
+      ...buildRetryingSnapshot("The site did not answer in time."),
+      progress: {
+        phase: "archiving_files",
+        phase_detail: { files_done: 1200, files_total: 5000 },
+      },
+    };
+    renderWithProviders(<SnapshotProgressCard snapshot={snapshot} />);
+    expect(screen.queryByText(PROGRESS_CONTRADICTION_TEXT)).not.toBeInTheDocument();
+    expect(screen.getByText(RETRYING_WITH_PROGRESS_TEXT)).toBeInTheDocument();
+  });
+
+  it("keeps 'hasn't started on the site yet' when the phase is still 'queued' (no progress made)", () => {
+    const snapshot = buildRetryingSnapshot("The site did not answer in time.");
+    renderWithProviders(<SnapshotProgressCard snapshot={snapshot} />);
+    expect(screen.getByText(RETRYING_TEXT)).toBeInTheDocument();
+    expect(screen.queryByText(RETRYING_WITH_PROGRESS_TEXT)).not.toBeInTheDocument();
+  });
 });

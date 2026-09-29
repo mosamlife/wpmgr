@@ -190,7 +190,14 @@ describe("useBackupStream — GH #791 wide-refetch frames", () => {
     expect(invalidateSpy).toHaveBeenCalledWith(
       expect.objectContaining({ queryKey: backupsKeys.detail(snapshotId) }),
     );
+    // GH #791 adv-review nit 10 — scoped to THIS snapshot's site list (read
+    // off the cached detail: seedDetail sets site_id "site-42"), not every
+    // ["backups"] query (which would also refetch every other site's list
+    // and the unrelated backup-settings queries).
     expect(invalidateSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ queryKey: backupsKeys.listFor("site-42") }),
+    );
+    expect(invalidateSpy).not.toHaveBeenCalledWith(
       expect.objectContaining({ queryKey: backupsKeys.all }),
     );
     expect(invalidateSpy).toHaveBeenCalledWith(
@@ -228,8 +235,12 @@ describe("useBackupStream — GH #791 wide-refetch frames", () => {
       phase_detail: { error: "Agent error: RuntimeException" },
     });
     // GH #791 — plus the wider refetch, because a command failure can end a
-    // run (and its linked schedule run) on the very first attempt.
+    // run (and its linked schedule run) on the very first attempt. Scoped
+    // (nit 10) to this snapshot's own site list, not every ["backups"] query.
     expect(invalidateSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ queryKey: backupsKeys.listFor("site-42") }),
+    );
+    expect(invalidateSpy).not.toHaveBeenCalledWith(
       expect.objectContaining({ queryKey: backupsKeys.all }),
     );
     expect(invalidateSpy).toHaveBeenCalledWith(
