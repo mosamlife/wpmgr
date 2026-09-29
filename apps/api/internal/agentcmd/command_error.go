@@ -162,32 +162,64 @@ func (e *CommandError) AgentFailed() bool {
 //
 // Nothing below ever shows a caller the raw response body or headers. The
 // agent's exception name, source location and message are free-form strings
-// an attacker who can make the agent (or something posing as it) answer could
-// influence; these are shown to operators and, for a failed backup, emailed in
-// plain text (see internal/backup's #753 phishing-surface note). Every field
-// is validated against an allow-list shape before display, and the whole
-// composed message is length-capped independent of any single field.
+// that anything able to answer for the site could influence. Every field is
+// validated against an allow-list shape before display, and the whole
+// composed message is length-capped independent of any single field. The
+// failure email never carries the free-form reason at all (see
+// NotificationMessage); the reason is for the dashboard, which renders it as
+// plain text.
+
+// maxAtLen bounds the source location shown to an operator.
+const maxAtLen = 200
 
 var (
 	// exceptionPattern allows a PHP class name, optionally namespaced with a
 	// leading backslash and backslash separators (e.g. "RuntimeException" or
 	// "\Wpmgr\Backup\Exception").
 	exceptionPattern = regexp.MustCompile(`^\\?[A-Za-z_][A-Za-z0-9_\\]{0,127}$`)
-	// atPattern allows a relative "path/to/file.php:123"-shaped location. The
-	// character class alone already rejects a Windows drive letter + backslash
-	// path (backslash is not in it); the prefix/".." checks below reject a
-	// leading-slash absolute path and path traversal, which the class permits.
-	atPattern = regexp.MustCompile(`^[A-Za-z0-9._/-]{1,200}:\d{1,6}$`)
+	// atPattern allows only a relative "dir/dir/file.php:123" location:
+	// directory segments carry no dot, so neither "." nor ".." can appear as
+	// a segment, the first character can never be "/", and the file must be
+	// a .php file.
+	atPattern = regexp.MustCompile(`^(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_.-]+\.php:\d{1,6}$`)
 	// attemptCodePattern is the allow-list for a machine code shown verbatim
 	// on a still-retrying attempt (e.g. a 403 "wpmgr_token_expired").
 	attemptCodePattern = regexp.MustCompile(`^[a-z0-9_]{1,64}$`)
+	// leadingClassPattern matches a PHP class name at the start of the
+	// agent's message, followed by ": " or the end of the string. The agent
+	// marks a class name it had to shorten with a leading "...".
+	leadingClassPattern = regexp.MustCompile(`^(?:\.\.\.)?\\?[A-Za-z_][A-Za-z0-9_\\]*(?:: |$)`)
 
-	urlPattern         = regexp.MustCompile(`(?i)\bhttps?://\S+`)
-	posixPathPattern   = regexp.MustCompile(`/[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)+`)
-	windowsPathPattern = regexp.MustCompile(`(?i)\b[a-z]:\\[^\s]*`)
-	encodedRunPattern  = regexp.MustCompile(`[A-Za-z0-9+/=_-]{32,}`)
-	whitespaceRun      = regexp.MustCompile(`\s+`)
+	// schemeURLPattern matches anything with a "//" authority, with or
+	// without a scheme in front of it: http, https, ftp, a defanged "hxxps",
+	// or a protocol-relative "//host".
+	schemeURLPattern = regexp.MustCompile(`(?i)(?:\b[a-z][a-z0-9+.-]*:)?//\S*`)
+	// emailPattern matches anything shaped like user@host.
+	emailPattern = regexp.MustCompile(`\S+@\S+`)
+	// uncPathPattern matches a Windows UNC path (\\server\share\...).
+	uncPathPattern = regexp.MustCompile(`\\\\\S+`)
+	// windowsPathPattern matches a drive-letter path with either separator.
+	windowsPathPattern = regexp.MustCompile(`(?i)\b[a-z]:[\\/]\S*`)
+	// posixPathPattern matches an ABSOLUTE POSIX path: a "/" at the start of
+	// the text or after a character that cannot be part of a relative path.
+	// The preceding character is captured and put back, so a relative path
+	// such as "includes/commands/x.php" is left intact.
+	posixPathPattern = regexp.MustCompile(`(^|[^A-Za-z0-9._/\-])/[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]*)*`)
+	// hostPattern matches a dotted name whose last label starts with a
+	// letter (a hostname shape), optionally followed by a path.
+	hostPattern       = regexp.MustCompile(`(?i)\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z][a-z0-9-]*[a-z0-9]\b(?:/\S*)?`)
+	encodedRunPattern = regexp.MustCompile(`[A-Za-z0-9+/=_-]{32,}`)
+	whitespaceRun     = regexp.MustCompile(`\s+`)
 )
+
+// fileExtensions are the final labels that make a dotted name a file name,
+// not a hostname, when nothing else about it looks like a link. None of them
+// is a top-level domain.
+var fileExtensions = map[string]struct{}{
+	"php": {}, "phar": {}, "js": {}, "json": {}, "css": {}, "htm": {}, "html": {},
+	"xml": {}, "sql": {}, "txt": {}, "log": {}, "ini": {}, "lock": {}, "yml": {},
+	"yaml": {}, "gz": {}, "tar": {}, "bak": {}, "tmp": {}, "csv": {},
+}
 
 // sanitizeException returns exc unchanged when it matches the PHP-class-name
 // allow-list, or "" when it does not (a forged or malformed value is dropped
@@ -199,18 +231,13 @@ func sanitizeException(exc string) string {
 	return ""
 }
 
-// sanitizeAt returns at unchanged when it is a safe relative "file:line"
-// location, or "" otherwise. Beyond the character-class match, an absolute
-// path (leading "/") and any ".." path-traversal segment are rejected even
-// though the character class alone would allow them.
+// sanitizeAt returns at unchanged when it is a relative "dir/file.php:line"
+// location of at most maxAtLen bytes, or "" otherwise.
 func sanitizeAt(at string) string {
+	if len(at) > maxAtLen {
+		return ""
+	}
 	if !atPattern.MatchString(at) {
-		return ""
-	}
-	if strings.HasPrefix(at, "/") {
-		return ""
-	}
-	if strings.Contains(at, "..") {
 		return ""
 	}
 	return at
@@ -225,41 +252,85 @@ func sanitizeAttemptCode(code string) string {
 	return ""
 }
 
-// sanitizeReason turns the agent's free-form message into a short, safe
-// sentence fragment: the generic "Command execution failed: <exception>: "
-// wrapper is stripped, the text is forced to valid UTF-8, control and format
-// characters (including bidi overrides and zero-width characters) become
-// spaces, whitespace is collapsed, absolute paths and URLs are replaced with
-// neutral placeholders, long encoded/opaque runs are redacted, and the result
-// is capped at 200 bytes on a rune boundary.
-func sanitizeReason(message, rawException string) string {
-	reason := message
-	if rawException != "" {
-		reason = strings.TrimPrefix(reason, "Command execution failed: "+rawException+": ")
+// stripAgentPrefix removes the agent's generic wrapper from its message:
+// "Command execution failed: <Class>: <reason>" becomes "<reason>", and a
+// message that carries no reason ("Command execution failed: <Class>" or
+// "Command execution failed.") becomes "". The class in the message is
+// matched by shape, not only by equality with data.exception, because the
+// agent may shorten one and not the other when it fits its body budget.
+func stripAgentPrefix(message, rawException string) string {
+	const generic = "Command execution failed"
+	if message == generic+"." {
+		return ""
 	}
+	rest, ok := strings.CutPrefix(message, generic+": ")
+	if !ok {
+		return message
+	}
+	if rawException != "" {
+		if r, ok := strings.CutPrefix(rest, rawException+": "); ok {
+			return r
+		}
+		if rest == rawException {
+			return ""
+		}
+	}
+	if loc := leadingClassPattern.FindStringIndex(rest); loc != nil {
+		return rest[loc[1]:]
+	}
+	return rest
+}
+
+// redactHost replaces a hostname-shaped match with "[link]" unless it is a
+// plain file name: no "www." in front, no path after it, and a final label
+// that is a known file extension.
+func redactHost(m string) string {
+	if strings.Contains(m, "/") || strings.HasPrefix(strings.ToLower(m), "www.") {
+		return "[link]"
+	}
+	ext := strings.ToLower(m[strings.LastIndexByte(m, '.')+1:])
+	if _, ok := fileExtensions[ext]; ok {
+		return m
+	}
+	return "[link]"
+}
+
+// sanitizeReason turns the agent's free-form message into a short, safe
+// sentence fragment: the agent's generic wrapper is stripped, the text is
+// forced to valid UTF-8, control, format and every kind of Unicode space or
+// line/paragraph separator become a plain space, whitespace is collapsed,
+// links, addresses, hostnames and absolute paths are replaced with neutral
+// placeholders, long encoded runs are redacted, and the result is capped at
+// 200 bytes on a rune boundary.
+func sanitizeReason(message, rawException string) string {
+	reason := stripAgentPrefix(message, rawException)
 	reason = strings.ToValidUTF8(reason, "")
 	reason = replaceControlAndFormatChars(reason)
 	reason = collapseWhitespace(reason)
-	// URLs first, so a long token embedded in a query string is swallowed by
-	// "[link]" rather than left for the encoded-run pass to fragment, and so
-	// the "//host/path" shape of a URL is never mistaken for a POSIX path.
-	reason = urlPattern.ReplaceAllString(reason, "[link]")
+	// Links first, so a token in a query string is swallowed by "[link]"
+	// rather than fragmented by a later pass, and so the "//host/path" of a
+	// URL is never mistaken for a POSIX path.
+	reason = schemeURLPattern.ReplaceAllString(reason, "[link]")
+	reason = emailPattern.ReplaceAllString(reason, "[address]")
+	reason = uncPathPattern.ReplaceAllString(reason, "[path]")
 	reason = windowsPathPattern.ReplaceAllString(reason, "[path]")
-	reason = posixPathPattern.ReplaceAllString(reason, "[path]")
+	reason = posixPathPattern.ReplaceAllString(reason, "${1}[path]")
+	reason = hostPattern.ReplaceAllStringFunc(reason, redactHost)
 	reason = encodedRunPattern.ReplaceAllString(reason, "[redacted]")
 	reason = collapseWhitespace(reason)
 	return capBytes(reason, 200)
 }
 
-// replaceControlAndFormatChars replaces every Unicode control character (Cc:
-// C0/C1 controls) and format character (Cf: bidi overrides U+202A-U+202E and
-// U+2066-U+2069, zero-width space/joiners U+200B-U+200D, etc.) with a single
-// space.
+// replaceControlAndFormatChars replaces every Unicode control character (Cc),
+// format character (Cf: bidi overrides, zero-width characters) and space
+// character (unicode.IsSpace, which includes U+2028 LINE SEPARATOR, U+2029
+// PARAGRAPH SEPARATOR and U+00A0) with a single ASCII space, so the ASCII-only
+// whitespace collapse that follows sees every one of them.
 func replaceControlAndFormatChars(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
 	for _, r := range s {
-		if unicode.IsControl(r) || unicode.In(r, unicode.Cf) {
+		if unicode.IsControl(r) || unicode.In(r, unicode.Cf) || unicode.IsSpace(r) {
 			b.WriteByte(' ')
 			continue
 		}
@@ -291,57 +362,106 @@ func capBytes(s string, limit int) string {
 // Operator-facing copy
 // ---------------------------------------------------------------------------
 
-// OperatorMessage builds the FINAL failure reason shown to an operator (and,
-// for backups, emailed in plain text) when AgentFailed() is true. action is
-// the capitalised verb naming the command family ("Backup", "Restore",
-// "Scan"); the message lower-cases it where English grammar wants a noun.
+// maxOperatorMessage is the cap on a composed final failure reason, the same
+// limit agentFailReason uses on the wire.
+const maxOperatorMessage = 512
+
+// agentErrorHead builds "Agent error: <Class> at <file.php:line>" from the
+// sanitised fields, or "" when neither survived the sanitiser.
+func agentErrorHead(exc, at string) string {
+	switch {
+	case exc != "" && at != "":
+		return "Agent error: " + exc + " at " + at
+	case exc != "":
+		return "Agent error: " + exc
+	case at != "":
+		return "Agent error at " + at
+	default:
+		return ""
+	}
+}
+
+// isOldAgentShape reports whether the body carried none of the fields agents
+// 0.61.150 and later add, so there is nothing more to show.
+func (e *CommandError) isOldAgentShape() bool {
+	return e.Exception == "" && e.At == "" && e.DataCommand == ""
+}
+
+func stoppedSentence(action, lower string) string {
+	return fmt.Sprintf("%s failed: the WPMgr agent on this site stopped with an error, so the %s was not retried.", action, lower)
+}
+
+func oldAgentMessage(action, lower string) string {
+	return stoppedSentence(action, lower) +
+		" This agent version does not report the error; update the WPMgr agent on this site to see it."
+}
+
+// OperatorMessage builds the FINAL failure reason shown to an operator in the
+// dashboard, the schedule run and the audit log when AgentFailed() is true.
+// action is the capitalised verb naming the command family ("Backup",
+// "Restore", "Scan"); the message lower-cases it where English grammar wants
+// a noun.
 //
-// Every agent field is sanitised before it is folded in; the composed message
-// is capped at 512 bytes, the same limit agentFailReason uses on the wire.
+// Every agent field is sanitised before it is folded in, and the composed
+// message is capped at 512 bytes. It includes the sanitised reason, so it is
+// never the text of an outbound email: use NotificationMessage there.
 func (e *CommandError) OperatorMessage(action string) string {
 	lower := strings.ToLower(action)
 	if e == nil {
-		return fmt.Sprintf("%s failed: the WPMgr agent on this site stopped with an error, so the %s was not retried.", action, lower)
+		return stoppedSentence(action, lower)
+	}
+	if e.isOldAgentShape() {
+		return oldAgentMessage(action, lower)
 	}
 
-	// Agents before 0.61.150 send only {"code":..., "data":{"status":500}} —
-	// no exception, no location, no echoed command. There is nothing more to
-	// show, so say so and point at the fix (an agent update) rather than
-	// showing an empty "Agent error: ." line.
-	if e.Exception == "" && e.At == "" && e.DataCommand == "" {
-		return fmt.Sprintf(
-			"%s failed: the WPMgr agent on this site stopped with an error, so the %s was not retried. "+
-				"This agent version does not report the error; update the WPMgr agent on this site to see it.",
-			action, lower)
-	}
-
-	exc := sanitizeException(e.Exception)
-	at := sanitizeAt(e.At)
+	head := agentErrorHead(sanitizeException(e.Exception), sanitizeAt(e.At))
 	reason := sanitizeReason(e.Message, e.Exception)
 
 	var agentErr string
 	switch {
-	case exc != "" && at != "":
-		agentErr = fmt.Sprintf("Agent error: %s at %s: %s.", exc, at, reason)
-	case exc != "":
-		agentErr = fmt.Sprintf("Agent error: %s: %s.", exc, reason)
-	default:
-		agentErr = fmt.Sprintf("Agent error: %s.", reason)
+	case head != "" && reason != "":
+		agentErr = head + ": " + reason + "."
+	case head != "":
+		agentErr = head + "."
+	case reason != "":
+		agentErr = "Agent error: " + reason + "."
 	}
 
-	msg := fmt.Sprintf(
-		"%s failed: the WPMgr agent on this site stopped with an error, so the %s was not retried. %s "+
-			"Fix the cause on the site, then run the %s again.",
-		action, lower, agentErr, lower)
-	return capBytes(msg, 512)
+	msg := stoppedSentence(action, lower) + " "
+	if agentErr != "" {
+		msg += agentErr + " "
+	}
+	msg += fmt.Sprintf("Fix the cause on the site, then run the %s again.", lower)
+	return capBytes(msg, maxOperatorMessage)
+}
+
+// NotificationMessage is the failure reason for an outbound plain-text email.
+// It carries the control plane's own wording plus, when they pass the
+// sanitiser, the exception class and the source location, and never the
+// agent's free-form reason: text the site supplied does not go into an email.
+// It points the reader at the dashboard, which shows the full reason.
+func (e *CommandError) NotificationMessage(action string) string {
+	lower := strings.ToLower(action)
+	if e == nil {
+		return stoppedSentence(action, lower)
+	}
+	if e.isOldAgentShape() {
+		return oldAgentMessage(action, lower)
+	}
+	msg := stoppedSentence(action, lower) + " "
+	if head := agentErrorHead(sanitizeException(e.Exception), sanitizeAt(e.At)); head != "" {
+		msg += head + ". "
+	}
+	msg += fmt.Sprintf("Fix the cause on the site, then run the %s again. The WPMgr dashboard shows the agent's full message.", lower)
+	return capBytes(msg, maxOperatorMessage)
 }
 
 // DescribeAttemptError classifies a non-final agentcmd error (one the caller
 // will retry) into a short, operator-facing sentence with no raw agent or
 // transport text — never a body snippet, a stack trace, or free-form agent
-// prose. It is meant for the "last error while retrying" column (e.g.
-// backup_snapshots.error while status='running'), which is visible to any
-// operator watching the run, not just the one who triggered it.
+// prose. It is meant for the "last error while retrying" field
+// (attempt_error on a running backup and its schedule run), which any
+// operator watching the run can see.
 func DescribeAttemptError(err error) string {
 	if err == nil {
 		return ""
@@ -349,10 +469,15 @@ func DescribeAttemptError(err error) string {
 	if ce, ok := AsCommandError(err); ok {
 		switch {
 		case ce.Status == 403:
-			if code := sanitizeAttemptCode(ce.Code); code != "" {
+			code := sanitizeAttemptCode(ce.Code)
+			switch {
+			case strings.HasPrefix(code, "wpmgr_"):
 				return fmt.Sprintf("The WPMgr agent refused the request (%s).", code)
+			case code != "":
+				return fmt.Sprintf("The site refused the request (HTTP 403, %s).", code)
+			default:
+				return "The site refused the request (HTTP 403)."
 			}
-			return fmt.Sprintf("The site answered HTTP %d.", ce.Status)
 		case ce.Status == 404:
 			return "The site did not find the WPMgr agent (HTTP 404). Check that the plugin is active."
 		case ce.Status == 500:
@@ -368,6 +493,9 @@ func DescribeAttemptError(err error) string {
 			return fmt.Sprintf("The site answered HTTP %d.", ce.Status)
 		}
 	}
+	if isDecodeErr(err) {
+		return "The site answered, but the reply was not the WPMgr agent's response. A PHP notice or another plugin's output may be in the way."
+	}
 	if IsTimeoutErr(err) {
 		return "The site did not answer in time."
 	}
@@ -375,4 +503,15 @@ func DescribeAttemptError(err error) string {
 		return "The site's HTTPS certificate was not accepted."
 	}
 	return "Could not connect to the site."
+}
+
+// isDecodeErr reports whether err is a JSON decode failure on a 2xx reply:
+// the site answered, but not with the agent's JSON.
+func isDecodeErr(err error) bool {
+	var syn *json.SyntaxError
+	if errors.As(err, &syn) {
+		return true
+	}
+	var typ *json.UnmarshalTypeError
+	return errors.As(err, &typ)
 }
