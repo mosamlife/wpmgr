@@ -20,12 +20,17 @@
 -- filter raises an error instead of touching fewer rows. app_alert_rollout
 -- has no row level security.
 --
--- WHICH ROWS ARE TURNED OFF. When this file applies in the same boot as m108,
--- no app alert state and no later version exist yet, and every alert_configs
--- row with app alerting on carries m108's default, so every such row is
--- turned off. When it applies later, only rows whose updated_at is no later
--- than m108's applied_at are turned off. updated_at changes only when a user
--- saves the alert settings, so a row saved since m108 keeps what was saved.
+-- WHICH ROWS ARE TURNED OFF. This file treats the run as the same boot as
+-- m108 only when no app alert state exists, no version after this one is
+-- recorded, and no alert_configs row has an updated_at later than m108's
+-- applied_at. Then every alert_configs row with app alerting on carries m108's
+-- default, so every such row is turned off. When any of the three holds, the
+-- application ran after m108, and only rows whose updated_at is no later than
+-- m108's applied_at are turned off. The third signal covers a deployment that
+-- stopped at a release whose newest version was m108 and never evaluated an
+-- app alert: it records neither of the other two. updated_at changes only
+-- when a user saves the alert settings, so a row saved since m108 keeps what
+-- was saved.
 --
 -- ORDINAL. 20260810120000 sorts after m108 (20260810000000) and before m109
 -- (20260811000000), so on a database that has not yet run m108 it applies in
@@ -96,6 +101,10 @@ BEGIN
             OR EXISTS (
                 SELECT 1 FROM schema_migrations
                 WHERE version > '20260810120000_m146_app_alert_rollout_repair'
+            )
+            OR EXISTS (
+                SELECT 1 FROM "public"."alert_configs"
+                WHERE updated_at > v_cutoff
             );
 
         IF NOT v_live THEN
