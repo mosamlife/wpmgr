@@ -632,6 +632,17 @@ type RestoreArgs struct {
 // Kind implements river.JobArgs.
 func (RestoreArgs) Kind() string { return "backup_restore" }
 
+// restoreMaxAttempts is the attempt limit for every backup_restore job. A
+// failed restore is not retried automatically; the operator retries it.
+const restoreMaxAttempts = 1
+
+// InsertOpts sets the attempt limit on every backup_restore job, whichever
+// path inserts it. River applies an insert-time MaxAttempts before this one,
+// so an enqueuer must leave MaxAttempts unset (EnqueueRestore passes nil).
+func (RestoreArgs) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{MaxAttempts: restoreMaxAttempts}
+}
+
 // RestoreWorker assembles the presigned-GET restore plan + ordered manifest
 // and dispatches the signed `restore` command (ADR-034 v0.8.1 wire shape: per-
 // artifact-part `logical_path` with presigned GET URLs for each PLAIN chunk).
@@ -700,14 +711,29 @@ func (w *RestoreWorker) Timeout(*river.Job[RestoreArgs]) time.Duration { return 
 //  5. POST the signed `restore` command to the agent and wait for the ACK.
 //  6. On ACK ok=true: return nil — the WORKER is done; the agent now drives
 //     completion via /progress events through the existing endpoint.
-//  7. On agent refusal or transport error: emit a `failed` progress event
+//  7. On agent refusal or any dispatch error: emit a `failed` progress event
 //     (which the SSE hub fans out + the existing service code records to
 //     audit) so the UI surfaces the failure without waiting for a watchdog.
 //
-// Transport errors are returned (River retries with a fresh JWT). Agent-side
-// refusals are recorded as terminal and return nil.
+// A restore runs at most once. A failed restore is not retried automatically;
+// the operator retries it, which creates a new run. Every error finalises the
+// run as failed on the attempt that hit it, and the job ends there: an agent
+// failure or refusal returns nil, and a dispatch or planning error cancels
+// the job (river.JobCancel) with the error recorded on it.
 func (w *RestoreWorker) Work(ctx context.Context, job *river.Job[RestoreArgs]) error {
 	a := job.Args
+
+	// RestoreArgs.InsertOpts limits a restore job to one attempt. A job
+	// inserted with a higher limit (queued before that limit existed) can
+	// still reach a later attempt; it is cancelled here, before anything is
+	// sent to the site. Its run was already finalised by the first attempt.
+	if job.JobRow != nil && job.Attempt > restoreMaxAttempts {
+		w.logger.Warn("restore job reached a second attempt; cancelling without dispatch",
+			slog.String("snapshot_id", a.SnapshotID.String()),
+			slog.String("tenant_id", a.TenantID.String()),
+			slog.Int("attempt", job.Attempt))
+		return river.JobCancel(fmt.Errorf("restore job attempt %d: a failed restore is not retried automatically", job.Attempt))
+	}
 	sel := RestoreSelection{
 		Full:         a.Full,
 		Paths:        a.Paths,
@@ -745,7 +771,8 @@ func (w *RestoreWorker) Work(ctx context.Context, job *river.Job[RestoreArgs]) e
 				SetFinished: true,
 			})
 		}
-		return err
+		// The run is finalised; the job ends here too.
+		return river.JobCancel(err)
 	}
 	if !si.Enrolled {
 		w.recordAudit(ctx, snap, ActionRestoreFailed, map[string]any{"restore_id": restoreID, "error": "site not enrolled"})
@@ -840,44 +867,27 @@ func (w *RestoreWorker) Work(ctx context.Context, job *river.Job[RestoreArgs]) e
 		return nil
 	}
 	if err != nil {
-		// Transport / SSRF / agent-reject: retryable infra error. River will
-		// retry with a fresh JWT. GH #791: DescribeAttemptError, never the raw
-		// error (which can carry a "body=…" snippet), is what an operator
-		// watching the retry sees.
-		attemptErr := agentcmd.DescribeAttemptError(err)
-		if job.MaxAttempts > 0 && job.Attempt >= job.MaxAttempts {
-			// River will not run this job again: record the restore as
-			// failed, which finalises the run.
-			w.recordAudit(ctx, snap, ActionRestoreFailed, map[string]any{
-				"restore_id": restoreID,
-				"error":      attemptErr,
-			})
-			_, _ = w.svc.RecordProgress(ctx, snap.TenantID, snap.ID, "failed", map[string]any{
-				"restore_id": restoreID,
-				"error":      attemptErr,
-			})
-			return fmt.Errorf("restore command to agent failed: %w", err)
-		}
-		// Another attempt follows, so this one is not the restore's outcome:
-		// publish a non-terminal 'retrying' hint (never a 'failed' frame, and
-		// nothing that finalises the run) so the UI can show why it is
-		// waiting.
-		w.svc.publish(BackupEvent{
-			SnapshotID: snap.ID,
-			Phase:      "retrying",
-			PhaseDetail: map[string]any{
-				"restore_id": restoreID,
-				"error":      attemptErr,
-			},
-			Status: snap.Status,
+		// Transport / SSRF / agent-reject: the restore failed. It is not
+		// retried automatically; the operator retries it. Finalise the run now
+		// with DescribeAttemptError, never the raw error (which can carry a
+		// "body=..." snippet), and cancel the job so River does not run it
+		// again whatever attempt limit it was inserted with.
+		msg := agentcmd.DescribeAttemptError(err)
+		w.recordAudit(ctx, snap, ActionRestoreFailed, map[string]any{
+			"restore_id": restoreID,
+			"error":      msg,
 		})
-		return fmt.Errorf("restore command to agent failed: %w", err)
+		_, _ = w.svc.RecordProgress(ctx, snap.TenantID, snap.ID, "failed", map[string]any{
+			"restore_id": restoreID,
+			"error":      msg,
+		})
+		return river.JobCancel(fmt.Errorf("restore command to agent failed: %w", err))
 	}
 	if !resp.OK {
 		if resp.Code == codeRunnerInFlight {
 			// GH #274: benign — a restore for this snapshot is ALREADY running
-			// (this dispatch was a River retry of a slow/timed-out original
-			// attempt). Do NOT record a terminal failure: recordAudit(...Failed)
+			// on the site (an earlier dispatch is still in flight). Do NOT
+			// record a terminal failure: recordAudit(...Failed)
 			// and RecordProgress("failed", ...) both flip the run/snapshot to a
 			// terminal state (RecordProgress's "failed" phase internally calls
 			// FailSnapshot), which would wrongly kill the still-in-flight
