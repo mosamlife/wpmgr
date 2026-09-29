@@ -86,15 +86,20 @@ func TestBackupWorker_RedirectFailsSnapshotOnFirstAttempt(t *testing.T) {
 // TestRestoreWorker_RedirectFailsOnFirstAttempt is RestoreWorker's mirror of
 // TestBackupWorker_RedirectFailsSnapshotOnFirstAttempt above: a site that
 // redirects its command address fails the restore dispatch on the first
-// attempt (never a retry), with exactly one Restore call, a "failed" progress
-// event carrying the operator message, and the active restore_run finalized
-// as failed — the same terminal-finalize assertion
-// TestRestoreWorker_RefuseWithoutCode_StillFailsTerminal makes for an
-// ordinary agent refusal, which is how that sibling test's own doc comment
-// describes "recording ActionRestoreFailed": the audit call and the
-// RecordProgress("failed", ...) call that drives this finalize are
-// unconditional and adjacent in the source, so proving the finalize ran is
-// proof the whole terminal-failure branch — audit call included — executed.
+// attempt (never a retry), with exactly one Restore call, and the active
+// restore_run finalized as failed.
+//
+// The restore run's own audit trail — the AppendRestoreEvent row
+// persistRestoreRunEvent writes right alongside MarkRestoreRunStatus — is
+// asserted directly below by its recorded action (Phase) and outcome
+// (Status/Detail), via fakeRestoreRunStore.eventCalls. An earlier version of
+// this test inferred that row was written only by argument: because
+// w.recordAudit and RecordProgress("failed", ...) are unconditional and
+// adjacent in worker.go's source, proving RecordProgress ran (via
+// statusCalls) was treated as proof the audit trail also did. That is a
+// structural argument, not a content check, and it would not have caught a
+// change that persisted the wrong phase, status or detail into the event row
+// while still calling MarkRestoreRunStatus correctly.
 func TestRestoreWorker_RedirectFailsOnFirstAttempt(t *testing.T) {
 	repo, runStore, tenantID, snapshotID, svc := newRestoreWorkerFixture(t)
 	cmd := &redirectCommander{}
@@ -118,5 +123,28 @@ func TestRestoreWorker_RedirectFailsOnFirstAttempt(t *testing.T) {
 	}
 	if repo.failCalled {
 		t.Error("FailSnapshot must not be called on the backup snapshot for a redirect")
+	}
+
+	// The restore run's audit trail: the AppendRestoreEvent row's action
+	// (Phase) and outcome (Status, and the operator message in Detail) must
+	// be the redirect failure, by content — not merely called. The dispatch
+	// also writes an unconditional "preflight" event before ever contacting
+	// the agent, so the terminal one under test is the LAST call, not the
+	// only one.
+	if len(runStore.eventCalls) != 2 {
+		t.Fatalf("expected exactly 2 AppendRestoreEvent calls (preflight, then the redirect audit entry), got %d: %+v", len(runStore.eventCalls), runStore.eventCalls)
+	}
+	ev := runStore.eventCalls[len(runStore.eventCalls)-1]
+	if ev.Phase != "failed" {
+		t.Errorf("AppendRestoreEvent phase = %q, want %q", ev.Phase, "failed")
+	}
+	if ev.Status != "failed" {
+		t.Errorf("AppendRestoreEvent status = %q, want %q", ev.Status, "failed")
+	}
+	if ev.RestoreRunID != runStore.active.ID {
+		t.Errorf("AppendRestoreEvent restore_run_id = %s, want the active run %s", ev.RestoreRunID, runStore.active.ID)
+	}
+	if !strings.Contains(string(ev.Detail), "Restore not started.") || !strings.Contains(string(ev.Detail), "https://www.example.com") {
+		t.Errorf("AppendRestoreEvent detail %q does not carry the operator message naming the redirect target", ev.Detail)
 	}
 }
