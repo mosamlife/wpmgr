@@ -284,6 +284,7 @@ type BackupScheduleRun struct {
 	StartedAt    pgtype.Timestamptz `json:"started_at"`
 	FinishedAt   pgtype.Timestamptz `json:"finished_at"`
 	UpdatedAt    time.Time          `json:"updated_at"`
+	AttemptError string             `json:"attempt_error"`
 }
 
 type BackupSnapshot struct {
@@ -326,6 +327,7 @@ type BackupSnapshot struct {
 	SourceContentUrl *string `json:"source_content_url"`
 	// wp_upload_dir()['baseurl'] recorded at backup time. See source_site_url.
 	SourceUploadUrl *string `json:"source_upload_url"`
+	AttemptError    string  `json:"attempt_error"`
 }
 
 type BillingEvent struct {

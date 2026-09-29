@@ -1824,7 +1824,13 @@ CREATE TABLE backup_snapshots (
     source_site_url    text,
     source_home_url    text,
     source_content_url text,
-    source_upload_url  text
+    source_upload_url  text,
+    -- attempt_error (m148 / GH #791): the control plane's description of the
+    -- last failed attempt to start this backup on the site, while it is still
+    -- retrying. Written only while status='running'; cleared by the next proof
+    -- of life and by completion. '' = nothing outstanding. error stays the
+    -- final failure reason only, so a running row never reads as failed.
+    attempt_error      text NOT NULL DEFAULT ''
 );
 
 CREATE INDEX backup_snapshots_tenant_site_idx ON backup_snapshots (tenant_id, site_id, created_at DESC);
@@ -2120,7 +2126,11 @@ CREATE TABLE backup_schedule_runs (
     created_at    timestamptz NOT NULL DEFAULT now(),
     started_at    timestamptz,
     finished_at   timestamptz,
-    updated_at    timestamptz NOT NULL DEFAULT now()
+    updated_at    timestamptz NOT NULL DEFAULT now(),
+    -- attempt_error (m148 / GH #791): mirrors backup_snapshots.attempt_error
+    -- for the linked snapshot. Written only while status='running'; cleared by
+    -- the next proof of life and when the run completes.
+    attempt_error text        NOT NULL DEFAULT ''
 );
 
 CREATE INDEX backup_schedule_runs_tenant_site_for_idx

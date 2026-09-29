@@ -50,10 +50,13 @@ WHERE id = $1 AND tenant_id = $2 AND status = 'pending';
 -- contract: 1 = a real transition; 0 = already terminal (completed/failed) or
 -- gone, which the caller must surface as a rejected submit -- the previous
 -- blind UPDATE reported success unconditionally.
+-- attempt_error (GH #791) is cleared: a completed row never carries an
+-- outstanding attempt error.
 UPDATE backup_snapshots
 SET status = 'completed',
     total_size = $3,
     chunk_count = $4,
+    attempt_error = '',
     finished_at = now(),
     updated_at = now()
 WHERE id = $1 AND tenant_id = $2 AND status IN ('pending', 'running');
@@ -93,12 +96,19 @@ WHERE id = $1 AND tenant_id = $2 AND status IN ('pending', 'running');
 -- whether a real transition happened, so it can gate the 'failed' SSE publish
 -- and the failure notification on an actual state change rather than firing
 -- them for a row that already moved on.
+-- GH #791: when an attempt error is outstanding, the failure reason keeps it
+-- after the watchdog's own message, capped at 1024 characters, so the reason
+-- the site gave survives the hard fail. attempt_error itself is left as it
+-- was. The caller re-reads the row for the reason actually stored.
 UPDATE backup_snapshots
 SET status = 'failed',
-    error = $3,
+    error = CASE
+                WHEN attempt_error = '' THEN sqlc.arg(error)::text
+                ELSE left(sqlc.arg(error)::text || '. Last error: ' || attempt_error, 1024)
+            END,
     finished_at = now(),
     updated_at = now()
-WHERE id = $1 AND tenant_id = $2 AND status = 'running';
+WHERE id = sqlc.arg(id) AND tenant_id = sqlc.arg(tenant_id) AND status = 'running';
 
 -- name: UpdateBackupSnapshotProgress :one
 -- M5.6 / ADR-032: agent runner posts a JSONB progress payload at every phpbu
@@ -152,9 +162,27 @@ RETURNING id;
 -- hard-failed, or the operator cancelled, is never matched here (both moved
 -- status away from 'running' first), so this can never revive a genuinely
 -- terminal snapshot.
+-- GH #791: the same proof of life clears an outstanding attempt_error, so a
+-- run that got going after a failed attempt stops showing that attempt's
+-- error. Rows-affected is 1 when either was cleared, 0 when there was nothing
+-- to clear or the row is not running.
 UPDATE backup_snapshots
-SET stalled_at = NULL, updated_at = now()
-WHERE id = $1 AND tenant_id = $2 AND status = 'running' AND stalled_at IS NOT NULL;
+SET stalled_at = NULL, attempt_error = '', updated_at = now()
+WHERE id = $1 AND tenant_id = $2 AND status = 'running'
+  AND (stalled_at IS NOT NULL OR attempt_error <> '');
+
+-- name: SetBackupSnapshotAttemptError :execrows
+-- GH #791: records the control plane's description of the last failed attempt
+-- to start this backup on the site, while it is still retrying. The
+-- status='running' guard is the contract: a pending, completed or failed row
+-- is never matched, so this can neither mark a row that has not started nor
+-- touch one that has ended. Rows-affected: 1 = recorded; 0 = the row is not
+-- running (or is gone), and the caller must not publish anything for it.
+-- The value is capped at 1024 characters here as well as by the caller.
+UPDATE backup_snapshots
+SET attempt_error = left(sqlc.arg(attempt_error)::text, 1024),
+    updated_at = now()
+WHERE id = sqlc.arg(id) AND tenant_id = sqlc.arg(tenant_id) AND status = 'running';
 
 -- name: DeleteBackupSnapshot :execrows
 DELETE FROM backup_snapshots
