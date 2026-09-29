@@ -49,7 +49,7 @@ func (g mountGate) SoleLiveTenantOwnedBy(context.Context, uuid.UUID) (uuid.UUID,
 // SelfHosted is false (hosted), so the install-owner arm is never read.
 func (g mountGate) SelfHosted() bool { return false }
 
-func (g mountGate) InstallOwnerHomeTenant(context.Context, uuid.UUID) (bool, uuid.UUID, error) {
+func (g mountGate) InstallOwnerAuditTenant(context.Context, uuid.UUID) (bool, uuid.UUID, error) {
 	return false, uuid.Nil, nil
 }
 

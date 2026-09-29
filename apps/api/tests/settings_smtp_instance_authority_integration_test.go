@@ -784,11 +784,11 @@ func (s splitGateStore) SelfHosted() bool {
 	return s.installOwner != nil && s.installOwner.SelfHosted()
 }
 
-func (s splitGateStore) InstallOwnerHomeTenant(ctx context.Context, id uuid.UUID) (bool, uuid.UUID, error) {
+func (s splitGateStore) InstallOwnerAuditTenant(ctx context.Context, id uuid.UUID) (bool, uuid.UUID, error) {
 	if s.installOwner == nil {
 		return false, uuid.Nil, nil
 	}
-	return s.installOwner.InstallOwnerHomeTenant(ctx, id)
+	return s.installOwner.InstallOwnerAuditTenant(ctx, id)
 }
 
 // closedAppPool opens a second wpmgr_app pool on the same container and closes

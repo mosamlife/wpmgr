@@ -33,7 +33,7 @@ type fakeStore struct {
 
 func (f *fakeStore) SelfHosted() bool { return f.selfHosted }
 
-func (f *fakeStore) InstallOwnerHomeTenant(context.Context, uuid.UUID) (bool, uuid.UUID, error) {
+func (f *fakeStore) InstallOwnerAuditTenant(context.Context, uuid.UUID) (bool, uuid.UUID, error) {
 	f.calls++
 	f.installOwnerCalls++
 	if f.installOwnerErr != nil {

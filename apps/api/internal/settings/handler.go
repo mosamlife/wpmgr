@@ -183,9 +183,10 @@ const auditAppendTimeout = 5 * time.Second
 //     the organisation the admitting decision named, so its owner reads it
 //     where they read everything else. That organisation is never the
 //     request's active one. For the install owner it is the organisation
-//     created with them at bootstrap, and only while it is live and they
-//     still own it; otherwise the decision names none and there is no copy.
-//     The install-owner arm is exactly the case with no superadmin to read the
+//     created with them at bootstrap while they still own it and it is live,
+//     otherwise the live organisation they own with the lowest id, so it is
+//     always one whose owners include the actor. An install owner who owns
+//     no live organisation is not admitted at all. The install-owner arm is exactly the case with no superadmin to read the
 //     instance trail, which only the admin console shows. A superadmin's
 //     change is recorded in the instance trail only.
 //   - Both records carry admitted_as, the arm that admitted the caller, so the

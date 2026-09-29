@@ -1106,7 +1106,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// admingate.PoolStore plus the install-owner arm, which is live only when
 	// WPMGR_HOSTED is not true. The agent-mirror gates keep the plain
 	// admingate.NewPoolStore and never see that arm.
-	instanceEmailGate := admingate.NewInstanceEmailPoolStore(pool, cfg.Hosted.Enabled)
+	instanceEmailGate := newInstanceEmailGate(pool, cfg)
 	smtpSettingsH := settings.NewHandler(smtpSettingsSvc, auditRec, instanceEmailGate)
 
 	// m59 — per-site email management. Shares the same age identity as the

@@ -28,15 +28,25 @@ type fakeInstanceStore struct {
 	selfHosted      bool
 	installOwner    bool
 	installOwnerErr error
+	// ownsNoLiveOrganisation makes the install owner hold no 'owner'
+	// membership in any live organisation, which the arm refuses.
+	ownsNoLiveOrganisation bool
 }
+
+// installOwnerOrgID is the organisation the fake names for the install
+// owner's audit copy.
+var installOwnerOrgID = uuid.MustParse("1a5e0000-0000-4000-8000-0000000000d1")
 
 func (f fakeInstanceStore) SelfHosted() bool { return f.selfHosted }
 
-func (f fakeInstanceStore) InstallOwnerHomeTenant(context.Context, uuid.UUID) (bool, uuid.UUID, error) {
+func (f fakeInstanceStore) InstallOwnerAuditTenant(context.Context, uuid.UUID) (bool, uuid.UUID, error) {
 	if f.installOwnerErr != nil {
 		return false, uuid.Nil, f.installOwnerErr
 	}
-	return f.installOwner, uuid.Nil, nil
+	if !f.installOwner || f.ownsNoLiveOrganisation {
+		return f.installOwner, uuid.Nil, nil
+	}
+	return true, installOwnerOrgID, nil
 }
 
 func (f fakeInstanceStore) IsSuperadmin(context.Context, uuid.UUID) (bool, error) {
@@ -75,6 +85,7 @@ func TestSetInstanceCapabilities_EqualsTheRouteDecision(t *testing.T) {
 		{"store not wired", orgUser(uuid.New()), nil, false},
 		{"install owner, self-hosted", orgUser(uuid.New()), fakeInstanceStore{selfHosted: true, installOwner: true}, true},
 		{"install owner, hosted", orgUser(uuid.New()), fakeInstanceStore{installOwner: true}, false},
+		{"install owner owning no live organisation, self-hosted", orgUser(uuid.New()), fakeInstanceStore{selfHosted: true, installOwner: true, ownsNoLiveOrganisation: true}, false},
 		{"install owner read error, self-hosted", orgUser(uuid.New()), fakeInstanceStore{selfHosted: true, installOwnerErr: errors.New("boom")}, false},
 		{"site-scoped install owner, self-hosted", siteUser, fakeInstanceStore{selfHosted: true, installOwner: true}, false},
 	}

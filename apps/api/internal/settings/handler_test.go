@@ -48,7 +48,7 @@ type fakeInstanceGate struct {
 
 func (f *fakeInstanceGate) SelfHosted() bool { return f.selfHosted }
 
-func (f *fakeInstanceGate) InstallOwnerHomeTenant(context.Context, uuid.UUID) (bool, uuid.UUID, error) {
+func (f *fakeInstanceGate) InstallOwnerAuditTenant(context.Context, uuid.UUID) (bool, uuid.UUID, error) {
 	f.installOwnerCalls++
 	if f.installOwnerErr != nil {
 		return false, uuid.Nil, f.installOwnerErr
