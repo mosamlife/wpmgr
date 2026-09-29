@@ -30,18 +30,28 @@ const ErrCodeInvalidSiteScope = "mcp_invalid_site_scope"
 
 // recognisedScopes is the CLOSED registry of scopes this surface grants.
 //
-// It is closed in the strong sense: an unrecognised scope is a REFUSAL of the
-// whole request, not a token quietly dropped from an otherwise-honoured one.
+// It is closed in the strong sense at /authorize: an unrecognised scope is a
+// REFUSAL of the whole request, not a token quietly dropped from an
+// otherwise-honoured one. (Registration is the one lenient reader, because it
+// grants nothing; see ParseRegistrationScopes.)
 // Dropping is the tempting behaviour because it "still works" for well-behaved
 // clients, and it is wrong for the same reason a nullable tenant_id is wrong --
 // it lets the operator consent to a scope set that is not the one the client
 // asked for, and neither party ever learns they disagreed.
 //
-// The registry holds exactly one entry and the read-only surface is the whole
-// security claim of the feature (m124 obligation 5). A write scope arrives with
-// its own migration and its own review, never by being appended here.
+// It holds two entries. ScopeRead confers the read capabilities; ScopeCache,
+// seated by m150, confers CapCachePurge and nothing else. KEEP IN LOCKSTEP with
+// mcp_grants_oauth_scopes_vocabulary_check and
+// mcp_oauth_clients_registered_scopes_vocabulary_check, which hold the same
+// names; the m136 and m137 parity tests in apps/api/tests compare them.
+//
+// RECOGNISING a scope is not ADVERTISING it and is not DEFAULTING to it.
+// Discovery advertises AdvertisedScopes() only, registration records ScopeCache
+// only when the client asked for it, and a grant stores it only when the
+// operator consented (see Register, Approve and MintConnection).
 var recognisedScopes = map[Scope]struct{}{
-	ScopeRead: {},
+	ScopeCache: {},
+	ScopeRead:  {},
 }
 
 // ParseRequestedScopes parses the RFC 6749 section 3.3 space-delimited `scope`
@@ -140,8 +150,9 @@ func splitASCIISpace(raw string) []string {
 	return out
 }
 
-// SupportedScopes lists the registry for discovery documents and error
-// details, sorted so the output is stable across map iterations.
+// SupportedScopes lists the whole registry for error details and for the
+// token path's explicit-list grants, sorted so the output is stable across map
+// iterations. It is NOT what discovery advertises; see AdvertisedScopes.
 func SupportedScopes() []string {
 	out := make([]string, 0, len(recognisedScopes))
 	for s := range recognisedScopes {
@@ -149,6 +160,57 @@ func SupportedScopes() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// AdvertisedScopes is what the discovery documents and the 401 challenge name:
+// the read scope, and nothing else.
+//
+// A client that reads scopes_supported and asks for every scope listed there
+// would otherwise register for, and request, the cache scope without anyone
+// having chosen it. The cache scope is reachable by a client that asks for it
+// by name, and the consent screen shows it; it is not offered to a client that
+// is merely copying the server's list back.
+//
+// A FUNCTION returning a fresh slice, for DefaultGrantScopes' reason.
+func AdvertisedScopes() []string {
+	return []string{string(ScopeRead)}
+}
+
+// ParseRegistrationScopes reads the RFC 7591 `scope` member of a registration
+// request LENIENTLY, and returns what the client is registered for plus the
+// tokens that were dropped.
+//
+// IT IS DELIBERATELY NOT ParseRequestedScopes. That one refuses the whole
+// request on an unrecognised token, which is right at /authorize, where the
+// operator is about to consent to a scope set and must consent to the one the
+// client asked for. Registration grants nothing: it records the CEILING a later
+// authorize call may ask within. Refusing a registration because a client
+// listed a scope this server does not know would take dynamic registration
+// dark for clients that send a generic list, and it would buy nothing, since
+// the dropped token can never be requested afterwards (Authorize refuses it
+// against this registration).
+//
+// THE RESULT ALWAYS CONTAINS ScopeRead. An omitted or empty `scope` registers
+// {mcp:read}; a present one registers {mcp:read} plus every recognised token
+// it names. ScopeCache is therefore registered only when the client spelled
+// it. Matching is exact and case-sensitive and only U+0020 separates, exactly
+// as at /authorize (splitASCIISpace).
+func ParseRegistrationScopes(raw string) (registered []string, dropped []string) {
+	set := map[Scope]struct{}{ScopeRead: {}}
+	for _, field := range splitASCIISpace(raw) {
+		s := Scope(field)
+		if _, ok := recognisedScopes[s]; !ok {
+			dropped = append(dropped, field)
+			continue
+		}
+		set[s] = struct{}{}
+	}
+	registered = make([]string, 0, len(set))
+	for s := range set {
+		registered = append(registered, string(s))
+	}
+	sort.Strings(registered)
+	return registered, dropped
 }
 
 // ValidateSiteScopeRequest refuses an incoherent or empty site-scope request

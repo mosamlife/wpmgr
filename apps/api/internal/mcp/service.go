@@ -340,6 +340,11 @@ type Service struct {
 	// newEphemeralConsentTicketCodec for what the unwired default does and does
 	// not promise; cmd/wpmgr replaces it with the instance-wide key at boot.
 	consentTickets *consentTicketCodec
+
+	// writeToolsEnabled is the server-wide switch for tools that are not reads
+	// (SetWriteToolsEnabled). The zero value is OFF: such tools are absent
+	// from tools/list and a call answers exactly as an unknown name does.
+	writeToolsEnabled bool
 }
 
 func NewService(store Store) *Service {
@@ -523,6 +528,11 @@ type RegistrationRequest struct {
 	ClientName              string
 	ClientURI               string
 	TokenEndpointAuthMethod string
+
+	// Scope is the RFC 7591 section 2 `scope` member, space-delimited, as the
+	// client sent it. Empty means the client named none. It is read leniently;
+	// see ParseRegistrationScopes.
+	Scope string
 }
 
 // RegisteredClient is what registration returns. ClientSecret is present
@@ -534,43 +544,36 @@ type RegisteredClient struct {
 	RedirectURIs            []string
 	ClientName              string
 	ClientURI               string
+
+	// Scopes is the STORED registered scope set, read back from the row, and
+	// is what the response echoes as `scope` (RFC 7591 section 3.2.1).
+	Scopes []string
+
+	// DroppedScopes are the tokens the request named that this server does not
+	// recognise. They were not registered and the registration still
+	// succeeded; the handler logs them as register_scope_dropped. They are
+	// never echoed to the client as registered.
+	DroppedScopes []string
 }
 
-// registeredScopesForOmittedRequest resolves what a registration that names no
-// `scope` is recorded as registered for. THE ANSWER IS THE FULL RECOGNISED
-// REGISTRY, and this is a decision, not a fallout.
+// registeredScopesFor resolves what a registration is recorded as registered
+// for: {mcp:read}, plus every recognised scope the client named.
 //
-// RFC 7591 section 2 leaves an omitted `scope` to the server, and m137 DECISION
-// 3 deliberately gave the column NO DATABASE DEFAULT so that something in Go
-// has to choose out loud. The two defensible answers are to REFUSE the
-// registration or to register for the whole registry; both are safe under this
-// schema. This is the second.
+// m137 DECISION 3 gave the column NO DATABASE DEFAULT so that something in Go
+// has to choose out loud, and this is the choice. AN OMITTED `scope` REGISTERS
+// {mcp:read} AND NOT THE WHOLE REGISTRY. The whole registry was the answer
+// while it held one member, and it would now register a client that said
+// nothing for the cache scope too, leaving the containment check in Authorize
+// and Approve with nothing to bite on. A client that wants the cache scope
+// asks for it by name at registration; one that registered without it and
+// asks at /authorize is refused there (requireScopesWithinRegistration), and
+// the consent screen tells the operator to remove the server from the client
+// and add it again.
 //
-// WHY NOT REFUSE. RegistrationRequest carries no Scope field and the
-// registration handler parses none, so NO CLIENT CAN SUPPLY ONE: today every
-// registration is an omission. Refusing would take dynamic client registration
-// dark on deploy for a distinction that is unobservable while the registry
-// holds one member -- the registry's only member is ScopeRead, so "the full
-// registry" is exactly {mcp:read}, which is exactly what m137's backfill wrote
-// onto every client that already existed. The ceiling does not move: this
-// registers no client for a scope it could not already have obtained, because
-// before m137 every client could request every recognised scope.
-//
-// WHAT THIS COSTS, STATED RATHER THAN DISCOVERED LATER. The two answers diverge
-// the day a second scope is recognised, and on that day THIS ONE IS THE
-// DANGEROUS DIRECTION: a client that says nothing would be registered for the
-// new scope too, and the containment check in Authorize and Approve would grant
-// it nothing to bite on. That is the same trap m137 DECISION 3 refused to build
-// into the schema as a DEFAULT, and choosing it here means it must be revisited
-// rather than inherited.
-//
-// IT CANNOT BE INHERITED SILENTLY. TestOmittedRegistrationScopeMustBeRevisited-
-// WhenTheRegistryGrows fails the moment recognisedScopes holds more than one
-// member, so the second scope's change cannot land without an author reading
-// this comment and choosing again. A comment asking to be revisited is a wish;
-// that test is the mechanism.
-func registeredScopesForOmittedRequest() []string {
-	return SupportedScopes()
+// UNRECOGNISED TOKENS ARE DROPPED, NOT REFUSED. See ParseRegistrationScopes
+// for why registration is the one lenient reader.
+func registeredScopesFor(raw string) (registered []string, dropped []string) {
+	return ParseRegistrationScopes(raw)
 }
 
 // Register implements RFC 7591 dynamic client registration.
@@ -604,6 +607,8 @@ func (s *Service) Register(ctx context.Context, req RegistrationRequest) (Regist
 		return RegisteredClient{}, err
 	}
 
+	registeredScopes, droppedScopes := registeredScopesFor(req.Scope)
+
 	clientID, err := randomToken(24)
 	if err != nil {
 		return RegisteredClient{}, fmt.Errorf("generate client_id: %w", err)
@@ -636,7 +641,7 @@ func (s *Service) Register(ctx context.Context, req RegistrationRequest) (Regist
 		RedirectUris:            req.RedirectURIs,
 		ClientName:              nullableText(strings.TrimSpace(req.ClientName)),
 		ClientUri:               nullableText(strings.TrimSpace(req.ClientURI)),
-		RegisteredScopes:        registeredScopesForOmittedRequest(),
+		RegisteredScopes:        registeredScopes,
 	})
 	if err != nil {
 		return RegisteredClient{}, fmt.Errorf("register client: %w", err)
@@ -680,6 +685,8 @@ func (s *Service) Register(ctx context.Context, req RegistrationRequest) (Regist
 		RedirectURIs:            stored.RedirectUris,
 		ClientName:              derefString(stored.ClientName),
 		ClientURI:               derefString(stored.ClientUri),
+		Scopes:                  stored.RegisteredScopes,
+		DroppedScopes:           droppedScopes,
 	}, nil
 }
 
@@ -756,6 +763,11 @@ type ConsentContext struct {
 	// what lets Approve store the scope set the operator was shown rather than
 	// the one the body claims. See consent_ticket.go.
 	ConsentTicket string
+
+	// ConferrableCapabilities is what Scopes confer, each with its effect,
+	// for the screen's capability picker. Set by Authorize; never read back
+	// from an approval body.
+	ConferrableCapabilities []ConferrableCapability
 }
 
 // Authorize validates an authorization request and returns what the consent
@@ -831,6 +843,11 @@ func (s *Service) Authorize(ctx context.Context, req AuthorizeRequest) (ConsentC
 		return ConsentContext{}, fmt.Errorf("issue consent ticket: %w", err)
 	}
 
+	conferrable, err := ConferrableCapabilities(scopes)
+	if err != nil {
+		return ConsentContext{}, fmt.Errorf("resolve conferrable capabilities: %w", err)
+	}
+
 	return ConsentContext{
 		ClientID:             client.ClientID,
 		ClientNameUnverified: derefString(client.ClientName),
@@ -842,6 +859,8 @@ func (s *Service) Authorize(ctx context.Context, req AuthorizeRequest) (ConsentC
 		CodeChallenge:        req.CodeChallenge,
 		CodeChallengeMethod:  req.CodeChallengeMethod,
 		ConsentTicket:        ticket,
+
+		ConferrableCapabilities: conferrable,
 	}, nil
 }
 
@@ -1132,6 +1151,11 @@ func (s *Service) Approve(ctx context.Context, req ApprovalRequest) (Approval, e
 	// intersection behind the operator's back.
 	caps, err := s.resolveGrantCapabilities(grantedScopes, req.Capabilities)
 	if err != nil {
+		return Approval{}, err
+	}
+	// Approving a request capability requires the approver to hold the
+	// permission it asks for; the same rule the token path applies.
+	if err := requireCreatorMayConfer(req.Principal, caps); err != nil {
 		return Approval{}, err
 	}
 

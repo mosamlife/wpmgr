@@ -3,6 +3,7 @@ package mcp
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
@@ -19,6 +20,9 @@ type registrationRequestDTO struct {
 	ClientName              string   `json:"client_name"`
 	ClientURI               string   `json:"client_uri"`
 	TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method"`
+	// Scope is RFC 7591 section 2's space-delimited list. Omitted registers
+	// {mcp:read}; see registeredScopesFor.
+	Scope string `json:"scope"`
 }
 
 type registrationResponseDTO struct {
@@ -28,6 +32,10 @@ type registrationResponseDTO struct {
 	RedirectURIs            []string `json:"redirect_uris"`
 	ClientName              string   `json:"client_name,omitempty"`
 	ClientURI               string   `json:"client_uri,omitempty"`
+	// Scope echoes the STORED registered set (RFC 7591 section 3.2.1), which
+	// can differ from the request: {mcp:read} is always present and
+	// unrecognised tokens are not registered.
+	Scope string `json:"scope"`
 }
 
 func toRegistrationResponse(c RegisteredClient) registrationResponseDTO {
@@ -38,6 +46,7 @@ func toRegistrationResponse(c RegisteredClient) registrationResponseDTO {
 		RedirectURIs:            c.RedirectURIs,
 		ClientName:              c.ClientName,
 		ClientURI:               c.ClientURI,
+		Scope:                   strings.Join(c.Scopes, " "),
 	}
 }
 
@@ -92,6 +101,18 @@ type consentResponseDTO struct {
 	// 90 days client-side would have been the same falsehood with a shorter
 	// shelf life, since the term is a server constant the dashboard cannot see.
 	GrantLifetimeDays int `json:"grant_lifetime_days"`
+
+	// ConferrableCapabilities is every capability the scopes on this screen
+	// confer, each with its effect ("read" or "request"). It is the list the
+	// operator may tick, and the screen groups it by effect. A client that
+	// meets an effect it does not know must not offer Approve: an unknown
+	// effect is not a read.
+	ConferrableCapabilities []conferrableCapabilityDTO `json:"conferrable_capabilities"`
+}
+
+type conferrableCapabilityDTO struct {
+	Name   string `json:"name"`
+	Effect string `json:"effect"`
 }
 
 func toConsentResponse(c ConsentContext) consentResponseDTO {
@@ -99,10 +120,17 @@ func toConsentResponse(c ConsentContext) consentResponseDTO {
 	for _, s := range c.Scopes {
 		scopes = append(scopes, string(s))
 	}
+	conferrable := make([]conferrableCapabilityDTO, 0, len(c.ConferrableCapabilities))
+	for _, cc := range c.ConferrableCapabilities {
+		conferrable = append(conferrable, conferrableCapabilityDTO{
+			Name: string(cc.Name), Effect: string(cc.Effect),
+		})
+	}
 	return consentResponseDTO{
-		ClientID:             c.ClientID,
-		ClientNameUnverified: c.ClientNameUnverified,
-		ClientURIUnverified:  c.ClientURIUnverified,
+		ConferrableCapabilities: conferrable,
+		ClientID:                c.ClientID,
+		ClientNameUnverified:    c.ClientNameUnverified,
+		ClientURIUnverified:     c.ClientURIUnverified,
 		// Always false, and it is a literal rather than a field on
 		// ConsentContext so there is no code path that can set it true.
 		// Registration is unauthenticated; nothing about this identity is
@@ -527,9 +555,11 @@ func oauthError(err error) (int, oauthErrorDTO) {
 		return http.StatusBadRequest, oauthErrorDTO{Err: "invalid_request", ErrDesc: domErr.Message}
 	case ErrCodeInvalidSiteScope, ErrCodeInvalidRequest:
 		return http.StatusBadRequest, oauthErrorDTO{Err: "invalid_request", ErrDesc: domErr.Message}
-	case ErrCodeAccessDenied:
+	case ErrCodeAccessDenied, ErrCodeCreatorMayNotConfer:
 		// 403, not the default 400: the request is well-formed and this
-		// principal is simply not permitted to authorize an org-level grant.
+		// principal is simply not permitted to authorize an org-level grant,
+		// or not permitted to confer a request capability it could not
+		// exercise itself.
 		return http.StatusForbidden, oauthErrorDTO{Err: "access_denied", ErrDesc: domErr.Message}
 	default:
 		return http.StatusBadRequest, oauthErrorDTO{Err: "invalid_request", ErrDesc: domErr.Message}

@@ -628,7 +628,7 @@ func (h *TransportHandler) dispatch(
 		// An empty list is a truthful answer for a connection whose org ceiling
 		// reaches nothing, not an error.
 
-		return newResponse(req.ID, map[string]any{"tools": VisibleTools(auth)}), http.StatusOK, true
+		return newResponse(req.ID, map[string]any{"tools": visibleTools(h.svc.liveRegistry(), auth)}), http.StatusOK, true
 
 	case "tools/call":
 		// AUTHORIZATION RUNS BEFORE THE BUDGET GATE for this method, unlike
@@ -936,7 +936,11 @@ func (h *TransportHandler) authorizeCall(ctx context.Context, auth AuthorizedReq
 		return ToolPolicy{}, p, newErrorResponse(req.ID, codeInvalidParams, "tools/call params could not be parsed", nil), true
 	}
 
-	entry, reason, err := AuthorizeTool(p.Name, auth)
+	// The LIVE surface, not the whole registry: while write tools are
+	// switched off the cache-request tools are absent, and a call to one
+	// answers exactly as an unknown name does.
+	live := h.svc.liveRegistry()
+	entry, reason, err := authorizeTool(live, p.Name, auth)
 	if err != nil {
 		// THE OPERATOR LOG IS WRITTEN FOR EVERY REFUSAL WITH A REASON, not
 		// only for the ones the wire blurs.
@@ -1014,7 +1018,7 @@ func (h *TransportHandler) authorizeCall(ctx context.Context, auth AuthorizedReq
 			data, _ := json.Marshal(map[string]any{
 				"argument":        "name",
 				"supplied":        p.Name,
-				"available_tools": visibleToolNames(auth),
+				"available_tools": visibleToolNames(live, auth),
 			})
 			return ToolPolicy{}, p, newErrorResponse(req.ID, codeToolNotAvailable, de.Message, data), true
 		}
@@ -1220,6 +1224,15 @@ func (h *TransportHandler) toolError(id json.RawMessage, err error) jsonrpcRespo
 			data, _ := json.Marshal(payload)
 			return newErrorResponse(id, codeCapabilityNotGranted, de.Message, data)
 		}
+		if de.Code == ErrCodeSiteAddressUnusable {
+			// -32014, for either scope. The message is OUR constant and never
+			// the error's own text, so no site text can reach it whatever the
+			// producer attached; retryable is false because only an operator
+			// correcting the site's address changes the answer. No details
+			// are copied: the producer's details are operator-facing.
+			data, _ := json.Marshal(map[string]any{"code": de.Code, "retryable": false})
+			return newErrorResponse(id, codeSiteAddressUnusable, siteAddressUnusableMessage, data)
+		}
 		if de.Code == govcontext.ErrCodeContextTooLarge {
 			// THE FORK THIS BRANCH SITS ON IS NOT "HOW BAD IS IT" BUT WHOSE
 			// INFORMATION THE MESSAGE CARRIES. This code's content is the
@@ -1401,7 +1414,7 @@ func (h *TransportHandler) auditGap(
 // unattributable refusals to go, which is a schema question and therefore
 // database-engineer's, not something to fake with a nil uuid.
 func (h *TransportHandler) writeUnauthorized(c *gin.Context, err error) {
-	c.Header("WWW-Authenticate", `Bearer realm="wpmgr-mcp"`)
+	c.Header("WWW-Authenticate", bearerChallenge())
 
 	msg := "a valid bearer token is required"
 	code := ErrCodeInvalidGrant

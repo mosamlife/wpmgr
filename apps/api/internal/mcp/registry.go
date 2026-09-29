@@ -102,6 +102,23 @@ type ToolPolicy struct {
 	// capability axis any more. See the D1 note below.
 	RequiresSiteScope bool
 
+	// Effect is what calling the tool does: EffectRead changes nothing, and
+	// EffectRequest writes a pending request that a person must approve in
+	// WPMgr before anything reaches a site. It is the effect of the tool, and
+	// it can differ from the effect of its capability: the status tool of a
+	// request capability is a read.
+	Effect Effect
+
+	// FencesSiteOriginText declares that every site-controlled or
+	// model-echoed value this tool puts in its result OR in its error data
+	// goes through fenceSiteText. TestEverySiteKeyedToolDeclaresTheFence
+	// requires it on every site-keyed tool.
+	FencesSiteOriginText bool
+
+	// Annotations are the MCP tool annotations the descriptor carries. nil
+	// omits them.
+	Annotations *ToolAnnotations
+
 	invoke toolInvoker
 }
 
@@ -110,8 +127,9 @@ type ToolPolicy struct {
 //
 // Adding an entry here is the only way a tool becomes reachable, and it is a
 // reviewed diff on a file whose package comment says the surface is read-only.
-// A write tool arrives with its own capability, its own migration for the
-// stored narrowing, and its own review -- never by being appended here.
+// A tool that is not a read arrives with its own capability, its own
+// migration, its own review, and its own entry in the allowlist in
+// TestNoRegisteredToolIsWriteShaped -- never by being appended here alone.
 func registryTools() []ToolPolicy {
 	entries := []ToolPolicy{{
 		Name: ToolFleetSitesList,
@@ -120,10 +138,12 @@ func registryTools() []ToolPolicy {
 			"inventory staleness stamp. Sites whose plugin/theme inventory has never " +
 			"been collected are reported as never_collected rather than being given a " +
 			"substitute date.",
-		InputSchema:        listSitesSchema,
-		Capability:         CapSitesRead,
-		OperatorPermission: authz.PermSiteRead,
-		RequiresSiteScope:  true,
+		InputSchema:          listSitesSchema,
+		Capability:           CapSitesRead,
+		OperatorPermission:   authz.PermSiteRead,
+		RequiresSiteScope:    true,
+		Effect:               EffectRead,
+		FencesSiteOriginText: true,
 		invoke: func(ctx context.Context, svc *Service, auth AuthorizedRequest, _ json.RawMessage) (string, error) {
 			return svc.ListSitesForModel(ctx, auth)
 		},
@@ -154,14 +174,24 @@ func registryTools() []ToolPolicy {
 			"A site whose inventory has never been collected reports inventory_status " +
 			"never_collected and is counted separately -- its zero means we have not looked, " +
 			"not that it is up to date.",
-		InputSchema:        updatesPendingSchema,
-		Capability:         CapSitesRead,
-		OperatorPermission: authz.PermSiteRead,
-		RequiresSiteScope:  true,
+		InputSchema:          updatesPendingSchema,
+		Capability:           CapSitesRead,
+		OperatorPermission:   authz.PermSiteRead,
+		RequiresSiteScope:    true,
+		Effect:               EffectRead,
+		FencesSiteOriginText: true,
 		invoke: func(ctx context.Context, svc *Service, auth AuthorizedRequest, _ json.RawMessage) (string, error) {
 			return svc.ListPendingUpdatesForModel(ctx, auth)
 		},
 	}}
+
+	// The two cache-request tools (cache_purge_tools.go). Neither changes a
+	// site: the first writes a request a person must approve, and the second
+	// reads what became of it. They are the ONLY entries whose capability is
+	// not a read, and TestNoRegisteredToolIsWriteShaped holds them as an
+	// explicit, reviewed allowlist of exactly these two (name, capability)
+	// pairs.
+	entries = append(entries, cachePurgeToolPolicies()...)
 
 	// EVERY ENTRY GETS ITS OWN COPY OF ITS SCHEMA BYTES.
 	//
@@ -314,10 +344,10 @@ func withinOrgCeiling(entry ToolPolicy, auth AuthorizedRequest) bool {
 func capabilityNotice(entry ToolPolicy) string {
 	return fmt.Sprintf(
 		"\n\nNOT AVAILABLE TO THIS CONNECTION. This tool requires the %q capability and "+
-			"this connection's grant does not hold it. Calling it refuses with %s. That "+
-			"refusal is permanent for this connection: retrying, refreshing the token or "+
-			"re-running the OAuth authorisation will return the same answer. A wpmgr "+
-			"operator must grant %[1]q to this connection before it can be used.",
+			"this connection does not hold it. Calling it refuses with %s. That refusal is "+
+			"permanent: retrying, refreshing the token or re-running the OAuth authorisation "+
+			"returns the same answer. A connection's permissions cannot be changed; an "+
+			"operator would have to revoke it and create a new connection with %[1]q ticked.",
 		entry.Capability, ErrCodeCapabilityNotGranted)
 }
 
@@ -345,7 +375,13 @@ func capabilityNotice(entry ToolPolicy) string {
 // scope is still listed and still refuses at invocation with mcp_scope_empty.
 // That half was ruled on separately and is deliberately untouched.
 func VisibleTools(auth AuthorizedRequest) []ToolDescriptor {
-	entries := registryTools()
+	return visibleTools(registryTools(), auth)
+}
+
+// visibleTools is VisibleTools over a given entry list. The transport passes
+// the live surface (Service.liveRegistry), which omits the cache-request tools
+// while write tools are switched off.
+func visibleTools(entries []ToolPolicy, auth AuthorizedRequest) []ToolDescriptor {
 	out := make([]ToolDescriptor, 0, len(entries))
 	for _, e := range entries {
 		if !withinOrgCeiling(e, auth) {
@@ -355,6 +391,7 @@ func VisibleTools(auth AuthorizedRequest) []ToolDescriptor {
 			Name:        e.Name,
 			Description: e.Description,
 			InputSchema: e.InputSchema,
+			Annotations: e.Annotations,
 		}
 		if !capabilityHeld(e, auth) {
 			d.Description += capabilityNotice(e)
@@ -372,8 +409,8 @@ func VisibleTools(auth AuthorizedRequest) []ToolDescriptor {
 // It carries NAMES ONLY, so it does not repeat the capability notice. A model
 // that finds its name in this list and still cannot call the tool is looking at
 // the capability refusal, which names the capability itself.
-func visibleToolNames(auth AuthorizedRequest) []string {
-	ts := VisibleTools(auth)
+func visibleToolNames(entries []ToolPolicy, auth AuthorizedRequest) []string {
+	ts := visibleTools(entries, auth)
 	out := make([]string, 0, len(ts))
 	for _, t := range ts {
 		out = append(out, t.Name)
@@ -438,9 +475,16 @@ func visibleToolNames(auth AuthorizedRequest) []string {
 // invocable", and there is deliberately no way for a caller to obtain the first
 // without the rest.
 func AuthorizeTool(name string, auth AuthorizedRequest) (ToolPolicy, refusalReason, error) {
+	return authorizeTool(registryTools(), name, auth)
+}
+
+// authorizeTool is AuthorizeTool over a given entry list. A name absent from
+// the list answers exactly as a name absent from the registry, which is what
+// makes a switched-off tool byte-identical to one that was never built.
+func authorizeTool(entries []ToolPolicy, name string, auth AuthorizedRequest) (ToolPolicy, refusalReason, error) {
 	var found bool
 	var entry ToolPolicy
-	for _, e := range registryTools() {
+	for _, e := range entries {
 		if e.Name == name {
 			entry, found = e, true
 			break
@@ -486,11 +530,11 @@ func AuthorizeTool(name string, auth AuthorizedRequest) (ToolPolicy, refusalReas
 		// naming the held set and marking it non-retryable is what makes it
 		// actionable rather than merely precise.
 		return ToolPolicy{}, reasonCapabilityNotHeld, domain.Forbidden(ErrCodeCapabilityNotGranted,
-			fmt.Sprintf("tool %q requires the %q capability and this connection's grant does "+
-				"not hold it. This is a permanent property of the grant and not a transient "+
-				"failure: retrying this call, refreshing the connection token or re-running "+
-				"the OAuth authorisation will return exactly this answer. A wpmgr operator "+
-				"must grant %[2]q to this connection before it can be called.",
+			fmt.Sprintf("tool %q requires the %q capability and this connection does not hold "+
+				"it. That refusal is permanent: retrying this call, refreshing the token or "+
+				"re-running the OAuth authorisation returns exactly this answer. A connection's "+
+				"permissions cannot be changed; an operator would have to revoke it and create "+
+				"a new connection with %[2]q ticked.",
 				name, entry.Capability)).
 			WithDetails(map[string]any{
 				"tool":                name,
@@ -498,8 +542,8 @@ func AuthorizeTool(name string, auth AuthorizedRequest) (ToolPolicy, refusalReas
 				// Sorted() renders the caller's OWN grant. Returning it
 				// discloses nothing new and lets a model tell the user exactly
 				// what this connection can and cannot do.
-				"held_capabilities":   capabilityNames(auth.Capabilities.Sorted()),
-				"retryable":           false,
+				"held_capabilities": capabilityNames(auth.Capabilities.Sorted()),
+				"retryable":         false,
 			})
 	}
 
@@ -577,6 +621,7 @@ func Tools() []ToolDescriptor {
 			Name:        e.Name,
 			Description: e.Description,
 			InputSchema: e.InputSchema,
+			Annotations: e.Annotations,
 		})
 	}
 	return out

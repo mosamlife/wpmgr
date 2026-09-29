@@ -109,14 +109,13 @@ const (
 	CapContentRead Capability = "mcp.content.read"
 
 	// CapCachePurge is THE FIRST NON-READ MEMBER OF THIS VOCABULARY, seated by
-	// m135. It gates one operation: clear a site's page cache.
+	// m135. Under ADR-061 it means "may ASK to clear one site's page cache":
+	// the tool it unlocks writes a pending request, and nothing reaches the
+	// site until a person approves that one request in WPMgr. No automation
+	// can approve a request.
 	//
-	// IT IS SEATED AND, LIKE CapContentRead, IT IS CONFERRED BY NO SCOPE -- so
-	// no grant can currently be minted holding it and no connection can
-	// currently call the tool behind it. That is not an oversight and it is not
-	// the same stance for the same reason; see the CapCachePurge paragraph on
-	// scopeCapabilities for the argument, and the ceiling note there for what
-	// has to land before it can be conferred at all.
+	// ScopeCache (m150) confers it and nothing else confers it. It is never in
+	// DefaultGrantCapabilities and never in a preset: an operator ticks it.
 	CapCachePurge Capability = "mcp.cache.purge"
 )
 
@@ -135,14 +134,13 @@ const (
 // KNOWING a capability is not CONFERRING it and is not DEFAULTING to it. Those
 // are three separate sets and this is the widest of them:
 //
-//	capabilityVocabulary     -- what may be spelled at all         (9)
-//	scopeCapabilities        -- what a scope confers, the CEILING  (7)
-//	DefaultGrantCapabilities -- what an unasked grant receives     (1)
+//	capabilityVocabulary     -- what may be spelled at all
+//	scopeCapabilities        -- what the scopes confer, the CEILING
+//	DefaultGrantCapabilities -- what an unasked grant receives (sites.read)
 //
-// THE GAP BETWEEN 9 AND 7 IS TWO DELIBERATELY UNREACHABLE MEMBERS, and it is
-// the shape of this design rather than a backlog: CapContentRead (m131
-// DECISION 3) and CapCachePurge (m135). Both are spellable, neither is
-// conferred, so NarrowTo refuses either by name and no mint path can store one.
+// THE GAP BETWEEN 9 AND 8 IS ONE DELIBERATELY UNREACHABLE MEMBER,
+// CapContentRead (m131 DECISION 3). It is spellable and conferred by no scope,
+// so NarrowTo refuses it by name and no mint path can store it.
 //
 // Widening this map alone widens NOTHING a grant receives, and that separation
 // is the whole point. See DefaultGrantCapabilities.
@@ -210,65 +208,25 @@ func AllCapabilities() []Capability {
 // under that review. TestContentReadIsKnownButConferredByNoScope pins it.
 //
 // ---------------------------------------------------------------------------
-// CapCachePurge IS ALSO ABSENT, AND THAT IS THE m135 CEILING DECISION.
+// CapCachePurge IS CONFERRED BY ScopeCache, AND BY NOTHING ELSE.
 //
-// THE CHOICE MADE: mcp.cache.purge is conferred by NO SCOPE. ScopeRead does not
-// confer it and no second scope is added here.
+// NOT BY ScopeRead. It is a read scope, and every live grant holds it by
+// construction: adding the purge capability there would hand the power to ask
+// for a cache clear to every grant this surface has ever minted, retroactively,
+// with no second consent. The read scope confers the READ capabilities, and
+// TestReadScopeConfersOnlyReads pins that.
 //
-// WHY NOT ScopeRead. It is a read scope. The paragraph above already states the
-// rule this map encodes -- "the read scope confers the READ capabilities, and a
-// member that does not end in `.read` is not conferred by it until someone
-// writes that line and defends it" -- and mcp.cache.purge is the first member
-// that tests it. The line cannot be defended: every live grant holds ScopeRead
-// by construction (see grantScopes), and every operator who consented to it
-// consented to a screen describing reads. Adding one entry here would hand the
-// power to purge a live site's cache to EVERY GRANT THIS SURFACE HAS EVER
-// MINTED, retroactively, with no second consent -- a write capability arriving
-// through a scope the operator did not read, which is the exact failure m135's
-// own note (3)(a) and m131 DECISION 3 both name.
+// BY A SECOND SCOPE, m150's mcp:cache, because a scope is what the operator
+// consents to. The OAuth path stores the scope set the consent ticket sealed
+// (Approve); the token path stores it when the operator named an explicit
+// capability list (MintConnection, ruling R1). A grant holding ScopeCache but
+// not CapCachePurge lists the two cache-request tools with the notice and
+// refuses them by name (ruling 9: refuse, do not hide). A grant without
+// ScopeCache does not list them at all, because they are outside its ceiling.
 //
-// WHY NOT A SECOND SCOPE EITHER, WHICH IS THE PART THAT BLOCKS THE TOOL.
-// "Mint-only" is not a mechanism this package has, and reading it as one is the
-// trap here. There is no mint path that bypasses this ceiling: BOTH creation
-// paths resolve through Service.resolveGrantCapabilities (mint.go:600), which
-// calls ceiling.NarrowTo for the explicit request AND for the preset, and
-// Service.Authenticate (service.go:1408) re-derives the same ceiling and
-// NarrowTo's the STORED column against it on every request. So a capability
-// conferred by no scope is not "mint-only", it is UNREACHABLE -- unstorable at
-// mint, and fatal to the whole connection if a row ever holds it.
-//
-// Conferring it therefore requires a second scope. WHEN THIS PARAGRAPH WAS
-// WRITTEN the blocker was that grantScopes() was a constant -- mcp_grants had
-// no scopes column -- so a second entry in recognisedScopes would have handed
-// ScopeRead's capabilities to a grant that never asked for them. m136 added the
-// column and grantScopes is now a real per-grant read, so THAT widening is
-// closed and this is no longer the thing standing in the way.
-//
-// What stands in the way now is one step further on, and it is smaller but not
-// nothing: the scope set STORED at consent is the approval body re-parsed, not
-// a restatement of the registry, and the two coincide only while
-// recognisedScopes has a single member. The note at Service.Approve in
-// service.go says what has to be bound before a second scope is recognised.
-// That binding, the write scope and the tool behind it belong in one diff,
-// under one review.
-//
-// SO THE CAPABILITY IS SEATED AND NO TOOL IS REGISTERED BEHIND IT YET.
-// registryTools() is unchanged by this diff, and that is the honest ordering
-// rather than a shortfall: a tool requiring this capability would be dropped
-// from every tools/list by withinOrgCeiling and answered as an unregistered
-// name by AuthorizeTool, for every connection, so registering it would ship an
-// authorisation path -- site-scope enforcement, agent dispatch, audit -- that
-// no test could exercise end to end through Authenticate, because no grant can
-// hold the capability that reaches it. An unreachable write path is exactly the
-// thing that gets reviewed once and then quietly goes wrong.
-//
-// The tool, its site-scope check and its dispatch belong in the SAME diff as
-// the scopes column and the write scope, where all three can be proved
-// together. That is the same seated-and-unreachable stance CapContentRead has
-// held since m131, and for a write capability it is the direction that fails
-// safe. TestCachePurgeIsKnownButConferredByNoScope pins it, and it is the test
-// that must be DELETED -- not edited -- by whoever confers this, so the
-// conferral cannot happen quietly.
+// A capability's EFFECT is stated separately, in capabilityEffect. Every
+// member is a read except CapCachePurge, which is a request: it asks, and a
+// person decides.
 // ---------------------------------------------------------------------------
 var scopeCapabilities = map[Scope][]Capability{
 	ScopeRead: {
@@ -280,6 +238,84 @@ var scopeCapabilities = map[Scope][]Capability{
 		CapSitesRead,
 		CapUptimeRead,
 	},
+	ScopeCache: {
+		CapCachePurge,
+	},
+}
+
+// Effect is what a capability, or a tool, does to a site. It is a closed set
+// of two, and the operator-facing surfaces group capabilities by it (the
+// consent screen's conferrable_capabilities, the wizard's picker).
+type Effect string
+
+const (
+	// EffectRead changes nothing anywhere.
+	EffectRead Effect = "read"
+	// EffectRequest writes a pending request and nothing else. The change it
+	// names happens only if a person approves that one request in WPMgr.
+	EffectRequest Effect = "request"
+)
+
+// capabilityEffect maps EVERY member of capabilityVocabulary to its effect.
+// It is total by test (TestCapabilityEffectIsExhaustive), so a capability
+// seated without an effect goes red rather than rendering as a read.
+var capabilityEffect = map[Capability]Effect{
+	CapActivityRead:    EffectRead,
+	CapBackupsRead:     EffectRead,
+	CapCachePurge:      EffectRequest,
+	CapContentRead:     EffectRead,
+	CapDiagnosticsRead: EffectRead,
+	CapPerformanceRead: EffectRead,
+	CapSecurityRead:    EffectRead,
+	CapSitesRead:       EffectRead,
+	CapUptimeRead:      EffectRead,
+}
+
+// CapabilityEffect reports c's effect. ok is false for a capability outside
+// the vocabulary; a caller must treat that as unknown and refuse to render it
+// as either kind.
+func CapabilityEffect(c Capability) (Effect, bool) {
+	e, ok := capabilityEffect[c]
+	return e, ok
+}
+
+// ConferrableCapability is one capability a scope set confers, with its
+// effect, for the consent screen.
+type ConferrableCapability struct {
+	Name   Capability
+	Effect Effect
+}
+
+// ConferrableCapabilities lists what scopes confer, sorted by name, each with
+// its effect. It is the consent screen's list of what the operator may tick.
+// An unmapped scope yields an error, exactly as OrgDefaultCapabilities does.
+func ConferrableCapabilities(scopes []Scope) ([]ConferrableCapability, error) {
+	set, err := OrgDefaultCapabilities(scopes)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ConferrableCapability, 0, set.Len())
+	for _, c := range set.Sorted() {
+		e, ok := CapabilityEffect(c)
+		if !ok {
+			return nil, domain.Forbidden(ErrCodeCapabilityUnmapped,
+				fmt.Sprintf("capability %q has no effect on this server", c))
+		}
+		out = append(out, ConferrableCapability{Name: c, Effect: e})
+	}
+	return out, nil
+}
+
+// holdsRequestCapability reports whether caps includes any capability whose
+// effect is a request. Creating a grant that holds one requires the creator to
+// hold the operator permission the request would exercise.
+func holdsRequestCapability(caps CapabilitySet) bool {
+	for _, c := range caps.Sorted() {
+		if e, _ := CapabilityEffect(c); e == EffectRequest {
+			return true
+		}
+	}
+	return false
 }
 
 // grantScopes reads mcp_grants.oauth_scopes back into the domain type. IT IS A
@@ -348,10 +384,9 @@ func scopeNames(scopes []Scope) []string {
 // shared slice is one append away from widening every grant this surface has
 // ever minted.
 //
-// WHEN A WRITE SCOPE EXISTS this is where the operator's choice replaces the
-// preset on the token path, and it is NOT where the write scope gets added to
-// the preset. See recognisedScopes in scope.go: a write scope arrives with its
-// own migration and its own review.
+// IT STAYS {mcp:read} NOW THAT ScopeCache EXISTS. The token path stores the
+// whole registry only when the operator named an explicit capability list
+// (MintConnection, ruling R1); a caller that named nothing gets this preset.
 func DefaultGrantScopes() []Scope {
 	return []Scope{ScopeRead}
 }
@@ -375,7 +410,7 @@ func DefaultGrantScopes() []Scope {
 // SO THE DEFAULT IS NOW AN EXPLICIT PRESET AND IT IS DELIBERATELY THE
 // NARROWEST ONE: the fleet inventory read, and nothing else.
 //
-// The argument for that value, rather than for the seven-member ceiling:
+// The argument for that value, rather than for the whole ceiling:
 //
 //  1. IT IS THE ONLY CAPABILITY THAT REACHES A TOOL. registry.go registers one
 //     tool and it requires CapSitesRead. Every other member of the ceiling
@@ -393,7 +428,7 @@ func DefaultGrantScopes() []Scope {
 //     same stance m131 DECISION 4 takes on the database side by refusing a
 //     backfill.
 //
-// THE CEILING IS STILL THE SEVEN. An operator who asks for a wider set gets it
+// THE CEILING IS WHAT THE SCOPES CONFER. An operator who asks for a wider set gets it
 // (Service.MintConnection -> resolveGrantCapabilities -> NarrowTo), because
 // asking is choosing. The default is what happens when nobody asked, and the
 // answer to "nobody asked" is never "everything".

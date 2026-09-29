@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
+	"github.com/mosamlife/wpmgr/apps/api/internal/authz"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
@@ -416,13 +417,52 @@ func (s *Service) MintConnection(ctx context.Context, req MintConnectionRequest)
 	// rather than dropping it, for the reason written on that method: a
 	// silently-dropped capability is a grant the operator did not ask for.
 	//
-	// THE SCOPES ARE DefaultGrantScopes() ON THIS PATH AND THE SAME SLICE IS
-	// STORED BELOW. A connection token has no RFC 7591 client behind it and so
-	// no `scope` request parameter to honour; the answer to "nobody asked" is
-	// the preset, which is the read scope and nothing else.
+	// THE SCOPES, UNDER OWNER RULING R1, AND THE SAME SLICE IS STORED BELOW.
+	//
+	// A connection token has no RFC 7591 client behind it and so no `scope`
+	// request parameter to honour. Two cases:
+	//
+	//   - NO CAPABILITY LIST (req.Capabilities nil): the caller chose nothing,
+	//     and the answer to "nobody asked" is the preset, DefaultGrantScopes(),
+	//     the read scope and nothing else.
+	//   - AN EXPLICIT LIST: the operator went through the picker, which shows
+	//     every capability this server has. The grant stores the whole
+	//     registry, SupportedScopes(), so a capability the operator left
+	//     unticked still LISTS its tools with the notice and refuses them by
+	//     name, instead of hiding them (WIZARD-SPEC ruling 9: refuse, do not
+	//     hide). The capability column is still exactly what was ticked, and
+	//     it is the authority; the scope set is only the ceiling.
+	//
+	// WHAT R1 COSTS ON A REVERT, stated so nobody discovers it: a build that
+	// does not recognise mcp:cache refuses every grant storing it, which under
+	// R1 is every token grant minted with an explicit list. The recovery is a
+	// repair migration that lifts FORCE row security and removes mcp:cache from
+	// every grant that does not hold mcp.cache.purge. The kill switch
+	// (WPMGR_MCP_WRITE_TOOLS=off) has no such cost and is the first lever.
+	//
+	// THE STORED SLICE IS THE VALIDATED SLICE. SupportedScopes() is re-parsed
+	// through ParseRequestedScopes, the same closed-registry gate /authorize
+	// uses, so a string that is not a recognised scope cannot reach the column.
 	grantedScopes := DefaultGrantScopes()
+	if req.Capabilities != nil {
+		parsed, perr := ParseRequestedScopes(strings.Join(SupportedScopes(), " "))
+		if perr != nil {
+			return MintedConnection{}, fmt.Errorf("resolve token-path scopes: %w", perr)
+		}
+		grantedScopes = parsed
+	}
 	caps, err := s.resolveGrantCapabilities(grantedScopes, req.Capabilities)
 	if err != nil {
+		return MintedConnection{}, err
+	}
+
+	// A REQUEST CAPABILITY NEEDS ITS CREATOR TO HOLD THE PERMISSION IT ASKS
+	// FOR. A connection holding mcp.cache.purge asks operators to clear
+	// caches; the operator who creates it must be one who may clear caches
+	// (authz.PermSiteCachePurge). Otherwise a principal that may manage keys
+	// but not purge could manufacture a requester for an action it may not
+	// take itself. Checked before anything is generated or written.
+	if err := requireCreatorMayConfer(req.Principal, caps); err != nil {
 		return MintedConnection{}, err
 	}
 
@@ -616,7 +656,7 @@ func (s *Service) MintConnection(ctx context.Context, req MintConnectionRequest)
 // read: the caller passes the scope set the grant is ABOUT TO BE STORED WITH,
 // and the ceiling is derived from that. The two creation paths pass different
 // things and both are honest -- Approve passes the client's re-parsed request,
-// MintConnection passes DefaultGrantScopes() because no client asked -- and
+// MintConnection passes its ruling-R1 scope set because no client asked -- and
 // each then writes the SAME slice into oauth_scopes. Deriving the ceiling from
 // one value and storing another is the divergence this signature makes
 // impossible to write by accident.
@@ -639,6 +679,31 @@ func (s *Service) resolveGrantCapabilities(scopes []Scope, requested *[]Capabili
 	// explicitly empty list reaches here too, and NarrowTo refuses that by name
 	// as well.
 	return ceiling.NarrowTo(*requested)
+}
+
+// ErrCodeCreatorMayNotConfer refuses a grant carrying a request capability
+// when the principal creating it does not hold the operator permission that
+// request would ask a person to exercise.
+const ErrCodeCreatorMayNotConfer = "mcp_creator_may_not_confer"
+
+// requireCreatorMayConfer is the rule both creation paths share: a grant that
+// holds a request capability (today only mcp.cache.purge) may be created only
+// by a principal holding authz.PermSiteCachePurge. It runs on the resolved
+// set, after NarrowTo, so it sees exactly what would be stored.
+//
+// authz.PrincipalAllows, not a role compare: a capability-scoped API key is
+// judged on its explicit capability set alone (#510).
+func requireCreatorMayConfer(p domain.Principal, caps CapabilitySet) error {
+	if !holdsRequestCapability(caps) {
+		return nil
+	}
+	if !authz.PrincipalAllows(p, authz.PermSiteCachePurge) {
+		return domain.Forbidden(ErrCodeCreatorMayNotConfer,
+			fmt.Sprintf("a connection holding %q can ask for site caches to be cleared, so "+
+				"creating one requires the %q permission, which you do not hold",
+				CapCachePurge, authz.PermSiteCachePurge))
+	}
+	return nil
 }
 
 // verifyScopeReferents refuses a scope payload naming an id that resolves to no
