@@ -72,12 +72,13 @@ function SmtpSettingsPage() {
     refetch,
   } = useSmtp({ enabled: capable });
 
-  // Only an instance administrator (a superadmin, or the owner of the
-  // install's only organisation) may reach this page at all — the server
-  // gate covers GET as well as PUT/POST, so there is no read-only view for
-  // anyone else. Say so plainly rather than firing a request that can only
-  // 403 and rendering the generic load-failure state with a Retry that can
-  // never succeed.
+  // Only an instance administrator (a superadmin, the owner of the
+  // install's only organisation, or, on a self-hosted install, the account
+  // that completed first-run setup, while it is active and owns a live
+  // organisation) may reach this page at all — the server gate covers GET as
+  // well as PUT/POST, so there is no read-only view for anyone else. Say so
+  // plainly rather than firing a request that can only 403 and rendering the
+  // generic load-failure state with a Retry that can never succeed.
   if (!capable) {
     return (
       <section
