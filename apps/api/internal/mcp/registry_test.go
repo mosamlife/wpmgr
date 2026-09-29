@@ -741,7 +741,7 @@ func TestVisibleToolNamesMatchTheListing(t *testing.T) {
 
 	for _, caps := range []CapabilitySet{{}, NewCapabilitySet(AllCapabilities())} {
 		auth := authWith(caps, uuid.New())
-		names := visibleToolNames(auth)
+		names := visibleToolNames(registryTools(), auth)
 		if len(names) != want {
 			t.Fatalf("caps=%v: the error body named %d of %d tools", caps.Sorted(), len(names), want)
 		}

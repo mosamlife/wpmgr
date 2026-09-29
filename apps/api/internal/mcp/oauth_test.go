@@ -677,9 +677,16 @@ func newAuthorizeRouter(t *testing.T, store Store) *gin.Engine {
 // and Approve both refuse a scope set this array does not contain, so a fixture
 // that left it nil would model a client registered for NOTHING and every
 // authorize test in this file would fail with invalid_scope rather than
-// exercising what it is named for. It carries the honest value -- the same one
-// registeredScopesForOmittedRequest writes and the same one m137's backfill put
-// on every client that already existed.
+// exercising what it is named for. It carries the honest value -- the one
+// registeredScopesFor writes for a registration that names no scope, which is
+// also what m137's backfill put on every client that already existed.
+// omittedScopeRegistration is what Register stores for a client that names no
+// scope.
+func omittedScopeRegistration() []string {
+	registered, _ := registeredScopesFor("")
+	return registered
+}
+
 func liveClient(redirect string) sqlc.McpOauthClient {
 	name := "Claude Desktop"
 	return sqlc.McpOauthClient{
@@ -688,7 +695,7 @@ func liveClient(redirect string) sqlc.McpOauthClient {
 		TokenEndpointAuthMethod: "none",
 		RedirectUris:            []string{redirect},
 		ClientName:              &name,
-		RegisteredScopes:        registeredScopesForOmittedRequest(),
+		RegisteredScopes:        omittedScopeRegistration(),
 	}
 }
 
