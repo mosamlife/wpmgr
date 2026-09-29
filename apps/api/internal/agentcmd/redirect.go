@@ -157,29 +157,43 @@ const commandRedirectProbeTimeout = 10 * time.Second
 // followed. suggested is that redirect's SuggestedSiteURL: the address the
 // saved one would become, or "" when the redirect names none. The ping goes
 // only to the saved address (and, under the same-host upgrade rule, to its
-// https form), never to the address being considered. It implements
+// https form), never to the address being considered. answered is
+// pingAnswered's verdict on the ping. It implements
 // site.CommandRedirectProber.
-func (c *Client) CommandRedirectTarget(ctx context.Context, siteID uuid.UUID, siteURL string) (suggested string, redirected bool) {
+func (c *Client) CommandRedirectTarget(ctx context.Context, siteID uuid.UUID, siteURL string) (suggested string, redirected, answered bool) {
 	ctx, cancel := context.WithTimeout(ctx, commandRedirectProbeTimeout)
 	defer cancel()
 	_, err := c.Ping(ctx, siteID, siteURL)
 	re, ok := AsRedirect(err)
 	if !ok {
-		return "", false
+		return "", false, pingAnswered(err)
 	}
-	return re.SuggestedSiteURL, true
+	return re.SuggestedSiteURL, true, pingAnswered(err)
 }
 
 // CommandPingOK sends one signed ping to exactly siteURL and reports whether
 // the agent answered it with a 2xx carrying ok: true. A redirect, any other
 // status and a transport failure are false. Called with an https address, it
-// can follow no redirect at all (only an http address is ever upgraded). It
-// implements site.CommandRedirectProber.
-func (c *Client) CommandPingOK(ctx context.Context, siteID uuid.UUID, siteURL string) bool {
+// can follow no redirect at all (only an http address is ever upgraded).
+// answered is pingAnswered's verdict on the ping. It implements
+// site.CommandRedirectProber.
+func (c *Client) CommandPingOK(ctx context.Context, siteID uuid.UUID, siteURL string) (ok, answered bool) {
 	ctx, cancel := context.WithTimeout(ctx, commandRedirectProbeTimeout)
 	defer cancel()
 	out, err := c.Ping(ctx, siteID, siteURL)
-	return err == nil && out.OK
+	return err == nil && out.OK, pingAnswered(err)
+}
+
+// pingAnswered reports whether a ping's outcome is a definitive answer from
+// the site: a 2xx whose reply decoded (err is nil), or a redirect whose
+// target was read. A transport failure, a timeout, a reply that did not
+// decode, a redirect without a usable Location and any other status are not.
+func pingAnswered(err error) bool {
+	if err == nil {
+		return true
+	}
+	re, ok := AsRedirect(err)
+	return ok && re.To != ""
 }
 
 // AsRedirect reports whether err is, or wraps, a *RedirectError, and returns
