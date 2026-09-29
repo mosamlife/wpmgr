@@ -355,14 +355,25 @@ describe("Razorpay checkout", () => {
   // Every test here needs Razorpay both registered AND offered — offered
   // requires a likely-Indian signal (5.10), which this route reads from the
   // timezone only (no `?currency=` hint on /settings/billing).
+  // Typed narrowly (just the one method used below) rather than
+  // `ReturnType<typeof vi.spyOn>`, which resolves to the generic
+  // `(this: unknown, ...args: unknown[]) => unknown` overload and rejects
+  // this call's actual, more specific return type. Restoring only this
+  // spy — never `vi.restoreAllMocks()` — matters: that wipes every
+  // module-level `vi.fn()` mock in this file too (mockedUseBilling,
+  // mockedUseCreateBillingCheckout, …), which broke later describe blocks
+  // that rely on `vi.clearAllMocks()` (line below) leaving their configured
+  // return values in place.
+  let timezoneSpy: { mockRestore: () => void };
+
   beforeEach(() => {
-    vi.spyOn(Intl, "DateTimeFormat").mockReturnValue({
+    timezoneSpy = vi.spyOn(Intl, "DateTimeFormat").mockReturnValue({
       resolvedOptions: () => ({ timeZone: "Asia/Kolkata" }),
     } as unknown as Intl.DateTimeFormat);
   });
 
   afterEach(() => {
-    vi.restoreAllMocks();
+    timezoneSpy.mockRestore();
   });
 
   it("opens the Checkout.js modal with the subscription's key/id/amount/currency, and on handler success calls verify then starts the billing poll", async () => {
