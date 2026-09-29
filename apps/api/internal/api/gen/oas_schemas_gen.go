@@ -6267,15 +6267,16 @@ type AgentMetadata struct {
 	ActiveTheme OptString `json:"active_theme"`
 	// The WPMgr agent plugin version.
 	AgentVersion OptString `json:"agent_version"`
-	// The site's WordPress home_url as the agent reads it (GH #755). Optional. The control plane adopts
-	// the reported address as the site's saved address only in two cases, each confirmed by a signed ping
-	// at the moment of adoption: the reported address names the same host upgraded from http to https,
-	// confirmed by a signed ping to the https form; or the reported address is the "www." sibling of the
-	// saved address, confirmed by a signed ping to the SAVED address that comes back redirected to it.
-	// Host comparison in both cases is by the host that is dialled, not a normalized apex or registrable
-	// domain. Anything else (a different host with no "www." relationship, a changed port or path, a
-	// downgrade to http) is ignored. Adoption runs as a separate, best-effort step after the rest of this
-	// push has been applied, not during it; a refusal or failure never fails the push.
+	// The site's WordPress home_url as the agent reads it (GH #755). Optional; malformed or oversized
+	// reports are ignored. A reported address is queued as a background job that runs after the rest of
+	// this push has been applied, never during it, and adopts the address as the site's saved address only
+	// in two cases, each confirmed there by a signed ping: the reported address names the same host
+	// upgraded from http to https, confirmed by a signed ping to the https form that answers with a 2xx;
+	// or the reported address is the "www." sibling of the saved address, confirmed by a signed ping to
+	// the SAVED address that comes back redirected to it. Host comparison in both cases is by the host
+	// that is dialled, not a normalized apex or registrable domain. Anything else (a different host with
+	// no "www." relationship, a changed port or path, a downgrade to http) is ignored. A refusal or a job
+	// failure never fails this push.
 	HomeURL OptString `json:"home_url"`
 	// The agent's per-site age PUBLIC recipient ("age1..."), stored so backups can be triggered without a
 	// separate registration call. Empty or missing leaves the stored recipient unchanged.
@@ -8166,6 +8167,70 @@ func (s *AgentSuppressionDeltaPageEntriesItem) SetSourceMessageID(val OptNilStri
 // SetCreatedAt sets the value of CreatedAt.
 func (s *AgentSuppressionDeltaPageEntriesItem) SetCreatedAt(val time.Time) {
 	s.CreatedAt = val
+}
+
+// The POST /recheck 502 body when the control plane could not reach the site's agent (code
+// "agent_unreachable"). No `details`; a dedicated schema, not the general-purpose `Error`, so its
+// `code` enum keeps this branch and `SiteUrlRedirectsError` mutually exclusive under `oneOf`.
+// Ref: #/components/schemas/AgentUnreachableError
+type AgentUnreachableError struct {
+	Code AgentUnreachableErrorCode `json:"code"`
+	// Human-readable error description.
+	Message string `json:"message"`
+}
+
+// GetCode returns the value of Code.
+func (s *AgentUnreachableError) GetCode() AgentUnreachableErrorCode {
+	return s.Code
+}
+
+// GetMessage returns the value of Message.
+func (s *AgentUnreachableError) GetMessage() string {
+	return s.Message
+}
+
+// SetCode sets the value of Code.
+func (s *AgentUnreachableError) SetCode(val AgentUnreachableErrorCode) {
+	s.Code = val
+}
+
+// SetMessage sets the value of Message.
+func (s *AgentUnreachableError) SetMessage(val string) {
+	s.Message = val
+}
+
+type AgentUnreachableErrorCode string
+
+const (
+	AgentUnreachableErrorCodeAgentUnreachable AgentUnreachableErrorCode = "agent_unreachable"
+)
+
+// AllValues returns all AgentUnreachableErrorCode values.
+func (AgentUnreachableErrorCode) AllValues() []AgentUnreachableErrorCode {
+	return []AgentUnreachableErrorCode{
+		AgentUnreachableErrorCodeAgentUnreachable,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AgentUnreachableErrorCode) MarshalText() ([]byte, error) {
+	switch s {
+	case AgentUnreachableErrorCodeAgentUnreachable:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AgentUnreachableErrorCode) UnmarshalText(data []byte) error {
+	switch AgentUnreachableErrorCode(data) {
+	case AgentUnreachableErrorCodeAgentUnreachable:
+		*s = AgentUnreachableErrorCodeAgentUnreachable
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
 }
 
 // A tenant's alert channel, shared by uptime downtime/recovery, high-severity security events, and
@@ -42043,7 +42108,7 @@ func (*RecheckResponse) recheckSiteRes() {}
 type RecheckSiteBadGateway struct {
 	// Type selects the active sum variant, switch on this field.
 	Type                  RecheckSiteBadGatewayType
-	Error                 Error
+	AgentUnreachableError AgentUnreachableError
 	SiteUrlRedirectsError SiteUrlRedirectsError
 }
 
@@ -42052,36 +42117,38 @@ type RecheckSiteBadGatewayType string
 
 // Possible values for RecheckSiteBadGatewayType.
 const (
-	ErrorRecheckSiteBadGateway                 RecheckSiteBadGatewayType = "agent_unreachable"
+	AgentUnreachableErrorRecheckSiteBadGateway RecheckSiteBadGatewayType = "agent_unreachable"
 	SiteUrlRedirectsErrorRecheckSiteBadGateway RecheckSiteBadGatewayType = "site_url_redirects"
 )
 
-// IsError reports whether RecheckSiteBadGateway is Error.
-func (s RecheckSiteBadGateway) IsError() bool { return s.Type == ErrorRecheckSiteBadGateway }
+// IsAgentUnreachableError reports whether RecheckSiteBadGateway is AgentUnreachableError.
+func (s RecheckSiteBadGateway) IsAgentUnreachableError() bool {
+	return s.Type == AgentUnreachableErrorRecheckSiteBadGateway
+}
 
 // IsSiteUrlRedirectsError reports whether RecheckSiteBadGateway is SiteUrlRedirectsError.
 func (s RecheckSiteBadGateway) IsSiteUrlRedirectsError() bool {
 	return s.Type == SiteUrlRedirectsErrorRecheckSiteBadGateway
 }
 
-// SetError sets RecheckSiteBadGateway to Error.
-func (s *RecheckSiteBadGateway) SetError(v Error) {
-	s.Type = ErrorRecheckSiteBadGateway
-	s.Error = v
+// SetAgentUnreachableError sets RecheckSiteBadGateway to AgentUnreachableError.
+func (s *RecheckSiteBadGateway) SetAgentUnreachableError(v AgentUnreachableError) {
+	s.Type = AgentUnreachableErrorRecheckSiteBadGateway
+	s.AgentUnreachableError = v
 }
 
-// GetError returns Error and true boolean if RecheckSiteBadGateway is Error.
-func (s RecheckSiteBadGateway) GetError() (v Error, ok bool) {
-	if !s.IsError() {
+// GetAgentUnreachableError returns AgentUnreachableError and true boolean if RecheckSiteBadGateway is AgentUnreachableError.
+func (s RecheckSiteBadGateway) GetAgentUnreachableError() (v AgentUnreachableError, ok bool) {
+	if !s.IsAgentUnreachableError() {
 		return v, false
 	}
-	return s.Error, true
+	return s.AgentUnreachableError, true
 }
 
-// NewErrorRecheckSiteBadGateway returns new RecheckSiteBadGateway from Error.
-func NewErrorRecheckSiteBadGateway(v Error) RecheckSiteBadGateway {
+// NewAgentUnreachableErrorRecheckSiteBadGateway returns new RecheckSiteBadGateway from AgentUnreachableError.
+func NewAgentUnreachableErrorRecheckSiteBadGateway(v AgentUnreachableError) RecheckSiteBadGateway {
 	var s RecheckSiteBadGateway
-	s.SetError(v)
+	s.SetAgentUnreachableError(v)
 	return s
 }
 
@@ -52058,8 +52125,11 @@ type SiteUrlRedirectsErrorDetails struct {
 	From string `json:"from"`
 	// The address the command request was redirected to.
 	To string `json:"to"`
-	// Present only when the saved address will update to this target automatically, from a later signed
-	// check-in confirming the redirect still holds. Informational; the caller does not act on it directly.
+	// Present only when the redirect target is an address the adoption rule would adopt over the saved one
+	// (a same-host http to https upgrade, or the "www." sibling of the saved address). Not a promise that
+	// the saved address will change: that still needs a later agent push reporting this address and a
+	// signed probe confirming it, run as a background job. Informational; the caller does not act on it
+	// directly.
 	SuggestedURL OptString `json:"suggested_url"`
 }
 

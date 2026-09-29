@@ -1974,6 +1974,38 @@ func (s *AgentSuppressionDeltaPage) Validate() error {
 	return nil
 }
 
+func (s *AgentUnreachableError) Validate() error {
+	if s == nil {
+		return validate.ErrNilPointer
+	}
+
+	var failures []validate.FieldError
+	if err := func() error {
+		if err := s.Code.Validate(); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "code",
+			Error: err,
+		})
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+	return nil
+}
+
+func (s AgentUnreachableErrorCode) Validate() error {
+	switch s {
+	case "agent_unreachable":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
+}
+
 func (s *AlertConfig) Validate() error {
 	if s == nil {
 		return validate.ErrNilPointer
@@ -11045,8 +11077,11 @@ func (s ReadinessStatus) Validate() error {
 
 func (s RecheckSiteBadGateway) Validate() error {
 	switch s.Type {
-	case ErrorRecheckSiteBadGateway:
-		return nil // no validation needed
+	case AgentUnreachableErrorRecheckSiteBadGateway:
+		if err := s.AgentUnreachableError.Validate(); err != nil {
+			return err
+		}
+		return nil
 	case SiteUrlRedirectsErrorRecheckSiteBadGateway:
 		if err := s.SiteUrlRedirectsError.Validate(); err != nil {
 			return err

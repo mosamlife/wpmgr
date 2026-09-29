@@ -639,6 +639,7 @@ export {
   type AgentSubmitManifestRequest,
   type AgentSubmitManifestResponse,
   type AgentSuppressionDeltaPage,
+  type AgentUnreachableError,
   type AlertConfig,
   type AlertConfigUpdate,
   type ApiKey,

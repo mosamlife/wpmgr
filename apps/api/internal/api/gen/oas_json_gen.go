@@ -21896,6 +21896,155 @@ func (s *AgentSuppressionDeltaPageEntriesItem) UnmarshalJSON(data []byte) error 
 }
 
 // Encode implements json.Marshaler.
+func (s *AgentUnreachableError) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *AgentUnreachableError) encodeFields(e *jx.Encoder) {
+	{
+		e.FieldStart("code")
+		s.Code.Encode(e)
+	}
+	{
+		e.FieldStart("message")
+		e.Str(s.Message)
+	}
+}
+
+var jsonFieldsNameOfAgentUnreachableError = [2]string{
+	0: "code",
+	1: "message",
+}
+
+// Decode decodes AgentUnreachableError from json.
+func (s *AgentUnreachableError) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AgentUnreachableError to nil")
+	}
+	var requiredBitSet [1]uint8
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "code":
+			requiredBitSet[0] |= 1 << 0
+			if err := func() error {
+				if err := s.Code.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"code\"")
+			}
+		case "message":
+			requiredBitSet[0] |= 1 << 1
+			if err := func() error {
+				v, err := d.Str()
+				s.Message = string(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"message\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode AgentUnreachableError")
+	}
+	// Validate required fields.
+	var failures []validate.FieldError
+	for i, mask := range [1]uint8{
+		0b00000011,
+	} {
+		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
+			// Mask only required fields and check equality to mask using XOR.
+			//
+			// If XOR result is not zero, result is not equal to expected, so some fields are missed.
+			// Bits of fields which would be set are actually bits of missed fields.
+			missed := bits.OnesCount8(result)
+			for bitN := 0; bitN < missed; bitN++ {
+				bitIdx := bits.TrailingZeros8(result)
+				fieldIdx := i*8 + bitIdx
+				var name string
+				if fieldIdx < len(jsonFieldsNameOfAgentUnreachableError) {
+					name = jsonFieldsNameOfAgentUnreachableError[fieldIdx]
+				} else {
+					name = strconv.Itoa(fieldIdx)
+				}
+				failures = append(failures, validate.FieldError{
+					Name:  name,
+					Error: validate.ErrFieldRequired,
+				})
+				// Reset bit.
+				result &^= 1 << bitIdx
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *AgentUnreachableError) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AgentUnreachableError) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AgentUnreachableErrorCode as json.
+func (s AgentUnreachableErrorCode) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes AgentUnreachableErrorCode from json.
+func (s *AgentUnreachableErrorCode) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AgentUnreachableErrorCode to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch AgentUnreachableErrorCode(v) {
+	case AgentUnreachableErrorCodeAgentUnreachable:
+		*s = AgentUnreachableErrorCodeAgentUnreachable
+	default:
+		*s = AgentUnreachableErrorCode(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s AgentUnreachableErrorCode) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AgentUnreachableErrorCode) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
 func (s *AlertConfig) Encode(e *jx.Encoder) {
 	e.ObjStart()
 	s.encodeFields(e)
@@ -98057,20 +98206,14 @@ func (s RecheckSiteBadGateway) Encode(e *jx.Encoder) {
 
 func (s RecheckSiteBadGateway) encodeFields(e *jx.Encoder) {
 	switch s.Type {
-	case ErrorRecheckSiteBadGateway:
+	case AgentUnreachableErrorRecheckSiteBadGateway:
 		e.FieldStart("code")
 		e.Str("agent_unreachable")
 		{
-			s := s.Error
+			s := s.AgentUnreachableError
 			{
 				e.FieldStart("message")
 				e.Str(s.Message)
-			}
-			{
-				if s.Details.Set {
-					e.FieldStart("details")
-					s.Details.Encode(e)
-				}
 			}
 		}
 	case SiteUrlRedirectsErrorRecheckSiteBadGateway:
@@ -98114,7 +98257,7 @@ func (s *RecheckSiteBadGateway) Decode(d *jx.Decoder) error {
 				}
 				switch typ {
 				case "agent_unreachable":
-					s.Type = ErrorRecheckSiteBadGateway
+					s.Type = AgentUnreachableErrorRecheckSiteBadGateway
 					found = true
 				case "site_url_redirects":
 					s.Type = SiteUrlRedirectsErrorRecheckSiteBadGateway
@@ -98133,8 +98276,8 @@ func (s *RecheckSiteBadGateway) Decode(d *jx.Decoder) error {
 		return errors.New("unable to detect sum type variant")
 	}
 	switch s.Type {
-	case ErrorRecheckSiteBadGateway:
-		if err := s.Error.Decode(d); err != nil {
+	case AgentUnreachableErrorRecheckSiteBadGateway:
+		if err := s.AgentUnreachableError.Decode(d); err != nil {
 			return err
 		}
 	case SiteUrlRedirectsErrorRecheckSiteBadGateway:
