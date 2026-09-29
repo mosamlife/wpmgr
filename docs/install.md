@@ -284,16 +284,20 @@ view, change, or test it. On a self-hosted install, that authority belongs to:
 
 - any account listed in `WPMGR_SUPERADMIN_EMAILS`;
 - on an install with exactly one organisation, that organisation's owner;
-- the account that completed first-run setup (see
-  [First-run notes](#first-run-notes) below), for as long as it still owns at
-  least one organisation.
+- the install owner: the first account ever to complete setup (see
+  [First-run notes](#first-run-notes) below), for as long as that account is
+  active and is an owner of at least one live organisation; an organisation in
+  its deletion grace period does not count.
 
-**Fallback.** When none of the above identifies an account, for example
-because the organisation created at first-run setup was deleted or purged
-before this version, or because the account that completed first-run setup no
-longer owns any organisation, the install has no install owner and only a
-superadmin can change the relay settings from that point on. Set
-`WPMGR_SUPERADMIN_EMAILS` to recover access.
+**Fallback.** The install owner arm tracks live ownership, not history:
+owning a live organisation again restores it on the next request, even after
+a period of owning none. If the install drops back to exactly one live
+organisation, that organisation's owner is admitted through the sole-owner
+rule above regardless of who the install owner is. The install owner itself
+is fixed at the first successful setup and is never replaced: if that account
+is deleted, disabled, or ends up owning no live organisation, a later account
+that completes setup is still never recorded as the install owner. Recover
+access with `WPMGR_SUPERADMIN_EMAILS`.
 
 Hosted installs are not affected: this whole section describes self-hosted
 behaviour only.
