@@ -609,6 +609,9 @@ SELECT
     g.expires_at                  AS grant_expires_at,
     g.idle_expire_after_days      AS grant_idle_expire_after_days,
     g.last_used_at                AS grant_last_used_at,
+    -- The operator's client choice (m128), carried onto an AI request's
+    -- stored facts. Read from the same row as the verdict.
+    g.setup_client                AS grant_setup_client,
     t.id                          AS token_id,
     t.token_prefix                AS token_prefix,
     t.status                      AS token_status,
@@ -691,6 +694,56 @@ JOIN mcp_grants g
 JOIN tenants tn
     ON tn.id = t.tenant_id
 WHERE t.tenant_id = $1 AND t.id = $2;
+
+-- name: ReCheckMCPGrantAuthorizationInTenantTx :one
+-- Runs InTenantTx, by primary key. The GRANT-LEVEL verdict for work done on a
+-- connection's behalf with no token in hand: approving an AI request, and
+-- dispatching an approved one. It must be a tenant read and never the
+-- caller's principal: mcp_grants_site_scope_select refuses every grant row to
+-- a site-scoped session, so under a site principal this would read nothing.
+--
+-- It is ReCheckMCPRequestAuthorizationInTenantTx with the TOKEN TERMS REMOVED,
+-- on purpose, and nothing else changed. Revocation sets g.status, so a revoked
+-- grant is refused here without a token. Tenant enablement is left out exactly
+-- as there (m130 DECISION 5), and so is tenants.deleted_at, so the two
+-- verdicts agree on every grant-level case; deletion is enforced where the
+-- clear is reserved. last_used_at is read, never written.
+--
+-- No row (pgx.ErrNoRows): no such grant in this tenant, which callers treat as
+-- inactive.
+SELECT
+    g.id                          AS grant_id,
+    g.name                        AS grant_name,
+    g.status                      AS grant_status,
+    g.site_scope_mode             AS site_scope_mode,
+    g.scope_tag_ids               AS scope_tag_ids,
+    g.scope_site_ids              AS scope_site_ids,
+    g.client_id                   AS client_id,
+    g.capabilities                AS grant_capabilities,
+    g.oauth_scopes                AS grant_oauth_scopes,
+    g.expires_at                  AS grant_expires_at,
+    g.idle_expire_after_days      AS grant_idle_expire_after_days,
+    g.last_used_at                AS grant_last_used_at,
+    g.setup_client                AS grant_setup_client,
+    COALESCE(g.expires_at <= now(), true)::boolean AS grant_absolute_expired,
+    COALESCE(g.idle_expire_after_days IS NOT NULL
+        AND COALESCE(g.last_used_at, g.created_at)
+            + make_interval(days => g.idle_expire_after_days) <= now(),
+        true)::boolean AS grant_idle_expired,
+    (tn.assistant_paused_at IS NOT NULL)::boolean AS tenant_assistant_paused,
+    COALESCE(g.status = 'active'
+        AND g.expires_at > now()
+        AND (g.idle_expire_after_days IS NULL
+             OR COALESCE(g.last_used_at, g.created_at)
+                + make_interval(days => g.idle_expire_after_days) > now())
+        AND tn.assistant_paused_at IS NULL,
+        false)::boolean AS authorized
+FROM mcp_grants g
+-- Inner join, safe for the reason given on the request verdict above: tenants
+-- has no row security and the foreign key guarantees the row.
+JOIN tenants tn
+    ON tn.id = g.tenant_id
+WHERE g.tenant_id = @tenant_id AND g.id = @grant_id;
 
 -- name: ListMCPConnectionTokensForGrant :many
 -- Runs InTenantTx. The rotation UI: token_prefix is the public handle that

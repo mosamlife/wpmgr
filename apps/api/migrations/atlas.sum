@@ -1,4 +1,4 @@
-h1:6/3Ib2g9BkSr5HdBevp29uM0UZK4rW3z7OCqGbS7jNU=
+h1:G2cEjtre8Fel7rrZUFdD8zCa+OaOi42EvIuyJ1fN+Sw=
 20260527115454_initial.sql h1:WfgbwGaDre3ilGSUpQWqeGW9gLACxOAIXvyRENhSX6w=
 20260527130000_auth_multitenancy.sql h1:dbQRjlWWYbkuHrqKHqZTPt1Z8Txoo58fe/Mr9HW/Plk=
 20260527172114_m2_site_registry.sql h1:RxL0mxr9jcC85gh8pcYnG0ge3IXy4+sGpLHS8YHMDDw=
@@ -154,3 +154,5 @@ h1:6/3Ib2g9BkSr5HdBevp29uM0UZK4rW3z7OCqGbS7jNU=
 20260908000000_m137_mcp_client_registered_scopes.sql h1:ijuqMrefs1z6ZR0DOOVCLfnzIgwbV4FVv6W3cNmkD2w=
 20260909000000_m138_font_transcode_results_cascade.sql h1:oe13TDseHwgHSb6UNkHBCQEcDOkErdyJ5/y+pXq/ogg=
 20260910000000_m147_install_owner.sql h1:6xLKtuzy8Hc+9K7YRBzdx9ls0NGapoamMb8rGyAdHjM=
+20260930000000_m150_mcp_cache_scope.sql h1:jHga5PJK+fAeFfSDxXV7EDqnSMNWTil7g6pI3AnRKTk=
+20260930010000_m151_assistant_cache_purge_requests.sql h1:DjSmtKDiRe2BDpcdGFMS5TSz/Hb0/sNnm1Ro3jo77WM=

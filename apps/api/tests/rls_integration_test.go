@@ -281,6 +281,15 @@ func startPostgres(t testing.TB) *db.Pool {
 		// here against a privilege no real install has. An immutable column
 		// inside a deletable row is not immutable.
 		"REVOKE DELETE, TRUNCATE ON assistant_update_proposals FROM wpmgr_app",
+		// m151's assistant_cache_purge_requests is m133's shape and needs the
+		// same three statements for the same reasons: without them url,
+		// site_host, digest_nonce and presented_digest are updatable in tests
+		// and not in production, and the row is deletable in tests and not in
+		// production, so every immutability and undeletability proof would
+		// pass against privileges no real install has.
+		"REVOKE UPDATE ON assistant_cache_purge_requests FROM wpmgr_app",
+		"GRANT UPDATE (state, decided_at, decided_by_user_id, withdrawn_at, claimed_at, cache_purge_audit_id, dispatch_attempts, last_attempt_at, last_attempt_code, outcome, not_sent_reason, outcome_at, hosting_caches_cleared, hosting_caches_skipped, origin_only_confirmed, wpmgr_cdn, site_reported_text) ON assistant_cache_purge_requests TO wpmgr_app",
+		"REVOKE DELETE, TRUNCATE ON assistant_cache_purge_requests FROM wpmgr_app",
 		// m147's install_owner is insert-once: the record of who set up the
 		// install must never be re-pointed or removed. Same re-revoke, same
 		// reason: without it the blanket GRANT above lets a test re-point the

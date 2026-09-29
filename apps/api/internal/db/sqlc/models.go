@@ -141,6 +141,41 @@ type AppAlertRollout struct {
 	DecidedAt    time.Time `json:"decided_at"`
 }
 
+type AssistantCachePurgeRequest struct {
+	ID                   uuid.UUID          `json:"id"`
+	TenantID             uuid.UUID          `json:"tenant_id"`
+	SiteID               uuid.UUID          `json:"site_id"`
+	ProposedByGrantID    uuid.UUID          `json:"proposed_by_grant_id"`
+	Scope                string             `json:"scope"`
+	Url                  *string            `json:"url"`
+	SiteLabel            string             `json:"site_label"`
+	SiteHost             string             `json:"site_host"`
+	GrantLabel           string             `json:"grant_label"`
+	GrantVia             string             `json:"grant_via"`
+	SetupClient          *string            `json:"setup_client"`
+	DigestNonce          string             `json:"digest_nonce"`
+	PresentedDigest      string             `json:"presented_digest"`
+	State                string             `json:"state"`
+	CreatedAt            time.Time          `json:"created_at"`
+	ExpiresAt            time.Time          `json:"expires_at"`
+	DecidedAt            pgtype.Timestamptz `json:"decided_at"`
+	DecidedByUserID      pgtype.UUID        `json:"decided_by_user_id"`
+	WithdrawnAt          pgtype.Timestamptz `json:"withdrawn_at"`
+	ClaimedAt            pgtype.Timestamptz `json:"claimed_at"`
+	CachePurgeAuditID    pgtype.UUID        `json:"cache_purge_audit_id"`
+	DispatchAttempts     int32              `json:"dispatch_attempts"`
+	LastAttemptAt        pgtype.Timestamptz `json:"last_attempt_at"`
+	LastAttemptCode      *string            `json:"last_attempt_code"`
+	Outcome              *string            `json:"outcome"`
+	NotSentReason        *string            `json:"not_sent_reason"`
+	OutcomeAt            pgtype.Timestamptz `json:"outcome_at"`
+	HostingCachesCleared []string           `json:"hosting_caches_cleared"`
+	HostingCachesSkipped []string           `json:"hosting_caches_skipped"`
+	OriginOnlyConfirmed  *bool              `json:"origin_only_confirmed"`
+	WpmgrCdn             *string            `json:"wpmgr_cdn"`
+	SiteReportedText     *string            `json:"site_reported_text"`
+}
+
 type AssistantUpdateProposal struct {
 	ID                    uuid.UUID          `json:"id"`
 	TenantID              uuid.UUID          `json:"tenant_id"`
@@ -341,14 +376,15 @@ type BillingEvent struct {
 }
 
 type CachePurgeAudit struct {
-	ID              uuid.UUID   `json:"id"`
-	TenantID        uuid.UUID   `json:"tenant_id"`
-	SiteID          uuid.UUID   `json:"site_id"`
-	Kind            string      `json:"kind"`
-	InitiatorUserID pgtype.UUID `json:"initiator_user_id"`
-	TargetUrls      []string    `json:"target_urls"`
-	UrlsCount       int32       `json:"urls_count"`
-	CreatedAt       time.Time   `json:"created_at"`
+	ID               uuid.UUID   `json:"id"`
+	TenantID         uuid.UUID   `json:"tenant_id"`
+	SiteID           uuid.UUID   `json:"site_id"`
+	Kind             string      `json:"kind"`
+	InitiatorUserID  pgtype.UUID `json:"initiator_user_id"`
+	TargetUrls       []string    `json:"target_urls"`
+	UrlsCount        int32       `json:"urls_count"`
+	CreatedAt        time.Time   `json:"created_at"`
+	InitiatorGrantID pgtype.UUID `json:"initiator_grant_id"`
 }
 
 type Client struct {
