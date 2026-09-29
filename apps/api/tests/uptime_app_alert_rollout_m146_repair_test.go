@@ -745,3 +745,282 @@ func TestM146MutationDropsThirdSignalClause_TurnsOffRecentlySavedRow(t *testing.
 	}
 	assertM146TablesForceIntact(t, admin)
 }
+
+// ---- Skip path: outside the server's runner (mirrors
+//      uptime_m144_backfill_repair_test.go's own two sibling tests) --------
+
+// readM146Body returns m146's own, UNMUTATED SQL text from the embedded FS.
+func readM146Body(t *testing.T) string {
+	t.Helper()
+	body, err := fs.ReadFile(migrations.FS, m146MigrationVersion+".sql")
+	if err != nil {
+		t.Fatalf("read m146 migration body: %v", err)
+	}
+	return string(body)
+}
+
+// m146AccessExclusiveLockCount runs body (m146's own SQL — the real,
+// unmutated file, or an in-memory mutated copy) inside a fresh explicit
+// transaction on pool, counts this backend's ACCESS EXCLUSIVE locks on
+// sites/alert_configs/site_app_alert_state in pg_locks, then rolls the
+// transaction back — nothing body does is ever committed — and returns the
+// count. Mirrors uptime_m144_backfill_repair_test.go's own
+// m144AccessExclusiveLockCount.
+func m146AccessExclusiveLockCount(t *testing.T, pool *db.Pool, body string) int {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin explicit tx to apply m146's body: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, body); err != nil {
+		t.Fatalf("apply m146's body inside an explicit tx: %v", err)
+	}
+	var n int
+	if err := tx.QueryRow(ctx,
+		`SELECT count(*) FROM pg_locks
+		 WHERE pid = pg_backend_pid()
+		   AND mode = 'AccessExclusiveLock'
+		   AND relation IN (
+		       'public.sites'::regclass,
+		       'public.alert_configs'::regclass,
+		       'public.site_app_alert_state'::regclass
+		   )`,
+	).Scan(&n); err != nil {
+		t.Fatalf("read pg_locks for sites/alert_configs/site_app_alert_state: %v", err)
+	}
+	return n
+}
+
+// m146NoM108RowSkipBlock is the IF v_cutoff IS NULL ... END IF; block (plus
+// its trailing blank line) that skips the whole repair — never lifting
+// FORCE or taking a lock on any of the three tables — when schema_migrations
+// exists but carries no row for m108. Deleting it is the fires proof that
+// TestM146SkipsOutsideServerRunner_NoM108Row's "no ACCESS EXCLUSIVE lock
+// taken" assertion is load-bearing: without it, v_cutoff stays NULL, but the
+// ALTER TABLE statements below run anyway.
+const m146NoM108RowSkipBlock = `    IF v_cutoff IS NULL THEN
+        RAISE NOTICE 'm146: repair skipped: schema_migrations has no row for 20260810000000_m108_uptime_app_alerting, so m108 was not applied by the server''s migration runner and its apply time is unknown; if sites existed when m108 applied, app_alert_rollout still says fresh_install and app alerting stays on for the alert_configs rows that received m108''s default';
+        RETURN;
+    END IF;
+
+`
+
+// TestM146SkipsOutsideServerRunner_NoSchemaMigrationsTable proves m146's
+// OUTSIDE THE SERVER'S RUNNER skip: applied the way atlas (or any runner
+// that does not use schema_migrations) would — with that table never
+// present at all — m146 raises its NOTICE and returns before touching a
+// single row or lifting FORCE on any of the three tables, even though a
+// pre-cutoff-shaped site and a stale alert_configs row exist that a real
+// repair would otherwise turn off.
+func TestM146SkipsOutsideServerRunner_NoSchemaMigrationsTable(t *testing.T) {
+	admin, owner := startPostgresBeforeM146(t)
+	ctx := context.Background()
+
+	// fresh_install is true here (startPostgresBeforeM146's own bootstrap: no
+	// sites existed when m108 ran), which is what lets execution reach past
+	// m146's own "nothing to repair" early return and into the
+	// schema_migrations checks this test targets.
+	var freshBefore bool
+	if err := admin.QueryRow(ctx, `SELECT fresh_install FROM app_alert_rollout WHERE singleton = true`).Scan(&freshBefore); err != nil {
+		t.Fatalf("query app_alert_rollout: %v", err)
+	}
+	if !freshBefore {
+		t.Fatal("setup invariant broken: fresh_install should be true before this test's schema_migrations manipulation")
+	}
+
+	tenant := seedTenant(t, admin, "m146-no-tracking-table")
+	if _, err := admin.Exec(ctx,
+		`INSERT INTO sites (tenant_id, url, name, created_at) VALUES ($1, $2, $3, $4)`,
+		tenant, "https://m146-no-tracking-table.example.com", "site", time.Now().UTC().Add(-time.Hour)); err != nil {
+		t.Fatalf("seed pre-cutoff-shaped site: %v", err)
+	}
+	if _, err := admin.Exec(ctx,
+		`INSERT INTO alert_configs (tenant_id, app_alerts_enabled) VALUES ($1, true)`, tenant); err != nil {
+		t.Fatalf("seed alert_configs: %v", err)
+	}
+
+	// Simulate a runner that does not use schema_migrations at all (atlas
+	// records its own applied versions in its own table): drop it. Nothing
+	// else about the schema changes — every OTHER migration up to m146 is
+	// already applied, from startPostgresBeforeM146's own bootstrap.
+	if _, err := admin.Exec(ctx, `DROP TABLE schema_migrations`); err != nil {
+		t.Fatalf("drop schema_migrations: %v", err)
+	}
+
+	// Call the file directly (never through owner.Migrate, which would
+	// itself try to recreate schema_migrations as part of the server's own
+	// runner — the exact thing this test needs to NOT be present).
+	if _, err := owner.Exec(ctx, readM146Body(t)); err != nil {
+		t.Fatalf("m146 body failed with no schema_migrations table present, want a clean no-op: %v", err)
+	}
+
+	var freshAfter bool
+	if err := admin.QueryRow(ctx, `SELECT fresh_install FROM app_alert_rollout WHERE singleton = true`).Scan(&freshAfter); err != nil {
+		t.Fatalf("query app_alert_rollout: %v", err)
+	}
+	if !freshAfter {
+		t.Fatal("fresh_install changed after m146 ran with no schema_migrations table, want unchanged (should have skipped before touching anything)")
+	}
+	var enabled bool
+	if err := admin.QueryRow(ctx, `SELECT app_alerts_enabled FROM alert_configs WHERE tenant_id = $1`, tenant).Scan(&enabled); err != nil {
+		t.Fatalf("read alert_configs: %v", err)
+	}
+	if !enabled {
+		t.Fatal("alert_configs.app_alerts_enabled turned off after m146 ran with no schema_migrations table, want unchanged")
+	}
+	assertM146TablesForceIntact(t, admin)
+
+	// Lock assertion: the skip path takes NO ACCESS EXCLUSIVE lock on any of
+	// the three tables. schema_migrations is still absent here, so this
+	// re-runs the same skip path a second time, inside its own rolled-back
+	// transaction — no side effects carry forward.
+	if n := m146AccessExclusiveLockCount(t, owner, readM146Body(t)); n != 0 {
+		t.Fatalf("m146's no-schema_migrations-table skip took %d ACCESS EXCLUSIVE lock(s), want 0", n)
+	}
+	t.Logf("real m146 correctly took 0 ACCESS EXCLUSIVE locks on sites/alert_configs/site_app_alert_state on the no-table skip path")
+
+	// Restore proof: with schema_migrations back and m108's applied_at row
+	// present, the REAL repair (called the same direct way) runs and
+	// correctly detects the deployment as an upgrade.
+	if _, err := owner.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
+		version    text        PRIMARY KEY,
+		applied_at timestamptz NOT NULL DEFAULT now()
+	)`); err != nil {
+		t.Fatalf("recreate schema_migrations: %v", err)
+	}
+	if _, err := admin.Exec(ctx,
+		`INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT (version) DO NOTHING`,
+		m108MigrationVersion); err != nil {
+		t.Fatalf("re-seed m108's applied_at row: %v", err)
+	}
+	if _, err := owner.Exec(ctx, readM146Body(t)); err != nil {
+		t.Fatalf("m146 body failed with schema_migrations present: %v", err)
+	}
+	var freshAfterRepair bool
+	if err := admin.QueryRow(ctx, `SELECT fresh_install FROM app_alert_rollout WHERE singleton = true`).Scan(&freshAfterRepair); err != nil {
+		t.Fatalf("query app_alert_rollout after restore: %v", err)
+	}
+	if freshAfterRepair {
+		t.Fatal("after restoring schema_migrations and m108's row: fresh_install still true, want false (the real repair should have run)")
+	}
+	var enabledAfterRepair bool
+	if err := admin.QueryRow(ctx, `SELECT app_alerts_enabled FROM alert_configs WHERE tenant_id = $1`, tenant).Scan(&enabledAfterRepair); err != nil {
+		t.Fatalf("read alert_configs after restore: %v", err)
+	}
+	if enabledAfterRepair {
+		t.Fatal("after restoring schema_migrations and m108's row: alert_configs still enabled, want turned off by the real repair")
+	}
+	assertM146TablesForceIntact(t, admin)
+}
+
+// TestM146SkipsOutsideServerRunner_NoM108Row is
+// TestM146SkipsOutsideServerRunner_NoSchemaMigrationsTable's sibling for the
+// OTHER outside-the-runner skip: schema_migrations exists — every other
+// migration up to m146 applied normally, through startPostgresBeforeM146's
+// own bootstrap — but carries no row for m108. m146 raises its NOTICE and
+// returns before touching a row or taking a lock on any of the three
+// tables, even though a pre-cutoff-shaped site and a stale alert_configs row
+// exist that a real repair would otherwise turn off.
+//
+// Also the fires proof for the "no m108 row" RETURN block itself
+// (m146NoM108RowSkipBlock): an in-memory copy with that block deleted
+// proceeds past the skip — v_cutoff stays NULL, which the ALTER TABLE
+// statements that follow don't depend on — and DOES take ACCESS EXCLUSIVE
+// locks on all three tables, proving the "no lock taken" assertion below is
+// load-bearing rather than vacuous.
+func TestM146SkipsOutsideServerRunner_NoM108Row(t *testing.T) {
+	admin, owner := startPostgresBeforeM146(t)
+	ctx := context.Background()
+
+	var freshBefore bool
+	if err := admin.QueryRow(ctx, `SELECT fresh_install FROM app_alert_rollout WHERE singleton = true`).Scan(&freshBefore); err != nil {
+		t.Fatalf("query app_alert_rollout: %v", err)
+	}
+	if !freshBefore {
+		t.Fatal("setup invariant broken: fresh_install should be true before this test's schema_migrations manipulation")
+	}
+
+	tenant := seedTenant(t, admin, "m146-no-m108-row")
+	if _, err := admin.Exec(ctx,
+		`INSERT INTO sites (tenant_id, url, name, created_at) VALUES ($1, $2, $3, $4)`,
+		tenant, "https://m146-no-m108-row.example.com", "site", time.Now().UTC().Add(-time.Hour)); err != nil {
+		t.Fatalf("seed pre-cutoff-shaped site: %v", err)
+	}
+	if _, err := admin.Exec(ctx,
+		`INSERT INTO alert_configs (tenant_id, app_alerts_enabled) VALUES ($1, true)`, tenant); err != nil {
+		t.Fatalf("seed alert_configs: %v", err)
+	}
+
+	// schema_migrations exists (startPostgresBeforeM146's own bootstrap
+	// applied m108 for real, through the owner role, and inserted its row)
+	// but drop JUST m108's row: the "table present, no m108 row" skip.
+	if _, err := admin.Exec(ctx,
+		`DELETE FROM schema_migrations WHERE version = $1`, m108MigrationVersion); err != nil {
+		t.Fatalf("delete m108's schema_migrations row: %v", err)
+	}
+
+	if _, err := owner.Exec(ctx, readM146Body(t)); err != nil {
+		t.Fatalf("m146 body failed with schema_migrations present but no m108 row, want a clean no-op: %v", err)
+	}
+
+	var freshAfter bool
+	if err := admin.QueryRow(ctx, `SELECT fresh_install FROM app_alert_rollout WHERE singleton = true`).Scan(&freshAfter); err != nil {
+		t.Fatalf("query app_alert_rollout: %v", err)
+	}
+	if !freshAfter {
+		t.Fatal("fresh_install changed after m146 ran with no m108 row, want unchanged (should have skipped before touching anything)")
+	}
+	var enabled bool
+	if err := admin.QueryRow(ctx, `SELECT app_alerts_enabled FROM alert_configs WHERE tenant_id = $1`, tenant).Scan(&enabled); err != nil {
+		t.Fatalf("read alert_configs: %v", err)
+	}
+	if !enabled {
+		t.Fatal("alert_configs.app_alerts_enabled turned off after m146 ran with no m108 row, want unchanged")
+	}
+	assertM146TablesForceIntact(t, admin)
+
+	// DOES NOT OVER-FIRE: the real skip path takes NO ACCESS EXCLUSIVE lock
+	// on any of the three tables.
+	if n := m146AccessExclusiveLockCount(t, owner, readM146Body(t)); n != 0 {
+		t.Fatalf("m146's no-m108-row skip took %d ACCESS EXCLUSIVE lock(s), want 0", n)
+	}
+	t.Logf("real m146 correctly took 0 ACCESS EXCLUSIVE locks on sites/alert_configs/site_app_alert_state on the no-m108-row skip path")
+
+	// FIRES: an in-memory copy of m146 with the "no m108 row" RETURN block
+	// deleted proceeds past the skip and DOES take ACCESS EXCLUSIVE locks on
+	// all three tables.
+	mutated := stripOnce(t, readM146Body(t), m146NoM108RowSkipBlock)
+	if n := m146AccessExclusiveLockCount(t, owner, mutated); n == 0 {
+		t.Fatal("block-stripped m146 (no-m108-row RETURN removed) took 0 ACCESS EXCLUSIVE locks; expected it to proceed past the skip and lock all three tables (this mutation must fire for the proof above to mean anything)")
+	} else {
+		t.Logf("block-stripped m146 correctly took %d ACCESS EXCLUSIVE lock(s) (guard-is-load-bearing)", n)
+	}
+
+	// Restore proof: with m108's row back, the REAL repair runs and
+	// correctly detects the deployment as an upgrade.
+	if _, err := admin.Exec(ctx,
+		`INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT (version) DO NOTHING`,
+		m108MigrationVersion); err != nil {
+		t.Fatalf("re-seed m108's applied_at row: %v", err)
+	}
+	if err := owner.Migrate(ctx); err != nil {
+		t.Fatalf("m146 migration: %v", err)
+	}
+	var freshAfterRepair bool
+	if err := admin.QueryRow(ctx, `SELECT fresh_install FROM app_alert_rollout WHERE singleton = true`).Scan(&freshAfterRepair); err != nil {
+		t.Fatalf("query app_alert_rollout after restore: %v", err)
+	}
+	if freshAfterRepair {
+		t.Fatal("after restoring m108's row: fresh_install still true, want false (the real repair should have run)")
+	}
+	var enabledAfterRepair bool
+	if err := admin.QueryRow(ctx, `SELECT app_alerts_enabled FROM alert_configs WHERE tenant_id = $1`, tenant).Scan(&enabledAfterRepair); err != nil {
+		t.Fatalf("read alert_configs after restore: %v", err)
+	}
+	if enabledAfterRepair {
+		t.Fatal("after restoring m108's row: alert_configs still enabled, want turned off by the real repair")
+	}
+	assertM146TablesForceIntact(t, admin)
+}

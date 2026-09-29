@@ -478,3 +478,208 @@ func TestM142MutationDropsArchivedFilter_CountsArchivedSites(t *testing.T) {
 	}
 	assertSitesForceIntact(t, admin)
 }
+
+// ---- Skip path: outside the server's runner (mirrors
+//      uptime_m144_backfill_repair_test.go's own two sibling tests) --------
+
+// readM142Body returns m142's own, UNMUTATED SQL text from the embedded FS.
+func readM142Body(t *testing.T) string {
+	t.Helper()
+	body, err := fs.ReadFile(migrations.FS, m142MigrationVersion+".sql")
+	if err != nil {
+		t.Fatalf("read m142 migration body: %v", err)
+	}
+	return string(body)
+}
+
+// m142AccessExclusiveLockCount runs body (m142's own SQL — the real,
+// unmutated file, or an in-memory mutated copy) inside a fresh explicit
+// transaction on pool, counts this backend's ACCESS EXCLUSIVE lock on sites
+// in pg_locks, then rolls the transaction back — nothing body does is ever
+// committed — and returns the count. Mirrors
+// uptime_m144_backfill_repair_test.go's own m144AccessExclusiveLockCount,
+// narrowed to the one table m142 touches.
+func m142AccessExclusiveLockCount(t *testing.T, pool *db.Pool, body string) int {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin explicit tx to apply m142's body: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, body); err != nil {
+		t.Fatalf("apply m142's body inside an explicit tx: %v", err)
+	}
+	var n int
+	if err := tx.QueryRow(ctx,
+		`SELECT count(*) FROM pg_locks
+		 WHERE pid = pg_backend_pid()
+		   AND mode = 'AccessExclusiveLock'
+		   AND relation = 'public.sites'::regclass`,
+	).Scan(&n); err != nil {
+		t.Fatalf("read pg_locks for sites: %v", err)
+	}
+	return n
+}
+
+// m142NoM91RowSkipBlock is the IF v_cutoff IS NULL ... END IF; block (plus
+// its trailing blank line) that skips the whole backfill — never lifting
+// FORCE or taking a lock on sites — when schema_migrations exists but
+// carries no row for m91. Deleting it is the fires proof that
+// TestM142SkipsOutsideServerRunner_NoM91Row's "no ACCESS EXCLUSIVE lock
+// taken" assertion is load-bearing: without it, v_cutoff stays NULL, but the
+// ALTER TABLE statement below runs anyway.
+const m142NoM91RowSkipBlock = `    IF v_cutoff IS NULL THEN
+        RAISE NOTICE 'm142: backfill skipped: schema_migrations has no row for 20260724000000_m91_hosted_billing_substrate, so m91 was not applied by the server''s migration runner and its apply time is unknown; free tenants that had more than 3 non-archived sites when m91 applied get no max_sites override from this file';
+        RETURN;
+    END IF;
+
+`
+
+// TestM142SkipsOutsideServerRunner_NoSchemaMigrationsTable proves m142's
+// OUTSIDE THE SERVER'S RUNNER skip: applied the way atlas (or any runner
+// that does not use schema_migrations) would — with that table never
+// present at all — m142 raises its NOTICE and returns before touching a
+// single row or lifting FORCE on sites, even though an over-cap
+// pre-cutoff-shaped tenant exists that a real backfill would otherwise
+// grandfather.
+func TestM142SkipsOutsideServerRunner_NoSchemaMigrationsTable(t *testing.T) {
+	admin, owner := startPostgresBeforeM142(t)
+	ctx := context.Background()
+
+	tenant := seedTenant(t, admin, "m142-no-tracking-table")
+	for i := 0; i < 5; i++ {
+		seedSiteAt(t, admin, tenant, fmt.Sprintf("https://m142-no-tracking-table-%d.example.com", i), time.Now().UTC().Add(-time.Hour))
+	}
+
+	// Simulate a runner that does not use schema_migrations at all (atlas
+	// records its own applied versions in its own table): drop it. Nothing
+	// else about the schema changes — every OTHER migration up to m142 is
+	// already applied, from startPostgresBeforeM142's own bootstrap.
+	if _, err := admin.Exec(ctx, `DROP TABLE schema_migrations`); err != nil {
+		t.Fatalf("drop schema_migrations: %v", err)
+	}
+
+	// Call the file directly (never through owner.Migrate, which would
+	// itself try to recreate schema_migrations as part of the server's own
+	// runner — the exact thing this test needs to NOT be present).
+	if _, err := owner.Exec(ctx, readM142Body(t)); err != nil {
+		t.Fatalf("m142 body failed with no schema_migrations table present, want a clean no-op: %v", err)
+	}
+
+	if _, present := planOverridesMaxSites(t, admin, tenant); present {
+		t.Fatal("max_sites override present after m142 ran with no schema_migrations table, want none (should have skipped before touching anything)")
+	}
+	assertSitesForceIntact(t, admin)
+
+	// Lock assertion: the skip path takes NO ACCESS EXCLUSIVE lock on sites.
+	// schema_migrations is still absent here, so this re-runs the same skip
+	// path a second time, inside its own rolled-back transaction — no side
+	// effects carry forward.
+	if n := m142AccessExclusiveLockCount(t, owner, readM142Body(t)); n != 0 {
+		t.Fatalf("m142's no-schema_migrations-table skip took %d ACCESS EXCLUSIVE lock(s) on sites, want 0", n)
+	}
+	t.Logf("real m142 correctly took 0 ACCESS EXCLUSIVE locks on sites on the no-table skip path")
+
+	// Restore proof: with schema_migrations back and m91's applied_at row
+	// present — the state startPostgresBeforeM142 actually left it in — the
+	// REAL repair (called the same direct way) runs and grandfathers the
+	// seeded tenant. Recreated as OWNER (wpmgr_owner), exactly as the
+	// server's own runner creates it (internal/db/migrate.go): recreating it
+	// as admin, the bootstrap superuser, would leave the table owned by a
+	// role m142 itself has no privilege on.
+	if _, err := owner.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
+		version    text        PRIMARY KEY,
+		applied_at timestamptz NOT NULL DEFAULT now()
+	)`); err != nil {
+		t.Fatalf("recreate schema_migrations: %v", err)
+	}
+	if _, err := admin.Exec(ctx,
+		`INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT (version) DO NOTHING`,
+		m91MigrationVersion); err != nil {
+		t.Fatalf("re-seed m91's applied_at row: %v", err)
+	}
+	if _, err := owner.Exec(ctx, readM142Body(t)); err != nil {
+		t.Fatalf("m142 body failed with schema_migrations present: %v", err)
+	}
+	if value, present := planOverridesMaxSites(t, admin, tenant); !present || value != 5 {
+		t.Fatalf("after restoring schema_migrations and m91's row: max_sites present=%v value=%d, want present=true value=5", present, value)
+	}
+	assertSitesForceIntact(t, admin)
+}
+
+// TestM142SkipsOutsideServerRunner_NoM91Row is
+// TestM142SkipsOutsideServerRunner_NoSchemaMigrationsTable's sibling for the
+// OTHER outside-the-runner skip: schema_migrations exists — every other
+// migration up to m142 applied normally, through startPostgresBeforeM142's
+// own bootstrap — but carries no row for m91, the shape atlas's own
+// out-of-order refusal and non-linear exec-order leave behind. m142 raises
+// its NOTICE and returns before touching a row or taking a lock on sites,
+// even though an over-cap pre-cutoff-shaped tenant exists that a real
+// backfill would otherwise grandfather.
+//
+// Also the fires proof for the "no m91 row" RETURN block itself
+// (m142NoM91RowSkipBlock): an in-memory copy with that block deleted
+// proceeds past the skip — v_cutoff stays NULL, which the ALTER TABLE
+// statement that follows doesn't depend on — and DOES take an ACCESS
+// EXCLUSIVE lock on sites, proving the "no lock taken" assertion below is
+// load-bearing rather than vacuous.
+func TestM142SkipsOutsideServerRunner_NoM91Row(t *testing.T) {
+	admin, owner := startPostgresBeforeM142(t)
+	ctx := context.Background()
+
+	tenant := seedTenant(t, admin, "m142-no-m91-row")
+	for i := 0; i < 5; i++ {
+		seedSiteAt(t, admin, tenant, fmt.Sprintf("https://m142-no-m91-row-%d.example.com", i), time.Now().UTC().Add(-time.Hour))
+	}
+
+	// schema_migrations exists (startPostgresBeforeM142's own bootstrap
+	// applied m91 for real, through the owner role, and inserted its row)
+	// but drop JUST m91's row: the "table present, no m91 row" skip.
+	if _, err := admin.Exec(ctx,
+		`DELETE FROM schema_migrations WHERE version = $1`, m91MigrationVersion); err != nil {
+		t.Fatalf("delete m91's schema_migrations row: %v", err)
+	}
+
+	if _, err := owner.Exec(ctx, readM142Body(t)); err != nil {
+		t.Fatalf("m142 body failed with schema_migrations present but no m91 row, want a clean no-op: %v", err)
+	}
+
+	if _, present := planOverridesMaxSites(t, admin, tenant); present {
+		t.Fatal("max_sites override present after m142 ran with no m91 row, want none (should have skipped before touching anything)")
+	}
+	assertSitesForceIntact(t, admin)
+
+	// DOES NOT OVER-FIRE: the real skip path takes NO ACCESS EXCLUSIVE lock
+	// on sites.
+	if n := m142AccessExclusiveLockCount(t, owner, readM142Body(t)); n != 0 {
+		t.Fatalf("m142's no-m91-row skip took %d ACCESS EXCLUSIVE lock(s) on sites, want 0", n)
+	}
+	t.Logf("real m142 correctly took 0 ACCESS EXCLUSIVE locks on sites on the no-m91-row skip path")
+
+	// FIRES: an in-memory copy of m142 with the "no m91 row" RETURN block
+	// deleted proceeds past the skip and DOES take an ACCESS EXCLUSIVE lock
+	// on sites.
+	mutated := stripOnce(t, readM142Body(t), m142NoM91RowSkipBlock)
+	if n := m142AccessExclusiveLockCount(t, owner, mutated); n == 0 {
+		t.Fatal("block-stripped m142 (no-m91-row RETURN removed) took 0 ACCESS EXCLUSIVE locks; expected it to proceed past the skip and lock sites (this mutation must fire for the proof above to mean anything)")
+	} else {
+		t.Logf("block-stripped m142 correctly took %d ACCESS EXCLUSIVE lock(s) on sites (guard-is-load-bearing)", n)
+	}
+
+	// Restore proof: with m91's row back — the state startPostgresBeforeM142
+	// actually left it in — the REAL repair runs and grandfathers the
+	// seeded tenant.
+	if _, err := admin.Exec(ctx,
+		`INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT (version) DO NOTHING`,
+		m91MigrationVersion); err != nil {
+		t.Fatalf("re-seed m91's applied_at row: %v", err)
+	}
+	if err := owner.Migrate(ctx); err != nil {
+		t.Fatalf("m142 migration: %v", err)
+	}
+	if value, present := planOverridesMaxSites(t, admin, tenant); !present || value != 5 {
+		t.Fatalf("after restoring m91's row: max_sites present=%v value=%d, want present=true value=5", present, value)
+	}
+	assertSitesForceIntact(t, admin)
+}
