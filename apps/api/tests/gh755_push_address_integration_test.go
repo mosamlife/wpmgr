@@ -2,11 +2,19 @@ package tests
 
 // GH #755 Part B — push-time address adoption. Once a site is enrolled and
 // connected, its DAILY diagnostics push (the "http" category's home_url) and
-// its periodic metadata push (home_url) each hand the agent-reported address
-// to site.AdoptReportedURL, which decides whether it replaces the saved one.
-// The rule is siteaddr.PlanStrict: a leading "www." toggle and/or an http to
-// https upgrade, on the same port and path, and ONLY after a signed ping
-// confirms it at the moment of the push (adopt_url.go).
+// its periodic metadata push (home_url) each queue the agent-reported address
+// as a site_adopt_reported_url job, whose worker runs site.AdoptReportedURL
+// to decide whether it replaces the saved one. The rule is
+// siteaddr.PlanStrict: a leading "www." toggle and/or an http to https
+// upgrade, on the same port and path, and ONLY after a signed ping confirms
+// it when the job runs (adopt_url.go).
+//
+// The env queues the job in gh755AdoptQueue, and pushDiagnostics and
+// pushMetadata run each queued job through the real worker as soon as the
+// push returns, so every case below reads the outcome the job decides.
+// TestGH755Push_AdoptionNeverHoldsThePush pins that the push itself never
+// waits for the probe, and TestGH755Push_AdoptionJobRunsOnRiver runs the job
+// on a real River client.
 //
 // Every request here goes through the REAL mounted routes (POST /enroll,
 // POST /sites, POST /agent/v1/diagnostics, POST /agent/v1/metadata, each
@@ -32,16 +40,22 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+	"github.com/riverqueue/river/rivermigrate"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/agent"
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
@@ -50,6 +64,34 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 	"github.com/mosamlife/wpmgr/apps/api/internal/site"
 )
+
+// gh755AdoptQueue is the env's site.AdoptURLEnqueuer: it records each job a
+// push queues, or refuses it when err is set. runAdoptJobs runs the recorded
+// jobs through the real worker.
+type gh755AdoptQueue struct {
+	mu   sync.Mutex
+	jobs []site.AdoptReportedURLArgs
+	err  error
+}
+
+func (q *gh755AdoptQueue) EnqueueAdoptURL(_ context.Context, a site.AdoptReportedURLArgs) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.err != nil {
+		return q.err
+	}
+	q.jobs = append(q.jobs, a)
+	return nil
+}
+
+// take removes and returns every queued job.
+func (q *gh755AdoptQueue) take() []site.AdoptReportedURLArgs {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	out := q.jobs
+	q.jobs = nil
+	return out
+}
 
 // redirectAnswer is one canned answer to CommandRedirectTarget.
 type redirectAnswer struct {
@@ -136,6 +178,7 @@ type gh755PushEnv struct {
 	svc    *site.Service
 	rec    *audit.Recorder
 	prober *gh755FakeProber
+	adoptQ *gh755AdoptQueue
 	as     domain.Principal
 }
 
@@ -150,6 +193,8 @@ func newGH755PushEnv(t *testing.T, pool *db.Pool) *gh755PushEnv {
 	svc.SetAuditRecorder(rec)
 	prober := newGH755FakeProber()
 	svc.SetCommandRedirectProber(prober)
+	adoptQ := &gh755AdoptQueue{}
+	svc.SetAdoptURLEnqueuer(adoptQ)
 
 	diagSvc := diagnostics.NewService(diagnostics.NewRepo(pool))
 	diagSvc.SetReportedURLSink(svc)
@@ -160,7 +205,7 @@ func newGH755PushEnv(t *testing.T, pool *db.Pool) *gh755PushEnv {
 	diagAgentH := agent.NewDiagnosticsHandler(diagSvc)
 	authn := agent.NewAuthenticator(svc, domain.SystemClock{}, 5*time.Minute)
 
-	env := &gh755PushEnv{pool: pool, svc: svc, rec: rec, prober: prober}
+	env := &gh755PushEnv{pool: pool, svc: svc, rec: rec, prober: prober, adoptQ: adoptQ}
 	eng := gin.New()
 	h.RegisterPublic(eng)
 	v1 := eng.Group("/api/v1")
@@ -259,10 +304,9 @@ func (e *gh755PushEnv) signedPush(t *testing.T, priv ed25519.PrivateKey, pub, pa
 	return w.Code, out
 }
 
-// pushDiagnostics is the agent's daily 14-category push, carrying only the
-// "http" category's home_url (GH755AssertsGetOnly the field AdoptReportedURL
-// reads).
-func (e *gh755PushEnv) pushDiagnostics(t *testing.T, priv ed25519.PrivateKey, pub, homeURL string) (int, map[string]any) {
+// diagnosticsBody is the agent's daily 14-category push body, carrying only
+// the "http" category's home_url (the only field AdoptReportedURL reads).
+func diagnosticsBody(t *testing.T, homeURL string) []byte {
 	t.Helper()
 	body, err := json.Marshal(map[string]any{
 		"http":         map[string]any{"home_url": homeURL},
@@ -271,20 +315,52 @@ func (e *gh755PushEnv) pushDiagnostics(t *testing.T, priv ed25519.PrivateKey, pu
 	if err != nil {
 		t.Fatalf("marshal diagnostics body: %v", err)
 	}
-	return e.signedPush(t, priv, pub, "/agent/v1/diagnostics", body)
+	return body
 }
 
-// pushMetadata is the agent's periodic metadata push, carrying home_url.
-func (e *gh755PushEnv) pushMetadata(t *testing.T, priv ed25519.PrivateKey, pub, homeURL string) (int, map[string]any) {
+// metadataBody is the agent's periodic metadata push body, carrying home_url
+// and, when it is not empty, agent_version.
+func metadataBody(t *testing.T, homeURL, agentVersion string) []byte {
 	t.Helper()
-	body, err := json.Marshal(map[string]any{
-		"wp_version": "6.6",
-		"home_url":   homeURL,
-	})
+	m := map[string]any{"wp_version": "6.6", "home_url": homeURL}
+	if agentVersion != "" {
+		m["agent_version"] = agentVersion
+	}
+	body, err := json.Marshal(m)
 	if err != nil {
 		t.Fatalf("marshal metadata body: %v", err)
 	}
-	return e.signedPush(t, priv, pub, "/agent/v1/metadata", body)
+	return body
+}
+
+// pushDiagnostics is the agent's diagnostics push, followed by every
+// adoption job it queued, run through the real worker.
+func (e *gh755PushEnv) pushDiagnostics(t *testing.T, priv ed25519.PrivateKey, pub, homeURL string) (int, map[string]any) {
+	t.Helper()
+	status, out := e.signedPush(t, priv, pub, "/agent/v1/diagnostics", diagnosticsBody(t, homeURL))
+	e.runAdoptJobs(t)
+	return status, out
+}
+
+// pushMetadata is the agent's metadata push, followed by every adoption job
+// it queued, run through the real worker.
+func (e *gh755PushEnv) pushMetadata(t *testing.T, priv ed25519.PrivateKey, pub, homeURL string) (int, map[string]any) {
+	t.Helper()
+	status, out := e.signedPush(t, priv, pub, "/agent/v1/metadata", metadataBody(t, homeURL, ""))
+	e.runAdoptJobs(t)
+	return status, out
+}
+
+// runAdoptJobs runs every queued adoption job through the worker production
+// registers with River. A job error fails the test: River would retry it.
+func (e *gh755PushEnv) runAdoptJobs(t *testing.T) {
+	t.Helper()
+	w := site.NewAdoptReportedURLWorker(e.svc)
+	for _, a := range e.adoptQ.take() {
+		if err := w.Work(context.Background(), &river.Job[site.AdoptReportedURLArgs]{Args: a}); err != nil {
+			t.Errorf("adoption job for %s: %v", a.Reported, err)
+		}
+	}
 }
 
 func (e *gh755PushEnv) site(t *testing.T, tenant, id uuid.UUID) site.Site {
@@ -851,5 +927,215 @@ func TestGH755Push_UnicodeHostUpgradeStoresTheSavedHost(t *testing.T) {
 				t.Fatalf("a scheme-only change asked for a redirect (%d->%d)", beforeR, afterR)
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// (l) the push never waits for the probe. With a site that takes 15s to
+// answer a signed ping, both pushes answer 200 in well under a second, each
+// with one job queued and no probe sent; the job, when run, performs the
+// adoption; and a queue that refuses the job leaves both pushes answering
+// 200.
+// ---------------------------------------------------------------------------
+
+// gh755SlowProber answers no probe until release is closed, the caller's
+// context ends, or 15s pass, the way a slow site answers a signed ping.
+type gh755SlowProber struct {
+	release chan struct{}
+	calls   atomic.Int32
+}
+
+func (p *gh755SlowProber) wait(ctx context.Context) {
+	p.calls.Add(1)
+	select {
+	case <-p.release:
+	case <-ctx.Done():
+	case <-time.After(15 * time.Second):
+	}
+}
+
+func (p *gh755SlowProber) CommandRedirectTarget(ctx context.Context, _ uuid.UUID, _ string) (string, bool) {
+	p.wait(ctx)
+	return "", false
+}
+
+func (p *gh755SlowProber) CommandPingOK(ctx context.Context, _ uuid.UUID, _ string) bool {
+	p.wait(ctx)
+	return false
+}
+
+func TestGH755Push_AdoptionNeverHoldsThePush(t *testing.T) {
+	env, tenant := gh755PushSetup(t, "gh755p-async")
+	ctx := context.Background()
+
+	t.Run("a slow probe holds neither push", func(t *testing.T) {
+		slow := &gh755SlowProber{release: make(chan struct{})}
+		defer close(slow.release)
+		env.svc.SetCommandRedirectProber(slow)
+		defer env.svc.SetCommandRedirectProber(env.prober)
+		id, priv, pub := env.connectSite(t, "http://pl1.example.com")
+
+		pushes := []struct {
+			name, path string
+			body       []byte
+		}{
+			{"diagnostics", "/agent/v1/diagnostics", diagnosticsBody(t, "https://pl1.example.com")},
+			{"metadata", "/agent/v1/metadata", metadataBody(t, "https://pl1.example.com", "0.61.150")},
+		}
+		for _, p := range pushes {
+			start := time.Now()
+			status, out := env.signedPush(t, priv, pub, p.path, p.body)
+			took := time.Since(start)
+			if status != http.StatusOK {
+				t.Fatalf("%s push answered %d, want 200: %v", p.name, status, out)
+			}
+			if took >= time.Second {
+				t.Fatalf("%s push took %v; it must not wait for the probe", p.name, took)
+			}
+		}
+		if n := slow.calls.Load(); n != 0 {
+			t.Fatalf("a push sent %d probes; only the job may probe", n)
+		}
+		jobs := env.adoptQ.take()
+		want := []site.AdoptReportedURLArgs{
+			{TenantID: tenant, SiteID: id, Reported: "https://pl1.example.com", Source: "agent_diagnostics"},
+			{TenantID: tenant, SiteID: id, Reported: "https://pl1.example.com", Source: "agent_metadata", AgentVersion: "0.61.150"},
+		}
+		if !reflect.DeepEqual(jobs, want) {
+			t.Fatalf("queued jobs = %+v, want %+v", jobs, want)
+		}
+		if s := env.site(t, tenant, id); s.URL != "http://pl1.example.com" {
+			t.Fatalf("site url = %q before any job ran, want it unchanged", s.URL)
+		}
+
+		// The job, when run, performs the adoption.
+		env.svc.SetCommandRedirectProber(env.prober)
+		env.prober.allowPing("https://pl1.example.com")
+		if err := env.adoptQ.EnqueueAdoptURL(ctx, jobs[0]); err != nil {
+			t.Fatal(err)
+		}
+		env.runAdoptJobs(t)
+		if s := env.site(t, tenant, id); s.URL != "https://pl1.example.com" {
+			t.Fatalf("site url = %q after the job ran, want https://pl1.example.com", s.URL)
+		}
+		changed, mismatch := env.urlAudits(t, tenant, id)
+		assertPushURLChanged(t, changed, "http://pl1.example.com", "https://pl1.example.com", "agent_diagnostics")
+		if len(mismatch) != 0 {
+			t.Fatalf("unexpected mismatch rows: %v", mismatch)
+		}
+	})
+
+	t.Run("an enqueue failure leaves both pushes answering 200", func(t *testing.T) {
+		env.adoptQ.mu.Lock()
+		env.adoptQ.err = errors.New("queue unavailable")
+		env.adoptQ.mu.Unlock()
+		defer func() {
+			env.adoptQ.mu.Lock()
+			env.adoptQ.err = nil
+			env.adoptQ.mu.Unlock()
+		}()
+		id, priv, pub := env.connectSite(t, "http://pl2.example.com")
+		env.prober.allowPing("https://pl2.example.com")
+		pings, _ := env.prober.calls(t)
+
+		if status, out := env.pushDiagnostics(t, priv, pub, "https://pl2.example.com"); status != http.StatusOK {
+			t.Fatalf("diagnostics push answered %d, want 200: %v", status, out)
+		}
+		if status, out := env.pushMetadata(t, priv, pub, "https://pl2.example.com"); status != http.StatusOK {
+			t.Fatalf("metadata push answered %d, want 200: %v", status, out)
+		}
+		if s := env.site(t, tenant, id); s.URL != "http://pl2.example.com" {
+			t.Fatalf("site url = %q, want it unchanged when the job was never queued", s.URL)
+		}
+		if after, _ := env.prober.calls(t); after != pings {
+			t.Fatalf("pinged with no job queued (%d->%d)", pings, after)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// (m) the job on a real River client: a push inserts it, later pushes of the
+// same address inside the hour insert nothing more, and the worker production
+// registers adopts the address when River runs it.
+// ---------------------------------------------------------------------------
+
+func TestGH755Push_AdoptionJobRunsOnRiver(t *testing.T) {
+	env, tenant := gh755PushSetup(t, "gh755p-river")
+	ctx := context.Background()
+
+	owner := connectOwner(t, env.pool)
+	defer owner.Close()
+	migrator, err := rivermigrate.New(riverpgxv5.New(owner.Pool), nil)
+	if err != nil {
+		t.Fatalf("river migrator: %v", err)
+	}
+	if _, err := migrator.Migrate(ctx, rivermigrate.DirectionUp, nil); err != nil {
+		t.Fatalf("river migrate: %v", err)
+	}
+
+	// Insert only, so the jobs stay queued and can be counted.
+	inserter, err := river.NewClient(riverpgxv5.New(env.pool.Pool), &river.Config{})
+	if err != nil {
+		t.Fatalf("river insert-only client: %v", err)
+	}
+	env.svc.SetAdoptURLEnqueuer(site.NewRiverAdoptURLEnqueuer(inserter))
+
+	id, priv, pub := env.connectSite(t, "http://pr1.example.com")
+	env.prober.allowPing("https://pr1.example.com")
+	for i := 0; i < 2; i++ {
+		if status, out := env.signedPush(t, priv, pub, "/agent/v1/diagnostics", diagnosticsBody(t, "https://pr1.example.com")); status != http.StatusOK {
+			t.Fatalf("diagnostics push %d answered %d, want 200: %v", i, status, out)
+		}
+	}
+	if status, out := env.signedPush(t, priv, pub, "/agent/v1/metadata", metadataBody(t, "https://pr1.example.com", "0.61.150")); status != http.StatusOK {
+		t.Fatalf("metadata push answered %d, want 200: %v", status, out)
+	}
+	var queued int
+	if err := env.pool.QueryRow(ctx,
+		`SELECT count(*) FROM river_job WHERE kind = $1 AND args->>'site_id' = $2`,
+		site.AdoptReportedURLArgs{}.Kind(), id.String()).Scan(&queued); err != nil {
+		t.Fatalf("count queued jobs: %v", err)
+	}
+	if queued != 1 {
+		t.Fatalf("queued adoption jobs = %d after three pushes of one address, want 1", queued)
+	}
+	if s := env.site(t, tenant, id); s.URL != "http://pr1.example.com" {
+		t.Fatalf("site url = %q before any worker ran, want it unchanged", s.URL)
+	}
+
+	workers := river.NewWorkers()
+	river.AddWorker(workers, site.NewAdoptReportedURLWorker(env.svc))
+	client, err := river.NewClient(riverpgxv5.New(env.pool.Pool), &river.Config{
+		Queues:  map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 1}},
+		Workers: workers,
+	})
+	if err != nil {
+		t.Fatalf("river client: %v", err)
+	}
+	if err := client.Start(ctx); err != nil {
+		t.Fatalf("river start: %v", err)
+	}
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = client.Stop(stopCtx)
+	}()
+
+	// Bounded: 80 polls of 250ms.
+	got := ""
+	for i := 0; i < 80; i++ {
+		got = env.site(t, tenant, id).URL
+		if got == "https://pr1.example.com" {
+			break
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	if got != "https://pr1.example.com" {
+		t.Fatalf("site url = %q after 20s of River running the job, want https://pr1.example.com", got)
+	}
+	changed, mismatch := env.urlAudits(t, tenant, id)
+	assertPushURLChanged(t, changed, "http://pr1.example.com", "https://pr1.example.com", "agent_diagnostics")
+	if len(mismatch) != 0 {
+		t.Fatalf("unexpected mismatch rows: %v", mismatch)
 	}
 }
