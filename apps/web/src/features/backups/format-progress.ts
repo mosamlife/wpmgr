@@ -225,19 +225,12 @@ export function isSnapshotStalled(
  * split these into two columns so an API consumer or the MCP read tools
  * never mistake a running-but-retrying row for a failed one).
  *
- * Not yet on the generated `BackupSnapshot` type, and not yet in
- * `openapi.yaml` either — the backend slice that lands the column
- * (`fix(backup,scan,update): wire the agent-failure classifier...`) does not
- * expose it on any handler response yet; that's a separate, still-pending
- * piece of the #791 backend work. Until the spec, the ogen handlers and
- * `packages/openapi-client` all carry the field, this reads it defensively
- * off the raw response (never a blind `as`) so the UI degrades to "no last
- * error" rather than throwing when it's absent. Replace this with a plain
- * `snapshot.attempt_error` read once `BackupSnapshot` carries it.
+ * On the generated `BackupSnapshot` type as of the #791 API slice
+ * ("expose attempt_error on backups and schedule runs, and the retrying
+ * phase") — read as a plain field.
  */
 export function snapshotAttemptError(snapshot: BackupSnapshot): string | null {
-  const raw = snapshot as unknown as Record<string, unknown>;
-  return str(raw.attempt_error);
+  return str(snapshot.attempt_error);
 }
 
 /**
@@ -252,7 +245,7 @@ export function snapshotAttemptError(snapshot: BackupSnapshot): string | null {
  * stale `attempt_error` were somehow still present.
  */
 export function isSnapshotRetrying(
-  snapshot: Pick<BackupSnapshot, "status"> & { attempt_error?: unknown },
+  snapshot: Pick<BackupSnapshot, "status" | "attempt_error">,
 ): boolean {
   if (snapshot.status !== "running") return false;
   return str(snapshot.attempt_error) !== null;

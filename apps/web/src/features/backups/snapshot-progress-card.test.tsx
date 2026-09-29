@@ -72,17 +72,12 @@ describe("SnapshotProgressCard — GH #279 stall indicator", () => {
 
 // GH #791 — a snapshot still `running` and being retried (a fresh
 // `attempt_error` on file) shows the "retrying" copy plus the last error,
-// distinct from the plain GH #279 stall hint. `attempt_error` is not yet on
-// the generated `BackupSnapshot` type (see `snapshotAttemptError`'s doc in
-// format-progress.ts), so it is attached here the same way a real response
-// carries it ahead of the generated client catching up.
+// distinct from the plain GH #279 stall hint. `attempt_error` is a plain
+// field on the generated `BackupSnapshot` type (the #791 API slice).
 const RETRYING_TEXT = /hasn't started on the site yet\. retrying automatically/i;
 
 function buildRetryingSnapshot(attemptError: string): BackupSnapshot {
-  return {
-    ...buildSnapshot({ status: "running" }),
-    attempt_error: attemptError,
-  } as BackupSnapshot;
+  return buildSnapshot({ status: "running", attempt_error: attemptError });
 }
 
 describe("SnapshotProgressCard — GH #791 retrying indicator", () => {

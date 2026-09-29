@@ -68,19 +68,14 @@ function buildSnapshot(overrides: Partial<BackupSnapshot> = {}): BackupSnapshot 
 }
 
 /**
- * `attempt_error` is not yet on the generated `BackupSnapshot` type (see
- * `snapshotAttemptError`'s doc in format-progress.ts) — this builds a
- * snapshot carrying it on the wire, exactly like a real response ahead of
- * the generated client catching up.
+ * `attempt_error` is a plain field on the generated `BackupSnapshot` type
+ * (the #791 API slice) — no cast needed to attach it.
  */
 function buildSnapshotWithAttemptError(
   attemptError: string | undefined,
   overrides: Partial<BackupSnapshot> = {},
 ): BackupSnapshot {
-  return {
-    ...buildSnapshot(overrides),
-    attempt_error: attemptError,
-  } as BackupSnapshot;
+  return buildSnapshot({ attempt_error: attemptError, ...overrides });
 }
 
 describe("isSnapshotRetrying", () => {
@@ -114,6 +109,32 @@ describe("isSnapshotRetrying", () => {
     expect(
       isSnapshotRetrying({ status: "pending", attempt_error: "stale value" }),
     ).toBe(false);
+  });
+});
+
+// GH #791 contract test — pins `attempt_error` on the REAL generated
+// `BackupSnapshot` type (the #791 API slice: "expose attempt_error on
+// backups and schedule runs, and the retrying phase"). This literal object
+// construction is checked by `pnpm -C apps/web typecheck`: no `as
+// BackupSnapshot` cast, no `Record<string, unknown>` read — if the backend
+// ever renames or drops the field, this fails to COMPILE before any runtime
+// assertion runs. Mirrors `tags-contract.test.ts`'s pattern for pinning a
+// generated shape.
+describe("GH #791 contract — attempt_error on the real generated BackupSnapshot", () => {
+  it("assigns directly, with no cast, and both helpers read it correctly", () => {
+    const snapshot: BackupSnapshot = {
+      id: "snap-real-shape",
+      tenant_id: "tenant-1",
+      site_id: "site-42",
+      kind: "full",
+      status: "running",
+      created_at: "2026-09-29T00:00:00Z",
+      updated_at: "2026-09-29T00:00:00Z",
+      progress: {},
+      attempt_error: "The site did not answer in time.",
+    };
+    expect(snapshotAttemptError(snapshot)).toBe("The site did not answer in time.");
+    expect(isSnapshotRetrying(snapshot)).toBe(true);
   });
 });
 
