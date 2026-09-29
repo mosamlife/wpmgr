@@ -43,7 +43,7 @@ func s0pApply(ctx context.Context, q *sqlc.Queries, id uuid.UUID, provider, sub,
 	p := sqlc.ApplyBillingSubscriptionStateForProviderParams{
 		TenantID:               id,
 		BillingProvider:        provider,
-		Plan:                   "starter",
+		Plan:                   string(billing.TierStarter),
 		PlanStatus:             "active",
 		ProviderSubscriptionID: s01Ptr(sub),
 		ProviderCustomerID:     customer,
