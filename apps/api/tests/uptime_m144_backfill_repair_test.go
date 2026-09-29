@@ -240,7 +240,7 @@ const (
 	// ACCESS EXCLUSIVE lock taken" assertion is load-bearing: without it,
 	// v_cutoff stays NULL, but the ALTER TABLE statements below run anyway.
 	m144NoM99RowSkipBlock = `    IF v_cutoff IS NULL THEN
-        RAISE NOTICE 'm144: repair skipped: schema_migrations has no row for 20260801000000_m99_uptime_rollup, so m99 was not applied by the server''s migration runner and its apply time is unknown; days before m99 are not rebuilt';
+        RAISE NOTICE 'm144: repair skipped: schema_migrations has no row for 20260801000000_m99_uptime_rollup, so m99 was not applied by the server''s migration runner and its apply time is unknown; days up to and including the day m99 was applied are not rebuilt';
         RETURN;
     END IF;
 
