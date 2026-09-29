@@ -16,6 +16,15 @@ package tests
 // rather than assumes. The signed ping itself is answered by a test double
 // (gh755FakeProber) implementing site.CommandRedirectProber: never an
 // external host.
+//
+// Every #755 integration test, in this file and in
+// gh755_enroll_address_integration_test.go, is selected by exactly one regex:
+//
+//	^(TestSiteFirstEnroll_|TestReEnroll_|TestReEnrollAddressGate_|TestSiteMint_|TestGH755Push_)
+//
+// `go -C apps/api test -list '<that regex>' ./tests/` must list every
+// TestSiteFirstEnroll_*, TestReEnroll_*, TestReEnrollAddressGate_*,
+// TestSiteMint_* and TestGH755Push_* function and nothing else.
 
 import (
 	"bytes"
@@ -302,6 +311,24 @@ func (e *gh755PushEnv) urlAudits(t *testing.T, tenant, siteID uuid.UUID) (change
 	return changed, mismatch
 }
 
+// assertPushURLChanged checks a site.url_changed row produced by a PUSH
+// (diagnostics or metadata), whose source is agent_diagnostics or
+// agent_metadata — unlike the enrollment-path rows assertURLChanged expects
+// (source always agent_enrollment), so it cannot be reused here.
+func assertPushURLChanged(t *testing.T, got []audit.Entry, from, to, source string) {
+	t.Helper()
+	if len(got) != 1 {
+		t.Fatalf("site.url_changed rows = %d, want 1", len(got))
+	}
+	m := got[0].Metadata
+	if m["from"] != from || m["to"] != to || m["source"] != source {
+		t.Fatalf("site.url_changed metadata = %v, want from=%s to=%s source=%s", m, from, to, source)
+	}
+	if got[0].ActorType != audit.ActorSystem {
+		t.Fatalf("site.url_changed actor = %s, want %s", got[0].ActorType, audit.ActorSystem)
+	}
+}
+
 func gh755PushSetup(t *testing.T, slug string) (*gh755PushEnv, uuid.UUID) {
 	t.Helper()
 	pool := startPostgres(t)
@@ -347,10 +374,7 @@ func TestGH755Push_HTTPSUpgradeGatedOnPing(t *testing.T) {
 			t.Fatalf("site url = %q, want the https address adopted", s.URL)
 		}
 		changed, mismatch := env.urlAudits(t, tenant, id)
-		assertURLChanged(t, changed, "http://pa1.example.com", "https://pa1.example.com")
-		if changed[0].ActorType != audit.ActorSystem || changed[0].Metadata["source"] != "agent_diagnostics" {
-			t.Fatalf("audit row actor/source = %s/%v, want system/agent_diagnostics", changed[0].ActorType, changed[0].Metadata["source"])
-		}
+		assertPushURLChanged(t, changed, "http://pa1.example.com", "https://pa1.example.com", "agent_diagnostics")
 		if len(mismatch) != 0 {
 			t.Fatalf("unexpected mismatch rows: %v", mismatch)
 		}
@@ -396,10 +420,7 @@ func TestGH755Push_WWWHostChangeGatedOnRedirect(t *testing.T) {
 			t.Fatalf("site url = %q, want the www address adopted", s.URL)
 		}
 		changed, _ := env.urlAudits(t, tenant, id)
-		assertURLChanged(t, changed, "https://pb1.example.com", "https://www.pb1.example.com")
-		if changed[0].Metadata["source"] != "agent_metadata" {
-			t.Fatalf("audit source = %v, want agent_metadata", changed[0].Metadata["source"])
-		}
+		assertPushURLChanged(t, changed, "https://pb1.example.com", "https://www.pb1.example.com", "agent_metadata")
 	})
 
 	t.Run("does not redirect: not adopted", func(t *testing.T) {
@@ -682,7 +703,7 @@ func TestGH755Push_CrossTenantNeverChangesOtherTenantsSite(t *testing.T) {
 		t.Fatalf("tenant A site url = %q, want the www address adopted", sA.URL)
 	}
 	changedA, _ := envA.urlAudits(t, tenantA, idA)
-	assertURLChanged(t, changedA, "https://ph1.example.com", "https://www.ph1.example.com")
+	assertPushURLChanged(t, changedA, "https://ph1.example.com", "https://www.ph1.example.com", "agent_diagnostics")
 
 	// Tenant B's identically-addressed site is completely untouched: same
 	// URL, same connection state, and no audit row of its own — read directly
@@ -701,5 +722,81 @@ func TestGH755Push_CrossTenantNeverChangesOtherTenantsSite(t *testing.T) {
 	changedB, mismatchB := envB.urlAudits(t, tenantB, idB)
 	if len(changedB)+len(mismatchB) != 0 {
 		t.Fatalf("tenant A's push left an audit trail on tenant B's site: changed=%v mismatch=%v", changedB, mismatchB)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// (i) the reporter's trailing-slash shape: the saved address itself carries a
+// trailing slash, that saved address redirects to the www form, and the push
+// reports the www form. Adopted, keeping the saved address's path (the
+// slash, per siteaddr.Plan's "To is built from the stored address" rule),
+// with exactly one url_changed row.
+// ---------------------------------------------------------------------------
+
+func TestGH755Push_TrailingSlashSavedRedirectsToWWW(t *testing.T) {
+	env, tenant := gh755PushSetup(t, "gh755p-slash")
+	id, priv, pub := env.connectSite(t, "https://slash1.example.com/")
+	env.prober.setRedirect("https://slash1.example.com/", "https://www.slash1.example.com", true)
+
+	status, body := env.pushMetadata(t, priv, pub, "https://www.slash1.example.com")
+	if status != http.StatusOK {
+		t.Fatalf("metadata push answered %d, want 200: %v", status, body)
+	}
+	s := env.site(t, tenant, id)
+	if s.URL != "https://www.slash1.example.com/" {
+		t.Fatalf("site url = %q, want the www address adopted with the saved trailing slash kept", s.URL)
+	}
+	changed, mismatch := env.urlAudits(t, tenant, id)
+	assertPushURLChanged(t, changed, "https://slash1.example.com/", "https://www.slash1.example.com/", "agent_metadata")
+	if len(mismatch) != 0 {
+		t.Fatalf("unexpected mismatch rows: %v", mismatch)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// (j) a host that differs from the saved one only by Unicode-vs-ASCII casing
+// of a non-ASCII letter (a dotted capital İ, a capital ẞ) is never adopted at
+// push time, and reaches no probe: siteaddr.PlanStrict compares hosts by
+// HostKey (ASCII letters lowercased, IDNA only for a non-ASCII host), never
+// Unicode case folding, so these name two different hosts, not a case
+// variant of the same one, and Plan's own host check refuses before any
+// probe would fire.
+// ---------------------------------------------------------------------------
+
+func TestGH755Push_UnicodeCaseHostNeverAdopted(t *testing.T) {
+	env, tenant := gh755PushSetup(t, "gh755p-unicode")
+
+	cases := []struct {
+		name, stored, reported string
+	}{
+		{"dotted capital I", "http://İstanbul.example.test", "https://istanbul.example.test"},
+		{"capital sharp S", "http://STRAẞE.example.test", "https://straße.example.test"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			id, priv, pub := env.connectSite(t, c.stored)
+			// A prober that would say yes to everything must never be asked:
+			// the decision is Mismatch before any probe.
+			env.prober.allowPing(c.reported)
+			env.prober.setRedirect(c.stored, c.reported, true)
+			before, beforeR := env.prober.calls(t)
+
+			status, body := env.pushDiagnostics(t, priv, pub, c.reported)
+			if status != http.StatusOK {
+				t.Fatalf("diagnostics push answered %d, want 200: %v", status, body)
+			}
+			s := env.site(t, tenant, id)
+			if s.URL != c.stored {
+				t.Fatalf("site url = %q, want it unchanged", s.URL)
+			}
+			changed, mismatch := env.urlAudits(t, tenant, id)
+			if len(changed)+len(mismatch) != 0 {
+				t.Fatalf("a Unicode-case host push was audited: changed=%v mismatch=%v", changed, mismatch)
+			}
+			after, afterR := env.prober.calls(t)
+			if after != before || afterR != beforeR {
+				t.Fatalf("probe was called for a Unicode-case host (ping %d->%d, redirect %d->%d)", before, after, beforeR, afterR)
+			}
+		})
 	}
 }

@@ -12,6 +12,15 @@ package tests
 // public POST /enroll), with the production site service, connection service
 // and audit recorder, against a database reached as wpmgr_app (NOSUPERUSER,
 // NOBYPASSRLS), which gh755AssertAppRole checks rather than assumes.
+//
+// Every #755 integration test, in this file and in
+// gh755_push_address_integration_test.go, is selected by exactly one regex:
+//
+//	^(TestSiteFirstEnroll_|TestReEnroll_|TestReEnrollAddressGate_|TestSiteMint_|TestGH755Push_)
+//
+// `go -C apps/api test -list '<that regex>' ./tests/` must list every
+// TestSiteFirstEnroll_*, TestReEnroll_*, TestReEnrollAddressGate_*,
+// TestSiteMint_* and TestGH755Push_* function and nothing else.
 
 import (
 	"context"
