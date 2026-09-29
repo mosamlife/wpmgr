@@ -6,10 +6,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 
-	"golang.org/x/text/unicode/norm"
+	"github.com/mosamlife/wpmgr/apps/api/internal/humantext"
 )
 
 // maxCommandErrorBody bounds how large a non-2xx agent response body postRaw
@@ -195,51 +193,7 @@ var (
 	// agent's message, followed by ": " or the end of the string. The agent
 	// marks a class name it had to shorten with a leading "...".
 	leadingClassPattern = regexp.MustCompile(`^(?:\.\.\.)?\\?[A-Za-z_][A-Za-z0-9_\\]*(?:: |$)`)
-
-	// schemeURLPattern matches anything with a "//" authority, with or
-	// without a scheme in front of it: http, https, ftp, a defanged "hxxps",
-	// or a protocol-relative "//host".
-	schemeURLPattern = regexp.MustCompile(`(?i)(?:\b[a-z][a-z0-9+.-]*:)?//\S*`)
-	// emailPattern matches anything shaped like user@host.
-	emailPattern = regexp.MustCompile(`\S+@\S+`)
-	// uncPathPattern matches a Windows UNC path (\\server\share\...).
-	uncPathPattern = regexp.MustCompile(`\\\\\S+`)
-	// windowsPathPattern matches a drive-letter path with either separator.
-	windowsPathPattern = regexp.MustCompile(`(?i)\b[a-z]:[\\/]\S*`)
-	// posixPathPattern matches an ABSOLUTE POSIX path: a "/" at the start of
-	// the text or after a character that cannot be part of a relative path.
-	// The preceding character is captured and put back, so a relative path
-	// such as "includes/commands/x.php" is left intact.
-	posixPathPattern = regexp.MustCompile(`(^|[^A-Za-z0-9._/\-])/[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]*)*`)
-	// hostPattern matches a dotted name whose last label starts with a
-	// letter (a hostname shape, in any script, so an internationalised name
-	// is covered as well as its punycode form), optionally followed by a
-	// path. Group 1 is the character before the name (or the start of the
-	// text), which is put back: Go's \b is ASCII-only, so the boundary is
-	// spelled out. Any character that cannot be part of a name is a
-	// boundary, "_" included, so "_evil.com" loses its host.
-	// Group 2 is the name and its path.
-	hostPattern = regexp.MustCompile(`(^|[^\p{L}\p{M}\p{N}])((?:[\p{L}\p{M}\p{N}](?:[\p{L}\p{M}\p{N}-]*[\p{L}\p{M}\p{N}])?\.)+\p{L}[\p{L}\p{M}\p{N}-]*[\p{L}\p{M}\p{N}](?:/\S*)?)`)
-	// ipv4Pattern matches a dotted-quad address, with an optional port and
-	// path. Like hostPattern, group 1 is the boundary in front of it (the
-	// start of the text, or a character that is not an ASCII letter or
-	// digit, "_" included) and is put back; group 2 is the address. A
-	// letter directly in front ("v1.2.3.4") keeps the text as it is.
-	ipv4Pattern = regexp.MustCompile(`(^|[^0-9A-Za-z])(\d{1,3}(?:\.\d{1,3}){3}\b(?::\d{1,5})?(?:/\S*)?)`)
-	// encodedRunPattern matches a long token-shaped run; redactEncoded
-	// decides whether it is one.
-	encodedRunPattern = regexp.MustCompile(`[A-Za-z0-9+/=_-]{32,}`)
-	whitespaceRun     = regexp.MustCompile(`\s+`)
 )
-
-// fileExtensions are the final labels that make a dotted name a file name,
-// not a hostname, when nothing else about it looks like a link. None of them
-// is a top-level domain.
-var fileExtensions = map[string]struct{}{
-	"php": {}, "phar": {}, "js": {}, "json": {}, "css": {}, "htm": {}, "html": {},
-	"xml": {}, "sql": {}, "txt": {}, "log": {}, "ini": {}, "lock": {}, "yml": {},
-	"yaml": {}, "gz": {}, "tar": {}, "bak": {}, "tmp": {}, "csv": {},
-}
 
 // sanitizeException returns exc unchanged when it matches the PHP-class-name
 // allow-list, or "" when it does not (a forged or malformed value is dropped
@@ -301,161 +255,18 @@ func stripAgentPrefix(message, rawException string) string {
 	return rest
 }
 
-// redactHosts applies redactHost to every hostPattern match, keeping the
-// boundary character each match captured in front of the name.
-func redactHosts(s string) string {
-	matches := hostPattern.FindAllStringSubmatchIndex(s, -1)
-	if matches == nil {
-		return s
-	}
-	var b strings.Builder
-	b.Grow(len(s))
-	prev := 0
-	for _, m := range matches {
-		nameStart, nameEnd := m[4], m[5]
-		b.WriteString(s[prev:nameStart])
-		b.WriteString(redactHost(s[nameStart:nameEnd]))
-		prev = nameEnd
-	}
-	b.WriteString(s[prev:])
-	return b.String()
-}
-
-// redactHost replaces a hostname-shaped match with "[link]" unless it is a
-// plain file name: no "www." in front, no path after it, and a final label
-// that is a known file extension.
-func redactHost(m string) string {
-	if strings.Contains(m, "/") || strings.HasPrefix(strings.ToLower(m), "www.") {
-		return "[link]"
-	}
-	ext := strings.ToLower(m[strings.LastIndexByte(m, '.')+1:])
-	if _, ok := fileExtensions[ext]; ok {
-		return m
-	}
-	return "[link]"
-}
-
-// redactEncoded replaces a long run with "[redacted]" when it carries a digit
-// or a base64 symbol, the marks of a token, key or hash. A run of letters,
-// "-", "_" and "/" alone is a relative path or a slug, and is kept.
-func redactEncoded(m string) string {
-	if strings.ContainsAny(m, "0123456789+=") {
-		return "[redacted]"
-	}
-	return m
-}
-
 // maxReasonLen caps the sanitised reason, in bytes.
 const maxReasonLen = 200
 
 // sanitizeReason turns the agent's free-form message into a short, safe
-// sentence fragment: the agent's generic wrapper is stripped, the text is
-// forced to valid UTF-8 and NFKC-normalised (so full-width letters, "@",
-// "/" and dots become their ASCII forms, and an ideographic full stop becomes
-// "."), control, format and every kind of Unicode space or line/paragraph
-// separator become a plain space, whitespace is collapsed, links, addresses,
-// hostnames, IP addresses and absolute paths are replaced with neutral
-// placeholders, long encoded runs are redacted, and the result is capped at
-// maxReasonLen bytes on a rune boundary and redacted again, so the cut
-// cannot leave a bare hostname behind.
+// sentence fragment: the agent's generic wrapper is stripped, and the rest
+// goes through humantext.Reason, the shared pipeline for prose a site
+// reported (valid UTF-8, NFKC, control/format/space replacement, whitespace
+// collapse, redaction of links, addresses, hostnames, IP addresses, absolute
+// paths and encoded runs, and a cap of maxReasonLen bytes that redacts again
+// after the cut).
 func sanitizeReason(message, rawException string) string {
-	reason := stripAgentPrefix(message, rawException)
-	reason = strings.ToValidUTF8(reason, "")
-	reason = norm.NFKC.String(reason)
-	reason = strings.Map(asciiFullStop, reason)
-	reason = replaceControlAndFormatChars(reason)
-	reason = collapseWhitespace(reason)
-	reason = redactReason(reason)
-	return capAndRedact(reason, maxReasonLen)
-}
-
-// redactReason replaces every link, address, path, hostname, IP address and
-// encoded run in s with its placeholder. It is idempotent: no placeholder
-// matches any pattern.
-func redactReason(s string) string {
-	// Links first, so a token in a query string is swallowed by "[link]"
-	// rather than fragmented by a later pass, and so the "//host/path" of a
-	// URL is never mistaken for a POSIX path.
-	s = schemeURLPattern.ReplaceAllString(s, "[link]")
-	s = emailPattern.ReplaceAllString(s, "[address]")
-	s = uncPathPattern.ReplaceAllString(s, "[path]")
-	s = windowsPathPattern.ReplaceAllString(s, "[path]")
-	s = posixPathPattern.ReplaceAllString(s, "${1}[path]")
-	s = ipv4Pattern.ReplaceAllString(s, "${1}[link]")
-	s = redactHosts(s)
-	s = encodedRunPattern.ReplaceAllStringFunc(s, redactEncoded)
-	return collapseWhitespace(s)
-}
-
-// capAndRedact caps an already-redacted s at limit bytes. Cutting can turn a
-// kept file name into a bare hostname ("help.com.js" cut to "help.com"), so
-// the capped text is redacted again. A placeholder can be a few bytes longer
-// than what it replaced, so this repeats until the text fits; only the tail
-// the cut created can change on each pass, and a cut placeholder matches
-// nothing.
-func capAndRedact(s string, limit int) string {
-	for i := 0; i < 4; i++ {
-		if len(s) <= limit {
-			return s
-		}
-		s = redactReason(capBytes(s, limit))
-	}
-	if len(s) <= limit {
-		return s
-	}
-	// Did not settle: drop the partial last word rather than show it.
-	s = capBytes(s, limit)
-	if k := strings.LastIndexByte(s, ' '); k > 0 {
-		return s[:k]
-	}
-	return ""
-}
-
-// asciiFullStop maps the ideographic full stop (U+3002, which NFKC also
-// produces from the halfwidth form) to ".", as hostname parsers do. NFKC
-// already maps the full-width and small full stops.
-func asciiFullStop(r rune) rune {
-	if r == '\u3002' {
-		return '.'
-	}
-	return r
-}
-
-// replaceControlAndFormatChars replaces every Unicode control character (Cc),
-// format character (Cf: bidi overrides, zero-width characters) and space
-// character (unicode.IsSpace, which includes U+2028 LINE SEPARATOR, U+2029
-// PARAGRAPH SEPARATOR and U+00A0) with a single ASCII space, so the ASCII-only
-// whitespace collapse that follows sees every one of them.
-func replaceControlAndFormatChars(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	for _, r := range s {
-		if unicode.IsControl(r) || unicode.In(r, unicode.Cf) || unicode.IsSpace(r) {
-			b.WriteByte(' ')
-			continue
-		}
-		b.WriteRune(r)
-	}
-	return b.String()
-}
-
-// collapseWhitespace replaces every run of whitespace with a single space and
-// trims the ends.
-func collapseWhitespace(s string) string {
-	return strings.TrimSpace(whitespaceRun.ReplaceAllString(s, " "))
-}
-
-// capBytes truncates s to at most limit bytes, backing off byte-by-byte until
-// the result is valid UTF-8 so a multi-byte rune is never split.
-func capBytes(s string, limit int) string {
-	if len(s) <= limit {
-		return s
-	}
-	b := []byte(s)[:limit]
-	for len(b) > 0 && !utf8.Valid(b) {
-		b = b[:len(b)-1]
-	}
-	return string(b)
+	return humantext.Reason(stripAgentPrefix(message, rawException), maxReasonLen)
 }
 
 // ---------------------------------------------------------------------------
@@ -532,7 +343,7 @@ func (e *CommandError) OperatorMessage(action string) string {
 		msg += agentErr + " "
 	}
 	msg += fmt.Sprintf("Fix the cause on the site, then run the %s again.", lower)
-	return capBytes(msg, maxOperatorMessage)
+	return humantext.CapBytes(msg, maxOperatorMessage)
 }
 
 // NotificationMessage is the failure reason for an outbound plain-text email.
@@ -553,7 +364,7 @@ func (e *CommandError) NotificationMessage(action string) string {
 		msg += head + ". "
 	}
 	msg += fmt.Sprintf("Fix the cause on the site, then run the %s again. The WPMgr dashboard shows the agent's full message.", lower)
-	return capBytes(msg, maxOperatorMessage)
+	return humantext.CapBytes(msg, maxOperatorMessage)
 }
 
 // DescribeAttemptError classifies a non-final agentcmd error (one the caller
