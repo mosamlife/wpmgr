@@ -177,8 +177,9 @@ describe("useCancelBillingSubscription — wire contract", () => {
     });
 
     expect(postMock).toHaveBeenCalledTimes(1);
-    const call = postMock.mock.calls[0][0] as { url: string; body?: unknown };
-    expect(call.url).toBe("/api/v1/billing/cancel");
-    expect(call.body).toBeUndefined();
+    const call = postMock.mock.calls[0]?.[0] as { url: string; body?: unknown } | undefined;
+    expect(call).toBeDefined();
+    expect(call?.url).toBe("/api/v1/billing/cancel");
+    expect(call?.body).toBeUndefined();
   });
 });
