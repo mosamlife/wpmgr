@@ -422,7 +422,7 @@ func (q *Queries) InsertBillingEvent(ctx context.Context, arg InsertBillingEvent
 }
 
 const listTenantsForReconcile = `-- name: ListTenantsForReconcile :many
-SELECT id, billing_provider, provider_customer_id, provider_subscription_id
+SELECT id, billing_provider, provider_customer_id, provider_subscription_id, plan_status
 FROM tenants
 WHERE billing_provider IS NOT NULL
   AND plan_status <> 'comped'
@@ -436,13 +436,16 @@ type ListTenantsForReconcileRow struct {
 	BillingProvider        *string   `json:"billing_provider"`
 	ProviderCustomerID     *string   `json:"provider_customer_id"`
 	ProviderSubscriptionID *string   `json:"provider_subscription_id"`
+	PlanStatus             string    `json:"plan_status"`
 }
 
 // The daily reconcile sweep's tenant set: every tenant that is not comped and
 // has a provider pinned, and either a stored subscription id, or, for Stripe
 // only, a stored customer id with no subscription id. The second half finds a
 // Stripe subscription whose activation never reached this database; the
-// caller looks it up by the returned customer id and nothing else.
+// caller looks it up by the returned customer id and nothing else. plan_status
+// is returned so the caller can also look up a Stripe tenant whose stored
+// subscription is no longer live.
 //
 // Soft-deleted tenants are included, so a subscription still live on a
 // deleted workspace is found. Not paginated, ordered by id.
@@ -460,6 +463,7 @@ func (q *Queries) ListTenantsForReconcile(ctx context.Context) ([]ListTenantsFor
 			&i.BillingProvider,
 			&i.ProviderCustomerID,
 			&i.ProviderSubscriptionID,
+			&i.PlanStatus,
 		); err != nil {
 			return nil, err
 		}

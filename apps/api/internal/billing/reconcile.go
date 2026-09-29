@@ -4,11 +4,14 @@ package billing
 // every tenant with a stored provider subscription (comped tenants excluded)
 // gets a billing_refresh, and the refresh worker re-derives its state through
 // the same locked apply function webhooks use (apply.go). A Stripe tenant
-// with a stored customer but no stored subscription is looked up at Stripe by
-// that customer, and a pending or live subscription found there is refreshed
-// by id, so an activation that never reached this database is adopted. A
-// missed webhook therefore never leaves a tenant's stored plan wrong for
-// longer than one sweep.
+// with a stored customer and either no stored subscription or a stored one
+// that is no longer live is also looked up at Stripe by that customer, and a
+// pending or live subscription found there is refreshed by id, so an
+// activation that never reached this database is adopted.
+//
+// Other providers are refreshed by the stored subscription id only, so a
+// subscription of theirs that this database never stored is not found by the
+// sweep.
 
 import (
 	"context"
@@ -36,8 +39,9 @@ type reconcileRefresh struct {
 // Reconcile enqueues one billing_refresh per tenant in the reconcile set
 // (ListTenantsForReconcile). It changes no billing state. The only provider
 // calls are the customer-filtered subscription lists for Stripe tenants with
-// a customer and no subscription, made outside any transaction; a failed
-// lookup is logged and skips that tenant for this sweep. Returns cleanly
+// a customer and no live stored subscription, made outside any transaction.
+// A failed lookup is logged; the tenant then gets only the refresh of its
+// stored subscription, when it has one. Returns cleanly
 // (zero work) when hosted billing is disabled or no provider is registered.
 func (s *Service) Reconcile(ctx context.Context) (ReconcileResult, error) {
 	var out ReconcileResult
@@ -59,16 +63,21 @@ func (s *Service) Reconcile(ctx context.Context) (ReconcileResult, error) {
 		if row.BillingProvider == nil {
 			continue
 		}
-		if row.ProviderSubscriptionID != nil && *row.ProviderSubscriptionID != "" {
+		stored := ""
+		if row.ProviderSubscriptionID != nil {
+			stored = *row.ProviderSubscriptionID
+		}
+		lookup := *row.BillingProvider == providerStripe &&
+			row.ProviderCustomerID != nil && *row.ProviderCustomerID != "" &&
+			(stored == "" || !isLiveStatus(Status(row.PlanStatus)))
+		if lookup {
+			if subID, ok := s.reconcileLookupByCustomer(ctx, row.ID, *row.ProviderCustomerID); ok && subID != stored {
+				refreshes = append(refreshes, reconcileRefresh{tenantID: row.ID, subscriptionID: subID})
+				continue
+			}
+		}
+		if stored != "" {
 			refreshes = append(refreshes, reconcileRefresh{tenantID: row.ID})
-			continue
-		}
-		if *row.BillingProvider != providerStripe || row.ProviderCustomerID == nil || *row.ProviderCustomerID == "" {
-			continue
-		}
-		subID, ok := s.reconcileLookupByCustomer(ctx, row.ID, *row.ProviderCustomerID)
-		if ok {
-			refreshes = append(refreshes, reconcileRefresh{tenantID: row.ID, subscriptionID: subID})
 		}
 	}
 
