@@ -17,9 +17,12 @@ the infra side alone.
 1. **Order matters (risk 22).** An image that boots without
    `WPMGR_BILLING_STRIPE_PORTAL_CONFIGURATION` set fails config validation by
    design — that is the intended, safe failure. A checkout against a Stripe
-   account whose Tax setting is not yet active fails the same way a checkout
-   against any misconfigured account does. Both are avoided by following the
-   deploy order in this doc, not worked around after the fact.
+   account whose Tax setting is not yet active does **not** fail: a sandbox
+   probe confirms the session is still created, with
+   `automatic_tax.status=requires_location_inputs`, and with zero tax
+   registrations on the account nothing is charged on it. Activate Stripe Tax
+   for the head office (§6) before the account needs to start collecting tax
+   — that is a launch-readiness step, not something checkout itself enforces.
 2. **The six `WPMGR_BILLING_STRIPE_*` variables are all-or-nothing.** Today's
    code (`validateStripeConfig`) enforces five of them together:
    `WPMGR_BILLING_STRIPE_SECRET_KEY`, `WPMGR_BILLING_STRIPE_WEBHOOK_SECRET`,
@@ -55,6 +58,36 @@ Stripe shows the full value exactly once.
 
 ## 2. Portal configuration
 
+### 2.1 Products and prices
+
+Create one product per plan — Starter, Agency, Scale — each with exactly one
+monthly price. Run once per mode (live, then test mode for §7):
+
+```
+stripe products create --name="WPMgr Starter" --metadata.app=wpmgr
+stripe products create --name="WPMgr Agency" --metadata.app=wpmgr
+stripe products create --name="WPMgr Scale" --metadata.app=wpmgr
+```
+
+Record each `prod_...` id, then create its one monthly price:
+
+```
+stripe prices create --product=<prod_starter> --currency=usd \
+  --unit-amount=<starter_cents> --recurring.interval=month
+stripe prices create --product=<prod_agency> --currency=usd \
+  --unit-amount=<agency_cents> --recurring.interval=month
+stripe prices create --product=<prod_scale> --currency=usd \
+  --unit-amount=<scale_cents> --recurring.interval=month
+```
+
+The three returned `price_...` ids are `WPMGR_BILLING_STRIPE_PRICE_STARTER`,
+`WPMGR_BILLING_STRIPE_PRICE_AGENCY` and `WPMGR_BILLING_STRIPE_PRICE_SCALE`
+(§5). Each product carries exactly one price — do not add a second price to
+an existing product; create a new product instead, so an old price never
+lingers as a second, silently-still-purchasable option.
+
+### 2.2 Portal configuration
+
 Create the WPMgr billing-portal configuration through the API (not the
 Dashboard default), so the portal can never silently fall back to the
 account-wide default:
@@ -62,13 +95,44 @@ account-wide default:
 ```
 stripe billing_portal configurations create \
   --business-profile.headline="Manage your WPMgr subscription" \
+  --features.subscription_update.enabled=true \
+  --features.subscription_update.default_allowed_updates[]=price \
+  --features.subscription_update.proration_behavior=always_invoice \
+  --features.subscription_update.products[]='{"product":"<prod_starter>","prices":["<price_starter>"],"adjustable_quantity":{"enabled":false}}' \
+  --features.subscription_update.products[]='{"product":"<prod_agency>","prices":["<price_agency>"],"adjustable_quantity":{"enabled":false}}' \
+  --features.subscription_update.products[]='{"product":"<prod_scale>","prices":["<price_scale>"],"adjustable_quantity":{"enabled":false}}' \
   --features.subscription_cancel.enabled=true \
+  --features.subscription_cancel.mode=at_period_end \
+  --features.invoice_history.enabled=true \
   --features.payment_method_update.enabled=true \
-  --features.invoice_history.enabled=true
+  --metadata.app=wpmgr
 ```
+
+- `subscription_update` lists all three products so a customer can move
+  between Starter, Agency and Scale from the portal; `default_allowed_updates`
+  is restricted to `price` (no quantity-only change is offered), and
+  `proration_behavior=always_invoice` settles the difference immediately
+  rather than carrying it to the next invoice.
+- `adjustable_quantity` is off for every product — each plan is a flat
+  monthly price, not a per-seat quantity.
+- `subscription_cancel` runs in `at_period_end` mode: a cancellation takes
+  effect at the end of the current billing period, not immediately.
+- `invoice_history` and `payment_method_update` are both on.
+- `metadata.app=wpmgr` tags the configuration so it is identifiable in the
+  Dashboard alongside any other configuration on the account.
 
 Record the returned `bpc_...` id — it is `WPMGR_BILLING_STRIPE_PORTAL_CONFIGURATION`
 (§5), a plain env var, not a secret.
+
+**On a shared Stripe account, the first `billing_portal` configuration ever
+created becomes the account default**, whether or not it is the one WPMgr
+intends to use. Only the Dashboard (Settings → Billing → Customer portal) can
+change which configuration holds default status — the API has no call for it.
+Passing the id explicitly through `WPMGR_BILLING_STRIPE_PORTAL_CONFIGURATION`
+means the running service always uses the WPMgr configuration by id
+regardless of which one the account treats as default; confirm in the
+Dashboard which configuration is marked default so a portal session opened
+through any other path on the same account does not surprise you.
 
 ## 3. Secret Manager
 
@@ -189,7 +253,9 @@ and it preserves the service's existing scaling and networking config.
 ## 6. Deploy order (risk 22)
 
 Do these in order. Reversing steps 1 and 2, or running step 3 before either,
-produces the two failures §"Read this first" already named.
+produces the boot-validation failure §"Read this first" already named, or
+lets the first live checkout run against an account where Tax is still
+inactive.
 
 1. **In Stripe:** Tax active for the head office (confirm below), the
    Product and Prices created, the portal configuration (§2), and the
@@ -265,3 +331,72 @@ the old one lapses on its own.
 
 A `stripe-go` major version bump re-pins the endpoint's Stripe API version
 (§4) in the same release that bumps the dependency.
+
+## 10. Sandbox end-to-end
+
+A local, disposable loop for exercising checkout and the webhook intake
+against Stripe test mode, without touching any shared environment.
+
+### 10.1 Postgres
+
+Run Postgres for the duration of this session only, and remove it when done
+— nothing here should persist between runs:
+
+```
+docker run -d --name wpmgr-billing-e2e -p 5433:5432 \
+  -e POSTGRES_PASSWORD=wpmgr -e POSTGRES_DB=wpmgr postgres:16
+```
+
+Point the API at it, run migrations, exercise the flow, then:
+
+```
+docker rm -f wpmgr-billing-e2e
+```
+
+### 10.2 Sandbox key
+
+The sandbox secret key lives only in a local, mode-600 file the owner
+creates by hand — for example `~/.wpmgr/secrets/stripe-sandbox.env` — and it
+is never pasted into a terminal command, a chat message, a log, or a
+committed file:
+
+```
+chmod 600 ~/.wpmgr/secrets/stripe-sandbox.env
+set -a && source ~/.wpmgr/secrets/stripe-sandbox.env && set +a
+```
+
+### 10.3 Webhook forwarding
+
+Forward Stripe test-mode events to the API running locally:
+
+```
+stripe listen --forward-to http://localhost:<api port>/webhooks/billing/stripe
+```
+
+Capture the signing secret it prints into its own mode-600 file rather than
+exporting it inline in a shell history entry:
+
+```
+stripe listen --print-secret > ~/.wpmgr/secrets/stripe-sandbox-whsec.env
+chmod 600 ~/.wpmgr/secrets/stripe-sandbox-whsec.env
+```
+
+### 10.4 Test cards
+
+Run checkout with each of:
+
+- `4242 4242 4242 4242` — any future expiry, any CVC, any postal code;
+  succeeds with no extra authentication step.
+- `4000 0035 6000 0123` — an Indian-issued test card; it requires an
+  e-mandate, so the checkout flow must carry the customer through that extra
+  authentication step rather than completing immediately.
+
+### 10.5 A foreign event
+
+Trigger an event type outside the endpoint's subscribed list (§4), to confirm
+the intake handler behaves correctly on an event it does not expect rather
+than only ever having been exercised against its own subscribed set:
+
+```
+stripe trigger charge.refunded
+```
