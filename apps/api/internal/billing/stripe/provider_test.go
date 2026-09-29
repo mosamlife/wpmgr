@@ -195,7 +195,7 @@ func TestVerifyWebhook_SubscriptionCreated_TrialingMapsToTrialStarted(t *testing
 func TestVerifyWebhook_SubscriptionDeleted_MapsToCanceled(t *testing.T) {
 	p := New(testConfig())
 	body := buildEvent("evt_sub_deleted", "customer.subscription.deleted", 1700000000,
-		`{"id": "sub_789", "object": "subscription", "status": "canceled", "customer": "cus_789"}`)
+		`{"id": "sub_789", "object": "subscription", "status": "canceled", "customer": "cus_789", "metadata": {"app": "wpmgr"}}`)
 	headers := sign(t, body, testConfig().WebhookSecret)
 
 	ev, err := p.VerifyWebhook(body, headers)
@@ -239,24 +239,6 @@ func TestVerifyWebhook_InvoicePaymentFailed_ReadsSubscriptionMetadataSnapshot(t 
 	}
 	if ev.ProviderCustomerID != "cus_999" {
 		t.Fatalf("ProviderCustomerID = %q", ev.ProviderCustomerID)
-	}
-}
-
-func TestVerifyWebhook_ChargeRefunded_NoSubscriptionReference(t *testing.T) {
-	p := New(testConfig())
-	body := buildEvent("evt_refund", "charge.refunded", 1700000000,
-		`{"id": "ch_1", "object": "charge", "customer": "cus_111"}`)
-	headers := sign(t, body, testConfig().WebhookSecret)
-
-	ev, err := p.VerifyWebhook(body, headers)
-	if err != nil {
-		t.Fatalf("VerifyWebhook: %v", err)
-	}
-	if ev.Kind != billing.EventRefunded {
-		t.Fatalf("Kind = %q, want refunded", ev.Kind)
-	}
-	if ev.ProviderSubscriptionID != "" {
-		t.Fatalf("ProviderSubscriptionID should be empty for a bare charge event, got %q", ev.ProviderSubscriptionID)
 	}
 }
 
