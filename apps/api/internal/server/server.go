@@ -18,6 +18,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentrelease"
 	"github.com/mosamlife/wpmgr/apps/api/internal/api/gen"
 	"github.com/mosamlife/wpmgr/apps/api/internal/apikey"
+	"github.com/mosamlife/wpmgr/apps/api/internal/assistantrequest"
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/auth"
 	"github.com/mosamlife/wpmgr/apps/api/internal/authz"
@@ -266,6 +267,11 @@ type Deps struct {
 	// unmounted route answers 404, which hides a wiring failure behind
 	// something that reads as a deliberate refusal.
 	MCPOAuthH *mcp.Handler
+	// AssistantRequestH serves the AI request queue and the site-nested
+	// approve and decline routes (GET /ai/requests,
+	// GET /sites/{siteId}/ai/requests, POST .../ai/requests/{requestId}/approve
+	// and /decline). Nil leaves them unmounted.
+	AssistantRequestH *assistantrequest.Handler
 	// MCPDiscoveryH serves the two unauthenticated OAuth discovery documents:
 	// GET /.well-known/oauth-authorization-server (RFC 8414) and GET
 	// /.well-known/oauth-protected-resource (RFC 9728), the second also at its
@@ -611,6 +617,11 @@ func New(deps Deps) *Server {
 		// On v1, so RequireAuth and RequireTenant both apply before the
 		// per-route RequirePermission inside RegisterConnections.
 		deps.MCPOAuthH.RegisterConnections(v1)
+	}
+	// The AI request queue, approve and decline. On v1, so RequireAuth and
+	// RequireTenant apply before the per-route gates inside Register.
+	if deps.AssistantRequestH != nil {
+		deps.AssistantRequestH.Register(v1)
 	}
 	deps.TenantH.Register(v1)
 	deps.SiteH.Register(v1)
