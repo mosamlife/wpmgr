@@ -69,3 +69,45 @@ describe("SnapshotProgressCard — GH #279 stall indicator", () => {
     expect(screen.queryByText(HINT_TEXT)).not.toBeInTheDocument();
   });
 });
+
+// GH #791 — a snapshot still `running` and being retried (a fresh
+// `attempt_error` on file) shows the "retrying" copy plus the last error,
+// distinct from the plain GH #279 stall hint. `attempt_error` is not yet on
+// the generated `BackupSnapshot` type (see `snapshotAttemptError`'s doc in
+// format-progress.ts), so it is attached here the same way a real response
+// carries it ahead of the generated client catching up.
+const RETRYING_TEXT = /hasn't started on the site yet\. retrying automatically/i;
+
+function buildRetryingSnapshot(attemptError: string): BackupSnapshot {
+  return {
+    ...buildSnapshot({ status: "running" }),
+    attempt_error: attemptError,
+  } as BackupSnapshot;
+}
+
+describe("SnapshotProgressCard — GH #791 retrying indicator", () => {
+  it("shows the retrying copy and the last error when running with an attempt_error", () => {
+    const snapshot = buildRetryingSnapshot("Could not connect to the site.");
+    renderWithProviders(<SnapshotProgressCard snapshot={snapshot} />);
+    expect(screen.getByText(RETRYING_TEXT)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Last error: Could not connect to the site\./),
+    ).toBeInTheDocument();
+  });
+
+  it("does not show the retrying copy for a healthy running snapshot (no attempt_error)", () => {
+    const snapshot = buildSnapshot({ status: "running" });
+    renderWithProviders(<SnapshotProgressCard snapshot={snapshot} />);
+    expect(screen.queryByText(RETRYING_TEXT)).not.toBeInTheDocument();
+  });
+
+  it("prefers the retrying hint over the plain stalled hint when both apply", () => {
+    const snapshot = {
+      ...buildRetryingSnapshot("The site did not answer in time."),
+      stalled_at: "2026-07-23T00:05:00Z",
+    };
+    renderWithProviders(<SnapshotProgressCard snapshot={snapshot} />);
+    expect(screen.getByText(RETRYING_TEXT)).toBeInTheDocument();
+    expect(screen.queryByText(HINT_TEXT)).not.toBeInTheDocument();
+  });
+});

@@ -1,6 +1,12 @@
 import { describe, it, expect } from "vitest";
+import type { BackupSnapshot } from "@wpmgr/api";
 
-import { isSnapshotStalled } from "./format-progress";
+import {
+  formatProgress,
+  isSnapshotRetrying,
+  isSnapshotStalled,
+  snapshotAttemptError,
+} from "./format-progress";
 
 // GH #279 — the "taking longer than expected" indicator must show ONLY
 // while the run is genuinely still active: `status="running"` AND a
@@ -38,5 +44,121 @@ describe("isSnapshotStalled", () => {
     expect(
       isSnapshotStalled({ status: "pending", stalled_at: "2026-07-23T00:00:00Z" }),
     ).toBe(false);
+  });
+});
+
+// GH #791 — the control plane records `attempt_error` separately from
+// `error`: `error` keeps meaning the final failure reason only, so a reader
+// (an API consumer, the MCP read tools, or this UI) never mistakes a running
+// row that is merely being retried for a failed one. isSnapshotRetrying must
+// therefore gate on BOTH status="running" AND a non-empty attempt_error.
+
+function buildSnapshot(overrides: Partial<BackupSnapshot> = {}): BackupSnapshot {
+  return {
+    id: "snap-791",
+    tenant_id: "tenant-1",
+    site_id: "site-42",
+    kind: "full",
+    status: "running",
+    created_at: "2026-09-29T00:00:00Z",
+    updated_at: "2026-09-29T00:00:00Z",
+    progress: {},
+    ...overrides,
+  };
+}
+
+/**
+ * `attempt_error` is not yet on the generated `BackupSnapshot` type (see
+ * `snapshotAttemptError`'s doc in format-progress.ts) — this builds a
+ * snapshot carrying it on the wire, exactly like a real response ahead of
+ * the generated client catching up.
+ */
+function buildSnapshotWithAttemptError(
+  attemptError: string | undefined,
+  overrides: Partial<BackupSnapshot> = {},
+): BackupSnapshot {
+  return {
+    ...buildSnapshot(overrides),
+    attempt_error: attemptError,
+  } as BackupSnapshot;
+}
+
+describe("isSnapshotRetrying", () => {
+  it("is true when running with a non-empty attempt_error", () => {
+    expect(
+      isSnapshotRetrying({ status: "running", attempt_error: "The site did not answer in time." }),
+    ).toBe(true);
+  });
+
+  it("is false when running with no attempt_error", () => {
+    expect(isSnapshotRetrying({ status: "running", attempt_error: undefined })).toBe(false);
+  });
+
+  it("is false when running with an empty-string attempt_error (the DB default)", () => {
+    expect(isSnapshotRetrying({ status: "running", attempt_error: "" })).toBe(false);
+  });
+
+  it("is false when completed, even with an attempt_error value present", () => {
+    expect(
+      isSnapshotRetrying({ status: "completed", attempt_error: "stale value" }),
+    ).toBe(false);
+  });
+
+  it("is false when failed, even with an attempt_error value present", () => {
+    expect(
+      isSnapshotRetrying({ status: "failed", attempt_error: "stale value" }),
+    ).toBe(false);
+  });
+
+  it("is false when pending", () => {
+    expect(
+      isSnapshotRetrying({ status: "pending", attempt_error: "stale value" }),
+    ).toBe(false);
+  });
+});
+
+describe("snapshotAttemptError", () => {
+  it("reads a non-empty attempt_error off the wire", () => {
+    const snapshot = buildSnapshotWithAttemptError("Could not connect to the site.");
+    expect(snapshotAttemptError(snapshot)).toBe("Could not connect to the site.");
+  });
+
+  it("returns null when attempt_error is absent", () => {
+    expect(snapshotAttemptError(buildSnapshot())).toBeNull();
+  });
+
+  it("returns null when attempt_error is the empty-string DB default", () => {
+    expect(snapshotAttemptError(buildSnapshotWithAttemptError(""))).toBeNull();
+  });
+});
+
+// GH #791 — the "second bug": FailSnapshot publishes the failure reason on
+// the wire as `phase_detail.error` (service.go), but this helper has always
+// read `phase_detail.message`, which that path never sets — so a live
+// failure reason never actually reached the UI. `.error` must be read as a
+// fallback.
+describe("formatProgress — errorMessage fallback (GH #791)", () => {
+  it("reads phase_detail.message when present (existing behaviour)", () => {
+    const snapshot = buildSnapshot({
+      status: "failed",
+      progress: { phase: "failed", phase_detail: { message: "from message" } },
+    });
+    expect(formatProgress(snapshot).errorMessage).toBe("from message");
+  });
+
+  it("falls back to phase_detail.error when message is absent", () => {
+    const snapshot = buildSnapshot({
+      status: "failed",
+      progress: { phase: "failed", phase_detail: { error: "from error" } },
+    });
+    expect(formatProgress(snapshot).errorMessage).toBe("from error");
+  });
+
+  it("is null when neither phase_detail.message nor .error is present", () => {
+    const snapshot = buildSnapshot({
+      status: "failed",
+      progress: { phase: "failed", phase_detail: {} },
+    });
+    expect(formatProgress(snapshot).errorMessage).toBeNull();
   });
 });
