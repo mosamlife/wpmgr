@@ -98,6 +98,40 @@ func (r *fakeWorkerRepo) ExistingChunkHashes(_ context.Context, tenantID uuid.UU
 	}
 	return out, nil
 }
+// SetSnapshotAttemptError mirrors SetBackupSnapshotAttemptError's
+// status='running' guard exactly (GH #791): a fake that always records would
+// hide the very defect the guard exists to catch.
+func (r *fakeWorkerRepo) SetSnapshotAttemptError(_ context.Context, _, snapshotID uuid.UUID, msg string) (int64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s, ok := r.snapshots[snapshotID]
+	if !ok || s.Status != StatusRunning {
+		return 0, nil
+	}
+	s.AttemptError = msg
+	r.snapshots[snapshotID] = s
+	return 1, nil
+}
+
+// ClearSnapshotStalled mirrors ClearBackupSnapshotStalled (GH #791: it also
+// clears attempt_error, not just stalled_at). Guarded on status='running',
+// like the real query.
+func (r *fakeWorkerRepo) ClearSnapshotStalled(_ context.Context, _, snapshotID uuid.UUID) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s, ok := r.snapshots[snapshotID]
+	if !ok || s.Status != StatusRunning {
+		return false, nil
+	}
+	if s.StalledAt == nil && s.AttemptError == "" {
+		return false, nil
+	}
+	s.StalledAt = nil
+	s.AttemptError = ""
+	r.snapshots[snapshotID] = s
+	return true, nil
+}
+
 func (r *fakeWorkerRepo) SetSnapshotLocked(_ context.Context, _, id uuid.UUID, locked bool) (Snapshot, error) {
 	s := r.fakeRepo.snapshots[id]
 	s.Locked = locked

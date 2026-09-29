@@ -116,6 +116,16 @@ func (w *RefreshInventoryWorker) Work(ctx context.Context, job *river.Job[Refres
 			slog.String("redirect_to", re.To))
 		return river.JobCancel(err)
 	}
+	// GH #791: a genuine agent-side command failure is also terminal — the
+	// agent itself threw and reported it, so retrying cannot help. This job
+	// has no user-facing row, so there is nothing further to record.
+	if ce, ok := agentcmd.AsCommandError(err); ok && ce.AgentFailed() {
+		w.logger.Warn("refresh inventory: agent reported a command failure; not retrying",
+			slog.String("site_id", a.SiteID.String()),
+			slog.String("source", a.Source),
+			slog.String("error", ce.OperatorMessage("Refresh")))
+		return river.JobCancel(err)
+	}
 	if isOldAgentRouteMissing(err) {
 		w.logger.Info("refresh inventory: agent has no refresh route (old agent); skipping",
 			slog.String("site_id", a.SiteID.String()),

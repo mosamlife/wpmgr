@@ -2127,16 +2127,23 @@ func (s *Service) FailStalledSnapshot(ctx context.Context, tenantID, snapshotID 
 	if err != nil {
 		return true, err
 	}
+	// GH #791: snap.Error, not the bare msg, is what actually got stored —
+	// FailStalledBackupSnapshot folds any outstanding attempt_error onto msg
+	// ("<msg>. Last error: <attempt_error>") so the reason the site gave on
+	// its last retry survives the hard fail. Every reader (SSE, the schedule
+	// run, the email below) must show that combined reason, not just the
+	// generic stall message.
+	reason := snap.Error
 	s.publish(BackupEvent{
 		SnapshotID:  snapshotID,
 		Phase:       "failed",
-		PhaseDetail: map[string]any{"error": msg},
+		PhaseDetail: map[string]any{"error": reason},
 		Status:      snap.Status,
 	})
 	// Reconcile the linked schedule run to 'failed' (best-effort) — mirrors
 	// FailSnapshot's reconciliation exactly, gated on the same real transition.
 	if s.scheduleRuns != nil {
-		errMsg := msg
+		errMsg := reason
 		_, _ = s.scheduleRuns.SetScheduleRunStatusBySnapshot(ctx, tenantID, snapshotID, SetScheduleRunStatusInput{
 			TenantID:    tenantID,
 			Status:      ScheduleRunStatusFailed,
@@ -2981,17 +2988,65 @@ func (s *Service) MarkSnapshotStalled(ctx context.Context, tenantID, snapshotID 
 }
 
 // ClearSnapshotStalledIfRunning is the GH #279 proof-of-life clear used by
-// PresignChunks, SubmitManifest, and RecordProgress: any agent callback that
-// proves the run is still alive clears a soft stall so the watchdog does not
-// later hard-fail a run the caller was merely slow on. The status='running'
-// predicate is the entire anti-resurrection guarantee: a snapshot the
-// watchdog already hard-failed, or the operator cancelled, is never revived
-// (both transition status away from 'running' first, so the clear matches
-// zero rows there). Idempotent: clearing an already-clear or non-running row
-// is a no-op (cleared=false, no error). The caller publishes the 'resumed'
-// SSE hint when cleared is true.
+// PresignChunks, SubmitManifest, RecordProgress, and (GH #791) the backup
+// worker on a dispatch that succeeds or hits codeRunnerInFlight: any agent
+// callback that proves the run is still alive clears a soft stall so the
+// watchdog does not later hard-fail a run the caller was merely slow on. The
+// status='running' predicate is the entire anti-resurrection guarantee: a
+// snapshot the watchdog already hard-failed, or the operator cancelled, is
+// never revived (both transition status away from 'running' first, so the
+// clear matches zero rows there). Idempotent: clearing an already-clear or
+// non-running row is a no-op (cleared=false, no error). The caller publishes
+// the 'resumed' SSE hint when cleared is true.
+//
+// GH #791: the underlying ClearBackupSnapshotStalled query clears
+// attempt_error on the snapshot alongside stalled_at, and this method also
+// clears the linked schedule run's attempt_error (best-effort: a manual
+// backup has no linked run, and a failure here must not turn proof of life
+// into a reported error — the snapshot-side clear above is authoritative).
 func (s *Service) ClearSnapshotStalledIfRunning(ctx context.Context, tenantID, snapshotID uuid.UUID) (bool, error) {
-	return s.repo.ClearSnapshotStalled(ctx, tenantID, snapshotID)
+	cleared, err := s.repo.ClearSnapshotStalled(ctx, tenantID, snapshotID)
+	if err != nil {
+		return false, err
+	}
+	if s.scheduleRuns != nil {
+		_, _ = s.scheduleRuns.ClearScheduleRunAttemptErrorBySnapshot(ctx, tenantID, snapshotID)
+	}
+	return cleared, nil
+}
+
+// RecordAttemptError is the GH #791 best-effort write for a still-retrying
+// backup dispatch: it records why the most recent attempt to reach the agent
+// failed, on the snapshot and (when one is linked) the schedule run, then
+// publishes an SSE 'retrying' hint so the UI can show "retrying automatically,
+// last error: …" instead of an opaque hang. Both writes are guarded on
+// status='running' by the underlying queries, so a row that has already
+// terminated (completed, been cancelled, or been failed by a concurrent
+// caller) is left untouched and nothing is published for it.
+//
+// This is deliberately best-effort from the CALLER's perspective: the backup
+// worker has already decided to let River retry regardless of whether this
+// write succeeds, so an error here is returned for the caller to log, never
+// to block or reverse that retry decision.
+func (s *Service) RecordAttemptError(ctx context.Context, tenantID, snapshotID uuid.UUID, msg string) error {
+	n, err := s.repo.SetSnapshotAttemptError(ctx, tenantID, snapshotID, msg)
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		// Not running (already terminal) or gone — nothing to show.
+		return nil
+	}
+	if s.scheduleRuns != nil {
+		_, _ = s.scheduleRuns.SetScheduleRunAttemptErrorBySnapshot(ctx, tenantID, snapshotID, msg)
+	}
+	s.publish(BackupEvent{
+		SnapshotID:  snapshotID,
+		Phase:       "retrying",
+		PhaseDetail: map[string]any{"error": msg},
+		Status:      StatusRunning,
+	})
+	return nil
 }
 
 // SiteForSnapshot returns the snapshot's site info (used by the backup worker to

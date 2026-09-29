@@ -444,7 +444,24 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupArgs]) err
 		if re, ok := agentcmd.AsRedirect(err); ok {
 			return w.fail(ctx, snap, re.OperatorMessage("Backup"))
 		}
-		// Transport/SSRF/agent-reject: retryable infra error.
+		// GH #791: a genuine agent-side command failure (the agent itself
+		// threw and reported it, post-auth) is also terminal — retrying
+		// cannot help, and hiding the reason behind 25 retries and a 30-minute
+		// generic stall is the bug this classifier exists to fix.
+		if ce, ok := agentcmd.AsCommandError(err); ok && ce.AgentFailed() {
+			return w.fail(ctx, snap, ce.OperatorMessage("Backup"))
+		}
+		// Anything else (transport failure, a non-agent 5xx/52x, a WordPress
+		// fatal, an ambiguous 500) stays retryable — River requeues below.
+		// Best-effort record the last attempt's reason so an operator
+		// watching a still-running backup sees why it hasn't started yet; a
+		// failure to record must never block the retry itself.
+		if werr := w.svc.RecordAttemptError(ctx, snap.TenantID, snap.ID, agentcmd.DescribeAttemptError(err)); werr != nil {
+			w.logger.Warn("record backup attempt error failed",
+				slog.String("snapshot_id", snap.ID.String()),
+				slog.String("tenant_id", snap.TenantID.String()),
+				slog.Any("error", werr))
+		}
 		return fmt.Errorf("backup command to agent failed: %w", err)
 	}
 	if !resp.OK {
@@ -462,6 +479,11 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupArgs]) err
 				slog.String("snapshot_id", snap.ID.String()),
 				slog.String("tenant_id", snap.TenantID.String()),
 				slog.String("detail", resp.Detail))
+			// GH #791: this is proof the run is alive, exactly like a
+			// presign/manifest/progress callback — clear any attempt error a
+			// PRIOR retry recorded and publish 'resumed' so the UI drops the
+			// "retrying" hint.
+			w.clearAttemptErrorAndPublishResumed(ctx, snap)
 			return nil
 		}
 		if resp.Code == codeKeystoreUnreadable {
@@ -477,7 +499,38 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupArgs]) err
 	}
 	// The agent accepted the job; completion happens when it submits the manifest
 	// (SubmitManifest completes the snapshot). Audit completion is recorded there.
+	// GH #791: a successful dispatch is proof of life — clear any attempt
+	// error a prior retry recorded and publish 'resumed'.
+	w.clearAttemptErrorAndPublishResumed(ctx, snap)
 	return nil
+}
+
+// clearAttemptErrorAndPublishResumed is the GH #791 proof-of-life clear the
+// backup worker triggers on a dispatch that reaches the agent successfully
+// (resp.OK) or finds one already in flight (codeRunnerInFlight): both mean
+// the site is answering, so any attempt error a prior retry recorded is
+// stale. Mirrors the pattern PresignChunks/SubmitManifest/RecordProgress
+// already use — publish 'resumed' only when something was actually cleared.
+// Best-effort: a failure here must never turn a successful dispatch into a
+// worker error.
+func (w *BackupWorker) clearAttemptErrorAndPublishResumed(ctx context.Context, snap Snapshot) {
+	cleared, err := w.svc.ClearSnapshotStalledIfRunning(ctx, snap.TenantID, snap.ID)
+	if err != nil {
+		w.logger.Warn("clear backup attempt error failed",
+			slog.String("snapshot_id", snap.ID.String()),
+			slog.String("tenant_id", snap.TenantID.String()),
+			slog.Any("error", err))
+		return
+	}
+	if !cleared {
+		return
+	}
+	w.svc.publish(BackupEvent{
+		SnapshotID:  snap.ID,
+		Phase:       "resumed",
+		PhaseDetail: map[string]any{},
+		Status:      StatusRunning,
+	})
 }
 
 func (w *BackupWorker) fail(ctx context.Context, snap Snapshot, msg string) error {
@@ -763,13 +816,32 @@ func (w *RestoreWorker) Work(ctx context.Context, job *river.Job[RestoreArgs]) e
 		})
 		return nil
 	}
+	if ce, ok := agentcmd.AsCommandError(err); ok && ce.AgentFailed() {
+		// GH #791: a genuine agent-side command failure is terminal, not
+		// retried — the agent itself threw and reported it, so a retry
+		// cannot help, and it stops River re-dispatching a restore that has
+		// already begun mutating the site. Recorded once, exactly like the
+		// redirect branch above.
+		msg := ce.OperatorMessage("Restore")
+		w.recordAudit(ctx, snap, ActionRestoreFailed, map[string]any{
+			"restore_id": restoreID,
+			"error":      msg,
+		})
+		_, _ = w.svc.RecordProgress(ctx, snap.TenantID, snap.ID, "failed", map[string]any{
+			"restore_id": restoreID,
+			"error":      msg,
+		})
+		return nil
+	}
 	if err != nil {
 		// Transport / SSRF / agent-reject: retryable infra error. Surface the
 		// in-flight failure on the SSE channel so the UI does not hang waiting
 		// for the watchdog. River will retry with a fresh JWT.
+		// GH #791: DescribeAttemptError, never the raw error (which can carry
+		// a "body=…" snippet), is what an operator watching the retry sees.
 		_, _ = w.svc.RecordProgress(ctx, snap.TenantID, snap.ID, "failed", map[string]any{
 			"restore_id": restoreID,
-			"error":      err.Error(),
+			"error":      agentcmd.DescribeAttemptError(err),
 		})
 		return fmt.Errorf("restore command to agent failed: %w", err)
 	}

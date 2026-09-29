@@ -121,6 +121,9 @@ func (r *wiringRepo) MarkSnapshotStalled(_ context.Context, _, _ uuid.UUID) (boo
 func (r *wiringRepo) ClearSnapshotStalled(_ context.Context, _, _ uuid.UUID) (bool, error) {
 	panic("unused")
 }
+func (r *wiringRepo) SetSnapshotAttemptError(_ context.Context, _, _ uuid.UUID, _ string) (int64, error) {
+	panic("unused")
+}
 func (r *wiringRepo) RecordManifest(_ context.Context, _ RecordManifestInput) (int64, int64, error) {
 	panic("unused")
 }
