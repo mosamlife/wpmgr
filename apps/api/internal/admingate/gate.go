@@ -27,12 +27,22 @@
 // no button behind it). So the decision is written once, here, and both callers
 // call it. Neither copies the SQL and neither re-derives the rule.
 //
+// Two decisions, not one. The agent-mirror pair asks ResolveInstanceAuthority
+// (superadmin, or owner of the only live organisation). The instance-email pair
+// asks InstanceEmailAuthority, which is that decision plus one more arm: on a
+// self-hosted install, the account recorded as having set up the install
+// (ArmInstallOwner). The extra arm is reachable only through
+// InstanceEmailStore, a wider interface the agent-mirror callers never hold,
+// so it cannot leak into their answer.
+//
 // Nothing in this package is cached. See Store's doc for why that matters.
 package admingate
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -156,7 +166,28 @@ const (
 	// ArmSoleLiveTenantOwner means the caller owns the only live organisation
 	// on this install.
 	ArmSoleLiveTenantOwner
+	// ArmInstallOwner means the caller is the account recorded as having set
+	// up the install (in install_owner), on an install that is not hosted.
+	// Only InstanceEmailAuthority returns it.
+	ArmInstallOwner
 )
+
+// String names the arm for logs and audit metadata. The names are stable:
+// they are written into audit rows as admitted_as.
+func (a Arm) String() string {
+	switch a {
+	case ArmNone:
+		return "none"
+	case ArmSuperadmin:
+		return "superadmin"
+	case ArmSoleLiveTenantOwner:
+		return "sole_live_tenant_owner"
+	case ArmInstallOwner:
+		return "install_owner"
+	default:
+		return fmt.Sprintf("arm(%d)", int(a))
+	}
+}
 
 // Authority is the outcome of the instance-authority decision together with
 // the fact that decided it. A caller that needs to know which arm admitted
@@ -164,10 +195,21 @@ const (
 // rather than deriving it a second time.
 type Authority struct {
 	Arm Arm
-	// TenantID is set only for ArmSoleLiveTenantOwner: the only live
-	// organisation, which the caller owns, as found by the statement that
-	// admitted them. It is never taken from the request's active
-	// organisation. It is uuid.Nil for every other arm.
+	// TenantID names the organisation whose audit_log also records what the
+	// caller does under this authority. It is found by the statement that
+	// admitted them and is never taken from the request's active organisation.
+	//
+	//   ArmSoleLiveTenantOwner: the only live organisation, which the caller
+	//                           owns.
+	//   ArmInstallOwner:        a live organisation the caller owns, chosen by
+	//                           installOwnerAuditTenant: the organisation
+	//                           created with them at bootstrap while they still
+	//                           own it and it is live, otherwise the live
+	//                           organisation they own with the lowest id.
+	//                           Never uuid.Nil: the arm is not granted without
+	//                           one.
+	//
+	// It is uuid.Nil for every other arm.
 	TenantID uuid.UUID
 }
 
@@ -199,7 +241,10 @@ func (a Authority) Admitted() bool { return a.Arm != ArmNone }
 // admits the specific routes it gates and nothing else. A second organisation
 // appearing on the install closes the owner arm again on the very next request,
 // with no migration and nothing to clean up, because the count is read at
-// request time and is never cached.
+// request time and is never cached. (The instance email settings have one
+// further arm that survives a second organisation, ArmInstallOwner. It is
+// InstanceEmailAuthority's, not this decision's, and the property above holds
+// for it too: nothing is written to users.)
 //
 // An API-key principal is refused even when the key belongs to the owner of the
 // only organisation. Install-level actions want a human in the audit record.
@@ -220,25 +265,45 @@ func HasInstanceAuthority(ctx context.Context, store Store) bool {
 // so a superadmin who also owns the only live organisation is reported as
 // ArmSuperadmin.
 func ResolveInstanceAuthority(ctx context.Context, store Store) Authority {
-	if store == nil {
-		return Authority{}
-	}
-	p, ok := domain.PrincipalFromContext(ctx)
-	if !ok || p.Type != domain.PrincipalUser {
-		return Authority{}
-	}
-	isSA, err := store.IsSuperadmin(ctx, p.UserID)
+	a, err := resolveInstanceAuthority(ctx, store)
 	if err != nil {
 		return Authority{}
 	}
+	return a
+}
+
+// errStoreRead marks a refusal that happened because a fact could not be
+// read, as opposed to a fact that was read and said no.
+var errStoreRead = errors.New("admingate: instance authority read failed")
+
+// resolveInstanceAuthority is ResolveInstanceAuthority with the two kinds of
+// ArmNone kept apart. A nil error with ArmNone means every fact was read and
+// none admitted. A non-nil error means a read failed, and the caller must not
+// consult any further arm on the strength of that ArmNone: a broken read would
+// otherwise silently become the next arm's answer.
+func resolveInstanceAuthority(ctx context.Context, store Store) (Authority, error) {
+	if store == nil {
+		return Authority{}, nil
+	}
+	p, ok := domain.PrincipalFromContext(ctx)
+	if !ok || p.Type != domain.PrincipalUser {
+		return Authority{}, nil
+	}
+	isSA, err := store.IsSuperadmin(ctx, p.UserID)
+	if err != nil {
+		return Authority{}, fmt.Errorf("%w: superadmin: %w", errStoreRead, err)
+	}
 	if isSA {
-		return Authority{Arm: ArmSuperadmin}
+		return Authority{Arm: ArmSuperadmin}, nil
 	}
 	tenantID, err := store.SoleLiveTenantOwnedBy(ctx, p.UserID)
-	if err != nil || tenantID == uuid.Nil {
-		return Authority{}
+	if err != nil {
+		return Authority{}, fmt.Errorf("%w: sole live tenant owner: %w", errStoreRead, err)
 	}
-	return Authority{Arm: ArmSoleLiveTenantOwner, TenantID: tenantID}
+	if tenantID == uuid.Nil {
+		return Authority{}, nil
+	}
+	return Authority{Arm: ArmSoleLiveTenantOwner, TenantID: tenantID}, nil
 }
 
 // CanRunAgentMirrorCheck answers whether the principal carried on ctx may
@@ -251,7 +316,7 @@ func CanRunAgentMirrorCheck(ctx context.Context, store Store) bool {
 
 // CanManageInstanceEmail is THE decision behind the instance SMTP settings: may
 // the principal carried on ctx read, change and test the install-wide relay?
-// It is HasInstanceAuthority for a principal that is not site-constrained.
+// It is InstanceEmailAuthority(...).Admitted().
 //
 // Two callers, one answer:
 //
@@ -270,17 +335,218 @@ func CanRunAgentMirrorCheck(ctx context.Context, store Store) bool {
 // No active organisation is NOT a refusal. Instance authority is a property of
 // the person, not of the organisation they are looking at, so an operator with
 // no membership anywhere is admitted exactly like one who has one.
-func CanManageInstanceEmail(ctx context.Context, store Store) bool {
+func CanManageInstanceEmail(ctx context.Context, store InstanceEmailStore) bool {
 	return InstanceEmailAuthority(ctx, store).Admitted()
 }
 
 // InstanceEmailAuthority is the decision CanManageInstanceEmail reports,
 // returned with the arm that admitted. The settings route gate calls it so the
 // handler behind the gate knows which arm admitted without asking again.
-func InstanceEmailAuthority(ctx context.Context, store Store) Authority {
-	p, ok := domain.PrincipalFromContext(ctx)
-	if !ok || p.IsSiteConstrained() {
+//
+// It admits, in this order:
+//
+//	users.is_superadmin = true                        ArmSuperadmin
+//	OR the caller owns the only live organisation     ArmSoleLiveTenantOwner
+//	OR, on a self-hosted install only, the account
+//	   recorded as having set up the install          ArmInstallOwner
+//
+// The first two are ResolveInstanceAuthority, unchanged. The third is last so
+// that a caller admitted before it existed keeps the arm it was admitted
+// under, and with it the audit routing it had.
+//
+// ArmInstallOwner (owner ruling, 2026-09-29). On a self-hosted install the
+// account recorded as having set up the install keeps the instance relay
+// when a second organisation appears. On hosted, where organisations belong
+// to different customers, nobody does. The authority belongs to the account
+// recorded in install_owner, not to a role: another owner of the same
+// organisation does not hold it, nobody inherits it when that account is
+// deleted, and a disabled account is refused. Where no install owner was
+// ever recorded the arm admits nobody, and WPMGR_SUPERADMIN_EMAILS is the
+// remedy.
+//
+// The arm also requires the recorded account to hold an 'owner' membership in
+// at least one live organisation right now. An install owner who has been
+// removed from every organisation, or whose only owned organisations are
+// soft-deleted, is refused: otherwise the account would keep changing the
+// relay with no organisation owner able to see it. Fail closed; the remedy is
+// again WPMGR_SUPERADMIN_EMAILS. The organisation that receives the audit copy
+// is the one installOwnerAuditTenant picks, so it is always one whose owners
+// include the actor.
+//
+// Refused before any read: a nil store, no principal, a site-constrained
+// principal, and any principal that is not a signed-in user. The principal
+// type is checked here and not only inside ResolveInstanceAuthority, because
+// that decision answers ArmNone with no error for an API key, which would
+// otherwise fall through to ArmInstallOwner for a key minted by the install
+// owner. Install-level changes want a human in the audit record.
+//
+// Fail closed: a read error in either earlier arm refuses and does NOT fall
+// through to ArmInstallOwner, and a read error in ArmInstallOwner refuses.
+func InstanceEmailAuthority(ctx context.Context, store InstanceEmailStore) Authority {
+	if store == nil {
 		return Authority{}
 	}
-	return ResolveInstanceAuthority(ctx, store)
+	p, ok := domain.PrincipalFromContext(ctx)
+	if !ok || p.IsSiteConstrained() || p.Type != domain.PrincipalUser {
+		return Authority{}
+	}
+	a, err := resolveInstanceAuthority(ctx, store)
+	if err != nil {
+		return Authority{}
+	}
+	if a.Admitted() {
+		return a
+	}
+	if !store.SelfHosted() {
+		return Authority{}
+	}
+	isOwner, auditTenant, err := store.InstallOwnerAuditTenant(ctx, p.UserID)
+	if err != nil || !isOwner || auditTenant == uuid.Nil {
+		return Authority{}
+	}
+	return Authority{Arm: ArmInstallOwner, TenantID: auditTenant}
+}
+
+// InstanceEmailStore is the read surface InstanceEmailAuthority needs: Store,
+// plus the install-owner facts. Only the instance-email callers hold one. The
+// agent-mirror callers hold a plain Store, so ArmInstallOwner is unreachable
+// from CanRunAgentMirrorCheck at the type level.
+type InstanceEmailStore interface {
+	Store
+	// SelfHosted reports whether this install is self-hosted (WPMGR_HOSTED is
+	// not true). It is fixed when the store is built.
+	SelfHosted() bool
+	// InstallOwnerAuditTenant reports whether userID is the install owner
+	// and, if so, the organisation to record their changes in, as chosen by
+	// installOwnerAuditTenant. isOwner is false when no install owner is
+	// recorded, when another account is, and when the recorded account is not
+	// active. auditTenant is uuid.Nil when the install owner holds no 'owner'
+	// membership in any live organisation, and InstanceEmailAuthority refuses
+	// that caller.
+	InstallOwnerAuditTenant(ctx context.Context, userID uuid.UUID) (isOwner bool, auditTenant uuid.UUID, err error)
+}
+
+// installOwnerFactsSQL reads every fact InstallOwnerAuditTenant needs in one
+// statement, so they come from one snapshot.
+//
+// No row: the caller is not the install owner. That covers an empty
+// install_owner (no owner was ever proven), a row naming someone else, a row
+// naming a user that has been deleted (the row has no foreign key, so it keeps
+// naming the missing id and nobody inherits it), and a user whose status is
+// not 'active'.
+//
+// One or more rows: the caller is the install owner. Column 1 is the
+// organisation recorded with them at bootstrap. Each row with a non-NULL
+// column 2 is one organisation they hold an 'owner' membership in, and column
+// 3 says whether that organisation is live (deleted_at IS NULL). When they own
+// nothing, the LEFT JOIN yields exactly one row with a NULL column 2.
+//
+// role = 'owner' is exact: admin, operator and viewer do not count.
+//
+// memberships is FORCE RLS, so this runs under InUserTx and reads the caller's
+// own rows through memberships_self_read. install_owner, users and tenants
+// carry no RLS.
+const installOwnerFactsSQL = `
+SELECT io.tenant_id,
+       m.tenant_id,
+       (t.id IS NOT NULL AND t.deleted_at IS NULL)
+FROM install_owner io
+JOIN users u ON u.id = io.user_id AND u.status = 'active'
+LEFT JOIN memberships m ON m.user_id = io.user_id AND m.role = 'owner'
+LEFT JOIN tenants t ON t.id = m.tenant_id
+WHERE io.user_id = $1`
+
+// ownedOrganisation is one organisation the install owner holds an 'owner'
+// membership in, and whether it is live.
+type ownedOrganisation struct {
+	ID   uuid.UUID
+	Live bool
+}
+
+// installOwnerAuditTenant is THE rule for which organisation receives the
+// install owner's audit copy, and so whether the arm is granted at all:
+//
+//  1. home, the organisation recorded with them at bootstrap, when they still
+//     own it and it is live;
+//  2. otherwise the live organisation they own with the lowest id (bytewise,
+//     the same order Postgres uses for uuid);
+//  3. otherwise uuid.Nil, and the arm is refused.
+//
+// It is deterministic, and the organisation it names always has the actor
+// among its owners, so an owner of that organisation reads the change where
+// they read everything else. Soft-deleted organisations never count.
+func installOwnerAuditTenant(home uuid.UUID, owned []ownedOrganisation) uuid.UUID {
+	lowest := uuid.Nil
+	for _, o := range owned {
+		if !o.Live || o.ID == uuid.Nil {
+			continue
+		}
+		if o.ID == home {
+			return home
+		}
+		if lowest == uuid.Nil || bytes.Compare(o.ID[:], lowest[:]) < 0 {
+			lowest = o.ID
+		}
+	}
+	return lowest
+}
+
+// InstanceEmailPoolStore is the production InstanceEmailStore: PoolStore plus
+// the install-owner read and the hosted flag.
+//
+// The zero value's selfHosted is false, which is the hosted answer: the
+// install-owner arm is off unless NewInstanceEmailPoolStore was told the
+// install is not hosted.
+type InstanceEmailPoolStore struct {
+	PoolStore
+	selfHosted bool
+}
+
+// NewInstanceEmailPoolStore builds the production InstanceEmailStore over
+// pool. hosted is cfg.Hosted.Enabled; the install-owner arm is live only when
+// it is false.
+func NewInstanceEmailPoolStore(pool *db.Pool, hosted bool) InstanceEmailPoolStore {
+	return InstanceEmailPoolStore{PoolStore: NewPoolStore(pool), selfHosted: !hosted}
+}
+
+// SelfHosted reports the flag fixed at construction.
+func (s InstanceEmailPoolStore) SelfHosted() bool { return s.selfHosted }
+
+// InstallOwnerAuditTenant runs installOwnerFactsSQL under InUserTx and applies
+// installOwnerAuditTenant to what it read.
+func (s InstanceEmailPoolStore) InstallOwnerAuditTenant(ctx context.Context, userID uuid.UUID) (bool, uuid.UUID, error) {
+	var (
+		isOwner bool
+		home    uuid.UUID
+		owned   []ownedOrganisation
+	)
+	err := s.pool.InUserTx(ctx, userID, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, installOwnerFactsSQL, userID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var (
+				recorded uuid.UUID
+				tenantID *uuid.UUID
+				live     bool
+			)
+			if err := rows.Scan(&recorded, &tenantID, &live); err != nil {
+				return err
+			}
+			isOwner, home = true, recorded
+			if tenantID != nil {
+				owned = append(owned, ownedOrganisation{ID: *tenantID, Live: live})
+			}
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return false, uuid.Nil, err
+	}
+	if !isOwner {
+		return false, uuid.Nil, nil
+	}
+	return true, installOwnerAuditTenant(home, owned), nil
 }

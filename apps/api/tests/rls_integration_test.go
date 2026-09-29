@@ -281,6 +281,11 @@ func startPostgres(t testing.TB) *db.Pool {
 		// here against a privilege no real install has. An immutable column
 		// inside a deletable row is not immutable.
 		"REVOKE DELETE, TRUNCATE ON assistant_update_proposals FROM wpmgr_app",
+		// m147's install_owner is insert-once: the record of who set up the
+		// install must never be re-pointed or removed. Same re-revoke, same
+		// reason: without it the blanket GRANT above lets a test re-point the
+		// row, which no real install can do.
+		"REVOKE UPDATE, DELETE, TRUNCATE ON install_owner FROM wpmgr_app",
 	} {
 		if _, err := ownerPool.Exec(ctx, stmt); err != nil {
 			setupFatalf(t, err, "postgres: provision app role ("+stmt+")")

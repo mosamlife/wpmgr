@@ -80,13 +80,14 @@ type Handler struct {
 	// the same function that gates /api/v1/settings/smtp, so the dashboard is
 	// offered the instance email settings exactly when those routes would
 	// admit the caller. Nil until wired, which reports false.
-	instanceGate admingate.Store
+	instanceGate admingate.InstanceEmailStore
 }
 
 // SetInstanceAuthorityGate wires the store behind Me.can_manage_instance_email.
-// Call it once at boot with the same kind of admingate.Store the settings
-// handler's route gate is built from.
-func (h *Handler) SetInstanceAuthorityGate(store admingate.Store) {
+// Call it once at boot with the same admingate.InstanceEmailStore the settings
+// handler's route gate is built from, so the hosted flag the install-owner arm
+// reads is the same one on both.
+func (h *Handler) SetInstanceAuthorityGate(store admingate.InstanceEmailStore) {
 	h.instanceGate = store
 }
 
