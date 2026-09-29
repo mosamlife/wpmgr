@@ -213,7 +213,8 @@ const (
 	Same Decision = iota
 	// Adopt: the reported address differs from the stored one only by
 	// a leading "www." and/or an http to https upgrade, on the same port and
-	// path. The stored address is replaced by PlanResult.To.
+	// path, a host spelt another way with the same HostKey counting as the
+	// same host. The stored address is replaced by PlanResult.To.
 	Adopt
 	// Mismatch: any other difference. The stored address is kept and
 	// the difference is flagged.
@@ -237,7 +238,11 @@ type PlanResult struct {
 // makes two addresses differ, and neither does a spelling of the host that
 // dials the same HostKey ("https://BÜCHER.de" and "https://bücher.de").
 //
-// For Adopt, hosts are compared with only their ASCII letters lowercased.
+// For Adopt, a reported host with the stored host's HostKey is the stored
+// host, so "http://BÜCHER.de" reporting "https://bücher.de" is a scheme-only
+// upgrade to the stored spelling, "https://bÜcher.de". Any other reported
+// host must be the stored host's "www." sibling, compared with only their
+// ASCII letters lowercased.
 // Before it answers Adopt, Plan checks that the address it returns dials, by
 // HostKey, the stored host's key (a scheme-only change) or the "www." sibling
 // of that key (a host change); any other key, or a host that does not
@@ -266,8 +271,11 @@ func Plan(stored, reported string) PlanResult {
 	if !ok {
 		return PlanResult{Decision: Mismatch}
 	}
+	// A reported host with the stored host's HostKey is the stored host,
+	// however it is spelt: the change is scheme-only, and To keeps the stored
+	// spelling. Any other host must be the stored host's "www." sibling.
 	host := s.Host
-	if r.Host != s.Host {
+	if !SameHost(su.Hostname(), ru.Hostname()) {
 		sibling, ok := WWWSibling(s.Host)
 		if !ok || sibling != r.Host {
 			return PlanResult{Decision: Mismatch}
