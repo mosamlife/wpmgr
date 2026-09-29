@@ -34,7 +34,7 @@ func TestInstallOwnerArm_SelfHostedInstallOwnerAdmitted(t *testing.T) {
 	}{
 		{"another organisation active", uuid.New(), installHomeTenantID},
 		{"no active organisation", uuid.Nil, installHomeTenantID},
-		{"home organisation gone", uuid.New(), uuid.Nil},
+		{"audit copy in another owned organisation", uuid.New(), highOrgID},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store := selfHostedInstallOwner()
@@ -47,6 +47,85 @@ func TestInstallOwnerArm_SelfHostedInstallOwnerAdmitted(t *testing.T) {
 				t.Error("CanManageInstanceEmail = false for the install owner of a self-hosted install")
 			}
 		})
+	}
+}
+
+// lowOrgID sorts before installHomeTenantID and highOrgID after it, bytewise,
+// so a rule that ignored the home preference, or picked by anything but the
+// lowest id, names the wrong one.
+var (
+	lowOrgID  = uuid.MustParse("0a000000-0000-4000-8000-0000000000b2")
+	highOrgID = uuid.MustParse("fa000000-0000-4000-8000-0000000000b3")
+)
+
+// installOwnerAuditTenant is the rule; this table is its contract.
+func TestInstallOwnerAuditTenant_Rule(t *testing.T) {
+	home := installHomeTenantID
+	for _, tc := range []struct {
+		name  string
+		owned []ownedOrganisation
+		want  uuid.UUID
+	}{
+		{"no owner membership", nil, uuid.Nil},
+		{"owner membership only in a deleted organisation", []ownedOrganisation{{lowOrgID, false}}, uuid.Nil},
+		{"owns only the home organisation, which is deleted", []ownedOrganisation{{home, false}}, uuid.Nil},
+		{"still owns the live home organisation", []ownedOrganisation{{home, true}}, home},
+		{"home preferred over a lower-id owned organisation", []ownedOrganisation{{lowOrgID, true}, {home, true}, {highOrgID, true}}, home},
+		{"owns another organisation only", []ownedOrganisation{{highOrgID, true}}, highOrgID},
+		{"home deleted, lowest live id wins", []ownedOrganisation{{highOrgID, true}, {home, false}, {lowOrgID, true}}, lowOrgID},
+		{"deleted lower id is skipped", []ownedOrganisation{{lowOrgID, false}, {highOrgID, true}}, highOrgID},
+		{"a nil id is never chosen", []ownedOrganisation{{uuid.Nil, true}}, uuid.Nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := installOwnerAuditTenant(home, tc.owned); got != tc.want {
+				t.Fatalf("installOwnerAuditTenant = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+// The rule and the gate together, with only the SQL read faked: the four
+// cases the arm turns on. Catches granting the arm when the install owner
+// owns no live organisation (a NULL audit organisation), and catches the
+// audit copy going anywhere but the organisation the rule names.
+func TestInstallOwnerArm_RequiresALiveOwnedOrganisation(t *testing.T) {
+	home := installHomeTenantID
+	for _, tc := range []struct {
+		name       string
+		owned      []ownedOrganisation
+		wantArm    Arm
+		wantTenant uuid.UUID
+	}{
+		{"no owner membership is refused", nil, ArmNone, uuid.Nil},
+		{"owner membership only in a deleted organisation is refused", []ownedOrganisation{{lowOrgID, false}, {home, false}}, ArmNone, uuid.Nil},
+		{"still owning the home organisation is admitted, audit copy there", []ownedOrganisation{{lowOrgID, true}, {home, true}}, ArmInstallOwner, home},
+		{"owning another organisation only is admitted, audit copy there", []ownedOrganisation{{highOrgID, true}}, ArmInstallOwner, highOrgID},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := selfHostedInstallOwner()
+			store.installHome = installOwnerAuditTenant(home, tc.owned)
+			got := InstanceEmailAuthority(withPrincipal(userPrincipal(uuid.New())), store)
+			if got.Arm != tc.wantArm || got.TenantID != tc.wantTenant {
+				t.Fatalf("InstanceEmailAuthority = %+v, want arm %s tenant %s", got, tc.wantArm, tc.wantTenant)
+			}
+			if store.installOwnerCalls != 1 {
+				t.Errorf("install-owner read %d times; want 1", store.installOwnerCalls)
+			}
+		})
+	}
+}
+
+// The store reports the install owner but names no organisation: refused.
+// This is the gate's own check, independent of the rule above.
+func TestInstallOwnerArm_NilAuditOrganisationRefused(t *testing.T) {
+	store := selfHostedInstallOwner()
+	store.installHome = uuid.Nil
+	ctx := withPrincipal(userPrincipal(uuid.New()))
+	if got := InstanceEmailAuthority(ctx, store); got.Admitted() {
+		t.Fatalf("install owner with no live owned organisation admitted as %s (tenant %s); want ArmNone", got.Arm, got.TenantID)
+	}
+	if CanManageInstanceEmail(ctx, store) {
+		t.Error("CanManageInstanceEmail = true for an install owner with no live owned organisation")
 	}
 }
 

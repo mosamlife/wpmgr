@@ -89,18 +89,41 @@ func TestSMTPPutAudit_InstallOwnerRecordsHomeOrganisation(t *testing.T) {
 	}
 }
 
-// With no home organisation (gone, soft-deleted or no longer owned), only the
-// instance trail records the change.
-func TestSMTPPutAudit_InstallOwnerWithoutHomeRecordsInstanceTrailOnly(t *testing.T) {
+// An install owner who has lost the home organisation but still owns another
+// live one is admitted, and the organisation copy goes to the one the gate
+// names, never to the request's active organisation.
+func TestSMTPPutAudit_InstallOwnerRecordsTheOwnedOrganisationTheGateNames(t *testing.T) {
+	other := uuid.MustParse("fa000000-0000-4000-8000-0000000000c2")
 	svc, rec := &fakeSMTPService{}, &fakeTenantRecorder{}
-	e := auditEngine(installOwnerGate(uuid.Nil), svc, rec, nil)
+	e := auditEngine(installOwnerGate(other), svc, rec, nil)
 	p := principalWithTenant(uuid.New())
 	if status := putAs(t, e, p); status != http.StatusOK {
 		t.Fatalf("PUT: got %d, want 200", status)
 	}
 	requireInstanceEvent(t, svc, p.UserID)
-	if len(rec.events) != 0 {
-		t.Errorf("organisation audit records = %d (%+v), want 0 with no home organisation", len(rec.events), rec.events)
+	if len(rec.events) != 1 || rec.events[0].TenantID != other {
+		t.Fatalf("organisation audit records = %+v, want exactly one in %s", rec.events, other)
+	}
+}
+
+// An install owner who owns no live organisation (removed from every one, or
+// owning only soft-deleted ones) is refused on every route, and nothing is
+// written or recorded. Catches granting the arm with no organisation to
+// record the change in.
+func TestSMTPGate_InstallOwnerOwningNoLiveOrganisationRefused(t *testing.T) {
+	gate := installOwnerGate(uuid.Nil)
+	requireRefused(t, gatedSettingsEngine(gate), orgUser(), allRoutes)
+	if gate.installOwnerCalls == 0 {
+		t.Error("refused without reading the install-owner fact; the refusal must come from the read")
+	}
+
+	svc, rec := &fakeSMTPService{}, &fakeTenantRecorder{}
+	e := auditEngine(installOwnerGate(uuid.Nil), svc, rec, nil)
+	if status := putAs(t, e, principalWithTenant(uuid.New())); status != http.StatusForbidden {
+		t.Fatalf("PUT: got %d, want 403", status)
+	}
+	if len(svc.instanceEvents) != 0 || len(rec.events) != 0 {
+		t.Errorf("refused PUT recorded instance %d, organisation %d events; want 0 and 0", len(svc.instanceEvents), len(rec.events))
 	}
 }
 
