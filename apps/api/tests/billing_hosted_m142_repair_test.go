@@ -383,3 +383,98 @@ func TestM142MutationDropsFreePlanPredicate_GrandfathersPayingTenant(t *testing.
 	}
 	assertSitesForceIntact(t, admin)
 }
+
+// TestM142LateRun_ArchivedSitesExcludedFromCount proves the
+// `connection_state <> 'archived'` predicate is load-bearing on the COUNT
+// itself, not just on which tenants get touched at all: a tenant with 4
+// active (non-archived) and 2 archived pre-cutoff sites must be grandfathered
+// to 4 (the true active count), never to 6 (every site regardless of state).
+//
+// Free-tier MaxSites is 3 (internal/billing/entitlements.go:135,
+// "MaxSites values are LOCKED: free=3" — mirrored by this migration's own
+// literal `> 3`), so the seeded active count must be over that cap on its
+// own merits (4, not 3) for a write to happen at all; a tenant with exactly
+// 3 active sites is AT the free cap, not over it, and would correctly
+// receive no override regardless of how the archived ones are counted — that
+// case cannot distinguish this predicate one way or the other.
+func TestM142LateRun_ArchivedSitesExcludedFromCount(t *testing.T) {
+	admin, owner := startPostgresBeforeM142(t)
+	ctx := context.Background()
+	cutoff := m91AppliedAt(t, admin)
+
+	tenant := seedTenant(t, admin, "m142-laterun-archived")
+	for i := 0; i < 4; i++ {
+		seedSiteAt(t, admin, tenant, fmt.Sprintf("https://m142-archived-active-%d.example.com", i), cutoff.Add(-time.Hour))
+	}
+	for i := 0; i < 2; i++ {
+		var siteID uuid.UUID
+		if err := admin.QueryRow(ctx,
+			`INSERT INTO sites (tenant_id, url, name, created_at) VALUES ($1, $2, $3, $4) RETURNING id`,
+			tenant, fmt.Sprintf("https://m142-archived-archived-%d.example.com", i), "site", cutoff.Add(-time.Hour),
+		).Scan(&siteID); err != nil {
+			t.Fatalf("seed pre-cutoff archived site %d: %v", i, err)
+		}
+		if _, err := admin.Exec(ctx,
+			`UPDATE sites SET connection_state = 'archived' WHERE id = $1`, siteID); err != nil {
+			t.Fatalf("archive site %d: %v", i, err)
+		}
+	}
+
+	if err := owner.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate (m142 late run): %v", err)
+	}
+
+	if value, present := planOverridesMaxSites(t, admin, tenant); !present || value != 4 {
+		t.Fatalf("max_sites present=%v value=%d, want present=true value=4 (4 active, not 6 counting the 2 archived)", present, value)
+	}
+	assertSitesForceIntact(t, admin)
+}
+
+// TestM142MutationDropsArchivedFilter_CountsArchivedSites proves the
+// `connection_state <> 'archived'` predicate load-bearing by mutation,
+// completing TestM142LateRun_ArchivedSitesExcludedFromCount's positive
+// proof: an IN-MEMORY copy of m142 with that predicate stripped (never the
+// committed file — migrations are database-engineer's territory) wrongly
+// grandfathers the same tenant to 6 (every site, archived included) instead
+// of 4.
+func TestM142MutationDropsArchivedFilter_CountsArchivedSites(t *testing.T) {
+	admin, owner := startPostgresBeforeM142(t)
+	ctx := context.Background()
+	cutoff := m91AppliedAt(t, admin)
+
+	tenant := seedTenant(t, admin, "m142-mutation-archived")
+	for i := 0; i < 4; i++ {
+		seedSiteAt(t, admin, tenant, fmt.Sprintf("https://m142-mutation-archived-active-%d.example.com", i), cutoff.Add(-time.Hour))
+	}
+	for i := 0; i < 2; i++ {
+		var siteID uuid.UUID
+		if err := admin.QueryRow(ctx,
+			`INSERT INTO sites (tenant_id, url, name, created_at) VALUES ($1, $2, $3, $4) RETURNING id`,
+			tenant, fmt.Sprintf("https://m142-mutation-archived-archived-%d.example.com", i), "site", cutoff.Add(-time.Hour),
+		).Scan(&siteID); err != nil {
+			t.Fatalf("seed pre-cutoff archived site %d: %v", i, err)
+		}
+		if _, err := admin.Exec(ctx,
+			`UPDATE sites SET connection_state = 'archived' WHERE id = $1`, siteID); err != nil {
+			t.Fatalf("archive site %d: %v", i, err)
+		}
+	}
+
+	body, err := fs.ReadFile(migrations.FS, m142MigrationVersion+".sql")
+	if err != nil {
+		t.Fatalf("read m142 migration body: %v", err)
+	}
+	mutated := stripOnce(t, string(body), "connection_state <> 'archived'\n          AND ")
+
+	if _, err := owner.Exec(ctx, mutated); err != nil {
+		t.Fatalf("apply mutated m142 (archived filter dropped): %v", err)
+	}
+
+	value, present := planOverridesMaxSites(t, admin, tenant)
+	if !present || value != 6 {
+		t.Fatalf("mutation did not fire: dropping the connection_state <> 'archived' predicate should have WRONGLY "+
+			"grandfathered this tenant to 6 (every site, archived included), got present=%v value=%d — the real "+
+			"migration's archived filter is not proven load-bearing by this check", present, value)
+	}
+	assertSitesForceIntact(t, admin)
+}

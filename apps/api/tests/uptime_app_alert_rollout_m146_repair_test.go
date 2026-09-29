@@ -216,7 +216,11 @@ func TestM146LateRun_TurnsOffStaleRowsKeepsRecentlySaved(t *testing.T) {
 		t.Fatal("setup invariant broken: fresh_install should still be true (m108's own bug) before m146 runs")
 	}
 
-	// A site_app_alert_state row: the "this is a late run" signal.
+	// A site_app_alert_state row: one of the three "this is a late run"
+	// signals (the state-row-exists signal; see TestM146LateRun_
+	// LaterVersionSignal_TurnsOffStaleRow and TestM146LateRun_
+	// SavedSinceM108Signal_KeepsRecentTurnsOffStale for the other two,
+	// exercised alone).
 	var siteID uuid.UUID
 	if err := admin.QueryRow(ctx, `SELECT id FROM sites WHERE tenant_id = $1`, tenant).Scan(&siteID); err != nil {
 		t.Fatalf("read seeded site id: %v", err)
@@ -513,4 +517,223 @@ func TestM146MutationForgetsUnforceAlertConfigs(t *testing.T) {
 	if !forcesec {
 		t.Fatal("alert_configs lost FORCE ROW LEVEL SECURITY after the failed mutated run")
 	}
+
+	// The failure must not have knocked FORCE off sites or
+	// site_app_alert_state either: check every table this file toggles, not
+	// just the one whose ALTER TABLE line was stripped.
+	assertM146TablesForceIntact(t, admin)
+}
+
+// ---- Each late-run signal alone (PR #786 r2) ---------------------------
+//
+// TestM146LateRun_TurnsOffStaleRowsKeepsRecentlySaved (above) seeds BOTH a
+// site_app_alert_state row and an alert_configs row saved after m108, so it
+// never isolates any one of the three `v_live` signals: dropping either the
+// schema_migrations later-version clause or (before this PR) an equivalent
+// of the alert_configs updated_at clause left that test, and the whole
+// suite, green. The two tests below each seed exactly one signal and no
+// other, so a regression to that signal's own clause is the only thing that
+// can make them fail.
+
+// fakeLaterSchemaMigrationsVersion is a schema_migrations version string
+// that sorts after m146's own version (20260810120000) but is never a real
+// embedded migration file — inserted directly so
+// TestM146LateRun_LaterVersionSignal_TurnsOffStaleRow can fake "a later
+// release already booted" without depending on what m146+1 happens to be
+// named today. internal/db/migrate.go's runner only ever looks up FS-derived
+// version strings in this table (Migrate, m146MigrationVersion above); a row
+// with no matching file is simply inert to it.
+const fakeLaterSchemaMigrationsVersion = "20260810120001_test_fake_later_signal"
+
+// TestM146LateRun_LaterVersionSignal_TurnsOffStaleRow isolates the SECOND
+// v_live signal: no site_app_alert_state row and no alert_configs row saved
+// since m108, but a schema_migrations version later than m146's own
+// recorded. Proves that signal alone still drives the stale-row turn-off and
+// the fresh_install/column-default repair.
+//
+// This test cannot also prove the schema_migrations clause is load-bearing
+// by mutation: v_live only ever changes the alert_configs UPDATE's WHERE
+// clause between "every enabled row" and "every enabled row not saved since
+// m108", and with no row saved since m108 in scope anywhere, those two
+// predicates select the identical set. Any row that WOULD distinguish them
+// (one saved after the cutoff) itself satisfies the third signal
+// (TestM146LateRun_SavedSinceM108Signal_KeepsRecentTurnsOffStale) regardless
+// of this one, so a fires/does-not-fire proof isolated to the
+// schema_migrations clause alone is not constructible against the current
+// three-signal body. Verified by actually stripping the clause and
+// re-running this test's own scenario: the result did not change.
+func TestM146LateRun_LaterVersionSignal_TurnsOffStaleRow(t *testing.T) {
+	admin, owner := startPostgresBeforeM108(t)
+	ctx := context.Background()
+
+	tenant := seedTenant(t, admin, "m146-laterun-laterversion")
+	if _, err := admin.Exec(ctx,
+		`INSERT INTO sites (tenant_id, url, name) VALUES ($1, $2, $3)`,
+		tenant, "https://m146-laterun-laterversion.example.com", "seed"); err != nil {
+		t.Fatalf("seed pre-m108 site: %v", err)
+	}
+	if _, err := admin.Exec(ctx,
+		`INSERT INTO alert_configs (tenant_id, enabled) VALUES ($1, true)`, tenant); err != nil {
+		t.Fatalf("seed pre-m108 alert_configs: %v", err)
+	}
+
+	scopePrefillMark(t, owner, m146MigrationVersion)
+	if err := owner.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate to head with m146 withheld: %v", err)
+	}
+
+	var freshAfterM108 bool
+	if err := admin.QueryRow(ctx, `SELECT fresh_install FROM app_alert_rollout WHERE singleton = true`).Scan(&freshAfterM108); err != nil {
+		t.Fatalf("query app_alert_rollout: %v", err)
+	}
+	if !freshAfterM108 {
+		t.Fatal("setup invariant broken: fresh_install should still be true (m108's own bug) before m146 runs")
+	}
+
+	// NO site_app_alert_state row, NO alert_configs row saved since m108 -
+	// the only signal present is a later schema_migrations version.
+	if _, err := admin.Exec(ctx,
+		`INSERT INTO schema_migrations (version) VALUES ($1)`, fakeLaterSchemaMigrationsVersion); err != nil {
+		t.Fatalf("seed fake later schema_migrations version: %v", err)
+	}
+
+	scopePrefillUnmark(t, owner, m146MigrationVersion)
+	if err := owner.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate with m146 present: %v", err)
+	}
+
+	var freshAfterM146 bool
+	if err := admin.QueryRow(ctx, `SELECT fresh_install FROM app_alert_rollout WHERE singleton = true`).Scan(&freshAfterM146); err != nil {
+		t.Fatalf("query app_alert_rollout after m146: %v", err)
+	}
+	if freshAfterM146 {
+		t.Fatal("app_alert_rollout.fresh_install must be false after m146 repairs an upgrade deployment")
+	}
+	if def := alertConfigsAppAlertsEnabledDefault(t, admin); def != "false" {
+		t.Fatalf("alert_configs.app_alerts_enabled column default = %q, want \"false\" after m146", def)
+	}
+	var enabled bool
+	if err := admin.QueryRow(ctx, `SELECT app_alerts_enabled FROM alert_configs WHERE tenant_id = $1`, tenant).Scan(&enabled); err != nil {
+		t.Fatalf("read the never-saved-since-m108 row: %v", err)
+	}
+	if enabled {
+		t.Fatal("the alert_configs row never saved since m108 must be turned off by m146, with only the later-version signal present")
+	}
+	assertM146TablesForceIntact(t, admin)
+}
+
+// TestM146LateRun_SavedSinceM108Signal_KeepsRecentTurnsOffStale isolates the
+// THIRD v_live signal (database-engineer's addition, PR #786 r2): no
+// site_app_alert_state row and no later schema_migrations version recorded,
+// but one tenant's alert_configs row was saved AFTER m108 ran. That row must
+// survive untouched, and a second, never-saved-since tenant's row must still
+// be turned off.
+func TestM146LateRun_SavedSinceM108Signal_KeepsRecentTurnsOffStale(t *testing.T) {
+	admin, owner := startPostgresBeforeM108(t)
+	ctx := context.Background()
+
+	staleTenant := seedTenant(t, admin, "m146-laterun-thirdsignal-stale")
+	if _, err := admin.Exec(ctx,
+		`INSERT INTO sites (tenant_id, url, name) VALUES ($1, $2, $3)`,
+		staleTenant, "https://m146-thirdsignal-stale.example.com", "seed"); err != nil {
+		t.Fatalf("seed pre-m108 site: %v", err)
+	}
+	if _, err := admin.Exec(ctx,
+		`INSERT INTO alert_configs (tenant_id, enabled) VALUES ($1, true)`, staleTenant); err != nil {
+		t.Fatalf("seed pre-m108 alert_configs: %v", err)
+	}
+
+	scopePrefillMark(t, owner, m146MigrationVersion)
+	if err := owner.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate to head with m146 withheld: %v", err)
+	}
+
+	var freshAfterM108 bool
+	if err := admin.QueryRow(ctx, `SELECT fresh_install FROM app_alert_rollout WHERE singleton = true`).Scan(&freshAfterM108); err != nil {
+		t.Fatalf("query app_alert_rollout: %v", err)
+	}
+	if !freshAfterM108 {
+		t.Fatal("setup invariant broken: fresh_install should still be true (m108's own bug) before m146 runs")
+	}
+
+	// NO site_app_alert_state row, NO later schema_migrations version - the
+	// only signal present is a SECOND tenant's alert_configs row saved after
+	// m108 (updated_at defaults to now(), after m108's applied_at since real
+	// time has passed).
+	savedTenant := seedTenant(t, admin, "m146-laterun-thirdsignal-saved")
+	if _, err := admin.Exec(ctx,
+		`INSERT INTO alert_configs (tenant_id, app_alerts_enabled) VALUES ($1, true)`, savedTenant); err != nil {
+		t.Fatalf("seed post-m108 alert_configs: %v", err)
+	}
+
+	scopePrefillUnmark(t, owner, m146MigrationVersion)
+	if err := owner.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate with m146 present: %v", err)
+	}
+
+	var staleEnabled bool
+	if err := admin.QueryRow(ctx, `SELECT app_alerts_enabled FROM alert_configs WHERE tenant_id = $1`, staleTenant).Scan(&staleEnabled); err != nil {
+		t.Fatalf("read the never-saved-since-m108 row: %v", err)
+	}
+	if staleEnabled {
+		t.Fatal("the alert_configs row never saved since m108 must be turned off, with the third signal present only on a different tenant's row")
+	}
+	var savedEnabled bool
+	if err := admin.QueryRow(ctx, `SELECT app_alerts_enabled FROM alert_configs WHERE tenant_id = $1`, savedTenant).Scan(&savedEnabled); err != nil {
+		t.Fatalf("read the saved-after-m108 row: %v", err)
+	}
+	if !savedEnabled {
+		t.Fatal("the alert_configs row saved AFTER m108 must be left on by m146 - it IS ITSELF the third signal that proves this is a late run")
+	}
+	assertM146TablesForceIntact(t, admin)
+}
+
+// TestM146MutationDropsThirdSignalClause_TurnsOffRecentlySavedRow proves the
+// third `EXISTS` clause (any alert_configs row updated after m108's cutoff -
+// database-engineer's addition, PR #786 r2) is load-bearing on its own: with
+// no site_app_alert_state row and no later schema_migrations version, an
+// IN-MEMORY copy of m146 with that clause stripped wrongly turns off a row
+// saved AFTER m108 - the same row
+// TestM146LateRun_SavedSinceM108Signal_KeepsRecentTurnsOffStale relies on the
+// REAL migration to keep on.
+func TestM146MutationDropsThirdSignalClause_TurnsOffRecentlySavedRow(t *testing.T) {
+	admin, owner := startPostgresBeforeM146(t)
+	ctx := context.Background()
+	cutoff := m108AppliedAt(t, admin)
+
+	tenant := seedTenant(t, admin, "m146-mutation-thirdsignal")
+	var siteID uuid.UUID
+	if err := admin.QueryRow(ctx,
+		`INSERT INTO sites (tenant_id, url, name, created_at) VALUES ($1, $2, $3, $4) RETURNING id`,
+		tenant, "https://m146-mutation-thirdsignal.example.com", "site", cutoff.Add(-time.Hour),
+	).Scan(&siteID); err != nil {
+		t.Fatalf("seed pre-cutoff site: %v", err)
+	}
+	if _, err := admin.Exec(ctx,
+		`INSERT INTO alert_configs (tenant_id, app_alerts_enabled, updated_at) VALUES ($1, true, $2)`,
+		tenant, cutoff.Add(time.Hour)); err != nil {
+		t.Fatalf("seed alert_configs saved after cutoff: %v", err)
+	}
+
+	body, err := fs.ReadFile(migrations.FS, m146MigrationVersion+".sql")
+	if err != nil {
+		t.Fatalf("read m146 migration body: %v", err)
+	}
+	mutated := stripOnce(t, string(body),
+		"\n            OR EXISTS (\n                SELECT 1 FROM \"public\".\"alert_configs\"\n                WHERE updated_at > v_cutoff\n            )")
+
+	if _, err := owner.Exec(ctx, mutated); err != nil {
+		t.Fatalf("apply mutated m146 (third signal clause dropped): %v", err)
+	}
+
+	var enabled bool
+	if err := admin.QueryRow(ctx, `SELECT app_alerts_enabled FROM alert_configs WHERE tenant_id = $1`, tenant).Scan(&enabled); err != nil {
+		t.Fatalf("read app_alerts_enabled: %v", err)
+	}
+	if enabled {
+		t.Fatal("mutation did not fire: dropping the third EXISTS clause should have WRONGLY turned off a row saved AFTER m108 " +
+			"(with no other signal present), but it is still on - the real migration's third clause is not proven load-bearing " +
+			"by this check")
+	}
+	assertM146TablesForceIntact(t, admin)
 }
