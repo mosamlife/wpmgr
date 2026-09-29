@@ -2131,11 +2131,12 @@ export type BackupEvent = {
     | "retrying";
   /**
    * Pass-through of the agent's POST /progress payload (e.g. chunk counters).
-   * For `retrying`, a control-plane hint that the command could not be
-   * delivered to the site and will be retried automatically,
+   * For `retrying`, a control-plane hint that a backup command could not
+   * be delivered to the site and will be retried automatically,
    * `phase_detail.error` carries the reason in the control plane's own
-   * words (the same text as `attempt_error`). For a restore it also
-   * carries `restore_id`.
+   * words (the same text as `attempt_error`). A restore is never
+   * retried automatically, so it never sends `retrying`; a failed
+   * restore sends `failed`.
    *
    */
   phase_detail?: {

@@ -3545,7 +3545,7 @@ export const BackupEventSchema = {
       type: "object",
       additionalProperties: true,
       description:
-        "Pass-through of the agent's POST /progress payload (e.g. chunk counters).\nFor `retrying`, a control-plane hint that the command could not be\ndelivered to the site and will be retried automatically,\n`phase_detail.error` carries the reason in the control plane's own\nwords (the same text as `attempt_error`). For a restore it also\ncarries `restore_id`.\n",
+        "Pass-through of the agent's POST /progress payload (e.g. chunk counters).\nFor `retrying`, a control-plane hint that a backup command could not\nbe delivered to the site and will be retried automatically,\n`phase_detail.error` carries the reason in the control plane's own\nwords (the same text as `attempt_error`). A restore is never\nretried automatically, so it never sends `retrying`; a failed\nrestore sends `failed`.\n",
     },
     status: {
       type: "string",

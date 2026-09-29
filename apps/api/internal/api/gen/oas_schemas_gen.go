@@ -9569,9 +9569,10 @@ type BackupEvent struct {
 	SnapshotID uuid.UUID        `json:"snapshot_id"`
 	Phase      BackupEventPhase `json:"phase"`
 	// Pass-through of the agent's POST /progress payload (e.g. chunk counters). For `retrying`, a
-	// control-plane hint that the command could not be delivered to the site and will be retried
+	// control-plane hint that a backup command could not be delivered to the site and will be retried
 	// automatically, `phase_detail.error` carries the reason in the control plane's own words (the same
-	// text as `attempt_error`). For a restore it also carries `restore_id`.
+	// text as `attempt_error`). A restore is never retried automatically, so it never sends `retrying`; a
+	// failed restore sends `failed`.
 	PhaseDetail OptBackupEventPhaseDetail `json:"phase_detail"`
 	Status      BackupEventStatus         `json:"status"`
 	Ts          time.Time                 `json:"ts"`
@@ -9732,9 +9733,10 @@ func (s *BackupEventPhase) UnmarshalText(data []byte) error {
 }
 
 // Pass-through of the agent's POST /progress payload (e.g. chunk counters). For `retrying`, a
-// control-plane hint that the command could not be delivered to the site and will be retried
+// control-plane hint that a backup command could not be delivered to the site and will be retried
 // automatically, `phase_detail.error` carries the reason in the control plane's own words (the same
-// text as `attempt_error`). For a restore it also carries `restore_id`.
+// text as `attempt_error`). A restore is never retried automatically, so it never sends `retrying`; a
+// failed restore sends `failed`.
 type BackupEventPhaseDetail map[string]jx.Raw
 
 func (s *BackupEventPhaseDetail) init() BackupEventPhaseDetail {
