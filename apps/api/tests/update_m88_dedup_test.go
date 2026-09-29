@@ -2,6 +2,7 @@ package tests
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"sort"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
@@ -19,10 +21,16 @@ import (
 )
 
 // m88MigrationVersion is the embedded migration filename (sans .sql) that adds
-// update_tasks_inflight_target_idx. The harness below stops short of applying
-// it so the test can seed the exact pre-m88 duplicate-row scenario the
-// migration must heal before creating the unique index.
+// update_tasks_inflight_target_idx.
 const m88MigrationVersion = "20260721000000_m88_update_tasks_inflight_dedup"
+
+// m141MigrationVersion is m141, PR #775's prefill that runs ahead of m88 and
+// does its dedup UPDATE under NO FORCE / row_security=off so it actually sees
+// pre-existing rows under the production migrator role. The harness below
+// stops short of THIS version (not m88's, which now sorts after it) so the
+// test can seed the exact pre-m88 duplicate-row scenario before either
+// migration runs.
+const m141MigrationVersion = "20260720120000_m141_update_tasks_inflight_dedup_prefill"
 
 // startPostgresBeforeM88 mirrors startPostgres's container bootstrap but
 // applies every embedded migration UP TO (not including) m88 AS wpmgr_owner —
@@ -104,8 +112,40 @@ func startPostgresBeforeM88(t *testing.T) (admin *db.Pool, owner *db.Pool) {
 			ownerSuper, ownerBypass)
 	}
 
-	applyMigrationsBefore(t, owner, m88MigrationVersion)
+	applyMigrationsBefore(t, owner, m141MigrationVersion)
 	return admin, owner
+}
+
+// assertUpdateTasksForceIntact fails the test unless update_tasks still
+// carries both relrowsecurity and relforcerowsecurity: m141 lifts FORCE for
+// the length of its dedup UPDATE and must restore it before it returns, and
+// it raises on its own if it doesn't — this is the test-side check on top of
+// that.
+func assertUpdateTasksForceIntact(t *testing.T, pool *db.Pool) {
+	t.Helper()
+	ctx := context.Background()
+	var rowsec, forcesec bool
+	if err := pool.QueryRow(ctx,
+		`SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE oid = 'public.update_tasks'::regclass`,
+	).Scan(&rowsec, &forcesec); err != nil {
+		t.Fatalf("read update_tasks pg_class: %v", err)
+	}
+	if !rowsec || !forcesec {
+		t.Fatalf("update_tasks relrowsecurity=%t relforcerowsecurity=%t, want true, true", rowsec, forcesec)
+	}
+}
+
+// updateTasksChecksum returns a deterministic hash of every update_tasks row,
+// used to prove a migration run touched no data.
+func updateTasksChecksum(t *testing.T, pool *db.Pool) string {
+	t.Helper()
+	var sum string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT md5(coalesce(string_agg(row(u.*)::text, '|' ORDER BY u.id), '')) FROM update_tasks u`,
+	).Scan(&sum); err != nil {
+		t.Fatalf("checksum update_tasks: %v", err)
+	}
+	return sum
 }
 
 // applyMigrationsBefore re-implements the (unexported) Pool.Migrate loop from
@@ -179,25 +219,12 @@ func applyMigrationsBefore(t *testing.T, pool *db.Pool, stopAt string) {
 // affected deployment. This test seeds the exact collision, then proves the
 // migration heals it before creating the index.
 func TestM88MigrationDedupesPreexistingInFlightDuplicates(t *testing.T) {
-	// KNOWN GAP (found by PR #775's owner-role harness, not fixed here — that
-	// is a migration change for database-engineer, not this test-harness PR):
-	// under the real production migrator role, m88's dedup UPDATE currently
-	// heals nothing on a table that already holds a genuine duplicate
-	// in-flight pair, and the CREATE UNIQUE INDEX that follows it then fails
-	// outright:
-	//
-	//   update_m88_dedup_test.go:243: m88 migration failed on a table with
-	//   pre-existing in-flight duplicates: apply migration
-	//   20260721000000_m88_update_tasks_inflight_dedup: ERROR: could not
-	//   create unique index "update_tasks_inflight_target_idx" (SQLSTATE 23505)
-	//
-	// Every install already past m88 is unaffected (the index already exists
-	// and enforces); this only bites an upgrade that is still pre-m88 and
-	// already holds a real duplicate. Do not loosen this test or the
-	// migration to make the skip below go away — see PR #775 / the session
-	// worklog for the full analysis.
-	t.Skip("known gap: m88's dedup backfill does not heal a pre-existing duplicate under the production migrator role; see PR #775")
-
+	// Fixed by PR #775/#780's m141: it runs ahead of m88 (the harness now
+	// stops before m141, not m88 — see m141MigrationVersion), does m88's own
+	// dedup UPDATE under NO FORCE / row_security=off so the production
+	// migrator role actually sees the pre-existing duplicates, then creates
+	// m88's unique index itself. m88 then finds nothing left to dedup and the
+	// index already present, and changes nothing.
 	pool, owner := startPostgresBeforeM88(t)
 	ctx := context.Background()
 
@@ -332,6 +359,172 @@ func TestM88MigrationDedupesPreexistingInFlightDuplicates(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected the partial unique index to reject a second in-flight duplicate after m88")
 	}
+
+	assertUpdateTasksForceIntact(t, pool)
+}
+
+// TestM141FiresOnPreexistingDuplicatesUnderOwnerRole is the fires proof for
+// m141: with m141 recorded as applied but never actually run (a binary that
+// predates PR #775's fix, exactly as production saw it), m88 must reproduce
+// the original ship-blocker failure — 23505 on update_tasks_inflight_target_idx
+// — because its own dedup UPDATE cannot see the duplicates under FORCE ROW
+// LEVEL SECURITY and no app.* GUC. Unmarking m141 and migrating again must
+// then succeed.
+func TestM141FiresOnPreexistingDuplicatesUnderOwnerRole(t *testing.T) {
+	pool, owner := startPostgresBeforeM88(t)
+	ctx := context.Background()
+
+	tenant := seedTenant(t, pool, "m141-fires")
+	var siteID uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO sites (tenant_id, url, name) VALUES ($1, $2, $3) RETURNING id`,
+		tenant, "https://m141-fires.example.com", "m141 fires site",
+	).Scan(&siteID); err != nil {
+		t.Fatalf("seed site: %v", err)
+	}
+	var runID uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO update_runs (tenant_id, status) VALUES ($1, 'running') RETURNING id`,
+		tenant,
+	).Scan(&runID); err != nil {
+		t.Fatalf("seed run: %v", err)
+	}
+	base := time.Now().Add(-time.Hour)
+	for i, status := range []string{"pending", "running"} {
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO update_tasks
+			   (run_id, tenant_id, site_id, target_type, target_slug, status, created_at, updated_at)
+			 VALUES ($1, $2, $3, 'plugin', 'akismet', $4, $5, $5)`,
+			runID, tenant, siteID, status, base.Add(time.Duration(i)*time.Minute),
+		); err != nil {
+			t.Fatalf("seed duplicate task %d: %v", i, err)
+		}
+	}
+
+	// Simulate the stale binary: m141 recorded as applied, never run.
+	scopePrefillMark(t, owner, m141MigrationVersion)
+	err := owner.Migrate(ctx)
+	if err == nil {
+		t.Fatal("expected m88 to fail creating its unique index on pre-existing duplicates when m141 is skipped")
+	}
+	t.Logf("Migrate error (expected): %v", err)
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
+		t.Fatalf("got %v, want a 23505 unique_violation", err)
+	}
+	if !strings.Contains(err.Error(), "update_tasks_inflight_target_idx") {
+		t.Fatalf("error does not name update_tasks_inflight_target_idx: %v", err)
+	}
+
+	// The fix: unmark m141 and migrate again.
+	scopePrefillUnmark(t, owner, m141MigrationVersion)
+	if err := owner.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate with m141 present: %v", err)
+	}
+	assertUpdateTasksForceIntact(t, pool)
+}
+
+// m141EarlyReturnGuard is the exact text of m141's probe/early-return check
+// (20260720120000_m141_update_tasks_inflight_dedup_prefill.sql). Kept as a
+// standalone constant so TestM141LateRunAfterM88AlreadyApplied's mutation can
+// assert it actually matched before stripping it — see stripOnce.
+const m141EarlyReturnGuard = `    IF to_regclass('public.update_tasks_inflight_target_idx') IS NOT NULL THEN
+        RETURN;
+    END IF;
+`
+
+// TestM141LateRunAfterM88AlreadyApplied covers the "LATE RUN" case m141's own
+// doc comment claims: on a database that reached head WITHOUT m141 (m88 ran
+// its own original code on a clean table and created the index itself), m141
+// arriving afterward must be a pure no-op — no error, no data change, NO LOCK
+// TAKEN — since its probe finds the index already present.
+//
+// Proof structure (see migration_late_run_lock_test.go's doc comment for the
+// shared helpers): a second connection holds ROW EXCLUSIVE on update_tasks
+// throughout. First, an IN-MEMORY copy of m141 with its early-return check
+// stripped is run against that hold and must fail (the guard is load-bearing:
+// this is what a security reviewer measured taking AccessExclusiveLock and
+// timing out against a live writer). Then the REAL, unmutated m141 is run
+// late via owner.Migrate and must finish well inside the bound a lock wait
+// would blow, and the real file is re-applied in its own explicit transaction
+// to prove pg_locks shows nothing against update_tasks for that backend
+// before commit.
+func TestM141LateRunAfterM88AlreadyApplied(t *testing.T) {
+	pool, owner := startPostgresBeforeM88(t)
+	ctx := context.Background()
+
+	// Reach head with m141 withheld: m88 runs unaided on an empty table.
+	scopePrefillMark(t, owner, m141MigrationVersion)
+	if err := owner.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate to head with m141 withheld: %v", err)
+	}
+	var idxCount int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM pg_indexes WHERE indexname = 'update_tasks_inflight_target_idx'`,
+	).Scan(&idxCount); err != nil {
+		t.Fatalf("check index: %v", err)
+	}
+	if idxCount != 1 {
+		t.Fatal("update_tasks_inflight_target_idx should already exist from m88")
+	}
+
+	// A REAL row in the target table — the gap this test used to have: an
+	// empty-table checksum compares equal no matter what a broken late run
+	// does, so it could never fail on data-corruption grounds.
+	tenant := seedTenant(t, pool, "m141-laterun")
+	var siteID uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO sites (tenant_id, url, name) VALUES ($1, $2, $3) RETURNING id`,
+		tenant, "https://m141-laterun.example.com", "m141 laterun site",
+	).Scan(&siteID); err != nil {
+		t.Fatalf("seed site: %v", err)
+	}
+	var runID uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO update_runs (tenant_id, status) VALUES ($1, 'running') RETURNING id`, tenant,
+	).Scan(&runID); err != nil {
+		t.Fatalf("seed run: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO update_tasks (run_id, tenant_id, site_id, target_type, target_slug, status)
+		 VALUES ($1, $2, $3, 'plugin', 'akismet', 'pending')`,
+		runID, tenant, siteID,
+	); err != nil {
+		t.Fatalf("seed a real in-flight task: %v", err)
+	}
+
+	body, err := fs.ReadFile(migrations.FS, m141MigrationVersion+".sql")
+	if err != nil {
+		t.Fatalf("read m141 migration body: %v", err)
+	}
+	mutated := stripOnce(t, string(body), m141EarlyReturnGuard)
+
+	release := holdRowExclusiveOpen(t, owner, "update_tasks", "updated_at")
+	defer release()
+
+	// Fires: without the guard, m141 would take AccessExclusiveLock (via its
+	// NO FORCE ROW LEVEL SECURITY toggle) on update_tasks and block behind the
+	// held ROW EXCLUSIVE until its own 5s lock_timeout fires — SQLSTATE 55P03.
+	mutatedMigrationMustBlockOrError(t, owner, mutated, sqlStateLockNotAvailable)
+
+	before := updateTasksChecksum(t, pool)
+
+	// Does not over-fire: the REAL m141 arrives late (unmark and migrate
+	// again) and must finish fast despite the lock still held above.
+	scopePrefillUnmark(t, owner, m141MigrationVersion)
+	assertMigrateStaysUnderLockBound(t, owner, ctx)
+
+	after := updateTasksChecksum(t, pool)
+	if before != after {
+		t.Fatalf("m141's late run changed update_tasks data: before=%s after=%s", before, after)
+	}
+
+	// Re-apply the real file directly and prove it took no lock on
+	// update_tasks at all, still with the ROW EXCLUSIVE holder open.
+	assertFileTakesNoLockOnRelation(t, owner, "public.update_tasks", string(body))
+
+	release()
+	assertUpdateTasksForceIntact(t, pool)
 }
 
 // TestM88MigrationIsNoopWhenNoDuplicatesExist proves the common case (a

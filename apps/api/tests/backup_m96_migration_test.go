@@ -12,6 +12,7 @@ package tests
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"sort"
 	"strings"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
@@ -29,11 +31,13 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/migrations"
 )
 
-// m96MigrationVersion is the embedded migration filename (sans .sql) that
-// adds backup_snapshots_chain_gen_completed_uidx. The harness below stops
-// short of applying it so the test can seed the exact pre-m96 duplicate-row
-// scenario the migration must heal before creating the unique index.
-const m96MigrationVersion = "20260729000000_m96_backup_chain_gen_completed_uidx"
+// m143MigrationVersion is m143, PR #775's prefill that runs ahead of m96 and
+// does its dedup UPDATE under NO FORCE / row_security=off so it actually sees
+// pre-existing rows under the production migrator role. The harness below
+// stops short of THIS version (not m96's, which now sorts after it) so the
+// test can seed the exact pre-m96 duplicate-row scenario before either
+// migration runs.
+const m143MigrationVersion = "20260728120000_m143_backup_chain_gen_dedup_prefill"
 
 // startPostgresBeforeM96 mirrors startPostgresBeforeM88's container bootstrap
 // but stops short of m96. It applies migrations AS wpmgr_owner — the
@@ -106,8 +110,40 @@ func startPostgresBeforeM96(t *testing.T) (admin *db.Pool, owner *db.Pool) {
 			ownerSuper, ownerBypass)
 	}
 
-	applyMigrationsBeforeM96(t, owner, m96MigrationVersion)
+	applyMigrationsBeforeM96(t, owner, m143MigrationVersion)
 	return admin, owner
+}
+
+// assertBackupSnapshotsForceIntact fails the test unless backup_snapshots
+// still carries both relrowsecurity and relforcerowsecurity: m143 lifts
+// FORCE for the length of its dedup UPDATE and must restore it before it
+// returns, and it raises on its own if it doesn't — this is the test-side
+// check on top of that.
+func assertBackupSnapshotsForceIntact(t *testing.T, pool *db.Pool) {
+	t.Helper()
+	ctx := context.Background()
+	var rowsec, forcesec bool
+	if err := pool.QueryRow(ctx,
+		`SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE oid = 'public.backup_snapshots'::regclass`,
+	).Scan(&rowsec, &forcesec); err != nil {
+		t.Fatalf("read backup_snapshots pg_class: %v", err)
+	}
+	if !rowsec || !forcesec {
+		t.Fatalf("backup_snapshots relrowsecurity=%t relforcerowsecurity=%t, want true, true", rowsec, forcesec)
+	}
+}
+
+// backupSnapshotsChecksum returns a deterministic hash of every
+// backup_snapshots row, used to prove a migration run touched no data.
+func backupSnapshotsChecksum(t *testing.T, pool *db.Pool) string {
+	t.Helper()
+	var sum string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT md5(coalesce(string_agg(row(b.*)::text, '|' ORDER BY b.id), '')) FROM backup_snapshots b`,
+	).Scan(&sum); err != nil {
+		t.Fatalf("checksum backup_snapshots: %v", err)
+	}
+	return sum
 }
 
 // applyMigrationsBeforeM96 is a local copy of update_m88_dedup_test.go's
@@ -201,26 +237,13 @@ func seedSiteOnAdminPool(t *testing.T, pool *db.Pool, tenant uuid.UUID, url stri
 // chainGenWinner's own tiebreak), and proves the surviving chain still
 // resolves end-to-end via PlanRestore.
 func TestM96MigrationDedupesPreexistingCompletedDuplicates(t *testing.T) {
-	// KNOWN GAP (found by PR #775's owner-role harness, not fixed here — a
-	// migration change for database-engineer, not this test-harness PR): the
-	// same failure shape as update_m88_dedup_test.go's sibling skip. Under
-	// the real production migrator role, m96's dedup UPDATE does not heal a
-	// pre-existing completed duplicate, and the CREATE UNIQUE INDEX that
-	// follows it then fails outright:
-	//
-	//   backup_m96_migration_test.go:249: m96 migration failed on a table
-	//   with pre-existing completed duplicates: apply migration
-	//   20260729000000_m96_backup_chain_gen_completed_uidx: ERROR: could not
-	//   create unique index "backup_snapshots_chain_gen_completed_uidx"
-	//   (SQLSTATE 23505)
-	//
-	// Every install already past m96 is unaffected (the index already exists
-	// and enforces); this only bites an upgrade that is still pre-m96 and
-	// already holds a real completed-row duplicate. Do not loosen this test
-	// or the migration to make the skip below go away — see PR #775 / the
-	// session worklog for the full analysis.
-	t.Skip("known gap: m96's dedup backfill does not heal a pre-existing duplicate under the production migrator role; see PR #775")
-
+	// Fixed by PR #775/#780's m143: it runs ahead of m96 (the harness now
+	// stops before m143, not m96 — see m143MigrationVersion), does m96's own
+	// dedup UPDATE under NO FORCE / row_security=off so the production
+	// migrator role actually sees the pre-existing completed duplicates, then
+	// creates m96's unique index itself. m96 then finds nothing left to dedup
+	// and the index already present (its GIN index still applies as m96's own
+	// statement).
 	pool, owner := startPostgresBeforeM96(t)
 	store := startBlobstore(t)
 	ctx := context.Background()
@@ -357,6 +380,155 @@ func TestM96MigrationDedupesPreexistingCompletedDuplicates(t *testing.T) {
 			t.Errorf("restore plan resolved %q — the DEMOTED (higher-id, non-completed) duplicate's data leaked into the surviving chain", unwanted)
 		}
 	}
+
+	assertBackupSnapshotsForceIntact(t, pool)
+}
+
+// TestM143FiresOnPreexistingDuplicatesUnderOwnerRole is the fires proof for
+// m143: with m143 recorded as applied but never actually run (a binary that
+// predates PR #775's fix, exactly as production saw it), m96 must reproduce
+// the original ship-blocker failure — 23505 on
+// backup_snapshots_chain_gen_completed_uidx — because its own dedup UPDATE
+// cannot see the duplicates under FORCE ROW LEVEL SECURITY and no app.* GUC.
+// Unmarking m143 and migrating again must then succeed.
+func TestM143FiresOnPreexistingDuplicatesUnderOwnerRole(t *testing.T) {
+	pool, owner := startPostgresBeforeM96(t)
+	store := startBlobstore(t)
+	ctx := context.Background()
+
+	tenant := seedTenant(t, pool, "m143-fires")
+	siteID := seedSiteOnAdminPool(t, pool, tenant, "https://m143-fires.example.com")
+
+	now := time.Now()
+	gen0ID := uuid.New()
+	chainID := gen0ID
+	seedGH168Chunk(t, pool, store, tenant, "m143-fl0", now)
+	seedGH168Chunk(t, pool, store, tenant, "m143-part0", now)
+	seedGH168Snapshot(t, pool, tenant, siteID, gen0ID, chainID, 0, backup.StatusCompleted, false,
+		archiveDeltaEntries(0, "m143-fl0", "m143-part0"), now)
+
+	idA := uuid.New()
+	idB := uuid.New()
+	if idA.String() > idB.String() {
+		idA, idB = idB, idA
+	}
+	seedGH168Chunk(t, pool, store, tenant, "m143-fl1-a", now)
+	seedGH168Chunk(t, pool, store, tenant, "m143-part1-a", now)
+	seedGH168Snapshot(t, pool, tenant, siteID, idA, chainID, 1, backup.StatusCompleted, true,
+		archiveDeltaEntries(1, "m143-fl1-a", "m143-part1-a"), now.Add(time.Second))
+	seedGH168Chunk(t, pool, store, tenant, "m143-fl1-b", now)
+	seedGH168Chunk(t, pool, store, tenant, "m143-part1-b", now)
+	seedGH168Snapshot(t, pool, tenant, siteID, idB, chainID, 1, backup.StatusCompleted, true,
+		archiveDeltaEntries(1, "m143-fl1-b", "m143-part1-b"), now.Add(2*time.Second))
+
+	// Simulate the stale binary: m143 recorded as applied, never run.
+	scopePrefillMark(t, owner, m143MigrationVersion)
+	err := owner.Migrate(ctx)
+	if err == nil {
+		t.Fatal("expected m96 to fail creating its unique index on pre-existing completed duplicates when m143 is skipped")
+	}
+	t.Logf("Migrate error (expected): %v", err)
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
+		t.Fatalf("got %v, want a 23505 unique_violation", err)
+	}
+	if !strings.Contains(err.Error(), "backup_snapshots_chain_gen_completed_uidx") {
+		t.Fatalf("error does not name backup_snapshots_chain_gen_completed_uidx: %v", err)
+	}
+
+	// The fix: unmark m143 and migrate again.
+	scopePrefillUnmark(t, owner, m143MigrationVersion)
+	if err := owner.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate with m143 present: %v", err)
+	}
+	assertBackupSnapshotsForceIntact(t, pool)
+}
+
+// m143EarlyReturnGuard is the exact text of m143's probe/early-return check
+// (20260728120000_m143_backup_chain_gen_dedup_prefill.sql). Kept as a
+// standalone constant so TestM143LateRunAfterM96AlreadyApplied's mutation can
+// assert it actually matched before stripping it — see stripOnce.
+const m143EarlyReturnGuard = `    IF to_regclass('public.backup_snapshots_chain_gen_completed_uidx') IS NOT NULL THEN
+        RETURN;
+    END IF;
+`
+
+// TestM143LateRunAfterM96AlreadyApplied covers the "LATE RUN" case m143's own
+// doc comment claims: on a database that reached head WITHOUT m143 (m96 ran
+// its own original code on a clean table and created the index itself), m143
+// arriving afterward must be a pure no-op — no error, no data change, NO LOCK
+// TAKEN — since its probe finds the index already present.
+//
+// Proof structure (see migration_late_run_lock_test.go's doc comment for the
+// shared helpers): a second connection holds ROW EXCLUSIVE on
+// backup_snapshots throughout. First, an IN-MEMORY copy of m143 with its
+// early-return check stripped is run against that hold and must fail. Then
+// the REAL, unmutated m143 is run late via owner.Migrate and must finish well
+// inside the bound a lock wait would blow, and the real file is re-applied in
+// its own explicit transaction to prove pg_locks shows nothing against
+// backup_snapshots for that backend before commit.
+func TestM143LateRunAfterM96AlreadyApplied(t *testing.T) {
+	pool, owner := startPostgresBeforeM96(t)
+	ctx := context.Background()
+
+	// Reach head with m143 withheld: m96 runs unaided on an empty table.
+	scopePrefillMark(t, owner, m143MigrationVersion)
+	if err := owner.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate to head with m143 withheld: %v", err)
+	}
+	var idxCount int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM pg_indexes WHERE indexname = 'backup_snapshots_chain_gen_completed_uidx'`,
+	).Scan(&idxCount); err != nil {
+		t.Fatalf("check index: %v", err)
+	}
+	if idxCount != 1 {
+		t.Fatal("backup_snapshots_chain_gen_completed_uidx should already exist from m96")
+	}
+
+	store := startBlobstore(t)
+	tenant := seedTenant(t, pool, "m143-laterun")
+	siteID := seedSiteOnAdminPool(t, pool, tenant, "https://m143-laterun.example.com")
+	now := time.Now()
+	gen0ID := uuid.New()
+	seedGH168Chunk(t, pool, store, tenant, "m143-lr-fl0", now)
+	seedGH168Chunk(t, pool, store, tenant, "m143-lr-part0", now)
+	seedGH168Snapshot(t, pool, tenant, siteID, gen0ID, gen0ID, 0, backup.StatusCompleted, false,
+		archiveDeltaEntries(0, "m143-lr-fl0", "m143-lr-part0"), now)
+
+	body, err := fs.ReadFile(migrations.FS, m143MigrationVersion+".sql")
+	if err != nil {
+		t.Fatalf("read m143 migration body: %v", err)
+	}
+	mutated := stripOnce(t, string(body), m143EarlyReturnGuard)
+
+	release := holdRowExclusiveOpen(t, owner, "backup_snapshots", "updated_at")
+	defer release()
+
+	// Fires: without the guard, m143 would take AccessExclusiveLock (via its
+	// NO FORCE ROW LEVEL SECURITY toggle) on backup_snapshots and block
+	// behind the held ROW EXCLUSIVE until its own 5s lock_timeout fires —
+	// SQLSTATE 55P03.
+	mutatedMigrationMustBlockOrError(t, owner, mutated, sqlStateLockNotAvailable)
+
+	before := backupSnapshotsChecksum(t, pool)
+
+	// Does not over-fire: the REAL m143 arrives late (unmark and migrate
+	// again) and must finish fast despite the lock still held above.
+	scopePrefillUnmark(t, owner, m143MigrationVersion)
+	assertMigrateStaysUnderLockBound(t, owner, ctx)
+
+	after := backupSnapshotsChecksum(t, pool)
+	if before != after {
+		t.Fatalf("m143's late run changed backup_snapshots data: before=%s after=%s", before, after)
+	}
+
+	// Re-apply the real file directly and prove it took no lock on
+	// backup_snapshots at all, still with the ROW EXCLUSIVE holder open.
+	assertFileTakesNoLockOnRelation(t, owner, "public.backup_snapshots", string(body))
+
+	release()
+	assertBackupSnapshotsForceIntact(t, pool)
 }
 
 // TestM96MigrationIsNoopWhenNoDuplicatesExist proves the common case (a
