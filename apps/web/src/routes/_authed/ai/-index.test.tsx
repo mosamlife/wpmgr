@@ -5,6 +5,7 @@ import type { QueryClient } from "@tanstack/react-query";
 
 import { createTestQueryClient, renderWithProviders } from "@/test/render";
 import { authKeys } from "@/features/auth/use-auth";
+import { assistantRequestKeys } from "@/features/ai-requests/use-ai-requests";
 
 import { Route } from "./index";
 import { MCP_TRANSPORT_PATH } from "@/features/ai-connections/client-table";
@@ -86,6 +87,19 @@ function json(body: unknown, status = 200): Response {
 function renderPage() {
   const queryClient = createTestQueryClient();
   seedMe(queryClient);
+  // Added alongside AiAreaTabs (W2, the Requests tab badge): this page now
+  // pulls the AI request queue's count via the GENERATED client, which does
+  // not read the vi.stubGlobal'd fetch this file uses for the (unrelated,
+  // hand-shaped) connections endpoint -- see the module doc above. Seeding
+  // the cache directly is the same trick `seedMe` already uses for `useMe`,
+  // so this page's own tests stay about the connections list, not about a
+  // tab bar covered in ai-area-tabs.test.tsx.
+  queryClient.setQueryData(assistantRequestKeys.list(), {
+    requests: [],
+    pending_count: 0,
+    limit: 50,
+    offset: 0,
+  });
   return renderWithProviders(<AiPage />, {
     withRouter: true,
     initialPath: "/ai",

@@ -57,6 +57,7 @@ import { Route as AuthedScheduleRunsRunIdRouteImport } from './routes/_authed/sc
 import { Route as AuthedRestoresRestoreIdRouteImport } from './routes/_authed/restores/$restoreId'
 import { Route as AuthedConnectAiRouteImport } from './routes/_authed/connect.ai'
 import { Route as AuthedClientsClientIdRouteImport } from './routes/_authed/clients/$clientId'
+import { Route as AuthedAiRequestsRouteImport } from './routes/_authed/ai/requests'
 import { Route as AuthedAiConnectRouteImport } from './routes/_authed/ai/connect'
 import { Route as AuthedAdminVulnFeedRouteImport } from './routes/_authed/admin/vuln-feed'
 import { Route as AuthedAdminRevenueRouteImport } from './routes/_authed/admin/revenue'
@@ -326,6 +327,11 @@ const AuthedClientsClientIdRoute = AuthedClientsClientIdRouteImport.update({
   path: '/clients/$clientId',
   getParentRoute: () => AuthedRoute,
 } as any)
+const AuthedAiRequestsRoute = AuthedAiRequestsRouteImport.update({
+  id: '/ai/requests',
+  path: '/ai/requests',
+  getParentRoute: () => AuthedRoute,
+} as any)
 const AuthedAiConnectRoute = AuthedAiConnectRouteImport.update({
   id: '/ai/connect',
   path: '/ai/connect',
@@ -511,6 +517,7 @@ export interface FileRoutesByFullPath {
   '/admin/revenue': typeof AuthedAdminRevenueRoute
   '/admin/vuln-feed': typeof AuthedAdminVulnFeedRoute
   '/ai/connect': typeof AuthedAiConnectRoute
+  '/ai/requests': typeof AuthedAiRequestsRoute
   '/clients/$clientId': typeof AuthedClientsClientIdRouteWithChildren
   '/connect/ai': typeof AuthedConnectAiRoute
   '/restores/$restoreId': typeof AuthedRestoresRestoreIdRoute
@@ -585,6 +592,7 @@ export interface FileRoutesByTo {
   '/admin/revenue': typeof AuthedAdminRevenueRoute
   '/admin/vuln-feed': typeof AuthedAdminVulnFeedRoute
   '/ai/connect': typeof AuthedAiConnectRoute
+  '/ai/requests': typeof AuthedAiRequestsRoute
   '/connect/ai': typeof AuthedConnectAiRoute
   '/restores/$restoreId': typeof AuthedRestoresRestoreIdRoute
   '/schedule-runs/$runId': typeof AuthedScheduleRunsRunIdRoute
@@ -661,6 +669,7 @@ export interface FileRoutesById {
   '/_authed/admin/revenue': typeof AuthedAdminRevenueRoute
   '/_authed/admin/vuln-feed': typeof AuthedAdminVulnFeedRoute
   '/_authed/ai/connect': typeof AuthedAiConnectRoute
+  '/_authed/ai/requests': typeof AuthedAiRequestsRoute
   '/_authed/clients/$clientId': typeof AuthedClientsClientIdRouteWithChildren
   '/_authed/connect/ai': typeof AuthedConnectAiRoute
   '/_authed/restores/$restoreId': typeof AuthedRestoresRestoreIdRoute
@@ -740,6 +749,7 @@ export interface FileRouteTypes {
     | '/admin/revenue'
     | '/admin/vuln-feed'
     | '/ai/connect'
+    | '/ai/requests'
     | '/clients/$clientId'
     | '/connect/ai'
     | '/restores/$restoreId'
@@ -814,6 +824,7 @@ export interface FileRouteTypes {
     | '/admin/revenue'
     | '/admin/vuln-feed'
     | '/ai/connect'
+    | '/ai/requests'
     | '/connect/ai'
     | '/restores/$restoreId'
     | '/schedule-runs/$runId'
@@ -889,6 +900,7 @@ export interface FileRouteTypes {
     | '/_authed/admin/revenue'
     | '/_authed/admin/vuln-feed'
     | '/_authed/ai/connect'
+    | '/_authed/ai/requests'
     | '/_authed/clients/$clientId'
     | '/_authed/connect/ai'
     | '/_authed/restores/$restoreId'
@@ -1292,6 +1304,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedClientsClientIdRouteImport
       parentRoute: typeof AuthedRoute
     }
+    '/_authed/ai/requests': {
+      id: '/_authed/ai/requests'
+      path: '/ai/requests'
+      fullPath: '/ai/requests'
+      preLoaderRoute: typeof AuthedAiRequestsRouteImport
+      parentRoute: typeof AuthedRoute
+    }
     '/_authed/ai/connect': {
       id: '/_authed/ai/connect'
       path: '/ai/connect'
@@ -1644,6 +1663,7 @@ interface AuthedRouteChildren {
   AuthedUptimeRoute: typeof AuthedUptimeRoute
   AuthedVulnerabilitiesRoute: typeof AuthedVulnerabilitiesRoute
   AuthedAiConnectRoute: typeof AuthedAiConnectRoute
+  AuthedAiRequestsRoute: typeof AuthedAiRequestsRoute
   AuthedClientsClientIdRoute: typeof AuthedClientsClientIdRouteWithChildren
   AuthedConnectAiRoute: typeof AuthedConnectAiRoute
   AuthedRestoresRestoreIdRoute: typeof AuthedRestoresRestoreIdRoute
@@ -1671,6 +1691,7 @@ const AuthedRouteChildren: AuthedRouteChildren = {
   AuthedUptimeRoute: AuthedUptimeRoute,
   AuthedVulnerabilitiesRoute: AuthedVulnerabilitiesRoute,
   AuthedAiConnectRoute: AuthedAiConnectRoute,
+  AuthedAiRequestsRoute: AuthedAiRequestsRoute,
   AuthedClientsClientIdRoute: AuthedClientsClientIdRouteWithChildren,
   AuthedConnectAiRoute: AuthedConnectAiRoute,
   AuthedRestoresRestoreIdRoute: AuthedRestoresRestoreIdRoute,

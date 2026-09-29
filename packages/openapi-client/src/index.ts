@@ -125,6 +125,11 @@ export {
   computeRucss,
   bulkPurgeCache,
   bulkConfigCache,
+  // AI cache-clear requests (ai-requests, tracka-cache-purge-design)
+  listAssistantRequests,
+  listSiteAssistantRequests,
+  approveAssistantRequest,
+  declineAssistantRequest,
   // search-replace (#188)
   runSearchReplace,
   // db snapshots (#189)
@@ -533,6 +538,15 @@ export type {
   BulkConfigCacheResponse,
   ComputeRucssData,
   ComputeRucssResponse,
+  // AI cache-clear requests (ai-requests, tracka-cache-purge-design).
+  // AssistantRequest, AssistantRequestList and the four Response aliases are
+  // NOT re-exported from here -- see the nullable-field patch below, which
+  // exports corrected versions of all six under these same names.
+  AssistantRequestApproveBody,
+  ListAssistantRequestsData,
+  ListSiteAssistantRequestsData,
+  ApproveAssistantRequestData,
+  DeclineAssistantRequestData,
   // search-replace (#188)
   SearchReplaceRequest,
   SearchReplaceResult,
@@ -949,3 +963,61 @@ export type {
   ForceAdminAccountStateResponse,
   GetAdminRevenueResponse,
 } from "./generated/types.gen";
+
+// --- AI cache-clear requests: nullable-field patch --------------------------
+//
+// packages/openapi/openapi.yaml declares `openapi: 3.1.0`. Under 3.1, schemas
+// are JSON Schema 2020-12, where nullability is `type: [T, "null"]`; the
+// OpenAPI-3.0-only `nullable: true` sidecar the AssistantRequest schema uses
+// is not a JSON Schema keyword there, and @hey-api/openapi-ts (this package's
+// generator, see openapi-ts.config.ts) does not special-case it, so every
+// field below is generated with no `| null` even though it is genuinely
+// nullable on the wire: apps/api/internal/api/gen/oas_schemas_gen.go's
+// AssistantRequest struct types every one of them Nil*/Opt*, matching
+// tracka-cache-purge-design-v7 §2.6's card-state table (a pending row has
+// decided_at/outcome/etc. all null). Confirmed by running this package's own
+// `generate` against the current spec: byte-identical output, so this is a
+// spec-authoring bug (the 3.0-style keyword in a 3.1 document), not stale
+// codegen -- out of this package's path (packages/openapi/openapi.yaml is
+// backend-owned) to fix at the source. Until it is, the facade corrects the
+// nullability here rather than let app code trust a type that lies about
+// what the server actually sends.
+import type {
+  AssistantRequest as GeneratedAssistantRequest,
+  AssistantRequestList as GeneratedAssistantRequestList,
+} from "./generated/types.gen";
+
+type PatchedAssistantRequestFields = {
+  url: GeneratedAssistantRequest["url"] | null;
+  setup_client: GeneratedAssistantRequest["setup_client"] | null;
+  decided_at: GeneratedAssistantRequest["decided_at"] | null;
+  decided_by_user_id: GeneratedAssistantRequest["decided_by_user_id"] | null;
+  decided_by_name: GeneratedAssistantRequest["decided_by_name"] | null;
+  withdrawn_at: GeneratedAssistantRequest["withdrawn_at"] | null;
+  claimed_at: GeneratedAssistantRequest["claimed_at"] | null;
+  last_attempt_at: GeneratedAssistantRequest["last_attempt_at"] | null;
+  last_attempt_code: GeneratedAssistantRequest["last_attempt_code"] | null;
+  outcome: GeneratedAssistantRequest["outcome"] | null;
+  not_sent_reason: GeneratedAssistantRequest["not_sent_reason"] | null;
+  outcome_at: GeneratedAssistantRequest["outcome_at"] | null;
+  hosting_caches_cleared: GeneratedAssistantRequest["hosting_caches_cleared"] | null;
+  hosting_caches_skipped: GeneratedAssistantRequest["hosting_caches_skipped"] | null;
+  origin_only_confirmed: GeneratedAssistantRequest["origin_only_confirmed"] | null;
+  wpmgr_cdn: GeneratedAssistantRequest["wpmgr_cdn"] | null;
+  site_reported_text: GeneratedAssistantRequest["site_reported_text"] | null;
+};
+
+export type AssistantRequest = Omit<
+  GeneratedAssistantRequest,
+  keyof PatchedAssistantRequestFields
+> &
+  PatchedAssistantRequestFields;
+
+export type AssistantRequestList = Omit<GeneratedAssistantRequestList, "requests"> & {
+  requests: AssistantRequest[];
+};
+
+export type ListAssistantRequestsResponse = AssistantRequestList;
+export type ListSiteAssistantRequestsResponse = AssistantRequestList;
+export type ApproveAssistantRequestResponse = AssistantRequest;
+export type DeclineAssistantRequestResponse = AssistantRequest;

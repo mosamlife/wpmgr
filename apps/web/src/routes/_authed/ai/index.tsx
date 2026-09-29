@@ -9,6 +9,7 @@ import { DestructiveConfirm } from "@/components/dialogs/destructive-confirm";
 import { ConnectionsList } from "@/features/ai-connections/connections-list";
 import { ConnectionContract } from "@/features/ai-connections/connection-contract";
 import { mcpEndpointUrl } from "@/features/ai-connections/endpoint";
+import { AiAreaTabs } from "@/features/ai-requests/ai-area-tabs";
 import { canManage, useMe } from "@/features/auth/use-auth";
 import {
   PROTOCOL_FLOOR_VERSION,
@@ -98,6 +99,12 @@ function AiConnectionsPage() {
         subline="One endpoint, one client, the sites you scope it to."
         actions={newConnectionButton}
       />
+
+      {/* The route is a tab beside /ai/requests's queue, per §2.6: "AI
+          connections [Connections] [Requests · N]". AiAreaTabs carries its
+          own badge query and does not depend on anything else on this
+          page. */}
+      <AiAreaTabs />
 
       {/* THE CONTRACT SITS ABOVE EVERYTHING, INCLUDING THE LIST. It is not an
           empty-state decoration: an operator with six connections already is
