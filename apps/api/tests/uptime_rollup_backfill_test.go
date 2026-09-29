@@ -32,6 +32,19 @@ import (
 // pre-existing site_uptime_probes rows.
 const m99MigrationVersion = "20260801000000_m99_uptime_rollup"
 
+// anchorToToday clamps a "near now" seed time forward to today (midnight
+// UTC) whenever plain subtraction would have left it on the PREVIOUS UTC
+// day — the six minutes after midnight are the only window where "now minus
+// a few minutes" and "today" disagree. Used wherever this file and
+// uptime_m144_backfill_repair_test.go seed probes as an offset from
+// time.Now() and then assert on the day-bucket those probes must land in.
+func anchorToToday(seed, today time.Time) time.Time {
+	if seed.Before(today) {
+		return today
+	}
+	return seed
+}
+
 // startPostgresBeforeM99 mirrors startPostgresBeforeM96's container bootstrap
 // but stops short of m99. Migrations run AS wpmgr_owner — the NOSUPERUSER
 // NOBYPASSRLS role production's migrator uses, not the bootstrap superuser
@@ -183,26 +196,25 @@ type dailyBucketExpectation struct {
 // populate site_uptime_daily/site_uptime_status with values that agree with a
 // straight GROUP BY over those rows, and running the backfill SQL a second
 // time must be a complete no-op (ON CONFLICT DO NOTHING).
+//
+// FORMERLY SKIPPED (PR #775's owner-role harness): m99's own backfill INSERTs
+// read FROM site_uptime_probes (also FORCE ROW LEVEL SECURITY) with no GUC set
+// by the production migrator, so under the real migrator role the
+// SELECT ... GROUP BY saw zero source rows and the INSERT was a silent no-op —
+// any pre-m99 install lost its entire pre-migration uptime history and current
+// status stamp on upgrade, silently. m144 (20260801120000, sorts between m99
+// and m100) is the repair: it re-aggregates the same window directly from
+// site_uptime_probes, under a NO FORCE/row_security=off toggle it lifts and
+// restores itself, so it can actually see the rows the production migrator
+// role couldn't. Because m144 sorts immediately after m99, the single
+// owner.Migrate(ctx) call below applies m99 (still inserting nothing, as
+// production saw) and then m144 (which fills the gap) before any assertion
+// runs — the stop point deliberately stays at m99 in startPostgresBeforeM99;
+// nothing here pins Migrate to stop early. See
+// uptime_m144_backfill_repair_test.go for m144's own dedicated regression
+// coverage (late run, the GC-pruned guard, its lock bound, and the "still
+// missing" proof of the defect this test used to skip around).
 func TestM99Migration_BackfillMatchesRawGroupBy_AndIdempotent(t *testing.T) {
-	// KNOWN GAP (found by PR #775's owner-role harness, not fixed here — a
-	// migration change for database-engineer, not this test-harness PR):
-	// worse than the m88/m96 sibling skips, this one does NOT fail loudly.
-	// m99's backfill INSERTs read FROM site_uptime_probes (also FORCE ROW
-	// LEVEL SECURITY) with no GUC set by the production migrator, so under
-	// the real migrator role the SELECT ... GROUP BY sees zero source rows,
-	// the INSERT is a silent no-op, and the migration reports success with
-	// site_uptime_daily/site_uptime_status left EMPTY instead of backfilled:
-	//
-	//   uptime_rollup_backfill_test.go:274: query daily bucket for
-	//   2026-09-28 00:00:00 +0000 UTC: no rows in result set
-	//
-	// Implication: any self-hosted install still pre-m99, on upgrade, loses
-	// its entire pre-migration uptime history and current-status stamp
-	// silently — no error, no log, a successful boot. Do not loosen this
-	// test or the migration to make the skip below go away — see PR #775 /
-	// the session worklog for the full analysis.
-	t.Skip("known gap: m99's backfill silently inserts zero rows under the production migrator role (RLS on site_uptime_probes); see PR #775")
-
 	pool, owner := startPostgresBeforeM99(t)
 	ctx := context.Background()
 
@@ -210,9 +222,33 @@ func TestM99Migration_BackfillMatchesRawGroupBy_AndIdempotent(t *testing.T) {
 	siteID := seedSiteFor(t, pool, tenant, "https://m99-backfill.example.com")
 	otherSiteID := seedSiteFor(t, pool, tenant, "https://m99-backfill-other.example.com")
 
-	now := time.Now().UTC()
+	// Truncated to the microsecond: Postgres timestamptz has no finer
+	// resolution, but time.Now() on Linux does, so an untruncated value can
+	// never round-trip through the DB and compare .Equal() to itself again —
+	// see lastProbedAt.Equal(latestToday) below, which is exactly that
+	// round-trip. macOS clocks happen to already be microsecond-aligned,
+	// which is why this only bit on the Linux integration runner.
+	now := time.Now().UTC().Truncate(time.Microsecond)
 	today := now.Truncate(24 * time.Hour)
 	yesterday := today.Add(-24 * time.Hour)
+	// today's probes are seeded MINUTES BEFORE now (not at fixed hours-of-day
+	// like today.Add(9h)): m99's applied_at is stamped at owner.Migrate time,
+	// moments after this seed runs, and m144's site_uptime_status backfill
+	// filters strictly on "probed_at < that stamp" (unlike its site_uptime_daily
+	// half, which only cares about the calendar day). A fixed hour-of-day probe
+	// (e.g. today.Add(12*time.Hour)) is in the FUTURE relative to applied_at
+	// whenever the suite runs before that hour UTC, which would silently drop
+	// it from the status backfill and fail this test depending on time of day
+	// it happens to run. Minutes-before-now has no such dependency.
+	//
+	// EXCEPT at the day boundary itself: "a few minutes before now" is
+	// computed by plain time.Time subtraction, which does not know about
+	// calendar days. Whenever the suite runs in the first six minutes after
+	// UTC midnight, now.Add(-4*time.Minute) is still YESTERDAY by wall-clock
+	// arithmetic even though it must bucket as today for the counts below to
+	// hold. anchorToToday clamps each such seed forward to midnight so it
+	// lands on today regardless of what minute the suite happens to run in.
+	latestToday := anchorToToday(now.Add(-1*time.Minute), today) // most recent overall — the expected "latest" row.
 
 	type probeSeed struct {
 		siteID   uuid.UUID
@@ -223,15 +259,15 @@ func TestM99Migration_BackfillMatchesRawGroupBy_AndIdempotent(t *testing.T) {
 	seeds := []probeSeed{
 		// siteID, today: 3 up (one zero-latency, excluded from the latency
 		// average like NULLIF(total_ms,0) would exclude it), 1 down.
-		{siteID, today.Add(9 * time.Hour), true, 120},
-		{siteID, today.Add(10 * time.Hour), true, 0},
-		{siteID, today.Add(11 * time.Hour), false, 0},
-		{siteID, today.Add(12 * time.Hour), true, 80}, // most recent overall — the expected "latest" row.
+		{siteID, anchorToToday(now.Add(-4*time.Minute), today), true, 120},
+		{siteID, anchorToToday(now.Add(-3*time.Minute), today), true, 0},
+		{siteID, anchorToToday(now.Add(-2*time.Minute), today), false, 0},
+		{siteID, latestToday, true, 80},
 		// siteID, yesterday: 2 up.
 		{siteID, yesterday.Add(9 * time.Hour), true, 200},
 		{siteID, yesterday.Add(10 * time.Hour), true, 300},
 		// A second site, today only — proves per-site grouping.
-		{otherSiteID, today.Add(9 * time.Hour), false, 999},
+		{otherSiteID, anchorToToday(now.Add(-4*time.Minute), today), false, 999},
 	}
 	for _, s := range seeds {
 		if _, err := pool.Exec(ctx,
@@ -292,7 +328,7 @@ func TestM99Migration_BackfillMatchesRawGroupBy_AndIdempotent(t *testing.T) {
 	}
 	assertDailyBuckets(t)
 
-	// Status stamp: the single most recent probe (today.Add(12h), up=true).
+	// Status stamp: the single most recent probe (latestToday, up=true).
 	var latestUp bool
 	var lastProbedAt time.Time
 	if err := pool.QueryRow(ctx,
@@ -303,8 +339,8 @@ func TestM99Migration_BackfillMatchesRawGroupBy_AndIdempotent(t *testing.T) {
 	if !latestUp {
 		t.Fatal("status: latest_up = false, want true (most recent seeded probe was up)")
 	}
-	if !lastProbedAt.Equal(today.Add(12 * time.Hour)) {
-		t.Fatalf("status: last_probed_at = %v, want %v", lastProbedAt, today.Add(12*time.Hour))
+	if !lastProbedAt.Equal(latestToday) {
+		t.Fatalf("status: last_probed_at = %v, want %v", lastProbedAt, latestToday)
 	}
 
 	// Idempotency: re-execute the m99 migration's own SQL text a second time
