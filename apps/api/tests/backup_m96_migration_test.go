@@ -31,10 +31,6 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/migrations"
 )
 
-// m96MigrationVersion is the embedded migration filename (sans .sql) that
-// adds backup_snapshots_chain_gen_completed_uidx.
-const m96MigrationVersion = "20260729000000_m96_backup_chain_gen_completed_uidx"
-
 // m143MigrationVersion is m143, PR #775's prefill that runs ahead of m96 and
 // does its dedup UPDATE under NO FORCE / row_security=off so it actually sees
 // pre-existing rows under the production migrator role. The harness below

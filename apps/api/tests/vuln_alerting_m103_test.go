@@ -329,10 +329,13 @@ func TestM103Migration_BackfillNotifiedAt_AndDefaults(t *testing.T) {
 // TestM145FiresLeavingNotifiedAtNullUnderOwnerRole is the fires proof for
 // m145: with m145 recorded as applied but never actually run (a binary that
 // predates PR #775's fix, exactly as production saw it), m103 must reproduce
-// the original silent failure — it boots cleanly, but notified_at stays NULL
-// for a pre-existing finding — because its own backfill UPDATE cannot see the
+// the original silent failure: it boots cleanly, but notified_at stays NULL
+// for a pre-existing finding, because its own backfill UPDATE cannot see the
 // row under FORCE ROW LEVEL SECURITY and no app.* GUC. Unmarking m145 and
-// migrating again must then backfill it.
+// migrating again does NOT backfill it, because m145's probe only checks
+// whether notified_at exists; m103's earlier ADD COLUMN already committed, so
+// the column is present and m145 no-ops. This test pins that unresolved gap,
+// spelled out in the comment below.
 func TestM145FiresLeavingNotifiedAtNullUnderOwnerRole(t *testing.T) {
 	pool, owner := startPostgresBeforeM103(t)
 	ctx := context.Background()
