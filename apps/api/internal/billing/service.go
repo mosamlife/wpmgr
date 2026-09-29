@@ -9,6 +9,7 @@ import (
 	"github.com/gomodule/redigo/redis"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/riverqueue/river"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
@@ -41,6 +42,16 @@ type Service struct {
 	registry        *Registry
 	defaultProvider string
 	auditRec        *audit.Recorder
+
+	// river enqueues the billing jobs (worker.go). Intake, reconcile and the
+	// operator actions fail loudly without it rather than dropping work.
+	river *river.Client[pgx.Tx]
+}
+
+// SetRiver wires the River client the billing jobs are inserted with. Called
+// once River has started (see cmd/wpmgr/main.go).
+func (s *Service) SetRiver(client *river.Client[pgx.Tx]) {
+	s.river = client
 }
 
 // SetProviders wires the payment-provider registry built at boot from config

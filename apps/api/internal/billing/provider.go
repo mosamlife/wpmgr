@@ -25,6 +25,31 @@ const (
 	EventPaymentFailed    EventKind = "payment_failed"
 	EventRefunded         EventKind = "refunded"
 	EventUpdated          EventKind = "updated"
+	// EventTaxIDUpdated is a change to a customer's saved tax ID. It never
+	// changes billing state; the apply worker records it and raises a warning
+	// when the ID is unverified.
+	EventTaxIDUpdated EventKind = "tax_id_updated"
+)
+
+// Ownership says whether a verified webhook event belongs to WPMgr. A payment
+// account can be shared with other products, so an adapter classifies every
+// verified event before intake records anything.
+//
+// The zero value means owned: an adapter that never sets the field (Razorpay,
+// the integration fake) produces owned events, which intake records and the
+// apply worker resolves to a tenant or reports as a mismatch.
+type Ownership uint8
+
+const (
+	// OwnershipOwned is the zero value: the event is WPMgr's.
+	OwnershipOwned Ownership = iota
+	// OwnershipForeign marks an event another product on the same account
+	// produced. Intake acknowledges it with 200 and records nothing.
+	OwnershipForeign
+	// OwnershipByCustomer marks an event that carries only a customer id.
+	// Intake treats it as owned when a tenant stores that customer for this
+	// provider, and as foreign otherwise.
+	OwnershipByCustomer
 )
 
 // CheckoutInput describes a request to start a hosted checkout for one
@@ -154,6 +179,23 @@ type Event struct {
 	CurrentPeriodEnd       time.Time
 	OccurredAt             time.Time
 	Raw                    []byte
+
+	// Ownership is the adapter's classification (see Ownership). The zero
+	// value means owned.
+	Ownership Ownership
+
+	// TaxIDTypes and BillingCountry are read from a completed checkout
+	// session's customer details: the types of the tax IDs the buyer gave
+	// (never the values) and the billing address country. Intake stores them
+	// in the ledger payload, so later work reads them from the ledger row.
+	TaxIDTypes     []string
+	BillingCountry string
+
+	// TaxIDType and TaxIDVerificationStatus describe a tax_id_updated event's
+	// ID: its type and its verification status (e.g. "verified",
+	// "unverified", "pending"). The ID value itself is never read.
+	TaxIDType               string
+	TaxIDVerificationStatus string
 }
 
 // Provider is the payment-provider integration surface. internal/billing's
@@ -213,6 +255,18 @@ type Provider interface {
 	// decide whether to advertise/attempt a portal link at all, rather than
 	// discovering "not supported" only after calling CreatePortalSession.
 	HasPortal() bool
+}
+
+// CheckoutSessionExpirer is an OPTIONAL capability a Provider may implement
+// when its hosted checkout leaves session objects open after a subscription
+// has started. The apply worker calls it after an activation commits, outside
+// any transaction, so a customer is left with no second payable checkout.
+//
+// Implementations must refuse an empty providerCustomerID with an error and
+// send no request, must list only that customer's sessions, and must expire
+// only sessions whose own customer equals it.
+type CheckoutSessionExpirer interface {
+	ExpireOpenCheckoutSessions(ctx context.Context, providerCustomerID string) (expired int, err error)
 }
 
 // CheckoutCallbackVerifier is an OPTIONAL capability a Provider may implement

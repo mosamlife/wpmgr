@@ -633,8 +633,10 @@ func (s *Service) CompAccount(ctx context.Context, actorUserID, tenantID uuid.UU
 	})
 }
 
-// RevokeComp reverts a comp: adopts the live provider subscription when one
-// exists (billing.Service.ReconcileOneNow), else falls back to free/none.
+// RevokeComp reverts a comp to free/none under the tenant billing lock
+// (billing.Service.RevokeComp). When a provider subscription is stored, a
+// billing refresh is enqueued in the same transaction and the refresh worker
+// adopts the live subscription's state; no provider call is made here.
 func (s *Service) RevokeComp(ctx context.Context, actorUserID, tenantID uuid.UUID, reason string) error {
 	if !s.billingPanelReady() {
 		return errBillingPanelNotWired()
@@ -644,21 +646,13 @@ func (s *Service) RevokeComp(ctx context.Context, actorUserID, tenantID uuid.UUI
 	}
 	adopted := false
 	if s.billingSvc != nil {
-		_, hadSub, rerr := s.billingSvc.ReconcileOneNow(ctx, tenantID)
+		res, rerr := s.billingSvc.RevokeComp(ctx, tenantID)
 		if rerr != nil {
-			return domain.Internal("admin_billing_revoke_comp_reconcile_failed", "failed to reconcile the live subscription").WithCause(rerr)
+			return rerr
 		}
-		if hadSub {
-			adopted = true
-			if err := s.billingRepo.ClearCompReason(ctx, tenantID); err != nil {
-				return err
-			}
-		}
-	}
-	if !adopted {
-		if err := s.billingRepo.RevokeCompToFree(ctx, tenantID); err != nil {
-			return err
-		}
+		adopted = res.RefreshEnqueued
+	} else if err := s.billingRepo.RevokeCompToFree(ctx, tenantID); err != nil {
+		return err
 	}
 	header, herr := s.billingRepo.GetAccountHeader(ctx, tenantID)
 	newPlan, newStatus := "free", "none"

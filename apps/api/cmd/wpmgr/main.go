@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -676,6 +677,9 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		PriceAgency:     cfg.Billing.Stripe.PriceAgency,
 		PriceScale:      cfg.Billing.Stripe.PriceScale,
 		PortalReturnURL: cfg.PublicBaseURL + "/billing",
+		// A dedicated client with a whole-request deadline, so one Stripe
+		// call can never outlive the billing worker's own bound.
+		HTTPClient: &http.Client{Timeout: 10 * time.Second},
 	}
 	if stripeCfg.Configured() {
 		billingProviders = append(billingProviders, billingstripe.New(stripeCfg))
@@ -721,6 +725,9 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	}, billingPublicBaseURL)
 	billingWebhookH := billing.NewWebhookHandler(billingSvc, logger)
 	billingReconcileWorker := billing.NewReconcileWorker(billingSvc, logger)
+	billingApplyWorker := billing.NewBillingApplyWorker(billingSvc)
+	billingRefreshWorker := billing.NewBillingRefreshWorker(billingSvc)
+	billingAuditWorker := billing.NewBillingAuditWorker(billingSvc)
 
 	// M16 live-pricing Phase 1 — public GET /api/v1/pricing (internal/pricing),
 	// the marketing site's price source. Reuses the SAME billingRegistry (so
@@ -2060,6 +2067,9 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		// worker's own Reconcile call no-ops cleanly when hosted billing is
 		// disabled or no provider is registered).
 		billingReconcileWorker: billingReconcileWorker,
+		billingApplyWorker:     billingApplyWorker,
+		billingRefreshWorker:   billingRefreshWorker,
+		billingAuditWorker:     billingAuditWorker,
 		// GH #152 part 2 — daily org grace-window purge sweep (always wired).
 		orgPurgeWorker: orgPurgeWorker,
 		// GH #402: site-object reclaim sweep (always wired; no-ops with no
@@ -2082,6 +2092,9 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// operator-facing refresh route on the site handler (via siteRefreshAdapter).
 	// GH #755: agent pushes queue a reported address for siteAdoptURLWorker.
 	siteSvc.SetAdoptURLEnqueuer(site.NewRiverAdoptURLEnqueuer(riverClient))
+	// Billing intake, reconcile and operator actions enqueue their jobs on
+	// the started client.
+	billingSvc.SetRiver(riverClient)
 	updateEnqueuer := update.NewRiverEnqueuer(riverClient)
 	updateSvc := update.NewService(updateRepo, sitesLookup, updateEnqueuer, validator, clock)
 	updateH := update.NewHandler(updateSvc, updateHub, auditRec)
@@ -3485,6 +3498,12 @@ type riverDeps struct {
 	// itself no-ops cleanly when hosted billing is disabled or no provider is
 	// registered, so there is nothing to gate here.
 	billingReconcileWorker *billing.ReconcileWorker
+	// The billing apply, refresh and audit workers (internal/billing's
+	// worker.go). Always wired with the reconcile worker; they share its
+	// queue. Webhook intake, reconcile and operator actions only enqueue.
+	billingApplyWorker   *billing.BillingApplyWorker
+	billingRefreshWorker *billing.BillingRefreshWorker
+	billingAuditWorker   *billing.BillingAuditWorker
 	// GH #152 part 2 — daily org grace-window purge sweep. Always wired (like
 	// billingReconcileWorker above): PurgeWorker.Work no-ops cleanly when
 	// there are zero tenants past their grace window.
@@ -4069,7 +4088,16 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 	// boot closes that window without any real cost (the tenant set is small).
 	if d.billingReconcileWorker != nil {
 		river.AddWorker(workers, d.billingReconcileWorker)
-		queues[billing.ReconcileQueue] = river.QueueConfig{MaxWorkers: 1}
+		if d.billingApplyWorker != nil {
+			river.AddWorker(workers, d.billingApplyWorker)
+		}
+		if d.billingRefreshWorker != nil {
+			river.AddWorker(workers, d.billingRefreshWorker)
+		}
+		if d.billingAuditWorker != nil {
+			river.AddWorker(workers, d.billingAuditWorker)
+		}
+		queues[billing.BillingQueue] = river.QueueConfig{MaxWorkers: 1}
 		periodics = append(periodics, river.NewPeriodicJob(
 			river.PeriodicInterval(24*time.Hour),
 			func() (river.JobArgs, *river.InsertOpts) { return billing.ReconcileArgs{}, nil },

@@ -70,14 +70,16 @@ func statusAppliesPlan(status Status) bool {
 //	                    treated as "not a real subscription yet/anymore":
 //	                    plan=free, status=none, grace cleared.
 //
-// billingProvider/providerCustomerID/providerSubscriptionID are carried
-// forward from the freshly fetched subscription; the caller is responsible
+// providerSubscriptionID is carried forward from the freshly fetched
+// subscription, and providerCustomerID only when none is stored; the caller is responsible
 // for having already set tenants.billing_provider on first checkout (see
 // Service.CreateCheckout) — nextBillingState does not invent a provider name.
 func nextBillingState(current tenantBillingProfile, sub Subscription, now time.Time) tenantBillingProfile {
 	next := current
 	next.ProviderSubscriptionID = sub.ID
-	if sub.CustomerID != "" {
+	// The stored customer is write-once: it is filled only when none is
+	// stored, and never replaced by the subscription's.
+	if current.ProviderCustomerID == "" {
 		next.ProviderCustomerID = sub.CustomerID
 	}
 	cpe := sub.CurrentPeriodEnd

@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -318,21 +319,29 @@ func (p *Provider) VerifyWebhook(rawBody []byte, headers http.Header) (billing.E
 		Raw:               ev.Data.Raw,
 	}
 
+	obj := ev.Data.Object
+	out.Ownership = p.classify(string(ev.Type), obj)
+	if out.Ownership == billing.OwnershipForeign {
+		// Another product's event on a shared account: nothing below reads
+		// it, and intake acknowledges it without recording anything.
+		return out, nil
+	}
+
 	switch ev.Type {
 	case stripesdk.EventTypeCheckoutSessionCompleted:
-		p.applyCheckoutSession(&out, ev.Data.Object)
+		p.applyCheckoutSession(&out, obj)
 	case stripesdk.EventTypeCustomerSubscriptionCreated:
-		p.applySubscriptionEvent(&out, ev.Data.Object, billing.EventActivated)
+		p.applySubscriptionEvent(&out, obj, billing.EventActivated)
 	case stripesdk.EventTypeCustomerSubscriptionUpdated:
-		p.applySubscriptionEvent(&out, ev.Data.Object, billing.EventUpdated)
+		p.applySubscriptionEvent(&out, obj, billing.EventUpdated)
 	case stripesdk.EventTypeCustomerSubscriptionDeleted:
-		p.applySubscriptionEvent(&out, ev.Data.Object, billing.EventCanceled)
+		p.applySubscriptionEvent(&out, obj, billing.EventCanceled)
 	case stripesdk.EventTypeInvoicePaymentFailed:
-		p.applyInvoiceEvent(&out, ev.Data.Object, billing.EventPaymentFailed)
+		p.applyInvoiceEvent(&out, obj, billing.EventPaymentFailed)
 	case stripesdk.EventTypeInvoicePaid:
-		p.applyInvoiceEvent(&out, ev.Data.Object, billing.EventPaymentSucceeded)
-	case stripesdk.EventTypeChargeRefunded:
-		p.applyChargeEvent(&out, ev.Data.Object, billing.EventRefunded)
+		p.applyInvoiceEvent(&out, obj, billing.EventPaymentSucceeded)
+	case stripesdk.EventTypeCustomerTaxIDUpdated:
+		p.applyTaxIDEvent(&out, obj)
 	default:
 		out.Handled = false
 	}
@@ -403,8 +412,46 @@ func (p *Provider) applyCheckoutSession(out *billing.Event, obj map[string]inter
 	out.Kind = billing.EventActivated
 	out.ProviderCustomerID = nestedID(obj, "customer")
 	out.ProviderSubscriptionID = nestedID(obj, "subscription")
-	out.TenantID = tenantIDFromMetadataOrClientRef(
-		stringMapField(obj, "metadata"), stringField(obj, "client_reference_id"))
+	out.TenantID = tenantIDFromMetadata(stringMapField(obj, "metadata"))
+	out.TaxIDTypes, out.BillingCountry = sessionTaxDetails(obj)
+}
+
+// sessionTaxDetails reads a completed checkout session's customer_details:
+// the TYPE of every tax ID the buyer gave (never its value) and the billing
+// address country. Both are empty when the session carries none. The types
+// slice is never nil, so the ledger payload always holds an array.
+func sessionTaxDetails(obj map[string]interface{}) (types []string, country string) {
+	types = []string{}
+	details, ok := obj["customer_details"].(map[string]interface{})
+	if !ok {
+		return types, ""
+	}
+	if ids, ok := details["tax_ids"].([]interface{}); ok {
+		for _, raw := range ids {
+			if id, ok := raw.(map[string]interface{}); ok {
+				if t := stringField(id, "type"); t != "" {
+					types = append(types, t)
+				}
+			}
+		}
+	}
+	if addr, ok := details["address"].(map[string]interface{}); ok {
+		country = stringField(addr, "country")
+	}
+	return types, country
+}
+
+// applyTaxIDEvent fills out from a customer.tax_id.updated event's raw
+// object: the owning customer, the ID's type and its verification status.
+// The ID's value is never read.
+func (p *Provider) applyTaxIDEvent(out *billing.Event, obj map[string]interface{}) {
+	out.Handled = true
+	out.Kind = billing.EventTaxIDUpdated
+	out.ProviderCustomerID = nestedID(obj, "customer")
+	out.TaxIDType = stringField(obj, "type")
+	if v, ok := obj["verification"].(map[string]interface{}); ok {
+		out.TaxIDVerificationStatus = stringField(v, "status")
+	}
 }
 
 // applySubscriptionEvent fills out from a customer.subscription.* event's raw
@@ -430,7 +477,7 @@ func (p *Provider) applySubscriptionEvent(out *billing.Event, obj map[string]int
 	}
 	out.ProviderCustomerID = nestedID(obj, "customer")
 	out.ProviderSubscriptionID = stringField(obj, "id")
-	out.TenantID = tenantIDFromMetadataOrClientRef(stringMapField(obj, "metadata"), "")
+	out.TenantID = tenantIDFromMetadata(stringMapField(obj, "metadata"))
 }
 
 // applyInvoiceEvent fills out from an invoice.* event's raw object. Tenant
@@ -444,44 +491,137 @@ func (p *Provider) applyInvoiceEvent(out *billing.Event, obj map[string]interfac
 	out.ProviderCustomerID = nestedID(obj, "customer")
 
 	var subMeta map[string]string
-	if parent, ok := obj["parent"].(map[string]interface{}); ok {
-		if details, ok := parent["subscription_details"].(map[string]interface{}); ok {
-			out.ProviderSubscriptionID = nestedID(details, "subscription")
-			subMeta = stringMapField(details, "metadata")
-		}
+	if details := invoiceSubscriptionDetails(obj); details != nil {
+		out.ProviderSubscriptionID = nestedID(details, "subscription")
+		subMeta = stringMapField(details, "metadata")
 	}
-	out.TenantID = tenantIDFromMetadataOrClientRef(subMeta, "")
+	out.TenantID = tenantIDFromMetadata(subMeta)
 }
 
-// applyChargeEvent fills out from a charge.refunded event's raw object.
-// Charges carry no subscription reference, so ProviderSubscriptionID is left
-// empty — Service.ProcessWebhook ledgers the event and does not attempt a
-// subscription refetch/state-machine pass when that is empty, matching the
-// spec's "charge.refunded → Refunded, no state mutation" behavior.
-func (p *Provider) applyChargeEvent(out *billing.Event, obj map[string]interface{}, kind billing.EventKind) {
-	out.Handled = true
-	out.Kind = kind
-	out.ProviderCustomerID = nestedID(obj, "customer")
-	out.TenantID = tenantIDFromMetadataOrClientRef(stringMapField(obj, "metadata"), "")
+// invoiceSubscriptionDetails returns an invoice object's
+// parent.subscription_details, or nil when the invoice has none.
+func invoiceSubscriptionDetails(obj map[string]interface{}) map[string]interface{} {
+	parent, ok := obj["parent"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	details, _ := parent["subscription_details"].(map[string]interface{})
+	return details
 }
 
-// tenantIDFromMetadataOrClientRef parses billing.Event.TenantID from a
-// Stripe metadata map's tenantMetadataKey entry, falling back to a raw
-// client_reference_id string (checkout sessions only). Returns uuid.Nil when
-// neither is present or parseable — the caller then falls back to the
-// (provider, provider_customer_id) lookup.
-func tenantIDFromMetadataOrClientRef(metadata map[string]string, clientRef string) uuid.UUID {
-	if metadata != nil {
-		if v, ok := metadata[tenantMetadataKey]; ok && v != "" {
-			if parsed, err := uuid.Parse(v); err == nil {
-				return parsed
-			}
-		}
-	}
-	if clientRef != "" {
-		if parsed, err := uuid.Parse(clientRef); err == nil {
+// appMetadataKey and appMetadataValue mark an object WPMgr created, for an
+// object that carries no tenant id.
+const (
+	appMetadataKey   = "app"
+	appMetadataValue = "wpmgr"
+)
+
+// tenantIDFromMetadata parses billing.Event.TenantID from a Stripe metadata
+// map's tenantMetadataKey entry. Returns uuid.Nil when it is absent or not a
+// UUID; the apply worker then resolves the tenant from the customer.
+func tenantIDFromMetadata(metadata map[string]string) uuid.UUID {
+	if v, ok := metadata[tenantMetadataKey]; ok && v != "" {
+		if parsed, err := uuid.Parse(v); err == nil {
 			return parsed
 		}
 	}
 	return uuid.Nil
+}
+
+// metadataIsOurs reports whether a Stripe metadata map marks its object as
+// WPMgr's: a tenant id, or app=wpmgr.
+func metadataIsOurs(metadata map[string]string) bool {
+	return metadata[tenantMetadataKey] != "" || metadata[appMetadataKey] == appMetadataValue
+}
+
+// classify decides whether a verified event belongs to WPMgr. The Stripe
+// account may be shared with other products, so only these count as owned:
+//
+//   - a checkout.session.* event whose session metadata marks it as WPMgr's;
+//   - a customer.subscription.* event whose subscription metadata marks it,
+//     or one of whose items uses a price this adapter maps to a tier;
+//   - an invoice.* event whose parent subscription_details metadata marks it.
+//
+// customer.tax_id.updated carries only a customer, so it is
+// OwnershipByCustomer and intake decides it against the stored customers.
+// Every other event is foreign. client_reference_id is never consulted.
+func (p *Provider) classify(evType string, obj map[string]interface{}) billing.Ownership {
+	switch {
+	case evType == string(stripesdk.EventTypeCustomerTaxIDUpdated):
+		return billing.OwnershipByCustomer
+	case strings.HasPrefix(evType, "checkout.session."):
+		if metadataIsOurs(stringMapField(obj, "metadata")) {
+			return billing.OwnershipOwned
+		}
+	case strings.HasPrefix(evType, "customer.subscription."):
+		if metadataIsOurs(stringMapField(obj, "metadata")) || p.subscriptionUsesOurPrice(obj) {
+			return billing.OwnershipOwned
+		}
+	case strings.HasPrefix(evType, "invoice."):
+		if details := invoiceSubscriptionDetails(obj); details != nil &&
+			metadataIsOurs(stringMapField(details, "metadata")) {
+			return billing.OwnershipOwned
+		}
+	}
+	return billing.OwnershipForeign
+}
+
+// subscriptionUsesOurPrice reports whether any item of a raw subscription
+// object uses a price in priceToPlan.
+func (p *Provider) subscriptionUsesOurPrice(obj map[string]interface{}) bool {
+	items, ok := obj["items"].(map[string]interface{})
+	if !ok {
+		return false
+	}
+	data, ok := items["data"].([]interface{})
+	if !ok {
+		return false
+	}
+	for _, raw := range data {
+		item, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if id := nestedID(item, "price"); id != "" {
+			if _, ok := p.priceToPlan[id]; ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// errListNeedsCustomer is returned by every list helper called with an empty
+// customer. A list without a customer filter would read the whole account.
+var errListNeedsCustomer = errors.New("stripe: a list call requires a non-empty customer")
+
+// ExpireOpenCheckoutSessions implements billing.CheckoutSessionExpirer. It
+// lists customerID's open Checkout Sessions, following every page, and
+// expires each one whose own customer equals customerID. An empty customerID
+// is refused before any request is sent.
+func (p *Provider) ExpireOpenCheckoutSessions(ctx context.Context, customerID string) (int, error) {
+	if customerID == "" {
+		return 0, errListNeedsCustomer
+	}
+	params := &stripesdk.CheckoutSessionListParams{
+		Customer: stripesdk.String(customerID),
+		Status:   stripesdk.String(string(stripesdk.CheckoutSessionStatusOpen)),
+	}
+	expired := 0
+	for sess, err := range p.client.V1CheckoutSessions.List(ctx, params).All(ctx) {
+		if err != nil {
+			return expired, wrapErr("billing_session_list_failed", "failed to list checkout sessions", err)
+		}
+		if sess == nil || sess.Customer == nil || sess.Customer.ID != customerID {
+			continue
+		}
+		if sess.Status != stripesdk.CheckoutSessionStatusOpen {
+			continue
+		}
+		if _, err := p.client.V1CheckoutSessions.Expire(ctx, sess.ID, nil); err != nil {
+			return expired, wrapErr("billing_session_expire_failed", "failed to expire checkout session", err)
+		}
+		expired++
+	}
+	return expired, nil
 }
