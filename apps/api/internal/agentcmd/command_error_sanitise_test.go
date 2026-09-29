@@ -54,6 +54,9 @@ func TestSanitizeReason_Redacts(t *testing.T) {
 		{"single-segment absolute path", "cannot open /etc now", "/etc", "[path]"},
 		{"windows path", `cannot open C:\inetpub\wwwroot\x.php here`, "inetpub", "[path]"},
 		{"windows forward-slash path", "cannot open D:/sites/x.php here", "sites", "[path]"},
+		{"url with an ip host", "fetch http://203.0.113.9/payload now", "203.0.113.9", "[link]"},
+		{"www host with a file-extension label", "open www.evil-help.php now", "evil-help", "[link]"},
+		{"host with a path ending in .php", "see evil.com/x.php now", "evil.com", "[link]"},
 		{"hex token", "key 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b rejected", "9f86d081", "[redacted]"},
 		{"base64 token", "key dGhpcyBpcyBhIHNlY3JldCBrZXkgdmFsdWU= rejected", "dGhpcyBp", "[redacted]"},
 		{"jwt-like token", "token eyJhbGciOiJFZERTQSJ9-eyJzdWIiOiJ4In0_abcDEF rejected", "eyJhbGci", "[redacted]"},
@@ -66,6 +69,9 @@ func TestSanitizeReason_Redacts(t *testing.T) {
 			}
 			if !strings.Contains(got, tt.wantIn) {
 				t.Errorf("sanitizeReason(%q) = %q, want it to contain %q", tt.in, got, tt.wantIn)
+			}
+			if strings.Contains(got, "://") {
+				t.Errorf("sanitizeReason(%q) = %q, a scheme survived", tt.in, got)
 			}
 		})
 	}
