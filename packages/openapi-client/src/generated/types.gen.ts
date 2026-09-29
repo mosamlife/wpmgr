@@ -10119,13 +10119,17 @@ export type DeleteOrgErrors = {
    */
   404: Error;
   /**
-   * org_already_deleted | billing_active | restore_in_progress, see the error `code` for which precondition failed
+   * org_already_deleted | billing_active | restore_in_progress, see the error `code` for which precondition failed. On billing_active, `details.reason` is one of: `cancel_required` (a live subscription has no cancellation scheduled; cancel it, then delete), `past_due` (a payment is past due; cancel now, available for card payments, or wait for the subscription to end), `comped_subscription` (a complimentary plan with a subscription attached; contact support) or `subscription_pending` (the subscription's state is still settling; try again shortly).
    */
   409: Error;
   /**
    * confirm_name does not match the organisation's name
    */
   422: Error;
+  /**
+   * org_delete_billing_guard_unwired — a hosted instance whose billing delete check is not configured refuses every delete rather than skip the check.
+   */
+  500: Error;
 };
 
 export type DeleteOrgError = DeleteOrgErrors[keyof DeleteOrgErrors];
@@ -11078,10 +11082,6 @@ export type CreateBillingCheckoutData = {
 
 export type CreateBillingCheckoutErrors = {
   /**
-   * billing_invalid_currency — currency was set to something other than INR for a Razorpay checkout (Razorpay is INR-only; Stripe ignores this field).
-   */
-  400: Error;
-  /**
    * Not authenticated
    */
   401: Error;
@@ -11094,7 +11094,7 @@ export type CreateBillingCheckoutErrors = {
    */
   409: Error;
   /**
-   * tier is not one of starter, agency, scale
+   * billing_invalid_tier — tier is not one of starter, agency, scale. billing_invalid_currency — currency was set to something other than INR for a Razorpay checkout (Razorpay is INR-only; Stripe ignores this field).
    */
   422: Error;
   /**
@@ -11224,7 +11224,7 @@ export type ConfirmBillingCheckoutError =
 
 export type ConfirmBillingCheckoutResponses = {
   /**
-   * The session was verified; a background refresh was enqueued (or the plan change had already landed via the webhook).
+   * The session was verified and the plan change had already landed. Nothing was enqueued.
    */
   200: {
     ok: boolean;
@@ -11257,7 +11257,11 @@ export type CancelBillingSubscriptionErrors = {
    */
   403: Error;
   /**
-   * when is not one of period_end, now; or now was requested while the subscription is not past_due, or its provider is not stripe.
+   * billing_no_subscription — the workspace has no subscription to cancel. billing_subscription_mismatch — for `when` now, the payment provider could not confirm that the stored subscription belongs to this workspace's stored customer; nothing was cancelled; contact support.
+   */
+  409: Error;
+  /**
+   * billing_invalid_cancel_when — when is not one of period_end, now. billing_cancel_now_not_allowed — now was requested while the subscription is not past_due (as stored, or as the payment provider reports it), or its provider is not stripe.
    */
   422: Error;
 };
@@ -11267,7 +11271,7 @@ export type CancelBillingSubscriptionError =
 
 export type CancelBillingSubscriptionResponses = {
   /**
-   * Cancellation scheduled
+   * Cancellation scheduled, or, for `when` now, requested
    */
   200: {
     ok: boolean;

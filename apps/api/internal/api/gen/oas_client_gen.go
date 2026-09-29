@@ -649,9 +649,11 @@ type Invoker interface {
 	// CancelBillingSubscription invokes cancelBillingSubscription operation.
 	//
 	// The provider-agnostic cancellation path — the only one for a provider with no hosted portal (e.g.
-	// Razorpay). Cancellation is scheduled for the end of the current billing period; the plan/status
-	// change lands later via the provider's webhook. Poll `GET /billing` afterward rather than expecting
-	// this response to carry the new plan state.
+	// Razorpay). By default (`when` omitted or `period_end`) cancellation is scheduled for the end of the
+	// current billing period. `when: now` ends the subscription at once, and is allowed only while a card
+	// (Stripe) payment is past due. Either way the plan/status change lands later via the provider's
+	// webhook or a background refresh. Poll `GET /billing` afterward rather than expecting this response
+	// to carry the new plan state.
 	//
 	// POST /api/v1/billing/cancel
 	CancelBillingSubscription(ctx context.Context, request OptBillingCancelRequest) (CancelBillingSubscriptionRes, error)
@@ -818,9 +820,9 @@ type Invoker interface {
 	// actually granting a plan; this endpoint just speeds up activation after the browser returns from a
 	// Stripe checkout redirect. The named session must belong to the caller's own tenant and its stored
 	// payment-provider customer, and must be a completed subscription-mode Checkout Session — the
-	// request can never name a different tenant, customer or session state. Enqueues a background refresh
-	// and returns; poll `GET /billing` afterward rather than expecting this response to carry the new plan
-	// state.
+	// request can never name a different tenant, customer or session state. Returns 200 when the plan
+	// change has already landed, and otherwise enqueues a background refresh and returns 202; after a 202,
+	// poll `GET /billing` rather than expecting this response to carry the new plan state.
 	//
 	// POST /api/v1/billing/checkout/confirm
 	ConfirmBillingCheckout(ctx context.Context, request *BillingCheckoutConfirmRequest) (ConfirmBillingCheckoutRes, error)
@@ -1116,8 +1118,9 @@ type Invoker interface {
 	// purge worker runs. `confirm_name` must exactly match the organisation's current name. When this is
 	// the caller's active org, their session is reassigned to another live membership, or cleared entirely
 	// (dropping to onboarding) if it was their last org, `active_tenant_id` in the response reflects the
-	// post-delete state. On a hosted instance an active paid subscription must be cancelled/downgraded
-	// first (`billing_active` 409).
+	// post-delete state. On a hosted instance the organisation's billing state must allow the delete, or
+	// it is refused with 409 `billing_active` and a `details.reason` saying what to do (see the 409
+	// response).
 	//
 	// DELETE /api/v1/orgs/{orgId}
 	DeleteOrg(ctx context.Context, request *DeleteOrgReq, params DeleteOrgParams) (DeleteOrgRes, error)
@@ -9325,9 +9328,11 @@ func (c *Client) sendCancelBackup(ctx context.Context, params CancelBackupParams
 // CancelBillingSubscription invokes cancelBillingSubscription operation.
 //
 // The provider-agnostic cancellation path — the only one for a provider with no hosted portal (e.g.
-// Razorpay). Cancellation is scheduled for the end of the current billing period; the plan/status
-// change lands later via the provider's webhook. Poll `GET /billing` afterward rather than expecting
-// this response to carry the new plan state.
+// Razorpay). By default (`when` omitted or `period_end`) cancellation is scheduled for the end of the
+// current billing period. `when: now` ends the subscription at once, and is allowed only while a card
+// (Stripe) payment is past due. Either way the plan/status change lands later via the provider's
+// webhook or a background refresh. Poll `GET /billing` afterward rather than expecting this response
+// to carry the new plan state.
 //
 // POST /api/v1/billing/cancel
 func (c *Client) CancelBillingSubscription(ctx context.Context, request OptBillingCancelRequest) (CancelBillingSubscriptionRes, error) {
@@ -10799,9 +10804,9 @@ func (c *Client) sendComputeRucss(ctx context.Context, request OptComputeRucssRe
 // actually granting a plan; this endpoint just speeds up activation after the browser returns from a
 // Stripe checkout redirect. The named session must belong to the caller's own tenant and its stored
 // payment-provider customer, and must be a completed subscription-mode Checkout Session — the
-// request can never name a different tenant, customer or session state. Enqueues a background refresh
-// and returns; poll `GET /billing` afterward rather than expecting this response to carry the new plan
-// state.
+// request can never name a different tenant, customer or session state. Returns 200 when the plan
+// change has already landed, and otherwise enqueues a background refresh and returns 202; after a 202,
+// poll `GET /billing` rather than expecting this response to carry the new plan state.
 //
 // POST /api/v1/billing/checkout/confirm
 func (c *Client) ConfirmBillingCheckout(ctx context.Context, request *BillingCheckoutConfirmRequest) (ConfirmBillingCheckoutRes, error) {
@@ -13963,8 +13968,9 @@ func (c *Client) sendDeleteMember(ctx context.Context, params DeleteMemberParams
 // purge worker runs. `confirm_name` must exactly match the organisation's current name. When this is
 // the caller's active org, their session is reassigned to another live membership, or cleared entirely
 // (dropping to onboarding) if it was their last org, `active_tenant_id` in the response reflects the
-// post-delete state. On a hosted instance an active paid subscription must be cancelled/downgraded
-// first (`billing_active` 409).
+// post-delete state. On a hosted instance the organisation's billing state must allow the delete, or
+// it is refused with 409 `billing_active` and a `details.reason` saying what to do (see the 409
+// response).
 //
 // DELETE /api/v1/orgs/{orgId}
 func (c *Client) DeleteOrg(ctx context.Context, request *DeleteOrgReq, params DeleteOrgParams) (DeleteOrgRes, error) {

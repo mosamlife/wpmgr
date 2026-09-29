@@ -12694,6 +12694,10 @@ type CancelBackupNotFound Error
 
 func (*CancelBackupNotFound) cancelBackupRes() {}
 
+type CancelBillingSubscriptionConflict Error
+
+func (*CancelBillingSubscriptionConflict) cancelBillingSubscriptionRes() {}
+
 type CancelBillingSubscriptionForbidden Error
 
 func (*CancelBillingSubscriptionForbidden) cancelBillingSubscriptionRes() {}
@@ -14613,10 +14617,6 @@ func (*CreateAutologinNotFound) createAutologinRes() {}
 type CreateAutologinUnprocessableEntity Error
 
 func (*CreateAutologinUnprocessableEntity) createAutologinRes() {}
-
-type CreateBillingCheckoutBadRequest Error
-
-func (*CreateBillingCheckoutBadRequest) createBillingCheckoutRes() {}
 
 type CreateBillingCheckoutConflict Error
 
@@ -17030,6 +17030,10 @@ func (*DeleteOrgConflict) deleteOrgRes() {}
 type DeleteOrgForbidden Error
 
 func (*DeleteOrgForbidden) deleteOrgRes() {}
+
+type DeleteOrgInternalServerError Error
+
+func (*DeleteOrgInternalServerError) deleteOrgRes() {}
 
 type DeleteOrgNotFound Error
 
