@@ -340,3 +340,39 @@ func TestAdoptReportedURL_DefinitiveNoHoldsForADay(t *testing.T) {
 		t.Fatalf("probes once the day had passed = %d, want 3", n)
 	}
 }
+
+// TestAdoptReportedURL_OneHostKeyUpgradePingsTheSavedHost: a site saved as
+// http://BÜCHER.de whose agent reports https://bücher.de is a scheme-only
+// upgrade: it sends one https ping to the saved host, no redirect probe, and
+// writes the saved spelling over https only when that ping answers 2xx.
+func TestAdoptReportedURL_OneHostKeyUpgradePingsTheSavedHost(t *testing.T) {
+	ctx := context.Background()
+	clk := &manualClock{t: time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)}
+	const saved, reported, want = "http://BÜCHER.de", "https://bücher.de", "https://bÜcher.de"
+
+	failing := &fakeProber{pingOK: false}
+	svc, repo := newAdoptService(saved, failing, clk)
+	if adopted, err := svc.adoptReportedURL(ctx, uuid.New(), uuid.New(), reported, "test", ""); adopted || err != nil {
+		t.Fatalf("failed ping: adopted=%v err=%v, want not adopted", adopted, err)
+	}
+	if len(repo.adoptCalls) != 0 {
+		t.Errorf("failed ping: address written %v", repo.adoptCalls)
+	}
+
+	ok := &fakeProber{pingOK: true}
+	svc, repo = newAdoptService(saved, ok, clk)
+	if adopted, err := svc.adoptReportedURL(ctx, uuid.New(), uuid.New(), reported, "test", ""); !adopted || err != nil {
+		t.Fatalf("2xx ping: adopted=%v err=%v, want adopted", adopted, err)
+	}
+	for _, p := range []*fakeProber{failing, ok} {
+		if len(p.pingCalls) != 1 || p.pingCalls[0] != want {
+			t.Errorf("ping calls = %v, want one to %s", p.pingCalls, want)
+		}
+		if len(p.redirectCalls) != 0 {
+			t.Errorf("redirect probe sent for a scheme-only upgrade: %v", p.redirectCalls)
+		}
+	}
+	if len(repo.adoptCalls) != 1 || repo.adoptCalls[0] != want {
+		t.Errorf("address writes = %v, want one to %s", repo.adoptCalls, want)
+	}
+}
