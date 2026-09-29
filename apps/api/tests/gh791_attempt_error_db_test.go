@@ -49,26 +49,31 @@ func newGH791Fixture(t *testing.T, slug string) gh791Fixture {
 	return gh791Fixture{app: app, admin: admin, repo: backup.NewRepo(app), tenant: tenant, site: site}
 }
 
-// runningSnapshot seeds a pending snapshot as wpmgr_app and claims it through
-// the repository, which is how a real run reaches 'running'.
-func (f gh791Fixture) runningSnapshot(t *testing.T) uuid.UUID {
+// runningSnapshot seeds a site of its own and a pending snapshot on it as
+// wpmgr_app, then claims the snapshot through the repository, which is how a
+// real run reaches 'running'. A site holds at most one in-flight snapshot
+// (backup_snapshots_one_inflight_per_site), so every running snapshot a test
+// needs gets a fresh site.
+func (f gh791Fixture) runningSnapshot(t *testing.T) (snap, site uuid.UUID) {
 	t.Helper()
-	id := seedBackupSnapshotAt(t, f.app, f.tenant, f.site, time.Now())
-	if _, claimed, err := f.repo.MarkSnapshotRunning(context.Background(), f.tenant, id); err != nil || !claimed {
+	site = seedSite(t, f.app, f.tenant, "")
+	snap = seedBackupSnapshotAt(t, f.app, f.tenant, site, time.Now())
+	if _, claimed, err := f.repo.MarkSnapshotRunning(context.Background(), f.tenant, snap); err != nil || !claimed {
 		t.Fatalf("MarkSnapshotRunning: claimed=%t err=%v", claimed, err)
 	}
-	return id
+	return snap, site
 }
 
-// linkedRun seeds a schedule and a run linked to snap in the given status.
-func (f gh791Fixture) linkedRun(t *testing.T, snap uuid.UUID, status string) uuid.UUID {
+// linkedRun seeds a schedule on site and a run linked to snap in the given
+// status.
+func (f gh791Fixture) linkedRun(t *testing.T, snap, site uuid.UUID, status string) uuid.UUID {
 	t.Helper()
-	sched := seedGuardSchedule(t, f.admin, f.tenant, f.site, time.Now().Add(time.Hour))
+	sched := seedGuardSchedule(t, f.admin, f.tenant, site, time.Now().Add(time.Hour))
 	var id uuid.UUID
 	if err := f.admin.QueryRow(context.Background(),
 		`INSERT INTO backup_schedule_runs (tenant_id, site_id, schedule_id, snapshot_id, scheduled_for, status)
 		 VALUES ($1, $2, $3, $4, now(), $5) RETURNING id`,
-		f.tenant, f.site, sched, snap, status).Scan(&id); err != nil {
+		f.tenant, site, sched, snap, status).Scan(&id); err != nil {
 		t.Fatalf("seed schedule run: %v", err)
 	}
 	return id
@@ -152,8 +157,8 @@ func (f gh791Fixture) run(t *testing.T, id uuid.UUID) sqlc.BackupScheduleRun {
 func TestGH791_AttemptErrorRecordedOnRunningRow(t *testing.T) {
 	f := newGH791Fixture(t, "gh791-set")
 	ctx := context.Background()
-	snapID := f.runningSnapshot(t)
-	runID := f.linkedRun(t, snapID, backup.ScheduleRunStatusRunning)
+	snapID, site := f.runningSnapshot(t)
+	runID := f.linkedRun(t, snapID, site, backup.ScheduleRunStatusRunning)
 
 	if n := f.setSnapAttempt(t, snapID, gh791AttemptMsg); n != 1 {
 		t.Fatalf("SetBackupSnapshotAttemptError on a running row affected %d rows, want 1", n)
@@ -210,8 +215,8 @@ func TestGH791_AttemptErrorRefusedUnlessRunning(t *testing.T) {
 	}
 
 	const finalReason = "Backup failed: the agent reported an error at includes/commands/class-backup-command.php:239."
-	failed := f.runningSnapshot(t)
-	runID := f.linkedRun(t, failed, backup.ScheduleRunStatusFailed)
+	failed, failedSite := f.runningSnapshot(t)
+	runID := f.linkedRun(t, failed, failedSite, backup.ScheduleRunStatusFailed)
 	if _, ok, err := f.repo.FailSnapshot(ctx, f.tenant, failed, finalReason); err != nil || !ok {
 		t.Fatalf("FailSnapshot: ok=%t err=%v", ok, err)
 	}
@@ -236,8 +241,8 @@ func TestGH791_AttemptErrorRefusedUnlessRunning(t *testing.T) {
 func TestGH791_CompleteClearsAttemptError(t *testing.T) {
 	f := newGH791Fixture(t, "gh791-complete")
 	ctx := context.Background()
-	snapID := f.runningSnapshot(t)
-	runID := f.linkedRun(t, snapID, backup.ScheduleRunStatusRunning)
+	snapID, site := f.runningSnapshot(t)
+	runID := f.linkedRun(t, snapID, site, backup.ScheduleRunStatusRunning)
 	if n := f.setSnapAttempt(t, snapID, gh791AttemptMsg); n != 1 {
 		t.Fatalf("seed attempt error on snapshot: %d rows, want 1", n)
 	}
@@ -272,9 +277,9 @@ func TestGH791_WatchdogHardFailKeepsLastError(t *testing.T) {
 	f := newGH791Fixture(t, "gh791-watchdog")
 	ctx := context.Background()
 
-	withErr := f.runningSnapshot(t)
-	plain := f.runningSnapshot(t)
-	long := f.runningSnapshot(t)
+	withErr, _ := f.runningSnapshot(t)
+	plain, _ := f.runningSnapshot(t)
+	long, _ := f.runningSnapshot(t)
 	if n := f.setSnapAttempt(t, withErr, gh791AttemptMsg); n != 1 {
 		t.Fatalf("seed attempt error: %d rows, want 1", n)
 	}
