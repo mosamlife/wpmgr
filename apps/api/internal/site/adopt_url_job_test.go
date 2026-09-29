@@ -137,6 +137,54 @@ func TestAdoptReportedURLWorker_Adopts(t *testing.T) {
 	}
 }
 
+// TestAdoptReportedURLWorker_RetriesAFailedWrite: when the probe confirms the
+// change and the address write then fails, the job returns the error, and the
+// retry River runs for it probes again and adopts. A write failure records no
+// probe hold; the successful probe that follows does.
+func TestAdoptReportedURLWorker_RetriesAFailedWrite(t *testing.T) {
+	t0 := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	clk := &manualClock{t: t0}
+	prober := &fakeProber{pingOK: true}
+	svc, repo := newAdoptService("http://example.com", prober, clk)
+	repo.failWrites = 1
+
+	job := &river.Job[AdoptReportedURLArgs]{Args: AdoptReportedURLArgs{
+		TenantID: uuid.New(), SiteID: uuid.New(), Reported: "https://example.com", Source: "agent_diagnostics",
+	}}
+	worker := NewAdoptReportedURLWorker(svc)
+	if err := worker.Work(context.Background(), job); err == nil {
+		t.Fatal("first attempt: Work returned nil after a failed write; River would not retry it")
+	}
+	if repo.url != "http://example.com" {
+		t.Fatalf("first attempt: site url = %q, want it unchanged", repo.url)
+	}
+
+	// River's first retry comes seconds later, well inside either hold.
+	clk.t = t0.Add(time.Second)
+	if err := worker.Work(context.Background(), job); err != nil {
+		t.Fatalf("retry: Work: %v", err)
+	}
+	if repo.url != "https://example.com" {
+		t.Fatalf("retry: site url = %q, want https://example.com: the retry was refused and never adopted", repo.url)
+	}
+	if want := []string{"https://example.com", "https://example.com"}; !reflect.DeepEqual(repo.adoptCalls, want) {
+		t.Errorf("address writes = %v, want %v", repo.adoptCalls, want)
+	}
+	if want := []string{"https://example.com", "https://example.com"}; !reflect.DeepEqual(prober.pingCalls, want) {
+		t.Errorf("ping calls = %v, want %v: the retry must probe again", prober.pingCalls, want)
+	}
+
+	// The successful attempt's definitive probe holds the address as before.
+	repo.url = "http://example.com"
+	clk.t = t0.Add(2 * time.Second)
+	if err := worker.Work(context.Background(), job); err != nil {
+		t.Fatalf("third run: Work: %v", err)
+	}
+	if n := len(prober.pingCalls); n != 2 {
+		t.Errorf("a run inside the hold after a successful probe pinged again: %d pings, want 2", n)
+	}
+}
+
 // TestAdoptReportedURL_EnqueueFailureNeverFailsThePush: a queue that refuses
 // the job leaves the metadata push succeeding, and nothing is written.
 func TestAdoptReportedURL_EnqueueFailureNeverFailsThePush(t *testing.T) {

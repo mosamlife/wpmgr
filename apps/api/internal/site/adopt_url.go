@@ -70,9 +70,12 @@ func (s *Service) SetCommandRedirectProber(p CommandRedirectProber) { s.redirect
 // read) it is not probed again for adoptProbeWindow, so an address the site
 // reports but does not serve costs one ping a day, not one per push. After a
 // probe without one (a transport failure or a timeout) it waits only
-// adoptProbeBackoff, so a passing outage does not cost a day. Because the scheme only ever goes up, and a host change
-// needs the saved address to redirect there when the job runs, two installs
-// cannot flip the address back and forth.
+// adoptProbeBackoff, so a passing outage does not cost a day. When the probe
+// confirms the change but the address write then fails, nothing is held: the
+// error is returned and the job's retry probes and writes again. Because the
+// scheme only ever goes up, and a host change needs the saved address to
+// redirect there when the job runs, two installs cannot flip the address back
+// and forth.
 func (s *Service) AdoptReportedURL(ctx context.Context, tenantID, siteID uuid.UUID, reported, source, agentVersion string) error {
 	_, err := s.adoptReportedURL(ctx, tenantID, siteID, reported, source, agentVersion)
 	return err
@@ -133,9 +136,18 @@ func (s *Service) adoptReportedURL(ctx context.Context, tenantID, siteID uuid.UU
 		return false, nil
 	}
 	// The hold is recorded once the probe is over, from its outcome: a day
-	// after a definitive answer, an hour after none.
+	// after a definitive answer, an hour after none. A write that fails
+	// after a confirming probe records no hold (writeFailed), so the retry
+	// River runs for the returned error is not refused here.
 	hold := adoptProbeBackoff
-	defer func() { limiter.finish(key, s.now(), hold) }()
+	writeFailed := false
+	defer func() {
+		if writeFailed {
+			limiter.release(key)
+			return
+		}
+		limiter.finish(key, s.now(), hold)
+	}()
 	if saved.Host != to.Host {
 		// The suggestion is built from the command URL, which never carries
 		// the saved address's trailing slash, so it is compared as an
@@ -163,6 +175,9 @@ func (s *Service) adoptReportedURL(ctx context.Context, tenantID, siteID uuid.UU
 
 	adopted, err := s.repo.AdoptSiteURL(ctx, tenantID, siteID, st.URL, plan.To)
 	if err != nil {
+		// A database error, not the compare-and-set finding no row (that is
+		// adopted == false with no error, and keeps its hold).
+		writeFailed = true
 		log.Warn("adopt reported address: write failed", slog.Any("error", err))
 		return false, err
 	}

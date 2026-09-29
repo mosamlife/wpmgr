@@ -2,6 +2,7 @@ package site
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -17,6 +18,9 @@ type adoptRepo struct {
 	state       ConnectionState
 	adoptResult bool
 	adoptCalls  []string
+	// failWrites is how many AdoptSiteURL calls, from the next, fail with a
+	// database error before the writes succeed.
+	failWrites int
 }
 
 func (r *adoptRepo) Get(_ context.Context, tenantID, id uuid.UUID) (Site, error) {
@@ -31,6 +35,10 @@ func (r *adoptRepo) UpdateMetadata(_ context.Context, tenantID, siteID uuid.UUID
 
 func (r *adoptRepo) AdoptSiteURL(_ context.Context, _, _ uuid.UUID, _, to string) (bool, error) {
 	r.adoptCalls = append(r.adoptCalls, to)
+	if r.failWrites > 0 {
+		r.failWrites--
+		return false, errors.New("write failed: connection reset")
+	}
 	if r.adoptResult {
 		r.url = to
 	}

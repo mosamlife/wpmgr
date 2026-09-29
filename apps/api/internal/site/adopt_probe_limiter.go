@@ -100,6 +100,19 @@ func (l *probeLimiter) finish(key probeKey, now time.Time, hold time.Duration) {
 	l.evict()
 }
 
+// release ends the probe begin allowed for key and forgets the key, so it
+// may be probed again at once. AdoptReportedURL calls it in place of finish
+// when the address write that followed the probe failed, so the job's retry
+// can probe and write again.
+func (l *probeLimiter) release(key probeKey) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if el, ok := l.entries[key]; ok {
+		l.order.Remove(el)
+		delete(l.entries, key)
+	}
+}
+
 // evict forgets the least recently used keys beyond capacity. The caller
 // holds mu.
 func (l *probeLimiter) evict() {
