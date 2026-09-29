@@ -47,17 +47,18 @@
 -- was bootstrapped again, the later account is recorded either way: by this
 -- backfill when the re-bootstrap came before the upgrade, or by that setup
 -- into the empty table when it came after. If the purge came after the
--- upgrade, the row already exists and a re-bootstrap records nothing, because
--- bootstrap inserts with ON CONFLICT DO NOTHING. What decides the outcome is
--- when the purge happened relative to the upgrade, not when the re-bootstrap
--- happened.
+-- upgrade and the backfill recorded a row, that row stays and a re-bootstrap
+-- records nothing, because bootstrap inserts with ON CONFLICT DO NOTHING.
+-- What decides the outcome is when the purge happened relative to the
+-- upgrade, not when the re-bootstrap happened.
 -- If the earliest row's actor id is not a uuid, or there is no bootstrap row
 -- at all (it was never written, or it went with the first organisation:
 -- deleting or purging an organisation clears its audit_log), nothing is
--- recorded. An empty table is filled by the next successful setup, which
--- records its account. Until then the install-owner arm admits nobody.
--- Superadmins (WPMGR_SUPERADMIN_EMAILS) are admitted by their own arm, not
--- this one, and are the remedy in the meantime.
+-- recorded and the install-owner arm admits nobody. The next successful setup
+-- records its account, but setup succeeds only once no organisation on the
+-- install has an owner. On an install that still has owners the table
+-- therefore stays empty, and WPMGR_SUPERADMIN_EMAILS is the remedy:
+-- superadmins are admitted by their own arm, which runs first.
 --
 -- audit_log is FORCE ROW LEVEL SECURITY, and the production migrator is a
 -- NOSUPERUSER NOBYPASSRLS table owner with no app.* setting in scope, so a
