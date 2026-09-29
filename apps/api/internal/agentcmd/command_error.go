@@ -207,7 +207,9 @@ var (
 	posixPathPattern = regexp.MustCompile(`(^|[^A-Za-z0-9._/\-])/[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]*)*`)
 	// hostPattern matches a dotted name whose last label starts with a
 	// letter (a hostname shape), optionally followed by a path.
-	hostPattern       = regexp.MustCompile(`(?i)\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z][a-z0-9-]*[a-z0-9]\b(?:/\S*)?`)
+	hostPattern = regexp.MustCompile(`(?i)\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z][a-z0-9-]*[a-z0-9]\b(?:/\S*)?`)
+	// encodedRunPattern matches a long token-shaped run; redactEncoded
+	// decides whether it is one.
 	encodedRunPattern = regexp.MustCompile(`[A-Za-z0-9+/=_-]{32,}`)
 	whitespaceRun     = regexp.MustCompile(`\s+`)
 )
@@ -295,6 +297,16 @@ func redactHost(m string) string {
 	return "[link]"
 }
 
+// redactEncoded replaces a long run with "[redacted]" when it carries a digit
+// or a base64 symbol, the marks of a token, key or hash. A run of letters,
+// "-", "_" and "/" alone is a relative path or a slug, and is kept.
+func redactEncoded(m string) string {
+	if strings.ContainsAny(m, "0123456789+=") {
+		return "[redacted]"
+	}
+	return m
+}
+
 // sanitizeReason turns the agent's free-form message into a short, safe
 // sentence fragment: the agent's generic wrapper is stripped, the text is
 // forced to valid UTF-8, control, format and every kind of Unicode space or
@@ -316,7 +328,7 @@ func sanitizeReason(message, rawException string) string {
 	reason = windowsPathPattern.ReplaceAllString(reason, "[path]")
 	reason = posixPathPattern.ReplaceAllString(reason, "${1}[path]")
 	reason = hostPattern.ReplaceAllStringFunc(reason, redactHost)
-	reason = encodedRunPattern.ReplaceAllString(reason, "[redacted]")
+	reason = encodedRunPattern.ReplaceAllStringFunc(reason, redactEncoded)
 	reason = collapseWhitespace(reason)
 	return capBytes(reason, 200)
 }
