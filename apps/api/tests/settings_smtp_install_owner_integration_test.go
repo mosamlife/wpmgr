@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -358,5 +359,196 @@ func TestSMTPSettings_SelfHosted_InstallOwner_InstanceAuthority(t *testing.T) {
 			t.Errorf("smtp_settings changed under refused requests")
 		}
 		requireCapability(t, e, sctx, false)
+	})
+}
+
+// fixture runs one setup statement as the bootstrap superuser and fails
+// unless it touched exactly one row, so a fixture that silently matched
+// nothing cannot leave the case below testing the wrong state. Only the setup
+// runs this way; every decision under test is read as wpmgr_app through the
+// real router.
+func (s *smtpIAStack) fixture(t *testing.T, stmt string, args ...any) {
+	t.Helper()
+	tag, err := s.adminDB.Exec(context.Background(), stmt, args...)
+	if err != nil {
+		t.Fatalf("fixture %q: %v", stmt, err)
+	}
+	if tag.RowsAffected() != 1 {
+		t.Fatalf("fixture %q touched %d rows; want 1", stmt, tag.RowsAffected())
+	}
+}
+
+// seedTenantWithID creates a live organisation with a chosen id, so a case
+// can depend on which of two organisations has the lower id.
+func seedTenantWithID(t *testing.T, s *smtpIAStack, id uuid.UUID, slug string) uuid.UUID {
+	t.Helper()
+	if _, err := s.pool.Exec(context.Background(),
+		"INSERT INTO tenants (id, name, slug) VALUES ($1, $2, $2)", id, slug); err != nil {
+		t.Fatalf("seed tenant %s: %v", id, err)
+	}
+	return id
+}
+
+// requireAdmittedWithAuditCopyIn asserts the install owner is admitted on
+// every route and in the Me capability, that the PUT is recorded once in the
+// instance trail as install_owner, and that the organisation copy lands in
+// want and in none of notIn.
+func requireAdmittedWithAuditCopyIn(t *testing.T, s *smtpIAStack, e *gin.Engine, sctx context.Context, actor, want uuid.UUID, notIn ...uuid.UUID) {
+	t.Helper()
+	requireCapability(t, e, sctx, true)
+	sysBefore := s.systemAuditAdmittedAs(t, actor, admingate.ArmInstallOwner)
+	wantBefore := s.tenantAuditUpdates(t, want, actor)
+	othersBefore := make([]int, len(notIn))
+	for i, id := range notIn {
+		othersBefore[i] = s.tenantAuditUpdates(t, id, actor)
+	}
+	requireAllAdmitted(t, s, e, sctx)
+	if n := s.systemAuditAdmittedAs(t, actor, admingate.ArmInstallOwner); n != sysBefore+1 {
+		t.Errorf("system_audit_log rows admitted_as install_owner went %d -> %d; want exactly one more", sysBefore, n)
+	}
+	if n := s.tenantAuditUpdates(t, want, actor); n != wantBefore+1 {
+		t.Errorf("audit_log rows in %s went %d -> %d; want exactly one more", want, wantBefore, n)
+	}
+	for i, id := range notIn {
+		if n := s.tenantAuditUpdates(t, id, actor); n != othersBefore[i] {
+			t.Errorf("audit_log rows in %s went %d -> %d; want unchanged", id, othersBefore[i], n)
+		}
+	}
+}
+
+// requireRefusedNothingRecorded asserts every route and the Me capability
+// refuse, the relay row is untouched, and no audit row is added anywhere for
+// the actor.
+func requireRefusedNothingRecorded(t *testing.T, s *smtpIAStack, e *gin.Engine, sctx context.Context, actor uuid.UUID, orgs ...uuid.UUID) {
+	t.Helper()
+	before, found := s.smtpRow(t)
+	if !found {
+		t.Fatal("PREMISE FAILED: no smtp_settings row to protect")
+	}
+	sysBefore := s.systemAuditAdmittedAs(t, actor, admingate.ArmInstallOwner)
+	orgBefore := make([]int, len(orgs))
+	for i, id := range orgs {
+		orgBefore[i] = s.tenantAuditUpdates(t, id, actor)
+	}
+	requireAllRefused(t, e, sctx)
+	requireCapability(t, e, sctx, false)
+	if after, _ := s.smtpRow(t); after != before {
+		t.Errorf("smtp_settings changed under refused requests:\nbefore %s\nafter  %s", before, after)
+	}
+	if n := s.systemAuditAdmittedAs(t, actor, admingate.ArmInstallOwner); n != sysBefore {
+		t.Errorf("system_audit_log rows went %d -> %d under refused requests", sysBefore, n)
+	}
+	for i, id := range orgs {
+		if n := s.tenantAuditUpdates(t, id, actor); n != orgBefore[i] {
+			t.Errorf("audit_log rows in %s went %d -> %d under refused requests", id, orgBefore[i], n)
+		}
+	}
+}
+
+// The install-owner arm holds only while the recorded account owns at least
+// one live organisation, and the organisation copy of its changes goes to the
+// home organisation while it still owns it, otherwise to the lowest-id live
+// organisation it owns. The cases run in order against one install, each
+// changing the install owner's memberships from the one before.
+//
+// NOT RUN BY CI. Run with `make test-integration` from the repository root.
+func TestSMTPSettings_SelfHosted_InstallOwner_NeedsALiveOwnedOrganisation(t *testing.T) {
+	s := newSMTPIAStack(t)
+	ctx := context.Background()
+	s.authSvc.SetBootstrapClaimSecret(testClaim)
+	selfHosted := admingate.NewInstanceEmailPoolStore(s.pool, false)
+	e := s.engine(t, selfHosted)
+
+	sfx := uuid.NewString()[:8]
+	boot, err := s.authSvc.Bootstrap(ctx, auth.RegisterInput{
+		Email:      "smtp-io-live-" + sfx + "@example.com",
+		Password:   "install-owner-strong-pass",
+		Name:       "First Run",
+		TenantName: "Home " + sfx,
+		TenantSlug: "smtp-io-live-home-" + sfx,
+	}, testClaim)
+	if err != nil {
+		t.Fatalf("bootstrap the install: %v", err)
+	}
+	installOwner, home := boot.User.ID, boot.ActiveTenant
+
+	// A second owner keeps home owned when the install owner is demoted, and
+	// tenantB keeps two organisations live throughout so the sole-owner arm
+	// never decides.
+	seedUserMembership(t, s.authRepo, "smtp-io-live-home-owner2-"+sfx+"@example.com", home, authz.RoleOwner)
+	tenantB := seedTenant(t, s.pool, "smtp-io-live-b-"+sfx)
+	seedUserMembership(t, s.authRepo, "smtp-io-live-owner-b-"+sfx+"@example.com", tenantB, authz.RoleOwner)
+
+	// lowOrg has the lowest possible version-4 id, so it sorts before home
+	// whatever id home was given; highOrg sorts after it.
+	lowOrg := seedTenantWithID(t, s, uuid.MustParse("00000000-0000-4000-8000-000000000001"), "smtp-io-live-low-"+sfx)
+	highOrg := seedTenantWithID(t, s, uuid.MustParse("ffffffff-ffff-4fff-bfff-fffffffffffe"), "smtp-io-live-high-"+sfx)
+	for _, id := range []uuid.UUID{lowOrg, highOrg} {
+		if _, err := s.authRepo.CreateMembership(ctx, installOwner, id, authz.RoleOwner); err != nil {
+			t.Fatalf("make the install owner an owner of %s: %v", id, err)
+		}
+	}
+	s.seedRelay(t, installOwner)
+	allOrgs := []uuid.UUID{home, tenantB, lowOrg, highOrg}
+
+	// THE PREMISE, asserted rather than assumed.
+	if isSA, err := selfHosted.IsSuperadmin(ctx, installOwner); err != nil || isSA {
+		t.Fatalf("PREMISE FAILED: IsSuperadmin(install owner) = %v, %v; want false, nil", isSA, err)
+	}
+	if uid, tid, _, found := s.installOwnerRow(t); !found || uid != installOwner || tid != home {
+		t.Fatalf("PREMISE FAILED: install_owner = (%s, %s, found=%v); want (%s, %s)", uid, tid, found, installOwner, home)
+	}
+	if n := s.liveTenantCount(t, home); n != 4 {
+		t.Fatalf("PREMISE FAILED: %d live organisations, want 4", n)
+	}
+
+	// Catches choosing by lowest id before the home preference: lowOrg is
+	// lower, but the install owner still owns home.
+	t.Run("still owning the home organisation is admitted with the audit copy there", func(t *testing.T) {
+		requireAdmittedWithAuditCopyIn(t, s, e, s.session(t, installOwner, home), installOwner, home, tenantB, lowOrg, highOrg)
+	})
+
+	// Catches a home copy kept after the account stopped owning home, and
+	// catches any choice other than the lowest id. The request's active
+	// organisation is home, which must not receive the copy.
+	s.fixture(t, `UPDATE memberships SET role = 'admin' WHERE user_id = $1 AND tenant_id = $2`, installOwner, home)
+	if role := s.membershipRole(t, home, installOwner); role != string(authz.RoleAdmin) {
+		t.Fatalf("PREMISE FAILED: install owner's role in home is %q after demotion", role)
+	}
+	t.Run("no longer owning home is admitted with the audit copy in the lowest-id owned organisation", func(t *testing.T) {
+		requireAdmittedWithAuditCopyIn(t, s, e, s.session(t, installOwner, home), installOwner, lowOrg, home, tenantB, highOrg)
+	})
+
+	// Catches counting a soft-deleted organisation when choosing.
+	s.fixture(t, `UPDATE tenants SET deleted_at = now() WHERE id = $1`, lowOrg)
+	t.Run("owning another organisation only is admitted with the audit copy there", func(t *testing.T) {
+		requireAdmittedWithAuditCopyIn(t, s, e, s.session(t, installOwner, home), installOwner, highOrg, home, tenantB, lowOrg)
+	})
+
+	// Owner memberships survive only in soft-deleted organisations: refused.
+	s.fixture(t, `UPDATE tenants SET deleted_at = now() WHERE id = $1`, highOrg)
+	if n := s.liveTenantCount(t, home); n != 2 {
+		t.Fatalf("PREMISE FAILED: %d live organisations, want 2", n)
+	}
+	t.Run("an owner membership only in a deleted organisation is refused", func(t *testing.T) {
+		requireRefusedNothingRecorded(t, s, e, s.session(t, installOwner, home), installOwner, allOrgs...)
+	})
+
+	// Removed from every organisation: refused.
+	for _, id := range []uuid.UUID{home, lowOrg, highOrg} {
+		s.fixture(t, `DELETE FROM memberships WHERE user_id = $1 AND tenant_id = $2`, installOwner, id)
+	}
+	t.Run("an install owner with no owner membership is refused", func(t *testing.T) {
+		requireRefusedNothingRecorded(t, s, e, s.session(t, installOwner, uuid.Nil), installOwner, allOrgs...)
+	})
+
+	// Positive control on the reversal: owning a live organisation again
+	// restores the arm on the next request, with the copy there. Without it,
+	// the two refusals above could be an arm that had simply stopped working.
+	if _, err := s.authRepo.CreateMembership(ctx, installOwner, tenantB, authz.RoleOwner); err != nil {
+		t.Fatalf("make the install owner an owner of tenantB: %v", err)
+	}
+	t.Run("owning a live organisation again restores the arm", func(t *testing.T) {
+		requireAdmittedWithAuditCopyIn(t, s, e, s.session(t, installOwner, tenantB), installOwner, tenantB, home, lowOrg, highOrg)
 	})
 }
