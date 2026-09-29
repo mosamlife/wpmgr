@@ -32,6 +32,7 @@ import (
 type instanceEvent struct {
 	actor  uuid.UUID
 	action string
+	meta   map[string]any
 	ctx    appendContext
 }
 
@@ -73,12 +74,12 @@ func (f *fakeSMTPService) Update(_ context.Context, in SMTPUpdate, _ uuid.UUID) 
 
 func (f *fakeSMTPService) SendTest(context.Context, string) error { return nil }
 
-func (f *fakeSMTPService) RecordInstanceEvent(ctx context.Context, actorID uuid.UUID, action string, _ map[string]any) {
+func (f *fakeSMTPService) RecordInstanceEvent(ctx context.Context, actorID uuid.UUID, action string, meta map[string]any) {
 	if ctx.Err() != nil {
 		f.droppedEvents++
 		return
 	}
-	f.instanceEvents = append(f.instanceEvents, instanceEvent{actor: actorID, action: action, ctx: observe(ctx)})
+	f.instanceEvents = append(f.instanceEvents, instanceEvent{actor: actorID, action: action, meta: meta, ctx: observe(ctx)})
 }
 
 type fakeTenantRecorder struct {

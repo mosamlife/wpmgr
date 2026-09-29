@@ -73,6 +73,10 @@ func TestSetInstanceCapabilities_EqualsTheRouteDecision(t *testing.T) {
 		{"superadmin read error", orgUser(uuid.New()), fakeInstanceStore{superadminErr: errors.New("boom"), soleOwner: true}, false},
 		{"organisation count read error", orgUser(uuid.New()), fakeInstanceStore{soleOwner: true, soleOwnerErr: errors.New("boom")}, false},
 		{"store not wired", orgUser(uuid.New()), nil, false},
+		{"install owner, self-hosted", orgUser(uuid.New()), fakeInstanceStore{selfHosted: true, installOwner: true}, true},
+		{"install owner, hosted", orgUser(uuid.New()), fakeInstanceStore{installOwner: true}, false},
+		{"install owner read error, self-hosted", orgUser(uuid.New()), fakeInstanceStore{selfHosted: true, installOwnerErr: errors.New("boom")}, false},
+		{"site-scoped install owner, self-hosted", siteUser, fakeInstanceStore{selfHosted: true, installOwner: true}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
