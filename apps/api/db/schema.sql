@@ -951,7 +951,8 @@ CREATE INDEX system_audit_log_tenant_id_idx ON system_audit_log (tenant_id, occu
 -- ---------------------------------------------------------------------------
 -- At most one row: the user who ran first-run bootstrap on this install, and
 -- the organisation bootstrap created with it. Written inside the bootstrap
--- transaction, or backfilled by m147 from the earliest bootstrap audit_log row.
+-- transaction, or backfilled by m147 from the earliest surviving bootstrap
+-- audit_log row.
 --
 -- No foreign keys: deleting the user or the organisation leaves the row naming
 -- an id that no longer exists, which records that nobody inherits it. No RLS:

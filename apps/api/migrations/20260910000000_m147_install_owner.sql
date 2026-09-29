@@ -1,13 +1,13 @@
--- m147 - install_owner: the durable record of the account that set up this
--- install.
+-- m147 - install_owner: the durable record of the account recorded as having
+-- set up the install.
 --
 -- WHAT IT GUARANTEES. After this file, install_owner holds at most one row,
--- naming the user who ran first-run bootstrap and the organisation bootstrap
--- created with it. wpmgr_app may read the row and may insert it once; no
--- statement the control plane issues can change it, delete it or empty the
--- table. PRIVILEGES below says what that does not cover. The control plane
--- records the row inside the bootstrap transaction from now on; this file
--- backfills it for installs bootstrapped before that.
+-- naming the account recorded as having set up the install and the
+-- organisation bootstrap created with it. wpmgr_app may read the row and may
+-- insert it once; no statement the control plane issues can change it, delete
+-- it or empty the table. PRIVILEGES below says what that does not cover. The
+-- control plane records the row inside the bootstrap transaction from now on;
+-- this file backfills it for installs bootstrapped before that.
 --
 -- WHY A TABLE. Until now nothing durable named that account. The only proof is
 -- the audit_log row bootstrap writes: action 'auth.register', actor_id =
