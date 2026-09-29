@@ -808,6 +808,10 @@ const (
 	maxSelfUpdateApplyID = 64
 	// maxSelfUpdateRung bounds the diagnostic connection-release rung name.
 	maxSelfUpdateRung = 32
+	// maxAgentVersion bounds the agent's reported plugin version, in runes,
+	// wherever the control plane keeps a copy: the stored metadata and an
+	// address adoption job's args.
+	maxAgentVersion = 64
 )
 
 // truncateRunes returns s truncated to at most n runes, never splitting a
@@ -940,7 +944,7 @@ func sanitizeMetadata(m Metadata) Metadata {
 		ServerInfo:   truncateRunes(m.ServerInfo, maxServerInfo),
 		Multisite:    m.Multisite,
 		ActiveTheme:  truncateRunes(m.ActiveTheme, maxActiveTheme),
-		AgentVersion: truncateRunes(m.AgentVersion, 64),
+		AgentVersion: truncateRunes(m.AgentVersion, maxAgentVersion),
 		Plugins:      sanitizeComponents(m.Plugins, maxPlugins),
 		Themes:       sanitizeComponents(m.Themes, maxThemes),
 		CoreUpdate:   sanitizeCoreUpdate(m.CoreUpdate),
