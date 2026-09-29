@@ -16,8 +16,11 @@ package tests
 // same engine, so the can_manage_instance_email capability is read through the
 // real auth handler. All of it runs over the pool startPostgres returns:
 // wpmgr_app, NOSUPERUSER, NOBYPASSRLS. The gate store is the production
-// admingate.PoolStore over that same pool, handed to both the settings handler
-// and the auth handler exactly as cmd/wpmgr does.
+// admingate.InstanceEmailPoolStore over that same pool, built self-hosted and
+// handed to both the settings handler and the auth handler exactly as cmd/wpmgr
+// does. No test here bootstraps, so install_owner stays empty and the
+// install-owner arm admits nobody; settings_smtp_install_owner_integration_test.go
+// covers that arm.
 //
 // Reads that observe the database go through the production transaction
 // helpers as wpmgr_app, and each one asserts the connected role inside its own
@@ -739,6 +742,12 @@ func TestSMTPSettings_SingleTenantInstall_InstanceAuthority(t *testing.T) {
 
 	// Runs last: it creates the second organisation.
 	t.Run("a second organisation refuses the same owner on the next request", func(t *testing.T) {
+		// This owner was seeded, not bootstrapped, so the install-owner arm
+		// (live on this self-hosted store) must not be what admits or refuses
+		// them here.
+		if _, _, _, found := s.installOwnerRow(t); found {
+			t.Fatal("PREMISE FAILED: install_owner has a row; this test's owner was never bootstrapped")
+		}
 		seedTenant(t, s.pool, "smtp-ia-second-"+sfx)
 		if n := s.liveTenantCount(t, tenant); n != 2 {
 			t.Fatalf("PREMISE FAILED: %d live organisations after seeding a second, want 2", n)
