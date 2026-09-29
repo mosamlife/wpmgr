@@ -110,7 +110,7 @@ example for each — read it top-to-bottom. Key env vars (all prefixed `WPMGR_`)
 | `WPMGR_S3_FORCE_PATH_STYLE` | required for SeaweedFS | `true` |
 | `WPMGR_CLICKHOUSE_ADDR` | ClickHouse | `localhost:9000` |
 | `WPMGR_OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP collector | `http://localhost:4318` |
-| `WPMGR_SUPERADMIN_EMAILS` | one-shot: grants `is_superadmin` and activates the account at boot. It does NOT mark the address verified: the operator confirms their address like any other user. (Unset after it runs; revoke via `WPMGR_SUPERADMIN_REVOKE_EMAILS`.) | (empty) |
+| `WPMGR_SUPERADMIN_EMAILS` | one-shot: grants `is_superadmin` and activates the account at boot. It does NOT mark the address verified: the operator confirms their address like any other user. (Unset after it runs; revoke via `WPMGR_SUPERADMIN_REVOKE_EMAILS`.) Also names who can always reach the install-wide email relay settings, see [Instance email (SMTP) authority](#instance-email-authority) below. | (empty) |
 | `WPMGR_WORDFENCE_API_KEY` | vulnerability-feed API key fallback (the key saved in the superadmin UI takes precedence) | (empty) |
 | `WPMGR_SCREENSHOT_READY_WAIT` | screenshot capture wait budget in whole seconds (media-encoder; raise on slow hosting) | `8` |
 | `WPMGR_HOSTED` | managed-SaaS entitlements switch; hosted only, leave unset on self-host | `false` |
@@ -275,6 +275,28 @@ GRANT-self/REVOKE pattern means the corpus migration requires the owner role
 The `WPMGR_ALLOW_RLS_BYPASS_ROLE=true` env var (default `false`) downgrades
 the boot-time RLS check to a warning. Intended only for single-node local dev
 sharing the bootstrap superuser; never set it in production.
+
+### Instance email (SMTP) authority {#instance-email-authority}
+
+The install-wide outgoing mail relay is one setting for the whole install, not
+a per-organisation one, and only an account with instance-level authority may
+view, change, or test it. On a self-hosted install, that authority belongs to:
+
+- any account listed in `WPMGR_SUPERADMIN_EMAILS`;
+- on an install with exactly one organisation, that organisation's owner;
+- the account that completed first-run setup (see
+  [First-run notes](#first-run-notes) below), for as long as it still owns at
+  least one organisation.
+
+**Fallback.** When none of the above identifies an account, for example
+because the organisation created at first-run setup was deleted or purged
+before this version, or because the account that completed first-run setup no
+longer owns any organisation, the install has no install owner and only a
+superadmin can change the relay settings from that point on. Set
+`WPMGR_SUPERADMIN_EMAILS` to recover access.
+
+Hosted installs are not affected: this whole section describes self-hosted
+behaviour only.
 
 ## 2. Bring up the stack
 
@@ -495,7 +517,10 @@ Grafana then ships with the WPMgr dashboards pre-provisioned. See
   body field, and is deliberately absent from `openapi.yaml`, so no generated
   client (including the dashboard) can send it. That value lives in `.env`
   under that key, generated once by `scripts/init-env.sh` and never rotated
-  by a re-run.
+  by a re-run. On a self-hosted install, the account that completes this claim
+  also holds the install-wide email relay authority described in
+  [Instance email (SMTP) authority](#instance-email-authority) above, for as
+  long as it keeps owning an organisation.
 
   You never need to look up or paste that value yourself. `scripts/init-env.sh`
   (and the quickstart-selfhost.sh curl-pipe path) prints the exact claim
