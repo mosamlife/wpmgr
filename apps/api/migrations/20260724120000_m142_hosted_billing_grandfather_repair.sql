@@ -33,6 +33,17 @@
 -- already wrote its overrides has the max_sites key set on those tenants, and
 -- this file changes nothing for them.
 --
+-- OUTSIDE THE SERVER'S RUNNER. Only the server's migration runner records
+-- versions in schema_migrations. When schema_migrations does not exist, or
+-- holds no row for m91, m91 was not applied by that runner, so m91's apply
+-- time is unknown and the file has no cutoff for the count. The backfill is
+-- then skipped: the file raises a NOTICE saying so and returns before it sets
+-- a lock timeout, lifts FORCE on sites or writes any row. It changes nothing,
+-- and every later migration applies after it. The consequence is that m91's
+-- grandfather is not applied on that database: a free tenant that had more
+-- than 3 non-archived sites when m91 applied gets no max_sites override from
+-- this file, and whatever m91 itself wrote stands.
+--
 -- SECOND RUN. Every tenant this file writes then carries max_sites, so the
 -- same statement matches nothing.
 --
@@ -48,12 +59,18 @@ DO $$
 DECLARE
     v_cutoff timestamptz;
 BEGIN
+    IF to_regclass('schema_migrations') IS NULL THEN
+        RAISE NOTICE 'm142: backfill skipped: no schema_migrations table, so this database was not migrated by the server''s migration runner and m91''s apply time is unknown; free tenants that had more than 3 non-archived sites when m91 applied get no max_sites override from this file';
+        RETURN;
+    END IF;
+
     SELECT applied_at INTO v_cutoff
     FROM schema_migrations
     WHERE version = '20260724000000_m91_hosted_billing_substrate';
 
     IF v_cutoff IS NULL THEN
-        RAISE EXCEPTION 'm142: m91 has no applied_at in schema_migrations';
+        RAISE NOTICE 'm142: backfill skipped: schema_migrations has no row for 20260724000000_m91_hosted_billing_substrate, so m91 was not applied by the server''s migration runner and its apply time is unknown; free tenants that had more than 3 non-archived sites when m91 applied get no max_sites override from this file';
+        RETURN;
     END IF;
 
     PERFORM set_config('lock_timeout', '5s', true);

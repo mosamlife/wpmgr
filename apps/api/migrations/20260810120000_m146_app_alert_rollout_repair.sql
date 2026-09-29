@@ -47,6 +47,21 @@
 -- applied_at from schema_migrations, so a site added since m108 never makes a
 -- fresh install look like an upgrade.
 --
+-- OUTSIDE THE SERVER'S RUNNER. Only the server's migration runner records
+-- versions in schema_migrations. When fresh_install is true and
+-- schema_migrations does not exist, or holds no row for m108, m108 was not
+-- applied by that runner, so m108's apply time is unknown and the file has no
+-- cutoff for telling a fresh install from an upgrade. The repair is then
+-- skipped: the file raises a NOTICE saying so and returns before it sets a
+-- lock timeout, lifts FORCE on any table or writes any row. It changes
+-- nothing, and every later migration applies after it. The consequence is
+-- that m108's decision stands uncorrected on that database: if sites existed
+-- when m108 applied, app_alert_rollout still says fresh_install, the column
+-- default of alert_configs.app_alerts_enabled stays true, and app alerting
+-- stays on for the alert_configs rows that received m108's default. When
+-- fresh_install is not true there is nothing to repair, and the file returns
+-- at the first statement without reading schema_migrations.
+--
 -- SECOND RUN. On a deployment this file corrected, fresh_install is then
 -- false and the first statement returns. On a fresh install it again finds no
 -- site older than m108 and changes nothing.
@@ -74,12 +89,18 @@ BEGIN
         RETURN;
     END IF;
 
+    IF to_regclass('schema_migrations') IS NULL THEN
+        RAISE NOTICE 'm146: repair skipped: no schema_migrations table, so this database was not migrated by the server''s migration runner and m108''s apply time is unknown; if sites existed when m108 applied, app_alert_rollout still says fresh_install and app alerting stays on for the alert_configs rows that received m108''s default';
+        RETURN;
+    END IF;
+
     SELECT applied_at INTO v_cutoff
     FROM schema_migrations
     WHERE version = '20260810000000_m108_uptime_app_alerting';
 
     IF v_cutoff IS NULL THEN
-        RAISE EXCEPTION 'm146: m108 has no applied_at in schema_migrations';
+        RAISE NOTICE 'm146: repair skipped: schema_migrations has no row for 20260810000000_m108_uptime_app_alerting, so m108 was not applied by the server''s migration runner and its apply time is unknown; if sites existed when m108 applied, app_alert_rollout still says fresh_install and app alerting stays on for the alert_configs rows that received m108''s default';
+        RETURN;
     END IF;
 
     PERFORM set_config('lock_timeout', '5s', true);
