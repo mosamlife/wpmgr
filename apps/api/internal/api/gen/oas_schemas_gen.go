@@ -25467,10 +25467,10 @@ type Me struct {
 	// /api/v1/settings/smtp). Computed by the same decision that gates those routes, so it is true exactly
 	// when they would admit this caller: instance-level authority (a superadmin, the owner of the only
 	// live organisation on the install, or, on a self-hosted install, the account recorded as having set
-	// it up, while it is active and owns at least one live organisation) and a principal that is not
-	// site-scoped. An active organisation is not required. False whenever that decision cannot be made.
-	// Present on GET and PATCH /auth/me; responses built before the session exists (login, register, 2FA
-	// and OIDC completion) omit it, and clients read it from the GET /auth/me that follows.
+	// up the install, while it is active and owns at least one live organisation) and a principal that is
+	// not site-scoped. An active organisation is not required. False whenever that decision cannot be
+	// made. Present on GET and PATCH /auth/me; responses built before the session exists (login, register,
+	// 2FA and OIDC completion) omit it, and clients read it from the GET /auth/me that follows.
 	CanManageInstanceEmail OptBool `json:"can_manage_instance_email"`
 	// The M16 Phase 0 "sign up into a plan" hint captured at registration (RegisterRequest.plan),
 	// single-use: present ONLY in the direct response to POST /auth/verify-email (read off the

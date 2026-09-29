@@ -89,7 +89,7 @@ const (
 	// grants it; its routes are gated by instance-level authority instead
 	// (admingate.CanManageInstanceEmail, mounted in internal/settings), which
 	// on a self-hosted install also admits the account recorded as having
-	// set it up, while it is active and owns at least one live
+	// set up the install, while it is active and owns at least one live
 	// organisation.
 	// PermSiteCacheManage enables/disables and reconfigures the agent-side page
 	// cache for a site (Performance Suite, ADR-046). Operator+ — the same
