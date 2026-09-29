@@ -98,6 +98,7 @@ func (r *fakeWorkerRepo) ExistingChunkHashes(_ context.Context, tenantID uuid.UU
 	}
 	return out, nil
 }
+
 // SetSnapshotAttemptError mirrors SetBackupSnapshotAttemptError's
 // status='running' guard exactly (GH #791): a fake that always records would
 // hide the very defect the guard exists to catch.

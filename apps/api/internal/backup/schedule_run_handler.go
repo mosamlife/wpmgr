@@ -60,6 +60,7 @@ type scheduleRunDTO struct {
 	Status           string  `json:"status"`
 	Kind             string  `json:"kind"`
 	Error            string  `json:"error,omitempty"`
+	AttemptError     string  `json:"attempt_error,omitempty"`
 	TriggeredBy      string  `json:"triggered_by,omitempty"`
 	TriggeredByEmail *string `json:"triggered_by_email"`
 	TriggeredByName  *string `json:"triggered_by_name"`
@@ -95,6 +96,10 @@ func toScheduleRunDTOWithActor(r ScheduleRun, email, name string) scheduleRunDTO
 	}
 	if r.Error != nil && *r.Error != "" {
 		d.Error = *r.Error
+	}
+	// GH #791: the last failed attempt's reason, only while still running.
+	if r.AttemptError != "" && r.Status == ScheduleRunStatusRunning {
+		d.AttemptError = r.AttemptError
 	}
 	if r.TriggeredBy != nil && *r.TriggeredBy != "" {
 		d.TriggeredBy = *r.TriggeredBy

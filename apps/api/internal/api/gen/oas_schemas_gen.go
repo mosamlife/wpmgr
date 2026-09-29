@@ -9568,7 +9568,10 @@ func (s *BackupCreateKind) UnmarshalText(data []byte) error {
 type BackupEvent struct {
 	SnapshotID uuid.UUID        `json:"snapshot_id"`
 	Phase      BackupEventPhase `json:"phase"`
-	// Pass-through of the agent's POST /progress payload (e.g. chunk counters).
+	// Pass-through of the agent's POST /progress payload (e.g. chunk counters). For `retrying`, a
+	// control-plane hint that the command could not be delivered to the site and will be retried
+	// automatically, `phase_detail.error` carries the reason in the control plane's own words (the same
+	// text as `attempt_error`). For a restore it also carries `restore_id`.
 	PhaseDetail OptBackupEventPhaseDetail `json:"phase_detail"`
 	Status      BackupEventStatus         `json:"status"`
 	Ts          time.Time                 `json:"ts"`
@@ -9634,8 +9637,10 @@ const (
 	BackupEventPhaseSubmittingManifest  BackupEventPhase = "submitting_manifest"
 	BackupEventPhaseCompleted           BackupEventPhase = "completed"
 	BackupEventPhaseFailed              BackupEventPhase = "failed"
+	BackupEventPhaseStarted             BackupEventPhase = "started"
 	BackupEventPhaseStalled             BackupEventPhase = "stalled"
 	BackupEventPhaseResumed             BackupEventPhase = "resumed"
+	BackupEventPhaseRetrying            BackupEventPhase = "retrying"
 )
 
 // AllValues returns all BackupEventPhase values.
@@ -9648,8 +9653,10 @@ func (BackupEventPhase) AllValues() []BackupEventPhase {
 		BackupEventPhaseSubmittingManifest,
 		BackupEventPhaseCompleted,
 		BackupEventPhaseFailed,
+		BackupEventPhaseStarted,
 		BackupEventPhaseStalled,
 		BackupEventPhaseResumed,
+		BackupEventPhaseRetrying,
 	}
 }
 
@@ -9670,9 +9677,13 @@ func (s BackupEventPhase) MarshalText() ([]byte, error) {
 		return []byte(s), nil
 	case BackupEventPhaseFailed:
 		return []byte(s), nil
+	case BackupEventPhaseStarted:
+		return []byte(s), nil
 	case BackupEventPhaseStalled:
 		return []byte(s), nil
 	case BackupEventPhaseResumed:
+		return []byte(s), nil
+	case BackupEventPhaseRetrying:
 		return []byte(s), nil
 	default:
 		return nil, errors.Errorf("invalid value: %q", s)
@@ -9703,18 +9714,27 @@ func (s *BackupEventPhase) UnmarshalText(data []byte) error {
 	case BackupEventPhaseFailed:
 		*s = BackupEventPhaseFailed
 		return nil
+	case BackupEventPhaseStarted:
+		*s = BackupEventPhaseStarted
+		return nil
 	case BackupEventPhaseStalled:
 		*s = BackupEventPhaseStalled
 		return nil
 	case BackupEventPhaseResumed:
 		*s = BackupEventPhaseResumed
 		return nil
+	case BackupEventPhaseRetrying:
+		*s = BackupEventPhaseRetrying
+		return nil
 	default:
 		return errors.Errorf("invalid value: %q", data)
 	}
 }
 
-// Pass-through of the agent's POST /progress payload (e.g. chunk counters).
+// Pass-through of the agent's POST /progress payload (e.g. chunk counters). For `retrying`, a
+// control-plane hint that the command could not be delivered to the site and will be retried
+// automatically, `phase_detail.error` carries the reason in the control plane's own words (the same
+// text as `attempt_error`). For a restore it also carries `restore_id`.
 type BackupEventPhaseDetail map[string]jx.Raw
 
 func (s *BackupEventPhaseDetail) init() BackupEventPhaseDetail {
@@ -10809,8 +10829,14 @@ type BackupSnapshot struct {
 	TotalSize    OptInt64  `json:"total_size"`
 	ChunkCount   OptInt64  `json:"chunk_count"`
 	// Kept by the monthly-archive retention rule.
-	Archived OptBool   `json:"archived"`
-	Error    OptString `json:"error"`
+	Archived OptBool `json:"archived"`
+	// Why the backup failed. Set only once `status` is `failed`; a running backup's retry reason is
+	// `attempt_error`, never this field.
+	Error OptString `json:"error"`
+	// While `status` is `running`: why the last attempt to start the backup on the site failed, in the
+	// control plane's own words, while it retries automatically. Cleared as soon as the site responds.
+	// Absent when no attempt is failing.
+	AttemptError OptString `json:"attempt_error"`
 	// M5.6 / ADR-032 phpbu runner progress. Empty `{}` until the runner posts its first phase. Shape: {
 	// "phase": "uploading", "phase_detail": {"chunks_done": 17, "chunks_total": 42, ...} } Phases form a
 	// closed set (see backup.allowedProgressPhases on the CP).
@@ -10897,6 +10923,11 @@ func (s *BackupSnapshot) GetArchived() OptBool {
 // GetError returns the value of Error.
 func (s *BackupSnapshot) GetError() OptString {
 	return s.Error
+}
+
+// GetAttemptError returns the value of AttemptError.
+func (s *BackupSnapshot) GetAttemptError() OptString {
+	return s.AttemptError
 }
 
 // GetProgress returns the value of Progress.
@@ -11017,6 +11048,11 @@ func (s *BackupSnapshot) SetArchived(val OptBool) {
 // SetError sets the value of Error.
 func (s *BackupSnapshot) SetError(val OptString) {
 	s.Error = val
+}
+
+// SetAttemptError sets the value of AttemptError.
+func (s *BackupSnapshot) SetAttemptError(val OptString) {
+	s.AttemptError = val
 }
 
 // SetProgress sets the value of Progress.
@@ -14412,8 +14448,14 @@ type CreateRestoreAccepted struct {
 	TotalSize    OptInt64  `json:"total_size"`
 	ChunkCount   OptInt64  `json:"chunk_count"`
 	// Kept by the monthly-archive retention rule.
-	Archived OptBool   `json:"archived"`
-	Error    OptString `json:"error"`
+	Archived OptBool `json:"archived"`
+	// Why the backup failed. Set only once `status` is `failed`; a running backup's retry reason is
+	// `attempt_error`, never this field.
+	Error OptString `json:"error"`
+	// While `status` is `running`: why the last attempt to start the backup on the site failed, in the
+	// control plane's own words, while it retries automatically. Cleared as soon as the site responds.
+	// Absent when no attempt is failing.
+	AttemptError OptString `json:"attempt_error"`
 	// M5.6 / ADR-032 phpbu runner progress. Empty `{}` until the runner posts its first phase. Shape: {
 	// "phase": "uploading", "phase_detail": {"chunks_done": 17, "chunks_total": 42, ...} } Phases form a
 	// closed set (see backup.allowedProgressPhases on the CP).
@@ -14503,6 +14545,11 @@ func (s *CreateRestoreAccepted) GetArchived() OptBool {
 // GetError returns the value of Error.
 func (s *CreateRestoreAccepted) GetError() OptString {
 	return s.Error
+}
+
+// GetAttemptError returns the value of AttemptError.
+func (s *CreateRestoreAccepted) GetAttemptError() OptString {
+	return s.AttemptError
 }
 
 // GetProgress returns the value of Progress.
@@ -14628,6 +14675,11 @@ func (s *CreateRestoreAccepted) SetArchived(val OptBool) {
 // SetError sets the value of Error.
 func (s *CreateRestoreAccepted) SetError(val OptString) {
 	s.Error = val
+}
+
+// SetAttemptError sets the value of AttemptError.
+func (s *CreateRestoreAccepted) SetAttemptError(val OptString) {
+	s.AttemptError = val
 }
 
 // SetProgress sets the value of Progress.
@@ -45354,6 +45406,9 @@ type ScheduleRun struct {
 	Kind ScheduleRunKind `json:"kind"`
 	// Human-readable error message when status is `failed`.
 	Error OptString `json:"error"`
+	// While `status` is `running`: why the last attempt to start the backup on the site failed, while the
+	// control plane retries it automatically. Absent when no attempt is failing.
+	AttemptError OptString `json:"attempt_error"`
 	// Actor that triggered this run (`schedule` for automatic fires; user UUID for manual).
 	TriggeredBy OptString `json:"triggered_by"`
 	// Email of the triggering user (null for schedule-fired or unresolvable actors).
@@ -45406,6 +45461,11 @@ func (s *ScheduleRun) GetKind() ScheduleRunKind {
 // GetError returns the value of Error.
 func (s *ScheduleRun) GetError() OptString {
 	return s.Error
+}
+
+// GetAttemptError returns the value of AttemptError.
+func (s *ScheduleRun) GetAttemptError() OptString {
+	return s.AttemptError
 }
 
 // GetTriggeredBy returns the value of TriggeredBy.
@@ -45476,6 +45536,11 @@ func (s *ScheduleRun) SetKind(val ScheduleRunKind) {
 // SetError sets the value of Error.
 func (s *ScheduleRun) SetError(val OptString) {
 	s.Error = val
+}
+
+// SetAttemptError sets the value of AttemptError.
+func (s *ScheduleRun) SetAttemptError(val OptString) {
+	s.AttemptError = val
 }
 
 // SetTriggeredBy sets the value of TriggeredBy.
