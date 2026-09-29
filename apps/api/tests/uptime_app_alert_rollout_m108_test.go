@@ -172,25 +172,17 @@ func applyMigrationsBeforeM108(t *testing.T, pool *db.Pool, stopAt string) {
 // has not asked for app-health alerting must never have it silently turned
 // on by an upgrade.
 func TestM108Migration_UpgradeDeployment_DefaultsAppAlertsOff(t *testing.T) {
-	// KNOWN GAP (found by PR #775's owner-role harness, not fixed here — a
-	// migration change for database-engineer, not this test-harness PR):
-	// worse than a silent no-op, this one flips a safety default the wrong
-	// way. m108's "does a site already exist" check reads FROM sites (FORCE
-	// ROW LEVEL SECURITY) with no GUC set by the production migrator, so
-	// under the real migrator role it always sees zero sites and always
-	// takes the fresh-install branch:
-	//
-	//   uptime_app_alert_rollout_m108_test.go:206: app_alert_rollout.fresh_install
-	//   must be false: a site already existed at migration time
-	//
-	// Implication: any self-hosted install still pre-m108, on upgrade, gets
-	// app_alerts_enabled defaulted to TRUE — app-health alerting silently
-	// turned ON for an operator who never asked for it — instead of the
-	// documented off-by-default upgrade behavior. No error, no log, a
-	// successful boot. Do not loosen this test or the migration to make the
-	// skip below go away — see PR #775 / the session worklog.
-	t.Skip("known gap: m108 always takes the fresh-install branch under the production migrator role (RLS on sites), defaulting app_alerts_enabled to true on upgrades too; see PR #775")
-
+	// FIXED by m146 (PR #786): worse than a silent no-op, this one flips a
+	// safety default the wrong way. m108's "does a site already exist" check
+	// reads FROM sites (FORCE ROW LEVEL SECURITY) with no GUC set by the
+	// production migrator, so under the real migrator role it always saw
+	// zero sites and always took the fresh-install branch. m146
+	// (20260810120000, sorts right after m108) re-decides the rollout under
+	// NO FORCE / row_security=off, scoped to sites that existed by m108's
+	// own applied_at, and applies in the SAME BOOT on any database reaching
+	// m108 for the first time — exactly this test's scenario. See
+	// uptime_app_alert_rollout_m146_repair_test.go for the LATE-RUN shape
+	// (a database already long past m108 when m146 finally lands).
 	pool, owner := startPostgresBeforeM108(t)
 	ctx := context.Background()
 
