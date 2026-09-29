@@ -60,6 +60,26 @@ func TestSanitizeReason_Redacts(t *testing.T) {
 		{"hex token", "key 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b rejected", "9f86d081", "[redacted]"},
 		{"base64 token", "key dGhpcyBpcyBhIHNlY3JldCBrZXkgdmFsdWU= rejected", "dGhpcyBp", "[redacted]"},
 		{"jwt-like token", "token eyJhbGciOiJFZERTQSJ9-eyJzdWIiOiJ4In0_abcDEF rejected", "eyJhbGci", "[redacted]"},
+		// NFKC and the ideographic full stop.
+		{"full-width dot host", "mail evil-wpmgr\uff0ecom/login now", "evil-wpmgr", "[link]"},
+		{"ideographic dot host", "mail evil-wpmgr\u3002com now", "evil-wpmgr", "[link]"},
+		{"halfwidth ideographic dot host", "mail evil-wpmgr\uff61com now", "evil-wpmgr", "[link]"},
+		{"small full stop host", "mail evil-wpmgr\ufe52com now", "evil-wpmgr", "[link]"},
+		{"full-width www host", "visit \uff57\uff57\uff57\uff0eevil-wpmgr\uff0ecom now", "evil-wpmgr", "[link]"},
+		{"full-width at sign", "mail billing\uff20evil-wpmgr.com please", "evil-wpmgr", "[address]"},
+		// Hosts in any script.
+		{"unicode www host", "restore it at www.\u043f\u0440\u0438\u043c\u0435\u0440.\u0440\u0444 today", "\u043f\u0440\u0438\u043c\u0435\u0440", "[link]"},
+		{"unicode host with path", "see \u043f\u0440\u0438\u043c\u0435\u0440.\u0440\u0444/login now", "\u043f\u0440\u0438\u043c\u0435\u0440", "[link]"},
+		{"bare unicode host", "mail \u043f\u0440\u0438\u043c\u0435\u0440.\u0440\u0444 now", "\u043f\u0440\u0438\u043c\u0435\u0440", "[link]"},
+		{"unicode host after a hyphen", "see --\u043f\u0440\u0438\u043c\u0435\u0440.\u0440\u0444 now", "\u043f\u0440\u0438\u043c\u0435\u0440", "[link]"},
+		{"ideographic www host", "visit www\u3002\u4f8b\u3048\u3002\u307f\u3093\u306a now", "\u4f8b\u3048", "[link]"},
+		// IPv4.
+		{"bare ipv4", "connect to 203.0.113.9 failed", "203.0.113", "[link]"},
+		{"ipv4 with a path", "reset at 185.199.108.153/reset now", "185.199", "[link]"},
+		{"ipv4 path is swallowed with the address", "reset at 185.199.108.153/reset now", "/reset", "[link]"},
+		{"ipv4 with a port", "connect to 203.0.113.9:8443 failed", "203.0.113", "[link]"},
+		{"ipv4 with a port and path", "open 203.0.113.9:8443/login now", "203.0.113", "[link]"},
+		{"ipv4 at the end", "connect to 203.0.113.9", "203.0.113", "[link]"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -102,6 +122,10 @@ func TestSanitizeReason_KeepsHonestText(t *testing.T) {
 		{"PHP 8.2 required, e.g. upgrade", "PHP 8.2 required, e.g. upgrade"},
 		{"and/or retry", "and/or retry"},
 		{"wp-content/plugins/fleet-agent-site-manager/includes/commands", "wp-content/plugins/fleet-agent-site-manager/includes/commands"},
+		{"version 1.2.3 required", "version 1.2.3 required"},
+		{"\u0444\u0430\u0439\u043b.php is missing", "\u0444\u0430\u0439\u043b.php is missing"},
+		{"snake_case.php and other_file.json", "snake_case.php and other_file.json"},
+		{"\uff46\uff55\uff4c\uff4c width text", "full width text"},
 	}
 	for _, tt := range tests {
 		if got := sanitizeReason(tt.in, ""); got != tt.want {
@@ -123,6 +147,67 @@ func TestSanitizeReason_CapsAt200(t *testing.T) {
 	}
 	if !utf8.ValidString(got) {
 		t.Errorf("sanitizeReason split a rune: %q", got)
+	}
+}
+
+// TestSanitizeReason_RedactsAfterCap: however the 200-byte cap cuts a kept
+// file name, what is left is never a bare hostname. The cut is moved across
+// every byte of "wpmgr-help.com.js".
+func TestSanitizeReason_RedactsAfterCap(t *testing.T) {
+	const name = "wpmgr-help.com.js"
+	for cut := 1; cut <= len(name); cut++ {
+		// Filler of single letters and spaces, so the cap falls exactly
+		// after name[:cut] and nothing in the filler is redacted.
+		filler := strings.Repeat("a ", (maxReasonLen-cut)/2)
+		if len(filler)+cut < maxReasonLen {
+			filler = "b" + filler
+		}
+		in := filler + name + " tail"
+		got := sanitizeReason(in, "")
+		if len(got) > maxReasonLen {
+			t.Fatalf("cut %d: %d bytes, want <= %d", cut, len(got), maxReasonLen)
+		}
+		if strings.Contains(got, "wpmgr-help.co") && !strings.Contains(got, name) {
+			t.Errorf("cut %d: sanitizeReason left a bare host: %q", cut, got[len(got)-min(len(got), 30):])
+		}
+		if again := redactReason(got); again != got {
+			t.Errorf("cut %d: output is not fully redacted:\n  got   %q\n  again %q", cut, got, again)
+		}
+	}
+}
+
+// TestSanitizeReason_OutputIsFullyRedacted: for many texts cut at many
+// points, the output fits the cap, is valid UTF-8, and redacting it again
+// changes nothing, so no link, address, host or path survived anywhere.
+func TestSanitizeReason_OutputIsFullyRedacted(t *testing.T) {
+	tokens := []string{
+		"evil-wpmgr.com", "www.evil.example", "wpmgr-help.com.js", "dump.sql.gz",
+		"203.0.113.9", "185.199.108.153/reset", "billing@evil.example", "https://evil.example/x",
+		"/var/www/html/x.php", `C:\inetpub\x.php`, `\\srv\share`, "includes/commands/class-x.php",
+		"\u043f\u0440\u0438\u043c\u0435\u0440.\u0440\u0444", "evil\u3002com", "\uff57\uff57\uff57\uff0eevil\uff0ecom",
+		"disk", "full", "\u00e9t\u00e9", "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b", "PHP", "8.2", "e.g.",
+	}
+	// A fixed linear congruential sequence keeps the test deterministic.
+	seed := uint32(791)
+	next := func(n int) int {
+		seed = seed*1664525 + 1013904223
+		return int(seed>>8) % n
+	}
+	for i := 0; i < 2000; i++ {
+		var b strings.Builder
+		want := 150 + next(150)
+		for b.Len() < want {
+			b.WriteString(tokens[next(len(tokens))])
+			b.WriteByte(" ,;:()"[next(6)])
+		}
+		in := b.String()
+		got := sanitizeReason(in, "")
+		if len(got) > maxReasonLen || !utf8.ValidString(got) {
+			t.Fatalf("input %q: output %d bytes, valid UTF-8 %v", in, len(got), utf8.ValidString(got))
+		}
+		if again := redactReason(got); again != got {
+			t.Fatalf("input %q:\n  got   %q\n  again %q", in, got, again)
+		}
 	}
 }
 
