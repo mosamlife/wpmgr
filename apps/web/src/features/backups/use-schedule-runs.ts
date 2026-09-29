@@ -30,6 +30,14 @@ export interface ScheduleRun {
   status: ScheduleRunStatus;
   kind: string;
   error: string | null;
+  /**
+   * GH #791 — `backup_schedule_runs.attempt_error` (m148): the last failed
+   * attempt's error while the run is still `running` and being retried.
+   * `error` keeps meaning the final failure reason only. Mirrors
+   * `BackupSnapshot`'s `attempt_error` split — see
+   * `format-progress.ts`'s `snapshotAttemptError` for why.
+   */
+  attempt_error: string | null;
   triggered_by: string | null;
   triggered_by_email: string | null;
   triggered_by_name: string | null;

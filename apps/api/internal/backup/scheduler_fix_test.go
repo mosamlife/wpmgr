@@ -237,6 +237,9 @@ func (r *schedulerTestRepo) MarkSnapshotStalled(_ context.Context, _, _ uuid.UUI
 func (r *schedulerTestRepo) ClearSnapshotStalled(_ context.Context, _, _ uuid.UUID) (bool, error) {
 	panic("schedulerTestRepo.ClearSnapshotStalled not expected")
 }
+func (r *schedulerTestRepo) SetSnapshotAttemptError(_ context.Context, _, _ uuid.UUID, _ string) (int64, error) {
+	panic("schedulerTestRepo.SetSnapshotAttemptError not expected")
+}
 func (r *schedulerTestRepo) GetLatestCompletedSnapshot(_ context.Context, _, _ uuid.UUID) (Snapshot, error) {
 	return Snapshot{}, domain.NotFound("not_found", "no completed snapshot")
 }

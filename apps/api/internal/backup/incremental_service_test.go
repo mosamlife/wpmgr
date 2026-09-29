@@ -188,6 +188,11 @@ func (r *fakeRepo) MarkSnapshotStalled(_ context.Context, _, _ uuid.UUID) (bool,
 func (r *fakeRepo) ClearSnapshotStalled(_ context.Context, _, _ uuid.UUID) (bool, error) {
 	return false, nil
 }
+func (r *fakeRepo) SetSnapshotAttemptError(_ context.Context, _, _ uuid.UUID, _ string) (int64, error) {
+	// Benign no-op, mirroring ClearSnapshotStalled above: callers that do not
+	// exercise GH #791's attempt-error path must not panic here.
+	return 0, nil
+}
 func (r *fakeRepo) ListManifest(_ context.Context, _, _ uuid.UUID) ([]ManifestEntry, error) {
 	panic("fakeRepo.ListManifest not implemented")
 }

@@ -13,8 +13,33 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const clearScheduleRunAttemptErrorBySnapshot = `-- name: ClearScheduleRunAttemptErrorBySnapshot :execrows
+UPDATE backup_schedule_runs
+SET attempt_error = '',
+    updated_at    = now()
+WHERE snapshot_id = $1 AND tenant_id = $2
+  AND status = 'running' AND attempt_error <> ''
+`
+
+type ClearScheduleRunAttemptErrorBySnapshotParams struct {
+	SnapshotID pgtype.UUID `json:"snapshot_id"`
+	TenantID   uuid.UUID   `json:"tenant_id"`
+}
+
+// GH #791: the run-side half of the proof-of-life clear
+// (ClearBackupSnapshotStalled clears the snapshot side). Matches only a
+// running run with an outstanding attempt error. Rows-affected: 1 = cleared;
+// 0 = nothing to clear.
+func (q *Queries) ClearScheduleRunAttemptErrorBySnapshot(ctx context.Context, arg ClearScheduleRunAttemptErrorBySnapshotParams) (int64, error) {
+	result, err := q.db.Exec(ctx, clearScheduleRunAttemptErrorBySnapshot, arg.SnapshotID, arg.TenantID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getScheduleRun = `-- name: GetScheduleRun :one
-SELECT id, tenant_id, site_id, schedule_id, snapshot_id, scheduled_for, status, kind, error, triggered_by, created_at, started_at, finished_at, updated_at FROM backup_schedule_runs
+SELECT id, tenant_id, site_id, schedule_id, snapshot_id, scheduled_for, status, kind, error, triggered_by, created_at, started_at, finished_at, updated_at, attempt_error FROM backup_schedule_runs
 WHERE id = $1 AND tenant_id = $2
 `
 
@@ -41,12 +66,13 @@ func (q *Queries) GetScheduleRun(ctx context.Context, arg GetScheduleRunParams) 
 		&i.StartedAt,
 		&i.FinishedAt,
 		&i.UpdatedAt,
+		&i.AttemptError,
 	)
 	return i, err
 }
 
 const listPastScheduleRuns = `-- name: ListPastScheduleRuns :many
-SELECT id, tenant_id, site_id, schedule_id, snapshot_id, scheduled_for, status, kind, error, triggered_by, created_at, started_at, finished_at, updated_at FROM backup_schedule_runs
+SELECT id, tenant_id, site_id, schedule_id, snapshot_id, scheduled_for, status, kind, error, triggered_by, created_at, started_at, finished_at, updated_at, attempt_error FROM backup_schedule_runs
 WHERE tenant_id = $1 AND site_id = $2
   AND status IN ('completed', 'failed', 'skipped', 'canceled')
 ORDER BY scheduled_for DESC
@@ -90,6 +116,7 @@ func (q *Queries) ListPastScheduleRuns(ctx context.Context, arg ListPastSchedule
 			&i.StartedAt,
 			&i.FinishedAt,
 			&i.UpdatedAt,
+			&i.AttemptError,
 		); err != nil {
 			return nil, err
 		}
@@ -102,7 +129,7 @@ func (q *Queries) ListPastScheduleRuns(ctx context.Context, arg ListPastSchedule
 }
 
 const listScheduleRunsBySite = `-- name: ListScheduleRunsBySite :many
-SELECT id, tenant_id, site_id, schedule_id, snapshot_id, scheduled_for, status, kind, error, triggered_by, created_at, started_at, finished_at, updated_at FROM backup_schedule_runs
+SELECT id, tenant_id, site_id, schedule_id, snapshot_id, scheduled_for, status, kind, error, triggered_by, created_at, started_at, finished_at, updated_at, attempt_error FROM backup_schedule_runs
 WHERE tenant_id = $1 AND site_id = $2
 ORDER BY scheduled_for DESC
 LIMIT $3 OFFSET $4
@@ -145,6 +172,7 @@ func (q *Queries) ListScheduleRunsBySite(ctx context.Context, arg ListScheduleRu
 			&i.StartedAt,
 			&i.FinishedAt,
 			&i.UpdatedAt,
+			&i.AttemptError,
 		); err != nil {
 			return nil, err
 		}
@@ -157,7 +185,7 @@ func (q *Queries) ListScheduleRunsBySite(ctx context.Context, arg ListScheduleRu
 }
 
 const listUpcomingScheduleRuns = `-- name: ListUpcomingScheduleRuns :many
-SELECT id, tenant_id, site_id, schedule_id, snapshot_id, scheduled_for, status, kind, error, triggered_by, created_at, started_at, finished_at, updated_at FROM backup_schedule_runs
+SELECT id, tenant_id, site_id, schedule_id, snapshot_id, scheduled_for, status, kind, error, triggered_by, created_at, started_at, finished_at, updated_at, attempt_error FROM backup_schedule_runs
 WHERE tenant_id = $1 AND site_id = $2
   AND (
       (status IN ('scheduled', 'queued') AND scheduled_for > now())
@@ -201,6 +229,7 @@ func (q *Queries) ListUpcomingScheduleRuns(ctx context.Context, arg ListUpcoming
 			&i.StartedAt,
 			&i.FinishedAt,
 			&i.UpdatedAt,
+			&i.AttemptError,
 		); err != nil {
 			return nil, err
 		}
@@ -212,13 +241,42 @@ func (q *Queries) ListUpcomingScheduleRuns(ctx context.Context, arg ListUpcoming
 	return items, nil
 }
 
+const setScheduleRunAttemptErrorBySnapshot = `-- name: SetScheduleRunAttemptErrorBySnapshot :execrows
+UPDATE backup_schedule_runs
+SET attempt_error = left($1::text, 1024),
+    updated_at    = now()
+WHERE snapshot_id = $2 AND tenant_id = $3
+  AND status = 'running'
+`
+
+type SetScheduleRunAttemptErrorBySnapshotParams struct {
+	AttemptError string      `json:"attempt_error"`
+	SnapshotID   pgtype.UUID `json:"snapshot_id"`
+	TenantID     uuid.UUID   `json:"tenant_id"`
+}
+
+// GH #791: mirrors SetBackupSnapshotAttemptError onto the run linked to the
+// snapshot. The status='running' guard is the contract: it never touches a
+// queued, completed, failed, skipped or canceled run, and unlike
+// SetScheduleRunStatusBySnapshot it never changes status, so it cannot drag
+// a finished run back to running. Rows-affected: 1 = recorded; 0 = no running
+// run is linked to the snapshot (a manual backup has none). The value is
+// capped at 1024 characters here as well as by the caller.
+func (q *Queries) SetScheduleRunAttemptErrorBySnapshot(ctx context.Context, arg SetScheduleRunAttemptErrorBySnapshotParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setScheduleRunAttemptErrorBySnapshot, arg.AttemptError, arg.SnapshotID, arg.TenantID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const setScheduleRunSnapshot = `-- name: SetScheduleRunSnapshot :one
 UPDATE backup_schedule_runs
 SET snapshot_id = $3,
     status      = 'queued',
     updated_at  = now()
 WHERE id = $1 AND tenant_id = $2
-RETURNING id, tenant_id, site_id, schedule_id, snapshot_id, scheduled_for, status, kind, error, triggered_by, created_at, started_at, finished_at, updated_at
+RETURNING id, tenant_id, site_id, schedule_id, snapshot_id, scheduled_for, status, kind, error, triggered_by, created_at, started_at, finished_at, updated_at, attempt_error
 `
 
 type SetScheduleRunSnapshotParams struct {
@@ -246,19 +304,21 @@ func (q *Queries) SetScheduleRunSnapshot(ctx context.Context, arg SetScheduleRun
 		&i.StartedAt,
 		&i.FinishedAt,
 		&i.UpdatedAt,
+		&i.AttemptError,
 	)
 	return i, err
 }
 
 const setScheduleRunStatusByID = `-- name: SetScheduleRunStatusByID :one
 UPDATE backup_schedule_runs
-SET status      = $3,
-    error       = $4,
+SET status        = $3,
+    error         = $4,
+    attempt_error = CASE WHEN $3 = 'completed' THEN '' ELSE attempt_error END,
     started_at  = CASE WHEN $5::boolean THEN now() ELSE started_at  END,
     finished_at = CASE WHEN $6::boolean THEN now() ELSE finished_at END,
     updated_at  = now()
 WHERE id = $1 AND tenant_id = $2
-RETURNING id, tenant_id, site_id, schedule_id, snapshot_id, scheduled_for, status, kind, error, triggered_by, created_at, started_at, finished_at, updated_at
+RETURNING id, tenant_id, site_id, schedule_id, snapshot_id, scheduled_for, status, kind, error, triggered_by, created_at, started_at, finished_at, updated_at, attempt_error
 `
 
 type SetScheduleRunStatusByIDParams struct {
@@ -273,6 +333,8 @@ type SetScheduleRunStatusByIDParams struct {
 // Advances a run to a terminal or intermediate status by its primary key.
 // started_at and finished_at are set conditionally so they are only written
 // once (the scheduler calls this for running→completed/failed transitions).
+// attempt_error (GH #791) is cleared when the run completes; a completed run
+// never carries an outstanding attempt error. Any other status leaves it.
 func (q *Queries) SetScheduleRunStatusByID(ctx context.Context, arg SetScheduleRunStatusByIDParams) (BackupScheduleRun, error) {
 	row := q.db.QueryRow(ctx, setScheduleRunStatusByID,
 		arg.ID,
@@ -298,19 +360,21 @@ func (q *Queries) SetScheduleRunStatusByID(ctx context.Context, arg SetScheduleR
 		&i.StartedAt,
 		&i.FinishedAt,
 		&i.UpdatedAt,
+		&i.AttemptError,
 	)
 	return i, err
 }
 
 const setScheduleRunStatusBySnapshot = `-- name: SetScheduleRunStatusBySnapshot :one
 UPDATE backup_schedule_runs
-SET status      = $3,
-    error       = $4,
+SET status        = $3,
+    error         = $4,
+    attempt_error = CASE WHEN $3 = 'completed' THEN '' ELSE attempt_error END,
     started_at  = CASE WHEN $5::boolean THEN now() ELSE started_at  END,
     finished_at = CASE WHEN $6::boolean THEN now() ELSE finished_at END,
     updated_at  = now()
 WHERE snapshot_id = $1 AND tenant_id = $2
-RETURNING id, tenant_id, site_id, schedule_id, snapshot_id, scheduled_for, status, kind, error, triggered_by, created_at, started_at, finished_at, updated_at
+RETURNING id, tenant_id, site_id, schedule_id, snapshot_id, scheduled_for, status, kind, error, triggered_by, created_at, started_at, finished_at, updated_at, attempt_error
 `
 
 type SetScheduleRunStatusBySnapshotParams struct {
@@ -325,6 +389,8 @@ type SetScheduleRunStatusBySnapshotParams struct {
 // Reconciliation path: when the linked snapshot reaches a terminal status,
 // update the run row to match. Keyed on snapshot_id so the snapshot finalize
 // path does not need to carry the run id. Runs tenant-scoped.
+// attempt_error (GH #791) is cleared when the run completes; a completed run
+// never carries an outstanding attempt error. Any other status leaves it.
 func (q *Queries) SetScheduleRunStatusBySnapshot(ctx context.Context, arg SetScheduleRunStatusBySnapshotParams) (BackupScheduleRun, error) {
 	row := q.db.QueryRow(ctx, setScheduleRunStatusBySnapshot,
 		arg.SnapshotID,
@@ -350,6 +416,7 @@ func (q *Queries) SetScheduleRunStatusBySnapshot(ctx context.Context, arg SetSch
 		&i.StartedAt,
 		&i.FinishedAt,
 		&i.UpdatedAt,
+		&i.AttemptError,
 	)
 	return i, err
 }
@@ -369,7 +436,7 @@ DO UPDATE SET
                        ELSE backup_schedule_runs.status
                    END,
     updated_at   = now()
-RETURNING id, tenant_id, site_id, schedule_id, snapshot_id, scheduled_for, status, kind, error, triggered_by, created_at, started_at, finished_at, updated_at
+RETURNING id, tenant_id, site_id, schedule_id, snapshot_id, scheduled_for, status, kind, error, triggered_by, created_at, started_at, finished_at, updated_at, attempt_error
 `
 
 type UpsertScheduleRunParams struct {
@@ -418,6 +485,7 @@ func (q *Queries) UpsertScheduleRun(ctx context.Context, arg UpsertScheduleRunPa
 		&i.StartedAt,
 		&i.FinishedAt,
 		&i.UpdatedAt,
+		&i.AttemptError,
 	)
 	return i, err
 }

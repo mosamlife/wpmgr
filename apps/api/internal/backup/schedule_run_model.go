@@ -52,4 +52,8 @@ type ScheduleRun struct {
 	StartedAt    *time.Time
 	FinishedAt   *time.Time
 	UpdatedAt    time.Time
+	// AttemptError (GH #791, m148) mirrors Snapshot.AttemptError onto the
+	// linked run: the control plane's description of the most recent failed
+	// attempt, while this run is still 'running'. '' means none outstanding.
+	AttemptError string
 }

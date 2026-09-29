@@ -113,6 +113,7 @@ func TestIncrementalSnapshotReadRoundTrip(t *testing.T) {
 		false,                                     // locked (m49 Track C)
 		pgtype.UUID{},                             // destination_id (null; M7/ADR-036 P1)
 		pgtype.Timestamptz{},                      // stalled_at (null; m104 / GH #279)
+		"The site did not answer in time.",        // attempt_error (m148 / GH #791)
 	}}
 
 	snap, err := scanSnapshotWithChainFields(row)
@@ -121,6 +122,9 @@ func TestIncrementalSnapshotReadRoundTrip(t *testing.T) {
 	}
 
 	// Read path → Snapshot model.
+	if snap.AttemptError != "The site did not answer in time." {
+		t.Errorf("Snapshot.AttemptError = %q, want the last scanned column", snap.AttemptError)
+	}
 	if !snap.IsIncremental {
 		t.Errorf("Snapshot.IsIncremental = false, want true")
 	}
@@ -195,6 +199,7 @@ func TestFullSnapshotReadRoundTrip(t *testing.T) {
 		false,                // locked (m49 Track C)
 		pgtype.UUID{},        // destination_id (null; M7/ADR-036 P1)
 		pgtype.Timestamptz{}, // stalled_at (null; m104 / GH #279)
+		"",                   // attempt_error (m148 / GH #791)
 	}}
 
 	snap, err := scanSnapshotWithChainFields(row)
