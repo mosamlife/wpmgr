@@ -27,6 +27,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -41,6 +42,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 	"github.com/mosamlife/wpmgr/apps/api/internal/site"
+	"github.com/mosamlife/wpmgr/apps/api/internal/siteaddr"
 )
 
 // gh755Env is one control plane mounted the way server.go mounts it: the
@@ -592,5 +594,99 @@ func TestSiteMint_RefusesEquivalentAddress(t *testing.T) {
 		if status, body := env.do(t, http.MethodPost, "/api/v1/sites", map[string]any{"url": distinct, "name": "distinct"}); status != http.StatusCreated {
 			t.Fatalf("%s answered %d, want 201: %v", distinct, status, body)
 		}
+	}
+}
+
+// gh755HostKey is the siteaddr.HostKey of the host in address: the ASCII
+// name a request to it is dialled by.
+func gh755HostKey(t *testing.T, address string) string {
+	t.Helper()
+	u, err := url.Parse(address)
+	if err != nil {
+		t.Fatalf("%q does not parse: %v", address, err)
+	}
+	k, ok := siteaddr.HostKey(u.Hostname())
+	if !ok {
+		t.Fatalf("the host of %q has no key", address)
+	}
+	return k
+}
+
+// assertDialsSavedHost fails unless got, a stored address, dials the same
+// host as saved, the address the site was added with.
+func assertDialsSavedHost(t *testing.T, got, saved string) {
+	t.Helper()
+	if kg, ks := gh755HostKey(t, got), gh755HostKey(t, saved); kg != ks {
+		t.Fatalf("stored %q dials %q, the saved %q dials %q", got, kg, saved, ks)
+	}
+}
+
+// gh755UnicodeUpgrades are sites saved over http with a host whose Unicode
+// lowercase is another domain (a capital dotted I lowercases to a plain "i",
+// a capital sharp s to a small one), whose agent reports the same host over
+// https. want is the address to store: the saved host with only its ASCII
+// letters lowercased, which dials the saved host's key. other is the address
+// Unicode lowercasing of the host would give, which dials another key.
+func gh755UnicodeUpgrades(apex string) []struct{ name, stored, reported, want, other string } {
+	return []struct{ name, stored, reported, want, other string }{
+		{"capital dotted I", "http://İstanbul." + apex, "https://İstanbul." + apex, "https://İstanbul." + apex, "https://istanbul." + apex},
+		{"capital sharp S", "http://STRAẞE." + apex, "https://STRAẞE." + apex, "https://straẞe." + apex, "https://straße." + apex},
+	}
+}
+
+// TestSiteFirstEnroll_UnicodeHostUpgradeStoresTheSavedHost: the first connect
+// of such a site stores the https address of the saved host, which dials the
+// saved host's key, and never the host Unicode lowercasing gives.
+func TestSiteFirstEnroll_UnicodeHostUpgradeStoresTheSavedHost(t *testing.T) {
+	env, tenant := gh755Setup(t, "gh755-unicode-enroll")
+
+	for _, c := range gh755UnicodeUpgrades("enroll755.example.test") {
+		t.Run(c.name, func(t *testing.T) {
+			if gh755HostKey(t, c.want) == gh755HostKey(t, c.other) {
+				t.Fatalf("fixture: %q and %q dial one key, so this case proves nothing", c.want, c.other)
+			}
+			id, code := env.addSite(t, c.stored)
+			env.mustEnroll(t, code, c.reported, id)
+
+			s := env.site(t, tenant, id)
+			assertDialsSavedHost(t, s.URL, c.stored)
+			if s.URL != c.want || s.ConnectionState != site.StateConnected {
+				t.Fatalf("site url=%q state=%s, want %q and connected", s.URL, s.ConnectionState, c.want)
+			}
+			changed, mismatch := env.urlAudits(t, tenant, id)
+			assertURLChanged(t, changed, c.stored, c.want)
+			if len(mismatch) != 0 {
+				t.Fatalf("unexpected site.url_mismatch rows: %v", mismatch)
+			}
+		})
+	}
+}
+
+// TestSiteFirstEnroll_OneHostKeyIsTheSavedAddress: an agent that reports the
+// saved address with its host spelt another way that dials the same key (a
+// non-ASCII capital, or the Punycode form) reports the saved address: the
+// stored address is kept as it was, and nothing is audited, neither a change
+// nor a mismatch.
+func TestSiteFirstEnroll_OneHostKeyIsTheSavedAddress(t *testing.T) {
+	env, tenant := gh755Setup(t, "gh755-onekey-enroll")
+
+	cases := []struct{ name, stored, reported string }{
+		{"non-ASCII letter case", "https://BÜCHER.onekey755.example.test", "https://bücher.onekey755.example.test/"},
+		{"Punycode spelling", "https://bücher.puny755.example.test", "https://xn--bcher-kva.puny755.example.test"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			id, code := env.addSite(t, c.stored)
+			env.mustEnroll(t, code, c.reported, id)
+
+			s := env.site(t, tenant, id)
+			if s.URL != c.stored || s.ConnectionState != site.StateConnected {
+				t.Fatalf("site url=%q state=%s, want %q unchanged and connected", s.URL, s.ConnectionState, c.stored)
+			}
+			changed, mismatch := env.urlAudits(t, tenant, id)
+			if len(changed)+len(mismatch) != 0 {
+				t.Fatalf("the saved address, spelt another way, was audited: changed=%v mismatch=%v", changed, mismatch)
+			}
+		})
 	}
 }

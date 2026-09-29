@@ -63,11 +63,11 @@ type redirectAnswer struct {
 // concurrent write between AdoptReportedURL's read and its compare-and-set
 // write (the "stale from" case) without a real race.
 type gh755FakeProber struct {
-	mu           sync.Mutex
-	pingOK       map[string]bool
-	redirectTo   map[string]redirectAnswer
-	beforeAnswer func()
-	pingCalls    []string
+	mu            sync.Mutex
+	pingOK        map[string]bool
+	redirectTo    map[string]redirectAnswer
+	beforeAnswer  func()
+	pingCalls     []string
 	redirectCalls []string
 }
 
@@ -116,6 +116,14 @@ func (p *gh755FakeProber) calls(t *testing.T) (ping, redirect int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return len(p.pingCalls), len(p.redirectCalls)
+}
+
+// pingsSince returns the addresses CommandPingOK was called with after the
+// first n calls.
+func (p *gh755FakeProber) pingsSince(n int) []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.pingCalls[n:]...)
 }
 
 // gh755PushEnv is one control plane mounted the way server.go mounts it: the
@@ -796,6 +804,51 @@ func TestGH755Push_UnicodeCaseHostNeverAdopted(t *testing.T) {
 			after, afterR := env.prober.calls(t)
 			if after != before || afterR != beforeR {
 				t.Fatalf("probe was called for a Unicode-case host (ping %d->%d, redirect %d->%d)", before, after, beforeR, afterR)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// (k) a site saved over http with a host whose Unicode lowercase is another
+// domain, whose agent pushes the same host over https: AdoptReportedURL
+// pings, and stores, the https address of the saved host, which dials the
+// saved host's key, never the host Unicode lowercasing gives. The fake
+// prober answers the ping for both, so only the address rule decides.
+// ---------------------------------------------------------------------------
+
+func TestGH755Push_UnicodeHostUpgradeStoresTheSavedHost(t *testing.T) {
+	env, tenant := gh755PushSetup(t, "gh755p-unicode-up")
+
+	for _, c := range gh755UnicodeUpgrades("push755.example.test") {
+		t.Run(c.name, func(t *testing.T) {
+			if gh755HostKey(t, c.want) == gh755HostKey(t, c.other) {
+				t.Fatalf("fixture: %q and %q dial one key, so this case proves nothing", c.want, c.other)
+			}
+			id, priv, pub := env.connectSite(t, c.stored)
+			env.prober.allowPing(c.want)
+			env.prober.allowPing(c.other)
+			before, beforeR := env.prober.calls(t)
+
+			status, body := env.pushDiagnostics(t, priv, pub, c.reported)
+			if status != http.StatusOK {
+				t.Fatalf("diagnostics push answered %d, want 200: %v", status, body)
+			}
+			s := env.site(t, tenant, id)
+			assertDialsSavedHost(t, s.URL, c.stored)
+			if s.URL != c.want {
+				t.Fatalf("site url = %q, want %q", s.URL, c.want)
+			}
+			changed, mismatch := env.urlAudits(t, tenant, id)
+			assertPushURLChanged(t, changed, c.stored, c.want, "agent_diagnostics")
+			if len(mismatch) != 0 {
+				t.Fatalf("unexpected mismatch rows: %v", mismatch)
+			}
+			if pings := env.prober.pingsSince(before); len(pings) != 1 || pings[0] != c.want {
+				t.Fatalf("pinged %v, want exactly [%s]", pings, c.want)
+			}
+			if _, afterR := env.prober.calls(t); afterR != beforeR {
+				t.Fatalf("a scheme-only change asked for a redirect (%d->%d)", beforeR, afterR)
 			}
 		})
 	}
