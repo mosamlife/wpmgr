@@ -11,6 +11,7 @@ import (
 	"github.com/riverqueue/river"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentcmd"
+	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 )
 
 // redirectCommander answers every command the way agentcmd does when the
@@ -89,35 +90,23 @@ func TestBackupWorker_RedirectFailsSnapshotOnFirstAttempt(t *testing.T) {
 // attempt (never a retry), with exactly one Restore call, and the active
 // restore_run finalized as failed.
 //
-// The restore run's own EVENT row — AppendRestoreEvent, which
-// persistRestoreRunEvent writes right alongside MarkRestoreRunStatus — is
-// asserted directly below by its recorded action (Phase) and outcome
-// (Status/Detail), via fakeRestoreRunStore.eventCalls. An earlier version of
-// this test inferred that row was written only by argument: because
-// w.recordAudit and RecordProgress("failed", ...) are unconditional and
-// adjacent in worker.go's source, proving RecordProgress ran (via
-// statusCalls) was treated as proof the event row also did. That is a
-// structural argument, not a content check, and it would not have caught a
-// change that persisted the wrong phase, status or detail into the event row
-// while still calling MarkRestoreRunStatus correctly.
+// Two separate records of that failure are asserted by content, not merely
+// by a call count:
 //
-// That EVENT row is NOT the audit trail. It is restore_run_events, the
-// per-run phase log RecordProgress fans out to the UI's SSE channel — a
-// different mechanism from the tenant-wide, hash-chained audit_log worker.go
-// calls via w.recordAudit(ctx, snap, ActionRestoreFailed, ...) a few lines
-// above the RecordProgress call this test does observe. This test passes nil
-// for RestoreWorker's audit recorder (NewRestoreWorker's third argument
-// below), so that recordAudit call is a no-op (the `w.audit == nil` guard in
-// RestoreWorker.recordAudit) and asserting the event row's content proves
-// nothing about it: a build that persisted the wrong action, target or
-// metadata into audit_log — or dropped the call entirely — would still pass
-// every assertion here. Closing that gap needs RestoreWorker.audit to accept
-// a test double in place of the concrete *audit.Recorder it takes today,
-// which is a production-code change outside this test-only pass.
+//   - The restore run's EVENT row (restore_run_events, via
+//     fakeRestoreRunStore.eventCalls): the per-run phase log RecordProgress
+//     writes and fans out to the UI's SSE channel.
+//   - The audit_log row (via recordingAuditRecorder, which stands in for the
+//     worker's *audit.Recorder): the tenant-wide, hash-chained audit trail
+//     w.recordAudit writes. Its action, target and metadata are checked, so a
+//     build that dropped the call or recorded the wrong action, target or
+//     message fails here.
 func TestRestoreWorker_RedirectFailsOnFirstAttempt(t *testing.T) {
 	repo, runStore, tenantID, snapshotID, svc := newRestoreWorkerFixture(t)
 	cmd := &redirectCommander{}
 	worker := NewRestoreWorker(svc, cmd, nil, nil, "https://cp.example.com", 0)
+	rec := &recordingAuditRecorder{}
+	worker.audit = rec
 
 	job := &river.Job[RestoreArgs]{Args: RestoreArgs{TenantID: tenantID, SnapshotID: snapshotID, Full: true}}
 	if err := worker.Work(context.Background(), job); err != nil {
@@ -162,4 +151,42 @@ func TestRestoreWorker_RedirectFailsOnFirstAttempt(t *testing.T) {
 	if !strings.Contains(string(ev.Detail), "Restore not started.") || !strings.Contains(string(ev.Detail), "https://www.example.com") {
 		t.Errorf("AppendRestoreEvent detail %q does not carry the operator message naming the redirect target", ev.Detail)
 	}
+
+	// The audit_log rows: the dispatch records restore.started before it
+	// contacts the agent, then exactly one restore.failed for the redirect,
+	// against the snapshot, carrying the operator message the run was failed
+	// with.
+	if len(rec.events) != 2 {
+		t.Fatalf("expected exactly 2 audit rows (restore.started, then the redirect failure), got %d: %+v", len(rec.events), rec.events)
+	}
+	if rec.events[0].Action != ActionRestoreStarted {
+		t.Errorf("first audit action = %q, want %q", rec.events[0].Action, ActionRestoreStarted)
+	}
+	ae := rec.events[1]
+	if ae.Action != ActionRestoreFailed {
+		t.Errorf("audit action = %q, want %q", ae.Action, ActionRestoreFailed)
+	}
+	if ae.TenantID != tenantID {
+		t.Errorf("audit tenant = %s, want %s", ae.TenantID, tenantID)
+	}
+	if ae.ActorType != audit.ActorSystem {
+		t.Errorf("audit actor type = %q, want %q", ae.ActorType, audit.ActorSystem)
+	}
+	if ae.TargetType != "backup_snapshot" || ae.TargetID != snapshotID.String() {
+		t.Errorf("audit target = %s/%s, want backup_snapshot/%s", ae.TargetType, ae.TargetID, snapshotID)
+	}
+	if got, _ := ae.Metadata["error"].(string); got != runStore.statusCalls[0].Error {
+		t.Errorf("audit metadata error = %q, want the operator message the run was failed with, %q", got, runStore.statusCalls[0].Error)
+	}
+	if got, _ := ae.Metadata["restore_id"].(string); got == "" {
+		t.Errorf("audit metadata restore_id is empty: %+v", ae.Metadata)
+	}
+}
+
+// recordingAuditRecorder records every audit event RestoreWorker writes.
+type recordingAuditRecorder struct{ events []audit.Event }
+
+func (r *recordingAuditRecorder) Record(_ context.Context, e audit.Event) (audit.Entry, error) {
+	r.events = append(r.events, e)
+	return audit.Entry{}, nil
 }

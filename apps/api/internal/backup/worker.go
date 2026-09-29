@@ -589,7 +589,7 @@ type RestoreWorker struct {
 	river.WorkerDefaults[RestoreArgs]
 	svc    *Service
 	cmd    Commander
-	audit  *audit.Recorder
+	audit  restoreAuditRecorder
 	logger *slog.Logger
 	// cpBaseURL is the control-plane base URL the agent uses for the progress
 	// callback (the same /agent/v1/backups/{id}/progress endpoint backups use).
@@ -608,7 +608,19 @@ func NewRestoreWorker(svc *Service, cmd Commander, rec *audit.Recorder, logger *
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &RestoreWorker{svc: svc, cmd: cmd, audit: rec, logger: logger, cpBaseURL: strings.TrimRight(cpBaseURL, "/"), jobTimeout: jobTimeout}
+	w := &RestoreWorker{svc: svc, cmd: cmd, logger: logger, cpBaseURL: strings.TrimRight(cpBaseURL, "/"), jobTimeout: jobTimeout}
+	// Assigned only when set: a nil *audit.Recorder stored in the interface
+	// would not compare equal to nil, and recordAudit's nil check relies on it.
+	if rec != nil {
+		w.audit = rec
+	}
+	return w
+}
+
+// restoreAuditRecorder is the part of *audit.Recorder RestoreWorker uses, so
+// a test can observe the audit rows the worker writes.
+type restoreAuditRecorder interface {
+	Record(ctx context.Context, e audit.Event) (audit.Entry, error)
 }
 
 // Timeout overrides River's default per-job context deadline for the restore
