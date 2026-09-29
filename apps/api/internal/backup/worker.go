@@ -448,8 +448,10 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupArgs]) err
 		// threw and reported it, post-auth) is also terminal — retrying
 		// cannot help, and hiding the reason behind 25 retries and a 30-minute
 		// generic stall is the bug this classifier exists to fix.
+		// The stored reason carries the sanitised agent message for the
+		// dashboard; the failure email gets a text without it.
 		if ce, ok := agentcmd.AsCommandError(err); ok && ce.AgentFailed() {
-			return w.fail(ctx, snap, ce.OperatorMessage("Backup"))
+			return w.failWithNotice(ctx, snap, ce.OperatorMessage("Backup"), ce.NotificationMessage("Backup"))
 		}
 		// Anything else (transport failure, a non-agent 5xx/52x, a WordPress
 		// fatal, an ambiguous 500) stays retryable — River requeues below.
@@ -534,7 +536,13 @@ func (w *BackupWorker) clearAttemptErrorAndPublishResumed(ctx context.Context, s
 }
 
 func (w *BackupWorker) fail(ctx context.Context, snap Snapshot, msg string) error {
-	failed, transitioned, err := w.svc.FailSnapshot(ctx, snap.TenantID, snap.ID, msg)
+	return w.failWithNotice(ctx, snap, msg, msg)
+}
+
+// failWithNotice is fail with a separate text for the failure email (see
+// Service.FailSnapshotWithNotice).
+func (w *BackupWorker) failWithNotice(ctx context.Context, snap Snapshot, msg, notice string) error {
+	failed, transitioned, err := w.svc.FailSnapshotWithNotice(ctx, snap.TenantID, snap.ID, msg, notice)
 	if err != nil {
 		return err
 	}
@@ -818,10 +826,8 @@ func (w *RestoreWorker) Work(ctx context.Context, job *river.Job[RestoreArgs]) e
 	}
 	if ce, ok := agentcmd.AsCommandError(err); ok && ce.AgentFailed() {
 		// GH #791: a genuine agent-side command failure is terminal, not
-		// retried — the agent itself threw and reported it, so a retry
-		// cannot help, and it stops River re-dispatching a restore that has
-		// already begun mutating the site. Recorded once, exactly like the
-		// redirect branch above.
+		// retried: the agent itself threw and reported it, so a retry cannot
+		// help. Recorded once, exactly like the redirect branch above.
 		msg := ce.OperatorMessage("Restore")
 		w.recordAudit(ctx, snap, ActionRestoreFailed, map[string]any{
 			"restore_id": restoreID,
@@ -834,14 +840,36 @@ func (w *RestoreWorker) Work(ctx context.Context, job *river.Job[RestoreArgs]) e
 		return nil
 	}
 	if err != nil {
-		// Transport / SSRF / agent-reject: retryable infra error. Surface the
-		// in-flight failure on the SSE channel so the UI does not hang waiting
-		// for the watchdog. River will retry with a fresh JWT.
-		// GH #791: DescribeAttemptError, never the raw error (which can carry
-		// a "body=…" snippet), is what an operator watching the retry sees.
-		_, _ = w.svc.RecordProgress(ctx, snap.TenantID, snap.ID, "failed", map[string]any{
-			"restore_id": restoreID,
-			"error":      agentcmd.DescribeAttemptError(err),
+		// Transport / SSRF / agent-reject: retryable infra error. River will
+		// retry with a fresh JWT. GH #791: DescribeAttemptError, never the raw
+		// error (which can carry a "body=…" snippet), is what an operator
+		// watching the retry sees.
+		attemptErr := agentcmd.DescribeAttemptError(err)
+		if job.MaxAttempts > 0 && job.Attempt >= job.MaxAttempts {
+			// River will not run this job again: record the restore as
+			// failed, which finalises the run.
+			w.recordAudit(ctx, snap, ActionRestoreFailed, map[string]any{
+				"restore_id": restoreID,
+				"error":      attemptErr,
+			})
+			_, _ = w.svc.RecordProgress(ctx, snap.TenantID, snap.ID, "failed", map[string]any{
+				"restore_id": restoreID,
+				"error":      attemptErr,
+			})
+			return fmt.Errorf("restore command to agent failed: %w", err)
+		}
+		// Another attempt follows, so this one is not the restore's outcome:
+		// publish a non-terminal 'retrying' hint (never a 'failed' frame, and
+		// nothing that finalises the run) so the UI can show why it is
+		// waiting.
+		w.svc.publish(BackupEvent{
+			SnapshotID: snap.ID,
+			Phase:      "retrying",
+			PhaseDetail: map[string]any{
+				"restore_id": restoreID,
+				"error":      attemptErr,
+			},
+			Status: snap.Status,
 		})
 		return fmt.Errorf("restore command to agent failed: %w", err)
 	}
