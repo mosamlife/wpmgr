@@ -42,16 +42,16 @@ func nonEmptyRegistry(t *testing.T) []ToolPolicy {
 // explicitly: the zero value of each allows nothing, so a test that forgot one
 // would prove the gate works for a reason it did not intend.
 //
-// THE CEILING IS THE PRODUCTION CEILING, not the grant. authWith models the
-// ordinary connection -- one whose organisation has everything the surface
-// offers enabled and whose own grant may be narrower. That is what
-// Authenticate builds today, because OrgDefaultCapabilities over grantScopes()
-// resolves to the whole vocabulary while exactly one scope is recognised.
+// THE CEILING IS THE WHOLE-REGISTRY CEILING, not the grant. authWith models a
+// connection whose grant stores every recognised scope -- what the token path
+// stores for an explicit capability list under ruling R1, and what an OAuth
+// grant that consented to both scopes stores -- and whose capability set may be
+// narrower. Every registered tool is inside that ceiling.
 //
 // A test that needs a NARROWER ceiling than the vocabulary -- the org-switched-
 // off case -- must say so, and authWithCeiling is how.
 func authWith(caps CapabilitySet, siteIDs ...uuid.UUID) AuthorizedRequest {
-	ceiling, err := OrgDefaultCapabilities(DefaultGrantScopes())
+	ceiling, err := OrgDefaultCapabilities(grantScopes(SupportedScopes()))
 	if err != nil {
 		// Not t.Fatal: authWith has no *testing.T and this is unreachable while
 		// scopeCapabilities is total over recognisedScopes, which
@@ -485,7 +485,9 @@ func TestExitGate_ListedIsNotCallable(t *testing.T) {
 // not-available one, which would send an operator hunting a capability problem
 // they do not have.
 func TestSiteScopeIsRefusedByName(t *testing.T) {
-	auth := authWith(NewCapabilitySet([]Capability{CapSitesRead})) // no sites
+	// Every capability, no sites: the connection holds what every tool
+	// requires, so any notice below could only be a site-scope notice.
+	auth := authWith(NewCapabilitySet(AllCapabilities())) // no sites
 
 	// SITE-SCOPE VISIBILITY IS OUT OF SCOPE FOR THE D1 RULING AND MUST NOT HAVE
 	// MOVED. The tool is listed, exactly as before, and the descriptor carries
@@ -694,7 +696,26 @@ func TestSchemaBytesAreNotSharedAcrossCallers(t *testing.T) {
 // capability this surface has is `mcp.<group>.read` (policy.go), so requiring
 // the suffix catches a write tool however it is spelled -- including one added
 // with a name this list has never heard of.
+//
+// THE TWO CACHE-REQUEST TOOLS ARE AN EXPLICIT, REVIEWED ALLOWLIST. They carry
+// "purge" as a segment and require mcp.cache.purge, which is not a read. They
+// are admitted by exact (name, capability, effect) triple and nothing else:
+// the request tool writes a pending request that a person must approve in
+// WPMgr (ADR-061), and the status tool reads it. A third tool that is not a
+// read, or either of these two with a different capability or effect, goes
+// red here. apply, propose and approve stay forbidden for every tool, and so
+// does the site:write operator permission.
 func TestNoRegisteredToolIsWriteShaped(t *testing.T) {
+	type allowed struct {
+		capability Capability
+		effect     Effect
+	}
+	allowlist := map[string]allowed{
+		ToolSiteCachePurgeRequest:       {CapCachePurge, EffectRequest},
+		ToolSiteCachePurgeRequestStatus: {CapCachePurge, EffectRead},
+	}
+	neverAllowed := map[string]struct{}{"apply": {}, "propose": {}, "approve": {}}
+
 	forbidden := map[string]struct{}{}
 	for _, v := range []string{
 		"create", "update", "delete", "remove", "restart", "reboot",
@@ -704,23 +725,46 @@ func TestNoRegisteredToolIsWriteShaped(t *testing.T) {
 	} {
 		forbidden[v] = struct{}{}
 	}
+	seenAllowed := 0
 	for _, e := range nonEmptyRegistry(t) {
+		if e.OperatorPermission == authz.PermSiteWrite {
+			t.Errorf("tool %q declares the site:write operator permission", e.Name)
+		}
+		for _, seg := range strings.Split(strings.ToLower(e.Name), "_") {
+			if _, never := neverAllowed[seg]; never {
+				t.Errorf("tool %q carries %q as a name segment, which no tool on this "+
+					"surface may carry", e.Name, seg)
+			}
+		}
+		if a, ok := allowlist[e.Name]; ok {
+			seenAllowed++
+			if e.Capability != a.capability || e.Effect != a.effect {
+				t.Errorf("allowlisted tool %q is (%q, %q), want exactly (%q, %q)",
+					e.Name, e.Capability, e.Effect, a.capability, a.effect)
+			}
+			continue
+		}
 		for _, seg := range strings.Split(strings.ToLower(e.Name), "_") {
 			if _, bad := forbidden[seg]; bad {
-				t.Errorf("tool %q carries the write-shaped verb %q as a name segment. The MCP "+
-					"surface is read-only BY CONSTRUCTION (m124 DECISION 1) -- a write tool "+
-					"arrives with its own capability, its own migration and its own security "+
-					"review, never by being appended to registryTools.", e.Name, seg)
+				t.Errorf("tool %q carries the write-shaped verb %q as a name segment. A tool "+
+					"that is not a read arrives with its own capability, migration, review and "+
+					"an entry in this test's allowlist, never by being appended to "+
+					"registryTools.", e.Name, seg)
 			}
 		}
 		if !strings.HasSuffix(string(e.Capability), ".read") {
-			t.Errorf("tool %q requires capability %q, which is not a .read capability. Every tool "+
-				"on this surface reads; a capability that is not a read is how a write tool "+
-				"would have to arrive, whatever it is named.", e.Name, e.Capability)
+			t.Errorf("tool %q requires capability %q, which is not a .read capability, and "+
+				"it is not on the allowlist.", e.Name, e.Capability)
 		}
-		if e.OperatorPermission == authz.PermSiteWrite {
-			t.Errorf("tool %q declares the site:write operator permission on a read-only surface", e.Name)
+		if e.Effect != EffectRead {
+			t.Errorf("tool %q declares effect %q, want %q for a tool not on the allowlist",
+				e.Name, e.Effect, EffectRead)
 		}
+	}
+	if seenAllowed != len(allowlist) {
+		t.Errorf("found %d of the %d allowlisted tools in the registry; an allowlist entry "+
+			"for a tool that is not registered admits a name nobody reviewed",
+			seenAllowed, len(allowlist))
 	}
 }
 
