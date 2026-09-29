@@ -107,24 +107,28 @@ const (
 )
 
 // reportedAddressKey is the canonical form of a reported site address that
-// the adoption job is unique by: the scheme, the host's siteaddr.HostKey, the
-// port with the scheme's default dropped, and the path through
-// siteaddr.NormalizePath, escaped. Spellings of one address that differ only
-// in the case of the scheme or an ASCII host, a written default port, a
-// trailing slash or the escaping of the path share one key. ok is false for
-// an address siteaddr.Parse refuses or whose host has no HostKey, which
-// PlanStrict never adopts.
+// the adoption job is unique by: the scheme, the host as siteaddr.Parse
+// ASCII-lowercases it (Address.Host), the port with the scheme's default
+// dropped, and the path through siteaddr.NormalizePath, escaped. The host is
+// built from Address.Host, not siteaddr.HostKey, because that is the host
+// PlanStrict itself compares (its "www." sibling branch compares Host, not
+// HostKey): using HostKey here could join two reports whose host spelling
+// differs only in a way HostKey folds but PlanStrict does not, and let them
+// decide differently while sharing one key. Spellings of one address that
+// differ only in the case of the scheme or an ASCII host, a written default
+// port, a trailing slash or the escaping of the path share one key. ok is
+// false for an address siteaddr.Parse refuses or whose host has no HostKey,
+// which PlanStrict never adopts.
 func reportedAddressKey(reported string) (string, bool) {
 	a, u, ok := parseSiteAddress(reported)
 	if !ok {
 		return "", false
 	}
-	host, ok := siteaddr.HostKey(u.Hostname())
-	if !ok {
+	if _, ok := siteaddr.HostKey(u.Hostname()); !ok {
 		return "", false
 	}
 	path := (&url.URL{Path: a.Path}).EscapedPath()
-	return siteaddr.Join(a.Scheme, host, a.Port, path), true
+	return siteaddr.Join(a.Scheme, a.Host, a.Port, path), true
 }
 
 // EnqueueAdoptReportedURL queues AdoptReportedURL for an address an agent
