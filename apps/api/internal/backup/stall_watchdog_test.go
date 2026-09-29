@@ -81,6 +81,10 @@ func (r *watchdogFakeRepo) FailSnapshot(_ context.Context, _, snapshotID uuid.UU
 // Anything else (already completed/failed/cancelled/resumed) reports
 // rowsAffected=0 with no error -- the TOCTOU-safe no-op the Fix 1 must-fix
 // depends on.
+// GH #791: mirrors FailStalledBackupSnapshot's CASE exactly — when the row
+// carries an outstanding attempt_error, the stored reason folds it onto errMsg
+// ("<errMsg>. Last error: <attempt_error>") rather than discarding it.
+// attempt_error itself is left as it was.
 func (r *watchdogFakeRepo) FailStalledSnapshot(_ context.Context, _, snapshotID uuid.UUID, errMsg string) (int64, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -89,7 +93,11 @@ func (r *watchdogFakeRepo) FailStalledSnapshot(_ context.Context, _, snapshotID 
 		return 0, nil
 	}
 	s.Status = StatusFailed
-	s.Error = errMsg
+	if s.AttemptError == "" {
+		s.Error = errMsg
+	} else {
+		s.Error = errMsg + ". Last error: " + s.AttemptError
+	}
 	r.snapshots[snapshotID] = s
 	return 1, nil
 }
@@ -140,6 +148,20 @@ func (r *watchdogFakeRepo) ClearSnapshotStalled(_ context.Context, _, snapshotID
 	s.StalledAt = nil
 	r.snapshots[snapshotID] = s
 	return true, nil
+}
+
+// SetSnapshotAttemptError mirrors SetBackupSnapshotAttemptError's
+// status='running' guard exactly (GH #791).
+func (r *watchdogFakeRepo) SetSnapshotAttemptError(_ context.Context, _, snapshotID uuid.UUID, msg string) (int64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s, ok := r.snapshots[snapshotID]
+	if !ok || s.Status != StatusRunning {
+		return 0, nil
+	}
+	s.AttemptError = msg
+	r.snapshots[snapshotID] = s
+	return 1, nil
 }
 
 // GetBackupSettings overrides the embedded fakeRepo's NotFound default so the

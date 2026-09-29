@@ -82,6 +82,27 @@ func (s *fakeScheduleRunStore) SetScheduleRunStatusBySnapshot(_ context.Context,
 	return ScheduleRun{}, nil
 }
 
+func (s *fakeScheduleRunStore) SetScheduleRunAttemptErrorBySnapshot(_ context.Context, _, snapshotID uuid.UUID, msg string) (int64, error) {
+	for i := range s.rows {
+		if s.rows[i].SnapshotID != nil && *s.rows[i].SnapshotID == snapshotID && s.rows[i].Status == ScheduleRunStatusRunning {
+			s.rows[i].AttemptError = msg
+			return 1, nil
+		}
+	}
+	return 0, nil
+}
+
+func (s *fakeScheduleRunStore) ClearScheduleRunAttemptErrorBySnapshot(_ context.Context, _, snapshotID uuid.UUID) (int64, error) {
+	for i := range s.rows {
+		if s.rows[i].SnapshotID != nil && *s.rows[i].SnapshotID == snapshotID &&
+			s.rows[i].Status == ScheduleRunStatusRunning && s.rows[i].AttemptError != "" {
+			s.rows[i].AttemptError = ""
+			return 1, nil
+		}
+	}
+	return 0, nil
+}
+
 func (s *fakeScheduleRunStore) GetScheduleRun(_ context.Context, _, runID uuid.UUID) (ScheduleRun, error) {
 	for _, r := range s.rows {
 		if r.ID == runID {

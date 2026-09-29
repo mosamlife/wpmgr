@@ -188,6 +188,13 @@ func (w *ScanRunWorker) Work(ctx context.Context, job *river.Job[ScanRunArgs]) e
 		if re, ok := agentcmd.AsRedirect(err); ok {
 			return w.fail(ctx, run, re.OperatorMessage("Scan"))
 		}
+		// GH #791: a genuine agent-side command failure is also terminal —
+		// checked before the 404-shaped "agent too old" heuristic below since
+		// both match on the same error-string substring space and a 500
+		// command-failure body is never a 404.
+		if ce, ok := agentcmd.AsCommandError(err); ok && ce.AgentFailed() {
+			return w.fail(ctx, run, ce.OperatorMessage("Scan"))
+		}
 		errMsg := err.Error()
 		// A 404 from the REST layer means the agent is too old to have the scan route.
 		if strings.Contains(errMsg, "status 404") {

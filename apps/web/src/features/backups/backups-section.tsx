@@ -1847,6 +1847,14 @@ function ScheduleRunRow({
             {run.error}
           </span>
         ) : null}
+        {/* GH #791 — the run is still being retried; show the last attempt's
+            error (never the final `error` column, which stays empty while
+            running). */}
+        {isRunning && run.attempt_error ? (
+          <span className="mt-1 block text-xs text-warning-subtle-fg">
+            Last error: {run.attempt_error}
+          </span>
+        ) : null}
       </TableCell>
       <TableCell className="tabular-nums text-sm" title={run.scheduled_for}>
         <time dateTime={run.scheduled_for}>{scheduledLabel}</time>

@@ -446,9 +446,18 @@ type Querier interface {
 	// hard-failed, or the operator cancelled, is never matched here (both moved
 	// status away from 'running' first), so this can never revive a genuinely
 	// terminal snapshot.
+	// GH #791: the same proof of life clears an outstanding attempt_error, so a
+	// run that got going after a failed attempt stops showing that attempt's
+	// error. Rows-affected is 1 when either was cleared, 0 when there was nothing
+	// to clear or the row is not running.
 	ClearBackupSnapshotStalled(ctx context.Context, arg ClearBackupSnapshotStalledParams) (int64, error)
 	// Clears the grace-window previous hash once the rotation grace period expires.
 	ClearBeaconKeyHashPrev(ctx context.Context, siteID uuid.UUID) error
+	// GH #791: the run-side half of the proof-of-life clear
+	// (ClearBackupSnapshotStalled clears the snapshot side). Matches only a
+	// running run with an outstanding attempt error. Rows-affected: 1 = cleared;
+	// 0 = nothing to clear.
+	ClearScheduleRunAttemptErrorBySnapshot(ctx context.Context, arg ClearScheduleRunAttemptErrorBySnapshotParams) (int64, error)
 	// Clear the provisional secret after enrollment is confirmed (or on explicit
 	// cancel). Idempotent: safe to call even if the columns are already NULL.
 	ClearUserTOTPProvisional(ctx context.Context, userID uuid.UUID) error
@@ -473,6 +482,8 @@ type Querier interface {
 	// contract: 1 = a real transition; 0 = already terminal (completed/failed) or
 	// gone, which the caller must surface as a rejected submit -- the previous
 	// blind UPDATE reported success unconditionally.
+	// attempt_error (GH #791) is cleared: a completed row never carries an
+	// outstanding attempt error.
 	CompleteBackupSnapshot(ctx context.Context, arg CompleteBackupSnapshotParams) (int64, error)
 	CompleteReport(ctx context.Context, arg CompleteReportParams) (GeneratedReport, error)
 	// Marks a task done. Set ONLY after the whole prefix drained with no error, so
@@ -1140,6 +1151,10 @@ type Querier interface {
 	// whether a real transition happened, so it can gate the 'failed' SSE publish
 	// and the failure notification on an actual state change rather than firing
 	// them for a row that already moved on.
+	// GH #791: when an attempt error is outstanding, the failure reason keeps it
+	// after the watchdog's own message, capped at 1024 characters, so the reason
+	// the site gave survives the hard fail. attempt_error itself is left as it
+	// was. The caller re-reads the row for the reason actually stored.
 	FailStalledBackupSnapshot(ctx context.Context, arg FailStalledBackupSnapshotParams) (int64, error)
 	// Records a failed or refused attempt and backs the task off. Never deletes the
 	// row. There is no Cancel for this table: cancelling would close the only record
@@ -3747,6 +3762,14 @@ type Querier interface {
 	// Stamp the in-flight db_scan job id + start time for the watchdog.
 	SetActiveDBScanJob(ctx context.Context, arg SetActiveDBScanJobParams) error
 	SetBackupSnapshotArchived(ctx context.Context, arg SetBackupSnapshotArchivedParams) error
+	// GH #791: records the control plane's description of the last failed attempt
+	// to start this backup on the site, while it is still retrying. The
+	// status='running' guard is the contract: a pending, completed or failed row
+	// is never matched, so this can neither mark a row that has not started nor
+	// touch one that has ended. Rows-affected: 1 = recorded; 0 = the row is not
+	// running (or is gone), and the caller must not publish anything for it.
+	// The value is capped at 1024 characters here as well as by the caller.
+	SetBackupSnapshotAttemptError(ctx context.Context, arg SetBackupSnapshotAttemptErrorParams) (int64, error)
 	// ---------------------------------------------------------------------------
 	// Beacon-key generation / rotation (InTenantTx)
 	// ---------------------------------------------------------------------------
@@ -3782,15 +3805,27 @@ type Querier interface {
 	// when rotating only the token or ARNs.
 	// Runs under InTenantTx (operator PUT path).
 	SetEmailConfigWebhookFields(ctx context.Context, arg SetEmailConfigWebhookFieldsParams) (SiteEmailConfig, error)
+	// GH #791: mirrors SetBackupSnapshotAttemptError onto the run linked to the
+	// snapshot. The status='running' guard is the contract: it never touches a
+	// queued, completed, failed, skipped or canceled run, and unlike
+	// SetScheduleRunStatusBySnapshot it never changes status, so it cannot drag
+	// a finished run back to running. Rows-affected: 1 = recorded; 0 = no running
+	// run is linked to the snapshot (a manual backup has none). The value is
+	// capped at 1024 characters here as well as by the caller.
+	SetScheduleRunAttemptErrorBySnapshot(ctx context.Context, arg SetScheduleRunAttemptErrorBySnapshotParams) (int64, error)
 	// Links the pending snapshot_id to a run and advances its status to 'queued'.
 	SetScheduleRunSnapshot(ctx context.Context, arg SetScheduleRunSnapshotParams) (BackupScheduleRun, error)
 	// Advances a run to a terminal or intermediate status by its primary key.
 	// started_at and finished_at are set conditionally so they are only written
 	// once (the scheduler calls this for running→completed/failed transitions).
+	// attempt_error (GH #791) is cleared when the run completes; a completed run
+	// never carries an outstanding attempt error. Any other status leaves it.
 	SetScheduleRunStatusByID(ctx context.Context, arg SetScheduleRunStatusByIDParams) (BackupScheduleRun, error)
 	// Reconciliation path: when the linked snapshot reaches a terminal status,
 	// update the run row to match. Keyed on snapshot_id so the snapshot finalize
 	// path does not need to carry the run id. Runs tenant-scoped.
+	// attempt_error (GH #791) is cleared when the run completes; a completed run
+	// never carries an outstanding attempt error. Any other status leaves it.
 	SetScheduleRunStatusBySnapshot(ctx context.Context, arg SetScheduleRunStatusBySnapshotParams) (BackupScheduleRun, error)
 	// Stores the per-site age PUBLIC recipient backups are encrypted to. The CP
 	// never holds the matching identity (private key); it cannot decrypt backups.

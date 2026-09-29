@@ -1,4 +1,4 @@
-h1:Okplx3aYPuaNXUM7q/PAG4G/67WqDmqsx6wVtBrMcpo=
+h1:BtVcEZUTtF/4sQpSHT/VWEdm5ugqY4KSxXeY1EN726Q=
 20260527115454_initial.sql h1:WfgbwGaDre3ilGSUpQWqeGW9gLACxOAIXvyRENhSX6w=
 20260527130000_auth_multitenancy.sql h1:dbQRjlWWYbkuHrqKHqZTPt1Z8Txoo58fe/Mr9HW/Plk=
 20260527172114_m2_site_registry.sql h1:RxL0mxr9jcC85gh8pcYnG0ge3IXy4+sGpLHS8YHMDDw=
@@ -154,4 +154,5 @@ h1:Okplx3aYPuaNXUM7q/PAG4G/67WqDmqsx6wVtBrMcpo=
 20260908000000_m137_mcp_client_registered_scopes.sql h1:ijuqMrefs1z6ZR0DOOVCLfnzIgwbV4FVv6W3cNmkD2w=
 20260909000000_m138_font_transcode_results_cascade.sql h1:oe13TDseHwgHSb6UNkHBCQEcDOkErdyJ5/y+pXq/ogg=
 20260910000000_m147_install_owner.sql h1:6xLKtuzy8Hc+9K7YRBzdx9ls0NGapoamMb8rGyAdHjM=
-20260929130000_m149_billing_checkout_binding.sql h1:Zd0bLvVP6o/T9f875sd8IV+3mBQrce0QroCIi+a7dZU=
+20260929120000_m148_backup_attempt_error.sql h1:Kg8eZb+Doe6cpTN/KbO+ccdSeIUlKxSyHKgGRBkwlYI=
+20260929130000_m149_billing_checkout_binding.sql h1:vS8WTnSBDRm18KgkRNz2oT+Ac/D0j/fq57U034UVD38=

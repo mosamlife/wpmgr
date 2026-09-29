@@ -953,7 +953,7 @@ func (c *Client) postRaw(ctx context.Context, siteID uuid.UUID, siteURL, command
 		if len(snippet) > 512 {
 			snippet = snippet[:512] + "…(truncated)"
 		}
-		return nil, fmt.Errorf("%s command rejected by agent: status %d body=%s", command, resp.StatusCode, snippet)
+		return nil, newCommandError(command, resp.StatusCode, snippet, data)
 	}
 	return data, nil
 }
