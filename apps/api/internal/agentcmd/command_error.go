@@ -8,6 +8,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // maxCommandErrorBody bounds how large a non-2xx agent response body postRaw
@@ -206,8 +208,15 @@ var (
 	// such as "includes/commands/x.php" is left intact.
 	posixPathPattern = regexp.MustCompile(`(^|[^A-Za-z0-9._/\-])/[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]*)*`)
 	// hostPattern matches a dotted name whose last label starts with a
-	// letter (a hostname shape), optionally followed by a path.
-	hostPattern = regexp.MustCompile(`(?i)\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z][a-z0-9-]*[a-z0-9]\b(?:/\S*)?`)
+	// letter (a hostname shape, in any script, so an internationalised name
+	// is covered as well as its punycode form), optionally followed by a
+	// path. Group 1 is the character before the name (or the start of the
+	// text), which is put back: Go's \b is ASCII-only, so the boundary is
+	// spelled out. Group 2 is the name and its path.
+	hostPattern = regexp.MustCompile(`(^|[^\p{L}\p{M}\p{N}_])((?:[\p{L}\p{M}\p{N}](?:[\p{L}\p{M}\p{N}-]*[\p{L}\p{M}\p{N}])?\.)+\p{L}[\p{L}\p{M}\p{N}-]*[\p{L}\p{M}\p{N}](?:/\S*)?)`)
+	// ipv4Pattern matches a dotted-quad address, with an optional port and
+	// path.
+	ipv4Pattern = regexp.MustCompile(`\b\d{1,3}(?:\.\d{1,3}){3}\b(?::\d{1,5})?(?:/\S*)?`)
 	// encodedRunPattern matches a long token-shaped run; redactEncoded
 	// decides whether it is one.
 	encodedRunPattern = regexp.MustCompile(`[A-Za-z0-9+/=_-]{32,}`)
@@ -283,6 +292,26 @@ func stripAgentPrefix(message, rawException string) string {
 	return rest
 }
 
+// redactHosts applies redactHost to every hostPattern match, keeping the
+// boundary character each match captured in front of the name.
+func redactHosts(s string) string {
+	matches := hostPattern.FindAllStringSubmatchIndex(s, -1)
+	if matches == nil {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	prev := 0
+	for _, m := range matches {
+		nameStart, nameEnd := m[4], m[5]
+		b.WriteString(s[prev:nameStart])
+		b.WriteString(redactHost(s[nameStart:nameEnd]))
+		prev = nameEnd
+	}
+	b.WriteString(s[prev:])
+	return b.String()
+}
+
 // redactHost replaces a hostname-shaped match with "[link]" unless it is a
 // plain file name: no "www." in front, no path after it, and a final label
 // that is a known file extension.
@@ -307,30 +336,80 @@ func redactEncoded(m string) string {
 	return m
 }
 
+// maxReasonLen caps the sanitised reason, in bytes.
+const maxReasonLen = 200
+
 // sanitizeReason turns the agent's free-form message into a short, safe
 // sentence fragment: the agent's generic wrapper is stripped, the text is
-// forced to valid UTF-8, control, format and every kind of Unicode space or
-// line/paragraph separator become a plain space, whitespace is collapsed,
-// links, addresses, hostnames and absolute paths are replaced with neutral
+// forced to valid UTF-8 and NFKC-normalised (so full-width letters, "@",
+// "/" and dots become their ASCII forms, and an ideographic full stop becomes
+// "."), control, format and every kind of Unicode space or line/paragraph
+// separator become a plain space, whitespace is collapsed, links, addresses,
+// hostnames, IP addresses and absolute paths are replaced with neutral
 // placeholders, long encoded runs are redacted, and the result is capped at
-// 200 bytes on a rune boundary.
+// maxReasonLen bytes on a rune boundary and redacted again, so the cut
+// cannot leave a bare hostname behind.
 func sanitizeReason(message, rawException string) string {
 	reason := stripAgentPrefix(message, rawException)
 	reason = strings.ToValidUTF8(reason, "")
+	reason = norm.NFKC.String(reason)
+	reason = strings.Map(asciiFullStop, reason)
 	reason = replaceControlAndFormatChars(reason)
 	reason = collapseWhitespace(reason)
+	reason = redactReason(reason)
+	return capAndRedact(reason, maxReasonLen)
+}
+
+// redactReason replaces every link, address, path, hostname, IP address and
+// encoded run in s with its placeholder. It is idempotent: no placeholder
+// matches any pattern.
+func redactReason(s string) string {
 	// Links first, so a token in a query string is swallowed by "[link]"
 	// rather than fragmented by a later pass, and so the "//host/path" of a
 	// URL is never mistaken for a POSIX path.
-	reason = schemeURLPattern.ReplaceAllString(reason, "[link]")
-	reason = emailPattern.ReplaceAllString(reason, "[address]")
-	reason = uncPathPattern.ReplaceAllString(reason, "[path]")
-	reason = windowsPathPattern.ReplaceAllString(reason, "[path]")
-	reason = posixPathPattern.ReplaceAllString(reason, "${1}[path]")
-	reason = hostPattern.ReplaceAllStringFunc(reason, redactHost)
-	reason = encodedRunPattern.ReplaceAllStringFunc(reason, redactEncoded)
-	reason = collapseWhitespace(reason)
-	return capBytes(reason, 200)
+	s = schemeURLPattern.ReplaceAllString(s, "[link]")
+	s = emailPattern.ReplaceAllString(s, "[address]")
+	s = uncPathPattern.ReplaceAllString(s, "[path]")
+	s = windowsPathPattern.ReplaceAllString(s, "[path]")
+	s = posixPathPattern.ReplaceAllString(s, "${1}[path]")
+	s = ipv4Pattern.ReplaceAllString(s, "[link]")
+	s = redactHosts(s)
+	s = encodedRunPattern.ReplaceAllStringFunc(s, redactEncoded)
+	return collapseWhitespace(s)
+}
+
+// capAndRedact caps an already-redacted s at limit bytes. Cutting can turn a
+// kept file name into a bare hostname ("help.com.js" cut to "help.com"), so
+// the capped text is redacted again. A placeholder can be a few bytes longer
+// than what it replaced, so this repeats until the text fits; only the tail
+// the cut created can change on each pass, and a cut placeholder matches
+// nothing.
+func capAndRedact(s string, limit int) string {
+	for i := 0; i < 4; i++ {
+		if len(s) <= limit {
+			return s
+		}
+		s = redactReason(capBytes(s, limit))
+	}
+	if len(s) <= limit {
+		return s
+	}
+	// Did not settle: drop the partial last word rather than show it.
+	s = capBytes(s, limit)
+	if k := strings.LastIndexByte(s, ' '); k > 0 {
+		return s[:k]
+	}
+	return ""
+}
+
+// asciiFullStop maps the ideographic full stop (U+3002, which NFKC also
+// produces from the halfwidth form) to ".", as hostname parsers do. NFKC
+// already maps the full-width and small full stops.
+func asciiFullStop(r rune) rune {
+	if r == '\u3002' {
+		return '.'
+	}
+	return r
 }
 
 // replaceControlAndFormatChars replaces every Unicode control character (Cc),
