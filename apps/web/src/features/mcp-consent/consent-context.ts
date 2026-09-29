@@ -125,6 +125,24 @@ export const consentWireSchema = z.object({
   // branch below that renders differently without it and no sentence on the
   // screen that depends on it. It is cargo.
   consent_ticket: z.string().optional(),
+
+  // Mirrors consentResponseDTO.ConferrableCapabilities (dto.go:105-116): every
+  // capability the requested scopes confer, each with its effect ("read" or
+  // "request"). OPTIONAL on the way in for the same deploy-ordering reason as
+  // consent_ticket above -- an empty array is a real, renderable answer
+  // ("this scope set confers nothing"), so `[]` is the default rather than
+  // `undefined`, and only a genuinely absent key falls back to it.
+  //
+  // `effect` is parsed as a bare string, not an enum: design v7 S2.2 requires
+  // an UNKNOWN effect to disable Approve, which is a fail-closed *render*
+  // decision (allCapabilityEffectsKnown, below), not a parse failure. Refusing
+  // to parse here would make an unrecognised effect look identical to a
+  // malformed payload, when the honest read is "the server named a capability
+  // this dashboard does not yet know how to describe" -- disable Approve, but
+  // still show the rest of the screen truthfully.
+  conferrable_capabilities: z
+    .array(z.object({ name: z.string().min(1), effect: z.string().min(1) }))
+    .optional(),
 });
 
 export type ConsentWire = z.infer<typeof consentWireSchema>;
@@ -222,6 +240,37 @@ export interface ConsentContext {
    * wire schema for why that case is tolerated rather than refused.
    */
   readonly consentTicket: string | null;
+
+  /** See the wire schema's note. `[]` for both "confers nothing" and "the
+   *  server did not send this key yet" -- there is no sentence on this screen
+   *  that needs to tell those two apart. */
+  readonly conferrableCapabilities: readonly ConferrableCapability[];
+}
+
+export interface ConferrableCapability {
+  readonly name: string;
+  readonly effect: string;
+}
+
+/** The one effect this dashboard can describe as an outright grant. */
+export const CAPABILITY_EFFECT_READ = "read";
+/** The one effect this dashboard describes as "asks, never runs by itself"
+ *  -- mcp.cache.purge's effect, per policy.go's EffectRequest. */
+export const CAPABILITY_EFFECT_REQUEST = "request";
+
+const KNOWN_CAPABILITY_EFFECTS: ReadonlySet<string> = new Set([
+  CAPABILITY_EFFECT_READ,
+  CAPABILITY_EFFECT_REQUEST,
+]);
+
+/**
+ * False the moment any conferrable capability names an effect this dashboard
+ * does not know how to describe truthfully. Design v7 S2.2: "An unknown
+ * effect disables Approve" -- an operator must never be asked to approve a
+ * capability this screen cannot tell them the honest consequence of.
+ */
+export function allCapabilityEffectsKnown(caps: readonly ConferrableCapability[]): boolean {
+  return caps.every((c) => KNOWN_CAPABILITY_EFFECTS.has(c.effect));
 }
 
 function orNull(raw: string | undefined): string | null {
@@ -256,6 +305,7 @@ export function parseConsentContext(raw: unknown): ConsentContext {
     // reference it arrived as. A non-empty ticket is not touched here, which is
     // the whole requirement.
     consentTicket: orNull(wire.consent_ticket),
+    conferrableCapabilities: wire.conferrable_capabilities ?? [],
   };
 }
 

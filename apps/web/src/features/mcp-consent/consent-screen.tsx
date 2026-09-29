@@ -697,6 +697,14 @@ export function ConsentScreen({
         <p className="mt-1.5 text-xs text-[var(--color-muted-foreground)]">
           Only you see this. The name above it is the client&apos;s own and we did not check it.
         </p>
+        {/* design v7 S2.2: this connection's name is what an operator reads on
+            every future AI cache-clear request it makes (S2.6's queue card,
+            "Connection name"), so a generic default left unchanged there is a
+            name nobody can place later. */}
+        <p className="mt-1 text-xs text-[var(--color-muted-foreground)]">
+          This name appears on every request this connection makes. Change it to something you
+          will recognise.
+        </p>
       </div>
 
       {approveError !== null && (
