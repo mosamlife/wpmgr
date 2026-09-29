@@ -180,7 +180,13 @@ func replaceOnce(t *testing.T, body, old, new string) string {
 // site_app_alert_state row (the "this is a late run" signal) before m146
 // finally lands.
 func TestM146LateRun_TurnsOffStaleRowsKeepsRecentlySaved(t *testing.T) {
-	admin, owner := startPostgresBeforeM146(t)
+	// startPostgresBeforeM108 (uptime_app_alert_rollout_m108_test.go), NOT
+	// startPostgresBeforeM146: it stops BEFORE m108 itself, so the site and
+	// alert_configs row seeded below are in place before m108 actually
+	// executes below — startPostgresBeforeM146 stops before m146, which
+	// means m108 has ALREADY run (on an empty database) by the time it
+	// returns, too late to reproduce the "already had a site" case.
+	admin, owner := startPostgresBeforeM108(t)
 	ctx := context.Background()
 
 	tenant := seedTenant(t, admin, "m146-laterun-stale")
