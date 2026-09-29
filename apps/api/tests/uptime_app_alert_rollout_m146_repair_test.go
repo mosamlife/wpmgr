@@ -628,50 +628,53 @@ func TestM146LateRun_LaterVersionSignal_TurnsOffStaleRow(t *testing.T) {
 }
 
 // TestM146LateRun_SavedSinceM108Signal_KeepsRecentTurnsOffStale isolates the
-// THIRD v_live signal (database-engineer's addition, PR #786 r2): no
-// site_app_alert_state row and no later schema_migrations version recorded,
-// but one tenant's alert_configs row was saved AFTER m108 ran. That row must
+// THIRD v_live signal (database-engineer's addition, PR #786 r2). It must
+// start from startPostgresBeforeM146, not startPostgresBeforeM108 plus a
+// scopePrefillMark/Migrate/scopePrefillUnmark round trip to head: that round
+// trip applies every migration after m108 (everything but m146 itself) before
+// m146 ever runs, which records versions later than m146 in schema_migrations
+// and so plants the SECOND signal too — the exact false-isolation bug this
+// comment used to claim didn't happen. startPostgresBeforeM146 stops
+// immediately after m108 (nothing embedded sorts between them), so the single
+// owner.Migrate(ctx) call below reaches m146 as the next unapplied version,
+// before m109 or anything later is applied or recorded. No site_app_alert_state
+// row is ever seeded either, so the only late-run signal present is one
+// tenant's alert_configs row saved AFTER m108's applied_at. That row must
 // survive untouched, and a second, never-saved-since tenant's row must still
 // be turned off.
 func TestM146LateRun_SavedSinceM108Signal_KeepsRecentTurnsOffStale(t *testing.T) {
-	admin, owner := startPostgresBeforeM108(t)
+	admin, owner := startPostgresBeforeM146(t)
 	ctx := context.Background()
+	cutoff := m108AppliedAt(t, admin)
 
+	// A site older than m108 so m146's own v_had_sites check (independent of
+	// m108's already-recorded fresh_install) finds a pre-existing deployment.
 	staleTenant := seedTenant(t, admin, "m146-laterun-thirdsignal-stale")
 	if _, err := admin.Exec(ctx,
-		`INSERT INTO sites (tenant_id, url, name) VALUES ($1, $2, $3)`,
-		staleTenant, "https://m146-thirdsignal-stale.example.com", "seed"); err != nil {
-		t.Fatalf("seed pre-m108 site: %v", err)
+		`INSERT INTO sites (tenant_id, url, name, created_at) VALUES ($1, $2, $3, $4)`,
+		staleTenant, "https://m146-thirdsignal-stale.example.com", "seed", cutoff.Add(-time.Hour)); err != nil {
+		t.Fatalf("seed pre-cutoff site: %v", err)
 	}
+	// One alert_configs row "on", saved (updated_at) BEFORE m108's applied_at.
 	if _, err := admin.Exec(ctx,
-		`INSERT INTO alert_configs (tenant_id, enabled) VALUES ($1, true)`, staleTenant); err != nil {
-		t.Fatalf("seed pre-m108 alert_configs: %v", err)
+		`INSERT INTO alert_configs (tenant_id, app_alerts_enabled, updated_at) VALUES ($1, true, $2)`,
+		staleTenant, cutoff.Add(-time.Hour)); err != nil {
+		t.Fatalf("seed pre-cutoff alert_configs: %v", err)
 	}
 
-	scopePrefillMark(t, owner, m146MigrationVersion)
-	if err := owner.Migrate(ctx); err != nil {
-		t.Fatalf("Migrate to head with m146 withheld: %v", err)
-	}
-
-	var freshAfterM108 bool
-	if err := admin.QueryRow(ctx, `SELECT fresh_install FROM app_alert_rollout WHERE singleton = true`).Scan(&freshAfterM108); err != nil {
-		t.Fatalf("query app_alert_rollout: %v", err)
-	}
-	if !freshAfterM108 {
-		t.Fatal("setup invariant broken: fresh_install should still be true (m108's own bug) before m146 runs")
-	}
-
-	// NO site_app_alert_state row, NO later schema_migrations version - the
-	// only signal present is a SECOND tenant's alert_configs row saved after
-	// m108 (updated_at defaults to now(), after m108's applied_at since real
-	// time has passed).
+	// NO site_app_alert_state row, NO later schema_migrations version — the
+	// only signal present is a SECOND tenant's alert_configs row "on", saved
+	// (updated_at) AFTER m108's applied_at.
 	savedTenant := seedTenant(t, admin, "m146-laterun-thirdsignal-saved")
 	if _, err := admin.Exec(ctx,
-		`INSERT INTO alert_configs (tenant_id, app_alerts_enabled) VALUES ($1, true)`, savedTenant); err != nil {
-		t.Fatalf("seed post-m108 alert_configs: %v", err)
+		`INSERT INTO alert_configs (tenant_id, app_alerts_enabled, updated_at) VALUES ($1, true, $2)`,
+		savedTenant, cutoff.Add(time.Hour)); err != nil {
+		t.Fatalf("seed post-cutoff alert_configs: %v", err)
 	}
 
-	scopePrefillUnmark(t, owner, m146MigrationVersion)
+	// The real m146, through the production migration runner, as wpmgr_owner
+	// (NOSUPERUSER NOBYPASSRLS): it is the next unapplied version, so this
+	// reaches it before schema_migrations records anything later.
 	if err := owner.Migrate(ctx); err != nil {
 		t.Fatalf("Migrate with m146 present: %v", err)
 	}
