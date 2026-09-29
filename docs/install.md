@@ -303,8 +303,9 @@ access with `WPMGR_SUPERADMIN_EMAILS`.
 nobody — there is no fallback to the earliest user or owner. Setup reopens
 only once no organisation on the install has an owner; the next successful
 setup then records its account. On an install that still has owners, this
-empty state persists indefinitely, and `WPMGR_SUPERADMIN_EMAILS` is the
-remedy. Superadmins are admitted through their own arm, not this one.
+empty state stays empty for as long as any organisation on the install has
+an owner, and `WPMGR_SUPERADMIN_EMAILS` is the remedy. Superadmins are
+admitted through their own arm, not this one.
 
 Hosted installs are not affected: this whole section describes self-hosted
 behaviour only.
@@ -528,10 +529,10 @@ Grafana then ships with the WPMgr dashboards pre-provisioned. See
   body field, and is deliberately absent from `openapi.yaml`, so no generated
   client (including the dashboard) can send it. That value lives in `.env`
   under that key, generated once by `scripts/init-env.sh` and never rotated
-  by a re-run. On a self-hosted install, the account recorded as having
-  completed this claim also holds the install-wide email relay authority
-  described in [Instance email (SMTP) authority](#instance-email-authority)
-  above, for as long as it stays active and keeps owning a live organisation.
+  by a re-run. On a self-hosted install, the account recorded as having set
+  up the install also holds the install-wide email relay authority described
+  in [Instance email (SMTP) authority](#instance-email-authority) above,
+  while that account is active and owns at least one live organisation.
   An account that completes setup after one is already recorded is not
   recorded, and does not gain that authority.
 
