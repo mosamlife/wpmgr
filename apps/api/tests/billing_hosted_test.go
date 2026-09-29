@@ -487,30 +487,16 @@ func startPostgresBeforeM91(t *testing.T) (admin *db.Pool, owner *db.Pool) {
 // the tenant keeps operating; only a 6th (new) site is blocked once hosted
 // billing is actually turned on.
 func TestGrandfatherBackfill_OverCapTenantKeepsOperating(t *testing.T) {
-	// KNOWN GAP (found by PR #775's owner-role harness, not fixed here — a
-	// migration change for database-engineer, not this test-harness PR):
-	// the same silent shape as m99/m103. m91's grandfather UPDATE joins
-	// against a FROM-subquery reading FROM sites (FORCE ROW LEVEL SECURITY,
-	// no GUC set by the migrator), so under the real migrator role that
-	// subquery is empty, the UPDATE's join matches no tenant, and no tenant
-	// is ever grandfathered:
-	//
-	//   billing_hosted_test.go:523: plan_overrides.max_sites = 0, want 5
-	//   (grandfathered to the tenant's existing count)
-	//
-	// (0 here is Go's zero value for an absent JSON key, not a written 0 —
-	// the migration writes nothing, it does not write a wrong number.)
-	//
-	// Implication: any self-hosted install still pre-m91 that already has a
-	// tenant over the free-tier site cap (>3 active sites), on upgrade, gets
-	// NO plan_overrides.max_sites grandfather -- the next hosted-billing
-	// enforcement treats them as capped at the base free-tier limit (3)
-	// instead of their existing count, blocking new site creation even
-	// though the whole point of this migration was to let them keep
-	// operating uninterrupted. No error, no log, a successful boot. Do not
-	// loosen this test or the migration to make the skip below go away —
-	// see PR #775 / the session worklog.
-	t.Skip("known gap: m91's grandfather backfill writes no plan_overrides.max_sites for any tenant under the production migrator role (RLS on sites); see PR #775")
+	// FIXED by m142 (PR #786): the same silent shape as m99/m103. m91's
+	// grandfather UPDATE joins against a FROM-subquery reading FROM sites
+	// (FORCE ROW LEVEL SECURITY, no GUC set by the migrator), so under the
+	// real migrator role that subquery was empty and no tenant was ever
+	// grandfathered. m142 (20260724120000, sorts right after m91) re-runs
+	// the same backfill under NO FORCE / row_security=off, scoped to sites
+	// that existed by m91's own applied_at, and applies in the SAME BOOT on
+	// any database reaching m91 for the first time — exactly this test's
+	// scenario. See billing_hosted_m142_repair_test.go for the LATE-RUN
+	// shape (a database already long past m91 when m142 finally lands).
 
 	pool, owner := startPostgresBeforeM91(t)
 	ctx := context.Background()
