@@ -260,6 +260,12 @@ type Meters struct {
 
 // Summary is the fully-resolved billing state for GET /api/v1/billing.
 type Summary struct {
+	// CancelAtPeriodEnd is true once a cancel is scheduled, for the period's
+	// end or through Cancel now. CancelAt is the scheduled or actual end, when
+	// one is known; a past instant marks Cancel now.
+	CancelAtPeriodEnd bool       `json:"cancel_at_period_end"`
+	CancelAt          *time.Time `json:"cancel_at,omitempty"`
+
 	Plan             Tier       `json:"plan"`
 	PlanStatus       Status     `json:"plan_status"`
 	CurrentPeriodEnd *time.Time `json:"current_period_end,omitempty"`
@@ -311,6 +317,10 @@ func (s *Service) GetBillingSummary(ctx context.Context, tenantID uuid.UUID) (Su
 	}
 
 	return Summary{
+		// Either stored field means a cancel is scheduled.
+		CancelAtPeriodEnd: cancelScheduled(profile),
+		CancelAt:          profile.CancelAt,
+
 		Plan:             profile.Plan,
 		PlanStatus:       profile.Status,
 		CurrentPeriodEnd: profile.CurrentPeriodEnd,

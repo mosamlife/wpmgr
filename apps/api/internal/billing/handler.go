@@ -9,6 +9,8 @@ package billing
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -205,22 +207,60 @@ type cancelResponse struct {
 	OK bool `json:"ok"`
 }
 
+// cancelRequest is the optional POST /billing/cancel body. An absent body,
+// or an absent when, means period_end.
+type cancelRequest struct {
+	When string `json:"when"`
+}
+
 // cancelSubscription is the provider-agnostic backend for the dashboard's
 // "Cancel subscription" action — the ONLY cancellation path for a provider
 // with no hosted portal (Razorpay; see billing.Provider.HasPortal). Tenant-
 // scoped + owner-gated exactly like every other /billing route.
+// {"when":"now"} is Cancel now (Service.CancelSubscriptionNow).
 func (h *Handler) cancelSubscription(c *gin.Context) {
 	p, ok := domain.PrincipalFromContext(c.Request.Context())
 	if !ok {
 		httpx.Error(c, domain.Unauthorized("unauthenticated", "authentication required"))
 		return
 	}
+	var body cancelRequest
+	if err := bindOptionalJSON(c, &body); err != nil {
+		httpx.Error(c, err)
+		return
+	}
+	when, err := ParseCancelWhen(body.When)
+	if err != nil {
+		httpx.Error(c, err)
+		return
+	}
 	actor := Actor{Type: actorTypeFor(p.Type == domain.PrincipalAPIKey), ID: p.ActorID()}
-	if err := h.svc.CancelSubscription(c.Request.Context(), p.TenantID, actor); err != nil {
+	if when == CancelNow {
+		err = h.svc.CancelSubscriptionNow(c.Request.Context(), p.TenantID, actor)
+	} else {
+		err = h.svc.CancelSubscription(c.Request.Context(), p.TenantID, actor)
+	}
+	if err != nil {
 		httpx.Error(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, cancelResponse{OK: true})
+}
+
+// bindOptionalJSON is bindJSON for a body that may be absent: an empty body
+// leaves dst unchanged.
+func bindOptionalJSON(c *gin.Context, dst any) error {
+	if c.Request.Body == nil {
+		return nil
+	}
+	dec := json.NewDecoder(c.Request.Body)
+	if err := dec.Decode(dst); err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		return domain.Validation("invalid_body", "request body is not valid JSON: "+err.Error())
+	}
+	return nil
 }
 
 func bindJSON(c *gin.Context, dst any) error {

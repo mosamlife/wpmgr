@@ -209,6 +209,29 @@ func cancelSubscriptionParams() *stripesdk.SubscriptionUpdateParams {
 	}
 }
 
+// CancelSubscriptionNow implements billing.ImmediateCanceller: it ends the
+// subscription at once (DELETE /v1/subscriptions/{id}), with no proration
+// credit and no final invoice. The caller decides when this is allowed; the
+// tenant's own state still changes only through the apply worker.
+func (p *Provider) CancelSubscriptionNow(ctx context.Context, providerSubscriptionID string) error {
+	if providerSubscriptionID == "" {
+		return domain.Validation("stripe_subscription_id_required", "a subscription id is required")
+	}
+	if _, err := p.client.V1Subscriptions.Cancel(ctx, providerSubscriptionID, cancelNowParams()); err != nil {
+		return wrapErr("stripe_subscription_cancel_now_failed", "failed to cancel the Stripe subscription", err)
+	}
+	return nil
+}
+
+// cancelNowParams builds the SubscriptionCancelParams CancelSubscriptionNow
+// sends: no proration credit and no final invoice.
+func cancelNowParams() *stripesdk.SubscriptionCancelParams {
+	return &stripesdk.SubscriptionCancelParams{
+		InvoiceNow: stripesdk.Bool(false),
+		Prorate:    stripesdk.Bool(false),
+	}
+}
+
 // GetSubscription implements billing.Provider — the sole source of truth the
 // state machine acts on ("pull is the truth").
 func (p *Provider) GetSubscription(ctx context.Context, providerSubscriptionID string) (billing.Subscription, error) {
@@ -225,9 +248,15 @@ func (p *Provider) GetSubscription(ctx context.Context, providerSubscriptionID s
 // SubscriptionItem.CurrentPeriodEnd / SubscriptionItem.Price.
 func (p *Provider) toSubscription(sub *stripesdk.Subscription) billing.Subscription {
 	out := billing.Subscription{
-		ID:                sub.ID,
-		Status:            mapStatus(sub.Status),
-		CancelAtPeriodEnd: sub.CancelAtPeriodEnd,
+		ID:     sub.ID,
+		Status: mapStatus(sub.Status),
+		// A cancel scheduled for a set date (cancel_at) is a scheduled cancel
+		// just as a period-end one is, whichever way it was requested.
+		CancelAtPeriodEnd:      sub.CancelAtPeriodEnd || sub.CancelAt > 0,
+		CancelScheduleReported: true,
+	}
+	if sub.CancelAt > 0 {
+		out.CancelAt = time.Unix(sub.CancelAt, 0).UTC()
 	}
 	if sub.Customer != nil {
 		out.CustomerID = sub.Customer.ID

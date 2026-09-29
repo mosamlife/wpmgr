@@ -127,6 +127,7 @@ func TestMapStatus_FullMatrix(t *testing.T) {
 		{"halted", billing.StatusPastDue},
 		{"cancelled", billing.StatusCanceled},
 		{"completed", billing.StatusCanceled},
+		{"expired", billing.StatusCanceled},
 		{"paused", billing.StatusPaused},
 		{"created", billing.StatusNone},
 		{"authenticated", billing.StatusNone},

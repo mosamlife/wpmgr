@@ -43,6 +43,11 @@ func toBillingProfile(row sqlc.GetTenantBillingProfileRow) tenantBillingProfile 
 	if row.ProviderSubscriptionID != nil {
 		out.ProviderSubscriptionID = *row.ProviderSubscriptionID
 	}
+	out.CancelAtPeriodEnd = row.CancelAtPeriodEnd
+	if row.CancelAt.Valid {
+		t := row.CancelAt.Time
+		out.CancelAt = &t
+	}
 	return out
 }
 

@@ -2572,10 +2572,11 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// Org handler: create org + activate.
 	orgTenantCreator := &orgTenantAdapter{svc: tenantSvc}
 	orgH := org.NewHandler(pool, orgTenantCreator, sessions, authSvc, auditRec)
-	// GH #152 — DELETE /orgs/{orgId} refuses to delete a tenant with
-	// plan_status='active' while hosted billing is enabled (self-host has no
-	// subscription to protect, so this is a no-op there).
+	// GH #152 — DELETE /orgs/{orgId} asks billing whether the tenant's
+	// subscription state allows the delete while hosted billing is enabled
+	// (self-host has no subscription to protect, so this is a no-op there).
 	orgH.SetHosted(cfg.Hosted.Enabled)
+	orgH.SetBillingGuard(billingSvc)
 
 	// ADR-064 slice S4 — governed org/site context. Facts (layer 4) is left
 	// unwired (nil) in this slice: SiteFactsProvider degrades a nil provider

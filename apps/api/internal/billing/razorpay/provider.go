@@ -302,6 +302,10 @@ func (p *Provider) toSubscription(sub subscriptionEntity) billing.Subscription {
 //     course — should not occur in practice given subscriptionTotalCycles,
 //     but handled defensively) both map to canceled (non-destructive
 //     downgrade to free — see state_machine.go).
+//   - expired (a subscription that was never started before its start
+//     window closed) also maps to canceled: it has ended and can never
+//     charge. This adapter sets no start window today, so the mapping is
+//     defensive.
 //   - paused maps directly.
 //   - created and authenticated (the mandate is set up/authorized but not
 //     yet a live, charging subscription) and anything unrecognized map to
@@ -314,7 +318,7 @@ func mapStatus(s string) billing.Status {
 		return billing.StatusPastDue
 	case "halted":
 		return billing.StatusPastDue
-	case "cancelled", "completed":
+	case "cancelled", "completed", "expired":
 		return billing.StatusCanceled
 	case "paused":
 		return billing.StatusPaused

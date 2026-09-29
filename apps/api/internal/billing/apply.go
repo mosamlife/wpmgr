@@ -334,21 +334,6 @@ func ownershipMismatch(providerName string, profile tenantBillingProfile, sub Su
 	return ""
 }
 
-// blocksOrgDelete reports whether a billing state would keep an org from
-// being deleted: a live or past-due subscription with no cancel scheduled, or
-// a subscription id attached while the status is none.
-func blocksOrgDelete(next tenantBillingProfile, sub Subscription) bool {
-	switch next.Status {
-	case StatusPastDue:
-		return true
-	case StatusActive, StatusTrialing, StatusPaused:
-		return !sub.CancelAtPeriodEnd
-	case StatusNone:
-		return next.ProviderSubscriptionID != ""
-	}
-	return false
-}
-
 // postApply is what applyLocked does after its transaction commits.
 type postApply struct {
 	invalidate     bool
@@ -439,7 +424,7 @@ func (s *Service) applyLocked(ctx context.Context, in applyInput) error {
 		}
 
 		next := nextBillingState(profile, sub, s.clock.Now())
-		if prow.DeletedAt.Valid && blocksOrgDelete(next, sub) {
+		if prow.DeletedAt.Valid && orgDeleteBlock(next, s.clock.Now()) != nil {
 			s.alert(ctx, slog.LevelError, alertDeletedOrgLive,
 				slog.String("tenant_id", in.tenantID.String()), slog.String("status", string(next.Status)))
 		}

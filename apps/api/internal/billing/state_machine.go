@@ -26,6 +26,11 @@ type tenantBillingProfile struct {
 	ProviderCustomerID     string
 	ProviderSubscriptionID string
 	CurrentPeriodEnd       *time.Time
+	// CancelAtPeriodEnd and CancelAt are the stored cancel schedule. A
+	// cancel is scheduled when either is set. CancelAt at or before now,
+	// while past due on Stripe, is the Cancel now marker.
+	CancelAtPeriodEnd bool
+	CancelAt          *time.Time
 }
 
 // statusAppliesPlan reports whether a normalized provider Status is one where
@@ -84,6 +89,18 @@ func nextBillingState(current tenantBillingProfile, sub Subscription, now time.T
 	}
 	cpe := sub.CurrentPeriodEnd
 	next.CurrentPeriodEnd = &cpe
+
+	// The cancel schedule follows the subscription when the provider reports
+	// one. A provider that reports none keeps the schedule the in-app cancel
+	// stored.
+	if sub.CancelScheduleReported {
+		next.CancelAtPeriodEnd = sub.CancelAtPeriodEnd
+		next.CancelAt = nil
+		if !sub.CancelAt.IsZero() {
+			at := sub.CancelAt
+			next.CancelAt = &at
+		}
+	}
 
 	switch sub.Status {
 	case StatusActive, StatusTrialing:

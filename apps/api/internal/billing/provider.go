@@ -143,6 +143,14 @@ type Subscription struct {
 	Status            Status
 	CurrentPeriodEnd  time.Time
 	CancelAtPeriodEnd bool
+	// CancelAt is the instant the provider scheduled the subscription to end,
+	// or ended it. The zero value means no end is scheduled.
+	CancelAt time.Time
+	// CancelScheduleReported is true when the provider reports its cancel
+	// schedule on the subscription itself, so CancelAtPeriodEnd and CancelAt
+	// are authoritative. When false the provider reports none, and the
+	// schedule stored by the in-app cancel is kept.
+	CancelScheduleReported bool
 }
 
 // Event is a normalized payment-provider webhook event, as returned by
