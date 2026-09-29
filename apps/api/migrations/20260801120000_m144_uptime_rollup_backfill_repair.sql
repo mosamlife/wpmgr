@@ -47,13 +47,17 @@
 -- window. The repair is then skipped: the file raises a NOTICE saying so and
 -- returns before it lifts FORCE or locks any of the three tables. It changes
 -- nothing, and every later migration applies after it. The consequence is
--- that days before m99 are not rebuilt on that database. Where m99's backfill
--- found no probes, as it does for a NOSUPERUSER NOBYPASSRLS owner, those days
--- stay missing from site_uptime_daily.
+-- that days up to and including the day m99 was applied are not rebuilt on
+-- that database. Where m99's backfill found no probes, as it does for a
+-- NOSUPERUSER NOBYPASSRLS owner, the days before it stay missing from
+-- site_uptime_daily and the day itself keeps only the checks counted after
+-- m99 was applied.
 --
--- For operators who apply migrations with atlas: on a database atlas has
--- already taken past m100, atlas refuses m144 as out of order unless it is run
--- with `--exec-order non-linear`, and then the repair is skipped as above.
+-- For operators who apply migrations with atlas, on a database atlas has
+-- already taken past m100, per atlas's `--exec-order` help: the default,
+-- `linear`, refuses m144 as out of order and applies nothing; `linear-skip`
+-- skips m144 without applying it, so no NOTICE is raised; `non-linear`
+-- applies m144, and the repair is then skipped as above.
 --
 -- RE-RUN. Running the file again changes nothing: every repaired row already
 -- equals its raw aggregate, so no count is strictly larger, and every site it
@@ -85,7 +89,7 @@ DECLARE
     v_bound  timestamptz;
 BEGIN
     IF to_regclass('schema_migrations') IS NULL THEN
-        RAISE NOTICE 'm144: repair skipped: no schema_migrations table, so this database was not migrated by the server''s migration runner and m99''s apply time is unknown; days before m99 are not rebuilt';
+        RAISE NOTICE 'm144: repair skipped: no schema_migrations table, so this database was not migrated by the server''s migration runner and m99''s apply time is unknown; days up to and including the day m99 was applied are not rebuilt';
         RETURN;
     END IF;
 
@@ -94,7 +98,7 @@ BEGIN
     WHERE version = '20260801000000_m99_uptime_rollup';
 
     IF v_cutoff IS NULL THEN
-        RAISE NOTICE 'm144: repair skipped: schema_migrations has no row for 20260801000000_m99_uptime_rollup, so m99 was not applied by the server''s migration runner and its apply time is unknown; days before m99 are not rebuilt';
+        RAISE NOTICE 'm144: repair skipped: schema_migrations has no row for 20260801000000_m99_uptime_rollup, so m99 was not applied by the server''s migration runner and its apply time is unknown; days up to and including the day m99 was applied are not rebuilt';
         RETURN;
     END IF;
 
