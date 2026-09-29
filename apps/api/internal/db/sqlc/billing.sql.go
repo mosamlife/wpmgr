@@ -85,6 +85,16 @@ SET billing_provider = $1::text,
             THEN NULL
         ELSE provider_subscription_id
     END,
+    cancel_at_period_end = CASE
+        WHEN billing_provider IS DISTINCT FROM $1::text
+            THEN false
+        ELSE cancel_at_period_end
+    END,
+    cancel_at = CASE
+        WHEN billing_provider IS DISTINCT FROM $1::text
+            THEN NULL
+        ELSE cancel_at
+    END,
     updated_at = now()
 WHERE id = $3
   AND billing_pin_is_movable(plan_status, provider_subscription_id)
@@ -124,7 +134,9 @@ type BindCheckoutProviderParams struct {
 //     (@expected_provider, @expected_customer), compared with IS NOT DISTINCT
 //     FROM so NULL matches NULL, and the pin differs from @new_provider. The
 //     pin becomes @new_provider, the customer becomes @customer_id, and the
-//     subscription id is cleared.
+//     subscription id and the stored cancel schedule (cancel_at_period_end,
+//     cancel_at) are cleared: a schedule belongs to the old provider's
+//     subscription, never to the one the new provider will create.
 //
 // Anything else changes nothing and returns pgx.ErrNoRows, which the caller
 // answers with 409; it must never retry the write with different expected

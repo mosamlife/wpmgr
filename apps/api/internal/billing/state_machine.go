@@ -92,14 +92,19 @@ func nextBillingState(current tenantBillingProfile, sub Subscription, now time.T
 
 	// The cancel schedule follows the subscription when the provider reports
 	// one. A provider that reports none keeps the schedule the in-app cancel
-	// stored.
-	if sub.CancelScheduleReported {
+	// stored, but only for the subscription it was stored for: a different
+	// subscription starts with no cancel scheduled.
+	switch {
+	case sub.CancelScheduleReported:
 		next.CancelAtPeriodEnd = sub.CancelAtPeriodEnd
 		next.CancelAt = nil
 		if !sub.CancelAt.IsZero() {
 			at := sub.CancelAt
 			next.CancelAt = &at
 		}
+	case sub.ID != current.ProviderSubscriptionID:
+		next.CancelAtPeriodEnd = false
+		next.CancelAt = nil
 	}
 
 	switch sub.Status {

@@ -311,7 +311,9 @@ type Querier interface {
 	//     (@expected_provider, @expected_customer), compared with IS NOT DISTINCT
 	//     FROM so NULL matches NULL, and the pin differs from @new_provider. The
 	//     pin becomes @new_provider, the customer becomes @customer_id, and the
-	//     subscription id is cleared.
+	//     subscription id and the stored cancel schedule (cancel_at_period_end,
+	//     cancel_at) are cleared: a schedule belongs to the old provider's
+	//     subscription, never to the one the new provider will create.
 	//
 	// Anything else changes nothing and returns pgx.ErrNoRows, which the caller
 	// answers with 409; it must never retry the write with different expected

@@ -98,6 +98,31 @@ func TestNextBillingState_CancelSchedule(t *testing.T) {
 	}
 }
 
+// TestNextBillingState_NewSubscriptionStartsUncancelled proves a stored
+// cancel schedule belongs to the subscription it was stored for: adopting a
+// different subscription from a provider that reports no schedule starts it
+// with no cancel scheduled, so the org delete is refused while it is live.
+func TestNextBillingState_NewSubscriptionStartsUncancelled(t *testing.T) {
+	now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
+	past := now.Add(-24 * time.Hour)
+	for _, storedSub := range []string{"sub_1", ""} {
+		current := tenantBillingProfile{
+			Plan: TierFree, Status: StatusCanceled, BillingProvider: providerRazorpay,
+			ProviderSubscriptionID: storedSub, CancelAtPeriodEnd: true, CancelAt: &past,
+		}
+		sub := Subscription{ID: "sub_2", Status: StatusActive, Plan: TierAgency, PlanResolved: true}
+		next := nextBillingState(current, sub, now)
+		if next.CancelAtPeriodEnd || next.CancelAt != nil {
+			t.Fatalf("stored sub %q: the new subscription inherited the old schedule: %+v", storedSub, next)
+		}
+		err := orgDeleteBlock(next, now)
+		de, ok := domain.AsDomain(err)
+		if !ok || de.Details["reason"] != OrgDeleteReasonCancelRequired {
+			t.Fatalf("stored sub %q: org delete with a live uncancelled subscription = %v, want %s", storedSub, err, OrgDeleteReasonCancelRequired)
+		}
+	}
+}
+
 // TestParseCancelWhen covers the request's when values.
 func TestParseCancelWhen(t *testing.T) {
 	for in, want := range map[string]CancelWhen{"": CancelAtPeriodEnd, "period_end": CancelAtPeriodEnd, "now": CancelNow} {
