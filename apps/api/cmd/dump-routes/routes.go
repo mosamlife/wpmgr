@@ -18,6 +18,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/agent"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentrelease"
 	"github.com/mosamlife/wpmgr/apps/api/internal/apikey"
+	"github.com/mosamlife/wpmgr/apps/api/internal/assistantrequest"
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/auth"
 	"github.com/mosamlife/wpmgr/apps/api/internal/autologin"
@@ -289,11 +290,17 @@ func buildEngine() (engine *gin.Engine, omittedDepsFields []string, err error) {
 	// cmd/wpmgr/main.go wires it (mcp.NewService(mcp.NewRepo(pool)) etc.), so
 	// POST /mcp, the four OAuth paths and the three well-known discovery
 	// documents all mount.
-	mcpSvc := mcp.NewService(mcp.NewRepo(pool)).WithClock(clock.Now).WithAudit(auditRec).
+	mcpRepo := mcp.NewRepo(pool)
+	mcpSvc := mcp.NewService(mcpRepo).WithClock(clock.Now).WithAudit(auditRec).
 		WithContextResolver(&govcontext.Resolver{Store: govContextRepo})
 	mcpTransportH := mcp.NewTransportHandler(mcpSvc, logger, "dump-routes")
 	mcpOAuthH := mcp.NewHandler(mcpSvc)
 	mcpDiscoveryH := mcp.NewDiscoveryHandler("https://cp.example.test")
+	// The AI request queue and the site-nested approve and decline routes,
+	// built as cmd/wpmgr/main.go builds them. The switch is left off: this
+	// engine only lists routes.
+	assistantReqH := assistantrequest.NewHandler(
+		assistantrequest.NewService(assistantrequest.NewRepo(pool), mcpRepo, mcpSvc, auditRec, logger))
 
 	deps := server.Deps{
 		Config:                 config.Config{},
@@ -363,6 +370,7 @@ func buildEngine() (engine *gin.Engine, omittedDepsFields []string, err error) {
 		MCPTransportH:          mcpTransportH,
 		MCPOAuthH:              mcpOAuthH,
 		MCPDiscoveryH:          mcpDiscoveryH,
+		AssistantRequestH:      assistantReqH,
 		BillingSuspensionGate:  billingSvc.SuspensionGate(),
 		ServiceName:            "wpmgr-dump-routes",
 		Version:                "dump-routes",

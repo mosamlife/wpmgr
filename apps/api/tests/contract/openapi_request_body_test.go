@@ -112,10 +112,11 @@ var allowedBoundFieldNotInSpec = map[fieldKey]string{
 // when the real cause is that the body is bound into an untyped map. Both are
 // resolved rather than re-worded below.
 var unresolvableHandlers = map[routeKey]string{
-	{"POST", "/agent/v1/diagnostics"}:                   "reads the raw body and hands it to the diagnostics service as json.RawMessage; there is no bound struct in the handler to compare",
-	{"POST", "/agent/v1/heartbeat"}:                     "binds the body into a map[string]any, not a struct (internal/agent/handler.go: \"the beat is about liveness, not the payload\"), and forwards the whole map to RecordHeartbeat. An untyped map has no json tags, so there is nothing to diff field-by-field",
-	{"POST", "/webhooks/billing/{provider}"}:            "raw provider payload: signature is verified over the exact bytes, so the handler must not decode into a struct first",
-	{"POST", "/webhooks/email/{provider}/{routeToken}"}: "raw provider payload, verified over exact bytes, same as the billing webhook",
+	{"POST", "/agent/v1/diagnostics"}:                                  "reads the raw body and hands it to the diagnostics service as json.RawMessage; there is no bound struct in the handler to compare",
+	{"POST", "/agent/v1/heartbeat"}:                                    "binds the body into a map[string]any, not a struct (internal/agent/handler.go: \"the beat is about liveness, not the payload\"), and forwards the whole map to RecordHeartbeat. An untyped map has no json tags, so there is nothing to diff field-by-field",
+	{"POST", "/webhooks/billing/{provider}"}:                           "raw provider payload: signature is verified over the exact bytes, so the handler must not decode into a struct first",
+	{"POST", "/webhooks/email/{provider}/{routeToken}"}:                "raw provider payload, verified over exact bytes, same as the billing webhook",
+	{"POST", "/api/v1/sites/{siteId}/ai/requests/{requestId}/decline"}: "the documented body is an empty JSON object: RequireJSONBody refuses anything but JSON (the CSRF guard) and the handler reads no field, so there is no struct to diff",
 }
 
 // ---------------------------------------------------------------------------
