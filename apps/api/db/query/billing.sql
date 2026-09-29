@@ -31,9 +31,13 @@ SELECT billing_count_active_sites(@tenant_id)::bigint AS count;
 -- processing need the provider identity + external ids that Phase A's
 -- GetTenantBilling (the tight entitlement-resolution hot path) does not
 -- select.
+--
+-- cancel_at_period_end, cancel_at and deleted_at are read here so a caller
+-- that decides under the per-tenant billing lock sees the cancel schedule and
+-- the soft-delete marker in the same read as the provider identity.
 SELECT plan, plan_status, plan_overrides, grace_until,
        billing_provider, provider_customer_id, provider_subscription_id,
-       current_period_end
+       current_period_end, cancel_at_period_end, cancel_at, deleted_at
 FROM tenants
 WHERE id = @tenant_id;
 
@@ -51,6 +55,10 @@ WHERE billing_provider = @billing_provider
 -- "One tenant = one provider at a time (set at first checkout)": this only
 -- ever writes when billing_provider is still NULL, so a tenant can never be
 -- silently re-pointed at a different provider by a later checkout attempt.
+--
+-- SUPERSEDED by BindCheckoutProvider below. Kept only while the current
+-- checkout code still calls it; delete it in the change that moves that
+-- caller to BindCheckoutProvider. New code must not call it.
 UPDATE tenants
 SET billing_provider = @billing_provider
 WHERE id = @tenant_id AND billing_provider IS NULL;
@@ -84,6 +92,60 @@ SET plan                     = @plan,
     provider_customer_id      = COALESCE(NULLIF(@provider_customer_id::text, ''), provider_customer_id)
 WHERE id = @tenant_id;
 
+-- name: BindCheckoutProvider :one
+-- The single write that binds a tenant to the payment provider a checkout
+-- uses. The caller holds the per-tenant billing lock, and passes the pin and
+-- stored customer it read before any provider call (@expected_provider and
+-- @expected_customer, both NULL when nothing was pinned), the provider the
+-- checkout asks for (@new_provider), and the provider customer id to store
+-- (@customer_id, NULL when there is none).
+--
+-- It writes exactly one row, and only while billing_pin_is_movable holds for
+-- that row (not comped; 'canceled', or 'none' with no stored subscription id)
+-- and one of these is true:
+--
+--   * SAME PROVIDER. The stored pin already equals @new_provider, whatever the
+--     caller expected. Nothing moves: the pin is rewritten to the same value,
+--     the stored customer is kept (or set to @customer_id when none is
+--     stored), and the stored subscription id is kept.
+--
+--   * MOVE FROM THE CHECKED PAIR. The stored pin and customer still equal
+--     (@expected_provider, @expected_customer), compared with IS NOT DISTINCT
+--     FROM so NULL matches NULL, and the pin differs from @new_provider. The
+--     pin becomes @new_provider, the customer becomes @customer_id, and the
+--     subscription id is cleared.
+--
+-- Anything else changes nothing and returns pgx.ErrNoRows, which the caller
+-- answers with 409; it must never retry the write with different expected
+-- values without repeating the checks those values stand for.
+--
+-- The CASE expressions read the row as it was before this UPDATE (Postgres
+-- evaluates SET expressions against the old row), so "billing_provider IS
+-- DISTINCT FROM @new_provider" is true exactly on the move branch.
+--
+-- Returns the stored customer id after the write, which may be NULL.
+UPDATE tenants
+SET billing_provider = @new_provider::text,
+    provider_customer_id = CASE
+        WHEN billing_provider IS DISTINCT FROM @new_provider::text
+            THEN sqlc.narg(customer_id)::text
+        ELSE COALESCE(provider_customer_id, sqlc.narg(customer_id)::text)
+    END,
+    provider_subscription_id = CASE
+        WHEN billing_provider IS DISTINCT FROM @new_provider::text
+            THEN NULL
+        ELSE provider_subscription_id
+    END,
+    updated_at = now()
+WHERE id = @tenant_id
+  AND billing_pin_is_movable(plan_status, provider_subscription_id)
+  AND (
+        billing_provider = @new_provider::text
+     OR (billing_provider IS NOT DISTINCT FROM sqlc.narg(expected_provider)::text
+         AND provider_customer_id IS NOT DISTINCT FROM sqlc.narg(expected_customer)::text)
+  )
+RETURNING provider_customer_id;
+
 -- ---------------------------------------------------------------------------
 -- billing_events (M91 ledger; M16 Phase B ingestion) — all queries below run
 -- under InAgentTx (app.agent = 'on', the billing_events_system RLS policy).
@@ -91,18 +153,40 @@ WHERE id = @tenant_id;
 
 -- name: InsertBillingEvent :one
 -- ON CONFLICT DO NOTHING makes a replayed webhook delivery a no-op insert
--- (Stripe, like most providers, retries on anything but a 2xx). tenant_id may
--- be NULL when attribution has not been resolved yet at insert time (the
--- caller backfills it via SetBillingEventTenant once resolved). A caller
+-- (Stripe, like most providers, retries on anything but a 2xx). A caller
 -- distinguishes "inserted" from "duplicate" by checking for pgx.ErrNoRows,
 -- exactly like email.Repo.InsertWebhookEventDedup.
+--
+-- @tenant_id is the tenant the event CLAIMS, which may be NULL. The stored
+-- tenant_id is that id only when a tenants row with it exists at insert time,
+-- and NULL otherwise, so a claim naming a tenant that was never created, or
+-- was hard-deleted before the insert, still records the event (with a NULL
+-- tenant) instead of failing the insert on the foreign key. The caller keeps
+-- the claim in the payload and backfills tenant_id via SetBillingEventTenant
+-- once attribution is resolved. A hard delete that commits between the
+-- subquery and the foreign-key check can still raise 23503; the caller
+-- retries that once with a NULL claim.
 INSERT INTO billing_events (
     provider, provider_event_id, kind, tenant_id, payload, occurred_at
 ) VALUES (
-    @provider, @provider_event_id, @kind, @tenant_id, @payload, @occurred_at
+    @provider, @provider_event_id, @kind,
+    (SELECT t.id FROM tenants t WHERE t.id = sqlc.narg(tenant_id)::uuid),
+    @payload, @occurred_at
 )
 ON CONFLICT (provider, provider_event_id) DO NOTHING
 RETURNING id;
+
+-- name: GetBillingEventByProviderEventID :one
+-- The ledger row for one provider event, by its natural key. Intake reads it
+-- on a duplicate delivery (to re-enqueue an event whose processing never
+-- completed), and the apply worker reads it to load the event it was handed.
+-- pgx.ErrNoRows means no such row: never recorded, or removed with its
+-- tenant. Runs under InAgentTx (the billing_events_system policy).
+SELECT id, provider, provider_event_id, kind, tenant_id, payload,
+       occurred_at, processed_at, created_at
+FROM billing_events
+WHERE provider = @provider
+  AND provider_event_id = @provider_event_id;
 
 -- name: SetBillingEventTenant :exec
 -- Best-effort backfill once tenant attribution is resolved AFTER the initial

@@ -32,7 +32,7 @@ func (q *Queries) AdminPurgeTenant(ctx context.Context, tenantID uuid.UUID) (boo
 const createTenant = `-- name: CreateTenant :one
 INSERT INTO tenants (name, slug)
 VALUES ($1, $2)
-RETURNING id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, comp_reason, suspended_at, suspended_reason, cancel_at_period_end, deleted_at, purge_started_at, assistant_enabled_at, assistant_paused_at, assistant_paused_reason, created_at, updated_at
+RETURNING id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, comp_reason, suspended_at, suspended_reason, cancel_at_period_end, cancel_at, deleted_at, purge_started_at, assistant_enabled_at, assistant_paused_at, assistant_paused_reason, created_at, updated_at
 `
 
 type CreateTenantParams struct {
@@ -59,6 +59,7 @@ func (q *Queries) CreateTenant(ctx context.Context, arg CreateTenantParams) (Ten
 		&i.SuspendedAt,
 		&i.SuspendedReason,
 		&i.CancelAtPeriodEnd,
+		&i.CancelAt,
 		&i.DeletedAt,
 		&i.PurgeStartedAt,
 		&i.AssistantEnabledAt,
@@ -161,7 +162,7 @@ func (q *Queries) EngageTenantAssistantKillSwitch(ctx context.Context, arg Engag
 }
 
 const getTenant = `-- name: GetTenant :one
-SELECT id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, comp_reason, suspended_at, suspended_reason, cancel_at_period_end, deleted_at, purge_started_at, assistant_enabled_at, assistant_paused_at, assistant_paused_reason, created_at, updated_at FROM tenants
+SELECT id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, comp_reason, suspended_at, suspended_reason, cancel_at_period_end, cancel_at, deleted_at, purge_started_at, assistant_enabled_at, assistant_paused_at, assistant_paused_reason, created_at, updated_at FROM tenants
 WHERE id = $1
 `
 
@@ -184,6 +185,7 @@ func (q *Queries) GetTenant(ctx context.Context, id uuid.UUID) (Tenant, error) {
 		&i.SuspendedAt,
 		&i.SuspendedReason,
 		&i.CancelAtPeriodEnd,
+		&i.CancelAt,
 		&i.DeletedAt,
 		&i.PurgeStartedAt,
 		&i.AssistantEnabledAt,
@@ -331,7 +333,7 @@ func (q *Queries) ListOrgsForUser(ctx context.Context, userID uuid.UUID) ([]List
 }
 
 const listTenants = `-- name: ListTenants :many
-SELECT id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, comp_reason, suspended_at, suspended_reason, cancel_at_period_end, deleted_at, purge_started_at, assistant_enabled_at, assistant_paused_at, assistant_paused_reason, created_at, updated_at FROM tenants
+SELECT id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, comp_reason, suspended_at, suspended_reason, cancel_at_period_end, cancel_at, deleted_at, purge_started_at, assistant_enabled_at, assistant_paused_at, assistant_paused_reason, created_at, updated_at FROM tenants
 ORDER BY created_at DESC
 LIMIT $1 OFFSET $2
 `
@@ -366,6 +368,7 @@ func (q *Queries) ListTenants(ctx context.Context, arg ListTenantsParams) ([]Ten
 			&i.SuspendedAt,
 			&i.SuspendedReason,
 			&i.CancelAtPeriodEnd,
+			&i.CancelAt,
 			&i.DeletedAt,
 			&i.PurgeStartedAt,
 			&i.AssistantEnabledAt,
@@ -439,7 +442,7 @@ func (q *Queries) ListTenantsForUser(ctx context.Context, arg ListTenantsForUser
 }
 
 const listTenantsPendingPurge = `-- name: ListTenantsPendingPurge :many
-SELECT id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, comp_reason, suspended_at, suspended_reason, cancel_at_period_end, deleted_at, purge_started_at, assistant_enabled_at, assistant_paused_at, assistant_paused_reason, created_at, updated_at FROM tenants
+SELECT id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, comp_reason, suspended_at, suspended_reason, cancel_at_period_end, cancel_at, deleted_at, purge_started_at, assistant_enabled_at, assistant_paused_at, assistant_paused_reason, created_at, updated_at FROM tenants
 WHERE deleted_at IS NOT NULL AND deleted_at < $1
 ORDER BY deleted_at ASC
 `
@@ -474,6 +477,7 @@ func (q *Queries) ListTenantsPendingPurge(ctx context.Context, cutoff pgtype.Tim
 			&i.SuspendedAt,
 			&i.SuspendedReason,
 			&i.CancelAtPeriodEnd,
+			&i.CancelAt,
 			&i.DeletedAt,
 			&i.PurgeStartedAt,
 			&i.AssistantEnabledAt,
@@ -546,7 +550,7 @@ const restoreTenant = `-- name: RestoreTenant :one
 UPDATE tenants
 SET deleted_at = NULL
 WHERE id = $1 AND deleted_at IS NOT NULL AND purge_started_at IS NULL
-RETURNING id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, comp_reason, suspended_at, suspended_reason, cancel_at_period_end, deleted_at, purge_started_at, assistant_enabled_at, assistant_paused_at, assistant_paused_reason, created_at, updated_at
+RETURNING id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, comp_reason, suspended_at, suspended_reason, cancel_at_period_end, cancel_at, deleted_at, purge_started_at, assistant_enabled_at, assistant_paused_at, assistant_paused_reason, created_at, updated_at
 `
 
 // RestoreTenant clears deleted_at within the grace window (GH #152 undelete).
@@ -576,6 +580,7 @@ func (q *Queries) RestoreTenant(ctx context.Context, tenantID uuid.UUID) (Tenant
 		&i.SuspendedAt,
 		&i.SuspendedReason,
 		&i.CancelAtPeriodEnd,
+		&i.CancelAt,
 		&i.DeletedAt,
 		&i.PurgeStartedAt,
 		&i.AssistantEnabledAt,
@@ -591,7 +596,7 @@ const softDeleteTenant = `-- name: SoftDeleteTenant :one
 UPDATE tenants
 SET deleted_at = now()
 WHERE id = $1 AND deleted_at IS NULL
-RETURNING id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, comp_reason, suspended_at, suspended_reason, cancel_at_period_end, deleted_at, purge_started_at, assistant_enabled_at, assistant_paused_at, assistant_paused_reason, created_at, updated_at
+RETURNING id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, comp_reason, suspended_at, suspended_reason, cancel_at_period_end, cancel_at, deleted_at, purge_started_at, assistant_enabled_at, assistant_paused_at, assistant_paused_reason, created_at, updated_at
 `
 
 // SoftDeleteTenant sets deleted_at (GH #152 Lane B — populated org). The read-
@@ -619,6 +624,7 @@ func (q *Queries) SoftDeleteTenant(ctx context.Context, tenantID uuid.UUID) (Ten
 		&i.SuspendedAt,
 		&i.SuspendedReason,
 		&i.CancelAtPeriodEnd,
+		&i.CancelAt,
 		&i.DeletedAt,
 		&i.PurgeStartedAt,
 		&i.AssistantEnabledAt,
@@ -634,7 +640,7 @@ const updateTenantName = `-- name: UpdateTenantName :one
 UPDATE tenants
 SET name = $2, updated_at = now()
 WHERE id = $1
-RETURNING id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, comp_reason, suspended_at, suspended_reason, cancel_at_period_end, deleted_at, purge_started_at, assistant_enabled_at, assistant_paused_at, assistant_paused_reason, created_at, updated_at
+RETURNING id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, comp_reason, suspended_at, suspended_reason, cancel_at_period_end, cancel_at, deleted_at, purge_started_at, assistant_enabled_at, assistant_paused_at, assistant_paused_reason, created_at, updated_at
 `
 
 type UpdateTenantNameParams struct {
@@ -663,6 +669,7 @@ func (q *Queries) UpdateTenantName(ctx context.Context, arg UpdateTenantNamePara
 		&i.SuspendedAt,
 		&i.SuspendedReason,
 		&i.CancelAtPeriodEnd,
+		&i.CancelAt,
 		&i.DeletedAt,
 		&i.PurgeStartedAt,
 		&i.AssistantEnabledAt,

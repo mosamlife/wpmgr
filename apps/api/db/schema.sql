@@ -156,6 +156,9 @@ CREATE TABLE tenants (
     suspended_at             timestamptz,
     suspended_reason         text,
     cancel_at_period_end     boolean     NOT NULL DEFAULT false,
+    -- m149: the instant the provider scheduled the subscription to end, or
+    -- ended it. NULL means no end is scheduled.
+    cancel_at                timestamptz,
     deleted_at               timestamptz,
     purge_started_at         timestamptz,
     -- M130 — the assistant / MCP surface's per-tenant enablement flag and kill
@@ -187,6 +190,31 @@ CREATE TABLE tenants (
     created_at               timestamptz NOT NULL DEFAULT now(),
     updated_at               timestamptz NOT NULL DEFAULT now()
 );
+
+-- m149: a Stripe customer id names at most one tenant, and a provider
+-- subscription id names at most one tenant per provider.
+CREATE UNIQUE INDEX tenants_stripe_customer_key ON tenants (provider_customer_id)
+    WHERE billing_provider = 'stripe' AND provider_customer_id IS NOT NULL;
+CREATE UNIQUE INDEX tenants_provider_subscription_key ON tenants (billing_provider, provider_subscription_id)
+    WHERE provider_subscription_id IS NOT NULL;
+
+-- billing_pin_is_movable (m149): true exactly when the tenant is not comped
+-- and is either 'canceled', or 'none' with no stored subscription id. The one
+-- predicate BindCheckoutProvider and AdminClearBillingPin share, so the
+-- checkout binding and the operator clear accept and refuse the same states.
+-- Reads no table, so the planner inlines it into the caller's WHERE clause.
+CREATE OR REPLACE FUNCTION billing_pin_is_movable(p_plan_status text, p_provider_subscription_id text)
+RETURNS boolean
+LANGUAGE sql
+IMMUTABLE
+PARALLEL SAFE
+AS $$
+    SELECT coalesce(
+        p_plan_status <> 'comped'
+        AND (p_plan_status = 'canceled'
+             OR (p_plan_status = 'none' AND p_provider_subscription_id IS NULL)),
+        false)
+$$;
 
 -- billing_events (M91) — the Phase-B webhook/event ledger, created now so a
 -- future payment-provider integration has a home to land in immediately.
@@ -755,6 +783,10 @@ CREATE TABLE audit_log (
 );
 
 CREATE INDEX audit_log_tenant_id_created_at_idx ON audit_log (tenant_id, created_at);
+-- m149: backs AuditEntryExistsByKey. The key lives in metadata, so it is part
+-- of the hashed content; audit_log has no audit_key column.
+CREATE INDEX audit_log_audit_key_idx ON audit_log (tenant_id, (metadata ->> 'audit_key'))
+    WHERE metadata ? 'audit_key';
 
 -- ---------------------------------------------------------------------------
 -- Row-Level Security for the new tenant-scoped tables

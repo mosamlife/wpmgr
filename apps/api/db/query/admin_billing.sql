@@ -232,6 +232,26 @@ UPDATE tenants
 SET plan = 'free', plan_status = 'none', comp_reason = NULL, grace_until = NULL, updated_at = now()
 WHERE id = @tenant_id;
 
+-- name: AdminClearBillingPin :execrows
+-- The operator's clear of a tenant's payment-provider binding: sets
+-- billing_provider, provider_customer_id and provider_subscription_id to NULL.
+-- The caller holds the per-tenant billing lock and passes the pin and stored
+-- customer it read before its provider check (@expected_provider,
+-- @expected_customer; NULL matches NULL). It writes only while
+-- billing_pin_is_movable holds (not comped; 'canceled', or 'none' with no
+-- stored subscription id) AND the stored pin and customer still equal the
+-- expected pair. So it never clears a pin or a customer the caller did not
+-- check. The caller requires exactly 1 row; 0 rows is a 409.
+UPDATE tenants
+SET billing_provider = NULL,
+    provider_customer_id = NULL,
+    provider_subscription_id = NULL,
+    updated_at = now()
+WHERE id = @tenant_id
+  AND billing_pin_is_movable(plan_status, provider_subscription_id)
+  AND billing_provider IS NOT DISTINCT FROM sqlc.narg(expected_provider)::text
+  AND provider_customer_id IS NOT DISTINCT FROM sqlc.narg(expected_customer)::text;
+
 -- name: AdminClearCompReason :exec
 -- Clears comp_reason only, leaving plan/plan_status exactly as just written
 -- by billing.Service.ReconcileOneNow (used when a live provider subscription

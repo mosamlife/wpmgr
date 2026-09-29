@@ -37,6 +37,16 @@ type Querier interface {
 	// these tiles always reflect the FULL instance regardless of what the
 	// operator is currently filtering the list by.
 	AdminAccountPlanStatusCounts(ctx context.Context) ([]AdminAccountPlanStatusCountsRow, error)
+	// The operator's clear of a tenant's payment-provider binding: sets
+	// billing_provider, provider_customer_id and provider_subscription_id to NULL.
+	// The caller holds the per-tenant billing lock and passes the pin and stored
+	// customer it read before its provider check (@expected_provider,
+	// @expected_customer; NULL matches NULL). It writes only while
+	// billing_pin_is_movable holds (not comped; 'canceled', or 'none' with no
+	// stored subscription id) AND the stored pin and customer still equal the
+	// expected pair. So it never clears a pin or a customer the caller did not
+	// check. The caller requires exactly 1 row; 0 rows is a 409.
+	AdminClearBillingPin(ctx context.Context, arg AdminClearBillingPinParams) (int64, error)
 	// Clears comp_reason only, leaving plan/plan_status exactly as just written
 	// by billing.Service.ReconcileOneNow (used when a live provider subscription
 	// was adopted instead of falling back to free).
@@ -264,10 +274,48 @@ type Querier interface {
 	AttachAgentAndConnect(ctx context.Context, arg AttachAgentAndConnectParams) (Site, error)
 	// Re-enrollment: rotate the agent key and mark the site active/enrolled again.
 	AttachAgentToSite(ctx context.Context, arg AttachAgentToSiteParams) (Site, error)
+	// True when this tenant's audit log already holds an entry whose
+	// metadata.audit_key equals @audit_key. An idempotent writer reads it after
+	// taking the tenant's audit chain lock and appends only on false, so a retried
+	// job records its entry once. Runs under InTenantTx (audit_log_tenant_isolation).
+	// Backed by audit_log_audit_key_idx (m149).
+	AuditEntryExistsByKey(ctx context.Context, arg AuditEntryExistsByKeyParams) (bool, error)
 	// revoked/disconnected/archived → pending_enrollment (operator). Bumps the
 	// generation counter and clears archived_at so the row leaves the archived list.
 	// The next consume increments nothing further — generation already advanced.
 	BeginSiteReEnrollment(ctx context.Context, arg BeginSiteReEnrollmentParams) (Site, error)
+	// The single write that binds a tenant to the payment provider a checkout
+	// uses. The caller holds the per-tenant billing lock, and passes the pin and
+	// stored customer it read before any provider call (@expected_provider and
+	// @expected_customer, both NULL when nothing was pinned), the provider the
+	// checkout asks for (@new_provider), and the provider customer id to store
+	// (@customer_id, NULL when there is none).
+	//
+	// It writes exactly one row, and only while billing_pin_is_movable holds for
+	// that row (not comped; 'canceled', or 'none' with no stored subscription id)
+	// and one of these is true:
+	//
+	//   * SAME PROVIDER. The stored pin already equals @new_provider, whatever the
+	//     caller expected. Nothing moves: the pin is rewritten to the same value,
+	//     the stored customer is kept (or set to @customer_id when none is
+	//     stored), and the stored subscription id is kept.
+	//
+	//   * MOVE FROM THE CHECKED PAIR. The stored pin and customer still equal
+	//     (@expected_provider, @expected_customer), compared with IS NOT DISTINCT
+	//     FROM so NULL matches NULL, and the pin differs from @new_provider. The
+	//     pin becomes @new_provider, the customer becomes @customer_id, and the
+	//     subscription id is cleared.
+	//
+	// Anything else changes nothing and returns pgx.ErrNoRows, which the caller
+	// answers with 409; it must never retry the write with different expected
+	// values without repeating the checks those values stand for.
+	//
+	// The CASE expressions read the row as it was before this UPDATE (Postgres
+	// evaluates SET expressions against the old row), so "billing_provider IS
+	// DISTINCT FROM @new_provider" is true exactly on the move branch.
+	//
+	// Returns the stored customer id after the write, which may be NULL.
+	BindCheckoutProvider(ctx context.Context, arg BindCheckoutProviderParams) (*string, error)
 	// Cancels ONE not-yet-dispatched task as part of halting its run.
 	//
 	// The 'pending' precondition is the whole point, and it is enforced here rather
@@ -1304,6 +1352,12 @@ type Querier interface {
 	// Runs tenant-scoped (the caller sets app.tenant_id before this query).
 	GetBackupSiteInfo(ctx context.Context, arg GetBackupSiteInfoParams) (GetBackupSiteInfoRow, error)
 	GetBackupSnapshot(ctx context.Context, arg GetBackupSnapshotParams) (BackupSnapshot, error)
+	// The ledger row for one provider event, by its natural key. Intake reads it
+	// on a duplicate delivery (to re-enqueue an event whose processing never
+	// completed), and the apply worker reads it to load the event it was handed.
+	// pgx.ErrNoRows means no such row: never recorded, or removed with its
+	// tenant. Runs under InAgentTx (the billing_events_system policy).
+	GetBillingEventByProviderEventID(ctx context.Context, arg GetBillingEventByProviderEventIDParams) (BillingEvent, error)
 	// Returns up to 366 daily-aggregated hit-ratio data points for a site since
 	// @since, ordered oldest-first. Each point is one calendar day (UTC) of data:
 	// avg(ratio_pct), sum(hit_count), sum(miss_count). Daily downsampling ensures a
@@ -1859,6 +1913,10 @@ type Querier interface {
 	// processing need the provider identity + external ids that Phase A's
 	// GetTenantBilling (the tight entitlement-resolution hot path) does not
 	// select.
+	//
+	// cancel_at_period_end, cancel_at and deleted_at are read here so a caller
+	// that decides under the per-tenant billing lock sees the cancel schedule and
+	// the soft-delete marker in the same read as the provider identity.
 	GetTenantBillingProfile(ctx context.Context, tenantID uuid.UUID) (GetTenantBillingProfileRow, error)
 	// The tenant's deletion state, which the worker reads as THREE outcomes, not
 	// two. A row with deleted_at or purge_started_at set means Lane B (the org
@@ -1976,11 +2034,19 @@ type Querier interface {
 	// under InAgentTx (app.agent = 'on', the billing_events_system RLS policy).
 	// ---------------------------------------------------------------------------
 	// ON CONFLICT DO NOTHING makes a replayed webhook delivery a no-op insert
-	// (Stripe, like most providers, retries on anything but a 2xx). tenant_id may
-	// be NULL when attribution has not been resolved yet at insert time (the
-	// caller backfills it via SetBillingEventTenant once resolved). A caller
+	// (Stripe, like most providers, retries on anything but a 2xx). A caller
 	// distinguishes "inserted" from "duplicate" by checking for pgx.ErrNoRows,
 	// exactly like email.Repo.InsertWebhookEventDedup.
+	//
+	// @tenant_id is the tenant the event CLAIMS, which may be NULL. The stored
+	// tenant_id is that id only when a tenants row with it exists at insert time,
+	// and NULL otherwise, so a claim naming a tenant that was never created, or
+	// was hard-deleted before the insert, still records the event (with a NULL
+	// tenant) instead of failing the insert on the foreign key. The caller keeps
+	// the claim in the payload and backfills tenant_id via SetBillingEventTenant
+	// once attribution is resolved. A hard delete that commits between the
+	// subquery and the foreign-key check can still raise 23503; the caller
+	// retries that once with a NULL claim.
 	InsertBillingEvent(ctx context.Context, arg InsertBillingEventParams) (uuid.UUID, error)
 	// ---------------------------------------------------------------------------
 	// site_cache_hit_ratio_history (M52 / #162)
@@ -3702,6 +3768,10 @@ type Querier interface {
 	// "One tenant = one provider at a time (set at first checkout)": this only
 	// ever writes when billing_provider is still NULL, so a tenant can never be
 	// silently re-pointed at a different provider by a later checkout attempt.
+	//
+	// SUPERSEDED by BindCheckoutProvider below. Kept only while the current
+	// checkout code still calls it; delete it in the change that moves that
+	// caller to BindCheckoutProvider. New code must not call it.
 	SetTenantBillingProviderIfUnset(ctx context.Context, arg SetTenantBillingProviderIfUnsetParams) (int64, error)
 	// The general run-status write, used by the immediate (non-scheduled)
 	// lifecycle: pending -> running on the first task start, and -> 'completed'
