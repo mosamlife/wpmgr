@@ -31,6 +31,38 @@ const REASON_LABELS: Record<string, string> = {
   confirm_sensitive_missing: "Sensitive-file confirmation was not provided",
   insufficient_permission: "The actor's role does not have permission for this action",
   confirm_token_missing: "The required confirmation token was not provided",
+
+  // AI cache-clear requests (tracka-cache-purge design v7, S2.7 / S3.3).
+  // `mcp.tool.denied`'s reason, or `assistant.request.not_sent`'s.
+  capability_not_held: "This connection does not hold the cache-clear capability",
+  scope_empty: "This connection has no sites in scope",
+  site_absent: "The site is outside this connection's scope",
+  // G2: the site's own stored address has no host form WPMgr can dial.
+  site_address_unusable: "WPMgr cannot use this site's stored address",
+  invalid_arguments: "The AI tool call's arguments were invalid",
+  url_not_on_site: "The page address is not on this site",
+  url_other_site: "The page address belongs to a different site in scope",
+  url_port_ambiguous: "The page address's port did not match a site in scope",
+  url_same_address: "More than one site in scope shares this exact address",
+  site_unreachable: "This site's agent was not connected",
+  agent_outdated: "This site's agent is too old for this request",
+  forbidden_by_context: "An operator AI rule forbids this tool on this site",
+  context_unavailable: "This site's AI rules could not be read",
+  pending_request_for_site: "This connection already has a request waiting for this site",
+  pending_cap: "This connection has reached its limit of waiting requests",
+  grant_daily_cap: "This connection reached its daily request limit",
+  site_hourly_cap: "This site reached its hourly limit of AI cache clears",
+  // assistant.request.withdrawn's reason, and not_sent's closed_by.
+  connection_revoked: "The connection was revoked",
+  // assistant.request.not_sent's reason.
+  grant_inactive: "The connection was revoked or had expired",
+  assistant_paused: "The organisation's AI assistant was paused",
+  organisation_deleted: "The organisation is being deleted",
+  write_tools_disabled: "AI cache clears were switched off on this server",
+  dispatch_deadline_passed: "The approved clear did not start within an hour of approval",
+  could_not_reach_site: "WPMgr could not reach this site",
+  // assistant.request.failed's outcome.
+  outcome_unknown: "WPMgr could not confirm whether the clear ran",
 };
 
 /** Humanize a `metadata.reason` code; passes through free text unchanged. */

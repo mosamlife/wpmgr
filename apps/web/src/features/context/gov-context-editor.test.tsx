@@ -198,3 +198,31 @@ describe("GovContextEditor — a rejected guidance value tells the operator why"
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 });
+
+// tracka-cache-purge design v7 S4.7: mcp.cache.purge is a real, callable tool
+// now, so "Forbidden tools" can name it. Only that field gets the hint --
+// naming a real tool under "Forbidden domains" or "Forbidden topics" would be
+// wrong, since neither of those fields matches against a tool name.
+describe("GovContextEditor — the forbidden-tools hint", () => {
+  it("names the AI cache-clear tool under Forbidden tools, and only there", () => {
+    renderWithProviders(
+      <GovContextEditor
+        scopeLabel="site"
+        current={buildContext()}
+        onSave={vi.fn()}
+        onReloadLatest={vi.fn()}
+        saveError={null}
+        isSaving={false}
+        canWrite
+      />,
+    );
+
+    expect(
+      screen.getByText(/site_cache_purge_request forbids the AI cache-clear tool/i),
+    ).toBeInTheDocument();
+    // There is exactly one hint paragraph on the page — under "Forbidden
+    // tools" — not one repeated under "Forbidden domains" or "Forbidden
+    // topics", neither of which matches against a tool name.
+    expect(screen.getAllByText(/forbids the AI cache-clear tool/i)).toHaveLength(1);
+  });
+});

@@ -14,6 +14,7 @@ import {
   formatDeliveryStatus,
   humanizeDeliveryReason,
   humanizeDeliveryStatus,
+  humanizeReason,
 } from "./metadata";
 
 describe("humanizeDeliveryStatus", () => {
@@ -69,5 +70,37 @@ describe("formatDeliveryStatus", () => {
     expect(formatDeliveryStatus("failed", "some_future_reason")).toBe(
       "Failed (some_future_reason)",
     );
+  });
+});
+
+// AI cache-clear requests (tracka-cache-purge design v7, S2.7 / S3.3).
+// `mcp.tool.denied.reason`, `assistant.request.not_sent.reason` and
+// `assistant.request.withdrawn.reason` are all `metadata.reason` codes,
+// rendered through this same humanizeReason path.
+describe("humanizeReason for AI cache-clear request reasons", () => {
+  it("names the G2 refusal honestly rather than a bare humanized key", () => {
+    // site_address_unusable would otherwise humanize to the flatter
+    // "Site address unusable", which loses WHO could not use it.
+    expect(humanizeReason("site_address_unusable")).toBe(
+      "WPMgr cannot use this site's stored address",
+    );
+  });
+
+  it("names the revoke cascade's two reason codes", () => {
+    expect(humanizeReason("connection_revoked")).toBe("The connection was revoked");
+    expect(humanizeReason("grant_inactive")).toBe("The connection was revoked or had expired");
+  });
+
+  it("names the write-tools-off and pause closures", () => {
+    expect(humanizeReason("write_tools_disabled")).toBe(
+      "AI cache clears were switched off on this server",
+    );
+    expect(humanizeReason("assistant_paused")).toBe(
+      "The organisation's AI assistant was paused",
+    );
+  });
+
+  it("falls back to sentence case for an unmapped reason code", () => {
+    expect(humanizeReason("some_future_reason")).toBe("Some future reason");
   });
 });

@@ -247,6 +247,24 @@ const ACTION_LABELS: Record<string, string> = {
   // security-event alerts alike.
   "uptime.alert.sent": "Downtime alert",
   "alert.config.changed": "Changed alert settings",
+
+  // AI cache-clear requests (tracka-cache-purge design v7, S2.7). One AI
+  // connection can ASK to clear a site's cache; every one of these rows is
+  // about that request's lifecycle, never about the clear itself running
+  // unapproved — "site.cache.purged" above still covers the clear.
+  "mcp.tool.called": "AI tool call",
+  "mcp.tool.denied": "Blocked AI tool call",
+  "assistant.request.approved": "Approved AI cache-clear request",
+  "assistant.request.declined": "Declined AI cache-clear request",
+  // Written on the connection's revoke cascade (service.go's onRevoked),
+  // never on a person's own action -- the row's actor is whoever revoked the
+  // connection, which the shared actor chip (actor.ts) already renders as an
+  // API key when that revoker was one.
+  "assistant.request.withdrawn": "Withdrew AI cache-clear request",
+  "assistant.request.not_sent": "AI cache-clear request not sent",
+  "assistant.request.dispatched": "Sent AI cache-clear request",
+  "assistant.request.expired": "AI cache-clear request expired unanswered",
+  "assistant.request.failed": "AI cache-clear request failed",
 };
 
 /** Turn "some.dotted_key" into "Some dotted key" — a dot never survives. */
@@ -336,6 +354,14 @@ const SENSITIVE_ACTIONS = new Set<string>([
   "share.granted",
   "share.revoked",
   "share.accepted",
+  // An AI connection asked to clear a site's cache, or a human decided that
+  // request. Nothing on this list mutates site data by itself -- "dispatched"
+  // and "site.cache.purged" do -- but every row here is a decision point on
+  // the one write surface an AI connection can reach, and deserves the same
+  // distinct signal as a credential or access-control change.
+  "mcp.tool.called",
+  "assistant.request.approved",
+  "assistant.request.failed",
 ]);
 
 // Forces "write" for keys the stem heuristic below cannot see the verb of
@@ -345,6 +371,9 @@ const WRITE_OVERRIDES = new Set<string>([
   "site.db.table.action",
   "site.db.search.replace",
   "site.db.snapshot",
+  // "dispatch" has no write-shaped stem, but this is the moment WPMgr commits
+  // to sending an approved AI cache clear to the site's agent (S2.7).
+  "assistant.request.dispatched",
 ]);
 
 // The heuristic below would otherwise flag these as writes (they contain a
