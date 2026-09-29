@@ -317,7 +317,10 @@ func TestM144LateRun_BackfillsExactlyThePreM99Window(t *testing.T) {
 	tenant := seedTenant(t, pool, "m144-laterun")
 	siteID := seedSiteFor(t, pool, tenant, "https://m144-laterun.example.com")
 
-	now := time.Now().UTC()
+	// Truncated to the microsecond: see uptime_rollup_backfill_test.go's own
+	// fix for why an untruncated time.Now() (nanosecond-precision on Linux)
+	// cannot round-trip a Postgres timestamptz (microsecond-precision).
+	now := time.Now().UTC().Truncate(time.Microsecond)
 	today := now.Truncate(24 * time.Hour)
 	dayMinus1 := today.Add(-24 * time.Hour)
 	dayMinus2 := today.Add(-48 * time.Hour)
@@ -347,9 +350,12 @@ func TestM144LateRun_BackfillsExactlyThePreM99Window(t *testing.T) {
 	// now, not a fixed hour-of-day: must land before whatever instant
 	// owner.Migrate stamps as m99's applied_at moments from now (see
 	// uptime_rollup_backfill_test.go's own fix for the same hazard).
+	// anchorToToday keeps both on today's date even when the suite runs in
+	// the six minutes after UTC midnight (uptime_rollup_backfill_test.go's
+	// own fix for the same hazard).
 	cutoverPre := []probeSeed{
-		{now.Add(-6 * time.Minute), true, 120},
-		{now.Add(-5 * time.Minute), true, 80},
+		{anchorToToday(now.Add(-6*time.Minute), today), true, 120},
+		{anchorToToday(now.Add(-5*time.Minute), today), true, 80},
 	}
 
 	seed := func(at time.Time, up bool, totalMs float64) {
@@ -408,7 +414,7 @@ func TestM144LateRun_BackfillsExactlyThePreM99Window(t *testing.T) {
 		t.Fatal("metrics.NewPostgres must return a RollupWriter")
 	}
 	appUp := true
-	cutoverAgentCheckedAt := now.Add(-1 * time.Minute)
+	cutoverAgentCheckedAt := anchorToToday(now.Add(-1*time.Minute), today)
 	cutoverAgentChecks := []metrics.Check{
 		{TenantID: tenant, SiteID: siteID, CheckedAt: cutoverAgentCheckedAt, Up: true, TotalMs: 60, AppUp: &appUp, AppProbeReason: "ok"},
 	}

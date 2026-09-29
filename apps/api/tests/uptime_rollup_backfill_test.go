@@ -32,6 +32,19 @@ import (
 // pre-existing site_uptime_probes rows.
 const m99MigrationVersion = "20260801000000_m99_uptime_rollup"
 
+// anchorToToday clamps a "near now" seed time forward to today (midnight
+// UTC) whenever plain subtraction would have left it on the PREVIOUS UTC
+// day — the six minutes after midnight are the only window where "now minus
+// a few minutes" and "today" disagree. Used wherever this file and
+// uptime_m144_backfill_repair_test.go seed probes as an offset from
+// time.Now() and then assert on the day-bucket those probes must land in.
+func anchorToToday(seed, today time.Time) time.Time {
+	if seed.Before(today) {
+		return today
+	}
+	return seed
+}
+
 // startPostgresBeforeM99 mirrors startPostgresBeforeM96's container bootstrap
 // but stops short of m99. Migrations run AS wpmgr_owner — the NOSUPERUSER
 // NOBYPASSRLS role production's migrator uses, not the bootstrap superuser
@@ -209,7 +222,13 @@ func TestM99Migration_BackfillMatchesRawGroupBy_AndIdempotent(t *testing.T) {
 	siteID := seedSiteFor(t, pool, tenant, "https://m99-backfill.example.com")
 	otherSiteID := seedSiteFor(t, pool, tenant, "https://m99-backfill-other.example.com")
 
-	now := time.Now().UTC()
+	// Truncated to the microsecond: Postgres timestamptz has no finer
+	// resolution, but time.Now() on Linux does, so an untruncated value can
+	// never round-trip through the DB and compare .Equal() to itself again —
+	// see lastProbedAt.Equal(latestToday) below, which is exactly that
+	// round-trip. macOS clocks happen to already be microsecond-aligned,
+	// which is why this only bit on the Linux integration runner.
+	now := time.Now().UTC().Truncate(time.Microsecond)
 	today := now.Truncate(24 * time.Hour)
 	yesterday := today.Add(-24 * time.Hour)
 	// today's probes are seeded MINUTES BEFORE now (not at fixed hours-of-day
@@ -221,7 +240,15 @@ func TestM99Migration_BackfillMatchesRawGroupBy_AndIdempotent(t *testing.T) {
 	// whenever the suite runs before that hour UTC, which would silently drop
 	// it from the status backfill and fail this test depending on time of day
 	// it happens to run. Minutes-before-now has no such dependency.
-	latestToday := now.Add(-1 * time.Minute) // most recent overall — the expected "latest" row.
+	//
+	// EXCEPT at the day boundary itself: "a few minutes before now" is
+	// computed by plain time.Time subtraction, which does not know about
+	// calendar days. Whenever the suite runs in the first six minutes after
+	// UTC midnight, now.Add(-4*time.Minute) is still YESTERDAY by wall-clock
+	// arithmetic even though it must bucket as today for the counts below to
+	// hold. anchorToToday clamps each such seed forward to midnight so it
+	// lands on today regardless of what minute the suite happens to run in.
+	latestToday := anchorToToday(now.Add(-1*time.Minute), today) // most recent overall — the expected "latest" row.
 
 	type probeSeed struct {
 		siteID   uuid.UUID
@@ -232,15 +259,15 @@ func TestM99Migration_BackfillMatchesRawGroupBy_AndIdempotent(t *testing.T) {
 	seeds := []probeSeed{
 		// siteID, today: 3 up (one zero-latency, excluded from the latency
 		// average like NULLIF(total_ms,0) would exclude it), 1 down.
-		{siteID, now.Add(-4 * time.Minute), true, 120},
-		{siteID, now.Add(-3 * time.Minute), true, 0},
-		{siteID, now.Add(-2 * time.Minute), false, 0},
+		{siteID, anchorToToday(now.Add(-4*time.Minute), today), true, 120},
+		{siteID, anchorToToday(now.Add(-3*time.Minute), today), true, 0},
+		{siteID, anchorToToday(now.Add(-2*time.Minute), today), false, 0},
 		{siteID, latestToday, true, 80},
 		// siteID, yesterday: 2 up.
 		{siteID, yesterday.Add(9 * time.Hour), true, 200},
 		{siteID, yesterday.Add(10 * time.Hour), true, 300},
 		// A second site, today only — proves per-site grouping.
-		{otherSiteID, now.Add(-4 * time.Minute), false, 999},
+		{otherSiteID, anchorToToday(now.Add(-4*time.Minute), today), false, 999},
 	}
 	for _, s := range seeds {
 		if _, err := pool.Exec(ctx,
