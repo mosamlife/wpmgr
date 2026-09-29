@@ -80,6 +80,13 @@ func TestSanitizeReason_Redacts(t *testing.T) {
 		{"ipv4 with a port", "connect to 203.0.113.9:8443 failed", "203.0.113", "[link]"},
 		{"ipv4 with a port and path", "open 203.0.113.9:8443/login now", "203.0.113", "[link]"},
 		{"ipv4 at the end", "connect to 203.0.113.9", "203.0.113", "[link]"},
+		// An underscore, or a letter outside ASCII, in front of the name.
+		{"host after an underscore", "see _evil.com now", "evil.com", "[link]"},
+		{"ipv4 after an underscore", "_185.199.108.153/reset", "185.199", "[link]"},
+		{"ipv4 path after an underscore", "_185.199.108.153/reset", "/reset", "[link]"},
+		{"www host after an underscore", "_www.evil-wpmgr.com/login", "evil-wpmgr", "[link]"},
+		{"www label after an underscore", "_www.evil-wpmgr.com/login", "www", "[link]"},
+		{"ipv4 after a non-ascii letter", "\u00e9185.199.108.153/reset", "185.199", "[link]"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -125,6 +132,7 @@ func TestSanitizeReason_KeepsHonestText(t *testing.T) {
 		{"version 1.2.3 required", "version 1.2.3 required"},
 		{"\u0444\u0430\u0439\u043b.php is missing", "\u0444\u0430\u0439\u043b.php is missing"},
 		{"snake_case.php and other_file.json", "snake_case.php and other_file.json"},
+		{"requires v1.2.3.4 or later", "requires v1.2.3.4 or later"},
 		{"\uff46\uff55\uff4c\uff4c width text", "full width text"},
 	}
 	for _, tt := range tests {

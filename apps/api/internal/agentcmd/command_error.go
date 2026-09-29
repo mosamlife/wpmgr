@@ -216,11 +216,16 @@ var (
 	// is covered as well as its punycode form), optionally followed by a
 	// path. Group 1 is the character before the name (or the start of the
 	// text), which is put back: Go's \b is ASCII-only, so the boundary is
-	// spelled out. Group 2 is the name and its path.
-	hostPattern = regexp.MustCompile(`(^|[^\p{L}\p{M}\p{N}_])((?:[\p{L}\p{M}\p{N}](?:[\p{L}\p{M}\p{N}-]*[\p{L}\p{M}\p{N}])?\.)+\p{L}[\p{L}\p{M}\p{N}-]*[\p{L}\p{M}\p{N}](?:/\S*)?)`)
+	// spelled out. Any character that cannot be part of a name is a
+	// boundary, "_" included, so "_evil.com" loses its host.
+	// Group 2 is the name and its path.
+	hostPattern = regexp.MustCompile(`(^|[^\p{L}\p{M}\p{N}])((?:[\p{L}\p{M}\p{N}](?:[\p{L}\p{M}\p{N}-]*[\p{L}\p{M}\p{N}])?\.)+\p{L}[\p{L}\p{M}\p{N}-]*[\p{L}\p{M}\p{N}](?:/\S*)?)`)
 	// ipv4Pattern matches a dotted-quad address, with an optional port and
-	// path.
-	ipv4Pattern = regexp.MustCompile(`\b\d{1,3}(?:\.\d{1,3}){3}\b(?::\d{1,5})?(?:/\S*)?`)
+	// path. Like hostPattern, group 1 is the boundary in front of it (the
+	// start of the text, or a character that is not an ASCII letter or
+	// digit, "_" included) and is put back; group 2 is the address. A
+	// letter directly in front ("v1.2.3.4") keeps the text as it is.
+	ipv4Pattern = regexp.MustCompile(`(^|[^0-9A-Za-z])(\d{1,3}(?:\.\d{1,3}){3}\b(?::\d{1,5})?(?:/\S*)?)`)
 	// encodedRunPattern matches a long token-shaped run; redactEncoded
 	// decides whether it is one.
 	encodedRunPattern = regexp.MustCompile(`[A-Za-z0-9+/=_-]{32,}`)
@@ -376,7 +381,7 @@ func redactReason(s string) string {
 	s = uncPathPattern.ReplaceAllString(s, "[path]")
 	s = windowsPathPattern.ReplaceAllString(s, "[path]")
 	s = posixPathPattern.ReplaceAllString(s, "${1}[path]")
-	s = ipv4Pattern.ReplaceAllString(s, "[link]")
+	s = ipv4Pattern.ReplaceAllString(s, "${1}[link]")
 	s = redactHosts(s)
 	s = encodedRunPattern.ReplaceAllStringFunc(s, redactEncoded)
 	return collapseWhitespace(s)
