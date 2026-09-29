@@ -390,3 +390,39 @@ func TestAdoptReportedURL_OneHostKeyUpgradePingsTheSavedHost(t *testing.T) {
 		t.Errorf("address writes = %v, want one to %s", repo.adoptCalls, want)
 	}
 }
+
+// TestAdoptReportedURL_CompareAndSetMissKeepsItsHold: when the probe confirms
+// the change but the compare-and-set finds no row (the address changed, the
+// site left the enrolled states, or another site holds the address), nothing
+// is returned for River to retry, and the probe's hold stands: a run straight
+// after it sends no ping and attempts no write.
+func TestAdoptReportedURL_CompareAndSetMissKeepsItsHold(t *testing.T) {
+	ctx := context.Background()
+	t0 := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	clk := &manualClock{t: t0}
+	prober := &fakeProber{pingOK: true}
+	svc, repo := newAdoptService("http://example.com", prober, clk)
+	repo.adoptResult = false
+	tenant, site := uuid.New(), uuid.New()
+
+	adopted, err := svc.adoptReportedURL(ctx, tenant, site, "https://example.com", "test", "")
+	if err != nil || adopted {
+		t.Fatalf("first run: adopted=%v err=%v, want not adopted and no error", adopted, err)
+	}
+	// Positive control: the first run probed and reached the compare-and-set.
+	if len(prober.pingCalls) != 1 || len(repo.adoptCalls) != 1 {
+		t.Fatalf("first run: pings=%v writes=%v, want one of each", prober.pingCalls, repo.adoptCalls)
+	}
+
+	clk.t = t0.Add(time.Second)
+	adopted, err = svc.adoptReportedURL(ctx, tenant, site, "https://example.com", "test", "")
+	if err != nil || adopted {
+		t.Fatalf("re-run: adopted=%v err=%v, want not adopted and no error", adopted, err)
+	}
+	if n := len(prober.pingCalls); n != 1 {
+		t.Errorf("a re-run straight after a compare-and-set miss pinged again: %d pings, want 1", n)
+	}
+	if n := len(repo.adoptCalls); n != 1 {
+		t.Errorf("a re-run straight after a compare-and-set miss wrote again: %d writes, want 1", n)
+	}
+}

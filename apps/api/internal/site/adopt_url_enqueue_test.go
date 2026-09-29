@@ -2,12 +2,16 @@ package site
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
+	"github.com/riverqueue/river/rivershared/structtag"
 
 	agentpkg "github.com/mosamlife/wpmgr/apps/api/internal/agent"
 	"github.com/mosamlife/wpmgr/apps/api/internal/siteaddr"
@@ -147,5 +151,111 @@ func TestEnqueueAdoptReportedURL_FiftyJunkReportsQueueNothing(t *testing.T) {
 	}
 	if n := len(q.jobs); n != 0 {
 		t.Fatalf("50 distinct junk reports queued %d jobs, want 0", n)
+	}
+}
+
+// riverUniqueQueue is an AdoptURLEnqueuer that skips a job whose unique
+// fields match a job it already holds, the way River skips one inserted with
+// UniqueOpts.ByArgs inside its window. The fields, and their values in the
+// job's encoded args, are read with River's own structtag package, as River
+// reads them to build the unique key.
+type riverUniqueQueue struct {
+	recordingQueue
+	held map[string]bool
+}
+
+func (q *riverUniqueQueue) EnqueueAdoptURL(ctx context.Context, a AdoptReportedURLArgs) error {
+	fields, err := structtag.SortedFieldsWithTag(a, "unique")
+	if err != nil {
+		return err
+	}
+	if len(fields) == 0 {
+		return errors.New("riverUniqueQueue: the args tag no field unique")
+	}
+	encoded, err := json.Marshal(a)
+	if err != nil {
+		return err
+	}
+	key := strings.Join(fields, "\x00") + "\x01" + strings.Join(structtag.ExtractValues(encoded, fields), "\x00")
+	if q.held == nil {
+		q.held = map[string]bool{}
+	}
+	if q.held[key] {
+		return nil
+	}
+	q.held[key] = true
+	return q.recordingQueue.EnqueueAdoptURL(ctx, a)
+}
+
+// TestEnqueueAdoptReportedURL_OneJobPerCanonicalAddress: spellings of one
+// address that differ in the case of the host (and in a written default port
+// and a trailing slash) queue one job for a site, from either push; the job
+// keeps the first spelling. Another host queues its own job.
+func TestEnqueueAdoptReportedURL_OneJobPerCanonicalAddress(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := newEnqueueService("http://example.com")
+	q := &riverUniqueQueue{}
+	svc.SetAdoptURLEnqueuer(q)
+	tenant, site := uuid.New(), uuid.New()
+
+	if _, err := svc.ApplyAgentMetadata(ctx, tenant, site, agentpkg.Metadata{HomeURL: "https://EXAMPLE.com"}); err != nil {
+		t.Fatalf("metadata push: %v", err)
+	}
+	for _, reported := range []string{"https://Example.com", "https://example.com", "https://example.com:443/"} {
+		if err := svc.EnqueueAdoptReportedURL(ctx, tenant, site, reported, "agent_diagnostics", ""); err != nil {
+			t.Fatalf("diagnostics push of %q: %v", reported, err)
+		}
+	}
+	if n := len(q.jobs); n != 1 {
+		t.Fatalf("four spellings of one address queued %d jobs, want 1: %+v", n, q.jobs)
+	}
+	if got := q.jobs[0]; got.Reported != "https://EXAMPLE.com" || got.ReportedKey != "https://example.com" {
+		t.Errorf("job = reported %q, key %q; want reported %q (the spelling the agent sent), key %q",
+			got.Reported, got.ReportedKey, "https://EXAMPLE.com", "https://example.com")
+	}
+
+	if err := svc.EnqueueAdoptReportedURL(ctx, tenant, site, "https://www.example.com", "agent_diagnostics", ""); err != nil {
+		t.Fatalf("diagnostics push of another host: %v", err)
+	}
+	if n := len(q.jobs); n != 2 {
+		t.Fatalf("two hosts queued %d jobs, want 2: %+v", n, q.jobs)
+	}
+	if got := q.jobs[1].ReportedKey; got != "https://www.example.com" {
+		t.Errorf("second job key = %q, want https://www.example.com", got)
+	}
+}
+
+// TestEnqueueAdoptReportedURL_CapsTheAgentVersion: a 1 MiB agent version,
+// from either push, queues a job whose version is cut to maxAgentVersion
+// runes, the limit the stored copy is held to, so its args stay within the
+// caps on every agent-supplied field.
+func TestEnqueueAdoptReportedURL_CapsTheAgentVersion(t *testing.T) {
+	ctx := context.Background()
+	huge := strings.Repeat("9", 1<<20)
+	svc, q := newEnqueueService("http://example.com")
+
+	if _, err := svc.ApplyAgentMetadata(ctx, uuid.New(), uuid.New(), agentpkg.Metadata{HomeURL: "https://example.com", AgentVersion: huge}); err != nil {
+		t.Fatalf("metadata push: %v", err)
+	}
+	if err := svc.EnqueueAdoptReportedURL(ctx, uuid.New(), uuid.New(), "https://example.com", "agent_diagnostics", huge); err != nil {
+		t.Fatalf("diagnostics enqueue: %v", err)
+	}
+	if n := len(q.jobs); n != 2 {
+		t.Fatalf("queued %d jobs, want 2", n)
+	}
+	// The ids, the source and the JSON field names, with room to spare.
+	const fixed = 512
+	bound := maxReportedURLLen + maxReportedKeyLen + maxAgentVersion*utf8.UTFMax + fixed
+	for i, job := range q.jobs {
+		if got := utf8.RuneCountInString(job.AgentVersion); got != maxAgentVersion || job.AgentVersion != huge[:maxAgentVersion] {
+			t.Errorf("job %d: agent version is %d runes, want the first %d of the report", i, got, maxAgentVersion)
+		}
+		encoded, err := json.Marshal(job)
+		if err != nil {
+			t.Fatalf("job %d: encode: %v", i, err)
+		}
+		if len(encoded) > bound {
+			t.Errorf("job %d: args are %d bytes, want at most %d", i, len(encoded), bound)
+		}
 	}
 }

@@ -104,8 +104,8 @@ func TestAdoptReportedURL_PushesDoNotWaitForTheProbe(t *testing.T) {
 		t.Errorf("a push wrote the address: %v", repo.adoptCalls)
 	}
 	want := []AdoptReportedURLArgs{
-		{TenantID: tenant, SiteID: site, Reported: "https://example.com", Source: "agent_diagnostics"},
-		{TenantID: tenant, SiteID: site, Reported: "https://example.com", Source: urlSourceAgentMetadata, AgentVersion: "0.61.150"},
+		{TenantID: tenant, SiteID: site, Reported: "https://example.com", ReportedKey: "https://example.com", Source: "agent_diagnostics"},
+		{TenantID: tenant, SiteID: site, Reported: "https://example.com", ReportedKey: "https://example.com", Source: urlSourceAgentMetadata, AgentVersion: "0.61.150"},
 	}
 	if !reflect.DeepEqual(q.jobs, want) {
 		t.Errorf("queued jobs = %+v, want %+v", q.jobs, want)
@@ -207,8 +207,9 @@ func TestAdoptReportedURL_EnqueueFailureNeverFailsThePush(t *testing.T) {
 }
 
 // TestAdoptReportedURLArgs_UniquePerSiteAndAddress: the job is unique by its
-// site and reported address only, within an hour, so repeated pushes of one
-// address queue one job however their source or agent version differs.
+// site and the canonical form of the reported address only, within an hour,
+// so repeated pushes of one address queue one job however their source,
+// agent version or spelling of the address differs.
 func TestAdoptReportedURLArgs_UniquePerSiteAndAddress(t *testing.T) {
 	opts := AdoptReportedURLArgs{}.InsertOpts()
 	if !opts.UniqueOpts.ByArgs || opts.UniqueOpts.ByPeriod != time.Hour {
@@ -222,7 +223,7 @@ func TestAdoptReportedURLArgs_UniquePerSiteAndAddress(t *testing.T) {
 		}
 	}
 	sort.Strings(unique)
-	if want := []string{"reported", "site_id"}; !reflect.DeepEqual(unique, want) {
+	if want := []string{"reported_key", "site_id"}; !reflect.DeepEqual(unique, want) {
 		t.Errorf("unique fields = %v, want %v", unique, want)
 	}
 }
