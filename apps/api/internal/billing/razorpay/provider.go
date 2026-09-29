@@ -171,10 +171,15 @@ func (p *Provider) planID(tier billing.Tier, currency string) (string, bool) {
 // customer during the Checkout.js authorization flow itself, not as a create
 // parameter. This is a deliberate no-op, not an oversight.
 func (p *Provider) CreateCheckout(ctx context.Context, in billing.CheckoutInput) (billing.CheckoutSession, error) {
+	// Razorpay checkouts are rupee-only. An omitted currency means INR, and
+	// every other value, USD included, is refused.
 	currency := strings.ToUpper(strings.TrimSpace(in.Currency))
-	if currency != CurrencyUSD && currency != CurrencyINR {
+	if currency == "" {
+		currency = CurrencyINR
+	}
+	if currency != CurrencyINR {
 		return billing.CheckoutSession{}, domain.Validation("billing_invalid_currency",
-			"currency must be USD or INR for a Razorpay checkout")
+			"a Razorpay checkout is charged in INR only")
 	}
 
 	planID, ok := p.planID(in.Plan, currency)

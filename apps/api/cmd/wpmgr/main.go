@@ -664,7 +664,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// config REGARDLESS of WPMGR_HOSTED (an empty registry is harmless — every
 	// billing.Service method already treats "no providers configured" as a
 	// clean, documented no-op/503, never a crash). Stripe is registered ONLY
-	// when its five WPMGR_BILLING_STRIPE_* variables are ALL present
+	// when its six WPMGR_BILLING_STRIPE_* variables are ALL present
 	// (StripeConfig.Configured — config.Validate refuses a PARTIAL Stripe
 	// config at boot, so by the time we get here it is always all-or-nothing).
 	// Razorpay (India pricing, dual-currency) mirrors this exactly: registered
@@ -677,6 +677,8 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		PriceAgency:     cfg.Billing.Stripe.PriceAgency,
 		PriceScale:      cfg.Billing.Stripe.PriceScale,
 		PortalReturnURL: cfg.PublicBaseURL + "/billing",
+		// WPMgr's own portal configuration; required by Configured().
+		PortalConfigurationID: cfg.Billing.Stripe.PortalConfiguration,
 		// A dedicated client with a whole-request deadline, so one Stripe
 		// call can never outlive the billing worker's own bound.
 		HTTPClient: &http.Client{Timeout: 10 * time.Second},
@@ -2650,7 +2652,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// clean "not configured" only if billingRepo itself were nil, which it
 	// never is here. stripeTestMode drives the account-detail subscription
 	// card's Stripe-dashboard deep link (test vs live URL prefix).
-	stripeTestMode := strings.HasPrefix(cfg.Billing.Stripe.SecretKey, "sk_test_")
+	stripeTestMode := billingstripe.IsTestModeKey(cfg.Billing.Stripe.SecretKey)
 	adminBillingRepo := admin.NewBillingRepo(pool)
 	adminSvc.SetBillingPanel(adminBillingRepo, billingSvc, auditRec, stripeTestMode)
 

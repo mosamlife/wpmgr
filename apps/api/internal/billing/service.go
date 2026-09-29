@@ -46,6 +46,9 @@ type Service struct {
 	// river enqueues the billing jobs (worker.go). Intake, reconcile and the
 	// operator actions fail loudly without it rather than dropping work.
 	river *river.Client[pgx.Tx]
+
+	// checkoutHooks are integration-test seams (see CheckoutTestHooks).
+	checkoutHooks CheckoutTestHooks
 }
 
 // SetRiver wires the River client the billing jobs are inserted with. Called

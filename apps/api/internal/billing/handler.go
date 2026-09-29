@@ -52,10 +52,27 @@ func NewHandler(svc *Service, emailLookup UserEmailLookup, publicBaseURL string)
 func (h *Handler) Register(r *gin.RouterGroup) {
 	g := r.Group("/billing", authz.RequireOrgScope())
 	g.GET("", authz.RequirePermission(authz.PermBillingManage), h.getBilling)
-	g.POST("/checkout", authz.RequirePermission(authz.PermBillingManage), h.createCheckout)
-	g.POST("/checkout/verify", authz.RequirePermission(authz.PermBillingManage), h.verifyCheckoutCallback)
-	g.POST("/portal", authz.RequirePermission(authz.PermBillingManage), h.createPortal)
-	g.POST("/cancel", authz.RequirePermission(authz.PermBillingManage), h.cancelSubscription)
+	g.POST("/checkout", authz.RequirePermission(authz.PermBillingManage), RequireHuman(), h.createCheckout)
+	g.POST("/checkout/verify", authz.RequirePermission(authz.PermBillingManage), RequireHuman(), h.verifyCheckoutCallback)
+	g.POST("/checkout/confirm", authz.RequirePermission(authz.PermBillingManage), RequireHuman(), h.confirmCheckout)
+	g.POST("/portal", authz.RequirePermission(authz.PermBillingManage), RequireHuman(), h.createPortal)
+	g.POST("/cancel", authz.RequirePermission(authz.PermBillingManage), RequireHuman(), h.cancelSubscription)
+}
+
+// RequireHuman is the billing allow-list: every billing action is taken by a
+// signed-in human. Only a principal of type PrincipalUser passes; an API
+// key, an MCP principal (which carries no type) and anything else get 403
+// billing_human_required.
+func RequireHuman() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		p, ok := domain.PrincipalFromContext(c.Request.Context())
+		if !ok || p.Type != domain.PrincipalUser {
+			httpx.Error(c, domain.Forbidden("billing_human_required", "billing actions require a signed-in person"))
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
 }
 
 func (h *Handler) getBilling(c *gin.Context) {
@@ -76,14 +93,14 @@ func (h *Handler) getBilling(c *gin.Context) {
 // caller-supplied selector for the PRICE — the request never names a
 // provider price id directly; Service.CreateCheckout validates tier against
 // the paid ladder and the provider adapter resolves it to a price
-// server-side. provider ("stripe" | "razorpay") lets the customer choose a
-// payment provider at checkout; empty defaults to "stripe" (back-comfort for
-// every caller written before Razorpay existed) UNLESS this tenant already
-// has a pinned provider, which always wins (see CreateCheckout's "one tenant
-// = one provider" resolution). currency ("USD" | "INR") is required when
-// provider is "razorpay" — Razorpay has no single multi-currency price the
-// way Stripe does, so the adapter resolves a plan PER (tier, currency); it is
-// ignored for every other provider.
+// server-side. provider ("stripe" | "razorpay") is the provider the customer
+// chooses; empty means Stripe when it is registered, else the only
+// registered provider. The request wins over the tenant's current provider,
+// subject to the switch rule in Service.CreateCheckout: moving off another
+// provider needs nothing pending or live there, and is otherwise refused
+// with 409 billing_provider_locked. currency matters to Razorpay only, which
+// charges in INR: omitted means INR, and USD is refused. Stripe ignores it
+// and charges US$.
 type checkoutRequest struct {
 	Tier     string `json:"tier"`
 	Provider string `json:"provider"`
@@ -123,7 +140,9 @@ func (h *Handler) createCheckout(c *gin.Context) {
 		}
 	}
 
-	successURL := h.publicBaseURL + "/billing?checkout=success"
+	// {CHECKOUT_SESSION_ID} is substituted by Stripe on redirect; the web
+	// passes it to POST /billing/checkout/confirm.
+	successURL := h.publicBaseURL + "/billing?checkout=success&session_id={CHECKOUT_SESSION_ID}"
 	cancelURL := h.publicBaseURL + "/billing?checkout=cancel"
 	actor := Actor{Type: actorTypeFor(p.Type == domain.PrincipalAPIKey), ID: p.ActorID()}
 
@@ -175,6 +194,41 @@ func (h *Handler) verifyCheckoutCallback(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, checkoutCallbackResponse{Verified: true})
+}
+
+// checkoutConfirmRequest is the POST /billing/checkout/confirm body.
+type checkoutConfirmRequest struct {
+	SessionID string `json:"session_id"`
+}
+
+type okResponse struct {
+	OK bool `json:"ok"`
+}
+
+// confirmCheckout checks the checkout session the browser returned with and
+// enqueues a refresh (see Service.ConfirmCheckout). 200 when the plan change
+// had already landed, 202 when a refresh was enqueued.
+func (h *Handler) confirmCheckout(c *gin.Context) {
+	p, ok := domain.PrincipalFromContext(c.Request.Context())
+	if !ok {
+		httpx.Error(c, domain.Unauthorized("unauthenticated", "authentication required"))
+		return
+	}
+	var body checkoutConfirmRequest
+	if err := bindJSON(c, &body); err != nil {
+		httpx.Error(c, err)
+		return
+	}
+	res, err := h.svc.ConfirmCheckout(c.Request.Context(), p.TenantID, body.SessionID)
+	if err != nil {
+		httpx.Error(c, err)
+		return
+	}
+	status := http.StatusAccepted
+	if res.Landed {
+		status = http.StatusOK
+	}
+	c.JSON(status, okResponse{OK: true})
 }
 
 type portalResponse struct {

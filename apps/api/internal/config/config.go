@@ -80,6 +80,10 @@ type StripeConfig struct {
 	PriceStarter string `koanf:"price_starter"`
 	PriceAgency  string `koanf:"price_agency"`
 	PriceScale   string `koanf:"price_scale"`
+	// PortalConfiguration is the id (bpc_...) of WPMgr's own Customer Portal
+	// configuration, so portal sessions never use the account default. Env:
+	// WPMGR_BILLING_STRIPE_PORTAL_CONFIGURATION.
+	PortalConfiguration string `koanf:"portal_configuration"`
 }
 
 // RazorpayConfig holds the Razorpay adapter's credentials and its
@@ -927,6 +931,9 @@ func defaults() map[string]any {
 		"billing.razorpay.plan_agency_inr":   "",
 		"billing.razorpay.plan_scale_usd":    "",
 		"billing.razorpay.plan_scale_inr":    "",
+
+		// WPMGR_BILLING_STRIPE_PORTAL_CONFIGURATION.
+		"billing.stripe.portal_configuration": "",
 	}
 }
 

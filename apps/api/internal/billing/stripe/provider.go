@@ -45,6 +45,11 @@ type Config struct {
 	// Portal configuration's own default return URL (set once in the Stripe
 	// Dashboard), so an empty value is a legal, working configuration.
 	PortalReturnURL string
+	// PortalConfigurationID is the id (bpc_...) of the Customer Portal
+	// configuration WPMgr's portal sessions use. Required: without it Stripe
+	// would fall back to the account's default configuration, which on a
+	// shared account belongs to no single product.
+	PortalConfigurationID string
 	// HTTPClient overrides the Stripe SDK's default HTTP client. Nil uses the
 	// SDK default. Exposed for tests (never used to change TLS/security
 	// behavior — only to point at a test double).
@@ -52,14 +57,21 @@ type Config struct {
 }
 
 // Configured reports whether cfg has everything this adapter needs to
-// operate: the secret key, the webhook signing secret, and all three price
-// ids. cmd/wpmgr/main.go only registers this provider in the billing.Registry
+// operate: the secret key, the webhook signing secret, all three price ids
+// and the portal configuration id. cmd/wpmgr/main.go only registers this provider in the billing.Registry
 // when Configured() is true — a partially-set Stripe config is refused at
 // boot by internal/config.Validate, never silently half-wired into a
 // Provider that would panic or misbehave on first use.
 func (c Config) Configured() bool {
 	return c.SecretKey != "" && c.WebhookSecret != "" &&
-		c.PriceStarter != "" && c.PriceAgency != "" && c.PriceScale != ""
+		c.PriceStarter != "" && c.PriceAgency != "" && c.PriceScale != "" &&
+		c.PortalConfigurationID != ""
+}
+
+// IsTestModeKey reports whether secretKey is a test-mode key: a secret key
+// (sk_test_) or a restricted key (rk_test_).
+func IsTestModeKey(secretKey string) bool {
+	return strings.HasPrefix(secretKey, "sk_test_") || strings.HasPrefix(secretKey, "rk_test_")
 }
 
 // Provider implements billing.Provider for Stripe.
@@ -67,8 +79,11 @@ type Provider struct {
 	client          *stripesdk.Client
 	webhookSecret   string
 	portalReturnURL string
+	portalConfigID  string
 	priceToPlan     map[string]billing.Tier
 	planToPrice     map[billing.Tier]string
+	// now is the clock checkout expiry is computed from. Tests replace it.
+	now func() time.Time
 }
 
 // New builds a Stripe Provider. Callers should check cfg.Configured() first
@@ -83,6 +98,8 @@ func New(cfg Config) *Provider {
 		client:          stripesdk.NewClient(cfg.SecretKey, opts...),
 		webhookSecret:   cfg.WebhookSecret,
 		portalReturnURL: cfg.PortalReturnURL,
+		portalConfigID:  cfg.PortalConfigurationID,
+		now:             time.Now,
 		priceToPlan: map[string]billing.Tier{
 			cfg.PriceStarter: billing.TierStarter,
 			cfg.PriceAgency:  billing.TierAgency,
@@ -109,44 +126,97 @@ func (p *Provider) MapPriceToPlan(priceID string) (billing.Tier, bool) {
 	return t, ok
 }
 
+// checkoutSessionLifetime is how long a Checkout Session stays payable.
+const checkoutSessionLifetime = time.Hour
+
 // CreateCheckout implements billing.Provider. The price id is resolved
 // SERVER-SIDE from in.Plan via planToPrice — the caller (ultimately, the
-// HTTP request body) never supplies a price id.
+// HTTP request body) never supplies a price id. The session is always
+// created on the stored customer in.ProviderCustomerID; an empty customer is
+// refused before any request is sent.
 func (p *Provider) CreateCheckout(ctx context.Context, in billing.CheckoutInput) (billing.CheckoutSession, error) {
 	price, ok := p.planToPrice[in.Plan]
 	if !ok || price == "" {
 		return billing.CheckoutSession{}, domain.Validation("billing_unknown_tier", "no Stripe price is configured for this tier")
 	}
-
-	tenantID := in.TenantID.String()
-	params := &stripesdk.CheckoutSessionCreateParams{
-		Mode:              stripesdk.String(string(stripesdk.CheckoutSessionModeSubscription)),
-		SuccessURL:        stripesdk.String(in.SuccessURL),
-		CancelURL:         stripesdk.String(in.CancelURL),
-		ClientReferenceID: stripesdk.String(tenantID),
-		Metadata:          map[string]string{tenantMetadataKey: tenantID},
-		LineItems: []*stripesdk.CheckoutSessionCreateLineItemParams{
-			{Price: stripesdk.String(price), Quantity: stripesdk.Int64(1)},
-		},
-		// Stamping the SAME tenant id onto the subscription's own metadata
-		// (not just the checkout session's) means every future
-		// customer.subscription.* webhook is self-attributing — no customer-id
-		// lookup fallback is needed for the common case.
-		SubscriptionData: &stripesdk.CheckoutSessionCreateSubscriptionDataParams{
-			Metadata: map[string]string{tenantMetadataKey: tenantID},
-		},
+	if in.ProviderCustomerID == "" {
+		return billing.CheckoutSession{}, domain.Internal("billing_customer_required", "a Stripe checkout requires a stored customer")
 	}
-	if in.ProviderCustomerID != "" {
-		params.Customer = stripesdk.String(in.ProviderCustomerID)
-	} else if in.CustomerEmail != "" {
-		params.CustomerEmail = stripesdk.String(in.CustomerEmail)
-	}
-
-	sess, err := p.client.V1CheckoutSessions.Create(ctx, params)
+	sess, err := p.client.V1CheckoutSessions.Create(ctx, p.checkoutSessionParams(in, price))
 	if err != nil {
 		return billing.CheckoutSession{}, wrapErr("stripe_checkout_create_failed", "failed to create Stripe checkout session", err)
 	}
-	return billing.CheckoutSession{URL: sess.URL}, nil
+	return billing.CheckoutSession{URL: sess.URL, SessionID: sess.ID}, nil
+}
+
+// checkoutSessionParams builds the Checkout Session create parameters. It is
+// a pure function of its inputs and the adapter clock, so every parameter is
+// unit-testable without a Stripe call:
+//
+//   - the session is created on the stored customer, never by email;
+//   - card is the only payment method type;
+//   - tax is calculated automatically, a billing address is required, the
+//     customer's address and name are saved back, and a tax ID is collected
+//     and required where Stripe supports requiring one;
+//   - the session and the resulting subscription carry the tenant id and
+//     app=wpmgr, which is how events are recognised as WPMgr's on an account
+//     shared with other products;
+//   - the session expires after checkoutSessionLifetime.
+func (p *Provider) checkoutSessionParams(in billing.CheckoutInput, price string) *stripesdk.CheckoutSessionCreateParams {
+	tenantID := in.TenantID.String()
+	meta := func() map[string]string {
+		return map[string]string{tenantMetadataKey: tenantID, appMetadataKey: appMetadataValue}
+	}
+	return &stripesdk.CheckoutSessionCreateParams{
+		Mode:               stripesdk.String(string(stripesdk.CheckoutSessionModeSubscription)),
+		SuccessURL:         stripesdk.String(in.SuccessURL),
+		CancelURL:          stripesdk.String(in.CancelURL),
+		ClientReferenceID:  stripesdk.String(tenantID),
+		Customer:           stripesdk.String(in.ProviderCustomerID),
+		Metadata:           meta(),
+		PaymentMethodTypes: []*string{stripesdk.String("card")},
+		AutomaticTax:       &stripesdk.CheckoutSessionCreateAutomaticTaxParams{Enabled: stripesdk.Bool(true)},
+		BillingAddressCollection: stripesdk.String(
+			string(stripesdk.CheckoutSessionBillingAddressCollectionRequired)),
+		CustomerUpdate: &stripesdk.CheckoutSessionCreateCustomerUpdateParams{
+			Address: stripesdk.String("auto"),
+			Name:    stripesdk.String("auto"),
+		},
+		TaxIDCollection: &stripesdk.CheckoutSessionCreateTaxIDCollectionParams{
+			Enabled:  stripesdk.Bool(true),
+			Required: stripesdk.String(string(stripesdk.CheckoutSessionTaxIDCollectionRequiredIfSupported)),
+		},
+		ExpiresAt: stripesdk.Int64(p.now().Add(checkoutSessionLifetime).Unix()),
+		LineItems: []*stripesdk.CheckoutSessionCreateLineItemParams{
+			{Price: stripesdk.String(price), Quantity: stripesdk.Int64(1)},
+		},
+		// The subscription carries the same metadata as the session, so
+		// every later customer.subscription.* event attributes itself.
+		SubscriptionData: &stripesdk.CheckoutSessionCreateSubscriptionDataParams{
+			Metadata: meta(),
+		},
+	}
+}
+
+// CreateCustomer implements billing.CustomerCreator: it creates a Stripe
+// Customer for tenantID carrying the tenant id and app=wpmgr, with the SDK's
+// own random idempotency key. It never looks up or reuses a customer by
+// email.
+func (p *Provider) CreateCustomer(ctx context.Context, tenantID uuid.UUID, email string) (string, error) {
+	params := &stripesdk.CustomerCreateParams{
+		Metadata: map[string]string{
+			tenantMetadataKey: tenantID.String(),
+			appMetadataKey:    appMetadataValue,
+		},
+	}
+	if email != "" {
+		params.Email = stripesdk.String(email)
+	}
+	c, err := p.client.V1Customers.Create(ctx, params)
+	if err != nil {
+		return "", wrapErr("stripe_customer_create_failed", "failed to create Stripe customer", err)
+	}
+	return c.ID, nil
 }
 
 // GetPrice implements billing.StripePriceReader: reads tier's live price via
@@ -170,9 +240,7 @@ func (p *Provider) GetPrice(ctx context.Context, tier billing.Tier) (amountMinor
 
 // CreatePortalSession implements billing.Provider.
 func (p *Provider) CreatePortalSession(ctx context.Context, providerCustomerID string) (billing.PortalSession, error) {
-	params := &stripesdk.BillingPortalSessionCreateParams{
-		Customer: stripesdk.String(providerCustomerID),
-	}
+	params := p.portalSessionParams(providerCustomerID)
 	if p.portalReturnURL != "" {
 		params.ReturnURL = stripesdk.String(p.portalReturnURL)
 	}
@@ -181,6 +249,15 @@ func (p *Provider) CreatePortalSession(ctx context.Context, providerCustomerID s
 		return billing.PortalSession{}, wrapErr("stripe_portal_create_failed", "failed to create Stripe billing portal session", err)
 	}
 	return billing.PortalSession{URL: sess.URL}, nil
+}
+
+// portalSessionParams builds the portal session parameters. The portal
+// configuration is always WPMgr's own, never the account default.
+func (p *Provider) portalSessionParams(providerCustomerID string) *stripesdk.BillingPortalSessionCreateParams {
+	return &stripesdk.BillingPortalSessionCreateParams{
+		Customer:      stripesdk.String(providerCustomerID),
+		Configuration: stripesdk.String(p.portalConfigID),
+	}
 }
 
 // CancelSubscription implements billing.Provider: schedules cancellation at
@@ -624,22 +701,22 @@ func (p *Provider) subscriptionUsesOurPrice(obj map[string]interface{}) bool {
 // customer. A list without a customer filter would read the whole account.
 var errListNeedsCustomer = errors.New("stripe: a list call requires a non-empty customer")
 
-// ExpireOpenCheckoutSessions implements billing.CheckoutSessionExpirer. It
-// lists customerID's open Checkout Sessions, following every page, and
-// expires each one whose own customer equals customerID. An empty customerID
-// is refused before any request is sent.
-func (p *Provider) ExpireOpenCheckoutSessions(ctx context.Context, customerID string) (int, error) {
+// listOpenSessions returns every open Checkout Session of customerID,
+// following every page. The request always carries the customer filter, an
+// empty customerID is refused before any request is sent, and a returned
+// session whose own customer differs from customerID is dropped.
+func (p *Provider) listOpenSessions(ctx context.Context, customerID string) ([]*stripesdk.CheckoutSession, error) {
 	if customerID == "" {
-		return 0, errListNeedsCustomer
+		return nil, errListNeedsCustomer
 	}
 	params := &stripesdk.CheckoutSessionListParams{
 		Customer: stripesdk.String(customerID),
 		Status:   stripesdk.String(string(stripesdk.CheckoutSessionStatusOpen)),
 	}
-	expired := 0
+	var out []*stripesdk.CheckoutSession
 	for sess, err := range p.client.V1CheckoutSessions.List(ctx, params).All(ctx) {
 		if err != nil {
-			return expired, wrapErr("billing_session_list_failed", "failed to list checkout sessions", err)
+			return nil, wrapErr("billing_session_list_failed", "failed to list checkout sessions", err)
 		}
 		if sess == nil || sess.Customer == nil || sess.Customer.ID != customerID {
 			continue
@@ -647,10 +724,157 @@ func (p *Provider) ExpireOpenCheckoutSessions(ctx context.Context, customerID st
 		if sess.Status != stripesdk.CheckoutSessionStatusOpen {
 			continue
 		}
+		out = append(out, sess)
+	}
+	return out, nil
+}
+
+// listSubscriptions returns every subscription of customerID in any status,
+// following every page, under the same rules as listOpenSessions.
+func (p *Provider) listSubscriptions(ctx context.Context, customerID string) ([]*stripesdk.Subscription, error) {
+	if customerID == "" {
+		return nil, errListNeedsCustomer
+	}
+	params := &stripesdk.SubscriptionListParams{
+		Customer: stripesdk.String(customerID),
+		Status:   stripesdk.String("all"),
+	}
+	var out []*stripesdk.Subscription
+	for sub, err := range p.client.V1Subscriptions.List(ctx, params).All(ctx) {
+		if err != nil {
+			return nil, wrapErr("billing_subscription_list_failed", "failed to list subscriptions", err)
+		}
+		if sub == nil || sub.Customer == nil || sub.Customer.ID != customerID {
+			continue
+		}
+		out = append(out, sub)
+	}
+	return out, nil
+}
+
+// ExpireOpenCheckoutSessions implements billing.CheckoutSessionExpirer. It
+// lists customerID's open Checkout Sessions, following every page, and
+// expires each one whose own customer equals customerID. An empty customerID
+// is refused before any request is sent.
+func (p *Provider) ExpireOpenCheckoutSessions(ctx context.Context, customerID string) (int, error) {
+	sessions, err := p.listOpenSessions(ctx, customerID)
+	if err != nil {
+		return 0, err
+	}
+	expired := 0
+	for _, sess := range sessions {
 		if _, err := p.client.V1CheckoutSessions.Expire(ctx, sess.ID, nil); err != nil {
 			return expired, wrapErr("billing_session_expire_failed", "failed to expire checkout session", err)
 		}
 		expired++
 	}
 	return expired, nil
+}
+
+// subscriptionPendingOrLive reports whether a Stripe subscription status
+// still holds, or may still become, a paid subscription.
+func subscriptionPendingOrLive(st stripesdk.SubscriptionStatus) bool {
+	switch st {
+	case stripesdk.SubscriptionStatusActive, stripesdk.SubscriptionStatusTrialing,
+		stripesdk.SubscriptionStatusPastDue, stripesdk.SubscriptionStatusUnpaid,
+		stripesdk.SubscriptionStatusPaused, stripesdk.SubscriptionStatusIncomplete:
+		return true
+	}
+	return false
+}
+
+// PendingOrLiveSubscription implements billing.SubscriptionLister: the id of
+// one of customerID's subscriptions that is pending or live, if any.
+func (p *Provider) PendingOrLiveSubscription(ctx context.Context, customerID string) (string, bool, error) {
+	subs, err := p.listSubscriptions(ctx, customerID)
+	if err != nil {
+		return "", false, err
+	}
+	for _, sub := range subs {
+		if subscriptionPendingOrLive(sub.Status) {
+			return sub.ID, true, nil
+		}
+	}
+	return "", false, nil
+}
+
+// HasPendingOrLive implements billing.SubscriptionLister. An empty
+// customerID has nothing findable, so it answers "nothing pending" with no
+// request at all. Otherwise it expires customerID's open Checkout Sessions,
+// then reports whether any of its subscriptions is pending or live.
+func (p *Provider) HasPendingOrLive(ctx context.Context, customerID string) (string, bool, error) {
+	if customerID == "" {
+		return "", false, nil
+	}
+	if _, err := p.ExpireOpenCheckoutSessions(ctx, customerID); err != nil {
+		return "", false, err
+	}
+	return p.PendingOrLiveSubscription(ctx, customerID)
+}
+
+// SupersedeOpenCheckoutSessions implements billing.CheckoutSessionSuperseder.
+// It lists customerID's open sessions (every page) and expires each one
+// except the greatest by (created, id). ownSuperseded is true when
+// ownSessionID was listed and is not the greatest. Every expiry is attempted;
+// the first failure is returned.
+func (p *Provider) SupersedeOpenCheckoutSessions(ctx context.Context, customerID, ownSessionID string) (ownSuperseded bool, err error) {
+	sessions, err := p.listOpenSessions(ctx, customerID)
+	if err != nil {
+		return false, err
+	}
+	if len(sessions) == 0 {
+		return false, nil
+	}
+	greatest := sessions[0]
+	for _, s := range sessions[1:] {
+		if s.Created > greatest.Created || (s.Created == greatest.Created && s.ID > greatest.ID) {
+			greatest = s
+		}
+	}
+	var firstErr error
+	for _, s := range sessions {
+		if s.ID == greatest.ID {
+			continue
+		}
+		if s.ID == ownSessionID {
+			ownSuperseded = true
+		}
+		if _, xerr := p.client.V1CheckoutSessions.Expire(ctx, s.ID, nil); xerr != nil && firstErr == nil {
+			firstErr = wrapErr("billing_session_expire_failed", "failed to expire checkout session", xerr)
+		}
+	}
+	return ownSuperseded, firstErr
+}
+
+// ExpireCheckoutSession implements billing.CheckoutSessionSuperseder: it
+// expires one session by id.
+func (p *Provider) ExpireCheckoutSession(ctx context.Context, sessionID string) error {
+	if sessionID == "" {
+		return errors.New("stripe: expire requires a session id")
+	}
+	if _, err := p.client.V1CheckoutSessions.Expire(ctx, sessionID, nil); err != nil {
+		return wrapErr("billing_session_expire_failed", "failed to expire checkout session", err)
+	}
+	return nil
+}
+
+// RetrieveCheckoutSession implements billing.CheckoutSessionConfirmer.
+func (p *Provider) RetrieveCheckoutSession(ctx context.Context, sessionID string) (billing.CheckoutSessionInfo, error) {
+	sess, err := p.client.V1CheckoutSessions.Retrieve(ctx, sessionID, nil)
+	if err != nil {
+		return billing.CheckoutSessionInfo{}, wrapErr("stripe_checkout_fetch_failed", "failed to fetch the Stripe checkout session", err)
+	}
+	out := billing.CheckoutSessionInfo{
+		ID:                sess.ID,
+		ClientReferenceID: sess.ClientReferenceID,
+		Mode:              string(sess.Mode),
+		Status:            string(sess.Status),
+	}
+	if sess.Customer != nil {
+		out.CustomerID = sess.Customer.ID
+	}
+	if sess.Subscription != nil {
+		out.SubscriptionID = sess.Subscription.ID
+	}
+	return out, nil
 }

@@ -62,20 +62,6 @@ func (s *Service) getBillingProfile(ctx context.Context, tenantID uuid.UUID) (te
 	return toBillingProfile(row), nil
 }
 
-// setBillingProviderIfUnset writes tenants.billing_provider the FIRST time a
-// tenant starts a checkout ("one tenant = one provider at a time"). A no-op
-// when already set (see SetTenantBillingProviderIfUnset's WHERE guard).
-func (s *Service) setBillingProviderIfUnset(ctx context.Context, tenantID uuid.UUID, providerName string) error {
-	_, err := sqlc.New(s.pool.Pool).SetTenantBillingProviderIfUnset(ctx, sqlc.SetTenantBillingProviderIfUnsetParams{
-		TenantID:        tenantID,
-		BillingProvider: &providerName,
-	})
-	if err != nil {
-		return domain.Internal("billing_set_provider_failed", "failed to record billing provider").WithCause(err)
-	}
-	return nil
-}
-
 // applySubscriptionStateTx persists the state machine's resolved next
 // tenantBillingProfile inside the caller's locked transaction.
 func applySubscriptionStateTx(ctx context.Context, q *sqlc.Queries, tenantID uuid.UUID, next tenantBillingProfile) error {
