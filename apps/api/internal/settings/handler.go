@@ -35,8 +35,9 @@ type tenantAuditRecorder interface {
 // (GET, PUT and POST /test) requires instance-level authority as decided by
 // admingate.CanManageInstanceEmail: a superadmin, the owner of the only live
 // organisation on the install, or, on a self-hosted install, the account that
-// set the install up. A role inside an organisation does not qualify on its
-// own. RequireOrgScope() additionally blocks site-scoped principals.
+// completed first-run setup, while that account is active and owns at least
+// one live organisation. A role inside an organisation does not qualify on
+// its own. RequireOrgScope() additionally blocks site-scoped principals.
 //
 // Instance authority is not tied to an organisation, so internal/server mounts
 // these routes on the authenticated group that does not require an active

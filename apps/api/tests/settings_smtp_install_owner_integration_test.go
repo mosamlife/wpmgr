@@ -301,6 +301,13 @@ func TestSMTPSettings_SelfHosted_InstallOwner_InstanceAuthority(t *testing.T) {
 
 	// Tamper-proofing as wpmgr_app: the row cannot be re-pointed, deleted,
 	// emptied or joined by a second row.
+	//
+	// This does not prove m147's REVOKE: the shared harness re-revokes
+	// UPDATE, DELETE and TRUNCATE on install_owner from wpmgr_app itself,
+	// after its own blanket GRANT (rls_integration_test.go:288), so this
+	// subtest passes even if the migration's REVOKE line were deleted — it
+	// checks the harness's privileges, not the migration's. The migration's
+	// REVOKE is proven by the TestInstallOwnerM147_* tests.
 	t.Run("wpmgr_app cannot change the install owner record", func(t *testing.T) {
 		s.requireSQLState(t, "42501", `UPDATE install_owner SET user_id = $1`, ownerB)
 		s.requireSQLState(t, "42501", `DELETE FROM install_owner`)
