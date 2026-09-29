@@ -286,6 +286,55 @@ func TestNotificationMessage_NoAgentProse(t *testing.T) {
 	}
 }
 
+// TestNotificationMessage_DropsForgedFields: the email text carries the
+// exception and location only when each passes its allow-list. A forged
+// value is dropped entirely, never partly shown.
+func TestNotificationMessage_DropsForgedFields(t *testing.T) {
+	const noHead = "Backup failed: the WPMgr agent on this site stopped with an error, so the backup was not retried. " +
+		"Fix the cause on the site, then run the backup again. The WPMgr dashboard shows the agent's full message."
+	tests := []struct {
+		name, exception, at, want string
+		leaks                     []string
+	}{
+		{
+			"forged at and forged exception",
+			"Evil www.evil-exc.example", "www.evil-at.example/login:1",
+			noHead,
+			[]string{"evil-exc", "evil-at", "www.", "login"},
+		},
+		{
+			"forged at, good exception",
+			"RuntimeException", "www.evil-at.example/restore.php:1",
+			"Backup failed: the WPMgr agent on this site stopped with an error, so the backup was not retried. " +
+				"Agent error: RuntimeException. " +
+				"Fix the cause on the site, then run the backup again. The WPMgr dashboard shows the agent's full message.",
+			[]string{"evil-at", "www.", "restore.php"},
+		},
+		{
+			"good at, forged exception",
+			"https://evil-exc.example/x", goodAt,
+			"Backup failed: the WPMgr agent on this site stopped with an error, so the backup was not retried. " +
+				"Agent error at " + goodAt + ". " +
+				"Fix the cause on the site, then run the backup again. The WPMgr dashboard shows the agent's full message.",
+			[]string{"evil-exc", "https"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ce := agentFailure("Command execution failed: x: disk full", tt.exception, tt.at)
+			got := ce.NotificationMessage("Backup")
+			if got != tt.want {
+				t.Errorf("NotificationMessage =\n  %q\nwant\n  %q", got, tt.want)
+			}
+			for _, leak := range tt.leaks {
+				if strings.Contains(got, leak) {
+					t.Errorf("NotificationMessage = %q leaked %q", got, leak)
+				}
+			}
+		})
+	}
+}
+
 // TestAgentFailed_ShapeChecks kills the partial-shape cases: data.status must
 // be 500, and a field of the wrong type makes the whole body not agent-shaped.
 func TestAgentFailed_ShapeChecks(t *testing.T) {
