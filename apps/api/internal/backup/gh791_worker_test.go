@@ -350,84 +350,88 @@ func restoreJob(tenantID, snapshotID uuid.UUID, attempt, max int) *river.Job[Res
 	return job
 }
 
-// TestRestoreWorker_RetryPublishesRetryingNotFailed: a retryable dispatch
-// error that River will retry publishes a non-terminal 'retrying' frame with
-// the control plane's reason, and does not finalise the restore run.
-func TestRestoreWorker_RetryPublishesRetryingNotFailed(t *testing.T) {
-	repo, runStore, tenantID, snapshotID, svc := newRestoreWorkerFixture(t)
-	hub := NewHub()
-	svc.SetHub(hub)
-	ch, unsub := hub.Subscribe(snapshotID)
-	defer unsub()
-	cmd := &errCommander{err: errors.New("restore command transport: dial tcp 203.0.113.9:443: connect: connection refused")}
-
-	err := NewRestoreWorker(svc, cmd, nil, nil, "https://cp.example.com", 0).Work(context.Background(), restoreJob(tenantID, snapshotID, 1, 25))
-	if err == nil {
-		t.Fatal("Work() = nil; a transport failure must be retried")
+// TestRestoreArgs_InsertOptsLimitsToOneAttempt: every backup_restore job is
+// inserted with MaxAttempts 1. River reads this through
+// JobArgsWithInsertOpts, and an insert-time MaxAttempts would override it, so
+// EnqueueRestore must pass none.
+func TestRestoreArgs_InsertOptsLimitsToOneAttempt(t *testing.T) {
+	withOpts, ok := any(RestoreArgs{}).(river.JobArgsWithInsertOpts)
+	if !ok {
+		t.Fatal("RestoreArgs does not implement river.JobArgsWithInsertOpts; its attempt limit is never applied")
 	}
-	if len(runStore.statusCalls) != 0 {
-		t.Fatalf("restore run finalised on a retryable attempt: %+v", runStore.statusCalls)
+	if got := withOpts.InsertOpts().MaxAttempts; got != 1 {
+		t.Fatalf("RestoreArgs.InsertOpts().MaxAttempts = %d, want 1", got)
 	}
-	if len(runStore.eventCalls) != 1 || runStore.eventCalls[0].Phase != "preflight" {
-		t.Errorf("restore run events = %+v, want only the preflight event", runStore.eventCalls)
-	}
-	if repo.failCalled {
-		t.Error("FailSnapshot called on the restored-from snapshot")
-	}
-	evs := drain(ch)
-	var retrying *BackupEvent
-	for _, ev := range evs {
-		if ev.Phase == "failed" {
-			t.Errorf("a retryable restore attempt published a 'failed' frame: %+v", ev)
-		}
-		if ev.Phase == "retrying" {
-			ev := ev
-			retrying = &ev
-		}
-	}
-	if retrying == nil {
-		t.Fatalf("no 'retrying' frame; phases = %v", phasesOf(evs))
-	}
-	if e, _ := retrying.PhaseDetail["error"].(string); e != "Could not connect to the site." {
-		t.Errorf("retrying error = %q, want the control-plane text", e)
-	}
-	if id, _ := retrying.PhaseDetail["restore_id"].(string); id == "" {
-		t.Errorf("retrying frame has no restore_id: %+v", retrying.PhaseDetail)
+	// The backup kind keeps River's default retries.
+	if got := backupInsertOpts().MaxAttempts; got != 0 {
+		t.Errorf("backupInsertOpts().MaxAttempts = %d, want 0 (River's default)", got)
 	}
 }
 
-// TestRestoreWorker_LastAttemptFailsRun: when River will not run the job
-// again, the retryable error is the restore's outcome: the run is finalised
-// as failed with the control plane's reason.
-func TestRestoreWorker_LastAttemptFailsRun(t *testing.T) {
-	_, runStore, tenantID, snapshotID, svc := newRestoreWorkerFixture(t)
-	hub := NewHub()
-	svc.SetHub(hub)
-	ch, unsub := hub.Subscribe(snapshotID)
-	defer unsub()
-	cmd := &errCommander{err: errors.New("restore command transport: dial tcp 203.0.113.9:443: connect: connection refused")}
+// restoreTransportErr is a dispatch error that never reached the agent.
+func restoreTransportErr() error {
+	return errors.New("restore command transport: dial tcp 203.0.113.9:443: connect: connection refused")
+}
 
-	if err := NewRestoreWorker(svc, cmd, nil, nil, "https://cp.example.com", 0).Work(context.Background(), restoreJob(tenantID, snapshotID, 25, 25)); err == nil {
-		t.Fatal("Work() = nil; the error is still returned on the last attempt")
+// assertJobCancel fails unless err is a river.JobCancel error.
+func assertJobCancel(t *testing.T, err error) {
+	t.Helper()
+	var cancelErr *river.JobCancelError
+	if !errors.As(err, &cancelErr) {
+		t.Fatalf("Work() returned %T (%v), want *river.JobCancelError", err, err)
 	}
-	if len(runStore.statusCalls) != 1 || runStore.statusCalls[0].Status != RestoreStatusFailed {
-		t.Fatalf("restore run status calls = %+v, want one 'failed'", runStore.statusCalls)
-	}
-	if e := runStore.statusCalls[0].Error; e != "Could not connect to the site." {
-		t.Errorf("restore run error = %q, want the control-plane text", e)
-	}
-	if phases := phasesOf(drain(ch)); contains(phases, "retrying") || !contains(phases, "failed") {
-		t.Errorf("phases = %v, want 'failed' and no 'retrying'", phases)
+}
+
+// TestRestoreWorker_TransportErrorFailsOnFirstAttempt: a dispatch error ends
+// the restore on the attempt that hit it, whatever attempt limit the job row
+// carries. The run is finalised as failed with the control plane's
+// description, a 'failed' frame is published, no 'retrying' frame exists, and
+// the job is cancelled.
+func TestRestoreWorker_TransportErrorFailsOnFirstAttempt(t *testing.T) {
+	for _, max := range []int{1, 25} {
+		t.Run(fmt.Sprintf("max_attempts_%d", max), func(t *testing.T) {
+			repo, runStore, tenantID, snapshotID, svc := newRestoreWorkerFixture(t)
+			hub := NewHub()
+			svc.SetHub(hub)
+			ch, unsub := hub.Subscribe(snapshotID)
+			defer unsub()
+			cmd := &errCommander{err: restoreTransportErr()}
+
+			err := NewRestoreWorker(svc, cmd, nil, nil, "https://cp.example.com", 0).Work(context.Background(), restoreJob(tenantID, snapshotID, 1, max))
+			assertJobCancel(t, err)
+			if cmd.calls != 1 {
+				t.Errorf("restore command sent %d times, want 1", cmd.calls)
+			}
+			if len(runStore.statusCalls) != 1 || runStore.statusCalls[0].Status != RestoreStatusFailed {
+				t.Fatalf("restore run status calls = %+v, want one 'failed'", runStore.statusCalls)
+			}
+			if e := runStore.statusCalls[0].Error; e != "Could not connect to the site." {
+				t.Errorf("restore run error = %q, want the control-plane text", e)
+			}
+			if repo.failCalled {
+				t.Error("FailSnapshot called on the restored-from snapshot")
+			}
+			phases := phasesOf(drain(ch))
+			if contains(phases, "retrying") || !contains(phases, "failed") {
+				t.Errorf("phases = %v, want 'failed' and no 'retrying'", phases)
+			}
+		})
 	}
 }
 
 // TestRestoreWorker_AgentFailedIsTerminal: an agent-reported failure ends the
-// restore on the first attempt with the sanitised operator message.
+// restore on the first attempt with OperatorMessage("Restore"), and no
+// 'retrying' frame.
 func TestRestoreWorker_AgentFailedIsTerminal(t *testing.T) {
 	_, runStore, tenantID, snapshotID, svc := newRestoreWorkerFixture(t)
-	cmd := &errCommander{err: agentFailedErr("restore")}
+	hub := NewHub()
+	svc.SetHub(hub)
+	ch, unsub := hub.Subscribe(snapshotID)
+	defer unsub()
+	agentErr := agentFailedErr("restore")
+	cmd := &errCommander{err: agentErr}
 
-	if err := NewRestoreWorker(svc, cmd, nil, nil, "https://cp.example.com", 0).Work(context.Background(), restoreJob(tenantID, snapshotID, 1, 25)); err != nil {
+	if err := NewRestoreWorker(svc, cmd, nil, nil, "https://cp.example.com", 0).Work(context.Background(), restoreJob(tenantID, snapshotID, 1, 1)); err != nil {
 		t.Fatalf("Work() = %v; an agent-reported failure is terminal", err)
 	}
 	if cmd.calls != 1 {
@@ -436,9 +440,54 @@ func TestRestoreWorker_AgentFailedIsTerminal(t *testing.T) {
 	if len(runStore.statusCalls) != 1 || runStore.statusCalls[0].Status != RestoreStatusFailed {
 		t.Fatalf("restore run status calls = %+v, want one 'failed'", runStore.statusCalls)
 	}
+	ce, _ := agentcmd.AsCommandError(agentErr)
 	e := runStore.statusCalls[0].Error
-	if !strings.HasPrefix(e, "Restore failed:") || strings.Contains(e, "body=") || strings.Contains(e, "evil-example") {
+	if want := ce.OperatorMessage("Restore"); e != want {
+		t.Errorf("restore run error = %q, want OperatorMessage(\"Restore\") %q", e, want)
+	}
+	if strings.Contains(e, "body=") || strings.Contains(e, "evil-example") {
 		t.Errorf("restore run error = %q, want the sanitised operator message", e)
+	}
+	phases := phasesOf(drain(ch))
+	if contains(phases, "retrying") || !contains(phases, "failed") {
+		t.Errorf("phases = %v, want 'failed' and no 'retrying'", phases)
+	}
+}
+
+// TestRestoreWorker_LaterAttemptCancelsWithoutDispatch: a restore job that
+// reaches a second attempt (one inserted with a higher limit) is cancelled
+// before anything is sent to the site, and leaves the run alone.
+func TestRestoreWorker_LaterAttemptCancelsWithoutDispatch(t *testing.T) {
+	_, runStore, tenantID, snapshotID, svc := newRestoreWorkerFixture(t)
+	hub := NewHub()
+	svc.SetHub(hub)
+	ch, unsub := hub.Subscribe(snapshotID)
+	defer unsub()
+	cmd := &errCommander{err: restoreTransportErr()}
+
+	err := NewRestoreWorker(svc, cmd, nil, nil, "https://cp.example.com", 0).Work(context.Background(), restoreJob(tenantID, snapshotID, 2, 25))
+	assertJobCancel(t, err)
+	if cmd.calls != 0 {
+		t.Errorf("restore command sent %d times on a second attempt, want 0", cmd.calls)
+	}
+	if len(runStore.statusCalls) != 0 || len(runStore.eventCalls) != 0 {
+		t.Errorf("run touched on a cancelled attempt: status %+v, events %+v", runStore.statusCalls, runStore.eventCalls)
+	}
+	if evs := drain(ch); len(evs) != 0 {
+		t.Errorf("published %v on a cancelled attempt, want nothing", phasesOf(evs))
+	}
+}
+
+// TestRestoreWorker_PlanErrorCancels: a restore that cannot be planned is
+// cancelled, not returned for River to retry, and nothing is sent.
+func TestRestoreWorker_PlanErrorCancels(t *testing.T) {
+	_, _, tenantID, _, svc := newRestoreWorkerFixture(t)
+	cmd := &errCommander{}
+
+	err := NewRestoreWorker(svc, cmd, nil, nil, "https://cp.example.com", 0).Work(context.Background(), restoreJob(tenantID, uuid.New(), 1, 1))
+	assertJobCancel(t, err)
+	if cmd.calls != 0 {
+		t.Errorf("restore command sent %d times for an unplannable restore, want 0", cmd.calls)
 	}
 }
 
