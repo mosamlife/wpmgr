@@ -1614,6 +1614,15 @@ type AuthorizedRequest struct {
 	// Capabilities makes for the same reason: a literal that forgets it lists
 	// NO tool rather than every tool.
 	OrgCeiling CapabilitySet
+
+	// SetupClient is the operator's client choice on the grant (m128), read
+	// from the same verdict row. It is stored on an AI request's facts and is
+	// never returned to the model.
+	SetupClient *string
+
+	// ViaOAuth is true when the grant came from the OAuth sign-in path
+	// (mcp_grants.client_id is set), false for a pasted token.
+	ViaOAuth bool
 }
 
 // Authenticate resolves a bearer token and re-checks its grant against CURRENT
@@ -1652,6 +1661,18 @@ func (s *Service) Authenticate(ctx context.Context, bearer string) (AuthorizedRe
 			"this connection has been revoked or has expired")
 	}
 
+	auth, err := s.authorizeGrant(ctx, tok.TenantID, grantVerdictFromRequestRow(chk))
+	if err != nil {
+		return AuthorizedRequest{}, err
+	}
+	auth.TokenID = chk.TokenID
+	return auth, nil
+}
+
+// authorizeGrant is the derivation shared by Authenticate and AuthorizeGrant:
+// from a verdict to the scope and capabilities it confers. The caller has
+// already refused an unauthorized verdict.
+func (s *Service) authorizeGrant(ctx context.Context, tenantID uuid.UUID, v GrantVerdict) (AuthorizedRequest, error) {
 	// Resolve the site scope at the one audited chokepoint, inside a tenant
 	// transaction so `sites` RLS drops any foreign UUID.
 	//
@@ -1659,8 +1680,8 @@ func (s *Service) Authenticate(ctx context.Context, bearer string) (AuthorizedRe
 	// IS THE ONE EXCEPTION TO ADR-061 A11 ITEM 2. Read bootstrapTenantPrincipal
 	// before changing it. In one line: this call is what PRODUCES the allowlist,
 	// so there is no allowlist to scope it by.
-	ids, err := s.store.ResolveScopeSites(ctx, bootstrapTenantPrincipal(tok.TenantID),
-		chk.SiteScopeMode, chk.ScopeTagIds, chk.ScopeSiteIds)
+	ids, err := s.store.ResolveScopeSites(ctx, bootstrapTenantPrincipal(tenantID),
+		v.SiteScopeMode, v.ScopeTagIDs, v.ScopeSiteIDs)
 	if err != nil {
 		return AuthorizedRequest{}, fmt.Errorf("resolve grant scope: %w", err)
 	}
@@ -1711,7 +1732,7 @@ func (s *Service) Authenticate(ctx context.Context, bearer string) (AuthorizedRe
 	// IT IS 403, NOT 401, for the reason spelled out on the empty-capabilities
 	// refusal below: an MCP client that receives 401 re-runs the OAuth handshake,
 	// which cannot repair a stored column.
-	scopes := grantScopes(chk.GrantOauthScopes)
+	scopes := grantScopes(v.OauthScopes)
 	if len(scopes) == 0 {
 		return AuthorizedRequest{}, domain.Forbidden(ErrCodeCapabilityUnmapped,
 			"this connection holds no scope, so it confers no capability")
@@ -1746,7 +1767,7 @@ func (s *Service) Authenticate(ctx context.Context, bearer string) (AuthorizedRe
 	// permitted. That is what 403 says, and it is what every other producer of
 	// ErrCodeCapabilityUnmapped already returns (all three in
 	// OrgDefaultCapabilities).
-	stored := capabilitiesFromColumn(chk.GrantCapabilities)
+	stored := capabilitiesFromColumn(v.Capabilities)
 	if len(stored) == 0 {
 		return AuthorizedRequest{}, domain.Forbidden(ErrCodeCapabilityUnmapped,
 			"this connection holds no capability, so it can reach no tool")
@@ -1763,12 +1784,16 @@ func (s *Service) Authenticate(ctx context.Context, bearer string) (AuthorizedRe
 	// An empty resolved set means NO SITES. NewSiteSet's zero value allows
 	// nothing, so there is no widening path here even if ids is nil.
 	return AuthorizedRequest{
-		TenantID:     tok.TenantID,
-		GrantID:      chk.GrantID,
-		GrantName:    chk.GrantName,
-		TokenID:      chk.TokenID,
+		TenantID:     tenantID,
+		GrantID:      v.GrantID,
+		GrantName:    v.GrantName,
 		Sites:        NewSiteSet(ids),
 		Capabilities: caps,
+		// Carried from the same verdict row, for the stored facts of an AI
+		// request: the operator's client choice, and whether the grant came
+		// from the OAuth sign-in path.
+		SetupClient: v.SetupClient,
+		ViaOAuth:    v.ClientID != nil,
 		// The ceiling resolved above, carried rather than recomputed. caps is
 		// ceiling.NarrowTo(stored), so this is always a superset of
 		// Capabilities and the registry can tell "your grant lacks it" from
