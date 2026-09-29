@@ -87,16 +87,49 @@ func (e *RiverAdoptURLEnqueuer) EnqueueAdoptURL(ctx context.Context, args AdoptR
 // enrollment.
 func (s *Service) SetAdoptURLEnqueuer(e AdoptURLEnqueuer) { s.adoptQueue = e }
 
+// maxReportedURLLen is the longest reported address, in bytes, that a push
+// may queue. A longer one is dropped before it reaches the job table.
+const maxReportedURLLen = 2048
+
 // EnqueueAdoptReportedURL queues AdoptReportedURL for an address an agent
 // push reported, and returns without probing the site. It satisfies
 // diagnostics.ReportedURLSink. The error, when the insert fails, is logged
 // here and returned for the caller to drop: a push is never failed by it.
+//
+// A report longer than maxReportedURLLen bytes, or one that is not a plain
+// http(s) site address (siteaddr.Parse), is dropped with a Debug log and
+// queues nothing: the job table is shared, and a report the job could never
+// adopt has no business in it.
 func (s *Service) EnqueueAdoptReportedURL(ctx context.Context, tenantID, siteID uuid.UUID, reported, source, agentVersion string) error {
+	return s.enqueueAdoptReportedURL(ctx, tenantID, siteID, "", reported, source, agentVersion)
+}
+
+// enqueueAdoptReportedURL is EnqueueAdoptReportedURL. saved, when not empty,
+// is the site's saved address as the push read it, and a report that the
+// job's rule (planReportedURL) would not adopt over it is dropped too. The
+// metadata push passes it from the row it has just written; the diagnostics
+// push has no site row to hand and passes "".
+func (s *Service) enqueueAdoptReportedURL(ctx context.Context, tenantID, siteID uuid.UUID, saved, reported, source, agentVersion string) error {
 	reported = strings.TrimSpace(reported)
 	if reported == "" {
 		return nil
 	}
 	log := s.logger.With(slog.String("site_id", siteID.String()), slog.String("source", source))
+	if len(reported) > maxReportedURLLen {
+		log.Debug("adopt reported address: not queued: longer than the address limit",
+			slog.Int("bytes", len(reported)), slog.Int("limit", maxReportedURLLen))
+		return nil
+	}
+	if _, _, ok := parseSiteAddress(reported); !ok {
+		log.Debug("adopt reported address: not queued: not a site address",
+			slog.String("reported", sanitizeReportedURL(reported)))
+		return nil
+	}
+	if saved != "" && planReportedURL(saved, reported).Decision != enrollURLAdopt {
+		log.Debug("adopt reported address: not queued: not an address the saved one could become",
+			slog.String("saved", saved), slog.String("reported", sanitizeReportedURL(reported)))
+		return nil
+	}
 	if s.adoptQueue == nil {
 		log.Debug("adopt reported address: not queued: no queue is wired")
 		return nil

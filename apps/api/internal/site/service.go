@@ -430,10 +430,11 @@ func (s *Service) ApplyAgentMetadata(ctx context.Context, tenantID, siteID uuid.
 		out = updated
 	}
 	// The agent's WordPress address, queued for AdoptReportedURL so its
-	// signed probe never holds up the push. An enqueue failure is logged
-	// and never fails the metadata push.
+	// signed probe never holds up the push. The row just written carries the
+	// saved address, so a report that could not replace it is not queued. An
+	// enqueue failure is logged and never fails the metadata push.
 	if m.HomeURL != "" {
-		_ = s.EnqueueAdoptReportedURL(ctx, tenantID, siteID, m.HomeURL, urlSourceAgentMetadata, m.AgentVersion)
+		_ = s.enqueueAdoptReportedURL(ctx, tenantID, siteID, out.URL, m.HomeURL, urlSourceAgentMetadata, m.AgentVersion)
 	}
 	return toAPI(out), nil
 }

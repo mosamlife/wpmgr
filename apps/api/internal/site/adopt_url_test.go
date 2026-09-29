@@ -23,6 +23,12 @@ func (r *adoptRepo) Get(_ context.Context, tenantID, id uuid.UUID) (Site, error)
 	return Site{ID: id, TenantID: tenantID, URL: r.url, ConnectionState: r.state}, nil
 }
 
+// UpdateMetadata returns the stored address with the row, as the real
+// query's RETURNING * does: the metadata push reads the saved address from it.
+func (r *adoptRepo) UpdateMetadata(_ context.Context, tenantID, siteID uuid.UUID, _ Metadata, _ []byte) (Site, error) {
+	return Site{ID: siteID, TenantID: tenantID, URL: r.url, ConnectionState: r.state}, nil
+}
+
 func (r *adoptRepo) AdoptSiteURL(_ context.Context, _, _ uuid.UUID, _, to string) (bool, error) {
 	r.adoptCalls = append(r.adoptCalls, to)
 	if r.adoptResult {
