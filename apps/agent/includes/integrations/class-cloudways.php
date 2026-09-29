@@ -22,6 +22,15 @@ namespace WPMgr\Agent\Integrations;
  */
 final class Cloudways extends Integration
 {
+    /** Identifier in the purge report. */
+    public const SLUG = 'cloudways';
+
+    /** How far this host's purge reaches; see Integration. */
+    protected const REACH = self::REACH_SHARED;
+
+    /** Evidence for REACH. */
+    protected const REACH_NOTE = 'Shared: the host\'s purge clears a whole zone.';
+
     /**
      * @return bool
      */

@@ -25,6 +25,8 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent\Cache;
 
+use WPMgr\Agent\Integrations\Integration;
+
 /**
  * Orchestrates the page-cache lifecycle and request hooks.
  */
@@ -230,20 +232,40 @@ final class CacheManager
      * Purge the cache. $url empty / "all" purges everything; otherwise purge that
      * single URL's variants.
      *
-     * @param string $url Target URL, or '' / 'all' for everything.
-     * @return array{ok:bool,detail:string,removed:int}
+     * With ['origin_only' => true] the purge stays inside this site: a host or
+     * edge integration whose reach is not confirmed to be this install does not
+     * run, and the result reports what each detected integration did.
+     *
+     * @param string              $url     Target URL, or '' / 'all' for everything.
+     * @param array<string,mixed> $options { origin_only?: bool }.
+     * @return array{ok:bool,detail:string,removed:int,origin_only_honoured?:bool,integrations?:list<array{slug:string,action:string}>}
      */
-    public function purge(string $url = ''): array
+    public function purge(string $url = '', array $options = []): array
     {
-        $purge = $this->purgeEngine();
+        $originOnly   = ($options['origin_only'] ?? false) === true;
+        $purgeOptions = $originOnly ? ['origin_only' => true] : [];
+        $purge        = $this->purgeEngine();
 
-        if ($url === '' || strtolower($url) === 'all') {
-            $ok = $purge->purgeEverything();
-            return ['ok' => $ok, 'detail' => $ok ? 'purged all' : 'purge failed', 'removed' => -1];
+        if ($originOnly) {
+            Integration::beginReport();
+        }
+        try {
+            if ($url === '' || strtolower($url) === 'all') {
+                $ok     = $purge->purgeEverything($purgeOptions);
+                $result = ['ok' => $ok, 'detail' => $ok ? 'purged all' : 'purge failed', 'removed' => -1];
+            } else {
+                $removed = $purge->purgeUrl($url, $purgeOptions);
+                $result  = ['ok' => true, 'detail' => 'purged url', 'removed' => $removed];
+            }
+        } finally {
+            $report = $originOnly ? Integration::endReport() : [];
         }
 
-        $removed = $purge->purgeUrl($url);
-        return ['ok' => true, 'detail' => 'purged url', 'removed' => $removed];
+        if ($originOnly) {
+            $result['origin_only_honoured'] = true;
+            $result['integrations']         = $report;
+        }
+        return $result;
     }
 
     /**

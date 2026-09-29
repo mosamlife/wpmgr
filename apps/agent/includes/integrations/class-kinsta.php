@@ -21,6 +21,15 @@ namespace WPMgr\Agent\Integrations;
  */
 final class Kinsta extends Integration
 {
+    /** Identifier in the purge report. */
+    public const SLUG = 'kinsta';
+
+    /** How far this host's purge reaches; see Integration. */
+    protected const REACH = self::REACH_SHARED;
+
+    /** Evidence for REACH. */
+    protected const REACH_NOTE = 'Unverified: that the host\'s full and per-URL purges reach only this site is not yet confirmed.';
+
     /**
      * @return bool
      */

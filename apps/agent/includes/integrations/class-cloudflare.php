@@ -29,6 +29,15 @@ namespace WPMgr\Agent\Integrations;
  */
 final class Cloudflare extends Integration
 {
+    /** Identifier in the purge report. */
+    public const SLUG = 'cloudflare';
+
+    /** How far this host's purge reaches; see Integration. */
+    protected const REACH = self::REACH_SHARED;
+
+    /** Evidence for REACH. */
+    protected const REACH_NOTE = 'Shared: a zone purge covers every site in the zone. An exact-URL purge is a candidate and is not yet confirmed.';
+
     /** Max files-by-URL Cloudflare accepts in one purge call. */
     private const MAX_URLS = 30;
 
