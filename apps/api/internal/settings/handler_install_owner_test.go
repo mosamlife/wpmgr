@@ -111,12 +111,9 @@ func TestSMTPPutAudit_InstallOwnerRecordsTheOwnedOrganisationTheGateNames(t *tes
 // written or recorded. Catches granting the arm with no organisation to
 // record the change in.
 func TestSMTPGate_InstallOwnerOwningNoLiveOrganisationRefused(t *testing.T) {
-	gate := installOwnerGate(uuid.Nil)
-	requireRefused(t, gatedSettingsEngine(gate), orgUser(), allRoutes)
-	if gate.installOwnerCalls == 0 {
-		t.Error("refused without reading the install-owner fact; the refusal must come from the read")
-	}
-
+	// The PUT runs first, against an engine with a working service, so an arm
+	// that wrongly admits fails here as an assertion rather than reaching the
+	// service-less engine below.
 	svc, rec := &fakeSMTPService{}, &fakeTenantRecorder{}
 	e := auditEngine(installOwnerGate(uuid.Nil), svc, rec, nil)
 	if status := putAs(t, e, principalWithTenant(uuid.New())); status != http.StatusForbidden {
@@ -124,6 +121,12 @@ func TestSMTPGate_InstallOwnerOwningNoLiveOrganisationRefused(t *testing.T) {
 	}
 	if len(svc.instanceEvents) != 0 || len(rec.events) != 0 {
 		t.Errorf("refused PUT recorded instance %d, organisation %d events; want 0 and 0", len(svc.instanceEvents), len(rec.events))
+	}
+
+	gate := installOwnerGate(uuid.Nil)
+	requireRefused(t, gatedSettingsEngine(gate), orgUser(), allRoutes)
+	if gate.installOwnerCalls == 0 {
+		t.Error("refused without reading the install-owner fact; the refusal must come from the read")
 	}
 }
 
