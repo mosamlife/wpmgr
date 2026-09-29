@@ -1100,9 +1100,14 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	sendEmailWorker := mailer.NewSendEmailWorker(mailerSvc)
 	smtpSettingsSvc := settings.NewService(settings.NewRepo(pool), siteDestAgeID, mailerSvc, logger)
 	// The SMTP relay is install-wide, so its routes are gated on instance-level
-	// authority, read through the same admingate.Store the admin console uses.
-	// authH.SetInstanceAuthorityGate below wires the matching Me capability.
-	smtpSettingsH := settings.NewHandler(smtpSettingsSvc, auditRec, admingate.NewPoolStore(pool))
+	// authority. instanceEmailGate is built ONCE and handed to both the route
+	// gate here and authH.SetInstanceAuthorityGate below (the Me capability),
+	// so the two read the same hosted flag. It is the admin console's
+	// admingate.PoolStore plus the install-owner arm, which is live only when
+	// WPMGR_HOSTED is not true. The agent-mirror gates keep the plain
+	// admingate.NewPoolStore and never see that arm.
+	instanceEmailGate := admingate.NewInstanceEmailPoolStore(pool, cfg.Hosted.Enabled)
+	smtpSettingsH := settings.NewHandler(smtpSettingsSvc, auditRec, instanceEmailGate)
 
 	// m59 — per-site email management. Shares the same age identity as the
 	// instance SMTP settings (siteDestAgeID). The agent command client is wired
@@ -2869,11 +2874,11 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// no-ops to true when WPMGR_HOSTED is off, so this wiring is safe to leave
 	// on unconditionally, exactly like SetHosted above.
 	authH.SetManagedStorageResolver(billingSvc)
-	// Me.can_manage_instance_email: the same admingate.Store over the same
-	// pool that smtpSettingsH's route gate reads, through the same
+	// Me.can_manage_instance_email: the same instanceEmailGate value that
+	// smtpSettingsH's route gate reads, through the same
 	// admingate.CanManageInstanceEmail, so the dashboard offers the instance
 	// email settings exactly when /api/v1/settings/smtp would admit.
-	authH.SetInstanceAuthorityGate(admingate.NewPoolStore(pool))
+	authH.SetInstanceAuthorityGate(instanceEmailGate)
 
 	filesH := files.NewHandler(filesSvc, auditRec)
 

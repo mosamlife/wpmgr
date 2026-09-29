@@ -24,6 +24,19 @@ type fakeInstanceStore struct {
 	superadminErr error
 	soleOwner     bool
 	soleOwnerErr  error
+	// selfHosted false is the hosted answer.
+	selfHosted      bool
+	installOwner    bool
+	installOwnerErr error
+}
+
+func (f fakeInstanceStore) SelfHosted() bool { return f.selfHosted }
+
+func (f fakeInstanceStore) InstallOwnerHomeTenant(context.Context, uuid.UUID) (bool, uuid.UUID, error) {
+	if f.installOwnerErr != nil {
+		return false, uuid.Nil, f.installOwnerErr
+	}
+	return f.installOwner, uuid.Nil, nil
 }
 
 func (f fakeInstanceStore) IsSuperadmin(context.Context, uuid.UUID) (bool, error) {
@@ -48,7 +61,7 @@ func TestSetInstanceCapabilities_EqualsTheRouteDecision(t *testing.T) {
 	cases := []struct {
 		name  string
 		p     domain.Principal
-		store admingate.Store
+		store admingate.InstanceEmailStore
 		want  bool
 	}{
 		{"superadmin, no active organisation", orgUser(uuid.Nil), fakeInstanceStore{superadmin: true}, true},

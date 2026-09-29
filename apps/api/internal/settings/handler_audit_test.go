@@ -98,7 +98,7 @@ func (f *fakeTenantRecorder) Record(ctx context.Context, e audit.Event) (audit.E
 
 const auditPutBody = `{"enabled":false,"host":"relay.example.test","port":587,"tls_mode":"starttls"}`
 
-func auditEngine(gate admingate.Store, svc *fakeSMTPService, rec *fakeTenantRecorder, log *slog.Logger) *gin.Engine {
+func auditEngine(gate admingate.InstanceEmailStore, svc *fakeSMTPService, rec *fakeTenantRecorder, log *slog.Logger) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	if log == nil {
 		log = slog.New(slog.NewTextHandler(io.Discard, nil))

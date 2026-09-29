@@ -87,7 +87,8 @@ const (
 	// The instance SMTP relay (ADR-045) has no Permission here on purpose. It is
 	// install-wide configuration, not an organisation's, so no tenant role
 	// grants it; its routes are gated by instance-level authority instead
-	// (admingate.HasInstanceAuthority, mounted in internal/settings).
+	// (admingate.CanManageInstanceEmail, mounted in internal/settings), which
+	// on a self-hosted install also admits the account that set it up.
 	// PermSiteCacheManage enables/disables and reconfigures the agent-side page
 	// cache for a site (Performance Suite, ADR-046). Operator+ — the same
 	// site-management tier as PermSiteWrite; site-scoped (NOT in orgLevelPerms),

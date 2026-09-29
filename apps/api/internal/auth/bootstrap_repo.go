@@ -103,9 +103,9 @@ func OwnershipEstablishedInTx(ctx context.Context, tx pgx.Tx) (bool, error) {
 	return owned, nil
 }
 
-// BootstrapInstall creates the install's first tenant, its first user and the
-// owner membership binding them, as ONE transaction under
-// InstallBootstrapLockKey.
+// BootstrapInstall creates the install's first tenant, its first user, the
+// owner membership binding them and the install_owner record naming them, as
+// ONE transaction under InstallBootstrapLockKey.
 //
 // THE COUNT AND THE CREATE ARE INSEPARABLE. Read "are there zero users?" in one
 // statement and act on it in the next, and two callers both read zero and both
@@ -185,6 +185,27 @@ func (r *Repo) BootstrapInstall(
 			return domain.Internal("membership_create_failed", "failed to create membership").WithCause(err)
 		}
 
+		// THE INSTALL OWNER RECORD, in the same locked transaction as the
+		// account it names. It is what the instance email settings read to
+		// admit the person who set up a self-hosted install once a second
+		// organisation exists (admingate.ArmInstallOwner). It is written on
+		// hosted installs too: it is a fact about the install, and only the
+		// reader is conditional.
+		//
+		// Not best-effort. An error here rolls the whole bootstrap back,
+		// because an install that bootstrapped without this row would leave
+		// its owner locked out of the relay the moment a second organisation
+		// appears, with nothing to show why.
+		//
+		// ON CONFLICT DO NOTHING: when a row already exists (an earlier
+		// bootstrap, or m147's backfill, whose account has since lost its
+		// owner membership), this bootstrap does not replace it. The authority
+		// never moves to a later account. wpmgr_app holds no UPDATE on the
+		// table, so no other path can move it either.
+		if err := recordInstallOwnerInTx(ctx, tx, userRow.ID, tenantID); err != nil {
+			return err
+		}
+
 		outUser = userToModel(userRow)
 		outMem = membershipToModel(memRow)
 		outTenID = tenantID
@@ -194,6 +215,23 @@ func (r *Repo) BootstrapInstall(
 		return User{}, Membership{}, uuid.Nil, err
 	}
 	return outUser, outMem, outTenID, nil
+}
+
+// recordInstallOwnerSQL writes the install_owner singleton (m147). The table
+// has no RLS and no foreign keys; see the migration for why.
+const recordInstallOwnerSQL = `
+INSERT INTO install_owner (singleton, user_id, tenant_id, source)
+VALUES (true, $1, $2, 'bootstrap')
+ON CONFLICT (singleton) DO NOTHING`
+
+// recordInstallOwnerInTx records userID and tenantID as the install owner
+// inside the caller's bootstrap transaction. Any error is returned as a
+// domain error for the caller to abort on.
+func recordInstallOwnerInTx(ctx context.Context, tx pgx.Tx, userID, tenantID uuid.UUID) error {
+	if _, err := tx.Exec(ctx, recordInstallOwnerSQL, userID, tenantID); err != nil {
+		return domain.Internal("install_owner_record_failed", "failed to record the install owner").WithCause(err)
+	}
+	return nil
 }
 
 // createTenantInTx inserts the first tenant inside the bootstrap transaction,
