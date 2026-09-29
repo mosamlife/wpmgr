@@ -10,6 +10,8 @@ import { client } from "@wpmgr/api";
 
 import { toError } from "@/features/auth/use-auth";
 
+import { BillingCheckoutError } from "./billing-checkout-error";
+
 // M16 Phase B — tenant billing hooks.
 //
 // The billing endpoints are landing in the control plane in parallel with
@@ -77,6 +79,13 @@ export interface BillingInfo {
   grace_until?: string;
   meters: BillingMeters;
   portal_available: boolean;
+  /**
+   * Payment providers registered on this instance, Stripe first when more
+   * than one is registered (openapi.yaml BillingSummary.available_providers).
+   * Drives whether Razorpay is offered at checkout — see
+   * features/billing/payment-method-picker.tsx.
+   */
+  available_providers: BillingProvider[];
 }
 
 export const billingKeys = {
@@ -152,10 +161,15 @@ export interface CreateCheckoutVariables {
  * POST /api/v1/billing/checkout { tier, provider?, currency? } -> CheckoutResult.
  * The caller branches on which field the result populates — see
  * `routes/_authed/settings/billing.tsx`'s `startCheckout`.
+ *
+ * A 409/400 refusal throws `BillingCheckoutError`, carrying the server's
+ * `code` and `details.reason` (billing_provider_locked only) so the caller
+ * can render the 3.3/5.10 copy via `mapBillingCheckoutError` instead of the
+ * server's raw message — see stripe-design-v9.md 3.3.
  */
 export function useCreateBillingCheckout(): UseMutationResult<
   CheckoutResult,
-  Error,
+  BillingCheckoutError,
   CreateCheckoutVariables
 > {
   return useMutation({
@@ -169,8 +183,21 @@ export function useCreateBillingCheckout(): UseMutationResult<
         url: "/api/v1/billing/checkout",
         body,
       });
-      if (result.error) throw toError(result.error);
-      if (!result.data) throw new Error("Empty response");
+      if (result.error) {
+        const raw = result.error as
+          | { code?: string; message?: string; details?: Record<string, unknown> }
+          | undefined;
+        const reason =
+          typeof raw?.details?.["reason"] === "string"
+            ? (raw.details["reason"] as string)
+            : undefined;
+        throw new BillingCheckoutError(
+          toError(result.error).message,
+          raw?.code,
+          reason,
+        );
+      }
+      if (!result.data) throw new BillingCheckoutError("Empty response");
       return result.data;
     },
   });
@@ -269,6 +296,41 @@ export function useCreateBillingPortal(): UseMutationResult<
       if (result.error) throw toError(result.error);
       if (!result.data) throw new Error("Empty response");
       return result.data;
+    },
+  });
+}
+
+export interface ConfirmCheckoutResult {
+  ok: boolean;
+}
+
+/**
+ * POST /api/v1/billing/checkout/confirm { session_id } -> { ok }.
+ *
+ * A UX-confirmation-only speedup on Stripe's browser return — the provider
+ * webhook remains the sole source of truth (openapi.yaml
+ * confirmBillingCheckout). Returns the response's HTTP status alongside the
+ * body so the caller can tell a 200 (already landed, or the enqueue is
+ * fire-and-forget) from a 202 (background refresh enqueued, not landed yet
+ * — show "Activating…" and rely on `useBillingCheckoutReturn`'s poll).
+ */
+export function useConfirmBillingCheckout(): UseMutationResult<
+  { data: ConfirmCheckoutResult; status: number | undefined },
+  Error,
+  { session_id: string }
+> {
+  return useMutation({
+    mutationFn: async (body) => {
+      const result = await client.post({
+        url: "/api/v1/billing/checkout/confirm",
+        body,
+      });
+      if (result.error) throw toError(result.error);
+      if (!result.data) throw new Error("Empty response");
+      return {
+        data: result.data as ConfirmCheckoutResult,
+        status: result.response?.status,
+      };
     },
   });
 }

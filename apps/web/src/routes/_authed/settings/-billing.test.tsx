@@ -118,6 +118,7 @@ function billingFixture(overrides: Partial<BillingInfo> = {}): BillingInfo {
     plan_status: "none",
     meters: { sites: { used: 1, limit: 3 } },
     portal_available: false,
+    available_providers: [],
     ...overrides,
   };
 }
@@ -238,7 +239,7 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("Payment method picker", () => {
-  it("defaults to Stripe: Upgrade posts { tier, provider: 'stripe' } with no currency (non-vacuous: proves the default matches the CP's own default)", async () => {
+  it("defaults to Stripe and posts { tier, provider: 'stripe' } with no currency; the picker itself stays hidden when Razorpay isn't offered (non-vacuous: proves the default matches the CP's own default)", async () => {
     const mutateMock = vi.fn();
     mockedUseBilling.mockReturnValue(
       mockQueryResult<BillingInfo | null>({ data: billingFixture() }),
@@ -249,10 +250,10 @@ describe("Payment method picker", () => {
 
     renderBillingPage();
 
-    const stripeRadio = await screen.findByRole("radio", { name: "Stripe" });
-    expect(stripeRadio).toHaveAttribute("aria-checked", "true");
-    // The currency picker is Razorpay-only — must not render while Stripe is selected.
-    expect(screen.queryByRole("radiogroup", { name: "Currency" })).not.toBeInTheDocument();
+    await screen.findByRole("heading", { name: "Billing" });
+    expect(
+      screen.queryByRole("radiogroup", { name: "Payment provider" }),
+    ).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Upgrade to Starter" }));
 
@@ -263,10 +264,18 @@ describe("Payment method picker", () => {
     );
   });
 
-  it("switching to Razorpay reveals a currency choice; selecting INR posts { provider: 'razorpay', currency: 'INR' }", async () => {
+  it("offers Razorpay for a likely-Indian visitor (Asia/Kolkata) when the instance has it registered; selecting it posts { provider: 'razorpay', currency: 'INR' } with no currency picker", async () => {
+    const resolvedOptionsSpy = vi
+      .spyOn(Intl, "DateTimeFormat")
+      .mockReturnValue({
+        resolvedOptions: () => ({ timeZone: "Asia/Kolkata" }),
+      } as unknown as Intl.DateTimeFormat);
+
     const mutateMock = vi.fn();
     mockedUseBilling.mockReturnValue(
-      mockQueryResult<BillingInfo | null>({ data: billingFixture() }),
+      mockQueryResult<BillingInfo | null>({
+        data: billingFixture({ available_providers: ["stripe", "razorpay"] }),
+      }),
     );
     mockedUseCreateBillingCheckout.mockReturnValue(
       mockMutationResult<CheckoutResult, CreateCheckoutVariables>({ mutate: mutateMock }),
@@ -274,17 +283,41 @@ describe("Payment method picker", () => {
 
     renderBillingPage();
 
-    fireEvent.click(await screen.findByRole("radio", { name: "Razorpay" }));
-    const currencyGroup = await screen.findByRole("radiogroup", { name: "Currency" });
-    expect(currencyGroup).toBeInTheDocument();
+    fireEvent.click(
+      await screen.findByRole("radio", { name: "UPI / RuPay / ₹ (Razorpay)" }),
+    );
+    // No currency choice any more — Razorpay is INR-only (decision 17).
+    expect(screen.queryByRole("radiogroup", { name: "Currency" })).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("radio", { name: "INR (₹)" }));
     fireEvent.click(screen.getByRole("button", { name: "Upgrade to Agency" }));
 
     expect(mutateMock).toHaveBeenCalledWith(
       { tier: "agency", provider: "razorpay", currency: "INR" },
       expect.anything(),
     );
+
+    resolvedOptionsSpy.mockRestore();
+  });
+
+  it("does not offer Razorpay for a non-Indian visitor even when the instance has it registered", async () => {
+    vi.spyOn(Intl, "DateTimeFormat").mockReturnValue({
+      resolvedOptions: () => ({ timeZone: "America/New_York" }),
+    } as unknown as Intl.DateTimeFormat);
+    mockedUseBilling.mockReturnValue(
+      mockQueryResult<BillingInfo | null>({
+        data: billingFixture({ available_providers: ["stripe", "razorpay"] }),
+      }),
+    );
+    mockedUseCreateBillingCheckout.mockReturnValue(
+      mockMutationResult<CheckoutResult, CreateCheckoutVariables>({}),
+    );
+
+    renderBillingPage();
+
+    await screen.findByRole("heading", { name: "Billing" });
+    expect(
+      screen.queryByRole("radiogroup", { name: "Payment provider" }),
+    ).not.toBeInTheDocument();
   });
 });
 
@@ -319,10 +352,26 @@ describe("Stripe checkout", () => {
 // ---------------------------------------------------------------------------
 
 describe("Razorpay checkout", () => {
+  // Every test here needs Razorpay both registered AND offered — offered
+  // requires a likely-Indian signal (5.10), which this route reads from the
+  // timezone only (no `?currency=` hint on /settings/billing).
+  beforeEach(() => {
+    vi.spyOn(Intl, "DateTimeFormat").mockReturnValue({
+      resolvedOptions: () => ({ timeZone: "Asia/Kolkata" }),
+    } as unknown as Intl.DateTimeFormat);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("opens the Checkout.js modal with the subscription's key/id/amount/currency, and on handler success calls verify then starts the billing poll", async () => {
     const refetchMock = vi.fn();
     mockedUseBilling.mockReturnValue(
-      mockQueryResult<BillingInfo | null>({ data: billingFixture(), refetch: refetchMock }),
+      mockQueryResult<BillingInfo | null>({
+        data: billingFixture({ available_providers: ["stripe", "razorpay"] }),
+        refetch: refetchMock,
+      }),
     );
     const mutateMock = fireOnSuccess<CheckoutResult, CreateCheckoutVariables>({
       razorpay: {
@@ -342,8 +391,9 @@ describe("Razorpay checkout", () => {
 
     const router = renderBillingPage();
 
-    fireEvent.click(await screen.findByRole("radio", { name: "Razorpay" }));
-    fireEvent.click(screen.getByRole("radio", { name: "INR (₹)" }));
+    fireEvent.click(
+      await screen.findByRole("radio", { name: "UPI / RuPay / ₹ (Razorpay)" }),
+    );
     fireEvent.click(screen.getByRole("button", { name: "Upgrade to Agency" }));
 
     await waitFor(() => expect(mockedLoadRazorpayCheckout).toHaveBeenCalledTimes(1));
@@ -384,12 +434,14 @@ describe("Razorpay checkout", () => {
     // which refetches billing immediately — the actual source of truth for
     // the plan flip, never the client-side verify response.
     await waitFor(() => expect(refetchMock).toHaveBeenCalled());
-    expect(await screen.findByText("Finalizing your subscription…")).toBeInTheDocument();
+    expect(await screen.findByText("Activating…")).toBeInTheDocument();
   });
 
   it("does nothing (no toast, no navigation) when the operator dismisses the modal without paying", async () => {
     mockedUseBilling.mockReturnValue(
-      mockQueryResult<BillingInfo | null>({ data: billingFixture() }),
+      mockQueryResult<BillingInfo | null>({
+        data: billingFixture({ available_providers: ["stripe", "razorpay"] }),
+      }),
     );
     const mutateMock = fireOnSuccess<CheckoutResult, CreateCheckoutVariables>({
       razorpay: {
@@ -405,7 +457,9 @@ describe("Razorpay checkout", () => {
 
     const router = renderBillingPage();
 
-    fireEvent.click(await screen.findByRole("radio", { name: "Razorpay" }));
+    fireEvent.click(
+      await screen.findByRole("radio", { name: "UPI / RuPay / ₹ (Razorpay)" }),
+    );
     fireEvent.click(screen.getByRole("button", { name: "Upgrade to Agency" }));
     await waitFor(() => expect(razorpayOpenMock).toHaveBeenCalledTimes(1));
 
@@ -418,7 +472,9 @@ describe("Razorpay checkout", () => {
 
   it("shows a fallback toast when Checkout.js fails to load, instead of throwing inside the click handler", async () => {
     mockedUseBilling.mockReturnValue(
-      mockQueryResult<BillingInfo | null>({ data: billingFixture() }),
+      mockQueryResult<BillingInfo | null>({
+        data: billingFixture({ available_providers: ["stripe", "razorpay"] }),
+      }),
     );
     const mutateMock = fireOnSuccess<CheckoutResult, CreateCheckoutVariables>({
       razorpay: {
@@ -437,7 +493,9 @@ describe("Razorpay checkout", () => {
 
     renderBillingPage();
 
-    fireEvent.click(await screen.findByRole("radio", { name: "Razorpay" }));
+    fireEvent.click(
+      await screen.findByRole("radio", { name: "UPI / RuPay / ₹ (Razorpay)" }),
+    );
     fireEvent.click(screen.getByRole("button", { name: "Upgrade to Agency" }));
 
     await waitFor(() => expect(mockedToastError).toHaveBeenCalledTimes(1));
