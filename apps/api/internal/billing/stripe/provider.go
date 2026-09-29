@@ -400,17 +400,21 @@ func wrapErr(code, msg string, err error) error {
 // failure — the caller (Service.ProcessWebhook) maps that to HTTP 401 without
 // this function having touched the database.
 //
-// webhook.ConstructEvent ALSO refuses an event whose api_version does not
-// match this stripe-go build's compiled stripesdk.APIVersion — deliberately
-// NOT suppressed here (no IgnoreAPIVersionMismatch): a version mismatch can
-// mean Stripe shaped the payload differently for an older/newer API version
-// (e.g. current_period_end lived on the subscription object itself before it
-// moved to the line item — see toSubscription), and silently misparsing a
-// shape this code does not expect is worse than a loud, actionable failure.
+// webhook.ConstructEvent's api_version check (stripe-go v86.1.0) only
+// requires the event's release train (the suffix after the date, e.g.
+// "dahlia") to match stripesdk.APIVersion's train, not an exact dated match:
+// an event dated later than the pinned version within the same train still
+// verifies (confirmed in sandbox: a 2026-07-29.dahlia event verifies against
+// a pinned 2026-06-24.dahlia). Left unsuppressed anyway (no
+// IgnoreAPIVersionMismatch) so a different train is still refused, since
+// Stripe can shape the payload differently across trains (e.g.
+// current_period_end lived on the subscription object itself before it moved
+// to the line item — see toSubscription).
 // OPERATIONAL REQUIREMENT: the Stripe webhook endpoint for
 // /webhooks/billing/stripe must be configured (Stripe supports pinning this
 // per-endpoint, independent of the account's default API version) to send
-// events at exactly stripesdk.APIVersion.
+// events on the same release train as stripesdk.APIVersion; an exact dated
+// match is not required.
 func (p *Provider) VerifyWebhook(rawBody []byte, headers http.Header) (billing.Event, error) {
 	sigHeader := headers.Get("Stripe-Signature")
 	ev, err := webhook.ConstructEvent(rawBody, sigHeader, p.webhookSecret)
