@@ -41,16 +41,6 @@ SELECT plan, plan_status, plan_overrides, grace_until,
 FROM tenants
 WHERE id = @tenant_id;
 
--- name: FindTenantByProviderCustomer :one
--- SUPERSEDED by FindTenantsByProviderCustomer below, and kept only while
--- internal/billing still calls it. Delete it in the change that moves that
--- caller. New code must not call it: when more than one tenant carries the
--- customer id (allowed for every provider but Stripe) it returns one of them
--- and hides the others, so a caller cannot tell "exactly one" from "several".
-SELECT id FROM tenants
-WHERE billing_provider = @billing_provider
-  AND provider_customer_id = @provider_customer_id;
-
 -- name: FindTenantsByProviderCustomer :many
 -- Every tenant pinned to @billing_provider whose stored customer id is
 -- @provider_customer_id, ordered by id. Webhook attribution and ownership
@@ -133,45 +123,6 @@ WHERE billing_provider IS NOT NULL
   AND (provider_subscription_id IS NOT NULL
        OR (billing_provider = 'stripe' AND provider_customer_id IS NOT NULL))
 ORDER BY id;
-
--- name: ListTenantsWithProviderSubscription :many
--- SUPERSEDED by ListTenantsForReconcile above, and kept only while the
--- reconcile sweep still calls it. Delete it in the change that moves that
--- caller.
---
--- The M16 Phase B daily reconcile sweep's tenant set: every tenant with a
--- live provider subscription reference, excluding comped tenants (immune to
--- any provider-driven mutation, webhook or reconcile alike) and any tenant
--- with no provider wired at all. Not paginated: the expected tenant count for
--- this early-stage feature is small; a future pass can add keyset pagination
--- (ORDER BY id already supports it) without changing this query's shape.
-SELECT id, billing_provider, provider_subscription_id
-FROM tenants
-WHERE provider_subscription_id IS NOT NULL
-  AND billing_provider IS NOT NULL
-  AND plan_status <> 'comped'
-ORDER BY id;
-
--- name: ApplyBillingSubscriptionState :exec
--- SUPERSEDED by ApplyBillingSubscriptionStateForProvider below, and kept
--- only while internal/billing still calls it. Delete it in the change that
--- moves that caller. New code must not call it: it writes no cancel fields,
--- does not check the pinned provider, reports no row count, and replaces a
--- stored customer id.
---
--- Persists the state machine's resolved next tenantBillingProfile
--- (nextBillingState in state_machine.go). provider_customer_id is only
--- overwritten when a non-empty value is supplied (COALESCE over NULLIF)
--- so a caller that does not yet know the customer id (should not happen once
--- a subscription exists, but keeps this query safe to reuse) cannot blank it.
-UPDATE tenants
-SET plan                     = @plan,
-    plan_status               = @plan_status,
-    grace_until               = @grace_until,
-    current_period_end        = @current_period_end,
-    provider_subscription_id  = @provider_subscription_id,
-    provider_customer_id      = COALESCE(NULLIF(@provider_customer_id::text, ''), provider_customer_id)
-WHERE id = @tenant_id;
 
 -- name: ApplyBillingSubscriptionStateForProvider :execrows
 -- Persists the state machine's resolved next billing state for one tenant,

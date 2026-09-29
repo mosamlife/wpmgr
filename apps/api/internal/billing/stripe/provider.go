@@ -862,6 +862,10 @@ func (p *Provider) ExpireCheckoutSession(ctx context.Context, sessionID string) 
 func (p *Provider) RetrieveCheckoutSession(ctx context.Context, sessionID string) (billing.CheckoutSessionInfo, error) {
 	sess, err := p.client.V1CheckoutSessions.Retrieve(ctx, sessionID, nil)
 	if err != nil {
+		var stripeErr *stripesdk.Error
+		if errors.As(err, &stripeErr) && stripeErr.HTTPStatusCode == http.StatusNotFound {
+			return billing.CheckoutSessionInfo{}, billing.ErrCheckoutSessionNotFound
+		}
 		return billing.CheckoutSessionInfo{}, wrapErr("stripe_checkout_fetch_failed", "failed to fetch the Stripe checkout session", err)
 	}
 	out := billing.CheckoutSessionInfo{

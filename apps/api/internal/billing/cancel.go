@@ -7,9 +7,13 @@ package billing
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
 
@@ -46,6 +50,45 @@ func ParseCancelWhen(s string) (CancelWhen, error) {
 // stored state: the apply worker does that from the provider's answer.
 type ImmediateCanceller interface {
 	CancelSubscriptionNow(ctx context.Context, providerSubscriptionID string) error
+}
+
+// setCancelRequested records, under the per-tenant billing lock, a cancel the
+// provider has just accepted but will not report back as a schedule.
+//
+//   - cancelNow: the Cancel-now marker (Stripe, past_due only).
+//   - otherwise: the local period-end flag (Razorpay, live statuses only),
+//     with cancelAt stored only when it is still in the future.
+//
+// Both write only while providerSubscriptionID is still the stored
+// subscription. wrote is false when nothing matched.
+func (s *Service) setCancelRequested(ctx context.Context, tenantID uuid.UUID, providerSubscriptionID string, cancelNow bool, cancelAt *time.Time) (wrote bool, err error) {
+	params := sqlc.SetCancelRequestedParams{
+		CancelNow:              cancelNow,
+		TenantID:               tenantID,
+		ProviderSubscriptionID: providerSubscriptionID,
+	}
+	if cancelAt != nil {
+		params.CancelAt = pgtype.Timestamptz{Time: *cancelAt, Valid: true}
+	}
+	var n int64
+	err = pgx.BeginFunc(ctx, s.pool.Pool, func(tx pgx.Tx) error {
+		if err := LockTenantBilling(ctx, tx, tenantID); err != nil {
+			return err
+		}
+		var qerr error
+		n, qerr = sqlc.New(tx).SetCancelRequested(ctx, params)
+		return qerr
+	})
+	if err != nil {
+		if _, ok := domain.AsDomain(err); ok {
+			return false, err
+		}
+		return false, domain.Internal("billing_cancel_mark_failed", "failed to record the requested cancel").WithCause(err)
+	}
+	if n > 0 {
+		s.invalidateCache(ctx, tenantID)
+	}
+	return n > 0, nil
 }
 
 // errCancelNowNotAllowed is the 422 for a Cancel now the state does not
@@ -114,6 +157,15 @@ func (s *Service) CancelSubscriptionNow(ctx context.Context, tenantID uuid.UUID,
 	cancelCall()
 	if err != nil {
 		return err
+	}
+
+	// The Cancel-now marker. The provider has already ended the subscription;
+	// the marker lets the org delete proceed before the resulting state
+	// change is applied. 0 rows means the stored state moved on (typically
+	// the cancellation was already applied), which needs nothing further.
+	if _, err := s.setCancelRequested(ctx, tenantID, profile.ProviderSubscriptionID, true, nil); err != nil {
+		s.logger.Warn("billing: failed to record the cancel-now marker",
+			slog.String("tenant_id", tenantID.String()), slog.Any("error", err))
 	}
 
 	s.recordAudit(ctx, tenantID, actor.Type, actor.ID, "billing.subscription.cancel_requested", map[string]any{

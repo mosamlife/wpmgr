@@ -58,6 +58,7 @@ func (h *Handler) Register(r *gin.RouterGroup) {
 	g.GET("/accounts/:id", h.accountDetail)
 	g.POST("/accounts/:id/comp", h.compAccount)
 	g.DELETE("/accounts/:id/comp", h.revokeComp)
+	g.DELETE("/accounts/:id/billing-provider", h.clearBillingProvider)
 	g.PUT("/accounts/:id/overrides", h.setOverrides)
 	g.POST("/accounts/:id/grace", h.extendGrace)
 	g.POST("/accounts/:id/suspend", h.suspendAccount)

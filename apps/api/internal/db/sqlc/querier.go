@@ -233,18 +233,6 @@ type Querier interface {
 	// that tenant's scope (the per-tenant isolation policy permits the UPDATE).
 	AdvanceBackupScheduleRun(ctx context.Context, arg AdvanceBackupScheduleRunParams) (BackupSchedule, error)
 	AllPluginSignatures(ctx context.Context) ([]PluginSignature, error)
-	// SUPERSEDED by ApplyBillingSubscriptionStateForProvider below, and kept
-	// only while internal/billing still calls it. Delete it in the change that
-	// moves that caller. New code must not call it: it writes no cancel fields,
-	// does not check the pinned provider, reports no row count, and replaces a
-	// stored customer id.
-	//
-	// Persists the state machine's resolved next tenantBillingProfile
-	// (nextBillingState in state_machine.go). provider_customer_id is only
-	// overwritten when a non-empty value is supplied (COALESCE over NULLIF)
-	// so a caller that does not yet know the customer id (should not happen once
-	// a subscription exists, but keeps this query safe to reuse) cannot blank it.
-	ApplyBillingSubscriptionState(ctx context.Context, arg ApplyBillingSubscriptionStateParams) error
 	// Persists the state machine's resolved next billing state for one tenant,
 	// including the cancel schedule (cancel_at_period_end, cancel_at). The caller
 	// holds LockTenantBilling.
@@ -1157,12 +1145,6 @@ type Querier interface {
 	// PROVES there is nothing to reclaim. A guard refusal leaves the task open on
 	// purpose, so a restored dump makes the drain stand off rather than forget.
 	FailTenantObjectReclaim(ctx context.Context, arg FailTenantObjectReclaimParams) (int64, error)
-	// SUPERSEDED by FindTenantsByProviderCustomer below, and kept only while
-	// internal/billing still calls it. Delete it in the change that moves that
-	// caller. New code must not call it: when more than one tenant carries the
-	// customer id (allowed for every provider but Stripe) it returns one of them
-	// and hides the others, so a caller cannot tell "exactly one" from "several".
-	FindTenantByProviderCustomer(ctx context.Context, arg FindTenantByProviderCustomerParams) (uuid.UUID, error)
 	// Every tenant pinned to @billing_provider whose stored customer id is
 	// @provider_customer_id, ordered by id. Webhook attribution and ownership
 	// classification use it when an event names a customer but no tenant.
@@ -2998,17 +2980,6 @@ type Querier interface {
 	// trusted background job, never a per-request handler. Includes tenants whose
 	// purge_started_at is already set (a resumed, previously-interrupted purge).
 	ListTenantsPendingPurge(ctx context.Context, cutoff pgtype.Timestamptz) ([]Tenant, error)
-	// SUPERSEDED by ListTenantsForReconcile above, and kept only while the
-	// reconcile sweep still calls it. Delete it in the change that moves that
-	// caller.
-	//
-	// The M16 Phase B daily reconcile sweep's tenant set: every tenant with a
-	// live provider subscription reference, excluding comped tenants (immune to
-	// any provider-driven mutation, webhook or reconcile alike) and any tenant
-	// with no provider wired at all. Not paginated: the expected tenant count for
-	// this early-stage feature is small; a future pass can add keyset pagination
-	// (ORDER BY id already supports it) without changing this query's shape.
-	ListTenantsWithProviderSubscription(ctx context.Context) ([]ListTenantsWithProviderSubscriptionRow, error)
 	// Cross-tenant enumeration (app.agent GUC) of every tenant whose fleet
 	// circuit breaker is CURRENTLY tripped - GH #291 Phase 3 Fix 4. Called ONCE
 	// per sweep tick (never per-tenant): a tenant whose down sites simply stop

@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -63,14 +64,21 @@ func (s *Service) getBillingProfile(ctx context.Context, tenantID uuid.UUID) (te
 }
 
 // applySubscriptionStateTx persists the state machine's resolved next
-// tenantBillingProfile inside the caller's locked transaction.
-func applySubscriptionStateTx(ctx context.Context, q *sqlc.Queries, tenantID uuid.UUID, next tenantBillingProfile) error {
-	params := sqlc.ApplyBillingSubscriptionStateParams{
+// tenantBillingProfile, cancel schedule included, inside the caller's locked
+// transaction. It writes only while the tenant is still pinned to
+// providerName, the provider the subscription was just read from, and
+// requires exactly one row: anything else is an error that rolls the
+// caller's transaction back. A stored customer id is never replaced; the
+// query only fills a missing one.
+func applySubscriptionStateTx(ctx context.Context, q *sqlc.Queries, tenantID uuid.UUID, providerName string, next tenantBillingProfile) error {
+	params := sqlc.ApplyBillingSubscriptionStateForProviderParams{
 		Plan:                   string(next.Plan),
 		PlanStatus:             string(next.Status),
 		ProviderSubscriptionID: nonEmptyPtr(next.ProviderSubscriptionID),
 		ProviderCustomerID:     next.ProviderCustomerID,
+		CancelAtPeriodEnd:      next.CancelAtPeriodEnd,
 		TenantID:               tenantID,
+		BillingProvider:        providerName,
 	}
 	if next.GraceUntil != nil {
 		params.GraceUntil = pgtype.Timestamptz{Time: *next.GraceUntil, Valid: true}
@@ -78,8 +86,16 @@ func applySubscriptionStateTx(ctx context.Context, q *sqlc.Queries, tenantID uui
 	if next.CurrentPeriodEnd != nil {
 		params.CurrentPeriodEnd = pgtype.Timestamptz{Time: *next.CurrentPeriodEnd, Valid: true}
 	}
-	if err := q.ApplyBillingSubscriptionState(ctx, params); err != nil {
+	if next.CancelAt != nil {
+		params.CancelAt = pgtype.Timestamptz{Time: *next.CancelAt, Valid: true}
+	}
+	n, err := q.ApplyBillingSubscriptionStateForProvider(ctx, params)
+	if err != nil {
 		return domain.Internal("billing_apply_state_failed", "failed to persist billing subscription state").WithCause(err)
+	}
+	if n != 1 {
+		return domain.Internal("billing_apply_state_not_written",
+			fmt.Sprintf("billing state write matched %d rows, want 1 (tenant no longer pinned to %s)", n, providerName))
 	}
 	return nil
 }

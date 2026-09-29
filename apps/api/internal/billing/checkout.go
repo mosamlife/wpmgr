@@ -423,11 +423,19 @@ func (s *Service) ConfirmCheckout(ctx context.Context, tenantID uuid.UUID, sessi
 	callCtx, cancel := context.WithTimeout(ctx, requestProviderTimeout)
 	info, err := confirmer.RetrieveCheckoutSession(callCtx, sessionID)
 	cancel()
+	if errors.Is(err, ErrCheckoutSessionNotFound) {
+		return ConfirmResult{}, notConfirmable
+	}
 	if err != nil {
 		return ConfirmResult{}, err
 	}
-	if info.ClientReferenceID != tenantID.String() ||
-		info.CustomerID != profile.ProviderCustomerID ||
+	// A session another workspace started is not this workspace's to
+	// confirm, and is answered as not found.
+	if info.ClientReferenceID != tenantID.String() {
+		return ConfirmResult{}, domain.NotFound("billing_checkout_session_not_found",
+			"no checkout session with this id exists for this workspace")
+	}
+	if info.CustomerID != profile.ProviderCustomerID ||
 		info.Mode != "subscription" || info.Status != "complete" ||
 		info.SubscriptionID == "" {
 		return ConfirmResult{}, notConfirmable
@@ -563,6 +571,15 @@ func (s *Service) CancelSubscription(ctx context.Context, tenantID uuid.UUID, ac
 
 	if err := provider.CancelSubscription(ctx, profile.ProviderSubscriptionID); err != nil {
 		return err
+	}
+
+	// Razorpay reports no cancel schedule back, so the in-app cancel is
+	// recorded locally: the flag, and the period end as cancel_at only while
+	// that is still in the future.
+	if profile.BillingProvider == providerRazorpay {
+		if _, err := s.setCancelRequested(ctx, tenantID, profile.ProviderSubscriptionID, false, profile.CurrentPeriodEnd); err != nil {
+			return err
+		}
 	}
 
 	s.recordAudit(ctx, tenantID, actor.Type, actor.ID, "billing.subscription.cancel_requested", map[string]any{

@@ -82,11 +82,15 @@ func (s *Service) alert(ctx context.Context, level slog.Level, name string, attr
 
 // LockTenantBilling takes the per-tenant billing advisory lock inside tx. It
 // is held until tx ends. Every write to a tenant's billing columns (the apply
-// worker, the operator's billing actions, and checkout binding) takes it
-// first, so they serialize per tenant. Callers make no provider call while
-// holding it, except the billing workers (bounded by providerCallTimeout).
+// worker, the operator's billing actions, checkout binding, the cancel
+// markers) and the org-delete billing check take it first, so they serialize
+// per tenant. Callers make no provider call while holding it, except the
+// billing workers (bounded by providerCallTimeout).
+//
+// The key is defined once, in the LockTenantBilling query; no Go code spells
+// it, so no caller can drift onto a different key.
 func LockTenantBilling(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID) error {
-	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext('wpmgr_billing:' || $1))", tenantID.String()); err != nil {
+	if err := sqlc.New(tx).LockTenantBilling(ctx, tenantID); err != nil {
 		return domain.Internal("billing_lock_failed", "failed to acquire the tenant billing lock").WithCause(err)
 	}
 	return nil
@@ -261,23 +265,21 @@ func (s *Service) resolveEventTenant(ctx context.Context, providerName string, c
 	return uuid.Nil, "customer_not_unique", nil
 }
 
-// tenantsByCustomer lists the tenants storing (provider, customer). An empty
-// customer matches nothing. tenants carries no RLS, so this reads the pool.
+// tenantsByCustomer lists every tenant storing (provider, customer), so the
+// caller can tell none, exactly one and several apart. An empty customer
+// matches nothing. tenants carries no RLS, so this reads the pool.
 func (s *Service) tenantsByCustomer(ctx context.Context, providerName, customerID string) ([]uuid.UUID, error) {
 	if customerID == "" {
 		return nil, nil
 	}
-	id, err := sqlc.New(s.pool.Pool).FindTenantByProviderCustomer(ctx, sqlc.FindTenantByProviderCustomerParams{
-		BillingProvider:    &providerName,
-		ProviderCustomerID: &customerID,
+	ids, err := sqlc.New(s.pool.Pool).FindTenantsByProviderCustomer(ctx, sqlc.FindTenantsByProviderCustomerParams{
+		BillingProvider:    providerName,
+		ProviderCustomerID: customerID,
 	})
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
-	}
 	if err != nil {
 		return nil, domain.Internal("billing_customer_lookup_failed", "failed to resolve tenant by billing customer").WithCause(err)
 	}
-	return []uuid.UUID{id}, nil
+	return ids, nil
 }
 
 // tenantExists reports whether a tenants row with id exists.
@@ -429,7 +431,7 @@ func (s *Service) applyLocked(ctx context.Context, in applyInput) error {
 				slog.String("tenant_id", in.tenantID.String()), slog.String("status", string(next.Status)))
 		}
 
-		if err := applySubscriptionStateTx(ctx, q, in.tenantID, next); err != nil {
+		if err := applySubscriptionStateTx(ctx, q, in.tenantID, providerName, next); err != nil {
 			return err
 		}
 		if err := markDone(); err != nil {

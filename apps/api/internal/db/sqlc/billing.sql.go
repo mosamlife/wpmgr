@@ -13,51 +13,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const applyBillingSubscriptionState = `-- name: ApplyBillingSubscriptionState :exec
-UPDATE tenants
-SET plan                     = $1,
-    plan_status               = $2,
-    grace_until               = $3,
-    current_period_end        = $4,
-    provider_subscription_id  = $5,
-    provider_customer_id      = COALESCE(NULLIF($6::text, ''), provider_customer_id)
-WHERE id = $7
-`
-
-type ApplyBillingSubscriptionStateParams struct {
-	Plan                   string             `json:"plan"`
-	PlanStatus             string             `json:"plan_status"`
-	GraceUntil             pgtype.Timestamptz `json:"grace_until"`
-	CurrentPeriodEnd       pgtype.Timestamptz `json:"current_period_end"`
-	ProviderSubscriptionID *string            `json:"provider_subscription_id"`
-	ProviderCustomerID     string             `json:"provider_customer_id"`
-	TenantID               uuid.UUID          `json:"tenant_id"`
-}
-
-// SUPERSEDED by ApplyBillingSubscriptionStateForProvider below, and kept
-// only while internal/billing still calls it. Delete it in the change that
-// moves that caller. New code must not call it: it writes no cancel fields,
-// does not check the pinned provider, reports no row count, and replaces a
-// stored customer id.
-//
-// Persists the state machine's resolved next tenantBillingProfile
-// (nextBillingState in state_machine.go). provider_customer_id is only
-// overwritten when a non-empty value is supplied (COALESCE over NULLIF)
-// so a caller that does not yet know the customer id (should not happen once
-// a subscription exists, but keeps this query safe to reuse) cannot blank it.
-func (q *Queries) ApplyBillingSubscriptionState(ctx context.Context, arg ApplyBillingSubscriptionStateParams) error {
-	_, err := q.db.Exec(ctx, applyBillingSubscriptionState,
-		arg.Plan,
-		arg.PlanStatus,
-		arg.GraceUntil,
-		arg.CurrentPeriodEnd,
-		arg.ProviderSubscriptionID,
-		arg.ProviderCustomerID,
-		arg.TenantID,
-	)
-	return err
-}
-
 const applyBillingSubscriptionStateForProvider = `-- name: ApplyBillingSubscriptionStateForProvider :execrows
 UPDATE tenants
 SET plan                     = $1,
@@ -206,29 +161,6 @@ func (q *Queries) CountActiveSitesForBilling(ctx context.Context, tenantID uuid.
 	var count int64
 	err := row.Scan(&count)
 	return count, err
-}
-
-const findTenantByProviderCustomer = `-- name: FindTenantByProviderCustomer :one
-SELECT id FROM tenants
-WHERE billing_provider = $1
-  AND provider_customer_id = $2
-`
-
-type FindTenantByProviderCustomerParams struct {
-	BillingProvider    *string `json:"billing_provider"`
-	ProviderCustomerID *string `json:"provider_customer_id"`
-}
-
-// SUPERSEDED by FindTenantsByProviderCustomer below, and kept only while
-// internal/billing still calls it. Delete it in the change that moves that
-// caller. New code must not call it: when more than one tenant carries the
-// customer id (allowed for every provider but Stripe) it returns one of them
-// and hides the others, so a caller cannot tell "exactly one" from "several".
-func (q *Queries) FindTenantByProviderCustomer(ctx context.Context, arg FindTenantByProviderCustomerParams) (uuid.UUID, error) {
-	row := q.db.QueryRow(ctx, findTenantByProviderCustomer, arg.BillingProvider, arg.ProviderCustomerID)
-	var id uuid.UUID
-	err := row.Scan(&id)
-	return id, err
 }
 
 const findTenantsByProviderCustomer = `-- name: FindTenantsByProviderCustomer :many
@@ -517,51 +449,6 @@ func (q *Queries) ListTenantsForReconcile(ctx context.Context) ([]ListTenantsFor
 			&i.ProviderCustomerID,
 			&i.ProviderSubscriptionID,
 		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listTenantsWithProviderSubscription = `-- name: ListTenantsWithProviderSubscription :many
-SELECT id, billing_provider, provider_subscription_id
-FROM tenants
-WHERE provider_subscription_id IS NOT NULL
-  AND billing_provider IS NOT NULL
-  AND plan_status <> 'comped'
-ORDER BY id
-`
-
-type ListTenantsWithProviderSubscriptionRow struct {
-	ID                     uuid.UUID `json:"id"`
-	BillingProvider        *string   `json:"billing_provider"`
-	ProviderSubscriptionID *string   `json:"provider_subscription_id"`
-}
-
-// SUPERSEDED by ListTenantsForReconcile above, and kept only while the
-// reconcile sweep still calls it. Delete it in the change that moves that
-// caller.
-//
-// The M16 Phase B daily reconcile sweep's tenant set: every tenant with a
-// live provider subscription reference, excluding comped tenants (immune to
-// any provider-driven mutation, webhook or reconcile alike) and any tenant
-// with no provider wired at all. Not paginated: the expected tenant count for
-// this early-stage feature is small; a future pass can add keyset pagination
-// (ORDER BY id already supports it) without changing this query's shape.
-func (q *Queries) ListTenantsWithProviderSubscription(ctx context.Context) ([]ListTenantsWithProviderSubscriptionRow, error) {
-	rows, err := q.db.Query(ctx, listTenantsWithProviderSubscription)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []ListTenantsWithProviderSubscriptionRow
-	for rows.Next() {
-		var i ListTenantsWithProviderSubscriptionRow
-		if err := rows.Scan(&i.ID, &i.BillingProvider, &i.ProviderSubscriptionID); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

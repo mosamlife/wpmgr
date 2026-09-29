@@ -2,6 +2,7 @@ package billing
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"sort"
 	"time"
@@ -171,9 +172,15 @@ type CheckoutSessionInfo struct {
 
 // CheckoutSessionConfirmer is an OPTIONAL capability of a hosted-redirect
 // provider whose browser returns with a session id the service can check.
+// RetrieveCheckoutSession returns ErrCheckoutSessionNotFound when the
+// provider has no session with that id.
 type CheckoutSessionConfirmer interface {
 	RetrieveCheckoutSession(ctx context.Context, sessionID string) (CheckoutSessionInfo, error)
 }
+
+// ErrCheckoutSessionNotFound is returned by RetrieveCheckoutSession when the
+// provider has no session with the given id.
+var ErrCheckoutSessionNotFound = errors.New("billing: checkout session not found")
 
 // PortalSession is the result of minting a billing-management portal session:
 // a short-lived URL the caller redirects the browser to.

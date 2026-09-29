@@ -157,6 +157,30 @@ func (h *Handler) revokeComp(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
+// clearBillingProviderBody is the DELETE /admin/accounts/{id}/billing-provider
+// body.
+type clearBillingProviderBody struct {
+	Reason                  string   `json:"reason"`
+	RazorpaySubscriptionIDs []string `json:"razorpay_subscription_ids"`
+	RazorpayLookupConfirmed bool     `json:"razorpay_lookup_confirmed"`
+}
+
+// clearBillingProvider is the operator's clear-pin action. It is not
+// available in this release: the route answers 501 for every request, after
+// the id and body are read, and changes nothing.
+func (h *Handler) clearBillingProvider(c *gin.Context) {
+	if _, ok := parseTenantIDParam(c); !ok {
+		return
+	}
+	var body clearBillingProviderBody
+	if err := c.ShouldBindJSON(&body); err != nil {
+		httpx.Error(c, domain.Validation("invalid_body", "request body is not valid JSON"))
+		return
+	}
+	httpx.Error(c, domain.Unavailable("billing_clear_pin_unavailable",
+		"clearing a payment-provider pin is not available in this release; contact engineering"))
+}
+
 type overridesRequestBody struct {
 	Sites     *int   `json:"sites"`
 	StorageGB *int   `json:"storage_gb"`
