@@ -17,16 +17,16 @@ the infra side alone.
 1. **Order matters (risk 22).** An image that boots without
    `WPMGR_BILLING_STRIPE_PORTAL_CONFIGURATION` set fails config validation by
    design — that is the intended, safe failure. A checkout against a Stripe
-   account whose Tax setting is not yet active does **not** fail. A sandbox
+   account whose Tax setting is not yet active does **not** fail. A hosted
    run confirmed this at the invoice, not only at the checkout session: with
-   Stripe Tax `status:pending` and zero registrations on the account
-   (`stripe get /v1/tax/settings`), the Checkout Session still came back with
-   `automatic_tax.status=requires_location_inputs`, and the invoice for the
-   subscription it produced charged $0 tax, with
-   `taxability_reason:not_collecting` (checked on the invoice object with the
-   Stripe CLI after the subscription activated). Activate Stripe Tax for the
-   head office (§6) before the account needs to start collecting tax — that
-   is a launch-readiness step; checkout itself does not enforce it.
+   Stripe Tax `status:pending` and zero registrations on the account, a real
+   Checkout Session was completed in the browser (2026-09-29, sandbox) with
+   test card `4242 4242 4242 4242` and a US address. The resulting invoice
+   came back with `automatic_tax.status:complete` and `total_taxes:0`, with
+   `taxability_reason:not_collecting` (checked on the invoice object after
+   the subscription activated). Activate Stripe Tax for the head office (§6)
+   and add registrations before the account needs to start collecting tax —
+   that is a launch-readiness step; checkout itself does not enforce it.
 2. **The six `WPMGR_BILLING_STRIPE_*` variables are all-or-nothing.** Today's
    code (`validateStripeConfig`) enforces five of them together:
    `WPMGR_BILLING_STRIPE_SECRET_KEY`, `WPMGR_BILLING_STRIPE_WEBHOOK_SECRET`,
@@ -371,8 +371,13 @@ docker run -d --name wpmgr-billing-e2e -p 5433:5432 \
   postgres:16
 ```
 
-Run migrations with the owner role (`POSTGRES_USER`/`POSTGRES_PASSWORD`
-above), then point the API at the app role instead —
+The API runs migrations at boot with `WPMGR_DB_MIGRATION_DSN` and falls back
+to the app DSN when it is unset — and `wpmgr_app` cannot create schema
+objects, so this run needs the migration DSN pointed at the owner role
+(`POSTGRES_USER`/`POSTGRES_PASSWORD` above), matching
+`infra/docker-compose.yml:178`, for example:
+`WPMGR_DB_MIGRATION_DSN=postgres://wpmgr:wpmgr@localhost:5433/wpmgr?sslmode=disable`.
+Point the API's own connection at the app role instead —
 `WPMGR_DB_HOST=localhost`, `WPMGR_DB_PORT=5433`, `WPMGR_DB_NAME=wpmgr`,
 `WPMGR_DB_USER=wpmgr_app`, `WPMGR_DB_PASSWORD=<the same local password>` —
 and leave `WPMGR_ALLOW_RLS_BYPASS_ROLE` unset, so the API boots with the RLS
@@ -445,6 +450,10 @@ Run checkout with each of:
 - `4000 0035 6000 0123` — an Indian-issued test card; it requires an
   e-mandate, so the checkout flow must carry the customer through that extra
   authentication step rather than completing immediately.
+
+This card's 3-D Secure / e-mandate step renders as a Stripe test page with a
+single COMPLETE button, and it needs a human click to get past — an automated
+browser tool cannot drive it, so run this card manually.
 
 ### 10.6 A foreign event
 
