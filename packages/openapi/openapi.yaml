@@ -2129,8 +2129,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
   # --- ADR-045 instance SMTP settings ------------------------------------------
-  # Every route below requires instance-level authority: a superadmin, or the
-  # owner of the only live organisation on the install. An active organisation
+  # Every route below requires instance-level authority: a superadmin, the
+  # owner of the only live organisation on the install, or, on a self-hosted
+  # install, the account that set up the install. An active organisation
   # is not required. A caller without that authority gets
   # 403 instance_authority_required; a site-scoped principal gets
   # 403 org_scope_required. Me.can_manage_instance_email reports the same
@@ -15076,8 +15077,9 @@ components:
             (GET, PUT and POST /test under /api/v1/settings/smtp). Computed by
             the same decision that gates those routes, so it is true exactly
             when they would admit this caller: instance-level authority
-            (a superadmin, or the owner of the only live organisation on the
-            install) and a principal that is not site-scoped. An active
+            (a superadmin, the owner of the only live organisation on the
+            install, or, on a self-hosted install, the account that set up
+            the install) and a principal that is not site-scoped. An active
             organisation is not required. False whenever that decision cannot
             be made. Present on GET and PATCH /auth/me; responses built before
             the session exists (login, register, 2FA and OIDC completion) omit
