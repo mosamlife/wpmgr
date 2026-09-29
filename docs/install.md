@@ -110,7 +110,7 @@ example for each — read it top-to-bottom. Key env vars (all prefixed `WPMGR_`)
 | `WPMGR_S3_FORCE_PATH_STYLE` | required for SeaweedFS | `true` |
 | `WPMGR_CLICKHOUSE_ADDR` | ClickHouse | `localhost:9000` |
 | `WPMGR_OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP collector | `http://localhost:4318` |
-| `WPMGR_SUPERADMIN_EMAILS` | one-shot: grants `is_superadmin` and activates the account at boot. It does NOT mark the address verified: the operator confirms their address like any other user. (Unset after it runs; revoke via `WPMGR_SUPERADMIN_REVOKE_EMAILS`.) | (empty) |
+| `WPMGR_SUPERADMIN_EMAILS` | one-shot: grants `is_superadmin` and activates the account at boot. It does NOT mark the address verified: the operator confirms their address like any other user. (Unset after it runs; revoke via `WPMGR_SUPERADMIN_REVOKE_EMAILS`.) Also names who can always reach the install-wide email relay settings, see [Instance email (SMTP) authority](#instance-email-authority) below. | (empty) |
 | `WPMGR_WORDFENCE_API_KEY` | vulnerability-feed API key fallback (the key saved in the superadmin UI takes precedence) | (empty) |
 | `WPMGR_SCREENSHOT_READY_WAIT` | screenshot capture wait budget in whole seconds (media-encoder; raise on slow hosting) | `8` |
 | `WPMGR_HOSTED` | managed-SaaS entitlements switch; hosted only, leave unset on self-host | `false` |
@@ -275,6 +275,40 @@ GRANT-self/REVOKE pattern means the corpus migration requires the owner role
 The `WPMGR_ALLOW_RLS_BYPASS_ROLE=true` env var (default `false`) downgrades
 the boot-time RLS check to a warning. Intended only for single-node local dev
 sharing the bootstrap superuser; never set it in production.
+
+### Instance email (SMTP) authority {#instance-email-authority}
+
+The install-wide outgoing mail relay is one setting for the whole install, not
+a per-organisation one, and only an account with instance-level authority may
+view, change, or test it. On a self-hosted install, that authority belongs to:
+
+- any account listed in `WPMGR_SUPERADMIN_EMAILS`;
+- on an install with exactly one live organisation, that organisation's owner;
+- the install owner: the account recorded as having set up the install (see
+  [First-run notes](#first-run-notes) below), for as long as that account is
+  active and is an owner of at least one live organisation; an organisation in
+  its deletion grace period does not count.
+
+**Fallback.** The install owner arm tracks live ownership, not history:
+owning a live organisation again restores it on the next request, even after
+a period of owning none. If the install drops back to exactly one live
+organisation, that organisation's owner is admitted through the sole-owner
+rule above regardless of who the install owner is. Once an account is
+recorded as the install owner it is never replaced: if that account is
+deleted, disabled, or ends up owning no live organisation, a later account
+that completes setup is still not recorded as the install owner. Recover
+access with `WPMGR_SUPERADMIN_EMAILS`.
+
+**No install owner recorded.** Until an account is recorded, this arm admits
+nobody — there is no fallback to the earliest user or owner. Setup reopens
+only once no organisation on the install has an owner; the next successful
+setup then records its account. On an install that still has owners, this
+empty state stays empty for as long as any organisation on the install has
+an owner, and `WPMGR_SUPERADMIN_EMAILS` is the remedy. Superadmins are
+admitted through their own arm, not this one.
+
+Hosted installs are not affected: this whole section describes self-hosted
+behaviour only.
 
 ## 2. Bring up the stack
 
@@ -495,7 +529,12 @@ Grafana then ships with the WPMgr dashboards pre-provisioned. See
   body field, and is deliberately absent from `openapi.yaml`, so no generated
   client (including the dashboard) can send it. That value lives in `.env`
   under that key, generated once by `scripts/init-env.sh` and never rotated
-  by a re-run.
+  by a re-run. On a self-hosted install, the account recorded as having set
+  up the install also holds the install-wide email relay authority described
+  in [Instance email (SMTP) authority](#instance-email-authority) above,
+  while that account is active and owns at least one live organisation.
+  An account that completes setup after one is already recorded is not
+  recorded, and does not gain that authority.
 
   You never need to look up or paste that value yourself. `scripts/init-env.sh`
   (and the quickstart-selfhost.sh curl-pipe path) prints the exact claim

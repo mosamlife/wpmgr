@@ -24,6 +24,29 @@ type fakeInstanceStore struct {
 	superadminErr error
 	soleOwner     bool
 	soleOwnerErr  error
+	// selfHosted false is the hosted answer.
+	selfHosted      bool
+	installOwner    bool
+	installOwnerErr error
+	// ownsNoLiveOrganisation makes the install owner hold no 'owner'
+	// membership in any live organisation, which the arm refuses.
+	ownsNoLiveOrganisation bool
+}
+
+// installOwnerOrgID is the organisation the fake names for the install
+// owner's audit copy.
+var installOwnerOrgID = uuid.MustParse("1a5e0000-0000-4000-8000-0000000000d1")
+
+func (f fakeInstanceStore) SelfHosted() bool { return f.selfHosted }
+
+func (f fakeInstanceStore) InstallOwnerAuditTenant(context.Context, uuid.UUID) (bool, uuid.UUID, error) {
+	if f.installOwnerErr != nil {
+		return false, uuid.Nil, f.installOwnerErr
+	}
+	if !f.installOwner || f.ownsNoLiveOrganisation {
+		return f.installOwner, uuid.Nil, nil
+	}
+	return true, installOwnerOrgID, nil
 }
 
 func (f fakeInstanceStore) IsSuperadmin(context.Context, uuid.UUID) (bool, error) {
@@ -48,7 +71,7 @@ func TestSetInstanceCapabilities_EqualsTheRouteDecision(t *testing.T) {
 	cases := []struct {
 		name  string
 		p     domain.Principal
-		store admingate.Store
+		store admingate.InstanceEmailStore
 		want  bool
 	}{
 		{"superadmin, no active organisation", orgUser(uuid.Nil), fakeInstanceStore{superadmin: true}, true},
@@ -60,6 +83,11 @@ func TestSetInstanceCapabilities_EqualsTheRouteDecision(t *testing.T) {
 		{"superadmin read error", orgUser(uuid.New()), fakeInstanceStore{superadminErr: errors.New("boom"), soleOwner: true}, false},
 		{"organisation count read error", orgUser(uuid.New()), fakeInstanceStore{soleOwner: true, soleOwnerErr: errors.New("boom")}, false},
 		{"store not wired", orgUser(uuid.New()), nil, false},
+		{"install owner, self-hosted", orgUser(uuid.New()), fakeInstanceStore{selfHosted: true, installOwner: true}, true},
+		{"install owner, hosted", orgUser(uuid.New()), fakeInstanceStore{installOwner: true}, false},
+		{"install owner owning no live organisation, self-hosted", orgUser(uuid.New()), fakeInstanceStore{selfHosted: true, installOwner: true, ownsNoLiveOrganisation: true}, false},
+		{"install owner read error, self-hosted", orgUser(uuid.New()), fakeInstanceStore{selfHosted: true, installOwnerErr: errors.New("boom")}, false},
+		{"site-scoped install owner, self-hosted", siteUser, fakeInstanceStore{selfHosted: true, installOwner: true}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
