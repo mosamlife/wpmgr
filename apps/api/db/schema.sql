@@ -2464,7 +2464,8 @@ CREATE TABLE alert_configs (
     -- DEFAULT here (true) matches a from-scratch build of this file (see
     -- app_alert_rollout above); a REAL upgrade deployment gets this column's
     -- default computed dynamically by m108 from whether it already had
-    -- sites, per the design's "measure first, alert later" rollout rule.
+    -- sites, per the design's "measure first, alert later" rollout rule, and
+    -- m146 sets it to false on a deployment that had sites when m108 ran.
     app_alerts_enabled boolean NOT NULL DEFAULT true,
     created_at       timestamptz NOT NULL DEFAULT now(),
     updated_at       timestamptz NOT NULL DEFAULT now()
