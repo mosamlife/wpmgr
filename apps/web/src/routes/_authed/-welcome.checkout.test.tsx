@@ -306,8 +306,11 @@ describe("WelcomeCheckoutPage — decline return (?checkout=cancel)", () => {
       "/welcome/checkout?plan=scale&checkout=cancel&currency=INR",
     );
 
-    // A decline return skips the auto-start effect's own checkout call —
-    // this test only cares about the button's own explicit call below.
+    // The auto-start effect (welcome.checkout.tsx) depends only on `tier`,
+    // never on `checkout`, so it still fires its own checkout call here on
+    // a decline return — pre-existing behavior, unchanged by this test.
+    // Wait for that call, then clear the mock so the assertion below is
+    // only about the button's own explicit call, not this one.
     await waitFor(() => expect(mutateMock).toHaveBeenCalledTimes(1));
     mutateMock.mockClear();
 

@@ -265,6 +265,11 @@ export type DeleteOrgErrorCode =
  * Human, actionable copy for every documented refusal code. Deliberately
  * overrides the server's own wording (aimed at logs/API consumers) with
  * house-style UI copy.
+ *
+ * `billing_active` here is the fallback used when `details.reason` is absent
+ * or not one of the four named reasons below -- see
+ * `BILLING_ACTIVE_REASON_MESSAGES` for the reason-specific copy that
+ * `mapDeleteOrgError` prefers when it can.
  */
 const DELETE_ORG_ERROR_MESSAGES: Record<DeleteOrgErrorCode, string> = {
   confirm_name_required: "Type the organisation's name to confirm deletion.",
@@ -288,28 +293,78 @@ function isDeleteOrgErrorCode(code: string): code is DeleteOrgErrorCode {
 }
 
 /**
- * Maps a DELETE /orgs/{orgId} error code into a clear, human message. Falls
- * back to the server's own message for any undocumented code, so a future
- * backend addition never surfaces as a blank error. Pure + exported so every
- * documented code is covered by use-orgs.test.ts without a network call.
+ * `details.reason` values a `billing_active` (409) refusal can carry --
+ * mirrors `apps/api/internal/billing/delete_guard.go:26-38` exactly. Any
+ * other/absent reason falls back to `DELETE_ORG_ERROR_MESSAGES.billing_active`
+ * above.
+ */
+export type BillingActiveDeleteReason =
+  | "cancel_required"
+  | "past_due"
+  | "comped_subscription"
+  | "subscription_pending";
+
+/**
+ * Per-reason copy for a `billing_active` refusal, so the owner is told what
+ * to actually do rather than the one-size-fits-all "cancel the subscription"
+ * -- a past-due tenant who has already scheduled a period-end cancel is still
+ * blocked (delete_guard.go's `StatusPastDue` branch only clears on Cancel
+ * now), and nothing else on this screen points them at it.
+ */
+const BILLING_ACTIVE_REASON_MESSAGES: Record<BillingActiveDeleteReason, string> = {
+  cancel_required:
+    "Cancel the subscription first, from the Billing page, then delete this organisation.",
+  past_due:
+    'A payment on this organisation is overdue. Use "Cancel now" on the Billing page to end the subscription at once, then try again.',
+  comped_subscription:
+    "This organisation has a complimentary subscription attached. Contact support to delete it.",
+  subscription_pending:
+    "A payment is still being set up for this organisation. Wait a minute, then try again.",
+};
+
+function isBillingActiveReason(
+  reason: string,
+): reason is BillingActiveDeleteReason {
+  return Object.prototype.hasOwnProperty.call(BILLING_ACTIVE_REASON_MESSAGES, reason);
+}
+
+/**
+ * Maps a DELETE /orgs/{orgId} error code into a clear, human message. For
+ * `billing_active`, prefers the reason-specific copy above when `reason` is
+ * one of the four the server documents; any other reason (including none)
+ * falls back to the generic `billing_active` copy. Falls back to the
+ * server's own message for any undocumented CODE, so a future backend
+ * addition never surfaces as a blank error. Pure + exported so every
+ * documented code/reason pair is covered by use-orgs.test.ts without a
+ * network call.
  */
 export function mapDeleteOrgError(
   code: string | undefined,
   fallbackMessage: string,
+  reason?: string,
 ): string {
+  if (code === "billing_active" && reason !== undefined && isBillingActiveReason(reason)) {
+    return BILLING_ACTIVE_REASON_MESSAGES[reason];
+  }
   if (code && isDeleteOrgErrorCode(code)) {
     return DELETE_ORG_ERROR_MESSAGES[code];
   }
   return fallbackMessage || "Could not delete organisation.";
 }
 
-/** Raised by useDeleteOrg; carries the server's error code for callers that need to branch on it. */
+/**
+ * Raised by useDeleteOrg; carries the server's error code (and, for
+ * `billing_active`, its `details.reason`) for callers that need to branch on
+ * either.
+ */
 export class DeleteOrgError extends Error {
   code?: string;
-  constructor(message: string, code?: string) {
+  reason?: string;
+  constructor(message: string, code?: string, reason?: string) {
     super(message);
     this.name = "DeleteOrgError";
     this.code = code;
+    this.reason = reason;
   }
 }
 
@@ -337,10 +392,15 @@ export function useDeleteOrg(): UseMutationResult<
         headers: { "Content-Type": "application/json" },
       });
       if (result.error !== undefined) {
-        const raw = result.error as { code?: string; message?: string };
+        const raw = result.error as
+          | { code?: string; message?: string; details?: Record<string, unknown> }
+          | undefined;
+        const reason =
+          typeof raw?.details?.["reason"] === "string" ? raw.details["reason"] : undefined;
         throw new DeleteOrgError(
-          mapDeleteOrgError(raw.code, raw.message ?? "Could not delete organisation."),
-          raw.code,
+          mapDeleteOrgError(raw?.code, raw?.message ?? "Could not delete organisation.", reason),
+          raw?.code,
+          reason,
         );
       }
       return result.data as DeleteOrgResult;
