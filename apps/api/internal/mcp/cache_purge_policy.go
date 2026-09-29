@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
+	"github.com/mosamlife/wpmgr/apps/api/internal/wpversion"
 )
 
 // MinAgentVersionForOriginOnlyPurge is the first agent release that clears
@@ -22,6 +23,27 @@ import (
 // the release that first ships the origin-only clear, and it must never be
 // ahead of the version apps/agent actually ships.
 const MinAgentVersionForOriginOnlyPurge = "0.61.153"
+
+// agentVersionPattern admits a dotted numeric version only. Anything else,
+// including empty, counts as below the floor.
+var agentVersionPattern = regexp.MustCompile(`^\d+(\.\d+){0,3}$`)
+
+// AgentMeetsOriginOnlyFloor reports whether a site's reported agent version
+// is at or above MinAgentVersionForOriginOnlyPurge. An empty or unparseable
+// version is below it. Creation, approval and dispatch all ask this one
+// function.
+func AgentMeetsOriginOnlyFloor(v string) bool {
+	v = strings.TrimSpace(v)
+	if !agentVersionPattern.MatchString(v) {
+		return false
+	}
+	return wpversion.Compare(v, MinAgentVersionForOriginOnlyPurge) >= 0
+}
+
+// agentConnectedEnough reports whether a site's agent can be sent a command.
+func agentConnectedEnough(state string) bool {
+	return state == "connected" || state == "degraded"
+}
 
 // governedCachePurgeAliases is the CLOSED set of names an operator's AI rule
 // may use to forbid the cache-clear request tool. A forbidden-tools entry is
@@ -93,6 +115,12 @@ func (s *Service) ForbiddenByContext(ctx context.Context, tenantID, siteID uuid.
 	if s.context == nil {
 		return "", false, domain.Internal(ErrCodeContextUnavailable,
 			"this site's governed context cannot be resolved")
+	}
+	if siteID == uuid.Nil {
+		// uuid.Nil is Resolve's organisation scope, which would skip every
+		// site rule. A site-scoped check never asks it.
+		return "", false, domain.Internal(ErrCodeContextUnavailable,
+			"a site-scoped context check needs a site")
 	}
 	rc, err := s.context.Resolve(ctx, tenantID, siteID, nil)
 	if err != nil {

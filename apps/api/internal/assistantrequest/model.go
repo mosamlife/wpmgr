@@ -16,6 +16,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/mosamlife/wpmgr/apps/api/internal/mcp"
 )
 
 // Request states (assistant_cache_purge_requests.state).
@@ -95,8 +97,9 @@ const (
 	// org.LifecycleLockKey; a test pins that.
 	lifecycleLockKey = "org_lifecycle"
 	// CardCopyVersion names the wording of the approval card a person
-	// approved. It is recorded on assistant.request.approved.
-	CardCopyVersion = "2026-09-29"
+	// approved. It is recorded on assistant.request.approved, and it is the
+	// same constant the creation rail puts in the request's digest.
+	CardCopyVersion = mcp.CacheRequestCardCopyVersion
 	// operatorMessageAction is the action name an agent failure is described
 	// with.
 	operatorMessageAction = "Cache clear"

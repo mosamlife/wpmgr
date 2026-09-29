@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/authz"
 )
@@ -47,13 +48,6 @@ const siteAddressUnusableMessage = "WPMgr cannot use this site's stored address,
 // reasonSiteAddressUnusable is the operator-facing refusal reason recorded on
 // mcp.tool.denied for that refusal.
 const reasonSiteAddressUnusable refusalReason = "site_address_unusable"
-
-// errCachePurgeToolNotBuilt is what the two invokers return until the
-// creation rail and the status read are wired. It is not a domain error, so
-// the transport answers the generic internal failure and says nothing else.
-// The tools are unreachable in the meantime: write tools default to off, and
-// only the wiring that installs the rail switches them on.
-var errCachePurgeToolNotBuilt = errors.New("cache-request tool is not wired on this build")
 
 // ToolAnnotations are the MCP tool annotations a descriptor may carry.
 // Pointers so an unset hint is omitted rather than sent as false.
@@ -159,32 +153,57 @@ func cachePurgeToolPolicies() []ToolPolicy {
 	}}
 }
 
-// requestSiteCachePurge is the creation rail's entry point.
-func (s *Service) requestSiteCachePurge(_ context.Context, _ AuthorizedRequest, _ json.RawMessage) (string, error) {
-	return "", errCachePurgeToolNotBuilt
-}
-
-// siteCachePurgeRequestStatus is the status tool's entry point.
-func (s *Service) siteCachePurgeRequestStatus(_ context.Context, _ AuthorizedRequest, _ json.RawMessage) (string, error) {
-	return "", errCachePurgeToolNotBuilt
-}
+// ErrWriteToolsUnavailable is SetWriteToolsEnabled's refusal to switch the
+// tools on for a Service that cannot run them.
+var ErrWriteToolsUnavailable = errors.New("mcp: write tools cannot be switched on")
 
 // SetWriteToolsEnabled is the server-wide switch for tools that are not
 // reads. It is read once at startup (WPMGR_MCP_WRITE_TOOLS, and whether the
 // services those tools need were built) and handed here. The zero value is
 // OFF, so a Service nobody switched on never lists or runs them.
-func (s *Service) SetWriteToolsEnabled(on bool) {
-	s.writeToolsEnabled = on
+//
+// THE SWITCH CANNOT TURN ON A TOOL WHOSE RAIL IS ABSENT. Asked for on, it
+// refuses, stays off and returns ErrWriteToolsUnavailable unless the rail is
+// installed: the store implements the request rail, an audit recorder is
+// wired (the rail records in its own transaction), a governed-context
+// resolver is wired (operator rules must be enforceable) and the request
+// limiter exists. main.go fails boot on that error rather than serving tools
+// that would answer every call with an internal failure. liveRegistry checks
+// the same thing again on every call, so a copy made afterwards without one
+// of them cannot serve the tools either.
+func (s *Service) SetWriteToolsEnabled(on bool) error {
+	if !on {
+		s.writeToolsEnabled = false
+		return nil
+	}
+	if _, err := s.requestRail(); err != nil {
+		s.writeToolsEnabled = false
+		return fmt.Errorf("%w: %v", ErrWriteToolsUnavailable, err)
+	}
+	s.writeToolsEnabled = true
+	return nil
+}
+
+// WriteToolsEnabled reports whether this Service serves the request tools:
+// the switch is on AND the rail is installed. main.go hands this value, not
+// the environment's, to the approval side, so the two halves cannot disagree.
+func (s *Service) WriteToolsEnabled() bool {
+	if !s.writeToolsEnabled {
+		return false
+	}
+	_, err := s.requestRail()
+	return err == nil
 }
 
 // liveRegistry is the surface this server actually serves: the registry,
 // minus every tool whose capability is a request while write tools are
-// switched off. The switch is applied HERE, in the transport's view, and not
-// inside AuthorizeTool, so a check that asks "is this tool permitted for this
-// grant" gets the same answer whichever way the switch is set.
+// switched off or their rail is absent. The switch is applied HERE, in the
+// transport's view, and not inside AuthorizeTool, so a check that asks "is
+// this tool permitted for this grant" gets the same answer whichever way the
+// switch is set.
 func (s *Service) liveRegistry() []ToolPolicy {
 	entries := registryTools()
-	if s.writeToolsEnabled {
+	if s.WriteToolsEnabled() {
 		return entries
 	}
 	out := make([]ToolPolicy, 0, len(entries))

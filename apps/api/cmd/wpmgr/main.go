@@ -1725,14 +1725,16 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	writeToolsOn := writeToolsRequested && perfAgentWired
+	assistantReqSvc := assistantrequest.NewService(assistantrequest.NewRepo(pool), mcpRepo, mcpSvc, auditRec, logger)
+	assistantReqSvc.SetSender(perfSvc, perfRepo)
+	writeToolsOn, err := switchWriteTools(writeToolsRequested, perfAgentWired, mcpSvc, assistantReqSvc)
+	if err != nil {
+		return err
+	}
 	if writeToolsRequested && !perfAgentWired {
 		logger.Warn("WPMGR_MCP_WRITE_TOOLS=on ignored: the agent command client is not wired")
 	}
-	mcpSvc.SetWriteToolsEnabled(writeToolsOn)
-	assistantReqSvc := assistantrequest.NewService(assistantrequest.NewRepo(pool), mcpRepo, mcpSvc, auditRec, logger)
-	assistantReqSvc.SetSender(perfSvc, perfRepo)
-	assistantReqSvc.SetWriteToolsEnabled(writeToolsOn)
+	logger.Info("mcp write tools", slog.Bool("enabled", writeToolsOn))
 	assistantReqScanWorker := assistantrequest.NewScanWorker(assistantReqSvc)
 	assistantReqDispatchWorker := assistantrequest.NewDispatchWorker(assistantReqSvc)
 	assistantReqSweepWorker := assistantrequest.NewSweepWorker(assistantReqSvc)

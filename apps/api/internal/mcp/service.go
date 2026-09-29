@@ -345,12 +345,18 @@ type Service struct {
 	// (SetWriteToolsEnabled). The zero value is OFF: such tools are absent
 	// from tools/list and a call answers exactly as an unknown name does.
 	writeToolsEnabled bool
+
+	// requestLimit is the per-process limiter on site_cache_purge_request
+	// (request_limit.go). Armed in NewService; a Service without it has no
+	// request rail.
+	requestLimit *requestRateLimiter
 }
 
 func NewService(store Store) *Service {
 	return &Service{
-		store: store,
-		now:   time.Now,
+		store:        store,
+		requestLimit: newRequestRateLimiter(),
+		now:          time.Now,
 		// Armed HERE rather than injected with a nil default, for the reason
 		// NewHandler gives about its own limiter: an unarmed limiter would be a
 		// wiring failure that presents as a working endpoint.
@@ -2018,6 +2024,13 @@ func (s *Service) RecordToolCall(ctx context.Context, auth AuthorizedRequest, to
 // a refusal that no ledger records, and is the reason this change goes to
 // security review rather than straight to merge.
 func (s *Service) RecordToolDenied(ctx context.Context, auth AuthorizedRequest, toolName string, reason refusalReason) error {
+	return s.recordToolDeniedWith(ctx, auth, toolName, reason, nil)
+}
+
+// recordToolDeniedWith is RecordToolDenied plus operator-facing metadata a
+// request-tool refusal carries (the supplied site id, the matched rule). The
+// extra keys never replace the row's own keys.
+func (s *Service) recordToolDeniedWith(ctx context.Context, auth AuthorizedRequest, toolName string, reason refusalReason, extra map[string]any) error {
 	if err := s.requireRecorder(); err != nil {
 		return err
 	}
@@ -2048,6 +2061,11 @@ func (s *Service) RecordToolDenied(ctx context.Context, auth AuthorizedRequest, 
 		// produces, so this flag is the signal that someone was probing the
 		// encoding boundary rather than mistyping.
 		meta["target_sanitized"] = true
+	}
+	for k, v := range extra {
+		if _, taken := meta[k]; !taken {
+			meta[k] = v
+		}
 	}
 
 	_, err := s.audit.RecordOrFail(ctx, audit.Event{

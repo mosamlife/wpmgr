@@ -1047,6 +1047,13 @@ func (h *TransportHandler) callTool(ctx context.Context, auth AuthorizedRequest,
 
 	text, err := entry.invoke(ctx, h.svc, auth, p.Arguments)
 	if err != nil {
+		// A REQUEST-TOOL REFUSAL carries its own operator reason. It is
+		// recorded in its OWN transaction, never the one that would have
+		// written a request row, and then answered.
+		var tr *toolRefusal
+		if errors.As(err, &tr) {
+			return h.refuseOnWrite(ctx, auth, req, entry, tr)
+		}
 		// A GOVERNED-CONTEXT REFUSAL IS A DENIAL AND EARNS THE DENIAL ROW.
 		// Authorization refusals are recorded in authorizeCall, above; these
 		// two are refused further in, after the gate said yes, so they used to
@@ -1061,6 +1068,17 @@ func (h *TransportHandler) callTool(ctx context.Context, auth AuthorizedRequest,
 			return h.refuseOnContext(ctx, auth, req, entry, reason, err)
 		}
 		return h.toolError(req.ID, err)
+	}
+
+	// A REQUEST TOOL OWNS ITS AUDIT ROWS. The creation rail records
+	// mcp.tool.called with RecordInTx inside the transaction that wrote the
+	// request row, so the row and its record commit together or not at all.
+	// Recording it again here would be a second row for one call, in a second
+	// transaction that could fail after the first committed.
+	if entry.Effect == EffectRequest {
+		return newResponse(req.ID, map[string]any{
+			"content": []map[string]any{{"type": "text", "text": text}},
+		})
 	}
 
 	// The operator-facing audit row (ActionMCPToolCalled), for this call and no
@@ -1160,6 +1178,36 @@ func (h *TransportHandler) refuseOnContext(
 	return h.toolError(req.ID, refusal)
 }
 
+// refuseOnWrite records one request-tool refusal and then answers it: the
+// twin of refuseOnContext for the request tools, and fail-closed the same
+// way. The row is written in its own transaction with no request-row write
+// (the rail's transaction, if one was opened, has already rolled back). A
+// log-only refusal (the per-process rate limit) writes the warning line and
+// no row.
+func (h *TransportHandler) refuseOnWrite(
+	ctx context.Context,
+	auth AuthorizedRequest,
+	req jsonrpcRequest,
+	entry ToolPolicy,
+	tr *toolRefusal,
+) jsonrpcResponse {
+	h.log.WarnContext(ctx, "mcp tool call refused",
+		slog.String("tenant_id", auth.TenantID.String()),
+		slog.String("grant_id", auth.GrantID.String()),
+		slog.String("tool", entry.Name),
+		slog.String("refusal_reason", string(tr.reason)),
+		slog.Bool("audited", !tr.logOnly),
+		slog.String("error", tr.Error()),
+	)
+	if !tr.logOnly {
+		if aerr := h.svc.recordToolDeniedWith(ctx, auth, entry.Name, tr.reason, tr.meta); aerr != nil {
+			h.auditGap(ctx, auth, audit.ActionMCPToolDenied, entry.Name, string(tr.reason), "", aerr)
+			return h.toolError(req.ID, aerr)
+		}
+	}
+	return h.toolError(req.ID, tr.err)
+}
+
 // callerCausedToolErrors enumerates the domain codes on the tools/call path
 // that a CLIENT can fix by changing its next request, and which therefore
 // answer -32602 (invalid params) carrying their own message. Everything not
@@ -1232,6 +1280,18 @@ func (h *TransportHandler) toolError(id json.RawMessage, err error) jsonrpcRespo
 			// are copied: the producer's details are operator-facing.
 			data, _ := json.Marshal(map[string]any{"code": de.Code, "retryable": false})
 			return newErrorResponse(id, codeSiteAddressUnusable, siteAddressUnusableMessage, data)
+		}
+		if wire, ok := requestToolWireCodes[de.Code]; ok {
+			// The request tools' typed refusals. The message is one of the
+			// rail's constants, and the details are built by the rail from
+			// constants and fenced values only; they are copied onto the wire
+			// so a client branches on a field rather than parsing English.
+			payload := map[string]any{"code": de.Code}
+			for k, v := range de.Details {
+				payload[k] = v
+			}
+			data, _ := json.Marshal(payload)
+			return newErrorResponse(id, wire, de.Message, data)
 		}
 		if de.Code == govcontext.ErrCodeContextTooLarge {
 			// THE FORK THIS BRANCH SITS ON IS NOT "HOW BAD IS IT" BUT WHOSE

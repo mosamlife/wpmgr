@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"regexp"
 	"strings"
 
 	"github.com/google/uuid"
@@ -16,7 +15,6 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 	"github.com/mosamlife/wpmgr/apps/api/internal/mcp"
 	"github.com/mosamlife/wpmgr/apps/api/internal/perf"
-	"github.com/mosamlife/wpmgr/apps/api/internal/wpversion"
 )
 
 // GrantVerdicts reads a connection's grant-level verdict with no token in
@@ -190,18 +188,11 @@ func requireSession(p domain.Principal) error {
 	return nil
 }
 
-// agentVersionPattern admits a dotted numeric version only. Anything else,
-// including empty, counts as below the floor.
-var agentVersionPattern = regexp.MustCompile(`^\d+(\.\d+){0,3}$`)
-
 // agentMeetsFloor reports whether a site's agent can clear only its own
-// cache when asked.
+// cache when asked. It is the creation rail's own function, so creation,
+// approval and dispatch apply one rule.
 func agentMeetsFloor(v string) bool {
-	v = strings.TrimSpace(v)
-	if !agentVersionPattern.MatchString(v) {
-		return false
-	}
-	return wpversion.Compare(v, mcp.MinAgentVersionForOriginOnlyPurge) >= 0
+	return mcp.AgentMeetsOriginOnlyFloor(v)
 }
 
 // connectedEnough reports whether the site's agent can be sent a command now.
