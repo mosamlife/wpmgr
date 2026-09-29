@@ -4322,6 +4322,102 @@ export type PurgeRequest = {
   delete_everything?: boolean;
 };
 
+export type AssistantRequestApproveBody = {
+  /**
+   * The digest the queue returned for this request.
+   */
+  presented_digest: string;
+};
+
+export type AssistantRequestList = {
+  requests: Array<AssistantRequest>;
+  /**
+   * Requests still waiting for a decision (the badge).
+   */
+  pending_count: number;
+  limit: number;
+  offset: number;
+};
+
+/**
+ * One AI cache-clear request. `site_label`, `site_host`, `grant_label`,
+ * `url` and `site_reported_text` came from a site or an AI connection:
+ * render each as plain text, never as markup, a link or a tooltip.
+ * The card state follows from `state` and `outcome` together.
+ *
+ */
+export type AssistantRequest = {
+  id: string;
+  site_id: string;
+  scope: "all" | "url";
+  /**
+   * The page address for scope url, as stored; null for all.
+   */
+  url: string;
+  site_label: string;
+  /**
+   * The site's host in the ASCII form WPMgr dials (Punycode for an internationalised name).
+   */
+  site_host: string;
+  grant_label: string;
+  grant_via: string;
+  setup_client: string;
+  /**
+   * Present only for a person signed in to the dashboard. Send it back to approve.
+   */
+  presented_digest?: string;
+  state:
+    | "pending"
+    | "approved_undispatched"
+    | "dispatched"
+    | "rejected"
+    | "withdrawn"
+    | "expired";
+  created_at: string;
+  expires_at: string;
+  decided_at: string;
+  decided_by_user_id: string;
+  decided_by_name: string;
+  /**
+   * True when the request names a decider whose account has since been deleted.
+   */
+  decided_by_account_deleted: boolean;
+  withdrawn_at: string;
+  claimed_at: string;
+  dispatch_attempts: number;
+  last_attempt_at: string;
+  last_attempt_code:
+    | "site_unreachable"
+    | "site_cooldown"
+    | "site_hourly_cap"
+    | "site_busy"
+    | "org_busy"
+    | "context_unavailable"
+    | "write_tools_disabled";
+  outcome:
+    | "purged"
+    | "site_reported_failure"
+    | "agent_failed"
+    | "outcome_unknown"
+    | "not_sent";
+  not_sent_reason:
+    | "grant_inactive"
+    | "assistant_paused"
+    | "organisation_deleted"
+    | "capability_not_held"
+    | "site_absent"
+    | "forbidden_by_context"
+    | "agent_outdated"
+    | "dispatch_deadline_passed"
+    | "transport_pre_send";
+  outcome_at: string;
+  hosting_caches_cleared: Array<string>;
+  hosting_caches_skipped: Array<string>;
+  origin_only_confirmed: boolean;
+  wpmgr_cdn: "not_attempted" | "cleared" | "failed" | "not_configured";
+  site_reported_text: string;
+};
+
 /**
  * The `{ok, detail}` acknowledgement returned by the cache action
  * endpoints (purge / preload / enable / disable). `ok` is false when the
@@ -17489,6 +17585,162 @@ export type GetCacheHealthResponses = {
 
 export type GetCacheHealthResponse =
   GetCacheHealthResponses[keyof GetCacheHealthResponses];
+
+export type ListAssistantRequestsData = {
+  body?: never;
+  path?: never;
+  query?: {
+    limit?: number;
+    offset?: number;
+  };
+  url: "/api/v1/ai/requests";
+};
+
+export type ListAssistantRequestsErrors = {
+  /**
+   * Missing site.cache.purge
+   */
+  403: Error;
+};
+
+export type ListAssistantRequestsError =
+  ListAssistantRequestsErrors[keyof ListAssistantRequestsErrors];
+
+export type ListAssistantRequestsResponses = {
+  /**
+   * A page of requests
+   */
+  200: AssistantRequestList;
+};
+
+export type ListAssistantRequestsResponse =
+  ListAssistantRequestsResponses[keyof ListAssistantRequestsResponses];
+
+export type ListSiteAssistantRequestsData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: {
+    limit?: number;
+    offset?: number;
+  };
+  url: "/api/v1/sites/{siteId}/ai/requests";
+};
+
+export type ListSiteAssistantRequestsErrors = {
+  /**
+   * Missing site.cache.purge
+   */
+  403: Error;
+  /**
+   * The site is not the caller's
+   */
+  404: Error;
+};
+
+export type ListSiteAssistantRequestsError =
+  ListSiteAssistantRequestsErrors[keyof ListSiteAssistantRequestsErrors];
+
+export type ListSiteAssistantRequestsResponses = {
+  /**
+   * A page of requests
+   */
+  200: AssistantRequestList;
+};
+
+export type ListSiteAssistantRequestsResponse =
+  ListSiteAssistantRequestsResponses[keyof ListSiteAssistantRequestsResponses];
+
+export type ApproveAssistantRequestData = {
+  body: AssistantRequestApproveBody;
+  path: {
+    siteId: string;
+    requestId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/ai/requests/{requestId}/approve";
+};
+
+export type ApproveAssistantRequestErrors = {
+  /**
+   * Not a signed-in person, or missing site.cache.purge
+   */
+  403: Error;
+  /**
+   * The site is not the caller's
+   */
+  404: Error;
+  /**
+   * Nothing was approved; the error code names why
+   */
+  409: Error;
+  /**
+   * The body was not application/json
+   */
+  415: Error;
+  /**
+   * The approval could not be recorded; nothing will run
+   */
+  500: Error;
+};
+
+export type ApproveAssistantRequestError =
+  ApproveAssistantRequestErrors[keyof ApproveAssistantRequestErrors];
+
+export type ApproveAssistantRequestResponses = {
+  /**
+   * Approved; the request now waits for the worker
+   */
+  200: AssistantRequest;
+};
+
+export type ApproveAssistantRequestResponse =
+  ApproveAssistantRequestResponses[keyof ApproveAssistantRequestResponses];
+
+export type DeclineAssistantRequestData = {
+  body: {
+    [key: string]: unknown;
+  };
+  path: {
+    siteId: string;
+    requestId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/ai/requests/{requestId}/decline";
+};
+
+export type DeclineAssistantRequestErrors = {
+  /**
+   * Not a signed-in person, or missing site.cache.purge
+   */
+  403: Error;
+  /**
+   * The site is not the caller's
+   */
+  404: Error;
+  /**
+   * The request is no longer waiting
+   */
+  409: Error;
+  /**
+   * The body was not application/json
+   */
+  415: Error;
+};
+
+export type DeclineAssistantRequestError =
+  DeclineAssistantRequestErrors[keyof DeclineAssistantRequestErrors];
+
+export type DeclineAssistantRequestResponses = {
+  /**
+   * Declined
+   */
+  200: AssistantRequest;
+};
+
+export type DeclineAssistantRequestResponse =
+  DeclineAssistantRequestResponses[keyof DeclineAssistantRequestResponses];
 
 export type PurgeCacheData = {
   body: PurgeRequest;

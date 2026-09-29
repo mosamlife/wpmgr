@@ -116,6 +116,9 @@ import type {
   ApplySiteFileUploadData,
   ApplySiteFileUploadErrors,
   ApplySiteFileUploadResponses,
+  ApproveAssistantRequestData,
+  ApproveAssistantRequestErrors,
+  ApproveAssistantRequestResponses,
   ArchiveSiteData,
   ArchiveSiteErrors,
   ArchiveSiteResponses,
@@ -251,6 +254,9 @@ import type {
   CreateUpdateRunData,
   CreateUpdateRunErrors,
   CreateUpdateRunResponses,
+  DeclineAssistantRequestData,
+  DeclineAssistantRequestErrors,
+  DeclineAssistantRequestResponses,
   DeleteAdminUserData,
   DeleteAdminUserErrors,
   DeleteAdminUserResponses,
@@ -627,6 +633,9 @@ import type {
   ListApiKeysData,
   ListApiKeysErrors,
   ListApiKeysResponses,
+  ListAssistantRequestsData,
+  ListAssistantRequestsErrors,
+  ListAssistantRequestsResponses,
   ListAuditData,
   ListAuditErrors,
   ListAuditResponses,
@@ -716,6 +725,9 @@ import type {
   ListSharedWithMeResponses,
   ListSiteActivityData,
   ListSiteActivityResponses,
+  ListSiteAssistantRequestsData,
+  ListSiteAssistantRequestsErrors,
+  ListSiteAssistantRequestsResponses,
   ListSiteBansData,
   ListSiteBansErrors,
   ListSiteBansResponses,
@@ -6587,6 +6599,99 @@ export const getCacheHealth = <ThrowOnError extends boolean = false>(
     GetCacheHealthErrors,
     ThrowOnError
   >({ url: "/api/v1/sites/{siteId}/perf/cache/health", ...options });
+
+/**
+ * List AI cache-clear requests
+ *
+ * This organisation's AI cache-clear requests the caller can see, newest
+ * first, with the number still waiting for a decision. A site
+ * collaborator sees only requests on their own sites. Requires
+ * `site.cache.purge`. `presented_digest` is included only for a person
+ * signed in to the dashboard; an API key gets the same rows without it.
+ *
+ */
+export const listAssistantRequests = <ThrowOnError extends boolean = false>(
+  options?: Options<ListAssistantRequestsData, ThrowOnError>,
+) =>
+  (options?.client ?? client).get<
+    ListAssistantRequestsResponses,
+    ListAssistantRequestsErrors,
+    ThrowOnError
+  >({ url: "/api/v1/ai/requests", ...options });
+
+/**
+ * List AI cache-clear requests for one site
+ *
+ * The same list as `GET /api/v1/ai/requests`, for one site. Feeds the
+ * site banner. Requires `site.cache.purge` and access to the site.
+ *
+ */
+export const listSiteAssistantRequests = <ThrowOnError extends boolean = false>(
+  options: Options<ListSiteAssistantRequestsData, ThrowOnError>,
+) =>
+  (options.client ?? client).get<
+    ListSiteAssistantRequestsResponses,
+    ListSiteAssistantRequestsErrors,
+    ThrowOnError
+  >({ url: "/api/v1/sites/{siteId}/ai/requests", ...options });
+
+/**
+ * Approve one AI cache-clear request
+ *
+ * Approves one waiting request. Only a person signed in to the dashboard
+ * may approve; an API key gets 403. The body must be JSON and carry the
+ * `presented_digest` the queue returned for this request, so an approval
+ * always names the exact request the person saw. There is no bulk
+ * approve. The approval and its audit row commit together; the request
+ * is then sent to the site by a worker, which re-checks everything first.
+ *
+ * 409 answers name why nothing was approved: the request changed or was
+ * decided, the AI assistant is paused, AI cache clears are switched off
+ * on this server, the connection was revoked or expired, the site left
+ * the connection's scope, the connection lost the capability, AI rules
+ * forbid it, the AI rules could not be read, the site's agent is too old,
+ * or the site can no longer be read.
+ *
+ */
+export const approveAssistantRequest = <ThrowOnError extends boolean = false>(
+  options: Options<ApproveAssistantRequestData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    ApproveAssistantRequestResponses,
+    ApproveAssistantRequestErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/sites/{siteId}/ai/requests/{requestId}/approve",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Decline one AI cache-clear request
+ *
+ * Declines one waiting request. Only a person signed in to the dashboard
+ * may decline. The body must be JSON (an empty object is fine). Declining
+ * always works while the request is waiting.
+ *
+ */
+export const declineAssistantRequest = <ThrowOnError extends boolean = false>(
+  options: Options<DeclineAssistantRequestData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    DeclineAssistantRequestResponses,
+    DeclineAssistantRequestErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/sites/{siteId}/ai/requests/{requestId}/decline",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
 
 /**
  * Purge the page cache for a site

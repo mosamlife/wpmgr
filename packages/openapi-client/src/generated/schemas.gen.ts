@@ -7183,6 +7183,250 @@ export const PurgeRequestSchema = {
   },
 } as const;
 
+export const AssistantRequestApproveBodySchema = {
+  type: "object",
+  required: ["presented_digest"],
+  properties: {
+    presented_digest: {
+      type: "string",
+      description: "The digest the queue returned for this request.",
+    },
+  },
+} as const;
+
+export const AssistantRequestListSchema = {
+  type: "object",
+  required: ["requests", "pending_count", "limit", "offset"],
+  properties: {
+    requests: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/AssistantRequest",
+      },
+    },
+    pending_count: {
+      type: "integer",
+      format: "int64",
+      description: "Requests still waiting for a decision (the badge).",
+    },
+    limit: {
+      type: "integer",
+      format: "int32",
+    },
+    offset: {
+      type: "integer",
+      format: "int32",
+    },
+  },
+} as const;
+
+export const AssistantRequestSchema = {
+  type: "object",
+  description:
+    "One AI cache-clear request. `site_label`, `site_host`, `grant_label`,\n`url` and `site_reported_text` came from a site or an AI connection:\nrender each as plain text, never as markup, a link or a tooltip.\nThe card state follows from `state` and `outcome` together.\n",
+  required: [
+    "id",
+    "site_id",
+    "scope",
+    "url",
+    "site_label",
+    "site_host",
+    "grant_label",
+    "grant_via",
+    "setup_client",
+    "state",
+    "created_at",
+    "expires_at",
+    "decided_at",
+    "decided_by_user_id",
+    "decided_by_name",
+    "decided_by_account_deleted",
+    "withdrawn_at",
+    "claimed_at",
+    "dispatch_attempts",
+    "last_attempt_at",
+    "last_attempt_code",
+    "outcome",
+    "not_sent_reason",
+    "outcome_at",
+    "hosting_caches_cleared",
+    "hosting_caches_skipped",
+    "origin_only_confirmed",
+    "wpmgr_cdn",
+    "site_reported_text",
+  ],
+  properties: {
+    id: {
+      type: "string",
+      format: "uuid",
+    },
+    site_id: {
+      type: "string",
+      format: "uuid",
+    },
+    scope: {
+      type: "string",
+      enum: ["all", "url"],
+    },
+    url: {
+      type: "string",
+      nullable: true,
+      description: "The page address for scope url, as stored; null for all.",
+    },
+    site_label: {
+      type: "string",
+    },
+    site_host: {
+      type: "string",
+      description:
+        "The site's host in the ASCII form WPMgr dials (Punycode for an internationalised name).",
+    },
+    grant_label: {
+      type: "string",
+    },
+    grant_via: {
+      type: "string",
+    },
+    setup_client: {
+      type: "string",
+      nullable: true,
+    },
+    presented_digest: {
+      type: "string",
+      description:
+        "Present only for a person signed in to the dashboard. Send it back to approve.",
+    },
+    state: {
+      type: "string",
+      enum: [
+        "pending",
+        "approved_undispatched",
+        "dispatched",
+        "rejected",
+        "withdrawn",
+        "expired",
+      ],
+    },
+    created_at: {
+      type: "string",
+      format: "date-time",
+    },
+    expires_at: {
+      type: "string",
+      format: "date-time",
+    },
+    decided_at: {
+      type: "string",
+      format: "date-time",
+      nullable: true,
+    },
+    decided_by_user_id: {
+      type: "string",
+      format: "uuid",
+      nullable: true,
+    },
+    decided_by_name: {
+      type: "string",
+      nullable: true,
+    },
+    decided_by_account_deleted: {
+      type: "boolean",
+      description:
+        "True when the request names a decider whose account has since been deleted.",
+    },
+    withdrawn_at: {
+      type: "string",
+      format: "date-time",
+      nullable: true,
+    },
+    claimed_at: {
+      type: "string",
+      format: "date-time",
+      nullable: true,
+    },
+    dispatch_attempts: {
+      type: "integer",
+      format: "int32",
+    },
+    last_attempt_at: {
+      type: "string",
+      format: "date-time",
+      nullable: true,
+    },
+    last_attempt_code: {
+      type: "string",
+      nullable: true,
+      enum: [
+        "site_unreachable",
+        "site_cooldown",
+        "site_hourly_cap",
+        "site_busy",
+        "org_busy",
+        "context_unavailable",
+        "write_tools_disabled",
+      ],
+    },
+    outcome: {
+      type: "string",
+      nullable: true,
+      enum: [
+        "purged",
+        "site_reported_failure",
+        "agent_failed",
+        "outcome_unknown",
+        "not_sent",
+      ],
+    },
+    not_sent_reason: {
+      type: "string",
+      nullable: true,
+      enum: [
+        "grant_inactive",
+        "assistant_paused",
+        "organisation_deleted",
+        "capability_not_held",
+        "site_absent",
+        "forbidden_by_context",
+        "agent_outdated",
+        "dispatch_deadline_passed",
+        "transport_pre_send",
+      ],
+    },
+    outcome_at: {
+      type: "string",
+      format: "date-time",
+      nullable: true,
+    },
+    hosting_caches_cleared: {
+      type: "array",
+      nullable: true,
+      items: {
+        type: "string",
+      },
+    },
+    hosting_caches_skipped: {
+      type: "array",
+      nullable: true,
+      items: {
+        type: "string",
+      },
+    },
+    origin_only_confirmed: {
+      type: "boolean",
+      nullable: true,
+    },
+    wpmgr_cdn: {
+      type: "string",
+      nullable: true,
+      enum: ["not_attempted", "cleared", "failed", "not_configured"],
+    },
+    site_reported_text: {
+      type: "string",
+      nullable: true,
+    },
+  },
+} as const;
+
 export const PerfActionResultSchema = {
   type: "object",
   description:

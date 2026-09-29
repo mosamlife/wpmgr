@@ -2406,6 +2406,260 @@ func (s *AssignSitesRequest) Validate() error {
 	return nil
 }
 
+func (s *AssistantRequest) Validate() error {
+	if s == nil {
+		return validate.ErrNilPointer
+	}
+
+	var failures []validate.FieldError
+	if err := func() error {
+		if err := s.Scope.Validate(); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "scope",
+			Error: err,
+		})
+	}
+	if err := func() error {
+		if err := s.State.Validate(); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "state",
+			Error: err,
+		})
+	}
+	if err := func() error {
+		if value, ok := s.LastAttemptCode.Get(); ok {
+			if err := func() error {
+				if err := value.Validate(); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "last_attempt_code",
+			Error: err,
+		})
+	}
+	if err := func() error {
+		if value, ok := s.Outcome.Get(); ok {
+			if err := func() error {
+				if err := value.Validate(); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "outcome",
+			Error: err,
+		})
+	}
+	if err := func() error {
+		if value, ok := s.NotSentReason.Get(); ok {
+			if err := func() error {
+				if err := value.Validate(); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "not_sent_reason",
+			Error: err,
+		})
+	}
+	if err := func() error {
+		if value, ok := s.WpmgrCDN.Get(); ok {
+			if err := func() error {
+				if err := value.Validate(); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "wpmgr_cdn",
+			Error: err,
+		})
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+	return nil
+}
+
+func (s AssistantRequestLastAttemptCode) Validate() error {
+	switch s {
+	case "site_unreachable":
+		return nil
+	case "site_cooldown":
+		return nil
+	case "site_hourly_cap":
+		return nil
+	case "site_busy":
+		return nil
+	case "org_busy":
+		return nil
+	case "context_unavailable":
+		return nil
+	case "write_tools_disabled":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
+}
+
+func (s *AssistantRequestList) Validate() error {
+	if s == nil {
+		return validate.ErrNilPointer
+	}
+
+	var failures []validate.FieldError
+	if err := func() error {
+		if s.Requests == nil {
+			return errors.New("nil is invalid value")
+		}
+		var failures []validate.FieldError
+		for i, elem := range s.Requests {
+			if err := func() error {
+				if err := elem.Validate(); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				failures = append(failures, validate.FieldError{
+					Name:  fmt.Sprintf("[%d]", i),
+					Error: err,
+				})
+			}
+		}
+		if len(failures) > 0 {
+			return &validate.Error{Fields: failures}
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "requests",
+			Error: err,
+		})
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+	return nil
+}
+
+func (s AssistantRequestNotSentReason) Validate() error {
+	switch s {
+	case "grant_inactive":
+		return nil
+	case "assistant_paused":
+		return nil
+	case "organisation_deleted":
+		return nil
+	case "capability_not_held":
+		return nil
+	case "site_absent":
+		return nil
+	case "forbidden_by_context":
+		return nil
+	case "agent_outdated":
+		return nil
+	case "dispatch_deadline_passed":
+		return nil
+	case "transport_pre_send":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
+}
+
+func (s AssistantRequestOutcome) Validate() error {
+	switch s {
+	case "purged":
+		return nil
+	case "site_reported_failure":
+		return nil
+	case "agent_failed":
+		return nil
+	case "outcome_unknown":
+		return nil
+	case "not_sent":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
+}
+
+func (s AssistantRequestScope) Validate() error {
+	switch s {
+	case "all":
+		return nil
+	case "url":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
+}
+
+func (s AssistantRequestState) Validate() error {
+	switch s {
+	case "pending":
+		return nil
+	case "approved_undispatched":
+		return nil
+	case "dispatched":
+		return nil
+	case "rejected":
+		return nil
+	case "withdrawn":
+		return nil
+	case "expired":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
+}
+
+func (s AssistantRequestWpmgrCDN) Validate() error {
+	switch s {
+	case "not_attempted":
+		return nil
+	case "cleared":
+		return nil
+	case "failed":
+		return nil
+	case "not_configured":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
+}
+
 func (s *AuditList) Validate() error {
 	if s == nil {
 		return validate.ErrNilPointer

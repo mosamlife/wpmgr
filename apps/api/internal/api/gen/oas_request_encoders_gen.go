@@ -486,6 +486,20 @@ func encodeApplySiteFileUploadRequest(
 	return nil
 }
 
+func encodeApproveAssistantRequestRequest(
+	req *AssistantRequestApproveBody,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	e := new(jx.Encoder)
+	{
+		req.Encode(e)
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
 func encodeArchiveSiteRequest(
 	req OptSiteLifecycleReason,
 	r *http.Request,
@@ -980,6 +994,20 @@ func encodeCreateTenantRequest(
 
 func encodeCreateUpdateRunRequest(
 	req *UpdateRunCreate,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	e := new(jx.Encoder)
+	{
+		req.Encode(e)
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
+func encodeDeclineAssistantRequestRequest(
+	req *DeclineAssistantRequestReq,
 	r *http.Request,
 ) error {
 	const contentType = "application/json"
