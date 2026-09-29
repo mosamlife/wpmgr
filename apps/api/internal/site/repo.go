@@ -41,6 +41,11 @@ type Repo interface {
 	// applied. SetAgeRecipient (above) stays the deliberate, unconditional
 	// operator path.
 	SetAgeRecipientIfUnset(ctx context.Context, tenantID, siteID uuid.UUID, recipient string) (Site, bool, error)
+	// AdoptSiteURL replaces the saved address with to, compare-and-set on
+	// from, for an enrolled site. false with no error means not adopted (the
+	// address changed, the state is not enrolled, or another site in the
+	// tenant holds to).
+	AdoptSiteURL(ctx context.Context, tenantID, siteID uuid.UUID, from, to string) (bool, error)
 
 	// GH #414 m117 — monitoring pause/resume. Bulk by construction (the UI
 	// entry point is a multi-select) and idempotent: see monitoring_repo.go.
@@ -83,12 +88,13 @@ type Repo interface {
 	// "Add site" flow) and returns it.
 	CreatePending(ctx context.Context, tenantID uuid.UUID, url, name string, tags []string) (Site, error)
 
-	// GetSiteByURL returns the (id, connection_state) of any existing site with
-	// the given URL inside a tenant (including archived rows). Returns (zero,
+	// GetSiteByAnyURL returns the (id, url, connection_state) of an existing
+	// site inside a tenant whose URL is any of urls (including archived rows).
+	// When several match, the one listed first in urls wins. Returns (zero,
 	// false, nil) when no row exists, and (row, true, nil) on a hit.
 	// Called by MintEnrollmentCode before CreatePending to surface a structured
 	// 409 with site_id + connection_state instead of a bare index-violation.
-	GetSiteByURL(ctx context.Context, tenantID uuid.UUID, url string) (SiteURLHit, bool, error)
+	GetSiteByAnyURL(ctx context.Context, tenantID uuid.UUID, urls []string) (SiteURLHit, bool, error)
 
 	// MintSiteBoundCode binds a fresh pairing code to an existing site_id.
 	MintSiteBoundCode(ctx context.Context, in CreatePairingCodeInput, siteID uuid.UUID, codeHash string, expiresAt time.Time) (PairingCode, error)
@@ -150,10 +156,11 @@ type SiteRef struct {
 	URL      string
 }
 
-// SiteURLHit is the minimal (id, connection_state) projection returned by
-// GetSiteByURL. Used by MintEnrollmentCode to build a structured 409.
+// SiteURLHit is the minimal (id, url, connection_state) projection returned by
+// GetSiteByAnyURL. Used by MintEnrollmentCode to build a structured 409.
 type SiteURLHit struct {
 	ID              uuid.UUID
+	URL             string
 	ConnectionState ConnectionState
 }
 
@@ -202,11 +209,46 @@ type TransitionResult struct {
 type ConsumeResult struct {
 	Site      Site
 	SiteBound bool // true when a pre-existing site was transitioned (site-first flow)
+	// URL reports what the consume did with the address the agent reported
+	// (EnrollInput.URL) against the site's stored address.
+	URL EnrollURLOutcome
+	// CodeCreatedBy is the user who issued the consumed pairing code; uuid.Nil
+	// when the code records none (the user was since deleted, or the code
+	// predates the column being set).
+	CodeCreatedBy uuid.UUID
+}
+
+// EnrollURLResult names what a site-bound enrollment did with the address its
+// agent reported. The zero value means nothing was compared.
+type EnrollURLResult string
+
+const (
+	// EnrollURLUnchanged: the reported address equals the stored one once
+	// normalised.
+	EnrollURLUnchanged EnrollURLResult = "unchanged"
+	// EnrollURLAdopted: the stored address was replaced by EnrollURLOutcome.To.
+	EnrollURLAdopted EnrollURLResult = "adopted"
+	// EnrollURLMismatch: the reported address is not one enrollment may adopt,
+	// so the stored address was kept.
+	EnrollURLMismatch EnrollURLResult = "mismatch"
+	// EnrollURLInUse: the address was adoptable, but another site in the tenant
+	// already holds it, so the stored address was kept.
+	EnrollURLInUse EnrollURLResult = "in_use"
+)
+
+// EnrollURLOutcome is the address half of a site-bound consume.
+type EnrollURLOutcome struct {
+	Result   EnrollURLResult
+	Stored   string // the site's address before the consume
+	Reported string // the agent-reported address, as received
+	To       string // the adoptable address: stored when Adopted, not stored when InUse
 }
 
 // EnrollInput carries the validated enroll request fields used to create or
 // attach a site.
 type EnrollInput struct {
+	// URL is the agent-reported address. The legacy path stores it; the
+	// site-bound consume compares it with the stored address (planEnrollURL).
 	URL            string
 	Name           string
 	AgentPublicKey string

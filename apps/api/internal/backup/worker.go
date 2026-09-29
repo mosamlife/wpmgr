@@ -437,6 +437,13 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupArgs]) err
 		resp, err = w.cmd.Backup(ctx, snap.SiteID, si.URL, req)
 	}
 	if err != nil {
+		// A redirect means the site's saved address is not where the site
+		// serves the agent. Every retry is refused the same way, so it is a
+		// terminal failure now, named plainly, not a retry that ends in the
+		// watchdog's generic stall message.
+		if re, ok := agentcmd.AsRedirect(err); ok {
+			return w.fail(ctx, snap, re.OperatorMessage("Backup"))
+		}
 		// Transport/SSRF/agent-reject: retryable infra error.
 		return fmt.Errorf("backup command to agent failed: %w", err)
 	}
@@ -582,7 +589,7 @@ type RestoreWorker struct {
 	river.WorkerDefaults[RestoreArgs]
 	svc    *Service
 	cmd    Commander
-	audit  *audit.Recorder
+	audit  restoreAuditRecorder
 	logger *slog.Logger
 	// cpBaseURL is the control-plane base URL the agent uses for the progress
 	// callback (the same /agent/v1/backups/{id}/progress endpoint backups use).
@@ -601,7 +608,19 @@ func NewRestoreWorker(svc *Service, cmd Commander, rec *audit.Recorder, logger *
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &RestoreWorker{svc: svc, cmd: cmd, audit: rec, logger: logger, cpBaseURL: strings.TrimRight(cpBaseURL, "/"), jobTimeout: jobTimeout}
+	w := &RestoreWorker{svc: svc, cmd: cmd, logger: logger, cpBaseURL: strings.TrimRight(cpBaseURL, "/"), jobTimeout: jobTimeout}
+	// Assigned only when set: a nil *audit.Recorder stored in the interface
+	// would not compare equal to nil, and recordAudit's nil check relies on it.
+	if rec != nil {
+		w.audit = rec
+	}
+	return w
+}
+
+// restoreAuditRecorder is the part of *audit.Recorder RestoreWorker uses, so
+// a test can observe the audit rows the worker writes.
+type restoreAuditRecorder interface {
+	Record(ctx context.Context, e audit.Event) (audit.Entry, error)
 }
 
 // Timeout overrides River's default per-job context deadline for the restore
@@ -730,6 +749,20 @@ func (w *RestoreWorker) Work(ctx context.Context, job *river.Job[RestoreArgs]) e
 	}
 
 	resp, err := w.cmd.Restore(ctx, snap.SiteID, si.URL, plan)
+	if re, ok := agentcmd.AsRedirect(err); ok {
+		// Terminal, like an agent refusal: the command never reached the
+		// agent, and every retry is refused the same way.
+		msg := re.OperatorMessage("Restore")
+		w.recordAudit(ctx, snap, ActionRestoreFailed, map[string]any{
+			"restore_id": restoreID,
+			"error":      msg,
+		})
+		_, _ = w.svc.RecordProgress(ctx, snap.TenantID, snap.ID, "failed", map[string]any{
+			"restore_id": restoreID,
+			"error":      msg,
+		})
+		return nil
+	}
 	if err != nil {
 		// Transport / SSRF / agent-reject: retryable infra error. Surface the
 		// in-flight failure on the SSE channel so the UI does not hang waiting

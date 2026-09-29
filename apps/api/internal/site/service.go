@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -44,6 +45,18 @@ type Service struct {
 	// entry is skipped, never that the event goes unreported — the structured
 	// log line is unconditional.
 	audit *audit.Recorder
+	// redirectProber confirms an address change before AdoptReportedURL
+	// writes it. Optional: nil means no address change is adopted after
+	// enrollment.
+	redirectProber CommandRedirectProber
+	// adoptProbes limits AdoptReportedURL to one probe per 24h per (site,
+	// reported address). In memory and bounded; a restart resets it.
+	adoptProbes     *probeLimiter
+	adoptProbesOnce sync.Once
+	// adoptQueue receives the addresses agent pushes report; its job runs
+	// AdoptReportedURL off the push. Optional: nil means a reported address
+	// is not adopted after enrollment.
+	adoptQueue AdoptURLEnqueuer
 }
 
 // SetAuditRecorder wires the hash-chained audit recorder. Call once at boot;
@@ -380,13 +393,21 @@ func (s *Service) RecordNonce(ctx context.Context, siteID uuid.UUID, nonce strin
 // ApplyAgentMetadata adapts agent-package metadata to the site domain and
 // returns the updated site in OpenAPI form, satisfying agent.MetadataSink.
 func (s *Service) ApplyAgentMetadata(ctx context.Context, tenantID, siteID uuid.UUID, m agentpkg.Metadata) (gen.Site, error) {
+	// Capped once, here, and passed everywhere else this push's agent version
+	// is used: the stored metadata below, the age-recipient log/audit path,
+	// and the address-adoption enqueue. Every one of those bounds its own
+	// copy independently, so without this the raw agent-reported string -
+	// unbounded, unlike every other metadata field - reaches a Warn log and
+	// an audit row uncapped before sanitizeMetadata ever truncates it for
+	// storage.
+	v := truncateRunes(m.AgentVersion, maxAgentVersion)
 	out, err := s.ApplyMetadata(ctx, tenantID, siteID, Metadata{
 		WPVersion:    m.WPVersion,
 		PHPVersion:   m.PHPVersion,
 		ServerInfo:   m.ServerInfo,
 		Multisite:    m.Multisite,
 		ActiveTheme:  m.ActiveTheme,
-		AgentVersion: m.AgentVersion,
+		AgentVersion: v,
 		Plugins:      fromAgentComponents(m.Plugins),
 		Themes:       fromAgentComponents(m.Themes),
 		CoreUpdate:   fromAgentCoreUpdate(m.CoreUpdate),
@@ -410,11 +431,18 @@ func (s *Service) ApplyAgentMetadata(ctx context.Context, tenantID, siteID uuid.
 	// distinguishes a first set from a change to an established value.
 	if rec := strings.TrimSpace(m.AgeRecipient); rec != "" && len(rec) <= 256 &&
 		strings.HasPrefix(rec, "age1") && out.AgeRecipient != rec {
-		updated, err := s.applyAgentAgeRecipient(ctx, tenantID, siteID, rec, out, m.AgentVersion)
+		updated, err := s.applyAgentAgeRecipient(ctx, tenantID, siteID, rec, out, v)
 		if err != nil {
 			return gen.Site{}, err
 		}
 		out = updated
+	}
+	// The agent's WordPress address, queued for AdoptReportedURL so its
+	// signed probe never holds up the push. The row just written carries the
+	// saved address, so a report that could not replace it is not queued. An
+	// enqueue failure is logged and never fails the metadata push.
+	if m.HomeURL != "" {
+		_ = s.enqueueAdoptReportedURL(ctx, tenantID, siteID, out.URL, m.HomeURL, urlSourceAgentMetadata, v)
 	}
 	return toAPI(out), nil
 }
@@ -788,6 +816,10 @@ const (
 	maxSelfUpdateApplyID = 64
 	// maxSelfUpdateRung bounds the diagnostic connection-release rung name.
 	maxSelfUpdateRung = 32
+	// maxAgentVersion bounds the agent's reported plugin version, in runes,
+	// wherever the control plane keeps a copy: the stored metadata and an
+	// address adoption job's args.
+	maxAgentVersion = 64
 )
 
 // truncateRunes returns s truncated to at most n runes, never splitting a
@@ -920,7 +952,7 @@ func sanitizeMetadata(m Metadata) Metadata {
 		ServerInfo:   truncateRunes(m.ServerInfo, maxServerInfo),
 		Multisite:    m.Multisite,
 		ActiveTheme:  truncateRunes(m.ActiveTheme, maxActiveTheme),
-		AgentVersion: truncateRunes(m.AgentVersion, 64),
+		AgentVersion: truncateRunes(m.AgentVersion, maxAgentVersion),
 		Plugins:      sanitizeComponents(m.Plugins, maxPlugins),
 		Themes:       sanitizeComponents(m.Themes, maxThemes),
 		CoreUpdate:   sanitizeCoreUpdate(m.CoreUpdate),

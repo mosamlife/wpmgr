@@ -260,6 +260,18 @@ func (w *Worker) runAgentSelfUpdate(ctx context.Context, args TaskArgs, task Tas
 		// isOldAgentRouteMissing is the same predicate RefreshInventoryWorker
 		// applies to the same situation (refresh.go), against the same canonical
 		// agentcmd error format.
+		// A redirect means the site's saved address is wrong, so the command
+		// never reached the agent. Like the old-agent case below it says
+		// nothing about the build, so it is recorded non-confirming (skipped)
+		// with the redirect named, rather than failed or retried.
+		if re, ok := agentcmd.AsRedirect(err); ok {
+			w.logger.Warn("agent self-update: site redirects its command address; not attempted",
+				slog.String("task_id", claimed.ID.String()),
+				slog.String("site_id", claimed.SiteID.String()),
+				slog.String("redirect_to", re.To))
+			return w.finishAgentTask(ctx, claimed, TaskSkipped, claimed.FromVersion, "",
+				re.OperatorMessage("Agent self-update"), err.Error())
+		}
 		if isOldAgentRouteMissing(err) {
 			w.logger.Info("agent self-update: site's agent has no self-update route (old agent); not attempted",
 				slog.String("task_id", claimed.ID.String()),

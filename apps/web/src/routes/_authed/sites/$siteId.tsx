@@ -442,6 +442,11 @@ export function SiteShell({ site, siteId }: { site: Site; siteId: string }) {
                         // sites; don't alarm the operator.
                         toast.info(err.message);
                       } else {
+                        // GH #755 slice 1: this also covers
+                        // SiteUrlRedirectsError (the site's saved address
+                        // redirects) — its message already names the target
+                        // and the remedy in full, so it must render here
+                        // verbatim, not a generic label.
                         toast.error("Re-check failed", {
                           description: err.message,
                         });

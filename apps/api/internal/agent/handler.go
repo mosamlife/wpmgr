@@ -86,6 +86,10 @@ type metadataDTO struct {
 	// AgentVersion is the WPMgr agent plugin version (M27). Optional; old agents
 	// omit it and the stored value stays ''.
 	AgentVersion flexString `json:"agent_version"`
+	// HomeURL is the site's WordPress home_url as the agent reads it (GH #755).
+	// Optional; old agents omit it. The site service decides whether it may
+	// replace the saved address (site.AdoptReportedURL).
+	HomeURL flexString `json:"home_url"`
 	// AgeRecipient is the agent's per-site age PUBLIC recipient ("age1…"). The
 	// CP stores it on sites.age_recipient so M4 backups can be triggered without
 	// a separate registration call. Optional; empty/missing leaves the stored
@@ -351,6 +355,7 @@ func (d metadataDTO) toMetadata() Metadata {
 		Multisite:    bool(d.Multisite),
 		ActiveTheme:  string(d.ActiveTheme),
 		AgentVersion: string(d.AgentVersion),
+		HomeURL:      string(d.HomeURL),
 		AgeRecipient: string(d.AgeRecipient),
 		Plugins:      conv(d.Plugins),
 		Themes:       conv(d.Themes),
@@ -483,6 +488,7 @@ type Metadata struct {
 	ActiveTheme  string
 	AgentVersion string // optional; WPMgr agent plugin version (M27)
 	AgeRecipient string // optional; agent's per-site age PUBLIC recipient ("age1…")
+	HomeURL      string // optional; the site's WordPress home_url (GH #755)
 	Plugins      []Component
 	Themes       []Component
 	// CoreUpdate is the optional WordPress core update advisory. nil when there

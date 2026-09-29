@@ -40,7 +40,25 @@ type Service struct {
 	siteLookup    SiteLookup
 	hostResolver  HostResolver
 	dbSizeHistory DBSizeHistorySink
+	reportedURL   ReportedURLSink
 }
+
+// ReportedURLSink receives the site address the agent reports in the http
+// category (home_url). The site service implements it: it queues a job that
+// decides whether the address replaces the saved one, and returns without
+// probing the site, so the push is never held up. Optional: nil means the
+// address is ignored.
+type ReportedURLSink interface {
+	EnqueueAdoptReportedURL(ctx context.Context, tenantID, siteID uuid.UUID, reported, source, agentVersion string) error
+}
+
+// reportedURLSource names the diagnostics push on the site.url_changed audit
+// row.
+const reportedURLSource = "agent_diagnostics"
+
+// SetReportedURLSink wires the sink for the agent-reported address. Call once
+// at boot.
+func (s *Service) SetReportedURLSink(sink ReportedURLSink) { s.reportedURL = sink }
 
 // RefreshEnqueuer enqueues an on-demand diagnostics command to the agent.
 // Optional; when nil the /diagnostics/refresh endpoint returns a 503 pointing
@@ -244,8 +262,32 @@ func (s *Service) IngestDiagnostics(ctx context.Context, tenantID, siteID uuid.U
 		if cat == CategoryWPNative {
 			s.ingestDBSizeHistory(ctx, tenantID, siteID, payload, collected)
 		}
+
+		// The http category carries the site's WordPress home_url. Hand it to
+		// the site service, which queues the decision whether it replaces the
+		// saved address. Best-effort: neither a decode failure nor an enqueue
+		// failure may fail the ingest.
+		if cat == CategoryHTTP {
+			s.ingestReportedURL(ctx, tenantID, siteID, payload)
+		}
 	}
 	return count, nil
+}
+
+// ingestReportedURL passes the http category's home_url, when present, to
+// the reported-address sink, which only queues it. Every failure is dropped
+// (the sink logs it).
+func (s *Service) ingestReportedURL(ctx context.Context, tenantID, siteID uuid.UUID, payload json.RawMessage) {
+	if s.reportedURL == nil {
+		return
+	}
+	var body struct {
+		HomeURL string `json:"home_url"`
+	}
+	if err := json.Unmarshal(payload, &body); err != nil || body.HomeURL == "" {
+		return
+	}
+	_ = s.reportedURL.EnqueueAdoptReportedURL(ctx, tenantID, siteID, body.HomeURL, reportedURLSource, "")
 }
 
 // LatestBySite returns a map keyed by category string. Categories the agent

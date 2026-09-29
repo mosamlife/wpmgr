@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	agentpkg "github.com/mosamlife/wpmgr/apps/api/internal/agent"
+	"github.com/mosamlife/wpmgr/apps/api/internal/agentcmd"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 	"github.com/mosamlife/wpmgr/apps/api/internal/server/httpx"
 )
@@ -108,6 +109,21 @@ func (h *Handler) recheck(c *gin.Context) {
 	// is treated as agent_unreachable (502) — do NOT flip the site to
 	// disconnected; let the sweeper own that transition.
 	rawMeta, cmdErr := h.rechecker.MetadataRaw(ctx, siteID, st.URL)
+	if re, ok := agentcmd.AsRedirect(cmdErr); ok {
+		// The site answered with a redirect, so the saved address is wrong.
+		// Same 502 as unreachable, but a distinct code that names the target
+		// and the remedy. Every URL here is already sanitised by agentcmd.
+		details := gin.H{"from": re.SavedSiteURL(), "to": re.To}
+		if re.SuggestedSiteURL != "" {
+			details["suggested_url"] = re.SuggestedSiteURL
+		}
+		c.JSON(http.StatusBadGateway, gin.H{
+			"code":    "site_url_redirects",
+			"message": "Couldn't reach the agent. " + re.Explanation(),
+			"details": details,
+		})
+		return
+	}
 	if cmdErr != nil {
 		// Log at warn; return a structured 502 so the web can render a
 		// "Couldn't reach agent" state without flipping the status badge.
