@@ -251,6 +251,26 @@ export function isSnapshotRetrying(
   return str(snapshot.attempt_error) !== null;
 }
 
+/**
+ * GH #791 adv-review nit 8 — true once the snapshot has visible progress,
+ * for deciding whether "hasn't started on the site yet" would contradict
+ * what's on screen (see `StalledHint`'s module doc). Gating on
+ * `fp.phase !== "queued"` alone missed an unrecognized phase id:
+ * `formatProgress` falls back to "queued" for any `progress.phase` string
+ * outside the closed `PHASE_IDS` set (`isPhaseId`), but `phase_detail`'s
+ * counters are read off the wire regardless of whether the phase itself was
+ * recognized — so a real file or byte counter already >0 must still count
+ * as progress even while `fp.phase` reads "queued".
+ */
+export function hasVisibleProgress(fp: FormattedProgress): boolean {
+  return (
+    fp.phase !== "queued" ||
+    (fp.filesDone !== null && fp.filesDone > 0) ||
+    (fp.chunksDone !== null && fp.chunksDone > 0) ||
+    (fp.bytesDone !== null && fp.bytesDone > 0)
+  );
+}
+
 export interface FormattedProgress {
   phase: PhaseId;
   /** Render-ready phase label. */

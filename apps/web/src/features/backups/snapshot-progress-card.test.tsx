@@ -135,4 +135,23 @@ describe("SnapshotProgressCard — GH #791 retrying indicator", () => {
     expect(screen.getByText(RETRYING_TEXT)).toBeInTheDocument();
     expect(screen.queryByText(RETRYING_WITH_PROGRESS_TEXT)).not.toBeInTheDocument();
   });
+
+  // GH #791 adv-review nit 8 — an unrecognized phase id must not make
+  // "hasn't started on the site yet" appear beside real file/byte counters.
+  // `formatProgress` falls back to `phase: "queued"` for any phase id
+  // outside the closed PHASE_IDS set, but `phase_detail`'s counters are
+  // still read off the wire regardless — so a phase the web has never seen
+  // must still count as progress once a counter is above 0.
+  it("drops 'hasn't started on the site yet' when an unrecognised phase id still carries a file counter", () => {
+    const snapshot: BackupSnapshot = {
+      ...buildRetryingSnapshot("The site did not answer in time."),
+      progress: {
+        phase: "some_future_phase_the_web_does_not_know",
+        phase_detail: { files_done: 1200, files_total: 5000 },
+      },
+    };
+    renderWithProviders(<SnapshotProgressCard snapshot={snapshot} />);
+    expect(screen.queryByText(PROGRESS_CONTRADICTION_TEXT)).not.toBeInTheDocument();
+    expect(screen.getByText(RETRYING_WITH_PROGRESS_TEXT)).toBeInTheDocument();
+  });
 });

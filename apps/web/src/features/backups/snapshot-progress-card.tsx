@@ -35,6 +35,7 @@ import { LiveIndicator } from "@/components/shared/live-indicator";
 import {
   buildStepperPhases,
   formatProgress,
+  hasVisibleProgress,
   isRestorePhase,
   isSnapshotRetrying,
   isSnapshotStalled,
@@ -175,7 +176,7 @@ export function SnapshotProgressCard({ snapshot }: { snapshot: BackupSnapshot })
           {isSnapshotRetrying(snapshot) ? (
             <StalledHint
               lastError={snapshotAttemptError(snapshot)}
-              hasProgress={fp.phase !== "queued"}
+              hasProgress={hasVisibleProgress(fp)}
             />
           ) : isSnapshotStalled(snapshot) ? (
             <StalledHint />

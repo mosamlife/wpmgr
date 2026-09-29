@@ -3,6 +3,7 @@ import type { BackupSnapshot } from "@wpmgr/api";
 
 import {
   formatProgress,
+  hasVisibleProgress,
   isSnapshotRetrying,
   isSnapshotStalled,
   snapshotAttemptError,
@@ -181,5 +182,63 @@ describe("formatProgress — errorMessage fallback (GH #791)", () => {
       progress: { phase: "failed", phase_detail: {} },
     });
     expect(formatProgress(snapshot).errorMessage).toBeNull();
+  });
+});
+
+// GH #791 adv-review nit 8 — `hasVisibleProgress` must not gate solely on
+// `phase !== "queued"`: `formatProgress` falls back to "queued" for any
+// phase id outside the closed PHASE_IDS set, but `phase_detail`'s counters
+// are read off the wire regardless of whether the phase was recognised.
+describe("hasVisibleProgress", () => {
+  it("is false for a fresh queued snapshot with no counters", () => {
+    const snapshot = buildSnapshot({
+      status: "running",
+      progress: { phase: "queued" },
+    });
+    expect(hasVisibleProgress(formatProgress(snapshot))).toBe(false);
+  });
+
+  it("is true once the phase has moved past queued", () => {
+    const snapshot = buildSnapshot({
+      status: "running",
+      progress: { phase: "archiving_files", phase_detail: {} },
+    });
+    expect(hasVisibleProgress(formatProgress(snapshot))).toBe(true);
+  });
+
+  it("is true for an unrecognised phase id that still carries a files counter", () => {
+    const snapshot = buildSnapshot({
+      status: "running",
+      progress: {
+        phase: "some_future_phase_the_web_does_not_know",
+        phase_detail: { files_done: 1200, files_total: 5000 },
+      },
+    });
+    const fp = formatProgress(snapshot);
+    expect(fp.phase).toBe("queued"); // unrecognised phase id falls back
+    expect(fp.filesDone).toBe(1200); // but the counter still reads through
+    expect(hasVisibleProgress(fp)).toBe(true);
+  });
+
+  it("is true for an unrecognised phase id that carries only a bytes counter", () => {
+    const snapshot = buildSnapshot({
+      status: "running",
+      progress: {
+        phase: "some_future_phase_the_web_does_not_know",
+        phase_detail: { bytes_written: 4096 },
+      },
+    });
+    expect(hasVisibleProgress(formatProgress(snapshot))).toBe(true);
+  });
+
+  it("is false for an unrecognised phase id whose counters are all zero", () => {
+    const snapshot = buildSnapshot({
+      status: "running",
+      progress: {
+        phase: "some_future_phase_the_web_does_not_know",
+        phase_detail: { files_done: 0, files_total: 5000 },
+      },
+    });
+    expect(hasVisibleProgress(formatProgress(snapshot))).toBe(false);
   });
 });
