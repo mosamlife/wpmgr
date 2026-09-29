@@ -998,8 +998,8 @@ func TestGH755Push_AdoptionNeverHoldsThePush(t *testing.T) {
 		}
 		jobs := env.adoptQ.take()
 		want := []site.AdoptReportedURLArgs{
-			{TenantID: tenant, SiteID: id, Reported: "https://pl1.example.com", Source: "agent_diagnostics"},
-			{TenantID: tenant, SiteID: id, Reported: "https://pl1.example.com", Source: "agent_metadata", AgentVersion: "0.61.150"},
+			{TenantID: tenant, SiteID: id, Reported: "https://pl1.example.com", ReportedKey: "https://pl1.example.com", Source: "agent_diagnostics"},
+			{TenantID: tenant, SiteID: id, Reported: "https://pl1.example.com", ReportedKey: "https://pl1.example.com", Source: "agent_metadata", AgentVersion: "0.61.150"},
 		}
 		if !reflect.DeepEqual(jobs, want) {
 			t.Fatalf("queued jobs = %+v, want %+v", jobs, want)
