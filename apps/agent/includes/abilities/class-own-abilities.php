@@ -210,7 +210,11 @@ final class OwnAbilities
             self::NAME_CONTENT   => ['Read a page', 'Reads the text of one published page or post.'],
         ];
         foreach (self::names() as $name) {
-            wp_register_ability($name, [
+            $registered = strtolower($name);
+            if ($registered === '' || $registered === '0') {
+                continue;
+            }
+            wp_register_ability($registered, [
                 'label'               => $copy[$name][0],
                 'description'         => $copy[$name][1],
                 'category'            => self::CATEGORY,
@@ -430,14 +434,14 @@ final class OwnAbilities
 
         $post = function_exists('get_post') ? get_post($id) : null;
         $ok   = is_object($post)
-            && in_array((string) ($post->post_type ?? ''), ['post', 'page'], true)
-            && (string) ($post->post_status ?? '') === 'publish'
-            && (string) ($post->post_password ?? '') === '';
+            && in_array((string) $post->post_type, ['post', 'page'], true)
+            && (string) $post->post_status === 'publish'
+            && (string) $post->post_password === '';
         if (!$ok || !is_object($post)) {
             return ['refusal' => ['code' => 'post_not_readable', 'detail' => 'no published, unprotected post or page with that id']];
         }
 
-        $raw  = (string) ($post->post_content ?? '');
+        $raw  = (string) $post->post_content;
         $text = function_exists('wp_strip_all_tags') ? wp_strip_all_tags($raw) : strip_tags($raw); // phpcs:ignore WordPress.WP.AlternativeFunctions.strip_tags_strip_tags -- fallback only when core's helper is absent; text is returned as data, never printed
         $text = trim((string) preg_replace('/[ \t]*\R{3,}/u', "\n\n", $text));
         $bytes = strlen($text);
@@ -446,11 +450,11 @@ final class OwnAbilities
             'post_id'       => $id,
             'post_type'     => (string) $post->post_type,
             'status'        => 'publish',
-            'modified_gmt'  => (string) ($post->post_modified_gmt ?? ''),
+            'modified_gmt'  => (string) $post->post_modified_gmt,
             'text_bytes'    => $bytes,
             'truncated'     => $bytes > $max,
             'from_the_site' => [
-                'title' => self::cap((string) ($post->post_title ?? ''), self::TITLE_CAP_BYTES),
+                'title' => self::cap((string) $post->post_title, self::TITLE_CAP_BYTES),
                 'text'  => self::cap($text, $max),
             ],
         ]];
