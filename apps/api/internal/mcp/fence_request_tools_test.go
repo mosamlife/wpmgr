@@ -253,7 +253,8 @@ func TestFence_EveryRegisteredToolFencesEverySiteColumn(t *testing.T) {
 			},
 			cat: []sqlc.AbilityCatalogue{catalogueRow("wpmgr/site-facts", "wpmgr", "read")},
 		}
-		agent := &fakeAbilityAgent{out: `{"title":"` + fenceSentinel + `","nested":{"list":["` + fenceSentinel + `"]}}`}
+		agent := &fakeAbilityAgent{out: `{"wp_version":"` + fenceSentinel + `","active_theme":{"template":"` + fenceSentinel +
+			`"},"active_plugins":["` + fenceSentinel + `"]}`}
 		if err := env.svc.EnableAbilityTools(store, agent, testEntryEncoder, "s"); err != nil {
 			t.Fatal(err)
 		}
