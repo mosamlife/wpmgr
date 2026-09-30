@@ -304,6 +304,14 @@ func startPostgres(t testing.TB) *db.Pool {
 		"REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON content_integrations, content_integrations_audit FROM wpmgr_app",
 		// m153 site_content_inventory_runs: no DELETE for wpmgr_app in the migration.
 		"REVOKE DELETE, TRUNCATE ON site_content_inventory_runs FROM wpmgr_app",
+		// m155's ability_catalogue and its audit, for the same reason as m153's
+		// content_integrations: SELECT-only for wpmgr_app, written only through
+		// the SECURITY DEFINER admin_upsert_ability_catalogue_entry.
+		"REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON ability_catalogue, ability_catalogue_audit FROM wpmgr_app",
+		// m155 site_ability_inventory_runs: no DELETE for wpmgr_app in the migration.
+		"REVOKE DELETE, TRUNCATE ON site_ability_inventory_runs FROM wpmgr_app",
+		// m155 site_ability_inventory: TRUNCATE revoked in the migration.
+		"REVOKE TRUNCATE ON site_ability_inventory FROM wpmgr_app",
 	} {
 		if _, err := ownerPool.Exec(ctx, stmt); err != nil {
 			setupFatalf(t, err, "postgres: provision app role ("+stmt+")")
