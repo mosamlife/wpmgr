@@ -179,14 +179,28 @@ func (r *Repo) ListOpenRequestStatus(ctx context.Context, principal domain.Princ
 // CloseAssistantRequestsForGrantTx runs on the caller's transaction, which is
 // the revoke transaction opened with the org-scoped revoker: the table's
 // _site_scope policy is inert there and every row of the grant is visible.
-// Waiting rows first, then approved rows, so the lock order (request rows,
-// then the audit chain on the caller's first RecordInTx) matches every other
-// writer of this table.
+//
+// It first takes the connection's request lock, the same transaction-scoped
+// advisory lock the creation transaction takes as its first statement. A
+// creation holding that lock therefore commits before the withdrawal reads,
+// and its row is withdrawn with the rest: a revoke never completes while a
+// creation for the same connection is part-way through. The caller already
+// holds the grant and token rows (the revoke statement); the creation
+// transaction never locks those rows, so waiting here cannot close a cycle.
+//
+// Then waiting rows, then approved rows, so the lock order (the grant lock,
+// request rows, then the audit chain on the caller's first RecordInTx)
+// matches every other writer of this table.
 func (r *Repo) CloseAssistantRequestsForGrantTx(ctx context.Context, tx pgx.Tx, tenantID, grantID uuid.UUID) (withdrawn, notSent []uuid.UUID, err error) {
 	if tx == nil {
 		return nil, nil, errors.New("close assistant requests for grant: no transaction")
 	}
 	q := sqlc.New(tx)
+	if err := q.TakeAssistantRequestXactLock(ctx, sqlc.TakeAssistantRequestXactLockParams{
+		LockKey: grantRequestLockKey, LockID: grantID.String(),
+	}); err != nil {
+		return nil, nil, fmt.Errorf("take the connection's request lock: %w", err)
+	}
 	withdrawn, err = q.WithdrawPendingAssistantCachePurgeRequestsForGrant(ctx,
 		sqlc.WithdrawPendingAssistantCachePurgeRequestsForGrantParams{
 			TenantID: tenantID, ProposedByGrantID: grantID,
