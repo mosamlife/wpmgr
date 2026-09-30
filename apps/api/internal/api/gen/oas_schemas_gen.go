@@ -15565,6 +15565,9 @@ func (s *ContentInventoryEditor) SetVersion(val OptNilString) {
 
 // Ref: #/components/schemas/ContentInventoryPage
 type ContentInventoryPage struct {
+	// True when the last check stopped at the page cap, so the list is a sample of the site. Held per
+	// instance; false when unknown.
+	Truncated       bool                      `json:"truncated"`
 	State           ContentInventoryPageState `json:"state"`
 	AgentVersion    OptString                 `json:"agent_version"`
 	MinAgentVersion string                    `json:"min_agent_version"`
@@ -15572,6 +15575,11 @@ type ContentInventoryPage struct {
 	TitlesIncluded  bool                      `json:"titles_included"`
 	NextAfterPostID OptNilInt64               `json:"next_after_post_id"`
 	Pages           []ContentInventoryRow     `json:"pages"`
+}
+
+// GetTruncated returns the value of Truncated.
+func (s *ContentInventoryPage) GetTruncated() bool {
+	return s.Truncated
 }
 
 // GetState returns the value of State.
@@ -15607,6 +15615,11 @@ func (s *ContentInventoryPage) GetNextAfterPostID() OptNilInt64 {
 // GetPages returns the value of Pages.
 func (s *ContentInventoryPage) GetPages() []ContentInventoryRow {
 	return s.Pages
+}
+
+// SetTruncated sets the value of Truncated.
+func (s *ContentInventoryPage) SetTruncated(val bool) {
+	s.Truncated = val
 }
 
 // SetState sets the value of State.

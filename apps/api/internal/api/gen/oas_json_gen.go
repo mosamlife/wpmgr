@@ -39927,6 +39927,10 @@ func (s *ContentInventoryPage) Encode(e *jx.Encoder) {
 // encodeFields encodes fields.
 func (s *ContentInventoryPage) encodeFields(e *jx.Encoder) {
 	{
+		e.FieldStart("truncated")
+		e.Bool(s.Truncated)
+	}
+	{
 		e.FieldStart("state")
 		s.State.Encode(e)
 	}
@@ -39966,14 +39970,15 @@ func (s *ContentInventoryPage) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfContentInventoryPage = [7]string{
-	0: "state",
-	1: "agent_version",
-	2: "min_agent_version",
-	3: "last_checked_at",
-	4: "titles_included",
-	5: "next_after_post_id",
-	6: "pages",
+var jsonFieldsNameOfContentInventoryPage = [8]string{
+	0: "truncated",
+	1: "state",
+	2: "agent_version",
+	3: "min_agent_version",
+	4: "last_checked_at",
+	5: "titles_included",
+	6: "next_after_post_id",
+	7: "pages",
 }
 
 // Decode decodes ContentInventoryPage from json.
@@ -39985,8 +39990,20 @@ func (s *ContentInventoryPage) Decode(d *jx.Decoder) error {
 
 	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
 		switch string(k) {
-		case "state":
+		case "truncated":
 			requiredBitSet[0] |= 1 << 0
+			if err := func() error {
+				v, err := d.Bool()
+				s.Truncated = bool(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"truncated\"")
+			}
+		case "state":
+			requiredBitSet[0] |= 1 << 1
 			if err := func() error {
 				if err := s.State.Decode(d); err != nil {
 					return err
@@ -40006,7 +40023,7 @@ func (s *ContentInventoryPage) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"agent_version\"")
 			}
 		case "min_agent_version":
-			requiredBitSet[0] |= 1 << 2
+			requiredBitSet[0] |= 1 << 3
 			if err := func() error {
 				v, err := d.Str()
 				s.MinAgentVersion = string(v)
@@ -40028,7 +40045,7 @@ func (s *ContentInventoryPage) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"last_checked_at\"")
 			}
 		case "titles_included":
-			requiredBitSet[0] |= 1 << 4
+			requiredBitSet[0] |= 1 << 5
 			if err := func() error {
 				v, err := d.Bool()
 				s.TitlesIncluded = bool(v)
@@ -40050,7 +40067,7 @@ func (s *ContentInventoryPage) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"next_after_post_id\"")
 			}
 		case "pages":
-			requiredBitSet[0] |= 1 << 6
+			requiredBitSet[0] |= 1 << 7
 			if err := func() error {
 				s.Pages = make([]ContentInventoryRow, 0)
 				if err := d.Arr(func(d *jx.Decoder) error {
@@ -40077,7 +40094,7 @@ func (s *ContentInventoryPage) Decode(d *jx.Decoder) error {
 	// Validate required fields.
 	var failures []validate.FieldError
 	for i, mask := range [1]uint8{
-		0b01010101,
+		0b10101011,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.

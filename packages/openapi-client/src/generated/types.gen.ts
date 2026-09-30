@@ -50,6 +50,10 @@ export type ContentInventoryRow = {
 };
 
 export type ContentInventoryPage = {
+  /**
+   * True when the last check stopped at the page cap, so the list is a sample of the site. Held per instance; false when unknown.
+   */
+  truncated: boolean;
   state: "ok" | "agent_update_needed" | "not_connected";
   agent_version?: string;
   min_agent_version: string;
