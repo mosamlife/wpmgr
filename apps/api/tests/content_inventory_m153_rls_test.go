@@ -256,6 +256,36 @@ func TestContentIntegrationsReadOnlyForAppRole(t *testing.T) {
 			t.Logf("wpmgr_app %s refused: %s", what, pgErr.Code)
 		}
 
+		// The privilege itself, not just its effect: an UPDATE or DELETE that
+		// RLS filters to zero rows returns no error, so the statements above
+		// only prove the fence because the privilege is gone.
+		var owner string
+		if err := tx.QueryRow(ctx,
+			`SELECT tableowner FROM pg_tables WHERE schemaname = 'public' AND tablename = 'content_integrations'`).Scan(&owner); err != nil {
+			return err
+		}
+		if owner == "wpmgr_app" {
+			t.Fatalf("content_integrations is owned by wpmgr_app; an owner can re-grant itself any write")
+		}
+		for _, priv := range []string{"INSERT", "UPDATE", "DELETE", "TRUNCATE"} {
+			for _, table := range []string{"content_integrations", "content_integrations_audit"} {
+				var has bool
+				if err := tx.QueryRow(ctx, `SELECT has_table_privilege('wpmgr_app', $1, $2)`, table, priv).Scan(&has); err != nil {
+					return err
+				}
+				if has {
+					t.Fatalf("WRITE LEAK: wpmgr_app holds %s on %s (owner %s)", priv, table, owner)
+				}
+			}
+		}
+		var survivors int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM content_integrations WHERE integration_id = 'elementor' AND enabled`).Scan(&survivors); err != nil {
+			return err
+		}
+		if survivors != 1 {
+			t.Fatalf("WRITE LEAK: the elementor seed row changed or vanished after wpmgr_app's refused writes (%d rows)", survivors)
+		}
+
 		_, err = sqlc.New(tx).AdminUpsertContentIntegration(ctx, sqlc.AdminUpsertContentIntegrationParams{
 			ActorUserID: uuid.New(), IntegrationID: "elementor", DisplayName: "Elementor",
 			Enabled: false, Status: "detect_only", Descriptor: []byte(`{}`),
