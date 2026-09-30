@@ -210,8 +210,8 @@ func TestContentInventoryAPIIsolation(t *testing.T) {
 	if len(second.Pages) != 1 || second.Pages[0].PostID != 11 || second.NextAfterPostID != nil {
 		t.Fatalf("second page = %+v", second)
 	}
-	if w := contentDo(contentEngine(t, h, owner), http.MethodGet, path+"?editor=Bad%20Value", ""); w.Code != http.StatusBadRequest {
-		t.Errorf("a malformed editor filter answered %d, want 400", w.Code)
+	if w := contentDo(contentEngine(t, h, owner), http.MethodGet, path+"?editor=Bad%20Value", ""); w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("a malformed editor filter answered %d, want 422", w.Code)
 	}
 
 	// Tenant B asks for tenant A's site: not found, and nothing of it.
@@ -362,8 +362,8 @@ func TestContentAdminGateAndActor(t *testing.T) {
 
 	// A body that names an actor is refused and nothing is written.
 	spoofed := strings.TrimSuffix(body, "}") + `,"actor_user_id":"` + other.String() + `"}`
-	if w := contentDo(engRoot, http.MethodPut, put, spoofed); w.Code != http.StatusBadRequest {
-		t.Fatalf("ACTOR FROM BODY: a body naming an actor answered %d, want 400: %s", w.Code, w.Body.String())
+	if w := contentDo(engRoot, http.MethodPut, put, spoofed); w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("ACTOR FROM BODY: a body naming an actor answered %d, want 422: %s", w.Code, w.Body.String())
 	}
 	if n := auditCount(); n != 0 {
 		t.Fatalf("ACTOR FROM BODY: %d audit rows after a refused body", n)
@@ -399,12 +399,12 @@ func TestContentAdminGateAndActor(t *testing.T) {
 		"blank name":  `{"display_name":"  ","enabled":true,"status":"detect_only","descriptor":{}}`,
 		"unknown key": `{"display_name":"X","enabled":true,"status":"detect_only","extra":1}`,
 	} {
-		if w := contentDo(engRoot, http.MethodPut, put, b); w.Code != http.StatusBadRequest {
-			t.Errorf("%s answered %d, want 400: %s", name, w.Code, w.Body.String())
+		if w := contentDo(engRoot, http.MethodPut, put, b); w.Code != http.StatusUnprocessableEntity {
+			t.Errorf("%s answered %d, want 422: %s", name, w.Code, w.Body.String())
 		}
 	}
-	if w := contentDo(engRoot, http.MethodPut, "/api/v1/admin/content/integrations/Bad_Id", body); w.Code != http.StatusBadRequest {
-		t.Errorf("a malformed integration id answered %d, want 400", w.Code)
+	if w := contentDo(engRoot, http.MethodPut, "/api/v1/admin/content/integrations/Bad_Id", body); w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("a malformed integration id answered %d, want 422", w.Code)
 	}
 
 	// Fleet report: counts across tenants, and no title or tenant id in it.
