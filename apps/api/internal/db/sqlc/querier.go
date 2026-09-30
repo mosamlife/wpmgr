@@ -182,7 +182,7 @@ type Querier interface {
 	// The ONLY write path. Call it only behind requireSuperadmin. The function
 	// refuses (SQLSTATE 42501) unless actor_user_id names a superadmin, and it
 	// writes a content_integrations_audit row in the same statement.
-	AdminUpsertContentIntegration(ctx context.Context, arg AdminUpsertContentIntegrationParams) (interface{}, error)
+	AdminUpsertContentIntegration(ctx context.Context, arg AdminUpsertContentIntegrationParams) (ContentIntegration, error)
 	// Tenants where @user_id is the ONLY member (so deleting them orphans the org),
 	// with each tenant's name + site count. Run under Pool.InAgentTx
 	// (memberships_agent + sites_agent) so the cross-tenant read is allowed.
