@@ -134,15 +134,24 @@ func sameIDSet(guc string, want []uuid.UUID) bool {
 //
 // Found is false when no such grant exists in the tenant. Authorized is then
 // false too; callers treat both as inactive.
+//
+// THE SITE SCOPE IS UNEXPORTED, AND THAT IS THE CONTRACT. A verdict's scope
+// always comes from the stored grant row: the only constructors are
+// grantVerdictFromGrantRow and grantVerdictFromRequestRow, and AuthorizeGrant
+// refuses any verdict they did not build. A caller outside this package can
+// read a verdict and hand it back, but cannot supply or change the scope it
+// resolves.
 type GrantVerdict struct {
 	Found bool
 
 	GrantID       uuid.UUID
 	GrantName     string
 	GrantStatus   string
-	SiteScopeMode string
-	ScopeTagIDs   []uuid.UUID
-	ScopeSiteIDs  []uuid.UUID
+	siteScopeMode string
+	scopeTagIDs   []uuid.UUID
+	scopeSiteIDs  []uuid.UUID
+	// fromStoredGrant is set only by the row constructors below.
+	fromStoredGrant bool
 	// ClientID is set when the grant came from the OAuth sign-in path.
 	ClientID     *string
 	Capabilities []string
@@ -158,12 +167,13 @@ type GrantVerdict struct {
 func grantVerdictFromGrantRow(r sqlc.ReCheckMCPGrantAuthorizationInTenantTxRow) GrantVerdict {
 	return GrantVerdict{
 		Found:                 true,
+		fromStoredGrant:       true,
 		GrantID:               r.GrantID,
 		GrantName:             r.GrantName,
 		GrantStatus:           r.GrantStatus,
-		SiteScopeMode:         r.SiteScopeMode,
-		ScopeTagIDs:           r.ScopeTagIds,
-		ScopeSiteIDs:          r.ScopeSiteIds,
+		siteScopeMode:         r.SiteScopeMode,
+		scopeTagIDs:           r.ScopeTagIds,
+		scopeSiteIDs:          r.ScopeSiteIds,
 		ClientID:              r.ClientID,
 		Capabilities:          r.GrantCapabilities,
 		OauthScopes:           r.GrantOauthScopes,
@@ -178,12 +188,13 @@ func grantVerdictFromGrantRow(r sqlc.ReCheckMCPGrantAuthorizationInTenantTxRow) 
 func grantVerdictFromRequestRow(r sqlc.ReCheckMCPRequestAuthorizationInTenantTxRow) GrantVerdict {
 	return GrantVerdict{
 		Found:           true,
+		fromStoredGrant: true,
 		GrantID:         r.GrantID,
 		GrantName:       r.GrantName,
 		GrantStatus:     r.GrantStatus,
-		SiteScopeMode:   r.SiteScopeMode,
-		ScopeTagIDs:     r.ScopeTagIds,
-		ScopeSiteIDs:    r.ScopeSiteIds,
+		siteScopeMode:   r.SiteScopeMode,
+		scopeTagIDs:     r.ScopeTagIds,
+		scopeSiteIDs:    r.ScopeSiteIds,
 		ClientID:        r.ClientID,
 		Capabilities:    r.GrantCapabilities,
 		OauthScopes:     r.GrantOauthScopes,
@@ -235,11 +246,14 @@ var ErrGrantNotAuthorized = errors.New("mcp: the connection is not authorized")
 // Repo.ReCheckGrantAuthorization.
 //
 // It refuses an unauthorized verdict itself, so no caller can derive scope
-// and capabilities for a grant that may not act.
+// and capabilities for a grant that may not act. It refuses, with the same
+// error, a verdict that was not read from a stored grant row (a GrantVerdict
+// literal built outside this package): the scope it resolves is only ever the
+// stored grant's.
 //
 // TokenID is left zero: no token carried this derivation. Authenticate sets it.
 func (s *Service) AuthorizeGrant(ctx context.Context, tenantID uuid.UUID, v GrantVerdict) (AuthorizedRequest, error) {
-	if !v.Found || !v.Authorized {
+	if !v.fromStoredGrant || !v.Found || !v.Authorized {
 		return AuthorizedRequest{}, ErrGrantNotAuthorized
 	}
 	return s.authorizeGrant(ctx, tenantID, v)

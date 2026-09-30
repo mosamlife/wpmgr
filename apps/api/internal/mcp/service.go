@@ -1687,7 +1687,7 @@ func (s *Service) authorizeGrant(ctx context.Context, tenantID uuid.UUID, v Gran
 	// before changing it. In one line: this call is what PRODUCES the allowlist,
 	// so there is no allowlist to scope it by.
 	ids, err := s.store.ResolveScopeSites(ctx, bootstrapTenantPrincipal(tenantID),
-		v.SiteScopeMode, v.ScopeTagIDs, v.ScopeSiteIDs)
+		v.siteScopeMode, v.scopeTagIDs, v.scopeSiteIDs)
 	if err != nil {
 		return AuthorizedRequest{}, fmt.Errorf("resolve grant scope: %w", err)
 	}
