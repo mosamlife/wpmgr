@@ -44,7 +44,8 @@ final class AbilityGuards
     /** @var list<string> */
     private array $violations = [];
 
-    private int $entered = 0;
+    /** @var array<string,int> Entries per ability name. */
+    private array $entered = [];
 
     /** @var list<array{0:string,1:callable,2:int}> Installed hooks, for removal. */
     private array $hooks = [];
@@ -81,7 +82,7 @@ final class AbilityGuards
         ));
         $this->recorded   = [];
         $this->violations = [];
-        $this->entered    = 0;
+        $this->entered    = [];
         $this->armed      = true;
 
         $record = function (string $key): callable {
@@ -117,14 +118,14 @@ final class AbilityGuards
 
                 return new \WP_Error('wpmgr_ability_intercepted', 'ability_intercepted/short_circuit');
             }
-            ++$this->entered;
-            if ($this->entered > 1) {
-                $this->violations[] = 'nested_reentry';
+            if ($name !== $this->outer && !in_array($name, $this->nestedAllow, true)) {
+                $this->violations[] = 'nested_ability_refused';
 
                 return new \WP_Error('wpmgr_nested_ability_refused', 'nested_ability_refused');
             }
-            if ($name !== $this->outer && !in_array($name, $this->nestedAllow, true)) {
-                $this->violations[] = 'nested_ability_refused';
+            $this->entered[$name] = ($this->entered[$name] ?? 0) + 1;
+            if ($this->entered[$name] > 1) {
+                $this->violations[] = 'nested_reentry';
 
                 return new \WP_Error('wpmgr_nested_ability_refused', 'nested_ability_refused');
             }

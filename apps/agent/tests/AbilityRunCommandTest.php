@@ -1,0 +1,624 @@
+<?php
+/**
+ * AbilityRunCommand tests, driven through the real request path: a signed
+ * Ed25519 command token carrying the pd claim, Router::authorizeCommand() and
+ * Router::handleCommand().
+ *
+ * @package WPMgr\Agent\Tests
+ */
+
+declare(strict_types=1);
+
+namespace WPMgr\Agent\Tests;
+
+use Brain\Monkey;
+use Brain\Monkey\Functions;
+use ReflectionProperty;
+use WPMgr\Agent\Abilities\AbilityDenylist;
+use WPMgr\Agent\Abilities\AbilityGuards;
+use WPMgr\Agent\Abilities\OwnAbilities;
+use WPMgr\Agent\Commands\AbilityRunCommand;
+use WPMgr\Agent\Commands\CommandEffect;
+use WPMgr\Agent\Commands\CommandRepeatability;
+use WPMgr\Agent\Connector;
+use WPMgr\Agent\Keystore;
+use WPMgr\Agent\Router;
+use WPMgr\Agent\Settings;
+use WPMgr\Agent\Support\AuthHeaderShield;
+use Yoast\PHPUnitPolyfills\TestCases\TestCase;
+
+/**
+ * @covers \WPMgr\Agent\Commands\AbilityRunCommand
+ * @covers \WPMgr\Agent\Abilities\OwnAbilities
+ * @covers \WPMgr\Agent\Abilities\AbilityDenylist
+ * @covers \WPMgr\Agent\Abilities\AbilityGuards
+ */
+final class AbilityRunCommandTest extends TestCase
+{
+    private const REQ_ID = '11111111-2222-4333-8444-555555555555';
+
+    private string $keyFile;
+
+    /** @var array<string,mixed> */
+    private array $options = [];
+
+    /** @var array<int,object> */
+    private array $posts = [];
+
+    private string $cpSecret;
+
+    private string $siteId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+
+    private Router $router;
+
+    private string $wpVersion = '6.4.2';
+
+    /** @var list<array{0:string,1:callable,2:int}> Captured add_filter calls. */
+    private array $filters = [];
+
+    protected function set_up(): void
+    {
+        parent::set_up();
+        Monkey\setUp();
+
+        $this->keyFile = sys_get_temp_dir() . '/wpmgr-agent-ability-' . bin2hex(random_bytes(8)) . '.key';
+        if (!defined('WPMGR_AGENT_KEY_FILE')) {
+            define('WPMGR_AGENT_KEY_FILE', $this->keyFile);
+        }
+
+        $this->options   = [];
+        $this->posts     = [];
+        $this->filters   = [];
+        $this->wpVersion = '6.4.2';
+
+        Functions\when('update_option')->alias(function ($name, $value) {
+            $this->options[$name] = $value;
+            return true;
+        });
+        Functions\when('get_option')->alias(fn ($name, $default = false) => $this->options[$name] ?? $default);
+        Functions\when('is_user_logged_in')->justReturn(false);
+        Functions\when('current_user_can')->justReturn(true);
+        Functions\when('register_rest_route')->justReturn(true);
+        Functions\when('get_bloginfo')->alias(fn () => $this->wpVersion);
+        Functions\when('get_post')->alias(fn ($id) => $this->posts[(int) $id] ?? null);
+        Functions\when('wp_strip_all_tags')->alias(static fn ($s) => trim(strip_tags((string) $s)));
+        Functions\when('add_filter')->alias(function ($name, $cb, $prio = 10) {
+            $this->filters[] = [(string) $name, $cb, (int) $prio];
+            return true;
+        });
+        Functions\when('remove_filter')->alias(function ($name, $cb, $prio = 10) {
+            foreach ($this->filters as $i => $row) {
+                if ($row[0] === $name && $row[1] === $cb && $row[2] === $prio) {
+                    unset($this->filters[$i]);
+                }
+            }
+            return true;
+        });
+
+        $keypair        = sodium_crypto_sign_keypair();
+        $this->cpSecret = sodium_crypto_sign_secretkey($keypair);
+        $keystore       = new Keystore();
+        $keystore->storeControlPlanePublicKey(sodium_crypto_sign_publickey($keypair));
+        $this->options[Settings::OPTION_SITE_ID] = $this->siteId;
+        $GLOBALS['wpdb'] = new class {
+            public string $prefix = 'wp_';
+            public string $last_error = '';
+
+            public function prepare(string $q, ...$args): string
+            {
+                return $q;
+            }
+
+            public function get_var(string $q): ?string
+            {
+                return null;
+            }
+
+            public function query(string $q): int
+            {
+                return 0;
+            }
+
+            /** @param array<string,mixed> $row */
+            public function insert(string $t, array $row, $f = null): int
+            {
+                return 1;
+            }
+        };
+        $this->resetShieldStash();
+
+        $this->router = new Router(new Connector($keystore, new Settings()), [new AbilityRunCommand()]);
+    }
+
+    protected function tear_down(): void
+    {
+        $this->resetShieldStash();
+        if (is_file($this->keyFile)) {
+            @unlink($this->keyFile);
+        }
+        unset($GLOBALS['wpdb']);
+        Monkey\tearDown();
+        parent::tear_down();
+    }
+
+    // -------------------------------------------------------------------------
+    // Identity
+    // -------------------------------------------------------------------------
+
+    public function test_declares_write_and_unsafe_to_repeat(): void
+    {
+        $c = new AbilityRunCommand();
+        $this->assertSame('ability_run', $c->name());
+        $this->assertSame(CommandEffect::Write, $c->effect());
+        $this->assertSame(CommandRepeatability::Unsafe, $c->repeatability());
+    }
+
+    // -------------------------------------------------------------------------
+    // R2: the digest is over bytes
+    // -------------------------------------------------------------------------
+
+    public function test_digest_mismatch_is_refused_and_nothing_runs(): void
+    {
+        Functions\expect('get_post')->never();
+        $p = $this->p('read', OwnAbilities::NAME_CONTENT, ['post_id' => 5]);
+
+        $r = $this->call($p, hash('sha256', $p . ' '));
+
+        $this->assertFalse($r['ok']);
+        $this->assertSame('token_params_mismatch', $r['code']);
+    }
+
+    public function test_a_token_without_pd_is_refused(): void
+    {
+        $r = $this->call($this->p('read', OwnAbilities::NAME_FACTS), null);
+
+        $this->assertSame('token_params_mismatch', $r['code']);
+    }
+
+    public function test_the_digest_covers_the_exact_bytes_not_the_meaning(): void
+    {
+        $p          = $this->p('read', OwnAbilities::NAME_FACTS);
+        $reencoded  = (string) json_encode(json_decode($p), JSON_PRETTY_PRINT);
+        $this->assertNotSame($p, $reencoded);
+
+        $r = $this->call($reencoded, hash('sha256', $p));
+
+        $this->assertSame('token_params_mismatch', $r['code'], 'semantically equal bytes must still not verify');
+    }
+
+    public function test_empty_object_and_empty_array_stay_distinct(): void
+    {
+        $asArray  = $this->callP($this->p('read', OwnAbilities::NAME_FACTS, [], '{"plugin_slugs":[]}'));
+        $asObject = $this->callP($this->p('read', OwnAbilities::NAME_FACTS, [], '{"plugin_slugs":{}}'));
+        $inputArr = $this->callP($this->p('read', OwnAbilities::NAME_FACTS, [], '[]'));
+        $inputObj = $this->callP($this->p('read', OwnAbilities::NAME_FACTS, [], '{}'));
+
+        $this->assertTrue($asArray['ok'], 'an empty list is a list');
+        $this->assertSame('bad_input', $asObject['code'], 'an empty object is not a list');
+        $this->assertSame('bad_input', $inputArr['code'], 'input must be an object, and [] is not one');
+        $this->assertTrue($inputObj['ok']);
+    }
+
+    public function test_entry_hash_mismatch_is_refused(): void
+    {
+        $entry = $this->entry(OwnAbilities::NAME_FACTS);
+        $p     = (string) json_encode([
+            'mode' => 'read', 'entry' => $entry, 'entry_sha256' => hash('sha256', $entry . ' '), 'input' => '{}',
+        ]);
+
+        $r = $this->callP($p);
+
+        $this->assertSame('integration_entry_changed', $r['code']);
+    }
+
+    public function test_body_must_be_exactly_p(): void
+    {
+        $p = $this->p('read', OwnAbilities::NAME_FACTS);
+        $r = $this->post((string) json_encode(['p' => $p, 'extra' => 1]), hash('sha256', $p));
+
+        $this->assertSame('bad_params', $r['code']);
+    }
+
+    // -------------------------------------------------------------------------
+    // Scope and denylist
+    // -------------------------------------------------------------------------
+
+    public function test_a_vendor_ability_is_refused_even_when_the_entry_says_admitted(): void
+    {
+        $r = $this->callP($this->p('read', 'acme-builder/get-page', [], '{}', ['status' => 'admitted', 'source' => 'vendor']));
+
+        $this->assertFalse($r['ok']);
+        $this->assertSame('ability_not_runnable_yet', $r['code']);
+    }
+
+    public function test_a_core_ability_is_refused_in_this_slice(): void
+    {
+        $r = $this->callP($this->p('read', 'core/get-site-info', [], '{}', ['source' => 'core', 'status' => 'admitted']));
+
+        $this->assertSame('ability_not_runnable_yet', $r['code']);
+    }
+
+    /**
+     * @return array<string,array{0:string}>
+     */
+    public static function deniedNames(): array
+    {
+        return [
+            'known code exec'       => ['bricks/execute-php'],
+            'pattern php'           => ['acme/run-php'],
+            'own namespace, denied' => ['wpmgr/execute-php'],
+            'shell segment'         => ['acme/shell'],
+            'sql prefix'            => ['acme/sql-console'],
+            'install'               => ['acme/plugin-install'],
+        ];
+    }
+
+    /**
+     * @dataProvider deniedNames
+     */
+    public function test_a_denylisted_name_is_refused_before_scope(string $name): void
+    {
+        $r = $this->callP($this->p('read', $name, [], '{}', ['status' => 'admitted']));
+
+        $this->assertFalse($r['ok']);
+        $this->assertSame('ability_denied', $r['code']);
+    }
+
+    public function test_the_denylist_does_not_over_fire_on_own_or_common_names(): void
+    {
+        foreach (OwnAbilities::names() as $name) {
+            $this->assertFalse(AbilityDenylist::denies($name), $name);
+        }
+        foreach (['core/get-site-info', 'acme/get-page', 'acme/list-posts', 'yoast/get-title'] as $name) {
+            $this->assertFalse(AbilityDenylist::denies($name), $name);
+        }
+        $this->assertTrue(AbilityDenylist::denies(''));
+        $this->assertTrue(AbilityDenylist::denies(null));
+    }
+
+    public function test_an_unknown_wpmgr_name_is_not_run(): void
+    {
+        $r = $this->callP($this->p('read', 'wpmgr/made-up'));
+
+        $this->assertSame('ability_unknown', $r['code']);
+    }
+
+    public function test_write_and_revert_modes_are_not_available(): void
+    {
+        foreach (['write', 'revert'] as $mode) {
+            $this->assertSame('mode_not_available', $this->callP($this->p($mode, OwnAbilities::NAME_FACTS))['code']);
+        }
+        $this->assertSame('bad_mode', $this->callP($this->p('bogus', OwnAbilities::NAME_FACTS))['code']);
+    }
+
+    public function test_a_disabled_entry_is_refused(): void
+    {
+        $r = $this->callP($this->p('read', OwnAbilities::NAME_FACTS, [], '{}', ['enabled' => false]));
+
+        $this->assertSame('ability_disabled', $r['code']);
+    }
+
+    public function test_read_mode_needs_a_read_class_entry(): void
+    {
+        $r = $this->callP($this->p('read', OwnAbilities::NAME_FACTS, [], '{}', ['class' => 'write']));
+
+        $this->assertSame('mode_class_mismatch', $r['code']);
+    }
+
+    // -------------------------------------------------------------------------
+    // Own abilities: output shape
+    // -------------------------------------------------------------------------
+
+    public function test_site_facts_shape(): void
+    {
+        $this->wpVersion                = '6.9.1';
+        $this->options['template']      = 'twentytwentyfive';
+        $this->options['stylesheet']    = 'child-theme';
+        $this->options['active_plugins'] = ['acme-builder/acme.php', 'hello.php'];
+
+        $r = $this->callP($this->p('read', OwnAbilities::NAME_FACTS, [], '{"plugin_slugs":["acme-builder","other"],"theme_slugs":["child-theme"]}'));
+
+        $this->assertTrue($r['ok']);
+        $this->assertSame('completed', $r['outcome']);
+        $o = $r['output'];
+        $this->assertSame('6.9.1', $o['wp_version']);
+        $this->assertSame(PHP_VERSION, $o['php_version']);
+        $this->assertSame(['template' => 'twentytwentyfive', 'stylesheet' => 'child-theme'], $o['active_theme']);
+        $this->assertSame(['acme-builder', 'hello'], $o['active_plugins']);
+        $this->assertSame(['plugin:acme-builder', 'theme:child-theme'], $o['builder_hints']);
+        $this->assertFalse($o['abilities_api']['filters_71']);
+        $this->assertArrayHasKey('multisite', $o);
+    }
+
+    public function test_content_read_returns_capped_text_under_from_the_site(): void
+    {
+        $this->seedPost(7, '<p>Hello <b>world</b></p><script>alert(1)</script>' . str_repeat('x', 600), 'page', 'publish', 'Title');
+
+        $r = $this->callP($this->p('read', OwnAbilities::NAME_CONTENT, [], '{"post_id":7,"max_bytes":256}'));
+
+        $this->assertTrue($r['ok']);
+        $o = $r['output'];
+        $this->assertSame(7, $o['post_id']);
+        $this->assertSame('page', $o['post_type']);
+        $this->assertTrue($o['truncated']);
+        $this->assertSame(256, strlen($o['from_the_site']['text']));
+        $this->assertStringStartsWith('Hello world', $o['from_the_site']['text']);
+        $this->assertSame('Title', $o['from_the_site']['title']);
+        $this->assertGreaterThan(256, $o['text_bytes']);
+        $this->assertArrayNotHasKey('text', $o, 'site text must live only under from_the_site');
+    }
+
+    public function test_content_read_never_splits_a_multibyte_character(): void
+    {
+        $this->seedPost(8, str_repeat("\u{20AC}", 200));
+
+        $r = $this->callP($this->p('read', OwnAbilities::NAME_CONTENT, [], '{"post_id":8,"max_bytes":256}'));
+
+        $this->assertSame(1, preg_match('//u', $r['output']['from_the_site']['text']));
+        $this->assertLessThanOrEqual(256, strlen($r['output']['from_the_site']['text']));
+    }
+
+    public function test_content_read_refuses_everything_that_is_not_public_with_one_answer(): void
+    {
+        $this->seedPost(20, 'x', 'page', 'draft');
+        $this->seedPost(21, 'x', 'page', 'private');
+        $this->seedPost(22, 'x', 'page', 'publish', 'T', 'secret');
+        $this->seedPost(23, 'x', 'shop_order', 'publish');
+        $this->seedPost(24, 'x', 'page', 'trash');
+
+        $answers = [];
+        foreach ([20, 21, 22, 23, 24, 999] as $id) {
+            $r = $this->callP($this->p('read', OwnAbilities::NAME_CONTENT, [], '{"post_id":' . $id . '}'));
+            $this->assertFalse($r['ok'], (string) $id);
+            $answers[] = $r['code'] . '|' . $r['detail'];
+        }
+        $this->assertSame(['post_not_readable|no published, unprotected post or page with that id'], array_values(array_unique($answers)));
+    }
+
+    public function test_content_read_validates_its_arguments(): void
+    {
+        foreach (['{}', '{"post_id":"7"}', '{"post_id":0}', '{"post_id":7,"max_bytes":1}', '{"post_id":7,"x":1}', '{"post_id":7.5}'] as $input) {
+            $this->assertSame('bad_input', $this->callP($this->p('read', OwnAbilities::NAME_CONTENT, [], $input))['code'], $input);
+        }
+    }
+
+    public function test_abilities_api_absent_inventory_still_works(): void
+    {
+        $this->assertFalse(function_exists('wp_get_abilities'), 'this process must not have the abilities API');
+
+        $r = $this->callP($this->p('read', OwnAbilities::NAME_INVENTORY));
+
+        $this->assertTrue($r['ok']);
+        $o = $r['output'];
+        $this->assertFalse($o['api_present']);
+        $this->assertFalse($o['truncated']);
+        $names = array_column($o['abilities'], 'name');
+        $this->assertSame(OwnAbilities::names(), $names);
+        foreach ($o['abilities'] as $row) {
+            $this->assertSame('wpmgr', $row['owner_kind']);
+            $this->assertFalse($row['owner_mismatch']);
+            $this->assertMatchesRegularExpression('/^sha256:[0-9a-f]{64}$/', $row['schema_struct_sha256']);
+            $this->assertSame('read', $row['class']);
+        }
+    }
+
+    public function test_all_own_abilities_run_without_the_abilities_api(): void
+    {
+        $this->seedPost(3);
+        foreach ([[OwnAbilities::NAME_FACTS, '{}'], [OwnAbilities::NAME_INVENTORY, '{}'], [OwnAbilities::NAME_CONTENT, '{"post_id":3}']] as [$name, $input]) {
+            $this->assertTrue($this->callP($this->p('read', $name, [], $input))['ok'], $name);
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // precheck and ledger
+    // -------------------------------------------------------------------------
+
+    public function test_precheck_validates_without_executing(): void
+    {
+        Functions\expect('get_post')->never();
+        $entry = $this->entry(OwnAbilities::NAME_CONTENT);
+        $input = '{"post_id":41}';
+
+        $r = $this->callP($this->p('precheck', OwnAbilities::NAME_CONTENT, ['request_id' => self::REQ_ID], $input));
+
+        $this->assertTrue($r['ok']);
+        $this->assertSame('prechecked', $r['outcome']);
+        $this->assertTrue($r['valid']);
+        $expected = hash('sha256', (string) json_encode([hash('sha256', $entry), hash('sha256', $input), '', '']));
+        $this->assertSame($expected, $r['precheck_digest']);
+        $this->assertArrayNotHasKey('output', $r);
+    }
+
+    public function test_precheck_rejects_bad_input_and_needs_a_request_id(): void
+    {
+        $bad = $this->callP($this->p('precheck', OwnAbilities::NAME_CONTENT, ['request_id' => self::REQ_ID], '{}'));
+        $this->assertSame('bad_input', $bad['code']);
+
+        $noId = $this->callP($this->p('precheck', OwnAbilities::NAME_FACTS));
+        $this->assertSame('bad_request_id', $noId['code']);
+    }
+
+    public function test_ledger_reports_not_found(): void
+    {
+        $r = $this->callP((string) json_encode(['mode' => 'ledger', 'request_id' => self::REQ_ID]));
+
+        $this->assertTrue($r['ok']);
+        $this->assertFalse($r['found']);
+        $this->assertFalse($r['inflight']);
+        $this->assertSame(self::REQ_ID, $r['request_id']);
+
+        $this->assertSame('bad_request_id', $this->callP((string) json_encode(['mode' => 'ledger', 'request_id' => 'nope']))['code']);
+    }
+
+    // -------------------------------------------------------------------------
+    // Interception guards (WP 7.1+)
+    // -------------------------------------------------------------------------
+
+    public function test_guards_are_armed_only_on_71_and_are_removed_afterwards(): void
+    {
+        $this->wpVersion = '7.1.0';
+        $this->assertTrue(AbilityGuards::supported());
+        $seen = null;
+        Functions\when('wp_strip_all_tags')->alias(function ($s) use (&$seen) {
+            $seen = count($this->filters);
+            return strip_tags((string) $s);
+        });
+        $this->seedPost(9, '<p>x</p>');
+
+        $r = $this->callP($this->p('read', OwnAbilities::NAME_CONTENT, [], '{"post_id":9}'));
+
+        $this->assertTrue($r['ok']);
+        $this->assertSame(7, $seen, 'guards and recorders are installed while the ability runs');
+        $this->assertSame([], $this->filters, 'and every one is removed afterwards');
+
+        $this->wpVersion = '7.0.9';
+        $this->assertFalse(AbilityGuards::supported());
+    }
+
+    public function test_a_tampered_input_or_short_circuit_or_nested_call_is_a_violation(): void
+    {
+        $this->wpVersion = '7.1.0';
+        $g = new AbilityGuards();
+        $g->arm('acme/outer');
+
+        // Recorder sees the value, a later filter rewrites it: the guard reverts and flags.
+        $rows = array_values(array_filter($this->filters, static fn ($r) => $r[0] === AbilityGuards::FILTER_INPUT));
+        $this->assertCount(2, $rows);
+        ($rows[0][1])(['a' => 1]);
+        $reverted = ($rows[1][1])(['a' => 2]);
+        $this->assertSame(['a' => 1], $reverted);
+
+        $pre = array_values(array_filter($this->filters, static fn ($r) => $r[0] === AbilityGuards::FILTER_PRE))[0][1];
+        $this->assertInstanceOf(\WP_Error::class, $pre('fake', 'acme/outer', []));
+        $this->assertNull($pre(null, 'acme/outer', []), 'the outer call itself passes');
+        $this->assertInstanceOf(\WP_Error::class, $pre(null, 'acme/outer', []), 're-entry is refused');
+        $this->assertInstanceOf(\WP_Error::class, $pre(null, 'acme/other', []), 'a nested ability is refused');
+
+        $v = $g->violations();
+        $this->assertContains('input', $v);
+        $this->assertContains('short_circuit', $v);
+        $this->assertContains('nested_reentry', $v);
+        $this->assertContains('nested_ability_refused', $v);
+
+        $g->disarm();
+        $this->assertSame([], $this->filters);
+    }
+
+    // -------------------------------------------------------------------------
+    // Helpers
+    // -------------------------------------------------------------------------
+
+    /**
+     * @param array<string,mixed> $entryOverrides Entry field overrides.
+     */
+    private function entry(string $name, array $entryOverrides = []): string
+    {
+        return (string) json_encode($entryOverrides + [
+            'name'    => $name,
+            'source'  => 'wpmgr',
+            'class'   => 'read',
+            'status'  => 'admitted',
+            'enabled' => true,
+            'limits'  => new \stdClass(),
+        ]);
+    }
+
+    /**
+     * Build the exact `p` text.
+     *
+     * @param array<string,mixed> $extra          Extra top-level fields.
+     * @param array<string,mixed> $entryOverrides Entry overrides.
+     */
+    private function p(string $mode, string $name, array $extra = [], string $input = '{}', array $entryOverrides = []): string
+    {
+        $entry = $this->entry($name, $entryOverrides);
+
+        return (string) json_encode([
+            'mode'         => $mode,
+            'entry'        => $entry,
+            'entry_sha256' => hash('sha256', $entry),
+            'input'        => $input,
+        ] + $extra);
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function callP(string $p): array
+    {
+        return $this->call($p, hash('sha256', $p));
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function call(string $p, ?string $pd): array
+    {
+        return $this->post((string) json_encode(['p' => $p]), $pd);
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function post(string $body, ?string $pd): array
+    {
+        $request = new \WP_REST_Request('POST', '/wpmgr/v1/command/ability_run');
+        $request->set_url_params(['command' => 'ability_run']);
+        $request->set_header('Content-Type', 'application/json');
+        $request->set_header('Accept', 'application/json');
+        $request->set_header('Authorization', 'Bearer ' . $this->mintToken($pd));
+        $request->set_body($body);
+
+        $this->assertTrue($this->router->authorizeCommand($request, 'ability_run'), 'the signed request was not authorized');
+        $response = $this->router->handleCommand($request);
+        $this->assertInstanceOf(\WP_REST_Response::class, $response);
+        $this->assertIsArray($response->data);
+
+        return $response->data;
+    }
+
+    private function seedPost(int $id, string $content = 'Plain words.', string $type = 'page', string $status = 'publish', string $title = 'A title', string $password = ''): void
+    {
+        $p                    = new \stdClass();
+        $p->ID                = $id;
+        $p->post_type         = $type;
+        $p->post_status       = $status;
+        $p->post_title        = $title;
+        $p->post_content      = $content;
+        $p->post_password     = $password;
+        $p->post_modified_gmt = '2026-09-01 10:00:00';
+        $this->posts[$id]     = $p;
+    }
+
+    private function mintToken(?string $pd): string
+    {
+        $claims = [
+            'aud' => $this->siteId,
+            'cmd' => 'ability_run',
+            'jti' => bin2hex(random_bytes(8)),
+            'exp' => time() + 30,
+        ];
+        if ($pd !== null) {
+            $claims['pd'] = $pd;
+        }
+        $segments = [
+            $this->b64((string) json_encode(['alg' => 'EdDSA', 'typ' => 'JWT'])),
+            $this->b64((string) json_encode($claims)),
+        ];
+        $segments[] = $this->b64(sodium_crypto_sign_detached(implode('.', $segments), $this->cpSecret));
+
+        return implode('.', $segments);
+    }
+
+    private function b64(string $data): string
+    {
+        return rtrim(strtr(base64_encode($data), '+/', '-_'), '=');
+    }
+
+    private function resetShieldStash(): void
+    {
+        $prop = new ReflectionProperty(AuthHeaderShield::class, 'stashedBearer');
+        $prop->setValue(null, null);
+    }
+}
