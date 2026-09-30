@@ -14391,26 +14391,26 @@ components:
         enabled: { type: boolean }
         approval_mode: { type: string, enum: [none, per_call] }
         permission_mode: { type: string, enum: [principal, asserted] }
-        integration_id: { type: string }
-        owner_dir: { type: string }
-        version_min: { type: string }
-        version_max_tested: { type: string }
-        min_wp_version: { type: string }
-        min_agent_version: { type: string }
-        schema_struct_sha256: { type: string }
-        dynamic_enum_paths: { type: array, items: { type: string } }
+        integration_id: { type: string, maxLength: 64 }
+        owner_dir: { type: string, maxLength: 100 }
+        version_min: { type: string, maxLength: 32 }
+        version_max_tested: { type: string, maxLength: 32 }
+        min_wp_version: { type: string, maxLength: 32 }
+        min_agent_version: { type: string, maxLength: 32 }
+        schema_struct_sha256: { type: string, maxLength: 64 }
+        dynamic_enum_paths: { type: array, maxItems: 64, items: { type: string, maxLength: 256 } }
         title: { type: string, maxLength: 80 }
         description: { type: string, maxLength: 1000 }
         usage: { type: string, maxLength: 2000 }
-        operator_permission: { type: string }
+        operator_permission: { type: string, maxLength: 64 }
         target: { nullable: true }
-        snapshot: { type: string }
-        preview: { type: string }
+        snapshot: { type: string, maxLength: 32 }
+        preview: { type: string, maxLength: 32 }
         arg_render: { type: object, additionalProperties: true }
         effect_copy: { type: string, enum: [draft, live, none] }
         limits: { type: object, additionalProperties: true }
-        nested_allow: { type: array, items: { type: string } }
-        global_option_keys: { type: array, items: { type: string } }
+        nested_allow: { type: array, maxItems: 64, items: { type: string, maxLength: 256 } }
+        global_option_keys: { type: array, maxItems: 64, items: { type: string, maxLength: 256 } }
         integration_block: { nullable: true }
         admission: { type: object, additionalProperties: true }
     ContentIntegrationInput:

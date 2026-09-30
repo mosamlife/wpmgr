@@ -465,29 +465,38 @@ export const AbilityCatalogueInputSchema = {
     },
     integration_id: {
       type: "string",
+      maxLength: 64,
     },
     owner_dir: {
       type: "string",
+      maxLength: 100,
     },
     version_min: {
       type: "string",
+      maxLength: 32,
     },
     version_max_tested: {
       type: "string",
+      maxLength: 32,
     },
     min_wp_version: {
       type: "string",
+      maxLength: 32,
     },
     min_agent_version: {
       type: "string",
+      maxLength: 32,
     },
     schema_struct_sha256: {
       type: "string",
+      maxLength: 64,
     },
     dynamic_enum_paths: {
       type: "array",
+      maxItems: 64,
       items: {
         type: "string",
+        maxLength: 256,
       },
     },
     title: {
@@ -504,15 +513,18 @@ export const AbilityCatalogueInputSchema = {
     },
     operator_permission: {
       type: "string",
+      maxLength: 64,
     },
     target: {
       nullable: true,
     },
     snapshot: {
       type: "string",
+      maxLength: 32,
     },
     preview: {
       type: "string",
+      maxLength: 32,
     },
     arg_render: {
       type: "object",
@@ -528,14 +540,18 @@ export const AbilityCatalogueInputSchema = {
     },
     nested_allow: {
       type: "array",
+      maxItems: 64,
       items: {
         type: "string",
+        maxLength: 256,
       },
     },
     global_option_keys: {
       type: "array",
+      maxItems: 64,
       items: {
         type: "string",
+        maxLength: 256,
       },
     },
     integration_block: {
