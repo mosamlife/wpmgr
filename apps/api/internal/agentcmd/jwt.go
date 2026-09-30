@@ -103,6 +103,11 @@ type jwtClaims struct {
 	Cmd string `json:"cmd"`
 	Tgt string `json:"tgt,omitempty"`
 	Ver string `json:"ver,omitempty"`
+	// PD is set ONLY by params-bound commands (ability_run): the lowercase hex
+	// sha256 of the exact bytes of the request's `p` string. The agent hashes
+	// the string it received and refuses a mismatch, so the token authorises
+	// one exact call. omitempty keeps every other command's claims unchanged.
+	PD string `json:"pd,omitempty"`
 }
 
 // Mint produces a signed compact JWT valid for JWTTTL from now, bound to the
@@ -165,7 +170,39 @@ func (s *Signer) mintClaims(now time.Time, ttl time.Duration, aud, cmd, jti, tgt
 		Tgt: tgt,
 		Ver: ver,
 	}
+	return s.signClaims(header, claims)
+}
 
+// MintParamsBound mints an agent-verified command token that also carries the
+// `pd` claim: pd must be the lowercase hex sha256 of the exact `p` bytes the
+// request body carries. Used by ability_run only.
+func (s *Signer) MintParamsBound(now time.Time, aud, cmd, pd string) (token, jti string, err error) {
+	if len(pd) != 64 || strings.ToLower(pd) != pd {
+		return "", "", fmt.Errorf("pd must be 64 lowercase hex characters")
+	}
+	if _, err := hex.DecodeString(pd); err != nil {
+		return "", "", fmt.Errorf("pd must be hex: %w", err)
+	}
+	jtiBytes := make([]byte, 16)
+	if _, err := rand.Read(jtiBytes); err != nil {
+		return "", "", fmt.Errorf("generate jti: %w", err)
+	}
+	jti = hex.EncodeToString(jtiBytes)
+	claims := jwtClaims{
+		JTI: jti,
+		Exp: now.Add(JWTTTL).Unix(),
+		Iat: now.Unix(),
+		Iss: Issuer,
+		Aud: aud,
+		Cmd: cmd,
+		PD:  pd,
+	}
+	token, err = s.signClaims(jwtHeader{Alg: "EdDSA", Typ: "JWT"}, claims)
+	return token, jti, err
+}
+
+// signClaims marshals header and claims and signs "header.payload".
+func (s *Signer) signClaims(header jwtHeader, claims jwtClaims) (string, error) {
 	headerJSON, err := json.Marshal(header)
 	if err != nil {
 		return "", fmt.Errorf("marshal jwt header: %w", err)
