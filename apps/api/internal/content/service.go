@@ -1,6 +1,7 @@
 package content
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -119,6 +120,9 @@ func (s *Service) Refresh(ctx context.Context, tenantID, siteID uuid.UUID, sched
 	indicators := BuildIndicators(target.Components, integrations)
 	types := []string{"page", "post"}
 
+	// The refresh is stamped when it starts, so a slower, older probe can never
+	// replace the result of a newer one (the write compares this stamp).
+	checkedAt := s.now().UTC()
 	var rows []Row
 	var skipped int
 	truncated := false
@@ -147,8 +151,11 @@ func (s *Service) Refresh(ctx context.Context, tenantID, siteID uuid.UUID, sched
 		}
 		rows = append(rows, got...)
 		skipped += unknown
-		if resp.NextOffset == nil || *resp.NextOffset <= offset {
+		if resp.NextOffset == nil {
 			break
+		}
+		if *resp.NextOffset <= offset {
+			return RefreshResult{}, fmt.Errorf("%w: next_offset %d does not advance past %d", ErrInvalidProbeResponse, *resp.NextOffset, offset)
 		}
 		offset = *resp.NextOffset
 	}
@@ -157,13 +164,16 @@ func (s *Service) Refresh(ctx context.Context, tenantID, siteID uuid.UUID, sched
 	// upsert would reject the whole statement on a repeated key, so the last
 	// row seen wins.
 	rows = dedupeRows(rows)
-	checkedAt := s.now().UTC()
-	if err := s.repo.ReplaceInventory(ctx, tenantID, siteID, checkedAt, rows, truncated); err != nil {
-		return RefreshResult{}, err
-	}
+	// A row this control plane cannot classify is not stored, and so must not
+	// let the stale delete remove that page's earlier row: with any unknown row
+	// the old rows stay and the run is recorded incomplete.
 	if skipped > 0 {
-		s.logger.Warn("content refresh: rows skipped for an unknown verdict or reason",
+		truncated = true
+		s.logger.Warn("content refresh: rows with an unknown verdict or reason; keeping earlier rows and marking the run incomplete",
 			slog.String("site_id", siteID.String()), slog.Int("skipped", skipped))
+	}
+	if err := s.repo.ReplaceInventory(ctx, tenantID, siteID, checkedAt, rows, truncated, skipped == 0); err != nil {
+		return RefreshResult{}, err
 	}
 	return RefreshResult{Stored: len(rows), SkippedUnknown: skipped, Truncated: truncated, CheckedAt: checkedAt}, nil
 }
@@ -402,6 +412,40 @@ func (s *Service) UpsertIntegration(ctx context.Context, in AdminUpsertInput) (I
 	in.DisplayName = name
 	if in.Status != "detect_only" {
 		return IntegrationRecord{}, domain.Validation("invalid_status", "status must be detect_only")
+	}
+	// Fields the request omitted keep their stored values, so switching a
+	// builder off or on never erases its detection data.
+	if in.Present != nil {
+		existing, err := s.repo.ListIntegrations(ctx, in.ActorUserID)
+		if err != nil {
+			return IntegrationRecord{}, err
+		}
+		for _, e := range existing {
+			if e.IntegrationID != in.IntegrationID {
+				continue
+			}
+			if !in.Present["descriptor"] {
+				in.Descriptor = e.Descriptor
+			}
+			if !in.Present["abilities"] {
+				in.Abilities = e.Abilities
+			}
+			if !in.Present["min_version"] {
+				in.MinVersion = e.MinVersion
+			}
+			if !in.Present["max_tested_version"] {
+				in.MaxTestedVersion = e.MaxTestedVersion
+			}
+			if !in.Present["min_wp_version"] {
+				in.MinWPVersion = e.MinWPVersion
+			}
+			if !in.Present["theme_slug"] {
+				in.ThemeSlug = e.ThemeSlug
+			}
+		}
+	}
+	if string(bytes.TrimSpace(in.Abilities)) == "null" {
+		in.Abilities = nil
 	}
 	if len(in.Descriptor) == 0 {
 		in.Descriptor = []byte(`{}`)

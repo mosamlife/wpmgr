@@ -24,7 +24,7 @@ type Repo interface {
 	// site's older rows, in one tenant transaction.
 	// The refresh's run record is written in the same transaction, with the
 	// same checked_at.
-	ReplaceInventory(ctx context.Context, tenantID, siteID uuid.UUID, checkedAt time.Time, rows []Row, truncated bool) error
+	ReplaceInventory(ctx context.Context, tenantID, siteID uuid.UUID, checkedAt time.Time, rows []Row, truncated bool, deleteStale bool) error
 	// GetRun reads the site's last refresh record; nil means never refreshed.
 	GetRun(ctx context.Context, p domain.Principal, siteID uuid.UUID) (*Run, error)
 	// ListInventory pages a site's inventory by post id, in the caller's scope.
@@ -84,9 +84,21 @@ func (r *pgRepo) ListEnabledIntegrations(ctx context.Context, tenantID uuid.UUID
 	return out, err
 }
 
-func (r *pgRepo) ReplaceInventory(ctx context.Context, tenantID, siteID uuid.UUID, checkedAt time.Time, rows []Row, truncated bool) error {
+func (r *pgRepo) ReplaceInventory(ctx context.Context, tenantID, siteID uuid.UUID, checkedAt time.Time, rows []Row, truncated bool, deleteStale bool) error {
 	return r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
 		q := sqlc.New(tx)
+		// One writer per site at a time, and never older data over newer: a
+		// refresh that started before the stored one finished changes nothing.
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('content_inventory'), hashtext($1))`, siteID.String()); err != nil {
+			return err
+		}
+		if cur, err := q.GetSiteContentInventoryRun(ctx, sqlc.GetSiteContentInventoryRunParams{TenantID: tenantID, SiteID: siteID}); err == nil {
+			if cur.CheckedAt.After(checkedAt) {
+				return nil
+			}
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
 		if len(rows) > 0 {
 			p := sqlc.UpsertSiteContentInventoryParams{
 				TenantID: tenantID, SiteID: siteID, CheckedAt: checkedAt,
@@ -109,10 +121,12 @@ func (r *pgRepo) ReplaceInventory(ctx context.Context, tenantID, siteID uuid.UUI
 				return err
 			}
 		}
-		if _, err := q.DeleteStaleSiteContentInventory(ctx, sqlc.DeleteStaleSiteContentInventoryParams{
-			TenantID: tenantID, SiteID: siteID, CheckedAt: checkedAt,
-		}); err != nil {
-			return err
+		if deleteStale {
+			if _, err := q.DeleteStaleSiteContentInventory(ctx, sqlc.DeleteStaleSiteContentInventoryParams{
+				TenantID: tenantID, SiteID: siteID, CheckedAt: checkedAt,
+			}); err != nil {
+				return err
+			}
 		}
 		return q.UpsertSiteContentInventoryRun(ctx, sqlc.UpsertSiteContentInventoryRunParams{
 			TenantID: tenantID, SiteID: siteID, CheckedAt: checkedAt,
@@ -251,6 +265,9 @@ type AdminUpsertInput struct {
 	MinWPVersion           *string
 	IntegrationEntrySHA256 string
 	ThemeSlug              *string
+	// Present names the optional fields the request carried; the rest keep
+	// their stored values. Nil means every field was supplied.
+	Present map[string]bool
 }
 
 func (r *pgRepo) AdminUpsertIntegration(ctx context.Context, in AdminUpsertInput) (IntegrationRecord, error) {

@@ -37,8 +37,10 @@ func mapAdminErr(err error) error {
 
 // RefreshArgs is the River payload for one site's inventory refresh.
 type RefreshArgs struct {
-	TenantID  uuid.UUID `json:"tenant_id"`
-	SiteID    uuid.UUID `json:"site_id"`
+	TenantID uuid.UUID `json:"tenant_id"`
+	// SiteID is the only field in the unique key: a sweep and an operator
+	// refresh of one site are the same work, whoever asked.
+	SiteID    uuid.UUID `json:"site_id" river:"unique"`
 	Scheduled bool      `json:"scheduled"`
 }
 
@@ -214,7 +216,7 @@ func (w *SweepWorker) Work(ctx context.Context, _ *river.Job[SweepArgs]) error {
 // RequestRefresh enqueues an operator's refresh now. It returns a rate-limit
 // error when a refresh for the site is already inside the unique window.
 func (s *Service) RequestRefresh(ctx context.Context, enq Enqueuer, tenantID, siteID uuid.UUID) error {
-	if enq == nil {
+	if enq == nil || s.agent == nil {
 		return domain.ServiceUnavailable("content_probe_unavailable", "page checks are not available on this install")
 	}
 	queued, err := enq.EnqueueRefresh(ctx, RefreshArgs{TenantID: tenantID, SiteID: siteID}, time.Time{})

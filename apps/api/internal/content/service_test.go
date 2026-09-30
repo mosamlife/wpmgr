@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -30,6 +31,8 @@ type fakeRepo struct {
 	integrations []Integration
 	replaced     [][]Row
 	truncated    []bool
+	deleteStale  []bool
+	stored       []IntegrationRecord
 	run          *Run
 	checkedAt    []time.Time
 	sweep        []SweepSite
@@ -41,8 +44,9 @@ func (f *fakeRepo) GetSiteTarget(context.Context, uuid.UUID, uuid.UUID) (SiteTar
 func (f *fakeRepo) ListEnabledIntegrations(context.Context, uuid.UUID) ([]Integration, error) {
 	return f.integrations, nil
 }
-func (f *fakeRepo) ReplaceInventory(_ context.Context, _, _ uuid.UUID, at time.Time, rows []Row, truncated bool) error {
+func (f *fakeRepo) ReplaceInventory(_ context.Context, _, _ uuid.UUID, at time.Time, rows []Row, truncated bool, deleteStale bool) error {
 	f.truncated = append(f.truncated, truncated)
+	f.deleteStale = append(f.deleteStale, deleteStale)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.replaced = append(f.replaced, rows)
@@ -60,10 +64,13 @@ func (f *fakeRepo) GetRun(context.Context, domain.Principal, uuid.UUID) (*Run, e
 }
 func (f *fakeRepo) ListSweepSites(context.Context) ([]SweepSite, error) { return f.sweep, nil }
 func (f *fakeRepo) AdminUpsertIntegration(_ context.Context, in AdminUpsertInput) (IntegrationRecord, error) {
-	return IntegrationRecord{IntegrationID: in.IntegrationID, DisplayName: in.DisplayName, Status: in.Status, Descriptor: in.Descriptor}, nil
+	rec := IntegrationRecord{IntegrationID: in.IntegrationID, DisplayName: in.DisplayName, Enabled: in.Enabled, Status: in.Status,
+		Descriptor: in.Descriptor, Abilities: in.Abilities, MinVersion: in.MinVersion, ThemeSlug: in.ThemeSlug}
+	f.stored = []IntegrationRecord{rec}
+	return rec, nil
 }
 func (f *fakeRepo) ListIntegrations(context.Context, uuid.UUID) ([]IntegrationRecord, error) {
-	return nil, nil
+	return f.stored, nil
 }
 
 // fakeAgent is an httptest server speaking the content_probe wire.
@@ -501,5 +508,124 @@ func TestRefresh_SendsDescriptorsWithIdentityFromTheColumns(t *testing.T) {
 	}
 	if d["integration_id"] != "elementor" || d["status"] != "detect_only" || d["enabled"] != true {
 		t.Errorf("descriptor = %v", d)
+	}
+}
+
+func TestRequestRefresh_NoProbeClientIsUnavailableNotQueued(t *testing.T) {
+	svc := NewService(&fakeRepo{}, nil, nil)
+	enq := &fakeEnq{}
+	err := svc.RequestRefresh(context.Background(), enq, uuid.New(), uuid.New())
+	if de, ok := domain.AsDomain(err); !ok || de.Kind != domain.KindUnavailable && de.Kind != domain.KindServiceUnavailable {
+		t.Fatalf("err = %v, want unavailable", err)
+	}
+	if len(enq.args) != 0 {
+		t.Error("a job was queued with no probe client")
+	}
+}
+
+func TestRefreshArgs_UniqueKeyIsTheSiteOnly(t *testing.T) {
+	f, ok := reflect.TypeOf(RefreshArgs{}).FieldByName("Scheduled")
+	if !ok || f.Tag.Get("river") == "unique" {
+		t.Fatal("Scheduled must not be part of the unique key")
+	}
+	s, _ := reflect.TypeOf(RefreshArgs{}).FieldByName("SiteID")
+	if s.Tag.Get("river") != "unique" {
+		t.Fatal("SiteID must be the unique key")
+	}
+	if _, has := reflect.TypeOf(RefreshArgs{}).FieldByName("TenantID"); !has || reflect.TypeOf(RefreshArgs{}).Field(0).Tag.Get("river") == "unique" {
+		t.Fatal("TenantID must not be in the unique key")
+	}
+}
+
+func TestRefresh_UnknownRowKeepsEarlierRowsAndMarksRunIncomplete(t *testing.T) {
+	fa := newFakeAgent(t, func(agentcmd.ContentProbeRequest) (int, any) {
+		rows := rowsJSON(1, 3)
+		rows[1]["verdict"] = "a_future_verdict"
+		return 200, listReply(rows, nil)
+	})
+	repo := &fakeRepo{target: connected()}
+	svc := newSvc(t, repo, fa)
+	if _, err := svc.Refresh(context.Background(), uuid.New(), uuid.New(), false); err != nil {
+		t.Fatal(err)
+	}
+	if len(repo.deleteStale) != 1 || repo.deleteStale[0] {
+		t.Errorf("stale rows were deleted despite an unknown row: %v", repo.deleteStale)
+	}
+	if !repo.truncated[0] {
+		t.Error("the run was not marked incomplete")
+	}
+	if len(repo.replaced[0]) != 2 {
+		t.Errorf("stored %d rows, want the 2 known", len(repo.replaced[0]))
+	}
+}
+
+func TestRefresh_CleanRunDeletesStale(t *testing.T) {
+	fa := newFakeAgent(t, func(agentcmd.ContentProbeRequest) (int, any) { return 200, listReply(rowsJSON(1, 2), nil) })
+	repo := &fakeRepo{target: connected()}
+	svc := newSvc(t, repo, fa)
+	if _, err := svc.Refresh(context.Background(), uuid.New(), uuid.New(), false); err != nil {
+		t.Fatal(err)
+	}
+	if !repo.deleteStale[0] || repo.truncated[0] {
+		t.Errorf("deleteStale=%v truncated=%v", repo.deleteStale, repo.truncated)
+	}
+}
+
+func TestRefresh_NonAdvancingNextOffsetFailsAndStoresNothing(t *testing.T) {
+	fa := newFakeAgent(t, func(req agentcmd.ContentProbeRequest) (int, any) {
+		if req.List.Offset == 0 {
+			return 200, listReply(rowsJSON(1, 200), 200)
+		}
+		return 200, listReply(rowsJSON(201, 200), 200) // does not advance
+	})
+	repo := &fakeRepo{target: connected()}
+	svc := newSvc(t, repo, fa)
+	_, err := svc.Refresh(context.Background(), uuid.New(), uuid.New(), false)
+	if !errors.Is(err, ErrInvalidProbeResponse) {
+		t.Fatalf("err = %v", err)
+	}
+	if len(repo.replaced) != 0 {
+		t.Error("inventory replaced after a failed probe")
+	}
+}
+
+func TestUpsertIntegration_OmittedFieldsKeepStoredValues(t *testing.T) {
+	repo := &fakeRepo{}
+	svc := NewService(repo, nil, nil)
+	ver := "1.2.3"
+	theme := "bricks"
+	full := AdminUpsertInput{
+		ActorUserID: uuid.New(), IntegrationID: "bricks", DisplayName: "Bricks", Enabled: true, Status: "detect_only",
+		Descriptor: []byte(`{"plugin_dir":"bricks-plugin"}`), Abilities: []byte(`{"a":1}`), MinVersion: &ver, ThemeSlug: &theme,
+	}
+	if _, err := svc.UpsertIntegration(context.Background(), full); err != nil {
+		t.Fatal(err)
+	}
+	// Kill switch: only display_name, enabled and status are sent.
+	off := AdminUpsertInput{
+		ActorUserID: full.ActorUserID, IntegrationID: "bricks", DisplayName: "Bricks", Enabled: false, Status: "detect_only",
+		Present: map[string]bool{},
+	}
+	rec, err := svc.UpsertIntegration(context.Background(), off)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Enabled || string(rec.Descriptor) != `{"plugin_dir":"bricks-plugin"}` || string(rec.Abilities) != `{"a":1}` ||
+		rec.MinVersion == nil || *rec.MinVersion != "1.2.3" || rec.ThemeSlug == nil || *rec.ThemeSlug != "bricks" {
+		t.Fatalf("disable erased data: %+v", rec)
+	}
+	on := off
+	on.Enabled = true
+	rec, err = svc.UpsertIntegration(context.Background(), on)
+	if err != nil || !rec.Enabled || string(rec.Descriptor) != `{"plugin_dir":"bricks-plugin"}` {
+		t.Fatalf("re-enable: %+v %v", rec, err)
+	}
+	// An explicit null clears abilities.
+	clr := on
+	clr.Present = map[string]bool{"abilities": true}
+	clr.Abilities = []byte(`null`)
+	rec, _ = svc.UpsertIntegration(context.Background(), clr)
+	if len(rec.Abilities) != 0 {
+		t.Errorf("explicit null did not clear abilities: %s", rec.Abilities)
 	}
 }

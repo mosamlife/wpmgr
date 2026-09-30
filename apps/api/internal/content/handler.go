@@ -158,6 +158,12 @@ func (h *Handler) upsertIntegration(c *gin.Context) {
 		return
 	}
 	var in integrationInput
+	var rawFields map[string]json.RawMessage
+	_ = json.Unmarshal(body, &rawFields)
+	present := map[string]bool{}
+	for _, k := range []string{"descriptor", "abilities", "min_version", "max_tested_version", "min_wp_version", "theme_slug"} {
+		_, present[k] = rawFields[k]
+	}
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&in); err != nil {
@@ -165,15 +171,12 @@ func (h *Handler) upsertIntegration(c *gin.Context) {
 		return
 	}
 	abil := in.Abilities
-	if string(bytes.TrimSpace(abil)) == "null" {
-		abil = nil
-	}
 	rec, err := h.svc.UpsertIntegration(c.Request.Context(), AdminUpsertInput{
 		ActorUserID:   p.UserID,
 		IntegrationID: c.Param("integrationId"),
 		DisplayName:   in.DisplayName, Enabled: in.Enabled, Status: in.Status,
 		Descriptor: in.Descriptor, Abilities: abil,
-		ThemeSlug: in.ThemeSlug, MinVersion: in.MinVersion, MaxTestedVersion: in.MaxTestedVersion, MinWPVersion: in.MinWPVersion,
+		ThemeSlug: in.ThemeSlug, Present: present, MinVersion: in.MinVersion, MaxTestedVersion: in.MaxTestedVersion, MinWPVersion: in.MinWPVersion,
 	})
 	if err != nil {
 		httpx.Error(c, err)
