@@ -91,17 +91,36 @@ final class Purge
     }
 
     /**
+     * Action arguments: the given leading arguments, plus the purge options
+     * when there are any. With no options the action receives exactly what it
+     * received before options existed.
+     *
+     * @param array<mixed>        $args    Leading action arguments.
+     * @param array<string,mixed> $options Purge options.
+     * @return array<mixed>
+     */
+    private static function withOptions(array $args, array $options): array
+    {
+        if ($options !== []) {
+            $args[] = $options;
+        }
+        return $args;
+    }
+
+    /**
      * Delete every cached variant for a single URL's directory (non-recursive).
      *
-     * @param string $url Absolute URL (scheme://host/path) or path-only.
+     * @param string              $url     Absolute URL (scheme://host/path) or path-only.
+     * @param array<string,mixed> $options Purge options passed to the purge actions,
+     *                                     e.g. ['origin_only' => true].
      * @return int Number of .html.gz files removed.
      */
-    public function purgeUrl(string $url): int
+    public function purgeUrl(string $url, array $options = []): int
     {
         $urls = [$url];
-        $this->fire('wpmgr_purge_urls:before', [$urls]);
+        $this->fire('wpmgr_purge_urls:before', self::withOptions([$urls], $options));
 
-        $host = (string) (wp_parse_url($url, PHP_URL_HOST) ?? '');
+        $host = self::bucketHost($url);
 
         // Derive the path component. wp_parse_url() returns NULL for the path when
         // the URL is just scheme://host with no path (e.g. "https://example.com"
@@ -126,7 +145,7 @@ final class Purge
         $dir  = $this->cacheRoot . '/' . $host . CacheKey::normalizePath($path);
 
         if (!$this->isContained($dir)) {
-            $this->fire('wpmgr_purge_urls:after', [$urls]);
+            $this->fire('wpmgr_purge_urls:after', self::withOptions([$urls], $options));
             return 0;
         }
 
@@ -145,9 +164,34 @@ final class Purge
         // Tidy an emptied directory.
         $this->removeIfEmpty($dir);
 
-        $this->fire('wpmgr_purge_urls:after', [$urls]);
+        $this->fire('wpmgr_purge_urls:after', self::withOptions([$urls], $options));
 
         return $removed;
+    }
+
+    /**
+     * The host part of a purge URL's cache bucket, before sanitizeHost().
+     *
+     * The cache writer buckets a page by the request's Host header, which
+     * carries a port only when it is not the scheme's default (browsers omit
+     * :443 for https and :80 for http). So a non-default port is part of the
+     * bucket and a default one never is. A URL without an http(s) scheme gives
+     * the bare host.
+     *
+     * @param string $url Absolute URL, or path-only.
+     * @return string Host, with ':port' when the port is not the scheme's default.
+     */
+    private static function bucketHost(string $url): string
+    {
+        $host   = (string) (wp_parse_url($url, PHP_URL_HOST) ?? '');
+        $port   = wp_parse_url($url, PHP_URL_PORT);
+        $scheme = strtolower((string) (wp_parse_url($url, PHP_URL_SCHEME) ?? ''));
+        if ($host !== '' && is_int($port)
+            && (($scheme === 'https' && $port !== 443) || ($scheme === 'http' && $port !== 80))
+        ) {
+            $host .= ':' . $port;
+        }
+        return $host;
     }
 
     /**
@@ -188,14 +232,16 @@ final class Purge
     /**
      * Remove the entire cache tree and recreate an empty root.
      *
+     * @param array<string,mixed> $options Purge options passed to the purge actions,
+     *                                     e.g. ['origin_only' => true].
      * @return bool True on success.
      */
-    public function purgeEverything(): bool
+    public function purgeEverything(array $options = []): bool
     {
-        $this->fire('wpmgr_purge_everything:before');
+        $this->fire('wpmgr_purge_everything:before', self::withOptions([], $options));
 
         if ($this->cacheRoot === '' || !$this->looksLikeCacheRoot($this->cacheRoot)) {
-            $this->fire('wpmgr_purge_everything:after');
+            $this->fire('wpmgr_purge_everything:after', self::withOptions([], $options));
             return false;
         }
 
@@ -205,7 +251,7 @@ final class Purge
 
         $ok = wp_mkdir_p($this->cacheRoot) || @is_dir($this->cacheRoot);
 
-        $this->fire('wpmgr_purge_everything:after');
+        $this->fire('wpmgr_purge_everything:after', self::withOptions([], $options));
 
         // Stamp the "Last purge" gauge for EVERY full-cache clear (operator purge,
         // auto-purge on content changes, host-integration flush). This is the one

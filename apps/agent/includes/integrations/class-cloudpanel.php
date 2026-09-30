@@ -22,6 +22,15 @@ namespace WPMgr\Agent\Integrations;
  */
 final class CloudPanel extends Integration
 {
+    /** Identifier in the purge report. */
+    public const SLUG = 'cloudpanel';
+
+    /** How far this host's purge reaches; see Integration. */
+    protected const REACH = self::REACH_SHARED;
+
+    /** Evidence for REACH. */
+    protected const REACH_NOTE = 'Shared: how far a tag purge reaches is set by the server.';
+
     /** Hard cap on per-call URL purges (loopback flood guard). */
     private const MAX_URLS = 200;
 

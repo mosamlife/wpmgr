@@ -22,6 +22,15 @@ namespace WPMgr\Agent\Integrations;
  */
 final class WPCloud extends Integration
 {
+    /** Identifier in the purge report. */
+    public const SLUG = 'wpcloud';
+
+    /** How far this host's purge reaches; see Integration. */
+    protected const REACH = self::REACH_SHARED;
+
+    /** Evidence for REACH. */
+    protected const REACH_NOTE = 'Unverified: the edge purge names this site\'s domain; that it reaches only that domain is not yet confirmed.';
+
     /**
      * @return bool
      */

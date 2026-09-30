@@ -4,7 +4,7 @@ Tags: backup, security, performance, updates, site management
 Requires at least: 6.2
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 0.61.152
+Stable tag: 0.61.153
 License: MIT
 License URI: https://opensource.org/licenses/MIT
 
@@ -286,6 +286,10 @@ This plugin ships two minified JavaScript files. Their human-readable source and
 
 The entries below summarize the notable changes since 0.31.1. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
 
+= 0.61.153 =
+* Added: the plugin can now carry out a cache purge limited to this site's own page cache, skipping hosting and CDN cache integrations, and report which detected integrations ran and which were skipped, when the control plane requests it.
+* Fixed: clearing the cache for a page address that uses a non-default port now targets the same cache entry that page was stored under.
+
 = 0.61.152 =
 * Fixed: the plugin now checks whether each key it has stored still opens under this site's current encryption key. If some do not, the WordPress admin screen shows a notice naming which keys cannot be read and what to do about it. When the backup key cannot be used, a backup is refused with a clear explanation instead of failing later. Status is reported to the dashboard along with the rest of this site's metadata. A missing backup key is only created while this site's own key pair still opens, or on a site with no stored keys yet.
 
@@ -467,6 +471,9 @@ The entries below summarize the notable changes since 0.31.1. This project ships
 * New: WOFF2 font transcoding. TTF, OTF and WOFF are converted on the control plane; the flag defaults to off.
 
 == Upgrade Notice ==
+
+= 0.61.153 =
+The plugin can now carry out a cache purge limited to this site's own page cache, skipping hosting and CDN cache integrations, and report which integrations ran, when the control plane requests it.
 
 = 0.61.152 =
 Detects when a stored key no longer opens, shows an admin notice naming which and what to do, and refuses a backup with a clear reason when the backup key cannot be used.

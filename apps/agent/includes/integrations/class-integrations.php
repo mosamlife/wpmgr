@@ -40,7 +40,7 @@ final class Integrations
      * Fully-qualified integration class names to instantiate on boot. Order is
      * irrelevant — each guards on its own host and no-ops otherwise.
      *
-     * @var list<class-string>
+     * @var list<class-string<Integration>>
      */
     private const INTEGRATIONS = [
         CloudPanel::class,
@@ -59,6 +59,32 @@ final class Integrations
 
     /** Guards against double-booting within a single request. */
     private bool $booted = false;
+
+    /**
+     * Every integration class this loader boots.
+     *
+     * @return list<class-string<Integration>>
+     */
+    public static function classes(): array
+    {
+        return self::INTEGRATIONS;
+    }
+
+    /**
+     * The reach table: one row per integration, in boot order.
+     *
+     * @return list<array{slug:string,reach:string,note:string,urls_exact:bool}>
+     */
+    public static function reachTable(): array
+    {
+        $rows = [];
+        foreach (self::INTEGRATIONS as $class) {
+            if (class_exists($class)) {
+                $rows[] = $class::reachRow();
+            }
+        }
+        return $rows;
+    }
 
     /**
      * Instantiate every integration. Each one wires its own purge hooks in its
