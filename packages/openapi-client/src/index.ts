@@ -233,6 +233,10 @@ export {
   getFleetAgentVersions,
   // upstream agent-release mirror manual check (GH #322, admin console)
   checkAgentMirrorNow,
+  // content inventory (Track B slice S1)
+  getSiteContentInventory,
+  refreshSiteContentInventory,
+  getAdminContentFleetReport,
   // file manager (P1 read-only browser)
   getSiteFilesSettings,
   updateSiteFilesSettings,
@@ -842,6 +846,12 @@ export type {
   FileReadResult,
   FileDownloadRequest,
   FileDownloadResult,
+  ContentInventoryPage,
+  ContentInventoryRow,
+  ContentInventoryEditor,
+  ContentFleetReport,
+  ContentFleetVerdictShare,
+  ContentFleetBuilderShare,
   FileManagerSettings,
   UpdateFileManagerSettingsRequest,
   GetSiteFilesSettingsData,
