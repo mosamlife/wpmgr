@@ -102,25 +102,24 @@ func (q *Queries) DeleteStaleSiteContentInventory(ctx context.Context, arg Delet
 }
 
 const fleetContentShareByBuilder = `-- name: FleetContentShareByBuilder :many
-SELECT owner_integration_id::text AS owner_integration_id,
-       owner_version,
-       count(*)::bigint AS pages,
-       count(DISTINCT site_id)::bigint AS sites
-FROM site_content_inventory
-WHERE owner_integration_id IS NOT NULL
-GROUP BY owner_integration_id, owner_version
-ORDER BY owner_integration_id, owner_version NULLS FIRST
+SELECT coalesce(f.owner_integration_id, '')::text AS owner_integration_id,
+       -- '' when the probe reported no version (sqlc cannot type a nullable
+       -- column of a set-returning function, so NULL is folded here).
+       coalesce(f.owner_version, '')::text AS owner_version,
+       f.pages::bigint AS pages,
+       f.sites::bigint AS sites
+FROM fleet_content_share_by_builder() AS f
 `
 
 type FleetContentShareByBuilderRow struct {
-	OwnerIntegrationID string  `json:"owner_integration_id"`
-	OwnerVersion       *string `json:"owner_version"`
-	Pages              int64   `json:"pages"`
-	Sites              int64   `json:"sites"`
+	OwnerIntegrationID string `json:"owner_integration_id"`
+	OwnerVersion       string `json:"owner_version"`
+	Pages              int64  `json:"pages"`
+	Sites              int64  `json:"sites"`
 }
 
 // Owner fleet report: builder pages per builder and version, across every
-// tenant. Run under pool.InAgentTx.
+// tenant, counts only, through the SECURITY DEFINER function.
 func (q *Queries) FleetContentShareByBuilder(ctx context.Context) ([]FleetContentShareByBuilderRow, error) {
 	rows, err := q.db.Query(ctx, fleetContentShareByBuilder)
 	if err != nil {
@@ -147,12 +146,11 @@ func (q *Queries) FleetContentShareByBuilder(ctx context.Context) ([]FleetConten
 }
 
 const fleetContentShareByVerdict = `-- name: FleetContentShareByVerdict :many
-SELECT verdict, route_number,
-       count(*)::bigint AS pages,
-       count(DISTINCT site_id)::bigint AS sites
-FROM site_content_inventory
-GROUP BY verdict, route_number
-ORDER BY verdict, route_number
+SELECT coalesce(f.verdict, '')::text AS verdict,
+       f.route_number::smallint AS route_number,
+       f.pages::bigint AS pages,
+       f.sites::bigint AS sites
+FROM fleet_content_share_by_verdict() AS f
 `
 
 type FleetContentShareByVerdictRow struct {
@@ -163,7 +161,9 @@ type FleetContentShareByVerdictRow struct {
 }
 
 // Owner fleet report: pages and sites per verdict and route, across every
-// tenant. Run under pool.InAgentTx (site_content_inventory_agent, FOR SELECT).
+// tenant, counts only, through the SECURITY DEFINER function (no session can
+// read other tenants' rows directly). Works in any transaction helper; gate
+// the caller to the platform owner in Go.
 func (q *Queries) FleetContentShareByVerdict(ctx context.Context) ([]FleetContentShareByVerdictRow, error) {
 	rows, err := q.db.Query(ctx, fleetContentShareByVerdict)
 	if err != nil {

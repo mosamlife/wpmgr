@@ -17,8 +17,15 @@
 --     is what lets the seed below and the SECURITY DEFINER writer run.
 --     wpmgr_app has no write policy, so a write that somehow held a grant
 --     would still be refused.
---   * wpmgr_app is REVOKEd INSERT, UPDATE, DELETE and TRUNCATE (m1's default
---     privileges gave it all four). SELECT stays.
+--   * When the migration role is NOT wpmgr_app (the production model: a
+--     separate owner DSN), wpmgr_app is REVOKEd INSERT, UPDATE, DELETE and
+--     TRUNCATE (m1's default privileges gave it all four) and keeps SELECT.
+--   * SINGLE-DSN INSTALLS HAVE NO DATABASE-LEVEL WRITE FENCE. When the
+--     migration role is wpmgr_app itself, wpmgr_app owns this table and the
+--     write function, and the REVOKE would only stop the function (which then
+--     runs as wpmgr_app) from writing, disabling the enabled = false kill
+--     switch for good. So the REVOKE is skipped there, and on such an install
+--     the application's superadmin gate is the only control over writes.
 --   * The ONE write path is admin_upsert_content_integration(), SECURITY
 --     DEFINER, owned by the migration role, EXECUTE granted only to
 --     wpmgr_app, reached only through the requireSuperadmin-gated admin
@@ -45,12 +52,17 @@
 -- daily job REPLACES a site's rows on each refresh: it upserts every row it
 -- saw with a single checked_at, then deletes the site's rows with an older
 -- checked_at. Both run in the site's tenant transaction, so tenant isolation
--- admits them. The owner fleet report reads across tenants under app.agent,
--- which is why the agent policy exists and is FOR SELECT only.
+-- admits them.
+--
+-- NO CROSS-TENANT POLICY. There is no app.agent policy on this table, so no
+-- session can read another tenant's rows, titles included. The owner fleet
+-- report reads through two SECURITY DEFINER functions that return counts
+-- only (fleet_content_share_by_verdict, fleet_content_share_by_builder).
+-- They visit each tenant in turn under that tenant's app.tenant_id, so they
+-- need no cross-tenant policy and work whichever role owns the table.
 --
 -- Policies, the m19/m151 set: tenant_isolation (permissive), the RESTRICTIVE
--- site_scope (the m19 predicate as m151 applies it), and a FOR SELECT agent
--- policy.
+-- site_scope (the m19 predicate as m151 applies it). No agent policy (above).
 --
 -- Grants: SELECT, INSERT, UPDATE, DELETE for wpmgr_app, because the
 -- replacement deletes rows the probe no longer reports. TRUNCATE is REVOKEd:
@@ -236,6 +248,10 @@ BEGIN
             USING ERRCODE = '42501';
     END IF;
 
+    -- Serialise writers of one integration, so two concurrent first inserts
+    -- cannot both read "no row" and both audit an 'insert'.
+    PERFORM pg_advisory_xact_lock(hashtext('content_integrations'), hashtext(p_integration_id));
+
     SELECT * INTO v_before FROM content_integrations
         WHERE integration_id = p_integration_id
         FOR UPDATE;
@@ -312,9 +328,16 @@ VALUES
     ('wpbakery',       'WPBakery',       true, 'detect_only', '{}'::jsonb)
 ON CONFLICT ("integration_id") DO NOTHING;
 
-REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON "public"."content_integrations" FROM "wpmgr_app";
+-- Skipped when the migration role is wpmgr_app itself; see the header.
+DO $$
+BEGIN
+    IF current_user <> 'wpmgr_app' THEN
+        REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON "public"."content_integrations" FROM "wpmgr_app";
+        REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON "public"."content_integrations_audit" FROM "wpmgr_app";
+    END IF;
+END;
+$$;
 GRANT SELECT ON "public"."content_integrations" TO "wpmgr_app";
-REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON "public"."content_integrations_audit" FROM "wpmgr_app";
 GRANT SELECT ON "public"."content_integrations_audit" TO "wpmgr_app";
 
 -- ---------------------------------------------------------------------------
@@ -446,21 +469,75 @@ BEGIN
 END;
 $$;
 
--- The owner fleet report aggregates across tenants with a plain SELECT under
--- pool.InAgentTx. Every write runs in the site's tenant transaction, so FOR
--- SELECT is the whole need; FOR ALL would let app.agent (which also serves
--- agent->CP requests) rewrite another tenant's inventory.
-DO $$
+-- ---------------------------------------------------------------------------
+-- Fleet report: counts only, through SECURITY DEFINER functions
+-- ---------------------------------------------------------------------------
+--
+-- content_inventory_fleet_rows visits every tenant under that tenant's own
+-- app.tenant_id, so tenant_isolation admits exactly that tenant's rows, and
+-- returns per-site counts. It is private: EXECUTE is revoked from PUBLIC and
+-- granted to nobody, so only the two definer functions below, running as the
+-- same owner, call it. It restores app.tenant_id before returning. The
+-- caller's app.site_scope is left alone, so a site-scoped caller still counts
+-- only its own sites.
+CREATE OR REPLACE FUNCTION "public"."content_inventory_fleet_rows"()
+RETURNS TABLE (
+    o_verdict text, o_route_number smallint,
+    o_owner_integration_id text, o_owner_version text,
+    o_site_id uuid, o_pages bigint
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+    v_tenant uuid;
+    v_prev   text := coalesce(current_setting('app.tenant_id', true), '');
 BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_policies
-        WHERE schemaname = 'public' AND tablename = 'site_content_inventory'
-          AND policyname = 'site_content_inventory_agent'
-    ) THEN
-        CREATE POLICY "site_content_inventory_agent"
-            ON "public"."site_content_inventory"
-            FOR SELECT
-            USING (current_setting('app.agent', true) = 'on');
-    END IF;
+    FOR v_tenant IN SELECT t.id FROM tenants t LOOP
+        PERFORM set_config('app.tenant_id', v_tenant::text, true);
+        RETURN QUERY
+            SELECT i.verdict, i.route_number, i.owner_integration_id,
+                   i.owner_version, i.site_id, count(*)::bigint
+            FROM site_content_inventory i
+            WHERE i.tenant_id = v_tenant
+            GROUP BY i.verdict, i.route_number, i.owner_integration_id,
+                     i.owner_version, i.site_id;
+    END LOOP;
+    PERFORM set_config('app.tenant_id', v_prev, true);
 END;
 $$;
+
+REVOKE ALL ON FUNCTION "public"."content_inventory_fleet_rows"() FROM PUBLIC;
+
+CREATE OR REPLACE FUNCTION "public"."fleet_content_share_by_verdict"()
+RETURNS TABLE (verdict text, route_number smallint, pages bigint, sites bigint)
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+    SELECT r.o_verdict, r.o_route_number,
+           sum(r.o_pages)::bigint, count(DISTINCT r.o_site_id)::bigint
+    FROM content_inventory_fleet_rows() r
+    GROUP BY r.o_verdict, r.o_route_number
+    ORDER BY r.o_verdict, r.o_route_number;
+$$;
+
+CREATE OR REPLACE FUNCTION "public"."fleet_content_share_by_builder"()
+RETURNS TABLE (owner_integration_id text, owner_version text, pages bigint, sites bigint)
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+    SELECT r.o_owner_integration_id, r.o_owner_version,
+           sum(r.o_pages)::bigint, count(DISTINCT r.o_site_id)::bigint
+    FROM content_inventory_fleet_rows() r
+    WHERE r.o_owner_integration_id IS NOT NULL
+    GROUP BY r.o_owner_integration_id, r.o_owner_version
+    ORDER BY r.o_owner_integration_id, r.o_owner_version NULLS FIRST;
+$$;
+
+REVOKE ALL ON FUNCTION "public"."fleet_content_share_by_verdict"() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION "public"."fleet_content_share_by_verdict"() TO "wpmgr_app";
+REVOKE ALL ON FUNCTION "public"."fleet_content_share_by_builder"() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION "public"."fleet_content_share_by_builder"() TO "wpmgr_app";

@@ -1263,10 +1263,12 @@ type Querier interface {
 	// gate applies equally without a separate query path.
 	FleetBackupHealth(ctx context.Context, arg FleetBackupHealthParams) ([]FleetBackupHealthRow, error)
 	// Owner fleet report: builder pages per builder and version, across every
-	// tenant. Run under pool.InAgentTx.
+	// tenant, counts only, through the SECURITY DEFINER function.
 	FleetContentShareByBuilder(ctx context.Context) ([]FleetContentShareByBuilderRow, error)
 	// Owner fleet report: pages and sites per verdict and route, across every
-	// tenant. Run under pool.InAgentTx (site_content_inventory_agent, FOR SELECT).
+	// tenant, counts only, through the SECURITY DEFINER function (no session can
+	// read other tenants' rows directly). Works in any transaction helper; gate
+	// the caller to the platform owner in Go.
 	FleetContentShareByVerdict(ctx context.Context) ([]FleetContentShareByVerdictRow, error)
 	// ---------------------------------------------------------------------------
 	// Fleet backup endpoints

@@ -117,22 +117,22 @@ LIMIT sqlc.arg(row_limit)::int;
 
 -- name: FleetContentShareByVerdict :many
 -- Owner fleet report: pages and sites per verdict and route, across every
--- tenant. Run under pool.InAgentTx (site_content_inventory_agent, FOR SELECT).
-SELECT verdict, route_number,
-       count(*)::bigint AS pages,
-       count(DISTINCT site_id)::bigint AS sites
-FROM site_content_inventory
-GROUP BY verdict, route_number
-ORDER BY verdict, route_number;
+-- tenant, counts only, through the SECURITY DEFINER function (no session can
+-- read other tenants' rows directly). Works in any transaction helper; gate
+-- the caller to the platform owner in Go.
+SELECT coalesce(f.verdict, '')::text AS verdict,
+       f.route_number::smallint AS route_number,
+       f.pages::bigint AS pages,
+       f.sites::bigint AS sites
+FROM fleet_content_share_by_verdict() AS f;
 
 -- name: FleetContentShareByBuilder :many
 -- Owner fleet report: builder pages per builder and version, across every
--- tenant. Run under pool.InAgentTx.
-SELECT owner_integration_id::text AS owner_integration_id,
-       owner_version,
-       count(*)::bigint AS pages,
-       count(DISTINCT site_id)::bigint AS sites
-FROM site_content_inventory
-WHERE owner_integration_id IS NOT NULL
-GROUP BY owner_integration_id, owner_version
-ORDER BY owner_integration_id, owner_version NULLS FIRST;
+-- tenant, counts only, through the SECURITY DEFINER function.
+SELECT coalesce(f.owner_integration_id, '')::text AS owner_integration_id,
+       -- '' when the probe reported no version (sqlc cannot type a nullable
+       -- column of a set-returning function, so NULL is folded here).
+       coalesce(f.owner_version, '')::text AS owner_version,
+       f.pages::bigint AS pages,
+       f.sites::bigint AS sites
+FROM fleet_content_share_by_builder() AS f;

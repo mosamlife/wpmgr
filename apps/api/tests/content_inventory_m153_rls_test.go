@@ -102,7 +102,8 @@ func m153CountSite(t *testing.T, tx pgx.Tx, site uuid.UUID) int {
 
 // TestContentInventoryIsolationAsAppRole proves the permissive tenant policy,
 // the RESTRICTIVE site-scope policy in both directions, the per-site replace,
-// the editor filter, and the FOR SELECT agent policy behind the fleet report.
+// the editor filter, and that the fleet report counts through the definer
+// functions while the agent context writes nothing.
 //
 // Mutation, planted and watched: removing site_content_inventory_site_scope
 // from m153 fires "SITE-SCOPE LEAK".
@@ -186,8 +187,8 @@ func TestContentInventoryIsolationAsAppRole(t *testing.T) {
 		t.Fatalf("read after replace: %v", err)
 	}
 
-	// Fleet report reads across tenants under app.agent; the agent context
-	// cannot write.
+	// The fleet report counts across tenants through the definer functions;
+	// the agent context cannot write.
 	if err := pool.InAgentTx(ctx, func(tx pgx.Tx) error {
 		mcpAssertAndReportRole(t, tx, "InAgentTx (fleet report)")
 		rows, err := sqlc.New(tx).FleetContentShareByVerdict(ctx)
@@ -206,7 +207,7 @@ func TestContentInventoryIsolationAsAppRole(t *testing.T) {
 			return err
 		}
 		if tag.RowsAffected() != 0 {
-			t.Fatalf("the agent context deleted %d rows; site_content_inventory_agent must be FOR SELECT", tag.RowsAffected())
+			t.Fatalf("the agent context deleted %d rows; no cross-tenant write may exist", tag.RowsAffected())
 		}
 		return nil
 	}); err != nil {
@@ -336,5 +337,70 @@ func TestContentIntegrationsReadOnlyForAppRole(t *testing.T) {
 		return nil
 	}); err != nil {
 		t.Fatalf("superadmin write: %v", err)
+	}
+}
+
+// TestContentInventoryAgentCannotReadTitlesAsAppRole proves that no
+// cross-tenant session can read inventory rows, titles included, while the
+// fleet functions still return counts for every tenant.
+//
+// Mutation, planted and watched: re-adding a FOR SELECT app.agent policy on
+// site_content_inventory fires "CROSS-TENANT READ".
+func TestContentInventoryAgentCannotReadTitlesAsAppRole(t *testing.T) {
+	ctx := context.Background()
+	pool := startPostgres(t)
+
+	tenantA := seedTenant(t, pool, "m153-ta-"+uuid.NewString()[:8])
+	tenantB := seedTenant(t, pool, "m153-tb-"+uuid.NewString()[:8])
+	sA := seedSite(t, pool, tenantA, "")
+	sB := seedSite(t, pool, tenantB, "")
+	m153Refresh(t, pool, tenantA, sA, 1, 2)
+	m153Refresh(t, pool, tenantB, sB, 3)
+
+	if err := pool.InAgentTx(ctx, func(tx pgx.Tx) error {
+		mcpAssertAndReportRole(t, tx, "InAgentTx (no cross-tenant read)")
+		var rows, titles int
+		if err := tx.QueryRow(ctx,
+			`SELECT count(*), count(title) FROM site_content_inventory`).Scan(&rows, &titles); err != nil {
+			return err
+		}
+		if rows != 0 || titles != 0 {
+			t.Fatalf("CROSS-TENANT READ: an InAgentTx session reads %d inventory rows and %d titles; "+
+				"site_content_inventory must carry no cross-tenant policy", rows, titles)
+		}
+
+		q := sqlc.New(tx)
+		byVerdict, err := q.FleetContentShareByVerdict(ctx)
+		if err != nil {
+			return err
+		}
+		var pages, sites int64
+		for _, r := range byVerdict {
+			pages += r.Pages
+			sites += r.Sites
+		}
+		// Tenant A's site carries two verdicts, so the per-verdict site
+		// counts sum to 3 across the two tenants' two sites.
+		if pages != 3 || sites != 3 {
+			t.Fatalf("fleet counts by verdict: pages=%d sites(summed)=%d, want 3 and 3: %+v", pages, sites, byVerdict)
+		}
+		byBuilder, err := q.FleetContentShareByBuilder(ctx)
+		if err != nil {
+			return err
+		}
+		if len(byBuilder) != 1 || byBuilder[0].OwnerIntegrationID != "elementor" ||
+			byBuilder[0].Pages != 2 || byBuilder[0].Sites != 2 {
+			t.Fatalf("fleet counts by builder: %+v, want elementor 2 pages on 2 sites", byBuilder)
+		}
+		var tenantAfter string
+		if err := tx.QueryRow(ctx, `SELECT coalesce(current_setting('app.tenant_id', true), '')`).Scan(&tenantAfter); err != nil {
+			return err
+		}
+		if tenantAfter != "" {
+			t.Fatalf("the fleet functions left app.tenant_id=%q in the caller's transaction", tenantAfter)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("agent session: %v", err)
 	}
 }
