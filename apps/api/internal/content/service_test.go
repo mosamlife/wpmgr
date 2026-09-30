@@ -364,7 +364,7 @@ func TestSweep_WithoutAnEnqueuerDoesNothing(t *testing.T) {
 }
 
 func TestRequestRefresh_RateLimitsAndNeverQueuesWithoutAnEnqueuer(t *testing.T) {
-	svc := NewService(&fakeRepo{}, nil, nil)
+	svc := NewService(&fakeRepo{}, realClient(t), nil)
 	site := uuid.New()
 	enq := &fakeEnq{dupOf: map[uuid.UUID]bool{site: true}}
 
