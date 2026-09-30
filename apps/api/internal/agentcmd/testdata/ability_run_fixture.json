@@ -1,0 +1,7 @@
+{
+  "body": "{\"p\":\"{\\\"mode\\\":\\\"precheck\\\",\\\"request_id\\\":\\\"7d4f7b0e-2b7a-4c55-9d7e-0f3f5e2a1c11\\\",\\\"entry\\\":\\\"{\\\\\\\"name\\\\\\\":\\\\\\\"wpmgr/site-facts\\\\\\\",\\\\\\\"source\\\\\\\":\\\\\\\"wpmgr\\\\\\\",\\\\\\\"class\\\\\\\":\\\\\\\"read\\\\\\\",\\\\\\\"status\\\\\\\":\\\\\\\"admitted\\\\\\\",\\\\\\\"enabled\\\\\\\":true,\\\\\\\"title\\\\\\\":\\\\\\\"Site facts — versions\\\\u2028and \\\\u003cb\\\\u003e\\\\u0026amp; hints\\\\\\\",\\\\\\\"limits\\\\\\\":{}}\\\",\\\"entry_sha256\\\":\\\"932290d1c801d31b04561090edf841d137c9f728e8841d472bcd52f4f0b7c758\\\",\\\"input\\\":\\\"{\\\\\\\"plugin_slugs\\\\\\\":[\\\\\\\"a-b\\\\\\\"],\\\\\\\"theme_slugs\\\\\\\":[]}\\\"}\"}",
+  "pd": "811d8e9a2648e9f1140a843ea6ad25a83fd279fab77e84305542a81396966d9c",
+  "entry_sha256": "932290d1c801d31b04561090edf841d137c9f728e8841d472bcd52f4f0b7c758",
+  "input_sha256": "9febaf4726670a715e6308db20c6740795c19ba48834a4a214061281acd6e877",
+  "precheck_digest": "90094b812fcd0129fd43e1368e5a1986b3207fccfb3409688e6fa974ad72d715"
+}

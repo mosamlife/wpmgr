@@ -295,6 +295,93 @@ final class AbilityRunCommandTest extends TestCase
         $this->assertSame('ability_disabled', $r['code']);
     }
 
+    /**
+     * @return array<string,array{0:array<string,mixed>}>
+     */
+    public static function notAdmittedStatuses(): array
+    {
+        return [
+            'detect_only'           => [['status' => 'detect_only']],
+            'awaiting_vendor_tools' => [['status' => 'awaiting_vendor_tools']],
+            'null'                  => [['status' => null]],
+        ];
+    }
+
+    /**
+     * @dataProvider notAdmittedStatuses
+     *
+     * @param array<string,mixed> $override Entry override.
+     */
+    public function test_an_entry_that_is_not_admitted_is_refused(array $override): void
+    {
+        $r = $this->callP($this->p('read', OwnAbilities::NAME_FACTS, [], '{}', $override));
+
+        $this->assertSame('ability_not_admitted', $r['code']);
+    }
+
+    public function test_an_entry_without_status_is_refused(): void
+    {
+        $r = $this->callP($this->pWithout('status', OwnAbilities::NAME_FACTS));
+
+        $this->assertSame('ability_not_admitted', $r['code']);
+    }
+
+    public function test_an_entry_without_source_is_refused_not_defaulted(): void
+    {
+        $r = $this->callP($this->pWithout('source', OwnAbilities::NAME_FACTS));
+
+        $this->assertSame('entry_source_mismatch', $r['code']);
+        $r = $this->callP($this->p('read', OwnAbilities::NAME_FACTS, [], '{}', ['source' => null]));
+        $this->assertSame('entry_source_mismatch', $r['code']);
+    }
+
+    /**
+     * The cross-language fixture the Go control plane writes
+     * (apps/api/internal/agentcmd/testdata/ability_run_fixture.json, from
+     * BuildAbilityRunParams). The agent recomputes every digest from the
+     * bytes it decodes, then runs the exact body through the command.
+     */
+    public function test_the_go_fixture_digests_match_and_the_command_accepts_it(): void
+    {
+        $path = dirname(__DIR__, 2) . '/api/internal/agentcmd/testdata/ability_run_fixture.json';
+        $this->assertFileExists($path, 'the Go fixture is missing, so this test proves nothing');
+        $fx = json_decode((string) file_get_contents($path), true);
+
+        $body = json_decode($fx['body'], true);
+        $this->assertSame(['p'], array_keys($body));
+        $p = $body['p'];
+        $this->assertSame($fx['pd'], hash('sha256', $p));
+
+        $req = json_decode($p, false);
+        $this->assertSame($fx['entry_sha256'], hash('sha256', $req->entry));
+        $this->assertSame($fx['input_sha256'], hash('sha256', $req->input));
+        $this->assertStringContainsString("\u{2014}", $req->entry);
+        $this->assertStringContainsString("\u{2028}", $req->entry);
+        $this->assertStringContainsString('<b>&amp;', $req->entry);
+
+        $r = $this->post($fx['body'], $fx['pd']);
+        $this->assertTrue($r['ok'] ?? false, 'the command refused the Go-built body: ' . json_encode($r));
+        $this->assertSame($fx['precheck_digest'], $r['precheck_digest']);
+    }
+
+    /**
+     * A read-mode `p` whose entry lacks one key entirely.
+     */
+    private function pWithout(string $key, string $name): string
+    {
+        $fields = json_decode($this->entry($name), true);
+        unset($fields[$key]);
+        $fields['limits'] = new \stdClass();
+        $entry = (string) json_encode($fields);
+
+        return (string) json_encode([
+            'mode'         => 'read',
+            'entry'        => $entry,
+            'entry_sha256' => hash('sha256', $entry),
+            'input'        => '{}',
+        ]);
+    }
+
     public function test_read_mode_needs_a_read_class_entry(): void
     {
         $r = $this->callP($this->p('read', OwnAbilities::NAME_FACTS, [], '{}', ['class' => 'write']));

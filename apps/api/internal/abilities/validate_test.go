@@ -38,6 +38,28 @@ func TestValidateInventory_MapsOwnersAndDropsBadNames(t *testing.T) {
 	}
 }
 
+// The agent reports schema hashes as "sha256:<hex>" (class-ability-schema.php).
+func TestValidateInventory_KeepsTheAgentsPrefixedSchemaHash(t *testing.T) {
+	hex := strings.Repeat("ab", 32)
+	out := json.RawMessage(`{"api_present":true,"abilities":[
+		{"name":"a/one","owner_kind":"core","schema_struct_sha256":"sha256:` + hex + `"},
+		{"name":"a/two","owner_kind":"core","schema_struct_sha256":"sha256:` + hex[:62] + `"},
+		{"name":"a/three","owner_kind":"core","schema_struct_sha256":"md5:` + hex + `"},
+		{"name":"a/four","owner_kind":"core","schema_struct_sha256":"sha256:` + strings.ToUpper(hex) + `"}]}`)
+	res, err := ValidateInventory(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Rows[0].SchemaStructSHA256 != hex {
+		t.Fatalf("prefixed hash dropped: %q", res.Rows[0].SchemaStructSHA256)
+	}
+	for _, r := range res.Rows[1:] {
+		if r.SchemaStructSHA256 != "" {
+			t.Fatalf("%s: malformed hash kept: %q", r.Name, r.SchemaStructSHA256)
+		}
+	}
+}
+
 func TestValidateInventory_RefusesContractBreaks(t *testing.T) {
 	for name, body := range map[string]string{
 		"unknown owner_kind": `{"api_present":true,"abilities":[{"name":"a/b","owner_kind":"root"}]}`,

@@ -109,11 +109,19 @@ func newAbilityFixture(t *testing.T) abilityFixture {
 
 func (f abilityFixture) router(t *testing.T, rec auditRecorder) *gin.Engine {
 	t.Helper()
+	return f.routerWith(t, rec, nil)
+}
+
+func (f abilityFixture) routerWith(t *testing.T, rec auditRecorder, configure func(*Service)) *gin.Engine {
+	t.Helper()
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	svc := NewService(f.store).WithContextResolver(emptyContextResolver()).withAuditRecorder(rec)
 	if err := svc.EnableAbilityTools(f.ab, f.agent, testEntryEncoder, "test-secret"); err != nil {
 		t.Fatal(err)
+	}
+	if configure != nil {
+		configure(svc)
 	}
 	NewTransportHandler(svc, slog.New(slog.DiscardHandler), "test-version").Register(r)
 	return r
@@ -239,7 +247,7 @@ func TestAbilityDescribe_SiteTextOnlyInsideTheFence(t *testing.T) {
 			t.Fatalf("planted text leaked into %q: %s", k, v)
 		}
 	}
-	if !strings.Contains(string(res["input_schema"]), `"q"`) || !strings.Contains(string(res["input_schema"]), "enum_values_omitted") {
+	if !strings.Contains(string(res["input_schema"]), `"`+siteTextMarker+`q"`) || !strings.Contains(string(res["input_schema"]), "enum_values_omitted") {
 		t.Fatalf("structural projection lost structure: %s", res["input_schema"])
 	}
 	if !strings.Contains(string(res["not_runnable_reason"]), notRunnableNotReviewed) {

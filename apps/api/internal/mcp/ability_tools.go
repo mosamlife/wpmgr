@@ -1033,12 +1033,15 @@ func projectNode(v any, depth int, removed *bool) any {
 		case "properties":
 			if props, ok := val.(map[string]any); ok {
 				p := map[string]any{}
+				// Property names are the site's choice, so each one that
+				// survives is fenced: no site-chosen key reaches the model
+				// unmarked.
 				for name, sub := range props {
 					if !schemaKeyPattern.MatchString(name) {
 						*removed = true
 						continue
 					}
-					p[name] = projectNode(sub, depth+1, removed)
+					p[fenceSiteText(name)] = projectNode(sub, depth+1, removed)
 				}
 				out[k] = p
 			}
@@ -1049,7 +1052,7 @@ func projectNode(v any, depth int, removed *bool) any {
 				req := []string{}
 				for _, x := range arr {
 					if s, ok := x.(string); ok && schemaKeyPattern.MatchString(s) {
-						req = append(req, s)
+						req = append(req, fenceSiteText(s))
 					}
 				}
 				out[k] = req
@@ -1252,7 +1255,7 @@ func (s *Service) runSiteAbility(ctx context.Context, auth AuthorizedRequest, ra
 		return "", refuse(reasonSiteUnreachable, domain.Unavailable(ErrCodeSiteUnreachable,
 			msgSiteUnreachable).WithDetails(map[string]any{"retryable": true}))
 	}
-	out, truncated := fenceAbilityOutput(resp.Output, abilityRunDefaultOutputBytes)
+	out, truncated := fenceAbilityOutput(name, resp.Output, abilityRunDefaultOutputBytes)
 	b, err := json.Marshal(runResult{
 		Name: name, AsOf: s.now().UTC().Format(time.RFC3339), Output: out, Truncated: truncated,
 	})
@@ -1294,11 +1297,51 @@ func validateOwnInput(name string, input []byte) bool {
 	return false
 }
 
-// fenceAbilityOutput fences every string leaf of the site's output and drops
-// any object key that is not a plain identifier. Over the byte cap the output
-// is withheld and truncated is true.
-func fenceAbilityOutput(raw json.RawMessage, maxBytes int) (json.RawMessage, bool) {
-	if len(raw) == 0 {
+// outShape is the KNOWN shape of an own ability's output: an object with an
+// allowlist of keys, an array of one shape, or a scalar leaf. Every key the
+// model reads is OURS; a key the site chose never reaches the answer.
+type outShape struct {
+	fields map[string]*outShape
+	items  *outShape
+}
+
+var leaf = &outShape{}
+
+func obj(fields map[string]*outShape) *outShape { return &outShape{fields: fields} }
+func list(items *outShape) *outShape            { return &outShape{items: items} }
+
+// ownAbilityOutputShapes mirror the agent's own abilities' outputs
+// (class-own-abilities.php). An ability without a shape returns no output.
+var ownAbilityOutputShapes = map[string]*outShape{
+	"wpmgr/abilities-inventory": obj(map[string]*outShape{
+		"api_present": leaf, "count": leaf, "truncated": leaf,
+		"abilities": list(obj(map[string]*outShape{
+			"name": leaf, "owner_kind": leaf, "owner_mismatch": leaf, "version": leaf,
+			"schema_struct_sha256": leaf, "class": leaf,
+			"from_the_site": obj(map[string]*outShape{"label": leaf, "description": leaf}),
+		})),
+	}),
+	"wpmgr/site-facts": obj(map[string]*outShape{
+		"wp_version": leaf, "php_version": leaf, "multisite": leaf, "agent_version": leaf,
+		"abilities_api": obj(map[string]*outShape{"present": leaf, "filters_71": leaf}),
+		"active_theme":  obj(map[string]*outShape{"template": leaf, "stylesheet": leaf}),
+		"active_plugins": list(leaf),
+		"builder_hints":  list(leaf),
+	}),
+	"wpmgr/content-read": obj(map[string]*outShape{
+		"post_id": leaf, "post_type": leaf, "status": leaf, "modified_gmt": leaf,
+		"text_bytes": leaf, "truncated": leaf,
+		"from_the_site": obj(map[string]*outShape{"title": leaf, "text": leaf}),
+	}),
+}
+
+// fenceAbilityOutput projects the site's output onto the ability's known
+// shape: only allowlisted keys survive, a value of the wrong kind is dropped,
+// and every string leaf is fenced. Over the byte cap the output is withheld
+// and truncated is true.
+func fenceAbilityOutput(name string, raw json.RawMessage, maxBytes int) (json.RawMessage, bool) {
+	shape, ok := ownAbilityOutputShapes[name]
+	if len(raw) == 0 || !ok {
 		return json.RawMessage(`null`), false
 	}
 	var v any
@@ -1307,36 +1350,45 @@ func fenceAbilityOutput(raw json.RawMessage, maxBytes int) (json.RawMessage, boo
 	if dec.Decode(&v) != nil {
 		return json.RawMessage(`null`), true
 	}
-	b, err := json.Marshal(fenceLeaves(v, 0))
+	b, err := json.Marshal(projectOutput(v, shape))
 	if err != nil || len(b) > maxBytes {
 		return json.RawMessage(`null`), true
 	}
 	return b, false
 }
 
-func fenceLeaves(v any, depth int) any {
-	if depth > 32 {
-		return nil
+func projectOutput(v any, s *outShape) any {
+	switch {
+	case s.fields != nil:
+		m, ok := v.(map[string]any)
+		if !ok {
+			return nil
+		}
+		out := make(map[string]any, len(s.fields))
+		for k, sub := range s.fields {
+			if x, present := m[k]; present {
+				out[k] = projectOutput(x, sub)
+			}
+		}
+		return out
+	case s.items != nil:
+		arr, ok := v.([]any)
+		if !ok {
+			return nil
+		}
+		out := make([]any, len(arr))
+		for i, x := range arr {
+			out[i] = projectOutput(x, s.items)
+		}
+		return out
 	}
 	switch t := v.(type) {
 	case string:
 		return fenceSiteText(t)
-	case map[string]any:
-		out := make(map[string]any, len(t))
-		for k, x := range t {
-			if schemaKeyPattern.MatchString(k) {
-				out[k] = fenceLeaves(x, depth+1)
-			}
-		}
-		return out
-	case []any:
-		out := make([]any, len(t))
-		for i, x := range t {
-			out[i] = fenceLeaves(x, depth+1)
-		}
-		return out
-	default:
+	case json.Number, bool, nil:
 		return t
+	default:
+		return nil // an object or array where a scalar belongs
 	}
 }
 
