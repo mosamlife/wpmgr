@@ -29,13 +29,18 @@
 -- assistant not paused. If that definition changes, this function changes with
 -- it in a new migration, or the two verdicts disagree.
 --
--- HOW THE SITE-SCOPE GATE IS LIFTED. By the function-level
--- `SET app.site_scope = ''` clause, NOT by an in-body set_config. PostgreSQL
--- saves the GUC on entry and restores it on exit, including on error, so the
--- caller's transaction is still site-scoped the instant this returns. An
--- in-body set_config(..., true) would persist for the rest of the caller's
--- transaction (m91 Security review Finding A); the SET clause cannot leak.
--- The lift covers only this function's single SELECT.
+-- HOW THE SITE-SCOPE GATE IS LIFTED. An in-body set_config, saved and
+-- restored around the one SELECT. A function-level `SET app.site_scope = ''`
+-- clause would restore itself, but PostgreSQL refuses it at CREATE time for a
+-- NOSUPERUSER migrator (42501, "permission denied to set parameter"), so it
+-- would fail at boot on every real install. set_config(..., true) is NOT
+-- undone at function exit (m91 Security review Finding A), so:
+--   * the normal path writes the caller's saved value back before RETURN;
+--   * the lift happens inside a BEGIN ... EXCEPTION block, which runs as a
+--     subtransaction; if the SELECT raises, the subtransaction aborts and
+--     PostgreSQL reverts the GUC with it, and the error is re-raised.
+-- Either way the caller's transaction is site-scoped again the instant this
+-- returns, and the lift covers only this function's single SELECT.
 --
 -- TENANT BOUNDARY, twice. The function refuses (false) unless p_tenant equals
 -- the caller's app.tenant_id, and it reads with mcp_grants_tenant_isolation
@@ -54,13 +59,13 @@
 CREATE OR REPLACE FUNCTION mcp_grant_is_active(p_tenant uuid, p_grant uuid)
 RETURNS boolean
 LANGUAGE plpgsql
-STABLE
+VOLATILE
 SECURITY DEFINER
 SET search_path = public, pg_temp
-SET app.site_scope = ''
 AS $$
 DECLARE
     v_caller uuid := nullif(current_setting('app.tenant_id', true), '')::uuid;
+    v_prev   text := coalesce(current_setting('app.site_scope', true), '');
     v_active boolean;
 BEGIN
     IF p_tenant IS NULL OR p_grant IS NULL OR v_caller IS NULL
@@ -68,18 +73,28 @@ BEGIN
         RETURN false;
     END IF;
 
-    SELECT COALESCE(g.status = 'active'
-            AND g.expires_at > now()
-            AND (g.idle_expire_after_days IS NULL
-                 OR COALESCE(g.last_used_at, g.created_at)
-                    + make_interval(days => g.idle_expire_after_days) > now())
-            AND tn.assistant_paused_at IS NULL,
-            false)
-      INTO v_active
-      FROM mcp_grants g
-      JOIN tenants tn ON tn.id = g.tenant_id
-     WHERE g.tenant_id = p_tenant
-       AND g.id = p_grant;
+    BEGIN
+        PERFORM set_config('app.site_scope', '', true);
+
+        SELECT COALESCE(g.status = 'active'
+                AND g.expires_at > now()
+                AND (g.idle_expire_after_days IS NULL
+                     OR COALESCE(g.last_used_at, g.created_at)
+                        + make_interval(days => g.idle_expire_after_days) > now())
+                AND tn.assistant_paused_at IS NULL,
+                false)
+          INTO v_active
+          FROM mcp_grants g
+          JOIN tenants tn ON tn.id = g.tenant_id
+         WHERE g.tenant_id = p_tenant
+           AND g.id = p_grant;
+
+        PERFORM set_config('app.site_scope', v_prev, true);
+    EXCEPTION WHEN OTHERS THEN
+        -- The subtransaction has aborted and PostgreSQL has already reverted
+        -- the set_config above; re-raise unchanged.
+        RAISE;
+    END;
 
     RETURN COALESCE(v_active, false);
 END;

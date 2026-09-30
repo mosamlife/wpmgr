@@ -7306,19 +7306,20 @@ CREATE POLICY mcp_grants_site_scope_delete ON mcp_grants
 -- may ask about a grant, which mcp_grants_site_scope_select otherwise hides.
 -- Returns only a boolean; "no such grant", "another tenant's grant" and
 -- "inactive" are all false. "Active" is ReCheckMCPGrantAuthorizationInTenantTx's
--- `authorized`. The function-level SET clause lifts app.site_scope for its own
--- body only and restores it on exit; p_tenant must equal app.tenant_id. See the
+-- `authorized`. It lifts app.site_scope around its one SELECT and restores the
+-- caller's value before returning (a subtransaction reverts it on error);
+-- p_tenant must equal app.tenant_id. See the
 -- migration for the full rationale. Grants mirror the migration.
 CREATE OR REPLACE FUNCTION mcp_grant_is_active(p_tenant uuid, p_grant uuid)
 RETURNS boolean
 LANGUAGE plpgsql
-STABLE
+VOLATILE
 SECURITY DEFINER
 SET search_path = public, pg_temp
-SET app.site_scope = ''
 AS $$
 DECLARE
     v_caller uuid := nullif(current_setting('app.tenant_id', true), '')::uuid;
+    v_prev   text := coalesce(current_setting('app.site_scope', true), '');
     v_active boolean;
 BEGIN
     IF p_tenant IS NULL OR p_grant IS NULL OR v_caller IS NULL
@@ -7326,18 +7327,28 @@ BEGIN
         RETURN false;
     END IF;
 
-    SELECT COALESCE(g.status = 'active'
-            AND g.expires_at > now()
-            AND (g.idle_expire_after_days IS NULL
-                 OR COALESCE(g.last_used_at, g.created_at)
-                    + make_interval(days => g.idle_expire_after_days) > now())
-            AND tn.assistant_paused_at IS NULL,
-            false)
-      INTO v_active
-      FROM mcp_grants g
-      JOIN tenants tn ON tn.id = g.tenant_id
-     WHERE g.tenant_id = p_tenant
-       AND g.id = p_grant;
+    BEGIN
+        PERFORM set_config('app.site_scope', '', true);
+
+        SELECT COALESCE(g.status = 'active'
+                AND g.expires_at > now()
+                AND (g.idle_expire_after_days IS NULL
+                     OR COALESCE(g.last_used_at, g.created_at)
+                        + make_interval(days => g.idle_expire_after_days) > now())
+                AND tn.assistant_paused_at IS NULL,
+                false)
+          INTO v_active
+          FROM mcp_grants g
+          JOIN tenants tn ON tn.id = g.tenant_id
+         WHERE g.tenant_id = p_tenant
+           AND g.id = p_grant;
+
+        PERFORM set_config('app.site_scope', v_prev, true);
+    EXCEPTION WHEN OTHERS THEN
+        -- The subtransaction has aborted and PostgreSQL has already reverted
+        -- the set_config above; re-raise unchanged.
+        RAISE;
+    END;
 
     RETURN COALESCE(v_active, false);
 END;
