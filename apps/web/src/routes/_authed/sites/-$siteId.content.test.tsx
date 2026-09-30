@@ -83,9 +83,24 @@ function ok(data: ContentInventoryPage) {
   return { data, error: undefined, response: { status: 200 } };
 }
 
-function renderTab(role: "operator" | "viewer" = "operator") {
+// A site-scoped collaborator has no org membership; Me.scope/Me.role carry the
+// share role (the same shape use-auth's canWriteSiteContext reads).
+function siteScopedMe(role: "operator" | "viewer"): Me {
+  return { scope: "site", role, memberships: [] } as unknown as Me;
+}
+
+function renderTab(
+  role: "operator" | "viewer" | "site-operator" | "site-viewer" = "operator",
+) {
   const queryClient = createTestQueryClient();
-  queryClient.setQueryData(ME_KEY, meWithRole(role));
+  queryClient.setQueryData(
+    ME_KEY,
+    role === "site-operator"
+      ? siteScopedMe("operator")
+      : role === "site-viewer"
+        ? siteScopedMe("viewer")
+        : meWithRole(role),
+  );
   const rootRoute = createRootRoute({});
   type UpdateOptions = Parameters<typeof ContentRoute.update>[0];
   const contentRoute = ContentRoute.update({
@@ -200,6 +215,20 @@ describe("site Content tab", () => {
     expect(
       await screen.findByText("Checked recently. Try again in 42 seconds."),
     ).toBeInTheDocument();
+  });
+
+  it("shows Refresh to a site-scoped operator (no org membership)", async () => {
+    getInv.mockResolvedValue(ok(page({})));
+    renderTab("site-operator");
+    await screen.findByText("About us");
+    expect(screen.getByRole("button", { name: "Refresh" })).toBeInTheDocument();
+  });
+
+  it("hides Refresh from a site-scoped viewer", async () => {
+    getInv.mockResolvedValue(ok(page({})));
+    renderTab("site-viewer");
+    await screen.findByText("About us");
+    expect(screen.queryByRole("button", { name: "Refresh" })).not.toBeInTheDocument();
   });
 
   it("hides Refresh from a viewer", async () => {
