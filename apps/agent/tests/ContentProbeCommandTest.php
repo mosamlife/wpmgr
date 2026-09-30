@@ -52,6 +52,14 @@ final class ContentProbeCommandTest extends TestCase
 
     private Router $router;
 
+    /** Set when anything asked for ALL of a post's meta at once. */
+    private bool $wholeMetaLoaded = false;
+
+    /** @var array<int,array<int,object>> Revision rows by parent ID. */
+    private array $revisionRows = [];
+
+    private ProbeWpdb $db;
+
     protected function set_up(): void
     {
         parent::set_up();
@@ -81,7 +89,10 @@ final class ContentProbeCommandTest extends TestCase
         $keystore       = new Keystore();
         $keystore->storeControlPlanePublicKey(sodium_crypto_sign_publickey($keypair));
         $this->options[Settings::OPTION_SITE_ID] = $this->siteId;
-        $GLOBALS['wpdb']                         = new FakeWpdb();
+        $this->wholeMetaLoaded = false;
+        $this->revisionRows    = [];
+        $this->db              = new ProbeWpdb($this->meta);
+        $GLOBALS['wpdb']       = $this->db;
         $this->resetShieldStash();
 
         $this->router = new Router(new Connector($keystore, new Settings()), [new ContentProbeCommand()]);
@@ -117,14 +128,23 @@ final class ContentProbeCommandTest extends TestCase
         Functions\when('get_post_meta')->alias(function ($id, $key = '', $single = false) {
             $all = $this->meta[(int) $id] ?? [];
             if ($key === '') {
+                $this->wholeMetaLoaded = true;
                 return array_map(static fn ($v) => [$v], $all);
             }
             return $all[$key] ?? '';
         });
-        Functions\when('wp_get_post_revisions')->justReturn([]);
+        Functions\expect('wp_get_post_revisions')->never();
         Functions\when('wp_revisions_to_keep')->justReturn(-1);
         Functions\when('get_userdata')->justReturn(false);
         Functions\when('get_posts')->alias(function ($args) {
+            if ($args['post_type'] === 'revision') {
+                $rows = array_values(array_filter(
+                    $this->revisionRows[$args['post_parent']] ?? [],
+                    static fn ($r) => in_array($r->post_name, $args['post_name__in'], true)
+                ));
+                usort($rows, static fn ($a, $b) => $b->ID <=> $a->ID);
+                return array_map(static fn ($r) => $r->ID, array_slice($rows, 0, $args['posts_per_page']));
+            }
             $ids = [];
             foreach ($this->posts as $p) {
                 if (in_array($p->post_type, $args['post_type'], true) && in_array($p->post_status, $args['post_status'], true)) {
@@ -260,6 +280,7 @@ final class ContentProbeCommandTest extends TestCase
     {
         $this->seedPost(12);
         $this->options['page_for_posts'] = 12;
+        $this->options['show_on_front']  = 'page';
 
         $r = $this->probe(['post_id' => 12]);
 
@@ -278,15 +299,37 @@ final class ContentProbeCommandTest extends TestCase
         $this->assertSame('special_page', $r['verdict']);
     }
 
-    public function test_page_on_front_is_special_only_when_the_front_shows_posts(): void
+    public function test_static_front_page_may_be_overridden_by_its_template(): void
     {
         $this->seedPost(14);
-        $this->options['page_on_front'] = 14;
         $this->options['show_on_front'] = 'page';
-        $this->assertSame('classic', $this->probe(['post_id' => 14])['verdict']);
+        $this->options['page_on_front'] = 14;
 
-        $this->options['show_on_front'] = 'posts';
-        $this->assertSame('special_page', $this->probe(['post_id' => 14])['verdict']);
+        $r = $this->probe(['post_id' => 14]);
+
+        $this->assertSame('template_may_override', $r['verdict']);
+        $this->assertSame(3, $r['route']['number']);
+    }
+
+    public function test_leftover_front_page_options_are_ignored_when_the_front_shows_posts(): void
+    {
+        $this->seedPost(14);
+        $this->seedPost(15, 'Other words.');
+        $this->options['show_on_front']  = 'posts';
+        $this->options['page_on_front']  = 14;
+        $this->options['page_for_posts'] = 15;
+
+        $this->assertSame('classic', $this->probe(['post_id' => 14])['verdict']);
+        $this->assertSame('classic', $this->probe(['post_id' => 15])['verdict']);
+    }
+
+    public function test_page_for_posts_is_special_when_the_front_is_a_static_page(): void
+    {
+        $this->seedPost(16);
+        $this->options['show_on_front']  = 'page';
+        $this->options['page_for_posts'] = 16;
+
+        $this->assertSame('special_page', $this->probe(['post_id' => 16])['verdict']);
     }
 
     public function test_descriptor_matched_builder_page_is_detect_only_route_3_and_names_the_builder(): void
@@ -367,6 +410,49 @@ final class ContentProbeCommandTest extends TestCase
         $this->assertSame('empty', $r['verdict']);
         $this->assertSame('empty_page', $r['route']['reason']);
         $this->assertSame([], $r['matches']);
+    }
+
+    public function test_a_large_unrelated_meta_value_is_never_loaded(): void
+    {
+        $this->seedPost(80, 'Plain words.');
+        $this->meta[80] = ['_unrelated_blob' => str_repeat('x', 2 * 1024 * 1024)];
+        $this->registerAbility('acme-builder/get-page');
+
+        $r = $this->probe(['post_id' => 80, 'descriptors' => [$this->descriptor(['ability_names' => ['acme-builder/get-page']])]]);
+
+        $this->assertTrue($r['ok']);
+        $this->assertSame('classic', $r['verdict']);
+        $this->assertFalse($this->wholeMetaLoaded, 'all meta of a post must never be loaded at once');
+        $this->assertSame([], $this->db->valueReads, 'no value is read when no needed key exists');
+    }
+
+    public function test_a_payload_over_the_read_budget_is_refused_before_it_is_loaded(): void
+    {
+        $this->seedPost(81, '');
+        $this->registerAbility('acme-builder/get-page');
+        $this->meta[81] = ['_acme_enabled' => '1', '_acme_data' => str_repeat('y', 8 * 1024 * 1024 + 1)];
+
+        $r = $this->probe(['post_id' => 81, 'descriptors' => [$this->descriptor(['ability_names' => ['acme-builder/get-page']])]]);
+
+        $this->assertFalse($r['ok']);
+        $this->assertSame('probe_limit', $r['code']);
+        $this->assertNotContains('_acme_data', $this->db->valueReads, 'an over-budget value must not be fetched');
+    }
+
+    public function test_newest_genuine_revision_is_fetched_alone_and_autosaves_are_excluded(): void
+    {
+        $this->seedPost(82);
+        $mk = static function (int $id, string $name): object {
+            $o = new \stdClass();
+            $o->ID = $id;
+            $o->post_name = $name;
+            return $o;
+        };
+        $this->revisionRows[82] = [$mk(901, '82-revision-v1'), $mk(905, '82-autosave-v1'), $mk(903, '82-revision-v1'), $mk(902, '82-revision-v1')];
+
+        $r = $this->probe(['post_id' => 82]);
+
+        $this->assertSame(903, $r['post']['newest_revision_id']);
     }
 
     public function test_stale_payload_is_never_classic(): void
@@ -612,5 +698,103 @@ final class ContentProbeCommandTest extends TestCase
     {
         $prop = new ReflectionProperty(AuthHeaderShield::class, 'stashedBearer');
         $prop->setValue(null, null);
+    }
+}
+
+/**
+ * $wpdb double for the probe: serves the post-meta queries the command issues
+ * from the test's in-memory meta, and records which values were fetched.
+ */
+final class ProbeWpdb
+{
+    public string $prefix = 'wp_';
+
+    public string $postmeta = 'wp_postmeta';
+
+    /** @var list<string> Meta keys whose VALUE was read. */
+    public array $valueReads = [];
+
+    private FakeWpdb $inner;
+
+    /** @var array<int,array<string,mixed>> */
+    private array $meta;
+
+    /** @param array<int,array<string,mixed>> $meta Shared meta store. */
+    public function __construct(array &$meta)
+    {
+        $this->meta  = &$meta;
+        $this->inner = new FakeWpdb();
+    }
+
+    public function esc_like(string $text): string
+    {
+        return addcslashes($text, '_%\\');
+    }
+
+    /** @param mixed ...$args Bound arguments. */
+    public function prepare(string $query, ...$args): string
+    {
+        if (count($args) === 1 && is_array($args[0])) {
+            $args = $args[0];
+        }
+
+        return (string) json_encode(['sql' => $query, 'args' => $args]);
+    }
+
+    /** @return list<object> */
+    public function get_results(string $prepared): array
+    {
+        $d    = json_decode($prepared, true);
+        $id   = (int) $d['args'][0];
+        $keys = array_slice($d['args'], 1);
+        $rows = [];
+        foreach ($keys as $k) {
+            if (array_key_exists($k, $this->meta[$id] ?? [])) {
+                $rows[] = (object) ['meta_key' => $k, 'len' => strlen((string) $this->meta[$id][$k])];
+            }
+        }
+
+        return $rows;
+    }
+
+    /** @return list<string> */
+    public function get_col(string $prepared): array
+    {
+        $d      = json_decode($prepared, true);
+        $id     = (int) $d['args'][0];
+        $prefix = stripslashes(rtrim((string) $d['args'][1], '%'));
+
+        return array_values(array_filter(
+            array_map('strval', array_keys($this->meta[$id] ?? [])),
+            static fn ($k) => str_starts_with($k, $prefix)
+        ));
+    }
+
+    public function get_var(string $prepared): ?string
+    {
+        $d = json_decode($prepared, true);
+        if (is_array($d) && str_contains((string) $d['sql'], 'postmeta')) {
+            $id  = (int) $d['args'][0];
+            $key = (string) $d['args'][1];
+            $this->valueReads[] = $key;
+
+            return array_key_exists($key, $this->meta[$id] ?? []) ? (string) $this->meta[$id][$key] : null;
+        }
+
+        return $this->inner->get_var($prepared);
+    }
+
+    public function query(string $prepared): int
+    {
+        return $this->inner->query($prepared);
+    }
+
+    /**
+     * @param array<string,int|string> $data   Row data.
+     * @param array<int,string>        $format Column formats.
+     */
+    public function insert(string $table, array $data, array $format): int
+    {
+        return $this->inner->insert($table, $data, $format);
     }
 }
