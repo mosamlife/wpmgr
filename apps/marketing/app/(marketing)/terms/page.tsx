@@ -3,7 +3,7 @@ import { buildMetadata, buildBreadcrumbLd } from "@/lib/seo";
 import { JsonLd } from "@/lib/json-ld";
 import { LegalPage } from "@/components/templates/legal-page";
 import { SITE_CONFIG } from "@/lib/site";
-import { COMPANY, LEGAL_EFFECTIVE_DATE, LEGAL_CONTACT_HREF, STRIPE, RAZORPAY } from "@/lib/content/legal";
+import { COMPANY, LEGAL_EFFECTIVE_DATE, LEGAL_CONTACT_HREF, STRIPE, RAZORPAY, RAZORPAY_SELLER } from "@/lib/content/legal";
 
 export const metadata: Metadata = buildMetadata({
   title: "Terms of Service",
@@ -149,9 +149,8 @@ export default function TermsPage() {
                   appear as the merchant on your statement.
                 </p>
                 <p>
-                  The seller of record for Razorpay-processed payments is confirmed separately and
-                  will be named here before that route goes live; Razorpay acts as the payment
-                  processor for it.
+                  For payments processed through Razorpay, {RAZORPAY_SELLER.legalName} is the
+                  seller. Razorpay acts solely as the payment processor for these transactions.
                 </p>
                 <p>
                   Your subscription renews automatically each billing period until you cancel,

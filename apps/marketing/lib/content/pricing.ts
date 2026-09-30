@@ -138,7 +138,7 @@ export const PRICING_FAQ: FaqItem[] = [
   },
   {
     q: "What payment methods do you accept?",
-    a: "By default you pay by card in US dollars, processed by Stripe; Jayso Labs, LLC is the seller. Customers in India can instead choose Razorpay, which charges in Indian rupees and also supports UPI and RuPay. Prices exclude applicable taxes, which are calculated and added at checkout where they apply.",
+    a: "By default you pay by card in US dollars, processed by Stripe; Jayso Labs, LLC is the seller. Customers in India can instead choose Razorpay, which charges in Indian rupees and also supports UPI and RuPay; for those payments the seller is Jayso Labs Private Limited. Prices exclude applicable taxes, which are calculated and added at checkout where they apply.",
   },
   {
     q: "What is your refund policy?",
