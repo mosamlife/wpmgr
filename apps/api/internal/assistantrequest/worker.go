@@ -711,6 +711,7 @@ func outcomeAuditEvent(a DispatchArgs, row sqlc.AssistantCachePurgeRequest, oc o
 		md["hosting_caches_cleared"] = nonNil(oc.HostingCleared)
 		md["hosting_caches_skipped"] = nonNil(oc.HostingSkipped)
 		md["origin_only_confirmed"] = oc.OriginOnlyConfirmed != nil && *oc.OriginOnlyConfirmed
+		md["unknown_integrations"] = oc.UnknownIntegrations
 		if oc.WpmgrCDN != nil {
 			md["wpmgr_cdn"] = *oc.WpmgrCDN
 		}

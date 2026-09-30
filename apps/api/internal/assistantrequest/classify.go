@@ -15,6 +15,9 @@ type outcome struct {
 	NotSentReason       *string
 	HostingCleared      []string
 	HostingSkipped      []string
+	// UnknownIntegrations counts report entries dropped for a slug or action
+	// outside the closed sets. Only the count is kept, never the text.
+	UnknownIntegrations int
 	OriginOnlyConfirmed *bool
 	WpmgrCDN            *string
 	SiteReportedText    *string
@@ -69,6 +72,7 @@ func purgedOutcome(res perf.AssistantPurgeResult) outcome {
 	seen := map[string]struct{}{}
 	for _, in := range res.Agent.Integrations {
 		if _, ok := known[in.Slug]; !ok {
+			oc.UnknownIntegrations++
 			continue
 		}
 		if _, dup := seen[in.Slug]; dup {
@@ -80,6 +84,7 @@ func purgedOutcome(res perf.AssistantPurgeResult) outcome {
 		case integrationSkipped:
 			skipped = append(skipped, in.Slug)
 		default:
+			oc.UnknownIntegrations++
 			continue
 		}
 		seen[in.Slug] = struct{}{}

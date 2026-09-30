@@ -38,7 +38,7 @@ const (
 // strings the model reads are our own constants.
 var (
 	statusWaitingReasons = closedSet("site_unreachable", "site_cooldown", "site_hourly_cap",
-		"site_busy", "org_busy", "context_unavailable")
+		"site_busy", "org_busy", "context_unavailable", "write_tools_disabled")
 	statusOutcomes = closedSet("purged", "site_reported_failure", "agent_failed",
 		"outcome_unknown", "not_sent")
 	statusNotSentReasons = closedSet("grant_inactive", "assistant_paused", "organisation_deleted",

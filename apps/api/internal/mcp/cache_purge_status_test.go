@@ -167,6 +167,13 @@ func TestStatus_EveryStoredStateMapsToItsModelState(t *testing.T) {
 				"decided_at": decided.Format(time.RFC3339), "poll_after_seconds": float64(statusPollAfterSec)},
 		},
 		{
+			name: "approved, write tools switched off",
+			row: sqlc.AssistantCachePurgeRequest{State: "approved_undispatched", DecidedAt: tstz(decided),
+				LastAttemptCode: strp("write_tools_disabled")},
+			want: map[string]any{"state": statusApproved, "waiting_reason": "write_tools_disabled",
+				"decided_at": decided.Format(time.RFC3339), "poll_after_seconds": float64(statusPollAfterSec)},
+		},
+		{
 			name: "dispatched, no outcome yet",
 			row:  sqlc.AssistantCachePurgeRequest{State: "dispatched", DecidedAt: tstz(decided)},
 			want: map[string]any{"state": statusRunning, "decided_at": decided.Format(time.RFC3339),

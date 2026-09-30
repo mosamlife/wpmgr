@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentcmd"
+	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 	"github.com/mosamlife/wpmgr/apps/api/internal/mcp"
 	"github.com/mosamlife/wpmgr/apps/api/internal/org"
@@ -164,5 +165,27 @@ func TestClassify_HostingReportIsFilteredToTheClosedSets(t *testing.T) {
 	got := classify(res, nil)
 	if strings.Join(got.HostingCleared, ",") != "wpcloud" || strings.Join(got.HostingSkipped, ",") != "kinsta" {
 		t.Fatalf("cleared=%v skipped=%v", got.HostingCleared, got.HostingSkipped)
+	}
+}
+
+func TestClassify_UnknownIntegrationsAreCountedNotEchoed(t *testing.T) {
+	res := perf.AssistantPurgeResult{Agent: agentcmd.CachePurgeResult{
+		OK: true, OriginOnlyHonoured: boolp(true),
+		Integrations: []agentcmd.CachePurgeIntegration{
+			{Slug: "wpcloud", Action: "purged_all"},
+			{Slug: "<script>", Action: "purged_all"},
+			{Slug: "varnish", Action: "rm -rf"},
+			{Slug: "kinsta", Action: "purged_all"},
+			{Slug: "kinsta", Action: "purged_all"},
+		},
+	}}
+	got := classify(res, nil)
+	// One unknown slug and one unknown action; a repeated known slug is not unknown.
+	if got.UnknownIntegrations != 2 {
+		t.Fatalf("UnknownIntegrations = %d, want 2", got.UnknownIntegrations)
+	}
+	ev := outcomeAuditEvent(DispatchArgs{}, sqlc.AssistantCachePurgeRequest{Scope: "all"}, got)
+	if ev.Metadata["unknown_integrations"] != 2 {
+		t.Fatalf("audit metadata unknown_integrations = %v", ev.Metadata["unknown_integrations"])
 	}
 }
