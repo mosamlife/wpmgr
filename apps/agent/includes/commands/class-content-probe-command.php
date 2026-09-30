@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent\Commands;
 
+use WPMgr\Agent\Abilities\AbilitySchema;
+
 // Direct-file-access guard: keep above the docblock (see the note in
 // class-content-update-command.php).
 if (!defined('ABSPATH')) {
@@ -606,12 +608,7 @@ final class ContentProbeCommand implements CommandInterface
     }
 
     /**
-     * Structural hash of an ability's input schema: type, property names
-     * (recursively), required, items, additionalProperties and enum values,
-     * with enum dropped at dynamic paths. Titles, descriptions, examples,
-     * defaults and translated text never contribute, and keys are sorted, so a
-     * locale change or a newly registered element type does not change the
-     * hash but a real change of shape does.
+     * Structural hash of an ability's input schema (see AbilitySchema).
      *
      * @param object       $ability Registered ability.
      * @param list<string> $dynamic Dotted property paths whose enum is dropped.
@@ -619,69 +616,7 @@ final class ContentProbeCommand implements CommandInterface
      */
     private function schemaHash(object $ability, array $dynamic): ?string
     {
-        if (!method_exists($ability, 'get_input_schema')) {
-            return null;
-        }
-        try {
-            $schema = $ability->get_input_schema();
-        } catch (\Throwable $e) {
-            return null;
-        }
-        if (!is_array($schema)) {
-            return null;
-        }
-        $json = json_encode($this->structural($schema, '', $dynamic));
-
-        return is_string($json) ? 'sha256:' . hash('sha256', $json) : null;
-    }
-
-    /**
-     * @param array<mixed> $node    Schema node.
-     * @param string       $path    Dotted property path of this node.
-     * @param list<string> $dynamic Dynamic enum paths.
-     * @return array<mixed>
-     */
-    private function structural(array $node, string $path, array $dynamic): array
-    {
-        $out = [];
-        if (isset($node['type']) && (is_string($node['type']) || is_array($node['type']))) {
-            $type = $node['type'];
-            if (is_array($type)) {
-                $type = array_values(array_filter($type, 'is_string'));
-                sort($type);
-            }
-            $out['type'] = $type;
-        }
-        if (isset($node['properties']) && is_array($node['properties'])) {
-            $props = [];
-            foreach ($node['properties'] as $key => $child) {
-                $childPath = $path === '' ? (string) $key : $path . '.' . $key;
-                $props[(string) $key] = is_array($child) ? $this->structural($child, $childPath, $dynamic) : [];
-            }
-            ksort($props);
-            $out['properties'] = $props === [] ? new \stdClass() : $props;
-        }
-        if (isset($node['required']) && is_array($node['required'])) {
-            $req = array_values(array_filter($node['required'], 'is_string'));
-            sort($req);
-            $out['required'] = $req;
-        }
-        if (isset($node['items']) && is_array($node['items'])) {
-            $out['items'] = $this->structural($node['items'], $path, $dynamic);
-        }
-        if (array_key_exists('additionalProperties', $node)) {
-            $out['additionalProperties'] = is_array($node['additionalProperties'])
-                ? $this->structural($node['additionalProperties'], $path, $dynamic)
-                : (bool) $node['additionalProperties'];
-        }
-        if (isset($node['enum']) && is_array($node['enum']) && !in_array($path, $dynamic, true)) {
-            $enum = array_map(static fn ($v) => is_scalar($v) ? $v : null, array_values($node['enum']));
-            usort($enum, static fn ($a, $b) => strcmp((string) json_encode($a), (string) json_encode($b)));
-            $out['enum'] = $enum;
-        }
-        ksort($out);
-
-        return $out;
+        return AbilitySchema::hashOf($ability, $dynamic);
     }
 
     /**
