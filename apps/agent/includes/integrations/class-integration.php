@@ -73,12 +73,13 @@ abstract class Integration
     protected const REACH_NOTE = '';
 
     /**
-     * What each detected integration did during one purge, or null when no
-     * report is being collected.
+     * Stack of purge reports, one frame per purge in flight (a purge hook can
+     * start another purge). Empty when no report is being collected; actions
+     * are recorded into the top frame.
      *
-     * @var list<array{slug:string,action:string}>|null
+     * @var list<list<array{slug:string,action:string}>>
      */
-    private static ?array $report = null;
+    private static array $reportFrames = [];
 
     /**
      * Register on the WPMgr purge actions. Hooks fire BEFORE WPMgr deletes its
@@ -327,26 +328,25 @@ abstract class Integration
     // -------------------------------------------------------------------------
 
     /**
-     * Start collecting what each detected integration does. Discards any report
-     * left over from an earlier purge.
+     * Start collecting what each detected integration does for one purge. Safe
+     * to nest: each call opens its own frame, closed by the matching endReport().
      *
      * @return void
      */
     final public static function beginReport(): void
     {
-        self::$report = [];
+        self::$reportFrames[] = [];
     }
 
     /**
-     * Stop collecting and return the report.
+     * Close the innermost report and return it (empty when none is open).
      *
      * @return list<array{slug:string,action:string}>
      */
     final public static function endReport(): array
     {
-        $report       = self::$report ?? [];
-        self::$report = null;
-        return $report;
+        $report = array_pop(self::$reportFrames);
+        return $report ?? [];
     }
 
     /**
@@ -357,9 +357,10 @@ abstract class Integration
      */
     private function record(string $action): void
     {
-        if (self::$report === null) {
+        $top = array_key_last(self::$reportFrames);
+        if ($top === null) {
             return;
         }
-        self::$report[] = ['slug' => (string) static::SLUG, 'action' => $action];
+        self::$reportFrames[$top][] = ['slug' => (string) static::SLUG, 'action' => $action];
     }
 }
