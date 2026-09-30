@@ -588,7 +588,7 @@ describe("ConsentScreen — the mcp:cache write section (design v7 S2.2)", () =>
     await screen.findByTestId("consent-cache-capability");
     expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(true);
     expect(screen.getByTestId("consent-nothing-to-confer")).toHaveTextContent(
-      /asked only to request cache clears/i,
+      /asked only for things that need a tick/i,
     );
     // Ticking the box makes the approval possible again.
     fireEvent.click(within(screen.getByTestId("consent-cache-capability")).getByRole("checkbox"));
