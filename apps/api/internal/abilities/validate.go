@@ -112,8 +112,10 @@ func ValidateInventory(output json.RawMessage) (InventoryResult, error) {
 			row.SchemaStructSHA256 = *a.SchemaStructSHA256
 		}
 		if a.FromTheSite != nil {
-			row.SiteLabel = humantext.CapRunes(humantext.Clean(a.FromTheSite.Label), siteLabelMaxRunes)
-			row.SiteDescription = humantext.CapRunes(humantext.Clean(a.FromTheSite.Description), siteDescriptionMaxRunes)
+			// CapRunes(s, n) yields up to n+1 runes (it appends an ellipsis),
+			// so cap at max-1 to stay inside the column CHECK.
+			row.SiteLabel = humantext.CapRunes(humantext.Clean(a.FromTheSite.Label), siteLabelMaxRunes-1)
+			row.SiteDescription = humantext.CapRunes(humantext.Clean(a.FromTheSite.Description), siteDescriptionMaxRunes-1)
 		}
 		res.Rows = append(res.Rows, row)
 	}

@@ -27,6 +27,7 @@ import (
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivermigrate"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/abilities"
 	"github.com/mosamlife/wpmgr/apps/api/internal/activity"
 	"github.com/mosamlife/wpmgr/apps/api/internal/admin"
 	"github.com/mosamlife/wpmgr/apps/api/internal/admingate"
@@ -1802,6 +1803,15 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	contentH := content.NewHandler(contentSvc)
 	contentRefreshWorker := content.NewRefreshWorker(contentSvc, logger)
 	contentSweepWorker := content.NewSweepWorker(contentSvc, logger)
+	// Ability engine (E1) — the per-site ability inventory refresh and its
+	// daily sweep. Same nil-interface care as the content probe above.
+	var abilityAgent abilities.AgentClient
+	if ocCmdClient != nil {
+		abilityAgent = ocCmdClient
+	}
+	abilitySvc := abilities.NewService(abilities.NewRepo(pool), abilityAgent, logger)
+	abilityRefreshWorker := abilities.NewRefreshWorker(abilitySvc, logger)
+	abilitySweepWorker := abilities.NewSweepWorker(abilitySvc, logger)
 	ocH := objectcache.NewHandler(ocSvc, auditRec)
 	ocGCWorker := objectcache.NewObjectCacheStatsHistoryGCWorker(ocRepo, logger)
 
@@ -2062,6 +2072,9 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		// Track B S1 — page-ownership inventory refresh and daily sweep.
 		contentRefreshWorker: contentRefreshWorker,
 		contentSweepWorker:   contentSweepWorker,
+		// Ability engine (E1) — inventory refresh and daily sweep.
+		abilityRefreshWorker: abilityRefreshWorker,
+		abilitySweepWorker:   abilitySweepWorker,
 		// M39 — watchdog for stalled db_clean/db_scan jobs.
 		dbCleanWatchdogWorker: dbCleanWatchdogWorker,
 		// P3.8 — watchdog for stalled db_orphan_delete jobs.
@@ -2279,6 +2292,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	dbCleanScheduleWorker.SetEnqueuer(dbCleanEnqueuer, cfg.PublicBaseURL)
 	contentEnqueuer := content.NewRiverEnqueuer(riverClient)
 	contentSweepWorker.SetEnqueuer(contentEnqueuer)
+	abilitySweepWorker.SetEnqueuer(abilities.NewRiverEnqueuer(riverClient))
 	contentH.SetEnqueuer(contentEnqueuer)
 	// The AI request scan enqueues one dispatch job per due approved request.
 	assistantReqScanWorker.SetEnqueuer(assistantrequest.NewRiverEnqueuer(riverClient))
@@ -3493,6 +3507,9 @@ type riverDeps struct {
 	// Track B S1 — page-ownership inventory.
 	contentRefreshWorker *content.RefreshWorker
 	contentSweepWorker   *content.SweepWorker
+	// Ability engine (E1) — per-site ability inventory.
+	abilityRefreshWorker *abilities.RefreshWorker
+	abilitySweepWorker   *abilities.SweepWorker
 	// M39 — watchdog for stalled db_clean + db_scan jobs (always wired).
 	dbCleanWatchdogWorker *perf.DBCleanWatchdogWorker
 	// P3.8 — watchdog for stalled db_orphan_delete jobs (always wired).
@@ -3878,6 +3895,17 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 		periodics = append(periodics, river.NewPeriodicJob(
 			river.PeriodicInterval(content.SweepInterval),
 			func() (river.JobArgs, *river.InsertOpts) { return content.SweepArgs{}, nil },
+			&river.PeriodicJobOpts{RunOnStart: false},
+		))
+	}
+	if d.abilityRefreshWorker != nil {
+		river.AddWorker(workers, d.abilityRefreshWorker)
+	}
+	if d.abilitySweepWorker != nil {
+		river.AddWorker(workers, d.abilitySweepWorker)
+		periodics = append(periodics, river.NewPeriodicJob(
+			river.PeriodicInterval(abilities.SweepInterval),
+			func() (river.JobArgs, *river.InsertOpts) { return abilities.SweepArgs{}, nil },
 			&river.PeriodicJobOpts{RunOnStart: false},
 		))
 	}
