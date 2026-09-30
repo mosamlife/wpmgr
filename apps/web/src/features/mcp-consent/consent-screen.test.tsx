@@ -574,7 +574,7 @@ describe("ConsentScreen — the mcp:cache write section (design v7 S2.2)", () =>
     expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(false);
   });
 
-  it("disables Approve and says why when a cache-only request leaves the box clear", () => {
+  it("disables Approve and says why when a cache-only request leaves the box clear", async () => {
     const cacheOnly = parseConsentContext({
       client_id: "c_cache_only",
       identity_verified: false,
@@ -585,6 +585,7 @@ describe("ConsentScreen — the mcp:cache write section (design v7 S2.2)", () =>
       conferrable_capabilities: [{ name: "mcp.cache.purge", effect: "request" }],
     });
     renderWithProviders(<ConsentScreen {...props({ consent: cacheOnly })} />, { withRouter: true });
+    await screen.findByTestId("consent-cache-capability");
     expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(true);
     expect(screen.getByTestId("consent-nothing-to-confer")).toHaveTextContent(
       /asked only to request cache clears/i,
