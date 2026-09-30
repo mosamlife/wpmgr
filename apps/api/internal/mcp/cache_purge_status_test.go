@@ -1,7 +1,9 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -317,6 +319,16 @@ func TestStatus_ListModeRefusesAnEmptyScope(t *testing.T) {
 		c := e.call(ToolSiteCachePurgeRequestStatus, args)
 		if c.code != codeScopeEmpty {
 			t.Fatalf("args %v on an empty scope: got %d %q (text %q), want -32002", args, c.code, c.msg, c.text)
+		}
+	}
+	// The transport's scope gate answers first, so the tool's own refusal is
+	// driven directly: it is the second layer, and it must hold on its own.
+	for _, raw := range []string{`{}`, `{"request_id":"` + uuid.NewString() + `"}`} {
+		out, err := e.svc.siteCachePurgeRequestStatus(context.Background(), e.auth, json.RawMessage(raw))
+		var ref *toolRefusal
+		if !errors.As(err, &ref) || ref.reason != reasonScopeEmpty || out != "" {
+			t.Fatalf("the status tool itself answered %q, %v on an empty scope for %s; want the scope_empty refusal",
+				out, err, raw)
 		}
 	}
 }
