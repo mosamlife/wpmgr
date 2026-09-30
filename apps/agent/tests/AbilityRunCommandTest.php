@@ -336,6 +336,35 @@ final class AbilityRunCommandTest extends TestCase
     }
 
     /**
+     * The cross-language fixture the Go control plane writes
+     * (apps/api/internal/agentcmd/testdata/ability_run_fixture.json, from
+     * BuildAbilityRunParams). The agent recomputes every digest from the
+     * bytes it decodes, then runs the exact body through the command.
+     */
+    public function test_the_go_fixture_digests_match_and_the_command_accepts_it(): void
+    {
+        $path = dirname(__DIR__, 2) . '/api/internal/agentcmd/testdata/ability_run_fixture.json';
+        $this->assertFileExists($path, 'the Go fixture is missing, so this test proves nothing');
+        $fx = json_decode((string) file_get_contents($path), true);
+
+        $body = json_decode($fx['body'], true);
+        $this->assertSame(['p'], array_keys($body));
+        $p = $body['p'];
+        $this->assertSame($fx['pd'], hash('sha256', $p));
+
+        $req = json_decode($p, false);
+        $this->assertSame($fx['entry_sha256'], hash('sha256', $req->entry));
+        $this->assertSame($fx['input_sha256'], hash('sha256', $req->input));
+        $this->assertStringContainsString("\u{2014}", $req->entry);
+        $this->assertStringContainsString("\u{2028}", $req->entry);
+        $this->assertStringContainsString('<b>&amp;', $req->entry);
+
+        $r = $this->post($fx['body'], $fx['pd']);
+        $this->assertTrue($r['ok'] ?? false, 'the command refused the Go-built body: ' . json_encode($r));
+        $this->assertSame($fx['precheck_digest'], $r['precheck_digest']);
+    }
+
+    /**
      * A read-mode `p` whose entry lacks one key entirely.
      */
     private function pWithout(string $key, string $name): string
