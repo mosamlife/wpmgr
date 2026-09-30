@@ -24,8 +24,8 @@ vi.mock("@wpmgr/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@wpmgr/api")>();
   return {
     ...actual,
-    getSiteContentInventory: (...a: unknown[]) => getInv(...a),
-    refreshSiteContentInventory: (...a: unknown[]) => refreshInv(...a),
+    getSiteContentInventory: (...a: unknown[]): unknown => getInv(...a),
+    refreshSiteContentInventory: (...a: unknown[]): unknown => refreshInv(...a),
   };
 });
 
@@ -82,7 +82,7 @@ function ok(data: ContentInventoryPage) {
   return { data, error: undefined, response: { status: 200 } };
 }
 
-async function renderTab(role: "operator" | "viewer" = "operator") {
+function renderTab(role: "operator" | "viewer" = "operator") {
   const queryClient = createTestQueryClient();
   queryClient.setQueryData(ME_KEY, meWithRole(role));
   const rootRoute = createRootRoute({});
@@ -116,7 +116,7 @@ describe("site Content tab", () => {
         }),
       ),
     );
-    await renderTab();
+    renderTab();
     expect(await screen.findByText("Spring sale")).toBeInTheDocument();
     expect(screen.getByText("Beaver Builder 2.11.2")).toBeInTheDocument();
     expect(screen.getByText("Block editor")).toBeInTheDocument();
@@ -128,7 +128,7 @@ describe("site Content tab", () => {
     getInv.mockResolvedValue(
       ok(page({ titles_included: false, pages: [row({ post_id: 412, title: "Secret title" })] })),
     );
-    await renderTab("viewer");
+    renderTab("viewer");
     expect(await screen.findByText("Page #412")).toBeInTheDocument();
     expect(screen.queryByText("Secret title")).not.toBeInTheDocument();
     expect(screen.getByText(/titles need operator access/i)).toBeInTheDocument();
@@ -138,7 +138,7 @@ describe("site Content tab", () => {
     getInv.mockResolvedValue(
       ok(page({ pages: [row({ verdict: "from_the_future", route_reason: "new_reason_code" })] })),
     );
-    await renderTab();
+    renderTab();
     await screen.findByText("About us");
     expect(screen.getAllByText("Not available yet")).toHaveLength(2);
     expect(screen.queryByText("new_reason_code")).not.toBeInTheDocument();
@@ -148,14 +148,14 @@ describe("site Content tab", () => {
     getInv.mockResolvedValue(
       ok(page({ pages: [row({ title: "<img src=x onerror=alert(1)>" })] })),
     );
-    await renderTab();
+    renderTab();
     expect(await screen.findByText("<img src=x onerror=alert(1)>")).toBeInTheDocument();
     expect(document.querySelector("img")).toBeNull();
   });
 
   it("agent_update_needed names the minimum version", async () => {
     getInv.mockResolvedValue(ok(page({ state: "agent_update_needed", pages: [] })));
-    await renderTab();
+    renderTab();
     expect(
       await screen.findByText(/Update the WPMgr plugin on this site to version 0\.62\.0 to see its pages\./),
     ).toBeInTheDocument();
@@ -163,26 +163,26 @@ describe("site Content tab", () => {
 
   it("not_connected", async () => {
     getInv.mockResolvedValue(ok(page({ state: "not_connected", pages: [] })));
-    await renderTab();
+    renderTab();
     expect(await screen.findByText(/not connected right now/i)).toBeInTheDocument();
   });
 
   it("never refreshed shows the empty state with a Refresh button", async () => {
     getInv.mockResolvedValue(ok(page({ last_checked_at: null, pages: [] })));
-    await renderTab();
+    renderTab();
     expect(await screen.findByText(/have not been checked yet/i)).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: "Refresh" }).length).toBeGreaterThan(0);
   });
 
   it("shows a loading state, then an error with retry", async () => {
     getInv.mockReturnValue(new Promise(() => {}));
-    await renderTab();
+    renderTab();
     expect(await screen.findByRole("status", { name: "Loading pages" })).toBeInTheDocument();
   });
 
   it("shows an error state when the request fails", async () => {
     getInv.mockResolvedValue({ data: undefined, error: { code: "internal", message: "boom" }, response: { status: 500 } });
-    await renderTab();
+    renderTab();
     expect(await screen.findByText("Could not load this site's pages")).toBeInTheDocument();
   });
 
@@ -193,7 +193,7 @@ describe("site Content tab", () => {
       error: { code: "rate_limited", message: "slow down" },
       response: new Response(null, { status: 429, headers: { "Retry-After": "42" } }),
     });
-    await renderTab();
+    renderTab();
     await screen.findByText("About us");
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
     expect(
@@ -203,19 +203,19 @@ describe("site Content tab", () => {
 
   it("hides Refresh from a viewer", async () => {
     getInv.mockResolvedValue(ok(page({})));
-    await renderTab("viewer");
+    renderTab("viewer");
     await screen.findByText("About us");
     expect(screen.queryByRole("button", { name: "Refresh" })).not.toBeInTheDocument();
   });
 
   it("maps the editor filter to the API editor param", async () => {
     getInv.mockResolvedValue(ok(page({})));
-    await renderTab();
+    renderTab();
     await screen.findByText("About us");
     fireEvent.change(screen.getByLabelText("Show"), { target: { value: "classic" } });
     await waitFor(() =>
       expect(getInv).toHaveBeenLastCalledWith(
-        expect.objectContaining({ query: expect.objectContaining({ editor: "classic" }) }),
+        expect.objectContaining({ query: expect.objectContaining({ editor: "classic" }) as unknown }),
       ),
     );
   });
@@ -224,7 +224,7 @@ describe("site Content tab", () => {
     getInv.mockResolvedValue(
       ok(page({ pages: [row({ post_id: 1, title: "Spring sale" }), row({ post_id: 2, title: "About us" })] })),
     );
-    await renderTab();
+    renderTab();
     await screen.findByText("Spring sale");
     fireEvent.change(screen.getByLabelText("Search"), { target: { value: "spring" } });
     expect(screen.queryByText("About us")).not.toBeInTheDocument();

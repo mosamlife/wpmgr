@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { FileText, RefreshCw } from "lucide-react";
 
 import { PageError } from "@/components/feedback/page-error";
@@ -54,15 +54,22 @@ export function ContentTab({ siteId, hostname, canOperate }: ContentTabProps) {
   const refresh = useRefreshContentInventory(siteId);
 
   const data = inv.data;
-  useEffect(() => {
-    if (!data) return;
-    const found: Record<string, string> = {};
-    for (const p of data.pages) {
-      if (p.editor?.display_name) found[p.editor.integration_id] = p.editor.display_name;
+  // Remember every builder seen so the filter keeps its options after the list
+  // narrows. Adjusting state while rendering (not in an effect) is the
+  // documented pattern for state derived from a changed value.
+  const [seenData, setSeenData] = useState<typeof data>(undefined);
+  if (data !== seenData) {
+    setSeenData(data);
+    if (data) {
+      const found: Record<string, string> = {};
+      for (const p of data.pages) {
+        if (p.editor?.display_name) found[p.editor.integration_id] = p.editor.display_name;
+      }
+      if (Object.keys(found).length > 0) {
+        setKnownEditors((prev) => ({ ...prev, ...found }));
+      }
     }
-    if (Object.keys(found).length === 0) return;
-    setKnownEditors((prev) => ({ ...prev, ...found }));
-  }, [data]);
+  }
 
   const visible = useMemo(() => {
     if (!data) return [];

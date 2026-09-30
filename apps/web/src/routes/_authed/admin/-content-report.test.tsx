@@ -15,10 +15,10 @@ import { Route as ReportRoute } from "./content-report";
 const getReport = vi.fn();
 vi.mock("@wpmgr/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@wpmgr/api")>();
-  return { ...actual, getAdminContentFleetReport: (...a: unknown[]) => getReport(...a) };
+  return { ...actual, getAdminContentFleetReport: (...a: unknown[]): unknown => getReport(...a) };
 });
 
-async function renderReport() {
+function renderReport() {
   const rootRoute = createRootRoute({});
   type UpdateOptions = Parameters<typeof ReportRoute.update>[0];
   const r = ReportRoute.update({
@@ -52,7 +52,7 @@ describe("fleet page-editor report", () => {
       error: undefined,
       response: { status: 200 },
     });
-    await renderReport();
+    renderReport();
     expect(await screen.findByText("Pages checked: 200")).toBeInTheDocument();
     expect(screen.getByText("elementor")).toBeInTheDocument();
     expect(screen.getByText("3.20.1")).toBeInTheDocument();
@@ -64,7 +64,7 @@ describe("fleet page-editor report", () => {
 
   it("shows an error state", async () => {
     getReport.mockResolvedValue({ data: undefined, error: { code: "x", message: "no" }, response: { status: 500 } });
-    await renderReport();
+    renderReport();
     expect(await screen.findByText("Could not load the page editor report")).toBeInTheDocument();
   });
 });
