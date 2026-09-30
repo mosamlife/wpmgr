@@ -1812,6 +1812,22 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	abilitySvc := abilities.NewService(abilities.NewRepo(pool), abilityAgent, logger)
 	abilityRefreshWorker := abilities.NewRefreshWorker(abilitySvc, logger)
 	abilitySweepWorker := abilities.NewSweepWorker(abilitySvc, logger)
+	// The four MCP ability tools, served only while WPMGR_MCP_ABILITY_TOOLS=on.
+	// The run tool sends the same entry bytes as the inventory job
+	// (abilities.SendableEntry).
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("WPMGR_MCP_ABILITY_TOOLS"))) {
+	case "", "off":
+	case "on":
+		var mcpAbilityAgent mcp.AbilityAgent
+		if ocCmdClient != nil {
+			mcpAbilityAgent = ocCmdClient
+		}
+		if err := mcpSvc.EnableAbilityTools(mcpRepo, mcpAbilityAgent, abilities.SendableEntry, cfg.Auth.SessionSecret); err != nil {
+			return fmt.Errorf("enable MCP ability tools: %w", err)
+		}
+	default:
+		return fmt.Errorf("WPMGR_MCP_ABILITY_TOOLS must be \"on\" or \"off\"")
+	}
 	ocH := objectcache.NewHandler(ocSvc, auditRec)
 	ocGCWorker := objectcache.NewObjectCacheStatsHistoryGCWorker(ocRepo, logger)
 

@@ -192,6 +192,7 @@ func registryTools() []ToolPolicy {
 	// explicit, reviewed allowlist of exactly these two (name, capability)
 	// pairs.
 	entries = append(entries, cachePurgeToolPolicies()...)
+	entries = append(entries, abilityToolPolicies()...)
 
 	// EVERY ENTRY GETS ITS OWN COPY OF ITS SCHEMA BYTES.
 	//

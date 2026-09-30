@@ -1001,5 +1001,8 @@ func (s *Service) recordCreation(ctx context.Context, tx pgx.Tx, auth Authorized
 			"existing":            res.Existing,
 		},
 	})
+	if err == nil {
+		markRequestRowRecorded(ctx)
+	}
 	return auditFailure(err)
 }
