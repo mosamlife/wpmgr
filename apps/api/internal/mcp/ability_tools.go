@@ -379,7 +379,7 @@ type classified struct {
 	displayName string
 }
 
-func strp(s string) *string { return &s }
+func abilityStrPtr(s string) *string { return &s }
 
 // pickCatalogueEntry chooses the entry for a name: the first admitted and
 // enabled one, else the first. E1 does not match vendor version ranges;
@@ -416,7 +416,7 @@ func classify(name string, entries []sqlc.AbilityCatalogue, inv *sqlc.SiteAbilit
 	e := pickCatalogueEntry(entries)
 	not := func(r string) classified {
 		c.runnable = false
-		c.reason = strp(r)
+		c.reason = abilityStrPtr(r)
 		c.classOrder = abilityClassOrder[c.class]
 		return c
 	}
@@ -428,7 +428,7 @@ func classify(name string, entries []sqlc.AbilityCatalogue, inv *sqlc.SiteAbilit
 	c.entry = e
 	c.class = e.Class
 	c.source = e.Source
-	c.title = strp(e.Title)
+	c.title = abilityStrPtr(e.Title)
 	c.approval = e.ApprovalMode
 	switch {
 	case e.Class == "denied":
