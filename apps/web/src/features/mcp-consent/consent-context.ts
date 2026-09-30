@@ -324,6 +324,7 @@ export function parseConsentContext(raw: unknown): ConsentContext {
 // (ADR-061 option B, "no automation may ever approve").
 export const SCOPE_READ = "mcp:read";
 export const SCOPE_CACHE = "mcp:cache";
+export const SCOPE_SITE = "mcp:site";
 
 export interface ScopeCopy {
   readonly token: string;
@@ -370,7 +371,7 @@ export function describeScope(token: string): ScopeCopy {
  *  whether by describeScope's own bullet (SCOPE_READ) or by its own dedicated
  *  section (SCOPE_CACHE). */
 export function allScopesRecognised(scopes: readonly string[]): boolean {
-  return scopes.every((s) => s === SCOPE_READ || s === SCOPE_CACHE);
+  return scopes.every((s) => s === SCOPE_READ || s === SCOPE_CACHE || s === SCOPE_SITE);
 }
 
 /**
@@ -383,6 +384,8 @@ export function allScopesRecognised(scopes: readonly string[]): boolean {
 export function buildApprovalCapabilities(
   conferrable: readonly ConferrableCapability[],
   purgeTicked: boolean,
+  abilityReadTicked = false,
+  abilityRequestTicked = false,
 ): string[] {
   const known: ReadonlySet<string> = new Set(CONFERRABLE_READS);
   const out = conferrable
@@ -392,5 +395,13 @@ export function buildApprovalCapabilities(
     (c) => c.name === "mcp.cache.purge" && c.effect === CAPABILITY_EFFECT_REQUEST,
   );
   if (purgeTicked && offersPurge) out.push("mcp.cache.purge");
+  const offers = (name: string, effect: string) =>
+    conferrable.some((c) => c.name === name && c.effect === effect);
+  if (abilityReadTicked && offers("mcp.ability.read", CAPABILITY_EFFECT_READ)) {
+    out.push("mcp.ability.read");
+  }
+  if (abilityRequestTicked && offers("mcp.ability.request", CAPABILITY_EFFECT_REQUEST)) {
+    out.push("mcp.ability.request");
+  }
   return out;
 }

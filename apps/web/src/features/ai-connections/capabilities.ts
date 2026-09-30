@@ -41,6 +41,11 @@ export const CAPABILITY_LABELS = {
   // property that makes this row impossible to render next to the reads by
   // accident.
   "mcp.cache.purge": "Ask to clear the site cache",
+  // The site-tools engine (scope mcp:site). The first is a read that is NOT in
+  // any preset, because it can return page text; the second is a request, like
+  // the cache row: nothing runs until a person approves it in WPMgr.
+  "mcp.ability.read": "See this site's tools and read its published pages",
+  "mcp.ability.request": "Ask to make changes through the site's tools. You approve each one.",
 } as const satisfies Readonly<Record<string, string>>;
 
 /** A capability wire string this build's vocabulary knows. */
@@ -82,7 +87,20 @@ export const CAPABILITY_KIND: Readonly<Record<Capability, "read" | "write">> = {
   "mcp.diagnostics.read": "read",
   "mcp.content.read": "read",
   "mcp.cache.purge": "write",
+  "mcp.ability.read": "read",
+  "mcp.ability.request": "write",
 };
+
+/**
+ * The two site-tools capabilities. They render in their own box (see
+ * AbilityCapabilityBox), never in the plain read list and never in a preset:
+ * the read can return page text, so it is an explicit opt-in like the cache row.
+ */
+export const ABILITY_CAPABILITIES = ["mcp.ability.read", "mcp.ability.request"] as const;
+
+export function isAbilityCapability(capability: string): boolean {
+  return (ABILITY_CAPABILITIES as readonly string[]).includes(capability);
+}
 
 /**
  * The kind of a capability wire string, for a name this build may not know.
@@ -152,6 +170,14 @@ export const CAPABILITY_DESCRIPTIONS: Readonly<Record<Capability, string>> = {
     "site. It skips every hosting cache, because WPMgr has not yet confirmed that any " +
     "of them clears only this site, so visitors may still get cached pages from the " +
     "host until they expire. Pages load slower until the cache refills.",
+  "mcp.ability.read":
+    "List the tools a site offers, describe one, and run the ones WPMgr has reviewed as " +
+    "read-only, such as reading a published page. This can return the text of pages on " +
+    "the sites you chose. It changes nothing.",
+  "mcp.ability.request":
+    "Ask to make a change through one of a site's reviewed tools. Nothing runs until " +
+    "someone allowed to edit that site's content approves the request in WPMgr. You " +
+    "approve each request one at a time.",
 } as const;
 
 /**
@@ -179,7 +205,7 @@ export const CAPABILITY_DESCRIPTIONS: Readonly<Record<Capability, string>> = {
  * CONFERRABLE_CAPABILITIES below.
  */
 export const CONFERRABLE_READS: readonly Capability[] = KNOWN_CAPABILITIES.filter(
-  (c) => c !== "mcp.content.read" && CAPABILITY_KIND[c] === "read",
+  (c) => c !== "mcp.content.read" && !isAbilityCapability(c) && CAPABILITY_KIND[c] === "read",
 );
 
 /**
