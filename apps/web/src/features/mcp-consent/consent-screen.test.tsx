@@ -507,7 +507,7 @@ describe("ConsentScreen — the mcp:cache write section (design v7 S2.2)", () =>
     });
   }
 
-  it("shows the shared write box, checked and never toggleable, when the client asked for mcp:cache", async () => {
+  it("shows the shared write box, unticked and toggleable, when the client asked for mcp:cache", async () => {
     renderWithProviders(<ConsentScreen {...props({ consent: cacheConsent() })} />, {
       withRouter: true,
     });
@@ -517,13 +517,13 @@ describe("ConsentScreen — the mcp:cache write section (design v7 S2.2)", () =>
     expect(within(box).getByTestId("cache-purge-capability-box")).toBeTruthy();
     expect(within(box).getByText(/Ask to clear the site cache/i)).toBeTruthy();
     const checkbox = within(box).getByRole("checkbox");
-    expect((checkbox as HTMLInputElement).checked).toBe(true);
-    expect((checkbox as HTMLInputElement).disabled).toBe(true);
-    // Clicking a disabled control does not fire onChange in jsdom, and the
-    // box's onChange is a no-op regardless -- this screen presents what the
-    // client asked for, it does not let the operator narrow it in place.
+    // Never ticked by default; the operator opts in.
+    expect(checkbox.getAttribute("aria-checked") ?? (checkbox as HTMLInputElement).checked).toMatch(
+      /false/,
+    );
+    expect(checkbox.hasAttribute("disabled")).toBe(false);
     fireEvent.click(checkbox);
-    expect((checkbox as HTMLInputElement).checked).toBe(true);
+    expect(checkbox.getAttribute("aria-checked")).toBe("true");
   });
 
   it("does NOT show the write box when the client did not ask for mcp:cache", () => {

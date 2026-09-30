@@ -13,6 +13,7 @@ import { cn } from "@/lib/utils";
 import {
   allCapabilityEffectsKnown,
   allScopesRecognised,
+  buildApprovalCapabilities,
   describeScope,
   SCOPE_CACHE,
   type ConsentContext,
@@ -171,7 +172,15 @@ function SelfAssertedSite({ value }: { value: SelfAsserted }) {
 // two are never mistaken for one another on this screen.
 // ---------------------------------------------------------------------------
 
-function PermissionsBlock({ consent }: { consent: ConsentContext }) {
+function PermissionsBlock({
+  consent,
+  purgeTicked,
+  onPurgeChange,
+}: {
+  consent: ConsentContext;
+  purgeTicked: boolean;
+  onPurgeChange: (checked: boolean) => void;
+}) {
   const recognised = allScopesRecognised(consent.scopes);
   // The generic bullets below describe only the read scope. mcp:cache gets
   // its own section (CachePurgeCapabilityBox), never a bullet from
@@ -201,16 +210,11 @@ function PermissionsBlock({ consent }: { consent: ConsentContext }) {
         })}
       </ul>
 
-      {/* design v7 S2.2: "the page shows the same write box and label as
-          2.1." checked and disabled -- this screen approves or denies the
-          scope the client's OAuth request already named, the same way the
-          read bullets above are a statement of what is granted rather than a
-          picker; there is no wire field this mutation sends that would let an
-          unticked box narrow the grant, so a live checkbox here would show a
-          control that does nothing, which is worse than none. */}
+      {/* design v7 S2.2: the same write box and label as 2.1. A live opt-in,
+          unticked by default; the approval sends `capabilities` built from it. */}
       {askedToClearCache && (
         <div className="mt-4" data-testid="consent-cache-capability">
-          <CachePurgeCapabilityBox checked onChange={() => {}} disabled />
+          <CachePurgeCapabilityBox checked={purgeTicked} onChange={onPurgeChange} />
         </div>
       )}
 
@@ -600,6 +604,8 @@ export interface ConsentScreenProps {
     siteScopeMode: SiteScopeMode;
     scopeTagIds: string[];
     scopeSiteIds: string[];
+    /** Omitted when empty: the server refuses `[]`. */
+    capabilities?: string[];
   }) => void;
   readonly onDeny: () => void;
 }
@@ -625,6 +631,8 @@ export function ConsentScreen({
     consent.clientNameUnverified.stated ? consent.clientNameUnverified.value : "",
   );
   const [nameError, setNameError] = useState<string | null>(null);
+  // Never ticked by default: the write capability is an opt-in.
+  const [purgeTicked, setPurgeTicked] = useState(false);
 
   const scope = useMemo(
     () =>
@@ -670,6 +678,8 @@ export function ConsentScreen({
 
   const canApprove = scopeOk && scopesOk && capabilitiesOk && tagPayload !== null && !isApproving;
 
+  const capabilities = buildApprovalCapabilities(consent.conferrableCapabilities, purgeTicked);
+
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const parsed = consentNameSchema.safeParse({ name });
@@ -690,6 +700,7 @@ export function ConsentScreen({
       // that stays true if the gate is ever refactored apart from it.
       scopeTagIds: assertTagPayload(tagPayload),
       scopeSiteIds: mode === "list" ? [...selectedSiteIds] : [],
+      ...(capabilities.length > 0 ? { capabilities } : {}),
     });
   }
 
@@ -704,7 +715,11 @@ export function ConsentScreen({
       </header>
 
       <IdentityBlock consent={consent} />
-      <PermissionsBlock consent={consent} />
+      <PermissionsBlock
+        consent={consent}
+        purgeTicked={purgeTicked}
+        onPurgeChange={setPurgeTicked}
+      />
       <SiteScopeBlock
         mode={mode}
         onModeChange={setMode}
