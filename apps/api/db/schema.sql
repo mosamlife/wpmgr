@@ -8472,8 +8472,9 @@ GRANT UPDATE (state, decided_at, decided_by_user_id, withdrawn_at,
 -- m153: content_integrations (GLOBAL platform allowlist of page builders,
 -- superadmin-written only through admin_upsert_content_integration, a
 -- SECURITY DEFINER function that audits every change; wpmgr_app has SELECT
--- only) and site_content_inventory (tenant- and site-scoped, FORCE RLS, the
--- content probe's list-mode rows per site). The migration's header carries
+-- only) and site_content_inventory (tenant- and site-scoped, FORCE RLS, no
+-- cross-tenant policy; the fleet report reads counts through definer
+-- functions; the content probe's list-mode rows per site). The migration's header carries
 -- the reasoning; this block mirrors its end state for sqlc.
 -- ---------------------------------------------------------------------------
 -- content_integrations
@@ -8619,6 +8620,10 @@ BEGIN
             USING ERRCODE = '42501';
     END IF;
 
+    -- Serialise writers of one integration, so two concurrent first inserts
+    -- cannot both read no row and both audit an 'insert'.
+    PERFORM pg_advisory_xact_lock(hashtext('content_integrations'), hashtext(p_integration_id));
+
     SELECT * INTO v_before FROM content_integrations
         WHERE integration_id = p_integration_id
         FOR UPDATE;
@@ -8695,9 +8700,12 @@ VALUES
     ('wpbakery',       'WPBakery',       true, 'detect_only', '{}'::jsonb)
 ON CONFLICT (integration_id) DO NOTHING;
 
+-- Skipped when the migration role is wpmgr_app itself; see the header.
+-- (In the migration: skipped when the migration role is wpmgr_app.)
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON content_integrations FROM wpmgr_app;
-GRANT SELECT ON content_integrations TO wpmgr_app;
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON content_integrations_audit FROM wpmgr_app;
+
+GRANT SELECT ON content_integrations TO wpmgr_app;
 GRANT SELECT ON content_integrations_audit TO wpmgr_app;
 
 -- ---------------------------------------------------------------------------
@@ -8811,12 +8819,75 @@ CREATE POLICY site_content_inventory_site_scope
     );
 
 
--- The owner fleet report aggregates across tenants with a plain SELECT under
--- pool.InAgentTx. Every write runs in the site's tenant transaction, so FOR
--- SELECT is the whole need; FOR ALL would let app.agent (which also serves
--- agent->CP requests) rewrite another tenant's inventory.
-CREATE POLICY site_content_inventory_agent
-    ON site_content_inventory
-    FOR SELECT
-    USING (current_setting('app.agent', true) = 'on');
+-- ---------------------------------------------------------------------------
+-- Fleet report: counts only, through SECURITY DEFINER functions
+-- ---------------------------------------------------------------------------
+--
+-- content_inventory_fleet_rows visits every tenant under that tenant's own
+-- app.tenant_id, so tenant_isolation admits exactly that tenant's rows, and
+-- returns per-site counts. It is private: EXECUTE is revoked from PUBLIC and
+-- granted to nobody, so only the two definer functions below, running as the
+-- same owner, call it. It restores app.tenant_id before returning. The
+-- caller's app.site_scope is left alone, so a site-scoped caller still counts
+-- only its own sites.
+CREATE OR REPLACE FUNCTION content_inventory_fleet_rows()
+RETURNS TABLE (
+    o_verdict text, o_route_number smallint,
+    o_owner_integration_id text, o_owner_version text,
+    o_site_id uuid, o_pages bigint
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+    v_tenant uuid;
+    v_prev   text := coalesce(current_setting('app.tenant_id', true), '');
+BEGIN
+    FOR v_tenant IN SELECT t.id FROM tenants t LOOP
+        PERFORM set_config('app.tenant_id', v_tenant::text, true);
+        RETURN QUERY
+            SELECT i.verdict, i.route_number, i.owner_integration_id,
+                   i.owner_version, i.site_id, count(*)::bigint
+            FROM site_content_inventory i
+            WHERE i.tenant_id = v_tenant
+            GROUP BY i.verdict, i.route_number, i.owner_integration_id,
+                     i.owner_version, i.site_id;
+    END LOOP;
+    PERFORM set_config('app.tenant_id', v_prev, true);
+END;
+$$;
 
+REVOKE ALL ON FUNCTION content_inventory_fleet_rows() FROM PUBLIC;
+
+CREATE OR REPLACE FUNCTION fleet_content_share_by_verdict()
+RETURNS TABLE (verdict text, route_number smallint, pages bigint, sites bigint)
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+    SELECT r.o_verdict, r.o_route_number,
+           sum(r.o_pages)::bigint, count(DISTINCT r.o_site_id)::bigint
+    FROM content_inventory_fleet_rows() r
+    GROUP BY r.o_verdict, r.o_route_number
+    ORDER BY r.o_verdict, r.o_route_number;
+$$;
+
+CREATE OR REPLACE FUNCTION fleet_content_share_by_builder()
+RETURNS TABLE (owner_integration_id text, owner_version text, pages bigint, sites bigint)
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+    SELECT r.o_owner_integration_id, r.o_owner_version,
+           sum(r.o_pages)::bigint, count(DISTINCT r.o_site_id)::bigint
+    FROM content_inventory_fleet_rows() r
+    WHERE r.o_owner_integration_id IS NOT NULL
+    GROUP BY r.o_owner_integration_id, r.o_owner_version
+    ORDER BY r.o_owner_integration_id, r.o_owner_version NULLS FIRST;
+$$;
+
+REVOKE ALL ON FUNCTION fleet_content_share_by_verdict() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION fleet_content_share_by_verdict() TO wpmgr_app;
+REVOKE ALL ON FUNCTION fleet_content_share_by_builder() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION fleet_content_share_by_builder() TO wpmgr_app;
