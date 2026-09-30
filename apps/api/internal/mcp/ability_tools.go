@@ -678,7 +678,8 @@ func (s *Service) discoverSiteAbilities(ctx context.Context, auth AuthorizedRequ
 	res := discoverResult{
 		Site: discoverSite{
 			SiteID: site.row.ID.String(), Stale: true,
-			WPVersion: site.row.WpVersion, AgentVersion: site.row.AgentVersion,
+			// Both versions are site-reported strings.
+			WPVersion: fenceSiteText(site.row.WpVersion), AgentVersion: fenceSiteText(site.row.AgentVersion),
 		},
 		Guidance: abilityGuidance, GuidanceVersion: abilityGuidanceVersion,
 		Abilities: []discoverAbility{}, Counts: counts,

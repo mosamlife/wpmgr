@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/agentcmd"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
 )
 
@@ -236,7 +237,46 @@ func TestFence_EveryRegisteredToolFencesEverySiteColumn(t *testing.T) {
 		return env.f.seedRow(r)
 	}
 
+	// abilityEnv: one sentinel site whose inventory carries the sentinel in
+	// an unreviewed name, its label and description, and whose agent answers
+	// a read with the sentinel.
+	abilityEnv := func(t *testing.T) (*railEnv, sqlc.Site) {
+		env, s := railSite(t)
+		s.AgentVersion = agentcmd.MinAgentVersionForAbilityEngine
+		env.f.db[s.ID] = s
+		label, desc := fenceSentinel+" label", fenceSentinel+" description"
+		store := &fakeAbilityStore{
+			run: &sqlc.SiteAbilityInventoryRun{SiteID: s.ID, CheckedAt: time.Now(), SnapshotID: uuid.New()},
+			rows: []sqlc.SiteAbilityInventory{
+				{SiteID: s.ID, Name: "wpmgr/site-facts", OwnerKind: "plugin"},
+				{SiteID: s.ID, Name: fenceSentinel + "/tool", OwnerKind: "unknown", SiteLabel: &label, SiteDescription: &desc},
+			},
+			cat: []sqlc.AbilityCatalogue{catalogueRow("wpmgr/site-facts", "wpmgr", "read")},
+		}
+		agent := &fakeAbilityAgent{out: `{"title":"` + fenceSentinel + `","nested":{"list":["` + fenceSentinel + `"]}}`}
+		if err := env.svc.EnableAbilityTools(store, agent, testEntryEncoder, "s"); err != nil {
+			t.Fatal(err)
+		}
+		return env, s
+	}
+
 	cases := map[string][]fenceCase{
+		ToolSiteAbilitiesDiscover: {{"site and unreviewed name", func(t *testing.T) railCall {
+			env, s := abilityEnv(t)
+			return env.call(ToolSiteAbilitiesDiscover, map[string]any{"site_id": s.ID.String()})
+		}}},
+		ToolSiteAbilityDescribe: {{"from_the_site", func(t *testing.T) railCall {
+			env, s := abilityEnv(t)
+			return env.call(ToolSiteAbilityDescribe, map[string]any{"site_id": s.ID.String(), "name": fenceSentinel + "/tool"})
+		}}},
+		ToolSiteAbilityRun: {{"read output", func(t *testing.T) railCall {
+			env, s := abilityEnv(t)
+			return env.call(ToolSiteAbilityRun, map[string]any{"site_id": s.ID.String(), "name": "wpmgr/site-facts"})
+		}}},
+		ToolSiteAbilityRequestStatus: {{"-32003 echoing the model's request_id", func(t *testing.T) railCall {
+			env, _ := abilityEnv(t)
+			return env.call(ToolSiteAbilityRequestStatus, map[string]any{"request_id": fenceSentinel})
+		}}},
 		ToolFleetSitesList: {{"list", func(t *testing.T) railCall {
 			return fleetEnv(t).call(ToolFleetSitesList, map[string]any{})
 		}}},
