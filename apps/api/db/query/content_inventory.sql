@@ -29,7 +29,8 @@ SELECT * FROM admin_upsert_content_integration(
     sqlc.narg(min_version)::text,
     sqlc.narg(max_tested_version)::text,
     sqlc.narg(min_wp_version)::text,
-    sqlc.narg(integration_entry_sha256)::text
+    sqlc.narg(integration_entry_sha256)::text,
+    sqlc.narg(theme_slug)::text
 );
 
 -- name: ListContentIntegrationAudit :many

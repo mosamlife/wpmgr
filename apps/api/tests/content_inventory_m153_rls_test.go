@@ -12,6 +12,7 @@ package tests
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -230,11 +231,24 @@ func TestContentIntegrationsReadOnlyForAppRole(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		want := map[string]bool{"beaver-builder": true, "bricks": true, "divi": true, "elementor": true, "wpbakery": true}
+		want := map[string]bool{"beaver-builder": true, "breakdance": true, "bricks": true, "divi": true, "elementor": true, "oxygen": true, "wpbakery": true}
 		for _, r := range rows {
 			if want[r.IntegrationID] {
 				if r.Status != "detect_only" {
 					t.Fatalf("seed row %s has status %q, want detect_only", r.IntegrationID, r.Status)
+				}
+				var d struct {
+					Verified    *bool    `json:"verified"`
+					PayloadKeys []string `json:"payload_keys"`
+					ModeFlag    *struct {
+						MetaKey string `json:"meta_key"`
+					} `json:"mode_flag"`
+				}
+				if err := json.Unmarshal(r.Descriptor, &d); err != nil {
+					t.Fatalf("seed row %s descriptor: %v", r.IntegrationID, err)
+				}
+				if d.Verified == nil || *d.Verified || len(d.PayloadKeys) == 0 || d.ModeFlag == nil || d.ModeFlag.MetaKey == "" {
+					t.Fatalf("seed row %s descriptor lacks verified=false, payload_keys or mode_flag: %s", r.IntegrationID, r.Descriptor)
 				}
 				delete(want, r.IntegrationID)
 			}

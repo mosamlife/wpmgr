@@ -13,7 +13,7 @@ import (
 )
 
 const adminUpsertContentIntegration = `-- name: AdminUpsertContentIntegration :one
-SELECT integration_id, display_name, enabled, status, descriptor, abilities, min_version, max_tested_version, min_wp_version, integration_entry_sha256, created_at, updated_at, updated_by_user_id FROM admin_upsert_content_integration(
+SELECT integration_id, display_name, enabled, status, descriptor, abilities, min_version, max_tested_version, min_wp_version, integration_entry_sha256, created_at, updated_at, updated_by_user_id, theme_slug FROM admin_upsert_content_integration(
     $1::uuid,
     $2::text,
     $3::text,
@@ -24,7 +24,8 @@ SELECT integration_id, display_name, enabled, status, descriptor, abilities, min
     $8::text,
     $9::text,
     $10::text,
-    $11::text
+    $11::text,
+    $12::text
 )
 `
 
@@ -40,6 +41,7 @@ type AdminUpsertContentIntegrationParams struct {
 	MaxTestedVersion       *string   `json:"max_tested_version"`
 	MinWpVersion           *string   `json:"min_wp_version"`
 	IntegrationEntrySha256 *string   `json:"integration_entry_sha256"`
+	ThemeSlug              *string   `json:"theme_slug"`
 }
 
 // The ONLY write path. Call it only behind requireSuperadmin. The function
@@ -58,6 +60,7 @@ func (q *Queries) AdminUpsertContentIntegration(ctx context.Context, arg AdminUp
 		arg.MaxTestedVersion,
 		arg.MinWpVersion,
 		arg.IntegrationEntrySha256,
+		arg.ThemeSlug,
 	)
 	var i ContentIntegration
 	err := row.Scan(
@@ -74,6 +77,7 @@ func (q *Queries) AdminUpsertContentIntegration(ctx context.Context, arg AdminUp
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.UpdatedByUserID,
+		&i.ThemeSlug,
 	)
 	return i, err
 }
@@ -234,7 +238,7 @@ func (q *Queries) ListContentIntegrationAudit(ctx context.Context, arg ListConte
 
 const listContentIntegrations = `-- name: ListContentIntegrations :many
 
-SELECT integration_id, display_name, enabled, status, descriptor, abilities, min_version, max_tested_version, min_wp_version, integration_entry_sha256, created_at, updated_at, updated_by_user_id FROM content_integrations
+SELECT integration_id, display_name, enabled, status, descriptor, abilities, min_version, max_tested_version, min_wp_version, integration_entry_sha256, created_at, updated_at, updated_by_user_id, theme_slug FROM content_integrations
 ORDER BY integration_id
 `
 
@@ -266,6 +270,7 @@ func (q *Queries) ListContentIntegrations(ctx context.Context) ([]ContentIntegra
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.UpdatedByUserID,
+			&i.ThemeSlug,
 		); err != nil {
 			return nil, err
 		}
@@ -278,7 +283,7 @@ func (q *Queries) ListContentIntegrations(ctx context.Context) ([]ContentIntegra
 }
 
 const listEnabledContentIntegrations = `-- name: ListEnabledContentIntegrations :many
-SELECT integration_id, display_name, enabled, status, descriptor, abilities, min_version, max_tested_version, min_wp_version, integration_entry_sha256, created_at, updated_at, updated_by_user_id FROM content_integrations
+SELECT integration_id, display_name, enabled, status, descriptor, abilities, min_version, max_tested_version, min_wp_version, integration_entry_sha256, created_at, updated_at, updated_by_user_id, theme_slug FROM content_integrations
 WHERE enabled
 ORDER BY integration_id
 `
@@ -307,6 +312,7 @@ func (q *Queries) ListEnabledContentIntegrations(ctx context.Context) ([]Content
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.UpdatedByUserID,
+			&i.ThemeSlug,
 		); err != nil {
 			return nil, err
 		}

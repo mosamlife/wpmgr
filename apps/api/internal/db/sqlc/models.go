@@ -428,6 +428,7 @@ type ContentIntegration struct {
 	CreatedAt              time.Time   `json:"created_at"`
 	UpdatedAt              time.Time   `json:"updated_at"`
 	UpdatedByUserID        pgtype.UUID `json:"updated_by_user_id"`
+	ThemeSlug              *string     `json:"theme_slug"`
 }
 
 type ContentIntegrationsAudit struct {
