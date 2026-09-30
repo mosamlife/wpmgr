@@ -48,6 +48,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/blobstore"
 	clientpkg "github.com/mosamlife/wpmgr/apps/api/internal/client"
 	"github.com/mosamlife/wpmgr/apps/api/internal/config"
+	"github.com/mosamlife/wpmgr/apps/api/internal/content"
 	"github.com/mosamlife/wpmgr/apps/api/internal/cryptbox"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
@@ -1789,6 +1790,18 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		ocCmdClient = agentcmd.NewClient(ssrfClient, cmdSigner)
 	}
 	ocSvc := objectcache.NewService(ocRepo, siteDestAgeID, ocCmdClient, perfSiteAdapterImpl, siteEventsPub)
+
+	// Track B S1 — page-ownership inventory. The probe client is nil-checked
+	// here so a nil *agentcmd.Client is never wrapped in a non-nil interface;
+	// with no signing key the refresh reports the feature as unavailable.
+	var contentProbe content.ProbeClient
+	if ocCmdClient != nil {
+		contentProbe = ocCmdClient
+	}
+	contentSvc := content.NewService(content.NewRepo(pool), contentProbe, logger)
+	contentH := content.NewHandler(contentSvc)
+	contentRefreshWorker := content.NewRefreshWorker(contentSvc, logger)
+	contentSweepWorker := content.NewSweepWorker(contentSvc, logger)
 	ocH := objectcache.NewHandler(ocSvc, auditRec)
 	ocGCWorker := objectcache.NewObjectCacheStatsHistoryGCWorker(ocRepo, logger)
 
@@ -2046,6 +2059,9 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		// M38 — CP-owned db-clean scheduling workers.
 		dbCleanWorker:         dbCleanWorker,
 		dbCleanScheduleWorker: dbCleanScheduleWorker,
+		// Track B S1 — page-ownership inventory refresh and daily sweep.
+		contentRefreshWorker: contentRefreshWorker,
+		contentSweepWorker:   contentSweepWorker,
 		// M39 — watchdog for stalled db_clean/db_scan jobs.
 		dbCleanWatchdogWorker: dbCleanWatchdogWorker,
 		// P3.8 — watchdog for stalled db_orphan_delete jobs.
@@ -2261,6 +2277,9 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// DBCleanArgs River jobs; the dispatch worker calls perfSvc.DBCleanScheduled.
 	dbCleanEnqueuer := perf.NewDBCleanRiverEnqueuer(riverClient)
 	dbCleanScheduleWorker.SetEnqueuer(dbCleanEnqueuer, cfg.PublicBaseURL)
+	contentEnqueuer := content.NewRiverEnqueuer(riverClient)
+	contentSweepWorker.SetEnqueuer(contentEnqueuer)
+	contentH.SetEnqueuer(contentEnqueuer)
 	// The AI request scan enqueues one dispatch job per due approved request.
 	assistantReqScanWorker.SetEnqueuer(assistantrequest.NewRiverEnqueuer(riverClient))
 
@@ -2651,6 +2670,8 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	adminSvc := admin.NewService(adminRepo, authSvc)
 	adminH := admin.NewHandler(adminSvc, pool)
 	adminH.SetAuditRecorder(auditRec)
+	contentH.SetAuditRecorder(auditRec)
+	adminH.SetContentRoutes(contentH.RegisterAdmin)
 	// m80 — wire the vuln-feed key management into the admin handler.
 	// vulnFeedKeySvc already has its feed-refresh enqueuer set (wired in the
 	// vuln River block above), so this call sees a fully-wired service.
@@ -2999,6 +3020,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		MediaAgentH: mediaAgentH,
 		// m36 / ADR-046 — Performance Suite.
 		PerfH:             perfH,
+		ContentH:          contentH,
 		PerfAgentH:        perfAgentH,
 		FontResultsAgentH: fontResultsAgentH,
 		// m68 — Object Cache operator routes.
@@ -3468,6 +3490,9 @@ type riverDeps struct {
 	// is configured; nil when the signing key is empty).
 	dbCleanWorker         *perf.DBCleanWorker
 	dbCleanScheduleWorker *perf.DBCleanScheduleWorker
+	// Track B S1 — page-ownership inventory.
+	contentRefreshWorker *content.RefreshWorker
+	contentSweepWorker   *content.SweepWorker
 	// M39 — watchdog for stalled db_clean + db_scan jobs (always wired).
 	dbCleanWatchdogWorker *perf.DBCleanWatchdogWorker
 	// P3.8 — watchdog for stalled db_orphan_delete jobs (always wired).
@@ -3841,6 +3866,20 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 	// next_db_clean_at (so the CP fully owns the auto-clean schedule).
 	if d.dbCleanWorker != nil {
 		river.AddWorker(workers, d.dbCleanWorker)
+	}
+	// Track B S1 — page-ownership inventory. The sweep runs daily and spreads
+	// each site's refresh across the following hours with a per-site jitter;
+	// RunOnStart is false so a restart does not re-ask the whole fleet.
+	if d.contentRefreshWorker != nil {
+		river.AddWorker(workers, d.contentRefreshWorker)
+	}
+	if d.contentSweepWorker != nil {
+		river.AddWorker(workers, d.contentSweepWorker)
+		periodics = append(periodics, river.NewPeriodicJob(
+			river.PeriodicInterval(content.SweepInterval),
+			func() (river.JobArgs, *river.InsertOpts) { return content.SweepArgs{}, nil },
+			&river.PeriodicJobOpts{RunOnStart: false},
+		))
 	}
 	if d.dbCleanScheduleWorker != nil {
 		river.AddWorker(workers, d.dbCleanScheduleWorker)

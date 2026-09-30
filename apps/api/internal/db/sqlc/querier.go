@@ -179,6 +179,10 @@ type Querier interface {
 	// Grants a manual comp: plan_status='comped', plan=@plan, comp_reason set.
 	AdminSetTenantComp(ctx context.Context, arg AdminSetTenantCompParams) error
 	AdminSetUserStatus(ctx context.Context, arg AdminSetUserStatusParams) (AdminSetUserStatusRow, error)
+	// The ONLY write path. Call it only behind requireSuperadmin. The function
+	// refuses (SQLSTATE 42501) unless actor_user_id names a superadmin, and it
+	// writes a content_integrations_audit row in the same statement.
+	AdminUpsertContentIntegration(ctx context.Context, arg AdminUpsertContentIntegrationParams) (ContentIntegration, error)
 	// Tenants where @user_id is the ONLY member (so deleting them orphans the org),
 	// with each tenant's name + site count. Run under Pool.InAgentTx
 	// (memberships_agent + sites_agent) so the cross-tenant read is allowed.
@@ -945,6 +949,9 @@ type Querier interface {
 	DeleteReport(ctx context.Context, arg DeleteReportParams) (int64, error)
 	DeleteShare(ctx context.Context, arg DeleteShareParams) (int64, error)
 	DeleteSite(ctx context.Context, arg DeleteSiteParams) (int64, error)
+	// The second half of a replace: drops the site's rows the latest refresh did
+	// not report. Pass the checked_at the upsert used.
+	DeleteStaleSiteContentInventory(ctx context.Context, arg DeleteStaleSiteContentInventoryParams) (int64, error)
 	DeleteTagRow(ctx context.Context, arg DeleteTagRowParams) (int64, error)
 	// Remove a single credential by its primary key and user_id guard.
 	DeleteWebAuthnCredential(ctx context.Context, arg DeleteWebAuthnCredentialParams) (int64, error)
@@ -1255,6 +1262,14 @@ type Querier interface {
 	// org-scoped principals pass all tenant site IDs so the @site_ids_filter
 	// gate applies equally without a separate query path.
 	FleetBackupHealth(ctx context.Context, arg FleetBackupHealthParams) ([]FleetBackupHealthRow, error)
+	// Owner fleet report: builder pages per builder and version, across every
+	// tenant, counts only, through the SECURITY DEFINER function.
+	FleetContentShareByBuilder(ctx context.Context) ([]FleetContentShareByBuilderRow, error)
+	// Owner fleet report: pages and sites per verdict and route, across every
+	// tenant, counts only, through the SECURITY DEFINER function (no session can
+	// read other tenants' rows directly). Works in any transaction helper; gate
+	// the caller to the platform owner in Go.
+	FleetContentShareByVerdict(ctx context.Context) ([]FleetContentShareByVerdictRow, error)
 	// ---------------------------------------------------------------------------
 	// Fleet backup endpoints
 	// ---------------------------------------------------------------------------
@@ -1749,6 +1764,9 @@ type Querier interface {
 	// archived site is visible and the caller can return a structured 409 with
 	// site_id + connection_state instead of hitting the unique-index violation.
 	GetSiteByURLForMint(ctx context.Context, arg GetSiteByURLForMintParams) (GetSiteByURLForMintRow, error)
+	// The site's last refresh. pgx.ErrNoRows means the site has never been
+	// refreshed.
+	GetSiteContentInventoryRun(ctx context.Context, arg GetSiteContentInventoryRunParams) (SiteContentInventoryRun, error)
 	// tenant_id is explicit (defense in depth per house convention) AND is the
 	// mechanism that makes a restore-pointer's stamp check work: a version id
 	// belonging to a DIFFERENT tenant stamp (a pre-transfer row, ADR-064 Decision
@@ -2401,6 +2419,14 @@ type Querier interface {
 	ListConnectedSiteIDsForScreenshot(ctx context.Context) ([]ListConnectedSiteIDsForScreenshotRow, error)
 	// Newest first; used by the per-site lifecycle timeline.
 	ListConnectionHistory(ctx context.Context, arg ListConnectionHistoryParams) ([]SiteConnectionHistory, error)
+	// Newest first, for the admin screen.
+	ListContentIntegrationAudit(ctx context.Context, arg ListContentIntegrationAuditParams) ([]ContentIntegrationsAudit, error)
+	// m153: content_integrations (global allowlist) and site_content_inventory
+	// (per-site probe results). See the migration header for the grant model.
+	// Every allowlist row, for the probe dispatch and the admin screen. Readable
+	// in any transaction: the table is global and its one policy is FOR SELECT
+	// USING (true).
+	ListContentIntegrations(ctx context.Context) ([]ContentIntegration, error)
 	// Cross-tenant enumeration of enabled schedules whose next_run_at has passed,
 	// for the periodic scheduler. Runs under the app.agent GUC (scheduler policy).
 	ListDueBackupSchedules(ctx context.Context, arg ListDueBackupSchedulesParams) ([]BackupSchedule, error)
@@ -2519,6 +2545,8 @@ type Querier interface {
 	// Keyset cursor on (created_at, id) ASC (agent polls for new entries since last fetch).
 	// @since_ts / @since_id: last seen row; pass epoch-start + uuid-zero for the first fetch.
 	ListEmailSuppressionDeltas(ctx context.Context, arg ListEmailSuppressionDeltasParams) ([]EmailSuppression, error)
+	// The rows the probe is sent. A disabled row is the kill switch.
+	ListEnabledContentIntegrations(ctx context.Context) ([]ContentIntegration, error)
 	// ---------------------------------------------------------------------------
 	// Health-check job (runs in each enrolled site's tenant scope).
 	// ---------------------------------------------------------------------------
@@ -2741,6 +2769,11 @@ type Querier interface {
 	// which the caller already holds in memory. Same archived filter and same
 	// nil-means-nothing array semantics as ListSitesForMCPScope.
 	ListSiteAddressesInScope(ctx context.Context, arg ListSiteAddressesInScopeParams) ([]ListSiteAddressesInScopeRow, error)
+	// One page of a site's inventory, keyset-paged on post_id ascending. Pass
+	// after_post_id = 0 for the first page. owner_integration_id filters by
+	// editor: NULL for every row, 'classic' for rows no builder owns, or an
+	// integration id.
+	ListSiteContentInventory(ctx context.Context, arg ListSiteContentInventoryParams) ([]SiteContentInventory, error)
 	// Keyset-paginated newest-first history, scoped to the CURRENT tenant stamp
 	// only — this is what makes list/item history "additionally scoped to
 	// versions stamped with the site's current organisation" (ADR-064 Decision 13)
@@ -4426,6 +4459,16 @@ type Querier interface {
 	UpsertSiteAlertState(ctx context.Context, arg UpsertSiteAlertStateParams) (SiteAlertState, error)
 	// Cross-tenant upsert of a site's app-health alert state (app.agent GUC).
 	UpsertSiteAppAlertState(ctx context.Context, arg UpsertSiteAppAlertStateParams) (SiteAppAlertState, error)
+	// One refresh's rows for ONE site, in one statement. Run in the site's tenant
+	// transaction, then DeleteStaleSiteContentInventory with the same checked_at
+	// in the same transaction: together they replace the site's inventory.
+	// The arrays are parallel, one element per post. Nullable text columns take
+	// '' for NULL (pgx cannot carry a NULL element in []string).
+	UpsertSiteContentInventory(ctx context.Context, arg UpsertSiteContentInventoryParams) (int64, error)
+	// Records one refresh of one site. Call it in the SAME tenant transaction as
+	// UpsertSiteContentInventory and DeleteStaleSiteContentInventory, with the
+	// same checked_at, so the record and the rows commit or roll back together.
+	UpsertSiteContentInventoryRun(ctx context.Context, arg UpsertSiteContentInventoryRunParams) error
 	// Insert-or-update a per-site config row. provider_secret_encrypted uses a
 	// nil-sentinel: when @set_secret is false the existing ciphertext is preserved,
 	// so editing non-secret fields without re-entering the password keeps the stored

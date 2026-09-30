@@ -31,6 +31,293 @@ export const ReadinessSchema = {
   },
 } as const;
 
+export const ContentInventoryEditorSchema = {
+  type: "object",
+  required: ["integration_id"],
+  properties: {
+    integration_id: {
+      type: "string",
+    },
+    display_name: {
+      type: ["string", "null"],
+      description: "From the platform allowlist, never from the site.",
+    },
+    version: {
+      type: ["string", "null"],
+    },
+  },
+} as const;
+
+export const ContentInventoryRowSchema = {
+  type: "object",
+  required: [
+    "post_id",
+    "post_type",
+    "post_status",
+    "verdict",
+    "route_number",
+    "route_reason",
+    "checked_at",
+  ],
+  properties: {
+    post_id: {
+      type: "integer",
+      format: "int64",
+    },
+    post_type: {
+      type: "string",
+    },
+    post_status: {
+      type: "string",
+    },
+    verdict: {
+      type: "string",
+      description:
+        "Known values: classic, empty, block_document, builder, ambiguous, unrecognised_builder, special_page, template_may_override.",
+    },
+    route_number: {
+      type: "integer",
+      minimum: 1,
+      maximum: 3,
+    },
+    route_reason: {
+      type: "string",
+      description:
+        'A closed set of reason codes; a client renders an unknown code as "Not available yet".',
+    },
+    editor: {
+      oneOf: [
+        {
+          $ref: "#/components/schemas/ContentInventoryEditor",
+        },
+        {
+          type: "null",
+        },
+      ],
+      description: "Null when no builder owns the page.",
+    },
+    title: {
+      type: ["string", "null"],
+      description:
+        "The site's own text, cleaned and capped at 120 bytes. Null unless the caller holds site.content.read.",
+    },
+    checked_at: {
+      type: "string",
+      format: "date-time",
+    },
+  },
+} as const;
+
+export const ContentInventoryPageSchema = {
+  type: "object",
+  required: [
+    "state",
+    "min_agent_version",
+    "titles_included",
+    "truncated",
+    "pages",
+  ],
+  properties: {
+    truncated: {
+      type: "boolean",
+      description:
+        "True when the last check stopped at the page cap, so the list is a sample of the site. From the site's last-check record; false when the site has never been checked.",
+    },
+    state: {
+      type: "string",
+      enum: ["ok", "agent_update_needed", "not_connected"],
+    },
+    agent_version: {
+      type: "string",
+    },
+    min_agent_version: {
+      type: "string",
+    },
+    last_checked_at: {
+      type: ["string", "null"],
+      format: "date-time",
+    },
+    titles_included: {
+      type: "boolean",
+    },
+    next_after_post_id: {
+      type: ["integer", "null"],
+      format: "int64",
+    },
+    pages: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/ContentInventoryRow",
+      },
+    },
+  },
+} as const;
+
+export const ContentFleetVerdictShareSchema = {
+  type: "object",
+  required: ["verdict", "route_number", "pages", "sites"],
+  properties: {
+    verdict: {
+      type: "string",
+    },
+    route_number: {
+      type: "integer",
+    },
+    pages: {
+      type: "integer",
+      format: "int64",
+    },
+    sites: {
+      type: "integer",
+      format: "int64",
+    },
+  },
+} as const;
+
+export const ContentFleetBuilderShareSchema = {
+  type: "object",
+  required: ["integration_id", "pages", "sites"],
+  properties: {
+    integration_id: {
+      type: "string",
+    },
+    version: {
+      type: ["string", "null"],
+    },
+    pages: {
+      type: "integer",
+      format: "int64",
+    },
+    sites: {
+      type: "integer",
+      format: "int64",
+    },
+  },
+} as const;
+
+export const ContentFleetReportSchema = {
+  type: "object",
+  required: ["pages", "by_verdict", "by_builder"],
+  properties: {
+    pages: {
+      type: "integer",
+      format: "int64",
+    },
+    by_verdict: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/ContentFleetVerdictShare",
+      },
+    },
+    by_builder: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/ContentFleetBuilderShare",
+      },
+    },
+  },
+} as const;
+
+export const ContentIntegrationSchema = {
+  type: "object",
+  required: [
+    "integration_id",
+    "display_name",
+    "enabled",
+    "status",
+    "descriptor",
+    "updated_at",
+  ],
+  properties: {
+    integration_id: {
+      type: "string",
+    },
+    display_name: {
+      type: "string",
+    },
+    enabled: {
+      type: "boolean",
+    },
+    status: {
+      type: "string",
+      enum: ["detect_only"],
+    },
+    descriptor: {
+      type: "object",
+      additionalProperties: true,
+    },
+    abilities: {
+      type: ["object", "null"],
+      additionalProperties: true,
+    },
+    min_version: {
+      type: ["string", "null"],
+    },
+    max_tested_version: {
+      type: ["string", "null"],
+    },
+    min_wp_version: {
+      type: ["string", "null"],
+    },
+    integration_entry_sha256: {
+      type: ["string", "null"],
+    },
+    theme_slug: {
+      type: ["string", "null"],
+      description:
+        "The theme directory that signals this builder; sent as a hint only when active.",
+    },
+    updated_at: {
+      type: "string",
+      format: "date-time",
+    },
+  },
+} as const;
+
+export const ContentIntegrationInputSchema = {
+  type: "object",
+  required: ["display_name", "enabled", "status"],
+  additionalProperties: false,
+  properties: {
+    display_name: {
+      type: "string",
+      minLength: 1,
+      maxLength: 80,
+    },
+    enabled: {
+      type: "boolean",
+    },
+    status: {
+      type: "string",
+      enum: ["detect_only"],
+    },
+    descriptor: {
+      type: "object",
+      additionalProperties: true,
+    },
+    abilities: {
+      type: ["object", "null"],
+      additionalProperties: true,
+    },
+    min_version: {
+      type: ["string", "null"],
+      maxLength: 32,
+    },
+    max_tested_version: {
+      type: ["string", "null"],
+      maxLength: 32,
+    },
+    min_wp_version: {
+      type: ["string", "null"],
+      maxLength: 32,
+    },
+    theme_slug: {
+      type: ["string", "null"],
+      maxLength: 100,
+    },
+  },
+} as const;
+
 export const ErrorSchema = {
   type: "object",
   required: ["code", "message"],

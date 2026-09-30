@@ -1,0 +1,501 @@
+// m153 proofs: site_content_inventory is invisible outside its tenant and its
+// site scope, content_integrations is read-only for wpmgr_app, its one write
+// path refuses a non-superadmin actor and audits a superadmin one, and the
+// seed rows exist after migration.
+//
+// Every transaction goes through the production dispatch (RunTenantTx /
+// InTenantTx / InAgentTx) and asserts, from inside, that it is wpmgr_app with
+// neither SUPERUSER nor BYPASSRLS. Statements that exist in
+// db/query/content_inventory.sql are called through the generated sqlc
+// methods, so the statement proven is the statement shipped.
+package tests
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/mosamlife/wpmgr/apps/api/internal/db"
+	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
+	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
+)
+
+func m153Principal(tenant uuid.UUID, sites ...uuid.UUID) domain.Principal {
+	if len(sites) == 0 {
+		return domain.Principal{TenantID: tenant, Scope: domain.ScopeOrg}
+	}
+	return domain.Principal{TenantID: tenant, Scope: domain.ScopeSite, AllowedSiteIDs: sites}
+}
+
+// m153Refresh replaces one site's inventory the way the daily job will: the
+// bulk upsert and the stale delete, one checked_at, one tenant transaction.
+func m153Refresh(t *testing.T, pool *db.Pool, tenant, site uuid.UUID, postIDs ...int64) {
+	t.Helper()
+	n := len(postIDs)
+	arg := sqlc.UpsertSiteContentInventoryParams{
+		TenantID: tenant, SiteID: site, CheckedAt: time.Now().UTC(),
+		PostIds: postIDs,
+	}
+	for i := 0; i < n; i++ {
+		arg.PostTypes = append(arg.PostTypes, "page")
+		arg.PostStatuses = append(arg.PostStatuses, "publish")
+		arg.RouteNumbers = append(arg.RouteNumbers, 3)
+		arg.Fingerprints = append(arg.Fingerprints, "")
+		arg.Titles = append(arg.Titles, "Home")
+		arg.OwnerDisplayNames = append(arg.OwnerDisplayNames, "")
+		if i%2 == 0 {
+			arg.Verdicts = append(arg.Verdicts, "builder")
+			arg.RouteReasons = append(arg.RouteReasons, "builder_not_supported")
+			arg.OwnerIntegrationIds = append(arg.OwnerIntegrationIds, "elementor")
+			arg.OwnerVersions = append(arg.OwnerVersions, "3.21.0")
+		} else {
+			arg.Verdicts = append(arg.Verdicts, "block_document")
+			arg.RouteReasons = append(arg.RouteReasons, "block_editor_unsupported")
+			arg.OwnerIntegrationIds = append(arg.OwnerIntegrationIds, "")
+			arg.OwnerVersions = append(arg.OwnerVersions, "")
+		}
+	}
+	if err := pool.RunTenantTx(context.Background(), m153Principal(tenant), func(tx pgx.Tx) error {
+		mcpAssertAndReportRole(t, tx, "RunTenantTx (m153 refresh)")
+		q := sqlc.New(tx)
+		got, err := q.UpsertSiteContentInventory(context.Background(), arg)
+		if err != nil {
+			return err
+		}
+		if got != int64(n) {
+			t.Fatalf("upsert wrote %d rows, want %d", got, n)
+		}
+		_, err = q.DeleteStaleSiteContentInventory(context.Background(), sqlc.DeleteStaleSiteContentInventoryParams{
+			TenantID: tenant, SiteID: site, CheckedAt: arg.CheckedAt,
+		})
+		return err
+	}); err != nil {
+		t.Fatalf("refresh inventory for site %s: %v", site, err)
+	}
+}
+
+func m153List(t *testing.T, tx pgx.Tx, tenant, site uuid.UUID, owner *string) []sqlc.SiteContentInventory {
+	t.Helper()
+	rows, err := sqlc.New(tx).ListSiteContentInventory(context.Background(), sqlc.ListSiteContentInventoryParams{
+		TenantID: tenant, SiteID: site, AfterPostID: 0, OwnerIntegrationID: owner, RowLimit: 50,
+	})
+	if err != nil {
+		t.Fatalf("list inventory for site %s: %v", site, err)
+	}
+	return rows
+}
+
+func m153CountSite(t *testing.T, tx pgx.Tx, site uuid.UUID) int {
+	t.Helper()
+	var n int
+	if err := tx.QueryRow(context.Background(),
+		`SELECT count(*) FROM site_content_inventory WHERE site_id = $1`, site).Scan(&n); err != nil {
+		t.Fatalf("count inventory rows: %v", err)
+	}
+	return n
+}
+
+// TestContentInventoryIsolationAsAppRole proves the permissive tenant policy,
+// the RESTRICTIVE site-scope policy in both directions, the per-site replace,
+// the editor filter, and that the fleet report counts through the definer
+// functions while the agent context writes nothing.
+//
+// Mutation, planted and watched: removing site_content_inventory_site_scope
+// from m153 fires "SITE-SCOPE LEAK".
+func TestContentInventoryIsolationAsAppRole(t *testing.T) {
+	ctx := context.Background()
+	pool := startPostgres(t)
+
+	tenantA := seedTenant(t, pool, "m153-a-"+uuid.NewString()[:8])
+	tenantB := seedTenant(t, pool, "m153-b-"+uuid.NewString()[:8])
+	s1 := seedSite(t, pool, tenantA, "")
+	s2 := seedSite(t, pool, tenantA, "")
+
+	m153Refresh(t, pool, tenantA, s1, 10, 11, 12)
+	m153Refresh(t, pool, tenantA, s2, 20)
+
+	// Tenant B sees nothing of tenant A.
+	if err := pool.InTenantTx(ctx, tenantB, func(tx pgx.Tx) error {
+		mcpAssertAndReportRole(t, tx, "InTenantTx (foreign tenant)")
+		if n := m153CountSite(t, tx, s1); n != 0 {
+			t.Fatalf("TENANCY LEAK: tenant B sees %d inventory rows of tenant A's site %s; "+
+				"site_content_inventory_tenant_isolation is missing or not enforced", n, s1)
+		}
+		if rows := m153List(t, tx, tenantA, s1, nil); len(rows) != 0 {
+			t.Fatalf("TENANCY LEAK: ListSiteContentInventory named tenant A and returned %d rows to tenant B", len(rows))
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("foreign tenant read: %v", err)
+	}
+
+	// A principal scoped to S1 sees S1 and not S2, and cannot write S2.
+	if err := pool.RunTenantTx(ctx, m153Principal(tenantA, s1), func(tx pgx.Tx) error {
+		mcpAssertAndReportRole(t, tx, "RunTenantTx (single site S1)")
+		if n := m153CountSite(t, tx, s2); n != 0 {
+			t.Fatalf("SITE-SCOPE LEAK: a principal scoped to site %s sees %d rows of site %s; "+
+				"site_content_inventory_site_scope is missing or not RESTRICTIVE", s1, n, s2)
+		}
+		if n := m153CountSite(t, tx, s1); n != 3 {
+			t.Fatalf("the S1-scoped principal sees %d rows of its own site, want 3", n)
+		}
+		err := m133ExpectRefused(t, tx,
+			`INSERT INTO site_content_inventory (tenant_id, site_id, post_id, post_type, post_status,
+			   verdict, route_number, route_reason, checked_at)
+			 VALUES ($1, $2, 99, 'page', 'draft', 'classic', 1, 'content_column', now())`, tenantA, s2)
+		if err == nil {
+			t.Fatalf("SITE-SCOPE LEAK: the S1-scoped principal inserted a row for site %s", s2)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("site-scoped read: %v", err)
+	}
+
+	// Positive control for the org principal, and the editor filter.
+	if err := pool.RunTenantTx(ctx, m153Principal(tenantA), func(tx pgx.Tx) error {
+		mcpAssertAndReportRole(t, tx, "RunTenantTx (org)")
+		if n := m153CountSite(t, tx, s2); n != 1 {
+			t.Fatalf("the org principal sees %d rows of site %s, want 1", n, s2)
+		}
+		el := "elementor"
+		if rows := m153List(t, tx, tenantA, s1, &el); len(rows) != 2 {
+			t.Fatalf("filter elementor returned %d rows, want 2", len(rows))
+		}
+		classic := "classic"
+		if rows := m153List(t, tx, tenantA, s1, &classic); len(rows) != 1 || rows[0].PostID != 11 {
+			t.Fatalf("filter classic returned %+v, want post 11 only", rows)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("org read: %v", err)
+	}
+
+	// Replace: a refresh that no longer reports post 10 and 12 drops them.
+	m153Refresh(t, pool, tenantA, s1, 11)
+	if err := pool.RunTenantTx(ctx, m153Principal(tenantA), func(tx pgx.Tx) error {
+		rows := m153List(t, tx, tenantA, s1, nil)
+		if len(rows) != 1 || rows[0].PostID != 11 {
+			t.Fatalf("after replace the site holds %+v, want post 11 only", rows)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("read after replace: %v", err)
+	}
+
+	// The fleet report counts across tenants through the definer functions;
+	// the agent context cannot write.
+	if err := pool.InAgentTx(ctx, func(tx pgx.Tx) error {
+		mcpAssertAndReportRole(t, tx, "InAgentTx (fleet report)")
+		rows, err := sqlc.New(tx).FleetContentShareByVerdict(ctx)
+		if err != nil {
+			return err
+		}
+		var pages int64
+		for _, r := range rows {
+			pages += r.Pages
+		}
+		if pages < 2 {
+			t.Fatalf("fleet report counted %d pages, want at least the 2 this test wrote", pages)
+		}
+		tag, err := tx.Exec(ctx, `DELETE FROM site_content_inventory WHERE site_id = $1`, s2)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 0 {
+			t.Fatalf("the agent context deleted %d rows; no cross-tenant write may exist", tag.RowsAffected())
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("agent read: %v", err)
+	}
+}
+
+// TestContentIntegrationsReadOnlyForAppRole proves the seed rows exist after
+// migration, that wpmgr_app can read and cannot INSERT, UPDATE, DELETE or
+// TRUNCATE content_integrations, and that the definer refuses a
+// non-superadmin actor and audits a superadmin one.
+func TestContentIntegrationsReadOnlyForAppRole(t *testing.T) {
+	ctx := context.Background()
+	pool := startPostgres(t)
+	tenant := seedTenant(t, pool, "m153-ci-"+uuid.NewString()[:8])
+
+	if err := pool.InTenantTx(ctx, tenant, func(tx pgx.Tx) error {
+		mcpAssertAndReportRole(t, tx, "InTenantTx (allowlist read)")
+		rows, err := sqlc.New(tx).ListContentIntegrations(ctx)
+		if err != nil {
+			return err
+		}
+		want := map[string]bool{"beaver-builder": true, "breakdance": true, "bricks": true, "divi": true, "elementor": true, "oxygen": true, "wpbakery": true}
+		for _, r := range rows {
+			if want[r.IntegrationID] {
+				if r.Status != "detect_only" {
+					t.Fatalf("seed row %s has status %q, want detect_only", r.IntegrationID, r.Status)
+				}
+				var d struct {
+					Verified    *bool    `json:"verified"`
+					PayloadKeys []string `json:"payload_keys"`
+					ModeFlag    *struct {
+						MetaKey string `json:"meta_key"`
+					} `json:"mode_flag"`
+				}
+				if err := json.Unmarshal(r.Descriptor, &d); err != nil {
+					t.Fatalf("seed row %s descriptor: %v", r.IntegrationID, err)
+				}
+				if d.Verified == nil || *d.Verified || len(d.PayloadKeys) == 0 || d.ModeFlag == nil || d.ModeFlag.MetaKey == "" {
+					t.Fatalf("seed row %s descriptor lacks verified=false, payload_keys or mode_flag: %s", r.IntegrationID, r.Descriptor)
+				}
+				delete(want, r.IntegrationID)
+			}
+		}
+		if len(want) != 0 {
+			t.Fatalf("seed rows missing after migration: %v (read %d rows)", want, len(rows))
+		}
+
+		for what, stmt := range map[string]string{
+			"INSERT":   `INSERT INTO content_integrations (integration_id, display_name, status) VALUES ('x-test', 'X', 'detect_only')`,
+			"UPDATE":   `UPDATE content_integrations SET enabled = false WHERE integration_id = 'elementor'`,
+			"DELETE":   `DELETE FROM content_integrations WHERE integration_id = 'elementor'`,
+			"TRUNCATE": `TRUNCATE content_integrations`,
+		} {
+			err := m133ExpectRefused(t, tx, stmt)
+			var pgErr *pgconn.PgError
+			if err == nil || !errors.As(err, &pgErr) || pgErr.Code != "42501" {
+				t.Fatalf("WRITE LEAK: wpmgr_app %s on content_integrations was not refused with 42501: %v", what, err)
+			}
+			t.Logf("wpmgr_app %s refused: %s", what, pgErr.Code)
+		}
+
+		// The privilege itself, not just its effect: an UPDATE or DELETE that
+		// RLS filters to zero rows returns no error, so the statements above
+		// only prove the fence because the privilege is gone.
+		var owner string
+		if err := tx.QueryRow(ctx,
+			`SELECT tableowner FROM pg_tables WHERE schemaname = 'public' AND tablename = 'content_integrations'`).Scan(&owner); err != nil {
+			return err
+		}
+		if owner == "wpmgr_app" {
+			t.Fatalf("content_integrations is owned by wpmgr_app; an owner can re-grant itself any write")
+		}
+		for _, priv := range []string{"INSERT", "UPDATE", "DELETE", "TRUNCATE"} {
+			for _, table := range []string{"content_integrations", "content_integrations_audit"} {
+				var has bool
+				if err := tx.QueryRow(ctx, `SELECT has_table_privilege('wpmgr_app', $1, $2)`, table, priv).Scan(&has); err != nil {
+					return err
+				}
+				if has {
+					t.Fatalf("WRITE LEAK: wpmgr_app holds %s on %s (owner %s)", priv, table, owner)
+				}
+			}
+		}
+		var survivors int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM content_integrations WHERE integration_id = 'elementor' AND enabled`).Scan(&survivors); err != nil {
+			return err
+		}
+		if survivors != 1 {
+			t.Fatalf("WRITE LEAK: the elementor seed row changed or vanished after wpmgr_app's refused writes (%d rows)", survivors)
+		}
+
+		// In a savepoint: the refusal aborts the statement, and the
+		// transaction must still commit afterwards.
+		sp, err := tx.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		_, err = sqlc.New(sp).AdminUpsertContentIntegration(ctx, sqlc.AdminUpsertContentIntegrationParams{
+			ActorUserID: uuid.New(), IntegrationID: "elementor", DisplayName: "Elementor",
+			Enabled: false, Status: "detect_only", Descriptor: []byte(`{}`),
+		})
+		_ = sp.Rollback(ctx)
+		var pgErr *pgconn.PgError
+		if err == nil || !errors.As(err, &pgErr) || pgErr.Code != "42501" {
+			t.Fatalf("the definer accepted a non-superadmin actor: %v", err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("allowlist checks: %v", err)
+	}
+
+	// A superadmin actor writes through the definer, and the audit records it.
+	admin := uuid.New()
+	if _, err := pool.Exec(ctx, `INSERT INTO users (id, email, is_superadmin) VALUES ($1, $2, true)`,
+		admin, "m153-"+admin.String()[:8]+"@example.test"); err != nil {
+		t.Fatalf("seed superadmin: %v", err)
+	}
+	if err := pool.InTenantTx(ctx, tenant, func(tx pgx.Tx) error {
+		mcpAssertAndReportRole(t, tx, "InTenantTx (definer write)")
+		q := sqlc.New(tx)
+		row, err := q.AdminUpsertContentIntegration(ctx, sqlc.AdminUpsertContentIntegrationParams{
+			ActorUserID: admin, IntegrationID: "elementor", DisplayName: "Elementor",
+			Enabled: false, Status: "detect_only", Descriptor: []byte(`{}`),
+		})
+		if err != nil {
+			return err
+		}
+		if row.Enabled || !row.UpdatedByUserID.Valid || uuid.UUID(row.UpdatedByUserID.Bytes) != admin {
+			t.Fatalf("definer returned %+v, want enabled=false by %s", row, admin)
+		}
+		audit, err := q.ListContentIntegrationAudit(ctx, sqlc.ListContentIntegrationAuditParams{IntegrationID: "elementor", RowLimit: 5})
+		if err != nil {
+			return err
+		}
+		if len(audit) != 1 || audit[0].ActorUserID != admin || audit[0].Action != "update" ||
+			audit[0].BeforeSha256 == nil || *audit[0].BeforeSha256 == audit[0].AfterSha256 {
+			t.Fatalf("audit after one superadmin update: %+v", audit)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("superadmin write: %v", err)
+	}
+}
+
+// TestContentInventoryAgentCannotReadTitlesAsAppRole proves that no
+// cross-tenant session can read inventory rows, titles included, while the
+// fleet functions still return counts for every tenant.
+//
+// Mutation, planted and watched: re-adding a FOR SELECT app.agent policy on
+// site_content_inventory fires "CROSS-TENANT READ".
+func TestContentInventoryAgentCannotReadTitlesAsAppRole(t *testing.T) {
+	ctx := context.Background()
+	pool := startPostgres(t)
+
+	tenantA := seedTenant(t, pool, "m153-ta-"+uuid.NewString()[:8])
+	tenantB := seedTenant(t, pool, "m153-tb-"+uuid.NewString()[:8])
+	sA := seedSite(t, pool, tenantA, "")
+	sB := seedSite(t, pool, tenantB, "")
+	m153Refresh(t, pool, tenantA, sA, 1, 2)
+	m153Refresh(t, pool, tenantB, sB, 3)
+
+	if err := pool.InAgentTx(ctx, func(tx pgx.Tx) error {
+		mcpAssertAndReportRole(t, tx, "InAgentTx (no cross-tenant read)")
+		var rows, titles int
+		if err := tx.QueryRow(ctx,
+			`SELECT count(*), count(title) FROM site_content_inventory`).Scan(&rows, &titles); err != nil {
+			return err
+		}
+		if rows != 0 || titles != 0 {
+			t.Fatalf("CROSS-TENANT READ: an InAgentTx session reads %d inventory rows and %d titles; "+
+				"site_content_inventory must carry no cross-tenant policy", rows, titles)
+		}
+
+		q := sqlc.New(tx)
+		byVerdict, err := q.FleetContentShareByVerdict(ctx)
+		if err != nil {
+			return err
+		}
+		var pages, sites int64
+		for _, r := range byVerdict {
+			pages += r.Pages
+			sites += r.Sites
+		}
+		// Tenant A's site carries two verdicts, so the per-verdict site
+		// counts sum to 3 across the two tenants' two sites.
+		if pages != 3 || sites != 3 {
+			t.Fatalf("fleet counts by verdict: pages=%d sites(summed)=%d, want 3 and 3: %+v", pages, sites, byVerdict)
+		}
+		byBuilder, err := q.FleetContentShareByBuilder(ctx)
+		if err != nil {
+			return err
+		}
+		if len(byBuilder) != 1 || byBuilder[0].OwnerIntegrationID != "elementor" ||
+			byBuilder[0].Pages != 2 || byBuilder[0].Sites != 2 {
+			t.Fatalf("fleet counts by builder: %+v, want elementor 2 pages on 2 sites", byBuilder)
+		}
+		var tenantAfter string
+		if err := tx.QueryRow(ctx, `SELECT coalesce(current_setting('app.tenant_id', true), '')`).Scan(&tenantAfter); err != nil {
+			return err
+		}
+		if tenantAfter != "" {
+			t.Fatalf("the fleet functions left app.tenant_id=%q in the caller's transaction", tenantAfter)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("agent session: %v", err)
+	}
+}
+
+// m153RecordRun writes one refresh record through the shipped statement.
+func m153RecordRun(t *testing.T, pool *db.Pool, tenant, site uuid.UUID, pages int32, truncated bool) {
+	t.Helper()
+	if err := pool.RunTenantTx(context.Background(), m153Principal(tenant), func(tx pgx.Tx) error {
+		mcpAssertAndReportRole(t, tx, "RunTenantTx (m153 run record)")
+		return sqlc.New(tx).UpsertSiteContentInventoryRun(context.Background(), sqlc.UpsertSiteContentInventoryRunParams{
+			TenantID: tenant, SiteID: site, CheckedAt: time.Now().UTC(), PagesStored: pages, Truncated: truncated,
+		})
+	}); err != nil {
+		t.Fatalf("record run for site %s: %v", site, err)
+	}
+}
+
+// TestContentInventoryRunsIsolationAsAppRole proves site_content_inventory_runs
+// is invisible to another tenant and, under site scope, to a principal scoped
+// to a different site, and that the upsert replaces the record.
+func TestContentInventoryRunsIsolationAsAppRole(t *testing.T) {
+	ctx := context.Background()
+	pool := startPostgres(t)
+
+	tenantA := seedTenant(t, pool, "m153-ra-"+uuid.NewString()[:8])
+	tenantB := seedTenant(t, pool, "m153-rb-"+uuid.NewString()[:8])
+	s1 := seedSite(t, pool, tenantA, "")
+	s2 := seedSite(t, pool, tenantA, "")
+	m153RecordRun(t, pool, tenantA, s1, 10, false)
+	m153RecordRun(t, pool, tenantA, s2, 5000, true)
+	m153RecordRun(t, pool, tenantA, s1, 12, false) // replaces s1's record
+
+	countRuns := func(tx pgx.Tx, site uuid.UUID) int {
+		var n int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM site_content_inventory_runs WHERE site_id = $1`, site).Scan(&n); err != nil {
+			t.Fatalf("count runs: %v", err)
+		}
+		return n
+	}
+
+	if err := pool.InTenantTx(ctx, tenantB, func(tx pgx.Tx) error {
+		mcpAssertAndReportRole(t, tx, "InTenantTx (foreign tenant, runs)")
+		if n := countRuns(tx, s1); n != 0 {
+			t.Fatalf("TENANCY LEAK: tenant B sees %d run records of tenant A's site %s", n, s1)
+		}
+		_, err := sqlc.New(tx).GetSiteContentInventoryRun(ctx, sqlc.GetSiteContentInventoryRunParams{TenantID: tenantA, SiteID: s1})
+		if !errors.Is(err, pgx.ErrNoRows) {
+			t.Fatalf("TENANCY LEAK: GetSiteContentInventoryRun for tenant A from tenant B returned %v, want no rows", err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("foreign tenant read: %v", err)
+	}
+
+	if err := pool.RunTenantTx(ctx, m153Principal(tenantA, s1), func(tx pgx.Tx) error {
+		mcpAssertAndReportRole(t, tx, "RunTenantTx (single site S1, runs)")
+		if n := countRuns(tx, s2); n != 0 {
+			t.Fatalf("SITE-SCOPE LEAK: a principal scoped to %s sees %d run records of %s", s1, n, s2)
+		}
+		run, err := sqlc.New(tx).GetSiteContentInventoryRun(ctx, sqlc.GetSiteContentInventoryRunParams{TenantID: tenantA, SiteID: s1})
+		if err != nil {
+			return err
+		}
+		if run.PagesStored != 12 || run.Truncated {
+			t.Fatalf("S1 run record %+v, want 12 pages, not truncated (the upsert replaces)", run)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("site-scoped read: %v", err)
+	}
+
+	if err := pool.RunTenantTx(ctx, m153Principal(tenantA), func(tx pgx.Tx) error {
+		run, err := sqlc.New(tx).GetSiteContentInventoryRun(ctx, sqlc.GetSiteContentInventoryRunParams{TenantID: tenantA, SiteID: s2})
+		if err != nil {
+			return err
+		}
+		if run.PagesStored != 5000 || !run.Truncated {
+			t.Fatalf("S2 run record %+v, want 5000 pages, truncated", run)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("org read (positive control): %v", err)
+	}
+}

@@ -16,6 +16,111 @@ export type Readiness = {
   };
 };
 
+export type ContentInventoryEditor = {
+  integration_id: string;
+  /**
+   * From the platform allowlist, never from the site.
+   */
+  display_name?: string | null;
+  version?: string | null;
+};
+
+export type ContentInventoryRow = {
+  post_id: number;
+  post_type: string;
+  post_status: string;
+  /**
+   * Known values: classic, empty, block_document, builder, ambiguous, unrecognised_builder, special_page, template_may_override.
+   */
+  verdict: string;
+  route_number: number;
+  /**
+   * A closed set of reason codes; a client renders an unknown code as "Not available yet".
+   */
+  route_reason: string;
+  /**
+   * Null when no builder owns the page.
+   */
+  editor?: ContentInventoryEditor | null;
+  /**
+   * The site's own text, cleaned and capped at 120 bytes. Null unless the caller holds site.content.read.
+   */
+  title?: string | null;
+  checked_at: string;
+};
+
+export type ContentInventoryPage = {
+  /**
+   * True when the last check stopped at the page cap, so the list is a sample of the site. From the site's last-check record; false when the site has never been checked.
+   */
+  truncated: boolean;
+  state: "ok" | "agent_update_needed" | "not_connected";
+  agent_version?: string;
+  min_agent_version: string;
+  last_checked_at?: string | null;
+  titles_included: boolean;
+  next_after_post_id?: number | null;
+  pages: Array<ContentInventoryRow>;
+};
+
+export type ContentFleetVerdictShare = {
+  verdict: string;
+  route_number: number;
+  pages: number;
+  sites: number;
+};
+
+export type ContentFleetBuilderShare = {
+  integration_id: string;
+  version?: string | null;
+  pages: number;
+  sites: number;
+};
+
+export type ContentFleetReport = {
+  pages: number;
+  by_verdict: Array<ContentFleetVerdictShare>;
+  by_builder: Array<ContentFleetBuilderShare>;
+};
+
+export type ContentIntegration = {
+  integration_id: string;
+  display_name: string;
+  enabled: boolean;
+  status: "detect_only";
+  descriptor: {
+    [key: string]: unknown;
+  };
+  abilities?: {
+    [key: string]: unknown;
+  } | null;
+  min_version?: string | null;
+  max_tested_version?: string | null;
+  min_wp_version?: string | null;
+  integration_entry_sha256?: string | null;
+  /**
+   * The theme directory that signals this builder; sent as a hint only when active.
+   */
+  theme_slug?: string | null;
+  updated_at: string;
+};
+
+export type ContentIntegrationInput = {
+  display_name: string;
+  enabled: boolean;
+  status: "detect_only";
+  descriptor?: {
+    [key: string]: unknown;
+  };
+  abilities?: {
+    [key: string]: unknown;
+  } | null;
+  min_version?: string | null;
+  max_tested_version?: string | null;
+  min_wp_version?: string | null;
+  theme_slug?: string | null;
+};
+
 export type Error = {
   /**
    * Stable machine-readable error code.
@@ -17911,6 +18016,198 @@ export type GetDbHealthResponses = {
 
 export type GetDbHealthResponse =
   GetDbHealthResponses[keyof GetDbHealthResponses];
+
+export type GetSiteContentInventoryData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: {
+    after_post_id?: number;
+    limit?: number;
+    /**
+     * Filter by editor: `classic` for pages no builder owns, or an integration id such as `elementor`.
+     */
+    editor?: string;
+  };
+  url: "/api/v1/sites/{siteId}/content/inventory";
+};
+
+export type GetSiteContentInventoryErrors = {
+  /**
+   * Validation error
+   */
+  400: Error;
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * Resource not found
+   */
+  404: Error;
+};
+
+export type GetSiteContentInventoryError =
+  GetSiteContentInventoryErrors[keyof GetSiteContentInventoryErrors];
+
+export type GetSiteContentInventoryResponses = {
+  /**
+   * Inventory page
+   */
+  200: ContentInventoryPage;
+};
+
+export type GetSiteContentInventoryResponse =
+  GetSiteContentInventoryResponses[keyof GetSiteContentInventoryResponses];
+
+export type RefreshSiteContentInventoryData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/content/inventory/refresh";
+};
+
+export type RefreshSiteContentInventoryErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * Resource not found
+   */
+  404: Error;
+  /**
+   * A check for this site was requested a moment ago
+   */
+  429: Error;
+};
+
+export type RefreshSiteContentInventoryError =
+  RefreshSiteContentInventoryErrors[keyof RefreshSiteContentInventoryErrors];
+
+export type RefreshSiteContentInventoryResponses = {
+  /**
+   * Queued
+   */
+  202: {
+    status: "queued";
+  };
+};
+
+export type RefreshSiteContentInventoryResponse =
+  RefreshSiteContentInventoryResponses[keyof RefreshSiteContentInventoryResponses];
+
+export type GetAdminContentFleetReportData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/api/v1/admin/content/fleet-report";
+};
+
+export type GetAdminContentFleetReportErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * superadmin_required
+   */
+  403: Error;
+};
+
+export type GetAdminContentFleetReportError =
+  GetAdminContentFleetReportErrors[keyof GetAdminContentFleetReportErrors];
+
+export type GetAdminContentFleetReportResponses = {
+  /**
+   * Fleet report
+   */
+  200: ContentFleetReport;
+};
+
+export type GetAdminContentFleetReportResponse =
+  GetAdminContentFleetReportResponses[keyof GetAdminContentFleetReportResponses];
+
+export type ListAdminContentIntegrationsData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/api/v1/admin/content/integrations";
+};
+
+export type ListAdminContentIntegrationsErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * superadmin_required
+   */
+  403: Error;
+};
+
+export type ListAdminContentIntegrationsError =
+  ListAdminContentIntegrationsErrors[keyof ListAdminContentIntegrationsErrors];
+
+export type ListAdminContentIntegrationsResponses = {
+  /**
+   * Allowlist rows
+   */
+  200: {
+    integrations: Array<ContentIntegration>;
+  };
+};
+
+export type ListAdminContentIntegrationsResponse =
+  ListAdminContentIntegrationsResponses[keyof ListAdminContentIntegrationsResponses];
+
+export type UpsertAdminContentIntegrationData = {
+  body: ContentIntegrationInput;
+  path: {
+    integrationId: string;
+  };
+  query?: never;
+  url: "/api/v1/admin/content/integrations/{integrationId}";
+};
+
+export type UpsertAdminContentIntegrationErrors = {
+  /**
+   * Validation error
+   */
+  400: Error;
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * superadmin_required
+   */
+  403: Error;
+};
+
+export type UpsertAdminContentIntegrationError =
+  UpsertAdminContentIntegrationErrors[keyof UpsertAdminContentIntegrationErrors];
+
+export type UpsertAdminContentIntegrationResponses = {
+  /**
+   * The stored row
+   */
+  200: ContentIntegration;
+};
+
+export type UpsertAdminContentIntegrationResponse =
+  UpsertAdminContentIntegrationResponses[keyof UpsertAdminContentIntegrationResponses];
 
 export type GetDbOrphansReportData = {
   body?: never;

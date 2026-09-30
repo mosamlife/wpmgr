@@ -225,6 +225,16 @@ const (
 	// — Decision 6: "site-scope write additionally requires access to that
 	// specific site", i.e. role AND authz.RequireSiteAccess, not org membership.
 	PermSiteContextWrite Permission = "context.site.write"
+
+	// PermSiteContentRead reads the page titles in a site's content inventory
+	// (Track B S1). The route facts (which editor owns a page, whether AI may
+	// change it) are readable with PermSiteRead; the titles are the site's own
+	// text and need this permission. Site-scoped (NOT in orgLevelPerms), so a
+	// collaborator granted the site holds it at the role's tier.
+	PermSiteContentRead Permission = "site.content.read"
+	// PermSiteContentRefresh asks for a fresh page-ownership check of a site.
+	// Operator+, the same tier as the other on-demand site probes.
+	PermSiteContentRefresh Permission = "site.content.refresh"
 )
 
 // minRoleFor maps each permission to the minimum role that holds it. The matrix
@@ -288,6 +298,9 @@ var minRoleFor = map[Permission]Role{
 	PermOrgContextWrite:  RoleAdmin,
 	PermSiteContextRead:  RoleViewer,
 	PermSiteContextWrite: RoleOperator,
+	// Page-ownership inventory (Track B S1).
+	PermSiteContentRead:    RoleOperator,
+	PermSiteContentRefresh: RoleOperator,
 }
 
 // Allows reports whether role r is permitted to perform p.

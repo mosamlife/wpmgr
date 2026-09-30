@@ -33,6 +33,8 @@ servers:
   - url: http://localhost:8080
     description: Local development
 tags:
+  - name: content
+    description: Page-ownership inventory (which editor owns each page).
   - name: system
     description: Liveness, readiness, and version probes.
   - name: auth
@@ -9511,6 +9513,172 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
+  /api/v1/sites/{siteId}/content/inventory:
+    get:
+      operationId: getSiteContentInventory
+      summary: Which editor owns each page on a site (Track B S1)
+      description: |
+        One page of the site's page-ownership inventory, ordered by `post_id`
+        ascending. Page it by passing `next_after_post_id` back as
+        `after_post_id`. Titles are the site's own text and are returned only
+        to callers holding `site.content.read`; `titles_included` says which
+        applies. A site whose agent is below `min_agent_version` answers 200
+        with `state: agent_update_needed` and no rows, never an error.
+        `verdict` and `route_reason` are open strings: a client must render an
+        unknown value as "Not available yet".
+      tags: [content]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+        - name: after_post_id
+          in: query
+          required: false
+          schema: { type: integer, format: int64, minimum: 0, default: 0 }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, format: int32, minimum: 1, maximum: 200, default: 50 }
+        - name: editor
+          in: query
+          required: false
+          description: >-
+            Filter by editor: `classic` for pages no builder owns, or an
+            integration id such as `elementor`.
+          schema: { type: string, maxLength: 64 }
+      responses:
+        "200":
+          description: Inventory page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContentInventoryPage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/sites/{siteId}/content/inventory/refresh:
+    post:
+      operationId: refreshSiteContentInventory
+      summary: Ask for a fresh page-ownership check of a site
+      description: |
+        Queues a check; the result appears in the inventory once it runs.
+        Rate limited per site: a second request inside the window answers 429
+        with `Retry-After`.
+      tags: [content]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      responses:
+        "202":
+          description: Queued
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, enum: [queued] }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          description: A check for this site was requested a moment ago
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/admin/content/fleet-report:
+    get:
+      operationId: getAdminContentFleetReport
+      summary: Fleet share of page editors (superadmin)
+      description: |
+        Counts across every tenant: pages and sites per verdict and route, and
+        builder pages per builder and version. Counts only; no titles or
+        tenant identifiers.
+      tags: [admin]
+      responses:
+        "200":
+          description: Fleet report
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContentFleetReport"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: superadmin_required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/admin/content/integrations:
+    get:
+      operationId: listAdminContentIntegrations
+      summary: The page-builder allowlist (superadmin)
+      tags: [admin]
+      responses:
+        "200":
+          description: Allowlist rows
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [integrations]
+                properties:
+                  integrations:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ContentIntegration"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: superadmin_required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/admin/content/integrations/{integrationId}:
+    put:
+      operationId: upsertAdminContentIntegration
+      summary: Create or update one allowlist row (superadmin)
+      description: |
+        The acting user is the authenticated session, never a body field. The
+        server computes `integration_entry_sha256` (sha256 of the canonical
+        JSON of the whole entry) and the database records an audit row.
+      tags: [admin]
+      parameters:
+        - name: integrationId
+          in: path
+          required: true
+          schema: { type: string, maxLength: 64, pattern: "^[a-z0-9]+(-[a-z0-9]+)*$" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ContentIntegrationInput"
+      responses:
+        "200":
+          description: The stored row
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContentIntegration"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: superadmin_required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /api/v1/sites/{siteId}/perf/db/orphans:
     get:
       operationId: getDbOrphansReport
@@ -13963,6 +14131,127 @@ components:
           type: object
           additionalProperties:
             type: string
+    ContentInventoryEditor:
+      type: object
+      required: [integration_id]
+      properties:
+        integration_id: { type: string }
+        display_name:
+          type: [string, "null"]
+          description: From the platform allowlist, never from the site.
+        version: { type: [string, "null"] }
+    ContentInventoryRow:
+      type: object
+      required: [post_id, post_type, post_status, verdict, route_number, route_reason, checked_at]
+      properties:
+        post_id: { type: integer, format: int64 }
+        post_type: { type: string }
+        post_status: { type: string }
+        verdict:
+          type: string
+          description: >-
+            Known values: classic, empty, block_document, builder, ambiguous,
+            unrecognised_builder, special_page, template_may_override.
+        route_number: { type: integer, minimum: 1, maximum: 3 }
+        route_reason:
+          type: string
+          description: >-
+            A closed set of reason codes; a client renders an unknown code as
+            "Not available yet".
+        editor:
+          oneOf:
+            - $ref: "#/components/schemas/ContentInventoryEditor"
+            - type: "null"
+          description: Null when no builder owns the page.
+        title:
+          type: [string, "null"]
+          description: >-
+            The site's own text, cleaned and capped at 120 bytes. Null unless
+            the caller holds site.content.read.
+        checked_at: { type: string, format: date-time }
+    ContentInventoryPage:
+      type: object
+      required: [state, min_agent_version, titles_included, truncated, pages]
+      properties:
+        truncated:
+          type: boolean
+          description: >-
+            True when the last check stopped at the page cap, so the list is a
+            sample of the site. From the site's last-check record; false when
+            the site has never been checked.
+        state:
+          type: string
+          enum: [ok, agent_update_needed, not_connected]
+        agent_version: { type: string }
+        min_agent_version: { type: string }
+        last_checked_at: { type: [string, "null"], format: date-time }
+        titles_included: { type: boolean }
+        next_after_post_id: { type: [integer, "null"], format: int64 }
+        pages:
+          type: array
+          items:
+            $ref: "#/components/schemas/ContentInventoryRow"
+    ContentFleetVerdictShare:
+      type: object
+      required: [verdict, route_number, pages, sites]
+      properties:
+        verdict: { type: string }
+        route_number: { type: integer }
+        pages: { type: integer, format: int64 }
+        sites: { type: integer, format: int64 }
+    ContentFleetBuilderShare:
+      type: object
+      required: [integration_id, pages, sites]
+      properties:
+        integration_id: { type: string }
+        version: { type: [string, "null"] }
+        pages: { type: integer, format: int64 }
+        sites: { type: integer, format: int64 }
+    ContentFleetReport:
+      type: object
+      required: [pages, by_verdict, by_builder]
+      properties:
+        pages: { type: integer, format: int64 }
+        by_verdict:
+          type: array
+          items:
+            $ref: "#/components/schemas/ContentFleetVerdictShare"
+        by_builder:
+          type: array
+          items:
+            $ref: "#/components/schemas/ContentFleetBuilderShare"
+    ContentIntegration:
+      type: object
+      required: [integration_id, display_name, enabled, status, descriptor, updated_at]
+      properties:
+        integration_id: { type: string }
+        display_name: { type: string }
+        enabled: { type: boolean }
+        status: { type: string, enum: [detect_only] }
+        descriptor: { type: object, additionalProperties: true }
+        abilities: { type: [object, "null"], additionalProperties: true }
+        min_version: { type: [string, "null"] }
+        max_tested_version: { type: [string, "null"] }
+        min_wp_version: { type: [string, "null"] }
+        integration_entry_sha256: { type: [string, "null"] }
+        theme_slug:
+          type: [string, "null"]
+          description: The theme directory that signals this builder; sent as a hint only when active.
+        updated_at: { type: string, format: date-time }
+    ContentIntegrationInput:
+      type: object
+      required: [display_name, enabled, status]
+      additionalProperties: false
+      properties:
+        display_name: { type: string, minLength: 1, maxLength: 80 }
+        enabled: { type: boolean }
+        status: { type: string, enum: [detect_only] }
+        descriptor: { type: object, additionalProperties: true }
+        abilities: { type: [object, "null"], additionalProperties: true }
+        min_version: { type: [string, "null"], maxLength: 32 }
+        max_tested_version: { type: [string, "null"], maxLength: 32 }
+        min_wp_version: { type: [string, "null"], maxLength: 32 }
+        theme_slug: { type: [string, "null"], maxLength: 100 }
     Error:
       type: object
       required: [code, message]

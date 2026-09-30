@@ -1374,6 +1374,13 @@ type Invoker interface {
 	//
 	// GET /api/v1/admin/accounts-tenancy
 	GetAdminAccountsTenancy(ctx context.Context, params GetAdminAccountsTenancyParams) (GetAdminAccountsTenancyRes, error)
+	// GetAdminContentFleetReport invokes getAdminContentFleetReport operation.
+	//
+	// Counts across every tenant: pages and sites per verdict and route, and builder pages per builder and
+	// version. Counts only; no titles or tenant identifiers.
+	//
+	// GET /api/v1/admin/content/fleet-report
+	GetAdminContentFleetReport(ctx context.Context) (GetAdminContentFleetReportRes, error)
 	// GetAdminRevenue invokes getAdminRevenue operation.
 	//
 	// Local-state-only revenue view derived from tenants + billing_events, zero payment-provider API
@@ -1896,6 +1903,17 @@ type Invoker interface {
 	//
 	// GET /api/v1/sites/{siteId}/updates/available
 	GetSiteAvailableUpdates(ctx context.Context, params GetSiteAvailableUpdatesParams) (GetSiteAvailableUpdatesRes, error)
+	// GetSiteContentInventory invokes getSiteContentInventory operation.
+	//
+	// One page of the site's page-ownership inventory, ordered by `post_id` ascending. Page it by passing
+	// `next_after_post_id` back as `after_post_id`. Titles are the site's own text and are returned only
+	// to callers holding `site.content.read`; `titles_included` says which applies. A site whose agent is
+	// below `min_agent_version` answers 200 with `state: agent_update_needed` and no rows, never an error.
+	// `verdict` and `route_reason` are open strings: a client must render an unknown value as "Not
+	// available yet".
+	//
+	// GET /api/v1/sites/{siteId}/content/inventory
+	GetSiteContentInventory(ctx context.Context, params GetSiteContentInventoryParams) (GetSiteContentInventoryRes, error)
 	// GetSiteContext invokes getSiteContext operation.
 	//
 	// Get a site's current context (ADR-064 layer 3).
@@ -2123,6 +2141,12 @@ type Invoker interface {
 	//
 	// GET /api/v1/admin/accounts
 	ListAdminAccounts(ctx context.Context, params ListAdminAccountsParams) (ListAdminAccountsRes, error)
+	// ListAdminContentIntegrations invokes listAdminContentIntegrations operation.
+	//
+	// The page-builder allowlist (superadmin).
+	//
+	// GET /api/v1/admin/content/integrations
+	ListAdminContentIntegrations(ctx context.Context) (ListAdminContentIntegrationsRes, error)
 	// ListAdminUserSites invokes listAdminUserSites operation.
 	//
 	// Every site reachable by a user via their org memberships (superadmin).
@@ -3026,6 +3050,13 @@ type Invoker interface {
 	//
 	// POST /api/v1/sites/{siteId}/recheck
 	RecheckSite(ctx context.Context, params RecheckSiteParams) (RecheckSiteRes, error)
+	// RefreshSiteContentInventory invokes refreshSiteContentInventory operation.
+	//
+	// Queues a check; the result appears in the inventory once it runs. Rate limited per site: a second
+	// request inside the window answers 429 with `Retry-After`.
+	//
+	// POST /api/v1/sites/{siteId}/content/inventory/refresh
+	RefreshSiteContentInventory(ctx context.Context, params RefreshSiteContentInventoryParams) (RefreshSiteContentInventoryRes, error)
 	// RefreshSiteDiagnostics invokes refreshSiteDiagnostics operation.
 	//
 	// Enqueues a signed `diagnostics` command to the agent. The agent runs the 14-category collector
@@ -3742,6 +3773,14 @@ type Invoker interface {
 	//
 	// PATCH /api/v1/tags/{tagId}
 	UpdateTag(ctx context.Context, request *SiteTagUpdate, params UpdateTagParams) (UpdateTagRes, error)
+	// UpsertAdminContentIntegration invokes upsertAdminContentIntegration operation.
+	//
+	// The acting user is the authenticated session, never a body field. The server computes
+	// `integration_entry_sha256` (sha256 of the canonical JSON of the whole entry) and the database
+	// records an audit row.
+	//
+	// PUT /api/v1/admin/content/integrations/{integrationId}
+	UpsertAdminContentIntegration(ctx context.Context, request *ContentIntegrationInput, params UpsertAdminContentIntegrationParams) (UpsertAdminContentIntegrationRes, error)
 	// VerifyAudit invokes verifyAudit operation.
 	//
 	// Verify the integrity of the audit hash-chain (admin+).
@@ -17498,6 +17537,87 @@ func (c *Client) sendGetAdminAccountsTenancy(ctx context.Context, params GetAdmi
 	return result, nil
 }
 
+// GetAdminContentFleetReport invokes getAdminContentFleetReport operation.
+//
+// Counts across every tenant: pages and sites per verdict and route, and builder pages per builder and
+// version. Counts only; no titles or tenant identifiers.
+//
+// GET /api/v1/admin/content/fleet-report
+func (c *Client) GetAdminContentFleetReport(ctx context.Context) (GetAdminContentFleetReportRes, error) {
+	res, err := c.sendGetAdminContentFleetReport(ctx)
+	return res, err
+}
+
+func (c *Client) sendGetAdminContentFleetReport(ctx context.Context) (res GetAdminContentFleetReportRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("getAdminContentFleetReport"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/admin/content/fleet-report"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, GetAdminContentFleetReportOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/api/v1/admin/content/fleet-report"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeGetAdminContentFleetReportResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // GetAdminRevenue invokes getAdminRevenue operation.
 //
 // Local-state-only revenue view derived from tenants + billing_events, zero payment-provider API
@@ -23726,6 +23846,165 @@ func (c *Client) sendGetSiteAvailableUpdates(ctx context.Context, params GetSite
 	return result, nil
 }
 
+// GetSiteContentInventory invokes getSiteContentInventory operation.
+//
+// One page of the site's page-ownership inventory, ordered by `post_id` ascending. Page it by passing
+// `next_after_post_id` back as `after_post_id`. Titles are the site's own text and are returned only
+// to callers holding `site.content.read`; `titles_included` says which applies. A site whose agent is
+// below `min_agent_version` answers 200 with `state: agent_update_needed` and no rows, never an error.
+// `verdict` and `route_reason` are open strings: a client must render an unknown value as "Not
+// available yet".
+//
+// GET /api/v1/sites/{siteId}/content/inventory
+func (c *Client) GetSiteContentInventory(ctx context.Context, params GetSiteContentInventoryParams) (GetSiteContentInventoryRes, error) {
+	res, err := c.sendGetSiteContentInventory(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendGetSiteContentInventory(ctx context.Context, params GetSiteContentInventoryParams) (res GetSiteContentInventoryRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("getSiteContentInventory"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/sites/{siteId}/content/inventory"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, GetSiteContentInventoryOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/sites/"
+	{
+		// Encode "siteId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "siteId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.SiteId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/content/inventory"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeQueryParams"
+	q := uri.NewQueryEncoder()
+	{
+		// Encode "after_post_id" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "after_post_id",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.AfterPostID.Get(); ok {
+				return e.EncodeValue(conv.Int64ToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	{
+		// Encode "limit" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "limit",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Limit.Get(); ok {
+				return e.EncodeValue(conv.Int32ToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	{
+		// Encode "editor" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "editor",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Editor.Get(); ok {
+				return e.EncodeValue(conv.StringToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	u.RawQuery = q.Values().Encode()
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeGetSiteContentInventoryResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // GetSiteContext invokes getSiteContext operation.
 //
 // Get a site's current context (ADR-064 layer 3).
@@ -26660,6 +26939,86 @@ func (c *Client) sendListAdminAccounts(ctx context.Context, params ListAdminAcco
 
 	stage = "DecodeResponse"
 	result, err := decodeListAdminAccountsResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// ListAdminContentIntegrations invokes listAdminContentIntegrations operation.
+//
+// The page-builder allowlist (superadmin).
+//
+// GET /api/v1/admin/content/integrations
+func (c *Client) ListAdminContentIntegrations(ctx context.Context) (ListAdminContentIntegrationsRes, error) {
+	res, err := c.sendListAdminContentIntegrations(ctx)
+	return res, err
+}
+
+func (c *Client) sendListAdminContentIntegrations(ctx context.Context) (res ListAdminContentIntegrationsRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("listAdminContentIntegrations"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/admin/content/integrations"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, ListAdminContentIntegrationsOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/api/v1/admin/content/integrations"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeListAdminContentIntegrationsResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}
@@ -38090,6 +38449,106 @@ func (c *Client) sendRecheckSite(ctx context.Context, params RecheckSiteParams) 
 	return result, nil
 }
 
+// RefreshSiteContentInventory invokes refreshSiteContentInventory operation.
+//
+// Queues a check; the result appears in the inventory once it runs. Rate limited per site: a second
+// request inside the window answers 429 with `Retry-After`.
+//
+// POST /api/v1/sites/{siteId}/content/inventory/refresh
+func (c *Client) RefreshSiteContentInventory(ctx context.Context, params RefreshSiteContentInventoryParams) (RefreshSiteContentInventoryRes, error) {
+	res, err := c.sendRefreshSiteContentInventory(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendRefreshSiteContentInventory(ctx context.Context, params RefreshSiteContentInventoryParams) (res RefreshSiteContentInventoryRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("refreshSiteContentInventory"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/api/v1/sites/{siteId}/content/inventory/refresh"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, RefreshSiteContentInventoryOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/sites/"
+	{
+		// Encode "siteId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "siteId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.SiteId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/content/inventory/refresh"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeRefreshSiteContentInventoryResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // RefreshSiteDiagnostics invokes refreshSiteDiagnostics operation.
 //
 // Enqueues a signed `diagnostics` command to the agent. The agent runs the 14-category collector
@@ -46167,6 +46626,109 @@ func (c *Client) sendUpdateTag(ctx context.Context, request *SiteTagUpdate, para
 
 	stage = "DecodeResponse"
 	result, err := decodeUpdateTagResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// UpsertAdminContentIntegration invokes upsertAdminContentIntegration operation.
+//
+// The acting user is the authenticated session, never a body field. The server computes
+// `integration_entry_sha256` (sha256 of the canonical JSON of the whole entry) and the database
+// records an audit row.
+//
+// PUT /api/v1/admin/content/integrations/{integrationId}
+func (c *Client) UpsertAdminContentIntegration(ctx context.Context, request *ContentIntegrationInput, params UpsertAdminContentIntegrationParams) (UpsertAdminContentIntegrationRes, error) {
+	res, err := c.sendUpsertAdminContentIntegration(ctx, request, params)
+	return res, err
+}
+
+func (c *Client) sendUpsertAdminContentIntegration(ctx context.Context, request *ContentIntegrationInput, params UpsertAdminContentIntegrationParams) (res UpsertAdminContentIntegrationRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("upsertAdminContentIntegration"),
+		semconv.HTTPRequestMethodKey.String("PUT"),
+		semconv.URLTemplateKey.String("/api/v1/admin/content/integrations/{integrationId}"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, UpsertAdminContentIntegrationOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [2]string
+	pathParts[0] = "/api/v1/admin/content/integrations/"
+	{
+		// Encode "integrationId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "integrationId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.StringToString(params.IntegrationId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "PUT", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeUpsertAdminContentIntegrationRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeUpsertAdminContentIntegrationResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}

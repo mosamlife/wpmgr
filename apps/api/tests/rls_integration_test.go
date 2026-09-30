@@ -295,6 +295,15 @@ func startPostgres(t testing.TB) *db.Pool {
 		// reason: without it the blanket GRANT above lets a test re-point the
 		// row, which no real install can do.
 		"REVOKE UPDATE, DELETE, TRUNCATE ON install_owner FROM wpmgr_app",
+		// m153's content_integrations and its audit are SELECT-only for
+		// wpmgr_app: the migration revokes every write, and the one write path
+		// is the SECURITY DEFINER admin_upsert_content_integration. Without
+		// this line the blanket GRANT above hands wpmgr_app INSERT, UPDATE and
+		// DELETE that no real install has, and the write-fence proof tests a
+		// database nobody runs.
+		"REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON content_integrations, content_integrations_audit FROM wpmgr_app",
+		// m153 site_content_inventory_runs: no DELETE for wpmgr_app in the migration.
+		"REVOKE DELETE, TRUNCATE ON site_content_inventory_runs FROM wpmgr_app",
 	} {
 		if _, err := ownerPool.Exec(ctx, stmt); err != nil {
 			setupFatalf(t, err, "postgres: provision app role ("+stmt+")")
