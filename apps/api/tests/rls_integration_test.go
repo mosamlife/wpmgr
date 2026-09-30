@@ -302,6 +302,8 @@ func startPostgres(t testing.TB) *db.Pool {
 		// DELETE that no real install has, and the write-fence proof tests a
 		// database nobody runs.
 		"REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON content_integrations, content_integrations_audit FROM wpmgr_app",
+		// m153 site_content_inventory_runs: no DELETE for wpmgr_app in the migration.
+		"REVOKE DELETE, TRUNCATE ON site_content_inventory_runs FROM wpmgr_app",
 	} {
 		if _, err := ownerPool.Exec(ctx, stmt); err != nil {
 			setupFatalf(t, err, "postgres: provision app role ("+stmt+")")

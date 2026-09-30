@@ -181,8 +181,17 @@ func BuildDescriptors(in []Integration) []json.RawMessage {
 		}
 		id, _ := json.Marshal(it.ID)
 		clean["integration_id"] = id
-		clean["status"] = json.RawMessage(`"detect_only"`)
-		clean["enabled"] = json.RawMessage(`true`)
+		status := it.Status
+		if status == "" {
+			status = "detect_only"
+		}
+		sb, _ := json.Marshal(status)
+		clean["status"] = sb
+		if it.Enabled {
+			clean["enabled"] = json.RawMessage(`true`)
+		} else {
+			clean["enabled"] = json.RawMessage(`false`)
+		}
 		b, err := json.Marshal(clean)
 		if err != nil {
 			continue

@@ -36,17 +36,21 @@ func TestValidate_AcceptsGoodRow(t *testing.T) {
 
 func TestValidate_StructuralViolationsFailTheWholeReply(t *testing.T) {
 	bad := map[string]func(*agentcmd.ContentProbeListResponse){
-		"not ok":          func(r *agentcmd.ContentProbeListResponse) { r.OK = false },
-		"probe version":   func(r *agentcmd.ContentProbeListResponse) { r.ProbeVersion = 3 },
-		"mode":            func(r *agentcmd.ContentProbeListResponse) { r.Mode = "single" },
-		"post id zero":    func(r *agentcmd.ContentProbeListResponse) { r.Rows[0].Post = 0 },
-		"type shape":      func(r *agentcmd.ContentProbeListResponse) { r.Rows[0].Type = "Page; DROP" },
-		"status shape":    func(r *agentcmd.ContentProbeListResponse) { r.Rows[0].Status = strings.Repeat("a", 21) },
-		"type not asked":  func(r *agentcmd.ContentProbeListResponse) { r.Rows[0].Type = "product" },
-		"route number":    func(r *agentcmd.ContentProbeListResponse) { r.Rows[0].Route.Number = 4 },
-		"owner id shape":  func(r *agentcmd.ContentProbeListResponse) { r.Rows[0].Owner = &agentcmd.ContentProbeOwner{IntegrationID: "Bad Id"} },
-		"owner id length": func(r *agentcmd.ContentProbeListResponse) { r.Rows[0].Owner = &agentcmd.ContentProbeOwner{IntegrationID: strings.Repeat("a", 65)} },
-		"duplicate id":    func(r *agentcmd.ContentProbeListResponse) { r.Rows = append(r.Rows, r.Rows[0]) },
+		"not ok":         func(r *agentcmd.ContentProbeListResponse) { r.OK = false },
+		"probe version":  func(r *agentcmd.ContentProbeListResponse) { r.ProbeVersion = 3 },
+		"mode":           func(r *agentcmd.ContentProbeListResponse) { r.Mode = "single" },
+		"post id zero":   func(r *agentcmd.ContentProbeListResponse) { r.Rows[0].Post = 0 },
+		"type shape":     func(r *agentcmd.ContentProbeListResponse) { r.Rows[0].Type = "Page; DROP" },
+		"status shape":   func(r *agentcmd.ContentProbeListResponse) { r.Rows[0].Status = strings.Repeat("a", 21) },
+		"type not asked": func(r *agentcmd.ContentProbeListResponse) { r.Rows[0].Type = "product" },
+		"route number":   func(r *agentcmd.ContentProbeListResponse) { r.Rows[0].Route.Number = 4 },
+		"owner id shape": func(r *agentcmd.ContentProbeListResponse) {
+			r.Rows[0].Owner = &agentcmd.ContentProbeOwner{IntegrationID: "Bad Id"}
+		},
+		"owner id length": func(r *agentcmd.ContentProbeListResponse) {
+			r.Rows[0].Owner = &agentcmd.ContentProbeOwner{IntegrationID: strings.Repeat("a", 65)}
+		},
+		"duplicate id": func(r *agentcmd.ContentProbeListResponse) { r.Rows = append(r.Rows, r.Rows[0]) },
 		"too many rows": func(r *agentcmd.ContentProbeListResponse) {
 			for i := int64(2); i < 12; i++ {
 				r.Rows = append(r.Rows, goodRow(i))
@@ -159,7 +163,7 @@ func TestBuildDescriptors(t *testing.T) {
 	in := []Integration{
 		{ID: "empty", Descriptor: []byte(`{}`)},
 		{ID: "no-payload", Descriptor: []byte(`{"mode_flag":{"meta_key":"_x","on_values":["1"]}}`)},
-		{ID: "good", Descriptor: []byte(`{"mode_flag":{"meta_key":"_x","on_values":["1"]},"payload_keys":["_data"],"stray_key":true,"integration_id":"spoofed","status":"admitted"}`)},
+		{ID: "good", Enabled: true, Descriptor: []byte(`{"mode_flag":{"meta_key":"_x","on_values":["1"]},"payload_keys":["_data"],"stray_key":true,"integration_id":"spoofed","status":"admitted"}`)},
 	}
 	out := BuildDescriptors(in)
 	if len(out) != 1 {
@@ -177,42 +181,33 @@ func TestBuildDescriptors(t *testing.T) {
 	}
 }
 
-func TestBuildIndicators(t *testing.T) {
-	comp := []byte(`{"plugins":[{"slug":"elementor/elementor.php","active":true},{"slug":"hello-dolly/hello.php","active":false},{"slug":"akismet/akismet.php","active":true}],"themes":[{"slug":"astra","active":true},{"slug":"twentytwenty","active":false}]}`)
-	ind := BuildIndicators(comp, []Integration{{ID: "x", Descriptor: []byte(`{"plugin_dir":"bb-plugin"}`)}})
-	want := map[string]bool{"elementor": true, "akismet": true, "bb-plugin": true}
-	if len(ind.PluginSlugs) != len(want) {
-		t.Fatalf("plugins = %v", ind.PluginSlugs)
+var hintAllowlist = []Integration{
+	{ID: "elementor", Descriptor: []byte(`{"plugin_dir":"elementor"}`)},
+	{ID: "bricks", ThemeSlug: "bricks", Descriptor: []byte(`{"plugin_dir":"bricks-plugin"}`)},
+	{ID: "divi", ThemeSlug: "Divi", Descriptor: []byte(`{}`)},
+}
+
+func TestBuildIndicators_OrdinarySiteSendsNoHints(t *testing.T) {
+	comp := []byte(`{"plugins":[{"slug":"akismet/akismet.php","active":true},{"slug":"hello-dolly/hello.php","active":true}],"themes":[{"slug":"twentytwentyfour","active":true}]}`)
+	ind := BuildIndicators(comp, hintAllowlist)
+	if len(ind.PluginSlugs) != 0 || len(ind.ThemeSlugs) != 0 {
+		t.Fatalf("an ordinary site sent hints: %+v", ind)
 	}
-	for _, s := range ind.PluginSlugs {
-		if !want[s] {
-			t.Errorf("unexpected plugin slug %q", s)
-		}
-	}
-	if len(ind.ThemeSlugs) != 1 || ind.ThemeSlugs[0] != "astra" {
-		t.Errorf("themes = %v", ind.ThemeSlugs)
-	}
-	if ind.MetaKeyPrefixes == nil {
-		t.Error("meta_key_prefixes must be an empty list, not null")
-	}
-	// An unreadable inventory yields no hints and no panic.
-	if got := BuildIndicators([]byte(`not json`), nil); len(got.PluginSlugs) != 0 {
-		t.Errorf("hints from garbage: %v", got)
+	if ind.MetaKeyPrefixes == nil || ind.PluginSlugs == nil {
+		t.Error("lists must be empty, not null")
 	}
 }
 
-func TestBuildIndicators_CapsAtAgentLimitKeepingBuilderLooksFirst(t *testing.T) {
-	var plugins []string
-	for i := 0; i < 60; i++ {
-		plugins = append(plugins, `{"slug":"aaa-plugin-`+string(rune('a'+i%26))+string(rune('a'+i/26))+`","active":true}`)
+func TestBuildIndicators_AllowlistedBuilderIsSent(t *testing.T) {
+	comp := []byte(`{"plugins":[{"slug":"elementor/elementor.php","active":true},{"slug":"akismet/akismet.php","active":true}],"themes":[{"slug":"bricks","active":true},{"slug":"divi","active":false}]}`)
+	ind := BuildIndicators(comp, hintAllowlist)
+	if len(ind.PluginSlugs) != 1 || ind.PluginSlugs[0] != "elementor" {
+		t.Errorf("plugins = %v", ind.PluginSlugs)
 	}
-	plugins = append(plugins, `{"slug":"zz-page-builder","active":true}`)
-	comp := []byte(`{"plugins":[` + strings.Join(plugins, ",") + `]}`)
-	ind := BuildIndicators(comp, nil)
-	if len(ind.PluginSlugs) != agentcmd.ContentProbeMaxIndicators {
-		t.Fatalf("len = %d", len(ind.PluginSlugs))
+	if len(ind.ThemeSlugs) != 1 || ind.ThemeSlugs[0] != "bricks" {
+		t.Errorf("themes = %v", ind.ThemeSlugs)
 	}
-	if ind.PluginSlugs[0] != "zz-page-builder" {
-		t.Errorf("builder-looking slug not first: %v", ind.PluginSlugs[:3])
+	if got := BuildIndicators([]byte(`not json`), hintAllowlist); len(got.PluginSlugs) != 0 {
+		t.Errorf("hints from garbage: %v", got)
 	}
 }

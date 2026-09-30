@@ -15206,7 +15206,9 @@ type ContentIntegration struct {
 	MaxTestedVersion       OptNilString                      `json:"max_tested_version"`
 	MinWpVersion           OptNilString                      `json:"min_wp_version"`
 	IntegrationEntrySHA256 OptNilString                      `json:"integration_entry_sha256"`
-	UpdatedAt              time.Time                         `json:"updated_at"`
+	// The theme directory that signals this builder; sent as a hint only when active.
+	ThemeSlug OptNilString `json:"theme_slug"`
+	UpdatedAt time.Time    `json:"updated_at"`
 }
 
 // GetIntegrationID returns the value of IntegrationID.
@@ -15257,6 +15259,11 @@ func (s *ContentIntegration) GetMinWpVersion() OptNilString {
 // GetIntegrationEntrySHA256 returns the value of IntegrationEntrySHA256.
 func (s *ContentIntegration) GetIntegrationEntrySHA256() OptNilString {
 	return s.IntegrationEntrySHA256
+}
+
+// GetThemeSlug returns the value of ThemeSlug.
+func (s *ContentIntegration) GetThemeSlug() OptNilString {
+	return s.ThemeSlug
 }
 
 // GetUpdatedAt returns the value of UpdatedAt.
@@ -15314,6 +15321,11 @@ func (s *ContentIntegration) SetIntegrationEntrySHA256(val OptNilString) {
 	s.IntegrationEntrySHA256 = val
 }
 
+// SetThemeSlug sets the value of ThemeSlug.
+func (s *ContentIntegration) SetThemeSlug(val OptNilString) {
+	s.ThemeSlug = val
+}
+
 // SetUpdatedAt sets the value of UpdatedAt.
 func (s *ContentIntegration) SetUpdatedAt(val time.Time) {
 	s.UpdatedAt = val
@@ -15353,6 +15365,7 @@ type ContentIntegrationInput struct {
 	MinVersion       OptNilString                           `json:"min_version"`
 	MaxTestedVersion OptNilString                           `json:"max_tested_version"`
 	MinWpVersion     OptNilString                           `json:"min_wp_version"`
+	ThemeSlug        OptNilString                           `json:"theme_slug"`
 }
 
 // GetDisplayName returns the value of DisplayName.
@@ -15395,6 +15408,11 @@ func (s *ContentIntegrationInput) GetMinWpVersion() OptNilString {
 	return s.MinWpVersion
 }
 
+// GetThemeSlug returns the value of ThemeSlug.
+func (s *ContentIntegrationInput) GetThemeSlug() OptNilString {
+	return s.ThemeSlug
+}
+
 // SetDisplayName sets the value of DisplayName.
 func (s *ContentIntegrationInput) SetDisplayName(val string) {
 	s.DisplayName = val
@@ -15433,6 +15451,11 @@ func (s *ContentIntegrationInput) SetMaxTestedVersion(val OptNilString) {
 // SetMinWpVersion sets the value of MinWpVersion.
 func (s *ContentIntegrationInput) SetMinWpVersion(val OptNilString) {
 	s.MinWpVersion = val
+}
+
+// SetThemeSlug sets the value of ThemeSlug.
+func (s *ContentIntegrationInput) SetThemeSlug(val OptNilString) {
+	s.ThemeSlug = val
 }
 
 type ContentIntegrationInputAbilities map[string]jx.Raw
@@ -15565,6 +15588,9 @@ func (s *ContentInventoryEditor) SetVersion(val OptNilString) {
 
 // Ref: #/components/schemas/ContentInventoryPage
 type ContentInventoryPage struct {
+	// True when the last check stopped at the page cap, so the list is a sample of the site. From the
+	// site's last-check record; false when the site has never been checked.
+	Truncated       bool                      `json:"truncated"`
 	State           ContentInventoryPageState `json:"state"`
 	AgentVersion    OptString                 `json:"agent_version"`
 	MinAgentVersion string                    `json:"min_agent_version"`
@@ -15572,6 +15598,11 @@ type ContentInventoryPage struct {
 	TitlesIncluded  bool                      `json:"titles_included"`
 	NextAfterPostID OptNilInt64               `json:"next_after_post_id"`
 	Pages           []ContentInventoryRow     `json:"pages"`
+}
+
+// GetTruncated returns the value of Truncated.
+func (s *ContentInventoryPage) GetTruncated() bool {
+	return s.Truncated
 }
 
 // GetState returns the value of State.
@@ -15607,6 +15638,11 @@ func (s *ContentInventoryPage) GetNextAfterPostID() OptNilInt64 {
 // GetPages returns the value of Pages.
 func (s *ContentInventoryPage) GetPages() []ContentInventoryRow {
 	return s.Pages
+}
+
+// SetTruncated sets the value of Truncated.
+func (s *ContentInventoryPage) SetTruncated(val bool) {
+	s.Truncated = val
 }
 
 // SetState sets the value of State.

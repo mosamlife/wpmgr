@@ -50,6 +50,10 @@ export type ContentInventoryRow = {
 };
 
 export type ContentInventoryPage = {
+  /**
+   * True when the last check stopped at the page cap, so the list is a sample of the site. From the site's last-check record; false when the site has never been checked.
+   */
+  truncated: boolean;
   state: "ok" | "agent_update_needed" | "not_connected";
   agent_version?: string;
   min_agent_version: string;
@@ -94,6 +98,10 @@ export type ContentIntegration = {
   max_tested_version?: string | null;
   min_wp_version?: string | null;
   integration_entry_sha256?: string | null;
+  /**
+   * The theme directory that signals this builder; sent as a hint only when active.
+   */
+  theme_slug?: string | null;
   updated_at: string;
 };
 
@@ -110,6 +118,7 @@ export type ContentIntegrationInput = {
   min_version?: string | null;
   max_tested_version?: string | null;
   min_wp_version?: string | null;
+  theme_slug?: string | null;
 };
 
 export type Error = {

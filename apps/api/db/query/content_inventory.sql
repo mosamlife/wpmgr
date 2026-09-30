@@ -29,7 +29,8 @@ SELECT * FROM admin_upsert_content_integration(
     sqlc.narg(min_version)::text,
     sqlc.narg(max_tested_version)::text,
     sqlc.narg(min_wp_version)::text,
-    sqlc.narg(integration_entry_sha256)::text
+    sqlc.narg(integration_entry_sha256)::text,
+    sqlc.narg(theme_slug)::text
 );
 
 -- name: ListContentIntegrationAudit :many
@@ -136,3 +137,22 @@ SELECT coalesce(f.owner_integration_id, '')::text AS owner_integration_id,
        f.pages::bigint AS pages,
        f.sites::bigint AS sites
 FROM fleet_content_share_by_builder() AS f;
+
+-- name: UpsertSiteContentInventoryRun :exec
+-- Records one refresh of one site. Call it in the SAME tenant transaction as
+-- UpsertSiteContentInventory and DeleteStaleSiteContentInventory, with the
+-- same checked_at, so the record and the rows commit or roll back together.
+INSERT INTO site_content_inventory_runs (tenant_id, site_id, checked_at, pages_stored, truncated)
+VALUES (sqlc.arg(tenant_id)::uuid, sqlc.arg(site_id)::uuid, sqlc.arg(checked_at)::timestamptz,
+        sqlc.arg(pages_stored)::int, sqlc.arg(truncated)::boolean)
+ON CONFLICT (site_id) DO UPDATE SET
+    checked_at = EXCLUDED.checked_at,
+    pages_stored = EXCLUDED.pages_stored,
+    truncated = EXCLUDED.truncated;
+
+-- name: GetSiteContentInventoryRun :one
+-- The site's last refresh. pgx.ErrNoRows means the site has never been
+-- refreshed.
+SELECT * FROM site_content_inventory_runs
+WHERE tenant_id = sqlc.arg(tenant_id)::uuid
+  AND site_id = sqlc.arg(site_id)::uuid;

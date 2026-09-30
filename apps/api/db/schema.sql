@@ -8518,7 +8518,13 @@ CREATE TABLE IF NOT EXISTS content_integrations (
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
     -- NULL only for a row the migration seeded.
-    updated_by_user_id uuid NULL
+    updated_by_user_id uuid NULL,
+    -- The theme folder for a builder that ships as a THEME, so the control
+    -- plane sends theme hints only for builder themes. NULL for plugins. Kept
+    -- out of descriptor because the agent refuses unknown descriptor keys.
+    theme_slug text NULL
+        CONSTRAINT content_integrations_theme_slug_check
+        CHECK (theme_slug ~ '^[A-Za-z0-9._-]{1,100}$')
 );
 
 ALTER TABLE content_integrations ENABLE ROW LEVEL SECURITY;
@@ -8585,7 +8591,8 @@ AS $$
         'min_version', r.min_version,
         'max_tested_version', r.max_tested_version,
         'min_wp_version', r.min_wp_version,
-        'integration_entry_sha256', r.integration_entry_sha256
+        'integration_entry_sha256', r.integration_entry_sha256,
+        'theme_slug', r.theme_slug
     )::text, 'UTF8')), 'hex');
 $$;
 
@@ -8601,7 +8608,8 @@ CREATE OR REPLACE FUNCTION admin_upsert_content_integration(
     p_min_version text,
     p_max_tested_version text,
     p_min_wp_version text,
-    p_integration_entry_sha256 text
+    p_integration_entry_sha256 text,
+    p_theme_slug text
 )
 RETURNS content_integrations
 LANGUAGE plpgsql
@@ -8631,12 +8639,12 @@ BEGIN
     INSERT INTO content_integrations AS ci (
         integration_id, display_name, enabled, status, descriptor, abilities,
         min_version, max_tested_version, min_wp_version,
-        integration_entry_sha256, updated_at, updated_by_user_id
+        integration_entry_sha256, updated_at, updated_by_user_id, theme_slug
     ) VALUES (
         p_integration_id, p_display_name, p_enabled, p_status,
         coalesce(p_descriptor, '{}'::jsonb), p_abilities,
         p_min_version, p_max_tested_version, p_min_wp_version,
-        p_integration_entry_sha256, now(), p_actor_user_id
+        p_integration_entry_sha256, now(), p_actor_user_id, p_theme_slug
     )
     ON CONFLICT (integration_id) DO UPDATE SET
         display_name = EXCLUDED.display_name,
@@ -8648,6 +8656,7 @@ BEGIN
         max_tested_version = EXCLUDED.max_tested_version,
         min_wp_version = EXCLUDED.min_wp_version,
         integration_entry_sha256 = EXCLUDED.integration_entry_sha256,
+        theme_slug = EXCLUDED.theme_slug,
         updated_at = now(),
         updated_by_user_id = EXCLUDED.updated_by_user_id
     RETURNING ci.* INTO v_after;
@@ -8671,19 +8680,34 @@ END;
 $$;
 
 REVOKE ALL ON FUNCTION admin_upsert_content_integration(
-    uuid, text, text, boolean, text, jsonb, jsonb, text, text, text, text
+    uuid, text, text, boolean, text, jsonb, jsonb, text, text, text, text, text
 ) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION admin_upsert_content_integration(
-    uuid, text, text, boolean, text, jsonb, jsonb, text, text, text, text
+    uuid, text, text, boolean, text, jsonb, jsonb, text, text, text, text, text
 ) TO wpmgr_app;
 
 -- ---------------------------------------------------------------------------
--- Seed: the builders ADR-062 names, detect_only, detection unverified.
+-- Seed: the builders ADR-062 names, plus Breakdance and Oxygen,
+-- detect_only, every descriptor verified: false.
 -- ---------------------------------------------------------------------------
 --
--- Display names only. descriptor is '{}' until the S1b scratch day verifies
--- each builder's detection constants and keys; an empty descriptor matches
--- nothing, so an unverified builder shows as a page builder.
+-- S1 only reports; nothing here admits a write. Detection data is taken from
+-- the builders' own documentation where it states it, and otherwise is the
+-- CONSERVATIVE choice, meaning the one that flags MORE pages as builder
+-- pages: the probe routes any page with a matching payload key away from
+-- route 1, so an over-broad key costs a report line, and a missing key would
+-- let a builder page look classic. Every row is re-verified on a scratch
+-- site (S1b) before any field is trusted.
+--
+--   * Content-column builders (Divi 4, WPBakery) keep their document in
+--     post_content, which the fingerprint already covers; their payload key
+--     is the builder flag itself, so a flagged page is detected.
+--   * Breakdance and Oxygen have no documented on/off flag. Their mode_flag
+--     value is the literal __wpmgr_unverified__, which no site stores, so a
+--     page carrying their payload reports as ambiguous (route 3) until S1b
+--     finds the real flag.
+--   * Bricks and Divi ship as themes: theme_slug names the theme folder and
+--     plugin_dir is NULL.
 --
 -- The table is ENABLE (not FORCE) RLS, so the owner running this migration
 -- bypasses RLS and the INSERT lands. The REVOKE comes after the INSERT, the
@@ -8691,13 +8715,22 @@ GRANT EXECUTE ON FUNCTION admin_upsert_content_integration(
 -- migration runner is wpmgr_app and still holds m1's default INSERT grant.
 
 INSERT INTO content_integrations
-    (integration_id, display_name, enabled, status, descriptor)
+    (integration_id, display_name, enabled, status, theme_slug, descriptor)
 VALUES
-    ('beaver-builder', 'Beaver Builder', true, 'detect_only', '{}'::jsonb),
-    ('bricks',         'Bricks',         true, 'detect_only', '{}'::jsonb),
-    ('divi',           'Divi',           true, 'detect_only', '{}'::jsonb),
-    ('elementor',      'Elementor',      true, 'detect_only', '{}'::jsonb),
-    ('wpbakery',       'WPBakery',       true, 'detect_only', '{}'::jsonb)
+    ('beaver-builder', 'Beaver Builder', true, 'detect_only', NULL,
+     '{verified: false, version_constant: FL_BUILDER_VERSION, mode_flag: {meta_key: _fl_builder_enabled, on_values: [1]}, payload_keys: [_fl_builder_data], draft_keys: [_fl_builder_draft], singular_override: unknown, plugin_dir: bb-plugin}'::jsonb),
+    ('breakdance', 'Breakdance', true, 'detect_only', NULL,
+     '{verified: false, mode_flag: {meta_key: _breakdance_data, on_values: [__wpmgr_unverified__]}, payload_keys: [_breakdance_data], singular_override: unknown, plugin_dir: breakdance}'::jsonb),
+    ('bricks', 'Bricks', true, 'detect_only', 'bricks',
+     '{verified: false, version_constant: BRICKS_VERSION, mode_flag: {meta_key: _bricks_editor_mode, on_values: [bricks]}, payload_keys: [_bricks_page_content_2, _bricks_page_header_2, _bricks_page_footer_2], singular_override: unknown}'::jsonb),
+    ('divi', 'Divi', true, 'detect_only', 'Divi',
+     '{verified: false, version_constant: ET_BUILDER_VERSION, mode_flag: {meta_key: _et_pb_use_builder, on_values: [on]}, payload_keys: [_et_pb_use_builder], shortcode_prefixes: [et_pb_], singular_override: unknown}'::jsonb),
+    ('elementor', 'Elementor', true, 'detect_only', NULL,
+     '{verified: false, version_constant: ELEMENTOR_VERSION, mode_flag: {meta_key: _elementor_edit_mode, on_values: [builder]}, payload_keys: [_elementor_data], singular_override: unknown, plugin_dir: elementor}'::jsonb),
+    ('oxygen', 'Oxygen', true, 'detect_only', NULL,
+     '{verified: false, mode_flag: {meta_key: _oxygen_data, on_values: [__wpmgr_unverified__]}, payload_keys: [_oxygen_data, ct_builder_shortcodes], shortcode_prefixes: [ct_], singular_override: unknown, plugin_dir: oxygen}'::jsonb),
+    ('wpbakery', 'WPBakery', true, 'detect_only', NULL,
+     '{verified: false, version_constant: WPB_VC_VERSION, mode_flag: {meta_key: _wpb_vc_js_status, on_values: [true]}, payload_keys: [_wpb_vc_js_status], shortcode_prefixes: [vc_], singular_override: unknown, plugin_dir: js_composer}'::jsonb)
 ON CONFLICT (integration_id) DO NOTHING;
 
 -- Skipped when the migration role is wpmgr_app itself; see the header.
@@ -8891,3 +8924,65 @@ REVOKE ALL ON FUNCTION fleet_content_share_by_verdict() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION fleet_content_share_by_verdict() TO wpmgr_app;
 REVOKE ALL ON FUNCTION fleet_content_share_by_builder() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION fleet_content_share_by_builder() TO wpmgr_app;
+
+-- ---------------------------------------------------------------------------
+-- site_content_inventory_runs: the last refresh per site
+-- ---------------------------------------------------------------------------
+--
+-- One row per site, written in the SAME tenant transaction as that refresh's
+-- inventory upsert, so the API can say truthfully whether the stored list was
+-- cut off at the page cap, on every instance and after a restart. Same
+-- tenancy as site_content_inventory: FORCE RLS, tenant_isolation, the
+-- RESTRICTIVE site_scope, no cross-tenant policy. Cascades with the site: it
+-- describes rows that cascade with it. No DELETE for wpmgr_app (the row is
+-- replaced by upsert, and goes with its site); TRUNCATE revoked.
+
+CREATE TABLE IF NOT EXISTS site_content_inventory_runs (
+    tenant_id uuid NOT NULL
+        REFERENCES tenants (id) ON DELETE CASCADE,
+    site_id uuid PRIMARY KEY,
+    CONSTRAINT site_content_inventory_runs_site_within_tenant_fkey
+        FOREIGN KEY (tenant_id, site_id)
+        REFERENCES sites (tenant_id, id) ON DELETE CASCADE,
+    checked_at timestamptz NOT NULL,
+    pages_stored integer NOT NULL
+        CONSTRAINT site_content_inventory_runs_pages_stored_check
+        CHECK (pages_stored >= 0),
+    truncated boolean NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS site_content_inventory_runs_tenant_idx
+    ON site_content_inventory_runs (tenant_id);
+
+ALTER TABLE site_content_inventory_runs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE site_content_inventory_runs FORCE ROW LEVEL SECURITY;
+
+GRANT SELECT, INSERT, UPDATE ON site_content_inventory_runs TO wpmgr_app;
+REVOKE DELETE, TRUNCATE ON site_content_inventory_runs FROM wpmgr_app;
+
+CREATE POLICY site_content_inventory_runs_tenant_isolation
+    ON site_content_inventory_runs
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+
+CREATE POLICY site_content_inventory_runs_site_scope
+    ON site_content_inventory_runs
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+

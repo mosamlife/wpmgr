@@ -14171,8 +14171,14 @@ components:
         checked_at: { type: string, format: date-time }
     ContentInventoryPage:
       type: object
-      required: [state, min_agent_version, titles_included, pages]
+      required: [state, min_agent_version, titles_included, truncated, pages]
       properties:
+        truncated:
+          type: boolean
+          description: >-
+            True when the last check stopped at the page cap, so the list is a
+            sample of the site. From the site's last-check record; false when
+            the site has never been checked.
         state:
           type: string
           enum: [ok, agent_update_needed, not_connected]
@@ -14228,6 +14234,9 @@ components:
         max_tested_version: { type: [string, "null"] }
         min_wp_version: { type: [string, "null"] }
         integration_entry_sha256: { type: [string, "null"] }
+        theme_slug:
+          type: [string, "null"]
+          description: The theme directory that signals this builder; sent as a hint only when active.
         updated_at: { type: string, format: date-time }
     ContentIntegrationInput:
       type: object
@@ -14242,6 +14251,7 @@ components:
         min_version: { type: [string, "null"], maxLength: 32 }
         max_tested_version: { type: [string, "null"], maxLength: 32 }
         min_wp_version: { type: [string, "null"], maxLength: 32 }
+        theme_slug: { type: [string, "null"], maxLength: 100 }
     Error:
       type: object
       required: [code, message]

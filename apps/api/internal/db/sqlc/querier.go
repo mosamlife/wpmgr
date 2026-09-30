@@ -1764,6 +1764,9 @@ type Querier interface {
 	// archived site is visible and the caller can return a structured 409 with
 	// site_id + connection_state instead of hitting the unique-index violation.
 	GetSiteByURLForMint(ctx context.Context, arg GetSiteByURLForMintParams) (GetSiteByURLForMintRow, error)
+	// The site's last refresh. pgx.ErrNoRows means the site has never been
+	// refreshed.
+	GetSiteContentInventoryRun(ctx context.Context, arg GetSiteContentInventoryRunParams) (SiteContentInventoryRun, error)
 	// tenant_id is explicit (defense in depth per house convention) AND is the
 	// mechanism that makes a restore-pointer's stamp check work: a version id
 	// belonging to a DIFFERENT tenant stamp (a pre-transfer row, ADR-064 Decision
@@ -4462,6 +4465,10 @@ type Querier interface {
 	// The arrays are parallel, one element per post. Nullable text columns take
 	// '' for NULL (pgx cannot carry a NULL element in []string).
 	UpsertSiteContentInventory(ctx context.Context, arg UpsertSiteContentInventoryParams) (int64, error)
+	// Records one refresh of one site. Call it in the SAME tenant transaction as
+	// UpsertSiteContentInventory and DeleteStaleSiteContentInventory, with the
+	// same checked_at, so the record and the rows commit or roll back together.
+	UpsertSiteContentInventoryRun(ctx context.Context, arg UpsertSiteContentInventoryRunParams) error
 	// Insert-or-update a per-site config row. provider_secret_encrypted uses a
 	// nil-sentinel: when @set_secret is false the existing ciphertext is preserved,
 	// so editing non-secret fields without re-entering the password keeps the stored

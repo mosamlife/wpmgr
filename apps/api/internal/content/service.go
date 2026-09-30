@@ -35,7 +35,7 @@ const (
 	// callTimeout bounds one agent call.
 	callTimeout = 25 * time.Second
 	// RefreshTimeout bounds a whole refresh (the River job timeout).
-	RefreshTimeout = 4 * time.Minute
+	RefreshTimeout = maxPages*callTimeout + time.Minute
 )
 
 var (
@@ -153,8 +153,12 @@ func (s *Service) Refresh(ctx context.Context, tenantID, siteID uuid.UUID, sched
 		offset = *resp.NextOffset
 	}
 
+	// A post can appear on two pages when the site changes between calls; the
+	// upsert would reject the whole statement on a repeated key, so the last
+	// row seen wins.
+	rows = dedupeRows(rows)
 	checkedAt := s.now().UTC()
-	if err := s.repo.ReplaceInventory(ctx, tenantID, siteID, checkedAt, rows); err != nil {
+	if err := s.repo.ReplaceInventory(ctx, tenantID, siteID, checkedAt, rows, truncated); err != nil {
 		return RefreshResult{}, err
 	}
 	if skipped > 0 {
@@ -164,20 +168,16 @@ func (s *Service) Refresh(ctx context.Context, tenantID, siteID uuid.UUID, sched
 	return RefreshResult{Stored: len(rows), SkippedUnknown: skipped, Truncated: truncated, CheckedAt: checkedAt}, nil
 }
 
-// builderish marks a plugin slug as one that may own a page's layout. It only
-// orders the hint list, because the agent takes at most 32 slugs.
-var builderish = regexp.MustCompile(`(?i)(builder|elementor|divi|bricks|oxygen|breakdance|brizy|composer|siteorigin|panels|fusion|layout|page-?build|visual|beaver|kadence|spectra|blocks|gutenberg)`)
-
-// BuildIndicators derives the site-level hints from the site's own inventory
-// (the update inventory the control plane already holds) and the allowlist's
-// plugin directories. The agent reports a hint only for an entry that is
-// active, so inactive entries cost nothing but a slot; active entries are
-// preferred, and builder-looking names first.
+// BuildIndicators derives the site-level builder hints. It sends ONLY hints
+// for builders on the platform allowlist: a plugin directory named by an
+// allowlist row's descriptor.plugin_dir, and the active theme only when it
+// matches an allowlist row's theme_slug. The agent treats every hint it finds
+// as a possible builder, so an ordinary plugin or theme sent here would strip
+// the classic verdict from every page on the site.
 func BuildIndicators(components []byte, integrations []Integration) agentcmd.ContentProbeIndicators {
 	var comp struct {
 		Plugins []struct {
-			Slug   string `json:"slug"`
-			Active bool   `json:"active"`
+			Slug string `json:"slug"`
 		} `json:"plugins"`
 		Themes []struct {
 			Slug   string `json:"slug"`
@@ -186,30 +186,37 @@ func BuildIndicators(components []byte, integrations []Integration) agentcmd.Con
 	}
 	_ = json.Unmarshal(components, &comp) // an unreadable inventory yields no hints
 
-	plugins := make(map[string]bool)
+	installed := make(map[string]bool)
 	for _, p := range comp.Plugins {
 		slug := p.Slug
 		if i := strings.Index(slug, "/"); i >= 0 {
 			slug = slug[:i]
 		}
-		slug = strings.TrimSuffix(slug, ".php")
-		if slugRe.MatchString(slug) && p.Active {
-			plugins[slug] = true
+		installed[strings.TrimSuffix(slug, ".php")] = true
+	}
+	activeThemes := make(map[string]bool)
+	for _, t := range comp.Themes {
+		if t.Active {
+			activeThemes[t.Slug] = true
 		}
 	}
-	// Allowlisted plugin directories are always offered.
+
+	plugins := make(map[string]bool)
+	themes := make(map[string]bool)
 	for _, it := range integrations {
 		var d struct {
 			PluginDir string `json:"plugin_dir"`
 		}
-		if json.Unmarshal(it.Descriptor, &d) == nil && slugRe.MatchString(d.PluginDir) {
+		if json.Unmarshal(it.Descriptor, &d) != nil {
+			continue
+		}
+		// The agent reports a hint only for an active entry, so offering an
+		// allowlisted directory the site does not have costs a slot and no more.
+		if slugRe.MatchString(d.PluginDir) && installed[d.PluginDir] {
 			plugins[d.PluginDir] = true
 		}
-	}
-	themes := make(map[string]bool)
-	for _, t := range comp.Themes {
-		if slugRe.MatchString(t.Slug) && t.Active {
-			themes[t.Slug] = true
+		if slugRe.MatchString(it.ThemeSlug) && activeThemes[it.ThemeSlug] {
+			themes[it.ThemeSlug] = true
 		}
 	}
 	return agentcmd.ContentProbeIndicators{
@@ -224,15 +231,23 @@ func capOrdered(set map[string]bool, max int) []string {
 	for s := range set {
 		out = append(out, s)
 	}
-	sort.Slice(out, func(i, j int) bool {
-		bi, bj := builderish.MatchString(out[i]), builderish.MatchString(out[j])
-		if bi != bj {
-			return bi
-		}
-		return out[i] < out[j]
-	})
+	sort.Strings(out)
 	if len(out) > max {
 		out = out[:max]
+	}
+	return out
+}
+
+func dedupeRows(rows []Row) []Row {
+	idx := make(map[int64]int, len(rows))
+	out := make([]Row, 0, len(rows))
+	for _, r := range rows {
+		if i, ok := idx[r.PostID]; ok {
+			out[i] = r
+			continue
+		}
+		idx[r.PostID] = len(out)
+		out = append(out, r)
 	}
 	return out
 }
@@ -253,6 +268,7 @@ type InventoryPage struct {
 	NextAfterPost  *int64
 	LastCheckedAt  *time.Time
 	TitlesIncluded bool
+	Truncated      bool
 }
 
 // Inventory returns one page of a site's inventory. withTitles says whether
@@ -299,12 +315,17 @@ func (s *Service) Inventory(ctx context.Context, p domain.Principal, siteID uuid
 		if !withTitles {
 			rows[i].Title = nil
 		}
-		if page.LastCheckedAt == nil || rows[i].CheckedAt.After(*page.LastCheckedAt) {
-			t := rows[i].CheckedAt
-			page.LastCheckedAt = &t
-		}
 	}
 	page.Rows = rows
+	run, err := s.repo.GetRun(ctx, p, siteID)
+	if err != nil {
+		return InventoryPage{}, err
+	}
+	if run != nil {
+		t := run.CheckedAt
+		page.LastCheckedAt = &t
+		page.Truncated = run.Truncated
+	}
 	return page, nil
 }
 
@@ -356,6 +377,7 @@ func EntrySHA256(in AdminUpsertInput) (string, error) {
 		"min_version":        in.MinVersion,
 		"max_tested_version": in.MaxTestedVersion,
 		"min_wp_version":     in.MinWPVersion,
+		"theme_slug":         in.ThemeSlug,
 	}
 	// encoding/json sorts map keys at every level and emits no whitespace.
 	b, err := json.Marshal(entry)
@@ -395,6 +417,12 @@ func (s *Service) UpsertIntegration(ctx context.Context, in AdminUpsertInput) (I
 	}
 	if len(in.Descriptor) > 16<<10 {
 		return IntegrationRecord{}, domain.Validation("invalid_descriptor", "descriptor is too large")
+	}
+	if in.ThemeSlug != nil && *in.ThemeSlug != "" && !slugRe.MatchString(*in.ThemeSlug) {
+		return IntegrationRecord{}, domain.Validation("invalid_theme_slug", "theme_slug is not a valid theme directory name")
+	}
+	if in.ThemeSlug != nil && *in.ThemeSlug == "" {
+		in.ThemeSlug = nil
 	}
 	sum, err := EntrySHA256(in)
 	if err != nil {
