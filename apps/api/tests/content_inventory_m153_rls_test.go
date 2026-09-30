@@ -286,10 +286,17 @@ func TestContentIntegrationsReadOnlyForAppRole(t *testing.T) {
 			t.Fatalf("WRITE LEAK: the elementor seed row changed or vanished after wpmgr_app's refused writes (%d rows)", survivors)
 		}
 
-		_, err = sqlc.New(tx).AdminUpsertContentIntegration(ctx, sqlc.AdminUpsertContentIntegrationParams{
+		// In a savepoint: the refusal aborts the statement, and the
+		// transaction must still commit afterwards.
+		sp, err := tx.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		_, err = sqlc.New(sp).AdminUpsertContentIntegration(ctx, sqlc.AdminUpsertContentIntegrationParams{
 			ActorUserID: uuid.New(), IntegrationID: "elementor", DisplayName: "Elementor",
 			Enabled: false, Status: "detect_only", Descriptor: []byte(`{}`),
 		})
+		_ = sp.Rollback(ctx)
 		var pgErr *pgconn.PgError
 		if err == nil || !errors.As(err, &pgErr) || pgErr.Code != "42501" {
 			t.Fatalf("the definer accepted a non-superadmin actor: %v", err)
