@@ -414,6 +414,34 @@ type ClientMember struct {
 	CreatedAt time.Time   `json:"created_at"`
 }
 
+type ContentIntegration struct {
+	IntegrationID          string      `json:"integration_id"`
+	DisplayName            string      `json:"display_name"`
+	Enabled                bool        `json:"enabled"`
+	Status                 string      `json:"status"`
+	Descriptor             []byte      `json:"descriptor"`
+	Abilities              []byte      `json:"abilities"`
+	MinVersion             *string     `json:"min_version"`
+	MaxTestedVersion       *string     `json:"max_tested_version"`
+	MinWpVersion           *string     `json:"min_wp_version"`
+	IntegrationEntrySha256 *string     `json:"integration_entry_sha256"`
+	CreatedAt              time.Time   `json:"created_at"`
+	UpdatedAt              time.Time   `json:"updated_at"`
+	UpdatedByUserID        pgtype.UUID `json:"updated_by_user_id"`
+}
+
+type ContentIntegrationsAudit struct {
+	ID            int64     `json:"id"`
+	IntegrationID string    `json:"integration_id"`
+	Action        string    `json:"action"`
+	ActorUserID   uuid.UUID `json:"actor_user_id"`
+	BeforeSha256  *string   `json:"before_sha256"`
+	AfterSha256   string    `json:"after_sha256"`
+	BeforeEnabled *bool     `json:"before_enabled"`
+	AfterEnabled  bool      `json:"after_enabled"`
+	At            time.Time `json:"at"`
+}
+
 type EmailAlertState struct {
 	TenantID           uuid.UUID          `json:"tenant_id"`
 	SiteID             uuid.UUID          `json:"site_id"`
@@ -1032,6 +1060,23 @@ type SiteConnectionHistory struct {
 	Generation  int32       `json:"generation"`
 	OccurredAt  time.Time   `json:"occurred_at"`
 	Metadata    []byte      `json:"metadata"`
+}
+
+type SiteContentInventory struct {
+	TenantID           uuid.UUID `json:"tenant_id"`
+	SiteID             uuid.UUID `json:"site_id"`
+	PostID             int64     `json:"post_id"`
+	PostType           string    `json:"post_type"`
+	PostStatus         string    `json:"post_status"`
+	Verdict            string    `json:"verdict"`
+	RouteNumber        int16     `json:"route_number"`
+	RouteReason        string    `json:"route_reason"`
+	OwnerIntegrationID *string   `json:"owner_integration_id"`
+	OwnerDisplayName   *string   `json:"owner_display_name"`
+	OwnerVersion       *string   `json:"owner_version"`
+	Fingerprint        *string   `json:"fingerprint"`
+	Title              *string   `json:"title"`
+	CheckedAt          time.Time `json:"checked_at"`
 }
 
 type SiteContextVersion struct {
