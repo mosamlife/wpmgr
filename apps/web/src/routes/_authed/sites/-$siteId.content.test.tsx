@@ -190,16 +190,26 @@ describe("site Content tab", () => {
     expect(screen.getAllByRole("button", { name: "Refresh" }).length).toBeGreaterThan(0);
   });
 
-  it("shows a loading state, then an error with retry", async () => {
+  it("shows a loading state while the request is pending", async () => {
     getInv.mockReturnValue(new Promise(() => {}));
     renderTab();
     expect(await screen.findByRole("status", { name: "Loading pages" })).toBeInTheDocument();
   });
 
-  it("shows an error state when the request fails", async () => {
-    getInv.mockResolvedValue({ data: undefined, error: { code: "internal", message: "boom" }, response: { status: 500 } });
+  it("shows an error state, and Try again loads the list", async () => {
+    getInv.mockResolvedValueOnce({
+      data: undefined,
+      error: { code: "internal", message: "boom" },
+      response: { status: 500 },
+    });
     renderTab();
     expect(await screen.findByText("Could not load this site's pages")).toBeInTheDocument();
+    const retry = screen.getByRole("button", { name: "Try again" });
+
+    getInv.mockResolvedValue(ok(page({ pages: [row({ title: "Recovered page" })] })));
+    fireEvent.click(retry);
+    expect(await screen.findByText("Recovered page")).toBeInTheDocument();
+    expect(screen.queryByText("Could not load this site's pages")).not.toBeInTheDocument();
   });
 
   it("a 429 on refresh says to try again in N seconds", async () => {
