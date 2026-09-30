@@ -241,6 +241,10 @@ type ConfirmTotpEnrollmentRes interface {
 	confirmTotpEnrollmentRes()
 }
 
+type CreateAdminAbilityCatalogueEntryRes interface {
+	createAdminAbilityCatalogueEntryRes()
+}
+
 type CreateApiKeyRes interface {
 	createApiKeyRes()
 }
@@ -739,6 +743,10 @@ type IngestRumBeaconRes interface {
 
 type InviteMemberRes interface {
 	inviteMemberRes()
+}
+
+type ListAdminAbilityCatalogueRes interface {
+	listAdminAbilityCatalogueRes()
 }
 
 type ListAdminAccountsRes interface {
@@ -1285,6 +1293,10 @@ type UnlinkMyIdentityRes interface {
 
 type UnlockBackupRes interface {
 	unlockBackupRes()
+}
+
+type UpdateAdminAbilityCatalogueEntryRes interface {
+	updateAdminAbilityCatalogueEntryRes()
 }
 
 type UpdateClientRes interface {
