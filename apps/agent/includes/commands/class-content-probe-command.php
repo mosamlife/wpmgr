@@ -934,18 +934,26 @@ final class ContentProbeCommand implements CommandInterface
             }
         }
 
+        $wanted = [];
+        foreach ($descriptors as $d) {
+            if ($d['enabled'] && ($site['live'][$d['integration_id']]['live'] ?? false)) {
+                $wanted = array_merge($wanted, [$d['flag_key']], $d['payload_keys'], $d['draft_keys']);
+            }
+        }
+        $sizes = $this->metaSizes($id, array_values(array_unique($wanted)));
+
         try {
         foreach ($descriptors as $d) {
             if (!$d['enabled'] || !($site['live'][$d['integration_id']]['live'] ?? false)) {
                 continue;
             }
-            $flagRaw  = $this->metaBytes($id, $d['flag_key'], $budget);
+            $flagRaw  = $this->metaBytes($id, $d['flag_key'], $sizes, $budget);
             $flagOn   = $flagRaw !== null && in_array($flagRaw, $d['flag_on'], true);
             $payload  = [];
             $payloadBytes = 0;
             $payloadPresent = false;
             foreach ($d['payload_keys'] as $k) {
-                $payload[$k]   = $this->metaBytes($id, $k, $budget);
+                $payload[$k]   = $this->metaBytes($id, $k, $sizes, $budget);
                 $bytes        += strlen((string) $payload[$k]);
                 $payloadBytes += strlen((string) $payload[$k]);
                 $payloadPresent = $payloadPresent || $this->nonEmptyPayload($payload[$k]);
@@ -953,7 +961,7 @@ final class ContentProbeCommand implements CommandInterface
             $draft = [];
             $draftPresent = false;
             foreach ($d['draft_keys'] as $k) {
-                $draft[$k]     = $this->metaBytes($id, $k, $budget);
+                $draft[$k]     = $this->metaBytes($id, $k, $sizes, $budget);
                 $bytes        += strlen((string) $draft[$k]);
                 $draftPresent = $draftPresent || $this->nonEmptyPayload($draft[$k]);
             }
@@ -988,9 +996,8 @@ final class ContentProbeCommand implements CommandInterface
 
         // Unclaimed meta-prefix hints need the post's own meta keys.
         $hints = $site['site_hints'];
-        $metaKeys = $this->metaKeys($id);
         foreach ($site['meta_prefixes'] as $prefix) {
-            foreach ($metaKeys as $key) {
+            foreach ($this->metaKeysWithPrefix($id, $prefix) as $key) {
                 if (str_starts_with($key, $prefix) && !isset($claimed[$key])) {
                     $hints[] = 'meta_prefix:' . $prefix;
                     break;
@@ -1035,6 +1042,12 @@ final class ContentProbeCommand implements CommandInterface
         }
         if ($content === '') {
             return $base + $this->verdict('empty', 3, 'empty_page');
+        }
+
+        // The configured static front page is commonly rendered by a
+        // front-page template that need not use post_content.
+        if ($this->showsStaticFront() && (int) get_option('page_on_front', 0) === $id) {
+            return $base + $this->verdict('template_may_override', 3, 'template_may_override');
         }
 
         // 4. A site-level hint blocks route 1 unless every hinted builder has a
@@ -1099,16 +1112,25 @@ final class ContentProbeCommand implements CommandInterface
     }
 
     /**
+     * Whether the site is configured with a static front page.
+     *
+     * @return bool
+     */
+    private function showsStaticFront(): bool
+    {
+        return (string) get_option('show_on_front', 'posts') === 'page';
+    }
+
+    /**
      * @param int                       $id          Post ID.
      * @param list<array<string,mixed>> $descriptors Normalised descriptors.
      * @return bool
      */
     private function isSpecialPage(int $id, array $descriptors): bool
     {
-        if ((int) get_option('page_for_posts', 0) === $id) {
-            return true;
-        }
-        if ((string) get_option('show_on_front', 'posts') === 'posts' && (int) get_option('page_on_front', 0) === $id) {
+        // WordPress ignores page_for_posts and page_on_front unless the front
+        // page setting is 'page', so a leftover value is not a special page.
+        if ($this->showsStaticFront() && (int) get_option('page_for_posts', 0) === $id) {
             return true;
         }
         foreach ($descriptors as $d) {
@@ -1148,53 +1170,78 @@ final class ContentProbeCommand implements CommandInterface
     }
 
     /**
-     * Byte length of a stored meta value via a length-only query, or null when
-     * the database handle is unavailable.
+     * The database handle. Failing loudly beats a silent unbounded read.
      *
-     * @param int    $id  Post ID.
-     * @param string $key Meta key.
-     * @return int|null
+     * @return \wpdb
      */
-    private function storedLength(int $id, string $key): ?int
+    private function db(): object
     {
         global $wpdb;
-        if (!is_object($wpdb) || !method_exists($wpdb, 'get_var') || !method_exists($wpdb, 'prepare') || !isset($wpdb->postmeta)) {
-            return null;
+        if (!is_object($wpdb) || !isset($wpdb->postmeta)) {
+            throw new \RuntimeException('database handle unavailable');
         }
-        $len = $wpdb->get_var($wpdb->prepare("SELECT MAX(LENGTH(meta_value)) FROM {$wpdb->postmeta} WHERE post_id = %d AND meta_key = %s", $id, $key)); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- length-only read so a large value is never loaded; table name from core
-        return is_numeric($len) ? (int) $len : null;
+
+        return $wpdb;
     }
 
     /**
-     * Stored bytes of one meta key: null when the key is absent, the string as
-     * stored otherwise. Non-string values are serialised deterministically.
+     * Byte length of each requested meta key of one post, from a length-only
+     * query: no value is loaded. Absent keys are absent from the result.
      *
-     * @param int    $id  Post ID.
-     * @param string $key Meta key.
-     * @return string|null
+     * @param int          $id   Post ID.
+     * @param list<string> $keys Meta keys.
+     * @return array<string,int>
      */
-    private function metaBytes(int $id, string $key, int &$budget): ?string
+    private function metaSizes(int $id, array $keys): array
     {
-        if (!metadata_exists('post', $id, $key)) {
-            return null;
+        if ($keys === []) {
+            return [];
         }
-        // Size is checked before the value is loaded.
-        $length = $this->storedLength($id, $key);
-        if ($length !== null) {
-            $budget -= $length;
-            if ($budget < 0) {
-                throw new \LengthException('probe read budget exceeded');
+        $db           = $this->db();
+        $placeholders = implode(',', array_fill(0, count($keys), '%s'));
+        // phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.PreparedSQL.UnfinishedPrepare,WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare -- length-only read so a large value is never loaded; table name from core, placeholders generated per key
+        $rows = $db->get_results(
+            $db->prepare(
+                "SELECT meta_key, MAX(LENGTH(meta_value)) AS len FROM {$db->postmeta} WHERE post_id = %d AND meta_key IN ($placeholders) GROUP BY meta_key",
+                array_merge([$id], $keys)
+            )
+        );
+        // phpcs:enable
+        $out = [];
+        if (is_array($rows)) {
+            foreach ($rows as $row) {
+                $out[(string) $row->meta_key] = (int) $row->len;
             }
         }
-        $value = get_post_meta($id, $key, true);
-        if (is_string($value)) {
-            return $value;
-        }
-        if (is_scalar($value)) {
-            return (string) $value;
-        }
 
-        return serialize($value);
+        return $out;
+    }
+
+    /**
+     * Stored bytes of one meta key: null when the key is absent, the raw stored
+     * string otherwise. The size is charged against the read budget BEFORE the
+     * value is fetched, and only this one key is ever fetched.
+     *
+     * @param int               $id     Post ID.
+     * @param string            $key    Meta key.
+     * @param array<string,int> $sizes  Sizes from metaSizes().
+     * @param int               $budget Remaining read budget in bytes.
+     * @return string|null
+     */
+    private function metaBytes(int $id, string $key, array $sizes, int &$budget): ?string
+    {
+        if (!isset($sizes[$key])) {
+            return null;
+        }
+        $budget -= $sizes[$key];
+        if ($budget < 0) {
+            throw new \LengthException('probe read budget exceeded');
+        }
+        $db = $this->db();
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- one budget-checked value read by key; table name from core
+        $value = $db->get_var($db->prepare("SELECT meta_value FROM {$db->postmeta} WHERE post_id = %d AND meta_key = %s ORDER BY meta_id DESC LIMIT 1", $id, $key));
+
+        return is_string($value) ? $value : '';
     }
 
     /**
@@ -1207,17 +1254,19 @@ final class ContentProbeCommand implements CommandInterface
     }
 
     /**
-     * @param int $id Post ID.
+     * Meta key names of one post that start with a prefix (names only).
+     *
+     * @param int    $id     Post ID.
+     * @param string $prefix Key prefix.
      * @return list<string>
      */
-    private function metaKeys(int $id): array
+    private function metaKeysWithPrefix(int $id, string $prefix): array
     {
-        $all = get_post_meta($id);
-        if (!is_array($all)) {
-            return [];
-        }
+        $db = $this->db();
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- key names only, never values; table name from core
+        $keys = $db->get_col($db->prepare("SELECT DISTINCT meta_key FROM {$db->postmeta} WHERE post_id = %d AND meta_key LIKE %s LIMIT 50", $id, $db->esc_like($prefix) . '%'));
 
-        return array_map('strval', array_keys($all));
+        return is_array($keys) ? array_map('strval', $keys) : [];
     }
 
     /**
@@ -1228,18 +1277,22 @@ final class ContentProbeCommand implements CommandInterface
      */
     private function newestRevisionId(object $post): ?int
     {
-        $revisions = wp_get_post_revisions((int) $post->ID);
-        if (!is_array($revisions)) {
-            return null;
-        }
-        foreach ($revisions as $revision) {
-            if (!is_object($revision)) {
-                continue;
-            }
-            $parent = (int) $revision->post_parent;
-            if (str_contains((string) $revision->post_name, $parent . '-revision')) {
-                return (int) $revision->ID;
-            }
+        // Genuine revisions are named "<parent>-revision-v1"; autosaves carry a
+        // different name, so filtering on it excludes them. Only the newest id
+        // is fetched.
+        $ids = get_posts([
+            'post_type'      => 'revision',
+            'post_status'    => 'inherit',
+            'post_parent'    => (int) $post->ID,
+            'post_name__in'  => [(int) $post->ID . '-revision-v1'],
+            'posts_per_page' => 1,
+            'orderby'        => 'ID',
+            'order'          => 'DESC',
+            'fields'         => 'ids',
+            'no_found_rows'  => true,
+        ]);
+        if ($ids !== []) {
+            return (int) $ids[0];
         }
 
         return null;
