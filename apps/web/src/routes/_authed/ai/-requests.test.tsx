@@ -281,4 +281,34 @@ describe("a pending request beyond the first page stays reachable", () => {
     // The request for page two really asked for the next offset.
     expect(listMock).toHaveBeenCalledWith({ query: { limit: 50, offset: 50 } });
   });
+  it("keeps the loaded cards and their controls when Show more fails, with an inline retry", async () => {
+    const page1 = Array.from({ length: 49 }, (_, i) =>
+      pendingRequest({
+        id: `done-${i}`,
+        state: "withdrawn",
+        withdrawn_at: "2026-09-29T10:00:00Z",
+        presented_digest: undefined,
+      }),
+    );
+    page1.push(pendingRequest({ id: "loaded-pending", site_label: "Loaded Shop" }));
+    listMock.mockImplementation((opts: { query?: { offset?: number } }) => {
+      const offset = opts?.query?.offset ?? 0;
+      if (offset === 0) return ok({ requests: page1, pending_count: 1, limit: 50, offset: 0 });
+      return Promise.resolve({
+        data: undefined,
+        error: { code: "internal", message: "Boom." },
+        response: { status: 500 },
+      });
+    });
+    renderPage();
+    expect(await screen.findByText(/Loaded Shop/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("ai-requests-show-more"));
+
+    expect(await screen.findByTestId("ai-requests-next-page-error")).toBeInTheDocument();
+    expect(screen.getByTestId("ai-requests-next-page-retry")).toBeInTheDocument();
+    expect(screen.getByText(/Loaded Shop/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^approve$/i })).toBeInTheDocument();
+    expect(screen.queryByText(/could not load ai requests/i)).not.toBeInTheDocument();
+  });
 });

@@ -93,7 +93,7 @@ function AiRequestsPage() {
 
       {query.isPending ? (
         <RequestsSkeleton />
-      ) : query.isError ? (
+      ) : query.isError && loaded.length === 0 ? (
         <PageError
           what="Could not load AI requests."
           why={query.error.message}
@@ -128,6 +128,21 @@ function AiRequestsPage() {
             <p role="status" data-testid="ai-requests-more-pending" className="text-sm text-muted-foreground">
               {pendingCount - pendingLoaded} more waiting on older pages. Show more to reach them.
             </p>
+          )}
+          {query.isFetchNextPageError && (
+            <div role="alert" data-testid="ai-requests-next-page-error" className="text-sm text-destructive">
+              Could not load more requests. {query.error?.message}
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="ml-2"
+                data-testid="ai-requests-next-page-retry"
+                onClick={() => void query.fetchNextPage()}
+              >
+                Retry
+              </Button>
+            </div>
           )}
           {query.hasNextPage && (
             <Button
