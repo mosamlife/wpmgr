@@ -190,6 +190,7 @@ var AbilityRunRefusalCodes = map[string]struct{}{
 	"ability_denied":            {},
 	"ability_disabled":          {},
 	"ability_intercepted":       {},
+	"ability_not_admitted":      {},
 	"ability_not_runnable_yet":  {},
 	"ability_unknown":           {},
 	"bad_ability_name":          {},

@@ -171,6 +171,9 @@ final class AbilityRunCommand implements CommandInterface
         if (($entry->enabled ?? null) !== true) {
             return $this->fail('ability_disabled', 'the entry is not enabled');
         }
+        if (($entry->status ?? null) !== 'admitted') {
+            return $this->fail('ability_not_admitted', 'the entry is not admitted');
+        }
 
         // 4. The code denylist: fail-closed, before scope, not reducible by data.
         if (AbilityDenylist::denies($name)) {
@@ -184,7 +187,8 @@ final class AbilityRunCommand implements CommandInterface
         if (!OwnAbilities::has($name)) {
             return $this->fail('ability_unknown', 'this agent does not implement that ability');
         }
-        if (($entry->source ?? 'wpmgr') !== 'wpmgr') {
+        // No default: an entry without a source is not a WPMgr entry.
+        if (($entry->source ?? null) !== 'wpmgr') {
             return $this->fail('entry_source_mismatch', 'a wpmgr/ ability must have source wpmgr');
         }
 
