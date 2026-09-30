@@ -8718,19 +8718,19 @@ INSERT INTO content_integrations
     (integration_id, display_name, enabled, status, theme_slug, descriptor)
 VALUES
     ('beaver-builder', 'Beaver Builder', true, 'detect_only', NULL,
-     '{verified: false, version_constant: FL_BUILDER_VERSION, mode_flag: {meta_key: _fl_builder_enabled, on_values: [1]}, payload_keys: [_fl_builder_data], draft_keys: [_fl_builder_draft], singular_override: unknown, plugin_dir: bb-plugin}'::jsonb),
+     '{"verified": false, "version_constant": "FL_BUILDER_VERSION", "mode_flag": {"meta_key": "_fl_builder_enabled", "on_values": ["1"]}, "payload_keys": ["_fl_builder_data"], "draft_keys": ["_fl_builder_draft"], "singular_override": "unknown", "plugin_dir": "bb-plugin"}'::jsonb),
     ('breakdance', 'Breakdance', true, 'detect_only', NULL,
-     '{verified: false, mode_flag: {meta_key: _breakdance_data, on_values: [__wpmgr_unverified__]}, payload_keys: [_breakdance_data], singular_override: unknown, plugin_dir: breakdance}'::jsonb),
+     '{"verified": false, "mode_flag": {"meta_key": "_breakdance_data", "on_values": ["__wpmgr_unverified__"]}, "payload_keys": ["_breakdance_data"], "singular_override": "unknown", "plugin_dir": "breakdance"}'::jsonb),
     ('bricks', 'Bricks', true, 'detect_only', 'bricks',
-     '{verified: false, version_constant: BRICKS_VERSION, mode_flag: {meta_key: _bricks_editor_mode, on_values: [bricks]}, payload_keys: [_bricks_page_content_2, _bricks_page_header_2, _bricks_page_footer_2], singular_override: unknown}'::jsonb),
+     '{"verified": false, "version_constant": "BRICKS_VERSION", "mode_flag": {"meta_key": "_bricks_editor_mode", "on_values": ["bricks"]}, "payload_keys": ["_bricks_page_content_2", "_bricks_page_header_2", "_bricks_page_footer_2"], "singular_override": "unknown"}'::jsonb),
     ('divi', 'Divi', true, 'detect_only', 'Divi',
-     '{verified: false, version_constant: ET_BUILDER_VERSION, mode_flag: {meta_key: _et_pb_use_builder, on_values: [on]}, payload_keys: [_et_pb_use_builder], shortcode_prefixes: [et_pb_], singular_override: unknown}'::jsonb),
+     '{"verified": false, "version_constant": "ET_BUILDER_VERSION", "mode_flag": {"meta_key": "_et_pb_use_builder", "on_values": ["on"]}, "payload_keys": ["_et_pb_use_builder"], "shortcode_prefixes": ["et_pb_"], "singular_override": "unknown"}'::jsonb),
     ('elementor', 'Elementor', true, 'detect_only', NULL,
-     '{verified: false, version_constant: ELEMENTOR_VERSION, mode_flag: {meta_key: _elementor_edit_mode, on_values: [builder]}, payload_keys: [_elementor_data], singular_override: unknown, plugin_dir: elementor}'::jsonb),
+     '{"verified": false, "version_constant": "ELEMENTOR_VERSION", "mode_flag": {"meta_key": "_elementor_edit_mode", "on_values": ["builder"]}, "payload_keys": ["_elementor_data"], "singular_override": "unknown", "plugin_dir": "elementor"}'::jsonb),
     ('oxygen', 'Oxygen', true, 'detect_only', NULL,
-     '{verified: false, mode_flag: {meta_key: _oxygen_data, on_values: [__wpmgr_unverified__]}, payload_keys: [_oxygen_data, ct_builder_shortcodes], shortcode_prefixes: [ct_], singular_override: unknown, plugin_dir: oxygen}'::jsonb),
+     '{"verified": false, "mode_flag": {"meta_key": "_oxygen_data", "on_values": ["__wpmgr_unverified__"]}, "payload_keys": ["_oxygen_data", "ct_builder_shortcodes"], "shortcode_prefixes": ["ct_"], "singular_override": "unknown", "plugin_dir": "oxygen"}'::jsonb),
     ('wpbakery', 'WPBakery', true, 'detect_only', NULL,
-     '{verified: false, version_constant: WPB_VC_VERSION, mode_flag: {meta_key: _wpb_vc_js_status, on_values: [true]}, payload_keys: [_wpb_vc_js_status], shortcode_prefixes: [vc_], singular_override: unknown, plugin_dir: js_composer}'::jsonb)
+     '{"verified": false, "version_constant": "WPB_VC_VERSION", "mode_flag": {"meta_key": "_wpb_vc_js_status", "on_values": ["true"]}, "payload_keys": ["_wpb_vc_js_status"], "shortcode_prefixes": ["vc_"], "singular_override": "unknown", "plugin_dir": "js_composer"}'::jsonb)
 ON CONFLICT (integration_id) DO NOTHING;
 
 -- Skipped when the migration role is wpmgr_app itself; see the header.
