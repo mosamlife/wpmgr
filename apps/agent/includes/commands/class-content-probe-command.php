@@ -1176,8 +1176,9 @@ final class ContentProbeCommand implements CommandInterface
      */
     private function db(): object
     {
+        /** @var \wpdb $wpdb */
         global $wpdb;
-        if (!is_object($wpdb) || !isset($wpdb->postmeta)) {
+        if (!is_object($wpdb) || (string) $wpdb->postmeta === '') {
             throw new \RuntimeException('database handle unavailable');
         }
 
@@ -1202,7 +1203,7 @@ final class ContentProbeCommand implements CommandInterface
         // phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.PreparedSQL.UnfinishedPrepare,WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare -- length-only read so a large value is never loaded; table name from core, placeholders generated per key
         $rows = $db->get_results(
             $db->prepare(
-                "SELECT meta_key, MAX(LENGTH(meta_value)) AS len FROM {$db->postmeta} WHERE post_id = %d AND meta_key IN ($placeholders) GROUP BY meta_key",
+                "SELECT meta_key, MAX(LENGTH(meta_value)) AS len FROM {$db->postmeta} WHERE post_id = %d AND meta_key IN ($placeholders) GROUP BY meta_key", // @phpstan-ignore argument.type
                 array_merge([$id], $keys)
             )
         );
@@ -1239,7 +1240,7 @@ final class ContentProbeCommand implements CommandInterface
         }
         $db = $this->db();
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- one budget-checked value read by key; table name from core
-        $value = $db->get_var($db->prepare("SELECT meta_value FROM {$db->postmeta} WHERE post_id = %d AND meta_key = %s ORDER BY meta_id DESC LIMIT 1", $id, $key));
+        $value = $db->get_var($db->prepare("SELECT meta_value FROM {$db->postmeta} WHERE post_id = %d AND meta_key = %s ORDER BY meta_id DESC LIMIT 1", $id, $key)); // @phpstan-ignore argument.type
 
         return is_string($value) ? $value : '';
     }
@@ -1264,9 +1265,9 @@ final class ContentProbeCommand implements CommandInterface
     {
         $db = $this->db();
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- key names only, never values; table name from core
-        $keys = $db->get_col($db->prepare("SELECT DISTINCT meta_key FROM {$db->postmeta} WHERE post_id = %d AND meta_key LIKE %s LIMIT 50", $id, $db->esc_like($prefix) . '%'));
+        $keys = $db->get_col($db->prepare("SELECT DISTINCT meta_key FROM {$db->postmeta} WHERE post_id = %d AND meta_key LIKE %s LIMIT 50", $id, $db->esc_like($prefix) . '%')); // @phpstan-ignore argument.type
 
-        return is_array($keys) ? array_map('strval', $keys) : [];
+        return is_array($keys) ? array_values(array_map('strval', $keys)) : [];
     }
 
     /**
