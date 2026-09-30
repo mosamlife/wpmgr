@@ -7302,6 +7302,49 @@ CREATE POLICY mcp_grants_site_scope_delete ON mcp_grants
     AS RESTRICTIVE FOR DELETE
     USING (coalesce(current_setting('app.site_scope', true), '') <> 'on');
 
+-- mcp_grant_is_active (m152, GH #800): the one question a site-scoped session
+-- may ask about a grant, which mcp_grants_site_scope_select otherwise hides.
+-- Returns only a boolean; "no such grant", "another tenant's grant" and
+-- "inactive" are all false. "Active" is ReCheckMCPGrantAuthorizationInTenantTx's
+-- `authorized`. The function-level SET clause lifts app.site_scope for its own
+-- body only and restores it on exit; p_tenant must equal app.tenant_id. See the
+-- migration for the full rationale. Grants mirror the migration.
+CREATE OR REPLACE FUNCTION mcp_grant_is_active(p_tenant uuid, p_grant uuid)
+RETURNS boolean
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = public, pg_temp
+SET app.site_scope = ''
+AS $$
+DECLARE
+    v_caller uuid := nullif(current_setting('app.tenant_id', true), '')::uuid;
+    v_active boolean;
+BEGIN
+    IF p_tenant IS NULL OR p_grant IS NULL OR v_caller IS NULL
+       OR p_tenant <> v_caller THEN
+        RETURN false;
+    END IF;
+
+    SELECT COALESCE(g.status = 'active'
+            AND g.expires_at > now()
+            AND (g.idle_expire_after_days IS NULL
+                 OR COALESCE(g.last_used_at, g.created_at)
+                    + make_interval(days => g.idle_expire_after_days) > now())
+            AND tn.assistant_paused_at IS NULL,
+            false)
+      INTO v_active
+      FROM mcp_grants g
+      JOIN tenants tn ON tn.id = g.tenant_id
+     WHERE g.tenant_id = p_tenant
+       AND g.id = p_grant;
+
+    RETURN COALESCE(v_active, false);
+END;
+$$;
+REVOKE ALL ON FUNCTION mcp_grant_is_active(uuid, uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mcp_grant_is_active(uuid, uuid) TO wpmgr_app;
+
 -- Its own table, not a column on mcp_grants: rotation means two live tokens at
 -- once, and two live credentials cannot be two values of one column.
 CREATE TABLE mcp_connection_tokens (

@@ -3121,6 +3121,14 @@ type Querier interface {
 	// Also returns beacon_key_hash_prev so the handler can accept the grace-window
 	// previous key during rotation.
 	LookupRumBeaconKey(ctx context.Context, beaconKeyHash []byte) (LookupRumBeaconKeyRow, error)
+	// Runs in the connection's SITE-SCOPED transaction (runConnectionTx), where
+	// mcp_grants_site_scope_select hides every mcp_grants row. m152's
+	// mcp_grant_is_active answers the one question that transaction needs: is this
+	// grant, in this tenant, still active. Same verdict as the `authorized` column
+	// of ReCheckMCPGrantAuthorizationInTenantTx. tenant_id must be the tx's own
+	// app.tenant_id; a different value, a missing grant, or another tenant's grant
+	// all return false. Always exactly one row.
+	MCPGrantIsActiveInScopedTx(ctx context.Context, arg MCPGrantIsActiveInScopedTxParams) (bool, error)
 	// Used on the Redis-hot-path success: Redis already produced the payload, but
 	// we still UPDATE the PG row so the audit/observability story is complete.
 	// Idempotent: returns 0 if another path already marked it (safe).

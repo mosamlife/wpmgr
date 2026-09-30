@@ -689,6 +689,29 @@ func (q *Queries) ListMCPGrantsForOrg(ctx context.Context, tenantID uuid.UUID) (
 	return items, nil
 }
 
+const mCPGrantIsActiveInScopedTx = `-- name: MCPGrantIsActiveInScopedTx :one
+SELECT mcp_grant_is_active($1::uuid, $2::uuid)::boolean AS active
+`
+
+type MCPGrantIsActiveInScopedTxParams struct {
+	TenantID uuid.UUID `json:"tenant_id"`
+	GrantID  uuid.UUID `json:"grant_id"`
+}
+
+// Runs in the connection's SITE-SCOPED transaction (runConnectionTx), where
+// mcp_grants_site_scope_select hides every mcp_grants row. m152's
+// mcp_grant_is_active answers the one question that transaction needs: is this
+// grant, in this tenant, still active. Same verdict as the `authorized` column
+// of ReCheckMCPGrantAuthorizationInTenantTx. tenant_id must be the tx's own
+// app.tenant_id; a different value, a missing grant, or another tenant's grant
+// all return false. Always exactly one row.
+func (q *Queries) MCPGrantIsActiveInScopedTx(ctx context.Context, arg MCPGrantIsActiveInScopedTxParams) (bool, error) {
+	row := q.db.QueryRow(ctx, mCPGrantIsActiveInScopedTx, arg.TenantID, arg.GrantID)
+	var active bool
+	err := row.Scan(&active)
+	return active, err
+}
+
 const reCheckMCPGrantAuthorizationInTenantTx = `-- name: ReCheckMCPGrantAuthorizationInTenantTx :one
 SELECT
     g.id                          AS grant_id,
