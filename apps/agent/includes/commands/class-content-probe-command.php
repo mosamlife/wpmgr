@@ -997,7 +997,7 @@ final class ContentProbeCommand implements CommandInterface
         // Unclaimed meta-prefix hints need the post's own meta keys.
         $hints = $site['site_hints'];
         foreach ($site['meta_prefixes'] as $prefix) {
-            foreach ($this->metaKeysWithPrefix($id, $prefix) as $key) {
+            foreach ($this->metaKeysWithPrefix($id, $prefix, array_map('strval', array_keys($claimed))) as $key) {
                 if (str_starts_with($key, $prefix) && !isset($claimed[$key])) {
                     $hints[] = 'meta_prefix:' . $prefix;
                     break;
@@ -1208,14 +1208,31 @@ final class ContentProbeCommand implements CommandInterface
             )
         );
         // phpcs:enable
+        // A failed query (null result or a recorded error) fails the probe; it
+        // is never read as "no such meta".
+        if (!is_array($rows)) {
+            throw new \RuntimeException('database read failed');
+        }
+        $this->assertQueryOk($db);
         $out = [];
-        if (is_array($rows)) {
-            foreach ($rows as $row) {
-                $out[(string) $row->meta_key] = (int) $row->len;
-            }
+        foreach ($rows as $row) {
+            $out[(string) $row->meta_key] = (int) $row->len;
         }
 
         return $out;
+    }
+
+    /**
+     * Fails the probe when the last query recorded an error.
+     *
+     * @param \wpdb $db Database handle.
+     * @return void
+     */
+    private function assertQueryOk(object $db): void
+    {
+        if ((string) $db->last_error !== '') {
+            throw new \RuntimeException('database read failed');
+        }
     }
 
     /**
@@ -1240,9 +1257,14 @@ final class ContentProbeCommand implements CommandInterface
         }
         $db = $this->db();
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- one budget-checked value read by key; table name from core
-        $value = $db->get_var($db->prepare("SELECT meta_value FROM {$db->postmeta} WHERE post_id = %d AND meta_key = %s ORDER BY meta_id DESC LIMIT 1", $id, $key)); // @phpstan-ignore argument.type
+        $value = $db->get_var($db->prepare("SELECT meta_value FROM {$db->postmeta} WHERE post_id = %d AND meta_key = %s ORDER BY meta_id ASC LIMIT 1", $id, $key)); // @phpstan-ignore argument.type
+        // The size query found this key, so a missing value means the read failed.
+        $this->assertQueryOk($db);
+        if (!is_string($value)) {
+            throw new \RuntimeException('database read failed');
+        }
 
-        return is_string($value) ? $value : '';
+        return $value;
     }
 
     /**
@@ -1259,15 +1281,27 @@ final class ContentProbeCommand implements CommandInterface
      *
      * @param int    $id     Post ID.
      * @param string $prefix Key prefix.
+     * @param list<string> $claimed Keys already claimed by a descriptor; excluded in SQL.
      * @return list<string>
      */
-    private function metaKeysWithPrefix(int $id, string $prefix): array
+    private function metaKeysWithPrefix(int $id, string $prefix, array $claimed): array
     {
-        $db = $this->db();
-        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- key names only, never values; table name from core
-        $keys = $db->get_col($db->prepare("SELECT DISTINCT meta_key FROM {$db->postmeta} WHERE post_id = %d AND meta_key LIKE %s LIMIT 50", $id, $db->esc_like($prefix) . '%')); // @phpstan-ignore argument.type
+        $db   = $this->db();
+        $args = [$id, $db->esc_like($prefix) . '%'];
+        $not  = '';
+        if ($claimed !== []) {
+            $not  = ' AND meta_key NOT IN (' . implode(',', array_fill(0, count($claimed), '%s')) . ')';
+            $args = array_merge($args, $claimed);
+        }
+        // phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare -- key names only, never values; table name from core, placeholders generated per key
+        $keys = $db->get_col($db->prepare("SELECT DISTINCT meta_key FROM {$db->postmeta} WHERE post_id = %d AND meta_key LIKE %s{$not} LIMIT 50", $args)); // @phpstan-ignore argument.type
+        // phpcs:enable
+        if (!is_array($keys)) {
+            throw new \RuntimeException('database read failed');
+        }
+        $this->assertQueryOk($db);
 
-        return is_array($keys) ? array_values(array_map('strval', $keys)) : [];
+        return array_values(array_map('strval', $keys));
     }
 
     /**
@@ -1278,25 +1312,16 @@ final class ContentProbeCommand implements CommandInterface
      */
     private function newestRevisionId(object $post): ?int
     {
-        // Genuine revisions are named "<parent>-revision-v1"; autosaves carry a
-        // different name, so filtering on it excludes them. Only the newest id
-        // is fetched.
-        $ids = get_posts([
-            'post_type'      => 'revision',
-            'post_status'    => 'inherit',
-            'post_parent'    => (int) $post->ID,
-            'post_name__in'  => [(int) $post->ID . '-revision-v1'],
-            'posts_per_page' => 1,
-            'orderby'        => 'ID',
-            'order'          => 'DESC',
-            'fields'         => 'ids',
-            'no_found_rows'  => true,
-        ]);
-        if ($ids !== []) {
-            return (int) $ids[0];
-        }
+        // A genuine revision carries the "<parent>-revision" marker in its
+        // name (any suffix, so imported names still count); autosaves use a
+        // different marker and never match. Only the newest id is fetched.
+        $parent = (int) $post->ID;
+        $db     = $this->db();
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- newest revision id only; table name from core
+        $id = $db->get_var($db->prepare("SELECT ID FROM {$db->posts} WHERE post_type = 'revision' AND post_parent = %d AND post_name LIKE %s ORDER BY post_date DESC, ID DESC LIMIT 1", $parent, $db->esc_like($parent . '-revision') . '%')); // @phpstan-ignore argument.type
+        $this->assertQueryOk($db);
 
-        return null;
+        return is_numeric($id) ? (int) $id : null;
     }
 
     /**
