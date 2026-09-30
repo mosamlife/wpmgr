@@ -57,6 +57,8 @@ require (
 	github.com/go-fonts/dejavu v0.3.4
 	github.com/go-webauthn/webauthn v0.17.4
 	github.com/pquerna/otp v1.5.0
+	github.com/riverqueue/river/rivershared v0.38.0
+	github.com/riverqueue/river/rivertype v0.38.0
 	github.com/stripe/stripe-go/v86 v86.1.0
 	github.com/tdewolff/font v0.0.0-20260527091451-1663e68cb8a4
 	golang.org/x/crypto v0.54.0
@@ -183,8 +185,6 @@ require (
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/quic-go/quic-go v0.59.1 // indirect
 	github.com/riverqueue/river/riverdriver v0.38.0 // indirect
-	github.com/riverqueue/river/rivershared v0.38.0 // indirect
-	github.com/riverqueue/river/rivertype v0.38.0 // indirect
 	github.com/riza-io/grpc-go v0.2.0 // indirect
 	github.com/segmentio/asm v1.2.1 // indirect
 	github.com/shirou/gopsutil/v4 v4.26.3 // indirect
@@ -208,6 +208,7 @@ require (
 	github.com/wasilibs/go-pgquery v0.0.0-20250409022910-10ac41983c07 // indirect
 	github.com/wasilibs/wazero-helpers v0.0.0-20240620070341-3dff1577cd52 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
+	github.com/yuin/goldmark v1.8.2 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	go.mongodb.org/mongo-driver/v2 v2.5.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
