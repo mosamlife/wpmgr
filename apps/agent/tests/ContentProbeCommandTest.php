@@ -340,6 +340,35 @@ final class ContentProbeCommandTest extends TestCase
         $this->assertFalse($r['matches'][0]['mode_flag']);
     }
 
+    public function test_empty_content_with_a_matching_descriptor_is_a_builder_page_not_empty(): void
+    {
+        $this->seedPost(70, '');
+        $this->meta[70] = ['_acme_enabled' => '1', '_acme_data' => '{"layout":true}'];
+        if (!defined('WPMGR_PROBE_B2_VERSION')) {
+            define('WPMGR_PROBE_B2_VERSION', '1.2.3');
+        }
+
+        $r = $this->probe(['post_id' => 70, 'descriptors' => [$this->descriptor(['version_constant' => 'WPMGR_PROBE_B2_VERSION'])]]);
+
+        $this->assertSame('builder', $r['verdict']);
+        $this->assertSame('acme-builder', $r['owner']['integration_id']);
+        $this->assertSame(3, $r['route']['number']);
+    }
+
+    public function test_empty_content_with_no_match_stays_empty(): void
+    {
+        $this->seedPost(71, '');
+        if (!defined('WPMGR_PROBE_B2_VERSION')) {
+            define('WPMGR_PROBE_B2_VERSION', '1.2.3');
+        }
+
+        $r = $this->probe(['post_id' => 71, 'descriptors' => [$this->descriptor(['version_constant' => 'WPMGR_PROBE_B2_VERSION'])]]);
+
+        $this->assertSame('empty', $r['verdict']);
+        $this->assertSame('empty_page', $r['route']['reason']);
+        $this->assertSame([], $r['matches']);
+    }
+
     public function test_stale_payload_is_never_classic(): void
     {
         $this->seedPost(16, 'Looks classic.');
