@@ -8,7 +8,7 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ### Added
 
-- A new content_probe agent command reports, for a post or page, which editor owns its content (the classic editor, the block editor or a page builder), whether it is a special page such as the blog index or front page, and which write route may touch it. It is read-only, changes nothing on the site and reports no page content or metadata values. It can inspect one item or return a paginated list, and reports revision, editor-lock and content fingerprint details for a single item. The control plane does not call it yet (#807). Agent 0.61.154.
+- A new content_probe agent command reports, for a post or page, which editor owns its content (the classic editor, the block editor or a page builder), whether it is a special page such as the blog index, or a static front page whose theme template may not use its content, and which write route may touch it. It is read-only, changes nothing on the site and reports no page content or metadata values. It can inspect one item or return a paginated list, and reports revision, editor-lock and content fingerprint details for a single item (#807). Agent 0.61.154.
 - Opt-in login admission budgets for POST /auth/login. WPMGR_AUTH_LOGIN_MODE=enforce refuses a sign in attempt that is over the pair, source, or source /48 budget with 429 too_many_attempts and a Retry-After header, but never over the account budget alone. observe remains the default and refuses nothing on budget grounds; a separate verification-concurrency limit still answers 503 server_busy with a Retry-After header in either mode (#718).
 
 ### Changed
