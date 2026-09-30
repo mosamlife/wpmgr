@@ -385,6 +385,7 @@ final class ContentProbeCommand implements CommandInterface
             'ability_names'        => [self::RE_ABILITY, 16, 0],
             'dynamic_enum_paths'   => [self::RE_ENUM_PATH, 16, 0],
         ];
+        /** @var array<string,list<string>> $out */
         $out = [];
         foreach ($lists as $field => [$regex, $max, $min]) {
             $list = $this->stringList($raw[$field] ?? [], $regex, $max, $min);
@@ -418,7 +419,7 @@ final class ContentProbeCommand implements CommandInterface
             'version_constant'     => $constant,
             'version_ability'      => $versionAbility,
             'flag_key'             => $flagKey,
-            'flag_on'              => array_values($on),
+            'flag_on'              => $on,
             'payload_keys'         => $out['payload_keys'],
             'draft_keys'           => $out['draft_keys'],
             'shortcode_prefixes'   => $out['shortcode_prefixes'],
@@ -471,10 +472,11 @@ final class ContentProbeCommand implements CommandInterface
                 '_ability'            => $ability,
             ];
         }
+        /** @var array<string,list<string>> $dynamicPaths */
         $dynamicPaths = [];
         foreach ($descriptors as $d) {
             foreach ($d['ability_names'] as $n) {
-                $dynamicPaths[$n] = array_merge($dynamicPaths[$n] ?? [], $d['dynamic_enum_paths']);
+                $dynamicPaths[$n] = array_values(array_merge($dynamicPaths[$n] ?? [], $d['dynamic_enum_paths']));
             }
         }
         foreach ($allowlisted as $i => $row) {
@@ -571,7 +573,7 @@ final class ContentProbeCommand implements CommandInterface
         $found = [];
         try {
             $all = wp_get_abilities();
-            if (is_array($all)) {
+            if ($all !== []) {
                 foreach ($all as $ability) {
                     if (is_object($ability) && method_exists($ability, 'get_name')) {
                         $name = $ability->get_name();
@@ -725,7 +727,7 @@ final class ContentProbeCommand implements CommandInterface
         $revision = $this->newestRevisionId($post);
         $contentV1 = $this->contentFingerprint($title, $content);
 
-        $modified = (string) ($post->post_modified_gmt ?? '');
+        $modified = (string) $post->post_modified_gmt;
         $matchRaw = $eval['match_raw'];
         $liveParts = [$contentV1];
         $docParts  = [$contentV1];
@@ -764,7 +766,7 @@ final class ContentProbeCommand implements CommandInterface
                 'modified_gmt'     => $modified,
                 'title_bytes'      => strlen($title),
                 'content_bytes'    => strlen($content),
-                'has_password'     => (string) ($post->post_password ?? '') !== '',
+                'has_password'     => (string) $post->post_password !== '',
                 'newest_revision_id' => $revision,
                 'last_editor'      => $this->lastEditor($id),
             ],
@@ -815,9 +817,6 @@ final class ContentProbeCommand implements CommandInterface
             'no_found_rows'    => true,
             'suppress_filters' => true,
         ]);
-        if (!is_array($ids)) {
-            $ids = [];
-        }
 
         $rows = [];
         foreach ($ids as $rawId) {
@@ -872,17 +871,17 @@ final class ContentProbeCommand implements CommandInterface
     /**
      * Refusals for a post that cannot be probed, or null.
      *
-     * @param object       $post    Post.
+     * @param \WP_Post       $post    Post.
      * @param list<string> $allowed Allowed post types.
      * @return array<string,mixed>|null
      */
     private function postRefusal(object $post, array $allowed): ?array
     {
         $id = (int) $post->ID;
-        if ((string) ($post->post_status ?? '') === 'trash') {
+        if ((string) $post->post_status === 'trash') {
             return $this->fail('post_in_trash', 'post ' . $id . ' is in the trash');
         }
-        $type = (string) ($post->post_type ?? '');
+        $type = (string) $post->post_type;
         if (!in_array($type, $allowed, true)) {
             return $this->fail('post_type_not_allowed', 'post ' . $id . ' is of a type this request did not allow');
         }
@@ -896,7 +895,7 @@ final class ContentProbeCommand implements CommandInterface
     /**
      * Verdict, matches and route for one post, from the descriptors alone.
      *
-     * @param object                    $post        Post.
+     * @param \WP_Post                    $post        Post.
      * @param list<array<string,mixed>> $descriptors Normalised descriptors.
      * @param array<string,mixed>       $site        Site context.
      * @return array<string,mixed>
@@ -1113,13 +1112,13 @@ final class ContentProbeCommand implements CommandInterface
      * Cache-cleaned post read.
      *
      * @param int $postId Post ID.
-     * @return object|null
+     * @return \WP_Post|null
      */
     private function readStored(int $postId): ?object
     {
         clean_post_cache($postId);
         $post = get_post($postId);
-        if (!is_object($post) || !isset($post->ID) || (int) $post->ID !== $postId) {
+        if (!is_object($post) || (int) $post->ID !== $postId) {
             return null;
         }
 
@@ -1176,7 +1175,7 @@ final class ContentProbeCommand implements CommandInterface
     /**
      * Newest genuine revision ID, autosaves excluded.
      *
-     * @param object $post Post.
+     * @param \WP_Post $post Post.
      * @return int|null
      */
     private function newestRevisionId(object $post): ?int
@@ -1186,10 +1185,10 @@ final class ContentProbeCommand implements CommandInterface
             return null;
         }
         foreach ($revisions as $revision) {
-            if (!is_object($revision) || !isset($revision->post_name)) {
+            if (!is_object($revision)) {
                 continue;
             }
-            $parent = isset($revision->post_parent) ? (int) $revision->post_parent : (int) $post->ID;
+            $parent = (int) $revision->post_parent;
             if (str_contains((string) $revision->post_name, $parent . '-revision')) {
                 return (int) $revision->ID;
             }
@@ -1229,7 +1228,7 @@ final class ContentProbeCommand implements CommandInterface
         if (!is_string($raw) || preg_match('/^(\d{1,12}):(\d{1,12})$/', $raw, $m) !== 1) {
             return $none;
         }
-        $window = (int) apply_filters('wp_check_post_lock_window', 150);
+        $window = (int) apply_filters('wp_check_post_lock_window', 150); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- core's own lock-window filter, read so the reported lock matches core
         if ((int) $m[1] <= time() - $window) {
             return $none;
         }
@@ -1250,21 +1249,21 @@ final class ContentProbeCommand implements CommandInterface
     // ---------------------------------------------------------------------
 
     /**
-     * @param object $post Post.
+     * @param \WP_Post $post Post.
      * @return string
      */
     private function title(object $post): string
     {
-        return (string) ($post->post_title ?? '');
+        return (string) $post->post_title;
     }
 
     /**
-     * @param object $post Post.
+     * @param \WP_Post $post Post.
      * @return string
      */
     private function content(object $post): string
     {
-        return (string) ($post->post_content ?? '');
+        return (string) $post->post_content;
     }
 
     /**
