@@ -428,6 +428,7 @@ type ContentIntegration struct {
 	CreatedAt              time.Time   `json:"created_at"`
 	UpdatedAt              time.Time   `json:"updated_at"`
 	UpdatedByUserID        pgtype.UUID `json:"updated_by_user_id"`
+	ThemeSlug              *string     `json:"theme_slug"`
 }
 
 type ContentIntegrationsAudit struct {
@@ -1077,6 +1078,14 @@ type SiteContentInventory struct {
 	Fingerprint        *string   `json:"fingerprint"`
 	Title              *string   `json:"title"`
 	CheckedAt          time.Time `json:"checked_at"`
+}
+
+type SiteContentInventoryRun struct {
+	TenantID    uuid.UUID `json:"tenant_id"`
+	SiteID      uuid.UUID `json:"site_id"`
+	CheckedAt   time.Time `json:"checked_at"`
+	PagesStored int32     `json:"pages_stored"`
+	Truncated   bool      `json:"truncated"`
 }
 
 type SiteContextVersion struct {
