@@ -14,6 +14,8 @@ import {
   allCapabilityEffectsKnown,
   allScopesRecognised,
   buildApprovalCapabilities,
+  CAPABILITY_EFFECT_READ,
+  CAPABILITY_EFFECT_REQUEST,
   describeScope,
   SCOPE_CACHE,
   SCOPE_SITE,
@@ -237,6 +239,12 @@ function PermissionsBlock({
             requestChecked={abilityRequestTicked}
             onReadChange={onAbilityReadChange}
             onRequestChange={onAbilityRequestChange}
+            readOffered={consent.conferrableCapabilities.some(
+              (c) => c.name === "mcp.ability.read" && c.effect === CAPABILITY_EFFECT_READ,
+            )}
+            requestOffered={consent.conferrableCapabilities.some(
+              (c) => c.name === "mcp.ability.request" && c.effect === CAPABILITY_EFFECT_REQUEST,
+            )}
           />
         </div>
       )}

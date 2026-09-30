@@ -16,6 +16,9 @@ export interface AbilityCapabilityBoxProps {
   readonly onReadChange: (checked: boolean) => void;
   readonly onRequestChange: (checked: boolean) => void;
   readonly disabled?: boolean;
+  /** False when the server did not offer that capability to this app. Default true. */
+  readonly readOffered?: boolean;
+  readonly requestOffered?: boolean;
 }
 
 export function AbilityCapabilityBox({
@@ -24,9 +27,21 @@ export function AbilityCapabilityBox({
   onReadChange,
   onRequestChange,
   disabled,
+  readOffered = true,
+  requestOffered = true,
 }: AbilityCapabilityBoxProps) {
-  const state = { "mcp.ability.read": readChecked, "mcp.ability.request": requestChecked };
-  const change = { "mcp.ability.read": onReadChange, "mcp.ability.request": onRequestChange };
+  const offered = {
+    "mcp.ability.read": readOffered,
+    "mcp.ability.request": requestOffered,
+  };
+  const state = {
+    "mcp.ability.read": readChecked,
+    "mcp.ability.request": requestChecked,
+  };
+  const change = {
+    "mcp.ability.read": onReadChange,
+    "mcp.ability.request": onRequestChange,
+  };
   return (
     <div
       data-testid="ability-capability-box"
@@ -36,32 +51,43 @@ export function AbilityCapabilityBox({
         Site tools
       </p>
       <ul className="space-y-2">
-        {ROWS.map((cap) => (
-          <li key={cap}>
-            <label
-              className={cn(
-                "flex items-start gap-2 rounded-md border border-[var(--color-border)] p-2 text-sm",
-                disabled === true && "cursor-not-allowed opacity-70",
-              )}
-            >
-              <Checkbox
-                className="mt-0.5"
-                data-testid={`ability-box-${cap}`}
-                checked={state[cap]}
-                disabled={disabled}
-                onChange={(e) => change[cap](e.target.checked)}
-              />
-              <span>
-                <span className="block font-medium text-[var(--color-foreground)]">
-                  {capabilityLabel(cap)}
+        {ROWS.map((cap) => {
+          const off = !offered[cap];
+          return (
+            <li key={cap}>
+              <label
+                className={cn(
+                  "flex items-start gap-2 rounded-md border border-[var(--color-border)] p-2 text-sm",
+                  (disabled === true || off) && "cursor-not-allowed opacity-70",
+                )}
+              >
+                <Checkbox
+                  className="mt-0.5"
+                  data-testid={`ability-box-${cap}`}
+                  checked={state[cap] && !off}
+                  disabled={disabled === true || off}
+                  onChange={(e) => change[cap](e.target.checked)}
+                />
+                <span>
+                  <span className="block font-medium text-[var(--color-foreground)]">
+                    {capabilityLabel(cap)}
+                  </span>
+                  <span className="block text-xs text-[var(--color-muted-foreground)]">
+                    {CAPABILITY_DESCRIPTIONS[cap]}
+                  </span>
+                  {off ? (
+                    <span
+                      data-testid={`ability-not-offered-${cap}`}
+                      className="mt-1 block text-xs font-medium text-[var(--color-muted-foreground)]"
+                    >
+                      Not requested by this app
+                    </span>
+                  ) : null}
                 </span>
-                <span className="block text-xs text-[var(--color-muted-foreground)]">
-                  {CAPABILITY_DESCRIPTIONS[cap]}
-                </span>
-              </span>
-            </label>
-          </li>
-        ))}
+              </label>
+            </li>
+          );
+        })}
       </ul>
     </div>
   );
