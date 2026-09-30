@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/humantext"
 )
@@ -112,8 +113,11 @@ func ValidateInventory(output json.RawMessage) (InventoryResult, error) {
 		if a.Version != nil && versionRe.MatchString(*a.Version) {
 			row.OwnerVersion = *a.Version
 		}
-		if a.SchemaStructSHA256 != nil && hex64Re.MatchString(*a.SchemaStructSHA256) {
-			row.SchemaStructSHA256 = *a.SchemaStructSHA256
+		// The agent reports "sha256:<hex>"; the column holds bare hex.
+		if a.SchemaStructSHA256 != nil {
+			if h := strings.TrimPrefix(*a.SchemaStructSHA256, "sha256:"); hex64Re.MatchString(h) {
+				row.SchemaStructSHA256 = h
+			}
 		}
 		if a.FromTheSite != nil {
 			// CapRunes(s, n) yields up to n+1 runes (it appends an ellipsis),
