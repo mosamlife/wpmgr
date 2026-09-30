@@ -41,6 +41,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/agent"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentrelease"
 	"github.com/mosamlife/wpmgr/apps/api/internal/apikey"
+	"github.com/mosamlife/wpmgr/apps/api/internal/assistantrequest"
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/auth"
 	"github.com/mosamlife/wpmgr/apps/api/internal/autologin"
@@ -56,6 +57,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/govcontext"
 	"github.com/mosamlife/wpmgr/apps/api/internal/invitation"
 	"github.com/mosamlife/wpmgr/apps/api/internal/loginbrand"
+	"github.com/mosamlife/wpmgr/apps/api/internal/mcp"
 	mediahandler "github.com/mosamlife/wpmgr/apps/api/internal/media/handler"
 	mediarepo "github.com/mosamlife/wpmgr/apps/api/internal/media/repo"
 	mediaservice "github.com/mosamlife/wpmgr/apps/api/internal/media/service"
@@ -400,6 +402,11 @@ func buildFullEngine(t *testing.T, pool *db.Pool) *gin.Engine {
 	pricingSvc := pricing.NewService(billing.NewRegistry(), nil, logger)
 	pricingH := pricing.NewHandler(pricingSvc)
 
+	// The AI request queue and its site-nested approve and decline routes.
+	mcpRepo := mcp.NewRepo(pool)
+	assistantReqH := assistantrequest.NewHandler(assistantrequest.NewService(
+		assistantrequest.NewRepo(pool), mcpRepo, mcp.NewService(mcpRepo), auditRec, logger))
+
 	deps := server.Deps{
 		Config:                 config.Config{},
 		Logger:                 logger,
@@ -410,6 +417,7 @@ func buildFullEngine(t *testing.T, pool *db.Pool) *gin.Engine {
 		MembersH:               auth.NewMembersHandler(authSvc, nil),
 		APIKeyH:                apikey.NewHandler(apiKeySvc, auditRec),
 		AuditH:                 audit.NewHandler(auditRec),
+		AssistantRequestH:      assistantReqH,
 		TenantH:                tenant.NewHandler(tenantSvc, auditRec),
 		SiteH:                  siteH,
 		SiteEventsH:            siteEventsH,

@@ -8967,6 +8967,26 @@ func (s *ApplyUploadResult) SetMtime(val int64) {
 
 func (*ApplyUploadResult) applySiteFileUploadRes() {}
 
+type ApproveAssistantRequestConflict Error
+
+func (*ApproveAssistantRequestConflict) approveAssistantRequestRes() {}
+
+type ApproveAssistantRequestForbidden Error
+
+func (*ApproveAssistantRequestForbidden) approveAssistantRequestRes() {}
+
+type ApproveAssistantRequestInternalServerError Error
+
+func (*ApproveAssistantRequestInternalServerError) approveAssistantRequestRes() {}
+
+type ApproveAssistantRequestNotFound Error
+
+func (*ApproveAssistantRequestNotFound) approveAssistantRequestRes() {}
+
+type ApproveAssistantRequestUnsupportedMediaType Error
+
+func (*ApproveAssistantRequestUnsupportedMediaType) approveAssistantRequestRes() {}
+
 // ArchiveSiteNoContent is response for ArchiveSite operation.
 type ArchiveSiteNoContent struct{}
 
@@ -9029,6 +9049,811 @@ func (*AssignSitesToClientForbidden) assignSitesToClientRes() {}
 type AssignSitesToClientUnauthorized Error
 
 func (*AssignSitesToClientUnauthorized) assignSitesToClientRes() {}
+
+// One AI cache-clear request. `site_label`, `site_host`, `grant_label`, `url` and `site_reported_text`
+// came from a site or an AI connection: render each as plain text, never as markup, a link or a
+// tooltip. The card state follows from `state` and `outcome` together.
+// Ref: #/components/schemas/AssistantRequest
+type AssistantRequest struct {
+	ID     uuid.UUID             `json:"id"`
+	SiteID uuid.UUID             `json:"site_id"`
+	Scope  AssistantRequestScope `json:"scope"`
+	// The page address for scope url, as stored; null for all.
+	URL       NilString `json:"url"`
+	SiteLabel string    `json:"site_label"`
+	// The site's host in the ASCII form WPMgr dials (Punycode for an internationalised name).
+	SiteHost    string    `json:"site_host"`
+	GrantLabel  string    `json:"grant_label"`
+	GrantVia    string    `json:"grant_via"`
+	SetupClient NilString `json:"setup_client"`
+	// Present only for a person signed in to the dashboard. Send it back to approve.
+	PresentedDigest OptString             `json:"presented_digest"`
+	State           AssistantRequestState `json:"state"`
+	CreatedAt       time.Time             `json:"created_at"`
+	ExpiresAt       time.Time             `json:"expires_at"`
+	DecidedAt       NilDateTime           `json:"decided_at"`
+	DecidedByUserID NilUUID               `json:"decided_by_user_id"`
+	DecidedByName   NilString             `json:"decided_by_name"`
+	// True when the request names a decider whose account has since been deleted.
+	DecidedByAccountDeleted bool                               `json:"decided_by_account_deleted"`
+	WithdrawnAt             NilDateTime                        `json:"withdrawn_at"`
+	ClaimedAt               NilDateTime                        `json:"claimed_at"`
+	DispatchAttempts        int32                              `json:"dispatch_attempts"`
+	LastAttemptAt           NilDateTime                        `json:"last_attempt_at"`
+	LastAttemptCode         NilAssistantRequestLastAttemptCode `json:"last_attempt_code"`
+	Outcome                 NilAssistantRequestOutcome         `json:"outcome"`
+	NotSentReason           NilAssistantRequestNotSentReason   `json:"not_sent_reason"`
+	OutcomeAt               NilDateTime                        `json:"outcome_at"`
+	HostingCachesCleared    []string                           `json:"hosting_caches_cleared"`
+	HostingCachesSkipped    []string                           `json:"hosting_caches_skipped"`
+	OriginOnlyConfirmed     NilBool                            `json:"origin_only_confirmed"`
+	WpmgrCDN                NilAssistantRequestWpmgrCDN        `json:"wpmgr_cdn"`
+	SiteReportedText        NilString                          `json:"site_reported_text"`
+}
+
+// GetID returns the value of ID.
+func (s *AssistantRequest) GetID() uuid.UUID {
+	return s.ID
+}
+
+// GetSiteID returns the value of SiteID.
+func (s *AssistantRequest) GetSiteID() uuid.UUID {
+	return s.SiteID
+}
+
+// GetScope returns the value of Scope.
+func (s *AssistantRequest) GetScope() AssistantRequestScope {
+	return s.Scope
+}
+
+// GetURL returns the value of URL.
+func (s *AssistantRequest) GetURL() NilString {
+	return s.URL
+}
+
+// GetSiteLabel returns the value of SiteLabel.
+func (s *AssistantRequest) GetSiteLabel() string {
+	return s.SiteLabel
+}
+
+// GetSiteHost returns the value of SiteHost.
+func (s *AssistantRequest) GetSiteHost() string {
+	return s.SiteHost
+}
+
+// GetGrantLabel returns the value of GrantLabel.
+func (s *AssistantRequest) GetGrantLabel() string {
+	return s.GrantLabel
+}
+
+// GetGrantVia returns the value of GrantVia.
+func (s *AssistantRequest) GetGrantVia() string {
+	return s.GrantVia
+}
+
+// GetSetupClient returns the value of SetupClient.
+func (s *AssistantRequest) GetSetupClient() NilString {
+	return s.SetupClient
+}
+
+// GetPresentedDigest returns the value of PresentedDigest.
+func (s *AssistantRequest) GetPresentedDigest() OptString {
+	return s.PresentedDigest
+}
+
+// GetState returns the value of State.
+func (s *AssistantRequest) GetState() AssistantRequestState {
+	return s.State
+}
+
+// GetCreatedAt returns the value of CreatedAt.
+func (s *AssistantRequest) GetCreatedAt() time.Time {
+	return s.CreatedAt
+}
+
+// GetExpiresAt returns the value of ExpiresAt.
+func (s *AssistantRequest) GetExpiresAt() time.Time {
+	return s.ExpiresAt
+}
+
+// GetDecidedAt returns the value of DecidedAt.
+func (s *AssistantRequest) GetDecidedAt() NilDateTime {
+	return s.DecidedAt
+}
+
+// GetDecidedByUserID returns the value of DecidedByUserID.
+func (s *AssistantRequest) GetDecidedByUserID() NilUUID {
+	return s.DecidedByUserID
+}
+
+// GetDecidedByName returns the value of DecidedByName.
+func (s *AssistantRequest) GetDecidedByName() NilString {
+	return s.DecidedByName
+}
+
+// GetDecidedByAccountDeleted returns the value of DecidedByAccountDeleted.
+func (s *AssistantRequest) GetDecidedByAccountDeleted() bool {
+	return s.DecidedByAccountDeleted
+}
+
+// GetWithdrawnAt returns the value of WithdrawnAt.
+func (s *AssistantRequest) GetWithdrawnAt() NilDateTime {
+	return s.WithdrawnAt
+}
+
+// GetClaimedAt returns the value of ClaimedAt.
+func (s *AssistantRequest) GetClaimedAt() NilDateTime {
+	return s.ClaimedAt
+}
+
+// GetDispatchAttempts returns the value of DispatchAttempts.
+func (s *AssistantRequest) GetDispatchAttempts() int32 {
+	return s.DispatchAttempts
+}
+
+// GetLastAttemptAt returns the value of LastAttemptAt.
+func (s *AssistantRequest) GetLastAttemptAt() NilDateTime {
+	return s.LastAttemptAt
+}
+
+// GetLastAttemptCode returns the value of LastAttemptCode.
+func (s *AssistantRequest) GetLastAttemptCode() NilAssistantRequestLastAttemptCode {
+	return s.LastAttemptCode
+}
+
+// GetOutcome returns the value of Outcome.
+func (s *AssistantRequest) GetOutcome() NilAssistantRequestOutcome {
+	return s.Outcome
+}
+
+// GetNotSentReason returns the value of NotSentReason.
+func (s *AssistantRequest) GetNotSentReason() NilAssistantRequestNotSentReason {
+	return s.NotSentReason
+}
+
+// GetOutcomeAt returns the value of OutcomeAt.
+func (s *AssistantRequest) GetOutcomeAt() NilDateTime {
+	return s.OutcomeAt
+}
+
+// GetHostingCachesCleared returns the value of HostingCachesCleared.
+func (s *AssistantRequest) GetHostingCachesCleared() []string {
+	return s.HostingCachesCleared
+}
+
+// GetHostingCachesSkipped returns the value of HostingCachesSkipped.
+func (s *AssistantRequest) GetHostingCachesSkipped() []string {
+	return s.HostingCachesSkipped
+}
+
+// GetOriginOnlyConfirmed returns the value of OriginOnlyConfirmed.
+func (s *AssistantRequest) GetOriginOnlyConfirmed() NilBool {
+	return s.OriginOnlyConfirmed
+}
+
+// GetWpmgrCDN returns the value of WpmgrCDN.
+func (s *AssistantRequest) GetWpmgrCDN() NilAssistantRequestWpmgrCDN {
+	return s.WpmgrCDN
+}
+
+// GetSiteReportedText returns the value of SiteReportedText.
+func (s *AssistantRequest) GetSiteReportedText() NilString {
+	return s.SiteReportedText
+}
+
+// SetID sets the value of ID.
+func (s *AssistantRequest) SetID(val uuid.UUID) {
+	s.ID = val
+}
+
+// SetSiteID sets the value of SiteID.
+func (s *AssistantRequest) SetSiteID(val uuid.UUID) {
+	s.SiteID = val
+}
+
+// SetScope sets the value of Scope.
+func (s *AssistantRequest) SetScope(val AssistantRequestScope) {
+	s.Scope = val
+}
+
+// SetURL sets the value of URL.
+func (s *AssistantRequest) SetURL(val NilString) {
+	s.URL = val
+}
+
+// SetSiteLabel sets the value of SiteLabel.
+func (s *AssistantRequest) SetSiteLabel(val string) {
+	s.SiteLabel = val
+}
+
+// SetSiteHost sets the value of SiteHost.
+func (s *AssistantRequest) SetSiteHost(val string) {
+	s.SiteHost = val
+}
+
+// SetGrantLabel sets the value of GrantLabel.
+func (s *AssistantRequest) SetGrantLabel(val string) {
+	s.GrantLabel = val
+}
+
+// SetGrantVia sets the value of GrantVia.
+func (s *AssistantRequest) SetGrantVia(val string) {
+	s.GrantVia = val
+}
+
+// SetSetupClient sets the value of SetupClient.
+func (s *AssistantRequest) SetSetupClient(val NilString) {
+	s.SetupClient = val
+}
+
+// SetPresentedDigest sets the value of PresentedDigest.
+func (s *AssistantRequest) SetPresentedDigest(val OptString) {
+	s.PresentedDigest = val
+}
+
+// SetState sets the value of State.
+func (s *AssistantRequest) SetState(val AssistantRequestState) {
+	s.State = val
+}
+
+// SetCreatedAt sets the value of CreatedAt.
+func (s *AssistantRequest) SetCreatedAt(val time.Time) {
+	s.CreatedAt = val
+}
+
+// SetExpiresAt sets the value of ExpiresAt.
+func (s *AssistantRequest) SetExpiresAt(val time.Time) {
+	s.ExpiresAt = val
+}
+
+// SetDecidedAt sets the value of DecidedAt.
+func (s *AssistantRequest) SetDecidedAt(val NilDateTime) {
+	s.DecidedAt = val
+}
+
+// SetDecidedByUserID sets the value of DecidedByUserID.
+func (s *AssistantRequest) SetDecidedByUserID(val NilUUID) {
+	s.DecidedByUserID = val
+}
+
+// SetDecidedByName sets the value of DecidedByName.
+func (s *AssistantRequest) SetDecidedByName(val NilString) {
+	s.DecidedByName = val
+}
+
+// SetDecidedByAccountDeleted sets the value of DecidedByAccountDeleted.
+func (s *AssistantRequest) SetDecidedByAccountDeleted(val bool) {
+	s.DecidedByAccountDeleted = val
+}
+
+// SetWithdrawnAt sets the value of WithdrawnAt.
+func (s *AssistantRequest) SetWithdrawnAt(val NilDateTime) {
+	s.WithdrawnAt = val
+}
+
+// SetClaimedAt sets the value of ClaimedAt.
+func (s *AssistantRequest) SetClaimedAt(val NilDateTime) {
+	s.ClaimedAt = val
+}
+
+// SetDispatchAttempts sets the value of DispatchAttempts.
+func (s *AssistantRequest) SetDispatchAttempts(val int32) {
+	s.DispatchAttempts = val
+}
+
+// SetLastAttemptAt sets the value of LastAttemptAt.
+func (s *AssistantRequest) SetLastAttemptAt(val NilDateTime) {
+	s.LastAttemptAt = val
+}
+
+// SetLastAttemptCode sets the value of LastAttemptCode.
+func (s *AssistantRequest) SetLastAttemptCode(val NilAssistantRequestLastAttemptCode) {
+	s.LastAttemptCode = val
+}
+
+// SetOutcome sets the value of Outcome.
+func (s *AssistantRequest) SetOutcome(val NilAssistantRequestOutcome) {
+	s.Outcome = val
+}
+
+// SetNotSentReason sets the value of NotSentReason.
+func (s *AssistantRequest) SetNotSentReason(val NilAssistantRequestNotSentReason) {
+	s.NotSentReason = val
+}
+
+// SetOutcomeAt sets the value of OutcomeAt.
+func (s *AssistantRequest) SetOutcomeAt(val NilDateTime) {
+	s.OutcomeAt = val
+}
+
+// SetHostingCachesCleared sets the value of HostingCachesCleared.
+func (s *AssistantRequest) SetHostingCachesCleared(val []string) {
+	s.HostingCachesCleared = val
+}
+
+// SetHostingCachesSkipped sets the value of HostingCachesSkipped.
+func (s *AssistantRequest) SetHostingCachesSkipped(val []string) {
+	s.HostingCachesSkipped = val
+}
+
+// SetOriginOnlyConfirmed sets the value of OriginOnlyConfirmed.
+func (s *AssistantRequest) SetOriginOnlyConfirmed(val NilBool) {
+	s.OriginOnlyConfirmed = val
+}
+
+// SetWpmgrCDN sets the value of WpmgrCDN.
+func (s *AssistantRequest) SetWpmgrCDN(val NilAssistantRequestWpmgrCDN) {
+	s.WpmgrCDN = val
+}
+
+// SetSiteReportedText sets the value of SiteReportedText.
+func (s *AssistantRequest) SetSiteReportedText(val NilString) {
+	s.SiteReportedText = val
+}
+
+func (*AssistantRequest) approveAssistantRequestRes() {}
+func (*AssistantRequest) declineAssistantRequestRes() {}
+
+// Ref: #/components/schemas/AssistantRequestApproveBody
+type AssistantRequestApproveBody struct {
+	// The digest the queue returned for this request.
+	PresentedDigest string `json:"presented_digest"`
+}
+
+// GetPresentedDigest returns the value of PresentedDigest.
+func (s *AssistantRequestApproveBody) GetPresentedDigest() string {
+	return s.PresentedDigest
+}
+
+// SetPresentedDigest sets the value of PresentedDigest.
+func (s *AssistantRequestApproveBody) SetPresentedDigest(val string) {
+	s.PresentedDigest = val
+}
+
+type AssistantRequestLastAttemptCode string
+
+const (
+	AssistantRequestLastAttemptCodeSiteUnreachable    AssistantRequestLastAttemptCode = "site_unreachable"
+	AssistantRequestLastAttemptCodeSiteCooldown       AssistantRequestLastAttemptCode = "site_cooldown"
+	AssistantRequestLastAttemptCodeSiteHourlyCap      AssistantRequestLastAttemptCode = "site_hourly_cap"
+	AssistantRequestLastAttemptCodeSiteBusy           AssistantRequestLastAttemptCode = "site_busy"
+	AssistantRequestLastAttemptCodeOrgBusy            AssistantRequestLastAttemptCode = "org_busy"
+	AssistantRequestLastAttemptCodeContextUnavailable AssistantRequestLastAttemptCode = "context_unavailable"
+	AssistantRequestLastAttemptCodeWriteToolsDisabled AssistantRequestLastAttemptCode = "write_tools_disabled"
+)
+
+// AllValues returns all AssistantRequestLastAttemptCode values.
+func (AssistantRequestLastAttemptCode) AllValues() []AssistantRequestLastAttemptCode {
+	return []AssistantRequestLastAttemptCode{
+		AssistantRequestLastAttemptCodeSiteUnreachable,
+		AssistantRequestLastAttemptCodeSiteCooldown,
+		AssistantRequestLastAttemptCodeSiteHourlyCap,
+		AssistantRequestLastAttemptCodeSiteBusy,
+		AssistantRequestLastAttemptCodeOrgBusy,
+		AssistantRequestLastAttemptCodeContextUnavailable,
+		AssistantRequestLastAttemptCodeWriteToolsDisabled,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AssistantRequestLastAttemptCode) MarshalText() ([]byte, error) {
+	switch s {
+	case AssistantRequestLastAttemptCodeSiteUnreachable:
+		return []byte(s), nil
+	case AssistantRequestLastAttemptCodeSiteCooldown:
+		return []byte(s), nil
+	case AssistantRequestLastAttemptCodeSiteHourlyCap:
+		return []byte(s), nil
+	case AssistantRequestLastAttemptCodeSiteBusy:
+		return []byte(s), nil
+	case AssistantRequestLastAttemptCodeOrgBusy:
+		return []byte(s), nil
+	case AssistantRequestLastAttemptCodeContextUnavailable:
+		return []byte(s), nil
+	case AssistantRequestLastAttemptCodeWriteToolsDisabled:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AssistantRequestLastAttemptCode) UnmarshalText(data []byte) error {
+	switch AssistantRequestLastAttemptCode(data) {
+	case AssistantRequestLastAttemptCodeSiteUnreachable:
+		*s = AssistantRequestLastAttemptCodeSiteUnreachable
+		return nil
+	case AssistantRequestLastAttemptCodeSiteCooldown:
+		*s = AssistantRequestLastAttemptCodeSiteCooldown
+		return nil
+	case AssistantRequestLastAttemptCodeSiteHourlyCap:
+		*s = AssistantRequestLastAttemptCodeSiteHourlyCap
+		return nil
+	case AssistantRequestLastAttemptCodeSiteBusy:
+		*s = AssistantRequestLastAttemptCodeSiteBusy
+		return nil
+	case AssistantRequestLastAttemptCodeOrgBusy:
+		*s = AssistantRequestLastAttemptCodeOrgBusy
+		return nil
+	case AssistantRequestLastAttemptCodeContextUnavailable:
+		*s = AssistantRequestLastAttemptCodeContextUnavailable
+		return nil
+	case AssistantRequestLastAttemptCodeWriteToolsDisabled:
+		*s = AssistantRequestLastAttemptCodeWriteToolsDisabled
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Ref: #/components/schemas/AssistantRequestList
+type AssistantRequestList struct {
+	Requests []AssistantRequest `json:"requests"`
+	// Requests still waiting for a decision (the badge).
+	PendingCount int64 `json:"pending_count"`
+	Limit        int32 `json:"limit"`
+	Offset       int32 `json:"offset"`
+}
+
+// GetRequests returns the value of Requests.
+func (s *AssistantRequestList) GetRequests() []AssistantRequest {
+	return s.Requests
+}
+
+// GetPendingCount returns the value of PendingCount.
+func (s *AssistantRequestList) GetPendingCount() int64 {
+	return s.PendingCount
+}
+
+// GetLimit returns the value of Limit.
+func (s *AssistantRequestList) GetLimit() int32 {
+	return s.Limit
+}
+
+// GetOffset returns the value of Offset.
+func (s *AssistantRequestList) GetOffset() int32 {
+	return s.Offset
+}
+
+// SetRequests sets the value of Requests.
+func (s *AssistantRequestList) SetRequests(val []AssistantRequest) {
+	s.Requests = val
+}
+
+// SetPendingCount sets the value of PendingCount.
+func (s *AssistantRequestList) SetPendingCount(val int64) {
+	s.PendingCount = val
+}
+
+// SetLimit sets the value of Limit.
+func (s *AssistantRequestList) SetLimit(val int32) {
+	s.Limit = val
+}
+
+// SetOffset sets the value of Offset.
+func (s *AssistantRequestList) SetOffset(val int32) {
+	s.Offset = val
+}
+
+func (*AssistantRequestList) listAssistantRequestsRes()     {}
+func (*AssistantRequestList) listSiteAssistantRequestsRes() {}
+
+type AssistantRequestNotSentReason string
+
+const (
+	AssistantRequestNotSentReasonGrantInactive          AssistantRequestNotSentReason = "grant_inactive"
+	AssistantRequestNotSentReasonAssistantPaused        AssistantRequestNotSentReason = "assistant_paused"
+	AssistantRequestNotSentReasonOrganisationDeleted    AssistantRequestNotSentReason = "organisation_deleted"
+	AssistantRequestNotSentReasonCapabilityNotHeld      AssistantRequestNotSentReason = "capability_not_held"
+	AssistantRequestNotSentReasonSiteAbsent             AssistantRequestNotSentReason = "site_absent"
+	AssistantRequestNotSentReasonForbiddenByContext     AssistantRequestNotSentReason = "forbidden_by_context"
+	AssistantRequestNotSentReasonAgentOutdated          AssistantRequestNotSentReason = "agent_outdated"
+	AssistantRequestNotSentReasonDispatchDeadlinePassed AssistantRequestNotSentReason = "dispatch_deadline_passed"
+	AssistantRequestNotSentReasonTransportPreSend       AssistantRequestNotSentReason = "transport_pre_send"
+)
+
+// AllValues returns all AssistantRequestNotSentReason values.
+func (AssistantRequestNotSentReason) AllValues() []AssistantRequestNotSentReason {
+	return []AssistantRequestNotSentReason{
+		AssistantRequestNotSentReasonGrantInactive,
+		AssistantRequestNotSentReasonAssistantPaused,
+		AssistantRequestNotSentReasonOrganisationDeleted,
+		AssistantRequestNotSentReasonCapabilityNotHeld,
+		AssistantRequestNotSentReasonSiteAbsent,
+		AssistantRequestNotSentReasonForbiddenByContext,
+		AssistantRequestNotSentReasonAgentOutdated,
+		AssistantRequestNotSentReasonDispatchDeadlinePassed,
+		AssistantRequestNotSentReasonTransportPreSend,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AssistantRequestNotSentReason) MarshalText() ([]byte, error) {
+	switch s {
+	case AssistantRequestNotSentReasonGrantInactive:
+		return []byte(s), nil
+	case AssistantRequestNotSentReasonAssistantPaused:
+		return []byte(s), nil
+	case AssistantRequestNotSentReasonOrganisationDeleted:
+		return []byte(s), nil
+	case AssistantRequestNotSentReasonCapabilityNotHeld:
+		return []byte(s), nil
+	case AssistantRequestNotSentReasonSiteAbsent:
+		return []byte(s), nil
+	case AssistantRequestNotSentReasonForbiddenByContext:
+		return []byte(s), nil
+	case AssistantRequestNotSentReasonAgentOutdated:
+		return []byte(s), nil
+	case AssistantRequestNotSentReasonDispatchDeadlinePassed:
+		return []byte(s), nil
+	case AssistantRequestNotSentReasonTransportPreSend:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AssistantRequestNotSentReason) UnmarshalText(data []byte) error {
+	switch AssistantRequestNotSentReason(data) {
+	case AssistantRequestNotSentReasonGrantInactive:
+		*s = AssistantRequestNotSentReasonGrantInactive
+		return nil
+	case AssistantRequestNotSentReasonAssistantPaused:
+		*s = AssistantRequestNotSentReasonAssistantPaused
+		return nil
+	case AssistantRequestNotSentReasonOrganisationDeleted:
+		*s = AssistantRequestNotSentReasonOrganisationDeleted
+		return nil
+	case AssistantRequestNotSentReasonCapabilityNotHeld:
+		*s = AssistantRequestNotSentReasonCapabilityNotHeld
+		return nil
+	case AssistantRequestNotSentReasonSiteAbsent:
+		*s = AssistantRequestNotSentReasonSiteAbsent
+		return nil
+	case AssistantRequestNotSentReasonForbiddenByContext:
+		*s = AssistantRequestNotSentReasonForbiddenByContext
+		return nil
+	case AssistantRequestNotSentReasonAgentOutdated:
+		*s = AssistantRequestNotSentReasonAgentOutdated
+		return nil
+	case AssistantRequestNotSentReasonDispatchDeadlinePassed:
+		*s = AssistantRequestNotSentReasonDispatchDeadlinePassed
+		return nil
+	case AssistantRequestNotSentReasonTransportPreSend:
+		*s = AssistantRequestNotSentReasonTransportPreSend
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type AssistantRequestOutcome string
+
+const (
+	AssistantRequestOutcomePurged              AssistantRequestOutcome = "purged"
+	AssistantRequestOutcomeSiteReportedFailure AssistantRequestOutcome = "site_reported_failure"
+	AssistantRequestOutcomeAgentFailed         AssistantRequestOutcome = "agent_failed"
+	AssistantRequestOutcomeOutcomeUnknown      AssistantRequestOutcome = "outcome_unknown"
+	AssistantRequestOutcomeNotSent             AssistantRequestOutcome = "not_sent"
+)
+
+// AllValues returns all AssistantRequestOutcome values.
+func (AssistantRequestOutcome) AllValues() []AssistantRequestOutcome {
+	return []AssistantRequestOutcome{
+		AssistantRequestOutcomePurged,
+		AssistantRequestOutcomeSiteReportedFailure,
+		AssistantRequestOutcomeAgentFailed,
+		AssistantRequestOutcomeOutcomeUnknown,
+		AssistantRequestOutcomeNotSent,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AssistantRequestOutcome) MarshalText() ([]byte, error) {
+	switch s {
+	case AssistantRequestOutcomePurged:
+		return []byte(s), nil
+	case AssistantRequestOutcomeSiteReportedFailure:
+		return []byte(s), nil
+	case AssistantRequestOutcomeAgentFailed:
+		return []byte(s), nil
+	case AssistantRequestOutcomeOutcomeUnknown:
+		return []byte(s), nil
+	case AssistantRequestOutcomeNotSent:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AssistantRequestOutcome) UnmarshalText(data []byte) error {
+	switch AssistantRequestOutcome(data) {
+	case AssistantRequestOutcomePurged:
+		*s = AssistantRequestOutcomePurged
+		return nil
+	case AssistantRequestOutcomeSiteReportedFailure:
+		*s = AssistantRequestOutcomeSiteReportedFailure
+		return nil
+	case AssistantRequestOutcomeAgentFailed:
+		*s = AssistantRequestOutcomeAgentFailed
+		return nil
+	case AssistantRequestOutcomeOutcomeUnknown:
+		*s = AssistantRequestOutcomeOutcomeUnknown
+		return nil
+	case AssistantRequestOutcomeNotSent:
+		*s = AssistantRequestOutcomeNotSent
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type AssistantRequestScope string
+
+const (
+	AssistantRequestScopeAll AssistantRequestScope = "all"
+	AssistantRequestScopeURL AssistantRequestScope = "url"
+)
+
+// AllValues returns all AssistantRequestScope values.
+func (AssistantRequestScope) AllValues() []AssistantRequestScope {
+	return []AssistantRequestScope{
+		AssistantRequestScopeAll,
+		AssistantRequestScopeURL,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AssistantRequestScope) MarshalText() ([]byte, error) {
+	switch s {
+	case AssistantRequestScopeAll:
+		return []byte(s), nil
+	case AssistantRequestScopeURL:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AssistantRequestScope) UnmarshalText(data []byte) error {
+	switch AssistantRequestScope(data) {
+	case AssistantRequestScopeAll:
+		*s = AssistantRequestScopeAll
+		return nil
+	case AssistantRequestScopeURL:
+		*s = AssistantRequestScopeURL
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type AssistantRequestState string
+
+const (
+	AssistantRequestStatePending              AssistantRequestState = "pending"
+	AssistantRequestStateApprovedUndispatched AssistantRequestState = "approved_undispatched"
+	AssistantRequestStateDispatched           AssistantRequestState = "dispatched"
+	AssistantRequestStateRejected             AssistantRequestState = "rejected"
+	AssistantRequestStateWithdrawn            AssistantRequestState = "withdrawn"
+	AssistantRequestStateExpired              AssistantRequestState = "expired"
+)
+
+// AllValues returns all AssistantRequestState values.
+func (AssistantRequestState) AllValues() []AssistantRequestState {
+	return []AssistantRequestState{
+		AssistantRequestStatePending,
+		AssistantRequestStateApprovedUndispatched,
+		AssistantRequestStateDispatched,
+		AssistantRequestStateRejected,
+		AssistantRequestStateWithdrawn,
+		AssistantRequestStateExpired,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AssistantRequestState) MarshalText() ([]byte, error) {
+	switch s {
+	case AssistantRequestStatePending:
+		return []byte(s), nil
+	case AssistantRequestStateApprovedUndispatched:
+		return []byte(s), nil
+	case AssistantRequestStateDispatched:
+		return []byte(s), nil
+	case AssistantRequestStateRejected:
+		return []byte(s), nil
+	case AssistantRequestStateWithdrawn:
+		return []byte(s), nil
+	case AssistantRequestStateExpired:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AssistantRequestState) UnmarshalText(data []byte) error {
+	switch AssistantRequestState(data) {
+	case AssistantRequestStatePending:
+		*s = AssistantRequestStatePending
+		return nil
+	case AssistantRequestStateApprovedUndispatched:
+		*s = AssistantRequestStateApprovedUndispatched
+		return nil
+	case AssistantRequestStateDispatched:
+		*s = AssistantRequestStateDispatched
+		return nil
+	case AssistantRequestStateRejected:
+		*s = AssistantRequestStateRejected
+		return nil
+	case AssistantRequestStateWithdrawn:
+		*s = AssistantRequestStateWithdrawn
+		return nil
+	case AssistantRequestStateExpired:
+		*s = AssistantRequestStateExpired
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type AssistantRequestWpmgrCDN string
+
+const (
+	AssistantRequestWpmgrCDNNotAttempted  AssistantRequestWpmgrCDN = "not_attempted"
+	AssistantRequestWpmgrCDNCleared       AssistantRequestWpmgrCDN = "cleared"
+	AssistantRequestWpmgrCDNFailed        AssistantRequestWpmgrCDN = "failed"
+	AssistantRequestWpmgrCDNNotConfigured AssistantRequestWpmgrCDN = "not_configured"
+)
+
+// AllValues returns all AssistantRequestWpmgrCDN values.
+func (AssistantRequestWpmgrCDN) AllValues() []AssistantRequestWpmgrCDN {
+	return []AssistantRequestWpmgrCDN{
+		AssistantRequestWpmgrCDNNotAttempted,
+		AssistantRequestWpmgrCDNCleared,
+		AssistantRequestWpmgrCDNFailed,
+		AssistantRequestWpmgrCDNNotConfigured,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AssistantRequestWpmgrCDN) MarshalText() ([]byte, error) {
+	switch s {
+	case AssistantRequestWpmgrCDNNotAttempted:
+		return []byte(s), nil
+	case AssistantRequestWpmgrCDNCleared:
+		return []byte(s), nil
+	case AssistantRequestWpmgrCDNFailed:
+		return []byte(s), nil
+	case AssistantRequestWpmgrCDNNotConfigured:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AssistantRequestWpmgrCDN) UnmarshalText(data []byte) error {
+	switch AssistantRequestWpmgrCDN(data) {
+	case AssistantRequestWpmgrCDNNotAttempted:
+		*s = AssistantRequestWpmgrCDNNotAttempted
+		return nil
+	case AssistantRequestWpmgrCDNCleared:
+		*s = AssistantRequestWpmgrCDNCleared
+		return nil
+	case AssistantRequestWpmgrCDNFailed:
+		*s = AssistantRequestWpmgrCDNFailed
+		return nil
+	case AssistantRequestWpmgrCDNNotConfigured:
+		*s = AssistantRequestWpmgrCDNNotConfigured
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
 
 // Ref: #/components/schemas/AuditEntry
 type AuditEntry struct {
@@ -16585,6 +17410,24 @@ func (*DbTableActionResponse) runDbTableActionRes() {}
 // Per-table result, keyed by table name (agent-defined shape).
 type DbTableActionResponseResults struct{}
 
+type DeclineAssistantRequestConflict Error
+
+func (*DeclineAssistantRequestConflict) declineAssistantRequestRes() {}
+
+type DeclineAssistantRequestForbidden Error
+
+func (*DeclineAssistantRequestForbidden) declineAssistantRequestRes() {}
+
+type DeclineAssistantRequestNotFound Error
+
+func (*DeclineAssistantRequestNotFound) declineAssistantRequestRes() {}
+
+type DeclineAssistantRequestReq struct{}
+
+type DeclineAssistantRequestUnsupportedMediaType Error
+
+func (*DeclineAssistantRequestUnsupportedMediaType) declineAssistantRequestRes() {}
+
 type DeleteAdminUserForbidden Error
 
 func (*DeleteAdminUserForbidden) deleteAdminUserRes() {}
@@ -18672,6 +19515,7 @@ func (*Error) getTenantRes()                                 {}
 func (*Error) getTwoFactorStatusRes()                        {}
 func (*Error) getUpdateRunRes()                              {}
 func (*Error) initSSEStream(sseConnectFunc, sseClientConfig) {}
+func (*Error) listAssistantRequestsRes()                     {}
 func (*Error) listMyIdentitiesRes()                          {}
 func (*Error) listOrgsRes()                                  {}
 func (*Error) listRestoreRunsRes()                           {}
@@ -25032,6 +25876,14 @@ func (s *ListSiteActivitySeverity) UnmarshalText(data []byte) error {
 	}
 }
 
+type ListSiteAssistantRequestsForbidden Error
+
+func (*ListSiteAssistantRequestsForbidden) listSiteAssistantRequestsRes() {}
+
+type ListSiteAssistantRequestsNotFound Error
+
+func (*ListSiteAssistantRequestsNotFound) listSiteAssistantRequestsRes() {}
+
 type ListSiteBansForbidden Error
 
 func (*ListSiteBansForbidden) listSiteBansRes() {}
@@ -28264,6 +29116,231 @@ func (o NilAgentMirrorStatusLastSuccessOutcome) Or(d AgentMirrorStatusLastSucces
 	return d
 }
 
+// NewNilAssistantRequestLastAttemptCode returns new NilAssistantRequestLastAttemptCode with value set to v.
+func NewNilAssistantRequestLastAttemptCode(v AssistantRequestLastAttemptCode) NilAssistantRequestLastAttemptCode {
+	return NilAssistantRequestLastAttemptCode{
+		Value: v,
+	}
+}
+
+// NilAssistantRequestLastAttemptCode is nullable AssistantRequestLastAttemptCode.
+type NilAssistantRequestLastAttemptCode struct {
+	Value AssistantRequestLastAttemptCode
+	Null  bool
+}
+
+// SetTo sets value to v.
+func (o *NilAssistantRequestLastAttemptCode) SetTo(v AssistantRequestLastAttemptCode) {
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o NilAssistantRequestLastAttemptCode) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *NilAssistantRequestLastAttemptCode) SetToNull() {
+	o.Null = true
+	var v AssistantRequestLastAttemptCode
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o NilAssistantRequestLastAttemptCode) Get() (v AssistantRequestLastAttemptCode, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o NilAssistantRequestLastAttemptCode) Or(d AssistantRequestLastAttemptCode) AssistantRequestLastAttemptCode {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewNilAssistantRequestNotSentReason returns new NilAssistantRequestNotSentReason with value set to v.
+func NewNilAssistantRequestNotSentReason(v AssistantRequestNotSentReason) NilAssistantRequestNotSentReason {
+	return NilAssistantRequestNotSentReason{
+		Value: v,
+	}
+}
+
+// NilAssistantRequestNotSentReason is nullable AssistantRequestNotSentReason.
+type NilAssistantRequestNotSentReason struct {
+	Value AssistantRequestNotSentReason
+	Null  bool
+}
+
+// SetTo sets value to v.
+func (o *NilAssistantRequestNotSentReason) SetTo(v AssistantRequestNotSentReason) {
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o NilAssistantRequestNotSentReason) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *NilAssistantRequestNotSentReason) SetToNull() {
+	o.Null = true
+	var v AssistantRequestNotSentReason
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o NilAssistantRequestNotSentReason) Get() (v AssistantRequestNotSentReason, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o NilAssistantRequestNotSentReason) Or(d AssistantRequestNotSentReason) AssistantRequestNotSentReason {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewNilAssistantRequestOutcome returns new NilAssistantRequestOutcome with value set to v.
+func NewNilAssistantRequestOutcome(v AssistantRequestOutcome) NilAssistantRequestOutcome {
+	return NilAssistantRequestOutcome{
+		Value: v,
+	}
+}
+
+// NilAssistantRequestOutcome is nullable AssistantRequestOutcome.
+type NilAssistantRequestOutcome struct {
+	Value AssistantRequestOutcome
+	Null  bool
+}
+
+// SetTo sets value to v.
+func (o *NilAssistantRequestOutcome) SetTo(v AssistantRequestOutcome) {
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o NilAssistantRequestOutcome) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *NilAssistantRequestOutcome) SetToNull() {
+	o.Null = true
+	var v AssistantRequestOutcome
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o NilAssistantRequestOutcome) Get() (v AssistantRequestOutcome, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o NilAssistantRequestOutcome) Or(d AssistantRequestOutcome) AssistantRequestOutcome {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewNilAssistantRequestWpmgrCDN returns new NilAssistantRequestWpmgrCDN with value set to v.
+func NewNilAssistantRequestWpmgrCDN(v AssistantRequestWpmgrCDN) NilAssistantRequestWpmgrCDN {
+	return NilAssistantRequestWpmgrCDN{
+		Value: v,
+	}
+}
+
+// NilAssistantRequestWpmgrCDN is nullable AssistantRequestWpmgrCDN.
+type NilAssistantRequestWpmgrCDN struct {
+	Value AssistantRequestWpmgrCDN
+	Null  bool
+}
+
+// SetTo sets value to v.
+func (o *NilAssistantRequestWpmgrCDN) SetTo(v AssistantRequestWpmgrCDN) {
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o NilAssistantRequestWpmgrCDN) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *NilAssistantRequestWpmgrCDN) SetToNull() {
+	o.Null = true
+	var v AssistantRequestWpmgrCDN
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o NilAssistantRequestWpmgrCDN) Get() (v AssistantRequestWpmgrCDN, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o NilAssistantRequestWpmgrCDN) Or(d AssistantRequestWpmgrCDN) AssistantRequestWpmgrCDN {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewNilBool returns new NilBool with value set to v.
+func NewNilBool(v bool) NilBool {
+	return NilBool{
+		Value: v,
+	}
+}
+
+// NilBool is nullable bool.
+type NilBool struct {
+	Value bool
+	Null  bool
+}
+
+// SetTo sets value to v.
+func (o *NilBool) SetTo(v bool) {
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o NilBool) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *NilBool) SetToNull() {
+	o.Null = true
+	var v bool
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o NilBool) Get() (v bool, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o NilBool) Or(d bool) bool {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewNilDateTime returns new NilDateTime with value set to v.
 func NewNilDateTime(v time.Time) NilDateTime {
 	return NilDateTime{
@@ -28438,6 +29515,51 @@ func (o NilString) Get() (v string, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o NilString) Or(d string) string {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewNilUUID returns new NilUUID with value set to v.
+func NewNilUUID(v uuid.UUID) NilUUID {
+	return NilUUID{
+		Value: v,
+	}
+}
+
+// NilUUID is nullable uuid.UUID.
+type NilUUID struct {
+	Value uuid.UUID
+	Null  bool
+}
+
+// SetTo sets value to v.
+func (o *NilUUID) SetTo(v uuid.UUID) {
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o NilUUID) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *NilUUID) SetToNull() {
+	o.Null = true
+	var v uuid.UUID
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o NilUUID) Get() (v uuid.UUID, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o NilUUID) Or(d uuid.UUID) uuid.UUID {
 	if v, ok := o.Get(); ok {
 		return v
 	}

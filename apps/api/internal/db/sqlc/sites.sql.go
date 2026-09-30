@@ -813,6 +813,55 @@ func (q *Queries) ListLatestBackupsForSites(ctx context.Context, arg ListLatestB
 	return items, nil
 }
 
+const listSiteAddressesInScope = `-- name: ListSiteAddressesInScope :many
+SELECT s.id, s.url
+FROM sites s
+WHERE s.tenant_id = $1
+  AND s.id = ANY($2::uuid[])
+  AND s.connection_state <> 'archived'
+ORDER BY s.id
+`
+
+type ListSiteAddressesInScopeParams struct {
+	TenantID uuid.UUID   `json:"tenant_id"`
+	SiteIds  []uuid.UUID `json:"site_ids"`
+}
+
+type ListSiteAddressesInScopeRow struct {
+	ID  uuid.UUID `json:"id"`
+	Url string    `json:"url"`
+}
+
+// The AI cache-clear creation path's tie check (internal/mcp): every in-scope
+// site's address, so a page address that also falls under another in-scope
+// site can be refused. Runs connection-scoped, and site_ids is the
+// connection's already-materialised scope set.
+//
+// NO LIMIT, DELIBERATELY, unlike ListSitesForMCPScope. A covering site that
+// sorted past a page boundary would be missed, and a missed tie is a clear
+// sent to the wrong install. The set is bounded by the connection's scope,
+// which the caller already holds in memory. Same archived filter and same
+// nil-means-nothing array semantics as ListSitesForMCPScope.
+func (q *Queries) ListSiteAddressesInScope(ctx context.Context, arg ListSiteAddressesInScopeParams) ([]ListSiteAddressesInScopeRow, error) {
+	rows, err := q.db.Query(ctx, listSiteAddressesInScope, arg.TenantID, arg.SiteIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListSiteAddressesInScopeRow
+	for rows.Next() {
+		var i ListSiteAddressesInScopeRow
+		if err := rows.Scan(&i.ID, &i.Url); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listSites = `-- name: ListSites :many
 SELECT s.id, s.tenant_id, s.url, s.name, s.status, s.wp_version, s.php_version, s.agent_version, s.agent_public_key, s.enrolled_at, s.last_seen_at, s.health_status, s.server_info, s.multisite, s.active_theme, s.components, s.components_updated_at, s.tags, s.age_recipient, s.wp_timezone, s.wp_gmt_offset, s.host_provider, s.host_provider_org, s.host_provider_ip, s.host_provider_checked_at, s.connection_state, s.connection_generation, s.disconnected_at, s.disconnected_reason, s.archived_at, s.missed_heartbeats, s.client_id, s.app_probe_path, s.app_alerts_disabled, s.monitoring_paused_at, s.monitoring_paused_by, s.monitoring_paused_reason, s.monitoring_resume_at, s.created_at, s.updated_at,
        COALESCE(pc.cache_enabled, false) AS page_cache_enabled,

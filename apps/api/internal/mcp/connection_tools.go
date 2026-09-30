@@ -122,7 +122,7 @@ func (s *Service) ConnectionTools(ctx context.Context, p domain.Principal, grant
 	// deliberately left as the zero value: VisibleTools does not read them, and
 	// resolving a site scope here would be a read this answer does not depend
 	// on.
-	return VisibleTools(AuthorizedRequest{
+	return visibleTools(s.liveRegistry(), AuthorizedRequest{
 		TenantID:     p.TenantID,
 		GrantID:      grant.ID,
 		Capabilities: caps,

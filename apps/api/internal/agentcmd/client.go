@@ -690,7 +690,7 @@ func (c *Client) CachePurge(ctx context.Context, siteID uuid.UUID, siteURL strin
 		return CachePurgeResult{}, err
 	}
 	if !out.OK {
-		return out, fmt.Errorf("cache_purge rejected by agent: %s", out.Detail)
+		return out, &agentReportedError{msg: fmt.Sprintf("cache_purge rejected by agent: %s", out.Detail)}
 	}
 	return out, nil
 }
@@ -872,22 +872,22 @@ func (c *Client) post(ctx context.Context, siteID uuid.UUID, siteURL, command st
 func (c *Client) postRaw(ctx context.Context, siteID uuid.UUID, siteURL, command string, body any) ([]byte, error) {
 	endpoint, err := joinCommandURL(siteURL, command)
 	if err != nil {
-		return nil, err
+		return nil, markNotSent(err)
 	}
 
 	payload, err := json.Marshal(body)
 	if err != nil {
-		return nil, fmt.Errorf("marshal %s command: %w", command, err)
+		return nil, markNotSent(fmt.Errorf("marshal %s command: %w", command, err))
 	}
 
 	token, _, err := c.signer.Mint(c.clock(), siteID.String(), command)
 	if err != nil {
-		return nil, fmt.Errorf("mint command jwt: %w", err)
+		return nil, markNotSent(fmt.Errorf("mint command jwt: %w", err))
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
-		return nil, fmt.Errorf("build %s request: %w", command, err)
+		return nil, markNotSent(fmt.Errorf("build %s request: %w", command, err))
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json")
@@ -914,7 +914,11 @@ func (c *Client) postRaw(ctx context.Context, siteID uuid.UUID, siteURL, command
 	// *RedirectError naming the saved address.
 	resp, err := c.http.DoOnce(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("%s command transport: %w", command, err)
+		terr := fmt.Errorf("%s command transport: %w", command, err)
+		if failedBeforeWrite(err) {
+			return nil, markNotSent(terr)
+		}
+		return nil, terr
 	}
 	if isRedirectStatus(resp.StatusCode) {
 		if target, ok := sameHostHTTPSUpgrade(httpReq.URL, resp.Header.Get("Location")); ok {

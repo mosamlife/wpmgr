@@ -1,10 +1,10 @@
 import { describe, it, expect, vi } from "vitest";
-import { screen, fireEvent } from "@testing-library/react";
+import { screen, fireEvent, within } from "@testing-library/react";
 
 import { renderWithProviders } from "@/test/render";
 
 import { ConsentScreen, type ConsentScreenProps } from "./consent-screen";
-import { parseConsentContext, SCOPE_READ } from "./consent-context";
+import { parseConsentContext, SCOPE_CACHE, SCOPE_READ } from "./consent-context";
 import { bannedWordHits } from "./site-enforcement";
 import type { ScopedSite } from "./site-scope";
 
@@ -478,5 +478,137 @@ describe("ConsentScreen — the site picker over a fleet we could not read", () 
   it("does not show that message when the sites loaded", () => {
     renderWithProviders(<ConsentScreen {...props()} />);
     expect(screen.queryByTestId("consent-sites-failed")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The mcp:cache write section (design v7 S2.2)
+// ---------------------------------------------------------------------------
+//
+// Rendered through the real router (withRouter: true), the same way the
+// duration block above is: a copy assertion that only ever sees a bare
+// component is one mount away from being about something the user does not
+// get.
+describe("ConsentScreen — the mcp:cache write section (design v7 S2.2)", () => {
+  function cacheConsent(
+    conferrable: readonly { name: string; effect: string }[] = [
+      { name: "mcp.sites.read", effect: "read" },
+      { name: "mcp.cache.purge", effect: "request" },
+    ],
+  ) {
+    return parseConsentContext({
+      client_id: "c_cache",
+      identity_verified: false,
+      redirect_uri: "https://x.example/cb",
+      redirect_host: "x.example",
+      scopes: [SCOPE_READ, SCOPE_CACHE],
+      grant_lifetime_days: 90,
+      conferrable_capabilities: conferrable,
+    });
+  }
+
+  it("shows the shared write box, unticked and toggleable, when the client asked for mcp:cache", async () => {
+    renderWithProviders(<ConsentScreen {...props({ consent: cacheConsent() })} />, {
+      withRouter: true,
+    });
+    const box = await screen.findByTestId("consent-cache-capability");
+    // The same component the wizard uses (design v7 S2.2 "the same write box
+    // and label as 2.1"), not a second hand-rolled copy of it.
+    expect(within(box).getByTestId("cache-purge-capability-box")).toBeTruthy();
+    expect(within(box).getByText(/Ask to clear the site cache/i)).toBeTruthy();
+    const checkbox = within(box).getByRole("checkbox");
+    // Never ticked by default; the operator opts in.
+    expect((checkbox as HTMLInputElement).checked).toBe(false);
+    expect((checkbox as HTMLInputElement).disabled).toBe(false);
+    fireEvent.click(checkbox);
+    expect((checkbox as HTMLInputElement).checked).toBe(true);
+  });
+
+  it("does NOT show the write box when the client did not ask for mcp:cache", () => {
+    // The over-fire case: a read-only request must not grow a write section.
+    renderWithProviders(<ConsentScreen {...props()} />);
+    expect(screen.queryByTestId("consent-cache-capability")).toBeNull();
+  });
+
+  it("never renders mcp:cache as a generic unrecognised-permission bullet", () => {
+    // mcp:cache is a recognised scope (policy.go's ScopeCache) and must not
+    // fall into describeScope's fallback branch, which would both misdescribe
+    // it and block Approve on a legitimate request.
+    renderWithProviders(<ConsentScreen {...props({ consent: cacheConsent() })} />);
+    expect(screen.queryByTestId("consent-unrecognised-scope")).toBeNull();
+    expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(false);
+  });
+
+  it("stops claiming the connection is read-only once it can ask to clear a cache", () => {
+    // The mutation this pins: dropping the askedToClearCache branch and
+    // always rendering "This connection is read-only." would be a false
+    // statement the moment mcp:cache is granted.
+    renderWithProviders(<ConsentScreen {...props({ consent: cacheConsent() })} />);
+    const bullet = screen.getByText(/It cannot change anything\./i).closest("li")!;
+    expect(bullet).not.toHaveTextContent(/This connection is read-only/i);
+    expect(bullet).toHaveTextContent(/nothing runs until you approve it/i);
+  });
+
+  it("keeps the read-only claim for a request that never asked for mcp:cache", () => {
+    // The over-fire case for the test directly above: a plain read grant must
+    // keep saying it is read-only.
+    renderWithProviders(<ConsentScreen {...props()} />);
+    const bullet = screen.getByText(/It cannot change anything\./i).closest("li")!;
+    expect(bullet).toHaveTextContent(/This connection is read-only/i);
+  });
+
+  it("disables Approve when a conferred capability names an effect this dashboard does not know", () => {
+    const unknown = cacheConsent([
+      { name: "mcp.sites.read", effect: "read" },
+      { name: "mcp.cache.purge", effect: "run_immediately" },
+    ]);
+    renderWithProviders(<ConsentScreen {...props({ consent: unknown })} />);
+    expect(screen.getByTestId("consent-unknown-capability-effect")).toBeTruthy();
+    expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(true);
+  });
+
+  it("does NOT disable Approve when every conferred capability has a known effect", () => {
+    // The over-fire case for the test directly above.
+    renderWithProviders(<ConsentScreen {...props({ consent: cacheConsent() })} />);
+    expect(screen.queryByTestId("consent-unknown-capability-effect")).toBeNull();
+    expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(false);
+  });
+
+  it("disables Approve and says why when a cache-only request leaves the box clear", async () => {
+    const cacheOnly = parseConsentContext({
+      client_id: "c_cache_only",
+      identity_verified: false,
+      redirect_uri: "https://x.example/cb",
+      redirect_host: "x.example",
+      scopes: [SCOPE_CACHE],
+      grant_lifetime_days: 90,
+      conferrable_capabilities: [{ name: "mcp.cache.purge", effect: "request" }],
+    });
+    renderWithProviders(<ConsentScreen {...props({ consent: cacheOnly })} />, { withRouter: true });
+    await screen.findByTestId("consent-cache-capability");
+    expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(true);
+    expect(screen.getByTestId("consent-nothing-to-confer")).toHaveTextContent(
+      /asked only to request cache clears/i,
+    );
+    // Ticking the box makes the approval possible again.
+    fireEvent.click(within(screen.getByTestId("consent-cache-capability")).getByRole("checkbox"));
+    expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(false);
+    expect(screen.queryByTestId("consent-nothing-to-confer")).toBeNull();
+  });
+
+  it("does not disable Approve when the server sent no conferrable_capabilities key at all", () => {
+    // Deploy-ordering case (consent-context.ts): an absent key parses to [],
+    // and .every over [] is vacuously true, never a false "unknown effect".
+    const noCaps = parseConsentContext({
+      client_id: "c_old_server",
+      identity_verified: false,
+      redirect_uri: "https://x.example/cb",
+      redirect_host: "x.example",
+      scopes: [SCOPE_READ],
+      grant_lifetime_days: 90,
+    });
+    renderWithProviders(<ConsentScreen {...props({ consent: noCaps })} />);
+    expect(screen.queryByTestId("consent-unknown-capability-effect")).toBeNull();
+    expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(false);
   });
 });

@@ -33,13 +33,21 @@ export const CAPABILITY_LABELS = {
   "mcp.performance.read": "Performance",
   "mcp.diagnostics.read": "Diagnostics",
   "mcp.content.read": "Content",
+  // The first WRITE name in the vocabulary (tracka-cache-purge design v7,
+  // ADR-061 option B: per-call human approval, no automation may ever
+  // approve). It does not end in `.read`: calling it does not change
+  // anything by itself, it only creates a request that a person in WPMgr
+  // must approve before anything runs. See CAPABILITY_KIND below for the
+  // property that makes this row impossible to render next to the reads by
+  // accident.
+  "mcp.cache.purge": "Ask to clear the site cache",
 } as const satisfies Readonly<Record<string, string>>;
 
 /** A capability wire string this build's vocabulary knows. */
 export type Capability = keyof typeof CAPABILITY_LABELS;
 
 /**
- * The eight names policy.go's capabilityVocabulary knows today, DERIVED from
+ * The nine names policy.go's capabilityVocabulary knows today, DERIVED from
  * CAPABILITY_LABELS's keys rather than written out again. See the file header:
  * this is what makes the two-lists-disagree shape impossible here rather than
  * merely tested for.
@@ -47,6 +55,45 @@ export type Capability = keyof typeof CAPABILITY_LABELS;
 export const KNOWN_CAPABILITIES: readonly Capability[] = Object.keys(
   CAPABILITY_LABELS,
 ) as Capability[];
+
+/**
+ * What KIND of thing a capability is: something the connection can see, or
+ * something it can ASK for -- never something it can just do. `Record<Capability,
+ * "read" | "write">` rather than a partial map so TypeScript refuses to
+ * compile a tenth capability added to CAPABILITY_LABELS without a kind here,
+ * the same "one list, derived everywhere else" property CAPABILITY_DESCRIPTIONS
+ * already holds, extended to the one distinction that decides which of the two
+ * visibly separate groups a row renders in (design v7 S2.1: "write rows
+ * visibly distinct, never pre-ticked, in no preset").
+ *
+ * "write" IS NOT "this runs unattended". Every write capability in this
+ * vocabulary gates its own call behind a person approving a specific request
+ * (ADR-061 option B); the kind only decides how the row is grouped and
+ * described on screen, never whether it needs approval -- that is true of the
+ * one write capability unconditionally, not toggled by this field.
+ */
+export const CAPABILITY_KIND: Readonly<Record<Capability, "read" | "write">> = {
+  "mcp.sites.read": "read",
+  "mcp.uptime.read": "read",
+  "mcp.backups.read": "read",
+  "mcp.security.read": "read",
+  "mcp.activity.read": "read",
+  "mcp.performance.read": "read",
+  "mcp.diagnostics.read": "read",
+  "mcp.content.read": "read",
+  "mcp.cache.purge": "write",
+};
+
+/**
+ * The kind of a capability wire string, for a name this build may not know.
+ * Falls back to "read" -- the quieter, more conservative badge -- rather than
+ * refusing to render, for the same reason capabilityLabel falls back to the
+ * raw string: an unrecognised name a live grant actually holds must still be
+ * shown, not dropped.
+ */
+export function capabilityKind(capability: string): "read" | "write" {
+  return (CAPABILITY_KIND as Readonly<Record<string, "read" | "write">>)[capability] ?? "read";
+}
 
 /**
  * Human label for a capability wire string.
@@ -89,13 +136,26 @@ export const CAPABILITY_DESCRIPTIONS: Readonly<Record<Capability, string>> = {
   "mcp.activity.read": "See the activity log: what changed, and when.",
   "mcp.performance.read": "See Core Web Vitals and other performance metrics.",
   "mcp.diagnostics.read": "See health checks and diagnostic reports for sites in scope.",
-  // Seated but unreachable -- see CONFERRABLE_CAPABILITIES below for why this
+  // Seated but unreachable -- see CONFERRABLE_READS below for why this
   // one is never offered as a live checkbox.
   "mcp.content.read": "Read post and page content.",
+  // WRITE. Every other blurb above describes seeing something; this one
+  // describes asking. It never changes anything by itself: calling the tool
+  // creates a request, and nothing runs until a person allowed to clear
+  // caches on that site approves it in WPMgr (ADR-061 option B). The wizard
+  // and the consent screen render this row in its own bordered group, never
+  // pre-ticked and never part of a preset (design v7 S2.1, S6 row W1).
+  "mcp.cache.purge":
+    "Ask to clear the page cache on one site at a time, for the whole site or one page " +
+    "address. Nothing runs until someone allowed to clear caches on that site approves " +
+    "the request in WPMgr. If approved, WPMgr deletes its own cached pages for that " +
+    "site. It skips every hosting cache, because WPMgr has not yet confirmed that any " +
+    "of them clears only this site, so visitors may still get cached pages from the " +
+    "host until they expire. Pages load slower until the cache refills.",
 } as const;
 
 /**
- * The seven capabilities the server will actually confer, mirrored from
+ * The seven READ capabilities the server will actually confer, mirrored from
  * apps/api/internal/mcp/policy.go's scopeCapabilities[ScopeRead] (lines
  * 190-198). `mcp.content.read` is deliberately excluded: policy.go's own
  * comment above CapContentRead (~line 100-104) says there is no post/page
@@ -104,11 +164,29 @@ export const CAPABILITY_DESCRIPTIONS: Readonly<Record<Capability, string>> = {
  * (m131 DECISION 5) requires the Go vocabulary and the database to agree on
  * all eight, not because it can be granted.
  *
- * DERIVED, NOT A HAND-COPIED SUBSET. Filtering KNOWN_CAPABILITIES rather than
- * writing the seven names out again means a capability added to
- * CAPABILITY_LABELS defaults to "not conferrable" until this list is updated
- * on purpose -- the safer direction for a name the picker cannot yet prove the
- * server will honour.
+ * DERIVED, NOT A HAND-COPIED SUBSET, AND DERIVED BY KIND. Filtering
+ * KNOWN_CAPABILITIES by `kind === "read"` rather than writing the six names
+ * out again means a capability added to CAPABILITY_LABELS defaults to "not
+ * conferrable as a read" until this list is updated on purpose -- the safer
+ * direction for a name the picker cannot yet prove the server will honour --
+ * and means the one write name can never end up in a set this file calls
+ * "reads" by a second list quietly disagreeing with CAPABILITY_KIND.
+ *
+ * THIS IS THE SET "READ EVERYTHING" ACTUALLY MEANS (ruling 33; design v7
+ * S2.1 "today :224 sends CONFERRABLE_CAPABILITIES, which would pick up the
+ * write row"). A preset must never include a capability that needs its own
+ * per-call approval, so the preset is built from this list and never from
+ * CONFERRABLE_CAPABILITIES below.
+ */
+export const CONFERRABLE_READS: readonly Capability[] = KNOWN_CAPABILITIES.filter(
+  (c) => c !== "mcp.content.read" && CAPABILITY_KIND[c] === "read",
+);
+
+/**
+ * Every capability this build's picker may offer at all -- the seven
+ * conferrable reads plus the one write, `mcp.cache.purge`. Use this for "does
+ * the picker know this name", never for a preset: see CONFERRABLE_READS for
+ * why the two must not be the same list.
  */
 export const CONFERRABLE_CAPABILITIES: readonly Capability[] = KNOWN_CAPABILITIES.filter(
   (c) => c !== "mcp.content.read",

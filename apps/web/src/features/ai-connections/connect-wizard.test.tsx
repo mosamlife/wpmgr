@@ -17,7 +17,7 @@ import { Route } from "@/routes/_authed/ai/connect";
 import { resolveCursorPos, WALK_SPEC_ORDER } from "./connect-wizard";
 import { authKeys } from "@/features/auth/use-auth";
 import { CLIENT_TABLE_VERIFIED_AT, MCP_CLIENTS } from "./client-table";
-import { CONFERRABLE_CAPABILITIES } from "./capabilities";
+import { CONFERRABLE_READS } from "./capabilities";
 import { useSites, DEFAULT_SITES_LIMIT } from "@/features/sites/use-sites";
 import { useTags } from "@/features/tags/use-tags";
 import { snapshotFromPage } from "@/features/mcp-consent/site-scope";
@@ -615,7 +615,14 @@ describe("the step rail names all ten specified steps and marks the right one cu
 
     fireEvent.click(authCard("oauth"));
     const oauthNotAsked = railStateNs("not-applicable");
-    expect(oauthNotAsked).toEqual(["8", "9", "10"]);
+    // #694: step 4 (Capabilities) is asked on every path up to here, but its
+    // own answer never reaches the browser sign-in approval screen -- the
+    // client opens that screen directly and it asks again from scratch (see
+    // connect-wizard.tsx's step 4 footnote). Marking it "not-applicable" the
+    // moment oauth is chosen is the fix: before it, the rail kept claiming
+    // this step was done on a path where the wizard itself says the answer
+    // was discarded.
+    expect(oauthNotAsked).toEqual(["4", "8", "9", "10"]);
 
     fireEvent.click(authCard("token"));
     const tokenNotAsked = railStateNs("not-applicable");
@@ -624,7 +631,7 @@ describe("the step rail names all ten specified steps and marks the right one cu
     // Disjoint, and between them exactly the four steps that depend on the
     // path. Neither path strikes through a step the other one also strikes.
     expect(oauthNotAsked.filter((n) => tokenNotAsked.includes(n))).toEqual([]);
-    expect([...tokenNotAsked, ...oauthNotAsked].sort()).toEqual(["10", "7", "8", "9"]);
+    expect([...tokenNotAsked, ...oauthNotAsked].sort()).toEqual(["10", "4", "7", "8", "9"]);
   });
 
   it("keeps the three rail states visually distinct, because they are three facts", async () => {
@@ -837,9 +844,14 @@ describe("the step rail names all ten specified steps and marks the right one cu
     await reachSetupStep("Cursor", "oauth");
 
     expect(currentRailStep()).toHaveAttribute("data-step-n", "6");
-    for (const n of ["1", "2", "3", "4", "5"]) {
+    for (const n of ["1", "2", "3", "5"]) {
       expect(railSegment(n)).toHaveAttribute("data-step-state", "completed");
     }
+    // #694: step 4's own answer never reaches the browser sign-in approval
+    // screen, so on the oauth path it is not-applicable behind the operator,
+    // never completed -- the same fact "marks the steps the chosen path will
+    // never ask, in both directions" asserts for this path.
+    expect(railSegment("4")).toHaveAttribute("data-step-state", "not-applicable");
   });
 
   it("re-blocks a step whose answer is taken away again, rather than latching it done", async () => {
@@ -1721,30 +1733,36 @@ describe("choosing what a token may do (step 4, token path only)", () => {
 
     expect(screen.getByRole("heading", { name: /^4\. Choose what it may do$/ })).toBeInTheDocument();
     // THE OUTCOME, NOT A CLAIM ABOUT A CONTROL SOMEWHERE ELSE. This assertion
-    // used to pin "the approval screen has no channel for it yet", which the
-    // consent endpoint's capability field falsified while the test kept it
-    // green. What is asserted now is the thing an operator can check against
-    // the connection afterwards: omitting the field resolves to
-    // DefaultGrantCapabilities(), policy.go:273, which is sites-read alone.
+    // used to pin "the approval screen has no channel for it yet", then pinned
+    // "created able to read your sites and nothing else" once the consent
+    // endpoint grew a capability field this app did not yet send. Neither is
+    // true any more: consent-screen.tsx now sends its own explicit list (design
+    // v7 S2.2), so what is asserted is the thing that is actually true today --
+    // this wizard's own answer here never reaches that screen, which asks
+    // again from scratch.
     expect(
-      screen.getByText(/created able to read your sites and nothing else/i),
+      screen.getByText(/your client opens a separate approval screen/i),
     ).toBeInTheDocument();
-    // And the retired claim is gone rather than merely unasserted, so it cannot
-    // come back under a passing suite the way it just did.
+    // And the retired claims are gone rather than merely unasserted, so they
+    // cannot come back under a passing suite the way one just did.
     expect(screen.queryByText(/no channel for it yet/i)).toBeNull();
     expect(screen.queryByText(/permissions are settled there instead/i)).toBeNull();
+    expect(screen.queryByText(/created able to read your sites and nothing else/i)).toBeNull();
     expect(railSegment("4")).toHaveAttribute("data-step-state", "current");
   });
 
   it("renders every conferrable capability with a real description, and Content disabled with its reason", async () => {
     await reachCapabilityStep();
 
-    // The seven conferrable rows, each carrying label AND description --
+    // The seven conferrable READ rows, each carrying label AND description --
     // never a bare label, which would leave "what it permits" to be guessed.
     // findAllByRole rather than a singular query: a still-loading render could
     // otherwise let this pass against a skeleton.
     const boxes = await screen.findAllByRole("checkbox", { name: /.+/ });
-    expect(boxes.length).toBe(8); // seven conferrable + the disabled Content row
+    // seven conferrable reads + the disabled Content row + the one write row
+    // in its own box (CachePurgeCapabilityBox) = 9.
+    expect(boxes.length).toBe(9);
+    expect(screen.getByTestId("cache-purge-capability-box")).toBeInTheDocument();
 
     expect(screen.getByRole("checkbox", { name: /^Sites/i })).toBeInTheDocument();
     expect(
@@ -2200,11 +2218,21 @@ describe("a preset is a shortcut, not a mode", () => {
 
   /**
    * THE INVARIANT, checked wherever it is called: the claim and the ticks agree.
-   * "read-everything" means every enabled row is ticked; "basics" means exactly
-   * one is; "custom" means the set matches neither.
+   * "read-everything" means every enabled READ row is ticked; "basics" means
+   * exactly one is; "custom" means the set matches neither.
+   *
+   * THE WRITE ROW IS DELIBERATELY EXCLUDED FROM "enabled" HERE. It lives in
+   * its own box (CachePurgeCapabilityBox) outside the reads `<ul>`, is never
+   * part of either preset (ruling 33; CONFERRABLE_READS excludes it), and
+   * stays unticked under "read everything" by design -- counting it as one of
+   * the "enabled" rows a preset must fill would make this helper assert a
+   * preset behaviour the product must NOT have.
    */
   function expectClaimMatchesTicks() {
-    const boxes = screen.getAllByRole<HTMLInputElement>("checkbox");
+    const writeBox = screen.getByTestId("cache-purge-capability-box");
+    const boxes = screen
+      .getAllByRole<HTMLInputElement>("checkbox")
+      .filter((b) => !writeBox.contains(b));
     const enabled = boxes.filter((b) => !b.disabled);
     const ticked = enabled.filter((b) => b.checked);
     const claim = claimed();
@@ -2239,6 +2267,12 @@ describe("a preset is a shortcut, not a mode", () => {
       .filter((b) => b.disabled);
     expect(disabled.length).toBeGreaterThan(0);
     for (const b of disabled) expect(b.checked).toBe(false);
+
+    // AND THE WRITE ROW IS STILL NOT TICKED (ruling 33; design v7 S2.1).
+    // "Read everything" is every READ the server would confer; the one write
+    // capability is not a read and must never ride in on this preset.
+    const writeBox = screen.getByTestId("cache-purge-capability-box");
+    expect(within(writeBox).getByRole("checkbox")).not.toBeChecked();
   });
 
   it("drops the preset claim the moment one row diverges from it", async () => {
@@ -2296,11 +2330,26 @@ describe("a preset is a shortcut, not a mode", () => {
 
     const body = capturedBody as Record<string, unknown>;
     const sent = body.capabilities as string[];
-    // Every conferrable capability, and the unconferrable one absent -- read
-    // off the same vocabulary the component uses rather than a written list,
-    // so a capability added to the product joins this assertion by itself.
-    expect([...sent].sort()).toEqual([...CONFERRABLE_CAPABILITIES].sort());
+    // Every conferrable READ, and neither the unconferrable read nor the
+    // write present -- read off the same vocabulary the component uses
+    // rather than a written list, so a capability added to the product joins
+    // this assertion by itself. "Read everything" including the write would
+    // be exactly ruling 33's regression (design v7 S2.1).
+    expect([...sent].sort()).toEqual([...CONFERRABLE_READS].sort());
     expect(sent).not.toContain("mcp.content.read");
+    expect(sent).not.toContain("mcp.cache.purge");
+  });
+
+  it("never ticks the write row from a preset, even when a preset is pressed after it was ticked by hand", async () => {
+    // A preset button only ever SETS the checkbox list; it must not be able to
+    // leave a previously-hand-ticked write row sitting on afterwards.
+    await reachCapabilityStep();
+    const writeBox = screen.getByTestId("cache-purge-capability-box");
+    fireEvent.click(within(writeBox).getByRole("checkbox"));
+    expect(within(writeBox).getByRole("checkbox")).toBeChecked();
+
+    fireEvent.click(screen.getByTestId("preset-read-everything"));
+    expect(within(writeBox).getByRole("checkbox")).not.toBeChecked();
   });
 });
 

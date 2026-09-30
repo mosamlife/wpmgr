@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"log/slog"
 	"net/http"
 	"slices"
 	"strconv"
@@ -121,7 +122,10 @@ func (h *Handler) RegisterPublic(r *gin.RouterGroup) {
 func (h *Handler) Register(r *gin.RouterGroup) {
 	g := r.Group(oauthGroupPath, h.requireOrgScope(), h.requireGrantPermission())
 	g.GET("/authorize", h.authorize)
-	g.POST("/consent", h.consent)
+	// JSON only (httpx.RequireJSONBody): the session cookie is SameSite=Lax
+	// and the body binder ignores Content-Type, so a form or text/plain POST
+	// from another site must not reach the approval.
+	g.POST("/consent", httpx.RequireJSONBody(), h.consent)
 }
 
 // RegisterConnections mounts the OPERATOR-FACING connection management surface
@@ -178,7 +182,7 @@ func (h *Handler) RegisterConnections(r *gin.RouterGroup) {
 	// Minting is at least as sensitive as revoking -- revoke removes authority,
 	// mint creates a long-lived bearer credential -- so it takes the manage
 	// tier, never the read one.
-	g.POST("", authz.RequirePermission(authz.PermAPIKeyManage), h.mintConnection)
+	g.POST("", authz.RequirePermission(authz.PermAPIKeyManage), httpx.RequireJSONBody(), h.mintConnection)
 
 	g.POST("/:"+connectionIDParam+"/revoke",
 		authz.RequirePermission(authz.PermAPIKeyManage), h.revokeConnection)
@@ -602,11 +606,27 @@ func (h *Handler) register(c *gin.Context) {
 		ClientName:              body.ClientName,
 		ClientURI:               body.ClientURI,
 		TokenEndpointAuthMethod: body.TokenEndpointAuthMethod,
+		Scope:                   body.Scope,
 	})
 	if err != nil {
 		status, dto := oauthError(err)
 		c.JSON(status, dto)
 		return
+	}
+	if len(out.DroppedScopes) > 0 {
+		// Operator log only: the registration succeeded without them, and the
+		// client learns what it holds from the echoed `scope`. The tokens are
+		// the anonymous caller's own input, so only a bounded count and a
+		// bounded prefix are logged.
+		dropped := strings.Join(out.DroppedScopes, " ")
+		if len(dropped) > 256 {
+			dropped = dropped[:256]
+		}
+		slog.WarnContext(c.Request.Context(), "register_scope_dropped",
+			slog.String("client_id", out.ClientID),
+			slog.Int("dropped_count", len(out.DroppedScopes)),
+			slog.String("dropped", strings.ToValidUTF8(dropped, "?")),
+		)
 	}
 	c.JSON(http.StatusCreated, toRegistrationResponse(out))
 }

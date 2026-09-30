@@ -193,6 +193,12 @@ type CachePurgeRequest struct {
 	Scope string   `json:"scope"` // "all" | "url"
 	URL   string   `json:"url,omitempty"`
 	URLs  []string `json:"urls,omitempty"`
+	// OriginOnly asks the agent to clear only this site's own page cache and
+	// to skip every hosting-cache integration not confirmed to clear only this
+	// site. The dashboard purge never sets it; the AI request path always does.
+	// An agent that predates the option ignores it, so callers gate on the
+	// agent version before relying on it.
+	OriginOnly bool `json:"origin_only,omitempty"`
 }
 
 // CachePurgeResult is the agent's response to `cache_purge`. PurgedCount is the
@@ -201,6 +207,20 @@ type CachePurgeResult struct {
 	OK          bool   `json:"ok"`
 	Detail      string `json:"detail"`
 	PurgedCount int    `json:"purged_count"`
+	// OriginOnlyHonoured is true only when the agent received origin_only and
+	// applied it. It is nil from an agent that ignored the option.
+	OriginOnlyHonoured *bool `json:"origin_only_honoured,omitempty"`
+	// Integrations reports, under origin_only, what the agent did with each
+	// hosting-cache integration it detected on the site.
+	Integrations []CachePurgeIntegration `json:"integrations,omitempty"`
+}
+
+// CachePurgeIntegration is one detected hosting-cache integration in an
+// origin-only purge report. Slug and Action are site-supplied: a caller checks
+// both against its own closed sets before storing either.
+type CachePurgeIntegration struct {
+	Slug   string `json:"slug"`
+	Action string `json:"action"`
 }
 
 // CachePreloadRequest is the POST body for `cache_preload`.

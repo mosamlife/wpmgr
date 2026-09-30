@@ -70,6 +70,16 @@ const RESTRICTION_FIELD_LABELS: Record<RestrictionFieldKey, string> = {
   forbidden_topics: "Forbidden topics",
 };
 
+// Only forbidden_tools carries a hint: it is the one restriction that can
+// name a REAL, callable tool today. site_cache_purge_request is matched
+// case-insensitively with punctuation collapsed to "_", against the same
+// alias set the server checks (govcontext.go), so any of the listed spellings
+// forbids the AI cache-clear tool on this scope.
+const RESTRICTION_FIELD_HINTS: Partial<Record<RestrictionFieldKey, string>> = {
+  forbidden_tools:
+    "Matched by name, case-insensitive. For example, site_cache_purge_request forbids the AI cache-clear tool on this scope.",
+};
+
 // Maps the server's `details.field` (a RestrictionSet key, per
 // use-context.ts's ContextWidenForbiddenError doc comment) onto the
 // react-hook-form path it corresponds to, so a widen refusal can flag the
@@ -243,6 +253,7 @@ export function GovContextEditor({
               <RestrictionListField
                 id={`ctx-${scopeLabel}-${field}`}
                 label={RESTRICTION_FIELD_LABELS[field]}
+                hint={RESTRICTION_FIELD_HINTS[field]}
                 values={rhf.value}
                 onChange={rhf.onChange}
                 errorMessage={errors.restrictions?.[field]?.message}
@@ -299,12 +310,14 @@ export function GovContextEditor({
 function RestrictionListField({
   id,
   label,
+  hint,
   values,
   onChange,
   errorMessage,
 }: {
   id: string;
   label: string;
+  hint?: string;
   values: string[];
   onChange: (next: string[]) => void;
   errorMessage?: string;
@@ -319,6 +332,7 @@ function RestrictionListField({
   return (
     <div className="space-y-1.5">
       <Label htmlFor={id}>{label}</Label>
+      {hint ? <p className="text-xs text-muted-foreground">{hint}</p> : null}
       {values.length > 0 ? (
         <ul className="flex flex-wrap gap-1.5" aria-label={`${label} (current)`}>
           {values.map((v) => (

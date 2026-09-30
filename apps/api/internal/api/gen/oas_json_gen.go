@@ -23855,6 +23855,196 @@ func (s *ApplyUploadResult) UnmarshalJSON(data []byte) error {
 	return s.Decode(d)
 }
 
+// Encode encodes ApproveAssistantRequestConflict as json.
+func (s *ApproveAssistantRequestConflict) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes ApproveAssistantRequestConflict from json.
+func (s *ApproveAssistantRequestConflict) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode ApproveAssistantRequestConflict to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = ApproveAssistantRequestConflict(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *ApproveAssistantRequestConflict) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *ApproveAssistantRequestConflict) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes ApproveAssistantRequestForbidden as json.
+func (s *ApproveAssistantRequestForbidden) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes ApproveAssistantRequestForbidden from json.
+func (s *ApproveAssistantRequestForbidden) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode ApproveAssistantRequestForbidden to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = ApproveAssistantRequestForbidden(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *ApproveAssistantRequestForbidden) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *ApproveAssistantRequestForbidden) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes ApproveAssistantRequestInternalServerError as json.
+func (s *ApproveAssistantRequestInternalServerError) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes ApproveAssistantRequestInternalServerError from json.
+func (s *ApproveAssistantRequestInternalServerError) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode ApproveAssistantRequestInternalServerError to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = ApproveAssistantRequestInternalServerError(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *ApproveAssistantRequestInternalServerError) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *ApproveAssistantRequestInternalServerError) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes ApproveAssistantRequestNotFound as json.
+func (s *ApproveAssistantRequestNotFound) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes ApproveAssistantRequestNotFound from json.
+func (s *ApproveAssistantRequestNotFound) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode ApproveAssistantRequestNotFound to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = ApproveAssistantRequestNotFound(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *ApproveAssistantRequestNotFound) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *ApproveAssistantRequestNotFound) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes ApproveAssistantRequestUnsupportedMediaType as json.
+func (s *ApproveAssistantRequestUnsupportedMediaType) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes ApproveAssistantRequestUnsupportedMediaType from json.
+func (s *ApproveAssistantRequestUnsupportedMediaType) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode ApproveAssistantRequestUnsupportedMediaType to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = ApproveAssistantRequestUnsupportedMediaType(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *ApproveAssistantRequestUnsupportedMediaType) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *ApproveAssistantRequestUnsupportedMediaType) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
 // Encode implements json.Marshaler.
 func (s *AssignSitesRequest) Encode(e *jx.Encoder) {
 	e.ObjStart()
@@ -24186,6 +24376,1145 @@ func (s *AssignSitesToClientUnauthorized) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *AssignSitesToClientUnauthorized) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *AssistantRequest) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *AssistantRequest) encodeFields(e *jx.Encoder) {
+	{
+		e.FieldStart("id")
+		json.EncodeUUID(e, s.ID)
+	}
+	{
+		e.FieldStart("site_id")
+		json.EncodeUUID(e, s.SiteID)
+	}
+	{
+		e.FieldStart("scope")
+		s.Scope.Encode(e)
+	}
+	{
+		e.FieldStart("url")
+		s.URL.Encode(e)
+	}
+	{
+		e.FieldStart("site_label")
+		e.Str(s.SiteLabel)
+	}
+	{
+		e.FieldStart("site_host")
+		e.Str(s.SiteHost)
+	}
+	{
+		e.FieldStart("grant_label")
+		e.Str(s.GrantLabel)
+	}
+	{
+		e.FieldStart("grant_via")
+		e.Str(s.GrantVia)
+	}
+	{
+		e.FieldStart("setup_client")
+		s.SetupClient.Encode(e)
+	}
+	{
+		if s.PresentedDigest.Set {
+			e.FieldStart("presented_digest")
+			s.PresentedDigest.Encode(e)
+		}
+	}
+	{
+		e.FieldStart("state")
+		s.State.Encode(e)
+	}
+	{
+		e.FieldStart("created_at")
+		json.EncodeDateTime(e, s.CreatedAt)
+	}
+	{
+		e.FieldStart("expires_at")
+		json.EncodeDateTime(e, s.ExpiresAt)
+	}
+	{
+		e.FieldStart("decided_at")
+		s.DecidedAt.Encode(e, json.EncodeDateTime)
+	}
+	{
+		e.FieldStart("decided_by_user_id")
+		s.DecidedByUserID.Encode(e)
+	}
+	{
+		e.FieldStart("decided_by_name")
+		s.DecidedByName.Encode(e)
+	}
+	{
+		e.FieldStart("decided_by_account_deleted")
+		e.Bool(s.DecidedByAccountDeleted)
+	}
+	{
+		e.FieldStart("withdrawn_at")
+		s.WithdrawnAt.Encode(e, json.EncodeDateTime)
+	}
+	{
+		e.FieldStart("claimed_at")
+		s.ClaimedAt.Encode(e, json.EncodeDateTime)
+	}
+	{
+		e.FieldStart("dispatch_attempts")
+		e.Int32(s.DispatchAttempts)
+	}
+	{
+		e.FieldStart("last_attempt_at")
+		s.LastAttemptAt.Encode(e, json.EncodeDateTime)
+	}
+	{
+		e.FieldStart("last_attempt_code")
+		s.LastAttemptCode.Encode(e)
+	}
+	{
+		e.FieldStart("outcome")
+		s.Outcome.Encode(e)
+	}
+	{
+		e.FieldStart("not_sent_reason")
+		s.NotSentReason.Encode(e)
+	}
+	{
+		e.FieldStart("outcome_at")
+		s.OutcomeAt.Encode(e, json.EncodeDateTime)
+	}
+	{
+		e.FieldStart("hosting_caches_cleared")
+		if s.HostingCachesCleared == nil {
+			e.Null()
+		} else {
+			e.ArrStart()
+			for _, elem := range s.HostingCachesCleared {
+				e.Str(elem)
+			}
+			e.ArrEnd()
+		}
+	}
+	{
+		e.FieldStart("hosting_caches_skipped")
+		if s.HostingCachesSkipped == nil {
+			e.Null()
+		} else {
+			e.ArrStart()
+			for _, elem := range s.HostingCachesSkipped {
+				e.Str(elem)
+			}
+			e.ArrEnd()
+		}
+	}
+	{
+		e.FieldStart("origin_only_confirmed")
+		s.OriginOnlyConfirmed.Encode(e)
+	}
+	{
+		e.FieldStart("wpmgr_cdn")
+		s.WpmgrCDN.Encode(e)
+	}
+	{
+		e.FieldStart("site_reported_text")
+		s.SiteReportedText.Encode(e)
+	}
+}
+
+var jsonFieldsNameOfAssistantRequest = [30]string{
+	0:  "id",
+	1:  "site_id",
+	2:  "scope",
+	3:  "url",
+	4:  "site_label",
+	5:  "site_host",
+	6:  "grant_label",
+	7:  "grant_via",
+	8:  "setup_client",
+	9:  "presented_digest",
+	10: "state",
+	11: "created_at",
+	12: "expires_at",
+	13: "decided_at",
+	14: "decided_by_user_id",
+	15: "decided_by_name",
+	16: "decided_by_account_deleted",
+	17: "withdrawn_at",
+	18: "claimed_at",
+	19: "dispatch_attempts",
+	20: "last_attempt_at",
+	21: "last_attempt_code",
+	22: "outcome",
+	23: "not_sent_reason",
+	24: "outcome_at",
+	25: "hosting_caches_cleared",
+	26: "hosting_caches_skipped",
+	27: "origin_only_confirmed",
+	28: "wpmgr_cdn",
+	29: "site_reported_text",
+}
+
+// Decode decodes AssistantRequest from json.
+func (s *AssistantRequest) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AssistantRequest to nil")
+	}
+	var requiredBitSet [4]uint8
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "id":
+			requiredBitSet[0] |= 1 << 0
+			if err := func() error {
+				v, err := json.DecodeUUID(d)
+				s.ID = v
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"id\"")
+			}
+		case "site_id":
+			requiredBitSet[0] |= 1 << 1
+			if err := func() error {
+				v, err := json.DecodeUUID(d)
+				s.SiteID = v
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"site_id\"")
+			}
+		case "scope":
+			requiredBitSet[0] |= 1 << 2
+			if err := func() error {
+				if err := s.Scope.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"scope\"")
+			}
+		case "url":
+			requiredBitSet[0] |= 1 << 3
+			if err := func() error {
+				if err := s.URL.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"url\"")
+			}
+		case "site_label":
+			requiredBitSet[0] |= 1 << 4
+			if err := func() error {
+				v, err := d.Str()
+				s.SiteLabel = string(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"site_label\"")
+			}
+		case "site_host":
+			requiredBitSet[0] |= 1 << 5
+			if err := func() error {
+				v, err := d.Str()
+				s.SiteHost = string(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"site_host\"")
+			}
+		case "grant_label":
+			requiredBitSet[0] |= 1 << 6
+			if err := func() error {
+				v, err := d.Str()
+				s.GrantLabel = string(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"grant_label\"")
+			}
+		case "grant_via":
+			requiredBitSet[0] |= 1 << 7
+			if err := func() error {
+				v, err := d.Str()
+				s.GrantVia = string(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"grant_via\"")
+			}
+		case "setup_client":
+			requiredBitSet[1] |= 1 << 0
+			if err := func() error {
+				if err := s.SetupClient.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"setup_client\"")
+			}
+		case "presented_digest":
+			if err := func() error {
+				s.PresentedDigest.Reset()
+				if err := s.PresentedDigest.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"presented_digest\"")
+			}
+		case "state":
+			requiredBitSet[1] |= 1 << 2
+			if err := func() error {
+				if err := s.State.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"state\"")
+			}
+		case "created_at":
+			requiredBitSet[1] |= 1 << 3
+			if err := func() error {
+				v, err := json.DecodeDateTime(d)
+				s.CreatedAt = v
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"created_at\"")
+			}
+		case "expires_at":
+			requiredBitSet[1] |= 1 << 4
+			if err := func() error {
+				v, err := json.DecodeDateTime(d)
+				s.ExpiresAt = v
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"expires_at\"")
+			}
+		case "decided_at":
+			requiredBitSet[1] |= 1 << 5
+			if err := func() error {
+				if err := s.DecidedAt.Decode(d, json.DecodeDateTime); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"decided_at\"")
+			}
+		case "decided_by_user_id":
+			requiredBitSet[1] |= 1 << 6
+			if err := func() error {
+				if err := s.DecidedByUserID.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"decided_by_user_id\"")
+			}
+		case "decided_by_name":
+			requiredBitSet[1] |= 1 << 7
+			if err := func() error {
+				if err := s.DecidedByName.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"decided_by_name\"")
+			}
+		case "decided_by_account_deleted":
+			requiredBitSet[2] |= 1 << 0
+			if err := func() error {
+				v, err := d.Bool()
+				s.DecidedByAccountDeleted = bool(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"decided_by_account_deleted\"")
+			}
+		case "withdrawn_at":
+			requiredBitSet[2] |= 1 << 1
+			if err := func() error {
+				if err := s.WithdrawnAt.Decode(d, json.DecodeDateTime); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"withdrawn_at\"")
+			}
+		case "claimed_at":
+			requiredBitSet[2] |= 1 << 2
+			if err := func() error {
+				if err := s.ClaimedAt.Decode(d, json.DecodeDateTime); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"claimed_at\"")
+			}
+		case "dispatch_attempts":
+			requiredBitSet[2] |= 1 << 3
+			if err := func() error {
+				v, err := d.Int32()
+				s.DispatchAttempts = int32(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"dispatch_attempts\"")
+			}
+		case "last_attempt_at":
+			requiredBitSet[2] |= 1 << 4
+			if err := func() error {
+				if err := s.LastAttemptAt.Decode(d, json.DecodeDateTime); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"last_attempt_at\"")
+			}
+		case "last_attempt_code":
+			requiredBitSet[2] |= 1 << 5
+			if err := func() error {
+				if err := s.LastAttemptCode.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"last_attempt_code\"")
+			}
+		case "outcome":
+			requiredBitSet[2] |= 1 << 6
+			if err := func() error {
+				if err := s.Outcome.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"outcome\"")
+			}
+		case "not_sent_reason":
+			requiredBitSet[2] |= 1 << 7
+			if err := func() error {
+				if err := s.NotSentReason.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"not_sent_reason\"")
+			}
+		case "outcome_at":
+			requiredBitSet[3] |= 1 << 0
+			if err := func() error {
+				if err := s.OutcomeAt.Decode(d, json.DecodeDateTime); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"outcome_at\"")
+			}
+		case "hosting_caches_cleared":
+			requiredBitSet[3] |= 1 << 1
+			if err := func() error {
+				switch tt := d.Next(); tt {
+				case jx.Null:
+					if err := d.Skip(); err != nil {
+						return err
+					}
+				default:
+					s.HostingCachesCleared = make([]string, 0)
+					if err := d.Arr(func(d *jx.Decoder) error {
+						var elem string
+						v, err := d.Str()
+						elem = string(v)
+						if err != nil {
+							return err
+						}
+						s.HostingCachesCleared = append(s.HostingCachesCleared, elem)
+						return nil
+					}); err != nil {
+						return err
+					}
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"hosting_caches_cleared\"")
+			}
+		case "hosting_caches_skipped":
+			requiredBitSet[3] |= 1 << 2
+			if err := func() error {
+				switch tt := d.Next(); tt {
+				case jx.Null:
+					if err := d.Skip(); err != nil {
+						return err
+					}
+				default:
+					s.HostingCachesSkipped = make([]string, 0)
+					if err := d.Arr(func(d *jx.Decoder) error {
+						var elem string
+						v, err := d.Str()
+						elem = string(v)
+						if err != nil {
+							return err
+						}
+						s.HostingCachesSkipped = append(s.HostingCachesSkipped, elem)
+						return nil
+					}); err != nil {
+						return err
+					}
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"hosting_caches_skipped\"")
+			}
+		case "origin_only_confirmed":
+			requiredBitSet[3] |= 1 << 3
+			if err := func() error {
+				if err := s.OriginOnlyConfirmed.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"origin_only_confirmed\"")
+			}
+		case "wpmgr_cdn":
+			requiredBitSet[3] |= 1 << 4
+			if err := func() error {
+				if err := s.WpmgrCDN.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"wpmgr_cdn\"")
+			}
+		case "site_reported_text":
+			requiredBitSet[3] |= 1 << 5
+			if err := func() error {
+				if err := s.SiteReportedText.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"site_reported_text\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode AssistantRequest")
+	}
+	// Validate required fields.
+	var failures []validate.FieldError
+	for i, mask := range [4]uint8{
+		0b11111111,
+		0b11111101,
+		0b11111111,
+		0b00111111,
+	} {
+		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
+			// Mask only required fields and check equality to mask using XOR.
+			//
+			// If XOR result is not zero, result is not equal to expected, so some fields are missed.
+			// Bits of fields which would be set are actually bits of missed fields.
+			missed := bits.OnesCount8(result)
+			for bitN := 0; bitN < missed; bitN++ {
+				bitIdx := bits.TrailingZeros8(result)
+				fieldIdx := i*8 + bitIdx
+				var name string
+				if fieldIdx < len(jsonFieldsNameOfAssistantRequest) {
+					name = jsonFieldsNameOfAssistantRequest[fieldIdx]
+				} else {
+					name = strconv.Itoa(fieldIdx)
+				}
+				failures = append(failures, validate.FieldError{
+					Name:  name,
+					Error: validate.ErrFieldRequired,
+				})
+				// Reset bit.
+				result &^= 1 << bitIdx
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *AssistantRequest) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AssistantRequest) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *AssistantRequestApproveBody) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *AssistantRequestApproveBody) encodeFields(e *jx.Encoder) {
+	{
+		e.FieldStart("presented_digest")
+		e.Str(s.PresentedDigest)
+	}
+}
+
+var jsonFieldsNameOfAssistantRequestApproveBody = [1]string{
+	0: "presented_digest",
+}
+
+// Decode decodes AssistantRequestApproveBody from json.
+func (s *AssistantRequestApproveBody) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AssistantRequestApproveBody to nil")
+	}
+	var requiredBitSet [1]uint8
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "presented_digest":
+			requiredBitSet[0] |= 1 << 0
+			if err := func() error {
+				v, err := d.Str()
+				s.PresentedDigest = string(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"presented_digest\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode AssistantRequestApproveBody")
+	}
+	// Validate required fields.
+	var failures []validate.FieldError
+	for i, mask := range [1]uint8{
+		0b00000001,
+	} {
+		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
+			// Mask only required fields and check equality to mask using XOR.
+			//
+			// If XOR result is not zero, result is not equal to expected, so some fields are missed.
+			// Bits of fields which would be set are actually bits of missed fields.
+			missed := bits.OnesCount8(result)
+			for bitN := 0; bitN < missed; bitN++ {
+				bitIdx := bits.TrailingZeros8(result)
+				fieldIdx := i*8 + bitIdx
+				var name string
+				if fieldIdx < len(jsonFieldsNameOfAssistantRequestApproveBody) {
+					name = jsonFieldsNameOfAssistantRequestApproveBody[fieldIdx]
+				} else {
+					name = strconv.Itoa(fieldIdx)
+				}
+				failures = append(failures, validate.FieldError{
+					Name:  name,
+					Error: validate.ErrFieldRequired,
+				})
+				// Reset bit.
+				result &^= 1 << bitIdx
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *AssistantRequestApproveBody) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AssistantRequestApproveBody) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AssistantRequestLastAttemptCode as json.
+func (s AssistantRequestLastAttemptCode) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes AssistantRequestLastAttemptCode from json.
+func (s *AssistantRequestLastAttemptCode) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AssistantRequestLastAttemptCode to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch AssistantRequestLastAttemptCode(v) {
+	case AssistantRequestLastAttemptCodeSiteUnreachable:
+		*s = AssistantRequestLastAttemptCodeSiteUnreachable
+	case AssistantRequestLastAttemptCodeSiteCooldown:
+		*s = AssistantRequestLastAttemptCodeSiteCooldown
+	case AssistantRequestLastAttemptCodeSiteHourlyCap:
+		*s = AssistantRequestLastAttemptCodeSiteHourlyCap
+	case AssistantRequestLastAttemptCodeSiteBusy:
+		*s = AssistantRequestLastAttemptCodeSiteBusy
+	case AssistantRequestLastAttemptCodeOrgBusy:
+		*s = AssistantRequestLastAttemptCodeOrgBusy
+	case AssistantRequestLastAttemptCodeContextUnavailable:
+		*s = AssistantRequestLastAttemptCodeContextUnavailable
+	case AssistantRequestLastAttemptCodeWriteToolsDisabled:
+		*s = AssistantRequestLastAttemptCodeWriteToolsDisabled
+	default:
+		*s = AssistantRequestLastAttemptCode(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s AssistantRequestLastAttemptCode) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AssistantRequestLastAttemptCode) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *AssistantRequestList) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *AssistantRequestList) encodeFields(e *jx.Encoder) {
+	{
+		e.FieldStart("requests")
+		e.ArrStart()
+		for _, elem := range s.Requests {
+			elem.Encode(e)
+		}
+		e.ArrEnd()
+	}
+	{
+		e.FieldStart("pending_count")
+		e.Int64(s.PendingCount)
+	}
+	{
+		e.FieldStart("limit")
+		e.Int32(s.Limit)
+	}
+	{
+		e.FieldStart("offset")
+		e.Int32(s.Offset)
+	}
+}
+
+var jsonFieldsNameOfAssistantRequestList = [4]string{
+	0: "requests",
+	1: "pending_count",
+	2: "limit",
+	3: "offset",
+}
+
+// Decode decodes AssistantRequestList from json.
+func (s *AssistantRequestList) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AssistantRequestList to nil")
+	}
+	var requiredBitSet [1]uint8
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "requests":
+			requiredBitSet[0] |= 1 << 0
+			if err := func() error {
+				s.Requests = make([]AssistantRequest, 0)
+				if err := d.Arr(func(d *jx.Decoder) error {
+					var elem AssistantRequest
+					if err := elem.Decode(d); err != nil {
+						return err
+					}
+					s.Requests = append(s.Requests, elem)
+					return nil
+				}); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"requests\"")
+			}
+		case "pending_count":
+			requiredBitSet[0] |= 1 << 1
+			if err := func() error {
+				v, err := d.Int64()
+				s.PendingCount = int64(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"pending_count\"")
+			}
+		case "limit":
+			requiredBitSet[0] |= 1 << 2
+			if err := func() error {
+				v, err := d.Int32()
+				s.Limit = int32(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"limit\"")
+			}
+		case "offset":
+			requiredBitSet[0] |= 1 << 3
+			if err := func() error {
+				v, err := d.Int32()
+				s.Offset = int32(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"offset\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode AssistantRequestList")
+	}
+	// Validate required fields.
+	var failures []validate.FieldError
+	for i, mask := range [1]uint8{
+		0b00001111,
+	} {
+		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
+			// Mask only required fields and check equality to mask using XOR.
+			//
+			// If XOR result is not zero, result is not equal to expected, so some fields are missed.
+			// Bits of fields which would be set are actually bits of missed fields.
+			missed := bits.OnesCount8(result)
+			for bitN := 0; bitN < missed; bitN++ {
+				bitIdx := bits.TrailingZeros8(result)
+				fieldIdx := i*8 + bitIdx
+				var name string
+				if fieldIdx < len(jsonFieldsNameOfAssistantRequestList) {
+					name = jsonFieldsNameOfAssistantRequestList[fieldIdx]
+				} else {
+					name = strconv.Itoa(fieldIdx)
+				}
+				failures = append(failures, validate.FieldError{
+					Name:  name,
+					Error: validate.ErrFieldRequired,
+				})
+				// Reset bit.
+				result &^= 1 << bitIdx
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *AssistantRequestList) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AssistantRequestList) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AssistantRequestNotSentReason as json.
+func (s AssistantRequestNotSentReason) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes AssistantRequestNotSentReason from json.
+func (s *AssistantRequestNotSentReason) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AssistantRequestNotSentReason to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch AssistantRequestNotSentReason(v) {
+	case AssistantRequestNotSentReasonGrantInactive:
+		*s = AssistantRequestNotSentReasonGrantInactive
+	case AssistantRequestNotSentReasonAssistantPaused:
+		*s = AssistantRequestNotSentReasonAssistantPaused
+	case AssistantRequestNotSentReasonOrganisationDeleted:
+		*s = AssistantRequestNotSentReasonOrganisationDeleted
+	case AssistantRequestNotSentReasonCapabilityNotHeld:
+		*s = AssistantRequestNotSentReasonCapabilityNotHeld
+	case AssistantRequestNotSentReasonSiteAbsent:
+		*s = AssistantRequestNotSentReasonSiteAbsent
+	case AssistantRequestNotSentReasonForbiddenByContext:
+		*s = AssistantRequestNotSentReasonForbiddenByContext
+	case AssistantRequestNotSentReasonAgentOutdated:
+		*s = AssistantRequestNotSentReasonAgentOutdated
+	case AssistantRequestNotSentReasonDispatchDeadlinePassed:
+		*s = AssistantRequestNotSentReasonDispatchDeadlinePassed
+	case AssistantRequestNotSentReasonTransportPreSend:
+		*s = AssistantRequestNotSentReasonTransportPreSend
+	default:
+		*s = AssistantRequestNotSentReason(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s AssistantRequestNotSentReason) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AssistantRequestNotSentReason) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AssistantRequestOutcome as json.
+func (s AssistantRequestOutcome) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes AssistantRequestOutcome from json.
+func (s *AssistantRequestOutcome) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AssistantRequestOutcome to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch AssistantRequestOutcome(v) {
+	case AssistantRequestOutcomePurged:
+		*s = AssistantRequestOutcomePurged
+	case AssistantRequestOutcomeSiteReportedFailure:
+		*s = AssistantRequestOutcomeSiteReportedFailure
+	case AssistantRequestOutcomeAgentFailed:
+		*s = AssistantRequestOutcomeAgentFailed
+	case AssistantRequestOutcomeOutcomeUnknown:
+		*s = AssistantRequestOutcomeOutcomeUnknown
+	case AssistantRequestOutcomeNotSent:
+		*s = AssistantRequestOutcomeNotSent
+	default:
+		*s = AssistantRequestOutcome(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s AssistantRequestOutcome) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AssistantRequestOutcome) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AssistantRequestScope as json.
+func (s AssistantRequestScope) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes AssistantRequestScope from json.
+func (s *AssistantRequestScope) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AssistantRequestScope to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch AssistantRequestScope(v) {
+	case AssistantRequestScopeAll:
+		*s = AssistantRequestScopeAll
+	case AssistantRequestScopeURL:
+		*s = AssistantRequestScopeURL
+	default:
+		*s = AssistantRequestScope(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s AssistantRequestScope) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AssistantRequestScope) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AssistantRequestState as json.
+func (s AssistantRequestState) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes AssistantRequestState from json.
+func (s *AssistantRequestState) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AssistantRequestState to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch AssistantRequestState(v) {
+	case AssistantRequestStatePending:
+		*s = AssistantRequestStatePending
+	case AssistantRequestStateApprovedUndispatched:
+		*s = AssistantRequestStateApprovedUndispatched
+	case AssistantRequestStateDispatched:
+		*s = AssistantRequestStateDispatched
+	case AssistantRequestStateRejected:
+		*s = AssistantRequestStateRejected
+	case AssistantRequestStateWithdrawn:
+		*s = AssistantRequestStateWithdrawn
+	case AssistantRequestStateExpired:
+		*s = AssistantRequestStateExpired
+	default:
+		*s = AssistantRequestState(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s AssistantRequestState) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AssistantRequestState) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AssistantRequestWpmgrCDN as json.
+func (s AssistantRequestWpmgrCDN) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes AssistantRequestWpmgrCDN from json.
+func (s *AssistantRequestWpmgrCDN) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AssistantRequestWpmgrCDN to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch AssistantRequestWpmgrCDN(v) {
+	case AssistantRequestWpmgrCDNNotAttempted:
+		*s = AssistantRequestWpmgrCDNNotAttempted
+	case AssistantRequestWpmgrCDNCleared:
+		*s = AssistantRequestWpmgrCDNCleared
+	case AssistantRequestWpmgrCDNFailed:
+		*s = AssistantRequestWpmgrCDNFailed
+	case AssistantRequestWpmgrCDNNotConfigured:
+		*s = AssistantRequestWpmgrCDNNotConfigured
+	default:
+		*s = AssistantRequestWpmgrCDN(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s AssistantRequestWpmgrCDN) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AssistantRequestWpmgrCDN) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -44065,6 +45394,202 @@ func (s *DbTableActionResponseResults) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *DbTableActionResponseResults) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes DeclineAssistantRequestConflict as json.
+func (s *DeclineAssistantRequestConflict) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes DeclineAssistantRequestConflict from json.
+func (s *DeclineAssistantRequestConflict) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode DeclineAssistantRequestConflict to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = DeclineAssistantRequestConflict(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *DeclineAssistantRequestConflict) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *DeclineAssistantRequestConflict) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes DeclineAssistantRequestForbidden as json.
+func (s *DeclineAssistantRequestForbidden) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes DeclineAssistantRequestForbidden from json.
+func (s *DeclineAssistantRequestForbidden) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode DeclineAssistantRequestForbidden to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = DeclineAssistantRequestForbidden(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *DeclineAssistantRequestForbidden) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *DeclineAssistantRequestForbidden) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes DeclineAssistantRequestNotFound as json.
+func (s *DeclineAssistantRequestNotFound) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes DeclineAssistantRequestNotFound from json.
+func (s *DeclineAssistantRequestNotFound) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode DeclineAssistantRequestNotFound to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = DeclineAssistantRequestNotFound(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *DeclineAssistantRequestNotFound) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *DeclineAssistantRequestNotFound) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *DeclineAssistantRequestReq) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *DeclineAssistantRequestReq) encodeFields(e *jx.Encoder) {
+}
+
+var jsonFieldsNameOfDeclineAssistantRequestReq = [0]string{}
+
+// Decode decodes DeclineAssistantRequestReq from json.
+func (s *DeclineAssistantRequestReq) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode DeclineAssistantRequestReq to nil")
+	}
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		default:
+			return d.Skip()
+		}
+	}); err != nil {
+		return errors.Wrap(err, "decode DeclineAssistantRequestReq")
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *DeclineAssistantRequestReq) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *DeclineAssistantRequestReq) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes DeclineAssistantRequestUnsupportedMediaType as json.
+func (s *DeclineAssistantRequestUnsupportedMediaType) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes DeclineAssistantRequestUnsupportedMediaType from json.
+func (s *DeclineAssistantRequestUnsupportedMediaType) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode DeclineAssistantRequestUnsupportedMediaType to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = DeclineAssistantRequestUnsupportedMediaType(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *DeclineAssistantRequestUnsupportedMediaType) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *DeclineAssistantRequestUnsupportedMediaType) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -70477,6 +72002,82 @@ func (s *ListScanRunsUnauthorized) UnmarshalJSON(data []byte) error {
 	return s.Decode(d)
 }
 
+// Encode encodes ListSiteAssistantRequestsForbidden as json.
+func (s *ListSiteAssistantRequestsForbidden) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes ListSiteAssistantRequestsForbidden from json.
+func (s *ListSiteAssistantRequestsForbidden) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode ListSiteAssistantRequestsForbidden to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = ListSiteAssistantRequestsForbidden(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *ListSiteAssistantRequestsForbidden) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *ListSiteAssistantRequestsForbidden) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes ListSiteAssistantRequestsNotFound as json.
+func (s *ListSiteAssistantRequestsNotFound) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes ListSiteAssistantRequestsNotFound from json.
+func (s *ListSiteAssistantRequestsNotFound) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode ListSiteAssistantRequestsNotFound to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = ListSiteAssistantRequestsNotFound(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *ListSiteAssistantRequestsNotFound) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *ListSiteAssistantRequestsNotFound) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
 // Encode encodes ListSiteBansForbidden as json.
 func (s *ListSiteBansForbidden) Encode(e *jx.Encoder) {
 	unwrapped := (*Error)(s)
@@ -77809,6 +79410,228 @@ func (s *NilAgentMirrorStatusLastSuccessOutcome) UnmarshalJSON(data []byte) erro
 	return s.Decode(d)
 }
 
+// Encode encodes AssistantRequestLastAttemptCode as json.
+func (o NilAssistantRequestLastAttemptCode) Encode(e *jx.Encoder) {
+	if o.Null {
+		e.Null()
+		return
+	}
+	e.Str(string(o.Value))
+}
+
+// Decode decodes AssistantRequestLastAttemptCode from json.
+func (o *NilAssistantRequestLastAttemptCode) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode NilAssistantRequestLastAttemptCode to nil")
+	}
+	if d.Next() == jx.Null {
+		if err := d.Null(); err != nil {
+			return err
+		}
+
+		var v AssistantRequestLastAttemptCode
+		o.Value = v
+		o.Null = true
+		return nil
+	}
+	o.Null = false
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s NilAssistantRequestLastAttemptCode) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *NilAssistantRequestLastAttemptCode) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AssistantRequestNotSentReason as json.
+func (o NilAssistantRequestNotSentReason) Encode(e *jx.Encoder) {
+	if o.Null {
+		e.Null()
+		return
+	}
+	e.Str(string(o.Value))
+}
+
+// Decode decodes AssistantRequestNotSentReason from json.
+func (o *NilAssistantRequestNotSentReason) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode NilAssistantRequestNotSentReason to nil")
+	}
+	if d.Next() == jx.Null {
+		if err := d.Null(); err != nil {
+			return err
+		}
+
+		var v AssistantRequestNotSentReason
+		o.Value = v
+		o.Null = true
+		return nil
+	}
+	o.Null = false
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s NilAssistantRequestNotSentReason) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *NilAssistantRequestNotSentReason) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AssistantRequestOutcome as json.
+func (o NilAssistantRequestOutcome) Encode(e *jx.Encoder) {
+	if o.Null {
+		e.Null()
+		return
+	}
+	e.Str(string(o.Value))
+}
+
+// Decode decodes AssistantRequestOutcome from json.
+func (o *NilAssistantRequestOutcome) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode NilAssistantRequestOutcome to nil")
+	}
+	if d.Next() == jx.Null {
+		if err := d.Null(); err != nil {
+			return err
+		}
+
+		var v AssistantRequestOutcome
+		o.Value = v
+		o.Null = true
+		return nil
+	}
+	o.Null = false
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s NilAssistantRequestOutcome) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *NilAssistantRequestOutcome) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AssistantRequestWpmgrCDN as json.
+func (o NilAssistantRequestWpmgrCDN) Encode(e *jx.Encoder) {
+	if o.Null {
+		e.Null()
+		return
+	}
+	e.Str(string(o.Value))
+}
+
+// Decode decodes AssistantRequestWpmgrCDN from json.
+func (o *NilAssistantRequestWpmgrCDN) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode NilAssistantRequestWpmgrCDN to nil")
+	}
+	if d.Next() == jx.Null {
+		if err := d.Null(); err != nil {
+			return err
+		}
+
+		var v AssistantRequestWpmgrCDN
+		o.Value = v
+		o.Null = true
+		return nil
+	}
+	o.Null = false
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s NilAssistantRequestWpmgrCDN) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *NilAssistantRequestWpmgrCDN) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes bool as json.
+func (o NilBool) Encode(e *jx.Encoder) {
+	if o.Null {
+		e.Null()
+		return
+	}
+	e.Bool(bool(o.Value))
+}
+
+// Decode decodes bool from json.
+func (o *NilBool) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode NilBool to nil")
+	}
+	if d.Next() == jx.Null {
+		if err := d.Null(); err != nil {
+			return err
+		}
+
+		var v bool
+		o.Value = v
+		o.Null = true
+		return nil
+	}
+	o.Null = false
+	v, err := d.Bool()
+	if err != nil {
+		return err
+	}
+	o.Value = bool(v)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s NilBool) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *NilBool) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
 // Encode encodes time.Time as json.
 func (o NilDateTime) Encode(e *jx.Encoder, format func(*jx.Encoder, time.Time)) {
 	if o.Null {
@@ -77987,6 +79810,52 @@ func (s NilString) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *NilString) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes uuid.UUID as json.
+func (o NilUUID) Encode(e *jx.Encoder) {
+	if o.Null {
+		e.Null()
+		return
+	}
+	json.EncodeUUID(e, o.Value)
+}
+
+// Decode decodes uuid.UUID from json.
+func (o *NilUUID) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode NilUUID to nil")
+	}
+	if d.Next() == jx.Null {
+		if err := d.Null(); err != nil {
+			return err
+		}
+
+		var v uuid.UUID
+		o.Value = v
+		o.Null = true
+		return nil
+	}
+	o.Null = false
+	v, err := json.DecodeUUID(d)
+	if err != nil {
+		return err
+	}
+	o.Value = v
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s NilUUID) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *NilUUID) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }

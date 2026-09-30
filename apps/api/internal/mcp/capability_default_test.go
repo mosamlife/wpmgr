@@ -1,13 +1,14 @@
 // The three sets this package keeps separate, and the tests that keep them
 // separate.
 //
-//	capabilityVocabulary       what may be spelled at all      -- 9
-//	scopeCapabilities          what a scope confers, a CEILING -- 7
-//	DefaultGrantCapabilities   what an unasked grant receives  -- 1
+//	capabilityVocabulary       what may be spelled at all
+//	scopeCapabilities          what a scope confers, a CEILING
+//	DefaultGrantCapabilities   what an unasked grant receives
 //
-// The gap between 9 and 7 is two deliberately unreachable members,
-// mcp.content.read (m131) and mcp.cache.purge (m135). Neither is conferred by
-// any scope, so neither can be minted or authenticated; see policy.go.
+// The vocabulary is wider than the ceiling by one deliberately unreachable
+// member, mcp.content.read (m131): no scope confers it, so it can be neither
+// minted nor authenticated. mcp.cache.purge (m135) is conferred by mcp:cache
+// (m150) and by nothing else, and never by default; see policy.go.
 //
 // Before m131 all three held one member, so all three were the same list and
 // nothing in the tree could tell them apart. The identity was TRUE, and every
@@ -257,72 +258,147 @@ func TestEveryCapabilityIsAReadOrAnEnumeratedWrite(t *testing.T) {
 		len(all), reads, len(nonReadCapabilities), capsToStrings(all))
 }
 
-// TestCachePurgeIsKnownButConferredByNoScope is the m135 ceiling decision, held
-// as a test. It is the sibling of TestContentReadIsKnownButConferredByNoScope
-// and it is deliberately a SEPARATE test rather than a second arm of that one:
-// the two members are unreachable for different reasons, and a shared test
-// would let one reason be deleted while the other kept it green.
+// TestReadScopeConfersOnlyReads is the rule the scopeCapabilities literal for
+// ScopeRead encodes, stated as a property rather than a list: every capability
+// the read scope confers is a read, and the cache capability is not among them.
 //
-// WHOEVER CONFERS mcp.cache.purge MUST DELETE THIS TEST, not edit it. That is
-// the point of pinning the refusal by name: conferring the first write
-// capability cannot then happen as a quiet one-line map edit, because the diff
-// that does it also has to remove a test whose comment says why it was there.
-//
-// THE PREREQUISITE THIS COMMENT NAMED HAS BEEN MET, and what remains is not
-// the same thing. It used to read that grantScopes() was a constant because
-// mcp_grants had no scopes column, so a second entry in recognisedScopes would
-// hand ScopeRead's capabilities to a grant that never requested them. m136
-// added the column and grantScopes is now a per-grant read, so that widening is
-// no longer the blocker.
-//
-// What blocks the conferral now is that no scope confers it: a second scope has
-// to arrive in recognisedScopes, be mapped in scopeCapabilities, and -- see the
-// note at service.go's Approve -- have the STORED scope set bound to what the
-// authorize call actually carried, which today is unnecessary only because the
-// registry holds one member. See the CapCachePurge note on scopeCapabilities in
-// policy.go.
-func TestCachePurgeIsKnownButConferredByNoScope(t *testing.T) {
-	// KNOWN: the database CHECK holds it, so this map must too, or a name the
-	// database accepts is refused at a different layer with a different error.
-	if !KnownCapability(CapCachePurge) {
-		t.Fatalf("%q is not in capabilityVocabulary, but m135 seats it in "+
-			"mcp_grants_capabilities_vocabulary_check; the two closed sets must "+
-			"agree exactly", CapCachePurge)
+// It REPLACES TestCachePurgeIsKnownButConferredByNoScope, which pinned "no
+// scope confers mcp.cache.purge" and whose comment required the diff that
+// conferred it to delete it rather than edit it. m150 confers it through
+// mcp:cache. What must still hold is that the READ scope, which every live
+// grant carries, never does: conferring it there would hand the power to ask
+// for a cache clear to every grant ever minted, with no second consent.
+func TestReadScopeConfersOnlyReads(t *testing.T) {
+	set, err := OrgDefaultCapabilities([]Scope{ScopeRead})
+	if err != nil {
+		t.Fatalf("OrgDefaultCapabilities([mcp:read]): %v", err)
+	}
+	if set.Len() == 0 {
+		t.Fatal("the read scope confers nothing, so the loop below would pass " +
+			"having checked no capability")
+	}
+	for _, c := range set.Sorted() {
+		e, ok := CapabilityEffect(c)
+		if !ok || e != EffectRead {
+			t.Errorf("the read scope confers %q, whose effect is %q (known=%v); the "+
+				"read scope confers reads only", c, e, ok)
+		}
+	}
+	if set.Allows(CapCachePurge) {
+		t.Fatalf("the read scope confers %q. Every live grant holds mcp:read, so "+
+			"this widens every grant ever minted with no second consent", CapCachePurge)
+	}
+}
+
+// TestCacheScopeConfersExactlyCachePurge pins the other half of the mapping:
+// mcp:cache confers mcp.cache.purge and nothing else, it is the ONLY scope that
+// confers it, and the no-request preset still does not reach it.
+func TestCacheScopeConfersExactlyCachePurge(t *testing.T) {
+	set, err := OrgDefaultCapabilities([]Scope{ScopeCache})
+	if err != nil {
+		t.Fatalf("OrgDefaultCapabilities([mcp:cache]): %v", err)
+	}
+	if want := []Capability{CapCachePurge}; !sameCaps(set.Sorted(), want) {
+		t.Fatalf("the mcp:cache ceiling = %v, want exactly %v",
+			capsToStrings(set.Sorted()), capsToStrings(want))
 	}
 
-	// NOT CONFERRED: no scope hands it out, so no grant can be minted holding
-	// it and no stored row carrying it can authenticate.
+	// BOTH SCOPES are the union, by value, and content.read is still absent.
+	both, err := OrgDefaultCapabilities([]Scope{ScopeRead, ScopeCache})
+	if err != nil {
+		t.Fatalf("OrgDefaultCapabilities([mcp:read mcp:cache]): %v", err)
+	}
+	wantBoth := []Capability{
+		CapActivityRead,
+		CapBackupsRead,
+		CapCachePurge,
+		CapDiagnosticsRead,
+		CapPerformanceRead,
+		CapSecurityRead,
+		CapSitesRead,
+		CapUptimeRead,
+	}
+	if !sameCaps(both.Sorted(), wantBoth) {
+		t.Fatalf("the mcp:read + mcp:cache ceiling = %v, want exactly %v",
+			capsToStrings(both.Sorted()), capsToStrings(wantBoth))
+	}
+
+	// EXACTLY ONE CONFERRER. Ranging over the map, not naming ScopeRead, so a
+	// third scope that also confers it goes red here too.
+	var conferrers []Scope
+	for s, caps := range scopeCapabilities {
+		for _, c := range caps {
+			if c == CapCachePurge {
+				conferrers = append(conferrers, s)
+			}
+		}
+	}
+	if len(conferrers) != 1 || conferrers[0] != ScopeCache {
+		t.Fatalf("%q is conferred by %v, want exactly [%s]", CapCachePurge, conferrers, ScopeCache)
+	}
+
+	// THE PRESET DOES NOT REACH IT. A grant nobody stated terms for holds
+	// mcp:read, so its ceiling refuses the cache capability whole rather than
+	// trimming the request down to the reads.
 	ceiling, err := OrgDefaultCapabilities(DefaultGrantScopes())
 	if err != nil {
 		t.Fatalf("OrgDefaultCapabilities(DefaultGrantScopes()): %v", err)
 	}
 	if ceiling.Allows(CapCachePurge) {
-		t.Fatalf("the organisation ceiling confers %q -- the FIRST WRITE capability "+
-			"on this surface. Every live grant holds ScopeRead by construction, so "+
-			"conferring this widens every grant ever minted with no second consent. "+
-			"Confer it only alongside a real per-grant scope read (mcp_grants has no "+
-			"scopes column today), in that diff, under that review.", CapCachePurge)
+		t.Fatalf("the default-scope ceiling confers %q", CapCachePurge)
 	}
-
-	// AND THE REFUSAL IS LOUD. An operator asking for it is told by name rather
-	// than handed a quietly smaller connection -- and critically, the whole
-	// request is refused rather than trimmed down to the read capabilities.
 	if _, err := ceiling.NarrowTo([]Capability{CapSitesRead, CapCachePurge}); err == nil {
-		t.Fatalf("a mint request naming %q was accepted; it must be refused whole, "+
-			"not trimmed down to the capabilities the ceiling does hold", CapCachePurge)
+		t.Fatalf("a request naming %q under the default-scope ceiling was accepted; "+
+			"it must be refused whole", CapCachePurge)
 	}
-
-	// THE DEFAULT DOES NOT CARRY IT EITHER. This is the m135 note (3)(a) arm:
-	// asserted here as well as in the preset test, because that test pins the
-	// whole set by value and this one says WHICH member must never appear in it
-	// and why -- so a future widening fails with the reason attached.
 	for _, c := range DefaultGrantCapabilities() {
 		if c == CapCachePurge {
-			t.Fatalf("DefaultGrantCapabilities() hands out %q. A grant minted with no "+
-				"explicit request would be stamped with the power to purge a live "+
-				"site's cache, which is exactly the widening m135 note (3)(a) and "+
-				"m131 DECISION 3 both forbid.", CapCachePurge)
+			t.Fatalf("DefaultGrantCapabilities() hands out %q; an operator ticks it, "+
+				"it is never a default", CapCachePurge)
 		}
+	}
+}
+
+// TestCapabilityEffectIsExhaustive holds capabilityEffect total over the
+// vocabulary and in agreement with nonReadCapabilities: a capability seated
+// without an effect goes red rather than rendering as a read, and the only
+// request capabilities are the ones a reviewer enumerated.
+func TestCapabilityEffectIsExhaustive(t *testing.T) {
+	all := AllCapabilities()
+	if len(all) == 0 {
+		t.Fatal("the vocabulary is empty, so this test would pass having checked nothing")
+	}
+	requests := 0
+	for _, c := range all {
+		e, ok := CapabilityEffect(c)
+		if !ok {
+			t.Errorf("capability %q has no effect in capabilityEffect", c)
+			continue
+		}
+		if e != EffectRead && e != EffectRequest {
+			t.Errorf("capability %q has effect %q, outside the closed set {%q, %q}",
+				c, e, EffectRead, EffectRequest)
+		}
+		_, enumerated := nonReadCapabilities[c]
+		if (e == EffectRequest) != enumerated {
+			t.Errorf("capability %q has effect %q but nonReadCapabilities membership "+
+				"is %v; the two must agree", c, e, enumerated)
+		}
+		if e == EffectRequest {
+			requests++
+		}
+	}
+	if requests == 0 {
+		t.Error("no capability has a request effect, so the agreement arm above " +
+			"checked only one direction")
+	}
+	for c := range capabilityEffect {
+		if !KnownCapability(c) {
+			t.Errorf("capabilityEffect names %q, which is not in the vocabulary", c)
+		}
+	}
+	if _, ok := CapabilityEffect(Capability("mcp.unknown.read")); ok {
+		t.Error("CapabilityEffect reported an effect for a capability outside the vocabulary")
 	}
 }
 

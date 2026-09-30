@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -111,15 +112,18 @@ func TestParseRequestedScopes_RecognisedScopeIsGranted(t *testing.T) {
 	}
 }
 
-// The registry is closed and read-only by construction (m124 DECISION 1: "no
-// capability column exists, and that is a decision"). If a write scope ever
-// appears in the registry it must arrive with its own review, not by drifting
-// in. This test is the tripwire.
-func TestRecognisedScopes_AreReadOnlyAndClosed(t *testing.T) {
-	if len(recognisedScopes) != 1 {
-		t.Fatalf("recognised scope registry has %d entries, want exactly 1; a new "+
-			"scope on the read-only MCP surface needs its own review",
-			len(recognisedScopes))
+// The registry is closed. It holds exactly the read scope and the cache scope
+// (m150), and each confers what policy.go says and nothing else. A third scope
+// arrives with its own migration and its own review, not by drifting in; this
+// test is the tripwire, and it names the set rather than counting it.
+func TestRecognisedScopes_AreExactlyReadAndCache(t *testing.T) {
+	want := []string{string(ScopeCache), string(ScopeRead)}
+	if got := SupportedScopes(); !slices.Equal(got, want) {
+		t.Fatalf("recognised scope registry = %v, want exactly %v; a new scope "+
+			"needs its own migration and review", got, want)
+	}
+	if got := scopeCapabilities[ScopeCache]; len(got) != 1 || got[0] != CapCachePurge {
+		t.Fatalf("mcp:cache confers %v, want exactly [%s]", got, CapCachePurge)
 	}
 	for s := range recognisedScopes {
 		if strings.Contains(string(s), "write") || strings.Contains(string(s), "admin") {

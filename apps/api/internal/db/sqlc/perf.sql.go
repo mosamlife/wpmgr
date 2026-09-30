@@ -694,7 +694,7 @@ INSERT INTO cache_purge_audit (
 ) VALUES (
     $1, $2, $3, $4, $5, $6
 )
-RETURNING id, tenant_id, site_id, kind, initiator_user_id, target_urls, urls_count, created_at
+RETURNING id, tenant_id, site_id, kind, initiator_user_id, target_urls, urls_count, created_at, initiator_grant_id
 `
 
 type InsertCachePurgeAuditParams struct {
@@ -728,6 +728,7 @@ func (q *Queries) InsertCachePurgeAudit(ctx context.Context, arg InsertCachePurg
 		&i.TargetUrls,
 		&i.UrlsCount,
 		&i.CreatedAt,
+		&i.InitiatorGrantID,
 	)
 	return i, err
 }
@@ -825,7 +826,7 @@ func (q *Queries) InsertRucssJob(ctx context.Context, arg InsertRucssJobParams) 
 }
 
 const listCachePurgeAuditForSite = `-- name: ListCachePurgeAuditForSite :many
-SELECT id, tenant_id, site_id, kind, initiator_user_id, target_urls, urls_count, created_at FROM cache_purge_audit
+SELECT id, tenant_id, site_id, kind, initiator_user_id, target_urls, urls_count, created_at, initiator_grant_id FROM cache_purge_audit
 WHERE tenant_id = $1 AND site_id = $2
 ORDER BY created_at DESC, id DESC
 LIMIT $4 OFFSET $3
@@ -861,6 +862,7 @@ func (q *Queries) ListCachePurgeAuditForSite(ctx context.Context, arg ListCacheP
 			&i.TargetUrls,
 			&i.UrlsCount,
 			&i.CreatedAt,
+			&i.InitiatorGrantID,
 		); err != nil {
 			return nil, err
 		}

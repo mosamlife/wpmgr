@@ -112,6 +112,8 @@ tags:
     description: Per-site wp-login whitelabeling (logo, link, message).
   - name: performance
     description: Per-site Performance Suite (page cache, CSS/JS optimization, RUCSS, CDN, database cleanup) plus portfolio-wide bulk cache actions.
+  - name: ai-requests
+    description: Requests an AI connection made to clear a site's cache. Each one waits for a person to approve or decline it; nothing is sent to a site without that approval.
   - name: object-cache
     description: Per-site object (Redis/Memcached) cache management — config, test, enable/disable, flush, and stats history.
   - name: settings
@@ -9158,6 +9160,184 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
+  /api/v1/ai/requests:
+    get:
+      operationId: listAssistantRequests
+      summary: List AI cache-clear requests
+      description: |
+        This organisation's AI cache-clear requests the caller can see, newest
+        first, with the number still waiting for a decision. A site
+        collaborator sees only requests on their own sites. Requires
+        `site.cache.purge`. `presented_digest` is included only for a person
+        signed in to the dashboard; an API key gets the same rows without it.
+      tags: [ai-requests]
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: A page of requests
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistantRequestList"
+        "403":
+          description: Missing site.cache.purge
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/sites/{siteId}/ai/requests:
+    get:
+      operationId: listSiteAssistantRequests
+      summary: List AI cache-clear requests for one site
+      description: |
+        The same list as `GET /api/v1/ai/requests`, for one site. Feeds the
+        site banner. Requires `site.cache.purge` and access to the site.
+      tags: [ai-requests]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: A page of requests
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistantRequestList"
+        "403":
+          description: Missing site.cache.purge
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: The site is not the caller's
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/sites/{siteId}/ai/requests/{requestId}/approve:
+    post:
+      operationId: approveAssistantRequest
+      summary: Approve one AI cache-clear request
+      description: |
+        Approves one waiting request. Only a person signed in to the dashboard
+        may approve; an API key gets 403. The body must be JSON and carry the
+        `presented_digest` the queue returned for this request, so an approval
+        always names the exact request the person saw. There is no bulk
+        approve. The approval and its audit row commit together; the request
+        is then sent to the site by a worker, which re-checks everything first.
+
+        409 answers name why nothing was approved: the request changed or was
+        decided, the AI assistant is paused, AI cache clears are switched off
+        on this server, the connection was revoked or expired, the site left
+        the connection's scope, the connection lost the capability, AI rules
+        forbid it, the AI rules could not be read, the site's agent is too old,
+        or the site can no longer be read.
+      tags: [ai-requests]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+        - name: requestId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssistantRequestApproveBody"
+      responses:
+        "200":
+          description: Approved; the request now waits for the worker
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistantRequest"
+        "403":
+          description: Not a signed-in person, or missing site.cache.purge
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: The site is not the caller's
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Nothing was approved; the error code names why
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "415":
+          description: The body was not application/json
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The approval could not be recorded; nothing will run
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/sites/{siteId}/ai/requests/{requestId}/decline:
+    post:
+      operationId: declineAssistantRequest
+      summary: Decline one AI cache-clear request
+      description: |
+        Declines one waiting request. Only a person signed in to the dashboard
+        may decline. The body must be JSON (an empty object is fine). Declining
+        always works while the request is waiting.
+      tags: [ai-requests]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+        - name: requestId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Declined
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistantRequest"
+        "403":
+          description: Not a signed-in person, or missing site.cache.purge
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: The site is not the caller's
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: The request is no longer waiting
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "415":
+          description: The body was not application/json
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /api/v1/sites/{siteId}/perf/cache/purge:
     post:
       operationId: purgeCache
@@ -19023,6 +19203,126 @@ components:
           description: |
             With `scope: all`, also clears every cached artifact. Requires the
             `site.cache.delete-everything` permission.
+    AssistantRequestApproveBody:
+      type: object
+      required: [presented_digest]
+      properties:
+        presented_digest:
+          type: string
+          description: The digest the queue returned for this request.
+    AssistantRequestList:
+      type: object
+      required: [requests, pending_count, limit, offset]
+      properties:
+        requests:
+          type: array
+          items:
+            $ref: "#/components/schemas/AssistantRequest"
+        pending_count:
+          type: integer
+          format: int64
+          description: Requests still waiting for a decision (the badge).
+        limit: { type: integer, format: int32 }
+        offset: { type: integer, format: int32 }
+    AssistantRequest:
+      type: object
+      description: |
+        One AI cache-clear request. `site_label`, `site_host`, `grant_label`,
+        `url` and `site_reported_text` came from a site or an AI connection:
+        render each as plain text, never as markup, a link or a tooltip.
+        The card state follows from `state` and `outcome` together.
+      required:
+        - id
+        - site_id
+        - scope
+        - url
+        - site_label
+        - site_host
+        - grant_label
+        - grant_via
+        - setup_client
+        - state
+        - created_at
+        - expires_at
+        - decided_at
+        - decided_by_user_id
+        - decided_by_name
+        - decided_by_account_deleted
+        - withdrawn_at
+        - claimed_at
+        - dispatch_attempts
+        - last_attempt_at
+        - last_attempt_code
+        - outcome
+        - not_sent_reason
+        - outcome_at
+        - hosting_caches_cleared
+        - hosting_caches_skipped
+        - origin_only_confirmed
+        - wpmgr_cdn
+        - site_reported_text
+      properties:
+        id: { type: string, format: uuid }
+        site_id: { type: string, format: uuid }
+        scope:
+          type: string
+          enum: [all, url]
+        url:
+          type: string
+          nullable: true
+          description: The page address for scope url, as stored; null for all.
+        site_label: { type: string }
+        site_host:
+          type: string
+          description: The site's host in the ASCII form WPMgr dials (Punycode for an internationalised name).
+        grant_label: { type: string }
+        grant_via: { type: string }
+        setup_client: { type: string, nullable: true }
+        presented_digest:
+          type: string
+          description: Present only for a person signed in to the dashboard. Send it back to approve.
+        state:
+          type: string
+          enum: [pending, approved_undispatched, dispatched, rejected, withdrawn, expired]
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+        decided_at: { type: string, format: date-time, nullable: true }
+        decided_by_user_id: { type: string, format: uuid, nullable: true }
+        decided_by_name: { type: string, nullable: true }
+        decided_by_account_deleted:
+          type: boolean
+          description: True when the request names a decider whose account has since been deleted.
+        withdrawn_at: { type: string, format: date-time, nullable: true }
+        claimed_at: { type: string, format: date-time, nullable: true }
+        dispatch_attempts: { type: integer, format: int32 }
+        last_attempt_at: { type: string, format: date-time, nullable: true }
+        last_attempt_code:
+          type: string
+          nullable: true
+          enum: [site_unreachable, site_cooldown, site_hourly_cap, site_busy, org_busy, context_unavailable, write_tools_disabled]
+        outcome:
+          type: string
+          nullable: true
+          enum: [purged, site_reported_failure, agent_failed, outcome_unknown, not_sent]
+        not_sent_reason:
+          type: string
+          nullable: true
+          enum: [grant_inactive, assistant_paused, organisation_deleted, capability_not_held, site_absent, forbidden_by_context, agent_outdated, dispatch_deadline_passed, transport_pre_send]
+        outcome_at: { type: string, format: date-time, nullable: true }
+        hosting_caches_cleared:
+          type: array
+          nullable: true
+          items: { type: string }
+        hosting_caches_skipped:
+          type: array
+          nullable: true
+          items: { type: string }
+        origin_only_confirmed: { type: boolean, nullable: true }
+        wpmgr_cdn:
+          type: string
+          nullable: true
+          enum: [not_attempted, cleared, failed, not_configured]
+        site_reported_text: { type: string, nullable: true }
     PerfActionResult:
       type: object
       description: |

@@ -79,3 +79,52 @@ describe("classifySeverity", () => {
     expect(classifySeverity("site.media.clean.delete")).toBe("write");
   });
 });
+
+// AI cache-clear requests (tracka-cache-purge design v7, S2.7). Every action
+// key m151's rail and worker actually write, exercised the same two ways as
+// the rest of this file: the label is never a raw dotted key, and the
+// severity separates "asked/approved/failed" from "nothing ran".
+describe("AI cache-clear request actions", () => {
+  it("labels every lifecycle key distinctly, never as a raw dotted key", () => {
+    expect(actionLabel("mcp.tool.called")).toBe("AI tool call");
+    expect(actionLabel("assistant.request.approved")).toBe("Approved AI cache-clear request");
+    expect(actionLabel("assistant.request.declined")).toBe("Declined AI cache-clear request");
+    expect(actionLabel("assistant.request.withdrawn")).toBe("Withdrew AI cache-clear request");
+    expect(actionLabel("assistant.request.not_sent")).toBe("AI cache-clear request not sent");
+    expect(actionLabel("assistant.request.dispatched")).toBe("Sent AI cache-clear request");
+    expect(actionLabel("assistant.request.expired")).toBe(
+      "AI cache-clear request expired unanswered",
+    );
+    expect(actionLabel("assistant.request.failed")).toBe("AI cache-clear request failed");
+  });
+
+  it("labels the denial through the exact key, not the recursive '.denied' fallback", () => {
+    // mcp.tool.denied ends in ".denied", so without its own ACTION_LABELS
+    // entry this would fall through to the generic recursive-suffix path
+    // (actionLabel("mcp.tool") + " (denied)"). It has its own entry instead.
+    expect(actionLabel("mcp.tool.denied")).toBe("Blocked AI tool call");
+  });
+
+  it("classifies the denial as denied like every other '.denied' action", () => {
+    expect(classifySeverity("mcp.tool.denied")).toBe("denied");
+  });
+
+  it("classifies the request and its approval as sensitive, not a quiet read", () => {
+    expect(classifySeverity("mcp.tool.called")).toBe("sensitive");
+    expect(classifySeverity("assistant.request.approved")).toBe("sensitive");
+    expect(classifySeverity("assistant.request.failed")).toBe("sensitive");
+  });
+
+  it("classifies the moment WPMgr actually sends the clear as a write", () => {
+    // "dispatched" carries no write-shaped stem, so this only passes because
+    // of the explicit WRITE_OVERRIDES entry.
+    expect(classifySeverity("assistant.request.dispatched")).toBe("write");
+  });
+
+  it("keeps the non-effecting closures quiet: nothing ran, so nothing is sensitive", () => {
+    expect(classifySeverity("assistant.request.declined")).toBe("read");
+    expect(classifySeverity("assistant.request.withdrawn")).toBe("read");
+    expect(classifySeverity("assistant.request.not_sent")).toBe("read");
+    expect(classifySeverity("assistant.request.expired")).toBe("read");
+  });
+});

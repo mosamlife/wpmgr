@@ -68,6 +68,12 @@ type ApplySiteFileUploadParams struct {
 	SiteId uuid.UUID
 }
 
+// ApproveAssistantRequestParams is parameters of approveAssistantRequest operation.
+type ApproveAssistantRequestParams struct {
+	SiteId    uuid.UUID
+	RequestId uuid.UUID
+}
+
 // ArchiveSiteParams is parameters of archiveSite operation.
 type ArchiveSiteParams struct {
 	SiteId uuid.UUID
@@ -182,6 +188,12 @@ type CreateSiteFileArchiveParams struct {
 // CreateSiteShareParams is parameters of createSiteShare operation.
 type CreateSiteShareParams struct {
 	SiteId uuid.UUID
+}
+
+// DeclineAssistantRequestParams is parameters of declineAssistantRequest operation.
+type DeclineAssistantRequestParams struct {
+	SiteId    uuid.UUID
+	RequestId uuid.UUID
 }
 
 // DeleteAdminUserParams is parameters of deleteAdminUser operation.
@@ -809,6 +821,12 @@ type ListApiKeysParams struct {
 	Offset OptInt32 `json:",omitempty,omitzero"`
 }
 
+// ListAssistantRequestsParams is parameters of listAssistantRequests operation.
+type ListAssistantRequestsParams struct {
+	Limit  OptInt32 `json:",omitempty,omitzero"`
+	Offset OptInt32 `json:",omitempty,omitzero"`
+}
+
 // ListAuditParams is parameters of listAudit operation.
 type ListAuditParams struct {
 	Limit  OptInt32 `json:",omitempty,omitzero"`
@@ -1021,6 +1039,13 @@ type ListSiteActivityParams struct {
 	Limit  OptInt32    `json:",omitempty,omitzero"`
 	Offset OptInt32    `json:",omitempty,omitzero"`
 	Cursor OptString   `json:",omitempty,omitzero"`
+}
+
+// ListSiteAssistantRequestsParams is parameters of listSiteAssistantRequests operation.
+type ListSiteAssistantRequestsParams struct {
+	SiteId uuid.UUID
+	Limit  OptInt32 `json:",omitempty,omitzero"`
+	Offset OptInt32 `json:",omitempty,omitzero"`
 }
 
 // ListSiteBansParams is parameters of listSiteBans operation.

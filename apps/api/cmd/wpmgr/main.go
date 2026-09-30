@@ -36,6 +36,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentrelease"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentupstream"
 	"github.com/mosamlife/wpmgr/apps/api/internal/apikey"
+	"github.com/mosamlife/wpmgr/apps/api/internal/assistantrequest"
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/auth"
 	"github.com/mosamlife/wpmgr/apps/api/internal/auth/twofactor"
@@ -553,7 +554,8 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	govContextRepo := govcontext.NewRepo(pool)
 	govContextResolver := &govcontext.Resolver{Store: govContextRepo}
 
-	mcpSvc := mcp.NewService(mcp.NewRepo(pool)).WithClock(clock.Now).WithAudit(auditRec).
+	mcpRepo := mcp.NewRepo(pool)
+	mcpSvc := mcp.NewService(mcpRepo).WithClock(clock.Now).WithAudit(auditRec).
 		WithContextResolver(govContextResolver)
 	// The consent ticket's key, derived from the instance session secret, which
 	// every replica shares and which is already validated before boot
@@ -1702,14 +1704,42 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	perfRepo := perf.NewRepo(pool)
 	perfSvc := perf.NewService(perfRepo, siteDestAgeID, siteEventsPub, logger)
 	perfSiteAdapterImpl := newPerfSiteAdapter(siteSvc)
+	perfAgentWired := false
 	if perfCmd, ok := commander.(perf.AgentPerfClient); ok {
 		perfSvc.SetAgentClient(perfCmd, perfSiteAdapterImpl)
+		perfAgentWired = true
 		logger.Info("perf agent client wired")
 	} else {
 		logger.Warn("perf agent client not wired: CP->agent commander unavailable (signing key empty?)")
 	}
 	// CDN purge is best-effort over the shared SSRF-hardened client.
 	perfSvc.SetCDNPurger(perf.NewCDNPurger(ssrfClient))
+
+	// AI cache-clear requests: the queue, approve and decline, and the
+	// dispatch worker, sweeper and reconciler. The write-tools switch
+	// (WPMGR_MCP_WRITE_TOOLS, default off) is one value handed to both halves,
+	// so the MCP tools and approval can never disagree about it. It is on only
+	// when asked for AND the agent command client exists; otherwise nothing
+	// could be sent. The revoke cascade lives in mcp and needs none of this.
+	writeToolsRequested, err := assistantrequest.WriteToolsFromEnv(os.Getenv("WPMGR_MCP_WRITE_TOOLS"))
+	if err != nil {
+		return err
+	}
+	assistantReqSvc := assistantrequest.NewService(assistantrequest.NewRepo(pool), mcpRepo, mcpSvc, auditRec, logger)
+	assistantReqSvc.SetSender(perfSvc, perfRepo)
+	writeToolsOn, err := switchWriteTools(writeToolsRequested, perfAgentWired, mcpSvc, assistantReqSvc)
+	if err != nil {
+		return err
+	}
+	if writeToolsRequested && !perfAgentWired {
+		logger.Warn("WPMGR_MCP_WRITE_TOOLS=on ignored: the agent command client is not wired")
+	}
+	logger.Info("mcp write tools", slog.Bool("enabled", writeToolsOn))
+	assistantReqScanWorker := assistantrequest.NewScanWorker(assistantReqSvc)
+	assistantReqDispatchWorker := assistantrequest.NewDispatchWorker(assistantReqSvc)
+	assistantReqSweepWorker := assistantrequest.NewSweepWorker(assistantReqSvc)
+	assistantReqReconcileWorker := assistantrequest.NewReconcileWorker(assistantReqSvc)
+	assistantReqH := assistantrequest.NewHandler(assistantReqSvc)
 	// Phase 2.2 — backup recency check for drop/empty advisory warning.
 	if backupSvc != nil {
 		perfSvc.SetBackupChecker(newBackupCheckerAdapter(backupSvc))
@@ -2031,6 +2061,11 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		rumRollupWorker: rumRollupWorker,
 		// GH #174 — ack-based RUM beacon-key reconcile worker (always wired).
 		rumBeaconReconcileWorker: rumBeaconReconcileWorker,
+		// AI cache-clear requests (always wired; they run with the switch off).
+		assistantReqScanWorker:      assistantReqScanWorker,
+		assistantReqDispatchWorker:  assistantReqDispatchWorker,
+		assistantReqSweepWorker:     assistantReqSweepWorker,
+		assistantReqReconcileWorker: assistantReqReconcileWorker,
 		// m59 Phase 3 — email log retention GC (always wired).
 		emailLogGCWorker: emailLogGCWorker,
 		// GH #461 — webhook dedup GC (always wired; 7-day retention).
@@ -2226,6 +2261,8 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// DBCleanArgs River jobs; the dispatch worker calls perfSvc.DBCleanScheduled.
 	dbCleanEnqueuer := perf.NewDBCleanRiverEnqueuer(riverClient)
 	dbCleanScheduleWorker.SetEnqueuer(dbCleanEnqueuer, cfg.PublicBaseURL)
+	// The AI request scan enqueues one dispatch job per due approved request.
+	assistantReqScanWorker.SetEnqueuer(assistantrequest.NewRiverEnqueuer(riverClient))
 
 	// ADR-046 Performance Suite: wire the RUCSS enqueuer + perf ingest service
 	// now that River has started. The ingest service stashes the agent-posted
@@ -2903,34 +2940,35 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	filesH := files.NewHandler(filesSvc, auditRec)
 
 	srv := server.New(server.Deps{
-		Config:           cfg,
-		Logger:           logger,
-		Pool:             pool,
-		Sessions:         sessions,
-		Auth:             authn,
-		AuthH:            authH,
-		MembersH:         auth.NewMembersHandler(authSvc, invitationSvc),
-		APIKeyH:          apikey.NewHandler(apiKeySvc, auditRec),
-		AuditH:           audit.NewHandler(auditRec),
-		TenantH:          tenant.NewHandler(tenantSvc, auditRec),
-		SiteH:            siteH,
-		SiteEventsH:      siteEventsH,
-		MCPTransportH:    mcpTransportH,
-		MCPOAuthH:        mcpOAuthH,
-		MCPDiscoveryH:    mcpDiscoveryH,
-		FilesH:           filesH,
-		UpdateH:          updateH,
-		BackupH:          backupH,
-		BackupAgentH:     backupAgentH,
-		InspectionDeps:   inspectionDeps,
-		UptimeH:          uptimeH,
-		AutologinH:       autologinH,
-		AutologinPolicyH: autologinPolicyH,
-		AutologinAgentH:  autologinAgentH,
-		AgentAuth:        agentAuthn,
-		AgentH:           agentH,
-		UpdateAgentH:     updateAgentH,
-		SiteDestH:        siteDestH,
+		Config:            cfg,
+		Logger:            logger,
+		Pool:              pool,
+		Sessions:          sessions,
+		Auth:              authn,
+		AuthH:             authH,
+		MembersH:          auth.NewMembersHandler(authSvc, invitationSvc),
+		APIKeyH:           apikey.NewHandler(apiKeySvc, auditRec),
+		AuditH:            audit.NewHandler(auditRec),
+		TenantH:           tenant.NewHandler(tenantSvc, auditRec),
+		SiteH:             siteH,
+		SiteEventsH:       siteEventsH,
+		MCPTransportH:     mcpTransportH,
+		MCPOAuthH:         mcpOAuthH,
+		AssistantRequestH: assistantReqH,
+		MCPDiscoveryH:     mcpDiscoveryH,
+		FilesH:            filesH,
+		UpdateH:           updateH,
+		BackupH:           backupH,
+		BackupAgentH:      backupAgentH,
+		InspectionDeps:    inspectionDeps,
+		UptimeH:           uptimeH,
+		AutologinH:        autologinH,
+		AutologinPolicyH:  autologinPolicyH,
+		AutologinAgentH:   autologinAgentH,
+		AgentAuth:         agentAuthn,
+		AgentH:            agentH,
+		UpdateAgentH:      updateAgentH,
+		SiteDestH:         siteDestH,
 		// ADR-045 — instance SMTP settings.
 		SettingsH: smtpSettingsH,
 		// ADR-037 Sprint 2 wiring.
@@ -3446,6 +3484,13 @@ type riverDeps struct {
 	// GH #174 — ack-based RUM beacon-key reconcile worker (always wired,
 	// event-driven only — no periodic sweep).
 	rumBeaconReconcileWorker *perf.RumBeaconReconcileWorker
+	// AI cache-clear requests: the scan, the per-request dispatch, the
+	// sweeper and the reconciler. Always wired, whatever the write-tools
+	// switch says: the sweeper and reconciler must close rows either way.
+	assistantReqScanWorker      *assistantrequest.ScanWorker
+	assistantReqDispatchWorker  *assistantrequest.DispatchWorker
+	assistantReqSweepWorker     *assistantrequest.SweepWorker
+	assistantReqReconcileWorker *assistantrequest.ReconcileWorker
 	// m59 Phase 3 — email log retention GC (always wired).
 	emailLogGCWorker *email.EmailLogGCWorker
 	// GH #461 — webhook dedup GC (always wired; 7-day retention).
@@ -3900,6 +3945,38 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 	// rum-enabled site. No periodic sweep — there is nothing to poll for.
 	if d.rumBeaconReconcileWorker != nil {
 		river.AddWorker(workers, d.rumBeaconReconcileWorker)
+	}
+
+	// AI cache-clear requests. The scan runs every ScanInterval and enqueues
+	// one dispatch job per due approved request onto that tenant's shard; the
+	// sweeper and the reconciler run every SweepInterval. All four run whether
+	// or not write tools are switched on.
+	if d.assistantReqScanWorker != nil && d.assistantReqDispatchWorker != nil &&
+		d.assistantReqSweepWorker != nil && d.assistantReqReconcileWorker != nil {
+		river.AddWorker(workers, d.assistantReqScanWorker)
+		river.AddWorker(workers, d.assistantReqDispatchWorker)
+		river.AddWorker(workers, d.assistantReqSweepWorker)
+		river.AddWorker(workers, d.assistantReqReconcileWorker)
+		for q, qc := range assistantrequest.Queues() {
+			queues[q] = qc
+		}
+		periodics = append(periodics,
+			river.NewPeriodicJob(
+				river.PeriodicInterval(assistantrequest.ScanInterval),
+				func() (river.JobArgs, *river.InsertOpts) { return assistantrequest.ScanArgs{}, nil },
+				&river.PeriodicJobOpts{RunOnStart: true},
+			),
+			river.NewPeriodicJob(
+				river.PeriodicInterval(assistantrequest.SweepInterval),
+				func() (river.JobArgs, *river.InsertOpts) { return assistantrequest.SweepArgs{}, nil },
+				&river.PeriodicJobOpts{RunOnStart: true},
+			),
+			river.NewPeriodicJob(
+				river.PeriodicInterval(assistantrequest.SweepInterval),
+				func() (river.JobArgs, *river.InsertOpts) { return assistantrequest.ReconcileArgs{}, nil },
+				&river.PeriodicJobOpts{RunOnStart: true},
+			),
+		)
 	}
 
 	// m59 Phase 3 — email log retention GC: sweeps site_email_log rows older

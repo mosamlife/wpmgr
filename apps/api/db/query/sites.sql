@@ -163,6 +163,24 @@ WHERE s.tenant_id = @tenant_id
 ORDER BY lower(s.name) ASC, s.id DESC
 LIMIT @row_limit;
 
+-- name: ListSiteAddressesInScope :many
+-- The AI cache-clear creation path's tie check (internal/mcp): every in-scope
+-- site's address, so a page address that also falls under another in-scope
+-- site can be refused. Runs connection-scoped, and site_ids is the
+-- connection's already-materialised scope set.
+--
+-- NO LIMIT, DELIBERATELY, unlike ListSitesForMCPScope. A covering site that
+-- sorted past a page boundary would be missed, and a missed tie is a clear
+-- sent to the wrong install. The set is bounded by the connection's scope,
+-- which the caller already holds in memory. Same archived filter and same
+-- nil-means-nothing array semantics as ListSitesForMCPScope.
+SELECT s.id, s.url
+FROM sites s
+WHERE s.tenant_id = @tenant_id
+  AND s.id = ANY(@site_ids::uuid[])
+  AND s.connection_state <> 'archived'
+ORDER BY s.id;
+
 -- name: ListSitesAgentVersions :many
 -- Tenant-scoped site_id/name/agent_version rollup for the read-only agent
 -- fleet-version dashboard (internal/agentrelease): "how many of my sites are

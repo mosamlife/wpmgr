@@ -164,6 +164,14 @@ type fakeStore struct {
 	// test can assert the repo is handed the principal (and therefore reaches
 	// RunTenantTx's site-scope dispatch) rather than a bare tenant id.
 	revokePrincipals []domain.Principal
+
+	// The revoke cascade: what CloseAssistantRequestsForGrantTx reports
+	// closing, the error it returns instead, and how often it ran.
+	cascadeWithdrawn []uuid.UUID
+	cascadeNotSent   []uuid.UUID
+	cascadeErr       error
+	cascadeCalls     int
+
 	// listPrincipals does the same for the list path.
 	listPrincipals []domain.Principal
 
@@ -643,6 +651,19 @@ func (f *fakeStore) RevokeGrantWithTokens(
 	return f.revokeRow, nil
 }
 
+// CloseAssistantRequestsForGrantTx is the cascade's fake: it reports the
+// configured ids, or cascadeErr.
+func (f *fakeStore) CloseAssistantRequestsForGrantTx(_ context.Context, _ pgx.Tx, _, _ uuid.UUID) ([]uuid.UUID, []uuid.UUID, error) {
+	f.note("CloseAssistantRequestsForGrantTx")
+	f.mu.Lock()
+	f.cascadeCalls++
+	f.mu.Unlock()
+	if f.cascadeErr != nil {
+		return nil, nil, f.cascadeErr
+	}
+	return f.cascadeWithdrawn, f.cascadeNotSent, nil
+}
+
 // ---------------------------------------------------------------------------
 // PROOF 1 -- THE EXIT GATE, END TO END THROUGH A REAL HANDLER.
 //
@@ -677,9 +698,11 @@ func newAuthorizeRouter(t *testing.T, store Store) *gin.Engine {
 // and Approve both refuse a scope set this array does not contain, so a fixture
 // that left it nil would model a client registered for NOTHING and every
 // authorize test in this file would fail with invalid_scope rather than
-// exercising what it is named for. It carries the honest value -- the same one
-// registeredScopesForOmittedRequest writes and the same one m137's backfill put
-// on every client that already existed.
+// exercising what it is named for. It carries the honest value -- {mcp:read},
+// which is what a registration that names no scope stores and what m137's
+// backfill put on every client that already existed. It is written as a
+// literal rather than derived from the registration code, so a regression
+// there cannot silently widen every fixture in this package along with it.
 func liveClient(redirect string) sqlc.McpOauthClient {
 	name := "Claude Desktop"
 	return sqlc.McpOauthClient{
@@ -688,7 +711,7 @@ func liveClient(redirect string) sqlc.McpOauthClient {
 		TokenEndpointAuthMethod: "none",
 		RedirectUris:            []string{redirect},
 		ClientName:              &name,
-		RegisteredScopes:        registeredScopesForOmittedRequest(),
+		RegisteredScopes:        []string{string(ScopeRead)},
 	}
 }
 

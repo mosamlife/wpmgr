@@ -79,12 +79,8 @@ func plantForContainment(t *testing.T) Scope {
 // registration names mcp:read and nothing else, while the registry recognises
 // more than that.
 //
-// RegisteredScopes IS SET EXPLICITLY AND NOT LEFT TO liveClient. liveClient
-// fills it from registeredScopesForOmittedRequest(), which reads the registry
-// AT CALL TIME -- so after a plant it would return BOTH scopes and the client
-// would be registered for the very scope the test is about to prove it cannot
-// request. That bug presents as "containment does not refuse", which is
-// indistinguishable from the defect this file exists to catch.
+// RegisteredScopes IS SET EXPLICITLY AND NOT LEFT TO liveClient, so the
+// fixture states the one fact the test depends on rather than inheriting it.
 func clientRegisteredForReadOnly() *fakeStore {
 	client := liveClient(registeredRedirect)
 	client.RegisteredScopes = []string{string(ScopeRead)}
@@ -309,15 +305,10 @@ func TestContainmentRefusesAClientRegisteredForNothing(t *testing.T) {
 // TestRegisterRecordsAConcreteScopeSet holds the other end of the bound.
 //
 // Containment is only worth having if registration writes something narrower
-// than "everything". This asserts the INSERT names the column at all -- it was
-// a 23502 between m137 and this change -- and that the value is neither empty
-// (a client that could never authorize) nor divorced from the registry (a
-// 23514 against the real vocabulary CHECK).
-//
-// It deliberately does NOT hard-code {mcp:read}: the decision recorded at
-// registeredScopesForOmittedRequest is "the full recognised registry", and a
-// test asserting the literal would pass unchanged if someone replaced that
-// function with a constant. The tripwire below covers the day the registry grows.
+// than "everything". An OMITTED `scope` registers exactly {mcp:read}: the
+// cache scope is recognised, and a client that said nothing must not be
+// registered for it, or the containment check in Authorize and Approve would
+// have nothing to bite on.
 func TestRegisterRecordsAConcreteScopeSet(t *testing.T) {
 	store := &fakeStore{registerRows: 1}
 
@@ -328,55 +319,59 @@ func TestRegisterRecordsAConcreteScopeSet(t *testing.T) {
 		t.Fatalf("Register failed: %v", err)
 	}
 
-	if len(store.client.RegisteredScopes) == 0 {
-		t.Fatal("Register wrote an empty registered_scopes; the column is NOT NULL " +
-			"with a cardinality >= 1 check, so against the real database this is a " +
-			"23502 or a 23514, and a client that could never authorize if it landed")
+	got := store.client.RegisteredScopes
+	if len(got) != 1 || got[0] != string(ScopeRead) {
+		t.Fatalf("an omitted scope registered %v, want exactly [%s]; a client that "+
+			"names no scope must not be registered for %s", got, ScopeRead, ScopeCache)
 	}
-	for _, s := range store.client.RegisteredScopes {
+	for _, s := range got {
 		if _, ok := recognisedScopes[Scope(s)]; !ok {
 			t.Fatalf("Register wrote %q, which is not a recognised scope; the "+
 				"vocabulary CHECK refuses it with 23514", s)
 		}
 	}
-	t.Logf("registration recorded registered_scopes=%v", store.client.RegisteredScopes)
 }
 
-// TestOmittedRegistrationScopeMustBeRevisitedWhenTheRegistryGrows is a
-// TRIPWIRE, not an assertion about today.
-//
-// registeredScopesForOmittedRequest resolves an omitted RFC 7591 `scope` to the
-// FULL RECOGNISED REGISTRY. That is safe and behaviour-preserving while the
-// registry holds one member -- it is exactly {mcp:read}, the value m137
-// backfilled onto every client that already existed. It stops being safe the
-// moment a second scope is recognised, because a client that says nothing would
-// then be registered for the new scope too and containment would have nothing
-// to bite on. That is the trap m137 DECISION 3 refused to build into the schema
-// as a DEFAULT, rebuilt one layer up.
-//
-// A comment asking to be revisited is a wish. This is the mechanism: adding the
-// second scope turns this red and the author has to go and choose.
-//
-// HOW TO MAKE IT GREEN AGAIN, since a red test with no stated remedy gets
-// deleted: decide what an omitted `scope` means with more than one scope on the
-// menu -- refuse the registration, parse RFC 7591 `scope` for real, or pin the
-// default to a named conservative subset -- change
-// registeredScopesForOmittedRequest to match, and rewrite this test to hold the
-// new rule. Do not widen the bound to silence it.
-//
-// IT MUST NOT PLANT. Every other test here widens the registry deliberately;
-// this one reads the SHIPPED registry, so it must run with no plant in force.
-// t.Cleanup restores the map after each planting test, and nothing in this
-// package calls t.Parallel, so by the time this runs the registry is the real one.
-func TestOmittedRegistrationScopeMustBeRevisitedWhenTheRegistryGrows(t *testing.T) {
-	if len(recognisedScopes) > 1 {
-		t.Fatalf("recognisedScopes now holds %d scopes (%v), and "+
-			"registeredScopesForOmittedRequest still resolves an omitted RFC 7591 "+
-			"`scope` to ALL of them.\n"+
-			"A client that names no scope would be registered for the new one, so "+
-			"the containment check in Authorize and Approve would bound it to "+
-			"everything -- which is no bound. Read the comment on "+
-			"registeredScopesForOmittedRequest and choose again.",
-			len(recognisedScopes), SupportedScopes())
+// TestRegisterScopeIsTheReadScopeUnionTheRecognisedRequest pins the RFC 7591
+// `scope` rule: {mcp:read} is always registered, a recognised token is added,
+// and an unrecognised one is dropped without refusing the registration. The
+// response echoes the STORED set.
+func TestRegisterScopeIsTheReadScopeUnionTheRecognisedRequest(t *testing.T) {
+	cases := []struct {
+		name        string
+		scope       string
+		wantStored  []string
+		wantDropped []string
+	}{
+		{"omitted", "", []string{"mcp:read"}, nil},
+		{"read only", "mcp:read", []string{"mcp:read"}, nil},
+		{"cache only still gets read", "mcp:cache", []string{"mcp:cache", "mcp:read"}, nil},
+		{"both", "mcp:read mcp:cache", []string{"mcp:cache", "mcp:read"}, nil},
+		{"unknown dropped", "mcp:read mcp:write", []string{"mcp:read"}, []string{"mcp:write"}},
+		{"case is exact", "MCP:CACHE", []string{"mcp:read"}, []string{"MCP:CACHE"}},
+		{"tab is not a separator", "mcp:read\tmcp:cache", []string{"mcp:read"}, []string{"mcp:read\tmcp:cache"}},
+		{"generic client list", "openid profile mcp:cache", []string{"mcp:cache", "mcp:read"}, []string{"openid", "profile"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &fakeStore{registerRows: 1}
+			out, err := NewService(store).Register(context.Background(), RegistrationRequest{
+				RedirectURIs: []string{registeredRedirect},
+				Scope:        tc.scope,
+			})
+			if err != nil {
+				t.Fatalf("Register refused %q: %v; an unrecognised token is dropped, "+
+					"never a refusal", tc.scope, err)
+			}
+			if !equalStrings(store.client.RegisteredScopes, tc.wantStored) {
+				t.Fatalf("stored %v, want %v", store.client.RegisteredScopes, tc.wantStored)
+			}
+			if !equalStrings(out.Scopes, tc.wantStored) {
+				t.Fatalf("echoed %v, want the stored set %v", out.Scopes, tc.wantStored)
+			}
+			if !equalStrings(out.DroppedScopes, tc.wantDropped) {
+				t.Fatalf("dropped %v, want %v", out.DroppedScopes, tc.wantDropped)
+			}
+		})
 	}
 }

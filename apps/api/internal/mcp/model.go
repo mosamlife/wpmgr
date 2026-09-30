@@ -24,21 +24,26 @@ import (
 // CLOSED: an unrecognised scope is refused, never ignored.
 type Scope string
 
-// ScopeRead is the only scope this surface grants, and the surface is
-// read-only by construction rather than by configuration.
+// ScopeRead is the read scope. Every grant holds it, and it confers the read
+// capabilities only (scopeCapabilities in policy.go).
 //
-// m127 DID MINT mcp_grants.capabilities, so the older statement here -- that
-// there is deliberately no capability column -- is no longer true and has been
-// removed rather than left to be believed. What it was protecting survives, and
-// survives in a stronger form: the column is NOT NULL with no default and
-// carries a CHECK closed over the same one-name vocabulary this package holds
-// (capabilityVocabulary), so a write capability STILL cannot appear in a row
-// without a migration and without a review. The column narrows what a
-// connection may do; it cannot widen it past what scopeCapabilities maps.
-//
-// A write scope does not belong here; it belongs in its own migration with its
-// own review.
+// m127 DID MINT mcp_grants.capabilities, so a connection's authority is the
+// stored capability column narrowed against the ceiling its scopes confer. The
+// column is NOT NULL with no default and carries a CHECK closed over the same
+// vocabulary this package holds (capabilityVocabulary), so no capability can
+// appear in a row without a migration and a review.
 const ScopeRead Scope = "mcp:read"
+
+// ScopeCache is the second scope, seated by m150. It confers exactly one
+// capability, CapCachePurge, which lets a connection ASK to clear one site's
+// page cache. Asking changes nothing: every request waits for a person to
+// approve it in WPMgr, and no automation can approve one (ADR-061).
+//
+// It is never advertised in discovery (AdvertisedScopes) and never stored on a
+// grant the operator did not consent to: the OAuth path stores the scope set
+// the consent ticket sealed, and the token path stores it only when the
+// operator named an explicit capability list (see MintConnection).
+const ScopeCache Scope = "mcp:cache"
 
 // SiteScopeMode says which sites a grant may read. It mirrors
 // mcp_grants_site_scope_mode_check: NOT NULL, closed set, and deliberately NO

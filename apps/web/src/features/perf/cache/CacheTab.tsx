@@ -1,5 +1,6 @@
 import { PageError } from "@/components/feedback";
 import { Skeleton } from "@/components/ui/skeleton";
+import { AiRequestSiteBanner } from "@/features/ai-requests/site-banner";
 
 import { usePerfConfig, useUpdatePerfConfig } from "../hooks/usePerfConfig";
 import { useCacheStats } from "../hooks/useCacheStats";
@@ -71,6 +72,11 @@ export function CacheTab({
 
   return (
     <div className="space-y-4">
+      {/* §2.6 "Site banner" — PermSiteCachePurge holders only, same gate as
+          the purge/preload actions below (canOperate). Read-only: it never
+          approves anything itself. */}
+      <AiRequestSiteBanner siteId={siteId} canView={canOperate} />
+
       <CacheOverview stats={stats.data} />
 
       <PreloadProgress siteId={siteId} />

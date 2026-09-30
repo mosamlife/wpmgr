@@ -146,6 +146,8 @@ export interface ApproveInput {
   readonly siteScopeMode: SiteScopeMode;
   readonly scopeTagIds: readonly string[];
   readonly scopeSiteIds: readonly string[];
+  /** Explicit capability list; omitted when empty (the server refuses `[]`). */
+  readonly capabilities?: readonly string[];
 }
 
 export interface ApproveResult {
@@ -180,6 +182,9 @@ export function useApproveConsent(): UseMutationResult<ApproveResult, Error, App
         scope_tag_ids: input.scopeTagIds,
         scope_site_ids: input.scopeSiteIds,
       };
+      if (input.capabilities !== undefined && input.capabilities.length > 0) {
+        requestBody.capabilities = input.capabilities;
+      }
 
       // THE TICKET GOES BACK EXACTLY AS IT CAME, OR NOT AT ALL.
       //

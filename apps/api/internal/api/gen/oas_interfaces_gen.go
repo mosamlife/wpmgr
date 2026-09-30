@@ -145,6 +145,10 @@ type ApplySiteFileUploadRes interface {
 	applySiteFileUploadRes()
 }
 
+type ApproveAssistantRequestRes interface {
+	approveAssistantRequestRes()
+}
+
 type ArchiveSiteRes interface {
 	archiveSiteRes()
 }
@@ -307,6 +311,10 @@ type CreateTenantRes interface {
 
 type CreateUpdateRunRes interface {
 	createUpdateRunRes()
+}
+
+type DeclineAssistantRequestRes interface {
+	declineAssistantRequestRes()
 }
 
 type DeleteAdminUserRes interface {
@@ -741,6 +749,10 @@ type ListApiKeysRes interface {
 	listApiKeysRes()
 }
 
+type ListAssistantRequestsRes interface {
+	listAssistantRequestsRes()
+}
+
 type ListAuditRes interface {
 	listAuditRes()
 }
@@ -831,6 +843,10 @@ type ListScheduleRunsRes interface {
 
 type ListSharedWithMeRes interface {
 	listSharedWithMeRes()
+}
+
+type ListSiteAssistantRequestsRes interface {
+	listSiteAssistantRequestsRes()
 }
 
 type ListSiteBansRes interface {

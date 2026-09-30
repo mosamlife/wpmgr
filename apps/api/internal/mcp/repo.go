@@ -181,6 +181,18 @@ type Store interface {
 	// pgx.ErrNoRows -- nothing was written, so nothing should be attributed.
 	// May be nil.
 	RevokeGrantWithTokens(ctx context.Context, principal domain.Principal, grantID uuid.UUID, onRevoked func(tx pgx.Tx, row sqlc.RevokeMCPGrantWithTokensInTenantTxRow) error) (sqlc.RevokeMCPGrantWithTokensInTenantTxRow, error)
+
+	// CloseAssistantRequestsForGrantTx is the revoke cascade over the
+	// connection's AI requests, on the revoke's OWN transaction: every waiting
+	// request becomes 'withdrawn' (naming no decider), and every approved
+	// request not yet reserved is closed as not sent with reason
+	// grant_inactive (its approver stays recorded). A request already
+	// reserved is left alone: that clear has started.
+	//
+	// RevokeConnection calls it unconditionally inside onRevoked. Nothing is
+	// wired from outside, so no configuration can leave it out, and the
+	// revocation and the closes commit together or not at all.
+	CloseAssistantRequestsForGrantTx(ctx context.Context, tx pgx.Tx, tenantID, grantID uuid.UUID) (withdrawn, notSent []uuid.UUID, err error)
 }
 
 // Repo is the live Store. Every method names the tx helper it runs under, and
@@ -729,19 +741,12 @@ func (r *Repo) ListSitesForRead(ctx context.Context, principal domain.Principal,
 		// any query added inside this fn later inherits the boundary without
 		// its author doing anything. That is the layer that covers queries
 		// which do not exist yet, and it is worth an assertion.
-		var siteScope string
-		if err := tx.QueryRow(ctx,
-			"SELECT coalesce(current_setting('app.site_scope', true), '')").Scan(&siteScope); err != nil {
-			return fmt.Errorf("read app.site_scope: %w", err)
-		}
-		if siteScope != "on" {
-			return fmt.Errorf(
-				"list sites for mcp read: app.site_scope is %q inside this read's own "+
-					"transaction, want \"on\". The RESTRICTIVE sites_site_scope policy (m19) is "+
-					"INERT at any other value, so the database is enforcing nothing on the site "+
-					"axis. Only InScopedTenantTx sets this GUC, and only RunTenantTx with a "+
-					"site-constrained principal reaches it",
-				siteScope)
+		//
+		// The assertion is the package's one GUC check (assertSiteScopedTx,
+		// kernel.go), shared with AssertSingleSiteTx: app.site_scope is 'on'
+		// and app.allowed_site_ids is exactly this principal's set.
+		if err := assertSiteScopedTx(ctx, tx, principal.AllowedSiteIDs); err != nil {
+			return fmt.Errorf("list sites for mcp read: %w", err)
 		}
 
 		out, err := sqlc.New(tx).ListSitesForMCPScope(ctx, sqlc.ListSitesForMCPScopeParams{

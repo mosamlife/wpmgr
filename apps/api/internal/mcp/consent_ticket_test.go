@@ -275,26 +275,25 @@ func TestApprove_AcceptsARepeatedScope(t *testing.T) {
 // TestAuthorizedScopes_ComparesSetsNotSequences pins the comparison itself over
 // a two-member set, which is the only shape where ordering is observable.
 //
-// It exercises the binding DIRECTLY rather than through Approve, because a
-// planted scope confers no capability -- OrgDefaultCapabilities refuses it a few
-// lines later, by design, and that refusal would mask whichever answer this
-// comparison gave. The capability ceiling is not what is under test here; what
-// the binding accepts is.
+// It exercises the binding DIRECTLY rather than through Approve, because the
+// capability ceiling is not what is under test here; what the binding accepts
+// is. The two-member set is the real one, {mcp:cache, mcp:read}, from a client
+// registered for both.
 func TestAuthorizedScopes_ComparesSetsNotSequences(t *testing.T) {
-	withRecognisedScope(t, plantedScope)
-
-	svc := consentSvc(approvalStore())
-	consent := authorizeForTest(t, svc, string(ScopeRead)+" "+string(plantedScope))
+	store := approvalStore()
+	store.client.RegisteredScopes = SupportedScopes()
+	svc := consentSvc(store)
+	consent := authorizeForTest(t, svc, string(ScopeRead)+" "+string(ScopeCache))
 	// Same set, reversed, with one member repeated.
-	consent.Scopes = []Scope{plantedScope, ScopeRead, ScopeRead}
+	consent.Scopes = []Scope{ScopeCache, ScopeRead, ScopeRead}
 
 	got, err := svc.authorizedScopes(consent)
 	if err != nil {
 		t.Fatalf("the binding refused a body naming the same SET in a different order: %v", err)
 	}
-	// Canonical order is the ticket's, which is sorted: the planted spelling
-	// sorts before mcp:read.
-	want := []string{string(plantedScope), string(ScopeRead)}
+	// Canonical order is the ticket's, which is sorted: mcp:cache sorts before
+	// mcp:read.
+	want := []string{string(ScopeCache), string(ScopeRead)}
 	if !equalStrings(scopeNames(got), want) {
 		t.Fatalf("resolved scopes = %v, want %v (the ticket's set, canonically ordered, "+
 			"not the body's ordering)", scopeNames(got), want)
@@ -307,13 +306,11 @@ func TestAuthorizedScopes_ComparesSetsNotSequences(t *testing.T) {
 // is the round trip disagreeing with itself, and accepting it means the screen
 // said one thing and the grant recorded another.
 func TestApprove_RefusesABodyNarrowerThanTheAuthorizeCall(t *testing.T) {
-	withRecognisedScope(t, plantedScope)
-	withScopeConferring(t, plantedScope, CapSitesRead)
-
 	store := approvalStore()
+	store.client.RegisteredScopes = SupportedScopes()
 	svc := consentSvc(store)
 
-	consent := authorizeForTest(t, svc, string(ScopeRead)+" "+string(plantedScope))
+	consent := authorizeForTest(t, svc, string(ScopeRead)+" "+string(ScopeCache))
 	req := approvalFor(consent)
 	req.Consent.Scopes = []Scope{ScopeRead}
 
@@ -328,8 +325,8 @@ func TestApprove_RefusesABodyNarrowerThanTheAuthorizeCall(t *testing.T) {
 	if !ok || de.Code != ErrCodeScopeNotAuthorized {
 		t.Fatalf("refusal = %v, want a domain error coded %q", err, ErrCodeScopeNotAuthorized)
 	}
-	if !strings.Contains(de.Message, string(plantedScope)) {
-		t.Fatalf("refusal message %q does not name the dropped scope %q", de.Message, plantedScope)
+	if !strings.Contains(de.Message, string(ScopeCache)) {
+		t.Fatalf("refusal message %q does not name the dropped scope %q", de.Message, ScopeCache)
 	}
 }
 

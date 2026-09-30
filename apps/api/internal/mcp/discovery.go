@@ -226,9 +226,11 @@ func (h *DiscoveryHandler) AuthorizationServerMetadata() authorizationServerMeta
 		// refused at /authorize, and have no way to learn why.
 		CodeChallengeMethodsSupported:     SupportedCodeChallengeMethods(),
 		TokenEndpointAuthMethodsSupported: SupportedTokenEndpointAuthMethods(),
-		// From the closed registry in scope.go, never a literal. S7's exit gate
+		// AdvertisedScopes, never a literal: the read scope only. The cache scope
+		// is recognised and requestable by name but is not offered to a client
+		// copying this list back (scope.go). S7's exit gate
 		// is that discovery never names authority the registry does not hold.
-		ScopesSupported: SupportedScopes(),
+		ScopesSupported: AdvertisedScopes(),
 	}
 }
 
@@ -240,7 +242,7 @@ func (h *DiscoveryHandler) ProtectedResourceMetadata() protectedResourceMetadata
 		Resource: h.base + TransportPath,
 		// This control plane is its own authorization server.
 		AuthorizationServers: []string{h.issuer},
-		ScopesSupported:      SupportedScopes(),
+		ScopesSupported:      AdvertisedScopes(),
 		// TransportHandler.bearerToken reads the Authorization header and
 		// nothing else — no form field, no query parameter. Access tokens in a
 		// query string are forbidden by the MCP specification and this server
@@ -301,4 +303,12 @@ func (h *DiscoveryHandler) preflight(c *gin.Context) {
 	c.Header("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
 	c.Header("Access-Control-Allow-Headers", "Authorization, "+ProtocolHeader)
 	c.Status(http.StatusNoContent)
+}
+
+// bearerChallenge is the RFC 6750 section 3 challenge the transport answers a
+// missing or invalid token with. Its scope attribute names AdvertisedScopes,
+// the same set the discovery documents carry, so a client that follows the
+// challenge asks for the read scope and nothing else.
+func bearerChallenge() string {
+	return `Bearer realm="wpmgr-mcp", scope="` + strings.Join(AdvertisedScopes(), " ") + `"`
 }

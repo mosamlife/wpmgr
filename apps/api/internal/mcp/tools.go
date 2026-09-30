@@ -66,6 +66,8 @@ type ToolDescriptor struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	InputSchema json.RawMessage `json:"inputSchema"`
+	// Annotations are omitted for a tool that declares none.
+	Annotations *ToolAnnotations `json:"annotations,omitempty"`
 }
 
 // listSitesSchema is returned by tools/list AND inline in an

@@ -4155,7 +4155,13 @@ CREATE TABLE cache_purge_audit (
         CONSTRAINT cache_purge_audit_initiator_fkey REFERENCES users (id) ON DELETE SET NULL,
     target_urls       text[]      NOT NULL DEFAULT '{}',
     urls_count        integer     NOT NULL DEFAULT 0,
-    created_at        timestamptz NOT NULL DEFAULT now()
+    created_at        timestamptz NOT NULL DEFAULT now(),
+    -- m150. The mcp_grants row an approved AI cache-clear request came from;
+    -- NULL for every dashboard and system purge. No FK and no DEFAULT (a
+    -- recorded fact). The row-security policies are unchanged: the RESTRICTIVE
+    -- cache_purge_audit_site_scope filters by SITE, not by initiator, so a
+    -- single-site read sees the dashboard's rows on that site too.
+    initiator_grant_id uuid
 );
 
 CREATE INDEX idx_cache_purge_site ON cache_purge_audit (site_id, created_at DESC);
@@ -7114,17 +7120,21 @@ CREATE TABLE mcp_grants (
     -- than one open set (m131 DECISION 5), so this list and that map move
     -- together or not at all.
     --
-    -- NO WRITE SCOPE IS SEATED. scope.go states the rule in its own words -- "A
-    -- write scope arrives with its own migration and its own review, never by
-    -- being appended here" -- and m136 kept it: seating one early would spend
-    -- the gate to save the toll. Widening a containment CHECK is monotone, so
-    -- that later migration is a drop-and-re-add of THIS NAME, exactly as m131
-    -- did for the capability vocabulary, and it cannot invalidate a row.
+    -- m150 SEATED THE FIRST SCOPE THAT IS NOT A READ, 'mcp:cache', in its own
+    -- migration and its own review, as scope.go's rule requires ("a write
+    -- scope arrives with its own migration and its own review, never by being
+    -- appended here"). It confers mcp.cache.purge, which under ADR-061 means
+    -- "may ASK to clear a site's page cache": every clear waits for a person to
+    -- approve that one request, and nothing in the schema lets automation
+    -- approve one. m150 widened this constraint by dropping and re-adding THIS
+    -- NAME, as m131 and m135 did for capabilities; widening a containment
+    -- CHECK is monotone and cannot invalidate a row.
     --
     -- Containment alone would admit '{}', which is why emptiness is refused by
     -- its own constraint above and not by this one.
     CONSTRAINT mcp_grants_oauth_scopes_vocabulary_check
         CHECK (oauth_scopes <@ ARRAY[
+            'mcp:cache',
             'mcp:read'
         ]::text[]),
 
@@ -7464,9 +7474,11 @@ CREATE TABLE mcp_oauth_clients (
     -- than widening silently. `<@` is array containment and is IMMUTABLE.
     -- Containment alone would admit '{}' -- the empty array is contained by
     -- every array -- which is why emptiness is refused by its own constraint
-    -- above rather than by this one.
+    -- above rather than by this one. m150 widened both constraints together to
+    -- admit 'mcp:cache', each by dropping and re-adding its own name.
     CONSTRAINT mcp_oauth_clients_registered_scopes_vocabulary_check
         CHECK (registered_scopes <@ ARRAY[
+            'mcp:cache',
             'mcp:read'
         ]::text[])
 );
@@ -8213,3 +8225,245 @@ REVOKE UPDATE ON assistant_update_proposals FROM wpmgr_app;
 GRANT UPDATE (state, decided_at, decided_by_user_id,
               dispatched_update_run_id, note)
     ON assistant_update_proposals TO wpmgr_app;
+
+-- assistant_cache_purge_requests - m151. ONE AI connection's request to clear
+-- ONE site's page cache ('all', or one page address with 'url'), waiting for a
+-- person to approve it. m133's hardened shape, device by device; the migration
+-- carries the reasoning and this copy is sqlc's input, not authoritative for
+-- RLS.
+--
+-- At a glance:
+--   * 'withdrawn' is what a revoke does to a waiting request. Like 'expired' it
+--     is not a decision and names nobody. The approver named on a row is not
+--     durable (no transition guard); the hash-chained
+--     assistant.request.approved audit row is the record of who approved.
+--   * url and site_host are backstopped: url is printable-ASCII http(s), at
+--     most 2048 bytes, with no `?` or `#`; site_host is the site row's dialled
+--     ASCII host (siteaddr.HostKey output) for BOTH scopes.
+--   * presented_digest covers the stored facts and digest_nonce, a
+--     server-random value no route returns.
+--   * 'dispatched' means taken off the approved queue; outcome says what then
+--     happened, including 'not_sent'.
+--
+-- Three policies: tenant isolation, the RESTRICTIVE m19 site-scope predicate,
+-- and a FOR SELECT agent policy for the cross-tenant scans.
+CREATE TABLE IF NOT EXISTS assistant_cache_purge_requests (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id uuid NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    site_id   uuid NOT NULL,
+    CONSTRAINT assistant_cache_purge_requests_site_within_tenant_fkey
+        FOREIGN KEY (tenant_id, site_id)
+        REFERENCES sites (tenant_id, id) ON DELETE CASCADE,
+    proposed_by_grant_id uuid NOT NULL,
+    scope text NOT NULL
+        CONSTRAINT assistant_cache_purge_requests_scope_check
+        CHECK (scope IN ('all', 'url')),
+    url text NULL
+        CONSTRAINT assistant_cache_purge_requests_url_backstop_check
+        CHECK (url IS NULL OR (
+            length(url) <= 2048
+            AND url ~ '^https?://[!-~]+$'
+            AND url !~ '[?#]'
+        )),
+    CONSTRAINT assistant_cache_purge_requests_url_matches_scope_check
+        CHECK ((scope = 'url') = (url IS NOT NULL)),
+    site_label text NOT NULL
+        CONSTRAINT assistant_cache_purge_requests_site_label_length_check
+        CHECK (char_length(site_label) <= 201),
+    site_host text NOT NULL
+        CONSTRAINT assistant_cache_purge_requests_site_host_ascii_check
+        CHECK (site_host ~ '^[!-~]{1,255}$'),
+    grant_label text NOT NULL
+        CONSTRAINT assistant_cache_purge_requests_grant_label_check
+        CHECK (length(btrim(grant_label)) > 0
+               AND char_length(grant_label) <= 65),
+    grant_via text NOT NULL
+        CONSTRAINT assistant_cache_purge_requests_grant_via_check
+        CHECK (grant_via IN ('token', 'browser_sign_in')),
+    setup_client text NULL
+        CONSTRAINT assistant_cache_purge_requests_setup_client_shape_check
+        CHECK (setup_client IS NULL
+               OR (setup_client ~ '^[a-z0-9]+(-[a-z0-9]+)*$'
+                   AND length(setup_client) <= 64)),
+    digest_nonce text NOT NULL
+        CONSTRAINT assistant_cache_purge_requests_digest_nonce_shape_check
+        CHECK (digest_nonce ~ '^[0-9a-f]{64}$'),
+    presented_digest text NOT NULL
+        CONSTRAINT assistant_cache_purge_requests_presented_digest_shape_check
+        CHECK (presented_digest ~ '^[0-9a-f]{64}$'),
+    state text NOT NULL
+        CONSTRAINT assistant_cache_purge_requests_state_check
+        CHECK (state IN (
+            'pending',
+            'approved_undispatched',
+            'dispatched',
+            'rejected',
+            'withdrawn',
+            'expired'
+        )),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    expires_at timestamptz NOT NULL,
+    CONSTRAINT assistant_cache_purge_requests_window_is_positive_check
+        CHECK (expires_at > created_at),
+    decided_at timestamptz NULL,
+    decided_by_user_id uuid NULL,
+    CONSTRAINT assistant_cache_purge_requests_decided_states_have_time_check
+        CHECK (
+            (state IN ('approved_undispatched', 'dispatched', 'rejected'))
+            = (decided_at IS NOT NULL)
+        ),
+    CONSTRAINT assistant_cache_purge_requests_consent_within_window_check
+        CHECK (
+            state NOT IN ('approved_undispatched', 'dispatched')
+            OR (decided_at IS NOT NULL AND decided_at < expires_at)
+        ),
+    CONSTRAINT assistant_cache_purge_requests_expiry_is_not_a_decision_check
+        CHECK (state <> 'expired' OR decided_by_user_id IS NULL),
+    CONSTRAINT assistant_cache_purge_requests_approval_names_a_human_check
+        CHECK (
+            state NOT IN ('approved_undispatched', 'dispatched')
+            OR decided_by_user_id IS NOT NULL
+        ),
+    CONSTRAINT assistant_cache_purge_requests_rejection_names_a_human_check
+        CHECK (state <> 'rejected' OR decided_by_user_id IS NOT NULL),
+    withdrawn_at timestamptz NULL,
+    CONSTRAINT assistant_cache_purge_requests_withdrawn_has_time_check
+        CHECK ((state = 'withdrawn') = (withdrawn_at IS NOT NULL)),
+    CONSTRAINT assistant_cache_purge_requests_withdrawal_names_nobody_check
+        CHECK (state <> 'withdrawn' OR decided_by_user_id IS NULL),
+    claimed_at timestamptz NULL,
+    CONSTRAINT assistant_cache_purge_requests_claimed_iff_dispatched_check
+        CHECK ((state = 'dispatched') = (claimed_at IS NOT NULL)),
+    cache_purge_audit_id uuid NULL,
+    CONSTRAINT assistant_cache_purge_requests_audit_row_when_dispatched_check
+        CHECK (cache_purge_audit_id IS NULL OR state = 'dispatched'),
+    dispatch_attempts integer NOT NULL DEFAULT 0
+        CONSTRAINT assistant_cache_purge_requests_dispatch_attempts_check
+        CHECK (dispatch_attempts >= 0),
+    last_attempt_at timestamptz NULL,
+    last_attempt_code text NULL
+        CONSTRAINT assistant_cache_purge_requests_last_attempt_code_check
+        CHECK (last_attempt_code IN (
+            'site_unreachable',
+            'site_cooldown',
+            'site_hourly_cap',
+            'site_busy',
+            'org_busy',
+            'context_unavailable',
+            'write_tools_disabled'
+        )),
+    outcome text NULL
+        CONSTRAINT assistant_cache_purge_requests_outcome_check
+        CHECK (outcome IN (
+            'purged',
+            'site_reported_failure',
+            'agent_failed',
+            'outcome_unknown',
+            'not_sent'
+        )),
+    CONSTRAINT assistant_cache_purge_requests_outcome_when_dispatched_check
+        CHECK (outcome IS NULL OR state = 'dispatched'),
+    not_sent_reason text NULL
+        CONSTRAINT assistant_cache_purge_requests_not_sent_reason_check
+        CHECK (not_sent_reason IN (
+            'grant_inactive',
+            'assistant_paused',
+            'organisation_deleted',
+            'capability_not_held',
+            'site_absent',
+            'forbidden_by_context',
+            'agent_outdated',
+            'dispatch_deadline_passed',
+            'transport_pre_send'
+        )),
+    CONSTRAINT assistant_cache_purge_requests_not_sent_has_reason_check
+        CHECK ((outcome IS NOT DISTINCT FROM 'not_sent')
+               = (not_sent_reason IS NOT NULL)),
+    CONSTRAINT assistant_cache_purge_requests_sent_names_audit_row_check
+        CHECK (outcome IS NULL OR outcome = 'not_sent'
+               OR cache_purge_audit_id IS NOT NULL),
+    outcome_at timestamptz NULL,
+    CONSTRAINT assistant_cache_purge_requests_outcome_has_time_check
+        CHECK ((outcome IS NULL) = (outcome_at IS NULL)),
+    hosting_caches_cleared text[] NULL
+        CONSTRAINT assistant_cache_purge_requests_hosting_cleared_check
+        CHECK (hosting_caches_cleared <@ ARRAY[
+            'cloudflare', 'cloudpanel', 'cloudways', 'gridpane', 'kinsta',
+            'rocketnet', 'runcloud', 'siteground', 'spinupwp', 'varnish',
+            'wpcloud', 'wpengine'
+        ]::text[]),
+    hosting_caches_skipped text[] NULL
+        CONSTRAINT assistant_cache_purge_requests_hosting_skipped_check
+        CHECK (hosting_caches_skipped <@ ARRAY[
+            'cloudflare', 'cloudpanel', 'cloudways', 'gridpane', 'kinsta',
+            'rocketnet', 'runcloud', 'siteground', 'spinupwp', 'varnish',
+            'wpcloud', 'wpengine'
+        ]::text[]),
+    origin_only_confirmed boolean NULL,
+    wpmgr_cdn text NULL
+        CONSTRAINT assistant_cache_purge_requests_wpmgr_cdn_check
+        CHECK (wpmgr_cdn IN ('not_attempted', 'cleared', 'failed', 'not_configured')),
+    site_reported_text text NULL
+        CONSTRAINT assistant_cache_purge_requests_site_reported_text_check
+        CHECK (site_reported_text IS NULL OR length(site_reported_text) <= 512)
+);
+CREATE INDEX IF NOT EXISTS assistant_cache_purge_requests_tenant_idx
+    ON assistant_cache_purge_requests (tenant_id);
+CREATE INDEX IF NOT EXISTS assistant_cache_purge_requests_site_idx
+    ON assistant_cache_purge_requests (site_id);
+CREATE INDEX IF NOT EXISTS assistant_cache_purge_requests_dispatch_idx
+    ON assistant_cache_purge_requests (decided_at)
+    WHERE state = 'approved_undispatched';
+CREATE INDEX IF NOT EXISTS assistant_cache_purge_requests_expiry_sweep_idx
+    ON assistant_cache_purge_requests (expires_at)
+    WHERE state = 'pending';
+-- At most one waiting request per connection per site.
+CREATE UNIQUE INDEX IF NOT EXISTS assistant_cache_purge_requests_one_pending_idx
+    ON assistant_cache_purge_requests (tenant_id, site_id, proposed_by_grant_id)
+    WHERE state = 'pending';
+CREATE INDEX IF NOT EXISTS assistant_cache_purge_requests_grant_created_idx
+    ON assistant_cache_purge_requests (proposed_by_grant_id, created_at DESC);
+-- In flight: the per-site busy check and the reconciler.
+CREATE INDEX IF NOT EXISTS assistant_cache_purge_requests_in_flight_idx
+    ON assistant_cache_purge_requests (site_id, claimed_at)
+    WHERE state = 'dispatched' AND outcome IS NULL;
+ALTER TABLE assistant_cache_purge_requests ENABLE ROW LEVEL SECURITY;
+ALTER TABLE assistant_cache_purge_requests FORCE ROW LEVEL SECURITY;
+CREATE POLICY assistant_cache_purge_requests_tenant_isolation ON assistant_cache_purge_requests
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+CREATE POLICY assistant_cache_purge_requests_site_scope ON assistant_cache_purge_requests
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+-- FOR SELECT, deliberately: the cross-tenant scans read; every write runs
+-- under a tenant transaction. See the migration and the ledger row.
+CREATE POLICY assistant_cache_purge_requests_agent ON assistant_cache_purge_requests
+    FOR SELECT
+    USING (current_setting('app.agent', true) = 'on');
+-- The facts are immutable after insert and the row cannot be deleted by the
+-- application role; revoke-then-grant, as for assistant_update_proposals.
+GRANT SELECT, INSERT ON assistant_cache_purge_requests TO wpmgr_app;
+REVOKE DELETE, TRUNCATE ON assistant_cache_purge_requests FROM wpmgr_app;
+REVOKE UPDATE ON assistant_cache_purge_requests FROM wpmgr_app;
+GRANT UPDATE (state, decided_at, decided_by_user_id, withdrawn_at,
+              claimed_at, cache_purge_audit_id,
+              dispatch_attempts, last_attempt_at, last_attempt_code,
+              outcome, not_sent_reason, outcome_at,
+              hosting_caches_cleared, hosting_caches_skipped,
+              origin_only_confirmed, wpmgr_cdn, site_reported_text)
+    ON assistant_cache_purge_requests TO wpmgr_app;

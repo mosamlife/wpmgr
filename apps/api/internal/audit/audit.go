@@ -431,6 +431,28 @@ const (
 	// incident, so an actor it names must be one that exists. Metadata:
 	// grants_revoked, tokens_revoked, already_revoked.
 	ActionMCPGrantRevoked = "mcp.grant.revoked"
+	// The AI request lifecycle (assistant_cache_purge_requests, m151).
+	// TargetType is "assistant_cache_purge_request" and TargetID the request
+	// id. Every one is written with RecordInTx in the transaction that changes
+	// the row, after the row write.
+	//
+	//   - approved / declined: ActorUser, the person who decided.
+	//   - expired: ActorSystem (the sweeper, or the creation path expiring the
+	//     connection's own lapsed row).
+	//   - withdrawn: the revoke cascade, actor from ActorFor(revoker). A
+	//     withdrawn row names no human decider.
+	//   - not_sent: the request closed without being sent. ActorSystem from the
+	//     worker and the sweeper; ActorFor(revoker) from the revoke cascade.
+	//   - dispatched: the clear was reserved and is about to be sent.
+	//   - failed: the site reported a failure, the agent failed, or the outcome
+	//     is unknown.
+	ActionAssistantRequestApproved   = "assistant.request.approved"
+	ActionAssistantRequestDeclined   = "assistant.request.declined"
+	ActionAssistantRequestExpired    = "assistant.request.expired"
+	ActionAssistantRequestWithdrawn  = "assistant.request.withdrawn"
+	ActionAssistantRequestNotSent    = "assistant.request.not_sent"
+	ActionAssistantRequestDispatched = "assistant.request.dispatched"
+	ActionAssistantRequestFailed     = "assistant.request.failed"
 	// ActionMCPToolCalled is recorded per successful tool invocation on the
 	// transport path (internal/mcp.Service.RecordToolCall), BEST-EFFORT like
 	// most of this log (Record, not RecordInTx): there is no companion write

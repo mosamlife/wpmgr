@@ -12,6 +12,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
+
+	"github.com/mosamlife/wpmgr/apps/api/internal/humantext"
 )
 
 // agentFailure builds an AgentFailed() command error with the given agent
@@ -178,7 +180,7 @@ func TestSanitizeReason_RedactsAfterCap(t *testing.T) {
 		if strings.Contains(got, "wpmgr-help.co") && !strings.Contains(got, name) {
 			t.Errorf("cut %d: sanitizeReason left a bare host: %q", cut, got[len(got)-min(len(got), 30):])
 		}
-		if again := redactReason(got); again != got {
+		if again := humantext.Redact(got); again != got {
 			t.Errorf("cut %d: output is not fully redacted:\n  got   %q\n  again %q", cut, got, again)
 		}
 	}
@@ -213,7 +215,7 @@ func TestSanitizeReason_OutputIsFullyRedacted(t *testing.T) {
 		if len(got) > maxReasonLen || !utf8.ValidString(got) {
 			t.Fatalf("input %q: output %d bytes, valid UTF-8 %v", in, len(got), utf8.ValidString(got))
 		}
-		if again := redactReason(got); again != got {
+		if again := humantext.Redact(got); again != got {
 			t.Fatalf("input %q:\n  got   %q\n  again %q", in, got, again)
 		}
 	}

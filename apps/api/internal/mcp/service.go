@@ -340,12 +340,23 @@ type Service struct {
 	// newEphemeralConsentTicketCodec for what the unwired default does and does
 	// not promise; cmd/wpmgr replaces it with the instance-wide key at boot.
 	consentTickets *consentTicketCodec
+
+	// writeToolsEnabled is the server-wide switch for tools that are not reads
+	// (SetWriteToolsEnabled). The zero value is OFF: such tools are absent
+	// from tools/list and a call answers exactly as an unknown name does.
+	writeToolsEnabled bool
+
+	// requestLimit is the per-process limiter on site_cache_purge_request
+	// (request_limit.go). Armed in NewService; a Service without it has no
+	// request rail.
+	requestLimit *requestRateLimiter
 }
 
 func NewService(store Store) *Service {
 	return &Service{
-		store: store,
-		now:   time.Now,
+		store:        store,
+		requestLimit: newRequestRateLimiter(),
+		now:          time.Now,
 		// Armed HERE rather than injected with a nil default, for the reason
 		// NewHandler gives about its own limiter: an unarmed limiter would be a
 		// wiring failure that presents as a working endpoint.
@@ -523,6 +534,11 @@ type RegistrationRequest struct {
 	ClientName              string
 	ClientURI               string
 	TokenEndpointAuthMethod string
+
+	// Scope is the RFC 7591 section 2 `scope` member, space-delimited, as the
+	// client sent it. Empty means the client named none. It is read leniently;
+	// see ParseRegistrationScopes.
+	Scope string
 }
 
 // RegisteredClient is what registration returns. ClientSecret is present
@@ -534,43 +550,36 @@ type RegisteredClient struct {
 	RedirectURIs            []string
 	ClientName              string
 	ClientURI               string
+
+	// Scopes is the STORED registered scope set, read back from the row, and
+	// is what the response echoes as `scope` (RFC 7591 section 3.2.1).
+	Scopes []string
+
+	// DroppedScopes are the tokens the request named that this server does not
+	// recognise. They were not registered and the registration still
+	// succeeded; the handler logs them as register_scope_dropped. They are
+	// never echoed to the client as registered.
+	DroppedScopes []string
 }
 
-// registeredScopesForOmittedRequest resolves what a registration that names no
-// `scope` is recorded as registered for. THE ANSWER IS THE FULL RECOGNISED
-// REGISTRY, and this is a decision, not a fallout.
+// registeredScopesFor resolves what a registration is recorded as registered
+// for: {mcp:read}, plus every recognised scope the client named.
 //
-// RFC 7591 section 2 leaves an omitted `scope` to the server, and m137 DECISION
-// 3 deliberately gave the column NO DATABASE DEFAULT so that something in Go
-// has to choose out loud. The two defensible answers are to REFUSE the
-// registration or to register for the whole registry; both are safe under this
-// schema. This is the second.
+// m137 DECISION 3 gave the column NO DATABASE DEFAULT so that something in Go
+// has to choose out loud, and this is the choice. AN OMITTED `scope` REGISTERS
+// {mcp:read} AND NOT THE WHOLE REGISTRY. The whole registry was the answer
+// while it held one member, and it would now register a client that said
+// nothing for the cache scope too, leaving the containment check in Authorize
+// and Approve with nothing to bite on. A client that wants the cache scope
+// asks for it by name at registration; one that registered without it and
+// asks at /authorize is refused there (requireScopesWithinRegistration), and
+// the consent screen tells the operator to remove the server from the client
+// and add it again.
 //
-// WHY NOT REFUSE. RegistrationRequest carries no Scope field and the
-// registration handler parses none, so NO CLIENT CAN SUPPLY ONE: today every
-// registration is an omission. Refusing would take dynamic client registration
-// dark on deploy for a distinction that is unobservable while the registry
-// holds one member -- the registry's only member is ScopeRead, so "the full
-// registry" is exactly {mcp:read}, which is exactly what m137's backfill wrote
-// onto every client that already existed. The ceiling does not move: this
-// registers no client for a scope it could not already have obtained, because
-// before m137 every client could request every recognised scope.
-//
-// WHAT THIS COSTS, STATED RATHER THAN DISCOVERED LATER. The two answers diverge
-// the day a second scope is recognised, and on that day THIS ONE IS THE
-// DANGEROUS DIRECTION: a client that says nothing would be registered for the
-// new scope too, and the containment check in Authorize and Approve would grant
-// it nothing to bite on. That is the same trap m137 DECISION 3 refused to build
-// into the schema as a DEFAULT, and choosing it here means it must be revisited
-// rather than inherited.
-//
-// IT CANNOT BE INHERITED SILENTLY. TestOmittedRegistrationScopeMustBeRevisited-
-// WhenTheRegistryGrows fails the moment recognisedScopes holds more than one
-// member, so the second scope's change cannot land without an author reading
-// this comment and choosing again. A comment asking to be revisited is a wish;
-// that test is the mechanism.
-func registeredScopesForOmittedRequest() []string {
-	return SupportedScopes()
+// UNRECOGNISED TOKENS ARE DROPPED, NOT REFUSED. See ParseRegistrationScopes
+// for why registration is the one lenient reader.
+func registeredScopesFor(raw string) (registered []string, dropped []string) {
+	return ParseRegistrationScopes(raw)
 }
 
 // Register implements RFC 7591 dynamic client registration.
@@ -604,6 +613,8 @@ func (s *Service) Register(ctx context.Context, req RegistrationRequest) (Regist
 		return RegisteredClient{}, err
 	}
 
+	registeredScopes, droppedScopes := registeredScopesFor(req.Scope)
+
 	clientID, err := randomToken(24)
 	if err != nil {
 		return RegisteredClient{}, fmt.Errorf("generate client_id: %w", err)
@@ -636,7 +647,7 @@ func (s *Service) Register(ctx context.Context, req RegistrationRequest) (Regist
 		RedirectUris:            req.RedirectURIs,
 		ClientName:              nullableText(strings.TrimSpace(req.ClientName)),
 		ClientUri:               nullableText(strings.TrimSpace(req.ClientURI)),
-		RegisteredScopes:        registeredScopesForOmittedRequest(),
+		RegisteredScopes:        registeredScopes,
 	})
 	if err != nil {
 		return RegisteredClient{}, fmt.Errorf("register client: %w", err)
@@ -680,6 +691,8 @@ func (s *Service) Register(ctx context.Context, req RegistrationRequest) (Regist
 		RedirectURIs:            stored.RedirectUris,
 		ClientName:              derefString(stored.ClientName),
 		ClientURI:               derefString(stored.ClientUri),
+		Scopes:                  stored.RegisteredScopes,
+		DroppedScopes:           droppedScopes,
 	}, nil
 }
 
@@ -756,6 +769,11 @@ type ConsentContext struct {
 	// what lets Approve store the scope set the operator was shown rather than
 	// the one the body claims. See consent_ticket.go.
 	ConsentTicket string
+
+	// ConferrableCapabilities is what Scopes confer, each with its effect,
+	// for the screen's capability picker. Set by Authorize; never read back
+	// from an approval body.
+	ConferrableCapabilities []ConferrableCapability
 }
 
 // Authorize validates an authorization request and returns what the consent
@@ -831,6 +849,11 @@ func (s *Service) Authorize(ctx context.Context, req AuthorizeRequest) (ConsentC
 		return ConsentContext{}, fmt.Errorf("issue consent ticket: %w", err)
 	}
 
+	conferrable, err := ConferrableCapabilities(scopes)
+	if err != nil {
+		return ConsentContext{}, fmt.Errorf("resolve conferrable capabilities: %w", err)
+	}
+
 	return ConsentContext{
 		ClientID:             client.ClientID,
 		ClientNameUnverified: derefString(client.ClientName),
@@ -842,6 +865,8 @@ func (s *Service) Authorize(ctx context.Context, req AuthorizeRequest) (ConsentC
 		CodeChallenge:        req.CodeChallenge,
 		CodeChallengeMethod:  req.CodeChallengeMethod,
 		ConsentTicket:        ticket,
+
+		ConferrableCapabilities: conferrable,
 	}, nil
 }
 
@@ -1132,6 +1157,11 @@ func (s *Service) Approve(ctx context.Context, req ApprovalRequest) (Approval, e
 	// intersection behind the operator's back.
 	caps, err := s.resolveGrantCapabilities(grantedScopes, req.Capabilities)
 	if err != nil {
+		return Approval{}, err
+	}
+	// Approving a request capability requires the approver to hold the
+	// permission it asks for; the same rule the token path applies.
+	if err := requireCreatorMayConfer(req.Principal, caps); err != nil {
 		return Approval{}, err
 	}
 
@@ -1590,6 +1620,15 @@ type AuthorizedRequest struct {
 	// Capabilities makes for the same reason: a literal that forgets it lists
 	// NO tool rather than every tool.
 	OrgCeiling CapabilitySet
+
+	// SetupClient is the operator's client choice on the grant (m128), read
+	// from the same verdict row. It is stored on an AI request's facts and is
+	// never returned to the model.
+	SetupClient *string
+
+	// ViaOAuth is true when the grant came from the OAuth sign-in path
+	// (mcp_grants.client_id is set), false for a pasted token.
+	ViaOAuth bool
 }
 
 // Authenticate resolves a bearer token and re-checks its grant against CURRENT
@@ -1628,6 +1667,18 @@ func (s *Service) Authenticate(ctx context.Context, bearer string) (AuthorizedRe
 			"this connection has been revoked or has expired")
 	}
 
+	auth, err := s.authorizeGrant(ctx, tok.TenantID, grantVerdictFromRequestRow(chk))
+	if err != nil {
+		return AuthorizedRequest{}, err
+	}
+	auth.TokenID = chk.TokenID
+	return auth, nil
+}
+
+// authorizeGrant is the derivation shared by Authenticate and AuthorizeGrant:
+// from a verdict to the scope and capabilities it confers. The caller has
+// already refused an unauthorized verdict.
+func (s *Service) authorizeGrant(ctx context.Context, tenantID uuid.UUID, v GrantVerdict) (AuthorizedRequest, error) {
 	// Resolve the site scope at the one audited chokepoint, inside a tenant
 	// transaction so `sites` RLS drops any foreign UUID.
 	//
@@ -1635,8 +1686,8 @@ func (s *Service) Authenticate(ctx context.Context, bearer string) (AuthorizedRe
 	// IS THE ONE EXCEPTION TO ADR-061 A11 ITEM 2. Read bootstrapTenantPrincipal
 	// before changing it. In one line: this call is what PRODUCES the allowlist,
 	// so there is no allowlist to scope it by.
-	ids, err := s.store.ResolveScopeSites(ctx, bootstrapTenantPrincipal(tok.TenantID),
-		chk.SiteScopeMode, chk.ScopeTagIds, chk.ScopeSiteIds)
+	ids, err := s.store.ResolveScopeSites(ctx, bootstrapTenantPrincipal(tenantID),
+		v.SiteScopeMode, v.ScopeTagIDs, v.ScopeSiteIDs)
 	if err != nil {
 		return AuthorizedRequest{}, fmt.Errorf("resolve grant scope: %w", err)
 	}
@@ -1687,7 +1738,7 @@ func (s *Service) Authenticate(ctx context.Context, bearer string) (AuthorizedRe
 	// IT IS 403, NOT 401, for the reason spelled out on the empty-capabilities
 	// refusal below: an MCP client that receives 401 re-runs the OAuth handshake,
 	// which cannot repair a stored column.
-	scopes := grantScopes(chk.GrantOauthScopes)
+	scopes := grantScopes(v.OauthScopes)
 	if len(scopes) == 0 {
 		return AuthorizedRequest{}, domain.Forbidden(ErrCodeCapabilityUnmapped,
 			"this connection holds no scope, so it confers no capability")
@@ -1722,7 +1773,7 @@ func (s *Service) Authenticate(ctx context.Context, bearer string) (AuthorizedRe
 	// permitted. That is what 403 says, and it is what every other producer of
 	// ErrCodeCapabilityUnmapped already returns (all three in
 	// OrgDefaultCapabilities).
-	stored := capabilitiesFromColumn(chk.GrantCapabilities)
+	stored := capabilitiesFromColumn(v.Capabilities)
 	if len(stored) == 0 {
 		return AuthorizedRequest{}, domain.Forbidden(ErrCodeCapabilityUnmapped,
 			"this connection holds no capability, so it can reach no tool")
@@ -1739,12 +1790,16 @@ func (s *Service) Authenticate(ctx context.Context, bearer string) (AuthorizedRe
 	// An empty resolved set means NO SITES. NewSiteSet's zero value allows
 	// nothing, so there is no widening path here even if ids is nil.
 	return AuthorizedRequest{
-		TenantID:     tok.TenantID,
-		GrantID:      chk.GrantID,
-		GrantName:    chk.GrantName,
-		TokenID:      chk.TokenID,
+		TenantID:     tenantID,
+		GrantID:      v.GrantID,
+		GrantName:    v.GrantName,
 		Sites:        NewSiteSet(ids),
 		Capabilities: caps,
+		// Carried from the same verdict row, for the stored facts of an AI
+		// request: the operator's client choice, and whether the grant came
+		// from the OAuth sign-in path.
+		SetupClient: v.SetupClient,
+		ViaOAuth:    v.ClientID != nil,
 		// The ceiling resolved above, carried rather than recomputed. caps is
 		// ceiling.NarrowTo(stored), so this is always a superset of
 		// Capabilities and the registry can tell "your grant lacks it" from
@@ -1969,6 +2024,13 @@ func (s *Service) RecordToolCall(ctx context.Context, auth AuthorizedRequest, to
 // a refusal that no ledger records, and is the reason this change goes to
 // security review rather than straight to merge.
 func (s *Service) RecordToolDenied(ctx context.Context, auth AuthorizedRequest, toolName string, reason refusalReason) error {
+	return s.recordToolDeniedWith(ctx, auth, toolName, reason, nil)
+}
+
+// recordToolDeniedWith is RecordToolDenied plus operator-facing metadata a
+// request-tool refusal carries (the supplied site id, the matched rule). The
+// extra keys never replace the row's own keys.
+func (s *Service) recordToolDeniedWith(ctx context.Context, auth AuthorizedRequest, toolName string, reason refusalReason, extra map[string]any) error {
 	if err := s.requireRecorder(); err != nil {
 		return err
 	}
@@ -1999,6 +2061,11 @@ func (s *Service) RecordToolDenied(ctx context.Context, auth AuthorizedRequest, 
 		// produces, so this flag is the signal that someone was probing the
 		// encoding boundary rather than mistyping.
 		meta["target_sanitized"] = true
+	}
+	for k, v := range extra {
+		if _, taken := meta[k]; !taken {
+			meta[k] = v
+		}
 	}
 
 	_, err := s.audit.RecordOrFail(ctx, audit.Event{
@@ -2530,6 +2597,19 @@ func (s *Service) RevokeConnection(ctx context.Context, p domain.Principal, gran
 			if err := s.requireRecorder(); err != nil {
 				return err
 			}
+			// THE AI REQUEST CASCADE, IN THIS TRANSACTION AND UNCONDITIONAL.
+			// Every waiting request this connection made is withdrawn and
+			// every approved one not yet reserved is closed as not sent, in
+			// the same commit as the revocation. There is no hook and no
+			// switch: a revoke always runs it, whether or not the request
+			// worker or write tools are on, because requests can exist from
+			// before a switch-off. After commit nothing this connection asked
+			// for can still be approved or sent, except a clear already
+			// reserved, which has started.
+			withdrawn, notSent, err := s.store.CloseAssistantRequestsForGrantTx(ctx, tx, p.TenantID, grantID)
+			if err != nil {
+				return err
+			}
 			// THE ACTOR IS WHICHEVER CREDENTIAL AUTHENTICATED, resolved by
 			// audit.ActorFor rather than hardcoded.
 			//
@@ -2544,6 +2624,42 @@ func (s *Service) RevokeConnection(ctx context.Context, p domain.Principal, gran
 			// no user and, because the name join is gated on actor_type, to no
 			// name either.
 			actorType, actorID := audit.ActorFor(p)
+			// One row per closed request, with the revoker as the actor (an
+			// API key is recorded as the key, never as a nil user), before
+			// the revoke's own row.
+			for _, id := range withdrawn {
+				if _, aerr := s.audit.RecordInTx(ctx, tx, audit.Event{
+					TenantID:   p.TenantID,
+					ActorType:  actorType,
+					ActorID:    actorID,
+					Action:     audit.ActionAssistantRequestWithdrawn,
+					TargetType: "assistant_cache_purge_request",
+					TargetID:   id.String(),
+					Metadata: map[string]any{
+						"reason":               "connection_revoked",
+						"proposed_by_grant_id": grantID.String(),
+					},
+				}); aerr != nil {
+					return aerr
+				}
+			}
+			for _, id := range notSent {
+				if _, aerr := s.audit.RecordInTx(ctx, tx, audit.Event{
+					TenantID:   p.TenantID,
+					ActorType:  actorType,
+					ActorID:    actorID,
+					Action:     audit.ActionAssistantRequestNotSent,
+					TargetType: "assistant_cache_purge_request",
+					TargetID:   id.String(),
+					Metadata: map[string]any{
+						"reason":               "grant_inactive",
+						"closed_by":            "connection_revoked",
+						"proposed_by_grant_id": grantID.String(),
+					},
+				}); aerr != nil {
+					return aerr
+				}
+			}
 			_, aerr := s.audit.RecordInTx(ctx, tx, audit.Event{
 				TenantID:   p.TenantID,
 				ActorType:  actorType,

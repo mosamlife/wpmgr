@@ -235,6 +235,10 @@ type Querier interface {
 	// has already excluded sites the caller cannot access via CanAccessSite
 	// before this runs).
 	ApplyTagDeltaToSite(ctx context.Context, arg ApplyTagDeltaToSiteParams) (int64, error)
+	// The digest, the state and the window are all in the WHERE clause, and
+	// decided_at is now(). No row (pgx.ErrNoRows) is the refusal: already
+	// decided, withdrawn, expired, or the facts changed under the reader.
+	ApproveAssistantCachePurgeRequest(ctx context.Context, arg ApproveAssistantCachePurgeRequestParams) (AssistantCachePurgeRequest, error)
 	// Soft-delete: sets archived_at without removing the row. Sites retain their
 	// client_id after archiving (they still show which client they were under).
 	ArchiveClient(ctx context.Context, arg ArchiveClientParams) (Client, error)
@@ -244,6 +248,9 @@ type Querier interface {
 	// Bulk-assign (or unassign when @client_id is NULL) a set of sites to a client.
 	// RLS + the composite FK guarantee cross-tenant assignment is impossible.
 	AssignSitesClient(ctx context.Context, arg AssignSitesClientParams) (int64, error)
+	// The per-site busy check: another clear on this site was sent and has no
+	// outcome yet. Single-site.
+	AssistantCachePurgeInFlightOnSite(ctx context.Context, arg AssistantCachePurgeInFlightOnSiteParams) (bool, error)
 	// Enroll path (app.enroll GUC): the site-first consume transition. Stores the
 	// agent key on the pre-existing pending_enrollment site and moves it to
 	// connected in one statement. The generation was already advanced at re-enroll
@@ -409,12 +416,27 @@ type Querier interface {
 	// two_factor_enabled is recomputed by the service after this call (it may
 	// remain true if WebAuthn credentials still exist).
 	ClearUserTOTPSecret(ctx context.Context, userID uuid.UUID) error
+	// A terminal close before anything is reserved. The SAME statement serves:
+	//   * closeWithoutSite (exception 11), tenant transaction, reasons
+	//     grant_inactive, assistant_paused, capability_not_held, site_absent;
+	//   * the single-site checks, reasons site_absent, forbidden_by_context,
+	//     agent_outdated, dispatch_deadline_passed;
+	//   * the reservation, reasons assistant_paused, organisation_deleted.
+	// 0 rows: another path got there first; write nothing. The approver stays.
+	CloseApprovedAssistantCachePurgeRequestNotSent(ctx context.Context, arg CloseApprovedAssistantCachePurgeRequestNotSentParams) (int64, error)
+	// An approved row not yet reserved is closed as not sent; its approver stays
+	// recorded. A row already 'dispatched' is left alone: that clear has started.
+	CloseApprovedAssistantCachePurgeRequestsForGrant(ctx context.Context, arg CloseApprovedAssistantCachePurgeRequestsForGrantParams) ([]uuid.UUID, error)
+	// The backstop that closes every approved row within the deadline, whatever
+	// kept it from starting. last_attempt_code is kept.
+	CloseAssistantCachePurgeRequestPastDeadline(ctx context.Context, arg CloseAssistantCachePurgeRequestPastDeadlineParams) (int64, error)
 	// Closes the open incident for a site on a FireRecovery transition
 	// (app.agent GUC, called from the same TransitionAlertState transaction as
 	// OpenIncident above). A no-op (0 rows affected) if no incident is open,
 	// which is defensive only — FireRecovery only ever fires when prev.InIncident
 	// was true, so a matching open row should already exist.
 	CloseIncident(ctx context.Context, arg CloseIncidentParams) error
+	CloseStaleDispatchedAssistantCachePurgeRequest(ctx context.Context, arg CloseStaleDispatchedAssistantCachePurgeRequestParams) (int64, error)
 	// Terminal-transition precondition (GH #458): only a 'pending' or 'running'
 	// snapshot may complete. 'pending' stays allowed because the files-only and
 	// carry-forward completion paths can land without an intervening MarkRunning.
@@ -504,9 +526,23 @@ type Querier interface {
 	// for a user who already had one in the bin, while the password path for the
 	// same user created nothing. Runs under InUserTx (memberships_self_read).
 	CountAllMembershipsForUser(ctx context.Context, userID uuid.UUID) (int64, error)
+	// The per-connection daily cap: rows created within the window, any state,
+	// any site the transaction admits. Connection-scoped, as above.
+	CountAssistantCachePurgeRequestsForGrantSince(ctx context.Context, arg CountAssistantCachePurgeRequestsForGrantSinceParams) (int64, error)
+	// The per-site cap on AI clears: rows with a grant initiator in the window.
+	// Dashboard purges (initiator_grant_id NULL) never count.
+	CountAssistantCachePurgesOnSiteSince(ctx context.Context, arg CountAssistantCachePurgesOnSiteSinceParams) (int64, error)
 	// Guards unlink: removing the last identity from a user with no password would
 	// lock them out of their own account permanently.
 	CountIdentitiesForUser(ctx context.Context, userID uuid.UUID) (int64, error)
+	// The queue badge.
+	CountLivePendingAssistantCachePurgeRequests(ctx context.Context, tenantID uuid.UUID) (int64, error)
+	// The per-connection waiting cap. Counts across EVERY site the transaction
+	// admits, so it must run connection-scoped: under a single-site principal it
+	// would count one site. A lapsed row cannot be approved and is not counted.
+	CountLivePendingAssistantCachePurgeRequestsForGrant(ctx context.Context, arg CountLivePendingAssistantCachePurgeRequestsForGrantParams) (int64, error)
+	// The site banner.
+	CountLivePendingAssistantCachePurgeRequestsForSite(ctx context.Context, arg CountLivePendingAssistantCachePurgeRequestsForSiteParams) (int64, error)
 	// 30-day flapping count for the incident-detail endpoint: how many incidents
 	// (open or closed) have STARTED for this site in the last 30 days, including
 	// the incident being viewed itself.
@@ -817,6 +853,9 @@ type Querier interface {
 	// not an error, and skips creating the duplicate task.
 	CreateUpdateTask(ctx context.Context, arg CreateUpdateTaskParams) (UpdateTask, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
+	// A lapsed row is not declined: its honest state is 'expired', which the
+	// sweeper writes. No row (pgx.ErrNoRows) is the refusal.
+	DeclineAssistantCachePurgeRequest(ctx context.Context, arg DeclineAssistantCachePurgeRequestParams) (AssistantCachePurgeRequest, error)
 	// DEPRECATED (ADR-050): refcount is observability-only post-mark-and-sweep and
 	// is NEVER consulted for a delete. Retained only so the generated querier keeps
 	// compiling; the GC delete path no longer calls it.
@@ -1007,6 +1046,8 @@ type Querier interface {
 	// TestGH408_BackfillFromSystemAuditLogFindsLaneAOrgDeletes drains after
 	// backfilling for this reason.
 	EnqueueTenantObjectReclaim(ctx context.Context, arg EnqueueTenantObjectReclaimParams) (int64, error)
+	// Never writes decided_by_user_id (m133 (7)(f)).
+	ExpireAssistantCachePurgeRequest(ctx context.Context, arg ExpireAssistantCachePurgeRequestParams) (int64, error)
 	// The grace window, applied at fire time: 'scheduled' -> 'expired' for a run
 	// that came due so long ago that running it now is no longer what the operator
 	// asked for. Terminal, never retried (m118).
@@ -1061,6 +1102,12 @@ type Querier interface {
 	// 'expired' with tasks still 'scheduled' is exactly the stranded shape
 	// CountUnfinishedTasksForRun's comment describes.
 	ExpireDueUpdateRun(ctx context.Context, arg ExpireDueUpdateRunParams) (UpdateRun, error)
+	// ---------------------------------------------------------------------------
+	// Creation (internal/mcp write rail), connection-scoped, after the grant lock
+	// ---------------------------------------------------------------------------
+	// This connection's own lapsed waiting row for this site, if any, becomes
+	// 'expired' before the insert. At most one row (the one-pending index).
+	ExpireLapsedPendingAssistantCachePurgeRequest(ctx context.Context, arg ExpireLapsedPendingAssistantCachePurgeRequestParams) ([]uuid.UUID, error)
 	// Lock a challenge by setting used_at (reached attempt limit or timeout).
 	ExpireTwoFactorChallenge(ctx context.Context, id uuid.UUID) error
 	// Terminal-transition precondition (GH #458). 'pending' is in the guard
@@ -1253,6 +1300,16 @@ type Querier interface {
 	// default for a tenant with no persisted alert_configs row yet, so that path
 	// and the persisted column's own DEFAULT never disagree.
 	GetAppAlertRolloutDefault(ctx context.Context) (bool, error)
+	// Single-site, opened with AssertSingleSiteTx. past_deadline is computed by
+	// the database clock. No row: the row is no longer approved (another path
+	// closed or reserved it) or is not visible under this principal.
+	GetApprovedAssistantCachePurgeRequestForDispatch(ctx context.Context, arg GetApprovedAssistantCachePurgeRequestForDispatchParams) (GetApprovedAssistantCachePurgeRequestForDispatchRow, error)
+	// ---------------------------------------------------------------------------
+	// Status tool (internal/mcp), connection-scoped. Narrow projection.
+	// site_id = ANY(@site_ids) is the connection's current scope, passed from
+	// auth.Sites, so a row on a site that has left the scope reads as absent.
+	// ---------------------------------------------------------------------------
+	GetAssistantCachePurgeRequestStatusForGrant(ctx context.Context, arg GetAssistantCachePurgeRequestStatusForGrantParams) (GetAssistantCachePurgeRequestStatusForGrantRow, error)
 	// Returns the tenant's current re-baseline anchor, if one has ever been set.
 	// Callers must handle pgx.ErrNoRows as "no baseline" (Verify walks the full
 	// chain from genesis in that case).
@@ -1457,6 +1514,10 @@ type Querier interface {
 	// the current tenant_id, so this naturally returns the destination org's
 	// active context per Decision 12 with no extra transfer-aware logic.
 	GetLatestSiteContextVersion(ctx context.Context, arg GetLatestSiteContextVersionParams) (SiteContextVersion, error)
+	// The whole-site cooldown: when the newest whole-site clear by ANY initiator
+	// in the window happened. No row (pgx.ErrNoRows): none in the window.
+	// Preloads and page clears are other kinds and do not count.
+	GetLatestWholeSitePurgeOnSiteSince(ctx context.Context, arg GetLatestWholeSitePurgeOnSiteSinceParams) (time.Time, error)
 	// REQUIRES app.mcp_code_lookup = 'on'. Resolving a presented code is what
 	// establishes the tenant, so it cannot run under one.
 	//
@@ -1575,6 +1636,13 @@ type Querier interface {
 	// Enroll path (app.enroll GUC): resolve a presented code by its hash before the
 	// tenant is known.
 	GetPairingCodeByHash(ctx context.Context, codeHash string) (PairingCode, error)
+	// The dedupe read after a conflict. pgx.ErrNoRows means a person decided the
+	// row in between; the caller retries the insert once.
+	GetPendingAssistantCachePurgeRequestForGrantSite(ctx context.Context, arg GetPendingAssistantCachePurgeRequestForGrantSiteParams) (AssistantCachePurgeRequest, error)
+	// ---------------------------------------------------------------------------
+	// Approve and decline (internal/assistantrequest), approver's own principal
+	// ---------------------------------------------------------------------------
+	GetPendingAssistantCachePurgeRequestForSite(ctx context.Context, arg GetPendingAssistantCachePurgeRequestForSiteParams) (AssistantCachePurgeRequest, error)
 	// M36 Performance Suite queries (ADR-046). Every statement is tenant-scoped both
 	// explicitly (tenant_id in the WHERE/VALUES) and by RLS (the app.tenant_id
 	// policy / app.agent policy). The repo wraps each call in InTenantTx/InAgentTx —
@@ -1834,6 +1902,10 @@ type Querier interface {
 	// of sites the operator asked to hear about, so a "3/8 -> 1/6" step reads
 	// correctly to a human even though no site's health moved.
 	GetTenantAppAlertRatio(ctx context.Context, tenantID uuid.UUID) (GetTenantAppAlertRatioRow, error)
+	// The reservation's organisation re-read. tenants has no row security. FOR
+	// SHARE makes a pause or delete that arrives later wait for this reservation
+	// to commit.
+	GetTenantAssistantLifecycleForShare(ctx context.Context, id uuid.UUID) (GetTenantAssistantLifecycleForShareRow, error)
 	// ===========================================================================
 	// M130 — the assistant / MCP surface's per-tenant enablement flag and kill
 	// switch. Four statements, deliberately NOT two: enabling and pausing are
@@ -1973,6 +2045,21 @@ type Querier interface {
 	// Agent-auth path (app.agent GUC). The unique (site_id, nonce) index makes a
 	// replayed nonce a no-op via ON CONFLICT, returning 0 rows affected.
 	InsertAgentNonce(ctx context.Context, arg InsertAgentNonceParams) (int64, error)
+	// ---------------------------------------------------------------------------
+	// cache_purge_audit on the AI clear path. Tx-taking replacements for
+	// perf.Repo.RecordPurge. The site-scope policy filters by site, not by
+	// initiator (m150 DECISION 3).
+	// ---------------------------------------------------------------------------
+	// The reservation's attempt record. initiator_user_id is the approver if that
+	// account still exists and NULL otherwise: the subselect yields NULL for a
+	// deleted account, where the id itself would fail the users foreign key.
+	// users has no row security, so this read does not depend on the principal.
+	InsertAssistantCachePurgeAudit(ctx context.Context, arg InsertAssistantCachePurgeAuditParams) (CachePurgeAudit, error)
+	// ON CONFLICT names the one-pending index's columns and predicate. A conflict
+	// inserts nothing and returns NO ROW (pgx.ErrNoRows): the caller then reads
+	// the waiting row with GetPendingAssistantCachePurgeRequestForGrantSite.
+	// state is always 'pending' here; nothing inserts a decided row.
+	InsertAssistantCachePurgeRequest(ctx context.Context, arg InsertAssistantCachePurgeRequestParams) (AssistantCachePurgeRequest, error)
 	InsertAuditEntry(ctx context.Context, arg InsertAuditEntryParams) (AuditLog, error)
 	// ============================================================================
 	// autologin (Phase 5.5 — One-Click Login) sqlc queries.
@@ -2144,6 +2231,13 @@ type Querier interface {
 	// always p.AllowedSiteIDs (RLS double-gate via app.site_scope on update_tasks).
 	// `, id` tiebreaker follows the project ORDER BY convention.
 	ListAppliedTasksForSites(ctx context.Context, arg ListAppliedTasksForSitesParams) ([]ListAppliedTasksForSitesRow, error)
+	// ---------------------------------------------------------------------------
+	// Queue and banner (internal/assistantrequest), caller's own principal. Row
+	// security narrows a site collaborator to their own sites. None of these
+	// reads mcp_grants.
+	// ---------------------------------------------------------------------------
+	ListAssistantCachePurgeRequests(ctx context.Context, arg ListAssistantCachePurgeRequestsParams) ([]AssistantCachePurgeRequest, error)
+	ListAssistantCachePurgeRequestsForSite(ctx context.Context, arg ListAssistantCachePurgeRequestsForSiteParams) ([]AssistantCachePurgeRequest, error)
 	// Newest-first, matching the web "Audit" page contract (page 1 = most recent;
 	// Next/Prev page via OFFSET now walks BACKWARD in time). actor_user_name/
 	// actor_key_name/actor_email resolve the acting user's display name + email,
@@ -2567,6 +2661,9 @@ type Querier interface {
 	// invisible to ALL of those call sites in one place, the instant DELETE
 	// /orgs/{orgId} commits, without a per-call-site patch.
 	ListMembershipsForUser(ctx context.Context, userID uuid.UUID) ([]Membership, error)
+	// List mode: this connection's requests that have no final result yet
+	// (waiting, approved, or sent with no outcome), newest first.
+	ListOpenAssistantCachePurgeRequestStatusForGrant(ctx context.Context, arg ListOpenAssistantCachePurgeRequestStatusForGrantParams) ([]ListOpenAssistantCachePurgeRequestStatusForGrantRow, error)
 	// Everything still open, whatever its attempt count. What
 	// `wpmgr-cli reclaim list` shows an operator (GH #408).
 	//
@@ -2633,6 +2730,17 @@ type Querier interface {
 	// session pinned to that (now-invisible) tenant on every login, landing in a
 	// permanent 403 loop instead of the no-access screen.
 	ListSharesForUser(ctx context.Context, userID uuid.UUID) ([]SiteShare, error)
+	// The AI cache-clear creation path's tie check (internal/mcp): every in-scope
+	// site's address, so a page address that also falls under another in-scope
+	// site can be refused. Runs connection-scoped, and site_ids is the
+	// connection's already-materialised scope set.
+	//
+	// NO LIMIT, DELIBERATELY, unlike ListSitesForMCPScope. A covering site that
+	// sorted past a page boundary would be missed, and a missed tie is a clear
+	// sent to the wrong install. The set is bounded by the connection's scope,
+	// which the caller already holds in memory. Same archived filter and same
+	// nil-means-nothing array semantics as ListSitesForMCPScope.
+	ListSiteAddressesInScope(ctx context.Context, arg ListSiteAddressesInScopeParams) ([]ListSiteAddressesInScopeRow, error)
 	// Keyset-paginated newest-first history, scoped to the CURRENT tenant stamp
 	// only — this is what makes list/item history "additionally scoped to
 	// versions stamped with the site's current organisation" (ADR-064 Decision 13)
@@ -3280,6 +3388,24 @@ type Querier interface {
 	// Prune dedup rows older than the given cutoff (run by the GC worker).
 	// Cross-tenant / InAgentTx.
 	PruneWebhookEventDedup(ctx context.Context, cutoffTs time.Time) (int64, error)
+	// Runs InTenantTx, by primary key. The GRANT-LEVEL verdict for work done on a
+	// connection's behalf with no token in hand: approving an AI request, and
+	// dispatching an approved one. It must be a tenant read and never the
+	// caller's principal: mcp_grants_site_scope_select refuses every grant row to
+	// a site-scoped session, so under a site principal this would read nothing.
+	//
+	// It is ReCheckMCPRequestAuthorizationInTenantTx with the TOKEN TERMS REMOVED,
+	// on purpose, and nothing else changed. Revocation sets g.status, so a revoked
+	// grant is refused here without a token. Tenant enablement is left out exactly
+	// as there (m130 DECISION 5), and so is tenants.deleted_at, so the two
+	// verdicts agree on every grant-level case; deletion is enforced where the
+	// clear is reserved. last_used_at is read, never written.
+	//
+	// No row (pgx.ErrNoRows): no such grant in this tenant, which callers treat as
+	// inactive.
+	// Inner join, safe for the reason given on the request verdict above: tenants
+	// has no row security and the foreign key guarantees the row.
+	ReCheckMCPGrantAuthorizationInTenantTx(ctx context.Context, arg ReCheckMCPGrantAuthorizationInTenantTxParams) (ReCheckMCPGrantAuthorizationInTenantTxRow, error)
 	// Runs InTenantTx with the tenant the lookup above established. STEP 2 OF 2,
 	// AND IT RUNS ON EVERY REQUEST, NOT ONLY AT CONNECT.
 	//
@@ -3321,6 +3447,12 @@ type Querier interface {
 	// parameter, so this is a primary-key probe and costs no extra round trip.
 	ReCheckMCPRequestAuthorizationInTenantTx(ctx context.Context, arg ReCheckMCPRequestAuthorizationInTenantTxParams) (ReCheckMCPRequestAuthorizationInTenantTxRow, error)
 	RecolorTag(ctx context.Context, arg RecolorTagParams) (SiteTag, error)
+	// A transient reason; the row stays approved. Single-site.
+	RecordAssistantCachePurgeDispatchAttempt(ctx context.Context, arg RecordAssistantCachePurgeDispatchAttemptParams) (int64, error)
+	// Compare-and-set on "sent with no outcome". 0 rows: the reconciler already
+	// closed it; write nothing. not_sent_reason is set only with outcome
+	// 'not_sent' (transport_pre_send); the table CHECK enforces the pairing.
+	RecordAssistantCachePurgeOutcome(ctx context.Context, arg RecordAssistantCachePurgeOutcomeParams) (int64, error)
 	// Runs InTenantTx. Decision 10: there are TWO distinguishable absences in the
 	// client identity and this query preserves both.
 	//
@@ -3521,6 +3653,11 @@ type Querier interface {
 	// Replays events after a client cursor (?since / Last-Event-ID). ULIDs sort
 	// lexicographically, so event_id > $2 is monotonic-after.
 	ReplaySiteEvents(ctx context.Context, arg ReplaySiteEventsParams) ([]SiteEvent, error)
+	// The one reservation point. Moves the row to 'dispatched' naming the
+	// cache_purge_audit row written in the same transaction. The deadline is in
+	// the WHERE clause, so nothing is reserved after it. 0 rows: another replica,
+	// the revoke cascade, a close or the sweeper won; roll back.
+	ReserveAssistantCachePurgeRequest(ctx context.Context, arg ReserveAssistantCachePurgeRequestParams) (int64, error)
 	// Resets the consecutive-miss counter to 0 (cross-tenant, app.agent GUC).
 	// Called by the heartbeat recovery path (RecordHeartbeat) in addition to the
 	// existing TouchSiteHeartbeat reset, so the counter is cleared regardless of
@@ -3676,6 +3813,21 @@ type Querier interface {
 	// is exactly what a merge needs when a site already carries both the source
 	// and the survivor name.
 	RewriteSiteTagName(ctx context.Context, arg RewriteSiteTagNameParams) error
+	ScanApprovedAssistantCachePurgeRequestsPastDeadline(ctx context.Context, arg ScanApprovedAssistantCachePurgeRequestsPastDeadlineParams) ([]ScanApprovedAssistantCachePurgeRequestsPastDeadlineRow, error)
+	// ---------------------------------------------------------------------------
+	// Dispatch worker (internal/assistantrequest)
+	// ---------------------------------------------------------------------------
+	// Agent scan (InAgentTx), plain SELECT. Returns what the per-row job needs to
+	// decide in Go, before any site principal exists. Backoff per row: base
+	// doubling per attempt, capped; the exponent is capped too so no interval can
+	// overflow.
+	ScanDueApprovedAssistantCachePurgeRequests(ctx context.Context, arg ScanDueApprovedAssistantCachePurgeRequestsParams) ([]ScanDueApprovedAssistantCachePurgeRequestsRow, error)
+	// ---------------------------------------------------------------------------
+	// Sweeper and reconciler (internal/assistantrequest). Each is a plain agent
+	// scan, then a per-row compare-and-set in a tenant transaction.
+	// ---------------------------------------------------------------------------
+	ScanLapsedPendingAssistantCachePurgeRequests(ctx context.Context, rowLimit int32) ([]ScanLapsedPendingAssistantCachePurgeRequestsRow, error)
+	ScanStaleDispatchedAssistantCachePurgeRequests(ctx context.Context, arg ScanStaleDispatchedAssistantCachePurgeRequestsParams) ([]ScanStaleDispatchedAssistantCachePurgeRequestsRow, error)
 	// Stamp the in-flight db_clean job id + start time for the watchdog.
 	// Runs under app.agent (cross-tenant scheduled path) or InTenantTx (operator).
 	SetActiveDBCleanJob(ctx context.Context, arg SetActiveDBCleanJobParams) error
@@ -3893,6 +4045,42 @@ type Querier interface {
 	// run this under the per-tenant org_lifecycle advisory lock (see
 	// internal/org/delete_handler.go) so the guard is authoritative, not racy.
 	SoftDeleteTenant(ctx context.Context, tenantID uuid.UUID) (Tenant, error)
+	// assistant_cache_purge_requests (m151): every statement over the request
+	// table, plus the cache_purge_audit statements the AI clear path needs.
+	//
+	// Both internal/mcp (creation, status, the revoke cascade) and
+	// internal/assistantrequest (approve, decline, queue, worker, sweeper,
+	// reconciler) call these directly; neither calls the other's store for m151.
+	//
+	// WHICH TRANSACTION, PER STATEMENT. Every statement names the transaction it
+	// is written for. Row security decides what each one can see, so the same SQL
+	// under a different principal is a different statement:
+	//   * connection-scoped  RunTenantTx(connectionScopedPrincipal(auth))
+	//   * single-site        RunTenantTx(mcp.SingleSitePrincipal(auth, site_id)),
+	//                        opened with mcp.AssertSingleSiteTx
+	//   * approver           RunTenantTx(the approving person's own principal)
+	//   * revoker            the revoke transaction, org-scoped revoker
+	//   * tenant             InTenantTx(tenant) -- the sweeper, the reconciler and
+	//                        closeWithoutSite only
+	//   * agent scan         InAgentTx -- plain SELECT, never a locking read
+	//
+	// TIME IS THE DATABASE'S. Every window below is measured against now() in
+	// the database; lengths arrive as whole seconds so the policy lives in Go and
+	// the clock does not. decided_at is always now() in the statement that
+	// decides, never a parameter (m133 (7)(c)).
+	//
+	// digest_nonce appears only in full-row reads (`*`), and no caller may put it
+	// in any response. The status-tool reads below return a narrow projection
+	// with no digest, nonce, grant label, setup client, decider or site-reported
+	// text, so the model-facing path cannot carry them.
+	// ---------------------------------------------------------------------------
+	// Advisory locks. Both arguments are bound AS TEXT: the `::text` casts make
+	// sqlc type them as string, so a caller must pass key strings and id.String(),
+	// and hashtext(uuid), which does not exist, cannot be reached.
+	// ---------------------------------------------------------------------------
+	// Blocking, transaction-scoped. Used for ('assistant_request_grant', grant id)
+	// at creation and ('assistant_site_dispatch', site id) at the reservation.
+	TakeAssistantRequestXactLock(ctx context.Context, arg TakeAssistantRequestXactLockParams) error
 	// Drain GUARD: is the tenant row BACK? A restored dump, or a control plane whose
 	// database is older than the bucket it is pointed at (the control-plane store is
 	// built with no PathPrefix, so every key sits at bucket root and there is no
@@ -3995,6 +4183,10 @@ type Querier interface {
 	// Update last_used_at on a trusted device (called when it is reused at login).
 	TouchTrustedDevice(ctx context.Context, id uuid.UUID) error
 	TouchUserLogin(ctx context.Context, id uuid.UUID) error
+	// Non-blocking, transaction-scoped. Used for (org.LifecycleLockKey, tenant id)
+	// at the reservation: false is the transient org_busy. A statement ERROR is
+	// not false and must never be reported as org_busy.
+	TryAssistantRequestXactLock(ctx context.Context, arg TryAssistantRequestXactLockParams) (bool, error)
 	// Operator PUT /autologin-policy path (app.tenant_id, GH #286). Upserts
 	// {enabled, default_wp_user_login} for (site_id, tenant_id); when no row
 	// exists yet the INSERT seeds the remaining columns (allowed_wp_roles,
@@ -4262,6 +4454,12 @@ type Querier interface {
 	// silent steady-state tick - so the caller can detect "materially worse
 	// since we last said anything" without a second table.
 	UpsertTenantAppAlertBreaker(ctx context.Context, arg UpsertTenantAppAlertBreakerParams) (TenantAppAlertBreaker, error)
+	// ---------------------------------------------------------------------------
+	// Revoke cascade (mcp.Repo.CloseAssistantRequestsForGrantTx), in the revoke
+	// transaction, org-scoped revoker. Pending rows first, then approved rows.
+	// ---------------------------------------------------------------------------
+	// Names nobody: decided_by_user_id and decided_at stay NULL.
+	WithdrawPendingAssistantCachePurgeRequestsForGrant(ctx context.Context, arg WithdrawPendingAssistantCachePurgeRequestsForGrantParams) ([]uuid.UUID, error)
 }
 
 var _ Querier = (*Queries)(nil)
