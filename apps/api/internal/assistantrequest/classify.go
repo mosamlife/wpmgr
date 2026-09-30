@@ -11,10 +11,10 @@ import (
 
 // outcome is what one send is recorded as.
 type outcome struct {
-	Outcome             string
-	NotSentReason       *string
-	HostingCleared      []string
-	HostingSkipped      []string
+	Outcome        string
+	NotSentReason  *string
+	HostingCleared []string
+	HostingSkipped []string
 	// UnknownIntegrations counts report entries dropped for a slug or action
 	// outside the closed sets. Only the count is kept, never the text.
 	UnknownIntegrations int
