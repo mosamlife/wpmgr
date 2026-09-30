@@ -121,7 +121,7 @@ export const ContentInventoryPageSchema = {
     truncated: {
       type: "boolean",
       description:
-        "True when the last check stopped at the page cap, so the list is a sample of the site. Held per instance; false when unknown.",
+        "True when the last check stopped at the page cap, so the list is a sample of the site. From the site's last-check record; false when the site has never been checked.",
     },
     state: {
       type: "string",
@@ -262,6 +262,11 @@ export const ContentIntegrationSchema = {
     integration_entry_sha256: {
       type: ["string", "null"],
     },
+    theme_slug: {
+      type: ["string", "null"],
+      description:
+        "The theme directory that signals this builder; sent as a hint only when active.",
+    },
     updated_at: {
       type: "string",
       format: "date-time",
@@ -305,6 +310,10 @@ export const ContentIntegrationInputSchema = {
     min_wp_version: {
       type: ["string", "null"],
       maxLength: 32,
+    },
+    theme_slug: {
+      type: ["string", "null"],
+      maxLength: 100,
     },
   },
 } as const;

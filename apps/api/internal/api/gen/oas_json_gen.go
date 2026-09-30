@@ -39063,12 +39063,18 @@ func (s *ContentIntegration) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
+		if s.ThemeSlug.Set {
+			e.FieldStart("theme_slug")
+			s.ThemeSlug.Encode(e)
+		}
+	}
+	{
 		e.FieldStart("updated_at")
 		json.EncodeDateTime(e, s.UpdatedAt)
 	}
 }
 
-var jsonFieldsNameOfContentIntegration = [11]string{
+var jsonFieldsNameOfContentIntegration = [12]string{
 	0:  "integration_id",
 	1:  "display_name",
 	2:  "enabled",
@@ -39079,7 +39085,8 @@ var jsonFieldsNameOfContentIntegration = [11]string{
 	7:  "max_tested_version",
 	8:  "min_wp_version",
 	9:  "integration_entry_sha256",
-	10: "updated_at",
+	10: "theme_slug",
+	11: "updated_at",
 }
 
 // Decode decodes ContentIntegration from json.
@@ -39197,8 +39204,18 @@ func (s *ContentIntegration) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"integration_entry_sha256\"")
 			}
+		case "theme_slug":
+			if err := func() error {
+				s.ThemeSlug.Reset()
+				if err := s.ThemeSlug.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"theme_slug\"")
+			}
 		case "updated_at":
-			requiredBitSet[1] |= 1 << 2
+			requiredBitSet[1] |= 1 << 3
 			if err := func() error {
 				v, err := json.DecodeDateTime(d)
 				s.UpdatedAt = v
@@ -39220,7 +39237,7 @@ func (s *ContentIntegration) Decode(d *jx.Decoder) error {
 	var failures []validate.FieldError
 	for i, mask := range [2]uint8{
 		0b00011111,
-		0b00000100,
+		0b00001000,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.
@@ -39433,9 +39450,15 @@ func (s *ContentIntegrationInput) encodeFields(e *jx.Encoder) {
 			s.MinWpVersion.Encode(e)
 		}
 	}
+	{
+		if s.ThemeSlug.Set {
+			e.FieldStart("theme_slug")
+			s.ThemeSlug.Encode(e)
+		}
+	}
 }
 
-var jsonFieldsNameOfContentIntegrationInput = [8]string{
+var jsonFieldsNameOfContentIntegrationInput = [9]string{
 	0: "display_name",
 	1: "enabled",
 	2: "status",
@@ -39444,6 +39467,7 @@ var jsonFieldsNameOfContentIntegrationInput = [8]string{
 	5: "min_version",
 	6: "max_tested_version",
 	7: "min_wp_version",
+	8: "theme_slug",
 }
 
 // Decode decodes ContentIntegrationInput from json.
@@ -39451,7 +39475,7 @@ func (s *ContentIntegrationInput) Decode(d *jx.Decoder) error {
 	if s == nil {
 		return errors.New("invalid: unable to decode ContentIntegrationInput to nil")
 	}
-	var requiredBitSet [1]uint8
+	var requiredBitSet [2]uint8
 
 	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
 		switch string(k) {
@@ -39539,6 +39563,16 @@ func (s *ContentIntegrationInput) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"min_wp_version\"")
 			}
+		case "theme_slug":
+			if err := func() error {
+				s.ThemeSlug.Reset()
+				if err := s.ThemeSlug.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"theme_slug\"")
+			}
 		default:
 			return errors.Errorf("unexpected field %q", k)
 		}
@@ -39548,8 +39582,9 @@ func (s *ContentIntegrationInput) Decode(d *jx.Decoder) error {
 	}
 	// Validate required fields.
 	var failures []validate.FieldError
-	for i, mask := range [1]uint8{
+	for i, mask := range [2]uint8{
 		0b00000111,
+		0b00000000,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.
