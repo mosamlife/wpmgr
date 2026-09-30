@@ -60,6 +60,21 @@ describe("fleet page-editor report", () => {
     expect(screen.getByText("A page builder, not confirmed")).toBeInTheDocument();
     expect(screen.getByText("Not available yet")).toBeInTheDocument();
     expect(screen.getByText("60%")).toBeInTheDocument();
+    expect(screen.getByText("Detected with unverified data")).toBeInTheDocument();
+  });
+
+  it("with no builder rows, does not claim none exist", async () => {
+    getReport.mockResolvedValue({
+      data: { pages: 10, by_verdict: [{ verdict: "classic", route_number: 1, pages: 10, sites: 1 }], by_builder: [] },
+      error: undefined,
+      response: { status: 200 },
+    });
+    renderReport();
+    expect(
+      await screen.findByText(/No builder pages found yet\. Builder detection uses unverified data/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("No page builders detected.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Detected with unverified data")).not.toBeInTheDocument();
   });
 
   it("shows an error state", async () => {

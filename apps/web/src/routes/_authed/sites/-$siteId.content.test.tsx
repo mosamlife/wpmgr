@@ -226,8 +226,58 @@ describe("site Content tab", () => {
     );
     renderTab();
     await screen.findByText("Spring sale");
-    fireEvent.change(screen.getByLabelText("Search"), { target: { value: "spring" } });
+    fireEvent.change(screen.getByLabelText(/^Search/), { target: { value: "spring" } });
     expect(screen.queryByText("About us")).not.toBeInTheDocument();
     expect(screen.getByText("Spring sale")).toBeInTheDocument();
+  });
+
+  it("a site checked with zero pages says when and that none were found", async () => {
+    getInv.mockResolvedValue(ok(page({ pages: [] })));
+    renderTab();
+    expect(
+      await screen.findByText(/WPMgr checked this site .* and found no published pages\./),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/have not been checked yet/i)).not.toBeInTheDocument();
+  });
+
+  it("the classic filter option is labelled No page builder", async () => {
+    getInv.mockResolvedValue(ok(page({})));
+    renderTab();
+    await screen.findByText("About us");
+    expect(screen.getByRole("option", { name: "No page builder" })).toHaveValue("classic");
+    expect(screen.queryByRole("option", { name: "WordPress (classic)" })).not.toBeInTheDocument();
+  });
+
+  it("shows the truncation note only when truncated is true", async () => {
+    getInv.mockResolvedValue(ok({ ...page({}), truncated: true } as ContentInventoryPage));
+    renderTab();
+    expect(
+      await screen.findByText("Showing the first 5,000 pages WPMgr checked on this site."),
+    ).toBeInTheDocument();
+  });
+
+  it("does not show the truncation note otherwise", async () => {
+    getInv.mockResolvedValue(ok(page({})));
+    renderTab();
+    await screen.findByText("About us");
+    expect(screen.queryByText(/Showing the first 5,000/)).not.toBeInTheDocument();
+  });
+
+  it("hints that search covers only the loaded page", async () => {
+    getInv.mockResolvedValue(ok(page({})));
+    renderTab();
+    expect(await screen.findByText("Searches this page of results")).toBeInTheDocument();
+  });
+
+  it("after a queued refresh it refetches and no longer claims the list updates when the site replies", async () => {
+    getInv.mockResolvedValue(ok(page({})));
+    refreshInv.mockResolvedValue({ data: { status: "queued" }, error: undefined, response: { status: 202 } });
+    renderTab();
+    await screen.findByText("About us");
+    const before = getInv.mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    expect(await screen.findByText(/refreshes on its own/)).toBeInTheDocument();
+    await waitFor(() => expect(getInv.mock.calls.length).toBeGreaterThan(before));
+    expect(screen.queryByText(/when the site replies/)).not.toBeInTheDocument();
   });
 });
