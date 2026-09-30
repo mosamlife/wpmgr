@@ -4,7 +4,7 @@ Tags: backup, security, performance, updates, site management
 Requires at least: 6.2
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 0.61.153
+Stable tag: 0.61.154
 License: MIT
 License URI: https://opensource.org/licenses/MIT
 
@@ -286,6 +286,9 @@ This plugin ships two minified JavaScript files. Their human-readable source and
 
 The entries below summarize the notable changes since 0.31.1. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
 
+= 0.61.154 =
+* Added: a read-only check the control plane can run to see which editor owns each page (the classic editor, the block editor, or a page builder) and whether it is a special page such as the blog index. It changes nothing on the site and reports no page content.
+
 = 0.61.153 =
 * Added: the plugin can now carry out a cache purge limited to this site's own page cache, skipping hosting and CDN cache integrations, and report which detected integrations ran and which were skipped, when the control plane requests it.
 * Fixed: clearing the cache for a page address that uses a non-default port now targets the same cache entry that page was stored under.
@@ -471,6 +474,9 @@ The entries below summarize the notable changes since 0.31.1. This project ships
 * New: WOFF2 font transcoding. TTF, OTF and WOFF are converted on the control plane; the flag defaults to off.
 
 == Upgrade Notice ==
+
+= 0.61.154 =
+Adds a read-only check the control plane can run to see which editor owns each page and whether it is a special page. It changes nothing on the site and reports no page content.
 
 = 0.61.153 =
 The plugin can now carry out a cache purge limited to this site's own page cache, skipping hosting and CDN cache integrations, and report which integrations ran, when the control plane requests it.
