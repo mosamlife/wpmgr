@@ -616,7 +616,7 @@ describe("ConsentScreen — the mcp:cache write section (design v7 S2.2)", () =>
 // ---------------------------------------------------------------------------
 // The mcp:site site-tools section
 // ---------------------------------------------------------------------------
-describe("ConsentScreen — the mcp:site site-tools section", () => {
+describe("ConsentScreen, the mcp:site site-tools section", () => {
   const READ = { name: "mcp.sites.read", effect: "read" };
   const ABILITY_READ = { name: "mcp.ability.read", effect: "read" };
   const ABILITY_REQUEST = { name: "mcp.ability.request", effect: "request" };
@@ -641,9 +641,9 @@ describe("ConsentScreen — the mcp:site site-tools section", () => {
     });
   }
 
-  const readBox = () => screen.getByTestId("ability-box-mcp.ability.read") as HTMLInputElement;
+  const readBox = () => screen.getByTestId("ability-box-mcp.ability.read");
   const requestBox = () =>
-    screen.getByTestId("ability-box-mcp.ability.request") as HTMLInputElement;
+    screen.getByTestId("ability-box-mcp.ability.request");
 
   function approveCall(onApprove: ReturnType<typeof vi.fn>) {
     fireEvent.submit(screen.getByTestId("consent-approve").closest("form")!);
