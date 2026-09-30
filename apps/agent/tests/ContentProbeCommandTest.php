@@ -91,7 +91,7 @@ final class ContentProbeCommandTest extends TestCase
         $this->options[Settings::OPTION_SITE_ID] = $this->siteId;
         $this->wholeMetaLoaded = false;
         $this->revisionRows    = [];
-        $this->db              = new ProbeWpdb($this->meta);
+        $this->db              = new ProbeWpdb($this->meta, $this->revisionRows);
         $GLOBALS['wpdb']       = $this->db;
         $this->resetShieldStash();
 
@@ -448,11 +448,65 @@ final class ContentProbeCommandTest extends TestCase
             $o->post_name = $name;
             return $o;
         };
-        $this->revisionRows[82] = [$mk(901, '82-revision-v1'), $mk(905, '82-autosave-v1'), $mk(903, '82-revision-v1'), $mk(902, '82-revision-v1')];
+        $this->revisionRows[82] = [$mk(901, '82-revision-v1'), $mk(905, '82-autosave-v1'), $mk(903, '82-revision-v2'), $mk(902, '82-revision-v1')];
 
         $r = $this->probe(['post_id' => 82]);
 
         $this->assertSame(903, $r['post']['newest_revision_id']);
+    }
+
+    public function test_a_failing_size_query_fails_the_probe_and_is_retryable(): void
+    {
+        $this->seedPost(83, '');
+        $this->registerAbility('acme-builder/get-page');
+        $this->meta[83]       = ['_acme_enabled' => '1', '_acme_data' => '{"a":1}'];
+        $this->db->failSizes = true;
+
+        $r = $this->probe(['post_id' => 83, 'descriptors' => [$this->descriptor(['ability_names' => ['acme-builder/get-page']])]]);
+
+        $this->assertFalse($r['ok']);
+        $this->assertSame('internal', $r['code']);
+        $this->assertTrue($r['retryable']);
+    }
+
+    public function test_the_first_meta_row_is_read_when_a_key_has_duplicates(): void
+    {
+        $this->seedPost(84, '');
+        $this->registerAbility('acme-builder/get-page');
+        $this->meta[84]                      = ['_acme_enabled' => '1', '_acme_data' => '{"first":1}'];
+        $this->db->dupes[84]['_acme_data'] = ['{"first":1}', '{"second":22}'];
+
+        $r = $this->probe(['post_id' => 84, 'descriptors' => [$this->descriptor(['ability_names' => ['acme-builder/get-page']])]]);
+
+        $this->assertSame(strlen('{"first":1}'), $r['matches'][0]['payload_bytes']);
+    }
+
+    public function test_an_unclaimed_prefix_key_is_found_among_more_than_fifty_claimed_keys(): void
+    {
+        $this->seedPost(85, 'Plain words.');
+        $descriptors = [];
+        $meta        = [];
+        for ($d = 0; $d < 4; $d++) {
+            $payload = [];
+            for ($k = 0; $k < 16; $k++) {
+                $payload[]                 = 'acme_p' . $d . '_' . $k;
+                $meta['acme_p' . $d . '_' . $k] = 'v';
+            }
+            $meta['acme_f' . $d] = '1';
+            $descriptors[]       = $this->descriptor([
+                'integration_id' => 'b' . $d,
+                'mode_flag'      => ['meta_key' => 'acme_f' . $d, 'on_values' => ['1']],
+                'payload_keys'   => $payload,
+                'draft_keys'     => [],
+            ]);
+        }
+        $meta['acme_unclaimed'] = 'z';
+        $this->meta[85]         = $meta;
+
+        $r = $this->probe(['post_id' => 85, 'descriptors' => $descriptors, 'indicators' => ['meta_key_prefixes' => ['acme_']]]);
+
+        $this->assertContains('meta_prefix:acme_', $r['hints']);
+        $this->assertSame('unrecognised_builder', $r['verdict']);
     }
 
     public function test_stale_payload_is_never_classic(): void
@@ -711,6 +765,18 @@ final class ProbeWpdb
 
     public string $postmeta = 'wp_postmeta';
 
+    public string $posts = 'wp_posts';
+
+    public string $last_error = '';
+
+    public bool $failSizes = false;
+
+    /** @var array<int,array<string,list<string>>> Duplicate rows per key, lowest meta_id first. */
+    public array $dupes = [];
+
+    /** @var array<int,array<int,object>> */
+    private array $revisionRows;
+
     /** @var list<string> Meta keys whose VALUE was read. */
     public array $valueReads = [];
 
@@ -720,9 +786,10 @@ final class ProbeWpdb
     private array $meta;
 
     /** @param array<int,array<string,mixed>> $meta Shared meta store. */
-    public function __construct(array &$meta)
+    public function __construct(array &$meta, array &$revisionRows)
     {
-        $this->meta  = &$meta;
+        $this->meta         = &$meta;
+        $this->revisionRows = &$revisionRows;
         $this->inner = new FakeWpdb();
     }
 
@@ -741,9 +808,13 @@ final class ProbeWpdb
         return (string) json_encode(['sql' => $query, 'args' => $args]);
     }
 
-    /** @return list<object> */
-    public function get_results(string $prepared): array
+    /** @return list<object>|null */
+    public function get_results(string $prepared): ?array
     {
+        if ($this->failSizes) {
+            $this->last_error = 'simulated failure';
+            return null;
+        }
         $d    = json_decode($prepared, true);
         $id   = (int) $d['args'][0];
         $keys = array_slice($d['args'], 1);
@@ -763,20 +834,35 @@ final class ProbeWpdb
         $d      = json_decode($prepared, true);
         $id     = (int) $d['args'][0];
         $prefix = stripslashes(rtrim((string) $d['args'][1], '%'));
+        $claimed = array_slice($d['args'], 2);
 
-        return array_values(array_filter(
+        return array_slice(array_values(array_filter(
             array_map('strval', array_keys($this->meta[$id] ?? [])),
-            static fn ($k) => str_starts_with($k, $prefix)
-        ));
+            static fn ($k) => str_starts_with($k, $prefix) && !in_array($k, $claimed, true)
+        )), 0, 50);
     }
 
     public function get_var(string $prepared): ?string
     {
         $d = json_decode($prepared, true);
+        if (is_array($d) && str_contains((string) $d['sql'], 'FROM wp_posts')) {
+            $parent = (int) $d['args'][0];
+            $prefix = stripslashes(rtrim((string) $d['args'][1], '%'));
+            $rows   = array_values(array_filter(
+                $this->revisionRows[$parent] ?? [],
+                static fn ($r) => str_starts_with($r->post_name, $prefix)
+            ));
+            usort($rows, static fn ($a, $b) => $b->ID <=> $a->ID);
+
+            return $rows === [] ? null : (string) $rows[0]->ID;
+        }
         if (is_array($d) && str_contains((string) $d['sql'], 'postmeta')) {
             $id  = (int) $d['args'][0];
             $key = (string) $d['args'][1];
             $this->valueReads[] = $key;
+            if (isset($this->dupes[$id][$key]) && str_contains((string) $d['sql'], 'meta_id ASC')) {
+                return $this->dupes[$id][$key][0];
+            }
 
             return array_key_exists($key, $this->meta[$id] ?? []) ? (string) $this->meta[$id][$key] : null;
         }
