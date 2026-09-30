@@ -60,9 +60,14 @@ export function ContentFleetReport() {
             <h2 id="by-editor" className="text-sm font-semibold">
               By page builder
             </h2>
+            {report.by_builder.length > 0 ? (
+              <p className="text-xs text-[var(--color-muted-foreground)]">
+                Detected with unverified data
+              </p>
+            ) : null}
             {report.by_builder.length === 0 ? (
               <p className="text-sm text-[var(--color-muted-foreground)]">
-                No page builders detected.
+                No builder pages found yet. Builder detection uses unverified data until WPMgr confirms each builder on a test site.
               </p>
             ) : (
               <Table>

@@ -25,6 +25,7 @@ import {
 } from "./content-copy";
 import {
   RefreshRateLimitedError,
+  POLL_WINDOW_MS,
   useContentInventory,
   useRefreshContentInventory,
 } from "./use-content";
@@ -50,7 +51,8 @@ export function ContentTab({ siteId, hostname, canOperate }: ContentTabProps) {
   const [knownEditors, setKnownEditors] = useState<Record<string, string>>({});
 
   const after = cursors[cursors.length - 1] ?? null;
-  const inv = useContentInventory(siteId, after, editor);
+  const [poll, setPoll] = useState<{ since: string | null; until: number } | null>(null);
+  const inv = useContentInventory(siteId, after, editor, poll);
   const refresh = useRefreshContentInventory(siteId);
 
   const data = inv.data;
@@ -82,13 +84,20 @@ export function ContentTab({ siteId, hostname, canOperate }: ContentTabProps) {
     refresh.error instanceof RefreshRateLimitedError ? refresh.error : null;
   const refreshFailed = refresh.isError && !rateLimited;
 
+  const startRefresh = () => {
+    const since = inv.data?.last_checked_at ?? null;
+    refresh.mutate(undefined, {
+      onSuccess: () => setPoll({ since, until: Date.now() + POLL_WINDOW_MS }),
+    });
+  };
+
   const checked = data ? relativeTime(data.last_checked_at) : null;
 
   const refreshButton = canOperate ? (
     <Button
       size="sm"
       variant="outline"
-      onClick={() => refresh.mutate()}
+      onClick={() => startRefresh()}
       disabled={refresh.isPending}
     >
       <RefreshCw aria-hidden="true" className="size-4" />
@@ -127,7 +136,7 @@ export function ContentTab({ siteId, hostname, canOperate }: ContentTabProps) {
       ) : null}
       {refresh.isSuccess ? (
         <p role="status" className="text-sm text-[var(--color-muted-foreground)]">
-          Check requested. The list updates when the site replies.
+          Check requested. This list refreshes on its own for up to 2 minutes.
         </p>
       ) : null}
     </>
@@ -189,6 +198,23 @@ export function ContentTab({ siteId, hostname, canOperate }: ContentTabProps) {
     );
   }
 
+  const checkedEmpty =
+    data!.last_checked_at != null &&
+    data!.pages.length === 0 &&
+    editor === "" &&
+    cursors.length === 1;
+  if (checkedEmpty) {
+    return (
+      <div className="space-y-4">
+        {header}
+        {notices}
+        <p role="status" className="py-8 text-center text-sm">
+          WPMgr checked this site {checked ? checked : "recently"} and found no
+          published pages.
+        </p>
+      </div>
+    );
+  }
   const neverChecked = data!.last_checked_at == null && data!.pages.length === 0;
   if (neverChecked && editor === "" && cursors.length === 1) {
     return (
@@ -206,7 +232,7 @@ export function ContentTab({ siteId, hostname, canOperate }: ContentTabProps) {
             A check lists the published pages and which editor each one uses.
           </p>
           {canOperate ? (
-            <Button onClick={() => refresh.mutate()} disabled={refresh.isPending}>
+            <Button onClick={() => startRefresh()} disabled={refresh.isPending}>
               Refresh
             </Button>
           ) : null}
@@ -227,7 +253,12 @@ export function ContentTab({ siteId, hostname, canOperate }: ContentTabProps) {
       {notices}
       <div className="flex flex-wrap items-end gap-3">
         <label className="flex flex-col gap-1 text-sm">
-          Search
+          <span>
+            Search{" "}
+            <span className="text-xs text-[var(--color-muted-foreground)]">
+              Searches this page of results
+            </span>
+          </span>
           <Input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -244,7 +275,7 @@ export function ContentTab({ siteId, hostname, canOperate }: ContentTabProps) {
             className="w-56"
           >
             <option value="">All editors</option>
-            <option value={CLASSIC}>WordPress (classic)</option>
+            <option value={CLASSIC}>No page builder</option>
             {Object.entries(knownEditors).map(([id, name]) => (
               <option key={id} value={id}>
                 {name}
@@ -253,6 +284,11 @@ export function ContentTab({ siteId, hostname, canOperate }: ContentTabProps) {
           </Select>
         </label>
       </div>
+      {(data as { truncated?: boolean }).truncated ? (
+        <p className="text-sm text-[var(--color-muted-foreground)]">
+          Showing the first 5,000 pages WPMgr checked on this site.
+        </p>
+      ) : null}
       {!titlesIncluded ? (
         <p className="text-sm text-[var(--color-muted-foreground)]">
           Page titles need operator access, so pages are shown by number.

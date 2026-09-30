@@ -24,13 +24,23 @@ export const contentKeys = {
 };
 
 export const INVENTORY_PAGE_SIZE = 25;
+export const POLL_MS = 5000;
+export const POLL_WINDOW_MS = 2 * 60 * 1000;
 
 export function useContentInventory(
   siteId: string,
   afterPostId: number | null,
   editor: string,
+  poll?: { since: string | null; until: number } | null,
 ): UseQueryResult<ContentInventoryPage, Error> {
   return useQuery({
+    // After a queued refresh: poll every 5s until last_checked_at changes or
+    // the deadline (2 minutes) passes.
+    refetchInterval: (query) => {
+      if (!poll || Date.now() >= poll.until) return false;
+      const cur = query.state.data?.last_checked_at ?? null;
+      return cur !== poll.since ? false : POLL_MS;
+    },
     queryKey: contentKeys.inventoryPage(siteId, afterPostId, editor),
     queryFn: async () => {
       const { data, error } = await getSiteContentInventory({
