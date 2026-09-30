@@ -179,6 +179,12 @@ type Querier interface {
 	// Grants a manual comp: plan_status='comped', plan=@plan, comp_reason set.
 	AdminSetTenantComp(ctx context.Context, arg AdminSetTenantCompParams) error
 	AdminSetUserStatus(ctx context.Context, arg AdminSetUserStatusParams) (AdminSetUserStatusRow, error)
+	// The ONLY write path. Call it only behind requireSuperadmin. entry_id NULL
+	// inserts; a non-NULL entry_id updates that entry (SQLSTATE P0002 if absent,
+	// 22023 if the name would change). Refuses with 42501 unless actor_user_id
+	// names a superadmin, and writes an ability_catalogue_audit row in the same
+	// statement.
+	AdminUpsertAbilityCatalogueEntry(ctx context.Context, arg AdminUpsertAbilityCatalogueEntryParams) (AbilityCatalogue, error)
 	// The ONLY write path. Call it only behind requireSuperadmin. The function
 	// refuses (SQLSTATE 42501) unless actor_user_id names a superadmin, and it
 	// writes a content_integrations_audit row in the same statement.
@@ -951,6 +957,9 @@ type Querier interface {
 	DeleteSite(ctx context.Context, arg DeleteSiteParams) (int64, error)
 	// The second half of a replace: drops the site's rows the latest refresh did
 	// not report. Pass the checked_at the upsert used.
+	DeleteStaleSiteAbilityInventory(ctx context.Context, arg DeleteStaleSiteAbilityInventoryParams) (int64, error)
+	// The second half of a replace: drops the site's rows the latest refresh did
+	// not report. Pass the checked_at the upsert used.
 	DeleteStaleSiteContentInventory(ctx context.Context, arg DeleteStaleSiteContentInventoryParams) (int64, error)
 	DeleteTagRow(ctx context.Context, arg DeleteTagRowParams) (int64, error)
 	// Remove a single credential by its primary key and user_id guard.
@@ -1296,6 +1305,8 @@ type Querier interface {
 	// domain.Unauthorized("apikey_invalid", ...) path) rather than continuing to
 	// authenticate into an org every session/UI path has already hidden.
 	GetAPIKeyByPrefix(ctx context.Context, prefix string) (ApiKey, error)
+	// One entry by its stable id. pgx.ErrNoRows when it does not exist.
+	GetAbilityCatalogueEntry(ctx context.Context, entryID uuid.UUID) (AbilityCatalogue, error)
 	// Auth-time allowlist resolver: returns all non-expired site shares for a given
 	// (user, tenant) pair. The result is used to build the AllowedSiteIDs list for a
 	// site-scoped principal. Run under InUserTx (app.user_id set) or directly with
@@ -1719,6 +1730,11 @@ type Querier interface {
 	// explicit tenant_id match in the ON clause is defense-in-depth + keeps the
 	// planner on the PK index (project convention — see clients.sql).
 	GetSite(ctx context.Context, arg GetSiteParams) (GetSiteRow, error)
+	// One ability on one site. pgx.ErrNoRows when the site did not report it.
+	GetSiteAbilityInventoryEntry(ctx context.Context, arg GetSiteAbilityInventoryEntryParams) (SiteAbilityInventory, error)
+	// The site's last refresh. pgx.ErrNoRows means the site has never been
+	// refreshed.
+	GetSiteAbilityInventoryRun(ctx context.Context, arg GetSiteAbilityInventoryRunParams) (SiteAbilityInventoryRun, error)
 	// Cross-tenant read of one site's alert state (app.agent GUC) for the probe job.
 	GetSiteAlertState(ctx context.Context, siteID uuid.UUID) (SiteAlertState, error)
 	// Cross-tenant read-and-LOCK of one site's alert state (app.agent GUC), used by
@@ -2228,9 +2244,20 @@ type Querier interface {
 	LastProcessedBillingEventOccurredAtForTenant(ctx context.Context, arg LastProcessedBillingEventOccurredAtForTenantParams) (time.Time, error)
 	LinkUserOIDC(ctx context.Context, arg LinkUserOIDCParams) (User, error)
 	ListAPIKeys(ctx context.Context, arg ListAPIKeysParams) ([]ApiKey, error)
+	// Every entry, any status, for the admin screen.
+	ListAbilityCatalogue(ctx context.Context) ([]AbilityCatalogue, error)
+	// Newest first, for the admin screen.
+	ListAbilityCatalogueAudit(ctx context.Context, arg ListAbilityCatalogueAuditParams) ([]AbilityCatalogueAudit, error)
 	// All unused recovery codes for a user (used_at IS NULL).
 	// Ordered by created_at ASC, id ASC for stable pagination.
 	ListActiveRecoveryCodes(ctx context.Context, userID uuid.UUID) ([]UserRecoveryCode, error)
+	// m155: ability_catalogue (global allowlist) and site_ability_inventory
+	// (per-site registered abilities). See the migration header for the grant
+	// model and the tenancy.
+	// The entries the engine may offer: admitted and enabled. A disabled entry is
+	// kill switch 1. Readable in any transaction: the table is global and its one
+	// policy is FOR SELECT USING (true).
+	ListAdmittedAbilityCatalogue(ctx context.Context) ([]AbilityCatalogue, error)
 	// Cross-tenant enumeration for the evaluator (app.agent GUC). Only enabled
 	// configs are returned.
 	ListAlertConfigsAllTenants(ctx context.Context) ([]AlertConfig, error)
@@ -2758,6 +2785,9 @@ type Querier interface {
 	// session pinned to that (now-invisible) tenant on every login, landing in a
 	// permanent 403 loop instead of the no-access screen.
 	ListSharesForUser(ctx context.Context, userID uuid.UUID) ([]SiteShare, error)
+	// One page of a site's inventory, keyset-paged on name ascending. Pass
+	// after_name = '' for the first page. namespace NULL lists every namespace.
+	ListSiteAbilityInventory(ctx context.Context, arg ListSiteAbilityInventoryParams) ([]SiteAbilityInventory, error)
 	// The AI cache-clear creation path's tie check (internal/mcp): every in-scope
 	// site's address, so a page address that also falls under another in-scope
 	// site can be refused. Runs connection-scoped, and site_ids is the
@@ -4454,6 +4484,19 @@ type Querier interface {
 	UpsertScreenshotPending(ctx context.Context, arg UpsertScreenshotPendingParams) (SiteScreenshot, error)
 	// Called by the capture worker (InAgentTx) on a successful capture.
 	UpsertScreenshotReady(ctx context.Context, arg UpsertScreenshotReadyParams) (SiteScreenshot, error)
+	// One refresh's rows for ONE site, in one statement. Run in the site's tenant
+	// transaction, then DeleteStaleSiteAbilityInventory with the same checked_at
+	// in the same transaction, then UpsertSiteAbilityInventoryRun: together they
+	// replace the site's inventory. The arrays are parallel, one element per
+	// ability. Nullable text columns take '' for NULL (pgx cannot carry a NULL
+	// element in []string); the schema and annotation arrays carry JSON text.
+	// owner_oks is text: 'true', 'false' or '' for unknown.
+	UpsertSiteAbilityInventory(ctx context.Context, arg UpsertSiteAbilityInventoryParams) (int64, error)
+	// Records one refresh of one site. Call it in the SAME tenant transaction as
+	// UpsertSiteAbilityInventory and DeleteStaleSiteAbilityInventory, with the
+	// same checked_at and a fresh snapshot_id, so the record and the rows commit
+	// or roll back together.
+	UpsertSiteAbilityInventoryRun(ctx context.Context, arg UpsertSiteAbilityInventoryRunParams) error
 	// Cross-tenant upsert of a site's alert state (app.agent GUC). The probe worker
 	// writes the new transition memory after each probe.
 	UpsertSiteAlertState(ctx context.Context, arg UpsertSiteAlertStateParams) (SiteAlertState, error)
