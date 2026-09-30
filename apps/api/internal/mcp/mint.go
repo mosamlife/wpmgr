@@ -686,10 +686,24 @@ func (s *Service) resolveGrantCapabilities(scopes []Scope, requested *[]Capabili
 // request would ask a person to exercise.
 const ErrCodeCreatorMayNotConfer = "mcp_creator_may_not_confer"
 
+// requestCapabilityPermission maps each REQUEST capability to the operator
+// permission its requests ask a person to exercise. It is total over the
+// request-effect members of the vocabulary by test
+// (TestEveryRequestCapabilityNamesACreatorPermission): a request capability
+// without an entry would be refused at mint rather than minted unchecked.
+var requestCapabilityPermission = map[Capability]struct {
+	perm authz.Permission
+	what string
+}{
+	CapCachePurge:     {authz.PermSiteCachePurge, "can ask for site caches to be cleared"},
+	CapAbilityRequest: {authz.PermSiteContentEdit, "can ask for changes to site content"},
+}
+
 // requireCreatorMayConfer is the rule both creation paths share: a grant that
-// holds a request capability (today only mcp.cache.purge) may be created only
-// by a principal holding authz.PermSiteCachePurge. It runs on the resolved
-// set, after NarrowTo, so it sees exactly what would be stored.
+// holds a request capability may be created only by a principal holding the
+// operator permission that capability's requests exercise
+// (requestCapabilityPermission). It runs on the resolved set, after NarrowTo,
+// so it sees exactly what would be stored.
 //
 // authz.PrincipalAllows, not a role compare: a capability-scoped API key is
 // judged on its explicit capability set alone (#510).
@@ -697,11 +711,21 @@ func requireCreatorMayConfer(p domain.Principal, caps CapabilitySet) error {
 	if !holdsRequestCapability(caps) {
 		return nil
 	}
-	if !authz.PrincipalAllows(p, authz.PermSiteCachePurge) {
-		return domain.Forbidden(ErrCodeCreatorMayNotConfer,
-			fmt.Sprintf("a connection holding %q can ask for site caches to be cleared, so "+
-				"creating one requires the %q permission, which you do not hold",
-				CapCachePurge, authz.PermSiteCachePurge))
+	for _, c := range caps.Sorted() {
+		if e, _ := CapabilityEffect(c); e != EffectRequest {
+			continue
+		}
+		need, ok := requestCapabilityPermission[c]
+		if !ok {
+			return domain.Forbidden(ErrCodeCreatorMayNotConfer,
+				fmt.Sprintf("capability %q has no creator permission on this server", c))
+		}
+		if !authz.PrincipalAllows(p, need.perm) {
+			return domain.Forbidden(ErrCodeCreatorMayNotConfer,
+				fmt.Sprintf("a connection holding %q %s, so "+
+					"creating one requires the %q permission, which you do not hold",
+					c, need.what, need.perm))
+		}
 	}
 	return nil
 }

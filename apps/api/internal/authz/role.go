@@ -235,6 +235,11 @@ const (
 	// PermSiteContentRefresh asks for a fresh page-ownership check of a site.
 	// Operator+, the same tier as the other on-demand site probes.
 	PermSiteContentRefresh Permission = "site.content.refresh"
+	// PermSiteContentEdit approves a reviewed content change on a site
+	// (ability engine write entries). Operator+, site-scoped. Creating an AI
+	// connection that may ASK for such changes (mcp.ability.request) requires
+	// it too.
+	PermSiteContentEdit Permission = "site.content.edit"
 )
 
 // minRoleFor maps each permission to the minimum role that holds it. The matrix
@@ -301,6 +306,7 @@ var minRoleFor = map[Permission]Role{
 	// Page-ownership inventory (Track B S1).
 	PermSiteContentRead:    RoleOperator,
 	PermSiteContentRefresh: RoleOperator,
+	PermSiteContentEdit:    RoleOperator,
 }
 
 // Allows reports whether role r is permitted to perform p.

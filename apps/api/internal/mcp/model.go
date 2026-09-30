@@ -45,6 +45,14 @@ const ScopeRead Scope = "mcp:read"
 // operator named an explicit capability list (see MintConnection).
 const ScopeCache Scope = "mcp:cache"
 
+// ScopeSite is the third scope, seated by m154. It confers the two ability
+// engine capabilities: CapAbilityRead (list a site's abilities, describe one,
+// run one WPMgr reviewed as a read) and CapAbilityRequest (ask for a reviewed
+// write, and read that request's status). Like ScopeCache it is never
+// advertised in discovery and never stored on a grant the operator did not
+// consent to.
+const ScopeSite Scope = "mcp:site"
+
 // SiteScopeMode says which sites a grant may read. It mirrors
 // mcp_grants_site_scope_mode_check: NOT NULL, closed set, and deliberately NO
 // DEFAULT, because the whole failure this slice differentiates against is a
