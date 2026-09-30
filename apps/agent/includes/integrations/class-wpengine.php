@@ -21,6 +21,15 @@ namespace WPMgr\Agent\Integrations;
  */
 final class WPEngine extends Integration
 {
+    /** Identifier in the purge report. */
+    public const SLUG = 'wpengine';
+
+    /** How far this host's purge reaches; see Integration. */
+    protected const REACH = self::REACH_SHARED;
+
+    /** Evidence for REACH. */
+    protected const REACH_NOTE = 'Unverified: the host purge also clears its CDN and object cache; that each reaches only this site is not yet confirmed.';
+
     /**
      * @return bool
      */

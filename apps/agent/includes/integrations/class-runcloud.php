@@ -21,6 +21,15 @@ namespace WPMgr\Agent\Integrations;
  */
 final class RunCloud extends Integration
 {
+    /** Identifier in the purge report. */
+    public const SLUG = 'runcloud';
+
+    /** How far this host's purge reaches; see Integration. */
+    protected const REACH = self::REACH_SHARED;
+
+    /** Evidence for REACH. */
+    protected const REACH_NOTE = 'Unverified: on multisite the host\'s purge covers every site in the network; single-site reach is not yet confirmed.';
+
     /**
      * @return bool
      */

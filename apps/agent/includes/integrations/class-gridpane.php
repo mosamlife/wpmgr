@@ -22,6 +22,15 @@ namespace WPMgr\Agent\Integrations;
  */
 final class GridPane extends Integration
 {
+    /** Identifier in the purge report. */
+    public const SLUG = 'gridpane';
+
+    /** How far this host's purge reaches; see Integration. */
+    protected const REACH = self::REACH_SHARED;
+
+    /** Evidence for REACH. */
+    protected const REACH_NOTE = 'Unverified: that the server\'s page-cache purge reaches only this site is not yet confirmed.';
+
     /**
      * @return bool
      */

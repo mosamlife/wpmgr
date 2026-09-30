@@ -22,6 +22,15 @@ namespace WPMgr\Agent\Integrations;
  */
 final class RocketNet extends Integration
 {
+    /** Identifier in the purge report. */
+    public const SLUG = 'rocketnet';
+
+    /** How far this host's purge reaches; see Integration. */
+    protected const REACH = self::REACH_SHARED;
+
+    /** Evidence for REACH. */
+    protected const REACH_NOTE = 'Shared: the host\'s purge clears the whole zone.';
+
     /**
      * @return bool
      */
