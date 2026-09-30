@@ -131,6 +131,7 @@ type abilityEngine struct {
 	agent     AbilityAgent
 	entry     EntryEncoder
 	cursorKey []byte
+	readLimit *abilityReadLimiter
 }
 
 // EntryEncoder returns the exact catalogue entry bytes to send and their
@@ -166,7 +167,7 @@ func (s *Service) EnableAbilityTools(store AbilityStore, agent AbilityAgent, ent
 		m.Write([]byte("wpmgr/mcp/ability-discover-cursor/v1"))
 		key = m.Sum(nil)
 	}
-	s.abilities = &abilityEngine{store: store, agent: agent, entry: entry, cursorKey: key}
+	s.abilities = &abilityEngine{store: store, agent: agent, entry: entry, cursorKey: key, readLimit: newAbilityReadLimiter()}
 	return nil
 }
 
@@ -1143,6 +1144,18 @@ func (s *Service) runSiteAbility(ctx context.Context, auth AuthorizedRequest, ra
 	// 5. Our own schema, checked here too; the agent re-validates.
 	if bad := validateOwnInput(name, input); bad {
 		return "", argRefusal(reasonInvalidArguments, "input", "", msgAbilityArgInput, ownAbilityInputSchemas[name])
+	}
+	// The read limits (v4 §1.4), per connection: 30 a minute per site, 600 a
+	// day. Log only, like the request tool's per-process limits.
+	if d := eng.readLimit.allow(auth.GrantID, site.row.ID); !d.allowed {
+		r := refuse(reasonRequestRateLimited, domain.RateLimited(ErrCodeRequestLimited, msgLimited).
+			WithDetails(map[string]any{
+				"limit_scope":         d.scope,
+				"retry_after_seconds": int(d.retryAfter / time.Second),
+				"retryable":           true,
+			}))
+		r.logOnly = true
+		return "", r
 	}
 	entryBytes, entrySum, err := eng.entry(*c.entry)
 	if err != nil {

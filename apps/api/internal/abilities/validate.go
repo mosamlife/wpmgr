@@ -41,6 +41,10 @@ const (
 //	wpmgr_squat  another plugin registered a name in our namespace
 //	core         WordPress core
 //	site         anything else; the agent does not yet resolve the owner
+//
+// TODO(C2, engine slice E3): once the agent resolves ownership (C2) it emits
+// the column's own kinds (core, plugin, theme, mu-plugin, unknown) directly;
+// drop the agent-only kinds from this map then.
 var ownerKindMap = map[string]struct{ kind, ok string }{
 	"wpmgr":       {"plugin", "true"},
 	"wpmgr_squat": {"unknown", "false"},

@@ -2702,6 +2702,10 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	adminH.SetAuditRecorder(auditRec)
 	contentH.SetAuditRecorder(auditRec)
 	adminH.SetContentRoutes(contentH.RegisterAdmin)
+	// Ability engine: the superadmin catalogue routes (list, create, update).
+	abilityAdminH := abilities.NewAdminHandler(abilities.NewAdminRepo(pool))
+	abilityAdminH.SetAuditRecorder(auditRec)
+	adminH.SetAbilityRoutes(abilityAdminH.RegisterAdmin)
 	// m80 — wire the vuln-feed key management into the admin handler.
 	// vulnFeedKeySvc already has its feed-refresh enqueuer set (wired in the
 	// vuln River block above), so this call sees a fully-wired service.

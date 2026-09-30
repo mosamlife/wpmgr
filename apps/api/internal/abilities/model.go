@@ -5,6 +5,7 @@
 package abilities
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 
@@ -19,8 +20,11 @@ const NameInventory = "wpmgr/abilities-inventory"
 // encoding (EntryBytes) is the text the agent hashes, so the field order here
 // IS the wire order and must not be reshuffled without re-stamping every
 // stored entry_sha256.
+//
+// It carries no entry_id: the id is assigned by the insert, and the hash must
+// be computable before the row exists so the admin write can stamp it in the
+// same statement.
 type Entry struct {
-	EntryID            string          `json:"entry_id"`
 	Name               string          `json:"name"`
 	Source             string          `json:"source"`
 	Class              string          `json:"class"`
@@ -52,11 +56,24 @@ type Entry struct {
 	Admission          json.RawMessage `json:"admission"`
 }
 
+// rawOrNull canonicalises a jsonb member: decoded (numbers kept as their
+// text) and re-encoded by encoding/json, which sorts object keys. The bytes
+// then depend on the value, not on how Postgres or a request spelled it.
 func rawOrNull(b []byte) json.RawMessage {
 	if len(b) == 0 {
 		return json.RawMessage("null")
 	}
-	return json.RawMessage(b)
+	var v any
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.UseNumber()
+	if err := dec.Decode(&v); err != nil {
+		return json.RawMessage(b)
+	}
+	out, err := json.Marshal(v)
+	if err != nil {
+		return json.RawMessage(b)
+	}
+	return out
 }
 
 func nonNil(s []string) []string {
@@ -69,7 +86,7 @@ func nonNil(s []string) []string {
 // EntryFromRow projects a catalogue row onto the wire entry.
 func EntryFromRow(r sqlc.AbilityCatalogue) Entry {
 	return Entry{
-		EntryID: r.EntryID.String(), Name: r.Name, Source: r.Source, Class: r.Class,
+		Name: r.Name, Source: r.Source, Class: r.Class,
 		Status: r.Status, Enabled: r.Enabled, ApprovalMode: r.ApprovalMode,
 		PermissionMode: r.PermissionMode, IntegrationID: r.IntegrationID, OwnerDir: r.OwnerDir,
 		VersionMin: r.VersionMin, VersionMaxTested: r.VersionMaxTested,
@@ -85,13 +102,14 @@ func EntryFromRow(r sqlc.AbilityCatalogue) Entry {
 }
 
 // EntryBytes is the canonical entry text: encoding/json over Entry, whose
-// field order is fixed and whose JSON-typed members are Postgres's own jsonb
-// output (deterministic for a stored value), compacted by encoding/json.
+// field order is fixed and whose JSON-typed members are canonicalised
+// (rawOrNull).
 //
 // THE CONTROL PLANE DOES NOT STORE THESE BYTES; IT REPRODUCES THEM. The same
 // row always yields the same bytes, and entry_sha256 is the sha256 of them.
 // The admin write stamps entry_sha256 from these bytes of the row it is about
-// to store; a row whose stored entry_sha256 is NULL (the m155 seed rows) is
+// to store, then reproduces them from the row the database returned and
+// refuses (rolls back) if they differ; a row whose stored entry_sha256 is NULL (the m155 seed rows) is
 // stamped at send from the same bytes. A row whose stored entry_sha256 is set
 // and differs from the reproduced bytes is refused (ErrEntryChanged): the
 // catalogue changed outside the admin write, and nothing is sent.
