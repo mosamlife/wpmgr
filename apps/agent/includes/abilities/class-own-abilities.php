@@ -350,7 +350,7 @@ final class OwnAbilities
      */
     private static function siteFacts(object $input): array
     {
-        $wp        = function_exists('get_bloginfo') ? (string) get_bloginfo('version') : '';
+        $wp        = AbilityGuards::wpVersion();
         $plugins   = self::activePluginSlugs();
         $template  = function_exists('get_option') ? (string) get_option('template', '') : '';
         $style     = function_exists('get_option') ? (string) get_option('stylesheet', '') : '';

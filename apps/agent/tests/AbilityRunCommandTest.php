@@ -51,7 +51,6 @@ final class AbilityRunCommandTest extends TestCase
 
     private Router $router;
 
-    private string $wpVersion = '6.4.2';
 
     /** @var list<array{0:string,1:callable,2:int}> Captured add_filter calls. */
     private array $filters = [];
@@ -69,7 +68,6 @@ final class AbilityRunCommandTest extends TestCase
         $this->options   = [];
         $this->posts     = [];
         $this->filters   = [];
-        $this->wpVersion = '6.4.2';
 
         Functions\when('update_option')->alias(function ($name, $value) {
             $this->options[$name] = $value;
@@ -79,9 +77,8 @@ final class AbilityRunCommandTest extends TestCase
         Functions\when('is_user_logged_in')->justReturn(false);
         Functions\when('current_user_can')->justReturn(true);
         Functions\when('register_rest_route')->justReturn(true);
-        Functions\when('get_bloginfo')->alias(fn () => $this->wpVersion);
+        $GLOBALS['wp_version'] = '6.4.2';
         Functions\when('get_post')->alias(fn ($id) => $this->posts[(int) $id] ?? null);
-        Functions\when('wp_strip_all_tags')->alias(static fn ($s) => trim(strip_tags((string) $s)));
         Functions\when('add_filter')->alias(function ($name, $cb, $prio = 10) {
             $this->filters[] = [(string) $name, $cb, (int) $prio];
             return true;
@@ -136,7 +133,7 @@ final class AbilityRunCommandTest extends TestCase
         if (is_file($this->keyFile)) {
             @unlink($this->keyFile);
         }
-        unset($GLOBALS['wpdb']);
+        unset($GLOBALS['wpdb'], $GLOBALS['wp_version']);
         Monkey\tearDown();
         parent::tear_down();
     }
@@ -311,7 +308,7 @@ final class AbilityRunCommandTest extends TestCase
 
     public function test_site_facts_shape(): void
     {
-        $this->wpVersion                = '6.9.1';
+        $GLOBALS['wp_version'] = '6.9.1';
         $this->options['template']      = 'twentytwentyfive';
         $this->options['stylesheet']    = 'child-theme';
         $this->options['active_plugins'] = ['acme-builder/acme.php', 'hello.php'];
@@ -457,12 +454,12 @@ final class AbilityRunCommandTest extends TestCase
 
     public function test_guards_are_armed_only_on_71_and_are_removed_afterwards(): void
     {
-        $this->wpVersion = '7.1.0';
+        $GLOBALS['wp_version'] = '7.1.0';
         $this->assertTrue(AbilityGuards::supported());
         $seen = null;
-        Functions\when('wp_strip_all_tags')->alias(function ($s) use (&$seen) {
+        Functions\when('get_post')->alias(function ($id) use (&$seen) {
             $seen = count($this->filters);
-            return strip_tags((string) $s);
+            return $this->posts[(int) $id] ?? null;
         });
         $this->seedPost(9, '<p>x</p>');
 
@@ -472,13 +469,13 @@ final class AbilityRunCommandTest extends TestCase
         $this->assertSame(7, $seen, 'guards and recorders are installed while the ability runs');
         $this->assertSame([], $this->filters, 'and every one is removed afterwards');
 
-        $this->wpVersion = '7.0.9';
+        $GLOBALS['wp_version'] = '7.0.9';
         $this->assertFalse(AbilityGuards::supported());
     }
 
     public function test_a_tampered_input_or_short_circuit_or_nested_call_is_a_violation(): void
     {
-        $this->wpVersion = '7.1.0';
+        $GLOBALS['wp_version'] = '7.1.0';
         $g = new AbilityGuards();
         $g->arm('acme/outer');
 

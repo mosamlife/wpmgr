@@ -57,11 +57,23 @@ final class AbilityGuards
      */
     public static function supported(): bool
     {
-        if (!function_exists('add_filter') || !function_exists('remove_filter') || !function_exists('get_bloginfo')) {
+        if (!function_exists('add_filter') || !function_exists('remove_filter')) {
             return false;
         }
 
-        return version_compare((string) get_bloginfo('version'), '7.1', '>=');
+        return version_compare(self::wpVersion(), '7.1', '>=');
+    }
+
+    /**
+     * The running WordPress version, from core's own global. Empty when unknown.
+     *
+     * @return string
+     */
+    public static function wpVersion(): string
+    {
+        $version = $GLOBALS['wp_version'] ?? '';
+
+        return is_string($version) ? $version : '';
     }
 
     /**
