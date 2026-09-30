@@ -114,7 +114,12 @@ func (h *Handler) refresh(c *gin.Context) {
 }
 
 func (h *Handler) fleetReport(c *gin.Context) {
-	rep, err := h.svc.Fleet(c.Request.Context())
+	p, ok := domain.PrincipalFromContext(c.Request.Context())
+	if !ok || p.Type != domain.PrincipalUser || p.UserID == uuid.Nil {
+		httpx.Error(c, domain.Forbidden("superadmin_required", "superadmin access required"))
+		return
+	}
+	rep, err := h.svc.Fleet(c.Request.Context(), p.UserID)
 	if err != nil {
 		httpx.Error(c, err)
 		return
@@ -123,7 +128,12 @@ func (h *Handler) fleetReport(c *gin.Context) {
 }
 
 func (h *Handler) listIntegrations(c *gin.Context) {
-	rows, err := h.svc.ListIntegrations(c.Request.Context())
+	p, ok := domain.PrincipalFromContext(c.Request.Context())
+	if !ok || p.Type != domain.PrincipalUser || p.UserID == uuid.Nil {
+		httpx.Error(c, domain.Forbidden("superadmin_required", "superadmin access required"))
+		return
+	}
+	rows, err := h.svc.ListIntegrations(c.Request.Context(), p.UserID)
 	if err != nil {
 		httpx.Error(c, err)
 		return

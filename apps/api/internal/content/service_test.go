@@ -49,14 +49,16 @@ func (f *fakeRepo) ReplaceInventory(_ context.Context, _, _ uuid.UUID, at time.T
 func (f *fakeRepo) ListInventory(context.Context, domain.Principal, uuid.UUID, int64, *string, int32) ([]InventoryRow, error) {
 	return nil, nil
 }
-func (f *fakeRepo) FleetReport(context.Context) ([]FleetVerdictShare, []FleetBuilderShare, error) {
+func (f *fakeRepo) FleetReport(context.Context, uuid.UUID) ([]FleetVerdictShare, []FleetBuilderShare, error) {
 	return nil, nil, nil
 }
 func (f *fakeRepo) ListSweepSites(context.Context) ([]SweepSite, error) { return f.sweep, nil }
 func (f *fakeRepo) AdminUpsertIntegration(_ context.Context, in AdminUpsertInput) (IntegrationRecord, error) {
 	return IntegrationRecord{IntegrationID: in.IntegrationID, DisplayName: in.DisplayName, Status: in.Status, Descriptor: in.Descriptor}, nil
 }
-func (f *fakeRepo) ListIntegrations(context.Context) ([]IntegrationRecord, error) { return nil, nil }
+func (f *fakeRepo) ListIntegrations(context.Context, uuid.UUID) ([]IntegrationRecord, error) {
+	return nil, nil
+}
 
 // fakeAgent is an httptest server speaking the content_probe wire.
 type fakeAgent struct {

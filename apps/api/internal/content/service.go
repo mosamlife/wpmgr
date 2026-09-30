@@ -317,8 +317,8 @@ type FleetReport struct {
 
 // Fleet aggregates every tenant's inventory. The caller must already be a
 // superadmin; nothing here checks that.
-func (s *Service) Fleet(ctx context.Context) (FleetReport, error) {
-	vs, bs, err := s.repo.FleetReport(ctx)
+func (s *Service) Fleet(ctx context.Context, actor uuid.UUID) (FleetReport, error) {
+	vs, bs, err := s.repo.FleetReport(ctx, actor)
 	if err != nil {
 		return FleetReport{}, err
 	}
@@ -409,6 +409,6 @@ func (s *Service) UpsertIntegration(ctx context.Context, in AdminUpsertInput) (I
 }
 
 // ListIntegrations reads the whole allowlist for the admin screen.
-func (s *Service) ListIntegrations(ctx context.Context) ([]IntegrationRecord, error) {
-	return s.repo.ListIntegrations(ctx)
+func (s *Service) ListIntegrations(ctx context.Context, actor uuid.UUID) ([]IntegrationRecord, error) {
+	return s.repo.ListIntegrations(ctx, actor)
 }

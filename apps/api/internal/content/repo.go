@@ -25,14 +25,17 @@ type Repo interface {
 	ReplaceInventory(ctx context.Context, tenantID, siteID uuid.UUID, checkedAt time.Time, rows []Row) error
 	// ListInventory pages a site's inventory by post id, in the caller's scope.
 	ListInventory(ctx context.Context, p domain.Principal, siteID uuid.UUID, afterPostID int64, owner *string, limit int32) ([]InventoryRow, error)
-	// FleetReport aggregates every tenant's inventory (app.agent, FOR SELECT).
-	FleetReport(ctx context.Context) ([]FleetVerdictShare, []FleetBuilderShare, error)
+	// FleetReport reads the cross-tenant counts through the database's
+	// count-only SECURITY DEFINER functions. No session can read another
+	// tenant's inventory rows; the caller must already be gated to the
+	// platform owner.
+	FleetReport(ctx context.Context, actor uuid.UUID) ([]FleetVerdictShare, []FleetBuilderShare, error)
 	// ListSweepSites enumerates the connected, unpaused sites across tenants.
 	ListSweepSites(ctx context.Context) ([]SweepSite, error)
 	// AdminUpsertIntegration calls the superadmin-only SQL writer.
 	AdminUpsertIntegration(ctx context.Context, in AdminUpsertInput) (IntegrationRecord, error)
 	// ListIntegrations reads every allowlist row (enabled or not).
-	ListIntegrations(ctx context.Context) ([]IntegrationRecord, error)
+	ListIntegrations(ctx context.Context, actor uuid.UUID) ([]IntegrationRecord, error)
 }
 
 type pgRepo struct{ pool *db.Pool }
@@ -130,10 +133,10 @@ func (r *pgRepo) ListInventory(ctx context.Context, p domain.Principal, siteID u
 	return out, err
 }
 
-func (r *pgRepo) FleetReport(ctx context.Context) ([]FleetVerdictShare, []FleetBuilderShare, error) {
+func (r *pgRepo) FleetReport(ctx context.Context, actor uuid.UUID) ([]FleetVerdictShare, []FleetBuilderShare, error) {
 	var vs []FleetVerdictShare
 	var bs []FleetBuilderShare
-	err := r.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
+	err := r.pool.InUserTx(ctx, actor, func(tx pgx.Tx) error {
 		q := sqlc.New(tx)
 		vrows, err := q.FleetContentShareByVerdict(ctx)
 		if err != nil {
@@ -147,7 +150,12 @@ func (r *pgRepo) FleetReport(ctx context.Context) ([]FleetVerdictShare, []FleetB
 			vs = append(vs, FleetVerdictShare{Verdict: v.Verdict, RouteNumber: v.RouteNumber, Pages: v.Pages, Sites: v.Sites})
 		}
 		for _, b := range brows {
-			bs = append(bs, FleetBuilderShare{IntegrationID: b.OwnerIntegrationID, Version: b.OwnerVersion, Pages: b.Pages, Sites: b.Sites})
+			var ver *string
+			if b.OwnerVersion != "" {
+				v := b.OwnerVersion
+				ver = &v
+			}
+			bs = append(bs, FleetBuilderShare{IntegrationID: b.OwnerIntegrationID, Version: ver, Pages: b.Pages, Sites: b.Sites})
 		}
 		return nil
 	})
@@ -235,9 +243,9 @@ func (r *pgRepo) AdminUpsertIntegration(ctx context.Context, in AdminUpsertInput
 	return out, err
 }
 
-func (r *pgRepo) ListIntegrations(ctx context.Context) ([]IntegrationRecord, error) {
+func (r *pgRepo) ListIntegrations(ctx context.Context, actor uuid.UUID) ([]IntegrationRecord, error) {
 	var out []IntegrationRecord
-	err := r.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
+	err := r.pool.InUserTx(ctx, actor, func(tx pgx.Tx) error {
 		rows, err := sqlc.New(tx).ListContentIntegrations(ctx)
 		if err != nil {
 			return err
