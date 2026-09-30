@@ -849,3 +849,13 @@ WHERE s.tenant_id = $1
         ELSE false
       END
 ORDER BY s.id;
+
+-- name: MCPGrantIsActiveInScopedTx :one
+-- Runs in the connection's SITE-SCOPED transaction (runConnectionTx), where
+-- mcp_grants_site_scope_select hides every mcp_grants row. m152's
+-- mcp_grant_is_active answers the one question that transaction needs: is this
+-- grant, in this tenant, still active. Same verdict as the `authorized` column
+-- of ReCheckMCPGrantAuthorizationInTenantTx. tenant_id must be the tx's own
+-- app.tenant_id; a different value, a missing grant, or another tenant's grant
+-- all return false. Always exactly one row.
+SELECT mcp_grant_is_active(@tenant_id::uuid, @grant_id::uuid)::boolean AS active;
