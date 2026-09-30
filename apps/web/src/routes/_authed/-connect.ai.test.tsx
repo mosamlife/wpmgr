@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { screen, fireEvent, waitFor } from "@testing-library/react";
+import { screen, fireEvent, waitFor, within } from "@testing-library/react";
 
 import { renderWithProviders } from "@/test/render";
 import { mockQueryResult } from "@/test/query-mocks";
@@ -10,7 +10,7 @@ import {
   navigateTo,
   OAuthRequestError,
 } from "@/features/mcp-consent/use-consent";
-import { parseConsentContext, SCOPE_READ } from "@/features/mcp-consent/consent-context";
+import { parseConsentContext, SCOPE_CACHE, SCOPE_READ } from "@/features/mcp-consent/consent-context";
 import { useSites } from "@/features/sites/use-sites";
 import { useTags } from "@/features/tags/use-tags";
 import type { ConsentContext } from "@/features/mcp-consent/consent-context";
@@ -259,6 +259,7 @@ function approveResponse(): Response {
 async function postedApprovalBody(
   consent: ConsentContext,
   fetchMock: ReturnType<typeof vi.fn>,
+  opts: { tickCache?: boolean } = {},
 ): Promise<Record<string, unknown>> {
   mockedConsent.mockReturnValue(mockQueryResult<ConsentContext>({ data: consent }));
   vi.stubGlobal("fetch", fetchMock);
@@ -268,6 +269,9 @@ async function postedApprovalBody(
   fireEvent.change(await screen.findByLabelText(/name this connection/i), {
     target: { value: "Desktop" },
   });
+  if (opts.tickCache) {
+    fireEvent.click(within(screen.getByTestId("consent-cache-capability")).getByRole("checkbox"));
+  }
   fireEvent.click(screen.getByTestId("consent-approve"));
 
   await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
@@ -313,5 +317,53 @@ describe("/connect/ai — the consent ticket is carried back unread", () => {
     // And the approval really did succeed rather than erroring out for want of
     // a field this server has never sent.
     await waitFor(() => expect(mockedNavigate).toHaveBeenCalledTimes(1));
+  });
+});
+
+describe("/connect/ai — the approval carries the consented capabilities", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const CACHE_WIRE = {
+    ...TICKETED_WIRE,
+    scopes: [SCOPE_READ, SCOPE_CACHE],
+    conferrable_capabilities: [
+      { name: "mcp.sites.read", effect: "read" },
+      { name: "mcp.uptime.read", effect: "read" },
+      { name: "mcp.cache.purge", effect: "request" },
+    ],
+  };
+
+  it("sends the reads and NOT mcp.cache.purge when the box is left unticked", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(approveResponse());
+    const body = await postedApprovalBody(parseConsentContext(CACHE_WIRE), fetchMock);
+
+    const caps = body.capabilities as string[];
+    expect([...caps].sort()).toEqual(["mcp.sites.read", "mcp.uptime.read"]);
+    expect(caps).not.toContain("mcp.cache.purge");
+  });
+
+  it("adds mcp.cache.purge only when the box is ticked", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(approveResponse());
+    const body = await postedApprovalBody(parseConsentContext(CACHE_WIRE), fetchMock, {
+      tickCache: true,
+    });
+
+    expect([...(body.capabilities as string[])].sort()).toEqual([
+      "mcp.cache.purge",
+      "mcp.sites.read",
+      "mcp.uptime.read",
+    ]);
+  });
+
+  it("never sends an empty list", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(approveResponse());
+    const body = await postedApprovalBody(
+      parseConsentContext({ ...TICKETED_WIRE, conferrable_capabilities: [] }),
+      fetchMock,
+    );
+
+    expect("capabilities" in body).toBe(false);
   });
 });

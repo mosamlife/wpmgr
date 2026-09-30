@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { CONFERRABLE_READS } from "@/features/ai-connections/capabilities";
+
 // The consent screen's data model (ADR-064 S6b, design Step 7).
 //
 // WHY THIS FILE EXISTS SEPARATELY FROM THE SCREEN
@@ -369,4 +371,26 @@ export function describeScope(token: string): ScopeCopy {
  *  section (SCOPE_CACHE). */
 export function allScopesRecognised(scopes: readonly string[]): boolean {
   return scopes.every((s) => s === SCOPE_READ || s === SCOPE_CACHE);
+}
+
+/**
+ * The capability list an approval sends: every conferrable READ the server
+ * named that this build knows (CONFERRABLE_READS, the set the connection
+ * wizard's presets use), plus mcp.cache.purge only when the operator ticked
+ * its box and the server offered it. An empty result is returned as empty;
+ * the caller omits the key rather than send `[]`, which the server refuses.
+ */
+export function buildApprovalCapabilities(
+  conferrable: readonly ConferrableCapability[],
+  purgeTicked: boolean,
+): string[] {
+  const known: ReadonlySet<string> = new Set(CONFERRABLE_READS);
+  const out = conferrable
+    .filter((c) => c.effect === CAPABILITY_EFFECT_READ && known.has(c.name))
+    .map((c) => c.name);
+  const offersPurge = conferrable.some(
+    (c) => c.name === "mcp.cache.purge" && c.effect === CAPABILITY_EFFECT_REQUEST,
+  );
+  if (purgeTicked && offersPurge) out.push("mcp.cache.purge");
+  return out;
 }
