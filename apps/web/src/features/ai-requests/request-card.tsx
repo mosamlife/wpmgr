@@ -16,7 +16,7 @@ import {
 // The AI request card (tracka-cache-purge-design-v7 §2.6). Every field this
 // component renders is named in "Where each fact comes from" and is shown
 // as plain text: `site_label`, `site_host`, `grant_label`, `url` and
-// `site_reported_text` (folded into requestStatusLine's failure lines) are
+// `site_reported_text` (carried on requestStatusLine's `detail` for a failed clear) are
 // all site- or connection-supplied and none of them is ever markup, a link,
 // or interpolated into a sentence this component wrote.
 

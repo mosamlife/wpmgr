@@ -115,7 +115,9 @@ describe("setUpForLine", () => {
 
 describe("ifApproveCopy", () => {
   it("names the CDN removal only for a url-scoped clear", () => {
-    expect(ifApproveCopy("url")).toMatch(/removes this address from your CDN/);
+    expect(ifApproveCopy("url")).toMatch(
+      /If this site uses a CDN set up in WPMgr, it also removes this address from that CDN/,
+    );
   });
 
   it("never mentions a CDN for a whole-site clear", () => {
@@ -263,6 +265,71 @@ describe("requestStatusLine — one branch per row of the §2.6 table", () => {
       null,
     ).text;
     expect(new Set([failure, agentFailed, unknown]).size).toBe(3);
+  });
+
+  it("purged with a failed CDN step says the CDN copy may be stale", () => {
+    const line = requestStatusLine(
+      baseRequest({
+        state: "dispatched",
+        outcome: "purged",
+        outcome_at: "2026-09-29T09:44:00Z",
+        wpmgr_cdn: "failed",
+      }),
+      null,
+    );
+    expect(line.kind).toBe("done_purged");
+    expect(line.text).toMatch(/Cleared at /);
+    expect(line.text).toMatch(
+      /Removing it from your CDN failed, so visitors may see the old page until the CDN copy expires\./,
+    );
+  });
+
+  it("purged with a cleared, unconfigured or unattempted CDN says nothing about the CDN", () => {
+    for (const wpmgr_cdn of ["cleared", "not_configured", "not_attempted"] as const) {
+      const line = requestStatusLine(
+        baseRequest({ state: "dispatched", outcome: "purged", outcome_at: "2026-09-29T09:44:00Z", wpmgr_cdn }),
+        null,
+      );
+      expect(line.text).not.toMatch(/CDN/);
+    }
+  });
+
+  it("a site-reported failure carries the site's own text as data, unmodified", () => {
+    const said = "<b>disk full</b> & more";
+    const line = requestStatusLine(
+      baseRequest({ state: "dispatched", outcome: "site_reported_failure", site_reported_text: said }),
+      null,
+    );
+    expect(line.detail).toBe(`The site said: ${said}`);
+    const empty = requestStatusLine(
+      baseRequest({ state: "dispatched", outcome: "site_reported_failure", site_reported_text: "" }),
+      null,
+    );
+    expect(empty.detail).toBeUndefined();
+  });
+
+  it("a deadline close names the last attempt's reason", () => {
+    const line = requestStatusLine(
+      baseRequest({
+        state: "dispatched",
+        outcome: "not_sent",
+        not_sent_reason: "dispatch_deadline_passed",
+        last_attempt_code: "site_unreachable",
+      }),
+      null,
+    );
+    expect(line.text).toBe("Nothing was sent: not started within an hour of approval. Nothing ran.");
+    expect(line.detail).toBe("Last attempt: site agent not connected.");
+    const none = requestStatusLine(
+      baseRequest({
+        state: "dispatched",
+        outcome: "not_sent",
+        not_sent_reason: "dispatch_deadline_passed",
+        last_attempt_code: null,
+      }),
+      null,
+    );
+    expect(none.detail).toBeUndefined();
   });
 
   it("rejected reads 'Declined by <name>'", () => {
