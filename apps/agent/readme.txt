@@ -287,7 +287,7 @@ This plugin ships two minified JavaScript files. Their human-readable source and
 The entries below summarize the notable changes since 0.31.1. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
 
 = 0.61.154 =
-* Added: a read-only check the control plane can run to see which editor owns each page (the classic editor, the block editor, or a page builder) and whether it is a special page such as the blog index. It changes nothing on the site and reports no page content.
+* Added: a read-only check the control plane can run to see which editor owns each page (the classic editor, the block editor, or a page builder) and whether it is a special page such as the blog index. It changes nothing on the site. It does not send page body text or stored builder data; it sends published page titles, and for a single page, the display name of the last editor and of anyone currently editing it.
 
 = 0.61.153 =
 * Added: the plugin can now carry out a cache purge limited to this site's own page cache, skipping hosting and CDN cache integrations, and report which detected integrations ran and which were skipped, when the control plane requests it.
@@ -476,7 +476,7 @@ The entries below summarize the notable changes since 0.31.1. This project ships
 == Upgrade Notice ==
 
 = 0.61.154 =
-Adds a read-only check the control plane can run to see which editor owns each page and whether it is a special page. It changes nothing on the site and reports no page content.
+Adds a read-only check the control plane can run to see which editor owns each page and whether it is a special page. It changes nothing on the site and does not send page body text or stored builder data; it sends published page titles and, for a single page, editor display names.
 
 = 0.61.153 =
 The plugin can now carry out a cache purge limited to this site's own page cache, skipping hosting and CDN cache integrations, and report which integrations ran, when the control plane requests it.
