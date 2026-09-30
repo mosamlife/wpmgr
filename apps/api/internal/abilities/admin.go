@@ -1,10 +1,13 @@
 package abilities
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"regexp"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -155,6 +158,42 @@ func mapCatalogueErr(err error) error {
 	return err
 }
 
+// canonicalIntPattern is the only number spelling a catalogue JSON member may
+// use: an integer as Postgres's jsonb prints it. A float, an exponent (1e3)
+// or a leading zero would be re-spelled by jsonb on store, so the entry bytes
+// hashed from the request would differ from the bytes reproduced from the
+// stored row. The engine is integers-only anyway (v4 §2.2).
+var canonicalIntPattern = regexp.MustCompile(`^-?(0|[1-9][0-9]{0,17})$`)
+
+// requireCanonicalJSONNumbers refuses a JSON member holding a number jsonb
+// would re-spell.
+func requireCanonicalJSONNumbers(r sqlc.AbilityCatalogue) error {
+	for field, raw := range map[string][]byte{
+		"target": r.Target, "arg_render": r.ArgRender, "limits": r.Limits,
+		"integration_block": r.IntegrationBlock, "admission": r.Admission,
+	} {
+		if len(raw) == 0 {
+			continue
+		}
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		dec.UseNumber()
+		for {
+			tok, err := dec.Token()
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			if err != nil {
+				return domain.Validation("invalid_entry", field+" is not valid JSON")
+			}
+			if n, ok := tok.(json.Number); ok && !canonicalIntPattern.MatchString(n.String()) {
+				return domain.Validation("invalid_entry",
+					field+" may hold integers only, written plainly (for example 1000, not 1e3 or 1.0)")
+			}
+		}
+	}
+	return nil
+}
+
 // AdminRepo is the catalogue admin's database access.
 type AdminRepo struct{ pool *db.Pool }
 
@@ -205,6 +244,9 @@ func (r *AdminRepo) Upsert(ctx context.Context, actor uuid.UUID, entryID *uuid.U
 			return domain.Validation("invalid_entry", "name is required")
 		}
 		row := in.merge(base)
+		if err := requireCanonicalJSONNumbers(row); err != nil {
+			return err
+		}
 		_, sum, err := EntryBytes(row)
 		if err != nil {
 			return err

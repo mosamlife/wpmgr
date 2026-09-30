@@ -104,7 +104,7 @@ const (
 	msgAbilityAgentRefused = "the site refused the call"
 	msgAbilityOutdated     = "This site's WPMgr agent is too old to run abilities. The agent must be updated to " +
 		agentcmd.MinAgentVersionForAbilityEngine + " or later."
-	msgAbilityRequestAbsent = "no such request for this connection"
+	msgAbilityRequestAbsent  = "no such request for this connection"
 	msgAbilityNotInventoried = "WPMgr has not read this site's abilities yet. A check has been queued; " +
 		"try again in a few minutes."
 )
@@ -405,18 +405,17 @@ func (s *Service) requireAbilityEngine() (*abilityEngine, error) {
 // ---------------------------------------------------------------------------
 
 type classified struct {
-	name        string
-	class       string
-	source      string
-	title       *string
-	runnable    bool
-	reason      *string
-	approval    string
-	entry       *sqlc.AbilityCatalogue
-	inventory   *sqlc.SiteAbilityInventory
-	wpmgrFirst  bool
-	classOrder  int
-	displayName string
+	name       string
+	class      string
+	source     string
+	title      *string
+	runnable   bool
+	reason     *string
+	approval   string
+	entry      *sqlc.AbilityCatalogue
+	inventory  *sqlc.SiteAbilityInventory
+	wpmgrFirst bool
+	classOrder int
 }
 
 func abilityStrPtr(s string) *string { return &s }
@@ -574,18 +573,31 @@ func (s *Service) siteClassified(ctx context.Context, eng *abilityEngine, site a
 // page, keyed by site_id.
 // ---------------------------------------------------------------------------
 
-func (e *abilityEngine) sealCursor(grantID, siteID, snapshot uuid.UUID, offset int) string {
-	body := snapshot.String() + ":" + strconv.Itoa(offset)
-	return base64.RawURLEncoding.EncodeToString([]byte(body)) + "." + e.cursorMAC(grantID, siteID, body)
+// discoverFilters is the filter set a page was cut with. The cursor's MAC
+// covers it, so a cursor used with different filters is refused rather than
+// silently indexing into a different list.
+type discoverFilters struct {
+	class, namespace, query string
 }
 
-func (e *abilityEngine) cursorMAC(grantID, siteID uuid.UUID, body string) string {
+func (f discoverFilters) key() string {
+	// JSON of three strings: unambiguous, whatever the query holds.
+	b, _ := json.Marshal([]string{f.class, f.namespace, f.query})
+	return string(b)
+}
+
+func (e *abilityEngine) sealCursor(grantID, siteID uuid.UUID, f discoverFilters, snapshot uuid.UUID, offset int) string {
+	body := snapshot.String() + ":" + strconv.Itoa(offset)
+	return base64.RawURLEncoding.EncodeToString([]byte(body)) + "." + e.cursorMAC(grantID, siteID, f, body)
+}
+
+func (e *abilityEngine) cursorMAC(grantID, siteID uuid.UUID, f discoverFilters, body string) string {
 	m := hmac.New(sha256.New, e.cursorKey)
-	m.Write([]byte(grantID.String() + "|" + siteID.String() + "|" + body))
+	m.Write([]byte(grantID.String() + "|" + siteID.String() + "|" + f.key() + "|" + body))
 	return base64.RawURLEncoding.EncodeToString(m.Sum(nil))
 }
 
-func (e *abilityEngine) openCursor(grantID, siteID uuid.UUID, cursor string) (uuid.UUID, int, bool) {
+func (e *abilityEngine) openCursor(grantID, siteID uuid.UUID, f discoverFilters, cursor string) (uuid.UUID, int, bool) {
 	enc, mac, ok := strings.Cut(cursor, ".")
 	if !ok || len(cursor) > 512 {
 		return uuid.Nil, 0, false
@@ -595,7 +607,7 @@ func (e *abilityEngine) openCursor(grantID, siteID uuid.UUID, cursor string) (uu
 		return uuid.Nil, 0, false
 	}
 	body := string(raw)
-	if !hmac.Equal([]byte(mac), []byte(e.cursorMAC(grantID, siteID, body))) {
+	if !hmac.Equal([]byte(mac), []byte(e.cursorMAC(grantID, siteID, f, body))) {
 		return uuid.Nil, 0, false
 	}
 	snap, off, ok := strings.Cut(body, ":")
@@ -711,9 +723,10 @@ func (s *Service) discoverSiteAbilities(ctx context.Context, auth AuthorizedRequ
 		snapshot = run.SnapshotID
 	}
 	offset := 0
+	filters := discoverFilters{class: class, namespace: ns, query: query}
 	if hasCursor {
-		snap, off, ok := eng.openCursor(auth.GrantID, site.row.ID, cursor)
-		if !ok || snap != snapshot || snapshot == uuid.Nil {
+		snap, off, ok := eng.openCursor(auth.GrantID, site.row.ID, filters, cursor)
+		if !ok || snap != snapshot {
 			return "", cursorRefusal()
 		}
 		offset = off
@@ -780,8 +793,11 @@ func (s *Service) discoverSiteAbilities(ctx context.Context, auth AuthorizedRequ
 		used += len(b) + 1
 		res.Abilities = append(res.Abilities, d)
 	}
-	if i < len(filtered) && snapshot != uuid.Nil {
-		next := eng.sealCursor(auth.GrantID, site.row.ID, snapshot, i)
+	if i < len(filtered) {
+		// Before the first inventory the snapshot is the nil id: the listed
+		// entries are then derived from the catalogue alone, and the first
+		// real run changes the snapshot, which expires this cursor.
+		next := eng.sealCursor(auth.GrantID, site.row.ID, filters, snapshot, i)
 		res.NextCursor = &next
 	}
 	b, err := json.Marshal(res)
@@ -1222,7 +1238,7 @@ func (s *Service) runSiteAbility(ctx context.Context, auth AuthorizedRequest, ra
 	// The read limits (v4 §1.4), per connection: 30 a minute per site, 600 a
 	// day. Log only, like the request tool's per-process limits.
 	if d := eng.readLimit.allow(auth.GrantID, site.row.ID); !d.allowed {
-		r := refuse(reasonRequestRateLimited, domain.RateLimited(ErrCodeRequestLimited, msgLimited).
+		r := refuse(reasonRequestRateLimited, domain.RateLimited(ErrCodeRequestLimited, msgAbilityReadLimited).
 			WithDetails(map[string]any{
 				"limit_scope":         d.scope,
 				"retry_after_seconds": int(d.retryAfter / time.Second),
@@ -1323,8 +1339,8 @@ var ownAbilityOutputShapes = map[string]*outShape{
 	}),
 	"wpmgr/site-facts": obj(map[string]*outShape{
 		"wp_version": leaf, "php_version": leaf, "multisite": leaf, "agent_version": leaf,
-		"abilities_api": obj(map[string]*outShape{"present": leaf, "filters_71": leaf}),
-		"active_theme":  obj(map[string]*outShape{"template": leaf, "stylesheet": leaf}),
+		"abilities_api":  obj(map[string]*outShape{"present": leaf, "filters_71": leaf}),
+		"active_theme":   obj(map[string]*outShape{"template": leaf, "stylesheet": leaf}),
 		"active_plugins": list(leaf),
 		"builder_hints":  list(leaf),
 	}),

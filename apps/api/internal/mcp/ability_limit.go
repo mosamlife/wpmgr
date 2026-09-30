@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"strconv"
 	"sync"
 	"time"
 
@@ -19,6 +20,12 @@ const (
 
 	abilityLimitKeyCap = 10000
 )
+
+// msgAbilityReadLimited is the model-facing text for a refused read. It names
+// the limits from the constants above, so the text cannot drift from them.
+var msgAbilityReadLimited = "too many ability reads: this connection may run " +
+	strconv.Itoa(abilityReadPerMinute) + " a minute on one site and " + strconv.Itoa(abilityReadPerDay) +
+	" a day; wait retry_after_seconds and try again"
 
 type windowCount struct {
 	start time.Time
