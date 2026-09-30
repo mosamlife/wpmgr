@@ -4,7 +4,7 @@ Tags: backup, security, performance, updates, site management
 Requires at least: 6.2
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 0.61.154
+Stable tag: 0.61.155
 License: MIT
 License URI: https://opensource.org/licenses/MIT
 
@@ -286,6 +286,9 @@ This plugin ships two minified JavaScript files. Their human-readable source and
 
 The entries below summarize the notable changes since 0.31.1. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
 
+= 0.61.155 =
+* Added: a signed command the control plane uses to list the tools (abilities) a site registers, and to run WPMgr's own read-only abilities: list the site's abilities, report site facts, and read the text of a published page. It changes nothing on the site. It sends the names, labels and descriptions of registered abilities, with each one's owner type, site facts (WordPress and PHP versions, theme and active plugin names), and, for a published page without a password that the control plane asks for, that page's title and text.
+
 = 0.61.154 =
 * Added: a read-only check the control plane can run to see which editor owns each page (the classic editor, the block editor, or a page builder) and whether it is a special page such as the blog index. It changes nothing on the site. It does not send page body text or stored builder data; it sends published page titles, and for a single page, the display name of the last editor and of anyone currently editing it.
 
@@ -474,6 +477,9 @@ The entries below summarize the notable changes since 0.31.1. This project ships
 * New: WOFF2 font transcoding. TTF, OTF and WOFF are converted on the control plane; the flag defaults to off.
 
 == Upgrade Notice ==
+
+= 0.61.155 =
+Adds a signed command the control plane uses to list the tools (abilities) a site registers and to run WPMgr's own read-only abilities. It changes nothing on the site. It sends the names, labels and descriptions of registered abilities, with each one's owner type, site facts (WordPress and PHP versions, theme and active plugin names), and, for a published page without a password that the control plane asks for, that page's title and text.
 
 = 0.61.154 =
 Adds a read-only check the control plane can run to see which editor owns each page and whether it is a special page. It changes nothing on the site and does not send page body text or stored builder data; it sends published page titles and, for a single page, editor display names.
