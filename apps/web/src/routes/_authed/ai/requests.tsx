@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { toast } from "sonner";
 import type { AssistantRequest } from "@wpmgr/api";
 
+import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/shared/page-header";
 import { PageError } from "@/components/feedback/page-error";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -9,7 +10,7 @@ import { useMe } from "@/features/auth/use-auth";
 import { AiAreaTabs } from "@/features/ai-requests/ai-area-tabs";
 import { RequestCard } from "@/features/ai-requests/request-card";
 import {
-  useAssistantRequests,
+  useAssistantRequestPages,
   useApproveAssistantRequest,
   useDeclineAssistantRequest,
 } from "@/features/ai-requests/use-ai-requests";
@@ -31,12 +32,21 @@ export const Route = createFileRoute("/_authed/ai/requests")({
 });
 
 function AiRequestsPage() {
-  const query = useAssistantRequests();
+  const query = useAssistantRequestPages();
   const approve = useApproveAssistantRequest();
   const decline = useDeclineAssistantRequest();
   const { data: me } = useMe();
 
-  const requests = query.data?.requests ?? [];
+  const loaded = query.data?.pages.flatMap((p) => p.requests) ?? [];
+  // Pending first, then decided, each keeping the server's newest-first order.
+  const requests = [
+    ...loaded.filter((r) => r.state === "pending"),
+    ...loaded.filter((r) => r.state !== "pending"),
+  ];
+  // pending_count is the server's whole-queue figure; when it exceeds what is
+  // loaded, a pending request is still on a later page.
+  const pendingCount = query.data?.pages[0]?.pending_count ?? 0;
+  const pendingLoaded = loaded.filter((r) => r.state === "pending").length;
   // Decline is the default-focused control on the FIRST pending card only
   // (ADR-061 :554-557) -- autofocusing every card in the list would just
   // hand focus to whichever one renders last.
@@ -114,6 +124,22 @@ function AiRequestsPage() {
               autoFocusDecline={request.id === firstPendingId}
             />
           ))}
+          {pendingCount > pendingLoaded && (
+            <p role="status" data-testid="ai-requests-more-pending" className="text-sm text-muted-foreground">
+              {pendingCount - pendingLoaded} more waiting on older pages. Show more to reach them.
+            </p>
+          )}
+          {query.hasNextPage && (
+            <Button
+              type="button"
+              variant="outline"
+              data-testid="ai-requests-show-more"
+              disabled={query.isFetchingNextPage}
+              onClick={() => void query.fetchNextPage()}
+            >
+              {query.isFetchingNextPage ? "Loading..." : "Show more"}
+            </Button>
+          )}
         </div>
       )}
     </div>
