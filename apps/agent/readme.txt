@@ -287,7 +287,7 @@ This plugin ships two minified JavaScript files. Their human-readable source and
 The entries below summarize the notable changes since 0.31.1. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
 
 = 0.61.153 =
-* Added: a cache purge requested by the control plane can now be limited to this site's own page cache, skipping hosting and CDN cache integrations. When it is, the plugin reports which detected integrations ran and which were skipped.
+* Added: the plugin can now carry out a cache purge limited to this site's own page cache, skipping hosting and CDN cache integrations, and report which detected integrations ran and which were skipped, when the control plane requests it.
 * Fixed: clearing the cache for a page address that uses a non-default port now targets the same cache entry that page was stored under.
 
 = 0.61.152 =
@@ -473,7 +473,7 @@ The entries below summarize the notable changes since 0.31.1. This project ships
 == Upgrade Notice ==
 
 = 0.61.153 =
-A cache purge can now be limited to this site's own page cache, skipping hosting and CDN integrations, and the plugin reports which integrations ran.
+The plugin can now carry out a cache purge limited to this site's own page cache, skipping hosting and CDN cache integrations, and report which integrations ran, when the control plane requests it.
 
 = 0.61.152 =
 Detects when a stored key no longer opens, shows an admin notice naming which and what to do, and refuses a backup with a clear reason when the backup key cannot be used.
