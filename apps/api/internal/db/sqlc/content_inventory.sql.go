@@ -193,6 +193,32 @@ func (q *Queries) FleetContentShareByVerdict(ctx context.Context) ([]FleetConten
 	return items, nil
 }
 
+const getSiteContentInventoryRun = `-- name: GetSiteContentInventoryRun :one
+SELECT tenant_id, site_id, checked_at, pages_stored, truncated FROM site_content_inventory_runs
+WHERE tenant_id = $1::uuid
+  AND site_id = $2::uuid
+`
+
+type GetSiteContentInventoryRunParams struct {
+	TenantID uuid.UUID `json:"tenant_id"`
+	SiteID   uuid.UUID `json:"site_id"`
+}
+
+// The site's last refresh. pgx.ErrNoRows means the site has never been
+// refreshed.
+func (q *Queries) GetSiteContentInventoryRun(ctx context.Context, arg GetSiteContentInventoryRunParams) (SiteContentInventoryRun, error) {
+	row := q.db.QueryRow(ctx, getSiteContentInventoryRun, arg.TenantID, arg.SiteID)
+	var i SiteContentInventoryRun
+	err := row.Scan(
+		&i.TenantID,
+		&i.SiteID,
+		&i.CheckedAt,
+		&i.PagesStored,
+		&i.Truncated,
+	)
+	return i, err
+}
+
 const listContentIntegrationAudit = `-- name: ListContentIntegrationAudit :many
 SELECT id, integration_id, action, actor_user_id, before_sha256, after_sha256, before_enabled, after_enabled, at FROM content_integrations_audit
 WHERE integration_id = $1::text
@@ -481,4 +507,36 @@ func (q *Queries) UpsertSiteContentInventory(ctx context.Context, arg UpsertSite
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const upsertSiteContentInventoryRun = `-- name: UpsertSiteContentInventoryRun :exec
+INSERT INTO site_content_inventory_runs (tenant_id, site_id, checked_at, pages_stored, truncated)
+VALUES ($1::uuid, $2::uuid, $3::timestamptz,
+        $4::int, $5::boolean)
+ON CONFLICT (site_id) DO UPDATE SET
+    checked_at = EXCLUDED.checked_at,
+    pages_stored = EXCLUDED.pages_stored,
+    truncated = EXCLUDED.truncated
+`
+
+type UpsertSiteContentInventoryRunParams struct {
+	TenantID    uuid.UUID `json:"tenant_id"`
+	SiteID      uuid.UUID `json:"site_id"`
+	CheckedAt   time.Time `json:"checked_at"`
+	PagesStored int32     `json:"pages_stored"`
+	Truncated   bool      `json:"truncated"`
+}
+
+// Records one refresh of one site. Call it in the SAME tenant transaction as
+// UpsertSiteContentInventory and DeleteStaleSiteContentInventory, with the
+// same checked_at, so the record and the rows commit or roll back together.
+func (q *Queries) UpsertSiteContentInventoryRun(ctx context.Context, arg UpsertSiteContentInventoryRunParams) error {
+	_, err := q.db.Exec(ctx, upsertSiteContentInventoryRun,
+		arg.TenantID,
+		arg.SiteID,
+		arg.CheckedAt,
+		arg.PagesStored,
+		arg.Truncated,
+	)
+	return err
 }

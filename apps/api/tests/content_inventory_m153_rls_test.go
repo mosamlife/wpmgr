@@ -418,3 +418,84 @@ func TestContentInventoryAgentCannotReadTitlesAsAppRole(t *testing.T) {
 		t.Fatalf("agent session: %v", err)
 	}
 }
+
+// m153RecordRun writes one refresh record through the shipped statement.
+func m153RecordRun(t *testing.T, pool *db.Pool, tenant, site uuid.UUID, pages int32, truncated bool) {
+	t.Helper()
+	if err := pool.RunTenantTx(context.Background(), m153Principal(tenant), func(tx pgx.Tx) error {
+		mcpAssertAndReportRole(t, tx, "RunTenantTx (m153 run record)")
+		return sqlc.New(tx).UpsertSiteContentInventoryRun(context.Background(), sqlc.UpsertSiteContentInventoryRunParams{
+			TenantID: tenant, SiteID: site, CheckedAt: time.Now().UTC(), PagesStored: pages, Truncated: truncated,
+		})
+	}); err != nil {
+		t.Fatalf("record run for site %s: %v", site, err)
+	}
+}
+
+// TestContentInventoryRunsIsolationAsAppRole proves site_content_inventory_runs
+// is invisible to another tenant and, under site scope, to a principal scoped
+// to a different site, and that the upsert replaces the record.
+func TestContentInventoryRunsIsolationAsAppRole(t *testing.T) {
+	ctx := context.Background()
+	pool := startPostgres(t)
+
+	tenantA := seedTenant(t, pool, "m153-ra-"+uuid.NewString()[:8])
+	tenantB := seedTenant(t, pool, "m153-rb-"+uuid.NewString()[:8])
+	s1 := seedSite(t, pool, tenantA, "")
+	s2 := seedSite(t, pool, tenantA, "")
+	m153RecordRun(t, pool, tenantA, s1, 10, false)
+	m153RecordRun(t, pool, tenantA, s2, 5000, true)
+	m153RecordRun(t, pool, tenantA, s1, 12, false) // replaces s1's record
+
+	countRuns := func(tx pgx.Tx, site uuid.UUID) int {
+		var n int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM site_content_inventory_runs WHERE site_id = $1`, site).Scan(&n); err != nil {
+			t.Fatalf("count runs: %v", err)
+		}
+		return n
+	}
+
+	if err := pool.InTenantTx(ctx, tenantB, func(tx pgx.Tx) error {
+		mcpAssertAndReportRole(t, tx, "InTenantTx (foreign tenant, runs)")
+		if n := countRuns(tx, s1); n != 0 {
+			t.Fatalf("TENANCY LEAK: tenant B sees %d run records of tenant A's site %s", n, s1)
+		}
+		_, err := sqlc.New(tx).GetSiteContentInventoryRun(ctx, sqlc.GetSiteContentInventoryRunParams{TenantID: tenantA, SiteID: s1})
+		if !errors.Is(err, pgx.ErrNoRows) {
+			t.Fatalf("TENANCY LEAK: GetSiteContentInventoryRun for tenant A from tenant B returned %v, want no rows", err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("foreign tenant read: %v", err)
+	}
+
+	if err := pool.RunTenantTx(ctx, m153Principal(tenantA, s1), func(tx pgx.Tx) error {
+		mcpAssertAndReportRole(t, tx, "RunTenantTx (single site S1, runs)")
+		if n := countRuns(tx, s2); n != 0 {
+			t.Fatalf("SITE-SCOPE LEAK: a principal scoped to %s sees %d run records of %s", s1, n, s2)
+		}
+		run, err := sqlc.New(tx).GetSiteContentInventoryRun(ctx, sqlc.GetSiteContentInventoryRunParams{TenantID: tenantA, SiteID: s1})
+		if err != nil {
+			return err
+		}
+		if run.PagesStored != 12 || run.Truncated {
+			t.Fatalf("S1 run record %+v, want 12 pages, not truncated (the upsert replaces)", run)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("site-scoped read: %v", err)
+	}
+
+	if err := pool.RunTenantTx(ctx, m153Principal(tenantA), func(tx pgx.Tx) error {
+		run, err := sqlc.New(tx).GetSiteContentInventoryRun(ctx, sqlc.GetSiteContentInventoryRunParams{TenantID: tenantA, SiteID: s2})
+		if err != nil {
+			return err
+		}
+		if run.PagesStored != 5000 || !run.Truncated {
+			t.Fatalf("S2 run record %+v, want 5000 pages, truncated", run)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("org read (positive control): %v", err)
+	}
+}

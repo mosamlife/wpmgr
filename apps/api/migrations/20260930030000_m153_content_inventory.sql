@@ -574,3 +574,83 @@ REVOKE ALL ON FUNCTION "public"."fleet_content_share_by_verdict"() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION "public"."fleet_content_share_by_verdict"() TO "wpmgr_app";
 REVOKE ALL ON FUNCTION "public"."fleet_content_share_by_builder"() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION "public"."fleet_content_share_by_builder"() TO "wpmgr_app";
+
+-- ---------------------------------------------------------------------------
+-- site_content_inventory_runs: the last refresh per site
+-- ---------------------------------------------------------------------------
+--
+-- One row per site, written in the SAME tenant transaction as that refresh's
+-- inventory upsert, so the API can say truthfully whether the stored list was
+-- cut off at the page cap, on every instance and after a restart. Same
+-- tenancy as site_content_inventory: FORCE RLS, tenant_isolation, the
+-- RESTRICTIVE site_scope, no cross-tenant policy. Cascades with the site: it
+-- describes rows that cascade with it. No DELETE for wpmgr_app (the row is
+-- replaced by upsert, and goes with its site); TRUNCATE revoked.
+
+CREATE TABLE IF NOT EXISTS "public"."site_content_inventory_runs" (
+    "tenant_id" uuid NOT NULL
+        REFERENCES "public"."tenants" ("id") ON DELETE CASCADE,
+    "site_id" uuid PRIMARY KEY,
+    CONSTRAINT "site_content_inventory_runs_site_within_tenant_fkey"
+        FOREIGN KEY ("tenant_id", "site_id")
+        REFERENCES "public"."sites" ("tenant_id", "id") ON DELETE CASCADE,
+    "checked_at" timestamptz NOT NULL,
+    "pages_stored" integer NOT NULL
+        CONSTRAINT "site_content_inventory_runs_pages_stored_check"
+        CHECK ("pages_stored" >= 0),
+    "truncated" boolean NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS "site_content_inventory_runs_tenant_idx"
+    ON "public"."site_content_inventory_runs" ("tenant_id");
+
+ALTER TABLE "public"."site_content_inventory_runs" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "public"."site_content_inventory_runs" FORCE ROW LEVEL SECURITY;
+
+GRANT SELECT, INSERT, UPDATE ON "public"."site_content_inventory_runs" TO "wpmgr_app";
+REVOKE DELETE, TRUNCATE ON "public"."site_content_inventory_runs" FROM "wpmgr_app";
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_policies
+        WHERE schemaname = 'public' AND tablename = 'site_content_inventory_runs'
+          AND policyname = 'site_content_inventory_runs_tenant_isolation'
+    ) THEN
+        CREATE POLICY "site_content_inventory_runs_tenant_isolation"
+            ON "public"."site_content_inventory_runs"
+            USING ("tenant_id" = nullif(current_setting('app.tenant_id', true), '')::uuid)
+            WITH CHECK ("tenant_id" = nullif(current_setting('app.tenant_id', true), '')::uuid);
+    END IF;
+END;
+$$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_policies
+        WHERE schemaname = 'public' AND tablename = 'site_content_inventory_runs'
+          AND policyname = 'site_content_inventory_runs_site_scope'
+    ) THEN
+        CREATE POLICY "site_content_inventory_runs_site_scope"
+            ON "public"."site_content_inventory_runs"
+            AS RESTRICTIVE FOR ALL
+            USING (
+                coalesce(current_setting('app.site_scope', true), '') <> 'on'
+                OR "site_id" = ANY (
+                    string_to_array(
+                        nullif(current_setting('app.allowed_site_ids', true), ''), ','
+                    )::uuid[]
+                )
+            )
+            WITH CHECK (
+                coalesce(current_setting('app.site_scope', true), '') <> 'on'
+                OR "site_id" = ANY (
+                    string_to_array(
+                        nullif(current_setting('app.allowed_site_ids', true), ''), ','
+                    )::uuid[]
+                )
+            );
+    END IF;
+END;
+$$;

@@ -1080,6 +1080,14 @@ type SiteContentInventory struct {
 	CheckedAt          time.Time `json:"checked_at"`
 }
 
+type SiteContentInventoryRun struct {
+	TenantID    uuid.UUID `json:"tenant_id"`
+	SiteID      uuid.UUID `json:"site_id"`
+	CheckedAt   time.Time `json:"checked_at"`
+	PagesStored int32     `json:"pages_stored"`
+	Truncated   bool      `json:"truncated"`
+}
+
 type SiteContextVersion struct {
 	ID                    uuid.UUID   `json:"id"`
 	TenantID              uuid.UUID   `json:"tenant_id"`
