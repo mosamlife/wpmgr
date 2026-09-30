@@ -98,7 +98,7 @@ func TestValidate_EveryStoredEnumIsInTheClosedSets(t *testing.T) {
 
 func TestValidate_TitleIsCleanedCappedAndOnlyForPublished(t *testing.T) {
 	r := goodRow(1)
-	r.Title = sp("  Sale‮\u0000 now\n\t on  " + strings.Repeat("é", 200))
+	r.Title = sp("  Sale\u202e\u0000 now\n\t on  " + strings.Repeat("é", 200))
 	rows, _, err := ValidateListResponse(okResp(r), 200, types, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -107,7 +107,7 @@ func TestValidate_TitleIsCleanedCappedAndOnlyForPublished(t *testing.T) {
 	if len(got) > 120 {
 		t.Errorf("title %d bytes, want at most 120", len(got))
 	}
-	if strings.ContainsAny(got, "‮\x00\n\t") || strings.Contains(got, "  ") {
+	if strings.ContainsAny(got, "\u202e\x00\n\t") || strings.Contains(got, "  ") {
 		t.Errorf("title not cleaned: %q", got)
 	}
 	if !strings.HasPrefix(got, "Sale now on") {

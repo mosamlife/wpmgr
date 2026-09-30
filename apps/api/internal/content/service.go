@@ -413,67 +413,64 @@ func (s *Service) UpsertIntegration(ctx context.Context, in AdminUpsertInput) (I
 	if in.Status != "detect_only" {
 		return IntegrationRecord{}, domain.Validation("invalid_status", "status must be detect_only")
 	}
-	// Fields the request omitted keep their stored values, so switching a
-	// builder off or on never erases its detection data.
-	if in.Present != nil {
-		existing, err := s.repo.ListIntegrations(ctx, in.ActorUserID)
+	finalize := func(existing *IntegrationRecord, in AdminUpsertInput) (AdminUpsertInput, error) {
+		// Fields the request omitted keep their stored values, so switching a
+		// builder off or on never erases its detection data.
+		if in.Present != nil && existing != nil {
+			{
+				e := existing
+				if !in.Present["descriptor"] {
+					in.Descriptor = e.Descriptor
+				}
+				if !in.Present["abilities"] {
+					in.Abilities = e.Abilities
+				}
+				if !in.Present["min_version"] {
+					in.MinVersion = e.MinVersion
+				}
+				if !in.Present["max_tested_version"] {
+					in.MaxTestedVersion = e.MaxTestedVersion
+				}
+				if !in.Present["min_wp_version"] {
+					in.MinWPVersion = e.MinWPVersion
+				}
+				if !in.Present["theme_slug"] {
+					in.ThemeSlug = e.ThemeSlug
+				}
+			}
+		}
+		if string(bytes.TrimSpace(in.Abilities)) == "null" {
+			in.Abilities = nil
+		}
+		if len(in.Descriptor) == 0 {
+			in.Descriptor = []byte(`{}`)
+		}
+		var d map[string]json.RawMessage
+		if err := json.Unmarshal(in.Descriptor, &d); err != nil || d == nil {
+			return AdminUpsertInput{}, domain.Validation("invalid_descriptor", "descriptor must be a JSON object")
+		}
+		for k := range d {
+			if _, ok := descriptorKeys[k]; !ok {
+				return AdminUpsertInput{}, domain.Validation("invalid_descriptor", "descriptor has a field the agent does not accept")
+			}
+		}
+		if len(in.Descriptor) > 16<<10 {
+			return AdminUpsertInput{}, domain.Validation("invalid_descriptor", "descriptor is too large")
+		}
+		if in.ThemeSlug != nil && *in.ThemeSlug != "" && !slugRe.MatchString(*in.ThemeSlug) {
+			return AdminUpsertInput{}, domain.Validation("invalid_theme_slug", "theme_slug is not a valid theme directory name")
+		}
+		if in.ThemeSlug != nil && *in.ThemeSlug == "" {
+			in.ThemeSlug = nil
+		}
+		sum, err := EntrySHA256(in)
 		if err != nil {
-			return IntegrationRecord{}, err
+			return AdminUpsertInput{}, domain.Validation("invalid_entry", "entry is not valid JSON")
 		}
-		for _, e := range existing {
-			if e.IntegrationID != in.IntegrationID {
-				continue
-			}
-			if !in.Present["descriptor"] {
-				in.Descriptor = e.Descriptor
-			}
-			if !in.Present["abilities"] {
-				in.Abilities = e.Abilities
-			}
-			if !in.Present["min_version"] {
-				in.MinVersion = e.MinVersion
-			}
-			if !in.Present["max_tested_version"] {
-				in.MaxTestedVersion = e.MaxTestedVersion
-			}
-			if !in.Present["min_wp_version"] {
-				in.MinWPVersion = e.MinWPVersion
-			}
-			if !in.Present["theme_slug"] {
-				in.ThemeSlug = e.ThemeSlug
-			}
-		}
+		in.IntegrationEntrySHA256 = sum
+		return in, nil
 	}
-	if string(bytes.TrimSpace(in.Abilities)) == "null" {
-		in.Abilities = nil
-	}
-	if len(in.Descriptor) == 0 {
-		in.Descriptor = []byte(`{}`)
-	}
-	var d map[string]json.RawMessage
-	if err := json.Unmarshal(in.Descriptor, &d); err != nil || d == nil {
-		return IntegrationRecord{}, domain.Validation("invalid_descriptor", "descriptor must be a JSON object")
-	}
-	for k := range d {
-		if _, ok := descriptorKeys[k]; !ok {
-			return IntegrationRecord{}, domain.Validation("invalid_descriptor", "descriptor has a field the agent does not accept")
-		}
-	}
-	if len(in.Descriptor) > 16<<10 {
-		return IntegrationRecord{}, domain.Validation("invalid_descriptor", "descriptor is too large")
-	}
-	if in.ThemeSlug != nil && *in.ThemeSlug != "" && !slugRe.MatchString(*in.ThemeSlug) {
-		return IntegrationRecord{}, domain.Validation("invalid_theme_slug", "theme_slug is not a valid theme directory name")
-	}
-	if in.ThemeSlug != nil && *in.ThemeSlug == "" {
-		in.ThemeSlug = nil
-	}
-	sum, err := EntrySHA256(in)
-	if err != nil {
-		return IntegrationRecord{}, domain.Validation("invalid_entry", "entry is not valid JSON")
-	}
-	in.IntegrationEntrySHA256 = sum
-	rec, err := s.repo.AdminUpsertIntegration(ctx, in)
+	rec, err := s.repo.AdminUpsertIntegration(ctx, in, finalize)
 	if err != nil {
 		return IntegrationRecord{}, mapAdminErr(err)
 	}

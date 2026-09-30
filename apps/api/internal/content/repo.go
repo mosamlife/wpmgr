@@ -37,7 +37,10 @@ type Repo interface {
 	// ListSweepSites enumerates the connected, unpaused sites across tenants.
 	ListSweepSites(ctx context.Context) ([]SweepSite, error)
 	// AdminUpsertIntegration calls the superadmin-only SQL writer.
-	AdminUpsertIntegration(ctx context.Context, in AdminUpsertInput) (IntegrationRecord, error)
+	// The stored row is read, merged by finalize and written in ONE transaction
+	// under a per-integration lock, so concurrent updates cannot re-write a
+	// stale row. existing is nil for a new integration.
+	AdminUpsertIntegration(ctx context.Context, in AdminUpsertInput, finalize func(existing *IntegrationRecord, in AdminUpsertInput) (AdminUpsertInput, error)) (IntegrationRecord, error)
 	// ListIntegrations reads every allowlist row (enabled or not).
 	ListIntegrations(ctx context.Context, actor uuid.UUID) ([]IntegrationRecord, error)
 }
@@ -270,11 +273,29 @@ type AdminUpsertInput struct {
 	Present map[string]bool
 }
 
-func (r *pgRepo) AdminUpsertIntegration(ctx context.Context, in AdminUpsertInput) (IntegrationRecord, error) {
+func (r *pgRepo) AdminUpsertIntegration(ctx context.Context, in AdminUpsertInput, finalize func(existing *IntegrationRecord, in AdminUpsertInput) (AdminUpsertInput, error)) (IntegrationRecord, error) {
 	var out IntegrationRecord
 	// The SQL function refuses unless actor_user_id names a superadmin; any
 	// transaction reaches it. InUserTx keeps the actor on the tx for audit.
 	err := r.pool.InUserTx(ctx, in.ActorUserID, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('content_integration'), hashtext($1))`, in.IntegrationID); err != nil {
+			return err
+		}
+		var existing *IntegrationRecord
+		rows, err := sqlc.New(tx).ListContentIntegrations(ctx)
+		if err != nil {
+			return err
+		}
+		for _, e := range rows {
+			if e.IntegrationID == in.IntegrationID {
+				rec := toRecord(e)
+				existing = &rec
+			}
+		}
+		in, err = finalize(existing, in)
+		if err != nil {
+			return err
+		}
 		sha := in.IntegrationEntrySHA256
 		row, err := sqlc.New(tx).AdminUpsertContentIntegration(ctx, sqlc.AdminUpsertContentIntegrationParams{
 			ActorUserID: in.ActorUserID, IntegrationID: in.IntegrationID, DisplayName: in.DisplayName,

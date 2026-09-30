@@ -86,7 +86,7 @@ func toFleetReportDTO(r FleetReport) fleetReportDTO {
 		out.ByVerdict = append(out.ByVerdict, fleetVerdictDTO{Verdict: v.Verdict, RouteNumber: int(v.RouteNumber), Pages: v.Pages, Sites: v.Sites})
 	}
 	for _, b := range r.ByBuilder {
-		out.ByBuilder = append(out.ByBuilder, fleetBuilderDTO{IntegrationID: b.IntegrationID, Version: b.Version, Pages: b.Pages, Sites: b.Sites})
+		out.ByBuilder = append(out.ByBuilder, fleetBuilderDTO(b))
 	}
 	return out
 }

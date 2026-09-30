@@ -26,16 +26,18 @@ import (
 
 // fakeRepo records what the service stores.
 type fakeRepo struct {
-	mu           sync.Mutex
-	target       SiteTarget
-	integrations []Integration
-	replaced     [][]Row
-	truncated    []bool
-	deleteStale  []bool
-	stored       []IntegrationRecord
-	run          *Run
-	checkedAt    []time.Time
-	sweep        []SweepSite
+	mu                  sync.Mutex
+	target              SiteTarget
+	integrations        []Integration
+	replaced            [][]Row
+	truncated           []bool
+	deleteStale         []bool
+	listCalls           int
+	finalizeSawExisting []bool
+	stored              []IntegrationRecord
+	run                 *Run
+	checkedAt           []time.Time
+	sweep               []SweepSite
 }
 
 func (f *fakeRepo) GetSiteTarget(context.Context, uuid.UUID, uuid.UUID) (SiteTarget, error) {
@@ -63,13 +65,24 @@ func (f *fakeRepo) GetRun(context.Context, domain.Principal, uuid.UUID) (*Run, e
 	return f.run, nil
 }
 func (f *fakeRepo) ListSweepSites(context.Context) ([]SweepSite, error) { return f.sweep, nil }
-func (f *fakeRepo) AdminUpsertIntegration(_ context.Context, in AdminUpsertInput) (IntegrationRecord, error) {
+func (f *fakeRepo) AdminUpsertIntegration(_ context.Context, in AdminUpsertInput, finalize func(*IntegrationRecord, AdminUpsertInput) (AdminUpsertInput, error)) (IntegrationRecord, error) {
+	var existing *IntegrationRecord
+	if len(f.stored) == 1 && f.stored[0].IntegrationID == in.IntegrationID {
+		e := f.stored[0]
+		existing = &e
+	}
+	f.finalizeSawExisting = append(f.finalizeSawExisting, existing != nil)
+	in, err := finalize(existing, in)
+	if err != nil {
+		return IntegrationRecord{}, err
+	}
 	rec := IntegrationRecord{IntegrationID: in.IntegrationID, DisplayName: in.DisplayName, Enabled: in.Enabled, Status: in.Status,
 		Descriptor: in.Descriptor, Abilities: in.Abilities, MinVersion: in.MinVersion, ThemeSlug: in.ThemeSlug}
 	f.stored = []IntegrationRecord{rec}
 	return rec, nil
 }
 func (f *fakeRepo) ListIntegrations(context.Context, uuid.UUID) ([]IntegrationRecord, error) {
+	f.listCalls++
 	return f.stored, nil
 }
 
@@ -241,7 +254,7 @@ func TestRefresh_BrokenReplyStoresNothing(t *testing.T) {
 
 func TestRefresh_AgentRefusalIsTypedAndStoresNothing(t *testing.T) {
 	fa := newFakeAgent(t, func(agentcmd.ContentProbeRequest) (int, any) {
-		return 200, map[string]any{"ok": false, "outcome": "failed", "code": "invalid_descriptor", "detail": "descriptor[0]: bad‮", "retryable": false}
+		return 200, map[string]any{"ok": false, "outcome": "failed", "code": "invalid_descriptor", "detail": "descriptor[0]: bad\u202e", "retryable": false}
 	})
 	repo := &fakeRepo{target: connected()}
 	svc := newSvc(t, repo, fa)
@@ -415,7 +428,7 @@ func TestUpsertIntegration_Validation(t *testing.T) {
 	}
 	bad := map[string]func(*AdminUpsertInput){
 		"id shape":       func(i *AdminUpsertInput) { i.IntegrationID = "Bad_ID" },
-		"blank name":     func(i *AdminUpsertInput) { i.DisplayName = "  ‮ " },
+		"blank name":     func(i *AdminUpsertInput) { i.DisplayName = "  \u202e " },
 		"admitted":       func(i *AdminUpsertInput) { i.Status = "admitted" },
 		"descriptor arr": func(i *AdminUpsertInput) { i.Descriptor = []byte(`[]`) },
 		"unknown key":    func(i *AdminUpsertInput) { i.Descriptor = []byte(`{"callback":"evil"}`) },
@@ -627,5 +640,36 @@ func TestUpsertIntegration_OmittedFieldsKeepStoredValues(t *testing.T) {
 	rec, _ = svc.UpsertIntegration(context.Background(), clr)
 	if len(rec.Abilities) != 0 {
 		t.Errorf("explicit null did not clear abilities: %s", rec.Abilities)
+	}
+}
+
+func TestUpsertIntegration_MergeUsesTheRowReadInsideTheWriteTransaction(t *testing.T) {
+	repo := &fakeRepo{}
+	svc := NewService(repo, nil, nil)
+	actor := uuid.New()
+	if _, err := svc.UpsertIntegration(context.Background(), AdminUpsertInput{
+		ActorUserID: actor, IntegrationID: "bricks", DisplayName: "Bricks", Enabled: true, Status: "detect_only",
+		Descriptor: []byte(`{"plugin_dir":"bricks-plugin"}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The service must not read the row itself: the merge input is the row the
+	// repo hands to finalize inside the transaction.
+	repo.listCalls = 0
+	rec, err := svc.UpsertIntegration(context.Background(), AdminUpsertInput{
+		ActorUserID: actor, IntegrationID: "bricks", DisplayName: "Bricks", Enabled: false, Status: "detect_only",
+		Present: map[string]bool{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repo.listCalls != 0 {
+		t.Errorf("the service read the row outside the write transaction (%d reads)", repo.listCalls)
+	}
+	if string(rec.Descriptor) != `{"plugin_dir":"bricks-plugin"}` {
+		t.Errorf("descriptor = %s", rec.Descriptor)
+	}
+	if n := len(repo.finalizeSawExisting); n != 2 || !repo.finalizeSawExisting[1] {
+		t.Errorf("finalize did not receive the stored row: %v", repo.finalizeSawExisting)
 	}
 }
