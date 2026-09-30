@@ -90,8 +90,7 @@ function pendingRequest(overrides: Partial<AssistantRequest> = {}): AssistantReq
   };
 }
 
-function renderPage() {
-  const queryClient = createTestQueryClient();
+function renderPage(queryClient = createTestQueryClient()) {
   queryClient.setQueryData(authKeys.me, buildMe());
   return renderWithProviders(<RequestsPage />, {
     withRouter: true,
@@ -310,5 +309,42 @@ describe("a pending request beyond the first page stays reachable", () => {
     expect(screen.getByText(/Loaded Shop/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^approve$/i })).toBeInTheDocument();
     expect(screen.queryByText(/could not load ai requests/i)).not.toBeInTheDocument();
+  });
+});
+
+describe("a failed background refresh", () => {
+  it("says so above the still-visible cards, with a Retry that refetches, distinct from the next-page error", async () => {
+    let fail = false;
+    listMock.mockImplementation(() =>
+      fail
+        ? Promise.resolve({
+            data: undefined,
+            error: { code: "internal", message: "Boom." },
+            response: { status: 500 },
+          })
+        : ok(list([pendingRequest({ id: "req-1", site_label: "Kept Shop" })])),
+    );
+    const queryClient = createTestQueryClient();
+    renderPage(queryClient);
+    expect(await screen.findByText(/Kept Shop/)).toBeInTheDocument();
+    expect(screen.queryByTestId("ai-requests-refresh-error")).not.toBeInTheDocument();
+
+    fail = true;
+    void queryClient.refetchQueries({ queryKey: ["ai-requests"] });
+
+    expect(await screen.findByTestId("ai-requests-refresh-error")).toHaveTextContent(
+      /couldn.t refresh the requests/i,
+    );
+    expect(screen.getByTestId("ai-requests-refresh-retry")).toBeInTheDocument();
+    expect(screen.getByText(/Kept Shop/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^approve$/i })).toBeInTheDocument();
+    expect(screen.queryByTestId("ai-requests-next-page-error")).not.toBeInTheDocument();
+    expect(screen.queryByText(/could not load ai requests/i)).not.toBeInTheDocument();
+
+    fail = false;
+    fireEvent.click(screen.getByTestId("ai-requests-refresh-retry"));
+    await waitFor(() =>
+      expect(screen.queryByTestId("ai-requests-refresh-error")).not.toBeInTheDocument(),
+    );
   });
 });

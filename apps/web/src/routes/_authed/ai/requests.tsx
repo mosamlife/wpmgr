@@ -107,6 +107,22 @@ function AiRequestsPage() {
         </p>
       ) : (
         <div className="space-y-4">
+          {query.isRefetchError && !query.isFetchNextPageError && (
+            <div role="alert" data-testid="ai-requests-refresh-error" className="text-sm text-destructive">
+              Couldn&apos;t refresh the requests. What you see may be out of date.
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="ml-2"
+                data-testid="ai-requests-refresh-retry"
+                disabled={query.isFetching}
+                onClick={() => void query.refetch()}
+              >
+                Retry
+              </Button>
+            </div>
+          )}
           <h2 className="text-sm font-semibold text-foreground">Requests waiting for you</h2>
           {requests.map((request) => (
             <RequestCard
