@@ -133,9 +133,10 @@ func TestCreateCheckout_PinnedProviderWinsOverRequestedProvider(t *testing.T) {
 	svc := billing.New(pool, nil, true, domain.SystemClock{}, slog.Default())
 	svc.SetProviders(billing.NewRegistry(fpDefault, fpOther), fpDefault.Name())
 
-	if _, err := svc.CreateCheckout(ctx, tenant, billing.TierStarter, "fake-other", "", "", "https://s", "https://c", billing.Actor{}); err != nil {
-		t.Fatalf("CreateCheckout: %v", err)
-	}
+	// fake-default cannot prove from its side that nothing is pending, so the
+	// switch is refused as needing support.
+	_, err := svc.CreateCheckout(ctx, tenant, billing.TierStarter, "fake-other", "", "", "https://s", "https://c", billing.Actor{})
+	assertProviderLocked(t, err, billing.ReasonNeedsSupport)
 
 	if fpOther.lastCheckoutInput.TenantID == tenant {
 		t.Fatal("an already-pinned provider must win over a caller-requested one — 'fake-other' should never have been called")

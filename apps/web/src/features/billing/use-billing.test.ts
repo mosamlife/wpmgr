@@ -1,9 +1,20 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { renderHook, act } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { createElement, type ReactNode } from "react";
+
+// `client.post` is mocked at the `@wpmgr/api` wire boundary (never the hook
+// module itself — see use-site-connection.test.ts's identical note), so the
+// "wire contract" describe block below exercises useCancelBillingSubscription's
+// real mutationFn, including its `when: "now"` body-spread branching.
+const { postMock } = vi.hoisted(() => ({ postMock: vi.fn() }));
+vi.mock("@wpmgr/api", () => ({ client: { post: postMock } }));
 
 import {
   shouldPollCheckoutReturn,
   isCheckoutTier,
   billingKeys,
+  useCancelBillingSubscription,
   type CheckoutPollSnapshot,
 } from "./use-billing";
 
@@ -108,5 +119,67 @@ describe("billingKeys", () => {
     const key = billingKeys.info();
     expect(key[0]).toBe("billing");
     expect(key).toContain("info");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// useCancelBillingSubscription — wire contract (real hook against a faked
+// transport, GH #745 Stripe S0 review). Cancel now's whole safety property is
+// that its body reads `{ when: "now" }` — an empty body sends a period-end
+// cancel instead (see cancel.go:118-120 for what the server does with each),
+// so this proves the mutationFn's own body-spread branch, not just the
+// component that calls it.
+// ---------------------------------------------------------------------------
+
+function makeQueryClient(): QueryClient {
+  return new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+}
+
+function wrapperFor(qc: QueryClient) {
+  return function Wrapper({ children }: { children: ReactNode }) {
+    return createElement(QueryClientProvider, { client: qc }, children);
+  };
+}
+
+describe("useCancelBillingSubscription — wire contract", () => {
+  beforeEach(() => {
+    postMock.mockReset();
+    postMock.mockResolvedValue({ data: { ok: true }, error: undefined, response: { status: 200 } });
+  });
+
+  it("posts { when: 'now' } in the body for Cancel now", async () => {
+    const { result } = renderHook(() => useCancelBillingSubscription(), {
+      wrapper: wrapperFor(makeQueryClient()),
+    });
+
+    await act(async () => {
+      await result.current.mutateAsync({ when: "now" });
+    });
+
+    expect(postMock).toHaveBeenCalledTimes(1);
+    expect(postMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: "/api/v1/billing/cancel",
+        body: { when: "now" },
+      }),
+    );
+  });
+
+  it("sends no body for a period-end cancel (over-fire guard: 'when: now' must not leak into the default path)", async () => {
+    const { result } = renderHook(() => useCancelBillingSubscription(), {
+      wrapper: wrapperFor(makeQueryClient()),
+    });
+
+    await act(async () => {
+      await result.current.mutateAsync(undefined);
+    });
+
+    expect(postMock).toHaveBeenCalledTimes(1);
+    const call = postMock.mock.calls[0]?.[0] as { url: string; body?: unknown } | undefined;
+    expect(call).toBeDefined();
+    expect(call?.url).toBe("/api/v1/billing/cancel");
+    expect(call?.body).toBeUndefined();
   });
 });

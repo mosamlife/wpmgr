@@ -68,11 +68,31 @@ const orgLifecycleLockKey = LifecycleLockKey
 const LifecycleLockKey = "org_lifecycle"
 
 // SetHosted wires whether hosted billing (WPMGR_HOSTED) is enabled. When
-// true, DELETE refuses to delete an org with plan_status='active' until the
-// subscription is cancelled/downgraded. A no-op call (false, the zero value)
+// true, DELETE asks the billing guard (SetBillingGuard) whether the org's
+// subscription state allows the delete, and refuses with 409 billing_active
+// when it does not; a hosted handler with no guard wired refuses every
+// delete rather than skip the check. A no-op call (false, the zero value)
 // means the guard never fires — matching self-host, where there is no
 // subscription to protect.
 func (h *Handler) SetHosted(enabled bool) { h.hosted = enabled }
+
+// BillingDeleteGuard decides whether an org's billing state allows it to be
+// deleted. Implemented by billing.Service; declared here so this package
+// never imports the billing domain.
+type BillingDeleteGuard interface {
+	// CheckOrgDeletable is the unlocked check, for the message.
+	CheckOrgDeletable(ctx context.Context, tenantID uuid.UUID) error
+	// CheckOrgDeletableLocked is the deciding check. It runs inside the
+	// delete's transaction after the org lifecycle lock is held, and takes
+	// the billing lock itself (lock order: org lifecycle, then billing).
+	CheckOrgDeletableLocked(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID) error
+}
+
+// SetBillingGuard wires the billing delete guard used when hosted.
+func (h *Handler) SetBillingGuard(g BillingDeleteGuard) { h.billingGuard = g }
+
+// errBillingGuardNotWired refuses a hosted delete when no guard is wired.
+var errBillingGuardNotWired = domain.Internal("org_delete_billing_guard_unwired", "the billing delete check is not configured")
 
 type deleteOrgBody struct {
 	ConfirmName string `json:"confirm_name"`
@@ -161,10 +181,15 @@ func (h *Handler) delete(c *gin.Context) {
 		httpx.Error(c, domain.Validation("confirm_name_mismatch", "confirm_name does not match the organisation's name"))
 		return
 	}
-	if h.hosted && t.PlanStatus == "active" {
-		httpx.Error(c, domain.Conflict("billing_active",
-			"cancel or downgrade the subscription before deleting this organisation"))
-		return
+	if h.hosted {
+		if h.billingGuard == nil {
+			httpx.Error(c, errBillingGuardNotWired)
+			return
+		}
+		if berr := h.billingGuard.CheckOrgDeletable(ctx, orgID); berr != nil {
+			httpx.Error(c, berr)
+			return
+		}
 	}
 	activeRestore, rerr := h.hasActiveRestore(ctx, orgID)
 	if rerr != nil {
@@ -208,6 +233,18 @@ func (h *Handler) delete(c *gin.Context) {
 			return domain.Conflict("org_already_deleted", "this organisation is already scheduled for deletion")
 		}
 		name = fresh.Name
+
+		// The deciding billing check, under the billing lock taken after the
+		// org lifecycle lock above, so no billing write for this tenant lands
+		// between this read and the delete's commit.
+		if h.hosted {
+			if h.billingGuard == nil {
+				return errBillingGuardNotWired
+			}
+			if berr := h.billingGuard.CheckOrgDeletableLocked(ctx, tx, orgID); berr != nil {
+				return berr
+			}
+		}
 
 		// Lane-A eligibility, per the task's definition: zero sites AND zero
 		// memberships OTHER THAN the caller (the deleting owner). This is

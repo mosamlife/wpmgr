@@ -11,6 +11,18 @@ func (s *AddSuppressionRequest) setDefaults() {
 }
 
 // setDefaults set default value of fields.
+func (s *AdminClearBillingProviderRequest) setDefaults() {
+	{
+		var defaultVal0 []string
+		s.RazorpaySubscriptionIds = defaultVal0
+	}
+	{
+		val := bool(false)
+		s.RazorpayLookupConfirmed.SetTo(val)
+	}
+}
+
+// setDefaults set default value of fields.
 func (s *AlertConfigUpdate) setDefaults() {
 	{
 		val := bool(true)
@@ -55,6 +67,14 @@ func (s *BackupScheduleUpdate) setDefaults() {
 	{
 		val := bool(false)
 		s.IncrementalEnabled.SetTo(val)
+	}
+}
+
+// setDefaults set default value of fields.
+func (s *BillingCancelRequest) setDefaults() {
+	{
+		val := BillingCancelRequestWhen("period_end")
+		s.When.SetTo(val)
 	}
 }
 

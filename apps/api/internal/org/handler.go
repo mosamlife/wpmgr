@@ -49,6 +49,9 @@ type Handler struct {
 	// hosted mirrors WPMGR_HOSTED (GH #152 delete guard); see SetHosted in
 	// delete_handler.go.
 	hosted bool
+	// billingGuard decides whether billing lets an org be deleted; see
+	// SetBillingGuard in delete_handler.go.
+	billingGuard BillingDeleteGuard
 }
 
 // NewHandler builds an org Handler.

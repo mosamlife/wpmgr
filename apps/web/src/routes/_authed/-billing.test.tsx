@@ -62,6 +62,18 @@ describe("/_authed/billing compatibility redirect", () => {
     expect(router.state.location.search).toMatchObject({ checkout: "cancel" });
   });
 
+  it("forwards session_id alongside checkout=success — dropping it would silently skip confirm-on-return (5.10)", async () => {
+    const router = renderShim(
+      "/billing?checkout=success&session_id=cs_test_abc123",
+    );
+
+    await waitFor(() => expect(router.state.location.pathname).toBe("/settings/billing"));
+    expect(router.state.location.search).toMatchObject({
+      checkout: "success",
+      session_id: "cs_test_abc123",
+    });
+  });
+
   it("forwards a bare /billing (no checkout param) to /settings/billing with no stray param", async () => {
     const router = renderShim("/billing");
 

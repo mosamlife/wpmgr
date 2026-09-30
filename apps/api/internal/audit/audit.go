@@ -732,6 +732,14 @@ func lockChain(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID) error {
 	return nil
 }
 
+// LockChain takes the per-tenant audit chain lock inside tx. A caller that
+// must read the chain before appending (for example, to skip an entry whose
+// idempotency key is already present) takes it first, then calls RecordInTx,
+// which re-takes it harmlessly.
+func LockChain(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID) error {
+	return lockChain(ctx, tx, tenantID)
+}
+
 // appendLocked inserts one hash-chained entry within an already-open tenant
 // tx. The caller must hold the per-tenant advisory lock (via lockChain) around
 // its read of the "previous" hash and this call, or two concurrent appends can

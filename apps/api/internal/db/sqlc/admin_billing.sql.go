@@ -63,6 +63,41 @@ func (q *Queries) AdminAccountPlanStatusCounts(ctx context.Context) ([]AdminAcco
 	return items, nil
 }
 
+const adminClearBillingPin = `-- name: AdminClearBillingPin :execrows
+UPDATE tenants
+SET billing_provider = NULL,
+    provider_customer_id = NULL,
+    provider_subscription_id = NULL,
+    updated_at = now()
+WHERE id = $1
+  AND billing_pin_is_movable(plan_status, provider_subscription_id)
+  AND billing_provider IS NOT DISTINCT FROM $2::text
+  AND provider_customer_id IS NOT DISTINCT FROM $3::text
+`
+
+type AdminClearBillingPinParams struct {
+	TenantID         uuid.UUID `json:"tenant_id"`
+	ExpectedProvider *string   `json:"expected_provider"`
+	ExpectedCustomer *string   `json:"expected_customer"`
+}
+
+// The operator's clear of a tenant's payment-provider binding: sets
+// billing_provider, provider_customer_id and provider_subscription_id to NULL.
+// The caller holds the per-tenant billing lock and passes the pin and stored
+// customer it read before its provider check (@expected_provider,
+// @expected_customer; NULL matches NULL). It writes only while
+// billing_pin_is_movable holds (not comped; 'canceled', or 'none' with no
+// stored subscription id) AND the stored pin and customer still equal the
+// expected pair. So it never clears a pin or a customer the caller did not
+// check. The caller requires exactly 1 row; 0 rows is a 409.
+func (q *Queries) AdminClearBillingPin(ctx context.Context, arg AdminClearBillingPinParams) (int64, error) {
+	result, err := q.db.Exec(ctx, adminClearBillingPin, arg.TenantID, arg.ExpectedProvider, arg.ExpectedCustomer)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const adminClearCompReason = `-- name: AdminClearCompReason :exec
 UPDATE tenants
 SET comp_reason = NULL, updated_at = now()

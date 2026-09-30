@@ -5,24 +5,23 @@ import { toast } from "@/components/toast";
 import {
   useCreateBillingCheckout,
   useVerifyRazorpayCheckout,
-  type BillingCurrency,
   type BillingProvider,
   type CheckoutTierId,
   type RazorpayCheckoutData,
 } from "./use-billing";
+import type { BillingCheckoutError } from "./billing-checkout-error";
 import { loadRazorpayCheckout, type RazorpayHandlerResponse } from "./razorpay-checkout";
 
-// M16 Phase B/C — the checkout machinery shared by every surface that can
-// start a paid-tier checkout (today: /settings/billing's `PlanTiersGrid`;
-// Phase C's post-verify upgrade screen reuses this exact hook rather than a
-// second copy). Extracted verbatim out of billing.tsx's former
-// `PlanTiersGrid` internals — this is a pure lift, not a behavior change; see
-// use-checkout-flow.test.ts and the still-green -billing.test.tsx for the
-// parity proof.
+// M16 Phase B/C, S0.4 (stripe-design-v9.md 5.10) — the checkout machinery
+// shared by every surface that can start a paid-tier checkout (today:
+// /settings/billing's `PlanTiersGrid`; /welcome/checkout's post-verify
+// screen reuses this exact hook rather than a second copy).
 //
 // Encapsulates:
-//   - the provider (Stripe/Razorpay) + Razorpay-only currency selection state
-//     that feeds `PaymentMethodPicker`;
+//   - the provider (Stripe/Razorpay) selection state that feeds
+//     `PaymentMethodPicker`. Razorpay is INR-only (decision 17) — there is no
+//     currency choice any more; `startCheckout` always sends `currency:
+//     "INR"` once Razorpay is selected;
 //   - POST /billing/checkout via `useCreateBillingCheckout`;
 //   - the Stripe path: a hosted-redirect `{ url }` -> `window.location.href`;
 //   - the Razorpay path: opening the Checkout.js modal, then on a successful
@@ -42,34 +41,33 @@ export interface UseCheckoutFlowOptions {
    * it drives off of (see billing.tsx's `markCheckoutSuccess`).
    */
   onCheckoutSuccess: () => void;
-  /**
-   * Initial currency selection — e.g. a `?currency=` URL hint carried from
-   * `/register` through to `/welcome/checkout` (M16 Phase C2). Only
-   * meaningful once the operator picks Razorpay; defaults to "USD", same as
-   * every caller that omits this (unregressed `/settings/billing` behavior).
-   */
-  initialCurrency?: BillingCurrency;
+  /** Preselect Razorpay as the initial provider (e.g. the decline banner's "Pay with Razorpay" action, or a tenant already pinned to Razorpay). Defaults to "stripe" for everyone (5.10: `:70`), even for a likely-Indian user. */
+  initialProvider?: BillingProvider;
 }
 
 export interface UseCheckoutFlowResult {
   provider: BillingProvider;
-  currency: BillingCurrency;
   setProvider: (provider: BillingProvider) => void;
-  setCurrency: (currency: BillingCurrency) => void;
-  /** Starts a checkout for `tier` using the currently selected provider/currency. */
-  startCheckout: (tier: CheckoutTierId) => void;
+  /**
+   * Starts a checkout for `tier` using the currently selected provider, or
+   * `providerOverride` when given. Pass the override whenever a caller also
+   * calls `setProvider` and starts checkout in the same handler tick — the
+   * `provider` state update from `setProvider` has not committed yet, so
+   * `startCheckout` would otherwise read the stale, pre-update value (e.g.
+   * the decline banner's "Pay with Razorpay" action in welcome.checkout.tsx).
+   */
+  startCheckout: (tier: CheckoutTierId, providerOverride?: BillingProvider) => void;
   /** True while the checkout POST (or the Razorpay modal it opens) is in flight. */
   isStarting: boolean;
-  /** The checkout POST's error, if the most recent attempt failed. */
-  error: Error | null;
+  /** The checkout POST's error, if the most recent attempt failed. Carries `code`/`reason` — see mapBillingCheckoutError. */
+  error: BillingCheckoutError | null;
 }
 
 export function useCheckoutFlow(options: UseCheckoutFlowOptions): UseCheckoutFlowResult {
   const checkout = useCreateBillingCheckout();
   const verify = useVerifyRazorpayCheckout();
-  const [provider, setProvider] = useState<BillingProvider>("stripe");
-  const [currency, setCurrency] = useState<BillingCurrency>(
-    options.initialCurrency ?? "USD",
+  const [provider, setProvider] = useState<BillingProvider>(
+    options.initialProvider ?? "stripe",
   );
 
   function openRazorpayCheckout(data: RazorpayCheckoutData) {
@@ -109,12 +107,15 @@ export function useCheckoutFlow(options: UseCheckoutFlowOptions): UseCheckoutFlo
       });
   }
 
-  function startCheckout(tier: CheckoutTierId) {
+  function startCheckout(tier: CheckoutTierId, providerOverride?: BillingProvider) {
+    const effectiveProvider = providerOverride ?? provider;
     checkout.mutate(
       {
         tier,
-        provider,
-        currency: provider === "razorpay" ? currency : undefined,
+        provider: effectiveProvider,
+        // Razorpay is INR-only (decision 17) — no user-facing currency
+        // choice any more (5.10, Z5).
+        currency: effectiveProvider === "razorpay" ? "INR" : undefined,
       },
       {
         onSuccess: (result) => {
@@ -130,9 +131,7 @@ export function useCheckoutFlow(options: UseCheckoutFlowOptions): UseCheckoutFlo
 
   return {
     provider,
-    currency,
     setProvider,
-    setCurrency,
     startCheckout,
     isStarting: checkout.isPending,
     error: checkout.isError ? checkout.error : null,

@@ -39,6 +39,10 @@ type fakeEventPayload struct {
 	ProviderCustomerID     string    `json:"provider_customer_id"`
 	ProviderSubscriptionID string    `json:"provider_subscription_id"`
 	OccurredAt             time.Time `json:"occurred_at"`
+	// Ownership is left at its zero value (owned) by every test except the
+	// shared-account isolation tests, exactly as a real adapter that never
+	// classifies behaves.
+	Ownership billing.Ownership `json:"ownership,omitempty"`
 }
 
 func fakeEventBody(p fakeEventPayload) []byte {
@@ -123,6 +127,7 @@ func (f *fakeProvider) VerifyWebhook(rawBody []byte, _ http.Header) (billing.Eve
 		ProviderCustomerID:     in.ProviderCustomerID,
 		ProviderSubscriptionID: in.ProviderSubscriptionID,
 		OccurredAt:             in.OccurredAt,
+		Ownership:              in.Ownership,
 	}, nil
 }
 

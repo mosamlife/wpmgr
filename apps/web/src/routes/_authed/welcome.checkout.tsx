@@ -22,8 +22,12 @@ import {
 import { useCheckoutFlow } from "@/features/billing/use-checkout-flow";
 import { PaymentMethodPicker } from "@/features/billing/payment-method-picker";
 import { CheckoutReturnBanner } from "@/features/billing/checkout-return-banner";
-import { planCatalogEntry } from "@/features/billing/plan-catalog";
+import { planCatalogEntry, planLabel } from "@/features/billing/plan-catalog";
 import { readPendingPlan, clearPendingPlan } from "@/features/billing/pending-plan";
+import { isLikelyIndian, currentTimezone } from "@/features/billing/likely-indian";
+import { IndianCardGuidance } from "@/features/billing/indian-card-guidance";
+import { BillingTaxCopy } from "@/features/billing/billing-tax-copy";
+import { mapBillingCheckoutError } from "@/features/billing/billing-checkout-error";
 
 // M16 Phase C2 — the post-verify "finish signing up for a plan" screen.
 // Reached from either:
@@ -37,6 +41,14 @@ import { readPendingPlan, clearPendingPlan } from "@/features/billing/pending-pl
 const checkoutSearchSchema = z.object({
   plan: z.enum(["starter", "agency", "scale"]).optional().catch(undefined),
   currency: z.enum(["USD", "INR"]).optional().catch(undefined),
+  // Mirrors routes/_authed/billing.tsx's compatibility-redirect schema.
+  // Today's provider return URLs always land on /billing (which forwards to
+  // /settings/billing) rather than back here — see that file's module doc —
+  // so this is defensive: it lets this screen render the same decline
+  // (`CheckoutReturnBanner`) copy, with the same "Pay with Razorpay" escape
+  // hatch, for any future or manual `?checkout=cancel` return that lands on
+  // this route instead.
+  checkout: z.enum(["success", "cancel"]).optional().catch(undefined),
 });
 
 /**
@@ -104,16 +116,23 @@ function WelcomeCheckoutPage() {
   if (!resolved.tier) return null;
 
   return (
-    <WelcomeCheckoutContent tier={resolved.tier} currencyHint={resolved.currency} />
+    <WelcomeCheckoutContent
+      tier={resolved.tier}
+      currencyHint={resolved.currency}
+      checkoutParam={search.checkout}
+    />
   );
 }
 
 function WelcomeCheckoutContent({
   tier,
   currencyHint,
+  checkoutParam,
 }: {
   tier: CheckoutTierId;
   currencyHint: BillingCurrency | undefined;
+  /** `?checkout=` as the URL carried it in — see checkoutSearchSchema's doc. */
+  checkoutParam: "success" | "cancel" | undefined;
 }) {
   const navigate = useNavigate();
   const entry = planCatalogEntry(tier);
@@ -121,9 +140,14 @@ function WelcomeCheckoutContent({
   // never fires two checkout-creation calls (same pattern as
   // verify-email.tsx's own `firedRef`).
   const firedRef = useRef(false);
-  const [checkoutStatus, setCheckoutStatus] = useState<"success" | undefined>(
-    undefined,
-  );
+  // Seeded from the URL (a decline return landing directly on this route —
+  // see checkoutSearchSchema's doc) but otherwise driven by the in-page
+  // Razorpay success callback below, which is the only source of "success"
+  // this screen ever sees itself (Stripe's own hosted-redirect success path
+  // leaves this page entirely).
+  const [checkoutStatus, setCheckoutStatus] = useState<
+    "success" | "cancel" | undefined
+  >(() => checkoutParam);
   const wasFinalizingRef = useRef(false);
 
   const billing = useBilling({ enabled: true });
@@ -133,21 +157,21 @@ function WelcomeCheckoutContent({
     () => void billing.refetch(),
   );
 
-  const {
-    provider,
-    currency,
-    setProvider,
-    setCurrency,
-    startCheckout,
-    isStarting,
-    error,
-  } = useCheckoutFlow({
-    initialCurrency: currencyHint,
-    // Only ever fires on the Razorpay in-page path — Stripe's own hosted
-    // redirect leaves this page entirely (see checkout-return-banner.tsx's
-    // module doc and the /billing compatibility redirect route).
-    onCheckoutSuccess: () => setCheckoutStatus("success"),
-  });
+  // Resolved once, not re-read on every render (Intl reads belong in a lazy
+  // initializer — see use-billing.ts's react-hooks/purity note). The
+  // register-flow `?currency=` hint (5.10: welcome.checkout.tsx:39,97) now
+  // feeds only this signal, never a currency picker (Razorpay is INR-only).
+  const [likelyIndian] = useState(() =>
+    isLikelyIndian({ currencyHint, timeZone: currentTimezone() }),
+  );
+
+  const { provider, setProvider, startCheckout, isStarting, error } =
+    useCheckoutFlow({
+      // Only ever fires on the Razorpay in-page path — Stripe's own hosted
+      // redirect leaves this page entirely (see checkout-return-banner.tsx's
+      // module doc and the /billing compatibility redirect route).
+      onCheckoutSuccess: () => setCheckoutStatus("success"),
+    });
 
   useEffect(() => {
     if (firedRef.current) return;
@@ -164,7 +188,7 @@ function WelcomeCheckoutContent({
     wasFinalizingRef.current = checkoutReturn.finalizing;
     if (
       shouldDropIntoSitesAfterCheckout({
-        status: checkoutStatus,
+        status: checkoutStatus === "success" ? "success" : undefined,
         wasFinalizing,
         isFinalizing: checkoutReturn.finalizing,
       })
@@ -189,6 +213,18 @@ function WelcomeCheckoutContent({
         status={checkoutStatus}
         finalizing={checkoutReturn.finalizing}
         timedOut={checkoutReturn.timedOut}
+        likelyIndian={likelyIndian}
+        razorpayAvailable={(billing.data?.available_providers ?? []).includes(
+          "razorpay",
+        )}
+        onPayWithRazorpay={() => {
+          // Pass the provider explicitly: setProvider's state update has not
+          // committed by the time startCheckout runs in this same handler,
+          // so reading the hook's `provider` state here would still see
+          // "stripe" (see use-checkout-flow.ts's startCheckout doc).
+          setProvider("razorpay");
+          startCheckout(tier, "razorpay");
+        }}
       />
 
       <Card>
@@ -208,16 +244,30 @@ function WelcomeCheckoutContent({
             </ul>
           ) : null}
 
+          {likelyIndian ? (
+            <IndianCardGuidance showScaleLine={tier === "scale"} />
+          ) : null}
+
           <PaymentMethodPicker
             provider={provider}
             onProviderChange={setProvider}
-            currency={currency}
-            onCurrencyChange={setCurrency}
+            availableProviders={billing.data?.available_providers ?? []}
+            likelyIndian={likelyIndian}
+            pinnedProvider={billing.data?.provider}
           />
+
+          <BillingTaxCopy />
 
           {error ? (
             <p role="alert" className="text-sm text-destructive">
-              {error.message}
+              {
+                mapBillingCheckoutError(
+                  error.code,
+                  error.reason,
+                  billing.data ? planLabel(billing.data.plan) : "current",
+                  error.message,
+                ).message
+              }
             </p>
           ) : null}
 

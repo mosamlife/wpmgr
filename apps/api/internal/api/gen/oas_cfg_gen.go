@@ -18,6 +18,7 @@ var regexMap = map[string]ogenregex.Regexp{
 	"^[A-F0-9]{5}$":              ogenregex.MustCompile("^[A-F0-9]{5}$"),
 	"^[a-z0-9]+(?:-[a-z0-9]+)*$": ogenregex.MustCompile("^[a-z0-9]+(?:-[a-z0-9]+)*$"),
 	"^[a-zA-Z0-9_.\\-@]*$":       ogenregex.MustCompile("^[a-zA-Z0-9_.\\-@]*$"),
+	"^sub_[A-Za-z0-9]+$":         ogenregex.MustCompile("^sub_[A-Za-z0-9]+$"),
 }
 var (
 	// Allocate option closure once.

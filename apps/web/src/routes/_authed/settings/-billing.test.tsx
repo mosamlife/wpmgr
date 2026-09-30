@@ -24,6 +24,7 @@ import {
   type CheckoutResult,
   type CreateCheckoutVariables,
   type CancelSubscriptionResult,
+  type CancelSubscriptionVariables,
   type VerifyCheckoutResult,
   type RazorpayCheckoutSuccess,
   type PortalResult,
@@ -118,6 +119,7 @@ function billingFixture(overrides: Partial<BillingInfo> = {}): BillingInfo {
     plan_status: "none",
     meters: { sites: { used: 1, limit: 3 } },
     portal_available: false,
+    available_providers: [],
     ...overrides,
   };
 }
@@ -211,7 +213,7 @@ beforeEach(() => {
     mockMutationResult<PortalResult, void>({}),
   );
   mockedUseCancelBillingSubscription.mockReturnValue(
-    mockMutationResult<CancelSubscriptionResult, void>({}),
+    mockMutationResult<CancelSubscriptionResult, CancelSubscriptionVariables | void>({}),
   );
   mockedUseVerifyRazorpayCheckout.mockReturnValue(
     mockMutationResult<VerifyCheckoutResult, RazorpayCheckoutSuccess>({}),
@@ -238,7 +240,7 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("Payment method picker", () => {
-  it("defaults to Stripe: Upgrade posts { tier, provider: 'stripe' } with no currency (non-vacuous: proves the default matches the CP's own default)", async () => {
+  it("defaults to Stripe and posts { tier, provider: 'stripe' } with no currency; the picker itself stays hidden when Razorpay isn't offered (non-vacuous: proves the default matches the CP's own default)", async () => {
     const mutateMock = vi.fn();
     mockedUseBilling.mockReturnValue(
       mockQueryResult<BillingInfo | null>({ data: billingFixture() }),
@@ -249,10 +251,10 @@ describe("Payment method picker", () => {
 
     renderBillingPage();
 
-    const stripeRadio = await screen.findByRole("radio", { name: "Stripe" });
-    expect(stripeRadio).toHaveAttribute("aria-checked", "true");
-    // The currency picker is Razorpay-only — must not render while Stripe is selected.
-    expect(screen.queryByRole("radiogroup", { name: "Currency" })).not.toBeInTheDocument();
+    await screen.findByRole("heading", { name: "Billing" });
+    expect(
+      screen.queryByRole("radiogroup", { name: "Payment provider" }),
+    ).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Upgrade to Starter" }));
 
@@ -263,10 +265,18 @@ describe("Payment method picker", () => {
     );
   });
 
-  it("switching to Razorpay reveals a currency choice; selecting INR posts { provider: 'razorpay', currency: 'INR' }", async () => {
+  it("offers Razorpay for a likely-Indian visitor (Asia/Kolkata) when the instance has it registered; selecting it posts { provider: 'razorpay', currency: 'INR' } with no currency picker", async () => {
+    const resolvedOptionsSpy = vi
+      .spyOn(Intl, "DateTimeFormat")
+      .mockReturnValue({
+        resolvedOptions: () => ({ timeZone: "Asia/Kolkata" }),
+      } as unknown as Intl.DateTimeFormat);
+
     const mutateMock = vi.fn();
     mockedUseBilling.mockReturnValue(
-      mockQueryResult<BillingInfo | null>({ data: billingFixture() }),
+      mockQueryResult<BillingInfo | null>({
+        data: billingFixture({ available_providers: ["stripe", "razorpay"] }),
+      }),
     );
     mockedUseCreateBillingCheckout.mockReturnValue(
       mockMutationResult<CheckoutResult, CreateCheckoutVariables>({ mutate: mutateMock }),
@@ -274,17 +284,129 @@ describe("Payment method picker", () => {
 
     renderBillingPage();
 
-    fireEvent.click(await screen.findByRole("radio", { name: "Razorpay" }));
-    const currencyGroup = await screen.findByRole("radiogroup", { name: "Currency" });
-    expect(currencyGroup).toBeInTheDocument();
+    fireEvent.click(
+      await screen.findByRole("radio", { name: "UPI / RuPay / ₹ (Razorpay)" }),
+    );
+    // No currency choice any more — Razorpay is INR-only (decision 17).
+    expect(screen.queryByRole("radiogroup", { name: "Currency" })).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("radio", { name: "INR (₹)" }));
     fireEvent.click(screen.getByRole("button", { name: "Upgrade to Agency" }));
 
     expect(mutateMock).toHaveBeenCalledWith(
       { tier: "agency", provider: "razorpay", currency: "INR" },
       expect.anything(),
     );
+
+    resolvedOptionsSpy.mockRestore();
+  });
+
+  it("keeps Razorpay visible and payable for a workspace already pinned to it (summary.provider), even outside India and even after toggling to Card and back (5.10)", async () => {
+    // Non-Indian timezone AND no `?currency=` hint on this route — the ONLY
+    // signal that can show Razorpay here is the server-confirmed pin
+    // (billing.provider), never the picker's own in-progress selection.
+    vi.spyOn(Intl, "DateTimeFormat").mockReturnValue({
+      resolvedOptions: () => ({ timeZone: "America/New_York" }),
+    } as unknown as Intl.DateTimeFormat);
+    mockedUseBilling.mockReturnValue(
+      mockQueryResult<BillingInfo | null>({
+        data: billingFixture({
+          plan: "starter",
+          plan_status: "active",
+          provider: "razorpay",
+          available_providers: ["stripe", "razorpay"],
+        }),
+      }),
+    );
+    const mutateMock = vi.fn();
+    mockedUseCreateBillingCheckout.mockReturnValue(
+      mockMutationResult<CheckoutResult, CreateCheckoutVariables>({ mutate: mutateMock }),
+    );
+
+    renderBillingPage();
+
+    // MUST fail if the picker's visibility reads back the local selection
+    // (or nothing at all) instead of the server-confirmed pin: a
+    // Razorpay-pinned tenant outside India would render no picker at all.
+    expect(
+      await screen.findByRole("radio", { name: "UPI / RuPay / ₹ (Razorpay)" }),
+    ).toBeInTheDocument();
+
+    // Switching to Card (e.g. just to look) must not make the Razorpay
+    // option disappear — the pin, not the current selection, gates it.
+    fireEvent.click(screen.getByRole("radio", { name: "Card (US$)" }));
+    await waitFor(() =>
+      expect(screen.getByRole("radio", { name: "Card (US$)" })).toHaveAttribute(
+        "aria-checked",
+        "true",
+      ),
+    );
+    expect(
+      screen.getByRole("radio", { name: "UPI / RuPay / ₹ (Razorpay)" }),
+    ).toBeInTheDocument();
+
+    // And the operator can still switch back and actually pay with it.
+    fireEvent.click(screen.getByRole("radio", { name: "UPI / RuPay / ₹ (Razorpay)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Upgrade to Agency" }));
+
+    expect(mutateMock).toHaveBeenCalledWith(
+      { tier: "agency", provider: "razorpay", currency: "INR" },
+      expect.anything(),
+    );
+  });
+
+  it("starts checkout on the pinned provider (razorpay) without requiring the operator to touch the picker first", async () => {
+    // Same pin, but this time the operator clicks Upgrade straight away —
+    // proving `useCheckoutFlow`'s OWN default (not just the picker's
+    // visibility) already matches the pin, so the very first checkout POST
+    // targets razorpay instead of the instance-wide Stripe default.
+    vi.spyOn(Intl, "DateTimeFormat").mockReturnValue({
+      resolvedOptions: () => ({ timeZone: "America/New_York" }),
+    } as unknown as Intl.DateTimeFormat);
+    mockedUseBilling.mockReturnValue(
+      mockQueryResult<BillingInfo | null>({
+        data: billingFixture({
+          plan: "starter",
+          plan_status: "active",
+          provider: "razorpay",
+          available_providers: ["stripe", "razorpay"],
+        }),
+      }),
+    );
+    const mutateMock = vi.fn();
+    mockedUseCreateBillingCheckout.mockReturnValue(
+      mockMutationResult<CheckoutResult, CreateCheckoutVariables>({ mutate: mutateMock }),
+    );
+
+    renderBillingPage();
+    await screen.findByRole("radio", { name: "UPI / RuPay / ₹ (Razorpay)" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Upgrade to Agency" }));
+
+    expect(mutateMock).toHaveBeenCalledWith(
+      { tier: "agency", provider: "razorpay", currency: "INR" },
+      expect.anything(),
+    );
+  });
+
+  it("does not offer Razorpay for a non-Indian visitor even when the instance has it registered", async () => {
+    vi.spyOn(Intl, "DateTimeFormat").mockReturnValue({
+      resolvedOptions: () => ({ timeZone: "America/New_York" }),
+    } as unknown as Intl.DateTimeFormat);
+    mockedUseBilling.mockReturnValue(
+      mockQueryResult<BillingInfo | null>({
+        data: billingFixture({ available_providers: ["stripe", "razorpay"] }),
+      }),
+    );
+    mockedUseCreateBillingCheckout.mockReturnValue(
+      mockMutationResult<CheckoutResult, CreateCheckoutVariables>({}),
+    );
+
+    renderBillingPage();
+
+    await screen.findByRole("heading", { name: "Billing" });
+    expect(
+      screen.queryByRole("radiogroup", { name: "Payment provider" }),
+    ).not.toBeInTheDocument();
   });
 });
 
@@ -319,10 +441,37 @@ describe("Stripe checkout", () => {
 // ---------------------------------------------------------------------------
 
 describe("Razorpay checkout", () => {
+  // Every test here needs Razorpay both registered AND offered — offered
+  // requires a likely-Indian signal (5.10), which this route reads from the
+  // timezone only (no `?currency=` hint on /settings/billing).
+  // Typed narrowly (just the one method used below) rather than
+  // `ReturnType<typeof vi.spyOn>`, which resolves to the generic
+  // `(this: unknown, ...args: unknown[]) => unknown` overload and rejects
+  // this call's actual, more specific return type. Restoring only this
+  // spy — never `vi.restoreAllMocks()` — matters: that wipes every
+  // module-level `vi.fn()` mock in this file too (mockedUseBilling,
+  // mockedUseCreateBillingCheckout, …), which broke later describe blocks
+  // that rely on `vi.clearAllMocks()` (line below) leaving their configured
+  // return values in place.
+  let timezoneSpy: { mockRestore: () => void };
+
+  beforeEach(() => {
+    timezoneSpy = vi.spyOn(Intl, "DateTimeFormat").mockReturnValue({
+      resolvedOptions: () => ({ timeZone: "Asia/Kolkata" }),
+    } as unknown as Intl.DateTimeFormat);
+  });
+
+  afterEach(() => {
+    timezoneSpy.mockRestore();
+  });
+
   it("opens the Checkout.js modal with the subscription's key/id/amount/currency, and on handler success calls verify then starts the billing poll", async () => {
     const refetchMock = vi.fn();
     mockedUseBilling.mockReturnValue(
-      mockQueryResult<BillingInfo | null>({ data: billingFixture(), refetch: refetchMock }),
+      mockQueryResult<BillingInfo | null>({
+        data: billingFixture({ available_providers: ["stripe", "razorpay"] }),
+        refetch: refetchMock,
+      }),
     );
     const mutateMock = fireOnSuccess<CheckoutResult, CreateCheckoutVariables>({
       razorpay: {
@@ -342,8 +491,9 @@ describe("Razorpay checkout", () => {
 
     const router = renderBillingPage();
 
-    fireEvent.click(await screen.findByRole("radio", { name: "Razorpay" }));
-    fireEvent.click(screen.getByRole("radio", { name: "INR (₹)" }));
+    fireEvent.click(
+      await screen.findByRole("radio", { name: "UPI / RuPay / ₹ (Razorpay)" }),
+    );
     fireEvent.click(screen.getByRole("button", { name: "Upgrade to Agency" }));
 
     await waitFor(() => expect(mockedLoadRazorpayCheckout).toHaveBeenCalledTimes(1));
@@ -384,12 +534,14 @@ describe("Razorpay checkout", () => {
     // which refetches billing immediately — the actual source of truth for
     // the plan flip, never the client-side verify response.
     await waitFor(() => expect(refetchMock).toHaveBeenCalled());
-    expect(await screen.findByText("Finalizing your subscription…")).toBeInTheDocument();
+    expect(await screen.findByText("Activating…")).toBeInTheDocument();
   });
 
   it("does nothing (no toast, no navigation) when the operator dismisses the modal without paying", async () => {
     mockedUseBilling.mockReturnValue(
-      mockQueryResult<BillingInfo | null>({ data: billingFixture() }),
+      mockQueryResult<BillingInfo | null>({
+        data: billingFixture({ available_providers: ["stripe", "razorpay"] }),
+      }),
     );
     const mutateMock = fireOnSuccess<CheckoutResult, CreateCheckoutVariables>({
       razorpay: {
@@ -405,7 +557,9 @@ describe("Razorpay checkout", () => {
 
     const router = renderBillingPage();
 
-    fireEvent.click(await screen.findByRole("radio", { name: "Razorpay" }));
+    fireEvent.click(
+      await screen.findByRole("radio", { name: "UPI / RuPay / ₹ (Razorpay)" }),
+    );
     fireEvent.click(screen.getByRole("button", { name: "Upgrade to Agency" }));
     await waitFor(() => expect(razorpayOpenMock).toHaveBeenCalledTimes(1));
 
@@ -418,7 +572,9 @@ describe("Razorpay checkout", () => {
 
   it("shows a fallback toast when Checkout.js fails to load, instead of throwing inside the click handler", async () => {
     mockedUseBilling.mockReturnValue(
-      mockQueryResult<BillingInfo | null>({ data: billingFixture() }),
+      mockQueryResult<BillingInfo | null>({
+        data: billingFixture({ available_providers: ["stripe", "razorpay"] }),
+      }),
     );
     const mutateMock = fireOnSuccess<CheckoutResult, CreateCheckoutVariables>({
       razorpay: {
@@ -437,7 +593,9 @@ describe("Razorpay checkout", () => {
 
     renderBillingPage();
 
-    fireEvent.click(await screen.findByRole("radio", { name: "Razorpay" }));
+    fireEvent.click(
+      await screen.findByRole("radio", { name: "UPI / RuPay / ₹ (Razorpay)" }),
+    );
     fireEvent.click(screen.getByRole("button", { name: "Upgrade to Agency" }));
 
     await waitFor(() => expect(mockedToastError).toHaveBeenCalledTimes(1));
@@ -466,7 +624,9 @@ describe("Cancel subscription vs Manage billing", () => {
       (): Promise<CancelSubscriptionResult> => Promise.resolve({ ok: true }),
     );
     mockedUseCancelBillingSubscription.mockReturnValue(
-      mockMutationResult<CancelSubscriptionResult, void>({ mutateAsync: cancelMutateAsync }),
+      mockMutationResult<CancelSubscriptionResult, CancelSubscriptionVariables | void>({
+        mutateAsync: cancelMutateAsync,
+      }),
     );
 
     renderBillingPage();
@@ -517,5 +677,94 @@ describe("Cancel subscription vs Manage billing", () => {
 
     expect(portalMutate).toHaveBeenCalledTimes(1);
     expect(window.location.href).toBe("https://billing.stripe.com/p/session_abc");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cancel now (3.6/5.10) — past_due-on-Stripe-only immediate cancel, separate
+// from the period-end "Cancel subscription" dialog above. Regression guard
+// for `showCancelNow` (settings/billing.tsx) and `performCancelNow`'s
+// `{ when: "now" }` body (the only thing that distinguishes this call from an
+// accidental period-end cancel — see cancel.go:97's 422
+// billing_cancel_now_not_allowed for every OTHER combination).
+// ---------------------------------------------------------------------------
+
+describe("Cancel now", () => {
+  it("shows Cancel now for a past_due Stripe subscription, and confirming posts { when: \"now\" }", async () => {
+    mockedUseBilling.mockReturnValue(
+      mockQueryResult<BillingInfo | null>({
+        data: billingFixture({
+          plan: "starter",
+          plan_status: "past_due",
+          provider: "stripe",
+          portal_available: true,
+        }),
+      }),
+    );
+    const cancelNowMutateAsync = vi.fn(
+      (): Promise<CancelSubscriptionResult> => Promise.resolve({ ok: true }),
+    );
+    mockedUseCancelBillingSubscription.mockReturnValue(
+      mockMutationResult<CancelSubscriptionResult, CancelSubscriptionVariables | void>({
+        mutateAsync: cancelNowMutateAsync,
+      }),
+    );
+
+    renderBillingPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel now" }));
+
+    const confirmInput = await screen.findByLabelText(/type/i);
+    fireEvent.change(confirmInput, { target: { value: "Starter" } });
+
+    // The trigger button is aria-hidden while the modal Radix dialog is open
+    // (see the "Cancel subscription vs Manage billing" describe block's
+    // identical note), so this uniquely resolves to the dialog's own confirm
+    // button.
+    fireEvent.click(screen.getByRole("button", { name: "Cancel now" }));
+
+    await waitFor(() => expect(cancelNowMutateAsync).toHaveBeenCalledTimes(1));
+    // The exact body Cancel now must send -- an empty-body call would be a
+    // period-end cancel instead, which the server does not refuse the same
+    // way, so this has to be the one wire assertion that can't drift silently.
+    expect(cancelNowMutateAsync).toHaveBeenCalledWith({ when: "now" });
+
+    expect(mockedToastSuccess).toHaveBeenCalledWith("Your subscription has been cancelled");
+  });
+
+  it("shows no Cancel now button for an active Stripe subscription", async () => {
+    mockedUseBilling.mockReturnValue(
+      mockQueryResult<BillingInfo | null>({
+        data: billingFixture({
+          plan: "starter",
+          plan_status: "active",
+          provider: "stripe",
+          portal_available: true,
+        }),
+      }),
+    );
+
+    renderBillingPage();
+
+    await screen.findByRole("button", { name: "Manage billing" });
+    expect(screen.queryByRole("button", { name: "Cancel now" })).not.toBeInTheDocument();
+  });
+
+  it("shows no Cancel now button for a past_due Razorpay subscription (Cancel now is Stripe-only -- cancel.go's ImmediateCanceller has no Razorpay implementation)", async () => {
+    mockedUseBilling.mockReturnValue(
+      mockQueryResult<BillingInfo | null>({
+        data: billingFixture({
+          plan: "starter",
+          plan_status: "past_due",
+          provider: "razorpay",
+          portal_available: false,
+        }),
+      }),
+    );
+
+    renderBillingPage();
+
+    await screen.findByRole("heading", { name: "Billing" });
+    expect(screen.queryByRole("button", { name: "Cancel now" })).not.toBeInTheDocument();
   });
 });

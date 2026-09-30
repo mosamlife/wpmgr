@@ -37,6 +37,16 @@ type Querier interface {
 	// these tiles always reflect the FULL instance regardless of what the
 	// operator is currently filtering the list by.
 	AdminAccountPlanStatusCounts(ctx context.Context) ([]AdminAccountPlanStatusCountsRow, error)
+	// The operator's clear of a tenant's payment-provider binding: sets
+	// billing_provider, provider_customer_id and provider_subscription_id to NULL.
+	// The caller holds the per-tenant billing lock and passes the pin and stored
+	// customer it read before its provider check (@expected_provider,
+	// @expected_customer; NULL matches NULL). It writes only while
+	// billing_pin_is_movable holds (not comped; 'canceled', or 'none' with no
+	// stored subscription id) AND the stored pin and customer still equal the
+	// expected pair. So it never clears a pin or a customer the caller did not
+	// check. The caller requires exactly 1 row; 0 rows is a 409.
+	AdminClearBillingPin(ctx context.Context, arg AdminClearBillingPinParams) (int64, error)
 	// Clears comp_reason only, leaving plan/plan_status exactly as just written
 	// by billing.Service.ReconcileOneNow (used when a live provider subscription
 	// was adopted instead of falling back to free).
@@ -223,12 +233,19 @@ type Querier interface {
 	// that tenant's scope (the per-tenant isolation policy permits the UPDATE).
 	AdvanceBackupScheduleRun(ctx context.Context, arg AdvanceBackupScheduleRunParams) (BackupSchedule, error)
 	AllPluginSignatures(ctx context.Context) ([]PluginSignature, error)
-	// Persists the state machine's resolved next tenantBillingProfile
-	// (nextBillingState in state_machine.go). provider_customer_id is only
-	// overwritten when a non-empty value is supplied (COALESCE over NULLIF)
-	// so a caller that does not yet know the customer id (should not happen once
-	// a subscription exists, but keeps this query safe to reuse) cannot blank it.
-	ApplyBillingSubscriptionState(ctx context.Context, arg ApplyBillingSubscriptionStateParams) error
+	// Persists the state machine's resolved next billing state for one tenant,
+	// including the cancel schedule (cancel_at_period_end, cancel_at). The caller
+	// holds LockTenantBilling.
+	//
+	// It writes only while the tenant is still pinned to @billing_provider, the
+	// provider whose subscription was just read. The caller requires exactly 1
+	// row: 0 rows means the pin moved (or the tenant is gone) and nothing was
+	// written.
+	//
+	// provider_customer_id is write-once: a stored value is always kept, and
+	// @provider_customer_id (ignored when empty) only fills a NULL. A new customer
+	// id is stored only by BindCheckoutProvider, never by an apply.
+	ApplyBillingSubscriptionStateForProvider(ctx context.Context, arg ApplyBillingSubscriptionStateForProviderParams) (int64, error)
 	// Bulk-apply's per-site write: computes dedup(tags ∪ @add) − @remove
 	// entirely in SQL from the CURRENT row (never from a stale client-side read).
 	// 0 affected rows means the site does not exist in this tenant (the handler
@@ -264,10 +281,50 @@ type Querier interface {
 	AttachAgentAndConnect(ctx context.Context, arg AttachAgentAndConnectParams) (Site, error)
 	// Re-enrollment: rotate the agent key and mark the site active/enrolled again.
 	AttachAgentToSite(ctx context.Context, arg AttachAgentToSiteParams) (Site, error)
+	// True when this tenant's audit log already holds an entry whose
+	// metadata.audit_key equals @audit_key. An idempotent writer reads it after
+	// taking the tenant's audit chain lock and appends only on false, so a retried
+	// job records its entry once. Runs under InTenantTx (audit_log_tenant_isolation).
+	// Backed by audit_log_audit_key_idx (m149).
+	AuditEntryExistsByKey(ctx context.Context, arg AuditEntryExistsByKeyParams) (bool, error)
 	// revoked/disconnected/archived → pending_enrollment (operator). Bumps the
 	// generation counter and clears archived_at so the row leaves the archived list.
 	// The next consume increments nothing further — generation already advanced.
 	BeginSiteReEnrollment(ctx context.Context, arg BeginSiteReEnrollmentParams) (Site, error)
+	// The single write that binds a tenant to the payment provider a checkout
+	// uses. The caller holds the per-tenant billing lock, and passes the pin and
+	// stored customer it read before any provider call (@expected_provider and
+	// @expected_customer, both NULL when nothing was pinned), the provider the
+	// checkout asks for (@new_provider), and the provider customer id to store
+	// (@customer_id, NULL when there is none).
+	//
+	// It writes exactly one row, and only while billing_pin_is_movable holds for
+	// that row (not comped; 'canceled', or 'none' with no stored subscription id)
+	// and one of these is true:
+	//
+	//   * SAME PROVIDER. The stored pin already equals @new_provider, whatever the
+	//     caller expected. Nothing moves: the pin is rewritten to the same value,
+	//     the stored customer is kept (or set to @customer_id when none is
+	//     stored), and the stored subscription id is kept.
+	//
+	//   * MOVE FROM THE CHECKED PAIR. The stored pin and customer still equal
+	//     (@expected_provider, @expected_customer), compared with IS NOT DISTINCT
+	//     FROM so NULL matches NULL, and the pin differs from @new_provider. The
+	//     pin becomes @new_provider, the customer becomes @customer_id, and the
+	//     subscription id and the stored cancel schedule (cancel_at_period_end,
+	//     cancel_at) are cleared: a schedule belongs to the old provider's
+	//     subscription, never to the one the new provider will create.
+	//
+	// Anything else changes nothing and returns pgx.ErrNoRows, which the caller
+	// answers with 409; it must never retry the write with different expected
+	// values without repeating the checks those values stand for.
+	//
+	// The CASE expressions read the row as it was before this UPDATE (Postgres
+	// evaluates SET expressions against the old row), so "billing_provider IS
+	// DISTINCT FROM @new_provider" is true exactly on the move branch.
+	//
+	// Returns the stored customer id after the write, which may be NULL.
+	BindCheckoutProvider(ctx context.Context, arg BindCheckoutProviderParams) (*string, error)
 	// Cancels ONE not-yet-dispatched task as part of halting its run.
 	//
 	// The 'pending' precondition is the whole point, and it is enforced here rather
@@ -1105,12 +1162,19 @@ type Querier interface {
 	// PROVES there is nothing to reclaim. A guard refusal leaves the task open on
 	// purpose, so a restored dump makes the drain stand off rather than forget.
 	FailTenantObjectReclaim(ctx context.Context, arg FailTenantObjectReclaimParams) (int64, error)
-	// The "unknown tenant" fallback attribution path: resolves a tenant from
-	// (provider, provider_customer_id) when a webhook event's payload carries no
-	// tenant metadata (e.g. an invoice/charge event whose subscription was not
-	// expanded). Returns pgx.ErrNoRows when no tenant matches — the caller then
-	// treats the event as "unknown customer" (record + warn, change nothing).
-	FindTenantByProviderCustomer(ctx context.Context, arg FindTenantByProviderCustomerParams) (uuid.UUID, error)
+	// Every tenant pinned to @billing_provider whose stored customer id is
+	// @provider_customer_id, ordered by id. Webhook attribution and ownership
+	// classification use it when an event names a customer but no tenant.
+	//
+	// The caller decides on the number of rows: none, exactly one, or more than
+	// one, and must treat each case explicitly. A Stripe customer id names at most
+	// one tenant (tenants_stripe_customer_key); other providers' customer ids are
+	// not unique, so more than one row is a real result there.
+	//
+	// Soft-deleted tenants are included on purpose: an event for a deleted
+	// workspace must still resolve to it so the caller can alert. tenants has no
+	// row security, so this runs on the plain pool or inside any transaction.
+	FindTenantsByProviderCustomer(ctx context.Context, arg FindTenantsByProviderCustomerParams) ([]uuid.UUID, error)
 	// Terminalizes ONE task that never left 'scheduled'. The counterpart to
 	// FinishUpdateTask, which cannot be used here: its precondition is
 	// status IN ('pending','running'), so a scheduled task is not "open" by its
@@ -1319,6 +1383,12 @@ type Querier interface {
 	// Runs tenant-scoped (the caller sets app.tenant_id before this query).
 	GetBackupSiteInfo(ctx context.Context, arg GetBackupSiteInfoParams) (GetBackupSiteInfoRow, error)
 	GetBackupSnapshot(ctx context.Context, arg GetBackupSnapshotParams) (BackupSnapshot, error)
+	// The ledger row for one provider event, by its natural key. Intake reads it
+	// on a duplicate delivery (to re-enqueue an event whose processing never
+	// completed), and the apply worker reads it to load the event it was handed.
+	// pgx.ErrNoRows means no such row: never recorded, or removed with its
+	// tenant. Runs under InAgentTx (the billing_events_system policy).
+	GetBillingEventByProviderEventID(ctx context.Context, arg GetBillingEventByProviderEventIDParams) (BillingEvent, error)
 	// Returns up to 366 daily-aggregated hit-ratio data points for a site since
 	// @since, ordered oldest-first. Each point is one calendar day (UTC) of data:
 	// avg(ratio_pct), sum(hit_count), sum(miss_count). Daily downsampling ensures a
@@ -1874,6 +1944,10 @@ type Querier interface {
 	// processing need the provider identity + external ids that Phase A's
 	// GetTenantBilling (the tight entitlement-resolution hot path) does not
 	// select.
+	//
+	// cancel_at_period_end, cancel_at and deleted_at are read here so a caller
+	// that decides under the per-tenant billing lock sees the cancel schedule and
+	// the soft-delete marker in the same read as the provider identity.
 	GetTenantBillingProfile(ctx context.Context, tenantID uuid.UUID) (GetTenantBillingProfileRow, error)
 	// The tenant's deletion state, which the worker reads as THREE outcomes, not
 	// two. A row with deleted_at or purge_started_at set means Lane B (the org
@@ -1991,11 +2065,19 @@ type Querier interface {
 	// under InAgentTx (app.agent = 'on', the billing_events_system RLS policy).
 	// ---------------------------------------------------------------------------
 	// ON CONFLICT DO NOTHING makes a replayed webhook delivery a no-op insert
-	// (Stripe, like most providers, retries on anything but a 2xx). tenant_id may
-	// be NULL when attribution has not been resolved yet at insert time (the
-	// caller backfills it via SetBillingEventTenant once resolved). A caller
+	// (Stripe, like most providers, retries on anything but a 2xx). A caller
 	// distinguishes "inserted" from "duplicate" by checking for pgx.ErrNoRows,
 	// exactly like email.Repo.InsertWebhookEventDedup.
+	//
+	// @tenant_id is the tenant the event CLAIMS, which may be NULL. The stored
+	// tenant_id is that id only when a tenants row with it exists at insert time,
+	// and NULL otherwise, so a claim naming a tenant that was never created, or
+	// was hard-deleted before the insert, still records the event (with a NULL
+	// tenant) instead of failing the insert on the foreign key. The caller keeps
+	// the claim in the payload and backfills tenant_id via SetBillingEventTenant
+	// once attribution is resolved. A hard delete that commits between the
+	// subquery and the foreign-key check can still raise 23503; the caller
+	// retries that once with a NULL claim.
 	InsertBillingEvent(ctx context.Context, arg InsertBillingEventParams) (uuid.UUID, error)
 	// ---------------------------------------------------------------------------
 	// site_cache_hit_ratio_history (M52 / #162)
@@ -2107,20 +2189,6 @@ type Querier interface {
 	// the fleet level (site_id IS NULL) or the specific site.
 	// Runs under InAgentTx (pre-send check from the delta-fetch query) or InTenantTx.
 	IsSuppressed(ctx context.Context, arg IsSuppressedParams) (bool, error)
-	// The out-of-order guard: the newest occurred_at among this tenant's ALREADY
-	// APPLIED events (processed_at IS NOT NULL), excluding the event currently
-	// being processed. A provider's webhook delivery order is not guaranteed to
-	// match event creation order (Stripe documents this explicitly), so a fresh
-	// event whose occurred_at is OLDER than this must be ledgered but must NOT be
-	// allowed to overwrite a later state the tenant has already reached.
-	//
-	// Deliberately NOT a bare aggregate (SELECT max(occurred_at) ...): sqlc infers
-	// an aggregate over occurred_at (a NOT NULL column) as itself NOT NULL, which
-	// is wrong for the empty-result-set case (max() over zero rows is NULL) and
-	// would panic the row.Scan on this tenant's very first processed event. A
-	// plain ORDER BY ... LIMIT 1 instead returns zero rows in that case, which the
-	// caller handles the normal way (errors.Is(err, pgx.ErrNoRows)).
-	LastProcessedBillingEventOccurredAtForTenant(ctx context.Context, arg LastProcessedBillingEventOccurredAtForTenantParams) (time.Time, error)
 	LinkUserOIDC(ctx context.Context, arg LinkUserOIDCParams) (User, error)
 	ListAPIKeys(ctx context.Context, arg ListAPIKeysParams) ([]ApiKey, error)
 	// All unused recovery codes for a user (used_at IS NULL).
@@ -2908,6 +2976,17 @@ type Querier interface {
 	// snapshot already references, and Phase 3 is fail-closed so an empty live set
 	// caused by an ERROR can never reach the sweep at all.
 	ListTenantsForBackupGC(ctx context.Context) ([]uuid.UUID, error)
+	// The daily reconcile sweep's tenant set: every tenant that is not comped and
+	// has a provider pinned, and either a stored subscription id, or, for Stripe
+	// only, a stored customer id with no subscription id. The second half finds a
+	// Stripe subscription whose activation never reached this database; the
+	// caller looks it up by the returned customer id and nothing else. plan_status
+	// is returned so the caller can also look up a Stripe tenant whose stored
+	// subscription is no longer live.
+	//
+	// Soft-deleted tenants are included, so a subscription still live on a
+	// deleted workspace is found. Not paginated, ordered by id.
+	ListTenantsForReconcile(ctx context.Context) ([]ListTenantsForReconcileRow, error)
 	// ListTenantsForUser returns only the tenants the given user is a member of.
 	// It joins memberships under the memberships_self_read policy (app.user_id GUC),
 	// so it MUST be run via InUserTx; the join itself restricts the result to the
@@ -2920,13 +2999,6 @@ type Querier interface {
 	// trusted background job, never a per-request handler. Includes tenants whose
 	// purge_started_at is already set (a resumed, previously-interrupted purge).
 	ListTenantsPendingPurge(ctx context.Context, cutoff pgtype.Timestamptz) ([]Tenant, error)
-	// The M16 Phase B daily reconcile sweep's tenant set: every tenant with a
-	// live provider subscription reference, excluding comped tenants (immune to
-	// any provider-driven mutation, webhook or reconcile alike) and any tenant
-	// with no provider wired at all. Not paginated: the expected tenant count for
-	// this early-stage feature is small; a future pass can add keyset pagination
-	// (ORDER BY id already supports it) without changing this query's shape.
-	ListTenantsWithProviderSubscription(ctx context.Context) ([]ListTenantsWithProviderSubscriptionRow, error)
 	// Cross-tenant enumeration (app.agent GUC) of every tenant whose fleet
 	// circuit breaker is CURRENTLY tripped - GH #291 Phase 3 Fix 4. Called ONCE
 	// per sweep tick (never per-tenant): a tenant whose down sites simply stop
@@ -3000,6 +3072,14 @@ type Querier interface {
 	// All registered credentials for a user (for the Security settings list).
 	// Ordered by created_at DESC, id DESC.
 	ListWebAuthnCredentialsForUser(ctx context.Context, userID uuid.UUID) ([]WebauthnCredential, error)
+	// Takes the per-tenant billing advisory lock for the rest of the calling
+	// transaction. Every writer of a tenant's billing state (webhook apply,
+	// reconcile, checkout binding, cancel, the org-delete billing check and
+	// operator billing writes) serialises on this one key, so the key lives here
+	// and nowhere else: a caller that spelled it differently would stop
+	// serialising with the others without any error. Must run inside a
+	// transaction; outside one the lock is released at once.
+	LockTenantBilling(ctx context.Context, tenantID uuid.UUID) error
 	// M56 Real User Monitoring (RUM) queries.
 	// All writes run under InRumIngestTx (app.rum_ingest='on').
 	// Dashboard reads run under InTenantTx (app.tenant_id set).
@@ -3700,6 +3780,26 @@ type Querier interface {
 	// insert (the customer-id fallback lookup path). Guarded so it never
 	// clobbers an already-attributed row.
 	SetBillingEventTenant(ctx context.Context, arg SetBillingEventTenantParams) error
+	// Records a cancel the caller has just asked the provider for, when the
+	// provider will not report it back as a schedule. Two uses, chosen by
+	// @cancel_now:
+	//
+	//   * @cancel_now = true: the Cancel-now marker. Only for a Stripe tenant
+	//     whose status is still 'past_due'. Sets cancel_at to the transaction's
+	//     now(), so every later read sees a cancel_at at or before its own now().
+	//
+	//   * @cancel_now = false: the local period-end cancel flag. Only for a
+	//     Razorpay tenant with a live status ('active', 'trialing', 'past_due' or
+	//     'paused'). cancel_at becomes @cancel_at when that is strictly in the
+	//     future at the moment of the write, and NULL otherwise, so this form
+	//     never stores a cancel_at in the past.
+	//
+	// Both set cancel_at_period_end to true. Both write only while the stored
+	// subscription id is still @provider_subscription_id, the one the caller
+	// cancelled, so a late write can never mark a subscription that replaced it.
+	// The caller holds LockTenantBilling. 0 rows means nothing was written: the
+	// tenant, its provider, its status or its subscription no longer match.
+	SetCancelRequested(ctx context.Context, arg SetCancelRequestedParams) (int64, error)
 	// m61: write/rotate webhook security columns on a config row.
 	// Use set_signing_key flag (nil-sentinel) to preserve the existing encrypted key
 	// when rotating only the token or ARNs.
@@ -3734,10 +3834,6 @@ type Querier interface {
 	// app.agent GUC). Only writes when the value actually changes to avoid churn.
 	SetSiteHealthStatus(ctx context.Context, arg SetSiteHealthStatusParams) (int64, error)
 	SetSiteTags(ctx context.Context, arg SetSiteTagsParams) (Site, error)
-	// "One tenant = one provider at a time (set at first checkout)": this only
-	// ever writes when billing_provider is still NULL, so a tenant can never be
-	// silently re-pointed at a different provider by a later checkout attempt.
-	SetTenantBillingProviderIfUnset(ctx context.Context, arg SetTenantBillingProviderIfUnsetParams) (int64, error)
 	// The general run-status write, used by the immediate (non-scheduled)
 	// lifecycle: pending -> running on the first task start, and -> 'completed'
 	// when the last task finishes.

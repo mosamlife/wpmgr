@@ -13,6 +13,32 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const auditEntryExistsByKey = `-- name: AuditEntryExistsByKey :one
+SELECT EXISTS (
+    SELECT 1 FROM audit_log
+    WHERE tenant_id = $1
+      AND metadata ? 'audit_key'
+      AND metadata ->> 'audit_key' = $2::text
+) AS exists
+`
+
+type AuditEntryExistsByKeyParams struct {
+	TenantID uuid.UUID `json:"tenant_id"`
+	AuditKey string    `json:"audit_key"`
+}
+
+// True when this tenant's audit log already holds an entry whose
+// metadata.audit_key equals @audit_key. An idempotent writer reads it after
+// taking the tenant's audit chain lock and appends only on false, so a retried
+// job records its entry once. Runs under InTenantTx (audit_log_tenant_isolation).
+// Backed by audit_log_audit_key_idx (m149).
+func (q *Queries) AuditEntryExistsByKey(ctx context.Context, arg AuditEntryExistsByKeyParams) (bool, error) {
+	row := q.db.QueryRow(ctx, auditEntryExistsByKey, arg.TenantID, arg.AuditKey)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const getLastAuditHash = `-- name: GetLastAuditHash :one
 SELECT hash FROM audit_log
 WHERE tenant_id = $1

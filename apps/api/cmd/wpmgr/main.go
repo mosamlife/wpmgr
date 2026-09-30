@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -663,7 +664,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// config REGARDLESS of WPMGR_HOSTED (an empty registry is harmless — every
 	// billing.Service method already treats "no providers configured" as a
 	// clean, documented no-op/503, never a crash). Stripe is registered ONLY
-	// when its five WPMGR_BILLING_STRIPE_* variables are ALL present
+	// when its six WPMGR_BILLING_STRIPE_* variables are ALL present
 	// (StripeConfig.Configured — config.Validate refuses a PARTIAL Stripe
 	// config at boot, so by the time we get here it is always all-or-nothing).
 	// Razorpay (India pricing, dual-currency) mirrors this exactly: registered
@@ -676,6 +677,15 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		PriceAgency:     cfg.Billing.Stripe.PriceAgency,
 		PriceScale:      cfg.Billing.Stripe.PriceScale,
 		PortalReturnURL: cfg.PublicBaseURL + "/billing",
+		// WPMgr's own portal configuration; required by Configured().
+		PortalConfigurationID: cfg.Billing.Stripe.PortalConfiguration,
+		// Default true keeps today's behaviour; an operator selling to
+		// individual consumers with no business tax number sets
+		// WPMGR_BILLING_STRIPE_TAX_ID_REQUIRED=false.
+		TaxIDRequired: cfg.Billing.Stripe.TaxIDRequired,
+		// A dedicated client with a whole-request deadline, so one Stripe
+		// call can never outlive the billing worker's own bound.
+		HTTPClient: &http.Client{Timeout: 10 * time.Second},
 	}
 	if stripeCfg.Configured() {
 		billingProviders = append(billingProviders, billingstripe.New(stripeCfg))
@@ -721,6 +731,9 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	}, billingPublicBaseURL)
 	billingWebhookH := billing.NewWebhookHandler(billingSvc, logger)
 	billingReconcileWorker := billing.NewReconcileWorker(billingSvc, logger)
+	billingApplyWorker := billing.NewBillingApplyWorker(billingSvc)
+	billingRefreshWorker := billing.NewBillingRefreshWorker(billingSvc)
+	billingAuditWorker := billing.NewBillingAuditWorker(billingSvc)
 
 	// M16 live-pricing Phase 1 — public GET /api/v1/pricing (internal/pricing),
 	// the marketing site's price source. Reuses the SAME billingRegistry (so
@@ -2060,6 +2073,9 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		// worker's own Reconcile call no-ops cleanly when hosted billing is
 		// disabled or no provider is registered).
 		billingReconcileWorker: billingReconcileWorker,
+		billingApplyWorker:     billingApplyWorker,
+		billingRefreshWorker:   billingRefreshWorker,
+		billingAuditWorker:     billingAuditWorker,
 		// GH #152 part 2 — daily org grace-window purge sweep (always wired).
 		orgPurgeWorker: orgPurgeWorker,
 		// GH #402: site-object reclaim sweep (always wired; no-ops with no
@@ -2082,6 +2098,9 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// operator-facing refresh route on the site handler (via siteRefreshAdapter).
 	// GH #755: agent pushes queue a reported address for siteAdoptURLWorker.
 	siteSvc.SetAdoptURLEnqueuer(site.NewRiverAdoptURLEnqueuer(riverClient))
+	// Billing intake, reconcile and operator actions enqueue their jobs on
+	// the started client.
+	billingSvc.SetRiver(riverClient)
 	updateEnqueuer := update.NewRiverEnqueuer(riverClient)
 	updateSvc := update.NewService(updateRepo, sitesLookup, updateEnqueuer, validator, clock)
 	updateH := update.NewHandler(updateSvc, updateHub, auditRec)
@@ -2559,10 +2578,11 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// Org handler: create org + activate.
 	orgTenantCreator := &orgTenantAdapter{svc: tenantSvc}
 	orgH := org.NewHandler(pool, orgTenantCreator, sessions, authSvc, auditRec)
-	// GH #152 — DELETE /orgs/{orgId} refuses to delete a tenant with
-	// plan_status='active' while hosted billing is enabled (self-host has no
-	// subscription to protect, so this is a no-op there).
+	// GH #152 — DELETE /orgs/{orgId} asks billing whether the tenant's
+	// subscription state allows the delete while hosted billing is enabled
+	// (self-host has no subscription to protect, so this is a no-op there).
 	orgH.SetHosted(cfg.Hosted.Enabled)
+	orgH.SetBillingGuard(billingSvc)
 
 	// ADR-064 slice S4 — governed org/site context. Facts (layer 4) is left
 	// unwired (nil) in this slice: SiteFactsProvider degrades a nil provider
@@ -2636,7 +2656,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// clean "not configured" only if billingRepo itself were nil, which it
 	// never is here. stripeTestMode drives the account-detail subscription
 	// card's Stripe-dashboard deep link (test vs live URL prefix).
-	stripeTestMode := strings.HasPrefix(cfg.Billing.Stripe.SecretKey, "sk_test_")
+	stripeTestMode := billingstripe.IsTestModeKey(cfg.Billing.Stripe.SecretKey)
 	adminBillingRepo := admin.NewBillingRepo(pool)
 	adminSvc.SetBillingPanel(adminBillingRepo, billingSvc, auditRec, stripeTestMode)
 
@@ -3485,6 +3505,12 @@ type riverDeps struct {
 	// itself no-ops cleanly when hosted billing is disabled or no provider is
 	// registered, so there is nothing to gate here.
 	billingReconcileWorker *billing.ReconcileWorker
+	// The billing apply, refresh and audit workers (internal/billing's
+	// worker.go). Always wired with the reconcile worker; they share its
+	// queue. Webhook intake, reconcile and operator actions only enqueue.
+	billingApplyWorker   *billing.BillingApplyWorker
+	billingRefreshWorker *billing.BillingRefreshWorker
+	billingAuditWorker   *billing.BillingAuditWorker
 	// GH #152 part 2 — daily org grace-window purge sweep. Always wired (like
 	// billingReconcileWorker above): PurgeWorker.Work no-ops cleanly when
 	// there are zero tenants past their grace window.
@@ -4069,7 +4095,16 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 	// boot closes that window without any real cost (the tenant set is small).
 	if d.billingReconcileWorker != nil {
 		river.AddWorker(workers, d.billingReconcileWorker)
-		queues[billing.ReconcileQueue] = river.QueueConfig{MaxWorkers: 1}
+		if d.billingApplyWorker != nil {
+			river.AddWorker(workers, d.billingApplyWorker)
+		}
+		if d.billingRefreshWorker != nil {
+			river.AddWorker(workers, d.billingRefreshWorker)
+		}
+		if d.billingAuditWorker != nil {
+			river.AddWorker(workers, d.billingAuditWorker)
+		}
+		queues[billing.BillingQueue] = river.QueueConfig{MaxWorkers: 1}
 		periodics = append(periodics, river.NewPeriodicJob(
 			river.PeriodicInterval(24*time.Hour),
 			func() (river.JobArgs, *river.InsertOpts) { return billing.ReconcileArgs{}, nil },

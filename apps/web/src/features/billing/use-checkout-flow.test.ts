@@ -137,7 +137,6 @@ describe("useCheckoutFlow — Stripe path", () => {
     const { result } = renderHook(() => useCheckoutFlow({ onCheckoutSuccess }));
 
     expect(result.current.provider).toBe("stripe");
-    expect(result.current.currency).toBe("USD");
 
     act(() => {
       result.current.startCheckout("starter");
@@ -157,6 +156,39 @@ describe("useCheckoutFlow — Stripe path", () => {
 // ---------------------------------------------------------------------------
 // Razorpay path
 // ---------------------------------------------------------------------------
+
+describe("useCheckoutFlow — providerOverride (same-handler-tick setProvider + startCheckout)", () => {
+  it("posts provider: 'razorpay' when a caller sets the provider and starts checkout inside the same handler, as the decline banner's onPayWithRazorpay does", () => {
+    // Regression: `setProvider("razorpay")` followed synchronously by
+    // `startCheckout(tier)` in one handler used to post `provider: "stripe"`
+    // — `startCheckout`'s closure still read the pre-update `provider`
+    // state, since the setProvider update had not committed yet. Passing
+    // the provider explicitly is the fix; this reproduces the exact
+    // same-tick shape (a single `act`, mirroring one React event handler),
+    // unlike the Razorpay-path tests above which flush state across two
+    // separate `act` calls and would not have caught this.
+    const mutateMock = fireOnSuccess<CheckoutResult, CreateCheckoutVariables>({
+      razorpay: { subscription_id: "sub_1", key_id: "rzp_1", currency: "INR", amount: 1500 },
+    });
+    mockedUseCreateBillingCheckout.mockReturnValue(
+      mockMutationResult<CheckoutResult, CreateCheckoutVariables>({ mutate: mutateMock }),
+    );
+
+    const { result } = renderHook(() => useCheckoutFlow({ onCheckoutSuccess: vi.fn() }));
+
+    expect(result.current.provider).toBe("stripe");
+
+    act(() => {
+      result.current.setProvider("razorpay");
+      result.current.startCheckout("starter", "razorpay");
+    });
+
+    expect(mutateMock).toHaveBeenCalledWith(
+      { tier: "starter", provider: "razorpay", currency: "INR" },
+      expect.anything(),
+    );
+  });
+});
 
 describe("useCheckoutFlow — Razorpay path", () => {
   it("posts the selected provider/currency, opens the Checkout.js modal with the subscription's key/id/amount/currency, and on handler success verifies then calls onCheckoutSuccess", async () => {
@@ -182,7 +214,6 @@ describe("useCheckoutFlow — Razorpay path", () => {
     const { result } = renderHook(() => useCheckoutFlow({ onCheckoutSuccess }));
 
     act(() => result.current.setProvider("razorpay"));
-    act(() => result.current.setCurrency("INR"));
     act(() => result.current.startCheckout("agency"));
 
     expect(mutateMock).toHaveBeenCalledWith(
@@ -313,54 +344,5 @@ describe("useCheckoutFlow — loading/error surface", () => {
 
     expect(result.current.isStarting).toBe(false);
     expect(result.current.error).toBeNull();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// initialCurrency — M16 Phase C2's `?currency=` hint (register.tsx / welcome.checkout.tsx)
-// ---------------------------------------------------------------------------
-
-describe("useCheckoutFlow — initialCurrency option", () => {
-  it("defaults to USD when initialCurrency is omitted (unregressed /settings/billing behavior)", () => {
-    mockedUseCreateBillingCheckout.mockReturnValue(
-      mockMutationResult<CheckoutResult, CreateCheckoutVariables>({}),
-    );
-
-    const { result } = renderHook(() => useCheckoutFlow({ onCheckoutSuccess: vi.fn() }));
-
-    expect(result.current.currency).toBe("USD");
-  });
-
-  it("seeds the currency state from initialCurrency when provided", () => {
-    mockedUseCreateBillingCheckout.mockReturnValue(
-      mockMutationResult<CheckoutResult, CreateCheckoutVariables>({}),
-    );
-
-    const { result } = renderHook(() =>
-      useCheckoutFlow({ onCheckoutSuccess: vi.fn(), initialCurrency: "INR" }),
-    );
-
-    expect(result.current.currency).toBe("INR");
-  });
-
-  it("posts the seeded currency once the operator switches to Razorpay, without an explicit setCurrency call", () => {
-    const mutateMock = fireOnSuccess<CheckoutResult, CreateCheckoutVariables>({
-      razorpay: { subscription_id: "sub_1", key_id: "rzp_1", currency: "INR", amount: 150000 },
-    });
-    mockedUseCreateBillingCheckout.mockReturnValue(
-      mockMutationResult<CheckoutResult, CreateCheckoutVariables>({ mutate: mutateMock }),
-    );
-
-    const { result } = renderHook(() =>
-      useCheckoutFlow({ onCheckoutSuccess: vi.fn(), initialCurrency: "INR" }),
-    );
-
-    act(() => result.current.setProvider("razorpay"));
-    act(() => result.current.startCheckout("agency"));
-
-    expect(mutateMock).toHaveBeenCalledWith(
-      { tier: "agency", provider: "razorpay", currency: "INR" },
-      expect.anything(),
-    );
   });
 });

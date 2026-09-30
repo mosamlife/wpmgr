@@ -1752,13 +1752,59 @@ func (s *AdminBillingAck) SetOk(val bool) {
 	s.Ok = val
 }
 
-func (*AdminBillingAck) compAdminAccountRes()         {}
-func (*AdminBillingAck) extendAdminAccountGraceRes()  {}
-func (*AdminBillingAck) forceAdminAccountStateRes()   {}
-func (*AdminBillingAck) restoreAdminAccountRes()      {}
-func (*AdminBillingAck) revokeAdminAccountCompRes()   {}
-func (*AdminBillingAck) setAdminAccountOverridesRes() {}
-func (*AdminBillingAck) suspendAdminAccountRes()      {}
+func (*AdminBillingAck) clearAdminAccountBillingProviderRes() {}
+func (*AdminBillingAck) compAdminAccountRes()                 {}
+func (*AdminBillingAck) extendAdminAccountGraceRes()          {}
+func (*AdminBillingAck) forceAdminAccountStateRes()           {}
+func (*AdminBillingAck) restoreAdminAccountRes()              {}
+func (*AdminBillingAck) revokeAdminAccountCompRes()           {}
+func (*AdminBillingAck) setAdminAccountOverridesRes()         {}
+func (*AdminBillingAck) suspendAdminAccountRes()              {}
+
+// Ref: #/components/schemas/AdminClearBillingProviderRequest
+type AdminClearBillingProviderRequest struct {
+	Reason string `json:"reason"`
+	// Razorpay subscription ids found by a manual Dashboard lookup for this tenant (may be empty if none
+	// were found). Only consulted when the tenant is currently pinned to Razorpay; an id that does not
+	// match ^sub_[A-Za-z0-9]+$ is refused with 400 billing_invalid_subscription_id before any provider
+	// call.
+	RazorpaySubscriptionIds []string `json:"razorpay_subscription_ids"`
+	// Confirms the operator searched the Razorpay Dashboard for this tenant's subscriptions before
+	// submitting razorpay_subscription_ids. Required (true) to clear a Razorpay-pinned tenant; otherwise
+	// the clear is refused with 409 billing_provider_locked (details.reason =
+	// razorpay_lookup_unconfirmed).
+	RazorpayLookupConfirmed OptBool `json:"razorpay_lookup_confirmed"`
+}
+
+// GetReason returns the value of Reason.
+func (s *AdminClearBillingProviderRequest) GetReason() string {
+	return s.Reason
+}
+
+// GetRazorpaySubscriptionIds returns the value of RazorpaySubscriptionIds.
+func (s *AdminClearBillingProviderRequest) GetRazorpaySubscriptionIds() []string {
+	return s.RazorpaySubscriptionIds
+}
+
+// GetRazorpayLookupConfirmed returns the value of RazorpayLookupConfirmed.
+func (s *AdminClearBillingProviderRequest) GetRazorpayLookupConfirmed() OptBool {
+	return s.RazorpayLookupConfirmed
+}
+
+// SetReason sets the value of Reason.
+func (s *AdminClearBillingProviderRequest) SetReason(val string) {
+	s.Reason = val
+}
+
+// SetRazorpaySubscriptionIds sets the value of RazorpaySubscriptionIds.
+func (s *AdminClearBillingProviderRequest) SetRazorpaySubscriptionIds(val []string) {
+	s.RazorpaySubscriptionIds = val
+}
+
+// SetRazorpayLookupConfirmed sets the value of RazorpayLookupConfirmed.
+func (s *AdminClearBillingProviderRequest) SetRazorpayLookupConfirmed(val OptBool) {
+	s.RazorpayLookupConfirmed = val
+}
 
 // Ref: #/components/schemas/AdminCompAccountRequest
 type AdminCompAccountRequest struct {
@@ -11344,18 +11390,99 @@ type BeginWebAuthnEnrollmentOK struct{}
 
 func (*BeginWebAuthnEnrollmentOK) beginWebAuthnEnrollmentRes() {}
 
+// Ref: #/components/schemas/BillingCancelRequest
+type BillingCancelRequest struct {
+	// `now` cancels immediately and is refused (422) unless the subscription's status is past_due and its
+	// provider is stripe; omit, or send period_end, for the default end-of-period cancellation.
+	When OptBillingCancelRequestWhen `json:"when"`
+}
+
+// GetWhen returns the value of When.
+func (s *BillingCancelRequest) GetWhen() OptBillingCancelRequestWhen {
+	return s.When
+}
+
+// SetWhen sets the value of When.
+func (s *BillingCancelRequest) SetWhen(val OptBillingCancelRequestWhen) {
+	s.When = val
+}
+
+// `now` cancels immediately and is refused (422) unless the subscription's status is past_due and its
+// provider is stripe; omit, or send period_end, for the default end-of-period cancellation.
+type BillingCancelRequestWhen string
+
+const (
+	BillingCancelRequestWhenPeriodEnd BillingCancelRequestWhen = "period_end"
+	BillingCancelRequestWhenNow       BillingCancelRequestWhen = "now"
+)
+
+// AllValues returns all BillingCancelRequestWhen values.
+func (BillingCancelRequestWhen) AllValues() []BillingCancelRequestWhen {
+	return []BillingCancelRequestWhen{
+		BillingCancelRequestWhenPeriodEnd,
+		BillingCancelRequestWhenNow,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s BillingCancelRequestWhen) MarshalText() ([]byte, error) {
+	switch s {
+	case BillingCancelRequestWhenPeriodEnd:
+		return []byte(s), nil
+	case BillingCancelRequestWhenNow:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *BillingCancelRequestWhen) UnmarshalText(data []byte) error {
+	switch BillingCancelRequestWhen(data) {
+	case BillingCancelRequestWhenPeriodEnd:
+		*s = BillingCancelRequestWhenPeriodEnd
+		return nil
+	case BillingCancelRequestWhenNow:
+		*s = BillingCancelRequestWhenNow
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Ref: #/components/schemas/BillingCheckoutConfirmRequest
+type BillingCheckoutConfirmRequest struct {
+	// The Checkout Session id returned in the success-URL query string after a Stripe checkout redirect.
+	SessionID string `json:"session_id"`
+}
+
+// GetSessionID returns the value of SessionID.
+func (s *BillingCheckoutConfirmRequest) GetSessionID() string {
+	return s.SessionID
+}
+
+// SetSessionID sets the value of SessionID.
+func (s *BillingCheckoutConfirmRequest) SetSessionID(val string) {
+	s.SessionID = val
+}
+
 // Ref: #/components/schemas/BillingCheckoutRequest
 type BillingCheckoutRequest struct {
 	// The only caller-supplied PRICE selector. The server resolves this to a payment-provider price
 	// server-side; a request can never name a price directly.
 	Tier BillingCheckoutRequestTier `json:"tier"`
-	// Preferred payment provider. Consulted only on a tenant's first-ever checkout: once a tenant is
-	// pinned to a provider that pinning always wins, so a returning customer can never split a
-	// subscription across two providers. An unknown name is rejected. Omit to use the instance default.
+	// Preferred payment provider. Honored, including a switch away from the tenant's current provider,
+	// whenever the provider-switch rules allow it — see this endpoint's 409 billing_provider_locked. A
+	// caller can never end up with two live subscriptions across providers: a stored live subscription
+	// (active, trialing, past_due or paused) is refused with 409 billing_subscription_exists first, and a
+	// stored subscription id still settling from a prior checkout is refused with 409
+	// billing_subscription_pending. A comped workspace is refused with 409 billing_comped. An unknown name
+	// is rejected. Omit to use the instance default.
 	Provider OptString `json:"provider"`
 	// Preferred billing currency, passed to the provider when it creates the checkout. Selects among the
-	// prices the server already knows for the requested tier; it can never set an amount. Omit for the
-	// provider default.
+	// prices the server already knows for the requested tier; it can never set an amount. Razorpay: INR
+	// only — omitted means INR, and a request for any other currency is refused with 400
+	// billing_invalid_currency. Stripe ignores this field and always charges US$.
 	Currency OptString `json:"currency"`
 }
 
@@ -11525,8 +11652,19 @@ type BillingSummary struct {
 	Plan             BillingSummaryPlan       `json:"plan"`
 	PlanStatus       BillingSummaryPlanStatus `json:"plan_status"`
 	CurrentPeriodEnd OptDateTime              `json:"current_period_end"`
-	// The tenant's payment provider (e.g. "stripe"). Empty until the tenant's first checkout.
+	// The tenant's payment provider (e.g. "stripe"). Empty before the tenant's first checkout. From the
+	// first checkout onward this is the provisional or final provider: it can still move to a different
+	// registered provider through a later checkout's provider-switch rules (see POST /billing/checkout's
+	// 409 billing_provider_locked). A live or pending stored subscription blocks the switch (409
+	// billing_subscription_exists or billing_subscription_pending), but a stored canceled subscription
+	// does not — this can still move even after a subscription has been stored.
 	Provider OptString `json:"provider"`
+	// True once cancellation is scheduled, whether for the current period's end or via an immediate Cancel
+	// now.
+	CancelAtPeriodEnd bool `json:"cancel_at_period_end"`
+	// Set once cancellation is scheduled. Equal to current_period_end for a period-end cancel; a past
+	// instant marks an immediate Cancel now.
+	CancelAt OptDateTime `json:"cancel_at"`
 	// Set only while plan_status is past_due: paid limits continue until this instant, after which the
 	// tenant falls back to free.
 	GraceUntil OptDateTime   `json:"grace_until"`
@@ -11534,6 +11672,9 @@ type BillingSummary struct {
 	// True once the tenant has a payment-provider customer id — i.e. POST /billing/portal will succeed
 	// rather than 409.
 	PortalAvailable bool `json:"portal_available"`
+	// Payment providers registered on this instance, stripe first when more than one is registered. Drives
+	// whether a non-default provider (e.g. Razorpay) is offered at checkout.
+	AvailableProviders []BillingSummaryAvailableProvidersItem `json:"available_providers"`
 }
 
 // GetPlan returns the value of Plan.
@@ -11556,6 +11697,16 @@ func (s *BillingSummary) GetProvider() OptString {
 	return s.Provider
 }
 
+// GetCancelAtPeriodEnd returns the value of CancelAtPeriodEnd.
+func (s *BillingSummary) GetCancelAtPeriodEnd() bool {
+	return s.CancelAtPeriodEnd
+}
+
+// GetCancelAt returns the value of CancelAt.
+func (s *BillingSummary) GetCancelAt() OptDateTime {
+	return s.CancelAt
+}
+
 // GetGraceUntil returns the value of GraceUntil.
 func (s *BillingSummary) GetGraceUntil() OptDateTime {
 	return s.GraceUntil
@@ -11569,6 +11720,11 @@ func (s *BillingSummary) GetMeters() BillingMeters {
 // GetPortalAvailable returns the value of PortalAvailable.
 func (s *BillingSummary) GetPortalAvailable() bool {
 	return s.PortalAvailable
+}
+
+// GetAvailableProviders returns the value of AvailableProviders.
+func (s *BillingSummary) GetAvailableProviders() []BillingSummaryAvailableProvidersItem {
+	return s.AvailableProviders
 }
 
 // SetPlan sets the value of Plan.
@@ -11591,6 +11747,16 @@ func (s *BillingSummary) SetProvider(val OptString) {
 	s.Provider = val
 }
 
+// SetCancelAtPeriodEnd sets the value of CancelAtPeriodEnd.
+func (s *BillingSummary) SetCancelAtPeriodEnd(val bool) {
+	s.CancelAtPeriodEnd = val
+}
+
+// SetCancelAt sets the value of CancelAt.
+func (s *BillingSummary) SetCancelAt(val OptDateTime) {
+	s.CancelAt = val
+}
+
 // SetGraceUntil sets the value of GraceUntil.
 func (s *BillingSummary) SetGraceUntil(val OptDateTime) {
 	s.GraceUntil = val
@@ -11606,7 +11772,53 @@ func (s *BillingSummary) SetPortalAvailable(val bool) {
 	s.PortalAvailable = val
 }
 
+// SetAvailableProviders sets the value of AvailableProviders.
+func (s *BillingSummary) SetAvailableProviders(val []BillingSummaryAvailableProvidersItem) {
+	s.AvailableProviders = val
+}
+
 func (*BillingSummary) getBillingRes() {}
+
+type BillingSummaryAvailableProvidersItem string
+
+const (
+	BillingSummaryAvailableProvidersItemStripe   BillingSummaryAvailableProvidersItem = "stripe"
+	BillingSummaryAvailableProvidersItemRazorpay BillingSummaryAvailableProvidersItem = "razorpay"
+)
+
+// AllValues returns all BillingSummaryAvailableProvidersItem values.
+func (BillingSummaryAvailableProvidersItem) AllValues() []BillingSummaryAvailableProvidersItem {
+	return []BillingSummaryAvailableProvidersItem{
+		BillingSummaryAvailableProvidersItemStripe,
+		BillingSummaryAvailableProvidersItemRazorpay,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s BillingSummaryAvailableProvidersItem) MarshalText() ([]byte, error) {
+	switch s {
+	case BillingSummaryAvailableProvidersItemStripe:
+		return []byte(s), nil
+	case BillingSummaryAvailableProvidersItemRazorpay:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *BillingSummaryAvailableProvidersItem) UnmarshalText(data []byte) error {
+	switch BillingSummaryAvailableProvidersItem(data) {
+	case BillingSummaryAvailableProvidersItemStripe:
+		*s = BillingSummaryAvailableProvidersItemStripe
+		return nil
+	case BillingSummaryAvailableProvidersItemRazorpay:
+		*s = BillingSummaryAvailableProvidersItemRazorpay
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
 
 // The tenant's SUBSCRIBED tier (tenants.plan). A canceled subscription resolves this to "free"
 // (non-destructive downgrade, see plan_status).
@@ -12520,6 +12732,10 @@ type CancelBackupNotFound Error
 
 func (*CancelBackupNotFound) cancelBackupRes() {}
 
+type CancelBillingSubscriptionConflict Error
+
+func (*CancelBillingSubscriptionConflict) cancelBillingSubscriptionRes() {}
+
 type CancelBillingSubscriptionForbidden Error
 
 func (*CancelBillingSubscriptionForbidden) cancelBillingSubscriptionRes() {}
@@ -12543,6 +12759,10 @@ func (*CancelBillingSubscriptionOK) cancelBillingSubscriptionRes() {}
 type CancelBillingSubscriptionUnauthorized Error
 
 func (*CancelBillingSubscriptionUnauthorized) cancelBillingSubscriptionRes() {}
+
+type CancelBillingSubscriptionUnprocessableEntity Error
+
+func (*CancelBillingSubscriptionUnprocessableEntity) cancelBillingSubscriptionRes() {}
 
 type CancelEnrollmentConflict Error
 
@@ -12933,6 +13153,38 @@ func (*ChmodSiteFileNotFound) chmodSiteFileRes() {}
 type ChmodSiteFileUnauthorized Error
 
 func (*ChmodSiteFileUnauthorized) chmodSiteFileRes() {}
+
+type ClearAdminAccountBillingProviderBadRequest Error
+
+func (*ClearAdminAccountBillingProviderBadRequest) clearAdminAccountBillingProviderRes() {}
+
+type ClearAdminAccountBillingProviderConflict Error
+
+func (*ClearAdminAccountBillingProviderConflict) clearAdminAccountBillingProviderRes() {}
+
+type ClearAdminAccountBillingProviderForbidden Error
+
+func (*ClearAdminAccountBillingProviderForbidden) clearAdminAccountBillingProviderRes() {}
+
+type ClearAdminAccountBillingProviderNotFound Error
+
+func (*ClearAdminAccountBillingProviderNotFound) clearAdminAccountBillingProviderRes() {}
+
+type ClearAdminAccountBillingProviderNotImplemented Error
+
+func (*ClearAdminAccountBillingProviderNotImplemented) clearAdminAccountBillingProviderRes() {}
+
+type ClearAdminAccountBillingProviderServiceUnavailable Error
+
+func (*ClearAdminAccountBillingProviderServiceUnavailable) clearAdminAccountBillingProviderRes() {}
+
+type ClearAdminAccountBillingProviderUnauthorized Error
+
+func (*ClearAdminAccountBillingProviderUnauthorized) clearAdminAccountBillingProviderRes() {}
+
+type ClearAdminAccountBillingProviderUnprocessableEntity Error
+
+func (*ClearAdminAccountBillingProviderUnprocessableEntity) clearAdminAccountBillingProviderRes() {}
 
 type ClearAdminVulnFeedKeyForbidden Error
 
@@ -14099,6 +14351,54 @@ func (s *ComputeRucssReq) SetUrls(val []string) {
 	s.Urls = val
 }
 
+type ConfirmBillingCheckoutAccepted struct {
+	Ok bool `json:"ok"`
+}
+
+// GetOk returns the value of Ok.
+func (s *ConfirmBillingCheckoutAccepted) GetOk() bool {
+	return s.Ok
+}
+
+// SetOk sets the value of Ok.
+func (s *ConfirmBillingCheckoutAccepted) SetOk(val bool) {
+	s.Ok = val
+}
+
+func (*ConfirmBillingCheckoutAccepted) confirmBillingCheckoutRes() {}
+
+type ConfirmBillingCheckoutForbidden Error
+
+func (*ConfirmBillingCheckoutForbidden) confirmBillingCheckoutRes() {}
+
+type ConfirmBillingCheckoutNotFound Error
+
+func (*ConfirmBillingCheckoutNotFound) confirmBillingCheckoutRes() {}
+
+type ConfirmBillingCheckoutOK struct {
+	Ok bool `json:"ok"`
+}
+
+// GetOk returns the value of Ok.
+func (s *ConfirmBillingCheckoutOK) GetOk() bool {
+	return s.Ok
+}
+
+// SetOk sets the value of Ok.
+func (s *ConfirmBillingCheckoutOK) SetOk(val bool) {
+	s.Ok = val
+}
+
+func (*ConfirmBillingCheckoutOK) confirmBillingCheckoutRes() {}
+
+type ConfirmBillingCheckoutUnauthorized Error
+
+func (*ConfirmBillingCheckoutUnauthorized) confirmBillingCheckoutRes() {}
+
+type ConfirmBillingCheckoutUnprocessableEntity Error
+
+func (*ConfirmBillingCheckoutUnprocessableEntity) confirmBillingCheckoutRes() {}
+
 type ConfirmTotpEnrollmentReq struct {
 	Code string `json:"code"`
 }
@@ -14355,6 +14655,10 @@ func (*CreateAutologinNotFound) createAutologinRes() {}
 type CreateAutologinUnprocessableEntity Error
 
 func (*CreateAutologinUnprocessableEntity) createAutologinRes() {}
+
+type CreateBillingCheckoutConflict Error
+
+func (*CreateBillingCheckoutConflict) createBillingCheckoutRes() {}
 
 type CreateBillingCheckoutForbidden Error
 
@@ -16780,6 +17084,10 @@ func (*DeleteOrgConflict) deleteOrgRes() {}
 type DeleteOrgForbidden Error
 
 func (*DeleteOrgForbidden) deleteOrgRes() {}
+
+type DeleteOrgInternalServerError Error
+
+func (*DeleteOrgInternalServerError) deleteOrgRes() {}
 
 type DeleteOrgNotFound Error
 
@@ -30830,6 +31138,98 @@ func (o OptBackupSnapshotProgress) Get() (v BackupSnapshotProgress, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptBackupSnapshotProgress) Or(d BackupSnapshotProgress) BackupSnapshotProgress {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptBillingCancelRequest returns new OptBillingCancelRequest with value set to v.
+func NewOptBillingCancelRequest(v BillingCancelRequest) OptBillingCancelRequest {
+	return OptBillingCancelRequest{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptBillingCancelRequest is optional BillingCancelRequest.
+type OptBillingCancelRequest struct {
+	Value BillingCancelRequest
+	Set   bool
+}
+
+// IsSet returns true if OptBillingCancelRequest was set.
+func (o OptBillingCancelRequest) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptBillingCancelRequest) Reset() {
+	var v BillingCancelRequest
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptBillingCancelRequest) SetTo(v BillingCancelRequest) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptBillingCancelRequest) Get() (v BillingCancelRequest, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptBillingCancelRequest) Or(d BillingCancelRequest) BillingCancelRequest {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptBillingCancelRequestWhen returns new OptBillingCancelRequestWhen with value set to v.
+func NewOptBillingCancelRequestWhen(v BillingCancelRequestWhen) OptBillingCancelRequestWhen {
+	return OptBillingCancelRequestWhen{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptBillingCancelRequestWhen is optional BillingCancelRequestWhen.
+type OptBillingCancelRequestWhen struct {
+	Value BillingCancelRequestWhen
+	Set   bool
+}
+
+// IsSet returns true if OptBillingCancelRequestWhen was set.
+func (o OptBillingCancelRequestWhen) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptBillingCancelRequestWhen) Reset() {
+	var v BillingCancelRequestWhen
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptBillingCancelRequestWhen) SetTo(v BillingCancelRequestWhen) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptBillingCancelRequestWhen) Get() (v BillingCancelRequestWhen, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptBillingCancelRequestWhen) Or(d BillingCancelRequestWhen) BillingCancelRequestWhen {
 	if v, ok := o.Get(); ok {
 		return v
 	}

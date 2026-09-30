@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/billing"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
@@ -567,49 +568,64 @@ func (r *BillingRepo) GetLastWebhookReceivedAt(ctx context.Context) (*time.Time,
 // Mutations
 // ---------------------------------------------------------------------------
 
+// underBillingLock runs fn in one transaction that first takes the tenant's
+// billing lock (billing.LockTenantBilling), so an operator write never
+// interleaves with the billing apply worker or a checkout binding for the
+// same tenant. fn makes no provider call. tenants carries no RLS, so no GUC
+// is set.
+func (r *BillingRepo) underBillingLock(ctx context.Context, tenantID uuid.UUID, fn func(q *sqlc.Queries) error) error {
+	return pgx.BeginFunc(ctx, r.pool.Pool, func(tx pgx.Tx) error {
+		if err := billing.LockTenantBilling(ctx, tx, tenantID); err != nil {
+			return err
+		}
+		return fn(sqlc.New(tx))
+	})
+}
+
 // SetComp grants a manual comp: plan_status='comped', plan=tier, comp_reason
-// set. Runs on the bare pool (tenants carries no RLS).
+// set, under the tenant billing lock.
 func (r *BillingRepo) SetComp(ctx context.Context, tenantID uuid.UUID, plan, reason string) error {
-	err := sqlc.New(r.pool.Pool).AdminSetTenantComp(ctx, sqlc.AdminSetTenantCompParams{Plan: plan, CompReason: &reason, TenantID: tenantID})
+	err := r.underBillingLock(ctx, tenantID, func(q *sqlc.Queries) error {
+		return q.AdminSetTenantComp(ctx, sqlc.AdminSetTenantCompParams{Plan: plan, CompReason: &reason, TenantID: tenantID})
+	})
 	if err != nil {
 		return domain.Internal("admin_billing_set_comp_failed", "failed to grant comp").WithCause(err)
 	}
 	return nil
 }
 
-// RevokeCompToFree reverts a comp to the free/none resting state (used when
-// there is no live provider subscription to adopt instead).
+// RevokeCompToFree reverts a comp to the free/none resting state, under the
+// tenant billing lock. Used only when no billing service is wired; the normal
+// path is billing.Service.RevokeComp.
 func (r *BillingRepo) RevokeCompToFree(ctx context.Context, tenantID uuid.UUID) error {
-	if err := sqlc.New(r.pool.Pool).AdminRevokeCompToFree(ctx, tenantID); err != nil {
+	err := r.underBillingLock(ctx, tenantID, func(q *sqlc.Queries) error {
+		return q.AdminRevokeCompToFree(ctx, tenantID)
+	})
+	if err != nil {
 		return domain.Internal("admin_billing_revoke_comp_failed", "failed to revoke comp").WithCause(err)
 	}
 	return nil
 }
 
-// ClearCompReason clears comp_reason only (used after billing.ReconcileOneNow
-// has already written the adopted live-subscription plan/status).
-func (r *BillingRepo) ClearCompReason(ctx context.Context, tenantID uuid.UUID) error {
-	if err := sqlc.New(r.pool.Pool).AdminClearCompReason(ctx, tenantID); err != nil {
-		return domain.Internal("admin_billing_clear_comp_reason_failed", "failed to clear comp reason").WithCause(err)
-	}
-	return nil
-}
-
 // SetOverrides persists the full resolved plan_overrides object (the caller
-// has already merged the requested deltas).
+// has already merged the requested deltas), under the tenant billing lock.
 func (r *BillingRepo) SetOverrides(ctx context.Context, tenantID uuid.UUID, overridesJSON []byte) error {
-	err := sqlc.New(r.pool.Pool).AdminSetOverrides(ctx, sqlc.AdminSetOverridesParams{PlanOverrides: overridesJSON, TenantID: tenantID})
+	err := r.underBillingLock(ctx, tenantID, func(q *sqlc.Queries) error {
+		return q.AdminSetOverrides(ctx, sqlc.AdminSetOverridesParams{PlanOverrides: overridesJSON, TenantID: tenantID})
+	})
 	if err != nil {
 		return domain.Internal("admin_billing_set_overrides_failed", "failed to set overrides").WithCause(err)
 	}
 	return nil
 }
 
-// SetGrace extends grace_until.
+// SetGrace extends grace_until, under the tenant billing lock.
 func (r *BillingRepo) SetGrace(ctx context.Context, tenantID uuid.UUID, until time.Time) error {
-	err := sqlc.New(r.pool.Pool).AdminSetGrace(ctx, sqlc.AdminSetGraceParams{
-		GraceUntil: pgtype.Timestamptz{Time: until, Valid: true},
-		TenantID:   tenantID,
+	err := r.underBillingLock(ctx, tenantID, func(q *sqlc.Queries) error {
+		return q.AdminSetGrace(ctx, sqlc.AdminSetGraceParams{
+			GraceUntil: pgtype.Timestamptz{Time: until, Valid: true},
+			TenantID:   tenantID,
+		})
 	})
 	if err != nil {
 		return domain.Internal("admin_billing_set_grace_failed", "failed to extend grace").WithCause(err)
@@ -617,26 +633,36 @@ func (r *BillingRepo) SetGrace(ctx context.Context, tenantID uuid.UUID, until ti
 	return nil
 }
 
-// SetSuspended sets suspended_at=now(), suspended_reason=reason.
+// SetSuspended sets suspended_at=now(), suspended_reason=reason, under the
+// tenant billing lock.
 func (r *BillingRepo) SetSuspended(ctx context.Context, tenantID uuid.UUID, reason string) error {
-	err := sqlc.New(r.pool.Pool).AdminSetSuspended(ctx, sqlc.AdminSetSuspendedParams{SuspendedReason: &reason, TenantID: tenantID})
+	err := r.underBillingLock(ctx, tenantID, func(q *sqlc.Queries) error {
+		return q.AdminSetSuspended(ctx, sqlc.AdminSetSuspendedParams{SuspendedReason: &reason, TenantID: tenantID})
+	})
 	if err != nil {
 		return domain.Internal("admin_billing_suspend_failed", "failed to suspend account").WithCause(err)
 	}
 	return nil
 }
 
-// ClearSuspended clears suspended_at/suspended_reason.
+// ClearSuspended clears suspended_at/suspended_reason, under the tenant
+// billing lock.
 func (r *BillingRepo) ClearSuspended(ctx context.Context, tenantID uuid.UUID) error {
-	if err := sqlc.New(r.pool.Pool).AdminClearSuspended(ctx, tenantID); err != nil {
+	err := r.underBillingLock(ctx, tenantID, func(q *sqlc.Queries) error {
+		return q.AdminClearSuspended(ctx, tenantID)
+	})
+	if err != nil {
 		return domain.Internal("admin_billing_restore_failed", "failed to restore account").WithCause(err)
 	}
 	return nil
 }
 
-// ForceState sets plan+plan_status directly (clearing grace_until).
+// ForceState sets plan+plan_status directly (clearing grace_until), under the
+// tenant billing lock.
 func (r *BillingRepo) ForceState(ctx context.Context, tenantID uuid.UUID, plan, planStatus string) error {
-	err := sqlc.New(r.pool.Pool).AdminForceState(ctx, sqlc.AdminForceStateParams{Plan: plan, PlanStatus: planStatus, TenantID: tenantID})
+	err := r.underBillingLock(ctx, tenantID, func(q *sqlc.Queries) error {
+		return q.AdminForceState(ctx, sqlc.AdminForceStateParams{Plan: plan, PlanStatus: planStatus, TenantID: tenantID})
+	})
 	if err != nil {
 		return domain.Internal("admin_billing_force_state_failed", "failed to force billing state").WithCause(err)
 	}

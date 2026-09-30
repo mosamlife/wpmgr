@@ -124,6 +124,11 @@ type CleanDatabaseParams struct {
 	SiteId uuid.UUID
 }
 
+// ClearAdminAccountBillingProviderParams is parameters of clearAdminAccountBillingProvider operation.
+type ClearAdminAccountBillingProviderParams struct {
+	ID uuid.UUID
+}
+
 // ClearRucssParams is parameters of clearRucss operation.
 type ClearRucssParams struct {
 	SiteId uuid.UUID

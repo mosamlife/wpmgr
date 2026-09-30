@@ -167,3 +167,16 @@ SELECT id, hash, created_at FROM audit_log
 WHERE tenant_id = $1
 ORDER BY created_at DESC, id DESC
 LIMIT 1;
+
+-- name: AuditEntryExistsByKey :one
+-- True when this tenant's audit log already holds an entry whose
+-- metadata.audit_key equals @audit_key. An idempotent writer reads it after
+-- taking the tenant's audit chain lock and appends only on false, so a retried
+-- job records its entry once. Runs under InTenantTx (audit_log_tenant_isolation).
+-- Backed by audit_log_audit_key_idx (m149).
+SELECT EXISTS (
+    SELECT 1 FROM audit_log
+    WHERE tenant_id = @tenant_id
+      AND metadata ? 'audit_key'
+      AND metadata ->> 'audit_key' = @audit_key::text
+) AS exists;

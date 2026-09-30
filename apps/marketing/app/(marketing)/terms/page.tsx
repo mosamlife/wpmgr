@@ -3,7 +3,7 @@ import { buildMetadata, buildBreadcrumbLd } from "@/lib/seo";
 import { JsonLd } from "@/lib/json-ld";
 import { LegalPage } from "@/components/templates/legal-page";
 import { SITE_CONFIG } from "@/lib/site";
-import { COMPANY, LEGAL_EFFECTIVE_DATE, LEGAL_CONTACT_HREF, PADDLE, STRIPE, RAZORPAY } from "@/lib/content/legal";
+import { COMPANY, LEGAL_EFFECTIVE_DATE, LEGAL_CONTACT_HREF, STRIPE, RAZORPAY, RAZORPAY_SELLER } from "@/lib/content/legal";
 
 export const metadata: Metadata = buildMetadata({
   title: "Terms of Service",
@@ -29,17 +29,6 @@ const githubLink = (
     className="font-medium text-[var(--primary)] underline underline-offset-4 hover:opacity-80 transition-opacity"
   >
     {SITE_CONFIG.github}
-  </a>
-);
-
-const paddleLink = (
-  <a
-    href={PADDLE.website}
-    target="_blank"
-    rel="noreferrer noopener"
-    className="font-medium text-[var(--primary)] underline underline-offset-4 hover:opacity-80 transition-opacity"
-  >
-    {PADDLE.legalName}
   </a>
 );
 
@@ -147,26 +136,21 @@ export default function TermsPage() {
             body: (
               <>
                 <p>
-                  Paid plans are billed monthly. At checkout, you choose the payment provider used
-                  to process your payment: {razorpayLink}, {stripeLink}, or {paddleLink}.
+                  Paid plans are billed monthly, in US dollars, processed by {stripeLink} by
+                  default. Customers in India may instead pay through {razorpayLink}, which bills
+                  in Indian rupees and also supports UPI and RuPay. Prices exclude applicable
+                  taxes, which are calculated and added at checkout where they apply.
                 </p>
                 <p>
-                  For payments processed through Stripe or Razorpay, {COMPANY.legalName} is the
-                  seller and merchant of record. We are responsible for invoicing, calculating and
-                  remitting applicable tax (including GST on Razorpay-processed payments in India),
-                  and processing refunds directly to you under our Refund Policy. Stripe and
-                  Razorpay act solely as payment processors for these transactions and do not
+                  For payments processed through Stripe, {COMPANY.legalName} is the seller and
+                  merchant of record. We are responsible for invoicing, calculating and remitting
+                  applicable tax, and processing refunds directly to you under our Refund Policy.
+                  Stripe acts solely as a payment processor for these transactions and does not
                   appear as the merchant on your statement.
                 </p>
                 <p>
-                  For payments processed through Paddle, Paddle is the merchant of record. Paddle
-                  sells the WPMgr subscription to you as our authorized reseller, is responsible for
-                  processing your payment, and appears as the merchant on your card or bank
-                  statement. Paddle is also responsible for invoicing, calculating and remitting
-                  applicable sales tax, VAT, or GST, and processing refunds on our behalf under our
-                  Refund Policy for Paddle-processed sales. By subscribing through Paddle, you also
-                  agree to Paddle&apos;s buyer terms and privacy policy, which govern that payment
-                  transaction.
+                  For payments processed through Razorpay, {RAZORPAY_SELLER.legalName} is the
+                  seller. Razorpay acts solely as the payment processor for these transactions.
                 </p>
                 <p>
                   Your subscription renews automatically each billing period until you cancel,

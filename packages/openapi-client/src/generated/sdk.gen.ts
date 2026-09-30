@@ -176,6 +176,9 @@ import type {
   ChmodSiteFileResponses,
   CleanDatabaseData,
   CleanDatabaseResponses,
+  ClearAdminAccountBillingProviderData,
+  ClearAdminAccountBillingProviderErrors,
+  ClearAdminAccountBillingProviderResponses,
   ClearAdminVulnFeedKeyData,
   ClearAdminVulnFeedKeyErrors,
   ClearAdminVulnFeedKeyResponses,
@@ -192,6 +195,9 @@ import type {
   CompleteTotpChallengeResponses,
   ComputeRucssData,
   ComputeRucssResponses,
+  ConfirmBillingCheckoutData,
+  ConfirmBillingCheckoutErrors,
+  ConfirmBillingCheckoutResponses,
   ConfirmTotpEnrollmentData,
   ConfirmTotpEnrollmentErrors,
   ConfirmTotpEnrollmentResponses,
@@ -1952,8 +1958,9 @@ export const activateOrg = <ThrowOnError extends boolean = false>(
  * organisation's current name. When this is the caller's active org,
  * their session is reassigned to another live membership, or cleared
  * entirely (dropping to onboarding) if it was their last org, `active_tenant_id` in the response reflects the post-delete state.
- * On a hosted instance an active paid subscription must be
- * cancelled/downgraded first (`billing_active` 409).
+ * On a hosted instance the organisation's billing state must allow
+ * the delete, or it is refused with 409 `billing_active` and a
+ * `details.reason` saying what to do (see the 409 response).
  *
  */
 export const deleteOrg = <ThrowOnError extends boolean = false>(
@@ -2498,9 +2505,31 @@ export const verifyBillingCheckoutCallback = <
   });
 
 /**
+ * Confirm a Stripe checkout session on browser return (owner)
+ *
+ * A UX confirmation ONLY — the payment provider's webhook remains the sole source of truth for actually granting a plan; this endpoint just speeds up activation after the browser returns from a Stripe checkout redirect. The named session must belong to the caller's own tenant and its stored payment-provider customer, and must be a completed subscription-mode Checkout Session — the request can never name a different tenant, customer or session state. Returns 200 when the plan change has already landed, and otherwise enqueues a background refresh and returns 202; after a 202, poll `GET /billing` rather than expecting this response to carry the new plan state.
+ *
+ */
+export const confirmBillingCheckout = <ThrowOnError extends boolean = false>(
+  options: Options<ConfirmBillingCheckoutData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    ConfirmBillingCheckoutResponses,
+    ConfirmBillingCheckoutErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/billing/checkout/confirm",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
  * Cancel the tenant's subscription (owner)
  *
- * The provider-agnostic cancellation path — the only one for a provider with no hosted portal (e.g. Razorpay). Cancellation is scheduled for the end of the current billing period; the plan/status change lands later via the provider's webhook. Poll `GET /billing` afterward rather than expecting this response to carry the new plan state.
+ * The provider-agnostic cancellation path — the only one for a provider with no hosted portal (e.g. Razorpay). By default (`when` omitted or `period_end`) cancellation is scheduled for the end of the current billing period. `when: now` ends the subscription at once, and is allowed only while a card (Stripe) payment is past due. Either way the plan/status change lands later via the provider's webhook or a background refresh. Poll `GET /billing` afterward rather than expecting this response to carry the new plan state.
  *
  */
 export const cancelBillingSubscription = <ThrowOnError extends boolean = false>(
@@ -2510,7 +2539,14 @@ export const cancelBillingSubscription = <ThrowOnError extends boolean = false>(
     CancelBillingSubscriptionResponses,
     CancelBillingSubscriptionErrors,
     ThrowOnError
-  >({ url: "/api/v1/billing/cancel", ...options });
+  >({
+    url: "/api/v1/billing/cancel",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options?.headers,
+    },
+  });
 
 /**
  * Instance-wide counts (superadmin)
@@ -2989,6 +3025,39 @@ export const forceAdminAccountState = <ThrowOnError extends boolean = false>(
     ThrowOnError
   >({
     url: "/api/v1/admin/accounts/{id}/state",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Clear a tenant's payment-provider pin (superadmin)
+ *
+ * Unpins the tenant from its current payment provider and clears its
+ * stored provider customer and subscription ids, so the tenant can
+ * start a fresh checkout with a different provider. Refused for a
+ * comped tenant, and unless the tenant's subscription is canceled, or
+ * none with no stored subscription id. Before clearing, the server
+ * confirms nothing is pending or live with the current provider: for
+ * Stripe this is a live provider check; for Razorpay, which stores no
+ * subscription id in this release, the caller must supply the ids
+ * found by a manual Dashboard lookup and confirm that lookup was
+ * done. Requires is_superadmin=true.
+ *
+ */
+export const clearAdminAccountBillingProvider = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<ClearAdminAccountBillingProviderData, ThrowOnError>,
+) =>
+  (options.client ?? client).delete<
+    ClearAdminAccountBillingProviderResponses,
+    ClearAdminAccountBillingProviderErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/admin/accounts/{id}/billing-provider",
     ...options,
     headers: {
       "Content-Type": "application/json",

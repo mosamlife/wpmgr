@@ -127,6 +127,7 @@ func TestMapStatus_FullMatrix(t *testing.T) {
 		{"halted", billing.StatusPastDue},
 		{"cancelled", billing.StatusCanceled},
 		{"completed", billing.StatusCanceled},
+		{"expired", billing.StatusCanceled},
 		{"paused", billing.StatusPaused},
 		{"created", billing.StatusNone},
 		{"authenticated", billing.StatusNone},
@@ -153,7 +154,7 @@ func TestToSubscription_UnknownPlanIsUnresolved(t *testing.T) {
 
 func TestCreateCheckout_RejectsInvalidCurrency(t *testing.T) {
 	p := New(testConfig())
-	for _, cur := range []string{"", "EUR", "usd-x"} {
+	for _, cur := range []string{"USD", "usd", "EUR", "usd-x"} {
 		_, err := p.CreateCheckout(context.Background(), billing.CheckoutInput{
 			TenantID: uuid.New(), Plan: billing.TierStarter, Currency: cur,
 		})
@@ -188,9 +189,9 @@ func TestCreateCheckout_Success(t *testing.T) {
 	var gotSubscriptionBody []byte
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/plans/plan_starter_usd", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/plans/plan_starter_inr", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"id":"plan_starter_usd","item":{"amount":1500,"currency":"USD"}}`)
+		fmt.Fprint(w, `{"id":"plan_starter_inr","item":{"amount":129900,"currency":"INR"}}`)
 	})
 	mux.HandleFunc("/subscriptions", func(w http.ResponseWriter, r *http.Request) {
 		gotUser, gotPass, _ = r.BasicAuth()
@@ -213,7 +214,7 @@ func TestCreateCheckout_Success(t *testing.T) {
 	sess, err := p.CreateCheckout(context.Background(), billing.CheckoutInput{
 		TenantID: tenantID,
 		Plan:     billing.TierStarter,
-		Currency: "usd", // lower-case, exercises the ToUpper normalization
+		Currency: "", // omitted means INR
 	})
 	if err != nil {
 		t.Fatalf("CreateCheckout: %v", err)
@@ -230,8 +231,8 @@ func TestCreateCheckout_Success(t *testing.T) {
 	if sess.Razorpay.KeyID != cfg.KeyID {
 		t.Errorf("KeyID = %q, want %q", sess.Razorpay.KeyID, cfg.KeyID)
 	}
-	if sess.Razorpay.Currency != "USD" || sess.Razorpay.AmountMinor != 1500 {
-		t.Errorf("Currency/AmountMinor = %s/%d, want USD/1500", sess.Razorpay.Currency, sess.Razorpay.AmountMinor)
+	if sess.Razorpay.Currency != "INR" || sess.Razorpay.AmountMinor != 129900 {
+		t.Errorf("Currency/AmountMinor = %s/%d, want INR/129900", sess.Razorpay.Currency, sess.Razorpay.AmountMinor)
 	}
 	if gotUser != cfg.KeyID || gotPass != cfg.KeySecret {
 		t.Errorf("basic auth = %s/%s, want %s/%s", gotUser, gotPass, cfg.KeyID, cfg.KeySecret)
@@ -241,8 +242,8 @@ func TestCreateCheckout_Success(t *testing.T) {
 	if err := json.Unmarshal(gotSubscriptionBody, &reqBody); err != nil {
 		t.Fatalf("decode subscription create request body: %v", err)
 	}
-	if reqBody["plan_id"] != "plan_starter_usd" {
-		t.Errorf("plan_id = %v, want plan_starter_usd", reqBody["plan_id"])
+	if reqBody["plan_id"] != "plan_starter_inr" {
+		t.Errorf("plan_id = %v, want plan_starter_inr", reqBody["plan_id"])
 	}
 	notes, _ := reqBody["notes"].(map[string]any)
 	if notes == nil || notes[tenantNotesKey] != tenantID.String() {

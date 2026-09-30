@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -43,6 +44,11 @@ func toBillingProfile(row sqlc.GetTenantBillingProfileRow) tenantBillingProfile 
 	if row.ProviderSubscriptionID != nil {
 		out.ProviderSubscriptionID = *row.ProviderSubscriptionID
 	}
+	out.CancelAtPeriodEnd = row.CancelAtPeriodEnd
+	if row.CancelAt.Valid {
+		t := row.CancelAt.Time
+		out.CancelAt = &t
+	}
 	return out
 }
 
@@ -57,29 +63,22 @@ func (s *Service) getBillingProfile(ctx context.Context, tenantID uuid.UUID) (te
 	return toBillingProfile(row), nil
 }
 
-// setBillingProviderIfUnset writes tenants.billing_provider the FIRST time a
-// tenant starts a checkout ("one tenant = one provider at a time"). A no-op
-// when already set (see SetTenantBillingProviderIfUnset's WHERE guard).
-func (s *Service) setBillingProviderIfUnset(ctx context.Context, tenantID uuid.UUID, providerName string) error {
-	_, err := sqlc.New(s.pool.Pool).SetTenantBillingProviderIfUnset(ctx, sqlc.SetTenantBillingProviderIfUnsetParams{
-		TenantID:        tenantID,
-		BillingProvider: &providerName,
-	})
-	if err != nil {
-		return domain.Internal("billing_set_provider_failed", "failed to record billing provider").WithCause(err)
-	}
-	return nil
-}
-
-// applySubscriptionState persists the state machine's resolved next
-// tenantBillingProfile.
-func (s *Service) applySubscriptionState(ctx context.Context, tenantID uuid.UUID, next tenantBillingProfile) error {
-	params := sqlc.ApplyBillingSubscriptionStateParams{
+// applySubscriptionStateTx persists the state machine's resolved next
+// tenantBillingProfile, cancel schedule included, inside the caller's locked
+// transaction. It writes only while the tenant is still pinned to
+// providerName, the provider the subscription was just read from, and
+// requires exactly one row: anything else is an error that rolls the
+// caller's transaction back. A stored customer id is never replaced; the
+// query only fills a missing one.
+func applySubscriptionStateTx(ctx context.Context, q *sqlc.Queries, tenantID uuid.UUID, providerName string, next tenantBillingProfile) error {
+	params := sqlc.ApplyBillingSubscriptionStateForProviderParams{
 		Plan:                   string(next.Plan),
 		PlanStatus:             string(next.Status),
 		ProviderSubscriptionID: nonEmptyPtr(next.ProviderSubscriptionID),
 		ProviderCustomerID:     next.ProviderCustomerID,
+		CancelAtPeriodEnd:      next.CancelAtPeriodEnd,
 		TenantID:               tenantID,
+		BillingProvider:        providerName,
 	}
 	if next.GraceUntil != nil {
 		params.GraceUntil = pgtype.Timestamptz{Time: *next.GraceUntil, Valid: true}
@@ -87,28 +86,18 @@ func (s *Service) applySubscriptionState(ctx context.Context, tenantID uuid.UUID
 	if next.CurrentPeriodEnd != nil {
 		params.CurrentPeriodEnd = pgtype.Timestamptz{Time: *next.CurrentPeriodEnd, Valid: true}
 	}
-	if err := sqlc.New(s.pool.Pool).ApplyBillingSubscriptionState(ctx, params); err != nil {
+	if next.CancelAt != nil {
+		params.CancelAt = pgtype.Timestamptz{Time: *next.CancelAt, Valid: true}
+	}
+	n, err := q.ApplyBillingSubscriptionStateForProvider(ctx, params)
+	if err != nil {
 		return domain.Internal("billing_apply_state_failed", "failed to persist billing subscription state").WithCause(err)
 	}
-	return nil
-}
-
-// findTenantByProviderCustomer resolves a tenant from (provider,
-// provider_customer_id) — the fallback attribution path for a webhook event
-// whose payload carries no tenant metadata. ok=false (not an error) when no
-// tenant matches.
-func (s *Service) findTenantByProviderCustomer(ctx context.Context, providerName, providerCustomerID string) (uuid.UUID, bool, error) {
-	id, err := sqlc.New(s.pool.Pool).FindTenantByProviderCustomer(ctx, sqlc.FindTenantByProviderCustomerParams{
-		BillingProvider:    &providerName,
-		ProviderCustomerID: &providerCustomerID,
-	})
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return uuid.Nil, false, nil
-		}
-		return uuid.Nil, false, domain.Internal("billing_customer_lookup_failed", "failed to resolve tenant by billing customer").WithCause(err)
+	if n != 1 {
+		return domain.Internal("billing_apply_state_not_written",
+			fmt.Sprintf("billing state write matched %d rows, want 1 (tenant no longer pinned to %s)", n, providerName))
 	}
-	return id, true, nil
+	return nil
 }
 
 // billingEventInsert is the input to insertBillingEvent.
@@ -168,58 +157,6 @@ func (s *Service) insertBillingEvent(ctx context.Context, in billingEventInsert)
 		return uuid.Nil, false, domain.Internal("billing_event_insert_failed", "failed to record billing event").WithCause(txErr)
 	}
 	return id, inserted, nil
-}
-
-// setBillingEventTenant best-effort backfills tenant_id on a billing_events
-// row once attribution is resolved after the initial insert.
-func (s *Service) setBillingEventTenant(ctx context.Context, eventID, tenantID uuid.UUID) error {
-	return s.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
-		return sqlc.New(tx).SetBillingEventTenant(ctx, sqlc.SetBillingEventTenantParams{
-			TenantID: pgtype.UUID{Bytes: tenantID, Valid: true},
-			ID:       eventID,
-		})
-	})
-}
-
-// markBillingEventProcessed stamps processed_at once a billing_events row has
-// been fully handled (applied, or deliberately no-op'd — comped tenant,
-// unknown price, out-of-order).
-func (s *Service) markBillingEventProcessed(ctx context.Context, eventID uuid.UUID) error {
-	return s.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
-		return sqlc.New(tx).MarkBillingEventProcessed(ctx, eventID)
-	})
-}
-
-// isOutOfOrder reports whether occurredAt is OLDER than the newest
-// occurred_at among this tenant's already-processed billing_events rows
-// (excluding excludeEventID, the row currently being processed). See
-// LastProcessedBillingEventOccurredAtForTenant's doc comment for why this is
-// NOT a bare MAX() aggregate query.
-func (s *Service) isOutOfOrder(ctx context.Context, tenantID, excludeEventID uuid.UUID, occurredAt time.Time) (bool, error) {
-	var last time.Time
-	var found bool
-	err := s.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
-		row, qerr := sqlc.New(tx).LastProcessedBillingEventOccurredAtForTenant(ctx, sqlc.LastProcessedBillingEventOccurredAtForTenantParams{
-			TenantID:  pgtype.UUID{Bytes: tenantID, Valid: true},
-			ExcludeID: excludeEventID,
-		})
-		if qerr != nil {
-			if errors.Is(qerr, pgx.ErrNoRows) {
-				return nil
-			}
-			return qerr
-		}
-		last = row
-		found = true
-		return nil
-	})
-	if err != nil {
-		return false, domain.Internal("billing_order_check_failed", "failed to check billing event ordering").WithCause(err)
-	}
-	if !found {
-		return false, nil
-	}
-	return occurredAt.Before(last), nil
 }
 
 // nonEmptyPtr returns nil for an empty string, else a pointer to s — used for

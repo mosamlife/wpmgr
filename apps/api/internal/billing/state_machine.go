@@ -26,6 +26,11 @@ type tenantBillingProfile struct {
 	ProviderCustomerID     string
 	ProviderSubscriptionID string
 	CurrentPeriodEnd       *time.Time
+	// CancelAtPeriodEnd and CancelAt are the stored cancel schedule. A
+	// cancel is scheduled when either is set. CancelAt at or before now,
+	// while past due on Stripe, is the Cancel now marker.
+	CancelAtPeriodEnd bool
+	CancelAt          *time.Time
 }
 
 // statusAppliesPlan reports whether a normalized provider Status is one where
@@ -70,18 +75,37 @@ func statusAppliesPlan(status Status) bool {
 //	                    treated as "not a real subscription yet/anymore":
 //	                    plan=free, status=none, grace cleared.
 //
-// billingProvider/providerCustomerID/providerSubscriptionID are carried
-// forward from the freshly fetched subscription; the caller is responsible
+// providerSubscriptionID is carried forward from the freshly fetched
+// subscription, and providerCustomerID only when none is stored; the caller is responsible
 // for having already set tenants.billing_provider on first checkout (see
 // Service.CreateCheckout) — nextBillingState does not invent a provider name.
 func nextBillingState(current tenantBillingProfile, sub Subscription, now time.Time) tenantBillingProfile {
 	next := current
 	next.ProviderSubscriptionID = sub.ID
-	if sub.CustomerID != "" {
+	// The stored customer is write-once: it is filled only when none is
+	// stored, and never replaced by the subscription's.
+	if current.ProviderCustomerID == "" {
 		next.ProviderCustomerID = sub.CustomerID
 	}
 	cpe := sub.CurrentPeriodEnd
 	next.CurrentPeriodEnd = &cpe
+
+	// The cancel schedule follows the subscription when the provider reports
+	// one. A provider that reports none keeps the schedule the in-app cancel
+	// stored, but only for the subscription it was stored for: a different
+	// subscription starts with no cancel scheduled.
+	switch {
+	case sub.CancelScheduleReported:
+		next.CancelAtPeriodEnd = sub.CancelAtPeriodEnd
+		next.CancelAt = nil
+		if !sub.CancelAt.IsZero() {
+			at := sub.CancelAt
+			next.CancelAt = &at
+		}
+	case sub.ID != current.ProviderSubscriptionID:
+		next.CancelAtPeriodEnd = false
+		next.CancelAt = nil
+	}
 
 	switch sub.Status {
 	case StatusActive, StatusTrialing:

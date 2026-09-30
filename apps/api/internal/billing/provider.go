@@ -2,7 +2,9 @@ package billing
 
 import (
 	"context"
+	"errors"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -25,6 +27,31 @@ const (
 	EventPaymentFailed    EventKind = "payment_failed"
 	EventRefunded         EventKind = "refunded"
 	EventUpdated          EventKind = "updated"
+	// EventTaxIDUpdated is a change to a customer's saved tax ID. It never
+	// changes billing state; the apply worker records it and raises a warning
+	// when the ID is unverified.
+	EventTaxIDUpdated EventKind = "tax_id_updated"
+)
+
+// Ownership says whether a verified webhook event belongs to WPMgr. A payment
+// account can be shared with other products, so an adapter classifies every
+// verified event before intake records anything.
+//
+// The zero value means owned: an adapter that never sets the field (Razorpay,
+// the integration fake) produces owned events, which intake records and the
+// apply worker resolves to a tenant or reports as a mismatch.
+type Ownership uint8
+
+const (
+	// OwnershipOwned is the zero value: the event is WPMgr's.
+	OwnershipOwned Ownership = iota
+	// OwnershipForeign marks an event another product on the same account
+	// produced. Intake acknowledges it with 200 and records nothing.
+	OwnershipForeign
+	// OwnershipByCustomer marks an event that carries only a customer id.
+	// Intake treats it as owned when a tenant stores that customer for this
+	// provider, and as foreign otherwise.
+	OwnershipByCustomer
 )
 
 // CheckoutInput describes a request to start a hosted checkout for one
@@ -42,11 +69,13 @@ type CheckoutInput struct {
 	// already encodes its currency and ignores this field entirely. Empty is
 	// legal for any provider that does not need it.
 	Currency string
-	// CustomerEmail prefills the checkout form. Best-effort: may be empty.
+	// CustomerEmail is the signed-in owner's email. Best-effort: may be
+	// empty. A provider that creates its checkout on a stored customer sets
+	// the email on that customer instead.
 	CustomerEmail string
-	// ProviderCustomerID reuses an existing provider customer record when the
-	// tenant has one (e.g. a lapsed subscription being restarted). Empty for a
-	// tenant's first-ever checkout.
+	// ProviderCustomerID is the stored provider customer the checkout is
+	// created on, as returned by the checkout binding. A provider that needs
+	// one (Stripe) refuses an empty value.
 	ProviderCustomerID string
 	SuccessURL         string
 	CancelURL          string
@@ -88,7 +117,70 @@ type RazorpayCheckoutData struct {
 type CheckoutSession struct {
 	URL      string                `json:"url,omitempty"`
 	Razorpay *RazorpayCheckoutData `json:"razorpay,omitempty"`
+	// SessionID is the hosted-redirect provider's session id. It never
+	// reaches the wire; the service uses it to expire or supersede the
+	// session it just created.
+	SessionID string `json:"-"`
 }
+
+// CustomerCreator is an OPTIONAL capability of a provider whose checkout is
+// created on a stored provider customer (Stripe). CreateCustomer creates a
+// new customer for tenantID marked as WPMgr's; it never looks a customer up
+// by email.
+type CustomerCreator interface {
+	CreateCustomer(ctx context.Context, tenantID uuid.UUID, email string) (string, error)
+}
+
+// SubscriptionLister is an OPTIONAL capability of a provider that can prove,
+// from the provider side, that nothing is pending or live for a customer.
+// A provider without it cannot be switched away from self-serve.
+//
+// Every list an implementation sends carries the customer filter. An empty
+// customerID has nothing findable: HasPendingOrLive answers "nothing
+// pending" without any provider request, and PendingOrLiveSubscription
+// returns an error without any provider request.
+type SubscriptionLister interface {
+	// HasPendingOrLive expires customerID's open checkout sessions, then
+	// reports one pending or live subscription id, if any.
+	HasPendingOrLive(ctx context.Context, customerID string) (subscriptionID string, pending bool, err error)
+	// PendingOrLiveSubscription reports one pending or live subscription id
+	// of customerID, if any, and changes nothing.
+	PendingOrLiveSubscription(ctx context.Context, customerID string) (subscriptionID string, pending bool, err error)
+}
+
+// CheckoutSessionSuperseder is an OPTIONAL capability of a hosted-redirect
+// provider that keeps at most one open checkout session per customer.
+type CheckoutSessionSuperseder interface {
+	// SupersedeOpenCheckoutSessions expires every open session of customerID
+	// except the greatest by (created, id). ownSuperseded reports that
+	// ownSessionID was one of the sessions that is not the greatest.
+	SupersedeOpenCheckoutSessions(ctx context.Context, customerID, ownSessionID string) (ownSuperseded bool, err error)
+	// ExpireCheckoutSession expires one session by id.
+	ExpireCheckoutSession(ctx context.Context, sessionID string) error
+}
+
+// CheckoutSessionInfo is what the confirm path reads from a provider's
+// checkout session.
+type CheckoutSessionInfo struct {
+	ID                string
+	ClientReferenceID string
+	CustomerID        string
+	SubscriptionID    string
+	Mode              string
+	Status            string
+}
+
+// CheckoutSessionConfirmer is an OPTIONAL capability of a hosted-redirect
+// provider whose browser returns with a session id the service can check.
+// RetrieveCheckoutSession returns ErrCheckoutSessionNotFound when the
+// provider has no session with that id.
+type CheckoutSessionConfirmer interface {
+	RetrieveCheckoutSession(ctx context.Context, sessionID string) (CheckoutSessionInfo, error)
+}
+
+// ErrCheckoutSessionNotFound is returned by RetrieveCheckoutSession when the
+// provider has no session with the given id.
+var ErrCheckoutSessionNotFound = errors.New("billing: checkout session not found")
 
 // PortalSession is the result of minting a billing-management portal session:
 // a short-lived URL the caller redirects the browser to.
@@ -118,6 +210,14 @@ type Subscription struct {
 	Status            Status
 	CurrentPeriodEnd  time.Time
 	CancelAtPeriodEnd bool
+	// CancelAt is the instant the provider scheduled the subscription to end,
+	// or ended it. The zero value means no end is scheduled.
+	CancelAt time.Time
+	// CancelScheduleReported is true when the provider reports its cancel
+	// schedule on the subscription itself, so CancelAtPeriodEnd and CancelAt
+	// are authoritative. When false the provider reports none, and the
+	// schedule stored by the in-app cancel is kept.
+	CancelScheduleReported bool
 }
 
 // Event is a normalized payment-provider webhook event, as returned by
@@ -154,6 +254,23 @@ type Event struct {
 	CurrentPeriodEnd       time.Time
 	OccurredAt             time.Time
 	Raw                    []byte
+
+	// Ownership is the adapter's classification (see Ownership). The zero
+	// value means owned.
+	Ownership Ownership
+
+	// TaxIDTypes and BillingCountry are read from a completed checkout
+	// session's customer details: the types of the tax IDs the buyer gave
+	// (never the values) and the billing address country. Intake stores them
+	// in the ledger payload, so later work reads them from the ledger row.
+	TaxIDTypes     []string
+	BillingCountry string
+
+	// TaxIDType and TaxIDVerificationStatus describe a tax_id_updated event's
+	// ID: its type and its verification status (e.g. "verified",
+	// "unverified", "pending"). The ID value itself is never read.
+	TaxIDType               string
+	TaxIDVerificationStatus string
 }
 
 // Provider is the payment-provider integration surface. internal/billing's
@@ -213,6 +330,18 @@ type Provider interface {
 	// decide whether to advertise/attempt a portal link at all, rather than
 	// discovering "not supported" only after calling CreatePortalSession.
 	HasPortal() bool
+}
+
+// CheckoutSessionExpirer is an OPTIONAL capability a Provider may implement
+// when its hosted checkout leaves session objects open after a subscription
+// has started. The apply worker calls it after an activation commits, outside
+// any transaction, so a customer is left with no second payable checkout.
+//
+// Implementations must refuse an empty providerCustomerID with an error and
+// send no request, must list only that customer's sessions, and must expire
+// only sessions whose own customer equals it.
+type CheckoutSessionExpirer interface {
+	ExpireOpenCheckoutSessions(ctx context.Context, providerCustomerID string) (expired int, err error)
 }
 
 // CheckoutCallbackVerifier is an OPTIONAL capability a Provider may implement
@@ -302,4 +431,36 @@ func (r *Registry) Provider(name string) (Provider, bool) {
 // Any reports whether at least one provider is registered.
 func (r *Registry) Any() bool {
 	return r != nil && len(r.providers) > 0
+}
+
+// Names returns the registered provider names, "stripe" first and the rest
+// in lexical order. It never returns nil.
+func (r *Registry) Names() []string {
+	out := []string{}
+	if r == nil {
+		return out
+	}
+	for name := range r.providers {
+		out = append(out, name)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if (out[i] == "stripe") != (out[j] == "stripe") {
+			return out[i] == "stripe"
+		}
+		return out[i] < out[j]
+	})
+	return out
+}
+
+// DefaultCheckoutProvider is the provider a checkout that names none uses:
+// "stripe" when it is registered, else the only registered provider, else "".
+func (r *Registry) DefaultCheckoutProvider() string {
+	names := r.Names()
+	if len(names) == 0 {
+		return ""
+	}
+	if names[0] == "stripe" || len(names) == 1 {
+		return names[0]
+	}
+	return ""
 }

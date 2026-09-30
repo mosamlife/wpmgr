@@ -171,10 +171,15 @@ func (p *Provider) planID(tier billing.Tier, currency string) (string, bool) {
 // customer during the Checkout.js authorization flow itself, not as a create
 // parameter. This is a deliberate no-op, not an oversight.
 func (p *Provider) CreateCheckout(ctx context.Context, in billing.CheckoutInput) (billing.CheckoutSession, error) {
+	// Razorpay checkouts are rupee-only. An omitted currency means INR, and
+	// every other value, USD included, is refused.
 	currency := strings.ToUpper(strings.TrimSpace(in.Currency))
-	if currency != CurrencyUSD && currency != CurrencyINR {
+	if currency == "" {
+		currency = CurrencyINR
+	}
+	if currency != CurrencyINR {
 		return billing.CheckoutSession{}, domain.Validation("billing_invalid_currency",
-			"currency must be USD or INR for a Razorpay checkout")
+			"a Razorpay checkout is charged in INR only")
 	}
 
 	planID, ok := p.planID(in.Plan, currency)
@@ -302,6 +307,10 @@ func (p *Provider) toSubscription(sub subscriptionEntity) billing.Subscription {
 //     course — should not occur in practice given subscriptionTotalCycles,
 //     but handled defensively) both map to canceled (non-destructive
 //     downgrade to free — see state_machine.go).
+//   - expired (a subscription that was never started before its start
+//     window closed) also maps to canceled: it has ended and can never
+//     charge. This adapter sets no start window today, so the mapping is
+//     defensive.
 //   - paused maps directly.
 //   - created and authenticated (the mandate is set up/authorized but not
 //     yet a live, charging subscription) and anything unrecognized map to
@@ -314,7 +323,7 @@ func mapStatus(s string) billing.Status {
 		return billing.StatusPastDue
 	case "halted":
 		return billing.StatusPastDue
-	case "cancelled", "completed":
+	case "cancelled", "completed", "expired":
 		return billing.StatusCanceled
 	case "paused":
 		return billing.StatusPaused

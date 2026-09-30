@@ -219,6 +219,14 @@ func Validate(cfg Config) []Issue {
 func Advisories(cfg Config) []Issue {
 	issues := validateSocialConfig(cfg)
 
+	// Stripe variables on an instance without hosted billing are never read.
+	if !cfg.Hosted.Enabled && stripeConfigAnySet(cfg.Billing.Stripe) {
+		issues = append(issues, Issue{
+			Name:   "WPMGR_BILLING_STRIPE_SECRET_KEY",
+			Reason: "Stripe billing variables are set but WPMGR_HOSTED is off, so they are ignored",
+		})
+	}
+
 	// The declared-development half of the published-session-secret check. That
 	// case boots on purpose (see publishedSessionSecretRefusal), so this is what
 	// stops it being silent: the developer is told on every boot, and the state
@@ -403,29 +411,30 @@ func isLoopbackHost(host string) bool {
 	return h == "localhost" || h == "127.0.0.1" || h == "::1" || h == "[::1]" || strings.HasSuffix(h, ".localhost")
 }
 
-// validateStripeConfig checks internal consistency of the five Stripe
-// fields: either all empty (Stripe simply is not this instance's provider —
-// legal) or all five present.
+// validateStripeConfig checks internal consistency of the six Stripe fields
+// in stripeConfigFields: either all empty (Stripe simply is not this
+// instance's provider — legal) or all six present.
+//
+// TaxIDRequired is deliberately NOT one of them: it is a plain bool (koanf
+// accepts "true"/"false", matching every other WPMGR_*_ENABLED-style flag in
+// this package), it defaults to true, and it is a legal setting regardless of
+// whether the rest of Stripe is configured — there is nothing to refuse it
+// against.
 func validateStripeConfig(s StripeConfig) []Issue {
-	fields := map[string]string{
-		"WPMGR_BILLING_STRIPE_SECRET_KEY":     s.SecretKey,
-		"WPMGR_BILLING_STRIPE_WEBHOOK_SECRET": s.WebhookSecret,
-		"WPMGR_BILLING_STRIPE_PRICE_STARTER":  s.PriceStarter,
-		"WPMGR_BILLING_STRIPE_PRICE_AGENCY":   s.PriceAgency,
-		"WPMGR_BILLING_STRIPE_PRICE_SCALE":    s.PriceScale,
-	}
-	anySet := false
-	for _, v := range fields {
-		if v != "" {
-			anySet = true
-			break
-		}
-	}
-	if !anySet {
+	fields := stripeConfigFields(s)
+	if !stripeConfigAnySet(s) {
 		return nil
 	}
 
 	var issues []Issue
+	// Hosted billing runs on a restricted key (rk_live_/rk_test_), which
+	// limits what a leaked key can reach. A full live secret key is refused.
+	if strings.HasPrefix(s.SecretKey, "sk_live_") {
+		issues = append(issues, Issue{
+			Name:   "WPMGR_BILLING_STRIPE_SECRET_KEY",
+			Reason: "a live secret key (sk_live_) is refused; use a restricted key (rk_live_)",
+		})
+	}
 	for name, v := range fields {
 		if v == "" {
 			issues = append(issues, Issue{
@@ -435,6 +444,29 @@ func validateStripeConfig(s StripeConfig) []Issue {
 		}
 	}
 	return issues
+}
+
+// stripeConfigFields maps each WPMGR_BILLING_STRIPE_* variable to its value.
+// All six are required together.
+func stripeConfigFields(s StripeConfig) map[string]string {
+	return map[string]string{
+		"WPMGR_BILLING_STRIPE_SECRET_KEY":           s.SecretKey,
+		"WPMGR_BILLING_STRIPE_WEBHOOK_SECRET":       s.WebhookSecret,
+		"WPMGR_BILLING_STRIPE_PRICE_STARTER":        s.PriceStarter,
+		"WPMGR_BILLING_STRIPE_PRICE_AGENCY":         s.PriceAgency,
+		"WPMGR_BILLING_STRIPE_PRICE_SCALE":          s.PriceScale,
+		"WPMGR_BILLING_STRIPE_PORTAL_CONFIGURATION": s.PortalConfiguration,
+	}
+}
+
+// stripeConfigAnySet reports whether any WPMGR_BILLING_STRIPE_* variable is set.
+func stripeConfigAnySet(s StripeConfig) bool {
+	for _, v := range stripeConfigFields(s) {
+		if v != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // validateRazorpayConfig checks internal consistency of the nine Razorpay

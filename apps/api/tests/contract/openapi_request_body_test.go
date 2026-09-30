@@ -281,7 +281,7 @@ func specRequestBodies(t *testing.T) map[routeKey]specBodyFields {
 // bodyBindFuncs are the calls that decode a JSON request body in this codebase.
 // The destination is always the call's last argument.
 var bodyBindFuncs = map[string]bool{
-	"bindJSON": true, "policyBindJSON": true, "decode": true, "decodeJSON": true,
+	"bindJSON": true, "bindOptionalJSON": true, "policyBindJSON": true, "decode": true, "decodeJSON": true,
 	"ShouldBindJSON": true, "BindJSON": true, "ShouldBindWith": true,
 	"MustBindWith": true, "ShouldBind": true, "Decode": true, "Unmarshal": true,
 }

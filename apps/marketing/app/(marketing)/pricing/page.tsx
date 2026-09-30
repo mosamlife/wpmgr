@@ -96,8 +96,8 @@ export default async function PricingPage() {
             <p className="mt-6 text-lg leading-relaxed text-[var(--muted-foreground)]">
               Start free with 3 sites, forever. Upgrade when you need more sites, more managed
               backup storage, or more frequent backups. Every plan gets the full feature set, no
-              tier locks a capability behind a higher price. Choose Razorpay, Stripe, or Paddle at
-              checkout; billed monthly.
+              tier locks a capability behind a higher price. Pay by card through Stripe, or through
+              Razorpay if you are in India; billed monthly. Prices exclude applicable taxes.
             </p>
             <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
               <Link

@@ -50,6 +50,7 @@ import {
   orgDeleteConfirmMatches,
   useActivateOrg,
   useDeleteOrg,
+  DeleteOrgError,
 } from "./use-orgs";
 import { sitesKeys, NotFoundError as SiteNotFoundError } from "@/features/sites/use-sites";
 
@@ -117,6 +118,55 @@ describe("mapDeleteOrgError", () => {
         "cannot_delete_active_org",
         "switch to a different organisation before deleting this one",
       ),
+    ).toBe("Switch to another organisation first. You can't delete the one you're currently in.");
+  });
+
+  // -------------------------------------------------------------------------
+  // billing_active's `details.reason` (delete_guard.go:26-38) picks ONE of
+  // four distinct messages instead of the one-size-fits-all copy above -- a
+  // past-due tenant needs pointing at "Cancel now" specifically, not just
+  // told to "cancel the subscription", since a period-end cancel does not
+  // clear StatusPastDue's block.
+  // -------------------------------------------------------------------------
+
+  it.each([
+    [
+      "cancel_required",
+      "Cancel the subscription first, from the Billing page, then delete this organisation.",
+    ],
+    [
+      "past_due",
+      'A payment on this organisation is overdue. Use "Cancel now" on the Billing page to end the subscription at once, then try again.',
+    ],
+    [
+      "comped_subscription",
+      "This organisation has a complimentary subscription attached. Contact support to delete it.",
+    ],
+    [
+      "subscription_pending",
+      "A payment is still being set up for this organisation. Wait a minute, then try again.",
+    ],
+  ] as const)("maps billing_active reason %s to its own message", (reason, expected) => {
+    expect(mapDeleteOrgError("billing_active", "server said something unhelpful", reason)).toBe(
+      expected,
+    );
+  });
+
+  it("falls back to the generic billing_active message for an unrecognised reason", () => {
+    expect(
+      mapDeleteOrgError("billing_active", "server said something unhelpful", "some_new_reason"),
+    ).toBe("Cancel the subscription before deleting this organisation.");
+  });
+
+  it("falls back to the generic billing_active message when no reason is given", () => {
+    expect(mapDeleteOrgError("billing_active", "server said something unhelpful")).toBe(
+      "Cancel the subscription before deleting this organisation.",
+    );
+  });
+
+  it("ignores a reason on a DIFFERENT code -- reason only branches billing_active", () => {
+    expect(
+      mapDeleteOrgError("cannot_delete_active_org", "server said something unhelpful", "past_due"),
     ).toBe("Switch to another organisation first. You can't delete the one you're currently in.");
   });
 });
@@ -188,6 +238,62 @@ describe("useDeleteOrg success toast", () => {
       | undefined;
     expect(softCall?.[0]).toBe('"Acme" is scheduled for permanent deletion');
     expect(softCall?.[1]?.description).toContain("recoverable");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// useDeleteOrg's billing_active refusal, end to end against a faked
+// transport: proves the wire's `error.details.reason` actually reaches
+// DeleteOrgError.message/.reason via mapDeleteOrgError, not just that the
+// pure mapper function returns the right string in isolation above.
+// ---------------------------------------------------------------------------
+describe("useDeleteOrg billing_active refusal", () => {
+  beforeEach(() => {
+    deleteMock.mockReset();
+  });
+
+  it("rejects with the past_due-specific message and carries code + reason", async () => {
+    deleteMock.mockResolvedValue({
+      data: undefined,
+      error: {
+        code: "billing_active",
+        message: "a payment is past due; cancel the subscription now, or wait for it to end, before deleting this organisation",
+        details: { reason: "past_due" },
+      },
+    });
+    const { result } = renderHook(() => useDeleteOrg(), { wrapper: hookWrapper });
+
+    let caught: unknown;
+    try {
+      await result.current.mutateAsync({ orgId: "o1", confirmName: "Acme" });
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(DeleteOrgError);
+    const err = caught as DeleteOrgError;
+    expect(err.code).toBe("billing_active");
+    expect(err.reason).toBe("past_due");
+    expect(err.message).toBe(
+      'A payment on this organisation is overdue. Use "Cancel now" on the Billing page to end the subscription at once, then try again.',
+    );
+    // Never the server's own log-consumer wording.
+    expect(err.message).not.toContain("wait for it to end");
+  });
+
+  it("falls back to the generic billing_active message when the server sends no reason", async () => {
+    deleteMock.mockResolvedValue({
+      data: undefined,
+      error: {
+        code: "billing_active",
+        message: "cancel the subscription before deleting this organisation; deletion is allowed once a cancellation is scheduled",
+      },
+    });
+    const { result } = renderHook(() => useDeleteOrg(), { wrapper: hookWrapper });
+
+    await expect(
+      result.current.mutateAsync({ orgId: "o1", confirmName: "Acme" }),
+    ).rejects.toThrow("Cancel the subscription before deleting this organisation.");
   });
 });
 

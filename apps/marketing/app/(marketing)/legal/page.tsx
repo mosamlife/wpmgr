@@ -36,7 +36,7 @@ const LEGAL_ITEMS = [
     icon: "LockKeyhole",
     title: "Privacy Policy",
     description:
-      "How WPMgr collects, uses, and stores data from hosted service users, including our sub-processors, Google Cloud Platform, Stripe, Razorpay, and Paddle. The agent is privacy-first and off-by-default.",
+      "How WPMgr collects, uses, and stores data from hosted service users, including our sub-processors, Google Cloud Platform, Stripe, and Razorpay. The agent is privacy-first and off-by-default.",
     href: "/privacy",
     external: false,
     cta: "View privacy policy",

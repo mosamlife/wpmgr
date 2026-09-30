@@ -618,6 +618,26 @@ func encodeBulkResendEmailLogRequest(
 	return nil
 }
 
+func encodeCancelBillingSubscriptionRequest(
+	req OptBillingCancelRequest,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	if !req.Set {
+		// Keep request with empty body if value is not set.
+		return nil
+	}
+	e := new(jx.Encoder)
+	{
+		if req.Set {
+			req.Encode(e)
+		}
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
 func encodeChangeMyPasswordRequest(
 	req *ChangeMyPasswordReq,
 	r *http.Request,
@@ -634,6 +654,20 @@ func encodeChangeMyPasswordRequest(
 
 func encodeChmodSiteFileRequest(
 	req *FileChmodRequest,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	e := new(jx.Encoder)
+	{
+		req.Encode(e)
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
+func encodeClearAdminAccountBillingProviderRequest(
+	req *AdminClearBillingProviderRequest,
 	r *http.Request,
 ) error {
 	const contentType = "application/json"
@@ -702,6 +736,20 @@ func encodeComputeRucssRequest(
 		if req.Set {
 			req.Encode(e)
 		}
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
+func encodeConfirmBillingCheckoutRequest(
+	req *BillingCheckoutConfirmRequest,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	e := new(jx.Encoder)
+	{
+		req.Encode(e)
 	}
 	encoded := e.Bytes()
 	ht.SetBody(r, bytes.NewReader(encoded), contentType)

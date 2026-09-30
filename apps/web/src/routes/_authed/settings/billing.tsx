@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { z } from "zod";
 import { AlertTriangle } from "lucide-react";
@@ -22,10 +22,15 @@ import {
   useCreateBillingPortal,
   useCancelBillingSubscription,
   useBillingCheckoutReturn,
+  useConfirmBillingCheckout,
   isCheckoutTier,
   type BillingInfo,
 } from "@/features/billing/use-billing";
-import { useCheckoutFlow } from "@/features/billing/use-checkout-flow";
+import {
+  useCheckoutFlow,
+  type UseCheckoutFlowResult,
+} from "@/features/billing/use-checkout-flow";
+import { mapBillingCheckoutError } from "@/features/billing/billing-checkout-error";
 import {
   billingBannerFor,
   formatBillingDate,
@@ -40,14 +45,21 @@ import {
 import { UsageMeterList } from "@/features/billing/usage-meter-list";
 import { PaymentMethodPicker } from "@/features/billing/payment-method-picker";
 import { CheckoutReturnBanner } from "@/features/billing/checkout-return-banner";
+import { IndianCardGuidance } from "@/features/billing/indian-card-guidance";
+import { IndianUpgradeCopy } from "@/features/billing/indian-upgrade-copy";
+import { BillingTaxCopy } from "@/features/billing/billing-tax-copy";
+import { isLikelyIndian, currentTimezone } from "@/features/billing/likely-indian";
 import { cn } from "@/lib/utils";
 
-// M16 Phase B — the tenant Billing settings page. Owner-only, hosted-only
-// (the nav entry and this route both gate on the same me.hosted +
-// activeRole==='owner' check — see routes/_authed/settings/route.tsx).
+// M16 Phase B, S0.4 — the tenant Billing settings page. Owner-only,
+// hosted-only (the nav entry and this route both gate on the same me.hosted
+// + activeRole==='owner' check — see routes/_authed/settings/route.tsx).
 
 const billingSearchSchema = z.object({
   checkout: z.enum(["success", "cancel"]).optional(),
+  // Stripe's checkout success URL carries this back (stripe-design-v9.md
+  // 5.10) — kept across the redirect so confirm can be called with it.
+  session_id: z.string().optional(),
 });
 
 export const Route = createFileRoute("/_authed/settings/billing")({
@@ -68,6 +80,28 @@ function BillingPage() {
     billing.data,
     () => void billing.refetch(),
   );
+
+  // Resolved once on mount, not re-read every render (Intl reads belong in
+  // a lazy initializer — see use-billing.ts's react-hooks/purity note).
+  // This route carries no `?currency=` hint, so the signal is timezone only.
+  const [likelyIndian] = useState(() =>
+    isLikelyIndian({ timeZone: currentTimezone() }),
+  );
+
+  // 5.10: on a Stripe return, keep `session_id` and call confirm once — a
+  // UX-confirmation speedup only, fire-and-forget. The poll above
+  // (`useBillingCheckoutReturn`) remains the sole source of truth and
+  // already renders "Activating…" while it runs, whether confirm answered
+  // 200 or 202.
+  const confirm = useConfirmBillingCheckout();
+  const confirmFiredRef = useRef(false);
+  useEffect(() => {
+    if (confirmFiredRef.current) return;
+    if (search.checkout !== "success" || !search.session_id) return;
+    confirmFiredRef.current = true;
+    confirm.mutate({ session_id: search.session_id });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search.checkout, search.session_id]);
 
   // Razorpay's Checkout.js modal completes IN-PAGE (no browser redirect), so
   // there is no natural `?checkout=success` navigation the way Stripe's
@@ -132,6 +166,7 @@ function BillingPage() {
       checkoutStatus={search.checkout}
       finalizing={checkoutReturn.finalizing}
       timedOut={checkoutReturn.timedOut}
+      likelyIndian={likelyIndian}
       onCheckoutSuccess={markCheckoutSuccess}
     />
   );
@@ -157,18 +192,39 @@ function BillingContent({
   checkoutStatus,
   finalizing,
   timedOut,
+  likelyIndian,
   onCheckoutSuccess,
 }: {
   billing: BillingInfo;
   checkoutStatus: "success" | "cancel" | undefined;
   finalizing: boolean;
   timedOut: boolean;
+  likelyIndian: boolean;
   onCheckoutSuccess: () => void;
 }) {
   const banner = billingBannerFor(billing);
   const portal = useCreateBillingPortal();
   const cancel = useCancelBillingSubscription();
   const [cancelOpen, setCancelOpen] = useState(false);
+  // Separate mutation instance from `cancel` above: Cancel now (immediate,
+  // past_due-only) and Cancel subscription (period-end) are two independent
+  // dialogs that can each be opened/closed/retried without one's pending/
+  // error state bleeding into the other's.
+  const cancelNow = useCancelBillingSubscription();
+  const [cancelNowOpen, setCancelNowOpen] = useState(false);
+
+  // Lifted here (rather than owned by PlanTiersGrid alone) so the decline
+  // banner's "Pay with Razorpay" action (3.3) can select the provider the
+  // tier buttons below then use.
+  //
+  // initialProvider: a workspace already pinned to Razorpay (billing.provider
+  // — the server-confirmed pin, never a guess) starts the picker on Razorpay
+  // rather than the instance default of Stripe, so its very first render
+  // already offers the provider this tenant can actually pay with (5.10).
+  const checkoutFlow = useCheckoutFlow({
+    onCheckoutSuccess,
+    initialProvider: billing.provider === "razorpay" ? "razorpay" : undefined,
+  });
 
   const openPortal = () => {
     portal.mutate(undefined, {
@@ -190,11 +246,30 @@ function BillingContent({
     }
   }
 
+  async function performCancelNow() {
+    try {
+      await cancelNow.mutateAsync({ when: "now" });
+      setCancelNowOpen(false);
+      toast.success("Your subscription has been cancelled");
+    } catch {
+      // Error surfaces inside the confirm dialog via the mutation state.
+    }
+  }
+
   // "Do NOT show both": a tenant either has a hosted portal (Stripe) or
   // doesn't (Razorpay), never both. A free-plan tenant with no portal has no
   // subscription to cancel either, so neither action renders for it.
   const showManageBilling = billing.portal_available;
   const showCancelSubscription = !billing.portal_available && billing.plan !== "free";
+  // Cancel now (3.6/5.10): only past_due, and only on Stripe (the only
+  // provider whose Service.CancelSubscriptionNow the CP implements — see
+  // apps/api/internal/billing/cancel.go's ImmediateCanceller). Independent of
+  // showManageBilling/showCancelSubscription above — a past-due Stripe
+  // subscription still has a portal (so shows "Manage billing"), but the
+  // portal has no immediate-cancel action of its own, so this button is
+  // additive rather than a third mutually-exclusive branch.
+  const showCancelNow =
+    billing.plan_status === "past_due" && billing.provider === "stripe";
 
   return (
     <section className="max-w-3xl space-y-6">
@@ -204,6 +279,9 @@ function BillingContent({
         status={checkoutStatus}
         finalizing={finalizing}
         timedOut={timedOut}
+        likelyIndian={likelyIndian}
+        razorpayAvailable={billing.available_providers.includes("razorpay")}
+        onPayWithRazorpay={() => checkoutFlow.setProvider("razorpay")}
       />
 
       {banner ? (
@@ -245,27 +323,47 @@ function BillingContent({
               ) : null}
             </CardDescription>
           </div>
-          {showManageBilling ? (
-            <Button
-              type="button"
-              variant="outline"
-              disabled={portal.isPending}
-              onClick={openPortal}
-            >
-              {portal.isPending ? "Opening…" : "Manage billing"}
-            </Button>
-          ) : showCancelSubscription ? (
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setCancelOpen(true)}
-            >
-              Cancel subscription
-            </Button>
+          {showManageBilling || showCancelSubscription || showCancelNow ? (
+            <div className="flex flex-col items-end gap-2">
+              {showManageBilling ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={portal.isPending}
+                  onClick={openPortal}
+                >
+                  {portal.isPending ? "Opening…" : "Manage billing"}
+                </Button>
+              ) : showCancelSubscription ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setCancelOpen(true)}
+                >
+                  Cancel subscription
+                </Button>
+              ) : null}
+              {showCancelNow ? (
+                <Button
+                  type="button"
+                  variant="destructive"
+                  size="sm"
+                  onClick={() => setCancelNowOpen(true)}
+                >
+                  Cancel now
+                </Button>
+              ) : null}
+            </div>
           ) : null}
         </CardHeader>
         <CardContent className="space-y-4">
           <UsageMeterList meters={billing.meters} />
+          {showManageBilling &&
+          likelyIndian &&
+          billing.provider === "stripe" &&
+          billing.plan !== "free" ? (
+            <IndianUpgradeCopy />
+          ) : null}
           {portal.isError ? (
             <p role="alert" className="text-sm text-destructive">
               {portal.error.message}
@@ -279,7 +377,8 @@ function BillingContent({
         portalAvailable={billing.portal_available}
         onManageBilling={openPortal}
         portalPending={portal.isPending}
-        onCheckoutSuccess={onCheckoutSuccess}
+        likelyIndian={likelyIndian}
+        checkoutFlow={checkoutFlow}
       />
 
       <DestructiveConfirm
@@ -301,6 +400,26 @@ function BillingContent({
         isPending={cancel.isPending}
         errorMessage={cancel.isError ? cancel.error.message : null}
       />
+
+      <DestructiveConfirm
+        open={cancelNowOpen}
+        onClose={() => setCancelNowOpen(false)}
+        onConfirm={performCancelNow}
+        title="Cancel now"
+        consequencesBody={
+          <>
+            Your {planLabel(billing.plan)} subscription ends immediately —
+            not at the end of the current billing period. This workspace
+            moves to the Free plan right away. Nothing you have already
+            backed up or configured is deleted.
+          </>
+        }
+        resourceName={planLabel(billing.plan)}
+        confirmLabel="Cancel now"
+        cancelLabel="Keep subscription"
+        isPending={cancelNow.isPending}
+        errorMessage={cancelNow.isError ? cancelNow.error.message : null}
+      />
     </section>
   );
 }
@@ -314,33 +433,41 @@ function PlanTiersGrid({
   portalAvailable,
   onManageBilling,
   portalPending,
-  onCheckoutSuccess,
+  likelyIndian,
+  checkoutFlow,
 }: {
   billing: BillingInfo;
   portalAvailable: boolean;
   onManageBilling: () => void;
   portalPending: boolean;
-  onCheckoutSuccess: () => void;
+  likelyIndian: boolean;
+  checkoutFlow: UseCheckoutFlowResult;
 }) {
-  const {
-    provider,
-    currency,
-    setProvider,
-    setCurrency,
-    startCheckout,
-    isStarting,
-    error: checkoutError,
-  } = useCheckoutFlow({ onCheckoutSuccess });
+  const { provider, setProvider, startCheckout, isStarting, error: checkoutError } =
+    checkoutFlow;
   const usedSites = billing.meters.sites?.used ?? 0;
+  const errorCopy = checkoutError
+    ? mapBillingCheckoutError(
+        checkoutError.code,
+        checkoutError.reason,
+        planLabel(billing.plan),
+        checkoutError.message,
+      )
+    : null;
 
   return (
     <div className="space-y-3">
+      {likelyIndian ? <IndianCardGuidance showScaleLine /> : null}
+
       <PaymentMethodPicker
         provider={provider}
         onProviderChange={setProvider}
-        currency={currency}
-        onCurrencyChange={setCurrency}
+        availableProviders={billing.available_providers}
+        likelyIndian={likelyIndian}
+        pinnedProvider={billing.provider}
       />
+
+      <BillingTaxCopy />
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {PLAN_CATALOG.map((tier) => {
@@ -419,10 +546,17 @@ function PlanTiersGrid({
           );
         })}
       </div>
-      {checkoutError ? (
-        <p role="alert" className="text-sm text-destructive">
-          {checkoutError.message}
-        </p>
+      {errorCopy ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <p role="alert" className="text-sm text-destructive">
+            {errorCopy.message}
+          </p>
+          {errorCopy.action === "manage_billing" && portalAvailable ? (
+            <Button type="button" size="sm" variant="outline" onClick={onManageBilling}>
+              Manage billing
+            </Button>
+          ) : null}
+        </div>
       ) : null}
     </div>
   );

@@ -1,131 +1,126 @@
 package billing
 
-// reconcile.go — M16 Phase B daily drift-repair sweep. A missed/lost webhook
-// delivery (a provider outage, a deploy window, a dropped 5xx) must never
-// leave a tenant's stored plan/status permanently wrong; this sweep re-derives
-// every tenant with a live provider subscription reference from the SAME
-// nextBillingState pipeline the webhook consumer uses, so drift repair is
-// AUTOMATICALLY "fail toward the customer": an upgrade/active state applies
-// immediately (nextBillingState's active/trialing branch), while a
-// downgrade only ever moves through the existing graded ladder — past_due's
-// 7-day grace, canceled's non-destructive plan=free — never a hard,
-// immediate cutoff. There is no separate "downgrade" code path to get wrong.
+// reconcile.go — the daily drift-repair sweep. It only lists and enqueues:
+// every tenant with a stored provider subscription (comped tenants excluded)
+// gets a billing_refresh, and the refresh worker re-derives its state through
+// the same locked apply function webhooks use (apply.go). A Stripe tenant
+// with a stored customer and either no stored subscription or a stored one
+// that is no longer live is also looked up at Stripe by that customer, and a
+// pending or live subscription found there is refreshed by id, so an
+// activation that never reached this database is adopted.
+//
+// Other providers are refreshed by the stored subscription id only, so a
+// subscription of theirs that this database never stored is not found by the
+// sweep.
 
 import (
 	"context"
 	"log/slog"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
-	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
 
-// ReconcileResult summarizes one sweep for logging/observability.
+// ReconcileResult summarizes one sweep for logging.
 type ReconcileResult struct {
 	Checked  int
-	Repaired int
+	Enqueued int
 }
 
-// Reconcile lists every tenant with a live provider subscription reference
-// (excluding comped tenants, which are immune to any provider-driven
-// mutation) and re-derives its billing state from the provider. A tenant
-// whose provider is not registered, or whose subscription fetch fails, is
-// logged and skipped — one tenant's provider hiccup must never abort the
-// rest of the sweep. Returns cleanly (zero work) when hosted billing is
-// disabled or no provider is registered.
+// reconcileRefresh is one billing_refresh the sweep enqueues.
+type reconcileRefresh struct {
+	tenantID       uuid.UUID
+	subscriptionID string
+}
+
+// Reconcile enqueues one billing_refresh per tenant in the reconcile set
+// (ListTenantsForReconcile). It changes no billing state. The only provider
+// calls are the customer-filtered subscription lists for Stripe tenants with
+// a customer and no live stored subscription, made outside any transaction.
+// A failed lookup is logged; the tenant then gets only the refresh of its
+// stored subscription, when it has one. Returns cleanly
+// (zero work) when hosted billing is disabled or no provider is registered.
 func (s *Service) Reconcile(ctx context.Context) (ReconcileResult, error) {
 	var out ReconcileResult
 	if !s.enabled || s.registry == nil || !s.registry.Any() {
 		return out, nil
 	}
+	if s.river == nil {
+		return out, errQueueNotWired
+	}
 
-	rows, err := sqlc.New(s.pool.Pool).ListTenantsWithProviderSubscription(ctx)
+	rows, err := sqlc.New(s.pool.Pool).ListTenantsForReconcile(ctx)
 	if err != nil {
 		return out, domain.Internal("billing_reconcile_list_failed", "failed to list tenants for billing reconcile").WithCause(err)
 	}
 
+	var refreshes []reconcileRefresh
 	for _, row := range rows {
 		out.Checked++
-		if row.BillingProvider == nil || row.ProviderSubscriptionID == nil {
+		if row.BillingProvider == nil {
 			continue
 		}
-		if repaired, err := s.reconcileOne(ctx, row.ID, *row.BillingProvider, *row.ProviderSubscriptionID); err != nil {
-			s.logger.Warn("billing reconcile: tenant skipped", slog.String("tenant_id", row.ID.String()), slog.Any("error", err))
-		} else if repaired {
-			out.Repaired++
+		stored := ""
+		if row.ProviderSubscriptionID != nil {
+			stored = *row.ProviderSubscriptionID
+		}
+		lookup := *row.BillingProvider == providerStripe &&
+			row.ProviderCustomerID != nil && *row.ProviderCustomerID != "" &&
+			(stored == "" || !isLiveStatus(Status(row.PlanStatus)))
+		if lookup {
+			if subID, ok := s.reconcileLookupByCustomer(ctx, row.ID, *row.ProviderCustomerID); ok && subID != stored {
+				refreshes = append(refreshes, reconcileRefresh{tenantID: row.ID, subscriptionID: subID})
+				continue
+			}
+		}
+		if stored != "" {
+			refreshes = append(refreshes, reconcileRefresh{tenantID: row.ID})
 		}
 	}
 
+	err = pgx.BeginFunc(ctx, s.pool.Pool, func(tx pgx.Tx) error {
+		for _, r := range refreshes {
+			if _, err := s.river.InsertTx(ctx, tx, BillingRefreshArgs{
+				TenantID: r.tenantID, SubscriptionID: r.subscriptionID, Source: RefreshSourceReconcile,
+			}, nil); err != nil {
+				return err
+			}
+			out.Enqueued++
+		}
+		return nil
+	})
+	if err != nil {
+		return ReconcileResult{}, domain.Internal("billing_reconcile_enqueue_failed", "failed to enqueue billing refreshes").WithCause(err)
+	}
 	return out, nil
 }
 
-// ReconcileOneNow immediately re-derives tenantID's billing state from its
-// live provider subscription (see reconcileOne) — the same drift-repair
-// pipeline the daily sweep and webhook consumer use. Used by the superadmin
-// billing panel's (internal/admin, M16 Phase C1) "revoke comp" action to
-// adopt whatever the provider currently reports the instant a comp override
-// is lifted, rather than waiting for the next scheduled sweep.
-// hadSubscription=false means tenantID has no live provider subscription
-// reference to reconcile against — the caller should then fall back to
-// plan=free (see AdminRevokeCompToFree).
-func (s *Service) ReconcileOneNow(ctx context.Context, tenantID uuid.UUID) (repaired bool, hadSubscription bool, err error) {
-	if !s.enabled || s.registry == nil || !s.registry.Any() {
-		return false, false, nil
-	}
-	profile, err := s.getBillingProfile(ctx, tenantID)
-	if err != nil {
-		return false, false, err
-	}
-	if profile.BillingProvider == "" || profile.ProviderSubscriptionID == "" {
-		return false, false, nil
-	}
-	repaired, err = s.reconcileOne(ctx, tenantID, profile.BillingProvider, profile.ProviderSubscriptionID)
-	return repaired, true, err
-}
-
-// reconcileOne reconciles a single tenant. Returns repaired=true when a drift
-// was found and applied.
-func (s *Service) reconcileOne(ctx context.Context, tenantID uuid.UUID, providerName, providerSubscriptionID string) (bool, error) {
-	provider, ok := s.registry.Provider(providerName)
+// reconcileLookupByCustomer asks Stripe, filtered by customerID, for a
+// pending or live subscription the tenant has not stored. It returns the
+// subscription id and true when one exists. Nothing found, no lister, or a
+// failed call returns false; a failure is logged and retried next sweep.
+func (s *Service) reconcileLookupByCustomer(ctx context.Context, tenantID uuid.UUID, customerID string) (string, bool) {
+	provider, ok := s.registry.Provider(providerStripe)
 	if !ok {
-		return false, domain.ServiceUnavailable("billing_provider_unavailable", "provider not registered")
+		return "", false
 	}
-
-	profile, err := s.getBillingProfile(ctx, tenantID)
+	lister, ok := provider.(SubscriptionLister)
+	if !ok {
+		return "", false
+	}
+	callCtx, cancel := context.WithTimeout(ctx, providerCallTimeout)
+	subID, pending, err := lister.PendingOrLiveSubscription(callCtx, customerID)
+	cancel()
 	if err != nil {
-		return false, err
+		s.logger.Warn("billing: reconcile lookup by customer failed",
+			slog.String("tenant_id", tenantID.String()), slog.Any("error", err))
+		return "", false
 	}
-
-	sub, err := provider.GetSubscription(ctx, providerSubscriptionID)
-	if err != nil {
-		return false, domain.Internal("billing_subscription_fetch_failed", "failed to fetch subscription").WithCause(err)
+	if !pending || subID == "" {
+		return "", false
 	}
-
-	if !sub.PlanResolved && statusAppliesPlan(sub.Status) {
-		return false, domain.Validation("billing_unknown_price", "subscription price does not map to a known tier")
-	}
-
-	next := nextBillingState(profile, sub, s.clock.Now())
-	if next.Plan == profile.Plan && next.Status == profile.Status {
-		return false, nil // no drift
-	}
-
-	if err := s.applySubscriptionState(ctx, tenantID, next); err != nil {
-		return false, err
-	}
-	s.invalidateCache(ctx, tenantID)
-	s.recordAudit(ctx, tenantID, audit.ActorSystem, "billing_reconcile", "billing.subscription.changed", map[string]any{
-		"old_plan":   string(profile.Plan),
-		"new_plan":   string(next.Plan),
-		"old_status": string(profile.Status),
-		"new_status": string(next.Status),
-		"source":     "reconcile",
-	})
-	s.logger.Info("billing reconcile: repaired drift",
-		slog.String("tenant_id", tenantID.String()),
-		slog.String("old_plan", string(profile.Plan)), slog.String("new_plan", string(next.Plan)),
-		slog.String("old_status", string(profile.Status)), slog.String("new_status", string(next.Status)))
-	return true, nil
+	return subID, true
 }

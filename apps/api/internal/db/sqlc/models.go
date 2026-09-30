@@ -1626,6 +1626,7 @@ type Tenant struct {
 	SuspendedAt            pgtype.Timestamptz `json:"suspended_at"`
 	SuspendedReason        *string            `json:"suspended_reason"`
 	CancelAtPeriodEnd      bool               `json:"cancel_at_period_end"`
+	CancelAt               pgtype.Timestamptz `json:"cancel_at"`
 	DeletedAt              pgtype.Timestamptz `json:"deleted_at"`
 	PurgeStartedAt         pgtype.Timestamptz `json:"purge_started_at"`
 	AssistantEnabledAt     pgtype.Timestamptz `json:"assistant_enabled_at"`

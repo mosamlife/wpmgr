@@ -260,7 +260,8 @@ func TestAdminBilling_CompBlocksWebhookMutation(t *testing.T) {
 
 	fp := newFakeProvider("fake")
 	fp.subscriptions["sub_admincomp"] = billing.Subscription{ID: "sub_admincomp", Status: billing.StatusCanceled}
-	billingSvc := newTestBillingService(app, fp)
+	h := newBillingHarness(t, app, fp)
+	billingSvc := h.svc
 	svc := newAdminBillingService(app, billingSvc, audit.NewRecorder(app, domain.SystemClock{}))
 
 	if err := svc.CompAccount(ctx, uuid.New(), tenant, billing.TierScale, "loyalty comp"); err != nil {
@@ -274,6 +275,7 @@ func TestAdminBilling_CompBlocksWebhookMutation(t *testing.T) {
 	if err := billingSvc.ProcessWebhook(ctx, "fake", body, http.Header{}); err != nil {
 		t.Fatalf("ProcessWebhook: %v", err)
 	}
+	h.drain(t)
 
 	plan, status := getTenantPlanStatus(t, app, tenant)
 	if plan != string(billing.TierScale) || status != "comped" {

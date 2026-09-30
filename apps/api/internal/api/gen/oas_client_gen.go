@@ -649,12 +649,14 @@ type Invoker interface {
 	// CancelBillingSubscription invokes cancelBillingSubscription operation.
 	//
 	// The provider-agnostic cancellation path — the only one for a provider with no hosted portal (e.g.
-	// Razorpay). Cancellation is scheduled for the end of the current billing period; the plan/status
-	// change lands later via the provider's webhook. Poll `GET /billing` afterward rather than expecting
-	// this response to carry the new plan state.
+	// Razorpay). By default (`when` omitted or `period_end`) cancellation is scheduled for the end of the
+	// current billing period. `when: now` ends the subscription at once, and is allowed only while a card
+	// (Stripe) payment is past due. Either way the plan/status change lands later via the provider's
+	// webhook or a background refresh. Poll `GET /billing` afterward rather than expecting this response
+	// to carry the new plan state.
 	//
 	// POST /api/v1/billing/cancel
-	CancelBillingSubscription(ctx context.Context) (CancelBillingSubscriptionRes, error)
+	CancelBillingSubscription(ctx context.Context, request OptBillingCancelRequest) (CancelBillingSubscriptionRes, error)
 	// CancelEnrollment invokes cancelEnrollment operation.
 	//
 	// Hard-deletes a site that is in `pending_enrollment` AND has never connected (`enrolled_at` is NULL
@@ -757,6 +759,18 @@ type Invoker interface {
 	//
 	// POST /api/v1/sites/{siteId}/perf/db/clean
 	CleanDatabase(ctx context.Context, params CleanDatabaseParams) (*DbCleanResult, error)
+	// ClearAdminAccountBillingProvider invokes clearAdminAccountBillingProvider operation.
+	//
+	// Unpins the tenant from its current payment provider and clears its stored provider customer and
+	// subscription ids, so the tenant can start a fresh checkout with a different provider. Refused for a
+	// comped tenant, and unless the tenant's subscription is canceled, or none with no stored subscription
+	// id. Before clearing, the server confirms nothing is pending or live with the current provider: for
+	// Stripe this is a live provider check; for Razorpay, which stores no subscription id in this release,
+	// the caller must supply the ids found by a manual Dashboard lookup and confirm that lookup was done.
+	// Requires is_superadmin=true.
+	//
+	// DELETE /api/v1/admin/accounts/{id}/billing-provider
+	ClearAdminAccountBillingProvider(ctx context.Context, request *AdminClearBillingProviderRequest, params ClearAdminAccountBillingProviderParams) (ClearAdminAccountBillingProviderRes, error)
 	// ClearAdminVulnFeedKey invokes clearAdminVulnFeedKey operation.
 	//
 	// Falls back to the `WPMGR_VULN_FEED_API_KEY` environment variable, if set.
@@ -800,6 +814,18 @@ type Invoker interface {
 	//
 	// POST /api/v1/sites/{siteId}/perf/rucss/compute
 	ComputeRucss(ctx context.Context, request OptComputeRucssReq, params ComputeRucssParams) (*PerfActionResult, error)
+	// ConfirmBillingCheckout invokes confirmBillingCheckout operation.
+	//
+	// A UX confirmation ONLY — the payment provider's webhook remains the sole source of truth for
+	// actually granting a plan; this endpoint just speeds up activation after the browser returns from a
+	// Stripe checkout redirect. The named session must belong to the caller's own tenant and its stored
+	// payment-provider customer, and must be a completed subscription-mode Checkout Session — the
+	// request can never name a different tenant, customer or session state. Returns 200 when the plan
+	// change has already landed, and otherwise enqueues a background refresh and returns 202; after a 202,
+	// poll `GET /billing` rather than expecting this response to carry the new plan state.
+	//
+	// POST /api/v1/billing/checkout/confirm
+	ConfirmBillingCheckout(ctx context.Context, request *BillingCheckoutConfirmRequest) (ConfirmBillingCheckoutRes, error)
 	// ConfirmTotpEnrollment invokes confirmTotpEnrollment operation.
 	//
 	// Validates `code` against the provisional secret from `POST /auth/2fa/totp/begin`, persists the
@@ -1092,8 +1118,9 @@ type Invoker interface {
 	// purge worker runs. `confirm_name` must exactly match the organisation's current name. When this is
 	// the caller's active org, their session is reassigned to another live membership, or cleared entirely
 	// (dropping to onboarding) if it was their last org, `active_tenant_id` in the response reflects the
-	// post-delete state. On a hosted instance an active paid subscription must be cancelled/downgraded
-	// first (`billing_active` 409).
+	// post-delete state. On a hosted instance the organisation's billing state must allow the delete, or
+	// it is refused with 409 `billing_active` and a `details.reason` saying what to do (see the 409
+	// response).
 	//
 	// DELETE /api/v1/orgs/{orgId}
 	DeleteOrg(ctx context.Context, request *DeleteOrgReq, params DeleteOrgParams) (DeleteOrgRes, error)
@@ -9301,17 +9328,19 @@ func (c *Client) sendCancelBackup(ctx context.Context, params CancelBackupParams
 // CancelBillingSubscription invokes cancelBillingSubscription operation.
 //
 // The provider-agnostic cancellation path — the only one for a provider with no hosted portal (e.g.
-// Razorpay). Cancellation is scheduled for the end of the current billing period; the plan/status
-// change lands later via the provider's webhook. Poll `GET /billing` afterward rather than expecting
-// this response to carry the new plan state.
+// Razorpay). By default (`when` omitted or `period_end`) cancellation is scheduled for the end of the
+// current billing period. `when: now` ends the subscription at once, and is allowed only while a card
+// (Stripe) payment is past due. Either way the plan/status change lands later via the provider's
+// webhook or a background refresh. Poll `GET /billing` afterward rather than expecting this response
+// to carry the new plan state.
 //
 // POST /api/v1/billing/cancel
-func (c *Client) CancelBillingSubscription(ctx context.Context) (CancelBillingSubscriptionRes, error) {
-	res, err := c.sendCancelBillingSubscription(ctx)
+func (c *Client) CancelBillingSubscription(ctx context.Context, request OptBillingCancelRequest) (CancelBillingSubscriptionRes, error) {
+	res, err := c.sendCancelBillingSubscription(ctx, request)
 	return res, err
 }
 
-func (c *Client) sendCancelBillingSubscription(ctx context.Context) (res CancelBillingSubscriptionRes, err error) {
+func (c *Client) sendCancelBillingSubscription(ctx context.Context, request OptBillingCancelRequest) (res CancelBillingSubscriptionRes, err error) {
 	otelAttrs := []attribute.KeyValue{
 		otelogen.OperationID("cancelBillingSubscription"),
 		semconv.HTTPRequestMethodKey.String("POST"),
@@ -9356,6 +9385,9 @@ func (c *Client) sendCancelBillingSubscription(ctx context.Context) (res CancelB
 	r, err := ht.NewRequest(ctx, "POST", u)
 	if err != nil {
 		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeCancelBillingSubscriptionRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
 	}
 
 	stage = "SendRequest"
@@ -10102,6 +10134,114 @@ func (c *Client) sendCleanDatabase(ctx context.Context, params CleanDatabasePara
 	return result, nil
 }
 
+// ClearAdminAccountBillingProvider invokes clearAdminAccountBillingProvider operation.
+//
+// Unpins the tenant from its current payment provider and clears its stored provider customer and
+// subscription ids, so the tenant can start a fresh checkout with a different provider. Refused for a
+// comped tenant, and unless the tenant's subscription is canceled, or none with no stored subscription
+// id. Before clearing, the server confirms nothing is pending or live with the current provider: for
+// Stripe this is a live provider check; for Razorpay, which stores no subscription id in this release,
+// the caller must supply the ids found by a manual Dashboard lookup and confirm that lookup was done.
+// Requires is_superadmin=true.
+//
+// DELETE /api/v1/admin/accounts/{id}/billing-provider
+func (c *Client) ClearAdminAccountBillingProvider(ctx context.Context, request *AdminClearBillingProviderRequest, params ClearAdminAccountBillingProviderParams) (ClearAdminAccountBillingProviderRes, error) {
+	res, err := c.sendClearAdminAccountBillingProvider(ctx, request, params)
+	return res, err
+}
+
+func (c *Client) sendClearAdminAccountBillingProvider(ctx context.Context, request *AdminClearBillingProviderRequest, params ClearAdminAccountBillingProviderParams) (res ClearAdminAccountBillingProviderRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("clearAdminAccountBillingProvider"),
+		semconv.HTTPRequestMethodKey.String("DELETE"),
+		semconv.URLTemplateKey.String("/api/v1/admin/accounts/{id}/billing-provider"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, ClearAdminAccountBillingProviderOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/admin/accounts/"
+	{
+		// Encode "id" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "id",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.ID))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/billing-provider"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "DELETE", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeClearAdminAccountBillingProviderRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeClearAdminAccountBillingProviderResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // ClearAdminVulnFeedKey invokes clearAdminVulnFeedKey operation.
 //
 // Falls back to the `WPMGR_VULN_FEED_API_KEY` environment variable, if set.
@@ -10651,6 +10791,95 @@ func (c *Client) sendComputeRucss(ctx context.Context, request OptComputeRucssRe
 
 	stage = "DecodeResponse"
 	result, err := decodeComputeRucssResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// ConfirmBillingCheckout invokes confirmBillingCheckout operation.
+//
+// A UX confirmation ONLY — the payment provider's webhook remains the sole source of truth for
+// actually granting a plan; this endpoint just speeds up activation after the browser returns from a
+// Stripe checkout redirect. The named session must belong to the caller's own tenant and its stored
+// payment-provider customer, and must be a completed subscription-mode Checkout Session — the
+// request can never name a different tenant, customer or session state. Returns 200 when the plan
+// change has already landed, and otherwise enqueues a background refresh and returns 202; after a 202,
+// poll `GET /billing` rather than expecting this response to carry the new plan state.
+//
+// POST /api/v1/billing/checkout/confirm
+func (c *Client) ConfirmBillingCheckout(ctx context.Context, request *BillingCheckoutConfirmRequest) (ConfirmBillingCheckoutRes, error) {
+	res, err := c.sendConfirmBillingCheckout(ctx, request)
+	return res, err
+}
+
+func (c *Client) sendConfirmBillingCheckout(ctx context.Context, request *BillingCheckoutConfirmRequest) (res ConfirmBillingCheckoutRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("confirmBillingCheckout"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/api/v1/billing/checkout/confirm"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, ConfirmBillingCheckoutOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/api/v1/billing/checkout/confirm"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeConfirmBillingCheckoutRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeConfirmBillingCheckoutResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}
@@ -13739,8 +13968,9 @@ func (c *Client) sendDeleteMember(ctx context.Context, params DeleteMemberParams
 // purge worker runs. `confirm_name` must exactly match the organisation's current name. When this is
 // the caller's active org, their session is reassigned to another live membership, or cleared entirely
 // (dropping to onboarding) if it was their last org, `active_tenant_id` in the response reflects the
-// post-delete state. On a hosted instance an active paid subscription must be cancelled/downgraded
-// first (`billing_active` 409).
+// post-delete state. On a hosted instance the organisation's billing state must allow the delete, or
+// it is refused with 409 `billing_active` and a `details.reason` saying what to do (see the 409
+// response).
 //
 // DELETE /api/v1/orgs/{orgId}
 func (c *Client) DeleteOrg(ctx context.Context, request *DeleteOrgReq, params DeleteOrgParams) (DeleteOrgRes, error) {

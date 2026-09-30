@@ -76,6 +76,7 @@ function billingFixture(overrides: Partial<BillingInfo> = {}): BillingInfo {
     plan_status: "none",
     meters: { sites: { used: 1, limit: 3 } },
     portal_available: false,
+    available_providers: [],
     ...overrides,
   };
 }
@@ -197,7 +198,7 @@ describe("WelcomeCheckoutPage — self-host / resolution guards (beforeLoad)", (
 });
 
 describe("WelcomeCheckoutPage — auto-starts checkout once on mount", () => {
-  it("auto-calls startCheckout(tier) with the default provider (Stripe) and renders the picker + plan summary", async () => {
+  it("auto-calls startCheckout(tier) with the default provider (Stripe) and renders the plan summary; the picker stays hidden for a non-Indian visitor with no Razorpay offered", async () => {
     const mutateMock = vi.fn();
     mockedUseCreateBillingCheckout.mockReturnValue(
       mockMutationResult<CheckoutResult, CreateCheckoutVariables>({ mutate: mutateMock }),
@@ -209,13 +210,40 @@ describe("WelcomeCheckoutPage — auto-starts checkout once on mount", () => {
       await screen.findByRole("heading", { name: "Complete your Agency subscription" }),
     ).toBeInTheDocument();
     expect(screen.getByText("Agency")).toBeInTheDocument();
-    expect(screen.getByRole("radio", { name: "Stripe" })).toHaveAttribute("aria-checked", "true");
+    // S0.4: the provider picker renders nothing at all when Razorpay is not
+    // on offer (`available_providers` from the default fixture is empty).
+    expect(screen.queryByRole("radiogroup", { name: "Payment provider" })).not.toBeInTheDocument();
 
     await waitFor(() => expect(mutateMock).toHaveBeenCalledTimes(1));
     expect(mutateMock).toHaveBeenCalledWith(
       { tier: "agency", provider: "stripe", currency: undefined },
       expect.anything(),
     );
+  });
+
+  it("shows the Razorpay provider option, Indian-card guidance and the Scale line for a likely-Indian visitor (?currency=INR)", async () => {
+    mockedUseBilling.mockReturnValue(
+      mockQueryResult<BillingInfo | null>({
+        data: billingFixture({ available_providers: ["stripe", "razorpay"] }),
+      }),
+    );
+    const mutateMock = vi.fn();
+    mockedUseCreateBillingCheckout.mockReturnValue(
+      mockMutationResult<CheckoutResult, CreateCheckoutVariables>({ mutate: mutateMock }),
+    );
+
+    renderWelcomeCheckout("/welcome/checkout?plan=scale&currency=INR");
+
+    expect(
+      await screen.findByRole("heading", { name: "Complete your Scale subscription" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("radio", { name: "UPI / RuPay / ₹ (Razorpay)" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Turn on international online payments in your bank app\./),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Scale may be above India's/)).toBeInTheDocument();
   });
 
   it("clears the pending-plan stash once checkout has started", async () => {
@@ -233,26 +261,71 @@ describe("WelcomeCheckoutPage — auto-starts checkout once on mount", () => {
   });
 
   it("does not auto-start a second checkout on a re-render", async () => {
+    mockedUseBilling.mockReturnValue(
+      mockQueryResult<BillingInfo | null>({
+        data: billingFixture({ available_providers: ["stripe", "razorpay"] }),
+      }),
+    );
     const mutateMock = vi.fn();
     mockedUseCreateBillingCheckout.mockReturnValue(
       mockMutationResult<CheckoutResult, CreateCheckoutVariables>({ mutate: mutateMock }),
     );
 
-    renderWelcomeCheckout("/welcome/checkout?plan=agency");
+    renderWelcomeCheckout("/welcome/checkout?plan=agency&currency=INR");
     await screen.findByRole("heading", { name: "Complete your Agency subscription" });
     await waitFor(() => expect(mutateMock).toHaveBeenCalledTimes(1));
 
     // Switching provider triggers a re-render of the same mounted component;
     // the auto-start effect must not fire again.
-    fireEvent.click(screen.getByRole("radio", { name: "Razorpay" }));
+    fireEvent.click(
+      screen.getByRole("radio", { name: "UPI / RuPay / ₹ (Razorpay)" }),
+    );
     await waitFor(() =>
-      expect(screen.getByRole("radio", { name: "Razorpay" })).toHaveAttribute(
-        "aria-checked",
-        "true",
-      ),
+      expect(
+        screen.getByRole("radio", { name: "UPI / RuPay / ₹ (Razorpay)" }),
+      ).toHaveAttribute("aria-checked", "true"),
     );
 
     expect(mutateMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("WelcomeCheckoutPage — decline return (?checkout=cancel)", () => {
+  it("renders the Indian-decline banner's 'Pay with Razorpay' action and starts a Razorpay checkout for THIS tier/currency, not whatever Stripe was mid-flight for", async () => {
+    mockedUseBilling.mockReturnValue(
+      mockQueryResult<BillingInfo | null>({
+        data: billingFixture({ available_providers: ["stripe", "razorpay"] }),
+      }),
+    );
+    const mutateMock = vi.fn();
+    mockedUseCreateBillingCheckout.mockReturnValue(
+      mockMutationResult<CheckoutResult, CreateCheckoutVariables>({ mutate: mutateMock }),
+    );
+
+    renderWelcomeCheckout(
+      "/welcome/checkout?plan=scale&checkout=cancel&currency=INR",
+    );
+
+    // The auto-start effect (welcome.checkout.tsx) depends only on `tier`,
+    // never on `checkout`, so it still fires its own checkout call here on
+    // a decline return — pre-existing behavior, unchanged by this test.
+    // Wait for that call, then clear the mock so the assertion below is
+    // only about the button's own explicit call, not this one.
+    await waitFor(() => expect(mutateMock).toHaveBeenCalledTimes(1));
+    mutateMock.mockClear();
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Pay with Razorpay" }),
+    );
+
+    // MUST fail if welcome.checkout.tsx's onPayWithRazorpay handler regresses
+    // to `startCheckout(tier)` (reading the not-yet-committed `provider`
+    // state instead of passing the "razorpay" override explicitly) — that
+    // regression posts { provider: "stripe", currency: undefined } instead.
+    expect(mutateMock).toHaveBeenCalledWith(
+      { tier: "scale", provider: "razorpay", currency: "INR" },
+      expect.anything(),
+    );
   });
 });
 

@@ -217,6 +217,10 @@ type ChmodSiteFileRes interface {
 	chmodSiteFileRes()
 }
 
+type ClearAdminAccountBillingProviderRes interface {
+	clearAdminAccountBillingProviderRes()
+}
+
 type ClearAdminVulnFeedKeyRes interface {
 	clearAdminVulnFeedKeyRes()
 }
@@ -231,6 +235,10 @@ type CompleteRecoveryChallengeRes interface {
 
 type CompleteTotpChallengeRes interface {
 	completeTotpChallengeRes()
+}
+
+type ConfirmBillingCheckoutRes interface {
+	confirmBillingCheckoutRes()
 }
 
 type ConfirmTotpEnrollmentRes interface {

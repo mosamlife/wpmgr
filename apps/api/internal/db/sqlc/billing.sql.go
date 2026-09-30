@@ -13,43 +13,151 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const applyBillingSubscriptionState = `-- name: ApplyBillingSubscriptionState :exec
+const applyBillingSubscriptionStateForProvider = `-- name: ApplyBillingSubscriptionStateForProvider :execrows
 UPDATE tenants
 SET plan                     = $1,
-    plan_status               = $2,
-    grace_until               = $3,
-    current_period_end        = $4,
-    provider_subscription_id  = $5,
-    provider_customer_id      = COALESCE(NULLIF($6::text, ''), provider_customer_id)
-WHERE id = $7
+    plan_status              = $2,
+    grace_until              = $3,
+    current_period_end       = $4,
+    provider_subscription_id = $5,
+    provider_customer_id     = COALESCE(provider_customer_id, NULLIF($6::text, '')),
+    cancel_at_period_end     = $7,
+    cancel_at                = $8,
+    updated_at               = now()
+WHERE id = $9
+  AND billing_provider = $10::text
 `
 
-type ApplyBillingSubscriptionStateParams struct {
+type ApplyBillingSubscriptionStateForProviderParams struct {
 	Plan                   string             `json:"plan"`
 	PlanStatus             string             `json:"plan_status"`
 	GraceUntil             pgtype.Timestamptz `json:"grace_until"`
 	CurrentPeriodEnd       pgtype.Timestamptz `json:"current_period_end"`
 	ProviderSubscriptionID *string            `json:"provider_subscription_id"`
 	ProviderCustomerID     string             `json:"provider_customer_id"`
+	CancelAtPeriodEnd      bool               `json:"cancel_at_period_end"`
+	CancelAt               pgtype.Timestamptz `json:"cancel_at"`
 	TenantID               uuid.UUID          `json:"tenant_id"`
+	BillingProvider        string             `json:"billing_provider"`
 }
 
-// Persists the state machine's resolved next tenantBillingProfile
-// (nextBillingState in state_machine.go). provider_customer_id is only
-// overwritten when a non-empty value is supplied (COALESCE over NULLIF)
-// so a caller that does not yet know the customer id (should not happen once
-// a subscription exists, but keeps this query safe to reuse) cannot blank it.
-func (q *Queries) ApplyBillingSubscriptionState(ctx context.Context, arg ApplyBillingSubscriptionStateParams) error {
-	_, err := q.db.Exec(ctx, applyBillingSubscriptionState,
+// Persists the state machine's resolved next billing state for one tenant,
+// including the cancel schedule (cancel_at_period_end, cancel_at). The caller
+// holds LockTenantBilling.
+//
+// It writes only while the tenant is still pinned to @billing_provider, the
+// provider whose subscription was just read. The caller requires exactly 1
+// row: 0 rows means the pin moved (or the tenant is gone) and nothing was
+// written.
+//
+// provider_customer_id is write-once: a stored value is always kept, and
+// @provider_customer_id (ignored when empty) only fills a NULL. A new customer
+// id is stored only by BindCheckoutProvider, never by an apply.
+func (q *Queries) ApplyBillingSubscriptionStateForProvider(ctx context.Context, arg ApplyBillingSubscriptionStateForProviderParams) (int64, error) {
+	result, err := q.db.Exec(ctx, applyBillingSubscriptionStateForProvider,
 		arg.Plan,
 		arg.PlanStatus,
 		arg.GraceUntil,
 		arg.CurrentPeriodEnd,
 		arg.ProviderSubscriptionID,
 		arg.ProviderCustomerID,
+		arg.CancelAtPeriodEnd,
+		arg.CancelAt,
 		arg.TenantID,
+		arg.BillingProvider,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const bindCheckoutProvider = `-- name: BindCheckoutProvider :one
+UPDATE tenants
+SET billing_provider = $1::text,
+    provider_customer_id = CASE
+        WHEN billing_provider IS DISTINCT FROM $1::text
+            THEN $2::text
+        ELSE COALESCE(provider_customer_id, $2::text)
+    END,
+    provider_subscription_id = CASE
+        WHEN billing_provider IS DISTINCT FROM $1::text
+            THEN NULL
+        ELSE provider_subscription_id
+    END,
+    cancel_at_period_end = CASE
+        WHEN billing_provider IS DISTINCT FROM $1::text
+            THEN false
+        ELSE cancel_at_period_end
+    END,
+    cancel_at = CASE
+        WHEN billing_provider IS DISTINCT FROM $1::text
+            THEN NULL
+        ELSE cancel_at
+    END,
+    updated_at = now()
+WHERE id = $3
+  AND billing_pin_is_movable(plan_status, provider_subscription_id)
+  AND (
+        billing_provider = $1::text
+     OR (billing_provider IS NOT DISTINCT FROM $4::text
+         AND provider_customer_id IS NOT DISTINCT FROM $5::text)
+  )
+RETURNING provider_customer_id
+`
+
+type BindCheckoutProviderParams struct {
+	NewProvider      string    `json:"new_provider"`
+	CustomerID       *string   `json:"customer_id"`
+	TenantID         uuid.UUID `json:"tenant_id"`
+	ExpectedProvider *string   `json:"expected_provider"`
+	ExpectedCustomer *string   `json:"expected_customer"`
+}
+
+// The single write that binds a tenant to the payment provider a checkout
+// uses. The caller holds the per-tenant billing lock, and passes the pin and
+// stored customer it read before any provider call (@expected_provider and
+// @expected_customer, both NULL when nothing was pinned), the provider the
+// checkout asks for (@new_provider), and the provider customer id to store
+// (@customer_id, NULL when there is none).
+//
+// It writes exactly one row, and only while billing_pin_is_movable holds for
+// that row (not comped; 'canceled', or 'none' with no stored subscription id)
+// and one of these is true:
+//
+//   - SAME PROVIDER. The stored pin already equals @new_provider, whatever the
+//     caller expected. Nothing moves: the pin is rewritten to the same value,
+//     the stored customer is kept (or set to @customer_id when none is
+//     stored), and the stored subscription id is kept.
+//
+//   - MOVE FROM THE CHECKED PAIR. The stored pin and customer still equal
+//     (@expected_provider, @expected_customer), compared with IS NOT DISTINCT
+//     FROM so NULL matches NULL, and the pin differs from @new_provider. The
+//     pin becomes @new_provider, the customer becomes @customer_id, and the
+//     subscription id and the stored cancel schedule (cancel_at_period_end,
+//     cancel_at) are cleared: a schedule belongs to the old provider's
+//     subscription, never to the one the new provider will create.
+//
+// Anything else changes nothing and returns pgx.ErrNoRows, which the caller
+// answers with 409; it must never retry the write with different expected
+// values without repeating the checks those values stand for.
+//
+// The CASE expressions read the row as it was before this UPDATE (Postgres
+// evaluates SET expressions against the old row), so "billing_provider IS
+// DISTINCT FROM @new_provider" is true exactly on the move branch.
+//
+// Returns the stored customer id after the write, which may be NULL.
+func (q *Queries) BindCheckoutProvider(ctx context.Context, arg BindCheckoutProviderParams) (*string, error) {
+	row := q.db.QueryRow(ctx, bindCheckoutProvider,
+		arg.NewProvider,
+		arg.CustomerID,
+		arg.TenantID,
+		arg.ExpectedProvider,
+		arg.ExpectedCustomer,
+	)
+	var provider_customer_id *string
+	err := row.Scan(&provider_customer_id)
+	return provider_customer_id, err
 }
 
 const countActiveSitesForBilling = `-- name: CountActiveSitesForBilling :one
@@ -67,27 +175,83 @@ func (q *Queries) CountActiveSitesForBilling(ctx context.Context, tenantID uuid.
 	return count, err
 }
 
-const findTenantByProviderCustomer = `-- name: FindTenantByProviderCustomer :one
+const findTenantsByProviderCustomer = `-- name: FindTenantsByProviderCustomer :many
 SELECT id FROM tenants
-WHERE billing_provider = $1
-  AND provider_customer_id = $2
+WHERE billing_provider = $1::text
+  AND provider_customer_id = $2::text
+ORDER BY id
 `
 
-type FindTenantByProviderCustomerParams struct {
-	BillingProvider    *string `json:"billing_provider"`
-	ProviderCustomerID *string `json:"provider_customer_id"`
+type FindTenantsByProviderCustomerParams struct {
+	BillingProvider    string `json:"billing_provider"`
+	ProviderCustomerID string `json:"provider_customer_id"`
 }
 
-// The "unknown tenant" fallback attribution path: resolves a tenant from
-// (provider, provider_customer_id) when a webhook event's payload carries no
-// tenant metadata (e.g. an invoice/charge event whose subscription was not
-// expanded). Returns pgx.ErrNoRows when no tenant matches — the caller then
-// treats the event as "unknown customer" (record + warn, change nothing).
-func (q *Queries) FindTenantByProviderCustomer(ctx context.Context, arg FindTenantByProviderCustomerParams) (uuid.UUID, error) {
-	row := q.db.QueryRow(ctx, findTenantByProviderCustomer, arg.BillingProvider, arg.ProviderCustomerID)
-	var id uuid.UUID
-	err := row.Scan(&id)
-	return id, err
+// Every tenant pinned to @billing_provider whose stored customer id is
+// @provider_customer_id, ordered by id. Webhook attribution and ownership
+// classification use it when an event names a customer but no tenant.
+//
+// The caller decides on the number of rows: none, exactly one, or more than
+// one, and must treat each case explicitly. A Stripe customer id names at most
+// one tenant (tenants_stripe_customer_key); other providers' customer ids are
+// not unique, so more than one row is a real result there.
+//
+// Soft-deleted tenants are included on purpose: an event for a deleted
+// workspace must still resolve to it so the caller can alert. tenants has no
+// row security, so this runs on the plain pool or inside any transaction.
+func (q *Queries) FindTenantsByProviderCustomer(ctx context.Context, arg FindTenantsByProviderCustomerParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, findTenantsByProviderCustomer, arg.BillingProvider, arg.ProviderCustomerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getBillingEventByProviderEventID = `-- name: GetBillingEventByProviderEventID :one
+SELECT id, provider, provider_event_id, kind, tenant_id, payload,
+       occurred_at, processed_at, created_at
+FROM billing_events
+WHERE provider = $1
+  AND provider_event_id = $2
+`
+
+type GetBillingEventByProviderEventIDParams struct {
+	Provider        string `json:"provider"`
+	ProviderEventID string `json:"provider_event_id"`
+}
+
+// The ledger row for one provider event, by its natural key. Intake reads it
+// on a duplicate delivery (to re-enqueue an event whose processing never
+// completed), and the apply worker reads it to load the event it was handed.
+// pgx.ErrNoRows means no such row: never recorded, or removed with its
+// tenant. Runs under InAgentTx (the billing_events_system policy).
+func (q *Queries) GetBillingEventByProviderEventID(ctx context.Context, arg GetBillingEventByProviderEventIDParams) (BillingEvent, error) {
+	row := q.db.QueryRow(ctx, getBillingEventByProviderEventID, arg.Provider, arg.ProviderEventID)
+	var i BillingEvent
+	err := row.Scan(
+		&i.ID,
+		&i.Provider,
+		&i.ProviderEventID,
+		&i.Kind,
+		&i.TenantID,
+		&i.Payload,
+		&i.OccurredAt,
+		&i.ProcessedAt,
+		&i.CreatedAt,
+	)
+	return i, err
 }
 
 const getTenantBilling = `-- name: GetTenantBilling :one
@@ -126,7 +290,7 @@ const getTenantBillingProfile = `-- name: GetTenantBillingProfile :one
 
 SELECT plan, plan_status, plan_overrides, grace_until,
        billing_provider, provider_customer_id, provider_subscription_id,
-       current_period_end
+       current_period_end, cancel_at_period_end, cancel_at, deleted_at
 FROM tenants
 WHERE id = $1
 `
@@ -140,6 +304,9 @@ type GetTenantBillingProfileRow struct {
 	ProviderCustomerID     *string            `json:"provider_customer_id"`
 	ProviderSubscriptionID *string            `json:"provider_subscription_id"`
 	CurrentPeriodEnd       pgtype.Timestamptz `json:"current_period_end"`
+	CancelAtPeriodEnd      bool               `json:"cancel_at_period_end"`
+	CancelAt               pgtype.Timestamptz `json:"cancel_at"`
+	DeletedAt              pgtype.Timestamptz `json:"deleted_at"`
 }
 
 // ---------------------------------------------------------------------------
@@ -156,6 +323,10 @@ type GetTenantBillingProfileRow struct {
 // processing need the provider identity + external ids that Phase A's
 // GetTenantBilling (the tight entitlement-resolution hot path) does not
 // select.
+//
+// cancel_at_period_end, cancel_at and deleted_at are read here so a caller
+// that decides under the per-tenant billing lock sees the cancel schedule and
+// the soft-delete marker in the same read as the provider identity.
 func (q *Queries) GetTenantBillingProfile(ctx context.Context, tenantID uuid.UUID) (GetTenantBillingProfileRow, error) {
 	row := q.db.QueryRow(ctx, getTenantBillingProfile, tenantID)
 	var i GetTenantBillingProfileRow
@@ -168,6 +339,9 @@ func (q *Queries) GetTenantBillingProfile(ctx context.Context, tenantID uuid.UUI
 		&i.ProviderCustomerID,
 		&i.ProviderSubscriptionID,
 		&i.CurrentPeriodEnd,
+		&i.CancelAtPeriodEnd,
+		&i.CancelAt,
+		&i.DeletedAt,
 	)
 	return i, err
 }
@@ -198,7 +372,9 @@ const insertBillingEvent = `-- name: InsertBillingEvent :one
 INSERT INTO billing_events (
     provider, provider_event_id, kind, tenant_id, payload, occurred_at
 ) VALUES (
-    $1, $2, $3, $4, $5, $6
+    $1, $2, $3,
+    (SELECT t.id FROM tenants t WHERE t.id = $4::uuid),
+    $5, $6
 )
 ON CONFLICT (provider, provider_event_id) DO NOTHING
 RETURNING id
@@ -218,11 +394,19 @@ type InsertBillingEventParams struct {
 // under InAgentTx (app.agent = 'on', the billing_events_system RLS policy).
 // ---------------------------------------------------------------------------
 // ON CONFLICT DO NOTHING makes a replayed webhook delivery a no-op insert
-// (Stripe, like most providers, retries on anything but a 2xx). tenant_id may
-// be NULL when attribution has not been resolved yet at insert time (the
-// caller backfills it via SetBillingEventTenant once resolved). A caller
+// (Stripe, like most providers, retries on anything but a 2xx). A caller
 // distinguishes "inserted" from "duplicate" by checking for pgx.ErrNoRows,
 // exactly like email.Repo.InsertWebhookEventDedup.
+//
+// @tenant_id is the tenant the event CLAIMS, which may be NULL. The stored
+// tenant_id is that id only when a tenants row with it exists at insert time,
+// and NULL otherwise, so a claim naming a tenant that was never created, or
+// was hard-deleted before the insert, still records the event (with a NULL
+// tenant) instead of failing the insert on the foreign key. The caller keeps
+// the claim in the payload and backfills tenant_id via SetBillingEventTenant
+// once attribution is resolved. A hard delete that commits between the
+// subquery and the foreign-key check can still raise 23503; the caller
+// retries that once with a NULL claim.
 func (q *Queries) InsertBillingEvent(ctx context.Context, arg InsertBillingEventParams) (uuid.UUID, error) {
 	row := q.db.QueryRow(ctx, insertBillingEvent,
 		arg.Provider,
@@ -237,72 +421,50 @@ func (q *Queries) InsertBillingEvent(ctx context.Context, arg InsertBillingEvent
 	return id, err
 }
 
-const lastProcessedBillingEventOccurredAtForTenant = `-- name: LastProcessedBillingEventOccurredAtForTenant :one
-SELECT occurred_at
-FROM billing_events
-WHERE tenant_id = $1
-  AND processed_at IS NOT NULL
-  AND id != $2
-ORDER BY occurred_at DESC
-LIMIT 1
-`
-
-type LastProcessedBillingEventOccurredAtForTenantParams struct {
-	TenantID  pgtype.UUID `json:"tenant_id"`
-	ExcludeID uuid.UUID   `json:"exclude_id"`
-}
-
-// The out-of-order guard: the newest occurred_at among this tenant's ALREADY
-// APPLIED events (processed_at IS NOT NULL), excluding the event currently
-// being processed. A provider's webhook delivery order is not guaranteed to
-// match event creation order (Stripe documents this explicitly), so a fresh
-// event whose occurred_at is OLDER than this must be ledgered but must NOT be
-// allowed to overwrite a later state the tenant has already reached.
-//
-// Deliberately NOT a bare aggregate (SELECT max(occurred_at) ...): sqlc infers
-// an aggregate over occurred_at (a NOT NULL column) as itself NOT NULL, which
-// is wrong for the empty-result-set case (max() over zero rows is NULL) and
-// would panic the row.Scan on this tenant's very first processed event. A
-// plain ORDER BY ... LIMIT 1 instead returns zero rows in that case, which the
-// caller handles the normal way (errors.Is(err, pgx.ErrNoRows)).
-func (q *Queries) LastProcessedBillingEventOccurredAtForTenant(ctx context.Context, arg LastProcessedBillingEventOccurredAtForTenantParams) (time.Time, error) {
-	row := q.db.QueryRow(ctx, lastProcessedBillingEventOccurredAtForTenant, arg.TenantID, arg.ExcludeID)
-	var occurred_at time.Time
-	err := row.Scan(&occurred_at)
-	return occurred_at, err
-}
-
-const listTenantsWithProviderSubscription = `-- name: ListTenantsWithProviderSubscription :many
-SELECT id, billing_provider, provider_subscription_id
+const listTenantsForReconcile = `-- name: ListTenantsForReconcile :many
+SELECT id, billing_provider, provider_customer_id, provider_subscription_id, plan_status
 FROM tenants
-WHERE provider_subscription_id IS NOT NULL
-  AND billing_provider IS NOT NULL
+WHERE billing_provider IS NOT NULL
   AND plan_status <> 'comped'
+  AND (provider_subscription_id IS NOT NULL
+       OR (billing_provider = 'stripe' AND provider_customer_id IS NOT NULL))
 ORDER BY id
 `
 
-type ListTenantsWithProviderSubscriptionRow struct {
+type ListTenantsForReconcileRow struct {
 	ID                     uuid.UUID `json:"id"`
 	BillingProvider        *string   `json:"billing_provider"`
+	ProviderCustomerID     *string   `json:"provider_customer_id"`
 	ProviderSubscriptionID *string   `json:"provider_subscription_id"`
+	PlanStatus             string    `json:"plan_status"`
 }
 
-// The M16 Phase B daily reconcile sweep's tenant set: every tenant with a
-// live provider subscription reference, excluding comped tenants (immune to
-// any provider-driven mutation, webhook or reconcile alike) and any tenant
-// with no provider wired at all. Not paginated: the expected tenant count for
-// this early-stage feature is small; a future pass can add keyset pagination
-// (ORDER BY id already supports it) without changing this query's shape.
-func (q *Queries) ListTenantsWithProviderSubscription(ctx context.Context) ([]ListTenantsWithProviderSubscriptionRow, error) {
-	rows, err := q.db.Query(ctx, listTenantsWithProviderSubscription)
+// The daily reconcile sweep's tenant set: every tenant that is not comped and
+// has a provider pinned, and either a stored subscription id, or, for Stripe
+// only, a stored customer id with no subscription id. The second half finds a
+// Stripe subscription whose activation never reached this database; the
+// caller looks it up by the returned customer id and nothing else. plan_status
+// is returned so the caller can also look up a Stripe tenant whose stored
+// subscription is no longer live.
+//
+// Soft-deleted tenants are included, so a subscription still live on a
+// deleted workspace is found. Not paginated, ordered by id.
+func (q *Queries) ListTenantsForReconcile(ctx context.Context) ([]ListTenantsForReconcileRow, error) {
+	rows, err := q.db.Query(ctx, listTenantsForReconcile)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []ListTenantsWithProviderSubscriptionRow
+	var items []ListTenantsForReconcileRow
 	for rows.Next() {
-		var i ListTenantsWithProviderSubscriptionRow
-		if err := rows.Scan(&i.ID, &i.BillingProvider, &i.ProviderSubscriptionID); err != nil {
+		var i ListTenantsForReconcileRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.BillingProvider,
+			&i.ProviderCustomerID,
+			&i.ProviderSubscriptionID,
+			&i.PlanStatus,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -311,6 +473,22 @@ func (q *Queries) ListTenantsWithProviderSubscription(ctx context.Context) ([]Li
 		return nil, err
 	}
 	return items, nil
+}
+
+const lockTenantBilling = `-- name: LockTenantBilling :exec
+SELECT pg_advisory_xact_lock(hashtext('wpmgr_billing:' || ($1::uuid)::text))
+`
+
+// Takes the per-tenant billing advisory lock for the rest of the calling
+// transaction. Every writer of a tenant's billing state (webhook apply,
+// reconcile, checkout binding, cancel, the org-delete billing check and
+// operator billing writes) serialises on this one key, so the key lives here
+// and nowhere else: a caller that spelled it differently would stop
+// serialising with the others without any error. Must run inside a
+// transaction; outside one the lock is released at once.
+func (q *Queries) LockTenantBilling(ctx context.Context, tenantID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, lockTenantBilling, tenantID)
+	return err
 }
 
 const markBillingEventProcessed = `-- name: MarkBillingEventProcessed :exec
@@ -341,22 +519,59 @@ func (q *Queries) SetBillingEventTenant(ctx context.Context, arg SetBillingEvent
 	return err
 }
 
-const setTenantBillingProviderIfUnset = `-- name: SetTenantBillingProviderIfUnset :execrows
+const setCancelRequested = `-- name: SetCancelRequested :execrows
 UPDATE tenants
-SET billing_provider = $1
-WHERE id = $2 AND billing_provider IS NULL
+SET cancel_at_period_end = true,
+    cancel_at = CASE
+        WHEN $1::boolean THEN now()
+        WHEN $2::timestamptz > clock_timestamp()
+            THEN $2::timestamptz
+        ELSE NULL
+    END,
+    updated_at = now()
+WHERE id = $3
+  AND provider_subscription_id = $4::text
+  AND CASE
+        WHEN $1::boolean
+            THEN billing_provider = 'stripe' AND plan_status = 'past_due'
+        ELSE billing_provider = 'razorpay'
+             AND plan_status IN ('active', 'trialing', 'past_due', 'paused')
+      END
 `
 
-type SetTenantBillingProviderIfUnsetParams struct {
-	BillingProvider *string   `json:"billing_provider"`
-	TenantID        uuid.UUID `json:"tenant_id"`
+type SetCancelRequestedParams struct {
+	CancelNow              bool               `json:"cancel_now"`
+	CancelAt               pgtype.Timestamptz `json:"cancel_at"`
+	TenantID               uuid.UUID          `json:"tenant_id"`
+	ProviderSubscriptionID string             `json:"provider_subscription_id"`
 }
 
-// "One tenant = one provider at a time (set at first checkout)": this only
-// ever writes when billing_provider is still NULL, so a tenant can never be
-// silently re-pointed at a different provider by a later checkout attempt.
-func (q *Queries) SetTenantBillingProviderIfUnset(ctx context.Context, arg SetTenantBillingProviderIfUnsetParams) (int64, error) {
-	result, err := q.db.Exec(ctx, setTenantBillingProviderIfUnset, arg.BillingProvider, arg.TenantID)
+// Records a cancel the caller has just asked the provider for, when the
+// provider will not report it back as a schedule. Two uses, chosen by
+// @cancel_now:
+//
+//   - @cancel_now = true: the Cancel-now marker. Only for a Stripe tenant
+//     whose status is still 'past_due'. Sets cancel_at to the transaction's
+//     now(), so every later read sees a cancel_at at or before its own now().
+//
+//   - @cancel_now = false: the local period-end cancel flag. Only for a
+//     Razorpay tenant with a live status ('active', 'trialing', 'past_due' or
+//     'paused'). cancel_at becomes @cancel_at when that is strictly in the
+//     future at the moment of the write, and NULL otherwise, so this form
+//     never stores a cancel_at in the past.
+//
+// Both set cancel_at_period_end to true. Both write only while the stored
+// subscription id is still @provider_subscription_id, the one the caller
+// cancelled, so a late write can never mark a subscription that replaced it.
+// The caller holds LockTenantBilling. 0 rows means nothing was written: the
+// tenant, its provider, its status or its subscription no longer match.
+func (q *Queries) SetCancelRequested(ctx context.Context, arg SetCancelRequestedParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setCancelRequested,
+		arg.CancelNow,
+		arg.CancelAt,
+		arg.TenantID,
+		arg.ProviderSubscriptionID,
+	)
 	if err != nil {
 		return 0, err
 	}

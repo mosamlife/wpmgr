@@ -1490,8 +1490,9 @@ paths:
         organisation's current name. When this is the caller's active org,
         their session is reassigned to another live membership, or cleared
         entirely (dropping to onboarding) if it was their last org, `active_tenant_id` in the response reflects the post-delete state.
-        On a hosted instance an active paid subscription must be
-        cancelled/downgraded first (`billing_active` 409).
+        On a hosted instance the organisation's billing state must allow
+        the delete, or it is refused with 409 `billing_active` and a
+        `details.reason` saying what to do (see the 409 response).
       tags: [orgs]
       parameters:
         - $ref: "#/components/parameters/OrgId"
@@ -1524,13 +1525,31 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           description: >-
-            org_already_deleted | billing_active | restore_in_progress, see the error `code` for which precondition failed
+            org_already_deleted | billing_active | restore_in_progress, see
+            the error `code` for which precondition failed. On
+            billing_active, `details.reason` is one of: `cancel_required`
+            (a live subscription has no cancellation scheduled; cancel it,
+            then delete), `past_due` (a payment is past due; cancel now,
+            available for card payments, or wait for the subscription to
+            end), `comped_subscription` (a complimentary plan with a
+            subscription attached; contact support) or
+            `subscription_pending` (the subscription's state is still
+            settling; try again shortly).
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "422":
           description: confirm_name does not match the organisation's name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: >-
+            org_delete_billing_guard_unwired — a hosted instance whose
+            billing delete check is not configured refuses every delete
+            rather than skip the check.
           content:
             application/json:
               schema:
@@ -2420,13 +2439,44 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "403":
-          description: Insufficient permission
+          description: >-
+            Insufficient permission — the owner role is required. A caller
+            that is authenticated but is not a signed-in human (an API key
+            or MCP principal) is refused the same way, with code
+            billing_human_required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >-
+            billing_comped — this workspace is on a complimentary plan; no
+            provider call is made. billing_subscription_exists — the tenant
+            already has a live subscription (active, trialing, past_due or
+            paused) with its current provider; manage it from the billing
+            portal instead. billing_subscription_pending — the tenant's
+            status is `none` but a subscription id is still stored, settling
+            from a prior checkout; a background refresh has been enqueued,
+            poll `GET /billing`. billing_provider_locked — the requested
+            provider cannot be bound right now; `details.reason` is one of
+            `needs_support` (switching away from Razorpay is not self-serve
+            in this release), `pending_at_provider` (something is still
+            pending with the tenant's current provider) or
+            `provider_changed` (the tenant's provider or stored customer
+            changed during the request — retry). billing_checkout_superseded
+            — a newer checkout session for this tenant was created before
+            this one could be returned, and this one was expired as a
+            result; start again.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "422":
-          description: tier is not one of starter, agency, scale
+          description: >-
+            billing_invalid_tier — tier is not one of starter, agency,
+            scale. billing_invalid_currency — currency was set to something
+            other than INR for a Razorpay checkout (Razorpay is INR-only;
+            Stripe ignores this field).
           content:
             application/json:
               schema:
@@ -2461,7 +2511,11 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "403":
-          description: Insufficient permission
+          description: >-
+            Insufficient permission — the owner role is required. A caller
+            that is authenticated but is not a signed-in human (an API key
+            or MCP principal) is refused the same way, with code
+            billing_human_required.
           content:
             application/json:
               schema:
@@ -2514,20 +2568,47 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "422":
           $ref: "#/components/responses/UnprocessableEntity"
-  /api/v1/billing/cancel:
+  /api/v1/billing/checkout/confirm:
     post:
-      operationId: cancelBillingSubscription
-      summary: Cancel the tenant's subscription (owner)
+      operationId: confirmBillingCheckout
+      summary: Confirm a Stripe checkout session on browser return (owner)
       description: >
-        The provider-agnostic cancellation path — the only one for a provider
-        with no hosted portal (e.g. Razorpay). Cancellation is scheduled for
-        the end of the current billing period; the plan/status change lands
-        later via the provider's webhook. Poll `GET /billing` afterward
-        rather than expecting this response to carry the new plan state.
+        A UX confirmation ONLY — the payment provider's webhook remains the
+        sole source of truth for actually granting a plan; this endpoint
+        just speeds up activation after the browser returns from a Stripe
+        checkout redirect. The named session must belong to the caller's
+        own tenant and its stored payment-provider customer, and must be a
+        completed subscription-mode Checkout Session — the request can
+        never name a different tenant, customer or session state. Returns
+        200 when the plan change has already landed, and otherwise enqueues
+        a background refresh and returns 202; after a 202, poll
+        `GET /billing` rather than expecting this response to carry the new
+        plan state.
       tags: [billing]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BillingCheckoutConfirmRequest"
       responses:
         "200":
-          description: Cancellation scheduled
+          description: >-
+            The session was verified and the plan change had already
+            landed. Nothing was enqueued.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok:
+                    type: boolean
+        "202":
+          description: >-
+            The session was verified and a background refresh was
+            enqueued; the plan change has not landed yet. Poll
+            `GET /billing`.
           content:
             application/json:
               schema:
@@ -2539,7 +2620,100 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/Forbidden"
+          description: >-
+            Insufficient permission — the owner role is required. A caller
+            that is authenticated but is not a signed-in human (an API key
+            or MCP principal) is refused the same way, with code
+            billing_human_required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: >-
+            billing_checkout_session_not_found — session_id resolves to a
+            Checkout Session that belongs to another workspace.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: >-
+            billing_checkout_not_confirmable — session_id does not resolve
+            to a completed subscription-mode Checkout Session for this
+            tenant's own stored payment-provider customer (an unrecognized
+            session id, one still open or expired, a non-subscription-mode
+            session, or one whose customer does not match the tenant's
+            stored payment-provider customer). This is distinct from the
+            404 above, which is only the cross-tenant case.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/billing/cancel:
+    post:
+      operationId: cancelBillingSubscription
+      summary: Cancel the tenant's subscription (owner)
+      description: >
+        The provider-agnostic cancellation path — the only one for a provider
+        with no hosted portal (e.g. Razorpay). By default (`when` omitted or
+        `period_end`) cancellation is scheduled for the end of the current
+        billing period. `when: now` ends the subscription at once, and is
+        allowed only while a card (Stripe) payment is past due. Either way
+        the plan/status change lands later via the provider's webhook or a
+        background refresh. Poll `GET /billing` afterward rather than
+        expecting this response to carry the new plan state.
+      tags: [billing]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BillingCancelRequest"
+      responses:
+        "200":
+          description: Cancellation scheduled, or, for `when` now, requested
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok:
+                    type: boolean
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: >-
+            Insufficient permission — the owner role is required. A caller
+            that is authenticated but is not a signed-in human (an API key
+            or MCP principal) is refused the same way, with code
+            billing_human_required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >-
+            billing_no_subscription — the workspace has no subscription to
+            cancel. billing_subscription_mismatch — for `when` now, the
+            payment provider could not confirm that the stored subscription
+            belongs to this workspace's stored customer; nothing was
+            cancelled; contact support.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: >-
+            billing_invalid_cancel_when — when is not one of period_end,
+            now. billing_cancel_now_not_allowed — now was requested while
+            the subscription is not past_due (as stored, or as the payment
+            provider reports it), or its provider is not stripe.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   # --- m33 superadmin instance-management console ------------------------------
   # Every route below requires is_superadmin=true (requireSuperadmin middleware).
@@ -3616,6 +3790,106 @@ paths:
             reason is empty, plan is not one of free, starter, agency, scale,
             or plan_status is not one of none, trialing, active, past_due,
             canceled, paused, comped
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The billing-admin panel is not configured on this instance
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/admin/accounts/{id}/billing-provider:
+    delete:
+      operationId: clearAdminAccountBillingProvider
+      summary: Clear a tenant's payment-provider pin (superadmin)
+      description: |
+        Unpins the tenant from its current payment provider and clears its
+        stored provider customer and subscription ids, so the tenant can
+        start a fresh checkout with a different provider. Refused for a
+        comped tenant, and unless the tenant's subscription is canceled, or
+        none with no stored subscription id. Before clearing, the server
+        confirms nothing is pending or live with the current provider: for
+        Stripe this is a live provider check; for Razorpay, which stores no
+        subscription id in this release, the caller must supply the ids
+        found by a manual Dashboard lookup and confirm that lookup was
+        done. Requires is_superadmin=true.
+      tags: [admin-billing]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminClearBillingProviderRequest"
+      responses:
+        "200":
+          description: Payment-provider pin cleared
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminBillingAck"
+        "400":
+          description: >-
+            billing_invalid_subscription_id — an id in
+            razorpay_subscription_ids does not match ^sub_[A-Za-z0-9]+$.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Caller is not a superadmin
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No tenant exists with this id
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >-
+            The tenant is comped, or its subscription is not in a
+            clearable state (canceled, or none with no stored subscription
+            id); or billing_provider_locked, meaning the pre-clear provider
+            check found something the caller must resolve first —
+            `details.reason` is one of `pending_at_provider` (something is
+            still pending or live with the tenant's current Stripe
+            customer), `provider_changed` (the tenant's provider or stored
+            customer changed during the check — retry),
+            `razorpay_lookup_unconfirmed` (razorpay_lookup_confirmed was
+            not sent as true), `razorpay_not_canceled` (a named Razorpay
+            subscription id is not canceled) or `razorpay_wrong_tenant` (a
+            named Razorpay subscription id belongs to a different tenant,
+            or carries no tenant at all).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: reason is empty
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "501":
+          description: >-
+            billing_clear_pin_unavailable — clearing a payment-provider pin
+            is not available in this release. Every request gets this
+            answer and nothing is changed.
           content:
             application/json:
               schema:
@@ -15501,7 +15775,13 @@ components:
           $ref: "#/components/schemas/BillingSiteMeter"
     BillingSummary:
       type: object
-      required: [plan, plan_status, meters, portal_available]
+      required:
+        - plan
+        - plan_status
+        - meters
+        - portal_available
+        - cancel_at_period_end
+        - available_providers
       properties:
         plan:
           type: string
@@ -15518,8 +15798,28 @@ components:
         provider:
           type: string
           description: >-
-            The tenant's payment provider (e.g. "stripe"). Empty until the
-            tenant's first checkout.
+            The tenant's payment provider (e.g. "stripe"). Empty before the
+            tenant's first checkout. From the first checkout onward this is
+            the provisional or final provider: it can still move to a
+            different registered provider through a later checkout's
+            provider-switch rules (see POST /billing/checkout's 409
+            billing_provider_locked). A live or pending stored subscription
+            blocks the switch (409 billing_subscription_exists or
+            billing_subscription_pending), but a stored canceled
+            subscription does not — this can still move even after a
+            subscription has been stored.
+        cancel_at_period_end:
+          type: boolean
+          description: >-
+            True once cancellation is scheduled, whether for the current
+            period's end or via an immediate Cancel now.
+        cancel_at:
+          type: string
+          format: date-time
+          description: >-
+            Set once cancellation is scheduled. Equal to current_period_end
+            for a period-end cancel; a past instant marks an immediate
+            Cancel now.
         grace_until:
           type: string
           format: date-time
@@ -15533,6 +15833,15 @@ components:
           description: >-
             True once the tenant has a payment-provider customer id — i.e.
             POST /billing/portal will succeed rather than 409.
+        available_providers:
+          type: array
+          description: >-
+            Payment providers registered on this instance, stripe first
+            when more than one is registered. Drives whether a non-default
+            provider (e.g. Razorpay) is offered at checkout.
+          items:
+            type: string
+            enum: [stripe, razorpay]
     BillingCheckoutRequest:
       type: object
       required: [tier]
@@ -15547,18 +15856,27 @@ components:
         provider:
           type: string
           description: >-
-            Preferred payment provider. Consulted only on a tenant's first-ever
-            checkout: once a tenant is pinned to a provider that pinning always
-            wins, so a returning customer can never split a subscription across
-            two providers. An unknown name is rejected. Omit to use the
+            Preferred payment provider. Honored, including a switch away
+            from the tenant's current provider, whenever the provider-switch
+            rules allow it — see this endpoint's 409 billing_provider_locked.
+            A caller can never end up with two live subscriptions across
+            providers: a stored live subscription (active, trialing,
+            past_due or paused) is refused with 409
+            billing_subscription_exists first, and a stored subscription id
+            still settling from a prior checkout is refused with 409
+            billing_subscription_pending. A comped workspace is refused with
+            409 billing_comped. An unknown name is rejected. Omit to use the
             instance default.
         currency:
           type: string
           description: >-
-            Preferred billing currency, passed to the provider when it creates
-            the checkout. Selects among the prices the server already knows for
-            the requested tier; it can never set an amount. Omit for the
-            provider default.
+            Preferred billing currency, passed to the provider when it
+            creates the checkout. Selects among the prices the server
+            already knows for the requested tier; it can never set an
+            amount. Razorpay: INR only — omitted means INR, and a request
+            for any other currency is refused with 400
+            billing_invalid_currency. Stripe ignores this field and always
+            charges US$.
     BillingCheckoutResponse:
       type: object
       required: [url]
@@ -15567,6 +15885,27 @@ components:
           type: string
           format: uri
           description: Redirect the browser here to complete checkout.
+    BillingCheckoutConfirmRequest:
+      type: object
+      required: [session_id]
+      properties:
+        session_id:
+          type: string
+          description: >-
+            The Checkout Session id returned in the success-URL query
+            string after a Stripe checkout redirect.
+    BillingCancelRequest:
+      type: object
+      properties:
+        when:
+          type: string
+          enum: [period_end, now]
+          default: period_end
+          description: >-
+            `now` cancels immediately and is refused (422) unless the
+            subscription's status is past_due and its provider is stripe;
+            omit, or send period_end, for the default end-of-period
+            cancellation.
     BillingPortalResponse:
       type: object
       required: [url]
@@ -15939,6 +16278,33 @@ components:
           type: string
           enum: [none, trialing, active, past_due, canceled, paused, comped]
         reason: { type: string }
+    AdminClearBillingProviderRequest:
+      type: object
+      required: [reason]
+      properties:
+        reason: { type: string }
+        razorpay_subscription_ids:
+          type: array
+          default: []
+          items:
+            type: string
+            pattern: "^sub_[A-Za-z0-9]+$"
+          description: >-
+            Razorpay subscription ids found by a manual Dashboard lookup
+            for this tenant (may be empty if none were found). Only
+            consulted when the tenant is currently pinned to Razorpay; an
+            id that does not match ^sub_[A-Za-z0-9]+$ is refused with 400
+            billing_invalid_subscription_id before any provider call.
+        razorpay_lookup_confirmed:
+          type: boolean
+          default: false
+          description: >-
+            Confirms the operator searched the Razorpay Dashboard for this
+            tenant's subscriptions before submitting
+            razorpay_subscription_ids. Required (true) to clear a
+            Razorpay-pinned tenant; otherwise the clear is refused with 409
+            billing_provider_locked (details.reason =
+            razorpay_lookup_unconfirmed).
     UpdateItem:
       type: object
       required: [type]
