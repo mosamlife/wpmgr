@@ -284,7 +284,7 @@ export function ContentTab({ siteId, hostname, canOperate }: ContentTabProps) {
           </Select>
         </label>
       </div>
-      {(data as { truncated?: boolean }).truncated ? (
+      {data!.truncated ? (
         <p className="text-sm text-[var(--color-muted-foreground)]">
           Showing the first 5,000 pages WPMgr checked on this site.
         </p>

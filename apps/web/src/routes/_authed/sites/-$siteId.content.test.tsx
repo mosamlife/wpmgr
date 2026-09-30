@@ -72,6 +72,7 @@ function page(over: Partial<ContentInventoryPage>): ContentInventoryPage {
     min_agent_version: "0.62.0",
     last_checked_at: "2026-09-30T09:40:00Z",
     titles_included: true,
+    truncated: false,
     next_after_post_id: null,
     pages: [row({})],
     ...over,
@@ -249,7 +250,7 @@ describe("site Content tab", () => {
   });
 
   it("shows the truncation note only when truncated is true", async () => {
-    getInv.mockResolvedValue(ok({ ...page({}), truncated: true } as ContentInventoryPage));
+    getInv.mockResolvedValue(ok(page({ truncated: true })));
     renderTab();
     expect(
       await screen.findByText("Showing the first 5,000 pages WPMgr checked on this site."),
