@@ -13,7 +13,7 @@ import (
 )
 
 const adminUpsertContentIntegration = `-- name: AdminUpsertContentIntegration :one
-SELECT (admin_upsert_content_integration(
+SELECT integration_id, display_name, enabled, status, descriptor, abilities, min_version, max_tested_version, min_wp_version, integration_entry_sha256, created_at, updated_at, updated_by_user_id FROM admin_upsert_content_integration(
     $1::uuid,
     $2::text,
     $3::text,
@@ -25,7 +25,7 @@ SELECT (admin_upsert_content_integration(
     $9::text,
     $10::text,
     $11::text
-)).*
+)
 `
 
 type AdminUpsertContentIntegrationParams struct {
@@ -45,7 +45,7 @@ type AdminUpsertContentIntegrationParams struct {
 // The ONLY write path. Call it only behind requireSuperadmin. The function
 // refuses (SQLSTATE 42501) unless actor_user_id names a superadmin, and it
 // writes a content_integrations_audit row in the same statement.
-func (q *Queries) AdminUpsertContentIntegration(ctx context.Context, arg AdminUpsertContentIntegrationParams) (interface{}, error) {
+func (q *Queries) AdminUpsertContentIntegration(ctx context.Context, arg AdminUpsertContentIntegrationParams) (ContentIntegration, error) {
 	row := q.db.QueryRow(ctx, adminUpsertContentIntegration,
 		arg.ActorUserID,
 		arg.IntegrationID,
@@ -59,9 +59,23 @@ func (q *Queries) AdminUpsertContentIntegration(ctx context.Context, arg AdminUp
 		arg.MinWpVersion,
 		arg.IntegrationEntrySha256,
 	)
-	var column_1 interface{}
-	err := row.Scan(&column_1)
-	return column_1, err
+	var i ContentIntegration
+	err := row.Scan(
+		&i.IntegrationID,
+		&i.DisplayName,
+		&i.Enabled,
+		&i.Status,
+		&i.Descriptor,
+		&i.Abilities,
+		&i.MinVersion,
+		&i.MaxTestedVersion,
+		&i.MinWpVersion,
+		&i.IntegrationEntrySha256,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.UpdatedByUserID,
+	)
+	return i, err
 }
 
 const deleteStaleSiteContentInventory = `-- name: DeleteStaleSiteContentInventory :execrows

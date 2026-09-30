@@ -18,7 +18,7 @@ ORDER BY integration_id;
 -- The ONLY write path. Call it only behind requireSuperadmin. The function
 -- refuses (SQLSTATE 42501) unless actor_user_id names a superadmin, and it
 -- writes a content_integrations_audit row in the same statement.
-SELECT (admin_upsert_content_integration(
+SELECT * FROM admin_upsert_content_integration(
     sqlc.arg(actor_user_id)::uuid,
     sqlc.arg(integration_id)::text,
     sqlc.arg(display_name)::text,
@@ -30,7 +30,7 @@ SELECT (admin_upsert_content_integration(
     sqlc.narg(max_tested_version)::text,
     sqlc.narg(min_wp_version)::text,
     sqlc.narg(integration_entry_sha256)::text
-)).*;
+);
 
 -- name: ListContentIntegrationAudit :many
 -- Newest first, for the admin screen.
