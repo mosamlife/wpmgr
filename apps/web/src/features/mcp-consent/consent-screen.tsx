@@ -604,7 +604,7 @@ export interface ConsentScreenProps {
     siteScopeMode: SiteScopeMode;
     scopeTagIds: string[];
     scopeSiteIds: string[];
-    /** Omitted when empty: the server refuses `[]`. */
+    /** Never empty when present: the server refuses `[]`. */
     capabilities?: string[];
   }) => void;
   readonly onDeny: () => void;
@@ -676,9 +676,14 @@ export function ConsentScreen({
     return resolveTagIds(selectedTagNames, tags);
   }, [mode, tags, selectedTagNames]);
 
-  const canApprove = scopeOk && scopesOk && capabilitiesOk && tagPayload !== null && !isApproving;
-
   const capabilities = buildApprovalCapabilities(consent.conferrableCapabilities, purgeTicked);
+  // The server offered capabilities but none is ticked (a cache-only request
+  // with the box left clear): an empty list is refused, so Approve is blocked.
+  // A server that offers none at all (older deploy) is not this case.
+  const nothingToConfer = consent.conferrableCapabilities.length > 0 && capabilities.length === 0;
+
+  const canApprove =
+    scopeOk && scopesOk && capabilitiesOk && tagPayload !== null && !nothingToConfer && !isApproving;
 
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -700,7 +705,9 @@ export function ConsentScreen({
       // that stays true if the gate is ever refactored apart from it.
       scopeTagIds: assertTagPayload(tagPayload),
       scopeSiteIds: mode === "list" ? [...selectedSiteIds] : [],
-      ...(capabilities.length > 0 ? { capabilities } : {}),
+      // Sent explicitly whenever the server offered any; never `[]`, since
+      // nothingToConfer gates that case out above.
+      ...(consent.conferrableCapabilities.length > 0 ? { capabilities } : {}),
     });
   }
 
@@ -781,6 +788,17 @@ export function ConsentScreen({
         <Button type="submit" disabled={!canApprove} data-testid="consent-approve">
           {isApproving ? "Approving…" : "Approve and connect"}
         </Button>
+        {nothingToConfer && (
+          <p
+            id="consent-nothing-to-confer"
+            role="status"
+            data-testid="consent-nothing-to-confer"
+            className="text-sm text-[var(--color-muted-foreground)]"
+          >
+            This app asked only to request cache clears. Tick the box to allow that, or deny the
+            request.
+          </p>
+        )}
         <Button type="button" variant="outline" onClick={onDeny} data-testid="consent-deny">
           Do not connect
         </Button>

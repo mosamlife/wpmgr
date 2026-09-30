@@ -574,6 +574,27 @@ describe("ConsentScreen — the mcp:cache write section (design v7 S2.2)", () =>
     expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(false);
   });
 
+  it("disables Approve and says why when a cache-only request leaves the box clear", () => {
+    const cacheOnly = parseConsentContext({
+      client_id: "c_cache_only",
+      identity_verified: false,
+      redirect_uri: "https://x.example/cb",
+      redirect_host: "x.example",
+      scopes: [SCOPE_CACHE],
+      grant_lifetime_days: 90,
+      conferrable_capabilities: [{ name: "mcp.cache.purge", effect: "request" }],
+    });
+    renderWithProviders(<ConsentScreen {...props({ consent: cacheOnly })} />, { withRouter: true });
+    expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(true);
+    expect(screen.getByTestId("consent-nothing-to-confer")).toHaveTextContent(
+      /asked only to request cache clears/i,
+    );
+    // Ticking the box makes the approval possible again.
+    fireEvent.click(within(screen.getByTestId("consent-cache-capability")).getByRole("checkbox"));
+    expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(false);
+    expect(screen.queryByTestId("consent-nothing-to-confer")).toBeNull();
+  });
+
   it("does not disable Approve when the server sent no conferrable_capabilities key at all", () => {
     // Deploy-ordering case (consent-context.ts): an absent key parses to [],
     // and .every over [] is vacuously true, never a false "unknown effect".
