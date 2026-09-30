@@ -1150,8 +1150,7 @@ final class ContentProbeCommand implements CommandInterface
         if (!is_object($wpdb) || !method_exists($wpdb, 'get_var') || !method_exists($wpdb, 'prepare') || !isset($wpdb->postmeta)) {
             return null;
         }
-        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- length-only read so a large value is never loaded
-        $len = $wpdb->get_var($wpdb->prepare("SELECT MAX(LENGTH(meta_value)) FROM {$wpdb->postmeta} WHERE post_id = %d AND meta_key = %s", $id, $key)); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name from core
+        $len = $wpdb->get_var($wpdb->prepare("SELECT MAX(LENGTH(meta_value)) FROM {$wpdb->postmeta} WHERE post_id = %d AND meta_key = %s", $id, $key)); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- length-only read so a large value is never loaded; table name from core
         return is_numeric($len) ? (int) $len : null;
     }
 
