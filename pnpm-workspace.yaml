@@ -62,7 +62,7 @@ auditConfig:
     # The advisory collapses every major into a single "<=5.0.7" range whose only
     # patched release is 5.0.8, and there is no 1.x backport to pin to. Forcing
     # 5.0.8 onto the 1.x consumers was tested and breaks eslint at runtime
-    # (@eslint/config-array pathMatches). The 5.x line IS pinned to 5.0.8 above.
+    # (@eslint/config-array pathMatches). The 5.x line IS pinned to 5.0.11 above.
     # DROP THIS when the monorepo moves to eslint 10, which no longer pulls the
     # minimatch@3 chain.
     - GHSA-mh99-v99m-4gvg
