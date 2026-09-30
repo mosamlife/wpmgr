@@ -149,7 +149,8 @@ final class PluginRestoreGcSweepTest extends TestCase
     public function test_within_throttle_window_is_a_no_op(): void
     {
         $this->markEnrolled();
-        $this->options[Plugin::OPTION_RESTORE_GC_LAST] = time() - 10; // well under the 900s window.
+        $stamp = time() - 10; // well under the 900s window.
+        $this->options[Plugin::OPTION_RESTORE_GC_LAST] = $stamp;
 
         $oldFiles = $this->seedExpiredOldFilesFixture();
         $dump     = $this->seedExpiredDumpFixture();
@@ -158,7 +159,7 @@ final class PluginRestoreGcSweepTest extends TestCase
 
         $this->assertTrue(is_dir($oldFiles['dir']), 'a throttled call within the window must never sweep the filesystem');
         $this->assertTrue(is_file($dump['dump']), 'a throttled call within the window must never sweep the filesystem');
-        $this->assertSame(time() - 10, $this->options[Plugin::OPTION_RESTORE_GC_LAST], 'a throttled call within the window must never re-stamp the option');
+        $this->assertSame($stamp, $this->options[Plugin::OPTION_RESTORE_GC_LAST], 'a throttled call within the window must never re-stamp the option');
     }
 
     public function test_past_throttle_window_stamps_before_running_then_sweeps_both_targets(): void

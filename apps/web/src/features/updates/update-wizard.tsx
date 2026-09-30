@@ -39,8 +39,10 @@ import type { Site, UpdateItem, UpdateRunCreate } from "@wpmgr/api";
 //   1. updateKind in WizardTarget drives the active tab/section (plugins,
 //      themes, or core) so the split-button selection is honoured.
 //   2. Components default to "has update" filter — only items with a
-//      new_version reported by the agent are pre-checked. Items without an
-//      update are hidden by default (operator can reveal via "Show all").
+//      new_version reported by the agent are shown. Items without an update
+//      are hidden by default (operator can reveal via "Show all"). Selection
+//      itself starts EMPTY; the operator ticks items individually or via the
+//      per-tab "Select all" toggle (GH #680).
 //   3. Plugins and themes are separated into tabs with their own lists.
 
 export type WizardUpdateKind = "plugins" | "themes" | "core";
@@ -221,6 +223,73 @@ function WizardForm({
   const [filterToUpdates, setFilterToUpdates] = useState(true);
 
   const options = useMemo(() => componentOptions(sites), [sites]);
+
+  // GH #763 / bot review of #766: `sites` is live data — a refetch while the
+  // wizard is open (see use-sites-live.ts) recomputes `options` above with
+  // the SAME WizardForm instance still mounted, because the form only
+  // remounts on target change (targetKey, at the top of this file), not on a
+  // sites refetch. Without this, a key ticked while its item had an update
+  // stays in `selectedSlugs` after the item updates elsewhere and drops out
+  // of `options`/hasUpdate, and buildItems() below posts it anyway even
+  // though no checkbox on screen is still ticked for it.
+  //
+  // The rule: drop a selected key when its item is no longer listed at all,
+  // or when it transitioned from having an update to not having one. Keep a
+  // key whose item was already up to date when selected (and still is) — an
+  // operator may deliberately tick an up-to-date row under "Show all" (see
+  // the PR #752 tests), and that pick must survive an unrelated refetch.
+  // Comparing hasUpdate true -> false across the PREVIOUS and CURRENT options
+  // (rather than remembering "why" a key was picked) gets the common case
+  // right without remembering intent. But "previous" means the render just
+  // before this one, not the render the key was ticked on: the drop
+  // condition is "this key's item had an update one snapshot ago and does
+  // not now", and it fires on that transition regardless of what the key was
+  // originally picked for. A deliberately-picked up-to-date row is safe only
+  // until its item transitions to having an update and then losing it again
+  // while still selected; that transition matches the same as it would for
+  // any other key.
+  //
+  // This used to run in a `useEffect`, which corrects `selectedSlugs` only on
+  // the render AFTER the one that first shows the refetched `options` — so a
+  // render is committed (paintable, and submittable) with the new options on
+  // screen but the stale key still counted, for the whole window between that
+  // commit and the effect's flush. React's documented "adjust state while
+  // rendering" pattern closes that window: compare against a previous-options
+  // snapshot held in STATE (never a ref — mutating a ref during render is
+  // exactly what Strict Mode's double-render is designed to catch) and, when
+  // it has changed, prune synchronously in THIS render, before anything below
+  // reads the selection.
+  const [prevOptions, setPrevOptions] = useState<ComponentOption[]>(options);
+  let effectiveSelectedSlugs = selectedSlugs;
+  if (prevOptions !== options) {
+    const prevByKey = new Map(
+      prevOptions.map((o) => [`${o.type}:${o.slug}`, o]),
+    );
+    const nextByKey = new Map(options.map((o) => [`${o.type}:${o.slug}`, o]));
+
+    let changed = false;
+    const pruned = new Set(selectedSlugs);
+    for (const key of selectedSlugs) {
+      const nextOpt = nextByKey.get(key);
+      if (!nextOpt) {
+        pruned.delete(key);
+        changed = true;
+        continue;
+      }
+      const prevOpt = prevByKey.get(key);
+      if (prevOpt?.hasUpdate && !nextOpt.hasUpdate) {
+        pruned.delete(key);
+        changed = true;
+      }
+    }
+
+    setPrevOptions(options);
+    if (changed) {
+      setSelectedSlugs(pruned);
+      effectiveSelectedSlugs = pruned;
+    }
+  }
+
   const pluginOptions = useMemo(
     () => options.filter((o) => o.type === "plugin"),
     [options],
@@ -249,10 +318,33 @@ function WizardForm({
     });
   }
 
+  // Keys for the active tab's available-update options, for the
+  // "Select all" / "Deselect all" toggle below.
+  const activeUpdatableKeys = useMemo(() => {
+    const list = activeTab === "plugins" ? pluginOptions : themeOptions;
+    return list.filter((o) => o.hasUpdate).map((o) => `${o.type}:${o.slug}`);
+  }, [activeTab, pluginOptions, themeOptions]);
+
+  const allActiveUpdatableSelected =
+    activeUpdatableKeys.length > 0 &&
+    activeUpdatableKeys.every((key) => effectiveSelectedSlugs.has(key));
+
+  function toggleSelectAll() {
+    setSelectedSlugs((prev) => {
+      const next = new Set(prev);
+      if (allActiveUpdatableSelected) {
+        for (const key of activeUpdatableKeys) next.delete(key);
+      } else {
+        for (const key of activeUpdatableKeys) next.add(key);
+      }
+      return next;
+    });
+  }
+
   function buildItems(): UpdateItem[] {
     const items: UpdateItem[] = [];
     if (updateCore) items.push({ type: "core", version: "latest" });
-    for (const key of selectedSlugs) {
+    for (const key of effectiveSelectedSlugs) {
       const opt = options.find((o) => `${o.type}:${o.slug}` === key);
       if (opt) items.push({ type: opt.type, slug: opt.slug, version: "latest" });
     }
@@ -406,13 +498,29 @@ function WizardForm({
                     ? `Showing ${totalWithUpdates} with available update${totalWithUpdates === 1 ? "" : "s"}`
                     : `Showing all ${(activeTab === "plugins" ? pluginOptions : themeOptions).length}`}
                 </p>
-                <button
-                  type="button"
-                  onClick={() => setFilterToUpdates((v) => !v)}
-                  className="text-xs text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                >
-                  {filterToUpdates ? "Show all" : "Show only with updates"}
-                </button>
+                <div className="flex items-center gap-3">
+                  {activeUpdatableKeys.length > 0 ? (
+                    <button
+                      type="button"
+                      onClick={toggleSelectAll}
+                      aria-label={
+                        allActiveUpdatableSelected
+                          ? "Deselect all available updates"
+                          : "Select all available updates"
+                      }
+                      className="text-xs text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      {allActiveUpdatableSelected ? "Deselect all" : "Select all"}
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => setFilterToUpdates((v) => !v)}
+                    className="text-xs text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    {filterToUpdates ? "Show all" : "Show only with updates"}
+                  </button>
+                </div>
               </div>
             ) : null}
 
@@ -433,7 +541,7 @@ function WizardForm({
                       >
                         <Checkbox
                           id={id}
-                          checked={selectedSlugs.has(key)}
+                          checked={effectiveSelectedSlugs.has(key)}
                           onChange={() => toggleSlug(key)}
                         />
                         <span className="font-medium">{opt.label}</span>

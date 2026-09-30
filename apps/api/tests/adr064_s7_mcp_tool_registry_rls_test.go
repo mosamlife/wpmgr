@@ -71,6 +71,10 @@ func s7GrantWithBearer(
 		ClientSecretHash:        &secretHash,
 		TokenEndpointAuthMethod: "client_secret_basic",
 		RedirectUris:            []string{"https://claude.ai/api/mcp/auth_callback"},
+		// m137: the column is NOT NULL with no DEFAULT. The honest value,
+		// matching what Service.Register writes, so this fixture models a
+		// real registration rather than one the schema would refuse.
+		RegisteredScopes: mcp.SupportedScopes(),
 	})
 	if err != nil || affected != 1 {
 		t.Fatalf("register client: affected=%d err=%v", affected, err)

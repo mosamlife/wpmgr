@@ -555,9 +555,10 @@ type AuthConfig struct {
 	ProxyHops int `koanf:"proxy_hops"`
 
 	// LoginMode (WPMGR_AUTH_LOGIN_MODE) selects what POST /auth/login does with
-	// its admission-control verdict: "observe" measures the per-source and
-	// per-account budgets and applies none of them, "enforce" applies them.
-	// Default "observe" (GH #718 Phase 0). The value is validated at startup by
+	// its admission-control verdict: "observe" measures the budgets and applies
+	// none of them, "enforce" refuses an attempt over the pair, source or
+	// source /48 budget with 429 (the account budget is logged, never applied).
+	// Default "observe" (GH #718). The value is validated at startup by
 	// auth.ParseLoginMode, which refuses an unrecognised mode rather than
 	// coercing it, and the effective mode is logged unconditionally at boot and
 	// warned about every five minutes while it is not "enforce".
@@ -810,8 +811,8 @@ func defaults() map[string]any {
 		// client address then its own). Every other topology must set this;
 		// see AuthConfig.ProxyHops and the startup log line that names it.
 		"auth.proxy_hops": 2,
-		// GH #718 Phase 0. "observe" until the logged numbers have been
-		// reviewed; Phase 1 flips this default to "enforce". The literal, not
+		// GH #718. "observe" is the default; "enforce" is opt-in and has to be
+		// set by name in WPMGR_AUTH_LOGIN_MODE. The literal, not
 		// auth.LoginModeObserve, because internal/auth imports this package —
 		// auth.ParseLoginMode is what actually validates the value at startup,
 		// so a drift between these two spellings fails the boot loudly.

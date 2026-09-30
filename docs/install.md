@@ -98,6 +98,7 @@ example for each — read it top-to-bottom. Key env vars (all prefixed `WPMGR_`)
 |-----|---------|---------|
 | `WPMGR_HTTP_ADDR` | API listen address | `:8080` |
 | `WPMGR_AUTH_PROXY_HOPS` | proxies in front of the control plane that append to `X-Forwarded-For`. **Set this deliberately**, see [Proxy hops](#proxy-hops) below | `2` (the hosted topology; the bundled compose stack needs `1`) |
+| `WPMGR_AUTH_LOGIN_MODE` | login admission for `POST /auth/login`. **Set this deliberately**, see [Login admission](#login-admission) below | `observe` |
 | `WPMGR_DB_HOST` | Postgres host | `localhost` |
 | `WPMGR_DB_PORT` | Postgres port | `5432` |
 | `WPMGR_DB_NAME` | Postgres database | `wpmgr` |
@@ -109,7 +110,7 @@ example for each — read it top-to-bottom. Key env vars (all prefixed `WPMGR_`)
 | `WPMGR_S3_FORCE_PATH_STYLE` | required for SeaweedFS | `true` |
 | `WPMGR_CLICKHOUSE_ADDR` | ClickHouse | `localhost:9000` |
 | `WPMGR_OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP collector | `http://localhost:4318` |
-| `WPMGR_SUPERADMIN_EMAILS` | one-shot: grants `is_superadmin` and activates the account at boot. It does NOT mark the address verified: the operator confirms their address like any other user. (Unset after it runs; revoke via `WPMGR_SUPERADMIN_REVOKE_EMAILS`.) | (empty) |
+| `WPMGR_SUPERADMIN_EMAILS` | one-shot: grants `is_superadmin` and activates the account at boot. It does NOT mark the address verified: the operator confirms their address like any other user. (Unset after it runs; revoke via `WPMGR_SUPERADMIN_REVOKE_EMAILS`.) Also names who can always reach the install-wide email relay settings, see [Instance email (SMTP) authority](#instance-email-authority) below. | (empty) |
 | `WPMGR_WORDFENCE_API_KEY` | vulnerability-feed API key fallback (the key saved in the superadmin UI takes precedence) | (empty) |
 | `WPMGR_SCREENSHOT_READY_WAIT` | screenshot capture wait budget in whole seconds (media-encoder; raise on slow hosting) | `8` |
 | `WPMGR_HOSTED` | managed-SaaS entitlements switch; hosted only, leave unset on self-host | `false` |
@@ -147,6 +148,48 @@ because empty and absent are not the same thing, and reading empty as `0` would
 silently reconfigure a load-balanced deployment onto a single shared limiter
 key. The control plane logs the value it resolved, and names the variable in
 the error when it refuses one.
+
+### Login admission: `WPMGR_AUTH_LOGIN_MODE` {#login-admission}
+
+Login admission control for `POST /auth/login` evaluates budgets keyed on the
+source address paired with the account, on the source address alone, and on
+the source `/48`; in `enforce` mode it can refuse an attempt that is over one
+of those three. It also evaluates a budget keyed on the account alone, but
+that one only logs and never refuses, in either mode, so `enforce` does not
+stop a distributed guessing attempt against one account spread across many
+source addresses. Two modes:
+
+| Value | Behavior |
+|-------|----------|
+| `observe` (default) | Evaluates every budget and logs what `enforce` would have refused, but refuses nothing on budget grounds; safe to leave on. An install that has never set this variable runs `observe`. |
+| `enforce` | Must be asked for by name. Refuses an attempt over the pair, source, or source `/48` budget with `429 too_many_attempts` and a `Retry-After` header. The account-only budget is still logged but never refuses. |
+
+Independent of the budgets and mode above, `POST /auth/login` also bounds how
+many sign-in attempts may verify a password at the same time within one
+process. When that bound is saturated, the attempt is answered with `503`,
+error code `server_busy`, and a `Retry-After` header, in every mode including
+the default `observe`. Seeing that response on `/auth/login` means sign-ins
+are arriving faster than this process is willing to verify passwords right
+now, not that any budget was exceeded; retry after the interval in the
+header.
+
+Budgets are **per process**: each `api` instance keeps its own counters, so a
+deployment running N instances admits up to N times each budget across the
+fleet. That is a property of this design, not a bug.
+
+`enforce` is only as safe as the identity it keys on, which depends on two
+things being correct at once:
+
+- **[`WPMGR_AUTH_PROXY_HOPS`](#proxy-hops) matching your real proxy chain.**
+  If it does not, a caller can spoof the address the budgets key on.
+- **The `api` container's published port staying off any interface a client
+  could reach without going through that proxy.** The bundled
+  `infra/docker-compose.yml` publishes it to `127.0.0.1` only, precisely so a
+  caller cannot reach `api` directly, hand it a self-chosen
+  `X-Forwarded-For`, and spend or drain another user's login budget. See
+  [First-run notes](#first-run-notes) below before you change that bind.
+
+Get both right before turning `enforce` on.
 
 ### Reverse proxy: paths that must reach the API {#proxy-paths}
 
@@ -233,6 +276,40 @@ The `WPMGR_ALLOW_RLS_BYPASS_ROLE=true` env var (default `false`) downgrades
 the boot-time RLS check to a warning. Intended only for single-node local dev
 sharing the bootstrap superuser; never set it in production.
 
+### Instance email (SMTP) authority {#instance-email-authority}
+
+The install-wide outgoing mail relay is one setting for the whole install, not
+a per-organisation one, and only an account with instance-level authority may
+view, change, or test it. On a self-hosted install, that authority belongs to:
+
+- any account listed in `WPMGR_SUPERADMIN_EMAILS`;
+- on an install with exactly one live organisation, that organisation's owner;
+- the install owner: the account recorded as having set up the install (see
+  [First-run notes](#first-run-notes) below), for as long as that account is
+  active and is an owner of at least one live organisation; an organisation in
+  its deletion grace period does not count.
+
+**Fallback.** The install owner arm tracks live ownership, not history:
+owning a live organisation again restores it on the next request, even after
+a period of owning none. If the install drops back to exactly one live
+organisation, that organisation's owner is admitted through the sole-owner
+rule above regardless of who the install owner is. Once an account is
+recorded as the install owner it is never replaced: if that account is
+deleted, disabled, or ends up owning no live organisation, a later account
+that completes setup is still not recorded as the install owner. Recover
+access with `WPMGR_SUPERADMIN_EMAILS`.
+
+**No install owner recorded.** Until an account is recorded, this arm admits
+nobody — there is no fallback to the earliest user or owner. Setup reopens
+only once no organisation on the install has an owner; the next successful
+setup then records its account. On an install that still has owners, this
+empty state stays empty for as long as any organisation on the install has
+an owner, and `WPMGR_SUPERADMIN_EMAILS` is the remedy. Superadmins are
+admitted through their own arm, not this one.
+
+Hosted installs are not affected: this whole section describes self-hosted
+behaviour only.
+
 ## 2. Bring up the stack
 
 ### Quickstart: prebuilt images, no clone (recommended for first-time installs)
@@ -270,11 +347,13 @@ The script downloads:
 | `infra/prometheus/prometheus.yml` + `infra/grafana/…` | observability profile |
 
 > **Port note:** the API listens on `:8080` *inside* the container, but is
-> published to the **host** on `:8081` (`WPMGR_API_PORT`). The dashboard nginx
-> is on **`:8088`** (`WPMGR_WEB_PORT`). These are the ports you curl and put
-> behind a reverse proxy. Neither is `:80` or `:8080` on the host — those are
-> deliberately avoided so first boot never needs root or collides with an
-> existing web server.
+> published to the **host** on `:8081` (`WPMGR_API_PORT`), bound to
+> `127.0.0.1` only — reachable from the host itself, not from another host or
+> container network. The dashboard nginx is on **`:8088`** (`WPMGR_WEB_PORT`)
+> and published on all interfaces. **`:8088` is the port a reverse proxy
+> belongs in front of**; it already forwards to the API in-network. Neither
+> is `:80` or `:8080` on the host — those are deliberately avoided so first
+> boot never needs root or collides with an existing web server.
 
 ### Or: build from source (clone path)
 
@@ -305,7 +384,7 @@ quickstart or a clone), bring up the stack with the pull-only overlay:
 <!-- wpmgr-install-pins:start (required pin; scripts/check-version-surfaces.sh keeps it current) -->
 
 ```bash
-export WPMGR_VERSION=v0.61.161   # omit to track :latest
+export WPMGR_VERSION=v0.61.163   # omit to track :latest
 docker compose -f infra/docker-compose.yml -f infra/docker-compose.prod.yml up -d
 ```
 
@@ -421,11 +500,28 @@ Grafana then ships with the WPMgr dashboards pre-provisioned. See
 - **Migrations** run automatically on API startup (Atlas, ADR-002).
 - **Default credentials in `.env.example` are for local dev only** — rotate the
   session secret, DB password, and S3 keys before any network-exposed deploy.
-- Put a TLS-terminating reverse proxy (the bundled `infra/nginx/` config, or
-  your own) in front of the published API port (`WPMGR_API_PORT`, default
-  `:8081`) for production. If it is your own rather than the bundled config,
-  see [Reverse proxy: paths that must reach the API](#proxy-paths) for the four
-  root-mounted paths an `/api/`-only rule will miss.
+- **The bundled nginx (`WPMGR_WEB_PORT`) is the supported entry point for
+  production.** `infra/docker-compose.yml` publishes the API port
+  (`WPMGR_API_PORT`, default `:8081`) to `127.0.0.1` only, so it is reachable
+  from the host itself but not from another host or a separate Docker
+  network. Put your TLS-terminating reverse proxy — the bundled
+  `infra/nginx/` config, or your own — in front of `WPMGR_WEB_PORT` instead;
+  it already forwards to the API in-network. If your reverse proxy runs on
+  another host or in a separate Docker network and genuinely needs to reach
+  the API port directly, that means deliberately rebinding it in
+  `infra/docker-compose.yml` (there is no override variable, by design — see
+  the comment on that line), and you must then also set
+  [`WPMGR_AUTH_PROXY_HOPS`](#proxy-hops) to match the real proxy chain in
+  front of it. If you use your own reverse proxy rather than the bundled
+  config, see [Reverse proxy: paths that must reach the API](#proxy-paths)
+  for the four root-mounted paths an `/api/`-only rule will miss.
+- **Login admission control (`WPMGR_AUTH_LOGIN_MODE`) is opt-in.** `observe`
+  is the default and refuses nothing on budget grounds, though the
+  verification-concurrency limit can still answer `503` in either mode;
+  `enforce` additionally refuses sign-in attempts over the pair, source, or
+  source `/48` budget (never the account alone), and is only as safe as the
+  `WPMGR_AUTH_PROXY_HOPS` value and the API-port bind above being correct. See
+  [Login admission](#login-admission).
 - **First-run ownership requires the provisioning claim.** The dashboard Sign
   Up form cannot create the first account. `POST /auth/register` only grants
   ownership when the request carries the `X-Wpmgr-Bootstrap-Claim` header set
@@ -433,7 +529,12 @@ Grafana then ships with the WPMgr dashboards pre-provisioned. See
   body field, and is deliberately absent from `openapi.yaml`, so no generated
   client (including the dashboard) can send it. That value lives in `.env`
   under that key, generated once by `scripts/init-env.sh` and never rotated
-  by a re-run.
+  by a re-run. On a self-hosted install, the account recorded as having set
+  up the install also holds the install-wide email relay authority described
+  in [Instance email (SMTP) authority](#instance-email-authority) above,
+  while that account is active and owns at least one live organisation.
+  An account that completes setup after one is already recorded is not
+  recorded, and does not gain that authority.
 
   You never need to look up or paste that value yourself. `scripts/init-env.sh`
   (and the quickstart-selfhost.sh curl-pipe path) prints the exact claim

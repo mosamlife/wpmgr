@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -44,6 +45,18 @@ type Service struct {
 	// entry is skipped, never that the event goes unreported — the structured
 	// log line is unconditional.
 	audit *audit.Recorder
+	// redirectProber confirms an address change before AdoptReportedURL
+	// writes it. Optional: nil means no address change is adopted after
+	// enrollment.
+	redirectProber CommandRedirectProber
+	// adoptProbes limits AdoptReportedURL to one probe per 24h per (site,
+	// reported address). In memory and bounded; a restart resets it.
+	adoptProbes     *probeLimiter
+	adoptProbesOnce sync.Once
+	// adoptQueue receives the addresses agent pushes report; its job runs
+	// AdoptReportedURL off the push. Optional: nil means a reported address
+	// is not adopted after enrollment.
+	adoptQueue AdoptURLEnqueuer
 }
 
 // SetAuditRecorder wires the hash-chained audit recorder. Call once at boot;
@@ -380,13 +393,21 @@ func (s *Service) RecordNonce(ctx context.Context, siteID uuid.UUID, nonce strin
 // ApplyAgentMetadata adapts agent-package metadata to the site domain and
 // returns the updated site in OpenAPI form, satisfying agent.MetadataSink.
 func (s *Service) ApplyAgentMetadata(ctx context.Context, tenantID, siteID uuid.UUID, m agentpkg.Metadata) (gen.Site, error) {
+	// Capped once, here, and passed everywhere else this push's agent version
+	// is used: the stored metadata below, the age-recipient log/audit path,
+	// and the address-adoption enqueue. Every one of those bounds its own
+	// copy independently, so without this the raw agent-reported string -
+	// unbounded, unlike every other metadata field - reaches a Warn log and
+	// an audit row uncapped before sanitizeMetadata ever truncates it for
+	// storage.
+	v := truncateRunes(m.AgentVersion, maxAgentVersion)
 	out, err := s.ApplyMetadata(ctx, tenantID, siteID, Metadata{
 		WPVersion:    m.WPVersion,
 		PHPVersion:   m.PHPVersion,
 		ServerInfo:   m.ServerInfo,
 		Multisite:    m.Multisite,
 		ActiveTheme:  m.ActiveTheme,
-		AgentVersion: m.AgentVersion,
+		AgentVersion: v,
 		Plugins:      fromAgentComponents(m.Plugins),
 		Themes:       fromAgentComponents(m.Themes),
 		CoreUpdate:   fromAgentCoreUpdate(m.CoreUpdate),
@@ -410,11 +431,18 @@ func (s *Service) ApplyAgentMetadata(ctx context.Context, tenantID, siteID uuid.
 	// distinguishes a first set from a change to an established value.
 	if rec := strings.TrimSpace(m.AgeRecipient); rec != "" && len(rec) <= 256 &&
 		strings.HasPrefix(rec, "age1") && out.AgeRecipient != rec {
-		updated, err := s.applyAgentAgeRecipient(ctx, tenantID, siteID, rec, out, m.AgentVersion)
+		updated, err := s.applyAgentAgeRecipient(ctx, tenantID, siteID, rec, out, v)
 		if err != nil {
 			return gen.Site{}, err
 		}
 		out = updated
+	}
+	// The agent's WordPress address, queued for AdoptReportedURL so its
+	// signed probe never holds up the push. The row just written carries the
+	// saved address, so a report that could not replace it is not queued. An
+	// enqueue failure is logged and never fails the metadata push.
+	if m.HomeURL != "" {
+		_ = s.enqueueAdoptReportedURL(ctx, tenantID, siteID, out.URL, m.HomeURL, urlSourceAgentMetadata, v)
 	}
 	return toAPI(out), nil
 }
@@ -560,18 +588,27 @@ func fromAgentComponents(cs []agentpkg.Component) []Component {
 }
 
 // fromAgentMetadataExtras lifts the optional sparse-metadata expansion fields
-// (host_flags / disk / user_count / admin_count) from the agent.Metadata DTO
-// onto the site domain's MetadataExtras struct. Returns nil when the agent
-// sent nothing (old agent; the sink does not overwrite previously-stored
-// values in that case — see ApplyMetadata).
+// (host_flags / disk / user_count / admin_count / roles / keystore_status)
+// from the agent.Metadata DTO onto the site domain's MetadataExtras struct.
+// Returns nil only when the agent sent none of them at all: there is no
+// delta/merge semantics to preserve by returning nil, because every push
+// REWRITES the whole stored components document (see buildInventoryPayload) —
+// a nil here simply means this push's inventory document omits these keys.
+//
+// KeystoreStatus is included in this nil check (GH #753) so a STATUS-ONLY push
+// — the 30-minute cron cadence or a CP-triggered recheck re-reporting a
+// keystore with none of the other sparse-metadata fields changed — is never
+// dropped for looking empty.
 func fromAgentMetadataExtras(m agentpkg.Metadata) *MetadataExtras {
-	if m.HostFlags == nil && m.Disk == nil && m.UserCount == 0 && m.AdminCount == 0 && len(m.Roles) == 0 {
+	if m.HostFlags == nil && m.Disk == nil && m.UserCount == 0 && m.AdminCount == 0 &&
+		len(m.Roles) == 0 && m.KeystoreStatus == nil {
 		return nil
 	}
 	x := &MetadataExtras{
-		UserCount:  m.UserCount,
-		AdminCount: m.AdminCount,
-		Roles:      fromAgentSiteRoles(m.Roles),
+		UserCount:      m.UserCount,
+		AdminCount:     m.AdminCount,
+		Roles:          fromAgentSiteRoles(m.Roles),
+		KeystoreStatus: fromAgentKeystoreStatus(m.KeystoreStatus),
 	}
 	if m.HostFlags != nil {
 		x.HostFlags = &HostFlags{
@@ -593,6 +630,91 @@ func fromAgentMetadataExtras(m agentpkg.Metadata) *MetadataExtras {
 		}
 	}
 	return x
+}
+
+// keystoreItemMax bounds how many per-envelope entries a keystore probe result
+// may carry, and how many keys the "unreadable" convenience list may name. The
+// agent's own probe covers a fixed, small set of envelopes (site_keypair,
+// cp_public_key, age_identity, email_secret, email_connection_secrets); this
+// is the control plane's independent floor so a forged or corrupted push
+// cannot grow either collection without limit.
+const keystoreItemMax = 32
+
+// keystoreItemKeyMax bounds the length of one item/unreadable key name.
+const keystoreItemKeyMax = 64
+
+// keystoreStateValues, keystoreKeySourceValues and keystoreItemValues are the
+// vocabularies Keystore::probe() actually emits. An agent-reported value
+// outside its vocabulary is dropped rather than stored: forwarding it
+// unchecked would let a forged or future-agent value reach the Site
+// response's typed enum fields as if it were one of the values those enums
+// declare.
+var keystoreStateValues = map[string]struct{}{
+	"ok": {}, "unreadable": {}, "key_unavailable": {},
+}
+var keystoreKeySourceValues = map[string]struct{}{
+	"constant": {}, "salts": {}, "file": {}, "db": {}, "unknown": {},
+}
+var keystoreItemValues = map[string]struct{}{
+	"absent": {}, "ok": {}, "unreadable": {},
+}
+
+// fromAgentKeystoreStatus bounds and allowlists the agent's keystore probe
+// result (GH #753) before it is stored. Returns nil when the agent sent
+// nothing, which the caller (fromAgentMetadataExtras) must not confuse with
+// an empty-but-present probe.
+func fromAgentKeystoreStatus(k *agentpkg.KeystoreStatus) *KeystoreStatus {
+	if k == nil {
+		return nil
+	}
+	out := &KeystoreStatus{}
+	if _, ok := keystoreStateValues[k.State]; ok {
+		out.State = k.State
+	}
+	if _, ok := keystoreKeySourceValues[k.KeySource]; ok {
+		out.KeySource = k.KeySource
+	}
+	if len(k.Items) > 0 {
+		items := make(map[string]string, min(len(k.Items), keystoreItemMax))
+		for key, val := range k.Items {
+			if len(items) >= keystoreItemMax {
+				break
+			}
+			key = truncateRunes(strings.TrimSpace(key), keystoreItemKeyMax)
+			if key == "" {
+				continue
+			}
+			if _, ok := keystoreItemValues[val]; !ok {
+				continue
+			}
+			items[key] = val
+		}
+		if len(items) > 0 {
+			out.Items = items
+		}
+	}
+	if len(k.Unreadable) > 0 {
+		unreadable := make([]string, 0, min(len(k.Unreadable), keystoreItemMax))
+		seen := make(map[string]struct{}, len(unreadable))
+		for _, key := range k.Unreadable {
+			if len(unreadable) >= keystoreItemMax {
+				break
+			}
+			key = truncateRunes(strings.TrimSpace(key), keystoreItemKeyMax)
+			if key == "" {
+				continue
+			}
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+			unreadable = append(unreadable, key)
+		}
+		if len(unreadable) > 0 {
+			out.Unreadable = unreadable
+		}
+	}
+	return out
 }
 
 // maxSiteRoles bounds how many WordPress roles are persisted for one site.
@@ -694,6 +816,10 @@ const (
 	maxSelfUpdateApplyID = 64
 	// maxSelfUpdateRung bounds the diagnostic connection-release rung name.
 	maxSelfUpdateRung = 32
+	// maxAgentVersion bounds the agent's reported plugin version, in runes,
+	// wherever the control plane keeps a copy: the stored metadata and an
+	// address adoption job's args.
+	maxAgentVersion = 64
 )
 
 // truncateRunes returns s truncated to at most n runes, never splitting a
@@ -826,7 +952,7 @@ func sanitizeMetadata(m Metadata) Metadata {
 		ServerInfo:   truncateRunes(m.ServerInfo, maxServerInfo),
 		Multisite:    m.Multisite,
 		ActiveTheme:  truncateRunes(m.ActiveTheme, maxActiveTheme),
-		AgentVersion: truncateRunes(m.AgentVersion, 64),
+		AgentVersion: truncateRunes(m.AgentVersion, maxAgentVersion),
 		Plugins:      sanitizeComponents(m.Plugins, maxPlugins),
 		Themes:       sanitizeComponents(m.Themes, maxThemes),
 		CoreUpdate:   sanitizeCoreUpdate(m.CoreUpdate),
@@ -890,6 +1016,14 @@ func buildInventoryPayload(m Metadata) map[string]any {
 		// substituting the five default roles behind the operator's back.
 		if len(m.Extras.Roles) > 0 {
 			payload["roles"] = m.Extras.Roles
+		}
+		// GH #753 — the agent's on-disk keystore trial-decrypt probe, a sibling
+		// key to plugins/themes. Absent when the agent did not report it (an
+		// agent older than #753, or a push where the metadata collector had no
+		// keystore access), which the Site response reads as "not reported"
+		// rather than substituting "ok" behind the operator's back.
+		if m.Extras.KeystoreStatus != nil {
+			payload["keystore_status"] = m.Extras.KeystoreStatus
 		}
 	}
 	// The agent's account of its last self-update apply beat, stored as a

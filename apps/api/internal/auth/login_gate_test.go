@@ -54,6 +54,18 @@ func loginHandlerForTest(t *testing.T, g *LoginGate, hops int) *gin.Engine {
 	return e
 }
 
+// failedAttempt runs one attempt through Admit and completes it the way a wrong
+// password does: the verification slot is released and the charge is kept. It
+// returns the refusal, if Admit refused (by a budget, or by shedding).
+//
+// Every direct Admit call in these tests goes through here, so none of them
+// leaves a verification slot held and starves the attempts after it.
+func failedAttempt(g *LoginGate, a loginAttempt) *loginRefusal {
+	ad, r := g.Admit(context.Background(), a)
+	ad.finish()
+	return r
+}
+
 // The two addresses the HTTP-level tests submit.
 //
 // Neither is a syntactically valid email, ON PURPOSE. Service.Login validates
@@ -151,8 +163,8 @@ func TestSrcAndAcctScopesAreObserved(t *testing.T) {
 		e := loginHandlerForTest(t, g, 2)
 		for i := 0; i < loginSrcBudget+5; i++ {
 			w := postLogin(e, simulatedClient, fmt.Sprintf("user%d[at]example.test", i))
-			if w.Code == http.StatusServiceUnavailable {
-				t.Fatalf("attempt %d shed in observe mode", i+1)
+			if w.Code == http.StatusServiceUnavailable || w.Code == http.StatusTooManyRequests {
+				t.Fatalf("attempt %d refused in observe mode: %d", i+1, w.Code)
 			}
 		}
 		if out := logs.String(); !strings.Contains(out, loginScopeSrc+`"`) {
@@ -165,8 +177,8 @@ func TestSrcAndAcctScopesAreObserved(t *testing.T) {
 		e := loginHandlerForTest(t, g, 2)
 		for i := 0; i < loginAcctBudget+5; i++ {
 			w := postLogin(e, fmt.Sprintf("198.51.100.%d", i%250), httpEmailA)
-			if w.Code == http.StatusServiceUnavailable {
-				t.Fatalf("attempt %d shed in observe mode", i+1)
+			if w.Code == http.StatusServiceUnavailable || w.Code == http.StatusTooManyRequests {
+				t.Fatalf("attempt %d refused in observe mode: %d", i+1, w.Code)
 			}
 		}
 		out := logs.String()
@@ -186,8 +198,8 @@ func TestSrcAndAcctScopesAreObserved(t *testing.T) {
 		for i := 0; i < loginSrc48Budget+5; i++ {
 			client := fmt.Sprintf("2001:db8:abcd:%x::1", i%0xffff)
 			w := postLogin(e, client, fmt.Sprintf("v6user%d[at]example.test", i))
-			if w.Code == http.StatusServiceUnavailable {
-				t.Fatalf("attempt %d shed in observe mode", i+1)
+			if w.Code == http.StatusServiceUnavailable || w.Code == http.StatusTooManyRequests {
+				t.Fatalf("attempt %d refused in observe mode: %d", i+1, w.Code)
 			}
 		}
 		if out := logs.String(); !strings.Contains(out, loginScopeSrc48+`"`) {
@@ -203,13 +215,27 @@ func TestSrcAndAcctScopesAreObserved(t *testing.T) {
 // it is over, the src and acct scopes must stop being charged — otherwise the
 // noise from one flooding pair empties the scopes that are there to measure
 // everything else.
+// tokensOf is key's tokens at now, requiring the bucket to exist: tokensAt reads
+// a missing bucket as a full budget, which would let a comparison of two reads
+// pass over a bucket that is not there at all.
+func tokensOf(t *testing.T, b *keyedBudget, key string, now time.Time) float64 {
+	t.Helper()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	bk, ok := b.buckets[key]
+	if !ok {
+		t.Fatalf("%s has no bucket for %q", b.scope, key)
+	}
+	return bk.lim.TokensAt(now)
+}
+
 func TestOverBudgetAttemptChargesNothing(t *testing.T) {
 	g, _ := newTestGate(t, LoginModeObserve, 8)
 	addr := netip.MustParseAddr(simulatedClient)
 
 	// Exhaust the pair budget exactly.
 	for i := 0; i < loginPairBudget; i++ {
-		g.Observe(context.Background(), loginAttempt{Addr: addr, FromChain: true, Hops: 2, Email: "a@example.test"})
+		failedAttempt(g, loginAttempt{Addr: addr, FromChain: true, Hops: 2, Email: "a@example.test"})
 	}
 	srcKey := srcKeyFor(addr)
 	acctH := g.AccountDigest("a@example.test")
@@ -220,18 +246,18 @@ func TestOverBudgetAttemptChargesNothing(t *testing.T) {
 	if beforeSrc.overBudget || beforeAcct.overBudget {
 		t.Fatalf("precondition: src/acct should still have budget after %d attempts", loginPairBudget)
 	}
-	srcTokens := g.src.buckets[srcKey].lim.TokensAt(now)
-	acctTokens := g.acct.buckets[acctH].lim.TokensAt(now)
+	srcTokens := tokensOf(t, g.src, srcKey, now)
+	acctTokens := tokensOf(t, g.acct, acctH, now)
 
 	// 50 more on the same pair. Every one is over the pair budget.
 	for i := 0; i < 50; i++ {
-		g.Observe(context.Background(), loginAttempt{Addr: addr, FromChain: true, Hops: 2, Email: "a@example.test"})
+		failedAttempt(g, loginAttempt{Addr: addr, FromChain: true, Hops: 2, Email: "a@example.test"})
 	}
 
-	if got := g.src.buckets[srcKey].lim.TokensAt(now); got != srcTokens {
+	if got := tokensOf(t, g.src, srcKey, now); got != srcTokens {
 		t.Errorf("src scope was charged for pair-over-budget attempts: tokens %v -> %v", srcTokens, got)
 	}
-	if got := g.acct.buckets[acctH].lim.TokensAt(now); got != acctTokens {
+	if got := tokensOf(t, g.acct, acctH, now); got != acctTokens {
 		t.Errorf("acct scope was charged for pair-over-budget attempts: tokens %v -> %v", acctTokens, got)
 	}
 }
@@ -405,7 +431,7 @@ func TestObservationIsInvisibleToTheCaller(t *testing.T) {
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
 		c.Request = httptest.NewRequest(http.MethodPost, "/auth/login", nil)
-		g.Observe(context.Background(), loginAttempt{Addr: netip.MustParseAddr(simulatedClient), FromChain: true, Hops: 2, Email: email})
+		failedAttempt(g, loginAttempt{Addr: netip.MustParseAddr(simulatedClient), FromChain: true, Hops: 2, Email: email})
 		if c.Writer.Written() {
 			t.Errorf("Observe wrote to the response for email %q", email)
 		}
@@ -546,13 +572,26 @@ func TestLimiterAddrSourceGradesTheAddress(t *testing.T) {
 // Memory bound, mode, and wiring.
 // ---------------------------------------------------------------------------
 
+// keptCharge charges key and settles the charge as kept, which is what a
+// failed attempt leaves in one scope: a permanent entry.
+func keptCharge(t *testing.T, b *keyedBudget, key string, now time.Time) {
+	t.Helper()
+	bk, ok := b.charge(key, now)
+	if !ok {
+		t.Fatalf("%s: could not charge %q", b.scope, key)
+	}
+	b.settle(key, bk, now, false)
+}
+
 // TestBucketMapIsCapped watches the memory bound actually hold. A cap nobody
 // has seen bind is not known to bind.
 func TestBucketMapIsCapped(t *testing.T) {
 	b := newKeyedBudget("test", 10)
 	now := time.Now()
 	for i := 0; i < loginBucketCap*2; i++ {
-		b.query(netip.AddrFrom4([4]byte{byte(i >> 24), byte(i >> 16), byte(i >> 8), byte(i)}).String(), now)
+		// A failed attempt's charge, not a query: only a kept charge makes an
+		// entry permanent.
+		keptCharge(t, b, netip.AddrFrom4([4]byte{byte(i >> 24), byte(i >> 16), byte(i >> 8), byte(i)}).String(), now)
 		if got := b.size(); got > loginBucketCap {
 			t.Fatalf("map grew to %d entries, past the %d cap, after %d keys", got, loginBucketCap, i+1)
 		}
@@ -570,8 +609,7 @@ func TestParseLoginMode(t *testing.T) {
 	}{
 		{"", LoginModeObserve, false},
 		{"observe", LoginModeObserve, false},
-		// Refused in Phase 0 on purpose; see TestEnforceIsNotConfigurableInPhase0.
-		{"enforce", "", true},
+		{"enforce", LoginModeEnforce, false},
 		{"Observe", "", true},
 		{"off", "", true},
 		{"true", "", true},
@@ -671,19 +709,21 @@ func TestNewLoginGateRefusesAWeakSecretAndAnUnknownMode(t *testing.T) {
 //
 // It also pins the second half of the same defect: a mode that stops
 // StartModeReminder from warning must be a mode that actually enforces.
+//
+// Both modes must be accepted and both must be exercised: the guard fails if
+// either is missing, so it cannot pass by checking only the easy half.
 func TestStartupLineCannotClaimEnforcementItDoesNotDo(t *testing.T) {
-	// Every string worth asking about, including the one Phase 1 will add.
-	// Whatever ParseLoginMode accepts is what gets exercised, so the day
-	// "enforce" starts being accepted this guard starts checking it.
+	// Every string worth asking about. Whatever ParseLoginMode accepts is what
+	// gets exercised.
 	candidates := []string{"", "observe", "enforce"}
 
-	accepted := 0
+	exercised := map[LoginMode]bool{}
 	for _, raw := range candidates {
 		mode, err := ParseLoginMode(raw)
 		if err != nil {
 			continue // Not configurable, so no operator can be misled by it.
 		}
-		accepted++
+		exercised[mode] = true
 
 		t.Run("mode="+string(mode), func(t *testing.T) {
 			g, _ := newTestGate(t, mode, 64)
@@ -700,7 +740,7 @@ func TestStartupLineCannotClaimEnforcementItDoesNotDo(t *testing.T) {
 					continue
 				}
 				// The verify bound is 64 and these are sequential, so a 503
-				// here could only come from budget enforcement.
+				// or a 429 here could only come from budget enforcement.
 				if w.Code == http.StatusServiceUnavailable || w.Code == http.StatusTooManyRequests {
 					refusedForBudget = true
 				}
@@ -742,20 +782,10 @@ func TestStartupLineCannotClaimEnforcementItDoesNotDo(t *testing.T) {
 		})
 	}
 
-	if accepted == 0 {
-		t.Fatal("ParseLoginMode accepted no mode at all; this guard checked nothing")
-	}
-}
-
-// TestEnforceIsNotConfigurableInPhase0 pins the narrow fact the guard above
-// depends on, with the reason attached, so the day it changes the change is
-// deliberate.
-func TestEnforceIsNotConfigurableInPhase0(t *testing.T) {
-	if _, err := ParseLoginMode("enforce"); err == nil {
-		t.Error("ParseLoginMode accepted \"enforce\" while Observe still refuses nothing; that mode would assert enforcement, silence the reminder, and enforce nothing")
-	}
-	if _, err := ParseLoginMode("observe"); err != nil {
-		t.Errorf("ParseLoginMode rejected the documented default: %v", err)
+	for _, m := range []LoginMode{LoginModeObserve, LoginModeEnforce} {
+		if !exercised[m] {
+			t.Errorf("mode %q was not accepted by ParseLoginMode, so the guard never checked the startup line against it", m)
+		}
 	}
 }
 

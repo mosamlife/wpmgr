@@ -67,7 +67,7 @@ const (
 	// acknowledge a historical, unrepairable chain break so Verify stops
 	// reporting it while still catching any NEW tampering going forward.
 	// Owner-only: it is a tenant-wide trust decision about the integrity
-	// mechanism itself, the same bar as PermTenantManage/PermSMTPManage, and
+	// mechanism itself, the same bar as PermTenantManage, and
 	// strictly higher than the admin-level PermAuditRead it sits alongside.
 	PermAuditManage Permission = "audit:manage"
 	// PermTenantManage manages tenant settings.
@@ -84,10 +84,13 @@ const (
 	// operator-level PermSiteWrite that guards sync/optimize/restore) and paired
 	// with a type-the-hostname UI confirmation.
 	PermMediaDeleteOriginals Permission = "media:delete_originals"
-	// PermSMTPManage edits the instance-level SMTP relay (ADR-045): host/port/
-	// credentials/From + the send-test. It writes a stored secret and is the
-	// instance's mail transport, so it sits with PermTenantManage at owner-only.
-	PermSMTPManage Permission = "smtp:manage"
+	// The instance SMTP relay (ADR-045) has no Permission here on purpose. It is
+	// install-wide configuration, not an organisation's, so no tenant role
+	// grants it; its routes are gated by instance-level authority instead
+	// (admingate.CanManageInstanceEmail, mounted in internal/settings), which
+	// on a self-hosted install also admits the account recorded as having
+	// set up the install, while it is active and owns at least one live
+	// organisation.
 	// PermSiteCacheManage enables/disables and reconfigures the agent-side page
 	// cache for a site (Performance Suite, ADR-046). Operator+ — the same
 	// site-management tier as PermSiteWrite; site-scoped (NOT in orgLevelPerms),
@@ -182,7 +185,7 @@ const (
 	// PermBillingManage authorises the M16 Phase B hosted-billing routes:
 	// reading the tenant's billing summary, starting a checkout, and opening
 	// the payment-provider's billing-management portal. Owner-only, the same
-	// trust bar as PermAuditManage/PermTenantManage/PermSMTPManage — this is
+	// trust bar as PermAuditManage/PermTenantManage — this is
 	// the tenant's payment-provider relationship, not an ordinary site-
 	// management action. Org-level (see orgLevelPerms): a site-scoped
 	// collaborator must never reach it regardless of role.
@@ -245,8 +248,6 @@ var minRoleFor = map[Permission]Role{
 	PermSiteAutologin: RoleAdmin,
 	// Irreversible media original-deletion: admin+ (ADR-043 §6).
 	PermMediaDeleteOriginals: RoleAdmin,
-	// Instance SMTP transport + stored secret: owner-only (ADR-045).
-	PermSMTPManage: RoleOwner,
 	// Performance Suite (ADR-046). Cache enable/purge + perf config are
 	// site-management actions at operator+; the destructive delete-everything is
 	// admin+ (mirrors PermMediaDeleteOriginals).

@@ -1974,6 +1974,38 @@ func (s *AgentSuppressionDeltaPage) Validate() error {
 	return nil
 }
 
+func (s *AgentUnreachableError) Validate() error {
+	if s == nil {
+		return validate.ErrNilPointer
+	}
+
+	var failures []validate.FieldError
+	if err := func() error {
+		if err := s.Code.Validate(); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "code",
+			Error: err,
+		})
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+	return nil
+}
+
+func (s AgentUnreachableErrorCode) Validate() error {
+	switch s {
+	case "agent_unreachable":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
+}
+
 func (s *AlertConfig) Validate() error {
 	if s == nil {
 		return validate.ErrNilPointer
@@ -2652,9 +2684,13 @@ func (s BackupEventPhase) Validate() error {
 		return nil
 	case "failed":
 		return nil
+	case "started":
+		return nil
 	case "stalled":
 		return nil
 	case "resumed":
+		return nil
+	case "retrying":
 		return nil
 	default:
 		return errors.Errorf("invalid value: %v", s)
@@ -11043,6 +11079,23 @@ func (s ReadinessStatus) Validate() error {
 	}
 }
 
+func (s RecheckSiteBadGateway) Validate() error {
+	switch s.Type {
+	case AgentUnreachableErrorRecheckSiteBadGateway:
+		if err := s.AgentUnreachableError.Validate(); err != nil {
+			return err
+		}
+		return nil
+	case SiteUrlRedirectsErrorRecheckSiteBadGateway:
+		if err := s.SiteUrlRedirectsError.Validate(); err != nil {
+			return err
+		}
+		return nil
+	default:
+		return errors.Errorf("invalid type %q", s.Type)
+	}
+}
+
 func (s *RecoveryCodesResponse) Validate() error {
 	if s == nil {
 		return validate.ErrNilPointer
@@ -12715,6 +12768,24 @@ func (s *Site) Validate() error {
 			Error: err,
 		})
 	}
+	if err := func() error {
+		if value, ok := s.KeystoreStatus.Get(); ok {
+			if err := func() error {
+				if err := value.Validate(); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "keystore_status",
+			Error: err,
+		})
+	}
 	if len(failures) > 0 {
 		return &validate.Error{Fields: failures}
 	}
@@ -13970,6 +14041,86 @@ func (s SiteInvitationStatus) Validate() error {
 	}
 }
 
+func (s *SiteKeystoreStatus) Validate() error {
+	if s == nil {
+		return validate.ErrNilPointer
+	}
+
+	var failures []validate.FieldError
+	if err := func() error {
+		if value, ok := s.State.Get(); ok {
+			if err := func() error {
+				if err := value.Validate(); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "state",
+			Error: err,
+		})
+	}
+	if err := func() error {
+		if value, ok := s.KeySource.Get(); ok {
+			if err := func() error {
+				if err := value.Validate(); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "key_source",
+			Error: err,
+		})
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+	return nil
+}
+
+func (s SiteKeystoreStatusKeySource) Validate() error {
+	switch s {
+	case "constant":
+		return nil
+	case "salts":
+		return nil
+	case "file":
+		return nil
+	case "db":
+		return nil
+	case "unknown":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
+}
+
+func (s SiteKeystoreStatusState) Validate() error {
+	switch s {
+	case "ok":
+		return nil
+	case "unreadable":
+		return nil
+	case "key_unavailable":
+		return nil
+	case "not_reported":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
+}
+
 func (s SiteLastBackupStatus) Validate() error {
 	switch s {
 	case "success":
@@ -14616,6 +14767,38 @@ func (s *SiteTags) Validate() error {
 		return &validate.Error{Fields: failures}
 	}
 	return nil
+}
+
+func (s *SiteUrlRedirectsError) Validate() error {
+	if s == nil {
+		return validate.ErrNilPointer
+	}
+
+	var failures []validate.FieldError
+	if err := func() error {
+		if err := s.Code.Validate(); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "code",
+			Error: err,
+		})
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+	return nil
+}
+
+func (s SiteUrlRedirectsErrorCode) Validate() error {
+	switch s {
+	case "site_url_redirects":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
 }
 
 func (s *SiteVulnerabilitiesResponse) Validate() error {

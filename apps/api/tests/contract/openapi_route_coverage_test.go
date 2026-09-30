@@ -37,6 +37,7 @@ import (
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/activity"
 	"github.com/mosamlife/wpmgr/apps/api/internal/admin"
+	"github.com/mosamlife/wpmgr/apps/api/internal/admingate"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agent"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentrelease"
 	"github.com/mosamlife/wpmgr/apps/api/internal/apikey"
@@ -347,7 +348,7 @@ func buildFullEngine(t *testing.T, pool *db.Pool) *gin.Engine {
 	govContextH := govcontext.NewHandler(govcontext.NewService(govContextRepo, auditRec, &govcontext.Resolver{Store: govContextRepo}))
 
 	// --- settings / files / screenshots -----------------------------------
-	settingsH := settings.NewHandler(settings.NewService(settings.NewRepo(pool), nil, nil, logger), auditRec)
+	settingsH := settings.NewHandler(settings.NewService(settings.NewRepo(pool), nil, nil, logger), auditRec, admingate.NewInstanceEmailPoolStore(pool, true))
 	filesH := files.NewHandler(files.NewService(pool), auditRec)
 	screenshotH := screenshot.NewHandler(screenshot.NewService(screenshot.NewRepo(pool), nil, nil, nil), siteGetterAdapter{siteSvc})
 

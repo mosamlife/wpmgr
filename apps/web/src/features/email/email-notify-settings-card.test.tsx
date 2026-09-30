@@ -1,9 +1,10 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { screen } from "@testing-library/react";
-import type { EmailNotifySettings } from "@wpmgr/api";
+import type { EmailNotifySettings, Me } from "@wpmgr/api";
 
 import { renderWithProviders } from "@/test/render";
 import { mockQueryResult, mockMutationResult } from "@/test/query-mocks";
+import { useMe } from "@/features/auth/use-auth";
 
 // GH #381, phase 3: the Notifications page promised "Send an alert email
 // when a delivery failure is detected on a site" with no mention that
@@ -40,7 +41,18 @@ vi.mock("./use-email", async (importOriginal) => {
   };
 });
 
+// Instance SMTP capability gating (5ae87b71): mocked so the capability tests
+// below (and every pre-existing test, defaulted capable in beforeEach) state
+// their principal explicitly rather than depending on whatever the real,
+// unmocked `getMe()` resolves to in jsdom.
+vi.mock("@/features/auth/use-auth", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/features/auth/use-auth")>();
+  return { ...actual, useMe: vi.fn() };
+});
+
 import { EmailNotifySettingsCard } from "./email-notify-settings-card";
+
+const mockedUseMe = vi.mocked(useMe);
 
 function buildSettings(
   overrides: Partial<EmailNotifySettings> = {},
@@ -74,6 +86,30 @@ function mockSettings(data: EmailNotifySettings | null) {
     mockMutationResult<EmailNotifySettings, unknown>({}),
   );
 }
+
+function buildMe(overrides: Partial<Me> = {}): Me {
+  return {
+    user: {
+      id: "00000000-0000-0000-0000-000000000002",
+      email: "owner@wpmgr.test",
+      name: "Owner",
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+    },
+    memberships: [],
+    ...overrides,
+  };
+}
+
+beforeEach(() => {
+  // Default principal is instance-capable so every pre-existing test in
+  // this file (which asserts on the "Instance mailer not configured." text
+  // only, never the link) keeps its original behavior. The capability-gate
+  // describe block below overrides this per case.
+  mockedUseMe.mockReturnValue(
+    mockQueryResult<Me | null>({ data: buildMe({ can_manage_instance_email: true }) }),
+  );
+});
 
 describe("EmailNotifySettingsCard failure-detection coverage (GH #381)", () => {
   it("shows a zero-coverage warning when no site can report delivery failures", async () => {
@@ -266,5 +302,54 @@ describe("EmailNotifySettingsCard failure-detection coverage (GH #381)", () => {
       screen.queryByText(/No connected site can report a delivery failure\./),
     ).not.toBeInTheDocument();
     expect(screen.queryByText(/Covering all/)).not.toBeInTheDocument();
+  });
+});
+
+// Instance SMTP capability gating (5ae87b71): the instance-mailer banner's
+// "Configure SMTP" link is gated on `me.can_manage_instance_email` — a
+// principal the server refuses gets the warning text with no link, since
+// following it can only lead to a page that refuses them too.
+describe("EmailNotifySettingsCard — instance mailer banner follows can_manage_instance_email", () => {
+  it("links to /settings/smtp when the principal is instance-capable", async () => {
+    mockedUseMe.mockReturnValue(
+      mockQueryResult<Me | null>({ data: buildMe({ can_manage_instance_email: true }) }),
+    );
+    mockSettings(buildSettings({ instance_mailer_configured: false }));
+
+    renderWithProviders(<EmailNotifySettingsCard />, { withRouter: true });
+
+    const link = await screen.findByRole("link", { name: "Configure SMTP" });
+    expect(link).toHaveAttribute("href", "/settings/smtp");
+    expect(
+      screen.queryByText(/Ask your instance administrator to configure it\./),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows no link, and tells the user to ask their instance administrator, when the principal is not capable", async () => {
+    mockedUseMe.mockReturnValue(
+      mockQueryResult<Me | null>({ data: buildMe({ can_manage_instance_email: false }) }),
+    );
+    mockSettings(buildSettings({ instance_mailer_configured: false }));
+
+    renderWithProviders(<EmailNotifySettingsCard />, { withRouter: true });
+
+    await screen.findByText("Instance mailer not configured.");
+    expect(
+      screen.getByText(/Ask your instance administrator to configure it\./),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Configure SMTP" })).not.toBeInTheDocument();
+  });
+
+  it("shows no link when can_manage_instance_email is absent from the response (never defaults open)", async () => {
+    mockedUseMe.mockReturnValue(mockQueryResult<Me | null>({ data: buildMe() }));
+    mockSettings(buildSettings({ instance_mailer_configured: false }));
+
+    renderWithProviders(<EmailNotifySettingsCard />, { withRouter: true });
+
+    await screen.findByText("Instance mailer not configured.");
+    expect(
+      screen.getByText(/Ask your instance administrator to configure it\./),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Configure SMTP" })).not.toBeInTheDocument();
   });
 });

@@ -14,6 +14,7 @@ import (
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/activity"
 	"github.com/mosamlife/wpmgr/apps/api/internal/admin"
+	"github.com/mosamlife/wpmgr/apps/api/internal/admingate"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agent"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentrelease"
 	"github.com/mosamlife/wpmgr/apps/api/internal/apikey"
@@ -241,7 +242,9 @@ func buildEngine() (engine *gin.Engine, omittedDepsFields []string, err error) {
 	govContextH := govcontext.NewHandler(govcontext.NewService(govContextRepo, auditRec, &govcontext.Resolver{Store: govContextRepo}))
 
 	// --- settings / files / screenshots -----------------------------------
-	settingsH := settings.NewHandler(settings.NewService(settings.NewRepo(pool), nil, nil, logger), auditRec)
+	// Only the route table is read here; the gate never runs. hosted=true
+	// keeps the install-owner arm off, the safe value with no config in scope.
+	settingsH := settings.NewHandler(settings.NewService(settings.NewRepo(pool), nil, nil, logger), auditRec, admingate.NewInstanceEmailPoolStore(pool, true))
 	filesH := files.NewHandler(files.NewService(pool), auditRec)
 	screenshotH := screenshot.NewHandler(screenshot.NewService(screenshot.NewRepo(pool), nil, nil, nil), siteGetterAdapter{siteSvc})
 

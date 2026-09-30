@@ -205,6 +205,19 @@ type Querier interface {
 	// audit entry: a conflict that repeats on every sign-in must not write an audit
 	// entry on every sign-in.
 	AdoptLegacyIdentity(ctx context.Context, arg AdoptLegacyIdentityParams) (int64, error)
+	// Replaces a site's stored address with a new one, compare-and-set on the
+	// address the caller last read. Matches only when the site is still in the
+	// tenant, still holds "from", and is in an enrolled state (connected, degraded
+	// or disconnected); a pending, revoked or archived site is never re-addressed
+	// here. A non-matching site, a changed address, or another site in the same
+	// tenant already holding "to" all yield pgx.ErrNoRows and leave the row as it
+	// was. The NOT EXISTS guard sees only rows the caller's RLS scope can see, and
+	// it cannot see a concurrent uncommitted write, so sites_tenant_id_url_key
+	// remains the authority: a caller must also treat a unique violation on that
+	// index as "address in use". Returns the url now stored.
+	// "to" and "from" are reserved words, so they are bound with sqlc.arg('...')
+	// rather than the @name shorthand, which does not parse for them.
+	AdoptSiteURL(ctx context.Context, arg AdoptSiteURLParams) (string, error)
 	// Records that a scheduled backup was enqueued and advances next_run_at. The
 	// scheduler resolves the tenant from the due-row first, then advances within
 	// that tenant's scope (the per-tenant isolation policy permits the UPDATE).
@@ -236,6 +249,13 @@ type Querier interface {
 	// connected in one statement. The generation was already advanced at re-enroll
 	// mint time (BeginSiteReEnrollment), so we do not bump it here. Mirrors the
 	// legacy AttachAgentToSite but driving connection_state.
+	//
+	// url is optional. NULL keeps the stored address. A non-NULL value is written
+	// only when no other site in the same tenant already holds it, so an address
+	// conflict leaves the stored url in place and the enrollment still succeeds
+	// instead of failing on sites_tenant_id_url_key. The caller learns whether the
+	// address was adopted by comparing the returned url with the one it passed.
+	// Deciding WHICH address may be passed is the caller's job, not this query's.
 	// Defense-in-depth (Phase 6 review, finding E): consume only from
 	// 'pending_enrollment'. A code is bound to a site BeginReEnrollment already moved
 	// to pending_enrollment, so this holds on the happy path; the guard stops a
@@ -369,9 +389,18 @@ type Querier interface {
 	// hard-failed, or the operator cancelled, is never matched here (both moved
 	// status away from 'running' first), so this can never revive a genuinely
 	// terminal snapshot.
+	// GH #791: the same proof of life clears an outstanding attempt_error, so a
+	// run that got going after a failed attempt stops showing that attempt's
+	// error. Rows-affected is 1 when either was cleared, 0 when there was nothing
+	// to clear or the row is not running.
 	ClearBackupSnapshotStalled(ctx context.Context, arg ClearBackupSnapshotStalledParams) (int64, error)
 	// Clears the grace-window previous hash once the rotation grace period expires.
 	ClearBeaconKeyHashPrev(ctx context.Context, siteID uuid.UUID) error
+	// GH #791: the run-side half of the proof-of-life clear
+	// (ClearBackupSnapshotStalled clears the snapshot side). Matches only a
+	// running run with an outstanding attempt error. Rows-affected: 1 = cleared;
+	// 0 = nothing to clear.
+	ClearScheduleRunAttemptErrorBySnapshot(ctx context.Context, arg ClearScheduleRunAttemptErrorBySnapshotParams) (int64, error)
 	// Clear the provisional secret after enrollment is confirmed (or on explicit
 	// cancel). Idempotent: safe to call even if the columns are already NULL.
 	ClearUserTOTPProvisional(ctx context.Context, userID uuid.UUID) error
@@ -396,6 +425,8 @@ type Querier interface {
 	// contract: 1 = a real transition; 0 = already terminal (completed/failed) or
 	// gone, which the caller must surface as a rejected submit -- the previous
 	// blind UPDATE reported success unconditionally.
+	// attempt_error (GH #791) is cleared: a completed row never carries an
+	// outstanding attempt error.
 	CompleteBackupSnapshot(ctx context.Context, arg CompleteBackupSnapshotParams) (int64, error)
 	CompleteReport(ctx context.Context, arg CompleteReportParams) (GeneratedReport, error)
 	// Marks a task done. Set ONLY after the whole prefix drained with no error, so
@@ -452,6 +483,8 @@ type Querier interface {
 	// IP. Exactly one concurrent caller wins (the conditional UPDATE is the lock);
 	// a loser gets pgx.ErrNoRows. Returns the resolved tenant_id + site_id so the
 	// caller can transition the bound site. NULL site_id ⇒ legacy create-at-enroll.
+	// created_by is the user who minted the code. It is nullable: callers must
+	// handle NULL (for one, the FK is ON DELETE SET NULL).
 	ConsumeSiteBoundPairingCode(ctx context.Context, arg ConsumeSiteBoundPairingCodeParams) (ConsumeSiteBoundPairingCodeRow, error)
 	// Mark a challenge used on successful verification.
 	ConsumeTwoFactorChallenge(ctx context.Context, id uuid.UUID) (TwoFactorChallenge, error)
@@ -1061,6 +1094,10 @@ type Querier interface {
 	// whether a real transition happened, so it can gate the 'failed' SSE publish
 	// and the failure notification on an actual state change rather than firing
 	// them for a row that already moved on.
+	// GH #791: when an attempt error is outstanding, the failure reason keeps it
+	// after the watchdog's own message, capped at 1024 characters, so the reason
+	// the site gave survives the hard fail. attempt_error itself is left as it
+	// was. The caller re-reads the row for the reason actually stored.
 	FailStalledBackupSnapshot(ctx context.Context, arg FailStalledBackupSnapshotParams) (int64, error)
 	// Records a failed or refused attempt and backs the task off. Never deletes the
 	// row. There is no Cancel for this table: cancelling would close the only record
@@ -1627,6 +1664,14 @@ type Querier interface {
 	// Agent-auth path (app.agent GUC). Resolve a site by its agent public key.
 	// ---------------------------------------------------------------------------
 	GetSiteByAgentKey(ctx context.Context, agentPublicKey string) (Site, error)
+	// Variant-aware URL-dedup check before MintEnrollmentCode. The caller passes
+	// every spelling it treats as the same site (for example with and without a
+	// leading "www.", http and https), in priority order. Tenant-scoped and, like
+	// GetSiteByURLForMint, includes ALL states so the caller can answer a
+	// structured 409. When several variants exist, the one listed first in urls
+	// wins, so passing the exact URL first reports an exact match ahead of a
+	// variant. Served by sites_tenant_id_url_key.
+	GetSiteByAnyURL(ctx context.Context, arg GetSiteByAnyURLParams) (GetSiteByAnyURLRow, error)
 	// ---------------------------------------------------------------------------
 	// Enrollment path (app.enroll GUC). These run before any tenant scope exists.
 	// ---------------------------------------------------------------------------
@@ -3422,6 +3467,15 @@ type Querier interface {
 	// 'none' hold exactly when client_secret_hash IS NULL, so a public client
 	// carrying a secret and a confidential client without one both fail here with
 	// 23514 rather than reaching a Go comparison against NULL (Decision 11).
+	// registered_scopes IS NAMED EXPLICITLY AND HAS NO DATABASE DEFAULT (m137
+	// DECISION 3). The caller decides the value; the column refuses to decide for
+	// it. Omitting this column from the INSERT is 23502, loudly, and that is the
+	// designed behaviour -- see Service.Register for what an omitted RFC 7591
+	// `scope` is resolved to and why.
+	//
+	// THE VALUE IS AN AUTHORISATION BOUND. Authorize and Approve both read it back
+	// and refuse a requested scope set it does not contain, so widening it here
+	// widens what the client may ever be granted.
 	RegisterMCPOAuthClient(ctx context.Context, arg RegisterMCPOAuthClientParams) (int64, error)
 	// ReleaseTenantAssistantKillSwitch clears the pause after an incident.
 	//
@@ -3628,6 +3682,14 @@ type Querier interface {
 	// Stamp the in-flight db_scan job id + start time for the watchdog.
 	SetActiveDBScanJob(ctx context.Context, arg SetActiveDBScanJobParams) error
 	SetBackupSnapshotArchived(ctx context.Context, arg SetBackupSnapshotArchivedParams) error
+	// GH #791: records the control plane's description of the last failed attempt
+	// to start this backup on the site, while it is still retrying. The
+	// status='running' guard is the contract: a pending, completed or failed row
+	// is never matched, so this can neither mark a row that has not started nor
+	// touch one that has ended. Rows-affected: 1 = recorded; 0 = the row is not
+	// running (or is gone), and the caller must not publish anything for it.
+	// The value is capped at 1024 characters here as well as by the caller.
+	SetBackupSnapshotAttemptError(ctx context.Context, arg SetBackupSnapshotAttemptErrorParams) (int64, error)
 	// ---------------------------------------------------------------------------
 	// Beacon-key generation / rotation (InTenantTx)
 	// ---------------------------------------------------------------------------
@@ -3643,15 +3705,27 @@ type Querier interface {
 	// when rotating only the token or ARNs.
 	// Runs under InTenantTx (operator PUT path).
 	SetEmailConfigWebhookFields(ctx context.Context, arg SetEmailConfigWebhookFieldsParams) (SiteEmailConfig, error)
+	// GH #791: mirrors SetBackupSnapshotAttemptError onto the run linked to the
+	// snapshot. The status='running' guard is the contract: it never touches a
+	// queued, completed, failed, skipped or canceled run, and unlike
+	// SetScheduleRunStatusBySnapshot it never changes status, so it cannot drag
+	// a finished run back to running. Rows-affected: 1 = recorded; 0 = no running
+	// run is linked to the snapshot (a manual backup has none). The value is
+	// capped at 1024 characters here as well as by the caller.
+	SetScheduleRunAttemptErrorBySnapshot(ctx context.Context, arg SetScheduleRunAttemptErrorBySnapshotParams) (int64, error)
 	// Links the pending snapshot_id to a run and advances its status to 'queued'.
 	SetScheduleRunSnapshot(ctx context.Context, arg SetScheduleRunSnapshotParams) (BackupScheduleRun, error)
 	// Advances a run to a terminal or intermediate status by its primary key.
 	// started_at and finished_at are set conditionally so they are only written
 	// once (the scheduler calls this for running→completed/failed transitions).
+	// attempt_error (GH #791) is cleared when the run completes; a completed run
+	// never carries an outstanding attempt error. Any other status leaves it.
 	SetScheduleRunStatusByID(ctx context.Context, arg SetScheduleRunStatusByIDParams) (BackupScheduleRun, error)
 	// Reconciliation path: when the linked snapshot reaches a terminal status,
 	// update the run row to match. Keyed on snapshot_id so the snapshot finalize
 	// path does not need to carry the run id. Runs tenant-scoped.
+	// attempt_error (GH #791) is cleared when the run completes; a completed run
+	// never carries an outstanding attempt error. Any other status leaves it.
 	SetScheduleRunStatusBySnapshot(ctx context.Context, arg SetScheduleRunStatusBySnapshotParams) (BackupScheduleRun, error)
 	// Stores the per-site age PUBLIC recipient backups are encrypted to. The CP
 	// never holds the matching identity (private key); it cannot decrypt backups.

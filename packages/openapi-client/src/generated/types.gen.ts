@@ -291,6 +291,7 @@ export type Site = {
    *
    */
   health_checked_at?: string;
+  keystore_status?: SiteKeystoreStatus;
   created_at: string;
   /**
    * The site row's mtime: bumped by heartbeats, agent metadata pushes and
@@ -301,6 +302,64 @@ export type Site = {
    *
    */
   updated_at: string;
+};
+
+/**
+ * GH #753 — trial-decrypt probe result for the site's on-disk agent
+ * keystore (Keystore::probe()). It arrives with the agent's ordinary
+ * metadata push — the 30-minute cron cadence, or a CP-triggered
+ * recheck — never on admin_init: the agent's admin_init check only
+ * records a local wp-admin notice and sends nothing to the control
+ * plane from that path.
+ *
+ * Absent on the Site response only before this site's first metadata
+ * sync. A pre-#753 agent that has since synced at least once gets
+ * state=not_reported instead, never absent and never ok, so an old
+ * agent's silence can never read as a healthy keystore. Every
+ * metadata push replaces the previously stored status outright — it
+ * is not a delta — so not_reported also covers any later push whose
+ * latest probe carried no recognised result; a prior good report does
+ * not survive a bad one. Never contains key material, a key-check
+ * value, an error detail or a file path.
+ *
+ */
+export type SiteKeystoreStatus = {
+  /**
+   * ok = every stored item decrypted under the resolved master key.
+   * unreadable = the master key resolved but one or more stored
+   * items did not decrypt under it (the common "site moved host, or
+   * the wp-config.php security keys changed" case).
+   * key_unavailable = the master key itself could not be resolved.
+   * not_reported = the latest metadata push carried no recognised
+   * probe result — a pre-#753 agent that has synced at least once,
+   * or a later push whose probe result the control plane did not
+   * recognise. Every push replaces the previous status outright, so
+   * this is never a delta against an earlier report.
+   *
+   */
+  state?: "ok" | "unreadable" | "key_unavailable" | "not_reported";
+  /**
+   * Which tier pinned the master key, mirroring the agent's own
+   * pin. Absent when no source is pinned yet.
+   *
+   */
+  key_source?: "constant" | "salts" | "file" | "db" | "unknown";
+  /**
+   * Per-item probe result, one entry per stored envelope (e.g.
+   * site_keypair, cp_public_key, age_identity, email_secret,
+   * email_connection_secrets). Each value is "absent", "ok" or
+   * "unreadable".
+   *
+   */
+  items?: {
+    [key: string]: string;
+  };
+  /**
+   * Convenience list of the item keys currently unreadable;
+   * mirrors the "unreadable" entries in `items`.
+   *
+   */
+  unreadable?: Array<string>;
 };
 
 /**
@@ -825,6 +884,26 @@ export type AgentMetadata = {
    */
   agent_version?: string;
   /**
+   * The site's WordPress home_url as the agent reads it (GH #755).
+   * Optional; malformed or oversized reports are ignored. A
+   * reported address is queued as a background job that runs
+   * after the rest of this push has been applied, never during
+   * it, and adopts the address as the site's saved address only
+   * in two cases, each confirmed there by a signed ping: the
+   * reported address names the same host upgraded from http to
+   * https, confirmed by a signed ping to the https form that
+   * answers with a 2xx; or the reported address is the "www."
+   * sibling of the saved address, confirmed by a signed ping to
+   * the SAVED address that comes back redirected to it. Host
+   * comparison in both cases is by the host that is dialled, not a
+   * normalized apex or registrable domain. Anything else (a
+   * different host with no "www." relationship, a changed port or
+   * path, a downgrade to http) is ignored. A refusal or a job
+   * failure never fails this push.
+   *
+   */
+  home_url?: string;
+  /**
    * The agent's per-site age PUBLIC recipient ("age1..."), stored so
    * backups can be triggered without a separate registration call.
    * Empty or missing leaves the stored recipient unchanged.
@@ -928,6 +1007,59 @@ export type AgentMetadata = {
   } | null;
   plugins?: Array<SiteComponent>;
   themes?: Array<SiteComponent>;
+  /**
+   * GH #753 — the agent's Keystore::probe() trial-decrypt result,
+   * replayed on the ordinary metadata push. Optional; an agent that
+   * predates #753, or one that sends nothing this push, simply omits
+   * it and the control plane records state=not_reported rather than
+   * inferring a healthy keystore from silence.
+   *
+   * Every field here is optional and tolerantly decoded: a malformed
+   * or unexpected shape (e.g. a value this project's agent never
+   * sends, or `items`/`unreadable` in a shape that doesn't parse) is
+   * ignored field-by-field rather than rejecting the whole metadata
+   * push, and the control plane separately allowlists `state` and
+   * `key_source` against the vocabulary described on
+   * SiteKeystoreStatus before storing them — this schema does not
+   * itself enforce that vocabulary, since the handler doesn't either.
+   *
+   */
+  keystore?: {
+    /**
+     * See SiteKeystoreStatus.state for the vocabulary the control
+     * plane recognises (ok, unreadable, key_unavailable). Any other
+     * value, or a value in an unparseable shape, is ignored and
+     * stored as not_reported.
+     *
+     */
+    state?: string;
+    /**
+     * See SiteKeystoreStatus.key_source for the vocabulary the
+     * control plane recognises (constant, salts, file, db,
+     * unknown). Any other or unparseable value is ignored.
+     *
+     */
+    key_source?: string;
+    /**
+     * Per-item probe result, one entry per stored envelope. Each
+     * value is expected to be "absent", "ok" or "unreadable"
+     * (SiteKeystoreStatus.items), but an unrecognised value is
+     * dropped rather than rejected. A shape this cannot parse as an
+     * object (including PHP's empty-array `[]`) is ignored and the
+     * whole map is left unset.
+     *
+     */
+    items?: {
+      [key: string]: string;
+    };
+    /**
+     * Convenience list of currently-unreadable item keys. A shape
+     * this cannot parse as an array is ignored and the list is left
+     * unset.
+     *
+     */
+    unreadable?: Array<string>;
+  } | null;
 };
 
 export type SiteCreate = {
@@ -999,6 +1131,11 @@ export type Me = {
    *
    */
   managed_storage_allowed?: boolean;
+  /**
+   * Whether the signed-in user may manage the install-wide SMTP relay (GET, PUT and POST /test under /api/v1/settings/smtp). Computed by the same decision that gates those routes, so it is true exactly when they would admit this caller: instance-level authority (a superadmin, the owner of the only live organisation on the install, or, on a self-hosted install, the account recorded as having set up the install, while it is active and owns at least one live organisation) and a principal that is not site-scoped. An active organisation is not required. False whenever that decision cannot be made. Present on GET and PATCH /auth/me; responses built before the session exists (login, register, 2FA and OIDC completion) omit it, and clients read it from the GET /auth/me that follows.
+   *
+   */
+  can_manage_instance_email?: boolean;
   /**
    * The M16 Phase 0 "sign up into a plan" hint captured at registration (RegisterRequest.plan), single-use: present ONLY in the direct response to POST /auth/verify-email (read off the just-consumed verification token) or the first-run bootstrap response of POST /auth/register — never on GET /auth/me or any other Me-returning response. The frontend uses this to auto-start checkout right after the account is verified. Absent means no intent was captured (free signup, self-hosted instance, or a resend/login/OIDC path that never carries one).
    */
@@ -1988,10 +2125,19 @@ export type BackupEvent = {
     | "submitting_manifest"
     | "completed"
     | "failed"
+    | "started"
     | "stalled"
-    | "resumed";
+    | "resumed"
+    | "retrying";
   /**
    * Pass-through of the agent's POST /progress payload (e.g. chunk counters).
+   * For `retrying`, a control-plane hint that a backup command could not
+   * be delivered to the site and will be retried automatically,
+   * `phase_detail.error` carries the reason in the control plane's own
+   * words (the same text as `attempt_error`). A restore is never
+   * retried automatically, so it never sends `retrying`; a failed
+   * restore sends `failed`.
+   *
    */
   phase_detail?: {
     [key: string]: unknown;
@@ -2029,7 +2175,20 @@ export type BackupSnapshot = {
    * Kept by the monthly-archive retention rule.
    */
   archived?: boolean;
+  /**
+   * Why the backup failed. Set only once `status` is `failed`; a
+   * running backup's retry reason is `attempt_error`, never this field.
+   *
+   */
   error?: string;
+  /**
+   * While `status` is `running`: why the last attempt to start the
+   * backup on the site failed, in the control plane's own words, while
+   * it retries automatically. Cleared as soon as the site responds.
+   * Absent when no attempt is failing.
+   *
+   */
+  attempt_error?: string;
   /**
    * M5.6 / ADR-032 phpbu runner progress. Empty `{}` until the runner posts
    * its first phase. Shape:
@@ -2691,6 +2850,13 @@ export type ScheduleRun = {
    * Human-readable error message when status is `failed`.
    */
   error?: string;
+  /**
+   * While `status` is `running`: why the last attempt to start the
+   * backup on the site failed, while the control plane retries it
+   * automatically. Absent when no attempt is failing.
+   *
+   */
+  attempt_error?: string;
   /**
    * Actor that triggered this run (`schedule` for automatic fires; user UUID for manual).
    */
@@ -7618,6 +7784,58 @@ export type MediaSettings = {
   auto_target_quality: string;
 };
 
+/**
+ * The POST /recheck 502 body when the control plane could not reach
+ * the site's agent (code "agent_unreachable"). No `details`; a
+ * dedicated schema, not the general-purpose `Error`, so its `code`
+ * enum keeps this branch and `SiteUrlRedirectsError` mutually
+ * exclusive under `oneOf`.
+ *
+ */
+export type AgentUnreachableError = {
+  code: "agent_unreachable";
+  /**
+   * Human-readable error description.
+   */
+  message: string;
+};
+
+/**
+ * The POST /recheck 502 body when the site answered its command
+ * address with a redirect (code "site_url_redirects"), so no command
+ * was sent.
+ *
+ */
+export type SiteUrlRedirectsError = {
+  code: "site_url_redirects";
+  /**
+   * Human-readable error description.
+   */
+  message: string;
+  details: {
+    /**
+     * The saved site address the command was sent to.
+     */
+    from: string;
+    /**
+     * The address the command request was redirected to.
+     */
+    to: string;
+    /**
+     * Present only when the redirect target is an address the
+     * adoption rule would adopt over the saved one (a
+     * same-host http to https upgrade, or the "www." sibling of
+     * the saved address). Not a promise that the saved address
+     * will change: that still needs a later agent push
+     * reporting this address and a signed probe confirming it,
+     * run as a background job. Informational; the caller does
+     * not act on it directly.
+     *
+     */
+    suggested_url?: string;
+  };
+};
+
 export type RecheckResponse = {
   connection_state: string;
   last_seen_at?: string;
@@ -8721,6 +8939,11 @@ export type LoginErrors = {
    * Validation failed
    */
   422: Error;
+  /**
+   * too_many_attempts - login admission control refused the attempt (only when WPMGR_AUTH_LOGIN_MODE=enforce). Decided before any account lookup, so the response is the same whether or not the account exists. details.scope names the budget: "pair" (this connection against this account), "source" (this connection across all accounts) or "network" (this IPv6 /48 across all accounts). details.retry_after_seconds matches the Retry-After header. A refused attempt is not counted against any budget.
+   *
+   */
+  429: Error;
 };
 
 export type LoginError = LoginErrors[keyof LoginErrors];
@@ -10611,7 +10834,7 @@ export type GetSmtpSettingsErrors = {
    */
   401: Error;
   /**
-   * Insufficient permission
+   * instance_authority_required (or org_scope_required for a site-scoped principal)
    */
   403: Error;
 };
@@ -10642,7 +10865,7 @@ export type UpdateSmtpSettingsErrors = {
    */
   401: Error;
   /**
-   * Insufficient permission
+   * instance_authority_required (or org_scope_required for a site-scoped principal)
    */
   403: Error;
   /**
@@ -10679,7 +10902,7 @@ export type SendSmtpTestEmailErrors = {
    */
   401: Error;
   /**
-   * Insufficient permission
+   * instance_authority_required (or org_scope_required for a site-scoped principal)
    */
   403: Error;
 };
@@ -15539,9 +15762,21 @@ export type RecheckSiteErrors = {
    */
   429: Error;
   /**
-   * agent_unreachable — could not reach the site agent
+   * agent_unreachable: could not reach the site agent; see
+   * `AgentUnreachableError`, no `details`. site_url_redirects: the
+   * site answered its command address with a redirect, so no
+   * command was sent; see `SiteUrlRedirectsError` for the
+   * `details` shape (`from`, `to` and, when the redirect target is
+   * an address the adoption rule would adopt, `suggested_url`).
+   *
    */
-  502: Error;
+  502:
+    | ({
+        code: "agent_unreachable";
+      } & AgentUnreachableError)
+    | ({
+        code: "site_url_redirects";
+      } & SiteUrlRedirectsError);
   /**
    * recheck_disabled or lifecycle_disabled — re-check is not available on this control plane
    */

@@ -785,6 +785,15 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		logger.Warn("WPMGR_AGENT_SIGNING_PRIVATE_KEY is empty: CP->agent update commands are disabled")
 		commander = disabledCommander{}
 	}
+	// GH #755: an agent push may report a "www." toggle and/or an https
+	// upgrade of the saved address. The site service adopts a host change only
+	// when a signed ping to the saved address is redirected there right now,
+	// and an https upgrade of the same host only when a signed ping to the
+	// https address is answered with a 2xx. Without a signer neither is
+	// adopted after enrollment.
+	if cmdSigner != nil {
+		siteSvc.SetCommandRedirectProber(agentcmd.NewClient(ssrfClient, cmdSigner))
+	}
 	prober := agentcmd.NewProbe(ssrfClient)
 	updateHub := update.NewHub()
 	updateRepo := update.NewRepo(pool)
@@ -1099,7 +1108,15 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	mailerSvc := mailer.NewService(emailResolver, emailRenderer, pool, cfg.PublicBaseURL, supportEmail, logger)
 	sendEmailWorker := mailer.NewSendEmailWorker(mailerSvc)
 	smtpSettingsSvc := settings.NewService(settings.NewRepo(pool), siteDestAgeID, mailerSvc, logger)
-	smtpSettingsH := settings.NewHandler(smtpSettingsSvc, auditRec)
+	// The SMTP relay is install-wide, so its routes are gated on instance-level
+	// authority. instanceEmailGate is built ONCE and handed to both the route
+	// gate here and authH.SetInstanceAuthorityGate below (the Me capability),
+	// so the two read the same hosted flag. It is the admin console's
+	// admingate.PoolStore plus the install-owner arm, which is live only when
+	// WPMGR_HOSTED is not true. The agent-mirror gates keep the plain
+	// admingate.NewPoolStore and never see that arm.
+	instanceEmailGate := newInstanceEmailGate(pool, cfg)
+	smtpSettingsH := settings.NewHandler(smtpSettingsSvc, auditRec, instanceEmailGate)
 
 	// m59 — per-site email management. Shares the same age identity as the
 	// instance SMTP settings (siteDestAgeID). The agent command client is wired
@@ -1514,6 +1531,10 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// pays one near-empty index read a minute.
 	siteAutoResumeWorker := site.NewAutoResumeWorker(
 		site.NewAutoResumer(siteRepo, auditRec, logger), logger)
+	// GH #755: an address an agent push reports is adopted by this job, off
+	// the push, so the signed probe that confirms it never holds a push up.
+	// The enqueuer is wired onto siteSvc once riverClient is up.
+	siteAdoptURLWorker := site.NewAdoptReportedURLWorker(siteSvc)
 	// SSE endpoint + the dedicated LISTEN listener.
 	siteEventsH := siteevents.NewHandler(pool, siteEventsHub)
 	siteEventsListener := siteevents.NewListener(pool, siteEventsHub, logger)
@@ -1963,6 +1984,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		siteSweepWorker:          siteSweepWorker,
 		siteEventPruneWorker:     siteEventPruneWorker,
 		siteAutoResumeWorker:     siteAutoResumeWorker,
+		siteAdoptURLWorker:       siteAdoptURLWorker,
 		updateWorker:             updateWorker,
 		updateReaperWorker:       updateReaperWorker,
 		updateDispatchWorker:     updateDispatchWorker,
@@ -2058,6 +2080,8 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// enqueuer. Wire them after the client is up. The same enqueuer also serves
 	// the post-update inventory-refresh path (via the update Worker) and the
 	// operator-facing refresh route on the site handler (via siteRefreshAdapter).
+	// GH #755: agent pushes queue a reported address for siteAdoptURLWorker.
+	siteSvc.SetAdoptURLEnqueuer(site.NewRiverAdoptURLEnqueuer(riverClient))
 	updateEnqueuer := update.NewRiverEnqueuer(riverClient)
 	updateSvc := update.NewService(updateRepo, sitesLookup, updateEnqueuer, validator, clock)
 	updateH := update.NewHandler(updateSvc, updateHub, auditRec)
@@ -2395,6 +2419,10 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// diagnostics.DBSizeHistorySink structurally via
 	// RecordDBSizeHistoryFromDiagnostics.
 	diagnosticsSvc.SetDBSizeHistorySink(perfRepo)
+	// GH #755: the daily diagnostics push's http.home_url goes to the site
+	// service, which queues the job that decides whether it replaces the
+	// saved address.
+	diagnosticsSvc.SetReportedURLSink(siteSvc)
 	// M28 — offline IP -> hosting-provider resolver. Self-disables (no-op) if the
 	// embedded DB-IP ASN database fails to open; never blocks boot.
 	if ipResolver, ipErr := ipprovider.New(); ipErr != nil {
@@ -2841,10 +2869,10 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	if err := authH.SetHandshakeSecret(cfg.Auth.SessionSecret); err != nil {
 		return fmt.Errorf("social handshake key: %w", err)
 	}
-	// GH #718 Phase 0 — login admission control. Fatal on a bad mode rather
-	// than a fallback: "observe" and "off" are not the same thing, and an
-	// operator who typed the mode wrong must find out here and not from an
-	// endpoint that quietly stopped measuring.
+	// GH #718 — login admission control. Fatal on a bad mode rather than a
+	// fallback: "observe" and "off" are not the same thing, and an operator
+	// who typed the mode wrong must find out here and not from an endpoint
+	// that quietly stopped measuring or enforcing.
 	loginMode, err := auth.ParseLoginMode(cfg.Auth.LoginMode)
 	if err != nil {
 		return err
@@ -2866,6 +2894,11 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// no-ops to true when WPMGR_HOSTED is off, so this wiring is safe to leave
 	// on unconditionally, exactly like SetHosted above.
 	authH.SetManagedStorageResolver(billingSvc)
+	// Me.can_manage_instance_email: the same instanceEmailGate value that
+	// smtpSettingsH's route gate reads, through the same
+	// admingate.CanManageInstanceEmail, so the dashboard offers the instance
+	// email settings exactly when /api/v1/settings/smtp would admit.
+	authH.SetInstanceAuthorityGate(instanceEmailGate)
 
 	filesH := files.NewHandler(filesSvc, auditRec)
 
@@ -3352,7 +3385,9 @@ type riverDeps struct {
 	siteSweepWorker      *site.SweepWorker
 	siteEventPruneWorker *site.EventPruneWorker
 	siteAutoResumeWorker *site.AutoResumeWorker
-	updateWorker         *update.Worker
+	// GH #755: adopts an agent-reported address off the push (always wired).
+	siteAdoptURLWorker *site.AdoptReportedURLWorker
+	updateWorker       *update.Worker
 	// #131 follow-up — periodic reaper for update_tasks stuck in
 	// pending/running past the stale-task threshold (always wired).
 	updateReaperWorker *update.ReaperWorker
@@ -3561,6 +3596,9 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 	// resume instant must un-pause those sites on the way back up rather than
 	// leaving them dark for up to another interval, and the sweep is idempotent
 	// so an extra run at boot costs one index read.
+	if d.siteAdoptURLWorker != nil {
+		river.AddWorker(workers, d.siteAdoptURLWorker)
+	}
 	if d.siteAutoResumeWorker != nil {
 		river.AddWorker(workers, d.siteAutoResumeWorker)
 		periodics = append(periodics, river.NewPeriodicJob(

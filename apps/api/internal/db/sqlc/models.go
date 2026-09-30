@@ -12,6 +12,54 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type AgentActivityLog struct {
+	ID          int64     `json:"id"`
+	TenantID    uuid.UUID `json:"tenant_id"`
+	SiteID      uuid.UUID `json:"site_id"`
+	Seq         int64     `json:"seq"`
+	EventType   string    `json:"event_type"`
+	ObjectType  string    `json:"object_type"`
+	ObjectID    string    `json:"object_id"`
+	ObjectLabel string    `json:"object_label"`
+	ActorUserID int64     `json:"actor_user_id"`
+	ActorLogin  string    `json:"actor_login"`
+	ActorIp     string    `json:"actor_ip"`
+	Summary     string    `json:"summary"`
+	Meta        []byte    `json:"meta"`
+	MetaRaw     string    `json:"meta_raw"`
+	Severity    string    `json:"severity"`
+	PrevHash    string    `json:"prev_hash"`
+	ThisHash    string    `json:"this_hash"`
+	ChainValid  bool      `json:"chain_valid"`
+	OccurredAt  time.Time `json:"occurred_at"`
+	ReceivedAt  time.Time `json:"received_at"`
+}
+
+type AgentDiagnostic struct {
+	ID       uuid.UUID `json:"id"`
+	TenantID uuid.UUID `json:"tenant_id"`
+	SiteID   uuid.UUID `json:"site_id"`
+	// One of: identity / php / mysql / filesystem / http / cron / themes / plugins / users / security / https / mail / performance / hosting / wp_native. The 14 legacy categories are the WPMgr-extra leapfrog collector; wp_native is the verbatim WP_Debug_Data::debug_data() dump introduced in agent v0.9.14 (Site-Health-Full).
+	Category    string    `json:"category"`
+	Payload     []byte    `json:"payload"`
+	CollectedAt time.Time `json:"collected_at"`
+	ReceivedAt  time.Time `json:"received_at"`
+}
+
+type AgentLoginEvent struct {
+	ID           int64              `json:"id"`
+	TenantID     uuid.UUID          `json:"tenant_id"`
+	SiteID       uuid.UUID          `json:"site_id"`
+	AgentEventID int64              `json:"agent_event_id"`
+	Ip           *string            `json:"ip"`
+	Status       *int16             `json:"status"`
+	Category     *string            `json:"category"`
+	Username     *string            `json:"username"`
+	RequestID    *string            `json:"request_id"`
+	OccurredAt   pgtype.Timestamptz `json:"occurred_at"`
+	IngestedAt   time.Time          `json:"ingested_at"`
+}
+
 type AgentMirrorState struct {
 	ID                  int32              `json:"id"`
 	LastRequestAt       pgtype.Timestamptz `json:"last_request_at"`
@@ -32,6 +80,26 @@ type AgentNonce struct {
 	SiteID    uuid.UUID `json:"site_id"`
 	Nonce     string    `json:"nonce"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+type AgentPhpError struct {
+	ID              uuid.UUID `json:"id"`
+	TenantID        uuid.UUID `json:"tenant_id"`
+	SiteID          uuid.UUID `json:"site_id"`
+	Md5             string    `json:"md5"`
+	Code            int32     `json:"code"`
+	Severity        string    `json:"severity"`
+	Message         string    `json:"message"`
+	File            string    `json:"file"`
+	Line            int32     `json:"line"`
+	RequestPath     string    `json:"request_path"`
+	FirstSeenAt     time.Time `json:"first_seen_at"`
+	LastSeenAt      time.Time `json:"last_seen_at"`
+	OccurrenceCount int64     `json:"occurrence_count"`
+	Silenced        bool      `json:"silenced"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+	Backtrace       []byte    `json:"backtrace"`
 }
 
 type AlertConfig struct {
@@ -141,14 +209,15 @@ type AutologinToken struct {
 }
 
 type BackupChunk struct {
-	ID        uuid.UUID `json:"id"`
-	TenantID  uuid.UUID `json:"tenant_id"`
-	Blake3    string    `json:"blake3"`
-	S3Key     string    `json:"s3_key"`
-	Size      int64     `json:"size"`
-	Refcount  int64     `json:"refcount"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID               uuid.UUID `json:"id"`
+	TenantID         uuid.UUID `json:"tenant_id"`
+	Blake3           string    `json:"blake3"`
+	S3Key            string    `json:"s3_key"`
+	Size             int64     `json:"size"`
+	Refcount         int64     `json:"refcount"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+	LastReferencedAt time.Time `json:"last_referenced_at"`
 }
 
 type BackupFileIndex struct {
@@ -194,13 +263,6 @@ type BackupSchedule struct {
 	KeepLast           int32              `json:"keep_last"`
 	IncrementalEnabled bool               `json:"incremental_enabled"`
 	BaseWindowDays     *int32             `json:"base_window_days"`
-	NotifyOnCompletion string             `json:"notify_on_completion"`
-	NotifyRecipients   []byte             `json:"notify_recipients"`
-	BackupComponents   []byte             `json:"backup_components"`
-	ExcludePaths       []byte             `json:"exclude_paths"`
-	ExcludeExtensions  []byte             `json:"exclude_extensions"`
-	ExcludeFileSizeMb  *int32             `json:"exclude_file_size_mb"`
-	IncludeCore        bool               `json:"include_core"`
 	NextRunAt          time.Time          `json:"next_run_at"`
 	LastRunAt          pgtype.Timestamptz `json:"last_run_at"`
 	CreatedAt          time.Time          `json:"created_at"`
@@ -222,6 +284,7 @@ type BackupScheduleRun struct {
 	StartedAt    pgtype.Timestamptz `json:"started_at"`
 	FinishedAt   pgtype.Timestamptz `json:"finished_at"`
 	UpdatedAt    time.Time          `json:"updated_at"`
+	AttemptError string             `json:"attempt_error"`
 }
 
 type BackupSnapshot struct {
@@ -254,6 +317,17 @@ type BackupSnapshot struct {
 	CycleBytesUploaded int64              `json:"cycle_bytes_uploaded"`
 	CreatedAt          time.Time          `json:"created_at"`
 	UpdatedAt          time.Time          `json:"updated_at"`
+	// When the CP wrote a legacy inspection cache for this snapshot. NULL means no cache; manifest-based inspection has its own resolution path.
+	SqlInspectionCachedAt pgtype.Timestamptz `json:"sql_inspection_cached_at"`
+	// siteurl recorded at backup time. Used by restore to compute URL rewrites when restoring to a different environment (dev->prod, staging->prod).
+	SourceSiteUrl *string `json:"source_site_url"`
+	// home_url recorded at backup time. See source_site_url.
+	SourceHomeUrl *string `json:"source_home_url"`
+	// WP_CONTENT_URL recorded at backup time. See source_site_url.
+	SourceContentUrl *string `json:"source_content_url"`
+	// wp_upload_dir()['baseurl'] recorded at backup time. See source_site_url.
+	SourceUploadUrl *string `json:"source_upload_url"`
+	AttemptError    string  `json:"attempt_error"`
 }
 
 type BillingEvent struct {
@@ -445,6 +519,14 @@ type HibpBreachCache struct {
 	FetchedAt time.Time `json:"fetched_at"`
 }
 
+type InstallOwner struct {
+	Singleton  bool      `json:"singleton"`
+	UserID     uuid.UUID `json:"user_id"`
+	TenantID   uuid.UUID `json:"tenant_id"`
+	Source     string    `json:"source"`
+	RecordedAt time.Time `json:"recorded_at"`
+}
+
 type InstanceSetting struct {
 	Key       string    `json:"key"`
 	ValueEnc  []byte    `json:"value_enc"`
@@ -512,13 +594,14 @@ type McpGrant struct {
 	ClientVersion            *string            `json:"client_version"`
 	ProtocolVersion          *string            `json:"protocol_version"`
 	ClientIdentityRecordedAt pgtype.Timestamptz `json:"client_identity_recorded_at"`
-	SetupClient              *string            `json:"setup_client"`
-	CreatedByUserID          pgtype.UUID        `json:"created_by_user_id"`
-	CreatedAt                time.Time          `json:"created_at"`
-	LastUsedAt               pgtype.Timestamptz `json:"last_used_at"`
-	RevokedAt                pgtype.Timestamptz `json:"revoked_at"`
-	ExpiresAt                time.Time          `json:"expires_at"`
-	IdleExpireAfterDays      *int32             `json:"idle_expire_after_days"`
+	// The AI client the operator chose at S29 step 2, as a client-table.ts slug. NULL means no operator choice was recorded -- NOT "generic", which is the distinct case of an operator actively choosing "Other MCP client". Distinct from client_name/client_version, which are self-reported by the client at initialize, and from client_id, which is an OAuth registration id. Never written by RecordConnect. See m128 DECISIONS 1, 2 and 4.
+	SetupClient         *string            `json:"setup_client"`
+	CreatedByUserID     pgtype.UUID        `json:"created_by_user_id"`
+	CreatedAt           time.Time          `json:"created_at"`
+	LastUsedAt          pgtype.Timestamptz `json:"last_used_at"`
+	RevokedAt           pgtype.Timestamptz `json:"revoked_at"`
+	ExpiresAt           time.Time          `json:"expires_at"`
+	IdleExpireAfterDays *int32             `json:"idle_expire_after_days"`
 }
 
 type McpOauthClient struct {
@@ -530,6 +613,47 @@ type McpOauthClient struct {
 	ClientName              *string   `json:"client_name"`
 	ClientUri               *string   `json:"client_uri"`
 	CreatedAt               time.Time `json:"created_at"`
+	RegisteredScopes        []string  `json:"registered_scopes"`
+}
+
+type MediaOptimizationJob struct {
+	ID                string             `json:"id"`
+	TenantID          uuid.UUID          `json:"tenant_id"`
+	SiteID            uuid.UUID          `json:"site_id"`
+	AssetID           pgtype.UUID        `json:"asset_id"`
+	WpAttachmentID    int64              `json:"wp_attachment_id"`
+	Kind              string             `json:"kind"`
+	TargetFormat      *string            `json:"target_format"`
+	TargetQuality     *string            `json:"target_quality"`
+	State             string             `json:"state"`
+	BytesBefore       *int64             `json:"bytes_before"`
+	BytesAfter        *int64             `json:"bytes_after"`
+	VariantsTotal     int32              `json:"variants_total"`
+	VariantsSucceeded int32              `json:"variants_succeeded"`
+	VariantsFailed    int32              `json:"variants_failed"`
+	ErrorReason       *string            `json:"error_reason"`
+	InitiatorUserID   pgtype.UUID        `json:"initiator_user_id"`
+	CreatedAt         time.Time          `json:"created_at"`
+	StartedAt         pgtype.Timestamptz `json:"started_at"`
+	CompletedAt       pgtype.Timestamptz `json:"completed_at"`
+	SyncGeneration    *int64             `json:"sync_generation"`
+	// River river_jobs.id for the media_encode job enqueued at encode-ready time. NULL for non-optimize jobs and for rows created before m51. Used by the cancel path to cancel the River job proactively.
+	EncodeRiverJobID *int64 `json:"encode_river_job_id"`
+}
+
+type MediaVariantResult struct {
+	ID                 uuid.UUID `json:"id"`
+	JobID              string    `json:"job_id"`
+	TenantID           uuid.UUID `json:"tenant_id"`
+	VariantName        string    `json:"variant_name"`
+	SourceSizeBytes    int64     `json:"source_size_bytes"`
+	OptimizedSizeBytes *int64    `json:"optimized_size_bytes"`
+	SourceMime         string    `json:"source_mime"`
+	OptimizedMime      *string   `json:"optimized_mime"`
+	EncodeMs           *int32    `json:"encode_ms"`
+	State              string    `json:"state"`
+	Reason             *string   `json:"reason"`
+	CreatedAt          time.Time `json:"created_at"`
 }
 
 type Membership struct {
@@ -609,6 +733,35 @@ type ReportSchedule struct {
 	UpdatedAt        time.Time          `json:"updated_at"`
 }
 
+type RestoreRun struct {
+	ID           uuid.UUID          `json:"id"`
+	TenantID     uuid.UUID          `json:"tenant_id"`
+	SiteID       uuid.UUID          `json:"site_id"`
+	SnapshotID   uuid.UUID          `json:"snapshot_id"`
+	Mode         string             `json:"mode"`
+	Components   []string           `json:"components"`
+	Selection    []byte             `json:"selection"`
+	Status       string             `json:"status"`
+	CurrentPhase *string            `json:"current_phase"`
+	Error        *string            `json:"error"`
+	TriggeredBy  *string            `json:"triggered_by"`
+	CreatedAt    time.Time          `json:"created_at"`
+	StartedAt    pgtype.Timestamptz `json:"started_at"`
+	FinishedAt   pgtype.Timestamptz `json:"finished_at"`
+	UpdatedAt    time.Time          `json:"updated_at"`
+}
+
+type RestoreRunEvent struct {
+	ID           int64     `json:"id"`
+	TenantID     uuid.UUID `json:"tenant_id"`
+	RestoreRunID uuid.UUID `json:"restore_run_id"`
+	Phase        string    `json:"phase"`
+	Status       string    `json:"status"`
+	Message      string    `json:"message"`
+	Detail       []byte    `json:"detail"`
+	OccurredAt   time.Time `json:"occurred_at"`
+}
+
 type RucssJob struct {
 	ID            string             `json:"id"`
 	TenantID      uuid.UUID          `json:"tenant_id"`
@@ -685,6 +838,51 @@ type RumRollupHourly struct {
 	MaxValue     int32     `json:"max_value"`
 }
 
+type ScanFinding struct {
+	ID          uuid.UUID `json:"id"`
+	TenantID    uuid.UUID `json:"tenant_id"`
+	SiteID      uuid.UUID `json:"site_id"`
+	RunID       uuid.UUID `json:"run_id"`
+	FindingType string    `json:"finding_type"`
+	Path        string    `json:"path"`
+	Severity    string    `json:"severity"`
+	ExpectedMd5 *string   `json:"expected_md5"`
+	ActualMd5   *string   `json:"actual_md5"`
+	DedupKey    string    `json:"dedup_key"`
+	Ignored     bool      `json:"ignored"`
+	IgnoredBy   *string   `json:"ignored_by"`
+	CreatedAt   time.Time `json:"created_at"`
+	LastSeenRun uuid.UUID `json:"last_seen_run"`
+}
+
+type ScanRun struct {
+	ID            uuid.UUID          `json:"id"`
+	TenantID      uuid.UUID          `json:"tenant_id"`
+	SiteID        uuid.UUID          `json:"site_id"`
+	Kind          string             `json:"kind"`
+	Status        string             `json:"status"`
+	Cursor        []byte             `json:"cursor"`
+	FilesScanned  int64              `json:"files_scanned"`
+	WpVersion     *string            `json:"wp_version"`
+	Locale        *string            `json:"locale"`
+	Error         *string            `json:"error"`
+	FindingCounts []byte             `json:"finding_counts"`
+	CreatedAt     time.Time          `json:"created_at"`
+	StartedAt     pgtype.Timestamptz `json:"started_at"`
+	FinishedAt    pgtype.Timestamptz `json:"finished_at"`
+}
+
+type ScanRunHash struct {
+	ID       int64     `json:"id"`
+	TenantID uuid.UUID `json:"tenant_id"`
+	RunID    uuid.UUID `json:"run_id"`
+	Path     string    `json:"path"`
+	Size     *int64    `json:"size"`
+	Md5      *string   `json:"md5"`
+	Mtime    *int64    `json:"mtime"`
+	IsLink   bool      `json:"is_link"`
+}
+
 type Site struct {
 	ID                     uuid.UUID          `json:"id"`
 	TenantID               uuid.UUID          `json:"tenant_id"`
@@ -747,6 +945,20 @@ type SiteAppAlertState struct {
 	EverAppUp       bool               `json:"ever_app_up"`
 	LastAlertAt     pgtype.Timestamptz `json:"last_alert_at"`
 	UpdatedAt       time.Time          `json:"updated_at"`
+}
+
+type SiteBackupSetting struct {
+	TenantID           uuid.UUID `json:"tenant_id"`
+	SiteID             uuid.UUID `json:"site_id"`
+	BackupComponents   []byte    `json:"backup_components"`
+	IncludeCore        bool      `json:"include_core"`
+	ExcludePaths       []byte    `json:"exclude_paths"`
+	ExcludeExtensions  []byte    `json:"exclude_extensions"`
+	ExcludeFileSizeMb  *int32    `json:"exclude_file_size_mb"`
+	NotifyOnCompletion string    `json:"notify_on_completion"`
+	NotifyRecipients   []byte    `json:"notify_recipients"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
 }
 
 type SiteCacheHitRatioHistory struct {
@@ -919,6 +1131,15 @@ type SiteEmailLog struct {
 	UpdatedAt     time.Time `json:"updated_at"`
 }
 
+type SiteErrorConfig struct {
+	TenantID   uuid.UUID `json:"tenant_id"`
+	SiteID     uuid.UUID `json:"site_id"`
+	ErrorLevel int32     `json:"error_level"`
+	IgnoreMd5s []string  `json:"ignore_md5s"`
+	UpdatedAt  time.Time `json:"updated_at"`
+	Enabled    bool      `json:"enabled"`
+}
+
 type SiteEvent struct {
 	EventID   string      `json:"event_id"`
 	TenantID  uuid.UUID   `json:"tenant_id"`
@@ -926,6 +1147,19 @@ type SiteEvent struct {
 	Type      string      `json:"type"`
 	Data      []byte      `json:"data"`
 	CreatedAt time.Time   `json:"created_at"`
+}
+
+type SiteFileBaseline struct {
+	SiteID     uuid.UUID `json:"site_id"`
+	TenantID   uuid.UUID `json:"tenant_id"`
+	Path       string    `json:"path"`
+	Md5        string    `json:"md5"`
+	Size       int64     `json:"size"`
+	Mtime      int64     `json:"mtime"`
+	IsLink     bool      `json:"is_link"`
+	Source     string    `json:"source"`
+	UpdatedRun uuid.UUID `json:"updated_run"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 type SiteFileManager struct {
@@ -952,6 +1186,63 @@ type SiteIncident struct {
 	Reason         string             `json:"reason"`
 	CreatedAt      time.Time          `json:"created_at"`
 	UpdatedAt      time.Time          `json:"updated_at"`
+}
+
+type SiteLoginBrand struct {
+	TenantID  uuid.UUID `json:"tenant_id"`
+	SiteID    uuid.UUID `json:"site_id"`
+	LogoUrl   string    `json:"logo_url"`
+	LogoLink  string    `json:"logo_link"`
+	Message   string    `json:"message"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type SiteManagedFile struct {
+	SiteID    uuid.UUID `json:"site_id"`
+	TenantID  uuid.UUID `json:"tenant_id"`
+	Path      string    `json:"path"`
+	Md5       string    `json:"md5"`
+	ManagedBy string    `json:"managed_by"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type SiteMediaAsset struct {
+	ID                uuid.UUID          `json:"id"`
+	TenantID          uuid.UUID          `json:"tenant_id"`
+	SiteID            uuid.UUID          `json:"site_id"`
+	WpAttachmentID    int64              `json:"wp_attachment_id"`
+	Title             string             `json:"title"`
+	OriginalPath      string             `json:"original_path"`
+	OriginalUrl       string             `json:"original_url"`
+	OriginalMime      string             `json:"original_mime"`
+	OriginalWidth     *int32             `json:"original_width"`
+	OriginalHeight    *int32             `json:"original_height"`
+	OriginalSizeBytes int64              `json:"original_size_bytes"`
+	CurrentFormat     string             `json:"current_format"`
+	CurrentSizeBytes  int64              `json:"current_size_bytes"`
+	Status            string             `json:"status"`
+	Generation        int32              `json:"generation"`
+	CompressionLevel  *string            `json:"compression_level"`
+	TargetFormat      *string            `json:"target_format"`
+	SizesOptimized    []byte             `json:"sizes_optimized"`
+	SizesUnoptimized  []byte             `json:"sizes_unoptimized"`
+	LastOptimizedAt   pgtype.Timestamptz `json:"last_optimized_at"`
+	LastSyncedAt      time.Time          `json:"last_synced_at"`
+	CreatedAt         time.Time          `json:"created_at"`
+	UpdatedAt         time.Time          `json:"updated_at"`
+	SyncGeneration    int64              `json:"sync_generation"`
+	VariantCount      int32              `json:"variant_count"`
+	SavedBytes        int64              `json:"saved_bytes"`
+}
+
+type SiteMediaSetting struct {
+	TenantID            uuid.UUID `json:"tenant_id"`
+	SiteID              uuid.UUID `json:"site_id"`
+	AutoOptimizeEnabled bool      `json:"auto_optimize_enabled"`
+	AutoTargetFormat    string    `json:"auto_target_format"`
+	AutoTargetQuality   string    `json:"auto_target_quality"`
+	CreatedAt           time.Time `json:"created_at"`
+	UpdatedAt           time.Time `json:"updated_at"`
 }
 
 type SiteObjectCacheConfig struct {
@@ -1124,6 +1415,47 @@ type SiteScreenshot struct {
 	Etag            *string            `json:"etag"`
 	CreatedAt       time.Time          `json:"created_at"`
 	UpdatedAt       time.Time          `json:"updated_at"`
+}
+
+type SiteSecurityBan struct {
+	ID        uuid.UUID `json:"id"`
+	TenantID  uuid.UUID `json:"tenant_id"`
+	SiteID    uuid.UUID `json:"site_id"`
+	Type      string    `json:"type"`
+	Value     string    `json:"value"`
+	Comment   string    `json:"comment"`
+	ActorType string    `json:"actor_type"`
+	ActorID   string    `json:"actor_id"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type SiteSecurityConfig struct {
+	TenantID   uuid.UUID `json:"tenant_id"`
+	SiteID     uuid.UUID `json:"site_id"`
+	Mode       string    `json:"mode"`
+	Thresholds []byte    `json:"thresholds"`
+	IpHeader   string    `json:"ip_header"`
+	AllowCidrs []string  `json:"allow_cidrs"`
+	DenyCidrs  []string  `json:"deny_cidrs"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+type SiteSecurityHardeningConfig struct {
+	SiteID                   uuid.UUID `json:"site_id"`
+	TenantID                 uuid.UUID `json:"tenant_id"`
+	DisableFileEditor        bool      `json:"disable_file_editor"`
+	XmlrpcMode               string    `json:"xmlrpc_mode"`
+	RestrictRestApi          string    `json:"restrict_rest_api"`
+	RestrictLoginIdentifier  string    `json:"restrict_login_identifier"`
+	ForceUniqueNickname      bool      `json:"force_unique_nickname"`
+	DisableAuthorArchiveEnum bool      `json:"disable_author_archive_enum"`
+	ForceSsl                 bool      `json:"force_ssl"`
+	DisableDirectoryBrowsing bool      `json:"disable_directory_browsing"`
+	DisablePhpInUploads      bool      `json:"disable_php_in_uploads"`
+	ProtectSystemFiles       bool      `json:"protect_system_files"`
+	UpdatedAt                time.Time `json:"updated_at"`
+	ActorType                *string   `json:"actor_type"`
+	ActorID                  *string   `json:"actor_id"`
 }
 
 type SiteSecurityPolicy struct {
@@ -1351,9 +1683,52 @@ type TwoFactorChallenge struct {
 }
 
 type UpdateRun struct {
-	ID          uuid.UUID          `json:"id"`
-	TenantID    uuid.UUID          `json:"tenant_id"`
-	CreatedBy   pgtype.UUID        `json:"created_by"`
+	ID        uuid.UUID   `json:"id"`
+	TenantID  uuid.UUID   `json:"tenant_id"`
+	CreatedBy pgtype.UUID `json:"created_by"`
+	// Run lifecycle. No CHECK constraint exists; this comment is the contract.
+	// Reconciled against internal/update/model.go by m119 (#482).
+	//
+	//   pending      Created and its tasks enqueued for immediate execution. The m3
+	//                default, and still the only state an immediate run passes
+	//                through.
+	//   scheduled    (#463) Created with a future scheduled_at and NOT yet handed to
+	//                the worker. The dispatcher's due-scan selects exactly these,
+	//                and update_runs_due_idx is partial on this value.
+	//   dispatching  (#463) Claimed by the dispatcher for this tick. The row has left
+	//                update_runs_due_idx, so a concurrent tick, a second replica or a
+	//                restart mid-dispatch cannot claim it again. Transient: the same
+	//                transaction that sets it enqueues the work.
+	//   running      At least one task is running.
+	//   completed    Every task reached a terminal state.
+	//   halted       (m119/#482 - written since the agent self-update wave machine
+	//                shipped, and declared by no migration until m119.) Terminal. The
+	//                run was STOPPED rather than finished, and is deliberately not
+	//                spelled 'completed', which would erase that fact. Reached two
+	//                ways, by two subsystems:
+	//                  - a wave gate refused to advance an agent self-update rollout
+	//                    (update/agent_repo.go haltLocked). Tasks underneath are a
+	//                    MIXTURE of real outcomes: those already dispatched run to
+	//                    their own conclusion and are never overwritten, only the
+	//                    still-'pending' ones become 'cancelled'.
+	//                  - an operator cancelled a scheduled run before it fired
+	//                    (update/cancel_repo.go CancelScheduledRun, #463). Tasks
+	//                    underneath are UNIFORMLY 'cancelled' and nothing was ever
+	//                    sent to any site.
+	//                The run vocabulary has no separate 'cancelled': cancel_repo.go
+	//                reuses this value on purpose rather than minting a status no
+	//                existing reader can render, and the task statuses underneath are
+	//                what distinguish the two cases.
+	//   expired      (#463) The run passed its dispatch window without being
+	//                dispatched - the control plane was down across scheduled_at, or
+	//                the run sat past the point where executing it is still what the
+	//                operator asked for. Terminal, and NEVER retried: a deferred bulk
+	//                update that fires days late is a surprise, not a service.
+	//                Distinct from 'completed' with failures, which was attempted, and
+	//                from 'halted', which was stopped by a gate or a human.
+	//
+	// Cross-tenant readers of this column run under InAgentTx and are admitted by
+	// update_runs_agent (m118), not by update_runs_tenant_isolation.
 	Status      string             `json:"status"`
 	DryRun      bool               `json:"dry_run"`
 	ScheduledAt pgtype.Timestamptz `json:"scheduled_at"`
@@ -1362,22 +1737,61 @@ type UpdateRun struct {
 }
 
 type UpdateTask struct {
-	ID             uuid.UUID          `json:"id"`
-	RunID          uuid.UUID          `json:"run_id"`
-	TenantID       uuid.UUID          `json:"tenant_id"`
-	SiteID         uuid.UUID          `json:"site_id"`
-	TargetType     string             `json:"target_type"`
-	TargetSlug     string             `json:"target_slug"`
-	DesiredVersion string             `json:"desired_version"`
-	FromVersion    string             `json:"from_version"`
-	ToVersion      string             `json:"to_version"`
-	Status         string             `json:"status"`
-	Detail         string             `json:"detail"`
-	Error          string             `json:"error"`
-	StartedAt      pgtype.Timestamptz `json:"started_at"`
-	FinishedAt     pgtype.Timestamptz `json:"finished_at"`
-	CreatedAt      time.Time          `json:"created_at"`
-	UpdatedAt      time.Time          `json:"updated_at"`
+	ID             uuid.UUID `json:"id"`
+	RunID          uuid.UUID `json:"run_id"`
+	TenantID       uuid.UUID `json:"tenant_id"`
+	SiteID         uuid.UUID `json:"site_id"`
+	TargetType     string    `json:"target_type"`
+	TargetSlug     string    `json:"target_slug"`
+	DesiredVersion string    `json:"desired_version"`
+	FromVersion    string    `json:"from_version"`
+	ToVersion      string    `json:"to_version"`
+	// Per-task lifecycle. No CHECK constraint exists; this comment is the contract.
+	// Reconciled against internal/update/model.go by m119 (#482).
+	//
+	//   pending      Created, awaiting execution.
+	//   running      In flight on the agent.
+	//   succeeded    Applied.
+	//   failed       Attempted and failed.
+	//   rolled_back  Attempted, failed, and reverted from the snapshot.
+	//   skipped      Not attempted, by decision at plan time - the control plane
+	//                declined this particular target.
+	//   cancelled    (m119/#482 - written since the wave machine shipped, and declared
+	//                by no migration until m119.) Terminal. NOTHING WAS EVER SENT TO
+	//                THIS SITE, and a human or a gate decided that. Written by
+	//                update/agent_repo.go haltLocked (only over tasks still 'pending';
+	//                a 'running' task is left alone, because its command is already
+	//                delivered and marking it cancelled would both record a falsehood
+	//                and stop the confirm poll that is the control plane's only way to
+	//                learn whether the site upgraded or bricked) and by
+	//                update/cancel_repo.go CancelScheduledRun (#463, over the
+	//                'scheduled' tasks of a run an operator cancelled).
+	//                Distinct from 'skipped', where the control plane declined the
+	//                target rather than a human stopping the run; from 'failed', where
+	//                the site WAS contacted; and from 'expired', below.
+	//   scheduled    (#463) Belongs to a run that is 'scheduled' and is not yet
+	//                eligible for execution. NOTE: 'scheduled' is NOT one of the
+	//                statuses in update_tasks_inflight_target_idx, whose predicate is
+	//                status IN ('pending','running'). That index is the authoritative
+	//                cross-run dedup guard (m88), so a scheduled task does NOT reserve
+	//                its (tenant, site, target) pair against a concurrent immediate
+	//                run.
+	//   expired      (#463) The parent run expired without dispatching, so this task
+	//                was never attempted. Terminal. NOT a spelling of 'cancelled':
+	//                'cancelled' records a decision somebody made, 'expired' records
+	//                that the window closed while the control plane was unavailable.
+	//
+	// The RESTRICTIVE update_tasks_site_scope policy (m19) and the cross-tenant
+	// update_tasks_agent policy (m89) both apply to this table; update_runs carries
+	// the agent policy from m118 but no site-scope policy, because it has no
+	// site_id.
+	Status     string             `json:"status"`
+	Detail     string             `json:"detail"`
+	Error      string             `json:"error"`
+	StartedAt  pgtype.Timestamptz `json:"started_at"`
+	FinishedAt pgtype.Timestamptz `json:"finished_at"`
+	CreatedAt  time.Time          `json:"created_at"`
+	UpdatedAt  time.Time          `json:"updated_at"`
 }
 
 type User struct {
@@ -1484,6 +1898,21 @@ type WordfenceVulnSoftware struct {
 	AffectedVersions []byte `json:"affected_versions"`
 	Patched          bool   `json:"patched"`
 	PatchedVersions  []byte `json:"patched_versions"`
+}
+
+type WporgCoreChecksum struct {
+	Version   string    `json:"version"`
+	Locale    string    `json:"locale"`
+	Path      string    `json:"path"`
+	Md5       string    `json:"md5"`
+	FetchedAt time.Time `json:"fetched_at"`
+}
+
+type WporgCoreChecksumsMetum struct {
+	Version   string    `json:"version"`
+	Locale    string    `json:"locale"`
+	FetchedAt time.Time `json:"fetched_at"`
+	Ok        bool      `json:"ok"`
 }
 
 type WporgPluginChecksum struct {

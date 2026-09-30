@@ -8,13 +8,53 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ### Added
 
+- Opt-in login admission budgets for POST /auth/login. WPMGR_AUTH_LOGIN_MODE=enforce refuses a sign in attempt that is over the pair, source, or source /48 budget with 429 too_many_attempts and a Retry-After header, but never over the account budget alone. observe remains the default and refuses nothing on budget grounds; a separate verification-concurrency limit still answers 503 server_busy with a Retry-After header in either mode (#718).
+
+### Changed
+
+- The bundled infra/docker-compose.yml now publishes the API port (WPMGR_API_PORT) to loopback only, not every interface. An operator whose own reverse proxy runs on another host or in a separate Docker network should point it at the bundled nginx (WPMGR_WEB_PORT) instead; reaching the API port directly from off the host now requires deliberately rebinding it and setting WPMGR_AUTH_PROXY_HOPS to match the real proxy chain (#718).
+
+### Fixed
+
+- The agent now checks whether each key it has stored still opens under the site's current encryption key. When some do not, WordPress admin shows a notice naming which keys cannot be read and what to do about it. When the backup key cannot be used, a backup is refused with a clear keystore_unreadable explanation instead of failing later. Status is reported to the dashboard with the agent's metadata, and a missing backup key is created only while the site's own key pair still opens, or on a site with no stored keys yet (#753). Agent 0.61.152.
+
+## [0.61.164] - 2026-09-28
+
+### Fixed
+
+- The plugin and theme update wizard now drops a selection whose item is no longer listed, or that had an update and no longer does, in the same render that site data refreshes, so the count shown and the request sent always match what the operator sees (#766).
+- Font transcode results are removed with their site and organisation. Rows belonging to a soft-deleted organisation stay until that organisation is purged (#768).
+- Router log lines that carry an exception message now escape control characters, so a command failure is always one readable line in the site's debug log. The response sent to the control plane is unchanged (#769). **Requires updating the plugin to pick up the fix.**
+- An instance SMTP change is now recorded in the audit trail even if the client disconnects right after saving. Both audit records are written on a context that is not canceled when the request ends, bounded to five seconds; a record that cannot be written is logged (#771).
+
+## [0.61.163] - 2026-09-28
+
+### Added
+
 - Every agent command now declares two facts about itself: what a successful run does to the site (read, write or destructive) and whether running it again is safe (idempotent, repeatable or unsafe). Nothing in the agent reads these to allow or refuse a command; they exist so an approval screen, a read-only connection or an audit trail can be built on a declared fact rather than a guess made from a command name. A command that declares neither is refused at build time (#734). Agent 0.61.149.
+- A new content_update command changes the title and/or body of an existing post or page by id, the agent's first command that writes post content. It keeps a retained copy of what it overwrites before writing, refuses a document built in the block editor outright, and requires a fingerprint of the content the caller believes it is replacing, so a conflicting write is reported as a conflict rather than silently applied. Nothing in the dashboard calls this command yet (#735). Agent 0.61.150.
+- The plugin and theme update wizard has a Select all button next to its existing controls. It selects every option in the active tab that has an available update, and turns into Deselect all once everything available in that tab is selected; selections on the other tab (plugins vs themes) are left untouched (#752).
+
+Thanks to Tim Coysh (GitHub `Coysh`), who requested it in #680 and built it.
+
+### Changed
+
+- Instance SMTP settings (the Email / SMTP page, and GET, PUT and POST /test under /api/v1/settings/smtp) now require instance-level authority: a superadmin configured through WPMGR_SUPERADMIN_EMAILS, or the owner of the only organisation on the install. On an install with more than one organisation, configure a superadmin to manage SMTP. Superadmins reach it from the admin console. The dashboard shows the page only to those who can use it (#761).
 
 ### Fixed
 
 - Restoring a file from the agent's media quarantine no longer overwrites a file that has since been recreated at the same path, and a file the restore declines to move is no longer removed from quarantine afterwards. Quarantine moves the original rather than copying it, so a file removed without being restored existed nowhere else. Restore now reports a per-file outcome with a reason instead of a bare count, and the quarantine folder is cleared only once every file it recorded is accounted for and a scan of the folder confirms nothing remains; anything the scan cannot positively classify counts as remaining (#737). **Requires updating the plugin to pick up the fix.**
 - The agent's page cache now keeps every path it builds inside the cache root (#719). **Requires updating the plugin to pick up the fix.**
 - The agent's pre-update snapshot now distinguishes a source directory that did not exist from a snapshot that could not be taken. Both previously produced the same empty result, and every rollback gate reads that result, so the two outcomes could not be told apart: a rollback could be skipped when one was available, or attempted when there was nothing to restore. An absent source is now a first-class before-state that a rollback undoes by removing whatever was created in its place, a capture failure is reported with a machine-readable code, and a partial snapshot left by a failed capture is deleted rather than left looking like a snapshot (#733). **Requires updating the plugin to pick up the fix.**
+- A command that fails now reports its exception class, where in the plugin it was thrown relative to the WordPress root, and a short reason, instead of a generic failure, so a failure is diagnosable from the dashboard without reproducing it. The reason passes through a redactor that removes recognised key material and absolute paths, and is withheld entirely if that cannot be done safely. The same failure is written to the site's debug log on one line, with recognised key material redacted and paths kept (#756). **Requires updating the plugin to pick up the fix.**
+
+Thanks to infoproxa-oss for the report (#754).
+
+- `apps/api/db/schema.sql` is brought back in step with the migrations. Four generated `backup_schedules` queries named columns a migration had already dropped, so the generated code could not match the real, migrated database; those queries now match it. Nothing currently calls the affected query (#762).
+
+Thanks to Denis V (GitHub `denisvmedia`), from #759 and #760.
+
+- Migrations m136 and m137, which add required scope columns to MCP grants and OAuth clients, now apply cleanly to a database that already has MCP connections. Boot previously stopped with a NOT NULL constraint violation on any such database. Upgrading from 0.61.160 or earlier applies them automatically (#770).
 
 ## [0.61.161] - 2026-09-10
 

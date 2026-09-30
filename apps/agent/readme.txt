@@ -4,7 +4,7 @@ Tags: backup, security, performance, updates, site management
 Requires at least: 6.2
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 0.61.149
+Stable tag: 0.61.152
 License: MIT
 License URI: https://opensource.org/licenses/MIT
 
@@ -286,6 +286,16 @@ This plugin ships two minified JavaScript files. Their human-readable source and
 
 The entries below summarize the notable changes since 0.31.1. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
 
+= 0.61.152 =
+* Fixed: the plugin now checks whether each key it has stored still opens under this site's current encryption key. If some do not, the WordPress admin screen shows a notice naming which keys cannot be read and what to do about it. When the backup key cannot be used, a backup is refused with a clear explanation instead of failing later. Status is reported to the dashboard along with the rest of this site's metadata. A missing backup key is only created while this site's own key pair still opens, or on a site with no stored keys yet.
+
+= 0.61.151 =
+* Fixed: a router log line that carries an exception message now escapes control characters, so a command failure is always one readable line in the debug log, instead of one that could break across lines or lose part of its own text. What is sent back to the control plane is unchanged.
+
+= 0.61.150 =
+* Fixed: a command that fails now reports back what broke: the kind of error, where in the plugin it was thrown, and a short reason, instead of a generic failure message. The reason passes through a redactor that removes recognised key material and absolute paths, and is withheld entirely if that cannot be done safely. The same failure is written to this site's debug log on one line, with recognised key material redacted and the path kept, so a failure can be diagnosed from the dashboard or the log without reproducing it.
+* Added: a new content-update command can change the title and/or body of an existing post or page by id. It keeps a retained copy of what it overwrites before writing, refuses to touch a document built in the block editor, and requires a fingerprint of the content it expects to replace, so a conflicting write is reported as a conflict rather than silently applied. Nothing in the dashboard uses this yet.
+
 = 0.61.149 =
 * Fixed: restoring a file from media quarantine no longer overwrites a file that has since been recreated at the same path. A file that cannot be put back safely is now left in quarantine and reported with a reason, instead of being removed after a restore that did not happen, so nothing is lost when a restore cannot complete in full. The quarantine folder is now cleared only once every file it recorded has been accounted for and a scan confirms nothing is left behind.
 * Fixed: every path the page cache reads or writes is now kept inside the cache folder.
@@ -457,6 +467,15 @@ The entries below summarize the notable changes since 0.31.1. This project ships
 * New: WOFF2 font transcoding. TTF, OTF and WOFF are converted on the control plane; the flag defaults to off.
 
 == Upgrade Notice ==
+
+= 0.61.152 =
+Detects when a stored key no longer opens, shows an admin notice naming which and what to do, and refuses a backup with a clear reason when the backup key cannot be used.
+
+= 0.61.151 =
+Router log lines now escape control characters, so a command failure always reads as one line in the debug log instead of one that could break apart. What is sent to the control plane is unchanged.
+
+= 0.61.150 =
+Command failures are now diagnosable from the dashboard: the kind of error, where it was thrown, and a redacted reason, plus a matching line in the site's debug log. Also adds a content-update command for changing an existing post's title or body; nothing in the dashboard uses it yet.
 
 = 0.61.149 =
 Fixes a media quarantine restore that could overwrite a file recreated at the same path, and could remove a quarantined file it had declined to restore. Also tightens where the page cache and folder creation may write. Update if this site uses the unused-image quarantine.

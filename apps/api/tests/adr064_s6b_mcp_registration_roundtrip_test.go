@@ -104,6 +104,10 @@ func TestMCPRegistrationRoundTripAsAppRole(t *testing.T) {
 		RedirectUris:            []string{"https://claude.ai/api/mcp/auth_callback"},
 		ClientName:              &name,
 		ClientUri:               &uri,
+		// m137: the column is NOT NULL with no DEFAULT. The honest value,
+		// matching what Service.Register writes, so this fixture models a
+		// real registration rather than one the schema would refuse.
+		RegisteredScopes: mcp.SupportedScopes(),
 	})
 	if err != nil {
 		t.Fatalf("STEP 1 RegisterClient failed as wpmgr_app: %v\n"+
@@ -225,6 +229,10 @@ func TestMCPRegisterTxCannotReadTheTable(t *testing.T) {
 		ClientSecretHash:        &secretHash,
 		TokenEndpointAuthMethod: "client_secret_post",
 		RedirectUris:            []string{"https://example.com/cb"},
+		// m137: the column is NOT NULL with no DEFAULT. The honest value,
+		// matching what Service.Register writes, so this fixture models a
+		// real registration rather than one the schema would refuse.
+		RegisteredScopes: mcp.SupportedScopes(),
 	}); err != nil {
 		t.Fatalf("seed registration: %v", err)
 	}

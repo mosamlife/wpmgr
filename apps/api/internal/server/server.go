@@ -630,8 +630,13 @@ func New(deps Deps) *Server {
 		deps.SiteDestH.Register(v1)
 	}
 	if deps.SettingsH != nil {
-		// ADR-045 — instance SMTP settings + send-test.
-		deps.SettingsH.Register(v1)
+		// ADR-045 — instance SMTP settings + send-test. On v1Auth, not v1: the
+		// relay is install-wide and its routes require instance-level authority
+		// (settings.Handler), which is a property of the person and not of an
+		// active organisation. RequireTenant would refuse an operator who holds
+		// that authority and belongs to no organisation. The settings group
+		// carries its own RequireOrgScope and instance-authority gate.
+		deps.SettingsH.Register(v1Auth)
 	}
 	if deps.UpdateH != nil {
 		deps.UpdateH.Register(v1)

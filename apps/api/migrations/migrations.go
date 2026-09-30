@@ -7,7 +7,8 @@ package migrations
 import "embed"
 
 // FS holds the embedded versioned migrations (the *.sql files in this dir).
-// atlas.sum is intentionally embedded too but ignored by the runner.
+// atlas.sum is not embedded: the pattern below matches only *.sql, and the
+// runner never reads atlas.sum. It serves the atlas CLI alone.
 //
 //go:embed *.sql
 var FS embed.FS

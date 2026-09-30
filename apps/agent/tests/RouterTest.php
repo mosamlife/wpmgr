@@ -171,6 +171,735 @@ final class RouterTest extends TestCase
 	}
 
 	// -------------------------------------------------------------------------
+	// #754: a throwing command must be diagnosable, without leaking anything
+	// -------------------------------------------------------------------------
+
+	/**
+	 * #754, the test that matters most: an exception message carrying an
+	 * absolute filesystem path must not reach the response. The path is real in
+	 * shape — FilesRestorer interpolates exactly this — and it discloses both
+	 * the hosting layout and the customer identity.
+	 */
+	public function test_command_failure_response_does_not_leak_an_absolute_path(): void
+	{
+		$response = $this->dispatchThrowing(
+			new \RuntimeException(
+				'FilesRestorer: cannot create staging dir: /home/customer123/public_html/wp-content/uploads/wpmgr/staging'
+			)
+		);
+
+		$this->assertInstanceOf( \WP_Error::class, $response );
+
+		$wire = $this->wireBlob( $response );
+
+		$this->assertStringNotContainsString( '/home/customer123', $wire );
+		$this->assertStringNotContainsString( 'customer123', $wire );
+		$this->assertStringNotContainsString( 'public_html', $wire );
+
+		// Redacted, not merely truncated: the category survives so the response
+		// is still worth reading.
+		$this->assertStringContainsString( 'cannot create staging dir', $wire );
+		$this->assertStringContainsString( '<path>', $wire );
+	}
+
+	/**
+	 * #754: an opaque 32+ character run — the shape of a key, token or hash —
+	 * is redacted out of the response.
+	 */
+	public function test_command_failure_response_redacts_an_opaque_secret_shaped_run(): void
+	{
+		$secret   = 'AKIAJ7Q2ZK4XN8PLW3RD6YTBVC5MHGFS9UEO1I0A';
+		$response = $this->dispatchThrowing( new \RuntimeException( 'Keystore: bad key ' . $secret ) );
+
+		$wire = $this->wireBlob( $response );
+
+		$this->assertStringNotContainsString( $secret, $wire );
+		$this->assertStringContainsString( '<redacted>', $wire );
+	}
+
+	/**
+	 * #754: STANDARD base64 — the encoding the agent's own encrypted material
+	 * is actually emitted in — must not survive. Its alphabet contains '/', so
+	 * a rule whose alphabet stops at the separator sees two sub-threshold
+	 * pieces instead of one token.
+	 *
+	 * Fixed vectors, each a real encoding of random bytes carrying at least one
+	 * '/', chosen by shape so that every clause of the decision is exercised:
+	 * a padded key whatever its case mix, and an unpadded key through the
+	 * case-mix gate with a digit or with '+'. Fixed rather than drawn per run,
+	 * so the outcome cannot vary between runs of correct code.
+	 *
+	 * @return void
+	 */
+	public function test_redaction_catches_standard_base64_key_material(): void
+	{
+		$caught = array(
+			// The DB-fallback master key: base64_encode() of 32 raw bytes.
+			'padded key'                          => 'JpXsrsvpkJ4QU9D43mEqo/DWxzeE2nX9GPs/Zi7BpTA=',
+			// Padding alone decides these two: each fails the case-mix gate.
+			'padded key, four upper-case letters' => '8wghyLbmBwxzgguxz6gptdaajh43m/mbka0o/bcVoAs=',
+			'padded key, five lower-case letters' => 'G/2H5NR4J/PoUT4eKnVGSH8M63CCUOzF7IW7A9If/NQ=',
+			// No digit and no '+': only its padding marks it as encoded.
+			'padded key, no digit and no plus'    => 'EOprBcOgQoHKDaJbHLiw/gRpaeUsqQhdspbTZaWzwoE=',
+			// The age header: the same 32 bytes with padding stripped.
+			'unpadded key with a digit'           => 'Quuv2rC/E4vYuaEw/i55soD7zlzCIHHFipbimo2QHGo',
+			// No digit: only its '+' marks it as encoded.
+			'unpadded key, plus and no digit'     => 'lXsoS/nsflSfFisFl/boKcLKEqsv/ZKSJXfiUZzbW+Q',
+			// No digit, '+' or '=': only length plus a '/' marks these.
+			'unpadded key, slash only (a)'        => 'XBdOdyJ/XJllQvQIAjsdcQ/PyiiRcOOiwYxMukFVQlI',
+			'unpadded key, slash only (b)'        => 'uDjBQFxylLNWjnhpokxYJoDgoWRHuZ/iWvaQuOfOZlc',
+			// The at-rest envelope: iv . tag . ciphertext, ~92 raw bytes.
+			'envelope'                            => '5bz9N3ww7Ce8KKPuh/EsRN75w/udeH1odTVrBbKuJBaI0bSATp/YJfEYUVAiwJTNZ1XLTBmQxsb/ZCdqE45NwXf3sTLBAbKQl/4SxCEdBZiVklsftCaJzXgtSTg=',
+		);
+
+		foreach ( $caught as $label => $secret ) {
+			$response = $this->dispatchThrowing( new \RuntimeException( 'Keystore: cannot unwrap ' . $secret ) );
+
+			$this->assertSame(
+				'Command execution failed: RuntimeException: Keystore: cannot unwrap <redacted>',
+				$response->get_error_message(),
+				$label . ' was not redacted whole'
+			);
+			$this->assertStringNotContainsString( $secret, $this->wireBlob( $response ), $label . ' survived' );
+		}
+	}
+
+	/**
+	 * #754: a key that begins with '/' reads as an absolute path. It keeps
+	 * that '/' through the encoded-run pass, so the path rule takes the whole
+	 * token and it comes out as <path> — nothing of it survives either way.
+	 *
+	 * @return void
+	 */
+	public function test_redaction_of_a_key_that_begins_with_a_slash(): void
+	{
+		$secret   = '/Yqrl3ycUTaJu5GEh0j/Ka7RUh/CYrOE9BHrzNBqBLwLCKSzk9Av7eE3IQ4yIZ+RwkGnilkYC1aietfEYsIxPQfKF2aK6LVCN8A7eLtRW6oK577rvuIPQrxkbvo=';
+		$response = $this->dispatchThrowing( new \RuntimeException( 'Keystore: cannot unwrap ' . $secret ) );
+
+		$this->assertSame(
+			'Command execution failed: RuntimeException: Keystore: cannot unwrap <path>',
+			$response->get_error_message()
+		);
+		$this->assertStringNotContainsString( 'Yqrl3ycUTaJu5GEh0j', $this->wireBlob( $response ) );
+	}
+
+	/**
+	 * #754: the stated limit of the encoded-run pass, pinned as a contract. An
+	 * UNPADDED key with fewer than six letters of one case does not qualify as
+	 * encoded, and a '/' inside it keeps every piece below the slash-free
+	 * threshold, so it comes through. Each of these is a real encoding of
+	 * random bytes.
+	 *
+	 * If a change starts catching these, that is a deliberate widening: move
+	 * them to the caught set above and update the comments in redactReason()
+	 * and isEncodedRun() that name this shape as uncaught.
+	 *
+	 * @return void
+	 */
+	public function test_redaction_limit_unpadded_key_that_is_not_case_mixed(): void
+	{
+		$uncaught = array(
+			// Four upper-case letters.
+			'8wghyLbmBwxzgguxz6gptdaajh43m/mbka0o/bcVoAs',
+			// Five lower-case letters.
+			'G/2H5NR4J/PoUT4eKnVGSH8M63CCUOzF7IW7A9If/NQ',
+		);
+
+		foreach ( $uncaught as $key ) {
+			$response = $this->dispatchThrowing( new \RuntimeException( 'Keystore: cannot unwrap ' . $key ) );
+
+			$this->assertSame(
+				'Command execution failed: RuntimeException: Keystore: cannot unwrap ' . $key,
+				$response->get_error_message()
+			);
+		}
+	}
+
+	/**
+	 * #754: the length rule for a case-mixed run that carries a '/' and no
+	 * digit, '+' or '=', both sides of the line. At 40 characters it is
+	 * redacted; one shorter, it is not. The accepted over-fire is pinned too:
+	 * a long case-mixed relative path is redacted by this rule.
+	 *
+	 * @return void
+	 */
+	public function test_case_mixed_slash_run_is_redacted_from_forty_characters(): void
+	{
+		$unit  = 'AbCdEfGhIjKlMnOpQrSt/';
+		$short = substr( str_repeat( $unit, 3 ), 0, 39 );
+		$long  = substr( str_repeat( $unit, 3 ), 0, 40 );
+
+		$this->assertSame( 0, preg_match( '~[0-9+=]~', $short . $long ), 'fixture must carry no digit, + or =' );
+		$this->assertStringEndsNotWith( '/', $short );
+		$this->assertStringEndsNotWith( '/', $long );
+
+		$this->assertSame(
+			'Command execution failed: RuntimeException: cannot unwrap ' . $short,
+			$this->dispatchThrowing( new \RuntimeException( 'cannot unwrap ' . $short ) )->get_error_message()
+		);
+		$this->assertSame(
+			'Command execution failed: RuntimeException: cannot unwrap <redacted>',
+			$this->dispatchThrowing( new \RuntimeException( 'cannot unwrap ' . $long ) )->get_error_message()
+		);
+
+		// The over-fire this rule accepts, stated as a contract.
+		$this->assertSame(
+			'Command execution failed: RuntimeException: cannot load <redacted>',
+			$this->dispatchThrowing(
+				new \RuntimeException( 'cannot load wp-content/plugins/example/src/Internal/DataStores/Orders/OrdersTableDataStore' )
+			)->get_error_message()
+		);
+	}
+
+	/**
+	 * #754: the whole failure body, encoded exactly as the REST server encodes
+	 * an error, fits the control plane's 512-byte window with data.exception
+	 * and data.at intact — for reasons whose encoded size is several times
+	 * their character count, and with a long namespaced exception class, which
+	 * the body carries twice.
+	 *
+	 * @return void
+	 */
+	public function test_failure_body_fits_the_control_plane_window(): void
+	{
+		$long = RouterTestBudgetExceptionWithALongNameStandingInForADeeplyNamespacedPluginException::class;
+
+		$cases = array(
+			'cjk'                => array( \RuntimeException::class, str_repeat( '鍵', 300 ) ),
+			'emoji'              => array( \RuntimeException::class, str_repeat( '🔑', 300 ) ),
+			'slash-heavy'        => array( \RuntimeException::class, 'cannot read ' . str_repeat( 'a/', 150 ) ),
+			'long class, ascii'  => array( $long, str_repeat( 'verbose failure ', 20 ) ),
+			'long class, cjk'    => array( $long, str_repeat( '鍵', 300 ) ),
+			'long class, emoji'  => array( $long, str_repeat( '🔑', 300 ) ),
+			'long class, slashy' => array( $long, 'cannot read ' . str_repeat( 'a/', 150 ) ),
+		);
+
+		foreach ( $cases as $label => $case ) {
+			list( $class, $reason ) = $case;
+
+			$response = $this->dispatchThrowing( new $class( $reason ) );
+			$body     = $this->restBody( $response );
+			$decoded  = json_decode( $body, true );
+
+			$this->assertLessThanOrEqual( 512, strlen( $body ), $label . ': body is ' . strlen( $body ) . ' bytes' );
+			$this->assertIsArray( $decoded, $label . ': body is not valid JSON' );
+			$this->assertSame( $class, $decoded['data']['exception'] ?? null, $label . ': data.exception did not survive' );
+			$this->assertMatchesRegularExpression( '~^[^/].*RouterTest\.php:\d+$~', (string) ( $decoded['data']['at'] ?? '' ), $label . ': data.at did not survive' );
+			$this->assertStringStartsWith( 'Command execution failed: ' . $class, (string) $decoded['message'], $label );
+		}
+	}
+
+	/**
+	 * #754: an anonymous exception class is reported by the name before its
+	 * NUL byte. The part after it is where the class was declared — an
+	 * absolute path — and must not reach the response.
+	 *
+	 * @return void
+	 */
+	public function test_anonymous_exception_class_does_not_carry_its_declaring_path(): void
+	{
+		$response = $this->dispatchThrowing( new class( 'boom' ) extends \RuntimeException {} );
+		$data     = $response->get_error_data();
+		$wire     = $this->wireBlob( $response );
+
+		$this->assertSame( 'RuntimeException@anonymous', $data['exception'] ?? null );
+		$this->assertStringNotContainsString( "\0", $wire );
+		$this->assertStringNotContainsString( '\u0000', $wire );
+		$this->assertStringNotContainsString( dirname( __DIR__ ), $wire );
+	}
+
+	/**
+	 * #754: encoded material is decided BEFORE the absolute-path rule. Here a
+	 * '/' follows a '+', which the path rule's lookbehind accepts as a path
+	 * start, so under the other order that rule rewrites the key's tail to
+	 * <path> and the head of the key survives, now below every threshold.
+	 *
+	 * @return void
+	 */
+	public function test_encoded_run_is_decided_before_the_path_rule(): void
+	{
+		$response = $this->dispatchThrowing(
+			new \RuntimeException( 'Keystore: cannot unwrap aG7kQ2pXvR8nZtL4yB6c+/sEwD3fUhJ9KrTgNxVbPq0=' )
+		);
+
+		$this->assertSame(
+			'Command execution failed: RuntimeException: Keystore: cannot unwrap <redacted>',
+			$response->get_error_message()
+		);
+		$this->assertStringNotContainsString( 'aG7kQ2pXvR8nZtL4yB6c', $this->wireBlob( $response ) );
+	}
+
+	/**
+	 * #754: an absolute path outside the WordPress tree that carries a
+	 * case-mixed segment with a digit — the shape the encoded-run pass
+	 * redacts — must still go whole. The pass stops at a '.', so without the
+	 * path rule taking the redaction as part of the path, the remainder would
+	 * survive as a relative-looking tail the path rule no longer recognises.
+	 * Covers the segment at the path's start, after a '.' part-way along, and
+	 * under a drive-letter root.
+	 *
+	 * @return void
+	 */
+	public function test_case_mixed_absolute_path_leaves_no_tail(): void
+	{
+		$cases = array(
+			'/home/AcmeCorpHosting2024/Public_HTML/Sites/client-site.com/private/backup-dir' => 'private/backup-dir',
+			'/Users/JohnSmithDev2026/Library/CloudStorage/Dropbox.old/Client/secret'         => 'Client/secret',
+			// The case-mixed run starts after a '.' part-way along the path.
+			'/home/ab.cd/AcmeCorpHosting2024/Public_HTML/Sites/client-site.com/private/x'   => 'private/x',
+			// A drive-letter root with forward slashes, as PHP on Windows reports it.
+			'C:/Users/JohnSmithDev2026/Library/CloudStorage/Dropbox.old/Client/secret'       => 'Client/secret',
+		);
+
+		foreach ( $cases as $path => $tail ) {
+			$response = $this->dispatchThrowing( new \RuntimeException( 'cannot open ' . $path ) );
+			$wire     = $this->wireBlob( $response );
+
+			$this->assertSame(
+				'Command execution failed: RuntimeException: cannot open <path>',
+				$response->get_error_message(),
+				$path . ' was not dropped whole'
+			);
+			$this->assertStringNotContainsString( $tail, $wire, $path . ' left its tail behind' );
+		}
+	}
+
+	/**
+	 * #754: '+' is a path character in every component, the first one after
+	 * the root included, and the path is still dropped whole rather than
+	 * leaving everything after the '+'.
+	 *
+	 * @return void
+	 */
+	public function test_absolute_path_with_a_plus_is_dropped_whole(): void
+	{
+		$paths = array(
+			'/srv/sites/acme+co/private/backup-dir',
+			'/+x/private/backup-dir',
+		);
+
+		foreach ( $paths as $path ) {
+			$response = $this->dispatchThrowing( new \RuntimeException( 'cannot open ' . $path ) );
+
+			$this->assertSame(
+				'Command execution failed: RuntimeException: cannot open <path>',
+				$response->get_error_message(),
+				$path . ' was not dropped whole'
+			);
+			$this->assertStringNotContainsString( 'private/backup-dir', $this->wireBlob( $response ) );
+		}
+	}
+
+	/**
+	 * #754: a long run of path characters must not stop the absolute-path rule
+	 * from matching. Every absolute path in the message has to be redacted at
+	 * any length, including one that is not the long run itself. Lengths on
+	 * both sides of where an engine limit could otherwise be met, with the
+	 * JIT on or off.
+	 *
+	 * @return void
+	 */
+	public function test_long_path_run_does_not_leak_other_paths(): void
+	{
+		foreach ( array( 1024, 12500, 250000 ) as $repeats ) {
+			$response = $this->dispatchThrowing(
+				new \RuntimeException(
+					'cannot open /home/customer-acme/private/backup-dir: checksum /' . str_repeat( 'deadbeef', $repeats )
+				)
+			);
+			$wire = $this->wireBlob( $response );
+
+			$this->assertSame(
+				'Command execution failed: RuntimeException: cannot open <path>: checksum <path>',
+				$response->get_error_message(),
+				sprintf( 'a %d-character run changed the redaction', 8 * $repeats )
+			);
+			$this->assertStringNotContainsString( 'customer-acme', $wire );
+			$this->assertStringNotContainsString( '/home/', $wire );
+			$this->assertStringNotContainsString( 'private/backup-dir', $wire );
+		}
+	}
+
+	/**
+	 * #754: the redaction fails CLOSED. When a redaction pass cannot complete,
+	 * the reason is withheld outright; the message as it stood before that
+	 * pass never reaches the response. The class and location still do.
+	 *
+	 * The engine is forced to give up by a backtrack limit too small for any
+	 * pattern to complete; both settings are restored whatever happens.
+	 *
+	 * @return void
+	 */
+	public function test_redaction_withholds_the_reason_when_a_pass_cannot_complete(): void
+	{
+		$jit   = (string) ini_get( 'pcre.jit' );
+		$limit = (string) ini_get( 'pcre.backtrack_limit' );
+
+		try {
+			ini_set( 'pcre.jit', '0' );
+			ini_set( 'pcre.backtrack_limit', '1' );
+
+			$response = $this->dispatchThrowing(
+				new \RuntimeException( 'cannot open /home/customer-acme/private/backup-dir' )
+			);
+		} finally {
+			ini_set( 'pcre.jit', $jit );
+			ini_set( 'pcre.backtrack_limit', $limit );
+		}
+
+		$wire = $this->wireBlob( $response );
+
+		$this->assertSame(
+			'Command execution failed: RuntimeException: (reason withheld: redaction could not complete)',
+			$response->get_error_message()
+		);
+		$this->assertStringNotContainsString( 'customer-acme', $wire );
+		$this->assertStringNotContainsString( 'private/backup-dir', $wire );
+
+		$data = $response->get_error_data();
+		$this->assertSame( 'RuntimeException', $data['exception'] ?? null );
+		$this->assertMatchesRegularExpression( '~^[^/].*:\d+$~', (string) ( $data['at'] ?? '' ) );
+	}
+
+	/**
+	 * #754: EACH redaction pass fails closed on its own. One pass at a time is
+	 * made to fail exactly as the engine does — its helper returns null, which
+	 * is what preg_replace and preg_replace_callback return on an engine
+	 * failure — while every other pass runs normally. Each input carries
+	 * something only that pass redacts, so a pass that kept its input on
+	 * failure would put it on the wire.
+	 *
+	 * @return void
+	 */
+	public function test_each_redaction_pass_fails_closed_on_its_own(): void
+	{
+		$cases = array(
+			'pass 1'    => array(
+				'pregCallbackOrNull',
+				static function ( string $pattern ): bool {
+					return true;
+				},
+				'Keystore: cannot unwrap Quuv2rC/E4vYuaEw/i55soD7zlzCIHHFipbimo2QHGo',
+				'i55soD7zlzCIHHFipbimo2QHGo',
+			),
+			'path rule' => array(
+				'pregOrNull',
+				static function ( string $pattern ): bool {
+					return strpos( $pattern, '<redacted>' ) !== false;
+				},
+				'cannot open /home/customer-acme/private/backup-dir',
+				'customer-acme',
+			),
+			'pass 2'    => array(
+				'pregOrNull',
+				static function ( string $pattern ): bool {
+					return strpos( $pattern, '<redacted>' ) === false;
+				},
+				'Keystore: bad key AKIAJ7Q2ZK4XN8PLW3RD6YTBVC5MHGFS9UEO1I0A',
+				'AKIAJ7Q2ZK4XN8PLW3RD6YTBVC5MHGFS9UEO1I0A',
+			),
+		);
+
+		foreach ( $cases as $label => $case ) {
+			list( $helper, $isTarget, $message, $secret ) = $case;
+
+			// Control: with nothing forced, the pass redacts the secret itself.
+			$this->assertStringNotContainsString(
+				$secret,
+				$this->wireBlob( $this->dispatchThrowing( new \RuntimeException( $message ) ) ),
+				$label . ' does not redact its own fixture'
+			);
+
+			$fired  = 0;
+			$handle = \Patchwork\redefine(
+				Router::class . '::' . $helper,
+				static function ( string $pattern ) use ( $isTarget, &$fired ) {
+					if ( $isTarget( $pattern ) ) {
+						++$fired;
+						return null;
+					}
+					return \Patchwork\relay();
+				}
+			);
+
+			try {
+				$response = $this->dispatchThrowing( new \RuntimeException( $message ) );
+			} finally {
+				\Patchwork\restore( $handle );
+			}
+
+			$this->assertGreaterThan( 0, $fired, $label . ': the forced failure never reached that pass' );
+			$this->assertSame(
+				'Command execution failed: RuntimeException: (reason withheld: redaction could not complete)',
+				$response->get_error_message(),
+				$label . ' did not withhold the reason'
+			);
+			$this->assertStringNotContainsString( $secret, $this->wireBlob( $response ), $label . ' leaked' );
+		}
+	}
+
+	/**
+	 * #754: the two redaction helpers themselves return null — never their
+	 * input — when the engine gives up. Driven with a pattern that cannot
+	 * complete within the engine's default limits, and the failure is
+	 * confirmed from preg_last_error() so the test cannot pass on a match.
+	 *
+	 * @return void
+	 */
+	public function test_redaction_helpers_return_null_when_the_engine_gives_up(): void
+	{
+		$pattern = '~(a+)+$~';
+		$subject = str_repeat( 'a', 40 ) . 'b';
+
+		$callback = new \ReflectionMethod( Router::class, 'pregCallbackOrNull' );
+		$this->assertNull(
+			$callback->invoke(
+				null,
+				$pattern,
+				static function ( array $m ): string {
+					return '';
+				},
+				$subject
+			)
+		);
+		$this->assertNotSame( PREG_NO_ERROR, preg_last_error(), 'the engine did not give up; the test proves nothing' );
+
+		$plain = new \ReflectionMethod( Router::class, 'pregOrNull' );
+		$this->assertNull( $plain->invoke( null, $pattern, '', $subject ) );
+		$this->assertNotSame( PREG_NO_ERROR, preg_last_error(), 'the engine did not give up; the test proves nothing' );
+	}
+
+	/**
+	 * #754: split positions chosen rather than left to the encoding. Each case puts a '/' at
+	 * a position chosen to split a 44-character standard-base64 key into two
+	 * pieces that are each BELOW the 32-character threshold — the exact shape
+	 * that a slash-free alphabet cannot see.
+	 *
+	 * @return void
+	 */
+	public function test_redaction_catches_base64_with_a_slash_inside_the_window(): void
+	{
+		// A realistic 44-char padded standard-base64 body, case-mixed as random
+		// bytes are, with no '/' of its own so the split position is exact.
+		$body = 'aG7kQ2pXvR8nZtL4yB6cM1sEwD3fUhJ9KrTgNxVbPq0=';
+		$this->assertSame( 44, strlen( $body ), 'fixture must be a full 44-char base64 body' );
+
+		// A 44-char body split at offset N leaves pieces of N and 43-N. Both are
+		// below the 32-character run threshold exactly when 12 <= N <= 31, so
+		// every offset here is a case the slash-free rule provably cannot see.
+		foreach ( array( 12, 15, 20, 22, 25, 31 ) as $at ) {
+			$secret = substr( $body, 0, $at ) . '/' . substr( $body, $at + 1 );
+
+			$this->assertLessThan( 32, $at, 'left piece must be below the run threshold' );
+			$this->assertLessThan( 32, 43 - $at, 'right piece must be below the run threshold' );
+
+			$wire = $this->wireBlob(
+				$this->dispatchThrowing( new \RuntimeException( 'Keystore: cannot unwrap ' . $secret ) )
+			);
+
+			$this->assertStringNotContainsString(
+				$secret,
+				$wire,
+				sprintf( 'base64 with a separator at offset %d survived whole', $at )
+			);
+			// No fragment of the key body escapes either: assert on the longer
+			// of the two pieces, which is the one a threshold rule might keep.
+			$left  = substr( $secret, 0, $at );
+			$right = substr( $secret, $at + 1 );
+			$piece = strlen( $left ) >= strlen( $right ) ? $left : $right;
+			$this->assertStringNotContainsString(
+				$piece,
+				$wire,
+				sprintf( 'a %d-char fragment of the key survived at offset %d', strlen( $piece ), $at )
+			);
+			$this->assertStringContainsString( '<redacted>', $wire );
+		}
+	}
+
+	/**
+	 * #754 over-fire control, and the reason the standard-base64 rule is a
+	 * shape test rather than "add '/' to the alphabet": every path, table
+	 * name, option key and command name the agent emits is single-case, and
+	 * every one of them has to come through the redaction untouched.
+	 *
+	 * An earlier attempt that simply widened the alphabet turned the first of
+	 * these into "<redacted>" — destroying the diagnostic #754 exists to
+	 * deliver.
+	 *
+	 * @return void
+	 */
+	public function test_redaction_keeps_single_case_agent_identifiers(): void
+	{
+		$intact = array(
+			'wp-content/uploads/wpmgr/keystore',
+			'wp-content/uploads/wpmgr/keystore.json',
+			'wp-content/uploads/wpmgr/restore-staging/files',
+			'wp-content/plugins/wpmgr-agent/includes/class-router.php',
+			'wp-content/plugins/wpmgr-agent/includes/commands/class-agent-self-update-command.php',
+			'wp-content/uploads/wpmgr/snapshots/2026-09-18-full',
+			'wp_wpmgr_command_log',
+			'wp_wpmgr_backup_chunks',
+			'wpmgr_agent_enrollment_state',
+			'wpmgr_agent_reenroll',
+			'objectcache.apply_config',
+		);
+
+		foreach ( $intact as $identifier ) {
+			$response = $this->dispatchThrowing(
+				new \RuntimeException( 'cannot read ' . $identifier )
+			);
+			$message = $response->get_error_message();
+
+			$this->assertStringContainsString(
+				$identifier,
+				$message,
+				$identifier . ' was eaten by the redaction'
+			);
+			$this->assertStringNotContainsString( '<redacted>', $message, $identifier . ' was redacted' );
+			$this->assertStringNotContainsString( '<path>', $message, $identifier . ' was treated as absolute' );
+		}
+	}
+
+	/**
+	 * #754: the redaction must not over-fire. A path already relative to the
+	 * WordPress root is the diagnostic payload — it says WHICH file failed —
+	 * and has to survive intact.
+	 */
+	public function test_redaction_keeps_a_root_relative_path(): void
+	{
+		$response = $this->dispatchThrowing(
+			new \RuntimeException( 'cannot read keystore at wp-content/uploads/wpmgr/keystore.json' )
+		);
+
+		$message = $response->get_error_message();
+
+		$this->assertStringContainsString( 'wp-content/uploads/wpmgr/keystore.json', $message );
+		$this->assertStringNotContainsString( '<path>', $message );
+	}
+
+	/**
+	 * #754: an absolute path UNDER the WordPress root is rewritten to the
+	 * root-relative form rather than dropped — the host layout goes, the
+	 * diagnostic stays.
+	 */
+	public function test_absolute_path_under_abspath_becomes_root_relative(): void
+	{
+		$abspath  = rtrim( (string) constant( 'ABSPATH' ), '/\\' );
+		$response = $this->dispatchThrowing(
+			new \RuntimeException( 'snapshots directory is not writable: ' . $abspath . '/wp-content/uploads/wpmgr/snapshots' )
+		);
+
+		$message = $response->get_error_message();
+
+		$this->assertStringNotContainsString( $abspath, $message );
+		$this->assertStringContainsString( 'wp-content/uploads/wpmgr/snapshots', $message );
+	}
+
+	/**
+	 * #754: a known root written with Windows separators is stripped too, so
+	 * the root-relative remainder survives rather than the whole path falling
+	 * through to the absolute-path rule. The root here is the test ABSPATH
+	 * with every '/' written as '\', which is the form the backslash needle
+	 * matches.
+	 *
+	 * @return void
+	 */
+	public function test_backslash_root_is_stripped_to_a_root_relative_path(): void
+	{
+		$abspath = rtrim( (string) constant( 'ABSPATH' ), '/\\' );
+		$winroot = str_replace( '/', '\\', $abspath );
+
+		$response = $this->dispatchThrowing(
+			new \RuntimeException( 'snapshots directory is not writable: ' . $winroot . '\\wp-content\\uploads\\wpmgr\\snapshots' )
+		);
+
+		$message = $response->get_error_message();
+
+		$this->assertStringContainsString( 'wp-content\\uploads\\wpmgr\\snapshots', $message );
+		$this->assertStringNotContainsString( $winroot, $message );
+		$this->assertStringNotContainsString( 'wpmgr_wp_abspath', $message );
+		$this->assertStringNotContainsString( '<path>', $message );
+	}
+
+	/**
+	 * #754: root stripping is ANCHORED on the separator. A sibling directory
+	 * whose name merely starts with a known root ("<ABSPATH>2/secret") must not
+	 * be half-stripped into a surviving fragment — an unanchored match would
+	 * leave "2/secret", which no longer looks absolute and so escapes the
+	 * absolute-path redaction entirely.
+	 */
+	public function test_root_stripping_is_anchored_on_the_separator(): void
+	{
+		$abspath  = rtrim( (string) constant( 'ABSPATH' ), '/\\' );
+		$response = $this->dispatchThrowing(
+			new \RuntimeException( 'cannot open ' . $abspath . '2/secret-sibling-dir/payload.txt' )
+		);
+
+		$wire = $this->wireBlob( $response );
+
+		$this->assertStringNotContainsString( 'secret-sibling-dir', $wire );
+		$this->assertStringNotContainsString( 'payload.txt', $wire );
+		$this->assertStringContainsString( '<path>', $wire );
+	}
+
+	/**
+	 * #754, the reporter's actual case: `RuntimeException: WPMgr Agent:
+	 * ciphertext authentication failed.` must arrive as something an operator
+	 * can act on, not as "Command execution failed."
+	 */
+	public function test_command_failure_response_carries_a_usable_reason(): void
+	{
+		$response = $this->dispatchThrowing(
+			new \RuntimeException( 'WPMgr Agent: ciphertext authentication failed.' )
+		);
+
+		$this->assertInstanceOf( \WP_Error::class, $response );
+		$this->assertSame( 'wpmgr_command_failed', $response->get_error_code() );
+
+		$message = $response->get_error_message();
+		$this->assertStringContainsString( 'ciphertext authentication failed', $message );
+		$this->assertStringContainsString( 'RuntimeException', $message );
+
+		$data = $response->get_error_data();
+		$this->assertSame( 500, $data['status'] ?? null );
+		$this->assertSame( 'boom', $data['command'] ?? null );
+		$this->assertSame( 'RuntimeException', $data['exception'] ?? null );
+
+		// The location is relative to the plugin root, never absolute.
+		$at = (string) ( $data['at'] ?? '' );
+		$this->assertMatchesRegularExpression( '~^[^/].*:\d+$~', $at, 'location must be relative and carry a line number' );
+		$this->assertStringContainsString( 'RouterTest.php', $at );
+	}
+
+	/**
+	 * #754: the reason is length-capped so it cannot blow the control plane's
+	 * 512-byte body clamp.
+	 */
+	public function test_command_failure_reason_is_length_capped(): void
+	{
+		$response = $this->dispatchThrowing( new \RuntimeException( str_repeat( 'verbose failure. ', 200 ) ) );
+
+		$message = $response->get_error_message();
+
+		$this->assertStringContainsString( '...(truncated)', $message );
+		$this->assertLessThan( 400, strlen( $message ), 'a capped reason must stay well inside the 512-byte body clamp' );
+	}
+
+	/**
+	 * #754 over-fire control: a command that SUCCEEDS is completely unaffected —
+	 * same 200, same payload, and no error surface at all.
+	 */
+	public function test_successful_command_is_unaffected_by_the_failure_path(): void
+	{
+		$response = $this->dispatchCommand( 'test_cmd' );
+
+		$this->assertInstanceOf( \WP_REST_Response::class, $response );
+		$this->assertNotInstanceOf( \WP_Error::class, $response );
+		$this->assertSame( 200, $response->status );
+		$this->assertSame( [ 'handled_by' => 'test_cmd' ], $response->data );
+	}
+
+	// -------------------------------------------------------------------------
 	// authorizeCommand: guard paths that don't reach verifyCommand
 	// -------------------------------------------------------------------------
 
@@ -249,6 +978,116 @@ final class RouterTest extends TestCase
 	}
 
 	/**
+	 * Dispatch a command whose handler throws, through the real production
+	 * path: handleCommand() -> dispatch() -> the catch under test.
+	 *
+	 * @param \Throwable $throwable What the handler throws.
+	 * @return \WP_Error
+	 */
+	private function dispatchThrowing( \Throwable $throwable ): \WP_Error
+	{
+		$router = new Router( $this->connector, [ $this->makeThrowingCommand( 'boom', $throwable ) ] );
+
+		$request = new \WP_REST_Request(
+			[
+				'command'      => 'boom',
+				'wpmgr_claims' => $this->fakeClaims,
+			]
+		);
+
+		$response = $router->handleCommand( $request );
+		$this->assertInstanceOf( \WP_Error::class, $response );
+
+		return $response;
+	}
+
+	/**
+	 * Everything about a WP_Error that goes out on the wire, as one string:
+	 * the message plus every value in the error data. A leak assertion must
+	 * cover the data bag, not just the message.
+	 *
+	 * @param \WP_Error $error The error.
+	 * @return string
+	 */
+	private function wireBlob( \WP_Error $error ): string
+	{
+		// Unescaped slashes, so a needle that contains '/' can match: with the
+		// default escaping every '/' becomes '\/' and a not-contains assertion
+		// on a path could never fail.
+		return (string) json_encode(
+			[
+				'code'    => $error->get_error_code(),
+				'message' => $error->get_error_message(),
+				'data'    => $error->get_error_data(),
+			],
+			JSON_UNESCAPED_SLASHES
+		);
+	}
+
+	/**
+	 * The error body exactly as the REST server sends it: code, message and
+	 * data, JSON-encoded with no flags, so '/' and non-ASCII are escaped.
+	 *
+	 * @param \WP_Error $error The error.
+	 * @return string
+	 */
+	private function restBody( \WP_Error $error ): string
+	{
+		return (string) json_encode(
+			[
+				'code'    => $error->get_error_code(),
+				'message' => $error->get_error_message(),
+				'data'    => $error->get_error_data(),
+			]
+		);
+	}
+
+	/**
+	 * Build a CommandInterface stub whose execute() throws.
+	 *
+	 * @param string     $name      Command name.
+	 * @param \Throwable $throwable What execute() throws.
+	 * @return CommandInterface
+	 */
+	private function makeThrowingCommand( string $name, \Throwable $throwable ): CommandInterface
+	{
+		return new class( $name, $throwable ) implements CommandInterface {
+			private string $n;
+
+			private \Throwable $t;
+
+			public function __construct( string $n, \Throwable $t )
+			{
+				$this->n = $n;
+				$this->t = $t;
+			}
+
+			public function name(): string
+			{
+				return $this->n;
+			}
+
+			/** @return CommandEffect A double that only throws reads nothing and changes nothing. */
+			public function effect(): CommandEffect
+			{
+				return CommandEffect::Read;
+			}
+
+			/** @return CommandRepeatability Throwing the same exception every time converges. */
+			public function repeatability(): CommandRepeatability
+			{
+				return CommandRepeatability::Idempotent;
+			}
+
+			/** @param array<string,mixed> $claims @param array<string,mixed> $params @return array<string,mixed> */
+			public function execute( array $claims, array $params ): array
+			{
+				throw $this->t;
+			}
+		};
+	}
+
+	/**
 	 * Build a minimal CommandInterface stub.
 	 *
 	 * @param string $name Command name.
@@ -288,4 +1127,12 @@ final class RouterTest extends TestCase
 			}
 		};
 	}
+}
+
+/**
+ * An exception whose fully qualified name is long, standing in for a deeply
+ * namespaced plugin exception: the failure body carries it twice.
+ */
+final class RouterTestBudgetExceptionWithALongNameStandingInForADeeplyNamespacedPluginException extends \RuntimeException
+{
 }

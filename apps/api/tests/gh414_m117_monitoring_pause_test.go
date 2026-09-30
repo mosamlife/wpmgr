@@ -10,9 +10,11 @@
 // on sites inert and pass vacuously; startPostgres exists precisely so this one
 // does not.
 //
-// Note the container in startPostgres runs adminPool.Migrate(ctx), which is the
-// same internal/db path main() runs at boot. So every test here also asserts
-// that m117 applies cleanly, in ordinal order, against a fresh database.
+// Note startPostgres runs ownerPool.Migrate(ctx) — wpmgr_owner, the same
+// NOSUPERUSER NOBYPASSRLS role production's migrator uses, not the
+// container's bootstrap superuser — which is the same internal/db path
+// main() runs at boot. So every test here also asserts that m117 applies
+// cleanly, in ordinal order, against a fresh database, under that role.
 package tests
 
 import (

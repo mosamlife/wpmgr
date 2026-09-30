@@ -105,13 +105,51 @@ func setupFatalfOrSkipIfDaemonDied(t testing.TB, ctx context.Context, startErr e
 }
 
 // startPostgres spins up an ephemeral Postgres, applies the embedded
-// migrations as the bootstrap superuser, then provisions a dedicated
+// migrations as wpmgr_owner — a NOSUPERUSER NOBYPASSRLS role that owns the
+// database, mirroring production's WPMGR_DB_MIGRATION_DSN role (see
+// DBConfig.MigrateDSN and cmd/wpmgr/main.go) — then provisions a dedicated
 // NON-superuser application role and returns a pool connected as that role.
 //
-// This mirrors the production requirement: Postgres superusers (and roles with
-// BYPASSRLS) ignore RLS policies entirely, so the application MUST connect as a
-// plain, non-superuser role for the sites_tenant_isolation policy to take
-// effect. The default container user is a superuser, hence the extra role.
+// This mirrors two production requirements, not one:
+//
+//   - Postgres superusers (and roles with BYPASSRLS) ignore RLS policies
+//     entirely, so the application MUST connect as a plain, non-superuser role
+//     for the sites_tenant_isolation policy to take effect.
+//   - Production does not MIGRATE as a superuser either. WPMGR_DB_MIGRATION_DSN
+//     is a NOSUPERUSER NOBYPASSRLS owner, so every FORCE ROW LEVEL SECURITY
+//     table (e.g. mcp_grants) applies its policies to the migrator itself. A
+//     migration whose UPDATE backfill relies on an ambient GUC the migrator
+//     never sets touches zero rows under RLS and then fails its own following
+//     SET NOT NULL — exactly what happened in production on 2026-09-28 (m136,
+//     fixed by #770's m139/m140 prefill). Migrating as the container's
+//     bootstrap superuser here, as this helper did before, bypasses RLS during
+//     the apply and cannot reproduce that failure, so a migration shaped that
+//     way passed every test in this package while it failed in production.
+//     apps/api/tests/mcp_scope_columns_prefill_migration_test.go proved the
+//     production shape is reproducible this way for m136/m137 specifically;
+//     this makes it the DEFAULT for every test in the package rather than a
+//     one-off harness.
+//
+// The container's bootstrap superuser connection is still opened first, but
+// only to provision wpmgr_owner and hand it the database — it never runs a
+// migration body itself, and its DSN is kept (via adminDSNs) purely as the
+// existing connectAdmin() escape hatch for tests that must tamper with data
+// outside RLS/privilege constraints entirely (e.g. the append-only audit_log).
+//
+// What this change does and does not catch, precisely, because it is easy to
+// overstate: every startPostgres(t) call migrates a freshly created, EMPTY
+// database, same as a fresh install. On an empty database this still catches
+// a migration that needs superuser, ownership or role privileges the real
+// migrator lacks, or that writes to a FORCE ROW LEVEL SECURITY table in a way
+// that fails regardless of whether any rows exist yet (a bad GRANT, a
+// privilege-gated DDL statement). It does NOT, by itself, catch m136's actual
+// failure shape — a backfill whose UPDATE/INSERT silently touches zero rows
+// under RLS because the migrator sets no GUC. On an empty table that is
+// indistinguishable from correct behaviour: zero rows were the right answer
+// either way. Catching that class requires a test that seeds rows BEFORE
+// calling Migrate, so the migration has real pre-existing data to (fail to)
+// act on — see e.g. update_m88_dedup_test.go's startPostgresBeforeM88 and its
+// siblings, which is where this change actually found several such bugs.
 func startPostgres(t testing.TB) *db.Pool {
 	t.Helper()
 	ctx := context.Background()
@@ -150,19 +188,64 @@ func startPostgres(t testing.TB) *db.Pool {
 		setupFatalf(t, err, "postgres: connection string")
 	}
 
-	// Apply migrations as the bootstrap superuser.
+	// Connect as the bootstrap superuser ONLY to provision wpmgr_owner below.
+	// It never applies a migration body itself (see the doc comment above).
 	adminPool, err := db.Connect(ctx, adminDSN)
 	if err != nil {
 		setupFatalf(t, err, "postgres: connect as bootstrap superuser")
 	}
-	if err := adminPool.Migrate(ctx); err != nil {
+
+	// wpmgr_owner mirrors production's WPMGR_DB_MIGRATION_DSN role: LOGIN,
+	// NOSUPERUSER, NOBYPASSRLS, CREATEROLE (m1's migration does `CREATE ROLE
+	// wpmgr_app`, so the migrator needs that attribute), and it owns the
+	// database so it owns every table its own migrations create — PostgreSQL
+	// 16's "public" schema is owned by pg_database_owner, so owning the
+	// database is owning the schema every migration creates into. Same shape
+	// as apps/api/tests/mcp_scope_columns_prefill_migration_test.go's
+	// startPostgresAsOwner.
+	for _, stmt := range []string{
+		"CREATE ROLE wpmgr_owner LOGIN PASSWORD 'owner' NOSUPERUSER NOBYPASSRLS CREATEROLE",
+		"ALTER DATABASE wpmgr OWNER TO wpmgr_owner",
+	} {
+		if _, err := adminPool.Exec(ctx, stmt); err != nil {
+			setupFatalf(t, err, "postgres: provision owner role ("+stmt+")")
+		}
+	}
+	adminPool.Close()
+
+	ownerDSN := strings.Replace(adminDSN, "wpmgr:wpmgr@", "wpmgr_owner:owner@", 1)
+	ownerPool, err := db.Connect(ctx, ownerDSN)
+	if err != nil {
+		setupFatalf(t, err, "postgres: connect as wpmgr_owner")
+	}
+
+	// The premise of every test in this package: the migrating role is subject
+	// to row security like any other. If this ever reads true, every RLS proof
+	// below it is inert (m112's failure shape) and a migration that only works
+	// as superuser or BYPASSRLS would pass here undetected.
+	var ownerSuper, ownerBypass bool
+	if err := ownerPool.QueryRow(ctx,
+		"SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user").
+		Scan(&ownerSuper, &ownerBypass); err != nil {
+		setupFatalf(t, err, "postgres: read owner role attributes")
+	}
+	if ownerSuper || ownerBypass {
+		t.Fatalf("wpmgr_owner has rolsuper=%t rolbypassrls=%t; startPostgres's premise is a role row security applies to",
+			ownerSuper, ownerBypass)
+	}
+
+	// Apply migrations as the owner, exactly as cmd/wpmgr does with
+	// WPMGR_DB_MIGRATION_DSN.
+	if err := ownerPool.Migrate(ctx); err != nil {
 		setupFatalf(t, err, "postgres: run embedded migrations")
 	}
 
 	// The auth migration already created the wpmgr_app role (NOLOGIN, no
 	// password) and granted it table privileges. Here we just give it a login +
-	// password so the test can connect AS that non-superuser role. (Grants for
-	// any pre-auth-migration tables are reasserted to be safe.)
+	// password so the test can connect AS that non-superuser role. wpmgr_owner
+	// can do this without superuser: it owns every table via the ALTER DATABASE
+	// above, so it holds grant option on all of them. (Grants for any
+	// pre-auth-migration tables are reasserted to be safe.)
 	for _, stmt := range []string{
 		"ALTER ROLE wpmgr_app LOGIN PASSWORD 'app'",
 		"GRANT USAGE ON SCHEMA public TO wpmgr_app",
@@ -198,12 +281,17 @@ func startPostgres(t testing.TB) *db.Pool {
 		// here against a privilege no real install has. An immutable column
 		// inside a deletable row is not immutable.
 		"REVOKE DELETE, TRUNCATE ON assistant_update_proposals FROM wpmgr_app",
+		// m147's install_owner is insert-once: the record of who set up the
+		// install must never be re-pointed or removed. Same re-revoke, same
+		// reason: without it the blanket GRANT above lets a test re-point the
+		// row, which no real install can do.
+		"REVOKE UPDATE, DELETE, TRUNCATE ON install_owner FROM wpmgr_app",
 	} {
-		if _, err := adminPool.Exec(ctx, stmt); err != nil {
+		if _, err := ownerPool.Exec(ctx, stmt); err != nil {
 			setupFatalf(t, err, "postgres: provision app role ("+stmt+")")
 		}
 	}
-	adminPool.Close()
+	ownerPool.Close()
 
 	appDSN := strings.Replace(adminDSN, "wpmgr:wpmgr@", "wpmgr_app:app@", 1)
 	pool, err := db.Connect(ctx, appDSN)
@@ -254,6 +342,33 @@ func connectAdmin(t *testing.T, app *db.Pool) *db.Pool {
 	pool, err := db.Connect(context.Background(), dsn)
 	if err != nil {
 		setupFatalf(t, err, "postgres: connectAdmin reconnect as bootstrap superuser")
+	}
+	return pool
+}
+
+// connectOwner opens a pool for the most recently started container AS
+// wpmgr_owner — the same NOSUPERUSER NOBYPASSRLS role production's migrator
+// uses (see startPostgres's doc comment above) — rather than the bootstrap
+// superuser connectAdmin returns. startPostgres already created wpmgr_owner
+// and handed it the database; that role and its password ('owner') persist
+// in the container after startPostgres's own owner connection closes, so this
+// just derives the same DSN startPostgres itself used. Used by tests that
+// re-run a migration file against an already-migrated database (idempotency
+// / boot-safety checks): re-applying it as the bootstrap superuser would not
+// reproduce the RLS exposure the real migrator has, exactly the gap this
+// harness change (#775) exists to close.
+func connectOwner(t *testing.T, app *db.Pool) *db.Pool {
+	t.Helper()
+	adminDSNsMu.Lock()
+	adminDSN, ok := adminDSNs[app]
+	adminDSNsMu.Unlock()
+	if !ok {
+		t.Fatal("SETUP FAILURE (test helper misuse, not the test's own assertion): connectOwner called with a pool startPostgres never returned")
+	}
+	ownerDSN := strings.Replace(adminDSN, "wpmgr:wpmgr@", "wpmgr_owner:owner@", 1)
+	pool, err := db.Connect(context.Background(), ownerDSN)
+	if err != nil {
+		setupFatalf(t, err, "postgres: connectOwner reconnect as wpmgr_owner")
 	}
 	return pool
 }

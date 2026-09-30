@@ -69,6 +69,109 @@ describe("SETTINGS_NAV_ITEMS — Security is not orgOnly (regression guard)", ()
   });
 });
 
+// Instance SMTP capability gating (5ae87b71): the "Email / SMTP" settings
+// nav item follows me.can_manage_instance_email rather than orgOnly — a
+// superadmin has no organisation and must still see it when the server
+// admits them, and an org member (even the owner) must NOT see it merely
+// for being org-scoped.
+describe("SETTINGS_NAV_ITEMS — Email / SMTP carries instanceEmailOnly, not orgOnly (regression guard)", () => {
+  it("Email / SMTP is gated by instanceEmailOnly and not by orgOnly", () => {
+    const smtp = SETTINGS_NAV_ITEMS.find((item) => item.label === "Email / SMTP");
+    expect(smtp).toBeDefined();
+    expect(smtp?.to).toBe("/settings/smtp");
+    expect(smtp?.instanceEmailOnly).toBe(true);
+    expect(smtp?.orgOnly).not.toBe(true);
+  });
+});
+
+describe("SettingsLayout — Email / SMTP link follows can_manage_instance_email", () => {
+  // A tenant owner: org-scoped, so every orgOnly item would show, but that is
+  // NOT what gates Email / SMTP — only the explicit capability does.
+  const TENANT_ID = "00000000-0000-0000-0000-0000000000aa";
+  const ORG_OWNER_ME: Me = {
+    user: {
+      id: "00000000-0000-0000-0000-000000000002",
+      email: "owner@wpmgr.test",
+      name: "Owner",
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+    },
+    memberships: [{ user_id: "00000000-0000-0000-0000-000000000002", tenant_id: TENANT_ID, role: "owner" }],
+    active_tenant_id: TENANT_ID,
+  };
+
+  it("shows Email / SMTP for an org owner the server reports as instance-capable", async () => {
+    mockedUseMe.mockReturnValue(
+      mockQueryResult<Me | null>({
+        data: { ...ORG_OWNER_ME, can_manage_instance_email: true },
+      }),
+    );
+
+    renderWithProviders(<SettingsLayout />, {
+      withRouter: true,
+      initialPath: "/settings/account",
+    });
+
+    const link = await screen.findByRole("link", { name: "Email / SMTP" });
+    expect(link).toHaveAttribute("href", "/settings/smtp");
+  });
+
+  it("hides Email / SMTP for an org owner the server does NOT report as instance-capable (orgOnly items still show — proves this isn't just orgOnly)", async () => {
+    mockedUseMe.mockReturnValue(
+      mockQueryResult<Me | null>({
+        data: { ...ORG_OWNER_ME, can_manage_instance_email: false },
+      }),
+    );
+
+    renderWithProviders(<SettingsLayout />, {
+      withRouter: true,
+      initialPath: "/settings/account",
+    });
+
+    // An org-scoped item renders, proving orgOnly gating still works for
+    // this principal — the absence of Email / SMTP below is the capability
+    // gate specifically, not a broken orgOnly filter.
+    await screen.findByRole("link", { name: "Organisation" });
+    expect(screen.queryByRole("link", { name: "Email / SMTP" })).not.toBeInTheDocument();
+  });
+
+  it("hides Email / SMTP when can_manage_instance_email is absent from the response", async () => {
+    mockedUseMe.mockReturnValue(mockQueryResult<Me | null>({ data: ORG_OWNER_ME }));
+
+    renderWithProviders(<SettingsLayout />, {
+      withRouter: true,
+      initialPath: "/settings/account",
+    });
+
+    await screen.findByRole("link", { name: "Organisation" });
+    expect(screen.queryByRole("link", { name: "Email / SMTP" })).not.toBeInTheDocument();
+  });
+
+  it("shows Email / SMTP for a superadmin with NO organisation, and the layout renders cleanly with every org-only item hidden", async () => {
+    mockedUseMe.mockReturnValue(
+      mockQueryResult<Me | null>({
+        data: { ...SUPERADMIN_ME, can_manage_instance_email: true },
+      }),
+    );
+
+    renderWithProviders(<SettingsLayout />, {
+      withRouter: true,
+      initialPath: "/settings/account",
+    });
+
+    const smtpLink = await screen.findByRole("link", { name: "Email / SMTP" });
+    expect(smtpLink).toHaveAttribute("href", "/settings/smtp");
+    // Every orgOnly item stays hidden for this principal — the layout does
+    // not break just because instanceEmailOnly admits one more item.
+    expect(screen.queryByRole("link", { name: "Organisation" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Billing" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Members" })).not.toBeInTheDocument();
+    // The personal, always-visible items are still there alongside it.
+    expect(screen.getByRole("link", { name: "Account" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Security" })).toBeInTheDocument();
+  });
+});
+
 describe("SettingsLayout — Security renders for a superadmin with no membership", () => {
   it("renders a Security link for a superadmin (is_superadmin, isOrgScoped false), and still hides Organisation", async () => {
     renderWithProviders(<SettingsLayout />, {

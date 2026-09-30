@@ -109,6 +109,8 @@ import {
   computeBulkDeleteToken,
 } from "@/features/backups/use-bulk-delete-backups";
 import { formatBytes, relativeTime } from "@/lib/utils";
+import { useSite } from "@/features/sites/use-sites";
+import { KeystoreStatusAlert } from "@/features/sites/keystore-status-alert";
 import type { BackupSnapshot } from "@wpmgr/api";
 
 // The "Backups" section rendered on the site detail page. One card holds the
@@ -123,8 +125,14 @@ export function BackupsSection({
   siteId: string;
   canOperate: boolean;
 }) {
+  // GH #753 slice 1b: shares the sitesKeys.detail(siteId) query the site
+  // detail layout already fetched (30s staleTime, see lib/query-client.ts),
+  // so this is a cache read in the common case, not a second request.
+  const { data: site } = useSite(siteId);
+
   return (
     <div className="space-y-6">
+      {site ? <KeystoreStatusAlert site={site} /> : null}
       <Card>
         <CardHeader className="flex flex-row items-start justify-between gap-4">
           <div className="space-y-1.5">
@@ -1837,6 +1845,14 @@ function ScheduleRunRow({
             className="mt-1 block text-xs text-destructive-subtle-fg"
           >
             {run.error}
+          </span>
+        ) : null}
+        {/* GH #791 — the run is still being retried; show the last attempt's
+            error (never the final `error` column, which stays empty while
+            running). */}
+        {isRunning && run.attempt_error ? (
+          <span className="mt-1 block text-xs text-warning-subtle-fg">
+            Last error: {run.attempt_error}
           </span>
         ) : null}
       </TableCell>

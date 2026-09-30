@@ -177,7 +177,8 @@ final class PluginBackupJanitorSweepTest extends TestCase
     public function test_within_throttle_window_is_a_no_op(): void
     {
         $this->markEnrolled();
-        $this->options[Plugin::OPTION_BACKUP_JANITOR_LAST] = time() - 10; // well under the 3600s window.
+        $stamp = time() - 10; // well under the 3600s window.
+        $this->options[Plugin::OPTION_BACKUP_JANITOR_LAST] = $stamp;
 
         $id  = $this->newSnapshotId();
         $dir = $this->seedStaleRunDir($id);
@@ -186,7 +187,7 @@ final class PluginBackupJanitorSweepTest extends TestCase
         $this->makePlugin()->maybeGcBackupRuns();
 
         $this->assertTrue(is_dir($dir), 'a throttled call within the window must never sweep the filesystem');
-        $this->assertSame(time() - 10, $this->options[Plugin::OPTION_BACKUP_JANITOR_LAST], 'a throttled call within the window must never re-stamp the option');
+        $this->assertSame($stamp, $this->options[Plugin::OPTION_BACKUP_JANITOR_LAST], 'a throttled call within the window must never re-stamp the option');
     }
 
     public function test_past_throttle_window_stamps_before_running_then_sweeps(): void

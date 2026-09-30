@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/netip"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,16 +17,20 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
 
-// GetSiteByURL returns the minimal (id, connection_state) for any existing site
-// with the given URL in the tenant, including archived rows. Returns (zero,
-// false, nil) when no matching row exists.
-func (r *pgRepo) GetSiteByURL(ctx context.Context, tenantID uuid.UUID, url string) (SiteURLHit, bool, error) {
+// GetSiteByAnyURL returns the minimal (id, url, connection_state) for an
+// existing site whose URL is any of urls in the tenant, including archived
+// rows; the first match in urls order wins. Returns (zero, false, nil) when no
+// matching row exists.
+func (r *pgRepo) GetSiteByAnyURL(ctx context.Context, tenantID uuid.UUID, urls []string) (SiteURLHit, bool, error) {
 	var hit SiteURLHit
 	var found bool
+	if len(urls) == 0 {
+		return hit, false, nil
+	}
 	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
-		row, err := sqlc.New(tx).GetSiteByURLForMint(ctx, sqlc.GetSiteByURLForMintParams{
+		row, err := sqlc.New(tx).GetSiteByAnyURL(ctx, sqlc.GetSiteByAnyURLParams{
 			TenantID: tenantID,
-			Url:      url,
+			Urls:     urls,
 		})
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
@@ -33,7 +38,7 @@ func (r *pgRepo) GetSiteByURL(ctx context.Context, tenantID uuid.UUID, url strin
 			}
 			return domain.Internal("site_url_lookup_failed", "failed to check for existing site URL").WithCause(err)
 		}
-		hit = SiteURLHit{ID: row.ID, ConnectionState: ConnectionState(row.ConnectionState)}
+		hit = SiteURLHit{ID: row.ID, URL: row.Url, ConnectionState: ConnectionState(row.ConnectionState)}
 		found = true
 		return nil
 	})
@@ -234,26 +239,108 @@ func (r *pgRepo) ConsumeSiteBoundCode(ctx context.Context, codeHash, consumedFro
 		siteID := uuid.UUID(consumed.SiteID.Bytes)
 		tenantID := consumed.TenantID
 
+		// Compare the agent-reported address with the stored one, under the
+		// row lock, so the "from" recorded below is the value being replaced.
+		// A missing row falls through to AttachAgentAndConnect, which reports
+		// it exactly as it did before the address was compared.
+		urlOut := EnrollURLOutcome{Reported: in.URL}
+		var adopt *string
+		loaded, lerr := q.GetSiteForTransition(ctx, sqlc.GetSiteForTransitionParams{ID: siteID, TenantID: tenantID})
+		switch {
+		case lerr == nil && strings.TrimSpace(in.URL) == "":
+			urlOut.Stored = loaded.Url // nothing reported, nothing to compare
+		case lerr == nil:
+			urlOut.Stored = loaded.Url
+			plan := planEnrollURL(loaded.Url, in.URL)
+			switch plan.Decision {
+			case enrollURLSame:
+				urlOut.Result = EnrollURLUnchanged
+			case enrollURLAdopt:
+				urlOut.To = plan.To
+				adopt = &plan.To
+			default:
+				urlOut.Result = EnrollURLMismatch
+			}
+		case !errors.Is(lerr, pgx.ErrNoRows):
+			return domain.Internal("site_enroll_failed", "failed to enroll site").WithCause(lerr)
+		}
+
 		// Transition the bound site → connected, storing the agent key. The
 		// generation was advanced at re-enroll mint time; we do not bump it again.
-		row, err := q.AttachAgentAndConnect(ctx, sqlc.AttachAgentAndConnectParams{
+		row, err := attachAgentAndConnect(ctx, tx, sqlc.AttachAgentAndConnectParams{
 			ID:             siteID,
 			TenantID:       tenantID,
 			AgentPublicKey: in.AgentPublicKey,
 			WpVersion:      in.WPVersion,
 			PhpVersion:     in.PHPVersion,
+			Url:            adopt,
 		})
 		if err != nil {
 			return mapEnrollDupKey(err)
 		}
+		if adopt != nil {
+			if row.Url == *adopt {
+				urlOut.Result = EnrollURLAdopted
+			} else {
+				urlOut.Result = EnrollURLInUse
+			}
+		}
+
+		meta := map[string]any{"url": row.Url}
+		if urlOut.Result == EnrollURLAdopted {
+			meta["previous_url"] = urlOut.Stored
+			meta["url_source"] = urlSourceAgentEnrollment
+		}
 		from := StatePendingEnrollment // the bound site was pending_enrollment
-		if err := insertHistory(ctx, q, tenantID, siteID, from, StateConnected, "enrolled", uuid.Nil, row.ConnectionGeneration, map[string]any{"url": row.Url}); err != nil {
+		if err := insertHistory(ctx, q, tenantID, siteID, from, StateConnected, "enrolled", uuid.Nil, row.ConnectionGeneration, meta); err != nil {
 			return err
 		}
-		out = ConsumeResult{Site: toModel(row), SiteBound: true}
+		out = ConsumeResult{Site: toModel(row), SiteBound: true, URL: urlOut}
+		if consumed.CreatedBy.Valid {
+			out.CodeCreatedBy = uuid.UUID(consumed.CreatedBy.Bytes)
+		}
 		return nil
 	})
 	return out, err
+}
+
+// urlSourceAgentEnrollment names enrollment as the source of an address
+// change, in history metadata and audit rows.
+const urlSourceAgentEnrollment = "agent_enrollment"
+
+// attachAgentAndConnect runs AttachAgentAndConnect. When it carries an address
+// to adopt, the statement runs inside a savepoint: if another site in the
+// tenant took that address in a transaction the statement's own guard could not
+// see, the unique index refuses it, and the statement is re-run without the
+// address so the enrollment still completes on the stored one.
+func attachAgentAndConnect(ctx context.Context, tx pgx.Tx, p sqlc.AttachAgentAndConnectParams) (sqlc.Site, error) {
+	if p.Url == nil {
+		return sqlc.New(tx).AttachAgentAndConnect(ctx, p)
+	}
+	sp, err := tx.Begin(ctx)
+	if err != nil {
+		return sqlc.Site{}, err
+	}
+	row, err := sqlc.New(sp).AttachAgentAndConnect(ctx, p)
+	if err == nil {
+		if cerr := sp.Commit(ctx); cerr != nil {
+			return sqlc.Site{}, cerr
+		}
+		return row, nil
+	}
+	_ = sp.Rollback(ctx)
+	if !isSiteURLUniqueViolation(err) {
+		return sqlc.Site{}, err
+	}
+	p.Url = nil
+	return sqlc.New(tx).AttachAgentAndConnect(ctx, p)
+}
+
+// isSiteURLUniqueViolation reports a unique violation on (tenant_id, url), as
+// opposed to one on the agent key.
+func isSiteURLUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "sites_tenant_id_url_key"
 }
 
 // PairingCodeSiteID peeks a presented code's bound site_id WITHOUT consuming it

@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/admingate"
 	"github.com/mosamlife/wpmgr/apps/api/internal/api/gen"
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/authz"
@@ -68,11 +69,33 @@ type Handler struct {
 	// session record. NOT optional in effect: unset makes socialStart refuse
 	// rather than issue a handshake nobody signed. See social_handshake.go.
 	handshake *handshakeCodec
-	// loginGate is the GH #718 Phase 0 login admission control: it measures the
-	// per-source and per-account budgets without applying them, and bounds how
-	// many argon2id verifications run at once. Unset removes BOTH, which is a
-	// wiring failure and not a mode — LogAdmissionStartup says so at boot.
+	// loginGate is the GH #718 login admission control: it evaluates the
+	// per-source and per-pair budgets (applying them in enforce mode), and
+	// bounds how many argon2id verifications run at once. Unset removes BOTH,
+	// which is a wiring failure and not a mode — LogAdmissionStartup says so at
+	// boot.
 	loginGate *LoginGate
+	// instanceGate answers Me.can_manage_instance_email, wired via
+	// SetInstanceAuthorityGate. It is read by admingate.CanManageInstanceEmail,
+	// the same function that gates /api/v1/settings/smtp, so the dashboard is
+	// offered the instance email settings exactly when those routes would
+	// admit the caller. Nil until wired, which reports false.
+	instanceGate admingate.InstanceEmailStore
+}
+
+// SetInstanceAuthorityGate wires the store behind Me.can_manage_instance_email.
+// Call it once at boot with the same admingate.InstanceEmailStore the settings
+// handler's route gate is built from, so the hosted flag the install-owner arm
+// reads is the same one on both.
+func (h *Handler) SetInstanceAuthorityGate(store admingate.InstanceEmailStore) {
+	h.instanceGate = store
+}
+
+// setInstanceCapabilities fills the Me fields that describe what the caller
+// may do on the install as a whole. ctx must carry the resolved principal.
+// Every refusal, including a store error and an unwired store, is false.
+func (h *Handler) setInstanceCapabilities(ctx context.Context, me *gen.Me) {
+	me.CanManageInstanceEmail = gen.NewOptBool(admingate.CanManageInstanceEmail(ctx, h.instanceGate))
 }
 
 // NewHandler builds an auth Handler.
@@ -174,38 +197,42 @@ func (h *Handler) login(c *gin.Context) {
 		return
 	}
 
-	// GH #718 Phase 0 — login admission control.
+	// GH #718 — login admission control.
 	//
 	// Placed here, and not inside Service.Login, for two reasons. It has to run
 	// BEFORE any account lookup so it cannot branch on whether the account
-	// exists (that is what keeps it from becoming an enumeration oracle), and
+	// exists (that is what keeps a refusal from becoming an enumeration
+	// oracle: it is decided, and answered, with no account looked at), and
 	// Service.Login's signature has to stay exactly as it is because seven
 	// service-level tests call it directly.
 	//
-	// Observe measures and returns nothing. AcquireVerify is the only part that
-	// can change what the caller sees, and only when this process already has
-	// as many password verifications in flight as it is willing to run.
+	// limiterAddrSource, not clientAddr: the address decides a refusal, so it
+	// must be the entry the infrastructure appended. TestDecisionSitesUseLimiter
+	// Addr pins this site to it.
 	addr, fromChain := h.limiterAddrSource(c)
-	h.loginGate.Observe(c.Request.Context(), loginAttempt{
+	admission, refusal := h.loginGate.Admit(c.Request.Context(), loginAttempt{
 		Addr:      addr,
 		FromChain: fromChain,
 		Hops:      h.effectiveProxyHops(),
 		Email:     body.Email,
 	})
-
-	releaseVerify, admitted := h.loginGate.AcquireVerify(c.Request.Context())
-	if !admitted {
-		// Saturation, not a limit: no account was looked at and nothing about
-		// this caller decided it. Retry-After is short because the condition it
-		// describes clears in the time one verification takes.
-		c.Header("Retry-After", "2")
-		httpx.Error(c, domain.ServiceUnavailable("server_busy", "server is busy verifying sign-ins; retry shortly"))
+	if refusal != nil {
+		// Either a budget refused it (enforce mode: 429 too_many_attempts), or
+		// the verification bound shed it (any mode: 503 server_busy, which is
+		// saturation and says nothing about this caller). Either way nothing
+		// was charged, no bucket entry was created and no account was looked
+		// up. No audit row is written: the gate's log line is the record.
+		c.Header("Retry-After", strconv.Itoa(refusal.retryAfterSeconds()))
+		httpx.Error(c, refusal.domainError())
 		return
 	}
-	// Idempotent, so the explicit release below can free the slot before the
-	// session and two-factor work that follows a successful verify, while this
-	// still covers every path that returns first.
-	defer releaseVerify()
+	// Admitted, holding a verification slot and a charge. finish settles
+	// whatever charge has not been given back as kept (a failed attempt) and
+	// frees the slot. It is idempotent, so the explicit calls below can free
+	// the slot before the session and two-factor work that follows a
+	// successful verify, while this still covers every path that returns
+	// first, a panic included.
+	defer admission.finish()
 
 	res, err := h.svc.Login(c.Request.Context(), body.Email, body.Password)
 	// Hand the slot back before the session store and the trusted-device
@@ -224,11 +251,19 @@ func (h *Handler) login(c *gin.Context) {
 	// holding 19 MiB of argon2id state per queued attempt while doing it. But
 	// it means a 503 here does not prove CPU saturation, and an operator
 	// diagnosing one should look at database latency too.
-	releaseVerify()
 	if err != nil {
+		// The attempt failed and keeps its charge.
+		admission.finish()
 		httpx.Error(c, err)
 		return
 	}
+	// The password verified. A successful sign-in costs no budget and leaves
+	// no bucket entry behind, so a shared connection's budget, and every map,
+	// is spent only by the attempts that failed. giveBack must come BEFORE
+	// finish: finish keeps whatever has not been given back by then.
+	// TestLoginGivesTheChargeBackOnSuccess pins both.
+	admission.giveBack()
+	admission.finish()
 
 	// ADR-056 Phase 3: two-factor enforcement.
 	// INVARIANT: a 2FA-enabled user must NEVER receive a full session without
@@ -545,6 +580,7 @@ func (h *Handler) me(c *gin.Context) {
 	out := toMe(u, memberships, p.TenantID, h.hosted, h.managedStorageAllowed(c.Request.Context(), p.TenantID), "")
 	// m66 — portal principal: enrich Me with scope, role, and portal branding.
 	enrichMePortal(c.Request.Context(), &out, p, h.svc.repo)
+	h.setInstanceCapabilities(c.Request.Context(), &out)
 	c.JSON(http.StatusOK, &out)
 }
 
@@ -581,6 +617,7 @@ func (h *Handler) updateProfile(c *gin.Context) {
 	// context editor would go read-only until a hard reload. An absent field
 	// must never read as a denied permission.
 	enrichMePortal(c.Request.Context(), &out, p, h.svc.repo)
+	h.setInstanceCapabilities(c.Request.Context(), &out)
 	c.JSON(http.StatusOK, &out)
 }
 
@@ -724,16 +761,16 @@ func (h *Handler) limiterAddr(c *gin.Context) netip.Addr {
 // address was read FROM THE FORWARDED CHAIN at the configured hop position
 // (true) or came from the peer-address fallback (false).
 //
-// The flag grades a degraded address. It is not itself a decision, and Phase 0
-// only logs it, but it is the signal that distinguishes the two ways an address
-// arrives, which the caller-visible behaviour cannot:
+// The flag grades a degraded address. It is the signal that distinguishes the
+// two ways an address arrives, which the caller-visible behaviour cannot:
 //
 //   - hops > 0 and fromChain=false means the chain was SHORTER than
 //     WPMGR_AUTH_PROXY_HOPS claims. Either the hop count is wrong or this
 //     process is reachable without the proxies it is configured for. Every
-//     affected client collapses onto one key, and an enforcing phase would
-//     refuse them together. An operator cannot see this from inside the
-//     process any other way, which is why it is logged.
+//     affected client collapses onto one key, so the login gate never refuses
+//     on it (loginAttempt.refusable) and logs the would-refuse at WARN
+//     instead. An operator cannot see this from inside the process any other
+//     way, which is why it is logged.
 //   - hops == 0 also reports false, because nothing was read from a chain —
 //     but there is nothing degraded about it: the peer address IS the
 //     configured source in that topology. loginAttempt.addrSource is where the

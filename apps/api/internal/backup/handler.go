@@ -842,6 +842,11 @@ func toAPISnapshot(s Snapshot) gen.BackupSnapshot {
 	if s.Error != "" {
 		out.Error = gen.NewOptString(s.Error)
 	}
+	// GH #791: the last failed attempt's reason, only while still running.
+	// A failed row's reason is Error; its leftover attempt error is not sent.
+	if s.AttemptError != "" && s.Status == StatusRunning {
+		out.AttemptError = gen.NewOptString(s.AttemptError)
+	}
 	if s.StartedAt != nil {
 		out.StartedAt = gen.NewOptDateTime(*s.StartedAt)
 	}

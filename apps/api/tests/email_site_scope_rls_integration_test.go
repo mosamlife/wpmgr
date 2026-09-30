@@ -714,7 +714,10 @@ func TestEveryEmailTableCarriesTheSiteScopePolicies(t *testing.T) {
 // has no IF NOT EXISTS in Postgres 16, so every statement in the file is
 // wrapped in a pg_policies existence check; this test executes the real file a
 // SECOND time against a fully-migrated database and requires it to succeed
-// silently.
+// silently. Re-applied as wpmgr_owner (connectOwner), not the bootstrap
+// superuser (connectAdmin) — a real boot-time re-apply runs as production's
+// migrator role, not a superuser, and that is exactly the distinction #775's
+// harness change exists to preserve.
 func TestM112IsIdempotent(t *testing.T) {
 	pool := startPostgres(t) // already applied every migration including m112
 	ctx := context.Background()
@@ -725,7 +728,7 @@ func TestM112IsIdempotent(t *testing.T) {
 			"for lexical apply order): %v", err)
 	}
 
-	admin := connectAdmin(t, pool)
+	admin := connectOwner(t, pool)
 	defer admin.Close()
 	if _, err := admin.Exec(ctx, string(body)); err != nil {
 		t.Fatalf("m112 is NOT idempotent: re-applying it to an already-migrated "+

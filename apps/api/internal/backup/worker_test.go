@@ -28,6 +28,7 @@ package backup
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -108,6 +109,11 @@ type fakeRestoreRunStore struct {
 	active      RestoreRun
 	hasActive   bool
 	statusCalls []MarkRestoreRunStatusInput
+	// eventCalls records every AppendRestoreEvent call verbatim, so a test can
+	// assert the restore run's own audit trail (phase/status/detail) by
+	// content instead of inferring it merely happened from source-adjacency to
+	// another call this fake DOES capture.
+	eventCalls []AppendRestoreEventInput
 }
 
 func (f *fakeRestoreRunStore) CreateRestoreRun(_ context.Context, _ CreateRestoreRunInput) (RestoreRun, error) {
@@ -125,7 +131,8 @@ func (f *fakeRestoreRunStore) ActiveRestoreRunForSnapshot(_ context.Context, _, 
 	}
 	return f.active, nil
 }
-func (f *fakeRestoreRunStore) AppendRestoreEvent(_ context.Context, _ AppendRestoreEventInput) (RestoreRunEvent, error) {
+func (f *fakeRestoreRunStore) AppendRestoreEvent(_ context.Context, in AppendRestoreEventInput) (RestoreRunEvent, error) {
+	f.eventCalls = append(f.eventCalls, in)
 	return RestoreRunEvent{}, nil
 }
 func (f *fakeRestoreRunStore) UpdateRestoreRunPhase(_ context.Context, _, _ uuid.UUID, _ string) error {
@@ -217,6 +224,57 @@ func TestBackupWorker_RefuseWithoutCode_StillFailsTerminal(t *testing.T) {
 				t.Errorf("snapshot status = %q, want %q", got.Status, StatusFailed)
 			}
 		})
+	}
+}
+
+// TestBackupWorkerKeystoreUnreadableFailsImmediately (GH #753): a
+// keystore_unreadable refusal must fail the snapshot on the FIRST attempt
+// with fixed, neutral, CP-authored operator copy — never the agent's own
+// free-form Detail text, which can change independently of this control
+// plane's release, prescribe a remedy that is wrong for this site's actual
+// key source, or leak into an outbound email — and must never be retried:
+// Work() returns nil so River does not requeue it, exactly like every other
+// terminal ok=false refusal.
+func TestBackupWorkerKeystoreUnreadableFailsImmediately(t *testing.T) {
+	repo, tenantID, snapshotID, svc := newBackupWorkerFixture()
+	cmd := &refusalCommander{backupResp: agentcmd.BackupResponse{
+		OK: false,
+		// Deliberately a DIFFERENT sentence than the fixed CP copy, carrying
+		// exactly the kind of remedy prose (a "put back the previous
+		// security keys" instruction and a "not affected" claim) the CP must
+		// never forward, so a test that accidentally asserted on resp.Detail
+		// (rather than the CP's own substituted message) would fail loudly
+		// instead of passing by luck.
+		Detail: "Backup not started: this site cannot read its backup key. Do not put back the previous security keys. See admin notice.",
+		Code:   codeKeystoreUnreadable,
+	}}
+	worker := NewBackupWorker(svc, cmd, nil, nil, "https://cp.example.com", 0)
+
+	job := &river.Job[BackupArgs]{Args: BackupArgs{TenantID: tenantID, SnapshotID: snapshotID}}
+	if err := worker.Work(context.Background(), job); err != nil {
+		t.Fatalf("Work() error: %v (a keystore_unreadable refusal must fail terminally on the first attempt, not retry)", err)
+	}
+	if !repo.failCalled {
+		t.Fatal("FailSnapshot must be called on the first attempt for a keystore_unreadable refusal")
+	}
+	got := repo.snapshots[snapshotID]
+	if got.Status != StatusFailed {
+		t.Errorf("snapshot status = %q, want %q", got.Status, StatusFailed)
+	}
+	if !strings.Contains(got.Error, keystoreUnreadableOperatorMessage) {
+		t.Errorf("snapshot error = %q, want it to contain the fixed keystore_unreadable operator copy", got.Error)
+	}
+	if strings.Contains(strings.ToLower(got.Error), "put back") {
+		t.Error("the operator message must never prescribe a remedy: it is wrong for a file/constant-pinned key source and for key_unavailable")
+	}
+	if strings.Contains(strings.ToLower(got.Error), "not affected") {
+		t.Error("the operator message must never make a hard-coded 'not affected' claim: it is not knowable from this refusal alone")
+	}
+	if strings.Contains(got.Error, "See admin notice") || strings.Contains(got.Error, "Do not put back") {
+		t.Error("none of the agent's own free-form Detail text may reach the stored operator message for this code")
+	}
+	if strings.Contains(got.Error, "stopped responding") {
+		t.Error("keystore_unreadable must never surface the generic stall/watchdog message")
 	}
 }
 

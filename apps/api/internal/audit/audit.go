@@ -120,6 +120,25 @@ const (
 	ActionSiteRestored     = "site.restored"
 	ActionSiteReEnrolled   = "site.reenrolled"
 
+	// GH #755 — the site's stored address. Both are recorded with ActorSystem,
+	// because the agent channel is the writer, never a user. source names
+	// which agent channel: "agent_enrollment" (the enrollment consume),
+	// "agent_metadata" (the metadata push) or "agent_diagnostics" (the daily
+	// diagnostics push). audit_log.action is plain text with no CHECK and no
+	// enum, so neither needed a migration.
+	//
+	// ActionSiteURLChanged: the stored address was replaced with the
+	// agent-reported one (a leading "www." and/or http to https, same port and
+	// path). Metadata: from, to, source; initiated_by (the user who issued
+	// the pairing code) at enrollment when the code names one; agent_version
+	// on a push when the agent reported one.
+	ActionSiteURLChanged = "site.url_changed"
+	// ActionSiteURLMismatch: the agent reported an address enrollment does not
+	// adopt, and the stored address was kept. Recorded at enrollment only.
+	// Metadata: stored, agent_reported, source, reason ("not_equivalent" or
+	// "address_in_use"), and initiated_by when the code names a user.
+	ActionSiteURLMismatch = "site.url_mismatch"
+
 	// GH #414 m117 — monitoring pause/resume (phase 1). Recorded ONE PER SITE
 	// even for a bulk request, so filtering the audit log by a single site's
 	// target_id finds the pause that governs it. audit_log.action is plain

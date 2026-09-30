@@ -21,7 +21,7 @@ import {
 
 import { FleetHubLogo, Wordmark } from "@/components/brand/logo";
 import { useShellState } from "@/components/layout/app-shell-context";
-import { useMe, isSuperadmin } from "@/features/auth/use-auth";
+import { useMe, isSuperadmin, canManageInstanceEmail } from "@/features/auth/use-auth";
 import { useSites } from "@/features/sites/use-sites";
 import { cn } from "@/lib/utils";
 
@@ -194,6 +194,17 @@ const ADMIN_NAV_GROUPS: ReadonlyArray<NavGroup> = [
   { label: "Agent mirror", icon: RefreshCw, to: "/admin/agent-mirror" },
 ];
 
+// The instance SMTP relay requires instance-level authority — the same
+// decision `me.can_manage_instance_email` reports. Appended to the admin
+// area only for a superadmin the server actually admits (a site-scoped
+// superadmin collaborator is refused), so the console always links
+// somewhere that will load rather than 403.
+const EMAIL_SMTP_ADMIN_NAV_ITEM: NavGroup = {
+  label: "Email / SMTP",
+  icon: Mail,
+  to: "/settings/smtp",
+};
+
 // Bottom-aligned app-switcher leaf, mirroring how the tenant sidebar
 // bottom-aligns its single Settings leaf.
 const BACK_TO_SITES_LEAF: NavGroup = {
@@ -208,6 +219,9 @@ export function Sidebar() {
   const pathname = location.pathname;
   const { data: me } = useMe();
   const superadmin = isSuperadmin(me);
+  const adminNavGroups = canManageInstanceEmail(me)
+    ? [...ADMIN_NAV_GROUPS, EMAIL_SMTP_ADMIN_NAV_ITEM]
+    : ADMIN_NAV_GROUPS;
 
   // Live "Sites" count for the nav badge (active, non-archived) — shares the
   // sites-list query cache with the Sites page, so it's deduped.
@@ -250,10 +264,12 @@ export function Sidebar() {
         <div className="flex flex-1 flex-col overflow-y-auto px-2 py-3">
           {superadmin ? (
             // Superadmin is monitoring-only: show ONLY the Admin area. They
-            // have no org and never manage sites/settings.
+            // have no org and never manage sites — the one exception is the
+            // instance-wide SMTP relay, linked in from here when the server
+            // admits them to it (see EMAIL_SMTP_ADMIN_NAV_ITEM above).
             <>
               <ul className="flex flex-col gap-0.5">
-                {ADMIN_NAV_GROUPS.map((group) => (
+                {adminNavGroups.map((group) => (
                   <li key={group.label}>
                     <NavGroupItem
                       group={group}

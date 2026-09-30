@@ -79,8 +79,8 @@ func (a *Authenticator) Authenticate() gin.HandlerFunc {
 			// site-scoped collaborator has an invariant ceiling — it must never
 			// reach an org-level action, whatever the row says. An API key has
 			// no such ceiling: an owner minting an owner-role key is a
-			// supported case (PermTenantManage / PermSMTPManage /
-			// PermBillingManage are owner-only and are reachable by key), so
+			// supported case (PermTenantManage / PermBillingManage are
+			// owner-only and are reachable by key), so
 			// any blanket clamp here would break legitimate keys. The ceiling
 			// therefore lives at the mint point, in apikey.Handler.create
 			// (GH #406). Keys minted before that fix keep the role they were

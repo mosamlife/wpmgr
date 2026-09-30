@@ -106,6 +106,26 @@ func (w *RefreshInventoryWorker) Work(ctx context.Context, job *river.Job[Refres
 	// body=…`; we sniff that prefix and treat it as a successful no-op so a long
 	// tail of un-updated sites does not pile up retries forever. Other errors
 	// (5xx, transport, 401/403) are returned so River retries.
+	// A redirect means the site's saved address is wrong: every retry is
+	// refused the same way, so cancel rather than burn the retry budget. It is
+	// never an old agent.
+	if re, ok := agentcmd.AsRedirect(err); ok {
+		w.logger.Warn("refresh inventory: site redirects its command address; not retrying",
+			slog.String("site_id", a.SiteID.String()),
+			slog.String("source", a.Source),
+			slog.String("redirect_to", re.To))
+		return river.JobCancel(err)
+	}
+	// GH #791: a genuine agent-side command failure is also terminal — the
+	// agent itself threw and reported it, so retrying cannot help. This job
+	// has no user-facing row, so there is nothing further to record.
+	if ce, ok := agentcmd.AsCommandError(err); ok && ce.AgentFailed() {
+		w.logger.Warn("refresh inventory: agent reported a command failure; not retrying",
+			slog.String("site_id", a.SiteID.String()),
+			slog.String("source", a.Source),
+			slog.String("error", ce.OperatorMessage("Refresh")))
+		return river.JobCancel(err)
+	}
 	if isOldAgentRouteMissing(err) {
 		w.logger.Info("refresh inventory: agent has no refresh route (old agent); skipping",
 			slog.String("site_id", a.SiteID.String()),

@@ -396,6 +396,9 @@ export const SiteSchema = {
       description:
         'GH #414 — RFC 3339 timestamp of the last uptime probe that actually ran\nagainst this site (site_uptime_status.last_probed_at), i.e. the "as of" for\n`health_status`. Absent when the site has never been probed.\n\nRead this WITH `health_status`, never instead of it. The uptime prober is\nwhat refreshes `health_status`, and pausing monitoring stops the prober — so\na paused site\'s `health_status` freezes at its last value while this stamp\nstops advancing. A paused site whose server died an hour ago therefore still\nreports `health_status: healthy`, and this field is the only thing that says\nhow old that verdict is. Render it as "as of <time>" rather than implying now.\n',
     },
+    keystore_status: {
+      $ref: "#/components/schemas/SiteKeystoreStatus",
+    },
     created_at: {
       type: "string",
       format: "date-time",
@@ -405,6 +408,42 @@ export const SiteSchema = {
       format: "date-time",
       description:
         "The site row's mtime: bumped by heartbeats, agent metadata pushes and\nhealth_status changes. Deliberately NOT bumped by monitoring pause/resume\nwrites (GH #414 Phase 1), so pausing a site does not make its inventory look\nfreshly synced. It is the inventory freshness stamp, not the health one —\nuse health_checked_at for health_status.\n",
+    },
+  },
+} as const;
+
+export const SiteKeystoreStatusSchema = {
+  type: "object",
+  description:
+    "GH #753 — trial-decrypt probe result for the site's on-disk agent\nkeystore (Keystore::probe()). It arrives with the agent's ordinary\nmetadata push — the 30-minute cron cadence, or a CP-triggered\nrecheck — never on admin_init: the agent's admin_init check only\nrecords a local wp-admin notice and sends nothing to the control\nplane from that path.\n\nAbsent on the Site response only before this site's first metadata\nsync. A pre-#753 agent that has since synced at least once gets\nstate=not_reported instead, never absent and never ok, so an old\nagent's silence can never read as a healthy keystore. Every\nmetadata push replaces the previously stored status outright — it\nis not a delta — so not_reported also covers any later push whose\nlatest probe carried no recognised result; a prior good report does\nnot survive a bad one. Never contains key material, a key-check\nvalue, an error detail or a file path.\n",
+  properties: {
+    state: {
+      type: "string",
+      enum: ["ok", "unreadable", "key_unavailable", "not_reported"],
+      description:
+        'ok = every stored item decrypted under the resolved master key.\nunreadable = the master key resolved but one or more stored\nitems did not decrypt under it (the common "site moved host, or\nthe wp-config.php security keys changed" case).\nkey_unavailable = the master key itself could not be resolved.\nnot_reported = the latest metadata push carried no recognised\nprobe result — a pre-#753 agent that has synced at least once,\nor a later push whose probe result the control plane did not\nrecognise. Every push replaces the previous status outright, so\nthis is never a delta against an earlier report.\n',
+    },
+    key_source: {
+      type: "string",
+      enum: ["constant", "salts", "file", "db", "unknown"],
+      description:
+        "Which tier pinned the master key, mirroring the agent's own\npin. Absent when no source is pinned yet.\n",
+    },
+    items: {
+      type: "object",
+      description:
+        'Per-item probe result, one entry per stored envelope (e.g.\nsite_keypair, cp_public_key, age_identity, email_secret,\nemail_connection_secrets). Each value is "absent", "ok" or\n"unreadable".\n',
+      additionalProperties: {
+        type: "string",
+      },
+    },
+    unreadable: {
+      type: "array",
+      items: {
+        type: "string",
+      },
+      description:
+        'Convenience list of the item keys currently unreadable;\nmirrors the "unreadable" entries in `items`.\n',
     },
   },
 } as const;
@@ -1316,6 +1355,11 @@ export const AgentMetadataSchema = {
       type: "string",
       description: "The WPMgr agent plugin version.",
     },
+    home_url: {
+      type: "string",
+      description:
+        'The site\'s WordPress home_url as the agent reads it (GH #755).\nOptional; malformed or oversized reports are ignored. A\nreported address is queued as a background job that runs\nafter the rest of this push has been applied, never during\nit, and adopts the address as the site\'s saved address only\nin two cases, each confirmed there by a signed ping: the\nreported address names the same host upgraded from http to\nhttps, confirmed by a signed ping to the https form that\nanswers with a 2xx; or the reported address is the "www."\nsibling of the saved address, confirmed by a signed ping to\nthe SAVED address that comes back redirected to it. Host\ncomparison in both cases is by the host that is dialled, not a\nnormalized apex or registrable domain. Anything else (a\ndifferent host with no "www." relationship, a changed port or\npath, a downgrade to http) is ignored. A refusal or a job\nfailure never fails this push.\n',
+    },
     age_recipient: {
       type: "string",
       description:
@@ -1451,6 +1495,39 @@ export const AgentMetadataSchema = {
       type: "array",
       items: {
         $ref: "#/components/schemas/SiteComponent",
+      },
+    },
+    keystore: {
+      type: ["object", "null"],
+      description:
+        "GH #753 — the agent's Keystore::probe() trial-decrypt result,\nreplayed on the ordinary metadata push. Optional; an agent that\npredates #753, or one that sends nothing this push, simply omits\nit and the control plane records state=not_reported rather than\ninferring a healthy keystore from silence.\n\nEvery field here is optional and tolerantly decoded: a malformed\nor unexpected shape (e.g. a value this project's agent never\nsends, or `items`/`unreadable` in a shape that doesn't parse) is\nignored field-by-field rather than rejecting the whole metadata\npush, and the control plane separately allowlists `state` and\n`key_source` against the vocabulary described on\nSiteKeystoreStatus before storing them — this schema does not\nitself enforce that vocabulary, since the handler doesn't either.\n",
+      properties: {
+        state: {
+          type: "string",
+          description:
+            "See SiteKeystoreStatus.state for the vocabulary the control\nplane recognises (ok, unreadable, key_unavailable). Any other\nvalue, or a value in an unparseable shape, is ignored and\nstored as not_reported.\n",
+        },
+        key_source: {
+          type: "string",
+          description:
+            "See SiteKeystoreStatus.key_source for the vocabulary the\ncontrol plane recognises (constant, salts, file, db,\nunknown). Any other or unparseable value is ignored.\n",
+        },
+        items: {
+          type: "object",
+          description:
+            'Per-item probe result, one entry per stored envelope. Each\nvalue is expected to be "absent", "ok" or "unreadable"\n(SiteKeystoreStatus.items), but an unrecognised value is\ndropped rather than rejected. A shape this cannot parse as an\nobject (including PHP\'s empty-array `[]`) is ignored and the\nwhole map is left unset.\n',
+          additionalProperties: {
+            type: "string",
+          },
+        },
+        unreadable: {
+          type: "array",
+          description:
+            "Convenience list of currently-unreadable item keys. A shape\nthis cannot parse as an array is ignored and the list is left\nunset.\n",
+          items: {
+            type: "string",
+          },
+        },
       },
     },
   },
@@ -1620,6 +1697,11 @@ export const MeSchema = {
       type: "boolean",
       description:
         "Whether the active tenant's plan currently permits routing a NEW backup to CP-managed storage (M16 Phase B). Always true on a self-hosted or hosted-billing-disabled instance, and true for every paid plan; false only for a free-plan tenant under WPMGR_HOSTED. This is a coarse, role-safe display signal for the operator-facing /destinations page (which any operator can view, unlike the owner-only /billing summary) — it is NOT the authoritative gate; the backup-run endpoints enforce the real check server-side and return 402 byo_destination_required when denied. Restoring/downloading an existing backup is never gated by this or any other check.\n",
+    },
+    can_manage_instance_email: {
+      type: "boolean",
+      description:
+        "Whether the signed-in user may manage the install-wide SMTP relay (GET, PUT and POST /test under /api/v1/settings/smtp). Computed by the same decision that gates those routes, so it is true exactly when they would admit this caller: instance-level authority (a superadmin, the owner of the only live organisation on the install, or, on a self-hosted install, the account recorded as having set up the install, while it is active and owns at least one live organisation) and a principal that is not site-scoped. An active organisation is not required. False whenever that decision cannot be made. Present on GET and PATCH /auth/me; responses built before the session exists (login, register, 2FA and OIDC completion) omit it, and clients read it from the GET /auth/me that follows.\n",
     },
     desired_plan: {
       type: "string",
@@ -3453,15 +3535,17 @@ export const BackupEventSchema = {
         "submitting_manifest",
         "completed",
         "failed",
+        "started",
         "stalled",
         "resumed",
+        "retrying",
       ],
     },
     phase_detail: {
       type: "object",
       additionalProperties: true,
       description:
-        "Pass-through of the agent's POST /progress payload (e.g. chunk counters).",
+        "Pass-through of the agent's POST /progress payload (e.g. chunk counters).\nFor `retrying`, a control-plane hint that a backup command could not\nbe delivered to the site and will be retried automatically,\n`phase_detail.error` carries the reason in the control plane's own\nwords (the same text as `attempt_error`). A restore is never\nretried automatically, so it never sends `retrying`; a failed\nrestore sends `failed`.\n",
     },
     status: {
       type: "string",
@@ -3542,6 +3626,13 @@ export const BackupSnapshotSchema = {
     },
     error: {
       type: "string",
+      description:
+        "Why the backup failed. Set only once `status` is `failed`; a\nrunning backup's retry reason is `attempt_error`, never this field.\n",
+    },
+    attempt_error: {
+      type: "string",
+      description:
+        "While `status` is `running`: why the last attempt to start the\nbackup on the site failed, in the control plane's own words, while\nit retries automatically. Cleared as soon as the site responds.\nAbsent when no attempt is failing.\n",
     },
     progress: {
       type: "object",
@@ -4630,6 +4721,11 @@ export const ScheduleRunSchema = {
     error: {
       type: "string",
       description: "Human-readable error message when status is `failed`.",
+    },
+    attempt_error: {
+      type: "string",
+      description:
+        "While `status` is `running`: why the last attempt to start the\nbackup on the site failed, while the control plane retries it\nautomatically. Absent when no attempt is failing.\n",
     },
     triggered_by: {
       type: "string",
@@ -13094,6 +13190,59 @@ export const MediaSettingsSchema = {
     auto_target_quality: {
       type: "string",
       description: "e.g. balanced | high | max",
+    },
+  },
+} as const;
+
+export const AgentUnreachableErrorSchema = {
+  type: "object",
+  required: ["code", "message"],
+  description:
+    'The POST /recheck 502 body when the control plane could not reach\nthe site\'s agent (code "agent_unreachable"). No `details`; a\ndedicated schema, not the general-purpose `Error`, so its `code`\nenum keeps this branch and `SiteUrlRedirectsError` mutually\nexclusive under `oneOf`.\n',
+  properties: {
+    code: {
+      type: "string",
+      enum: ["agent_unreachable"],
+    },
+    message: {
+      type: "string",
+      description: "Human-readable error description.",
+    },
+  },
+} as const;
+
+export const SiteUrlRedirectsErrorSchema = {
+  type: "object",
+  required: ["code", "message", "details"],
+  description:
+    'The POST /recheck 502 body when the site answered its command\naddress with a redirect (code "site_url_redirects"), so no command\nwas sent.\n',
+  properties: {
+    code: {
+      type: "string",
+      enum: ["site_url_redirects"],
+    },
+    message: {
+      type: "string",
+      description: "Human-readable error description.",
+    },
+    details: {
+      type: "object",
+      required: ["from", "to"],
+      properties: {
+        from: {
+          type: "string",
+          description: "The saved site address the command was sent to.",
+        },
+        to: {
+          type: "string",
+          description: "The address the command request was redirected to.",
+        },
+        suggested_url: {
+          type: "string",
+          description:
+            'Present only when the redirect target is an address the\nadoption rule would adopt over the saved one (a\nsame-host http to https upgrade, or the "www." sibling of\nthe saved address). Not a promise that the saved address\nwill change: that still needs a later agent push\nreporting this address and a signed probe confirming it,\nrun as a background job. Informational; the caller does\nnot act on it directly.\n',
+        },
+      },
     },
   },
 } as const;

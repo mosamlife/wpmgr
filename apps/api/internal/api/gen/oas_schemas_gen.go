@@ -6267,6 +6267,17 @@ type AgentMetadata struct {
 	ActiveTheme OptString `json:"active_theme"`
 	// The WPMgr agent plugin version.
 	AgentVersion OptString `json:"agent_version"`
+	// The site's WordPress home_url as the agent reads it (GH #755). Optional; malformed or oversized
+	// reports are ignored. A reported address is queued as a background job that runs after the rest of
+	// this push has been applied, never during it, and adopts the address as the site's saved address only
+	// in two cases, each confirmed there by a signed ping: the reported address names the same host
+	// upgraded from http to https, confirmed by a signed ping to the https form that answers with a 2xx;
+	// or the reported address is the "www." sibling of the saved address, confirmed by a signed ping to
+	// the SAVED address that comes back redirected to it. Host comparison in both cases is by the host
+	// that is dialled, not a normalized apex or registrable domain. Anything else (a different host with
+	// no "www." relationship, a changed port or path, a downgrade to http) is ignored. A refusal or a job
+	// failure never fails this push.
+	HomeURL OptString `json:"home_url"`
 	// The agent's per-site age PUBLIC recipient ("age1..."), stored so backups can be triggered without a
 	// separate registration call. Empty or missing leaves the stored recipient unchanged.
 	AgeRecipient OptString `json:"age_recipient"`
@@ -6293,6 +6304,18 @@ type AgentMetadata struct {
 	AgentSelfUpdate OptNilAgentMetadataAgentSelfUpdate `json:"agent_self_update"`
 	Plugins         []SiteComponent                    `json:"plugins"`
 	Themes          []SiteComponent                    `json:"themes"`
+	// GH #753 — the agent's Keystore::probe() trial-decrypt result, replayed on the ordinary metadata
+	// push. Optional; an agent that predates #753, or one that sends nothing this push, simply omits it
+	// and the control plane records state=not_reported rather than inferring a healthy keystore from
+	// silence.
+	//
+	// Every field here is optional and tolerantly decoded: a malformed or unexpected shape (e.g. a value
+	// this project's agent never sends, or `items`/`unreadable` in a shape that doesn't parse) is ignored
+	// field-by-field rather than rejecting the whole metadata push, and the control plane separately
+	// allowlists `state` and `key_source` against the vocabulary described on SiteKeystoreStatus before
+	// storing them — this schema does not itself enforce that vocabulary, since the handler doesn't
+	// either.
+	Keystore OptNilAgentMetadataKeystore `json:"keystore"`
 }
 
 // GetWpVersion returns the value of WpVersion.
@@ -6323,6 +6346,11 @@ func (s *AgentMetadata) GetActiveTheme() OptString {
 // GetAgentVersion returns the value of AgentVersion.
 func (s *AgentMetadata) GetAgentVersion() OptString {
 	return s.AgentVersion
+}
+
+// GetHomeURL returns the value of HomeURL.
+func (s *AgentMetadata) GetHomeURL() OptString {
+	return s.HomeURL
 }
 
 // GetAgeRecipient returns the value of AgeRecipient.
@@ -6375,6 +6403,11 @@ func (s *AgentMetadata) GetThemes() []SiteComponent {
 	return s.Themes
 }
 
+// GetKeystore returns the value of Keystore.
+func (s *AgentMetadata) GetKeystore() OptNilAgentMetadataKeystore {
+	return s.Keystore
+}
+
 // SetWpVersion sets the value of WpVersion.
 func (s *AgentMetadata) SetWpVersion(val OptString) {
 	s.WpVersion = val
@@ -6403,6 +6436,11 @@ func (s *AgentMetadata) SetActiveTheme(val OptString) {
 // SetAgentVersion sets the value of AgentVersion.
 func (s *AgentMetadata) SetAgentVersion(val OptString) {
 	s.AgentVersion = val
+}
+
+// SetHomeURL sets the value of HomeURL.
+func (s *AgentMetadata) SetHomeURL(val OptString) {
+	s.HomeURL = val
 }
 
 // SetAgeRecipient sets the value of AgeRecipient.
@@ -6453,6 +6491,11 @@ func (s *AgentMetadata) SetPlugins(val []SiteComponent) {
 // SetThemes sets the value of Themes.
 func (s *AgentMetadata) SetThemes(val []SiteComponent) {
 	s.Themes = val
+}
+
+// SetKeystore sets the value of Keystore.
+func (s *AgentMetadata) SetKeystore(val OptNilAgentMetadataKeystore) {
+	s.Keystore = val
 }
 
 // The outcome of the agent's last self-update apply, replayed on the next metadata push. This is the
@@ -6702,6 +6745,90 @@ func (s *AgentMetadataHostFlags) SetIsRuncloud(val OptBool) {
 // SetIsCloudways sets the value of IsCloudways.
 func (s *AgentMetadataHostFlags) SetIsCloudways(val OptBool) {
 	s.IsCloudways = val
+}
+
+// GH #753 — the agent's Keystore::probe() trial-decrypt result, replayed on the ordinary metadata
+// push. Optional; an agent that predates #753, or one that sends nothing this push, simply omits it
+// and the control plane records state=not_reported rather than inferring a healthy keystore from
+// silence.
+//
+// Every field here is optional and tolerantly decoded: a malformed or unexpected shape (e.g. a value
+// this project's agent never sends, or `items`/`unreadable` in a shape that doesn't parse) is ignored
+// field-by-field rather than rejecting the whole metadata push, and the control plane separately
+// allowlists `state` and `key_source` against the vocabulary described on SiteKeystoreStatus before
+// storing them — this schema does not itself enforce that vocabulary, since the handler doesn't
+// either.
+type AgentMetadataKeystore struct {
+	// See SiteKeystoreStatus.state for the vocabulary the control plane recognises (ok, unreadable,
+	// key_unavailable). Any other value, or a value in an unparseable shape, is ignored and stored as
+	// not_reported.
+	State OptString `json:"state"`
+	// See SiteKeystoreStatus.key_source for the vocabulary the control plane recognises (constant, salts,
+	// file, db, unknown). Any other or unparseable value is ignored.
+	KeySource OptString `json:"key_source"`
+	// Per-item probe result, one entry per stored envelope. Each value is expected to be "absent", "ok" or
+	// "unreadable" (SiteKeystoreStatus.items), but an unrecognised value is dropped rather than rejected.
+	// A shape this cannot parse as an object (including PHP's empty-array `[]`) is ignored and the whole
+	// map is left unset.
+	Items OptAgentMetadataKeystoreItems `json:"items"`
+	// Convenience list of currently-unreadable item keys. A shape this cannot parse as an array is ignored
+	// and the list is left unset.
+	Unreadable []string `json:"unreadable"`
+}
+
+// GetState returns the value of State.
+func (s *AgentMetadataKeystore) GetState() OptString {
+	return s.State
+}
+
+// GetKeySource returns the value of KeySource.
+func (s *AgentMetadataKeystore) GetKeySource() OptString {
+	return s.KeySource
+}
+
+// GetItems returns the value of Items.
+func (s *AgentMetadataKeystore) GetItems() OptAgentMetadataKeystoreItems {
+	return s.Items
+}
+
+// GetUnreadable returns the value of Unreadable.
+func (s *AgentMetadataKeystore) GetUnreadable() []string {
+	return s.Unreadable
+}
+
+// SetState sets the value of State.
+func (s *AgentMetadataKeystore) SetState(val OptString) {
+	s.State = val
+}
+
+// SetKeySource sets the value of KeySource.
+func (s *AgentMetadataKeystore) SetKeySource(val OptString) {
+	s.KeySource = val
+}
+
+// SetItems sets the value of Items.
+func (s *AgentMetadataKeystore) SetItems(val OptAgentMetadataKeystoreItems) {
+	s.Items = val
+}
+
+// SetUnreadable sets the value of Unreadable.
+func (s *AgentMetadataKeystore) SetUnreadable(val []string) {
+	s.Unreadable = val
+}
+
+// Per-item probe result, one entry per stored envelope. Each value is expected to be "absent", "ok" or
+// "unreadable" (SiteKeystoreStatus.items), but an unrecognised value is dropped rather than rejected.
+// A shape this cannot parse as an object (including PHP's empty-array `[]`) is ignored and the whole
+// map is left unset.
+type AgentMetadataKeystoreItems map[string]string
+
+func (s *AgentMetadataKeystoreItems) init() AgentMetadataKeystoreItems {
+	m := *s
+	if m == nil {
+		m = map[string]string{}
+		*s = m
+	}
+	return m
 }
 
 type AgentMetadataRolesItem struct {
@@ -8042,6 +8169,70 @@ func (s *AgentSuppressionDeltaPageEntriesItem) SetCreatedAt(val time.Time) {
 	s.CreatedAt = val
 }
 
+// The POST /recheck 502 body when the control plane could not reach the site's agent (code
+// "agent_unreachable"). No `details`; a dedicated schema, not the general-purpose `Error`, so its
+// `code` enum keeps this branch and `SiteUrlRedirectsError` mutually exclusive under `oneOf`.
+// Ref: #/components/schemas/AgentUnreachableError
+type AgentUnreachableError struct {
+	Code AgentUnreachableErrorCode `json:"code"`
+	// Human-readable error description.
+	Message string `json:"message"`
+}
+
+// GetCode returns the value of Code.
+func (s *AgentUnreachableError) GetCode() AgentUnreachableErrorCode {
+	return s.Code
+}
+
+// GetMessage returns the value of Message.
+func (s *AgentUnreachableError) GetMessage() string {
+	return s.Message
+}
+
+// SetCode sets the value of Code.
+func (s *AgentUnreachableError) SetCode(val AgentUnreachableErrorCode) {
+	s.Code = val
+}
+
+// SetMessage sets the value of Message.
+func (s *AgentUnreachableError) SetMessage(val string) {
+	s.Message = val
+}
+
+type AgentUnreachableErrorCode string
+
+const (
+	AgentUnreachableErrorCodeAgentUnreachable AgentUnreachableErrorCode = "agent_unreachable"
+)
+
+// AllValues returns all AgentUnreachableErrorCode values.
+func (AgentUnreachableErrorCode) AllValues() []AgentUnreachableErrorCode {
+	return []AgentUnreachableErrorCode{
+		AgentUnreachableErrorCodeAgentUnreachable,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AgentUnreachableErrorCode) MarshalText() ([]byte, error) {
+	switch s {
+	case AgentUnreachableErrorCodeAgentUnreachable:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AgentUnreachableErrorCode) UnmarshalText(data []byte) error {
+	switch AgentUnreachableErrorCode(data) {
+	case AgentUnreachableErrorCodeAgentUnreachable:
+		*s = AgentUnreachableErrorCodeAgentUnreachable
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
 // A tenant's alert channel, shared by uptime downtime/recovery, high-severity security events, and
 // vulnerability alerting (GH #247). The webhook secret is write-only and is never returned;
 // webhook_configured indicates whether a webhook URL is set.
@@ -9377,7 +9568,11 @@ func (s *BackupCreateKind) UnmarshalText(data []byte) error {
 type BackupEvent struct {
 	SnapshotID uuid.UUID        `json:"snapshot_id"`
 	Phase      BackupEventPhase `json:"phase"`
-	// Pass-through of the agent's POST /progress payload (e.g. chunk counters).
+	// Pass-through of the agent's POST /progress payload (e.g. chunk counters). For `retrying`, a
+	// control-plane hint that a backup command could not be delivered to the site and will be retried
+	// automatically, `phase_detail.error` carries the reason in the control plane's own words (the same
+	// text as `attempt_error`). A restore is never retried automatically, so it never sends `retrying`; a
+	// failed restore sends `failed`.
 	PhaseDetail OptBackupEventPhaseDetail `json:"phase_detail"`
 	Status      BackupEventStatus         `json:"status"`
 	Ts          time.Time                 `json:"ts"`
@@ -9443,8 +9638,10 @@ const (
 	BackupEventPhaseSubmittingManifest  BackupEventPhase = "submitting_manifest"
 	BackupEventPhaseCompleted           BackupEventPhase = "completed"
 	BackupEventPhaseFailed              BackupEventPhase = "failed"
+	BackupEventPhaseStarted             BackupEventPhase = "started"
 	BackupEventPhaseStalled             BackupEventPhase = "stalled"
 	BackupEventPhaseResumed             BackupEventPhase = "resumed"
+	BackupEventPhaseRetrying            BackupEventPhase = "retrying"
 )
 
 // AllValues returns all BackupEventPhase values.
@@ -9457,8 +9654,10 @@ func (BackupEventPhase) AllValues() []BackupEventPhase {
 		BackupEventPhaseSubmittingManifest,
 		BackupEventPhaseCompleted,
 		BackupEventPhaseFailed,
+		BackupEventPhaseStarted,
 		BackupEventPhaseStalled,
 		BackupEventPhaseResumed,
+		BackupEventPhaseRetrying,
 	}
 }
 
@@ -9479,9 +9678,13 @@ func (s BackupEventPhase) MarshalText() ([]byte, error) {
 		return []byte(s), nil
 	case BackupEventPhaseFailed:
 		return []byte(s), nil
+	case BackupEventPhaseStarted:
+		return []byte(s), nil
 	case BackupEventPhaseStalled:
 		return []byte(s), nil
 	case BackupEventPhaseResumed:
+		return []byte(s), nil
+	case BackupEventPhaseRetrying:
 		return []byte(s), nil
 	default:
 		return nil, errors.Errorf("invalid value: %q", s)
@@ -9512,18 +9715,28 @@ func (s *BackupEventPhase) UnmarshalText(data []byte) error {
 	case BackupEventPhaseFailed:
 		*s = BackupEventPhaseFailed
 		return nil
+	case BackupEventPhaseStarted:
+		*s = BackupEventPhaseStarted
+		return nil
 	case BackupEventPhaseStalled:
 		*s = BackupEventPhaseStalled
 		return nil
 	case BackupEventPhaseResumed:
 		*s = BackupEventPhaseResumed
 		return nil
+	case BackupEventPhaseRetrying:
+		*s = BackupEventPhaseRetrying
+		return nil
 	default:
 		return errors.Errorf("invalid value: %q", data)
 	}
 }
 
-// Pass-through of the agent's POST /progress payload (e.g. chunk counters).
+// Pass-through of the agent's POST /progress payload (e.g. chunk counters). For `retrying`, a
+// control-plane hint that a backup command could not be delivered to the site and will be retried
+// automatically, `phase_detail.error` carries the reason in the control plane's own words (the same
+// text as `attempt_error`). A restore is never retried automatically, so it never sends `retrying`; a
+// failed restore sends `failed`.
 type BackupEventPhaseDetail map[string]jx.Raw
 
 func (s *BackupEventPhaseDetail) init() BackupEventPhaseDetail {
@@ -10618,8 +10831,14 @@ type BackupSnapshot struct {
 	TotalSize    OptInt64  `json:"total_size"`
 	ChunkCount   OptInt64  `json:"chunk_count"`
 	// Kept by the monthly-archive retention rule.
-	Archived OptBool   `json:"archived"`
-	Error    OptString `json:"error"`
+	Archived OptBool `json:"archived"`
+	// Why the backup failed. Set only once `status` is `failed`; a running backup's retry reason is
+	// `attempt_error`, never this field.
+	Error OptString `json:"error"`
+	// While `status` is `running`: why the last attempt to start the backup on the site failed, in the
+	// control plane's own words, while it retries automatically. Cleared as soon as the site responds.
+	// Absent when no attempt is failing.
+	AttemptError OptString `json:"attempt_error"`
 	// M5.6 / ADR-032 phpbu runner progress. Empty `{}` until the runner posts its first phase. Shape: {
 	// "phase": "uploading", "phase_detail": {"chunks_done": 17, "chunks_total": 42, ...} } Phases form a
 	// closed set (see backup.allowedProgressPhases on the CP).
@@ -10706,6 +10925,11 @@ func (s *BackupSnapshot) GetArchived() OptBool {
 // GetError returns the value of Error.
 func (s *BackupSnapshot) GetError() OptString {
 	return s.Error
+}
+
+// GetAttemptError returns the value of AttemptError.
+func (s *BackupSnapshot) GetAttemptError() OptString {
+	return s.AttemptError
 }
 
 // GetProgress returns the value of Progress.
@@ -10826,6 +11050,11 @@ func (s *BackupSnapshot) SetArchived(val OptBool) {
 // SetError sets the value of Error.
 func (s *BackupSnapshot) SetError(val OptString) {
 	s.Error = val
+}
+
+// SetAttemptError sets the value of AttemptError.
+func (s *BackupSnapshot) SetAttemptError(val OptString) {
+	s.AttemptError = val
 }
 
 // SetProgress sets the value of Progress.
@@ -14221,8 +14450,14 @@ type CreateRestoreAccepted struct {
 	TotalSize    OptInt64  `json:"total_size"`
 	ChunkCount   OptInt64  `json:"chunk_count"`
 	// Kept by the monthly-archive retention rule.
-	Archived OptBool   `json:"archived"`
-	Error    OptString `json:"error"`
+	Archived OptBool `json:"archived"`
+	// Why the backup failed. Set only once `status` is `failed`; a running backup's retry reason is
+	// `attempt_error`, never this field.
+	Error OptString `json:"error"`
+	// While `status` is `running`: why the last attempt to start the backup on the site failed, in the
+	// control plane's own words, while it retries automatically. Cleared as soon as the site responds.
+	// Absent when no attempt is failing.
+	AttemptError OptString `json:"attempt_error"`
 	// M5.6 / ADR-032 phpbu runner progress. Empty `{}` until the runner posts its first phase. Shape: {
 	// "phase": "uploading", "phase_detail": {"chunks_done": 17, "chunks_total": 42, ...} } Phases form a
 	// closed set (see backup.allowedProgressPhases on the CP).
@@ -14312,6 +14547,11 @@ func (s *CreateRestoreAccepted) GetArchived() OptBool {
 // GetError returns the value of Error.
 func (s *CreateRestoreAccepted) GetError() OptString {
 	return s.Error
+}
+
+// GetAttemptError returns the value of AttemptError.
+func (s *CreateRestoreAccepted) GetAttemptError() OptString {
+	return s.AttemptError
 }
 
 // GetProgress returns the value of Progress.
@@ -14437,6 +14677,11 @@ func (s *CreateRestoreAccepted) SetArchived(val OptBool) {
 // SetError sets the value of Error.
 func (s *CreateRestoreAccepted) SetError(val OptString) {
 	s.Error = val
+}
+
+// SetAttemptError sets the value of AttemptError.
+func (s *CreateRestoreAccepted) SetAttemptError(val OptString) {
+	s.AttemptError = val
 }
 
 // SetProgress sets the value of Progress.
@@ -18497,6 +18742,7 @@ func (s *ErrorHeaders) SetResponse(val Error) {
 }
 
 func (*ErrorHeaders) checkAgentMirrorNowRes() {}
+func (*ErrorHeaders) loginRes()               {}
 
 type ExportSiteEmailLogForbidden Error
 
@@ -25356,6 +25602,15 @@ type Me struct {
 	// the real check server-side and return 402 byo_destination_required when denied.
 	// Restoring/downloading an existing backup is never gated by this or any other check.
 	ManagedStorageAllowed OptBool `json:"managed_storage_allowed"`
+	// Whether the signed-in user may manage the install-wide SMTP relay (GET, PUT and POST /test under
+	// /api/v1/settings/smtp). Computed by the same decision that gates those routes, so it is true exactly
+	// when they would admit this caller: instance-level authority (a superadmin, the owner of the only
+	// live organisation on the install, or, on a self-hosted install, the account recorded as having set
+	// up the install, while it is active and owns at least one live organisation) and a principal that is
+	// not site-scoped. An active organisation is not required. False whenever that decision cannot be
+	// made. Present on GET and PATCH /auth/me; responses built before the session exists (login, register,
+	// 2FA and OIDC completion) omit it, and clients read it from the GET /auth/me that follows.
+	CanManageInstanceEmail OptBool `json:"can_manage_instance_email"`
 	// The M16 Phase 0 "sign up into a plan" hint captured at registration (RegisterRequest.plan),
 	// single-use: present ONLY in the direct response to POST /auth/verify-email (read off the
 	// just-consumed verification token) or the first-run bootstrap response of POST /auth/register —
@@ -25405,6 +25660,11 @@ func (s *Me) GetManagedStorageAllowed() OptBool {
 	return s.ManagedStorageAllowed
 }
 
+// GetCanManageInstanceEmail returns the value of CanManageInstanceEmail.
+func (s *Me) GetCanManageInstanceEmail() OptBool {
+	return s.CanManageInstanceEmail
+}
+
 // GetDesiredPlan returns the value of DesiredPlan.
 func (s *Me) GetDesiredPlan() OptMeDesiredPlan {
 	return s.DesiredPlan
@@ -25448,6 +25708,11 @@ func (s *Me) SetHosted(val OptBool) {
 // SetManagedStorageAllowed sets the value of ManagedStorageAllowed.
 func (s *Me) SetManagedStorageAllowed(val OptBool) {
 	s.ManagedStorageAllowed = val
+}
+
+// SetCanManageInstanceEmail sets the value of CanManageInstanceEmail.
+func (s *Me) SetCanManageInstanceEmail(val OptBool) {
+	s.CanManageInstanceEmail = val
 }
 
 // SetDesiredPlan sets the value of DesiredPlan.
@@ -30111,6 +30376,52 @@ func (o OptAgentMediaPresignOKUploads) Or(d AgentMediaPresignOKUploads) AgentMed
 	return d
 }
 
+// NewOptAgentMetadataKeystoreItems returns new OptAgentMetadataKeystoreItems with value set to v.
+func NewOptAgentMetadataKeystoreItems(v AgentMetadataKeystoreItems) OptAgentMetadataKeystoreItems {
+	return OptAgentMetadataKeystoreItems{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAgentMetadataKeystoreItems is optional AgentMetadataKeystoreItems.
+type OptAgentMetadataKeystoreItems struct {
+	Value AgentMetadataKeystoreItems
+	Set   bool
+}
+
+// IsSet returns true if OptAgentMetadataKeystoreItems was set.
+func (o OptAgentMetadataKeystoreItems) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAgentMetadataKeystoreItems) Reset() {
+	var v AgentMetadataKeystoreItems
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAgentMetadataKeystoreItems) SetTo(v AgentMetadataKeystoreItems) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAgentMetadataKeystoreItems) Get() (v AgentMetadataKeystoreItems, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAgentMetadataKeystoreItems) Or(d AgentMetadataKeystoreItems) AgentMetadataKeystoreItems {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptAlertConfigUpdateVulnMinSeverity returns new OptAlertConfigUpdateVulnMinSeverity with value set to v.
 func NewOptAlertConfigUpdateVulnMinSeverity(v AlertConfigUpdateVulnMinSeverity) OptAlertConfigUpdateVulnMinSeverity {
 	return OptAlertConfigUpdateVulnMinSeverity{
@@ -33511,6 +33822,74 @@ func (o OptNilAgentMetadataHostFlags) Or(d AgentMetadataHostFlags) AgentMetadata
 	return d
 }
 
+// NewOptNilAgentMetadataKeystore returns new OptNilAgentMetadataKeystore with value set to v.
+func NewOptNilAgentMetadataKeystore(v AgentMetadataKeystore) OptNilAgentMetadataKeystore {
+	return OptNilAgentMetadataKeystore{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilAgentMetadataKeystore is optional nullable AgentMetadataKeystore.
+type OptNilAgentMetadataKeystore struct {
+	Value AgentMetadataKeystore
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilAgentMetadataKeystore was set.
+func (o OptNilAgentMetadataKeystore) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilAgentMetadataKeystore) Reset() {
+	var v AgentMetadataKeystore
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilAgentMetadataKeystore) SetTo(v AgentMetadataKeystore) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilAgentMetadataKeystore) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilAgentMetadataKeystore) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v AgentMetadataKeystore
+	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilAgentMetadataKeystore) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilAgentMetadataKeystore) Get() (v AgentMetadataKeystore, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilAgentMetadataKeystore) Or(d AgentMetadataKeystore) AgentMetadataKeystore {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptNilBool returns new OptNilBool with value set to v.
 func NewOptNilBool(v bool) OptNilBool {
 	return OptNilBool{
@@ -36743,6 +37122,190 @@ func (o OptSiteCreateStatus) Get() (v SiteCreateStatus, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptSiteCreateStatus) Or(d SiteCreateStatus) SiteCreateStatus {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptSiteKeystoreStatus returns new OptSiteKeystoreStatus with value set to v.
+func NewOptSiteKeystoreStatus(v SiteKeystoreStatus) OptSiteKeystoreStatus {
+	return OptSiteKeystoreStatus{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptSiteKeystoreStatus is optional SiteKeystoreStatus.
+type OptSiteKeystoreStatus struct {
+	Value SiteKeystoreStatus
+	Set   bool
+}
+
+// IsSet returns true if OptSiteKeystoreStatus was set.
+func (o OptSiteKeystoreStatus) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptSiteKeystoreStatus) Reset() {
+	var v SiteKeystoreStatus
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptSiteKeystoreStatus) SetTo(v SiteKeystoreStatus) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptSiteKeystoreStatus) Get() (v SiteKeystoreStatus, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptSiteKeystoreStatus) Or(d SiteKeystoreStatus) SiteKeystoreStatus {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptSiteKeystoreStatusItems returns new OptSiteKeystoreStatusItems with value set to v.
+func NewOptSiteKeystoreStatusItems(v SiteKeystoreStatusItems) OptSiteKeystoreStatusItems {
+	return OptSiteKeystoreStatusItems{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptSiteKeystoreStatusItems is optional SiteKeystoreStatusItems.
+type OptSiteKeystoreStatusItems struct {
+	Value SiteKeystoreStatusItems
+	Set   bool
+}
+
+// IsSet returns true if OptSiteKeystoreStatusItems was set.
+func (o OptSiteKeystoreStatusItems) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptSiteKeystoreStatusItems) Reset() {
+	var v SiteKeystoreStatusItems
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptSiteKeystoreStatusItems) SetTo(v SiteKeystoreStatusItems) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptSiteKeystoreStatusItems) Get() (v SiteKeystoreStatusItems, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptSiteKeystoreStatusItems) Or(d SiteKeystoreStatusItems) SiteKeystoreStatusItems {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptSiteKeystoreStatusKeySource returns new OptSiteKeystoreStatusKeySource with value set to v.
+func NewOptSiteKeystoreStatusKeySource(v SiteKeystoreStatusKeySource) OptSiteKeystoreStatusKeySource {
+	return OptSiteKeystoreStatusKeySource{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptSiteKeystoreStatusKeySource is optional SiteKeystoreStatusKeySource.
+type OptSiteKeystoreStatusKeySource struct {
+	Value SiteKeystoreStatusKeySource
+	Set   bool
+}
+
+// IsSet returns true if OptSiteKeystoreStatusKeySource was set.
+func (o OptSiteKeystoreStatusKeySource) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptSiteKeystoreStatusKeySource) Reset() {
+	var v SiteKeystoreStatusKeySource
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptSiteKeystoreStatusKeySource) SetTo(v SiteKeystoreStatusKeySource) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptSiteKeystoreStatusKeySource) Get() (v SiteKeystoreStatusKeySource, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptSiteKeystoreStatusKeySource) Or(d SiteKeystoreStatusKeySource) SiteKeystoreStatusKeySource {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptSiteKeystoreStatusState returns new OptSiteKeystoreStatusState with value set to v.
+func NewOptSiteKeystoreStatusState(v SiteKeystoreStatusState) OptSiteKeystoreStatusState {
+	return OptSiteKeystoreStatusState{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptSiteKeystoreStatusState is optional SiteKeystoreStatusState.
+type OptSiteKeystoreStatusState struct {
+	Value SiteKeystoreStatusState
+	Set   bool
+}
+
+// IsSet returns true if OptSiteKeystoreStatusState was set.
+func (o OptSiteKeystoreStatusState) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptSiteKeystoreStatusState) Reset() {
+	var v SiteKeystoreStatusState
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptSiteKeystoreStatusState) SetTo(v SiteKeystoreStatusState) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptSiteKeystoreStatusState) Get() (v SiteKeystoreStatusState, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptSiteKeystoreStatusState) Or(d SiteKeystoreStatusState) SiteKeystoreStatusState {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -41596,7 +42159,74 @@ func (s *RecheckResponse) SetRecovered(val bool) {
 
 func (*RecheckResponse) recheckSiteRes() {}
 
-type RecheckSiteBadGateway Error
+// RecheckSiteBadGateway represents sum type.
+type RecheckSiteBadGateway struct {
+	// Type selects the active sum variant, switch on this field.
+	Type                  RecheckSiteBadGatewayType
+	AgentUnreachableError AgentUnreachableError
+	SiteUrlRedirectsError SiteUrlRedirectsError
+}
+
+// RecheckSiteBadGatewayType is oneOf type of RecheckSiteBadGateway.
+type RecheckSiteBadGatewayType string
+
+// Possible values for RecheckSiteBadGatewayType.
+const (
+	AgentUnreachableErrorRecheckSiteBadGateway RecheckSiteBadGatewayType = "agent_unreachable"
+	SiteUrlRedirectsErrorRecheckSiteBadGateway RecheckSiteBadGatewayType = "site_url_redirects"
+)
+
+// IsAgentUnreachableError reports whether RecheckSiteBadGateway is AgentUnreachableError.
+func (s RecheckSiteBadGateway) IsAgentUnreachableError() bool {
+	return s.Type == AgentUnreachableErrorRecheckSiteBadGateway
+}
+
+// IsSiteUrlRedirectsError reports whether RecheckSiteBadGateway is SiteUrlRedirectsError.
+func (s RecheckSiteBadGateway) IsSiteUrlRedirectsError() bool {
+	return s.Type == SiteUrlRedirectsErrorRecheckSiteBadGateway
+}
+
+// SetAgentUnreachableError sets RecheckSiteBadGateway to AgentUnreachableError.
+func (s *RecheckSiteBadGateway) SetAgentUnreachableError(v AgentUnreachableError) {
+	s.Type = AgentUnreachableErrorRecheckSiteBadGateway
+	s.AgentUnreachableError = v
+}
+
+// GetAgentUnreachableError returns AgentUnreachableError and true boolean if RecheckSiteBadGateway is AgentUnreachableError.
+func (s RecheckSiteBadGateway) GetAgentUnreachableError() (v AgentUnreachableError, ok bool) {
+	if !s.IsAgentUnreachableError() {
+		return v, false
+	}
+	return s.AgentUnreachableError, true
+}
+
+// NewAgentUnreachableErrorRecheckSiteBadGateway returns new RecheckSiteBadGateway from AgentUnreachableError.
+func NewAgentUnreachableErrorRecheckSiteBadGateway(v AgentUnreachableError) RecheckSiteBadGateway {
+	var s RecheckSiteBadGateway
+	s.SetAgentUnreachableError(v)
+	return s
+}
+
+// SetSiteUrlRedirectsError sets RecheckSiteBadGateway to SiteUrlRedirectsError.
+func (s *RecheckSiteBadGateway) SetSiteUrlRedirectsError(v SiteUrlRedirectsError) {
+	s.Type = SiteUrlRedirectsErrorRecheckSiteBadGateway
+	s.SiteUrlRedirectsError = v
+}
+
+// GetSiteUrlRedirectsError returns SiteUrlRedirectsError and true boolean if RecheckSiteBadGateway is SiteUrlRedirectsError.
+func (s RecheckSiteBadGateway) GetSiteUrlRedirectsError() (v SiteUrlRedirectsError, ok bool) {
+	if !s.IsSiteUrlRedirectsError() {
+		return v, false
+	}
+	return s.SiteUrlRedirectsError, true
+}
+
+// NewSiteUrlRedirectsErrorRecheckSiteBadGateway returns new RecheckSiteBadGateway from SiteUrlRedirectsError.
+func NewSiteUrlRedirectsErrorRecheckSiteBadGateway(v SiteUrlRedirectsError) RecheckSiteBadGateway {
+	var s RecheckSiteBadGateway
+	s.SetSiteUrlRedirectsError(v)
+	return s
+}
 
 func (*RecheckSiteBadGateway) recheckSiteRes() {}
 
@@ -44779,6 +45409,9 @@ type ScheduleRun struct {
 	Kind ScheduleRunKind `json:"kind"`
 	// Human-readable error message when status is `failed`.
 	Error OptString `json:"error"`
+	// While `status` is `running`: why the last attempt to start the backup on the site failed, while the
+	// control plane retries it automatically. Absent when no attempt is failing.
+	AttemptError OptString `json:"attempt_error"`
 	// Actor that triggered this run (`schedule` for automatic fires; user UUID for manual).
 	TriggeredBy OptString `json:"triggered_by"`
 	// Email of the triggering user (null for schedule-fired or unresolvable actors).
@@ -44831,6 +45464,11 @@ func (s *ScheduleRun) GetKind() ScheduleRunKind {
 // GetError returns the value of Error.
 func (s *ScheduleRun) GetError() OptString {
 	return s.Error
+}
+
+// GetAttemptError returns the value of AttemptError.
+func (s *ScheduleRun) GetAttemptError() OptString {
+	return s.AttemptError
 }
 
 // GetTriggeredBy returns the value of TriggeredBy.
@@ -44901,6 +45539,11 @@ func (s *ScheduleRun) SetKind(val ScheduleRunKind) {
 // SetError sets the value of Error.
 func (s *ScheduleRun) SetError(val OptString) {
 	s.Error = val
+}
+
+// SetAttemptError sets the value of AttemptError.
+func (s *ScheduleRun) SetAttemptError(val OptString) {
+	s.AttemptError = val
 }
 
 // SetTriggeredBy sets the value of TriggeredBy.
@@ -45731,8 +46374,9 @@ type Site struct {
 	// freezes at its last value while this stamp stops advancing. A paused site whose server died an hour
 	// ago therefore still reports `health_status: healthy`, and this field is the only thing that says how
 	// old that verdict is. Render it as "as of " rather than implying now.
-	HealthCheckedAt OptDateTime `json:"health_checked_at"`
-	CreatedAt       time.Time   `json:"created_at"`
+	HealthCheckedAt OptDateTime           `json:"health_checked_at"`
+	KeystoreStatus  OptSiteKeystoreStatus `json:"keystore_status"`
+	CreatedAt       time.Time             `json:"created_at"`
 	// The site row's mtime: bumped by heartbeats, agent metadata pushes and health_status changes.
 	// Deliberately NOT bumped by monitoring pause/resume writes (GH #414 Phase 1), so pausing a site does
 	// not make its inventory look freshly synced. It is the inventory freshness stamp, not the health one
@@ -45958,6 +46602,11 @@ func (s *Site) GetMonitoringResumeAt() OptDateTime {
 // GetHealthCheckedAt returns the value of HealthCheckedAt.
 func (s *Site) GetHealthCheckedAt() OptDateTime {
 	return s.HealthCheckedAt
+}
+
+// GetKeystoreStatus returns the value of KeystoreStatus.
+func (s *Site) GetKeystoreStatus() OptSiteKeystoreStatus {
+	return s.KeystoreStatus
 }
 
 // GetCreatedAt returns the value of CreatedAt.
@@ -46188,6 +46837,11 @@ func (s *Site) SetMonitoringResumeAt(val OptDateTime) {
 // SetHealthCheckedAt sets the value of HealthCheckedAt.
 func (s *Site) SetHealthCheckedAt(val OptDateTime) {
 	s.HealthCheckedAt = val
+}
+
+// SetKeystoreStatus sets the value of KeystoreStatus.
+func (s *Site) SetKeystoreStatus(val OptSiteKeystoreStatus) {
+	s.KeystoreStatus = val
 }
 
 // SetCreatedAt sets the value of CreatedAt.
@@ -49722,6 +50376,216 @@ func (s *SiteInvitationStatus) UnmarshalText(data []byte) error {
 	}
 }
 
+// GH #753 — trial-decrypt probe result for the site's on-disk agent keystore (Keystore::probe()). It
+// arrives with the agent's ordinary metadata push — the 30-minute cron cadence, or a CP-triggered
+// recheck — never on admin_init: the agent's admin_init check only records a local wp-admin notice
+// and sends nothing to the control plane from that path.
+//
+// Absent on the Site response only before this site's first metadata sync. A pre-#753 agent that has
+// since synced at least once gets state=not_reported instead, never absent and never ok, so an old
+// agent's silence can never read as a healthy keystore. Every metadata push replaces the previously
+// stored status outright — it is not a delta — so not_reported also covers any later push whose
+// latest probe carried no recognised result; a prior good report does not survive a bad one. Never
+// contains key material, a key-check value, an error detail or a file path.
+// Ref: #/components/schemas/SiteKeystoreStatus
+type SiteKeystoreStatus struct {
+	// Ok = every stored item decrypted under the resolved master key. unreadable = the master key resolved
+	// but one or more stored items did not decrypt under it (the common "site moved host, or the
+	// wp-config.php security keys changed" case). key_unavailable = the master key itself could not be
+	// resolved. not_reported = the latest metadata push carried no recognised probe result — a pre-#753
+	// agent that has synced at least once, or a later push whose probe result the control plane did not
+	// recognise. Every push replaces the previous status outright, so this is never a delta against an
+	// earlier report.
+	State OptSiteKeystoreStatusState `json:"state"`
+	// Which tier pinned the master key, mirroring the agent's own pin. Absent when no source is pinned
+	// yet.
+	KeySource OptSiteKeystoreStatusKeySource `json:"key_source"`
+	// Per-item probe result, one entry per stored envelope (e.g. site_keypair, cp_public_key,
+	// age_identity, email_secret, email_connection_secrets). Each value is "absent", "ok" or "unreadable".
+	Items OptSiteKeystoreStatusItems `json:"items"`
+	// Convenience list of the item keys currently unreadable; mirrors the "unreadable" entries in `items`.
+	Unreadable []string `json:"unreadable"`
+}
+
+// GetState returns the value of State.
+func (s *SiteKeystoreStatus) GetState() OptSiteKeystoreStatusState {
+	return s.State
+}
+
+// GetKeySource returns the value of KeySource.
+func (s *SiteKeystoreStatus) GetKeySource() OptSiteKeystoreStatusKeySource {
+	return s.KeySource
+}
+
+// GetItems returns the value of Items.
+func (s *SiteKeystoreStatus) GetItems() OptSiteKeystoreStatusItems {
+	return s.Items
+}
+
+// GetUnreadable returns the value of Unreadable.
+func (s *SiteKeystoreStatus) GetUnreadable() []string {
+	return s.Unreadable
+}
+
+// SetState sets the value of State.
+func (s *SiteKeystoreStatus) SetState(val OptSiteKeystoreStatusState) {
+	s.State = val
+}
+
+// SetKeySource sets the value of KeySource.
+func (s *SiteKeystoreStatus) SetKeySource(val OptSiteKeystoreStatusKeySource) {
+	s.KeySource = val
+}
+
+// SetItems sets the value of Items.
+func (s *SiteKeystoreStatus) SetItems(val OptSiteKeystoreStatusItems) {
+	s.Items = val
+}
+
+// SetUnreadable sets the value of Unreadable.
+func (s *SiteKeystoreStatus) SetUnreadable(val []string) {
+	s.Unreadable = val
+}
+
+// Per-item probe result, one entry per stored envelope (e.g. site_keypair, cp_public_key,
+// age_identity, email_secret, email_connection_secrets). Each value is "absent", "ok" or "unreadable".
+type SiteKeystoreStatusItems map[string]string
+
+func (s *SiteKeystoreStatusItems) init() SiteKeystoreStatusItems {
+	m := *s
+	if m == nil {
+		m = map[string]string{}
+		*s = m
+	}
+	return m
+}
+
+// Which tier pinned the master key, mirroring the agent's own pin. Absent when no source is pinned
+// yet.
+type SiteKeystoreStatusKeySource string
+
+const (
+	SiteKeystoreStatusKeySourceConstant SiteKeystoreStatusKeySource = "constant"
+	SiteKeystoreStatusKeySourceSalts    SiteKeystoreStatusKeySource = "salts"
+	SiteKeystoreStatusKeySourceFile     SiteKeystoreStatusKeySource = "file"
+	SiteKeystoreStatusKeySourceDb       SiteKeystoreStatusKeySource = "db"
+	SiteKeystoreStatusKeySourceUnknown  SiteKeystoreStatusKeySource = "unknown"
+)
+
+// AllValues returns all SiteKeystoreStatusKeySource values.
+func (SiteKeystoreStatusKeySource) AllValues() []SiteKeystoreStatusKeySource {
+	return []SiteKeystoreStatusKeySource{
+		SiteKeystoreStatusKeySourceConstant,
+		SiteKeystoreStatusKeySourceSalts,
+		SiteKeystoreStatusKeySourceFile,
+		SiteKeystoreStatusKeySourceDb,
+		SiteKeystoreStatusKeySourceUnknown,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s SiteKeystoreStatusKeySource) MarshalText() ([]byte, error) {
+	switch s {
+	case SiteKeystoreStatusKeySourceConstant:
+		return []byte(s), nil
+	case SiteKeystoreStatusKeySourceSalts:
+		return []byte(s), nil
+	case SiteKeystoreStatusKeySourceFile:
+		return []byte(s), nil
+	case SiteKeystoreStatusKeySourceDb:
+		return []byte(s), nil
+	case SiteKeystoreStatusKeySourceUnknown:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *SiteKeystoreStatusKeySource) UnmarshalText(data []byte) error {
+	switch SiteKeystoreStatusKeySource(data) {
+	case SiteKeystoreStatusKeySourceConstant:
+		*s = SiteKeystoreStatusKeySourceConstant
+		return nil
+	case SiteKeystoreStatusKeySourceSalts:
+		*s = SiteKeystoreStatusKeySourceSalts
+		return nil
+	case SiteKeystoreStatusKeySourceFile:
+		*s = SiteKeystoreStatusKeySourceFile
+		return nil
+	case SiteKeystoreStatusKeySourceDb:
+		*s = SiteKeystoreStatusKeySourceDb
+		return nil
+	case SiteKeystoreStatusKeySourceUnknown:
+		*s = SiteKeystoreStatusKeySourceUnknown
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Ok = every stored item decrypted under the resolved master key. unreadable = the master key resolved
+// but one or more stored items did not decrypt under it (the common "site moved host, or the
+// wp-config.php security keys changed" case). key_unavailable = the master key itself could not be
+// resolved. not_reported = the latest metadata push carried no recognised probe result — a pre-#753
+// agent that has synced at least once, or a later push whose probe result the control plane did not
+// recognise. Every push replaces the previous status outright, so this is never a delta against an
+// earlier report.
+type SiteKeystoreStatusState string
+
+const (
+	SiteKeystoreStatusStateOk             SiteKeystoreStatusState = "ok"
+	SiteKeystoreStatusStateUnreadable     SiteKeystoreStatusState = "unreadable"
+	SiteKeystoreStatusStateKeyUnavailable SiteKeystoreStatusState = "key_unavailable"
+	SiteKeystoreStatusStateNotReported    SiteKeystoreStatusState = "not_reported"
+)
+
+// AllValues returns all SiteKeystoreStatusState values.
+func (SiteKeystoreStatusState) AllValues() []SiteKeystoreStatusState {
+	return []SiteKeystoreStatusState{
+		SiteKeystoreStatusStateOk,
+		SiteKeystoreStatusStateUnreadable,
+		SiteKeystoreStatusStateKeyUnavailable,
+		SiteKeystoreStatusStateNotReported,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s SiteKeystoreStatusState) MarshalText() ([]byte, error) {
+	switch s {
+	case SiteKeystoreStatusStateOk:
+		return []byte(s), nil
+	case SiteKeystoreStatusStateUnreadable:
+		return []byte(s), nil
+	case SiteKeystoreStatusStateKeyUnavailable:
+		return []byte(s), nil
+	case SiteKeystoreStatusStateNotReported:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *SiteKeystoreStatusState) UnmarshalText(data []byte) error {
+	switch SiteKeystoreStatusState(data) {
+	case SiteKeystoreStatusStateOk:
+		*s = SiteKeystoreStatusStateOk
+		return nil
+	case SiteKeystoreStatusStateUnreadable:
+		*s = SiteKeystoreStatusStateUnreadable
+		return nil
+	case SiteKeystoreStatusStateKeyUnavailable:
+		*s = SiteKeystoreStatusStateKeyUnavailable
+		return nil
+	case SiteKeystoreStatusStateNotReported:
+		*s = SiteKeystoreStatusStateNotReported
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
 // Normalized status of the most recent backup snapshot (DB 'completed'→'success',
 // 'pending'→'running').
 type SiteLastBackupStatus string
@@ -51248,6 +52112,123 @@ func (s *SiteTags) GetTags() []string {
 // SetTags sets the value of Tags.
 func (s *SiteTags) SetTags(val []string) {
 	s.Tags = val
+}
+
+// The POST /recheck 502 body when the site answered its command address with a redirect (code
+// "site_url_redirects"), so no command was sent.
+// Ref: #/components/schemas/SiteUrlRedirectsError
+type SiteUrlRedirectsError struct {
+	Code SiteUrlRedirectsErrorCode `json:"code"`
+	// Human-readable error description.
+	Message string                       `json:"message"`
+	Details SiteUrlRedirectsErrorDetails `json:"details"`
+}
+
+// GetCode returns the value of Code.
+func (s *SiteUrlRedirectsError) GetCode() SiteUrlRedirectsErrorCode {
+	return s.Code
+}
+
+// GetMessage returns the value of Message.
+func (s *SiteUrlRedirectsError) GetMessage() string {
+	return s.Message
+}
+
+// GetDetails returns the value of Details.
+func (s *SiteUrlRedirectsError) GetDetails() SiteUrlRedirectsErrorDetails {
+	return s.Details
+}
+
+// SetCode sets the value of Code.
+func (s *SiteUrlRedirectsError) SetCode(val SiteUrlRedirectsErrorCode) {
+	s.Code = val
+}
+
+// SetMessage sets the value of Message.
+func (s *SiteUrlRedirectsError) SetMessage(val string) {
+	s.Message = val
+}
+
+// SetDetails sets the value of Details.
+func (s *SiteUrlRedirectsError) SetDetails(val SiteUrlRedirectsErrorDetails) {
+	s.Details = val
+}
+
+type SiteUrlRedirectsErrorCode string
+
+const (
+	SiteUrlRedirectsErrorCodeSiteURLRedirects SiteUrlRedirectsErrorCode = "site_url_redirects"
+)
+
+// AllValues returns all SiteUrlRedirectsErrorCode values.
+func (SiteUrlRedirectsErrorCode) AllValues() []SiteUrlRedirectsErrorCode {
+	return []SiteUrlRedirectsErrorCode{
+		SiteUrlRedirectsErrorCodeSiteURLRedirects,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s SiteUrlRedirectsErrorCode) MarshalText() ([]byte, error) {
+	switch s {
+	case SiteUrlRedirectsErrorCodeSiteURLRedirects:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *SiteUrlRedirectsErrorCode) UnmarshalText(data []byte) error {
+	switch SiteUrlRedirectsErrorCode(data) {
+	case SiteUrlRedirectsErrorCodeSiteURLRedirects:
+		*s = SiteUrlRedirectsErrorCodeSiteURLRedirects
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type SiteUrlRedirectsErrorDetails struct {
+	// The saved site address the command was sent to.
+	From string `json:"from"`
+	// The address the command request was redirected to.
+	To string `json:"to"`
+	// Present only when the redirect target is an address the adoption rule would adopt over the saved one
+	// (a same-host http to https upgrade, or the "www." sibling of the saved address). Not a promise that
+	// the saved address will change: that still needs a later agent push reporting this address and a
+	// signed probe confirming it, run as a background job. Informational; the caller does not act on it
+	// directly.
+	SuggestedURL OptString `json:"suggested_url"`
+}
+
+// GetFrom returns the value of From.
+func (s *SiteUrlRedirectsErrorDetails) GetFrom() string {
+	return s.From
+}
+
+// GetTo returns the value of To.
+func (s *SiteUrlRedirectsErrorDetails) GetTo() string {
+	return s.To
+}
+
+// GetSuggestedURL returns the value of SuggestedURL.
+func (s *SiteUrlRedirectsErrorDetails) GetSuggestedURL() OptString {
+	return s.SuggestedURL
+}
+
+// SetFrom sets the value of From.
+func (s *SiteUrlRedirectsErrorDetails) SetFrom(val string) {
+	s.From = val
+}
+
+// SetTo sets the value of To.
+func (s *SiteUrlRedirectsErrorDetails) SetTo(val string) {
+	s.To = val
+}
+
+// SetSuggestedURL sets the value of SuggestedURL.
+func (s *SiteUrlRedirectsErrorDetails) SetSuggestedURL(val OptString) {
+	s.SuggestedURL = val
 }
 
 // Ref: #/components/schemas/SiteVulnerabilitiesResponse

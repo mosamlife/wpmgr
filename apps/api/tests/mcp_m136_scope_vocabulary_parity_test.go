@@ -3,6 +3,27 @@
 // and m136 DECISION 2(c) and DECISION 5 owe this file: two closed sets with two
 // answers is worse than one open set unless something EXECUTES the comparison.
 //
+// ===========================================================================
+// THERE ARE NOW TWO CONSTRAINTS TRACKING recognisedScopes (m137). WIDENING THE
+// REGISTRY MEANS WIDENING BOTH.
+// ===========================================================================
+//
+//	mcp_grants_oauth_scopes_vocabulary_check              (m136, this file)
+//	mcp_oauth_clients_registered_scopes_vocabulary_check  (m137, checked by
+//	                                                       mcp_m137_client_scope_vocabulary_parity_test.go)
+//
+// m136's column records what a GRANT was issued for; m137's records what a
+// CLIENT may ever ask for, and it is the right-hand side of the containment
+// comparison Authorize and Approve perform. Both are closed against the same Go
+// registry, and each parity file names both so a reader arriving at either
+// learns about the other.
+//
+// TWO IS ACCEPTABLE PRECISELY BECAUSE MISSING ONE FAILS CLOSED. A migration
+// that widens only one leaves the other refusing the new scope with 23514 at
+// INSERT: loud, immediate, at a named constraint. Nothing widens silently and
+// no scope becomes grantable by half. Both names are STABLE, so a widening
+// migration drops and re-adds THEM rather than introducing new ones.
+//
 // THE HAZARD IS m131 DECISION 5's, ONE COLUMN OVER. A scope the database
 // accepts and Go does not is stored and then refused at a different layer with
 // a different error -- and because grantScopes deliberately does NOT filter, it

@@ -17,7 +17,7 @@ const advanceBackupScheduleRun = `-- name: AdvanceBackupScheduleRun :one
 UPDATE backup_schedules
 SET last_run_at = now(), next_run_at = $3, updated_at = now()
 WHERE id = $1 AND tenant_id = $2
-RETURNING id, tenant_id, site_id, cadence, kind, enabled, retention_days, monthly_archive_keep, run_hour, run_minute, day_of_week, day_of_month, frequency_hours, keep_last, incremental_enabled, base_window_days, notify_on_completion, notify_recipients, backup_components, exclude_paths, exclude_extensions, exclude_file_size_mb, include_core, next_run_at, last_run_at, created_at, updated_at
+RETURNING id, tenant_id, site_id, cadence, kind, enabled, retention_days, monthly_archive_keep, run_hour, run_minute, day_of_week, day_of_month, frequency_hours, keep_last, incremental_enabled, base_window_days, next_run_at, last_run_at, created_at, updated_at
 `
 
 type AdvanceBackupScheduleRunParams struct {
@@ -49,13 +49,6 @@ func (q *Queries) AdvanceBackupScheduleRun(ctx context.Context, arg AdvanceBacku
 		&i.KeepLast,
 		&i.IncrementalEnabled,
 		&i.BaseWindowDays,
-		&i.NotifyOnCompletion,
-		&i.NotifyRecipients,
-		&i.BackupComponents,
-		&i.ExcludePaths,
-		&i.ExcludeExtensions,
-		&i.ExcludeFileSizeMb,
-		&i.IncludeCore,
 		&i.NextRunAt,
 		&i.LastRunAt,
 		&i.CreatedAt,
@@ -66,8 +59,9 @@ func (q *Queries) AdvanceBackupScheduleRun(ctx context.Context, arg AdvanceBacku
 
 const clearBackupSnapshotStalled = `-- name: ClearBackupSnapshotStalled :execrows
 UPDATE backup_snapshots
-SET stalled_at = NULL, updated_at = now()
-WHERE id = $1 AND tenant_id = $2 AND status = 'running' AND stalled_at IS NOT NULL
+SET stalled_at = NULL, attempt_error = '', updated_at = now()
+WHERE id = $1 AND tenant_id = $2 AND status = 'running'
+  AND (stalled_at IS NOT NULL OR attempt_error <> '')
 `
 
 type ClearBackupSnapshotStalledParams struct {
@@ -82,6 +76,10 @@ type ClearBackupSnapshotStalledParams struct {
 // hard-failed, or the operator cancelled, is never matched here (both moved
 // status away from 'running' first), so this can never revive a genuinely
 // terminal snapshot.
+// GH #791: the same proof of life clears an outstanding attempt_error, so a
+// run that got going after a failed attempt stops showing that attempt's
+// error. Rows-affected is 1 when either was cleared, 0 when there was nothing
+// to clear or the row is not running.
 func (q *Queries) ClearBackupSnapshotStalled(ctx context.Context, arg ClearBackupSnapshotStalledParams) (int64, error) {
 	result, err := q.db.Exec(ctx, clearBackupSnapshotStalled, arg.ID, arg.TenantID)
 	if err != nil {
@@ -95,6 +93,7 @@ UPDATE backup_snapshots
 SET status = 'completed',
     total_size = $3,
     chunk_count = $4,
+    attempt_error = '',
     finished_at = now(),
     updated_at = now()
 WHERE id = $1 AND tenant_id = $2 AND status IN ('pending', 'running')
@@ -117,6 +116,8 @@ type CompleteBackupSnapshotParams struct {
 // contract: 1 = a real transition; 0 = already terminal (completed/failed) or
 // gone, which the caller must surface as a rejected submit -- the previous
 // blind UPDATE reported success unconditionally.
+// attempt_error (GH #791) is cleared: a completed row never carries an
+// outstanding attempt error.
 func (q *Queries) CompleteBackupSnapshot(ctx context.Context, arg CompleteBackupSnapshotParams) (int64, error) {
 	result, err := q.db.Exec(ctx, completeBackupSnapshot,
 		arg.ID,
@@ -135,7 +136,7 @@ const createBackupSnapshot = `-- name: CreateBackupSnapshot :one
 
 INSERT INTO backup_snapshots (tenant_id, site_id, created_by, kind, status, age_recipient, destination_id)
 VALUES ($1, $2, $3, $4, 'pending', $5, $6)
-RETURNING id, tenant_id, site_id, created_by, kind, status, age_recipient, total_size, chunk_count, error, archived, locked, destination_id, progress, progress_updated_at, stalled_at, started_at, finished_at, is_incremental, parent_snapshot_id, base_snapshot_id, chain_id, generation, cycle_files_scanned, cycle_files_changed, cycle_files_deleted, cycle_bytes_uploaded, created_at, updated_at
+RETURNING id, tenant_id, site_id, created_by, kind, status, age_recipient, total_size, chunk_count, error, archived, locked, destination_id, progress, progress_updated_at, stalled_at, started_at, finished_at, is_incremental, parent_snapshot_id, base_snapshot_id, chain_id, generation, cycle_files_scanned, cycle_files_changed, cycle_files_deleted, cycle_bytes_uploaded, created_at, updated_at, sql_inspection_cached_at, source_site_url, source_home_url, source_content_url, source_upload_url, attempt_error
 `
 
 type CreateBackupSnapshotParams struct {
@@ -195,6 +196,12 @@ func (q *Queries) CreateBackupSnapshot(ctx context.Context, arg CreateBackupSnap
 		&i.CycleBytesUploaded,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SqlInspectionCachedAt,
+		&i.SourceSiteUrl,
+		&i.SourceHomeUrl,
+		&i.SourceContentUrl,
+		&i.SourceUploadUrl,
+		&i.AttemptError,
 	)
 	return i, err
 }
@@ -356,16 +363,19 @@ func (q *Queries) FailBackupSnapshot(ctx context.Context, arg FailBackupSnapshot
 const failStalledBackupSnapshot = `-- name: FailStalledBackupSnapshot :execrows
 UPDATE backup_snapshots
 SET status = 'failed',
-    error = $3,
+    error = CASE
+                WHEN attempt_error = '' THEN $1::text
+                ELSE left($1::text || '. Last error: ' || attempt_error, 1024)
+            END,
     finished_at = now(),
     updated_at = now()
-WHERE id = $1 AND tenant_id = $2 AND status = 'running'
+WHERE id = $2 AND tenant_id = $3 AND status = 'running'
 `
 
 type FailStalledBackupSnapshotParams struct {
+	Error    string    `json:"error"`
 	ID       uuid.UUID `json:"id"`
 	TenantID uuid.UUID `json:"tenant_id"`
-	Error    string    `json:"error"`
 }
 
 // TOCTOU-safe hard-fail for the two-tier progress watchdog (GH #279 must-fix).
@@ -382,8 +392,12 @@ type FailStalledBackupSnapshotParams struct {
 // whether a real transition happened, so it can gate the 'failed' SSE publish
 // and the failure notification on an actual state change rather than firing
 // them for a row that already moved on.
+// GH #791: when an attempt error is outstanding, the failure reason keeps it
+// after the watchdog's own message, capped at 1024 characters, so the reason
+// the site gave survives the hard fail. attempt_error itself is left as it
+// was. The caller re-reads the row for the reason actually stored.
 func (q *Queries) FailStalledBackupSnapshot(ctx context.Context, arg FailStalledBackupSnapshotParams) (int64, error) {
-	result, err := q.db.Exec(ctx, failStalledBackupSnapshot, arg.ID, arg.TenantID, arg.Error)
+	result, err := q.db.Exec(ctx, failStalledBackupSnapshot, arg.Error, arg.ID, arg.TenantID)
 	if err != nil {
 		return 0, err
 	}
@@ -648,7 +662,7 @@ func (q *Queries) FleetListSnapshotsCount(ctx context.Context, arg FleetListSnap
 
 const getBackupChunk = `-- name: GetBackupChunk :one
 
-SELECT id, tenant_id, blake3, s3_key, size, refcount, created_at, updated_at FROM backup_chunks
+SELECT id, tenant_id, blake3, s3_key, size, refcount, created_at, updated_at, last_referenced_at FROM backup_chunks
 WHERE tenant_id = $1 AND blake3 = $2
 `
 
@@ -672,6 +686,7 @@ func (q *Queries) GetBackupChunk(ctx context.Context, arg GetBackupChunkParams) 
 		&i.Refcount,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.LastReferencedAt,
 	)
 	return i, err
 }
@@ -679,7 +694,7 @@ func (q *Queries) GetBackupChunk(ctx context.Context, arg GetBackupChunkParams) 
 const getBackupScheduleForSite = `-- name: GetBackupScheduleForSite :one
 
 
-SELECT id, tenant_id, site_id, cadence, kind, enabled, retention_days, monthly_archive_keep, run_hour, run_minute, day_of_week, day_of_month, frequency_hours, keep_last, incremental_enabled, base_window_days, notify_on_completion, notify_recipients, backup_components, exclude_paths, exclude_extensions, exclude_file_size_mb, include_core, next_run_at, last_run_at, created_at, updated_at FROM backup_schedules
+SELECT id, tenant_id, site_id, cadence, kind, enabled, retention_days, monthly_archive_keep, run_hour, run_minute, day_of_week, day_of_month, frequency_hours, keep_last, incremental_enabled, base_window_days, next_run_at, last_run_at, created_at, updated_at FROM backup_schedules
 WHERE tenant_id = $1 AND site_id = $2
 `
 
@@ -753,13 +768,6 @@ func (q *Queries) GetBackupScheduleForSite(ctx context.Context, arg GetBackupSch
 		&i.KeepLast,
 		&i.IncrementalEnabled,
 		&i.BaseWindowDays,
-		&i.NotifyOnCompletion,
-		&i.NotifyRecipients,
-		&i.BackupComponents,
-		&i.ExcludePaths,
-		&i.ExcludeExtensions,
-		&i.ExcludeFileSizeMb,
-		&i.IncludeCore,
 		&i.NextRunAt,
 		&i.LastRunAt,
 		&i.CreatedAt,
@@ -810,7 +818,7 @@ func (q *Queries) GetBackupSiteInfo(ctx context.Context, arg GetBackupSiteInfoPa
 }
 
 const getBackupSnapshot = `-- name: GetBackupSnapshot :one
-SELECT id, tenant_id, site_id, created_by, kind, status, age_recipient, total_size, chunk_count, error, archived, locked, destination_id, progress, progress_updated_at, stalled_at, started_at, finished_at, is_incremental, parent_snapshot_id, base_snapshot_id, chain_id, generation, cycle_files_scanned, cycle_files_changed, cycle_files_deleted, cycle_bytes_uploaded, created_at, updated_at FROM backup_snapshots
+SELECT id, tenant_id, site_id, created_by, kind, status, age_recipient, total_size, chunk_count, error, archived, locked, destination_id, progress, progress_updated_at, stalled_at, started_at, finished_at, is_incremental, parent_snapshot_id, base_snapshot_id, chain_id, generation, cycle_files_scanned, cycle_files_changed, cycle_files_deleted, cycle_bytes_uploaded, created_at, updated_at, sql_inspection_cached_at, source_site_url, source_home_url, source_content_url, source_upload_url, attempt_error FROM backup_snapshots
 WHERE id = $1 AND tenant_id = $2
 `
 
@@ -852,6 +860,12 @@ func (q *Queries) GetBackupSnapshot(ctx context.Context, arg GetBackupSnapshotPa
 		&i.CycleBytesUploaded,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SqlInspectionCachedAt,
+		&i.SourceSiteUrl,
+		&i.SourceHomeUrl,
+		&i.SourceContentUrl,
+		&i.SourceUploadUrl,
+		&i.AttemptError,
 	)
 	return i, err
 }
@@ -860,7 +874,7 @@ const incrementChunkRefcount = `-- name: IncrementChunkRefcount :one
 UPDATE backup_chunks
 SET refcount = refcount + 1, updated_at = now()
 WHERE tenant_id = $1 AND blake3 = $2
-RETURNING id, tenant_id, blake3, s3_key, size, refcount, created_at, updated_at
+RETURNING id, tenant_id, blake3, s3_key, size, refcount, created_at, updated_at, last_referenced_at
 `
 
 type IncrementChunkRefcountParams struct {
@@ -880,12 +894,13 @@ func (q *Queries) IncrementChunkRefcount(ctx context.Context, arg IncrementChunk
 		&i.Refcount,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.LastReferencedAt,
 	)
 	return i, err
 }
 
 const listBackupChunksByHashes = `-- name: ListBackupChunksByHashes :many
-SELECT id, tenant_id, blake3, s3_key, size, refcount, created_at, updated_at FROM backup_chunks
+SELECT id, tenant_id, blake3, s3_key, size, refcount, created_at, updated_at, last_referenced_at FROM backup_chunks
 WHERE tenant_id = $1 AND blake3 = ANY($2::text[])
 `
 
@@ -914,6 +929,7 @@ func (q *Queries) ListBackupChunksByHashes(ctx context.Context, arg ListBackupCh
 			&i.Refcount,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.LastReferencedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -953,7 +969,7 @@ func (q *Queries) ListBackupSiteIDsForTenant(ctx context.Context, tenantID uuid.
 }
 
 const listBackupSnapshotsForSite = `-- name: ListBackupSnapshotsForSite :many
-SELECT id, tenant_id, site_id, created_by, kind, status, age_recipient, total_size, chunk_count, error, archived, locked, destination_id, progress, progress_updated_at, stalled_at, started_at, finished_at, is_incremental, parent_snapshot_id, base_snapshot_id, chain_id, generation, cycle_files_scanned, cycle_files_changed, cycle_files_deleted, cycle_bytes_uploaded, created_at, updated_at FROM backup_snapshots
+SELECT id, tenant_id, site_id, created_by, kind, status, age_recipient, total_size, chunk_count, error, archived, locked, destination_id, progress, progress_updated_at, stalled_at, started_at, finished_at, is_incremental, parent_snapshot_id, base_snapshot_id, chain_id, generation, cycle_files_scanned, cycle_files_changed, cycle_files_deleted, cycle_bytes_uploaded, created_at, updated_at, sql_inspection_cached_at, source_site_url, source_home_url, source_content_url, source_upload_url, attempt_error FROM backup_snapshots
 WHERE tenant_id = $1 AND site_id = $2
 ORDER BY created_at DESC
 LIMIT $3 OFFSET $4
@@ -1010,6 +1026,12 @@ func (q *Queries) ListBackupSnapshotsForSite(ctx context.Context, arg ListBackup
 			&i.CycleBytesUploaded,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.SqlInspectionCachedAt,
+			&i.SourceSiteUrl,
+			&i.SourceHomeUrl,
+			&i.SourceContentUrl,
+			&i.SourceUploadUrl,
+			&i.AttemptError,
 		); err != nil {
 			return nil, err
 		}
@@ -1075,7 +1097,7 @@ func (q *Queries) ListCompletedSnapshotsForSite(ctx context.Context, arg ListCom
 }
 
 const listDueBackupSchedules = `-- name: ListDueBackupSchedules :many
-SELECT id, tenant_id, site_id, cadence, kind, enabled, retention_days, monthly_archive_keep, run_hour, run_minute, day_of_week, day_of_month, frequency_hours, keep_last, incremental_enabled, base_window_days, notify_on_completion, notify_recipients, backup_components, exclude_paths, exclude_extensions, exclude_file_size_mb, include_core, next_run_at, last_run_at, created_at, updated_at FROM backup_schedules
+SELECT id, tenant_id, site_id, cadence, kind, enabled, retention_days, monthly_archive_keep, run_hour, run_minute, day_of_week, day_of_month, frequency_hours, keep_last, incremental_enabled, base_window_days, next_run_at, last_run_at, created_at, updated_at FROM backup_schedules
 WHERE enabled = true AND next_run_at <= $1
 ORDER BY next_run_at ASC
 LIMIT $2
@@ -1114,13 +1136,6 @@ func (q *Queries) ListDueBackupSchedules(ctx context.Context, arg ListDueBackupS
 			&i.KeepLast,
 			&i.IncrementalEnabled,
 			&i.BaseWindowDays,
-			&i.NotifyOnCompletion,
-			&i.NotifyRecipients,
-			&i.BackupComponents,
-			&i.ExcludePaths,
-			&i.ExcludeExtensions,
-			&i.ExcludeFileSizeMb,
-			&i.IncludeCore,
 			&i.NextRunAt,
 			&i.LastRunAt,
 			&i.CreatedAt,
@@ -1137,7 +1152,7 @@ func (q *Queries) ListDueBackupSchedules(ctx context.Context, arg ListDueBackupS
 }
 
 const listExpiredBackupSnapshots = `-- name: ListExpiredBackupSnapshots :many
-SELECT id, tenant_id, site_id, created_by, kind, status, age_recipient, total_size, chunk_count, error, archived, locked, destination_id, progress, progress_updated_at, stalled_at, started_at, finished_at, is_incremental, parent_snapshot_id, base_snapshot_id, chain_id, generation, cycle_files_scanned, cycle_files_changed, cycle_files_deleted, cycle_bytes_uploaded, created_at, updated_at FROM backup_snapshots
+SELECT id, tenant_id, site_id, created_by, kind, status, age_recipient, total_size, chunk_count, error, archived, locked, destination_id, progress, progress_updated_at, stalled_at, started_at, finished_at, is_incremental, parent_snapshot_id, base_snapshot_id, chain_id, generation, cycle_files_scanned, cycle_files_changed, cycle_files_deleted, cycle_bytes_uploaded, created_at, updated_at, sql_inspection_cached_at, source_site_url, source_home_url, source_content_url, source_upload_url, attempt_error FROM backup_snapshots
 WHERE tenant_id = $1
   AND status = 'completed'
   AND archived = false
@@ -1192,6 +1207,12 @@ func (q *Queries) ListExpiredBackupSnapshots(ctx context.Context, arg ListExpire
 			&i.CycleBytesUploaded,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.SqlInspectionCachedAt,
+			&i.SourceSiteUrl,
+			&i.SourceHomeUrl,
+			&i.SourceContentUrl,
+			&i.SourceUploadUrl,
+			&i.AttemptError,
 		); err != nil {
 			return nil, err
 		}
@@ -1516,13 +1537,41 @@ func (q *Queries) SetBackupSnapshotArchived(ctx context.Context, arg SetBackupSn
 	return err
 }
 
+const setBackupSnapshotAttemptError = `-- name: SetBackupSnapshotAttemptError :execrows
+UPDATE backup_snapshots
+SET attempt_error = left($1::text, 1024),
+    updated_at = now()
+WHERE id = $2 AND tenant_id = $3 AND status = 'running'
+`
+
+type SetBackupSnapshotAttemptErrorParams struct {
+	AttemptError string    `json:"attempt_error"`
+	ID           uuid.UUID `json:"id"`
+	TenantID     uuid.UUID `json:"tenant_id"`
+}
+
+// GH #791: records the control plane's description of the last failed attempt
+// to start this backup on the site, while it is still retrying. The
+// status='running' guard is the contract: a pending, completed or failed row
+// is never matched, so this can neither mark a row that has not started nor
+// touch one that has ended. Rows-affected: 1 = recorded; 0 = the row is not
+// running (or is gone), and the caller must not publish anything for it.
+// The value is capped at 1024 characters here as well as by the caller.
+func (q *Queries) SetBackupSnapshotAttemptError(ctx context.Context, arg SetBackupSnapshotAttemptErrorParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setBackupSnapshotAttemptError, arg.AttemptError, arg.ID, arg.TenantID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const updateBackupSnapshotProgress = `-- name: UpdateBackupSnapshotProgress :one
 UPDATE backup_snapshots
 SET progress = $3,
     progress_updated_at = now(),
     updated_at = now()
 WHERE id = $1 AND tenant_id = $2
-RETURNING id, tenant_id, site_id, created_by, kind, status, age_recipient, total_size, chunk_count, error, archived, locked, destination_id, progress, progress_updated_at, stalled_at, started_at, finished_at, is_incremental, parent_snapshot_id, base_snapshot_id, chain_id, generation, cycle_files_scanned, cycle_files_changed, cycle_files_deleted, cycle_bytes_uploaded, created_at, updated_at
+RETURNING id, tenant_id, site_id, created_by, kind, status, age_recipient, total_size, chunk_count, error, archived, locked, destination_id, progress, progress_updated_at, stalled_at, started_at, finished_at, is_incremental, parent_snapshot_id, base_snapshot_id, chain_id, generation, cycle_files_scanned, cycle_files_changed, cycle_files_deleted, cycle_bytes_uploaded, created_at, updated_at, sql_inspection_cached_at, source_site_url, source_home_url, source_content_url, source_upload_url, attempt_error
 `
 
 type UpdateBackupSnapshotProgressParams struct {
@@ -1570,6 +1619,12 @@ func (q *Queries) UpdateBackupSnapshotProgress(ctx context.Context, arg UpdateBa
 		&i.CycleBytesUploaded,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SqlInspectionCachedAt,
+		&i.SourceSiteUrl,
+		&i.SourceHomeUrl,
+		&i.SourceContentUrl,
+		&i.SourceUploadUrl,
+		&i.AttemptError,
 	)
 	return i, err
 }
@@ -1579,7 +1634,7 @@ INSERT INTO backup_chunks (tenant_id, blake3, s3_key, size, refcount)
 VALUES ($1, $2, $3, $4, 0)
 ON CONFLICT (tenant_id, blake3)
 DO UPDATE SET updated_at = now()
-RETURNING id, tenant_id, blake3, s3_key, size, refcount, created_at, updated_at
+RETURNING id, tenant_id, blake3, s3_key, size, refcount, created_at, updated_at, last_referenced_at
 `
 
 type UpsertBackupChunkParams struct {
@@ -1610,6 +1665,7 @@ func (q *Queries) UpsertBackupChunk(ctx context.Context, arg UpsertBackupChunkPa
 		&i.Refcount,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.LastReferencedAt,
 	)
 	return i, err
 }
@@ -1637,7 +1693,7 @@ DO UPDATE SET cadence              = EXCLUDED.cadence,
               incremental_enabled  = EXCLUDED.incremental_enabled,
               base_window_days     = EXCLUDED.base_window_days,
               updated_at           = now()
-RETURNING id, tenant_id, site_id, cadence, kind, enabled, retention_days, monthly_archive_keep, run_hour, run_minute, day_of_week, day_of_month, frequency_hours, keep_last, incremental_enabled, base_window_days, notify_on_completion, notify_recipients, backup_components, exclude_paths, exclude_extensions, exclude_file_size_mb, include_core, next_run_at, last_run_at, created_at, updated_at
+RETURNING id, tenant_id, site_id, cadence, kind, enabled, retention_days, monthly_archive_keep, run_hour, run_minute, day_of_week, day_of_month, frequency_hours, keep_last, incremental_enabled, base_window_days, next_run_at, last_run_at, created_at, updated_at
 `
 
 type UpsertBackupScheduleParams struct {
@@ -1700,13 +1756,6 @@ func (q *Queries) UpsertBackupSchedule(ctx context.Context, arg UpsertBackupSche
 		&i.KeepLast,
 		&i.IncrementalEnabled,
 		&i.BaseWindowDays,
-		&i.NotifyOnCompletion,
-		&i.NotifyRecipients,
-		&i.BackupComponents,
-		&i.ExcludePaths,
-		&i.ExcludeExtensions,
-		&i.ExcludeFileSizeMb,
-		&i.IncludeCore,
 		&i.NextRunAt,
 		&i.LastRunAt,
 		&i.CreatedAt,
