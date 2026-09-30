@@ -35,7 +35,17 @@ const (
 type Integration struct {
 	ID          string
 	DisplayName string
+	Status      string
+	Enabled     bool
+	ThemeSlug   string
 	Descriptor  []byte
+}
+
+// Run is the record of a site's last refresh.
+type Run struct {
+	CheckedAt   time.Time
+	PagesStored int32
+	Truncated   bool
 }
 
 // SiteTarget is what the refresh needs to know about a site.

@@ -173,7 +173,7 @@ func (h *Handler) upsertIntegration(c *gin.Context) {
 		IntegrationID: c.Param("integrationId"),
 		DisplayName:   in.DisplayName, Enabled: in.Enabled, Status: in.Status,
 		Descriptor: in.Descriptor, Abilities: abil,
-		MinVersion: in.MinVersion, MaxTestedVersion: in.MaxTestedVersion, MinWPVersion: in.MinWPVersion,
+		ThemeSlug: in.ThemeSlug, MinVersion: in.MinVersion, MaxTestedVersion: in.MaxTestedVersion, MinWPVersion: in.MinWPVersion,
 	})
 	if err != nil {
 		httpx.Error(c, err)

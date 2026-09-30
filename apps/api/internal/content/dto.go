@@ -102,6 +102,7 @@ type integrationDTO struct {
 	MaxTestedVersion       *string         `json:"max_tested_version"`
 	MinWPVersion           *string         `json:"min_wp_version"`
 	IntegrationEntrySHA256 *string         `json:"integration_entry_sha256"`
+	ThemeSlug              *string         `json:"theme_slug"`
 	UpdatedAt              time.Time       `json:"updated_at"`
 }
 
@@ -118,7 +119,7 @@ func toIntegrationDTO(r IntegrationRecord) integrationDTO {
 		IntegrationID: r.IntegrationID, DisplayName: r.DisplayName, Enabled: r.Enabled,
 		Status: r.Status, Descriptor: desc, Abilities: abil, MinVersion: r.MinVersion,
 		MaxTestedVersion: r.MaxTestedVersion, MinWPVersion: r.MinWPVersion,
-		IntegrationEntrySHA256: r.IntegrationEntrySHA256, UpdatedAt: r.UpdatedAt,
+		IntegrationEntrySHA256: r.IntegrationEntrySHA256, ThemeSlug: r.ThemeSlug, UpdatedAt: r.UpdatedAt,
 	}
 }
 
@@ -134,4 +135,5 @@ type integrationInput struct {
 	MinVersion       *string         `json:"min_version"`
 	MaxTestedVersion *string         `json:"max_tested_version"`
 	MinWPVersion     *string         `json:"min_wp_version"`
+	ThemeSlug        *string         `json:"theme_slug"`
 }

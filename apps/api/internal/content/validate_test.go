@@ -163,7 +163,7 @@ func TestBuildDescriptors(t *testing.T) {
 	in := []Integration{
 		{ID: "empty", Descriptor: []byte(`{}`)},
 		{ID: "no-payload", Descriptor: []byte(`{"mode_flag":{"meta_key":"_x","on_values":["1"]}}`)},
-		{ID: "good", Descriptor: []byte(`{"mode_flag":{"meta_key":"_x","on_values":["1"]},"payload_keys":["_data"],"stray_key":true,"integration_id":"spoofed","status":"admitted"}`)},
+		{ID: "good", Enabled: true, Descriptor: []byte(`{"mode_flag":{"meta_key":"_x","on_values":["1"]},"payload_keys":["_data"],"stray_key":true,"integration_id":"spoofed","status":"admitted"}`)},
 	}
 	out := BuildDescriptors(in)
 	if len(out) != 1 {
@@ -183,8 +183,8 @@ func TestBuildDescriptors(t *testing.T) {
 
 var hintAllowlist = []Integration{
 	{ID: "elementor", Descriptor: []byte(`{"plugin_dir":"elementor"}`)},
-	{ID: "bricks", Descriptor: []byte(`{"plugin_dir":"bricks-plugin","theme_slug":"bricks"}`)},
-	{ID: "divi", Descriptor: []byte(`{"theme_slug":"Divi"}`)},
+	{ID: "bricks", ThemeSlug: "bricks", Descriptor: []byte(`{"plugin_dir":"bricks-plugin"}`)},
+	{ID: "divi", ThemeSlug: "Divi", Descriptor: []byte(`{}`)},
 }
 
 func TestBuildIndicators_OrdinarySiteSendsNoHints(t *testing.T) {

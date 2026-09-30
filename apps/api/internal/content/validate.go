@@ -155,10 +155,6 @@ var descriptorKeys = map[string]struct{}{
 	"ability_names": {}, "dynamic_enum_paths": {},
 }
 
-// adminOnlyDescriptorKeys are stored in an allowlist row but never sent to the
-// agent (BuildDescriptors drops everything outside descriptorKeys).
-var adminOnlyDescriptorKeys = map[string]struct{}{"theme_slug": {}}
-
 // BuildDescriptors turns allowlist rows into the descriptors sent to the
 // agent. A row whose descriptor does not carry a mode flag and payload keys
 // cannot detect anything and is left out (the seeded rows are like this until
@@ -185,8 +181,17 @@ func BuildDescriptors(in []Integration) []json.RawMessage {
 		}
 		id, _ := json.Marshal(it.ID)
 		clean["integration_id"] = id
-		clean["status"] = json.RawMessage(`"detect_only"`)
-		clean["enabled"] = json.RawMessage(`true`)
+		status := it.Status
+		if status == "" {
+			status = "detect_only"
+		}
+		sb, _ := json.Marshal(status)
+		clean["status"] = sb
+		if it.Enabled {
+			clean["enabled"] = json.RawMessage(`true`)
+		} else {
+			clean["enabled"] = json.RawMessage(`false`)
+		}
 		b, err := json.Marshal(clean)
 		if err != nil {
 			continue

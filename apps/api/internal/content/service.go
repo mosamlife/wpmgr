@@ -11,7 +11,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -74,9 +73,6 @@ type Service struct {
 	agent  ProbeClient
 	logger *slog.Logger
 	now    func() time.Time
-
-	truncMu sync.Mutex
-	trunc   map[uuid.UUID]bool
 }
 
 // NewService builds the service. agent may be nil in a build without the agent
@@ -161,9 +157,8 @@ func (s *Service) Refresh(ctx context.Context, tenantID, siteID uuid.UUID, sched
 	// upsert would reject the whole statement on a repeated key, so the last
 	// row seen wins.
 	rows = dedupeRows(rows)
-	s.setTruncated(siteID, truncated)
 	checkedAt := s.now().UTC()
-	if err := s.repo.ReplaceInventory(ctx, tenantID, siteID, checkedAt, rows); err != nil {
+	if err := s.repo.ReplaceInventory(ctx, tenantID, siteID, checkedAt, rows, truncated); err != nil {
 		return RefreshResult{}, err
 	}
 	if skipped > 0 {
@@ -211,7 +206,6 @@ func BuildIndicators(components []byte, integrations []Integration) agentcmd.Con
 	for _, it := range integrations {
 		var d struct {
 			PluginDir string `json:"plugin_dir"`
-			ThemeSlug string `json:"theme_slug"`
 		}
 		if json.Unmarshal(it.Descriptor, &d) != nil {
 			continue
@@ -221,8 +215,8 @@ func BuildIndicators(components []byte, integrations []Integration) agentcmd.Con
 		if slugRe.MatchString(d.PluginDir) && installed[d.PluginDir] {
 			plugins[d.PluginDir] = true
 		}
-		if slugRe.MatchString(d.ThemeSlug) && activeThemes[d.ThemeSlug] {
-			themes[d.ThemeSlug] = true
+		if slugRe.MatchString(it.ThemeSlug) && activeThemes[it.ThemeSlug] {
+			themes[it.ThemeSlug] = true
 		}
 	}
 	return agentcmd.ContentProbeIndicators{
@@ -256,29 +250,6 @@ func dedupeRows(rows []Row) []Row {
 		out = append(out, r)
 	}
 	return out
-}
-
-// setTruncated remembers whether a site's last refresh hit the page cap. It is
-// held in memory on the instance that ran the refresh: the inventory has no
-// column for it, so another instance, or a restart, reports it as unknown
-// (false) until the next refresh.
-func (s *Service) setTruncated(siteID uuid.UUID, v bool) {
-	s.truncMu.Lock()
-	defer s.truncMu.Unlock()
-	if s.trunc == nil {
-		s.trunc = map[uuid.UUID]bool{}
-	}
-	if v {
-		s.trunc[siteID] = true
-	} else {
-		delete(s.trunc, siteID)
-	}
-}
-
-func (s *Service) isTruncated(siteID uuid.UUID) bool {
-	s.truncMu.Lock()
-	defer s.truncMu.Unlock()
-	return s.trunc[siteID]
 }
 
 // ---------------------------------------------------------------------------
@@ -321,7 +292,7 @@ func (s *Service) Inventory(ctx context.Context, p domain.Principal, siteID uuid
 	if err != nil {
 		return InventoryPage{}, err
 	}
-	page := InventoryPage{MinAgent: MinAgentVersionForContentProbe, AgentVersion: humantext.CapBytes(humantext.Clean(target.AgentVersion), 32), TitlesIncluded: withTitles, Truncated: s.isTruncated(siteID)}
+	page := InventoryPage{MinAgent: MinAgentVersionForContentProbe, AgentVersion: humantext.CapBytes(humantext.Clean(target.AgentVersion), 32), TitlesIncluded: withTitles}
 	switch {
 	case !AgentMeetsFloor(target.AgentVersion):
 		page.State = StateAgentUpdateNeeded
@@ -344,12 +315,17 @@ func (s *Service) Inventory(ctx context.Context, p domain.Principal, siteID uuid
 		if !withTitles {
 			rows[i].Title = nil
 		}
-		if page.LastCheckedAt == nil || rows[i].CheckedAt.After(*page.LastCheckedAt) {
-			t := rows[i].CheckedAt
-			page.LastCheckedAt = &t
-		}
 	}
 	page.Rows = rows
+	run, err := s.repo.GetRun(ctx, p, siteID)
+	if err != nil {
+		return InventoryPage{}, err
+	}
+	if run != nil {
+		t := run.CheckedAt
+		page.LastCheckedAt = &t
+		page.Truncated = run.Truncated
+	}
 	return page, nil
 }
 
@@ -401,6 +377,7 @@ func EntrySHA256(in AdminUpsertInput) (string, error) {
 		"min_version":        in.MinVersion,
 		"max_tested_version": in.MaxTestedVersion,
 		"min_wp_version":     in.MinWPVersion,
+		"theme_slug":         in.ThemeSlug,
 	}
 	// encoding/json sorts map keys at every level and emits no whitespace.
 	b, err := json.Marshal(entry)
@@ -434,14 +411,18 @@ func (s *Service) UpsertIntegration(ctx context.Context, in AdminUpsertInput) (I
 		return IntegrationRecord{}, domain.Validation("invalid_descriptor", "descriptor must be a JSON object")
 	}
 	for k := range d {
-		_, agentKey := descriptorKeys[k]
-		_, adminKey := adminOnlyDescriptorKeys[k]
-		if !agentKey && !adminKey {
+		if _, ok := descriptorKeys[k]; !ok {
 			return IntegrationRecord{}, domain.Validation("invalid_descriptor", "descriptor has a field the agent does not accept")
 		}
 	}
 	if len(in.Descriptor) > 16<<10 {
 		return IntegrationRecord{}, domain.Validation("invalid_descriptor", "descriptor is too large")
+	}
+	if in.ThemeSlug != nil && *in.ThemeSlug != "" && !slugRe.MatchString(*in.ThemeSlug) {
+		return IntegrationRecord{}, domain.Validation("invalid_theme_slug", "theme_slug is not a valid theme directory name")
+	}
+	if in.ThemeSlug != nil && *in.ThemeSlug == "" {
+		in.ThemeSlug = nil
 	}
 	sum, err := EntrySHA256(in)
 	if err != nil {

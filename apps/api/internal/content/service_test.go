@@ -29,6 +29,8 @@ type fakeRepo struct {
 	target       SiteTarget
 	integrations []Integration
 	replaced     [][]Row
+	truncated    []bool
+	run          *Run
 	checkedAt    []time.Time
 	sweep        []SweepSite
 }
@@ -39,7 +41,8 @@ func (f *fakeRepo) GetSiteTarget(context.Context, uuid.UUID, uuid.UUID) (SiteTar
 func (f *fakeRepo) ListEnabledIntegrations(context.Context, uuid.UUID) ([]Integration, error) {
 	return f.integrations, nil
 }
-func (f *fakeRepo) ReplaceInventory(_ context.Context, _, _ uuid.UUID, at time.Time, rows []Row) error {
+func (f *fakeRepo) ReplaceInventory(_ context.Context, _, _ uuid.UUID, at time.Time, rows []Row, truncated bool) error {
+	f.truncated = append(f.truncated, truncated)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.replaced = append(f.replaced, rows)
@@ -51,6 +54,9 @@ func (f *fakeRepo) ListInventory(context.Context, domain.Principal, uuid.UUID, i
 }
 func (f *fakeRepo) FleetReport(context.Context, uuid.UUID) ([]FleetVerdictShare, []FleetBuilderShare, error) {
 	return nil, nil, nil
+}
+func (f *fakeRepo) GetRun(context.Context, domain.Principal, uuid.UUID) (*Run, error) {
+	return f.run, nil
 }
 func (f *fakeRepo) ListSweepSites(context.Context) ([]SweepSite, error) { return f.sweep, nil }
 func (f *fakeRepo) AdminUpsertIntegration(_ context.Context, in AdminUpsertInput) (IntegrationRecord, error) {
@@ -452,13 +458,48 @@ func TestRefresh_PageCapMarksTruncated(t *testing.T) {
 	if !res.Truncated || res.Stored != maxPages*200 || fa.calls() != maxPages {
 		t.Fatalf("res=%+v calls=%d", res, fa.calls())
 	}
-	if !svc.isTruncated(site) {
-		t.Error("truncation was not remembered for the inventory response")
+	_ = site
+	if len(repo.truncated) != 1 || !repo.truncated[0] {
+		t.Errorf("truncated was not persisted with the run: %v", repo.truncated)
 	}
 }
 
 func TestRefreshTimeout_CoversEveryPageOfASlowSite(t *testing.T) {
 	if RefreshTimeout < maxPages*callTimeout {
 		t.Fatalf("job timeout %v cannot cover %d calls of %v", RefreshTimeout, maxPages, callTimeout)
+	}
+}
+
+func TestRefresh_UntruncatedRunIsPersistedAsSuch(t *testing.T) {
+	fa := newFakeAgent(t, func(agentcmd.ContentProbeRequest) (int, any) { return 200, listReply(rowsJSON(1, 3), nil) })
+	repo := &fakeRepo{target: connected()}
+	svc := newSvc(t, repo, fa)
+	if _, err := svc.Refresh(context.Background(), uuid.New(), uuid.New(), false); err != nil {
+		t.Fatal(err)
+	}
+	if len(repo.truncated) != 1 || repo.truncated[0] {
+		t.Errorf("truncated = %v", repo.truncated)
+	}
+}
+
+func TestRefresh_SendsDescriptorsWithIdentityFromTheColumns(t *testing.T) {
+	fa := newFakeAgent(t, func(agentcmd.ContentProbeRequest) (int, any) { return 200, listReply(nil, nil) })
+	repo := &fakeRepo{target: connected(), integrations: []Integration{{
+		ID: "elementor", Status: "detect_only", Enabled: true,
+		Descriptor: []byte(`{"mode_flag":{"meta_key":"_e","on_values":["1"]},"payload_keys":["_d"]}`),
+	}}}
+	svc := newSvc(t, repo, fa)
+	if _, err := svc.Refresh(context.Background(), uuid.New(), uuid.New(), false); err != nil {
+		t.Fatal(err)
+	}
+	if len(fa.bodies[0].Descriptors) != 1 {
+		t.Fatalf("descriptors = %d", len(fa.bodies[0].Descriptors))
+	}
+	var d map[string]any
+	if err := json.Unmarshal(fa.bodies[0].Descriptors[0], &d); err != nil {
+		t.Fatal(err)
+	}
+	if d["integration_id"] != "elementor" || d["status"] != "detect_only" || d["enabled"] != true {
+		t.Errorf("descriptor = %v", d)
 	}
 }

@@ -22,7 +22,11 @@ type Repo interface {
 	ListEnabledIntegrations(ctx context.Context, tenantID uuid.UUID) ([]Integration, error)
 	// ReplaceInventory upserts every row with one checked_at, then deletes the
 	// site's older rows, in one tenant transaction.
-	ReplaceInventory(ctx context.Context, tenantID, siteID uuid.UUID, checkedAt time.Time, rows []Row) error
+	// The refresh's run record is written in the same transaction, with the
+	// same checked_at.
+	ReplaceInventory(ctx context.Context, tenantID, siteID uuid.UUID, checkedAt time.Time, rows []Row, truncated bool) error
+	// GetRun reads the site's last refresh record; nil means never refreshed.
+	GetRun(ctx context.Context, p domain.Principal, siteID uuid.UUID) (*Run, error)
 	// ListInventory pages a site's inventory by post id, in the caller's scope.
 	ListInventory(ctx context.Context, p domain.Principal, siteID uuid.UUID, afterPostID int64, owner *string, limit int32) ([]InventoryRow, error)
 	// FleetReport reads the cross-tenant counts through the database's
@@ -69,14 +73,18 @@ func (r *pgRepo) ListEnabledIntegrations(ctx context.Context, tenantID uuid.UUID
 			return err
 		}
 		for _, row := range rows {
-			out = append(out, Integration{ID: row.IntegrationID, DisplayName: row.DisplayName, Descriptor: row.Descriptor})
+			it := Integration{ID: row.IntegrationID, DisplayName: row.DisplayName, Status: row.Status, Enabled: row.Enabled, Descriptor: row.Descriptor}
+			if row.ThemeSlug != nil {
+				it.ThemeSlug = *row.ThemeSlug
+			}
+			out = append(out, it)
 		}
 		return nil
 	})
 	return out, err
 }
 
-func (r *pgRepo) ReplaceInventory(ctx context.Context, tenantID, siteID uuid.UUID, checkedAt time.Time, rows []Row) error {
+func (r *pgRepo) ReplaceInventory(ctx context.Context, tenantID, siteID uuid.UUID, checkedAt time.Time, rows []Row, truncated bool) error {
 	return r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
 		q := sqlc.New(tx)
 		if len(rows) > 0 {
@@ -101,11 +109,32 @@ func (r *pgRepo) ReplaceInventory(ctx context.Context, tenantID, siteID uuid.UUI
 				return err
 			}
 		}
-		_, err := q.DeleteStaleSiteContentInventory(ctx, sqlc.DeleteStaleSiteContentInventoryParams{
+		if _, err := q.DeleteStaleSiteContentInventory(ctx, sqlc.DeleteStaleSiteContentInventoryParams{
 			TenantID: tenantID, SiteID: siteID, CheckedAt: checkedAt,
+		}); err != nil {
+			return err
+		}
+		return q.UpsertSiteContentInventoryRun(ctx, sqlc.UpsertSiteContentInventoryRunParams{
+			TenantID: tenantID, SiteID: siteID, CheckedAt: checkedAt,
+			PagesStored: int32(len(rows)), Truncated: truncated,
 		})
-		return err
 	})
+}
+
+func (r *pgRepo) GetRun(ctx context.Context, p domain.Principal, siteID uuid.UUID) (*Run, error) {
+	var out *Run
+	err := r.pool.RunTenantTx(ctx, p, func(tx pgx.Tx) error {
+		row, err := sqlc.New(tx).GetSiteContentInventoryRun(ctx, sqlc.GetSiteContentInventoryRunParams{TenantID: p.TenantID, SiteID: siteID})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		out = &Run{CheckedAt: row.CheckedAt, PagesStored: row.PagesStored, Truncated: row.Truncated}
+		return nil
+	})
+	return out, err
 }
 
 func (r *pgRepo) ListInventory(ctx context.Context, p domain.Principal, siteID uuid.UUID, afterPostID int64, owner *string, limit int32) ([]InventoryRow, error) {
@@ -203,6 +232,7 @@ type IntegrationRecord struct {
 	MaxTestedVersion       *string
 	MinWPVersion           *string
 	IntegrationEntrySHA256 *string
+	ThemeSlug              *string
 	UpdatedAt              time.Time
 }
 
@@ -220,6 +250,7 @@ type AdminUpsertInput struct {
 	MaxTestedVersion       *string
 	MinWPVersion           *string
 	IntegrationEntrySHA256 string
+	ThemeSlug              *string
 }
 
 func (r *pgRepo) AdminUpsertIntegration(ctx context.Context, in AdminUpsertInput) (IntegrationRecord, error) {
@@ -232,7 +263,7 @@ func (r *pgRepo) AdminUpsertIntegration(ctx context.Context, in AdminUpsertInput
 			ActorUserID: in.ActorUserID, IntegrationID: in.IntegrationID, DisplayName: in.DisplayName,
 			Enabled: in.Enabled, Status: in.Status, Descriptor: in.Descriptor, Abilities: in.Abilities,
 			MinVersion: in.MinVersion, MaxTestedVersion: in.MaxTestedVersion, MinWpVersion: in.MinWPVersion,
-			IntegrationEntrySha256: &sha,
+			IntegrationEntrySha256: &sha, ThemeSlug: in.ThemeSlug,
 		})
 		if err != nil {
 			return err
@@ -263,6 +294,6 @@ func toRecord(row sqlc.ContentIntegration) IntegrationRecord {
 		IntegrationID: row.IntegrationID, DisplayName: row.DisplayName, Enabled: row.Enabled,
 		Status: row.Status, Descriptor: row.Descriptor, Abilities: row.Abilities,
 		MinVersion: row.MinVersion, MaxTestedVersion: row.MaxTestedVersion, MinWPVersion: row.MinWpVersion,
-		IntegrationEntrySHA256: row.IntegrationEntrySha256, UpdatedAt: row.UpdatedAt,
+		IntegrationEntrySHA256: row.IntegrationEntrySha256, ThemeSlug: row.ThemeSlug, UpdatedAt: row.UpdatedAt,
 	}
 }
