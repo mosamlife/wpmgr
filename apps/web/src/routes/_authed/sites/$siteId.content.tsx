@@ -2,10 +2,10 @@ import { createFileRoute } from "@tanstack/react-router";
 
 import { ContentTab } from "@/features/content/ContentTab";
 import { useSite } from "@/features/sites/use-sites";
-import { useMe, canOperate } from "@/features/auth/use-auth";
+import { useMe, canWriteSiteContext } from "@/features/auth/use-auth";
 
 // `/sites/$siteId/content` (Track B slice S1): read-only page inventory. The
-// refresh button mirrors the server's site.content.refresh gate (operator+).
+// refresh button mirrors the server's site.content.refresh gate (operator+, or a site-scoped operator share for this site).
 
 export const Route = createFileRoute("/_authed/sites/$siteId/content")({
   component: ContentTabRoute,
@@ -20,7 +20,7 @@ function ContentTabRoute() {
       <ContentTab
         siteId={siteId}
         hostname={hostnameOf(site?.url ?? "")}
-        canOperate={canOperate(me)}
+        canOperate={canWriteSiteContext(me)}
       />
     </section>
   );
