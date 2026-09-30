@@ -49,6 +49,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/billing"
 	clientpkg "github.com/mosamlife/wpmgr/apps/api/internal/client"
 	"github.com/mosamlife/wpmgr/apps/api/internal/config"
+	"github.com/mosamlife/wpmgr/apps/api/internal/content"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/diagnostics"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
@@ -407,7 +408,13 @@ func buildFullEngine(t *testing.T, pool *db.Pool) *gin.Engine {
 	assistantReqH := assistantrequest.NewHandler(assistantrequest.NewService(
 		assistantrequest.NewRepo(pool), mcpRepo, mcp.NewService(mcpRepo), auditRec, logger))
 
+	// Track B S1 page-ownership inventory and its superadmin routes, wired as
+	// in production. Nothing is issued through them: only the route set is read.
+	contentH := content.NewHandler(content.NewService(content.NewRepo(pool), nil, logger))
+	adminH.SetContentRoutes(contentH.RegisterAdmin)
+
 	deps := server.Deps{
+		ContentH:               contentH,
 		Config:                 config.Config{},
 		Logger:                 logger,
 		Pool:                   pool,
