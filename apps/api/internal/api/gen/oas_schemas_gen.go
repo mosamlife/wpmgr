@@ -15059,6 +15059,750 @@ func (s *ConnectedIdentity) SetLastLoginAt(val OptNilDateTime) {
 	s.LastLoginAt = val
 }
 
+// Ref: #/components/schemas/ContentFleetBuilderShare
+type ContentFleetBuilderShare struct {
+	IntegrationID string       `json:"integration_id"`
+	Version       OptNilString `json:"version"`
+	Pages         int64        `json:"pages"`
+	Sites         int64        `json:"sites"`
+}
+
+// GetIntegrationID returns the value of IntegrationID.
+func (s *ContentFleetBuilderShare) GetIntegrationID() string {
+	return s.IntegrationID
+}
+
+// GetVersion returns the value of Version.
+func (s *ContentFleetBuilderShare) GetVersion() OptNilString {
+	return s.Version
+}
+
+// GetPages returns the value of Pages.
+func (s *ContentFleetBuilderShare) GetPages() int64 {
+	return s.Pages
+}
+
+// GetSites returns the value of Sites.
+func (s *ContentFleetBuilderShare) GetSites() int64 {
+	return s.Sites
+}
+
+// SetIntegrationID sets the value of IntegrationID.
+func (s *ContentFleetBuilderShare) SetIntegrationID(val string) {
+	s.IntegrationID = val
+}
+
+// SetVersion sets the value of Version.
+func (s *ContentFleetBuilderShare) SetVersion(val OptNilString) {
+	s.Version = val
+}
+
+// SetPages sets the value of Pages.
+func (s *ContentFleetBuilderShare) SetPages(val int64) {
+	s.Pages = val
+}
+
+// SetSites sets the value of Sites.
+func (s *ContentFleetBuilderShare) SetSites(val int64) {
+	s.Sites = val
+}
+
+// Ref: #/components/schemas/ContentFleetReport
+type ContentFleetReport struct {
+	Pages     int64                      `json:"pages"`
+	ByVerdict []ContentFleetVerdictShare `json:"by_verdict"`
+	ByBuilder []ContentFleetBuilderShare `json:"by_builder"`
+}
+
+// GetPages returns the value of Pages.
+func (s *ContentFleetReport) GetPages() int64 {
+	return s.Pages
+}
+
+// GetByVerdict returns the value of ByVerdict.
+func (s *ContentFleetReport) GetByVerdict() []ContentFleetVerdictShare {
+	return s.ByVerdict
+}
+
+// GetByBuilder returns the value of ByBuilder.
+func (s *ContentFleetReport) GetByBuilder() []ContentFleetBuilderShare {
+	return s.ByBuilder
+}
+
+// SetPages sets the value of Pages.
+func (s *ContentFleetReport) SetPages(val int64) {
+	s.Pages = val
+}
+
+// SetByVerdict sets the value of ByVerdict.
+func (s *ContentFleetReport) SetByVerdict(val []ContentFleetVerdictShare) {
+	s.ByVerdict = val
+}
+
+// SetByBuilder sets the value of ByBuilder.
+func (s *ContentFleetReport) SetByBuilder(val []ContentFleetBuilderShare) {
+	s.ByBuilder = val
+}
+
+func (*ContentFleetReport) getAdminContentFleetReportRes() {}
+
+// Ref: #/components/schemas/ContentFleetVerdictShare
+type ContentFleetVerdictShare struct {
+	Verdict     string `json:"verdict"`
+	RouteNumber int    `json:"route_number"`
+	Pages       int64  `json:"pages"`
+	Sites       int64  `json:"sites"`
+}
+
+// GetVerdict returns the value of Verdict.
+func (s *ContentFleetVerdictShare) GetVerdict() string {
+	return s.Verdict
+}
+
+// GetRouteNumber returns the value of RouteNumber.
+func (s *ContentFleetVerdictShare) GetRouteNumber() int {
+	return s.RouteNumber
+}
+
+// GetPages returns the value of Pages.
+func (s *ContentFleetVerdictShare) GetPages() int64 {
+	return s.Pages
+}
+
+// GetSites returns the value of Sites.
+func (s *ContentFleetVerdictShare) GetSites() int64 {
+	return s.Sites
+}
+
+// SetVerdict sets the value of Verdict.
+func (s *ContentFleetVerdictShare) SetVerdict(val string) {
+	s.Verdict = val
+}
+
+// SetRouteNumber sets the value of RouteNumber.
+func (s *ContentFleetVerdictShare) SetRouteNumber(val int) {
+	s.RouteNumber = val
+}
+
+// SetPages sets the value of Pages.
+func (s *ContentFleetVerdictShare) SetPages(val int64) {
+	s.Pages = val
+}
+
+// SetSites sets the value of Sites.
+func (s *ContentFleetVerdictShare) SetSites(val int64) {
+	s.Sites = val
+}
+
+// Ref: #/components/schemas/ContentIntegration
+type ContentIntegration struct {
+	IntegrationID          string                            `json:"integration_id"`
+	DisplayName            string                            `json:"display_name"`
+	Enabled                bool                              `json:"enabled"`
+	Status                 ContentIntegrationStatus          `json:"status"`
+	Descriptor             ContentIntegrationDescriptor      `json:"descriptor"`
+	Abilities              OptNilContentIntegrationAbilities `json:"abilities"`
+	MinVersion             OptNilString                      `json:"min_version"`
+	MaxTestedVersion       OptNilString                      `json:"max_tested_version"`
+	MinWpVersion           OptNilString                      `json:"min_wp_version"`
+	IntegrationEntrySHA256 OptNilString                      `json:"integration_entry_sha256"`
+	UpdatedAt              time.Time                         `json:"updated_at"`
+}
+
+// GetIntegrationID returns the value of IntegrationID.
+func (s *ContentIntegration) GetIntegrationID() string {
+	return s.IntegrationID
+}
+
+// GetDisplayName returns the value of DisplayName.
+func (s *ContentIntegration) GetDisplayName() string {
+	return s.DisplayName
+}
+
+// GetEnabled returns the value of Enabled.
+func (s *ContentIntegration) GetEnabled() bool {
+	return s.Enabled
+}
+
+// GetStatus returns the value of Status.
+func (s *ContentIntegration) GetStatus() ContentIntegrationStatus {
+	return s.Status
+}
+
+// GetDescriptor returns the value of Descriptor.
+func (s *ContentIntegration) GetDescriptor() ContentIntegrationDescriptor {
+	return s.Descriptor
+}
+
+// GetAbilities returns the value of Abilities.
+func (s *ContentIntegration) GetAbilities() OptNilContentIntegrationAbilities {
+	return s.Abilities
+}
+
+// GetMinVersion returns the value of MinVersion.
+func (s *ContentIntegration) GetMinVersion() OptNilString {
+	return s.MinVersion
+}
+
+// GetMaxTestedVersion returns the value of MaxTestedVersion.
+func (s *ContentIntegration) GetMaxTestedVersion() OptNilString {
+	return s.MaxTestedVersion
+}
+
+// GetMinWpVersion returns the value of MinWpVersion.
+func (s *ContentIntegration) GetMinWpVersion() OptNilString {
+	return s.MinWpVersion
+}
+
+// GetIntegrationEntrySHA256 returns the value of IntegrationEntrySHA256.
+func (s *ContentIntegration) GetIntegrationEntrySHA256() OptNilString {
+	return s.IntegrationEntrySHA256
+}
+
+// GetUpdatedAt returns the value of UpdatedAt.
+func (s *ContentIntegration) GetUpdatedAt() time.Time {
+	return s.UpdatedAt
+}
+
+// SetIntegrationID sets the value of IntegrationID.
+func (s *ContentIntegration) SetIntegrationID(val string) {
+	s.IntegrationID = val
+}
+
+// SetDisplayName sets the value of DisplayName.
+func (s *ContentIntegration) SetDisplayName(val string) {
+	s.DisplayName = val
+}
+
+// SetEnabled sets the value of Enabled.
+func (s *ContentIntegration) SetEnabled(val bool) {
+	s.Enabled = val
+}
+
+// SetStatus sets the value of Status.
+func (s *ContentIntegration) SetStatus(val ContentIntegrationStatus) {
+	s.Status = val
+}
+
+// SetDescriptor sets the value of Descriptor.
+func (s *ContentIntegration) SetDescriptor(val ContentIntegrationDescriptor) {
+	s.Descriptor = val
+}
+
+// SetAbilities sets the value of Abilities.
+func (s *ContentIntegration) SetAbilities(val OptNilContentIntegrationAbilities) {
+	s.Abilities = val
+}
+
+// SetMinVersion sets the value of MinVersion.
+func (s *ContentIntegration) SetMinVersion(val OptNilString) {
+	s.MinVersion = val
+}
+
+// SetMaxTestedVersion sets the value of MaxTestedVersion.
+func (s *ContentIntegration) SetMaxTestedVersion(val OptNilString) {
+	s.MaxTestedVersion = val
+}
+
+// SetMinWpVersion sets the value of MinWpVersion.
+func (s *ContentIntegration) SetMinWpVersion(val OptNilString) {
+	s.MinWpVersion = val
+}
+
+// SetIntegrationEntrySHA256 sets the value of IntegrationEntrySHA256.
+func (s *ContentIntegration) SetIntegrationEntrySHA256(val OptNilString) {
+	s.IntegrationEntrySHA256 = val
+}
+
+// SetUpdatedAt sets the value of UpdatedAt.
+func (s *ContentIntegration) SetUpdatedAt(val time.Time) {
+	s.UpdatedAt = val
+}
+
+func (*ContentIntegration) upsertAdminContentIntegrationRes() {}
+
+type ContentIntegrationAbilities map[string]jx.Raw
+
+func (s *ContentIntegrationAbilities) init() ContentIntegrationAbilities {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+type ContentIntegrationDescriptor map[string]jx.Raw
+
+func (s *ContentIntegrationDescriptor) init() ContentIntegrationDescriptor {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+// Ref: #/components/schemas/ContentIntegrationInput
+type ContentIntegrationInput struct {
+	DisplayName      string                                 `json:"display_name"`
+	Enabled          bool                                   `json:"enabled"`
+	Status           ContentIntegrationInputStatus          `json:"status"`
+	Descriptor       OptContentIntegrationInputDescriptor   `json:"descriptor"`
+	Abilities        OptNilContentIntegrationInputAbilities `json:"abilities"`
+	MinVersion       OptNilString                           `json:"min_version"`
+	MaxTestedVersion OptNilString                           `json:"max_tested_version"`
+	MinWpVersion     OptNilString                           `json:"min_wp_version"`
+}
+
+// GetDisplayName returns the value of DisplayName.
+func (s *ContentIntegrationInput) GetDisplayName() string {
+	return s.DisplayName
+}
+
+// GetEnabled returns the value of Enabled.
+func (s *ContentIntegrationInput) GetEnabled() bool {
+	return s.Enabled
+}
+
+// GetStatus returns the value of Status.
+func (s *ContentIntegrationInput) GetStatus() ContentIntegrationInputStatus {
+	return s.Status
+}
+
+// GetDescriptor returns the value of Descriptor.
+func (s *ContentIntegrationInput) GetDescriptor() OptContentIntegrationInputDescriptor {
+	return s.Descriptor
+}
+
+// GetAbilities returns the value of Abilities.
+func (s *ContentIntegrationInput) GetAbilities() OptNilContentIntegrationInputAbilities {
+	return s.Abilities
+}
+
+// GetMinVersion returns the value of MinVersion.
+func (s *ContentIntegrationInput) GetMinVersion() OptNilString {
+	return s.MinVersion
+}
+
+// GetMaxTestedVersion returns the value of MaxTestedVersion.
+func (s *ContentIntegrationInput) GetMaxTestedVersion() OptNilString {
+	return s.MaxTestedVersion
+}
+
+// GetMinWpVersion returns the value of MinWpVersion.
+func (s *ContentIntegrationInput) GetMinWpVersion() OptNilString {
+	return s.MinWpVersion
+}
+
+// SetDisplayName sets the value of DisplayName.
+func (s *ContentIntegrationInput) SetDisplayName(val string) {
+	s.DisplayName = val
+}
+
+// SetEnabled sets the value of Enabled.
+func (s *ContentIntegrationInput) SetEnabled(val bool) {
+	s.Enabled = val
+}
+
+// SetStatus sets the value of Status.
+func (s *ContentIntegrationInput) SetStatus(val ContentIntegrationInputStatus) {
+	s.Status = val
+}
+
+// SetDescriptor sets the value of Descriptor.
+func (s *ContentIntegrationInput) SetDescriptor(val OptContentIntegrationInputDescriptor) {
+	s.Descriptor = val
+}
+
+// SetAbilities sets the value of Abilities.
+func (s *ContentIntegrationInput) SetAbilities(val OptNilContentIntegrationInputAbilities) {
+	s.Abilities = val
+}
+
+// SetMinVersion sets the value of MinVersion.
+func (s *ContentIntegrationInput) SetMinVersion(val OptNilString) {
+	s.MinVersion = val
+}
+
+// SetMaxTestedVersion sets the value of MaxTestedVersion.
+func (s *ContentIntegrationInput) SetMaxTestedVersion(val OptNilString) {
+	s.MaxTestedVersion = val
+}
+
+// SetMinWpVersion sets the value of MinWpVersion.
+func (s *ContentIntegrationInput) SetMinWpVersion(val OptNilString) {
+	s.MinWpVersion = val
+}
+
+type ContentIntegrationInputAbilities map[string]jx.Raw
+
+func (s *ContentIntegrationInputAbilities) init() ContentIntegrationInputAbilities {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+type ContentIntegrationInputDescriptor map[string]jx.Raw
+
+func (s *ContentIntegrationInputDescriptor) init() ContentIntegrationInputDescriptor {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+type ContentIntegrationInputStatus string
+
+const (
+	ContentIntegrationInputStatusDetectOnly ContentIntegrationInputStatus = "detect_only"
+)
+
+// AllValues returns all ContentIntegrationInputStatus values.
+func (ContentIntegrationInputStatus) AllValues() []ContentIntegrationInputStatus {
+	return []ContentIntegrationInputStatus{
+		ContentIntegrationInputStatusDetectOnly,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s ContentIntegrationInputStatus) MarshalText() ([]byte, error) {
+	switch s {
+	case ContentIntegrationInputStatusDetectOnly:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *ContentIntegrationInputStatus) UnmarshalText(data []byte) error {
+	switch ContentIntegrationInputStatus(data) {
+	case ContentIntegrationInputStatusDetectOnly:
+		*s = ContentIntegrationInputStatusDetectOnly
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type ContentIntegrationStatus string
+
+const (
+	ContentIntegrationStatusDetectOnly ContentIntegrationStatus = "detect_only"
+)
+
+// AllValues returns all ContentIntegrationStatus values.
+func (ContentIntegrationStatus) AllValues() []ContentIntegrationStatus {
+	return []ContentIntegrationStatus{
+		ContentIntegrationStatusDetectOnly,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s ContentIntegrationStatus) MarshalText() ([]byte, error) {
+	switch s {
+	case ContentIntegrationStatusDetectOnly:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *ContentIntegrationStatus) UnmarshalText(data []byte) error {
+	switch ContentIntegrationStatus(data) {
+	case ContentIntegrationStatusDetectOnly:
+		*s = ContentIntegrationStatusDetectOnly
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Ref: #/components/schemas/ContentInventoryEditor
+type ContentInventoryEditor struct {
+	IntegrationID string `json:"integration_id"`
+	// From the platform allowlist, never from the site.
+	DisplayName OptNilString `json:"display_name"`
+	Version     OptNilString `json:"version"`
+}
+
+// GetIntegrationID returns the value of IntegrationID.
+func (s *ContentInventoryEditor) GetIntegrationID() string {
+	return s.IntegrationID
+}
+
+// GetDisplayName returns the value of DisplayName.
+func (s *ContentInventoryEditor) GetDisplayName() OptNilString {
+	return s.DisplayName
+}
+
+// GetVersion returns the value of Version.
+func (s *ContentInventoryEditor) GetVersion() OptNilString {
+	return s.Version
+}
+
+// SetIntegrationID sets the value of IntegrationID.
+func (s *ContentInventoryEditor) SetIntegrationID(val string) {
+	s.IntegrationID = val
+}
+
+// SetDisplayName sets the value of DisplayName.
+func (s *ContentInventoryEditor) SetDisplayName(val OptNilString) {
+	s.DisplayName = val
+}
+
+// SetVersion sets the value of Version.
+func (s *ContentInventoryEditor) SetVersion(val OptNilString) {
+	s.Version = val
+}
+
+// Ref: #/components/schemas/ContentInventoryPage
+type ContentInventoryPage struct {
+	State           ContentInventoryPageState `json:"state"`
+	AgentVersion    OptString                 `json:"agent_version"`
+	MinAgentVersion string                    `json:"min_agent_version"`
+	LastCheckedAt   OptNilDateTime            `json:"last_checked_at"`
+	TitlesIncluded  bool                      `json:"titles_included"`
+	NextAfterPostID OptNilInt64               `json:"next_after_post_id"`
+	Pages           []ContentInventoryRow     `json:"pages"`
+}
+
+// GetState returns the value of State.
+func (s *ContentInventoryPage) GetState() ContentInventoryPageState {
+	return s.State
+}
+
+// GetAgentVersion returns the value of AgentVersion.
+func (s *ContentInventoryPage) GetAgentVersion() OptString {
+	return s.AgentVersion
+}
+
+// GetMinAgentVersion returns the value of MinAgentVersion.
+func (s *ContentInventoryPage) GetMinAgentVersion() string {
+	return s.MinAgentVersion
+}
+
+// GetLastCheckedAt returns the value of LastCheckedAt.
+func (s *ContentInventoryPage) GetLastCheckedAt() OptNilDateTime {
+	return s.LastCheckedAt
+}
+
+// GetTitlesIncluded returns the value of TitlesIncluded.
+func (s *ContentInventoryPage) GetTitlesIncluded() bool {
+	return s.TitlesIncluded
+}
+
+// GetNextAfterPostID returns the value of NextAfterPostID.
+func (s *ContentInventoryPage) GetNextAfterPostID() OptNilInt64 {
+	return s.NextAfterPostID
+}
+
+// GetPages returns the value of Pages.
+func (s *ContentInventoryPage) GetPages() []ContentInventoryRow {
+	return s.Pages
+}
+
+// SetState sets the value of State.
+func (s *ContentInventoryPage) SetState(val ContentInventoryPageState) {
+	s.State = val
+}
+
+// SetAgentVersion sets the value of AgentVersion.
+func (s *ContentInventoryPage) SetAgentVersion(val OptString) {
+	s.AgentVersion = val
+}
+
+// SetMinAgentVersion sets the value of MinAgentVersion.
+func (s *ContentInventoryPage) SetMinAgentVersion(val string) {
+	s.MinAgentVersion = val
+}
+
+// SetLastCheckedAt sets the value of LastCheckedAt.
+func (s *ContentInventoryPage) SetLastCheckedAt(val OptNilDateTime) {
+	s.LastCheckedAt = val
+}
+
+// SetTitlesIncluded sets the value of TitlesIncluded.
+func (s *ContentInventoryPage) SetTitlesIncluded(val bool) {
+	s.TitlesIncluded = val
+}
+
+// SetNextAfterPostID sets the value of NextAfterPostID.
+func (s *ContentInventoryPage) SetNextAfterPostID(val OptNilInt64) {
+	s.NextAfterPostID = val
+}
+
+// SetPages sets the value of Pages.
+func (s *ContentInventoryPage) SetPages(val []ContentInventoryRow) {
+	s.Pages = val
+}
+
+func (*ContentInventoryPage) getSiteContentInventoryRes() {}
+
+type ContentInventoryPageState string
+
+const (
+	ContentInventoryPageStateOk                ContentInventoryPageState = "ok"
+	ContentInventoryPageStateAgentUpdateNeeded ContentInventoryPageState = "agent_update_needed"
+	ContentInventoryPageStateNotConnected      ContentInventoryPageState = "not_connected"
+)
+
+// AllValues returns all ContentInventoryPageState values.
+func (ContentInventoryPageState) AllValues() []ContentInventoryPageState {
+	return []ContentInventoryPageState{
+		ContentInventoryPageStateOk,
+		ContentInventoryPageStateAgentUpdateNeeded,
+		ContentInventoryPageStateNotConnected,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s ContentInventoryPageState) MarshalText() ([]byte, error) {
+	switch s {
+	case ContentInventoryPageStateOk:
+		return []byte(s), nil
+	case ContentInventoryPageStateAgentUpdateNeeded:
+		return []byte(s), nil
+	case ContentInventoryPageStateNotConnected:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *ContentInventoryPageState) UnmarshalText(data []byte) error {
+	switch ContentInventoryPageState(data) {
+	case ContentInventoryPageStateOk:
+		*s = ContentInventoryPageStateOk
+		return nil
+	case ContentInventoryPageStateAgentUpdateNeeded:
+		*s = ContentInventoryPageStateAgentUpdateNeeded
+		return nil
+	case ContentInventoryPageStateNotConnected:
+		*s = ContentInventoryPageStateNotConnected
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Ref: #/components/schemas/ContentInventoryRow
+type ContentInventoryRow struct {
+	PostID     int64  `json:"post_id"`
+	PostType   string `json:"post_type"`
+	PostStatus string `json:"post_status"`
+	// Known values: classic, empty, block_document, builder, ambiguous, unrecognised_builder,
+	// special_page, template_may_override.
+	Verdict     string `json:"verdict"`
+	RouteNumber int    `json:"route_number"`
+	// A closed set of reason codes; a client renders an unknown code as "Not available yet".
+	RouteReason string `json:"route_reason"`
+	// Null when no builder owns the page.
+	Editor OptNilContentInventoryEditor `json:"editor"`
+	// The site's own text, cleaned and capped at 120 bytes. Null unless the caller holds
+	// site.content.read.
+	Title     OptNilString `json:"title"`
+	CheckedAt time.Time    `json:"checked_at"`
+}
+
+// GetPostID returns the value of PostID.
+func (s *ContentInventoryRow) GetPostID() int64 {
+	return s.PostID
+}
+
+// GetPostType returns the value of PostType.
+func (s *ContentInventoryRow) GetPostType() string {
+	return s.PostType
+}
+
+// GetPostStatus returns the value of PostStatus.
+func (s *ContentInventoryRow) GetPostStatus() string {
+	return s.PostStatus
+}
+
+// GetVerdict returns the value of Verdict.
+func (s *ContentInventoryRow) GetVerdict() string {
+	return s.Verdict
+}
+
+// GetRouteNumber returns the value of RouteNumber.
+func (s *ContentInventoryRow) GetRouteNumber() int {
+	return s.RouteNumber
+}
+
+// GetRouteReason returns the value of RouteReason.
+func (s *ContentInventoryRow) GetRouteReason() string {
+	return s.RouteReason
+}
+
+// GetEditor returns the value of Editor.
+func (s *ContentInventoryRow) GetEditor() OptNilContentInventoryEditor {
+	return s.Editor
+}
+
+// GetTitle returns the value of Title.
+func (s *ContentInventoryRow) GetTitle() OptNilString {
+	return s.Title
+}
+
+// GetCheckedAt returns the value of CheckedAt.
+func (s *ContentInventoryRow) GetCheckedAt() time.Time {
+	return s.CheckedAt
+}
+
+// SetPostID sets the value of PostID.
+func (s *ContentInventoryRow) SetPostID(val int64) {
+	s.PostID = val
+}
+
+// SetPostType sets the value of PostType.
+func (s *ContentInventoryRow) SetPostType(val string) {
+	s.PostType = val
+}
+
+// SetPostStatus sets the value of PostStatus.
+func (s *ContentInventoryRow) SetPostStatus(val string) {
+	s.PostStatus = val
+}
+
+// SetVerdict sets the value of Verdict.
+func (s *ContentInventoryRow) SetVerdict(val string) {
+	s.Verdict = val
+}
+
+// SetRouteNumber sets the value of RouteNumber.
+func (s *ContentInventoryRow) SetRouteNumber(val int) {
+	s.RouteNumber = val
+}
+
+// SetRouteReason sets the value of RouteReason.
+func (s *ContentInventoryRow) SetRouteReason(val string) {
+	s.RouteReason = val
+}
+
+// SetEditor sets the value of Editor.
+func (s *ContentInventoryRow) SetEditor(val OptNilContentInventoryEditor) {
+	s.Editor = val
+}
+
+// SetTitle sets the value of Title.
+func (s *ContentInventoryRow) SetTitle(val OptNilString) {
+	s.Title = val
+}
+
+// SetCheckedAt sets the value of CheckedAt.
+func (s *ContentInventoryRow) SetCheckedAt(val time.Time) {
+	s.CheckedAt = val
+}
+
 // Ref: #/components/schemas/CreateAgencyClientRequest
 type CreateAgencyClientRequest struct {
 	Name         string    `json:"name"`
@@ -23222,6 +23966,14 @@ type GetAdminAccountsTenancyUnauthorized Error
 
 func (*GetAdminAccountsTenancyUnauthorized) getAdminAccountsTenancyRes() {}
 
+type GetAdminContentFleetReportForbidden Error
+
+func (*GetAdminContentFleetReportForbidden) getAdminContentFleetReportRes() {}
+
+type GetAdminContentFleetReportUnauthorized Error
+
+func (*GetAdminContentFleetReportUnauthorized) getAdminContentFleetReportRes() {}
+
 type GetAdminRevenueForbidden Error
 
 func (*GetAdminRevenueForbidden) getAdminRevenueRes() {}
@@ -23936,6 +24688,22 @@ func (*GetSiteAutologinPolicyForbidden) getSiteAutologinPolicyRes() {}
 type GetSiteAutologinPolicyNotFound Error
 
 func (*GetSiteAutologinPolicyNotFound) getSiteAutologinPolicyRes() {}
+
+type GetSiteContentInventoryBadRequest Error
+
+func (*GetSiteContentInventoryBadRequest) getSiteContentInventoryRes() {}
+
+type GetSiteContentInventoryForbidden Error
+
+func (*GetSiteContentInventoryForbidden) getSiteContentInventoryRes() {}
+
+type GetSiteContentInventoryNotFound Error
+
+func (*GetSiteContentInventoryNotFound) getSiteContentInventoryRes() {}
+
+type GetSiteContentInventoryUnauthorized Error
+
+func (*GetSiteContentInventoryUnauthorized) getSiteContentInventoryRes() {}
 
 type GetSiteContextForbidden Error
 
@@ -25471,6 +26239,30 @@ func (*ListAdminAccountsServiceUnavailable) listAdminAccountsRes() {}
 type ListAdminAccountsUnauthorized Error
 
 func (*ListAdminAccountsUnauthorized) listAdminAccountsRes() {}
+
+type ListAdminContentIntegrationsForbidden Error
+
+func (*ListAdminContentIntegrationsForbidden) listAdminContentIntegrationsRes() {}
+
+type ListAdminContentIntegrationsOK struct {
+	Integrations []ContentIntegration `json:"integrations"`
+}
+
+// GetIntegrations returns the value of Integrations.
+func (s *ListAdminContentIntegrationsOK) GetIntegrations() []ContentIntegration {
+	return s.Integrations
+}
+
+// SetIntegrations sets the value of Integrations.
+func (s *ListAdminContentIntegrationsOK) SetIntegrations(val []ContentIntegration) {
+	s.Integrations = val
+}
+
+func (*ListAdminContentIntegrationsOK) listAdminContentIntegrationsRes() {}
+
+type ListAdminContentIntegrationsUnauthorized Error
+
+func (*ListAdminContentIntegrationsUnauthorized) listAdminContentIntegrationsRes() {}
 
 type ListAdminUserSitesForbidden Error
 
@@ -32142,6 +32934,52 @@ func (o OptComputeRucssReq) Or(d ComputeRucssReq) ComputeRucssReq {
 	return d
 }
 
+// NewOptContentIntegrationInputDescriptor returns new OptContentIntegrationInputDescriptor with value set to v.
+func NewOptContentIntegrationInputDescriptor(v ContentIntegrationInputDescriptor) OptContentIntegrationInputDescriptor {
+	return OptContentIntegrationInputDescriptor{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptContentIntegrationInputDescriptor is optional ContentIntegrationInputDescriptor.
+type OptContentIntegrationInputDescriptor struct {
+	Value ContentIntegrationInputDescriptor
+	Set   bool
+}
+
+// IsSet returns true if OptContentIntegrationInputDescriptor was set.
+func (o OptContentIntegrationInputDescriptor) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptContentIntegrationInputDescriptor) Reset() {
+	var v ContentIntegrationInputDescriptor
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptContentIntegrationInputDescriptor) SetTo(v ContentIntegrationInputDescriptor) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptContentIntegrationInputDescriptor) Get() (v ContentIntegrationInputDescriptor, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptContentIntegrationInputDescriptor) Or(d ContentIntegrationInputDescriptor) ContentIntegrationInputDescriptor {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptCreateRestoreAcceptedProgress returns new OptCreateRestoreAcceptedProgress with value set to v.
 func NewOptCreateRestoreAcceptedProgress(v CreateRestoreAcceptedProgress) OptCreateRestoreAcceptedProgress {
 	return OptCreateRestoreAcceptedProgress{
@@ -35210,6 +36048,210 @@ func (o OptNilChainBreak) Get() (v ChainBreak, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptNilChainBreak) Or(d ChainBreak) ChainBreak {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptNilContentIntegrationAbilities returns new OptNilContentIntegrationAbilities with value set to v.
+func NewOptNilContentIntegrationAbilities(v ContentIntegrationAbilities) OptNilContentIntegrationAbilities {
+	return OptNilContentIntegrationAbilities{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilContentIntegrationAbilities is optional nullable ContentIntegrationAbilities.
+type OptNilContentIntegrationAbilities struct {
+	Value ContentIntegrationAbilities
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilContentIntegrationAbilities was set.
+func (o OptNilContentIntegrationAbilities) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilContentIntegrationAbilities) Reset() {
+	var v ContentIntegrationAbilities
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilContentIntegrationAbilities) SetTo(v ContentIntegrationAbilities) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilContentIntegrationAbilities) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilContentIntegrationAbilities) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v ContentIntegrationAbilities
+	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilContentIntegrationAbilities) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilContentIntegrationAbilities) Get() (v ContentIntegrationAbilities, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilContentIntegrationAbilities) Or(d ContentIntegrationAbilities) ContentIntegrationAbilities {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptNilContentIntegrationInputAbilities returns new OptNilContentIntegrationInputAbilities with value set to v.
+func NewOptNilContentIntegrationInputAbilities(v ContentIntegrationInputAbilities) OptNilContentIntegrationInputAbilities {
+	return OptNilContentIntegrationInputAbilities{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilContentIntegrationInputAbilities is optional nullable ContentIntegrationInputAbilities.
+type OptNilContentIntegrationInputAbilities struct {
+	Value ContentIntegrationInputAbilities
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilContentIntegrationInputAbilities was set.
+func (o OptNilContentIntegrationInputAbilities) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilContentIntegrationInputAbilities) Reset() {
+	var v ContentIntegrationInputAbilities
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilContentIntegrationInputAbilities) SetTo(v ContentIntegrationInputAbilities) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilContentIntegrationInputAbilities) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilContentIntegrationInputAbilities) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v ContentIntegrationInputAbilities
+	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilContentIntegrationInputAbilities) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilContentIntegrationInputAbilities) Get() (v ContentIntegrationInputAbilities, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilContentIntegrationInputAbilities) Or(d ContentIntegrationInputAbilities) ContentIntegrationInputAbilities {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptNilContentInventoryEditor returns new OptNilContentInventoryEditor with value set to v.
+func NewOptNilContentInventoryEditor(v ContentInventoryEditor) OptNilContentInventoryEditor {
+	return OptNilContentInventoryEditor{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilContentInventoryEditor is optional nullable ContentInventoryEditor.
+type OptNilContentInventoryEditor struct {
+	Value ContentInventoryEditor
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilContentInventoryEditor was set.
+func (o OptNilContentInventoryEditor) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilContentInventoryEditor) Reset() {
+	var v ContentInventoryEditor
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilContentInventoryEditor) SetTo(v ContentInventoryEditor) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilContentInventoryEditor) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilContentInventoryEditor) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v ContentInventoryEditor
+	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilContentInventoryEditor) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilContentInventoryEditor) Get() (v ContentInventoryEditor, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilContentInventoryEditor) Or(d ContentInventoryEditor) ContentInventoryEditor {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -43386,6 +44428,72 @@ func (s *RecoveryCodesResponse) SetRecoveryCodes(val []string) {
 
 func (*RecoveryCodesResponse) confirmTotpEnrollmentRes()   {}
 func (*RecoveryCodesResponse) regenerateRecoveryCodesRes() {}
+
+type RefreshSiteContentInventoryAccepted struct {
+	Status RefreshSiteContentInventoryAcceptedStatus `json:"status"`
+}
+
+// GetStatus returns the value of Status.
+func (s *RefreshSiteContentInventoryAccepted) GetStatus() RefreshSiteContentInventoryAcceptedStatus {
+	return s.Status
+}
+
+// SetStatus sets the value of Status.
+func (s *RefreshSiteContentInventoryAccepted) SetStatus(val RefreshSiteContentInventoryAcceptedStatus) {
+	s.Status = val
+}
+
+func (*RefreshSiteContentInventoryAccepted) refreshSiteContentInventoryRes() {}
+
+type RefreshSiteContentInventoryAcceptedStatus string
+
+const (
+	RefreshSiteContentInventoryAcceptedStatusQueued RefreshSiteContentInventoryAcceptedStatus = "queued"
+)
+
+// AllValues returns all RefreshSiteContentInventoryAcceptedStatus values.
+func (RefreshSiteContentInventoryAcceptedStatus) AllValues() []RefreshSiteContentInventoryAcceptedStatus {
+	return []RefreshSiteContentInventoryAcceptedStatus{
+		RefreshSiteContentInventoryAcceptedStatusQueued,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s RefreshSiteContentInventoryAcceptedStatus) MarshalText() ([]byte, error) {
+	switch s {
+	case RefreshSiteContentInventoryAcceptedStatusQueued:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *RefreshSiteContentInventoryAcceptedStatus) UnmarshalText(data []byte) error {
+	switch RefreshSiteContentInventoryAcceptedStatus(data) {
+	case RefreshSiteContentInventoryAcceptedStatusQueued:
+		*s = RefreshSiteContentInventoryAcceptedStatusQueued
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type RefreshSiteContentInventoryForbidden Error
+
+func (*RefreshSiteContentInventoryForbidden) refreshSiteContentInventoryRes() {}
+
+type RefreshSiteContentInventoryNotFound Error
+
+func (*RefreshSiteContentInventoryNotFound) refreshSiteContentInventoryRes() {}
+
+type RefreshSiteContentInventoryTooManyRequests Error
+
+func (*RefreshSiteContentInventoryTooManyRequests) refreshSiteContentInventoryRes() {}
+
+type RefreshSiteContentInventoryUnauthorized Error
+
+func (*RefreshSiteContentInventoryUnauthorized) refreshSiteContentInventoryRes() {}
 
 // RefreshSiteDiagnosticsAccepted is response for RefreshSiteDiagnostics operation.
 type RefreshSiteDiagnosticsAccepted struct{}
@@ -57114,6 +58222,18 @@ func (s *UpdateTaskTargetType) UnmarshalText(data []byte) error {
 		return errors.Errorf("invalid value: %q", data)
 	}
 }
+
+type UpsertAdminContentIntegrationBadRequest Error
+
+func (*UpsertAdminContentIntegrationBadRequest) upsertAdminContentIntegrationRes() {}
+
+type UpsertAdminContentIntegrationForbidden Error
+
+func (*UpsertAdminContentIntegrationForbidden) upsertAdminContentIntegrationRes() {}
+
+type UpsertAdminContentIntegrationUnauthorized Error
+
+func (*UpsertAdminContentIntegrationUnauthorized) upsertAdminContentIntegrationRes() {}
 
 // Ref: #/components/schemas/UptimePoint
 type UptimePoint struct {

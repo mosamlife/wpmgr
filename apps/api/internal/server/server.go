@@ -27,6 +27,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/billing"
 	clientpkg "github.com/mosamlife/wpmgr/apps/api/internal/client"
 	"github.com/mosamlife/wpmgr/apps/api/internal/config"
+	"github.com/mosamlife/wpmgr/apps/api/internal/content"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/diagnostics"
 	"github.com/mosamlife/wpmgr/apps/api/internal/email"
@@ -165,7 +166,9 @@ type Deps struct {
 	// /api/v1/cache/* bulk routes; PerfAgentH serves the agent-authenticated
 	// /agent/v1/cache/* + /agent/v1/perf/* + /agent/v1/rucss callbacks. Either
 	// may be nil.
-	PerfH      *perf.Handler
+	PerfH *perf.Handler
+	// ContentH serves the page-ownership inventory (Track B S1).
+	ContentH   *content.Handler
 	PerfAgentH *perf.AgentHandler
 	// m68 — Object Cache (P0+P1). ObjectCacheH serves the operator-facing
 	// /api/v1/sites/{siteId}/perf/object-cache/... routes.
@@ -741,6 +744,9 @@ func New(deps Deps) *Server {
 	// portfolio bulk cache routes.
 	if deps.PerfH != nil {
 		deps.PerfH.Register(v1)
+	}
+	if deps.ContentH != nil {
+		deps.ContentH.Register(v1)
 	}
 
 	// m68 — Object Cache operator routes: GET/PUT config, POST test/enable/

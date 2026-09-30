@@ -378,6 +378,9 @@ import type {
   GetAdminAccountsTenancyData,
   GetAdminAccountsTenancyErrors,
   GetAdminAccountsTenancyResponses,
+  GetAdminContentFleetReportData,
+  GetAdminContentFleetReportErrors,
+  GetAdminContentFleetReportResponses,
   GetAdminRevenueData,
   GetAdminRevenueErrors,
   GetAdminRevenueResponses,
@@ -544,6 +547,9 @@ import type {
   GetSiteAvailableUpdatesData,
   GetSiteAvailableUpdatesErrors,
   GetSiteAvailableUpdatesResponses,
+  GetSiteContentInventoryData,
+  GetSiteContentInventoryErrors,
+  GetSiteContentInventoryResponses,
   GetSiteContextData,
   GetSiteContextErrors,
   GetSiteContextResponses,
@@ -624,6 +630,9 @@ import type {
   ListAdminAccountsData,
   ListAdminAccountsErrors,
   ListAdminAccountsResponses,
+  ListAdminContentIntegrationsData,
+  ListAdminContentIntegrationsErrors,
+  ListAdminContentIntegrationsResponses,
   ListAdminUsersData,
   ListAdminUsersErrors,
   ListAdminUserSitesData,
@@ -896,6 +905,9 @@ import type {
   RecheckSiteData,
   RecheckSiteErrors,
   RecheckSiteResponses,
+  RefreshSiteContentInventoryData,
+  RefreshSiteContentInventoryErrors,
+  RefreshSiteContentInventoryResponses,
   RefreshSiteDiagnosticsData,
   RefreshSiteDiagnosticsErrors,
   RefreshSiteDiagnosticsResponses,
@@ -1108,6 +1120,9 @@ import type {
   UpdateTagData,
   UpdateTagErrors,
   UpdateTagResponses,
+  UpsertAdminContentIntegrationData,
+  UpsertAdminContentIntegrationErrors,
+  UpsertAdminContentIntegrationResponses,
   VerifyAuditData,
   VerifyAuditErrors,
   VerifyAuditResponses,
@@ -6820,6 +6835,106 @@ export const getDbHealth = <ThrowOnError extends boolean = false>(
     GetDbHealthErrors,
     ThrowOnError
   >({ url: "/api/v1/sites/{siteId}/perf/db/health", ...options });
+
+/**
+ * Which editor owns each page on a site (Track B S1)
+ *
+ * One page of the site's page-ownership inventory, ordered by `post_id`
+ * ascending. Page it by passing `next_after_post_id` back as
+ * `after_post_id`. Titles are the site's own text and are returned only
+ * to callers holding `site.content.read`; `titles_included` says which
+ * applies. A site whose agent is below `min_agent_version` answers 200
+ * with `state: agent_update_needed` and no rows, never an error.
+ * `verdict` and `route_reason` are open strings: a client must render an
+ * unknown value as "Not available yet".
+ *
+ */
+export const getSiteContentInventory = <ThrowOnError extends boolean = false>(
+  options: Options<GetSiteContentInventoryData, ThrowOnError>,
+) =>
+  (options.client ?? client).get<
+    GetSiteContentInventoryResponses,
+    GetSiteContentInventoryErrors,
+    ThrowOnError
+  >({ url: "/api/v1/sites/{siteId}/content/inventory", ...options });
+
+/**
+ * Ask for a fresh page-ownership check of a site
+ *
+ * Queues a check; the result appears in the inventory once it runs.
+ * Rate limited per site: a second request inside the window answers 429
+ * with `Retry-After`.
+ *
+ */
+export const refreshSiteContentInventory = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<RefreshSiteContentInventoryData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    RefreshSiteContentInventoryResponses,
+    RefreshSiteContentInventoryErrors,
+    ThrowOnError
+  >({ url: "/api/v1/sites/{siteId}/content/inventory/refresh", ...options });
+
+/**
+ * Fleet share of page editors (superadmin)
+ *
+ * Counts across every tenant: pages and sites per verdict and route, and
+ * builder pages per builder and version. Counts only; no titles or
+ * tenant identifiers.
+ *
+ */
+export const getAdminContentFleetReport = <
+  ThrowOnError extends boolean = false,
+>(
+  options?: Options<GetAdminContentFleetReportData, ThrowOnError>,
+) =>
+  (options?.client ?? client).get<
+    GetAdminContentFleetReportResponses,
+    GetAdminContentFleetReportErrors,
+    ThrowOnError
+  >({ url: "/api/v1/admin/content/fleet-report", ...options });
+
+/**
+ * The page-builder allowlist (superadmin)
+ */
+export const listAdminContentIntegrations = <
+  ThrowOnError extends boolean = false,
+>(
+  options?: Options<ListAdminContentIntegrationsData, ThrowOnError>,
+) =>
+  (options?.client ?? client).get<
+    ListAdminContentIntegrationsResponses,
+    ListAdminContentIntegrationsErrors,
+    ThrowOnError
+  >({ url: "/api/v1/admin/content/integrations", ...options });
+
+/**
+ * Create or update one allowlist row (superadmin)
+ *
+ * The acting user is the authenticated session, never a body field. The
+ * server computes `integration_entry_sha256` (sha256 of the canonical
+ * JSON of the whole entry) and the database records an audit row.
+ *
+ */
+export const upsertAdminContentIntegration = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<UpsertAdminContentIntegrationData, ThrowOnError>,
+) =>
+  (options.client ?? client).put<
+    UpsertAdminContentIntegrationResponses,
+    UpsertAdminContentIntegrationErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/admin/content/integrations/{integrationId}",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
 
 /**
  * On-demand orphan-artifact classification report (P3.5, read-only)

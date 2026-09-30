@@ -666,6 +666,15 @@ type GetSiteAvailableUpdatesParams struct {
 	SiteId uuid.UUID
 }
 
+// GetSiteContentInventoryParams is parameters of getSiteContentInventory operation.
+type GetSiteContentInventoryParams struct {
+	SiteId      uuid.UUID
+	AfterPostID OptInt64 `json:",omitempty,omitzero"`
+	Limit       OptInt32 `json:",omitempty,omitzero"`
+	// Filter by editor: `classic` for pages no builder owns, or an integration id such as `elementor`.
+	Editor OptString `json:",omitempty,omitzero"`
+}
+
 // GetSiteContextParams is parameters of getSiteContext operation.
 type GetSiteContextParams struct {
 	SiteId uuid.UUID
@@ -1361,6 +1370,11 @@ type RecheckSiteParams struct {
 	SiteId uuid.UUID
 }
 
+// RefreshSiteContentInventoryParams is parameters of refreshSiteContentInventory operation.
+type RefreshSiteContentInventoryParams struct {
+	SiteId uuid.UUID
+}
+
 // RefreshSiteDiagnosticsParams is parameters of refreshSiteDiagnostics operation.
 type RefreshSiteDiagnosticsParams struct {
 	SiteId uuid.UUID
@@ -1703,6 +1717,11 @@ type UpdateSiteFilesSettingsParams struct {
 // UpdateTagParams is parameters of updateTag operation.
 type UpdateTagParams struct {
 	TagId uuid.UUID
+}
+
+// UpsertAdminContentIntegrationParams is parameters of upsertAdminContentIntegration operation.
+type UpsertAdminContentIntegrationParams struct {
+	IntegrationId string
 }
 
 // VerifySiteActivityParams is parameters of verifySiteActivity operation.

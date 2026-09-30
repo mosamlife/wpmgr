@@ -457,6 +457,10 @@ type GetAdminAccountsTenancyRes interface {
 	getAdminAccountsTenancyRes()
 }
 
+type GetAdminContentFleetReportRes interface {
+	getAdminContentFleetReportRes()
+}
+
 type GetAdminRevenueRes interface {
 	getAdminRevenueRes()
 }
@@ -641,6 +645,10 @@ type GetSiteAvailableUpdatesRes interface {
 	getSiteAvailableUpdatesRes()
 }
 
+type GetSiteContentInventoryRes interface {
+	getSiteContentInventoryRes()
+}
+
 type GetSiteContextRes interface {
 	getSiteContextRes()
 }
@@ -735,6 +743,10 @@ type InviteMemberRes interface {
 
 type ListAdminAccountsRes interface {
 	listAdminAccountsRes()
+}
+
+type ListAdminContentIntegrationsRes interface {
+	listAdminContentIntegrationsRes()
 }
 
 type ListAdminUserSitesRes interface {
@@ -1053,6 +1065,10 @@ type RecheckSiteRes interface {
 	recheckSiteRes()
 }
 
+type RefreshSiteContentInventoryRes interface {
+	refreshSiteContentInventoryRes()
+}
+
 type RefreshSiteDiagnosticsRes interface {
 	refreshSiteDiagnosticsRes()
 }
@@ -1297,6 +1313,10 @@ type UpdateSmtpSettingsRes interface {
 
 type UpdateTagRes interface {
 	updateTagRes()
+}
+
+type UpsertAdminContentIntegrationRes interface {
+	upsertAdminContentIntegrationRes()
 }
 
 type VerifyAuditRes interface {
