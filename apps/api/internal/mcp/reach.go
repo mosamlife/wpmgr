@@ -107,13 +107,16 @@ func hostingCacheSentence(rows []hostingCacheReach) string {
 		}
 	}
 	if len(confirmed) == 0 {
-		return "Hosting caches are cleared only where WPMgr has confirmed they clear only this " +
-			"site; at present none is confirmed, so every hosting cache is skipped and visitors " +
-			"may still get cached copies from the host."
+		return "WPMgr's own hosting and CDN cache integrations are cleared only where WPMgr has " +
+			"confirmed they clear only this site; at present none is confirmed, so all of them " +
+			"are skipped and visitors may still get cached copies from the host. This limit " +
+			"covers those integrations only, not other plugins' hooks on the purge actions."
 	}
-	out := "Hosting caches are cleared only where WPMgr has confirmed they clear only this " +
-		"site, which at present is " + joinNames(confirmed) + ". Other hosting caches are " +
-		"skipped, so visitors may still get cached copies from those hosts."
+	out := "WPMgr's own hosting and CDN cache integrations are cleared only where WPMgr has " +
+		"confirmed they clear only this site, which at present is " + joinNames(confirmed) +
+		". Its other integrations are skipped, so visitors may still get cached copies from " +
+		"those hosts. This limit covers those integrations only, not other plugins' hooks on " +
+		"the purge actions."
 	if len(wholeSite) > 0 {
 		out += " On " + joinNames(wholeSite) + ", a `url` clear clears this site's whole cache " +
 			"there, because that host has no per-page clear."

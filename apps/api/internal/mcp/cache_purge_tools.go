@@ -87,8 +87,9 @@ var cachePurgeRequestStatusSchema = json.RawMessage(`{
 func cachePurgeRequestDescription() string {
 	return "Asks an operator to clear the page cache on ONE site in this connection's scope. " +
 		"It changes nothing by itself: the request waits for a person to approve it in WPMgr " +
-		"and closes unanswered after 24 hours. If approved, scope `all` deletes WPMgr's own " +
-		"cache directory for the site, and scope `url` deletes WPMgr's cached files for one " +
+		"and closes unanswered after 24 hours. If approved, scope `all` deletes WPMgr's " +
+		"whole page-cache directory on that WordPress install; on a multisite or multi-host " +
+		"install that includes other hosts' cached pages. Scope `url` deletes WPMgr's cached files for one " +
 		"page address. The address must be printable ASCII (write an internationalised host " +
 		"in its Punycode form and percent-encode anything else in the path), on the site's " +
 		"own host and under the site's own path, with no `?` or `#` anywhere, and no " +
