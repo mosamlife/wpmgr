@@ -15,9 +15,11 @@ import {
   CAPABILITY_DESCRIPTIONS,
   CONFERRABLE_READS,
   KNOWN_CAPABILITIES,
+  isAbilityCapability,
   capabilityKind,
   capabilityLabel,
 } from "./capabilities";
+import { AbilityCapabilityBox } from "./ability-capability-box";
 import { CachePurgeCapabilityBox } from "./cache-purge-capability-box";
 
 import {
@@ -639,6 +641,14 @@ export function ConnectWizard({
   // same `capabilities` array the checkboxes render and the mint sends, so the
   // label, the ticks and the wire payload are three readings of one value.
   const activePreset = presetFor(capabilities);
+  const toggleCapability = (cap: string, next: boolean) =>
+    setCapabilities((current) =>
+      next
+        ? current.includes(cap)
+          ? current
+          : [...current, cap]
+        : current.filter((c) => c !== cap),
+    );
 
   // THE RAIL'S CAPABILITY STATE, mirroring siteScopeState immediately above:
   // one function, read by both the rail and `mintBlockedReason` below, so
@@ -1050,7 +1060,9 @@ export function ConnectWizard({
                   CAPABILITY_KIND here, rather than by a written-out name,
                   means a future read added to the vocabulary joins this list
                   by construction and a future write does not. */}
-              {KNOWN_CAPABILITIES.filter((cap) => capabilityKind(cap) === "read").map((cap) => {
+              {KNOWN_CAPABILITIES.filter(
+                (cap) => capabilityKind(cap) === "read" && !isAbilityCapability(cap),
+              ).map((cap) => {
                 const conferrable = (CONFERRABLE_READS as readonly string[]).includes(cap);
                 const checked = capabilities.includes(cap);
                 return (
@@ -1115,6 +1127,14 @@ export function ConnectWizard({
                     : current.filter((c) => c !== "mcp.cache.purge"),
                 )
               }
+            />
+
+            <AbilityCapabilityBox
+              readChecked={capabilities.includes("mcp.ability.read")}
+              requestChecked={capabilities.includes("mcp.ability.request")}
+              disabled={mintInFlight}
+              onReadChange={(next) => toggleCapability("mcp.ability.read", next)}
+              onRequestChange={(next) => toggleCapability("mcp.ability.request", next)}
             />
 
             {/* THIS IS THE #694 FIX'S OTHER HALF (see SPEC_STEPS' n:4 entry,

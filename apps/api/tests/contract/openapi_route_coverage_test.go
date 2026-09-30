@@ -35,6 +35,7 @@ import (
 	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/abilities"
 	"github.com/mosamlife/wpmgr/apps/api/internal/activity"
 	"github.com/mosamlife/wpmgr/apps/api/internal/admin"
 	"github.com/mosamlife/wpmgr/apps/api/internal/admingate"
@@ -412,6 +413,8 @@ func buildFullEngine(t *testing.T, pool *db.Pool) *gin.Engine {
 	// in production. Nothing is issued through them: only the route set is read.
 	contentH := content.NewHandler(content.NewService(content.NewRepo(pool), nil, logger))
 	adminH.SetContentRoutes(contentH.RegisterAdmin)
+	// Ability engine: the superadmin catalogue routes, wired as in production.
+	adminH.SetAbilityRoutes(abilities.NewAdminHandler(abilities.NewAdminRepo(pool)).RegisterAdmin)
 
 	deps := server.Deps{
 		ContentH:               contentH,

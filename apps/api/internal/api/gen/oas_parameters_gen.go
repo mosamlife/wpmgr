@@ -1693,6 +1693,11 @@ type UnlockBackupParams struct {
 	SnapshotId uuid.UUID
 }
 
+// UpdateAdminAbilityCatalogueEntryParams is parameters of updateAdminAbilityCatalogueEntry operation.
+type UpdateAdminAbilityCatalogueEntryParams struct {
+	EntryId uuid.UUID
+}
+
 // UpdateClientParams is parameters of updateClient operation.
 type UpdateClientParams struct {
 	ClientId uuid.UUID

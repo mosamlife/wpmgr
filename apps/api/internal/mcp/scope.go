@@ -52,6 +52,7 @@ const ErrCodeInvalidSiteScope = "mcp_invalid_site_scope"
 var recognisedScopes = map[Scope]struct{}{
 	ScopeCache: {},
 	ScopeRead:  {},
+	ScopeSite:  {},
 }
 
 // ParseRequestedScopes parses the RFC 6749 section 3.3 space-delimited `scope`

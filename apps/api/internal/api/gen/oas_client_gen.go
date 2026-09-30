@@ -822,6 +822,13 @@ type Invoker interface {
 	//
 	// POST /auth/2fa/totp/confirm
 	ConfirmTotpEnrollment(ctx context.Context, request *ConfirmTotpEnrollmentReq) (ConfirmTotpEnrollmentRes, error)
+	// CreateAdminAbilityCatalogueEntry invokes createAdminAbilityCatalogueEntry operation.
+	//
+	// The acting user is the authenticated session, never a body field. The server stamps `entry_sha256`
+	// and the database records an audit row.
+	//
+	// POST /api/v1/admin/abilities/catalogue
+	CreateAdminAbilityCatalogueEntry(ctx context.Context, request *AbilityCatalogueInput) (CreateAdminAbilityCatalogueEntryRes, error)
 	// CreateApiKey invokes createApiKey operation.
 	//
 	// Create an API key (admin+); the secret is shown once.
@@ -2131,6 +2138,12 @@ type Invoker interface {
 	//
 	// POST /api/v1/sites/{siteId}/media/clean/isolate
 	IsolateUnusedMedia(ctx context.Context, request *MediaCleanIsolateRequest, params IsolateUnusedMediaParams) (*MediaCleanIsolateResult, error)
+	// ListAdminAbilityCatalogue invokes listAdminAbilityCatalogue operation.
+	//
+	// The reviewed-ability catalogue (superadmin).
+	//
+	// GET /api/v1/admin/abilities/catalogue
+	ListAdminAbilityCatalogue(ctx context.Context) (ListAdminAbilityCatalogueRes, error)
 	// ListAdminAccounts invokes listAdminAccounts operation.
 	//
 	// Superadmin-only accounts console: instance-wide header tiles (always unfiltered by the current
@@ -3713,6 +3726,13 @@ type Invoker interface {
 	//
 	// DELETE /api/v1/backups/{snapshotId}/lock
 	UnlockBackup(ctx context.Context, params UnlockBackupParams) (UnlockBackupRes, error)
+	// UpdateAdminAbilityCatalogueEntry invokes updateAdminAbilityCatalogueEntry operation.
+	//
+	// Omitted fields keep their stored values; the merge happens in the write's transaction under the
+	// entry's lock. The acting user is the authenticated session. The server re-stamps `entry_sha256`.
+	//
+	// PUT /api/v1/admin/abilities/catalogue/{entryId}
+	UpdateAdminAbilityCatalogueEntry(ctx context.Context, request *AbilityCatalogueInput, params UpdateAdminAbilityCatalogueEntryParams) (UpdateAdminAbilityCatalogueEntryRes, error)
 	// UpdateClient invokes updateClient operation.
 	//
 	// Update an agency client.
@@ -10942,6 +10962,90 @@ func (c *Client) sendConfirmTotpEnrollment(ctx context.Context, request *Confirm
 
 	stage = "DecodeResponse"
 	result, err := decodeConfirmTotpEnrollmentResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// CreateAdminAbilityCatalogueEntry invokes createAdminAbilityCatalogueEntry operation.
+//
+// The acting user is the authenticated session, never a body field. The server stamps `entry_sha256`
+// and the database records an audit row.
+//
+// POST /api/v1/admin/abilities/catalogue
+func (c *Client) CreateAdminAbilityCatalogueEntry(ctx context.Context, request *AbilityCatalogueInput) (CreateAdminAbilityCatalogueEntryRes, error) {
+	res, err := c.sendCreateAdminAbilityCatalogueEntry(ctx, request)
+	return res, err
+}
+
+func (c *Client) sendCreateAdminAbilityCatalogueEntry(ctx context.Context, request *AbilityCatalogueInput) (res CreateAdminAbilityCatalogueEntryRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("createAdminAbilityCatalogueEntry"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/api/v1/admin/abilities/catalogue"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, CreateAdminAbilityCatalogueEntryOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/api/v1/admin/abilities/catalogue"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeCreateAdminAbilityCatalogueEntryRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeCreateAdminAbilityCatalogueEntryResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}
@@ -26681,6 +26785,86 @@ func (c *Client) sendIsolateUnusedMedia(ctx context.Context, request *MediaClean
 
 	stage = "DecodeResponse"
 	result, err := decodeIsolateUnusedMediaResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// ListAdminAbilityCatalogue invokes listAdminAbilityCatalogue operation.
+//
+// The reviewed-ability catalogue (superadmin).
+//
+// GET /api/v1/admin/abilities/catalogue
+func (c *Client) ListAdminAbilityCatalogue(ctx context.Context) (ListAdminAbilityCatalogueRes, error) {
+	res, err := c.sendListAdminAbilityCatalogue(ctx)
+	return res, err
+}
+
+func (c *Client) sendListAdminAbilityCatalogue(ctx context.Context) (res ListAdminAbilityCatalogueRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("listAdminAbilityCatalogue"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/admin/abilities/catalogue"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, ListAdminAbilityCatalogueOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/api/v1/admin/abilities/catalogue"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeListAdminAbilityCatalogueResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}
@@ -45916,6 +46100,108 @@ func (c *Client) sendUnlockBackup(ctx context.Context, params UnlockBackupParams
 
 	stage = "DecodeResponse"
 	result, err := decodeUnlockBackupResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// UpdateAdminAbilityCatalogueEntry invokes updateAdminAbilityCatalogueEntry operation.
+//
+// Omitted fields keep their stored values; the merge happens in the write's transaction under the
+// entry's lock. The acting user is the authenticated session. The server re-stamps `entry_sha256`.
+//
+// PUT /api/v1/admin/abilities/catalogue/{entryId}
+func (c *Client) UpdateAdminAbilityCatalogueEntry(ctx context.Context, request *AbilityCatalogueInput, params UpdateAdminAbilityCatalogueEntryParams) (UpdateAdminAbilityCatalogueEntryRes, error) {
+	res, err := c.sendUpdateAdminAbilityCatalogueEntry(ctx, request, params)
+	return res, err
+}
+
+func (c *Client) sendUpdateAdminAbilityCatalogueEntry(ctx context.Context, request *AbilityCatalogueInput, params UpdateAdminAbilityCatalogueEntryParams) (res UpdateAdminAbilityCatalogueEntryRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("updateAdminAbilityCatalogueEntry"),
+		semconv.HTTPRequestMethodKey.String("PUT"),
+		semconv.URLTemplateKey.String("/api/v1/admin/abilities/catalogue/{entryId}"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, UpdateAdminAbilityCatalogueEntryOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [2]string
+	pathParts[0] = "/api/v1/admin/abilities/catalogue/"
+	{
+		// Encode "entryId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "entryId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.EntryId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "PUT", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeUpdateAdminAbilityCatalogueEntryRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeUpdateAdminAbilityCatalogueEntryResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}

@@ -55,6 +55,8 @@ use WPMgr\Agent\Commands\SyncMediaConfigCommand;
 use WPMgr\Agent\Commands\SyncSecurityConfigCommand;
 use WPMgr\Agent\Commands\UnblockIpCommand;
 use WPMgr\Agent\Commands\UpdateCommand;
+use WPMgr\Agent\Abilities\OwnAbilities;
+use WPMgr\Agent\Commands\AbilityRunCommand;
 use WPMgr\Agent\Commands\ContentProbeCommand;
 use WPMgr\Agent\Commands\ContentUpdateCommand;
 use WPMgr\Agent\Commands\CacheEnableCommand;
@@ -696,6 +698,12 @@ final class Plugin
         if ($ocInstaller->state() === \WPMgr\Agent\ObjectCache\ObjectCacheDropinInstaller::STATE_OURS_CURRENT) {
             add_filter('perflab_disable_object_cache_dropin', '__return_true');
         }
+
+        // WPMgr's own read abilities, offered to the WordPress Abilities API
+        // (6.9+). These hooks never fire on older WordPress; the engine runs
+        // the same abilities in-process either way.
+        add_action('wp_abilities_api_categories_init', [OwnAbilities::class, 'registerCategory']);
+        add_action('wp_abilities_api_init', [OwnAbilities::class, 'registerAbilities']);
 
         add_action('rest_api_init', [$this->router, 'registerRoutes']);
         add_action('rest_api_init', [$this, 'registerAutologinRoute']);
@@ -2028,6 +2036,10 @@ final class Plugin
             // Read-only ownership probe for content_update: says whether
             // post_content is what a visitor sees for a page. Writes nothing.
             new ContentProbeCommand(),
+            // The engine's signed command: modes read, precheck and ledger,
+            // for WPMgr's own wpmgr/* abilities only. Params are digest-bound
+            // to the token (claim pd) over the exact JSON bytes.
+            new AbilityRunCommand(),
             // M5.6 / ADR-033: BackupCommand validates the signed CP request,
             // dedups, seeds the wpmgr_backup_tasks row, schedules the
             // watchdog cron event, then hands off via wp_schedule_single_event

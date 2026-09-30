@@ -198,6 +198,9 @@ import type {
   ConfirmTotpEnrollmentData,
   ConfirmTotpEnrollmentErrors,
   ConfirmTotpEnrollmentResponses,
+  CreateAdminAbilityCatalogueEntryData,
+  CreateAdminAbilityCatalogueEntryErrors,
+  CreateAdminAbilityCatalogueEntryResponses,
   CreateApiKeyData,
   CreateApiKeyErrors,
   CreateApiKeyResponses,
@@ -627,6 +630,9 @@ import type {
   InviteMemberResponses,
   IsolateUnusedMediaData,
   IsolateUnusedMediaResponses,
+  ListAdminAbilityCatalogueData,
+  ListAdminAbilityCatalogueErrors,
+  ListAdminAbilityCatalogueResponses,
   ListAdminAccountsData,
   ListAdminAccountsErrors,
   ListAdminAccountsResponses,
@@ -1099,6 +1105,9 @@ import type {
   UnlockBackupData,
   UnlockBackupErrors,
   UnlockBackupResponses,
+  UpdateAdminAbilityCatalogueEntryData,
+  UpdateAdminAbilityCatalogueEntryErrors,
+  UpdateAdminAbilityCatalogueEntryResponses,
   UpdateClientData,
   UpdateClientErrors,
   UpdateClientResponses,
@@ -6929,6 +6938,69 @@ export const upsertAdminContentIntegration = <
     ThrowOnError
   >({
     url: "/api/v1/admin/content/integrations/{integrationId}",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * The reviewed-ability catalogue (superadmin)
+ */
+export const listAdminAbilityCatalogue = <ThrowOnError extends boolean = false>(
+  options?: Options<ListAdminAbilityCatalogueData, ThrowOnError>,
+) =>
+  (options?.client ?? client).get<
+    ListAdminAbilityCatalogueResponses,
+    ListAdminAbilityCatalogueErrors,
+    ThrowOnError
+  >({ url: "/api/v1/admin/abilities/catalogue", ...options });
+
+/**
+ * Add one catalogue entry (superadmin)
+ *
+ * The acting user is the authenticated session, never a body field. The
+ * server stamps `entry_sha256` and the database records an audit row.
+ *
+ */
+export const createAdminAbilityCatalogueEntry = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<CreateAdminAbilityCatalogueEntryData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    CreateAdminAbilityCatalogueEntryResponses,
+    CreateAdminAbilityCatalogueEntryErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/admin/abilities/catalogue",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Update one catalogue entry (superadmin)
+ *
+ * Omitted fields keep their stored values; the merge happens in the
+ * write's transaction under the entry's lock. The acting user is the
+ * authenticated session. The server re-stamps `entry_sha256`.
+ *
+ */
+export const updateAdminAbilityCatalogueEntry = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<UpdateAdminAbilityCatalogueEntryData, ThrowOnError>,
+) =>
+  (options.client ?? client).put<
+    UpdateAdminAbilityCatalogueEntryResponses,
+    UpdateAdminAbilityCatalogueEntryErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/admin/abilities/catalogue/{entryId}",
     ...options,
     headers: {
       "Content-Type": "application/json",

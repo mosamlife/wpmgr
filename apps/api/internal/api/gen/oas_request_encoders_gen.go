@@ -736,6 +736,20 @@ func encodeConfirmTotpEnrollmentRequest(
 	return nil
 }
 
+func encodeCreateAdminAbilityCatalogueEntryRequest(
+	req *AbilityCatalogueInput,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	e := new(jx.Encoder)
+	{
+		req.Encode(e)
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
 func encodeCreateApiKeyRequest(
 	req *ApiKeyCreate,
 	r *http.Request,
@@ -2296,6 +2310,20 @@ func encodeTriggerDbScanRequest(
 
 func encodeUnblockSiteIPRequest(
 	req *UnblockIPRequest,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	e := new(jx.Encoder)
+	{
+		req.Encode(e)
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
+func encodeUpdateAdminAbilityCatalogueEntryRequest(
+	req *AbilityCatalogueInput,
 	r *http.Request,
 ) error {
 	const contentType = "application/json"

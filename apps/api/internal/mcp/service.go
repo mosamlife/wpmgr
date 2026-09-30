@@ -350,6 +350,10 @@ type Service struct {
 	// (request_limit.go). Armed in NewService; a Service without it has no
 	// request rail.
 	requestLimit *requestRateLimiter
+
+	// abilities is the ability engine's wiring (EnableAbilityTools). Nil
+	// means the four ability tools are neither listed nor run.
+	abilities *abilityEngine
 }
 
 func NewService(store Store) *Service {

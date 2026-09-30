@@ -1,0 +1,266 @@
+package agentcmd
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"regexp"
+
+	"github.com/google/uuid"
+
+	"github.com/mosamlife/wpmgr/apps/api/internal/humantext"
+)
+
+// This file is the CP->agent contract for `ability_run`, the ability engine's
+// one command. Wire: POST {site_url}/wp-json/wpmgr/v1/command/ability_run.
+//
+// THE BODY IS EXACTLY {"p":"<json text>"}. p is itself JSON text:
+//
+//	{"mode":"read|precheck|ledger","request_id":"<uuid>","entry":"<entry JSON text>",
+//	 "entry_sha256":"<hex sha256 of the entry text bytes>","input":"<input JSON text>"}
+//
+// The token carries `pd`, the lowercase hex sha256 of the exact bytes of the p
+// string. The agent hashes the string it received FIRST and refuses a mismatch
+// (token_params_mismatch), then decodes that same string. No canonicaliser
+// sits in the security path: both digests are over bytes this file produced
+// and sent, never over a re-encoding.
+
+// CmdAbilityRun is the command name, which is also the token's cmd claim.
+const CmdAbilityRun = "ability_run"
+
+// MinAgentVersionForAbilityEngine is the first agent release that ships
+// ability_run. An older agent answers 404 for the route; the MCP tools refuse
+// before sending.
+const MinAgentVersionForAbilityEngine = "0.61.155"
+
+// Ability-run modes this control plane sends in E1.
+const (
+	AbilityRunModeRead     = "read"
+	AbilityRunModePrecheck = "precheck"
+	AbilityRunModeLedger   = "ledger"
+)
+
+// Limits mirrored from the agent (class-ability-run-command.php). The control
+// plane refuses to send past them so a call is never refused for size.
+const (
+	AbilityRunMaxPBytes     = 262144
+	AbilityRunMaxEntryBytes = 65536
+	AbilityRunMaxInputBytes = 65536
+)
+
+// AbilityRunCall is one call. Entry and Input are exact JSON text: they are
+// placed into p verbatim as strings, so the bytes the agent hashes are the
+// bytes the caller supplied. EntrySHA256 must be the hex sha256 of Entry.
+type AbilityRunCall struct {
+	Mode        string
+	RequestID   uuid.UUID
+	Entry       []byte
+	EntrySHA256 string
+	Input       []byte
+}
+
+// abilityRunP is p's shape. Field order is the wire order. Every value is a
+// string, so the encoding is fully determined by encoding/json's string
+// escaping, and the digest is taken over the bytes produced here.
+type abilityRunP struct {
+	Mode        string `json:"mode"`
+	RequestID   string `json:"request_id"`
+	Entry       string `json:"entry,omitempty"`
+	EntrySHA256 string `json:"entry_sha256,omitempty"`
+	Input       string `json:"input,omitempty"`
+}
+
+// abilityRunBody is the outer body, exactly {"p": "..."}.
+type abilityRunBody struct {
+	P string `json:"p"`
+}
+
+// SHA256Hex is the lowercase hex sha256 of b.
+func SHA256Hex(b []byte) string {
+	s := sha256.Sum256(b)
+	return hex.EncodeToString(s[:])
+}
+
+// BuildAbilityRunParams returns the exact p text and its digest pd. Exported
+// so tests (and the shared fixture) can pin the bytes.
+func BuildAbilityRunParams(call AbilityRunCall) (p []byte, pd string, err error) {
+	switch call.Mode {
+	case AbilityRunModeRead, AbilityRunModePrecheck, AbilityRunModeLedger:
+	default:
+		return nil, "", fmt.Errorf("ability_run: unknown mode %q", call.Mode)
+	}
+	if call.RequestID == uuid.Nil {
+		return nil, "", fmt.Errorf("ability_run: request_id is required")
+	}
+	pv := abilityRunP{Mode: call.Mode, RequestID: call.RequestID.String()}
+	if call.Mode != AbilityRunModeLedger {
+		if len(call.Entry) == 0 || len(call.Entry) > AbilityRunMaxEntryBytes {
+			return nil, "", fmt.Errorf("ability_run: entry must be 1..%d bytes", AbilityRunMaxEntryBytes)
+		}
+		if !json.Valid(call.Entry) || !isJSONObject(call.Entry) {
+			return nil, "", fmt.Errorf("ability_run: entry must be JSON object text")
+		}
+		if got := SHA256Hex(call.Entry); got != call.EntrySHA256 {
+			return nil, "", fmt.Errorf("ability_run: entry_sha256 does not match the entry bytes")
+		}
+		input := call.Input
+		if len(input) == 0 {
+			input = []byte("{}")
+		}
+		if len(input) > AbilityRunMaxInputBytes {
+			return nil, "", fmt.Errorf("ability_run: input exceeds %d bytes", AbilityRunMaxInputBytes)
+		}
+		if !json.Valid(input) || !isJSONObject(input) {
+			return nil, "", fmt.Errorf("ability_run: input must be JSON object text")
+		}
+		pv.Entry = string(call.Entry)
+		pv.EntrySHA256 = call.EntrySHA256
+		pv.Input = string(input)
+	}
+	p, err = json.Marshal(pv)
+	if err != nil {
+		return nil, "", fmt.Errorf("ability_run: marshal p: %w", err)
+	}
+	if len(p) > AbilityRunMaxPBytes {
+		return nil, "", fmt.Errorf("ability_run: p exceeds %d bytes", AbilityRunMaxPBytes)
+	}
+	return p, SHA256Hex(p), nil
+}
+
+func isJSONObject(b []byte) bool {
+	for _, c := range b {
+		switch c {
+		case ' ', '\t', '\n', '\r':
+			continue
+		case '{':
+			return true
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+// AbilityRunResponse is the agent's reply. When OK is false the refusal
+// fields (Code, Detail, Retryable) are set instead of the mode's fields.
+type AbilityRunResponse struct {
+	OK      bool   `json:"ok"`
+	Outcome string `json:"outcome"`
+	Mode    string `json:"mode"`
+	Ability string `json:"ability"`
+
+	// read
+	EntrySHA256 string          `json:"entry_sha256"`
+	Output      json.RawMessage `json:"output"`
+
+	// precheck and ledger
+	RequestID       string          `json:"request_id"`
+	Valid           bool            `json:"valid"`
+	BaseFingerprint string          `json:"base_fingerprint"`
+	PreviewDigest   string          `json:"preview_digest"`
+	PrecheckDigest  string          `json:"precheck_digest"`
+	Found           bool            `json:"found"`
+	Inflight        bool            `json:"inflight"`
+	Result          json.RawMessage `json:"result"`
+
+	// refusal
+	Code       string          `json:"code,omitempty"`
+	Detail     string          `json:"detail,omitempty"`
+	Retryable  bool            `json:"retryable,omitempty"`
+	Violations json.RawMessage `json:"violations,omitempty"`
+}
+
+// AbilityRunRefusal is an ok=false reply. Code is from the closed set below
+// (anything else becomes "unknown"); Detail is site text, cleaned and capped.
+type AbilityRunRefusal struct {
+	Code      string
+	Detail    string
+	Retryable bool
+}
+
+func (e *AbilityRunRefusal) Error() string {
+	return fmt.Sprintf("ability_run refused by agent: %s", e.Code)
+}
+
+// AbilityRunRefusalCodes is the closed set of refusal codes the agent emits
+// (class-ability-run-command.php and the own abilities).
+var AbilityRunRefusalCodes = map[string]struct{}{
+	"ability_denied":            {},
+	"ability_disabled":          {},
+	"ability_intercepted":       {},
+	"ability_not_admitted":      {},
+	"ability_not_runnable_yet":  {},
+	"ability_unknown":           {},
+	"bad_ability_name":          {},
+	"bad_entry":                 {},
+	"bad_input":                 {},
+	"bad_mode":                  {},
+	"bad_params":                {},
+	"bad_request_id":            {},
+	"disabled_on_site":          {},
+	"entry_source_mismatch":     {},
+	"integration_entry_changed": {},
+	"internal":                  {},
+	"mode_class_mismatch":       {},
+	"mode_not_available":        {},
+	"output_too_large":          {},
+	"params_too_large":          {},
+	"post_not_readable":         {},
+	"token_params_mismatch":     {},
+}
+
+var abilityRunCodeRe = regexp.MustCompile(`^[a-z0-9_]{1,40}$`)
+
+// AbilityRun sends one signed ability_run call. An ok=false reply is returned
+// with a *AbilityRunRefusal. A transport failure is returned as the usual
+// command error (markNotSent where nothing left this process).
+func (c *Client) AbilityRun(ctx context.Context, siteID uuid.UUID, siteURL string, call AbilityRunCall) (AbilityRunResponse, error) {
+	var out AbilityRunResponse
+	p, pd, err := BuildAbilityRunParams(call)
+	if err != nil {
+		return out, markNotSent(err)
+	}
+	body, err := json.Marshal(abilityRunBody{P: string(p)})
+	if err != nil {
+		return out, markNotSent(fmt.Errorf("marshal ability_run body: %w", err))
+	}
+	endpoint, err := joinCommandURL(siteURL, CmdAbilityRun)
+	if err != nil {
+		return out, markNotSent(err)
+	}
+	token, _, err := c.signer.MintParamsBound(c.clock(), siteID.String(), CmdAbilityRun, pd)
+	if err != nil {
+		return out, markNotSent(fmt.Errorf("mint command jwt: %w", err))
+	}
+	data, err := c.sendSigned(ctx, endpoint, CmdAbilityRun, body, token)
+	if err != nil {
+		return out, err
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return AbilityRunResponse{}, fmt.Errorf("decode ability_run response: %w", err)
+	}
+	if !out.OK {
+		return out, abilityRunRefusalOf(out)
+	}
+	if out.Mode != call.Mode {
+		return AbilityRunResponse{}, fmt.Errorf("ability_run: agent answered mode %q for %q", out.Mode, call.Mode)
+	}
+	if call.Mode == AbilityRunModeRead && out.EntrySHA256 != call.EntrySHA256 {
+		return AbilityRunResponse{}, fmt.Errorf("ability_run: agent answered for a different entry")
+	}
+	return out, nil
+}
+
+func abilityRunRefusalOf(out AbilityRunResponse) *AbilityRunRefusal {
+	code := out.Code
+	if _, ok := AbilityRunRefusalCodes[code]; !ok || !abilityRunCodeRe.MatchString(code) {
+		code = "unknown"
+	}
+	return &AbilityRunRefusal{
+		Code:      code,
+		Detail:    humantext.CapBytes(humantext.Clean(out.Detail), 200),
+		Retryable: out.Retryable,
+	}
+}

@@ -23,7 +23,12 @@ type Handler struct {
 	vulnFeedH    *vulnFeedAdminHandler    // wired via SetVulnFeed; nil until wired
 	agentMirrorH *agentMirrorAdminHandler // wired via SetAgentMirror; nil until wired
 	contentMount func(*gin.RouterGroup)   // wired via SetContentRoutes; nil until wired
+	abilityMount func(*gin.RouterGroup)   // wired via SetAbilityRoutes; nil until wired
 }
+
+// SetAbilityRoutes wires the ability catalogue routes into the superadmin
+// group, which is already behind requireSuperadmin.
+func (h *Handler) SetAbilityRoutes(mount func(*gin.RouterGroup)) { h.abilityMount = mount }
 
 // SetContentRoutes wires the page-ownership routes (fleet report and the
 // builder allowlist) into the superadmin group. The function receives the group
@@ -74,6 +79,10 @@ func (h *Handler) Register(r *gin.RouterGroup) {
 	// Track B S1: fleet page-ownership report and the builder allowlist writer.
 	if h.contentMount != nil {
 		h.contentMount(g)
+	}
+	// Ability engine: the reviewed-ability catalogue writer.
+	if h.abilityMount != nil {
+		h.abilityMount(g)
 	}
 	// vuln-feed key management (optional; wired via RegisterVulnFeed after boot).
 	if h.vulnFeedH != nil {

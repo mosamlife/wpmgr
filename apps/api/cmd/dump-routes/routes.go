@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/abilities"
 	"github.com/mosamlife/wpmgr/apps/api/internal/activity"
 	"github.com/mosamlife/wpmgr/apps/api/internal/admin"
 	"github.com/mosamlife/wpmgr/apps/api/internal/admingate"
@@ -306,6 +307,8 @@ func buildEngine() (engine *gin.Engine, omittedDepsFields []string, err error) {
 	// Track B S1 page-ownership inventory and its superadmin routes.
 	contentH := content.NewHandler(content.NewService(content.NewRepo(pool), nil, logger))
 	adminH.SetContentRoutes(contentH.RegisterAdmin)
+	// Ability engine: the superadmin catalogue routes.
+	adminH.SetAbilityRoutes(abilities.NewAdminHandler(abilities.NewAdminRepo(pool)).RegisterAdmin)
 
 	deps := server.Deps{
 		ContentH:               contentH,

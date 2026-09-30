@@ -274,6 +274,296 @@ export const ContentIntegrationSchema = {
   },
 } as const;
 
+export const AbilityCatalogueEntrySchema = {
+  type: "object",
+  description:
+    "One reviewed ability in the global catalogue. `entry_sha256` is the\nsha256 of the exact entry bytes sent to a site's agent.\n",
+  required: [
+    "entry_id",
+    "name",
+    "source",
+    "class",
+    "status",
+    "enabled",
+    "approval_mode",
+    "permission_mode",
+    "dynamic_enum_paths",
+    "title",
+    "description",
+    "snapshot",
+    "arg_render",
+    "effect_copy",
+    "limits",
+    "nested_allow",
+    "global_option_keys",
+    "admission",
+    "updated_at",
+  ],
+  properties: {
+    entry_id: {
+      type: "string",
+      format: "uuid",
+    },
+    name: {
+      type: "string",
+    },
+    source: {
+      type: "string",
+      enum: ["wpmgr", "core", "vendor"],
+    },
+    class: {
+      type: "string",
+      enum: ["read", "write", "denied"],
+    },
+    status: {
+      type: "string",
+      enum: ["admitted", "detect_only", "awaiting_vendor_tools"],
+    },
+    enabled: {
+      type: "boolean",
+    },
+    approval_mode: {
+      type: "string",
+      enum: ["none", "per_call"],
+    },
+    permission_mode: {
+      type: "string",
+      enum: ["principal", "asserted"],
+    },
+    integration_id: {
+      type: "string",
+      nullable: true,
+    },
+    owner_dir: {
+      type: "string",
+      nullable: true,
+    },
+    version_min: {
+      type: "string",
+      nullable: true,
+    },
+    version_max_tested: {
+      type: "string",
+      nullable: true,
+    },
+    min_wp_version: {
+      type: "string",
+      nullable: true,
+    },
+    min_agent_version: {
+      type: "string",
+      nullable: true,
+    },
+    schema_struct_sha256: {
+      type: "string",
+      nullable: true,
+    },
+    dynamic_enum_paths: {
+      type: "array",
+      items: {
+        type: "string",
+      },
+    },
+    title: {
+      type: "string",
+    },
+    description: {
+      type: "string",
+    },
+    usage: {
+      type: "string",
+      nullable: true,
+    },
+    operator_permission: {
+      type: "string",
+      nullable: true,
+    },
+    target: {
+      nullable: true,
+    },
+    snapshot: {
+      type: "string",
+    },
+    preview: {
+      type: "string",
+      nullable: true,
+    },
+    arg_render: {
+      type: "object",
+      additionalProperties: true,
+    },
+    effect_copy: {
+      type: "string",
+      enum: ["draft", "live", "none"],
+    },
+    limits: {
+      type: "object",
+      additionalProperties: true,
+    },
+    nested_allow: {
+      type: "array",
+      items: {
+        type: "string",
+      },
+    },
+    global_option_keys: {
+      type: "array",
+      items: {
+        type: "string",
+      },
+    },
+    integration_block: {
+      nullable: true,
+    },
+    admission: {
+      type: "object",
+      additionalProperties: true,
+    },
+    entry_sha256: {
+      type: "string",
+      nullable: true,
+    },
+    updated_at: {
+      type: "string",
+      format: "date-time",
+    },
+  },
+} as const;
+
+export const AbilityCatalogueInputSchema = {
+  type: "object",
+  description:
+    "Every field is optional on update; an omitted field keeps its stored\nvalue. `name` is required on create and cannot change. There is no\nactor field: the actor is the authenticated session.\n",
+  additionalProperties: false,
+  properties: {
+    name: {
+      type: "string",
+      pattern: "^[a-z0-9-]{1,64}/[a-z0-9-]{1,64}$",
+    },
+    source: {
+      type: "string",
+      enum: ["wpmgr", "core", "vendor"],
+    },
+    class: {
+      type: "string",
+      enum: ["read", "write", "denied"],
+    },
+    status: {
+      type: "string",
+      enum: ["admitted", "detect_only", "awaiting_vendor_tools"],
+    },
+    enabled: {
+      type: "boolean",
+    },
+    approval_mode: {
+      type: "string",
+      enum: ["none", "per_call"],
+    },
+    permission_mode: {
+      type: "string",
+      enum: ["principal", "asserted"],
+    },
+    integration_id: {
+      type: "string",
+      maxLength: 64,
+    },
+    owner_dir: {
+      type: "string",
+      maxLength: 100,
+    },
+    version_min: {
+      type: "string",
+      maxLength: 32,
+    },
+    version_max_tested: {
+      type: "string",
+      maxLength: 32,
+    },
+    min_wp_version: {
+      type: "string",
+      maxLength: 32,
+    },
+    min_agent_version: {
+      type: "string",
+      maxLength: 32,
+    },
+    schema_struct_sha256: {
+      type: "string",
+      maxLength: 64,
+    },
+    dynamic_enum_paths: {
+      type: "array",
+      maxItems: 64,
+      items: {
+        type: "string",
+        maxLength: 256,
+      },
+    },
+    title: {
+      type: "string",
+      maxLength: 80,
+    },
+    description: {
+      type: "string",
+      maxLength: 1000,
+    },
+    usage: {
+      type: "string",
+      maxLength: 2000,
+    },
+    operator_permission: {
+      type: "string",
+      maxLength: 64,
+    },
+    target: {
+      nullable: true,
+    },
+    snapshot: {
+      type: "string",
+      maxLength: 32,
+    },
+    preview: {
+      type: "string",
+      maxLength: 32,
+    },
+    arg_render: {
+      type: "object",
+      additionalProperties: true,
+    },
+    effect_copy: {
+      type: "string",
+      enum: ["draft", "live", "none"],
+    },
+    limits: {
+      type: "object",
+      additionalProperties: true,
+    },
+    nested_allow: {
+      type: "array",
+      maxItems: 64,
+      items: {
+        type: "string",
+        maxLength: 256,
+      },
+    },
+    global_option_keys: {
+      type: "array",
+      maxItems: 64,
+      items: {
+        type: "string",
+        maxLength: 256,
+      },
+    },
+    integration_block: {
+      nullable: true,
+    },
+    admission: {
+      type: "object",
+      additionalProperties: true,
+    },
+  },
+} as const;
+
 export const ContentIntegrationInputSchema = {
   type: "object",
   required: ["display_name", "enabled", "status"],

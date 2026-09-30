@@ -12,6 +12,58 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type AbilityCatalogue struct {
+	EntryID            uuid.UUID   `json:"entry_id"`
+	Name               string      `json:"name"`
+	Source             string      `json:"source"`
+	Class              string      `json:"class"`
+	Status             string      `json:"status"`
+	Enabled            bool        `json:"enabled"`
+	ApprovalMode       string      `json:"approval_mode"`
+	PermissionMode     string      `json:"permission_mode"`
+	IntegrationID      *string     `json:"integration_id"`
+	OwnerDir           *string     `json:"owner_dir"`
+	VersionMin         *string     `json:"version_min"`
+	VersionMaxTested   *string     `json:"version_max_tested"`
+	MinWpVersion       *string     `json:"min_wp_version"`
+	MinAgentVersion    *string     `json:"min_agent_version"`
+	SchemaStructSha256 *string     `json:"schema_struct_sha256"`
+	DynamicEnumPaths   []string    `json:"dynamic_enum_paths"`
+	Title              string      `json:"title"`
+	Description        string      `json:"description"`
+	Usage              *string     `json:"usage"`
+	OperatorPermission *string     `json:"operator_permission"`
+	Target             []byte      `json:"target"`
+	Snapshot           string      `json:"snapshot"`
+	Preview            *string     `json:"preview"`
+	ArgRender          []byte      `json:"arg_render"`
+	EffectCopy         string      `json:"effect_copy"`
+	Limits             []byte      `json:"limits"`
+	NestedAllow        []string    `json:"nested_allow"`
+	GlobalOptionKeys   []string    `json:"global_option_keys"`
+	IntegrationBlock   []byte      `json:"integration_block"`
+	Admission          []byte      `json:"admission"`
+	EntrySha256        *string     `json:"entry_sha256"`
+	CreatedAt          time.Time   `json:"created_at"`
+	UpdatedAt          time.Time   `json:"updated_at"`
+	UpdatedByUserID    pgtype.UUID `json:"updated_by_user_id"`
+}
+
+type AbilityCatalogueAudit struct {
+	ID                int64     `json:"id"`
+	EntryID           uuid.UUID `json:"entry_id"`
+	Name              string    `json:"name"`
+	Action            string    `json:"action"`
+	ActorUserID       uuid.UUID `json:"actor_user_id"`
+	BeforeRowSha256   *string   `json:"before_row_sha256"`
+	AfterRowSha256    string    `json:"after_row_sha256"`
+	BeforeEntrySha256 *string   `json:"before_entry_sha256"`
+	AfterEntrySha256  *string   `json:"after_entry_sha256"`
+	BeforeEnabled     *bool     `json:"before_enabled"`
+	AfterEnabled      bool      `json:"after_enabled"`
+	At                time.Time `json:"at"`
+}
+
 type AgentActivityLog struct {
 	ID          int64     `json:"id"`
 	TenantID    uuid.UUID `json:"tenant_id"`
@@ -989,6 +1041,34 @@ type Site struct {
 	MonitoringResumeAt     pgtype.Timestamptz `json:"monitoring_resume_at"`
 	CreatedAt              time.Time          `json:"created_at"`
 	UpdatedAt              time.Time          `json:"updated_at"`
+}
+
+type SiteAbilityInventory struct {
+	TenantID           uuid.UUID `json:"tenant_id"`
+	SiteID             uuid.UUID `json:"site_id"`
+	Name               string    `json:"name"`
+	Namespace          *string   `json:"namespace"`
+	OwnerKind          string    `json:"owner_kind"`
+	OwnerDir           *string   `json:"owner_dir"`
+	OwnerOk            *bool     `json:"owner_ok"`
+	OwnerVersion       *string   `json:"owner_version"`
+	SchemaStructSha256 *string   `json:"schema_struct_sha256"`
+	InputSchema        []byte    `json:"input_schema"`
+	OutputSchema       []byte    `json:"output_schema"`
+	Annotations        []byte    `json:"annotations"`
+	SiteLabel          *string   `json:"site_label"`
+	SiteDescription    *string   `json:"site_description"`
+	CheckedAt          time.Time `json:"checked_at"`
+}
+
+type SiteAbilityInventoryRun struct {
+	TenantID        uuid.UUID `json:"tenant_id"`
+	SiteID          uuid.UUID `json:"site_id"`
+	CheckedAt       time.Time `json:"checked_at"`
+	SnapshotID      uuid.UUID `json:"snapshot_id"`
+	ApiPresent      bool      `json:"api_present"`
+	AbilitiesStored int32     `json:"abilities_stored"`
+	Truncated       bool      `json:"truncated"`
 }
 
 type SiteAlertState struct {

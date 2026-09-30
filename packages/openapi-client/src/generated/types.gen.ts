@@ -105,6 +105,96 @@ export type ContentIntegration = {
   updated_at: string;
 };
 
+/**
+ * One reviewed ability in the global catalogue. `entry_sha256` is the
+ * sha256 of the exact entry bytes sent to a site's agent.
+ *
+ */
+export type AbilityCatalogueEntry = {
+  entry_id: string;
+  name: string;
+  source: "wpmgr" | "core" | "vendor";
+  class: "read" | "write" | "denied";
+  status: "admitted" | "detect_only" | "awaiting_vendor_tools";
+  enabled: boolean;
+  approval_mode: "none" | "per_call";
+  permission_mode: "principal" | "asserted";
+  integration_id?: string;
+  owner_dir?: string;
+  version_min?: string;
+  version_max_tested?: string;
+  min_wp_version?: string;
+  min_agent_version?: string;
+  schema_struct_sha256?: string;
+  dynamic_enum_paths: Array<string>;
+  title: string;
+  description: string;
+  usage?: string;
+  operator_permission?: string;
+  target?: unknown;
+  snapshot: string;
+  preview?: string;
+  arg_render: {
+    [key: string]: unknown;
+  };
+  effect_copy: "draft" | "live" | "none";
+  limits: {
+    [key: string]: unknown;
+  };
+  nested_allow: Array<string>;
+  global_option_keys: Array<string>;
+  integration_block?: unknown;
+  admission: {
+    [key: string]: unknown;
+  };
+  entry_sha256?: string;
+  updated_at: string;
+};
+
+/**
+ * Every field is optional on update; an omitted field keeps its stored
+ * value. `name` is required on create and cannot change. There is no
+ * actor field: the actor is the authenticated session.
+ *
+ */
+export type AbilityCatalogueInput = {
+  name?: string;
+  source?: "wpmgr" | "core" | "vendor";
+  class?: "read" | "write" | "denied";
+  status?: "admitted" | "detect_only" | "awaiting_vendor_tools";
+  enabled?: boolean;
+  approval_mode?: "none" | "per_call";
+  permission_mode?: "principal" | "asserted";
+  integration_id?: string;
+  owner_dir?: string;
+  version_min?: string;
+  version_max_tested?: string;
+  min_wp_version?: string;
+  min_agent_version?: string;
+  schema_struct_sha256?: string;
+  dynamic_enum_paths?: Array<string>;
+  title?: string;
+  description?: string;
+  usage?: string;
+  operator_permission?: string;
+  target?: unknown;
+  snapshot?: string;
+  preview?: string;
+  arg_render?: {
+    [key: string]: unknown;
+  };
+  effect_copy?: "draft" | "live" | "none";
+  limits?: {
+    [key: string]: unknown;
+  };
+  nested_allow?: Array<string>;
+  global_option_keys?: Array<string>;
+  integration_block?: unknown;
+  admission?: {
+    [key: string]: unknown;
+  };
+};
+
 export type ContentIntegrationInput = {
   display_name: string;
   enabled: boolean;
@@ -18208,6 +18298,119 @@ export type UpsertAdminContentIntegrationResponses = {
 
 export type UpsertAdminContentIntegrationResponse =
   UpsertAdminContentIntegrationResponses[keyof UpsertAdminContentIntegrationResponses];
+
+export type ListAdminAbilityCatalogueData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/api/v1/admin/abilities/catalogue";
+};
+
+export type ListAdminAbilityCatalogueErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * superadmin_required
+   */
+  403: Error;
+};
+
+export type ListAdminAbilityCatalogueError =
+  ListAdminAbilityCatalogueErrors[keyof ListAdminAbilityCatalogueErrors];
+
+export type ListAdminAbilityCatalogueResponses = {
+  /**
+   * Every catalogue entry, any status
+   */
+  200: {
+    entries: Array<AbilityCatalogueEntry>;
+  };
+};
+
+export type ListAdminAbilityCatalogueResponse =
+  ListAdminAbilityCatalogueResponses[keyof ListAdminAbilityCatalogueResponses];
+
+export type CreateAdminAbilityCatalogueEntryData = {
+  body: AbilityCatalogueInput;
+  path?: never;
+  query?: never;
+  url: "/api/v1/admin/abilities/catalogue";
+};
+
+export type CreateAdminAbilityCatalogueEntryErrors = {
+  /**
+   * Validation error
+   */
+  400: Error;
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * superadmin_required
+   */
+  403: Error;
+  /**
+   * Conflict — resource is referenced and cannot be deleted
+   */
+  409: Error;
+};
+
+export type CreateAdminAbilityCatalogueEntryError =
+  CreateAdminAbilityCatalogueEntryErrors[keyof CreateAdminAbilityCatalogueEntryErrors];
+
+export type CreateAdminAbilityCatalogueEntryResponses = {
+  /**
+   * The stored entry
+   */
+  201: AbilityCatalogueEntry;
+};
+
+export type CreateAdminAbilityCatalogueEntryResponse =
+  CreateAdminAbilityCatalogueEntryResponses[keyof CreateAdminAbilityCatalogueEntryResponses];
+
+export type UpdateAdminAbilityCatalogueEntryData = {
+  body: AbilityCatalogueInput;
+  path: {
+    entryId: string;
+  };
+  query?: never;
+  url: "/api/v1/admin/abilities/catalogue/{entryId}";
+};
+
+export type UpdateAdminAbilityCatalogueEntryErrors = {
+  /**
+   * Validation error
+   */
+  400: Error;
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * superadmin_required
+   */
+  403: Error;
+  /**
+   * Resource not found
+   */
+  404: Error;
+};
+
+export type UpdateAdminAbilityCatalogueEntryError =
+  UpdateAdminAbilityCatalogueEntryErrors[keyof UpdateAdminAbilityCatalogueEntryErrors];
+
+export type UpdateAdminAbilityCatalogueEntryResponses = {
+  /**
+   * The stored entry
+   */
+  200: AbilityCatalogueEntry;
+};
+
+export type UpdateAdminAbilityCatalogueEntryResponse =
+  UpdateAdminAbilityCatalogueEntryResponses[keyof UpdateAdminAbilityCatalogueEntryResponses];
 
 export type GetDbOrphansReportData = {
   body?: never;

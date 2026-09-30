@@ -14,8 +14,11 @@ import {
   allCapabilityEffectsKnown,
   allScopesRecognised,
   buildApprovalCapabilities,
+  CAPABILITY_EFFECT_READ,
+  CAPABILITY_EFFECT_REQUEST,
   describeScope,
   SCOPE_CACHE,
+  SCOPE_SITE,
   type ConsentContext,
   type SelfAsserted,
 } from "./consent-context";
@@ -30,6 +33,7 @@ import {
   type SiteScopeMode,
 } from "./site-scope";
 import { SiteEnforcementBox } from "./site-enforcement-box";
+import { AbilityCapabilityBox } from "@/features/ai-connections/ability-capability-box";
 import { CachePurgeCapabilityBox } from "@/features/ai-connections/cache-purge-capability-box";
 
 // The consent screen (design Step 7).
@@ -176,17 +180,26 @@ function PermissionsBlock({
   consent,
   purgeTicked,
   onPurgeChange,
+  abilityReadTicked,
+  abilityRequestTicked,
+  onAbilityReadChange,
+  onAbilityRequestChange,
 }: {
   consent: ConsentContext;
   purgeTicked: boolean;
   onPurgeChange: (checked: boolean) => void;
+  abilityReadTicked: boolean;
+  abilityRequestTicked: boolean;
+  onAbilityReadChange: (checked: boolean) => void;
+  onAbilityRequestChange: (checked: boolean) => void;
 }) {
   const recognised = allScopesRecognised(consent.scopes);
   // The generic bullets below describe only the read scope. mcp:cache gets
   // its own section (CachePurgeCapabilityBox), never a bullet from
   // describeScope, so the one write permission in this vocabulary is never
   // described in two places that could drift apart. See describeScope's note.
-  const readScopes = consent.scopes.filter((s) => s !== SCOPE_CACHE);
+  const readScopes = consent.scopes.filter((s) => s !== SCOPE_CACHE && s !== SCOPE_SITE);
+  const askedForSiteTools = consent.scopes.includes(SCOPE_SITE);
   const askedToClearCache = consent.scopes.includes(SCOPE_CACHE);
   const capabilitiesOk = allCapabilityEffectsKnown(consent.conferrableCapabilities);
   return (
@@ -215,6 +228,24 @@ function PermissionsBlock({
       {askedToClearCache && (
         <div className="mt-4" data-testid="consent-cache-capability">
           <CachePurgeCapabilityBox checked={purgeTicked} onChange={onPurgeChange} />
+        </div>
+      )}
+
+      {/* mcp:site: two explicit ticks, both clear by default. */}
+      {askedForSiteTools && (
+        <div className="mt-4" data-testid="consent-site-capability">
+          <AbilityCapabilityBox
+            readChecked={abilityReadTicked}
+            requestChecked={abilityRequestTicked}
+            onReadChange={onAbilityReadChange}
+            onRequestChange={onAbilityRequestChange}
+            readOffered={consent.conferrableCapabilities.some(
+              (c) => c.name === "mcp.ability.read" && c.effect === CAPABILITY_EFFECT_READ,
+            )}
+            requestOffered={consent.conferrableCapabilities.some(
+              (c) => c.name === "mcp.ability.request" && c.effect === CAPABILITY_EFFECT_REQUEST,
+            )}
+          />
         </div>
       )}
 
@@ -633,6 +664,8 @@ export function ConsentScreen({
   const [nameError, setNameError] = useState<string | null>(null);
   // Never ticked by default: the write capability is an opt-in.
   const [purgeTicked, setPurgeTicked] = useState(false);
+  const [abilityReadTicked, setAbilityReadTicked] = useState(false);
+  const [abilityRequestTicked, setAbilityRequestTicked] = useState(false);
 
   const scope = useMemo(
     () =>
@@ -676,7 +709,12 @@ export function ConsentScreen({
     return resolveTagIds(selectedTagNames, tags);
   }, [mode, tags, selectedTagNames]);
 
-  const capabilities = buildApprovalCapabilities(consent.conferrableCapabilities, purgeTicked);
+  const capabilities = buildApprovalCapabilities(
+    consent.conferrableCapabilities,
+    purgeTicked,
+    abilityReadTicked,
+    abilityRequestTicked,
+  );
   // The server offered capabilities but none is ticked (a cache-only request
   // with the box left clear): an empty list is refused, so Approve is blocked.
   // A server that offers none at all (older deploy) is not this case.
@@ -726,6 +764,10 @@ export function ConsentScreen({
         consent={consent}
         purgeTicked={purgeTicked}
         onPurgeChange={setPurgeTicked}
+        abilityReadTicked={abilityReadTicked}
+        abilityRequestTicked={abilityRequestTicked}
+        onAbilityReadChange={setAbilityReadTicked}
+        onAbilityRequestChange={setAbilityRequestTicked}
       />
       <SiteScopeBlock
         mode={mode}
@@ -795,8 +837,8 @@ export function ConsentScreen({
             data-testid="consent-nothing-to-confer"
             className="text-sm text-[var(--color-muted-foreground)]"
           >
-            This app asked only to request cache clears. Tick the box to allow that, or deny the
-            request.
+            This app asked only for things that need a tick. Tick a box above to allow it, or deny
+            the request.
           </p>
         )}
         <Button type="button" variant="outline" onClick={onDeny} data-testid="consent-deny">

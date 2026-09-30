@@ -19,6 +19,1306 @@ import (
 	"github.com/ogen-go/ogen/sse"
 )
 
+// One reviewed ability in the global catalogue. `entry_sha256` is the sha256 of the exact entry bytes
+// sent to a site's agent.
+// Ref: #/components/schemas/AbilityCatalogueEntry
+type AbilityCatalogueEntry struct {
+	EntryID            uuid.UUID                           `json:"entry_id"`
+	Name               string                              `json:"name"`
+	Source             AbilityCatalogueEntrySource         `json:"source"`
+	Class              AbilityCatalogueEntryClass          `json:"class"`
+	Status             AbilityCatalogueEntryStatus         `json:"status"`
+	Enabled            bool                                `json:"enabled"`
+	ApprovalMode       AbilityCatalogueEntryApprovalMode   `json:"approval_mode"`
+	PermissionMode     AbilityCatalogueEntryPermissionMode `json:"permission_mode"`
+	IntegrationID      OptNilString                        `json:"integration_id"`
+	OwnerDir           OptNilString                        `json:"owner_dir"`
+	VersionMin         OptNilString                        `json:"version_min"`
+	VersionMaxTested   OptNilString                        `json:"version_max_tested"`
+	MinWpVersion       OptNilString                        `json:"min_wp_version"`
+	MinAgentVersion    OptNilString                        `json:"min_agent_version"`
+	SchemaStructSHA256 OptNilString                        `json:"schema_struct_sha256"`
+	DynamicEnumPaths   []string                            `json:"dynamic_enum_paths"`
+	Title              string                              `json:"title"`
+	Description        string                              `json:"description"`
+	Usage              OptNilString                        `json:"usage"`
+	OperatorPermission OptNilString                        `json:"operator_permission"`
+	Target             jx.Raw                              `json:"target"`
+	Snapshot           string                              `json:"snapshot"`
+	Preview            OptNilString                        `json:"preview"`
+	ArgRender          AbilityCatalogueEntryArgRender      `json:"arg_render"`
+	EffectCopy         AbilityCatalogueEntryEffectCopy     `json:"effect_copy"`
+	Limits             AbilityCatalogueEntryLimits         `json:"limits"`
+	NestedAllow        []string                            `json:"nested_allow"`
+	GlobalOptionKeys   []string                            `json:"global_option_keys"`
+	IntegrationBlock   jx.Raw                              `json:"integration_block"`
+	Admission          AbilityCatalogueEntryAdmission      `json:"admission"`
+	EntrySHA256        OptNilString                        `json:"entry_sha256"`
+	UpdatedAt          time.Time                           `json:"updated_at"`
+}
+
+// GetEntryID returns the value of EntryID.
+func (s *AbilityCatalogueEntry) GetEntryID() uuid.UUID {
+	return s.EntryID
+}
+
+// GetName returns the value of Name.
+func (s *AbilityCatalogueEntry) GetName() string {
+	return s.Name
+}
+
+// GetSource returns the value of Source.
+func (s *AbilityCatalogueEntry) GetSource() AbilityCatalogueEntrySource {
+	return s.Source
+}
+
+// GetClass returns the value of Class.
+func (s *AbilityCatalogueEntry) GetClass() AbilityCatalogueEntryClass {
+	return s.Class
+}
+
+// GetStatus returns the value of Status.
+func (s *AbilityCatalogueEntry) GetStatus() AbilityCatalogueEntryStatus {
+	return s.Status
+}
+
+// GetEnabled returns the value of Enabled.
+func (s *AbilityCatalogueEntry) GetEnabled() bool {
+	return s.Enabled
+}
+
+// GetApprovalMode returns the value of ApprovalMode.
+func (s *AbilityCatalogueEntry) GetApprovalMode() AbilityCatalogueEntryApprovalMode {
+	return s.ApprovalMode
+}
+
+// GetPermissionMode returns the value of PermissionMode.
+func (s *AbilityCatalogueEntry) GetPermissionMode() AbilityCatalogueEntryPermissionMode {
+	return s.PermissionMode
+}
+
+// GetIntegrationID returns the value of IntegrationID.
+func (s *AbilityCatalogueEntry) GetIntegrationID() OptNilString {
+	return s.IntegrationID
+}
+
+// GetOwnerDir returns the value of OwnerDir.
+func (s *AbilityCatalogueEntry) GetOwnerDir() OptNilString {
+	return s.OwnerDir
+}
+
+// GetVersionMin returns the value of VersionMin.
+func (s *AbilityCatalogueEntry) GetVersionMin() OptNilString {
+	return s.VersionMin
+}
+
+// GetVersionMaxTested returns the value of VersionMaxTested.
+func (s *AbilityCatalogueEntry) GetVersionMaxTested() OptNilString {
+	return s.VersionMaxTested
+}
+
+// GetMinWpVersion returns the value of MinWpVersion.
+func (s *AbilityCatalogueEntry) GetMinWpVersion() OptNilString {
+	return s.MinWpVersion
+}
+
+// GetMinAgentVersion returns the value of MinAgentVersion.
+func (s *AbilityCatalogueEntry) GetMinAgentVersion() OptNilString {
+	return s.MinAgentVersion
+}
+
+// GetSchemaStructSHA256 returns the value of SchemaStructSHA256.
+func (s *AbilityCatalogueEntry) GetSchemaStructSHA256() OptNilString {
+	return s.SchemaStructSHA256
+}
+
+// GetDynamicEnumPaths returns the value of DynamicEnumPaths.
+func (s *AbilityCatalogueEntry) GetDynamicEnumPaths() []string {
+	return s.DynamicEnumPaths
+}
+
+// GetTitle returns the value of Title.
+func (s *AbilityCatalogueEntry) GetTitle() string {
+	return s.Title
+}
+
+// GetDescription returns the value of Description.
+func (s *AbilityCatalogueEntry) GetDescription() string {
+	return s.Description
+}
+
+// GetUsage returns the value of Usage.
+func (s *AbilityCatalogueEntry) GetUsage() OptNilString {
+	return s.Usage
+}
+
+// GetOperatorPermission returns the value of OperatorPermission.
+func (s *AbilityCatalogueEntry) GetOperatorPermission() OptNilString {
+	return s.OperatorPermission
+}
+
+// GetTarget returns the value of Target.
+func (s *AbilityCatalogueEntry) GetTarget() jx.Raw {
+	return s.Target
+}
+
+// GetSnapshot returns the value of Snapshot.
+func (s *AbilityCatalogueEntry) GetSnapshot() string {
+	return s.Snapshot
+}
+
+// GetPreview returns the value of Preview.
+func (s *AbilityCatalogueEntry) GetPreview() OptNilString {
+	return s.Preview
+}
+
+// GetArgRender returns the value of ArgRender.
+func (s *AbilityCatalogueEntry) GetArgRender() AbilityCatalogueEntryArgRender {
+	return s.ArgRender
+}
+
+// GetEffectCopy returns the value of EffectCopy.
+func (s *AbilityCatalogueEntry) GetEffectCopy() AbilityCatalogueEntryEffectCopy {
+	return s.EffectCopy
+}
+
+// GetLimits returns the value of Limits.
+func (s *AbilityCatalogueEntry) GetLimits() AbilityCatalogueEntryLimits {
+	return s.Limits
+}
+
+// GetNestedAllow returns the value of NestedAllow.
+func (s *AbilityCatalogueEntry) GetNestedAllow() []string {
+	return s.NestedAllow
+}
+
+// GetGlobalOptionKeys returns the value of GlobalOptionKeys.
+func (s *AbilityCatalogueEntry) GetGlobalOptionKeys() []string {
+	return s.GlobalOptionKeys
+}
+
+// GetIntegrationBlock returns the value of IntegrationBlock.
+func (s *AbilityCatalogueEntry) GetIntegrationBlock() jx.Raw {
+	return s.IntegrationBlock
+}
+
+// GetAdmission returns the value of Admission.
+func (s *AbilityCatalogueEntry) GetAdmission() AbilityCatalogueEntryAdmission {
+	return s.Admission
+}
+
+// GetEntrySHA256 returns the value of EntrySHA256.
+func (s *AbilityCatalogueEntry) GetEntrySHA256() OptNilString {
+	return s.EntrySHA256
+}
+
+// GetUpdatedAt returns the value of UpdatedAt.
+func (s *AbilityCatalogueEntry) GetUpdatedAt() time.Time {
+	return s.UpdatedAt
+}
+
+// SetEntryID sets the value of EntryID.
+func (s *AbilityCatalogueEntry) SetEntryID(val uuid.UUID) {
+	s.EntryID = val
+}
+
+// SetName sets the value of Name.
+func (s *AbilityCatalogueEntry) SetName(val string) {
+	s.Name = val
+}
+
+// SetSource sets the value of Source.
+func (s *AbilityCatalogueEntry) SetSource(val AbilityCatalogueEntrySource) {
+	s.Source = val
+}
+
+// SetClass sets the value of Class.
+func (s *AbilityCatalogueEntry) SetClass(val AbilityCatalogueEntryClass) {
+	s.Class = val
+}
+
+// SetStatus sets the value of Status.
+func (s *AbilityCatalogueEntry) SetStatus(val AbilityCatalogueEntryStatus) {
+	s.Status = val
+}
+
+// SetEnabled sets the value of Enabled.
+func (s *AbilityCatalogueEntry) SetEnabled(val bool) {
+	s.Enabled = val
+}
+
+// SetApprovalMode sets the value of ApprovalMode.
+func (s *AbilityCatalogueEntry) SetApprovalMode(val AbilityCatalogueEntryApprovalMode) {
+	s.ApprovalMode = val
+}
+
+// SetPermissionMode sets the value of PermissionMode.
+func (s *AbilityCatalogueEntry) SetPermissionMode(val AbilityCatalogueEntryPermissionMode) {
+	s.PermissionMode = val
+}
+
+// SetIntegrationID sets the value of IntegrationID.
+func (s *AbilityCatalogueEntry) SetIntegrationID(val OptNilString) {
+	s.IntegrationID = val
+}
+
+// SetOwnerDir sets the value of OwnerDir.
+func (s *AbilityCatalogueEntry) SetOwnerDir(val OptNilString) {
+	s.OwnerDir = val
+}
+
+// SetVersionMin sets the value of VersionMin.
+func (s *AbilityCatalogueEntry) SetVersionMin(val OptNilString) {
+	s.VersionMin = val
+}
+
+// SetVersionMaxTested sets the value of VersionMaxTested.
+func (s *AbilityCatalogueEntry) SetVersionMaxTested(val OptNilString) {
+	s.VersionMaxTested = val
+}
+
+// SetMinWpVersion sets the value of MinWpVersion.
+func (s *AbilityCatalogueEntry) SetMinWpVersion(val OptNilString) {
+	s.MinWpVersion = val
+}
+
+// SetMinAgentVersion sets the value of MinAgentVersion.
+func (s *AbilityCatalogueEntry) SetMinAgentVersion(val OptNilString) {
+	s.MinAgentVersion = val
+}
+
+// SetSchemaStructSHA256 sets the value of SchemaStructSHA256.
+func (s *AbilityCatalogueEntry) SetSchemaStructSHA256(val OptNilString) {
+	s.SchemaStructSHA256 = val
+}
+
+// SetDynamicEnumPaths sets the value of DynamicEnumPaths.
+func (s *AbilityCatalogueEntry) SetDynamicEnumPaths(val []string) {
+	s.DynamicEnumPaths = val
+}
+
+// SetTitle sets the value of Title.
+func (s *AbilityCatalogueEntry) SetTitle(val string) {
+	s.Title = val
+}
+
+// SetDescription sets the value of Description.
+func (s *AbilityCatalogueEntry) SetDescription(val string) {
+	s.Description = val
+}
+
+// SetUsage sets the value of Usage.
+func (s *AbilityCatalogueEntry) SetUsage(val OptNilString) {
+	s.Usage = val
+}
+
+// SetOperatorPermission sets the value of OperatorPermission.
+func (s *AbilityCatalogueEntry) SetOperatorPermission(val OptNilString) {
+	s.OperatorPermission = val
+}
+
+// SetTarget sets the value of Target.
+func (s *AbilityCatalogueEntry) SetTarget(val jx.Raw) {
+	s.Target = val
+}
+
+// SetSnapshot sets the value of Snapshot.
+func (s *AbilityCatalogueEntry) SetSnapshot(val string) {
+	s.Snapshot = val
+}
+
+// SetPreview sets the value of Preview.
+func (s *AbilityCatalogueEntry) SetPreview(val OptNilString) {
+	s.Preview = val
+}
+
+// SetArgRender sets the value of ArgRender.
+func (s *AbilityCatalogueEntry) SetArgRender(val AbilityCatalogueEntryArgRender) {
+	s.ArgRender = val
+}
+
+// SetEffectCopy sets the value of EffectCopy.
+func (s *AbilityCatalogueEntry) SetEffectCopy(val AbilityCatalogueEntryEffectCopy) {
+	s.EffectCopy = val
+}
+
+// SetLimits sets the value of Limits.
+func (s *AbilityCatalogueEntry) SetLimits(val AbilityCatalogueEntryLimits) {
+	s.Limits = val
+}
+
+// SetNestedAllow sets the value of NestedAllow.
+func (s *AbilityCatalogueEntry) SetNestedAllow(val []string) {
+	s.NestedAllow = val
+}
+
+// SetGlobalOptionKeys sets the value of GlobalOptionKeys.
+func (s *AbilityCatalogueEntry) SetGlobalOptionKeys(val []string) {
+	s.GlobalOptionKeys = val
+}
+
+// SetIntegrationBlock sets the value of IntegrationBlock.
+func (s *AbilityCatalogueEntry) SetIntegrationBlock(val jx.Raw) {
+	s.IntegrationBlock = val
+}
+
+// SetAdmission sets the value of Admission.
+func (s *AbilityCatalogueEntry) SetAdmission(val AbilityCatalogueEntryAdmission) {
+	s.Admission = val
+}
+
+// SetEntrySHA256 sets the value of EntrySHA256.
+func (s *AbilityCatalogueEntry) SetEntrySHA256(val OptNilString) {
+	s.EntrySHA256 = val
+}
+
+// SetUpdatedAt sets the value of UpdatedAt.
+func (s *AbilityCatalogueEntry) SetUpdatedAt(val time.Time) {
+	s.UpdatedAt = val
+}
+
+func (*AbilityCatalogueEntry) createAdminAbilityCatalogueEntryRes() {}
+func (*AbilityCatalogueEntry) updateAdminAbilityCatalogueEntryRes() {}
+
+type AbilityCatalogueEntryAdmission map[string]jx.Raw
+
+func (s *AbilityCatalogueEntryAdmission) init() AbilityCatalogueEntryAdmission {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+type AbilityCatalogueEntryApprovalMode string
+
+const (
+	AbilityCatalogueEntryApprovalModeNone    AbilityCatalogueEntryApprovalMode = "none"
+	AbilityCatalogueEntryApprovalModePerCall AbilityCatalogueEntryApprovalMode = "per_call"
+)
+
+// AllValues returns all AbilityCatalogueEntryApprovalMode values.
+func (AbilityCatalogueEntryApprovalMode) AllValues() []AbilityCatalogueEntryApprovalMode {
+	return []AbilityCatalogueEntryApprovalMode{
+		AbilityCatalogueEntryApprovalModeNone,
+		AbilityCatalogueEntryApprovalModePerCall,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityCatalogueEntryApprovalMode) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityCatalogueEntryApprovalModeNone:
+		return []byte(s), nil
+	case AbilityCatalogueEntryApprovalModePerCall:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityCatalogueEntryApprovalMode) UnmarshalText(data []byte) error {
+	switch AbilityCatalogueEntryApprovalMode(data) {
+	case AbilityCatalogueEntryApprovalModeNone:
+		*s = AbilityCatalogueEntryApprovalModeNone
+		return nil
+	case AbilityCatalogueEntryApprovalModePerCall:
+		*s = AbilityCatalogueEntryApprovalModePerCall
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type AbilityCatalogueEntryArgRender map[string]jx.Raw
+
+func (s *AbilityCatalogueEntryArgRender) init() AbilityCatalogueEntryArgRender {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+type AbilityCatalogueEntryClass string
+
+const (
+	AbilityCatalogueEntryClassRead   AbilityCatalogueEntryClass = "read"
+	AbilityCatalogueEntryClassWrite  AbilityCatalogueEntryClass = "write"
+	AbilityCatalogueEntryClassDenied AbilityCatalogueEntryClass = "denied"
+)
+
+// AllValues returns all AbilityCatalogueEntryClass values.
+func (AbilityCatalogueEntryClass) AllValues() []AbilityCatalogueEntryClass {
+	return []AbilityCatalogueEntryClass{
+		AbilityCatalogueEntryClassRead,
+		AbilityCatalogueEntryClassWrite,
+		AbilityCatalogueEntryClassDenied,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityCatalogueEntryClass) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityCatalogueEntryClassRead:
+		return []byte(s), nil
+	case AbilityCatalogueEntryClassWrite:
+		return []byte(s), nil
+	case AbilityCatalogueEntryClassDenied:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityCatalogueEntryClass) UnmarshalText(data []byte) error {
+	switch AbilityCatalogueEntryClass(data) {
+	case AbilityCatalogueEntryClassRead:
+		*s = AbilityCatalogueEntryClassRead
+		return nil
+	case AbilityCatalogueEntryClassWrite:
+		*s = AbilityCatalogueEntryClassWrite
+		return nil
+	case AbilityCatalogueEntryClassDenied:
+		*s = AbilityCatalogueEntryClassDenied
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type AbilityCatalogueEntryEffectCopy string
+
+const (
+	AbilityCatalogueEntryEffectCopyDraft AbilityCatalogueEntryEffectCopy = "draft"
+	AbilityCatalogueEntryEffectCopyLive  AbilityCatalogueEntryEffectCopy = "live"
+	AbilityCatalogueEntryEffectCopyNone  AbilityCatalogueEntryEffectCopy = "none"
+)
+
+// AllValues returns all AbilityCatalogueEntryEffectCopy values.
+func (AbilityCatalogueEntryEffectCopy) AllValues() []AbilityCatalogueEntryEffectCopy {
+	return []AbilityCatalogueEntryEffectCopy{
+		AbilityCatalogueEntryEffectCopyDraft,
+		AbilityCatalogueEntryEffectCopyLive,
+		AbilityCatalogueEntryEffectCopyNone,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityCatalogueEntryEffectCopy) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityCatalogueEntryEffectCopyDraft:
+		return []byte(s), nil
+	case AbilityCatalogueEntryEffectCopyLive:
+		return []byte(s), nil
+	case AbilityCatalogueEntryEffectCopyNone:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityCatalogueEntryEffectCopy) UnmarshalText(data []byte) error {
+	switch AbilityCatalogueEntryEffectCopy(data) {
+	case AbilityCatalogueEntryEffectCopyDraft:
+		*s = AbilityCatalogueEntryEffectCopyDraft
+		return nil
+	case AbilityCatalogueEntryEffectCopyLive:
+		*s = AbilityCatalogueEntryEffectCopyLive
+		return nil
+	case AbilityCatalogueEntryEffectCopyNone:
+		*s = AbilityCatalogueEntryEffectCopyNone
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type AbilityCatalogueEntryLimits map[string]jx.Raw
+
+func (s *AbilityCatalogueEntryLimits) init() AbilityCatalogueEntryLimits {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+type AbilityCatalogueEntryPermissionMode string
+
+const (
+	AbilityCatalogueEntryPermissionModePrincipal AbilityCatalogueEntryPermissionMode = "principal"
+	AbilityCatalogueEntryPermissionModeAsserted  AbilityCatalogueEntryPermissionMode = "asserted"
+)
+
+// AllValues returns all AbilityCatalogueEntryPermissionMode values.
+func (AbilityCatalogueEntryPermissionMode) AllValues() []AbilityCatalogueEntryPermissionMode {
+	return []AbilityCatalogueEntryPermissionMode{
+		AbilityCatalogueEntryPermissionModePrincipal,
+		AbilityCatalogueEntryPermissionModeAsserted,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityCatalogueEntryPermissionMode) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityCatalogueEntryPermissionModePrincipal:
+		return []byte(s), nil
+	case AbilityCatalogueEntryPermissionModeAsserted:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityCatalogueEntryPermissionMode) UnmarshalText(data []byte) error {
+	switch AbilityCatalogueEntryPermissionMode(data) {
+	case AbilityCatalogueEntryPermissionModePrincipal:
+		*s = AbilityCatalogueEntryPermissionModePrincipal
+		return nil
+	case AbilityCatalogueEntryPermissionModeAsserted:
+		*s = AbilityCatalogueEntryPermissionModeAsserted
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type AbilityCatalogueEntrySource string
+
+const (
+	AbilityCatalogueEntrySourceWpmgr  AbilityCatalogueEntrySource = "wpmgr"
+	AbilityCatalogueEntrySourceCore   AbilityCatalogueEntrySource = "core"
+	AbilityCatalogueEntrySourceVendor AbilityCatalogueEntrySource = "vendor"
+)
+
+// AllValues returns all AbilityCatalogueEntrySource values.
+func (AbilityCatalogueEntrySource) AllValues() []AbilityCatalogueEntrySource {
+	return []AbilityCatalogueEntrySource{
+		AbilityCatalogueEntrySourceWpmgr,
+		AbilityCatalogueEntrySourceCore,
+		AbilityCatalogueEntrySourceVendor,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityCatalogueEntrySource) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityCatalogueEntrySourceWpmgr:
+		return []byte(s), nil
+	case AbilityCatalogueEntrySourceCore:
+		return []byte(s), nil
+	case AbilityCatalogueEntrySourceVendor:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityCatalogueEntrySource) UnmarshalText(data []byte) error {
+	switch AbilityCatalogueEntrySource(data) {
+	case AbilityCatalogueEntrySourceWpmgr:
+		*s = AbilityCatalogueEntrySourceWpmgr
+		return nil
+	case AbilityCatalogueEntrySourceCore:
+		*s = AbilityCatalogueEntrySourceCore
+		return nil
+	case AbilityCatalogueEntrySourceVendor:
+		*s = AbilityCatalogueEntrySourceVendor
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type AbilityCatalogueEntryStatus string
+
+const (
+	AbilityCatalogueEntryStatusAdmitted            AbilityCatalogueEntryStatus = "admitted"
+	AbilityCatalogueEntryStatusDetectOnly          AbilityCatalogueEntryStatus = "detect_only"
+	AbilityCatalogueEntryStatusAwaitingVendorTools AbilityCatalogueEntryStatus = "awaiting_vendor_tools"
+)
+
+// AllValues returns all AbilityCatalogueEntryStatus values.
+func (AbilityCatalogueEntryStatus) AllValues() []AbilityCatalogueEntryStatus {
+	return []AbilityCatalogueEntryStatus{
+		AbilityCatalogueEntryStatusAdmitted,
+		AbilityCatalogueEntryStatusDetectOnly,
+		AbilityCatalogueEntryStatusAwaitingVendorTools,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityCatalogueEntryStatus) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityCatalogueEntryStatusAdmitted:
+		return []byte(s), nil
+	case AbilityCatalogueEntryStatusDetectOnly:
+		return []byte(s), nil
+	case AbilityCatalogueEntryStatusAwaitingVendorTools:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityCatalogueEntryStatus) UnmarshalText(data []byte) error {
+	switch AbilityCatalogueEntryStatus(data) {
+	case AbilityCatalogueEntryStatusAdmitted:
+		*s = AbilityCatalogueEntryStatusAdmitted
+		return nil
+	case AbilityCatalogueEntryStatusDetectOnly:
+		*s = AbilityCatalogueEntryStatusDetectOnly
+		return nil
+	case AbilityCatalogueEntryStatusAwaitingVendorTools:
+		*s = AbilityCatalogueEntryStatusAwaitingVendorTools
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Every field is optional on update; an omitted field keeps its stored value. `name` is required on
+// create and cannot change. There is no actor field: the actor is the authenticated session.
+// Ref: #/components/schemas/AbilityCatalogueInput
+type AbilityCatalogueInput struct {
+	Name               OptString                              `json:"name"`
+	Source             OptAbilityCatalogueInputSource         `json:"source"`
+	Class              OptAbilityCatalogueInputClass          `json:"class"`
+	Status             OptAbilityCatalogueInputStatus         `json:"status"`
+	Enabled            OptBool                                `json:"enabled"`
+	ApprovalMode       OptAbilityCatalogueInputApprovalMode   `json:"approval_mode"`
+	PermissionMode     OptAbilityCatalogueInputPermissionMode `json:"permission_mode"`
+	IntegrationID      OptString                              `json:"integration_id"`
+	OwnerDir           OptString                              `json:"owner_dir"`
+	VersionMin         OptString                              `json:"version_min"`
+	VersionMaxTested   OptString                              `json:"version_max_tested"`
+	MinWpVersion       OptString                              `json:"min_wp_version"`
+	MinAgentVersion    OptString                              `json:"min_agent_version"`
+	SchemaStructSHA256 OptString                              `json:"schema_struct_sha256"`
+	DynamicEnumPaths   []string                               `json:"dynamic_enum_paths"`
+	Title              OptString                              `json:"title"`
+	Description        OptString                              `json:"description"`
+	Usage              OptString                              `json:"usage"`
+	OperatorPermission OptString                              `json:"operator_permission"`
+	Target             jx.Raw                                 `json:"target"`
+	Snapshot           OptString                              `json:"snapshot"`
+	Preview            OptString                              `json:"preview"`
+	ArgRender          OptAbilityCatalogueInputArgRender      `json:"arg_render"`
+	EffectCopy         OptAbilityCatalogueInputEffectCopy     `json:"effect_copy"`
+	Limits             OptAbilityCatalogueInputLimits         `json:"limits"`
+	NestedAllow        []string                               `json:"nested_allow"`
+	GlobalOptionKeys   []string                               `json:"global_option_keys"`
+	IntegrationBlock   jx.Raw                                 `json:"integration_block"`
+	Admission          OptAbilityCatalogueInputAdmission      `json:"admission"`
+}
+
+// GetName returns the value of Name.
+func (s *AbilityCatalogueInput) GetName() OptString {
+	return s.Name
+}
+
+// GetSource returns the value of Source.
+func (s *AbilityCatalogueInput) GetSource() OptAbilityCatalogueInputSource {
+	return s.Source
+}
+
+// GetClass returns the value of Class.
+func (s *AbilityCatalogueInput) GetClass() OptAbilityCatalogueInputClass {
+	return s.Class
+}
+
+// GetStatus returns the value of Status.
+func (s *AbilityCatalogueInput) GetStatus() OptAbilityCatalogueInputStatus {
+	return s.Status
+}
+
+// GetEnabled returns the value of Enabled.
+func (s *AbilityCatalogueInput) GetEnabled() OptBool {
+	return s.Enabled
+}
+
+// GetApprovalMode returns the value of ApprovalMode.
+func (s *AbilityCatalogueInput) GetApprovalMode() OptAbilityCatalogueInputApprovalMode {
+	return s.ApprovalMode
+}
+
+// GetPermissionMode returns the value of PermissionMode.
+func (s *AbilityCatalogueInput) GetPermissionMode() OptAbilityCatalogueInputPermissionMode {
+	return s.PermissionMode
+}
+
+// GetIntegrationID returns the value of IntegrationID.
+func (s *AbilityCatalogueInput) GetIntegrationID() OptString {
+	return s.IntegrationID
+}
+
+// GetOwnerDir returns the value of OwnerDir.
+func (s *AbilityCatalogueInput) GetOwnerDir() OptString {
+	return s.OwnerDir
+}
+
+// GetVersionMin returns the value of VersionMin.
+func (s *AbilityCatalogueInput) GetVersionMin() OptString {
+	return s.VersionMin
+}
+
+// GetVersionMaxTested returns the value of VersionMaxTested.
+func (s *AbilityCatalogueInput) GetVersionMaxTested() OptString {
+	return s.VersionMaxTested
+}
+
+// GetMinWpVersion returns the value of MinWpVersion.
+func (s *AbilityCatalogueInput) GetMinWpVersion() OptString {
+	return s.MinWpVersion
+}
+
+// GetMinAgentVersion returns the value of MinAgentVersion.
+func (s *AbilityCatalogueInput) GetMinAgentVersion() OptString {
+	return s.MinAgentVersion
+}
+
+// GetSchemaStructSHA256 returns the value of SchemaStructSHA256.
+func (s *AbilityCatalogueInput) GetSchemaStructSHA256() OptString {
+	return s.SchemaStructSHA256
+}
+
+// GetDynamicEnumPaths returns the value of DynamicEnumPaths.
+func (s *AbilityCatalogueInput) GetDynamicEnumPaths() []string {
+	return s.DynamicEnumPaths
+}
+
+// GetTitle returns the value of Title.
+func (s *AbilityCatalogueInput) GetTitle() OptString {
+	return s.Title
+}
+
+// GetDescription returns the value of Description.
+func (s *AbilityCatalogueInput) GetDescription() OptString {
+	return s.Description
+}
+
+// GetUsage returns the value of Usage.
+func (s *AbilityCatalogueInput) GetUsage() OptString {
+	return s.Usage
+}
+
+// GetOperatorPermission returns the value of OperatorPermission.
+func (s *AbilityCatalogueInput) GetOperatorPermission() OptString {
+	return s.OperatorPermission
+}
+
+// GetTarget returns the value of Target.
+func (s *AbilityCatalogueInput) GetTarget() jx.Raw {
+	return s.Target
+}
+
+// GetSnapshot returns the value of Snapshot.
+func (s *AbilityCatalogueInput) GetSnapshot() OptString {
+	return s.Snapshot
+}
+
+// GetPreview returns the value of Preview.
+func (s *AbilityCatalogueInput) GetPreview() OptString {
+	return s.Preview
+}
+
+// GetArgRender returns the value of ArgRender.
+func (s *AbilityCatalogueInput) GetArgRender() OptAbilityCatalogueInputArgRender {
+	return s.ArgRender
+}
+
+// GetEffectCopy returns the value of EffectCopy.
+func (s *AbilityCatalogueInput) GetEffectCopy() OptAbilityCatalogueInputEffectCopy {
+	return s.EffectCopy
+}
+
+// GetLimits returns the value of Limits.
+func (s *AbilityCatalogueInput) GetLimits() OptAbilityCatalogueInputLimits {
+	return s.Limits
+}
+
+// GetNestedAllow returns the value of NestedAllow.
+func (s *AbilityCatalogueInput) GetNestedAllow() []string {
+	return s.NestedAllow
+}
+
+// GetGlobalOptionKeys returns the value of GlobalOptionKeys.
+func (s *AbilityCatalogueInput) GetGlobalOptionKeys() []string {
+	return s.GlobalOptionKeys
+}
+
+// GetIntegrationBlock returns the value of IntegrationBlock.
+func (s *AbilityCatalogueInput) GetIntegrationBlock() jx.Raw {
+	return s.IntegrationBlock
+}
+
+// GetAdmission returns the value of Admission.
+func (s *AbilityCatalogueInput) GetAdmission() OptAbilityCatalogueInputAdmission {
+	return s.Admission
+}
+
+// SetName sets the value of Name.
+func (s *AbilityCatalogueInput) SetName(val OptString) {
+	s.Name = val
+}
+
+// SetSource sets the value of Source.
+func (s *AbilityCatalogueInput) SetSource(val OptAbilityCatalogueInputSource) {
+	s.Source = val
+}
+
+// SetClass sets the value of Class.
+func (s *AbilityCatalogueInput) SetClass(val OptAbilityCatalogueInputClass) {
+	s.Class = val
+}
+
+// SetStatus sets the value of Status.
+func (s *AbilityCatalogueInput) SetStatus(val OptAbilityCatalogueInputStatus) {
+	s.Status = val
+}
+
+// SetEnabled sets the value of Enabled.
+func (s *AbilityCatalogueInput) SetEnabled(val OptBool) {
+	s.Enabled = val
+}
+
+// SetApprovalMode sets the value of ApprovalMode.
+func (s *AbilityCatalogueInput) SetApprovalMode(val OptAbilityCatalogueInputApprovalMode) {
+	s.ApprovalMode = val
+}
+
+// SetPermissionMode sets the value of PermissionMode.
+func (s *AbilityCatalogueInput) SetPermissionMode(val OptAbilityCatalogueInputPermissionMode) {
+	s.PermissionMode = val
+}
+
+// SetIntegrationID sets the value of IntegrationID.
+func (s *AbilityCatalogueInput) SetIntegrationID(val OptString) {
+	s.IntegrationID = val
+}
+
+// SetOwnerDir sets the value of OwnerDir.
+func (s *AbilityCatalogueInput) SetOwnerDir(val OptString) {
+	s.OwnerDir = val
+}
+
+// SetVersionMin sets the value of VersionMin.
+func (s *AbilityCatalogueInput) SetVersionMin(val OptString) {
+	s.VersionMin = val
+}
+
+// SetVersionMaxTested sets the value of VersionMaxTested.
+func (s *AbilityCatalogueInput) SetVersionMaxTested(val OptString) {
+	s.VersionMaxTested = val
+}
+
+// SetMinWpVersion sets the value of MinWpVersion.
+func (s *AbilityCatalogueInput) SetMinWpVersion(val OptString) {
+	s.MinWpVersion = val
+}
+
+// SetMinAgentVersion sets the value of MinAgentVersion.
+func (s *AbilityCatalogueInput) SetMinAgentVersion(val OptString) {
+	s.MinAgentVersion = val
+}
+
+// SetSchemaStructSHA256 sets the value of SchemaStructSHA256.
+func (s *AbilityCatalogueInput) SetSchemaStructSHA256(val OptString) {
+	s.SchemaStructSHA256 = val
+}
+
+// SetDynamicEnumPaths sets the value of DynamicEnumPaths.
+func (s *AbilityCatalogueInput) SetDynamicEnumPaths(val []string) {
+	s.DynamicEnumPaths = val
+}
+
+// SetTitle sets the value of Title.
+func (s *AbilityCatalogueInput) SetTitle(val OptString) {
+	s.Title = val
+}
+
+// SetDescription sets the value of Description.
+func (s *AbilityCatalogueInput) SetDescription(val OptString) {
+	s.Description = val
+}
+
+// SetUsage sets the value of Usage.
+func (s *AbilityCatalogueInput) SetUsage(val OptString) {
+	s.Usage = val
+}
+
+// SetOperatorPermission sets the value of OperatorPermission.
+func (s *AbilityCatalogueInput) SetOperatorPermission(val OptString) {
+	s.OperatorPermission = val
+}
+
+// SetTarget sets the value of Target.
+func (s *AbilityCatalogueInput) SetTarget(val jx.Raw) {
+	s.Target = val
+}
+
+// SetSnapshot sets the value of Snapshot.
+func (s *AbilityCatalogueInput) SetSnapshot(val OptString) {
+	s.Snapshot = val
+}
+
+// SetPreview sets the value of Preview.
+func (s *AbilityCatalogueInput) SetPreview(val OptString) {
+	s.Preview = val
+}
+
+// SetArgRender sets the value of ArgRender.
+func (s *AbilityCatalogueInput) SetArgRender(val OptAbilityCatalogueInputArgRender) {
+	s.ArgRender = val
+}
+
+// SetEffectCopy sets the value of EffectCopy.
+func (s *AbilityCatalogueInput) SetEffectCopy(val OptAbilityCatalogueInputEffectCopy) {
+	s.EffectCopy = val
+}
+
+// SetLimits sets the value of Limits.
+func (s *AbilityCatalogueInput) SetLimits(val OptAbilityCatalogueInputLimits) {
+	s.Limits = val
+}
+
+// SetNestedAllow sets the value of NestedAllow.
+func (s *AbilityCatalogueInput) SetNestedAllow(val []string) {
+	s.NestedAllow = val
+}
+
+// SetGlobalOptionKeys sets the value of GlobalOptionKeys.
+func (s *AbilityCatalogueInput) SetGlobalOptionKeys(val []string) {
+	s.GlobalOptionKeys = val
+}
+
+// SetIntegrationBlock sets the value of IntegrationBlock.
+func (s *AbilityCatalogueInput) SetIntegrationBlock(val jx.Raw) {
+	s.IntegrationBlock = val
+}
+
+// SetAdmission sets the value of Admission.
+func (s *AbilityCatalogueInput) SetAdmission(val OptAbilityCatalogueInputAdmission) {
+	s.Admission = val
+}
+
+type AbilityCatalogueInputAdmission map[string]jx.Raw
+
+func (s *AbilityCatalogueInputAdmission) init() AbilityCatalogueInputAdmission {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+type AbilityCatalogueInputApprovalMode string
+
+const (
+	AbilityCatalogueInputApprovalModeNone    AbilityCatalogueInputApprovalMode = "none"
+	AbilityCatalogueInputApprovalModePerCall AbilityCatalogueInputApprovalMode = "per_call"
+)
+
+// AllValues returns all AbilityCatalogueInputApprovalMode values.
+func (AbilityCatalogueInputApprovalMode) AllValues() []AbilityCatalogueInputApprovalMode {
+	return []AbilityCatalogueInputApprovalMode{
+		AbilityCatalogueInputApprovalModeNone,
+		AbilityCatalogueInputApprovalModePerCall,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityCatalogueInputApprovalMode) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityCatalogueInputApprovalModeNone:
+		return []byte(s), nil
+	case AbilityCatalogueInputApprovalModePerCall:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityCatalogueInputApprovalMode) UnmarshalText(data []byte) error {
+	switch AbilityCatalogueInputApprovalMode(data) {
+	case AbilityCatalogueInputApprovalModeNone:
+		*s = AbilityCatalogueInputApprovalModeNone
+		return nil
+	case AbilityCatalogueInputApprovalModePerCall:
+		*s = AbilityCatalogueInputApprovalModePerCall
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type AbilityCatalogueInputArgRender map[string]jx.Raw
+
+func (s *AbilityCatalogueInputArgRender) init() AbilityCatalogueInputArgRender {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+type AbilityCatalogueInputClass string
+
+const (
+	AbilityCatalogueInputClassRead   AbilityCatalogueInputClass = "read"
+	AbilityCatalogueInputClassWrite  AbilityCatalogueInputClass = "write"
+	AbilityCatalogueInputClassDenied AbilityCatalogueInputClass = "denied"
+)
+
+// AllValues returns all AbilityCatalogueInputClass values.
+func (AbilityCatalogueInputClass) AllValues() []AbilityCatalogueInputClass {
+	return []AbilityCatalogueInputClass{
+		AbilityCatalogueInputClassRead,
+		AbilityCatalogueInputClassWrite,
+		AbilityCatalogueInputClassDenied,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityCatalogueInputClass) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityCatalogueInputClassRead:
+		return []byte(s), nil
+	case AbilityCatalogueInputClassWrite:
+		return []byte(s), nil
+	case AbilityCatalogueInputClassDenied:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityCatalogueInputClass) UnmarshalText(data []byte) error {
+	switch AbilityCatalogueInputClass(data) {
+	case AbilityCatalogueInputClassRead:
+		*s = AbilityCatalogueInputClassRead
+		return nil
+	case AbilityCatalogueInputClassWrite:
+		*s = AbilityCatalogueInputClassWrite
+		return nil
+	case AbilityCatalogueInputClassDenied:
+		*s = AbilityCatalogueInputClassDenied
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type AbilityCatalogueInputEffectCopy string
+
+const (
+	AbilityCatalogueInputEffectCopyDraft AbilityCatalogueInputEffectCopy = "draft"
+	AbilityCatalogueInputEffectCopyLive  AbilityCatalogueInputEffectCopy = "live"
+	AbilityCatalogueInputEffectCopyNone  AbilityCatalogueInputEffectCopy = "none"
+)
+
+// AllValues returns all AbilityCatalogueInputEffectCopy values.
+func (AbilityCatalogueInputEffectCopy) AllValues() []AbilityCatalogueInputEffectCopy {
+	return []AbilityCatalogueInputEffectCopy{
+		AbilityCatalogueInputEffectCopyDraft,
+		AbilityCatalogueInputEffectCopyLive,
+		AbilityCatalogueInputEffectCopyNone,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityCatalogueInputEffectCopy) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityCatalogueInputEffectCopyDraft:
+		return []byte(s), nil
+	case AbilityCatalogueInputEffectCopyLive:
+		return []byte(s), nil
+	case AbilityCatalogueInputEffectCopyNone:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityCatalogueInputEffectCopy) UnmarshalText(data []byte) error {
+	switch AbilityCatalogueInputEffectCopy(data) {
+	case AbilityCatalogueInputEffectCopyDraft:
+		*s = AbilityCatalogueInputEffectCopyDraft
+		return nil
+	case AbilityCatalogueInputEffectCopyLive:
+		*s = AbilityCatalogueInputEffectCopyLive
+		return nil
+	case AbilityCatalogueInputEffectCopyNone:
+		*s = AbilityCatalogueInputEffectCopyNone
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type AbilityCatalogueInputLimits map[string]jx.Raw
+
+func (s *AbilityCatalogueInputLimits) init() AbilityCatalogueInputLimits {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+type AbilityCatalogueInputPermissionMode string
+
+const (
+	AbilityCatalogueInputPermissionModePrincipal AbilityCatalogueInputPermissionMode = "principal"
+	AbilityCatalogueInputPermissionModeAsserted  AbilityCatalogueInputPermissionMode = "asserted"
+)
+
+// AllValues returns all AbilityCatalogueInputPermissionMode values.
+func (AbilityCatalogueInputPermissionMode) AllValues() []AbilityCatalogueInputPermissionMode {
+	return []AbilityCatalogueInputPermissionMode{
+		AbilityCatalogueInputPermissionModePrincipal,
+		AbilityCatalogueInputPermissionModeAsserted,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityCatalogueInputPermissionMode) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityCatalogueInputPermissionModePrincipal:
+		return []byte(s), nil
+	case AbilityCatalogueInputPermissionModeAsserted:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityCatalogueInputPermissionMode) UnmarshalText(data []byte) error {
+	switch AbilityCatalogueInputPermissionMode(data) {
+	case AbilityCatalogueInputPermissionModePrincipal:
+		*s = AbilityCatalogueInputPermissionModePrincipal
+		return nil
+	case AbilityCatalogueInputPermissionModeAsserted:
+		*s = AbilityCatalogueInputPermissionModeAsserted
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type AbilityCatalogueInputSource string
+
+const (
+	AbilityCatalogueInputSourceWpmgr  AbilityCatalogueInputSource = "wpmgr"
+	AbilityCatalogueInputSourceCore   AbilityCatalogueInputSource = "core"
+	AbilityCatalogueInputSourceVendor AbilityCatalogueInputSource = "vendor"
+)
+
+// AllValues returns all AbilityCatalogueInputSource values.
+func (AbilityCatalogueInputSource) AllValues() []AbilityCatalogueInputSource {
+	return []AbilityCatalogueInputSource{
+		AbilityCatalogueInputSourceWpmgr,
+		AbilityCatalogueInputSourceCore,
+		AbilityCatalogueInputSourceVendor,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityCatalogueInputSource) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityCatalogueInputSourceWpmgr:
+		return []byte(s), nil
+	case AbilityCatalogueInputSourceCore:
+		return []byte(s), nil
+	case AbilityCatalogueInputSourceVendor:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityCatalogueInputSource) UnmarshalText(data []byte) error {
+	switch AbilityCatalogueInputSource(data) {
+	case AbilityCatalogueInputSourceWpmgr:
+		*s = AbilityCatalogueInputSourceWpmgr
+		return nil
+	case AbilityCatalogueInputSourceCore:
+		*s = AbilityCatalogueInputSourceCore
+		return nil
+	case AbilityCatalogueInputSourceVendor:
+		*s = AbilityCatalogueInputSourceVendor
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type AbilityCatalogueInputStatus string
+
+const (
+	AbilityCatalogueInputStatusAdmitted            AbilityCatalogueInputStatus = "admitted"
+	AbilityCatalogueInputStatusDetectOnly          AbilityCatalogueInputStatus = "detect_only"
+	AbilityCatalogueInputStatusAwaitingVendorTools AbilityCatalogueInputStatus = "awaiting_vendor_tools"
+)
+
+// AllValues returns all AbilityCatalogueInputStatus values.
+func (AbilityCatalogueInputStatus) AllValues() []AbilityCatalogueInputStatus {
+	return []AbilityCatalogueInputStatus{
+		AbilityCatalogueInputStatusAdmitted,
+		AbilityCatalogueInputStatusDetectOnly,
+		AbilityCatalogueInputStatusAwaitingVendorTools,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityCatalogueInputStatus) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityCatalogueInputStatusAdmitted:
+		return []byte(s), nil
+	case AbilityCatalogueInputStatusDetectOnly:
+		return []byte(s), nil
+	case AbilityCatalogueInputStatusAwaitingVendorTools:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityCatalogueInputStatus) UnmarshalText(data []byte) error {
+	switch AbilityCatalogueInputStatus(data) {
+	case AbilityCatalogueInputStatusAdmitted:
+		*s = AbilityCatalogueInputStatusAdmitted
+		return nil
+	case AbilityCatalogueInputStatusDetectOnly:
+		*s = AbilityCatalogueInputStatusDetectOnly
+		return nil
+	case AbilityCatalogueInputStatusAwaitingVendorTools:
+		*s = AbilityCatalogueInputStatusAwaitingVendorTools
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
 type AcceptInvitationBadRequest Error
 
 func (*AcceptInvitationBadRequest) acceptInvitationRes() {}
@@ -15839,6 +17139,22 @@ func (s *ContentInventoryRow) SetCheckedAt(val time.Time) {
 	s.CheckedAt = val
 }
 
+type CreateAdminAbilityCatalogueEntryBadRequest Error
+
+func (*CreateAdminAbilityCatalogueEntryBadRequest) createAdminAbilityCatalogueEntryRes() {}
+
+type CreateAdminAbilityCatalogueEntryConflict Error
+
+func (*CreateAdminAbilityCatalogueEntryConflict) createAdminAbilityCatalogueEntryRes() {}
+
+type CreateAdminAbilityCatalogueEntryForbidden Error
+
+func (*CreateAdminAbilityCatalogueEntryForbidden) createAdminAbilityCatalogueEntryRes() {}
+
+type CreateAdminAbilityCatalogueEntryUnauthorized Error
+
+func (*CreateAdminAbilityCatalogueEntryUnauthorized) createAdminAbilityCatalogueEntryRes() {}
+
 // Ref: #/components/schemas/CreateAgencyClientRequest
 type CreateAgencyClientRequest struct {
 	Name         string    `json:"name"`
@@ -26264,6 +27580,30 @@ func (s *InviteRequest) SetRole(val Role) {
 	s.Role = val
 }
 
+type ListAdminAbilityCatalogueForbidden Error
+
+func (*ListAdminAbilityCatalogueForbidden) listAdminAbilityCatalogueRes() {}
+
+type ListAdminAbilityCatalogueOK struct {
+	Entries []AbilityCatalogueEntry `json:"entries"`
+}
+
+// GetEntries returns the value of Entries.
+func (s *ListAdminAbilityCatalogueOK) GetEntries() []AbilityCatalogueEntry {
+	return s.Entries
+}
+
+// SetEntries sets the value of Entries.
+func (s *ListAdminAbilityCatalogueOK) SetEntries(val []AbilityCatalogueEntry) {
+	s.Entries = val
+}
+
+func (*ListAdminAbilityCatalogueOK) listAdminAbilityCatalogueRes() {}
+
+type ListAdminAbilityCatalogueUnauthorized Error
+
+func (*ListAdminAbilityCatalogueUnauthorized) listAdminAbilityCatalogueRes() {}
+
 type ListAdminAccountsForbidden Error
 
 func (*ListAdminAccountsForbidden) listAdminAccountsRes() {}
@@ -31819,6 +33159,420 @@ func (*OidcCallbackUnauthorized) oidcCallbackRes() {}
 type OidcLoginFound struct{}
 
 func (*OidcLoginFound) oidcLoginRes() {}
+
+// NewOptAbilityCatalogueInputAdmission returns new OptAbilityCatalogueInputAdmission with value set to v.
+func NewOptAbilityCatalogueInputAdmission(v AbilityCatalogueInputAdmission) OptAbilityCatalogueInputAdmission {
+	return OptAbilityCatalogueInputAdmission{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAbilityCatalogueInputAdmission is optional AbilityCatalogueInputAdmission.
+type OptAbilityCatalogueInputAdmission struct {
+	Value AbilityCatalogueInputAdmission
+	Set   bool
+}
+
+// IsSet returns true if OptAbilityCatalogueInputAdmission was set.
+func (o OptAbilityCatalogueInputAdmission) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAbilityCatalogueInputAdmission) Reset() {
+	var v AbilityCatalogueInputAdmission
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAbilityCatalogueInputAdmission) SetTo(v AbilityCatalogueInputAdmission) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAbilityCatalogueInputAdmission) Get() (v AbilityCatalogueInputAdmission, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAbilityCatalogueInputAdmission) Or(d AbilityCatalogueInputAdmission) AbilityCatalogueInputAdmission {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptAbilityCatalogueInputApprovalMode returns new OptAbilityCatalogueInputApprovalMode with value set to v.
+func NewOptAbilityCatalogueInputApprovalMode(v AbilityCatalogueInputApprovalMode) OptAbilityCatalogueInputApprovalMode {
+	return OptAbilityCatalogueInputApprovalMode{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAbilityCatalogueInputApprovalMode is optional AbilityCatalogueInputApprovalMode.
+type OptAbilityCatalogueInputApprovalMode struct {
+	Value AbilityCatalogueInputApprovalMode
+	Set   bool
+}
+
+// IsSet returns true if OptAbilityCatalogueInputApprovalMode was set.
+func (o OptAbilityCatalogueInputApprovalMode) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAbilityCatalogueInputApprovalMode) Reset() {
+	var v AbilityCatalogueInputApprovalMode
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAbilityCatalogueInputApprovalMode) SetTo(v AbilityCatalogueInputApprovalMode) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAbilityCatalogueInputApprovalMode) Get() (v AbilityCatalogueInputApprovalMode, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAbilityCatalogueInputApprovalMode) Or(d AbilityCatalogueInputApprovalMode) AbilityCatalogueInputApprovalMode {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptAbilityCatalogueInputArgRender returns new OptAbilityCatalogueInputArgRender with value set to v.
+func NewOptAbilityCatalogueInputArgRender(v AbilityCatalogueInputArgRender) OptAbilityCatalogueInputArgRender {
+	return OptAbilityCatalogueInputArgRender{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAbilityCatalogueInputArgRender is optional AbilityCatalogueInputArgRender.
+type OptAbilityCatalogueInputArgRender struct {
+	Value AbilityCatalogueInputArgRender
+	Set   bool
+}
+
+// IsSet returns true if OptAbilityCatalogueInputArgRender was set.
+func (o OptAbilityCatalogueInputArgRender) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAbilityCatalogueInputArgRender) Reset() {
+	var v AbilityCatalogueInputArgRender
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAbilityCatalogueInputArgRender) SetTo(v AbilityCatalogueInputArgRender) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAbilityCatalogueInputArgRender) Get() (v AbilityCatalogueInputArgRender, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAbilityCatalogueInputArgRender) Or(d AbilityCatalogueInputArgRender) AbilityCatalogueInputArgRender {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptAbilityCatalogueInputClass returns new OptAbilityCatalogueInputClass with value set to v.
+func NewOptAbilityCatalogueInputClass(v AbilityCatalogueInputClass) OptAbilityCatalogueInputClass {
+	return OptAbilityCatalogueInputClass{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAbilityCatalogueInputClass is optional AbilityCatalogueInputClass.
+type OptAbilityCatalogueInputClass struct {
+	Value AbilityCatalogueInputClass
+	Set   bool
+}
+
+// IsSet returns true if OptAbilityCatalogueInputClass was set.
+func (o OptAbilityCatalogueInputClass) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAbilityCatalogueInputClass) Reset() {
+	var v AbilityCatalogueInputClass
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAbilityCatalogueInputClass) SetTo(v AbilityCatalogueInputClass) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAbilityCatalogueInputClass) Get() (v AbilityCatalogueInputClass, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAbilityCatalogueInputClass) Or(d AbilityCatalogueInputClass) AbilityCatalogueInputClass {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptAbilityCatalogueInputEffectCopy returns new OptAbilityCatalogueInputEffectCopy with value set to v.
+func NewOptAbilityCatalogueInputEffectCopy(v AbilityCatalogueInputEffectCopy) OptAbilityCatalogueInputEffectCopy {
+	return OptAbilityCatalogueInputEffectCopy{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAbilityCatalogueInputEffectCopy is optional AbilityCatalogueInputEffectCopy.
+type OptAbilityCatalogueInputEffectCopy struct {
+	Value AbilityCatalogueInputEffectCopy
+	Set   bool
+}
+
+// IsSet returns true if OptAbilityCatalogueInputEffectCopy was set.
+func (o OptAbilityCatalogueInputEffectCopy) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAbilityCatalogueInputEffectCopy) Reset() {
+	var v AbilityCatalogueInputEffectCopy
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAbilityCatalogueInputEffectCopy) SetTo(v AbilityCatalogueInputEffectCopy) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAbilityCatalogueInputEffectCopy) Get() (v AbilityCatalogueInputEffectCopy, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAbilityCatalogueInputEffectCopy) Or(d AbilityCatalogueInputEffectCopy) AbilityCatalogueInputEffectCopy {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptAbilityCatalogueInputLimits returns new OptAbilityCatalogueInputLimits with value set to v.
+func NewOptAbilityCatalogueInputLimits(v AbilityCatalogueInputLimits) OptAbilityCatalogueInputLimits {
+	return OptAbilityCatalogueInputLimits{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAbilityCatalogueInputLimits is optional AbilityCatalogueInputLimits.
+type OptAbilityCatalogueInputLimits struct {
+	Value AbilityCatalogueInputLimits
+	Set   bool
+}
+
+// IsSet returns true if OptAbilityCatalogueInputLimits was set.
+func (o OptAbilityCatalogueInputLimits) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAbilityCatalogueInputLimits) Reset() {
+	var v AbilityCatalogueInputLimits
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAbilityCatalogueInputLimits) SetTo(v AbilityCatalogueInputLimits) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAbilityCatalogueInputLimits) Get() (v AbilityCatalogueInputLimits, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAbilityCatalogueInputLimits) Or(d AbilityCatalogueInputLimits) AbilityCatalogueInputLimits {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptAbilityCatalogueInputPermissionMode returns new OptAbilityCatalogueInputPermissionMode with value set to v.
+func NewOptAbilityCatalogueInputPermissionMode(v AbilityCatalogueInputPermissionMode) OptAbilityCatalogueInputPermissionMode {
+	return OptAbilityCatalogueInputPermissionMode{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAbilityCatalogueInputPermissionMode is optional AbilityCatalogueInputPermissionMode.
+type OptAbilityCatalogueInputPermissionMode struct {
+	Value AbilityCatalogueInputPermissionMode
+	Set   bool
+}
+
+// IsSet returns true if OptAbilityCatalogueInputPermissionMode was set.
+func (o OptAbilityCatalogueInputPermissionMode) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAbilityCatalogueInputPermissionMode) Reset() {
+	var v AbilityCatalogueInputPermissionMode
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAbilityCatalogueInputPermissionMode) SetTo(v AbilityCatalogueInputPermissionMode) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAbilityCatalogueInputPermissionMode) Get() (v AbilityCatalogueInputPermissionMode, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAbilityCatalogueInputPermissionMode) Or(d AbilityCatalogueInputPermissionMode) AbilityCatalogueInputPermissionMode {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptAbilityCatalogueInputSource returns new OptAbilityCatalogueInputSource with value set to v.
+func NewOptAbilityCatalogueInputSource(v AbilityCatalogueInputSource) OptAbilityCatalogueInputSource {
+	return OptAbilityCatalogueInputSource{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAbilityCatalogueInputSource is optional AbilityCatalogueInputSource.
+type OptAbilityCatalogueInputSource struct {
+	Value AbilityCatalogueInputSource
+	Set   bool
+}
+
+// IsSet returns true if OptAbilityCatalogueInputSource was set.
+func (o OptAbilityCatalogueInputSource) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAbilityCatalogueInputSource) Reset() {
+	var v AbilityCatalogueInputSource
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAbilityCatalogueInputSource) SetTo(v AbilityCatalogueInputSource) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAbilityCatalogueInputSource) Get() (v AbilityCatalogueInputSource, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAbilityCatalogueInputSource) Or(d AbilityCatalogueInputSource) AbilityCatalogueInputSource {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptAbilityCatalogueInputStatus returns new OptAbilityCatalogueInputStatus with value set to v.
+func NewOptAbilityCatalogueInputStatus(v AbilityCatalogueInputStatus) OptAbilityCatalogueInputStatus {
+	return OptAbilityCatalogueInputStatus{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAbilityCatalogueInputStatus is optional AbilityCatalogueInputStatus.
+type OptAbilityCatalogueInputStatus struct {
+	Value AbilityCatalogueInputStatus
+	Set   bool
+}
+
+// IsSet returns true if OptAbilityCatalogueInputStatus was set.
+func (o OptAbilityCatalogueInputStatus) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAbilityCatalogueInputStatus) Reset() {
+	var v AbilityCatalogueInputStatus
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAbilityCatalogueInputStatus) SetTo(v AbilityCatalogueInputStatus) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAbilityCatalogueInputStatus) Get() (v AbilityCatalogueInputStatus, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAbilityCatalogueInputStatus) Or(d AbilityCatalogueInputStatus) AbilityCatalogueInputStatus {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
 
 // NewOptAdminAccountTimelineEntryMetadata returns new OptAdminAccountTimelineEntryMetadata with value set to v.
 func NewOptAdminAccountTimelineEntryMetadata(v AdminAccountTimelineEntryMetadata) OptAdminAccountTimelineEntryMetadata {
@@ -56499,6 +58253,22 @@ func (*UnlinkMyIdentityNotFound) unlinkMyIdentityRes() {}
 type UnlinkMyIdentityUnauthorized Error
 
 func (*UnlinkMyIdentityUnauthorized) unlinkMyIdentityRes() {}
+
+type UpdateAdminAbilityCatalogueEntryBadRequest Error
+
+func (*UpdateAdminAbilityCatalogueEntryBadRequest) updateAdminAbilityCatalogueEntryRes() {}
+
+type UpdateAdminAbilityCatalogueEntryForbidden Error
+
+func (*UpdateAdminAbilityCatalogueEntryForbidden) updateAdminAbilityCatalogueEntryRes() {}
+
+type UpdateAdminAbilityCatalogueEntryNotFound Error
+
+func (*UpdateAdminAbilityCatalogueEntryNotFound) updateAdminAbilityCatalogueEntryRes() {}
+
+type UpdateAdminAbilityCatalogueEntryUnauthorized Error
+
+func (*UpdateAdminAbilityCatalogueEntryUnauthorized) updateAdminAbilityCatalogueEntryRes() {}
 
 // All fields are optional (PATCH semantics).
 // Ref: #/components/schemas/UpdateAgencyClientRequest

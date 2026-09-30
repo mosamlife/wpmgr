@@ -204,11 +204,18 @@ func (s *Service) WriteToolsEnabled() bool {
 // switch is set.
 func (s *Service) liveRegistry() []ToolPolicy {
 	entries := registryTools()
-	if s.WriteToolsEnabled() {
-		return entries
-	}
+	writes := s.WriteToolsEnabled()
 	out := make([]ToolPolicy, 0, len(entries))
 	for _, e := range entries {
+		// The ability tools are served only while the engine is enabled
+		// (WPMGR_MCP_ABILITY_TOOLS).
+		if _, ability := abilityToolNames[e.Name]; ability && s.abilities == nil {
+			continue
+		}
+		if writes {
+			out = append(out, e)
+			continue
+		}
 		if eff, ok := CapabilityEffect(e.Capability); ok && eff == EffectRead {
 			out = append(out, e)
 		}
