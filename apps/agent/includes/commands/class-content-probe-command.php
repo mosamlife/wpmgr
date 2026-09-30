@@ -201,7 +201,7 @@ final class ContentProbeCommand implements CommandInterface
         }
 
         $rawDescriptors = $params['descriptors'] ?? [];
-        if (!is_array($rawDescriptors) || !array_is_list($rawDescriptors)) {
+        if (!is_array($rawDescriptors) || !$this->isList($rawDescriptors)) {
             return $this->refuse('invalid_params', 'descriptors must be a list');
         }
         if (count($rawDescriptors) > self::MAX_DESCRIPTORS) {
@@ -266,7 +266,7 @@ final class ContentProbeCommand implements CommandInterface
         }
 
         $list = $params['list'];
-        if (!is_array($list) || array_is_list($list) && $list !== []) {
+        if (!is_array($list) || $this->isList($list) && $list !== []) {
             return $this->refuse('invalid_params', 'list must be an object');
         }
         foreach (array_keys($list) as $key) {
@@ -296,6 +296,18 @@ final class ContentProbeCommand implements CommandInterface
     }
 
     /**
+     * True for an array whose keys are 0..n-1 in order (array_is_list needs
+     * PHP 8.1 and the plugin supports older runtimes).
+     *
+     * @param array<mixed> $a Array to test.
+     * @return bool
+     */
+    private function isList(array $a): bool
+    {
+        return $a === [] || array_keys($a) === range(0, count($a) - 1);
+    }
+
+    /**
      * @param mixed  $value Candidate list.
      * @param string $regex Each element must match.
      * @param int    $max   Most elements.
@@ -304,7 +316,7 @@ final class ContentProbeCommand implements CommandInterface
      */
     private function stringList(mixed $value, string $regex, int $max, int $min): ?array
     {
-        if (!is_array($value) || !array_is_list($value) || count($value) > $max || count($value) < $min) {
+        if (!is_array($value) || !$this->isList($value) || count($value) > $max || count($value) < $min) {
             return null;
         }
         foreach ($value as $item) {
@@ -325,7 +337,7 @@ final class ContentProbeCommand implements CommandInterface
      */
     private function normaliseDescriptor(mixed $raw): array|string
     {
-        if (!is_array($raw) || array_is_list($raw) && $raw !== []) {
+        if (!is_array($raw) || $this->isList($raw) && $raw !== []) {
             return 'must be an object';
         }
         foreach (array_keys($raw) as $key) {
@@ -363,7 +375,7 @@ final class ContentProbeCommand implements CommandInterface
         }
 
         $flagSpec = $raw['mode_flag'] ?? null;
-        if (!is_array($flagSpec) || array_is_list($flagSpec) || array_diff(array_keys($flagSpec), ['meta_key', 'on_values']) !== []) {
+        if (!is_array($flagSpec) || $this->isList($flagSpec) || array_diff(array_keys($flagSpec), ['meta_key', 'on_values']) !== []) {
             return 'invalid mode_flag';
         }
         $flagKey = $flagSpec['meta_key'] ?? null;
@@ -371,7 +383,7 @@ final class ContentProbeCommand implements CommandInterface
             return 'invalid mode_flag.meta_key';
         }
         $on = $flagSpec['on_values'] ?? null;
-        if (!is_array($on) || !array_is_list($on) || $on === [] || count($on) > 8) {
+        if (!is_array($on) || !$this->isList($on) || $on === [] || count($on) > 8) {
             return 'invalid mode_flag.on_values';
         }
         foreach ($on as $value) {
@@ -818,7 +830,6 @@ final class ContentProbeCommand implements CommandInterface
             'order'            => 'ASC',
             'fields'           => 'ids',
             'no_found_rows'    => true,
-            'suppress_filters' => true,
         ]);
 
         $rows = [];
