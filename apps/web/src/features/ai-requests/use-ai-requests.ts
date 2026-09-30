@@ -1,7 +1,10 @@
 import {
+  useInfiniteQuery,
   useMutation,
   useQuery,
   useQueryClient,
+  type InfiniteData,
+  type UseInfiniteQueryResult,
   type UseMutationResult,
   type UseQueryResult,
 } from "@tanstack/react-query";
@@ -98,6 +101,39 @@ export function useAssistantRequests(): UseQueryResult<AssistantRequestList, Err
     // Live data is pulled, not pushed (house rule): there is no SSE channel
     // for this queue, so a short poll is the whole freshness story, not a
     // backstop for one.
+    refetchInterval: 30_000,
+  });
+}
+
+/** Rows per page on /ai/requests. The API accepts up to 100 (handler pageParams). */
+export const REQUESTS_PAGE_SIZE = 50;
+
+/**
+ * The paged queue behind /ai/requests. The list API is newest-first with
+ * limit/offset and no state filter, so an old pending request can sit beyond
+ * the first page; the route pages through with "Show more" rather than
+ * dropping it. Keyed under assistantRequestKeys.all so every approve/decline
+ * invalidates it.
+ */
+export function useAssistantRequestPages(): UseInfiniteQueryResult<
+  InfiniteData<AssistantRequestList, number>,
+  Error
+> {
+  return useInfiniteQuery({
+    queryKey: [...assistantRequestKeys.list(), "paged"] as const,
+    initialPageParam: 0,
+    queryFn: async ({ pageParam }): Promise<AssistantRequestList> => {
+      const { data, error, response } = await listAssistantRequests({
+        query: { limit: REQUESTS_PAGE_SIZE, offset: pageParam },
+      });
+      const status = response?.status;
+      if (error) throw toAssistantRequestError(error, status);
+      if (!data) throw new AssistantRequestError("empty_response", "Empty response", status);
+      return data;
+    },
+    // A full page means there may be more; a short page is the end.
+    getNextPageParam: (last) =>
+      last.requests.length >= REQUESTS_PAGE_SIZE ? last.offset + last.requests.length : undefined,
     refetchInterval: 30_000,
   });
 }

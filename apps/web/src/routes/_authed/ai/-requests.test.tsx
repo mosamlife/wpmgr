@@ -249,3 +249,36 @@ describe("approve and decline", () => {
     expect(screen.queryByRole("button", { name: /^decline$/i })).not.toBeInTheDocument();
   });
 });
+
+describe("a pending request beyond the first page stays reachable", () => {
+  it("shows that older pending exist, and Show more brings the request and its controls", async () => {
+    const decided = Array.from({ length: 50 }, (_, i) =>
+      pendingRequest({
+        id: `done-${i}`,
+        state: "withdrawn",
+        withdrawn_at: "2026-09-29T10:00:00Z",
+        presented_digest: undefined,
+      }),
+    );
+    const stranded = pendingRequest({ id: "old-pending", site_label: "Stranded Shop" });
+    listMock.mockImplementation((opts: { query?: { offset?: number } }) => {
+      const offset = opts?.query?.offset ?? 0;
+      if (offset === 0) return ok({ requests: decided, pending_count: 1, limit: 50, offset: 0 });
+      return ok({ requests: [stranded], pending_count: 1, limit: 50, offset });
+    });
+    renderPage();
+
+    // Page one holds 50 decided rows and no pending one: the page says so.
+    expect(await screen.findByTestId("ai-requests-more-pending")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^approve$/i })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("ai-requests-show-more"));
+
+    expect(await screen.findByText(/Stranded Shop/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^approve$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^decline$/i })).toBeInTheDocument();
+    expect(screen.queryByTestId("ai-requests-more-pending")).not.toBeInTheDocument();
+    // The request for page two really asked for the next offset.
+    expect(listMock).toHaveBeenCalledWith({ query: { limit: 50, offset: 50 } });
+  });
+});

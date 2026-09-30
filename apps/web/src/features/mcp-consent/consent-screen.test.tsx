@@ -518,12 +518,10 @@ describe("ConsentScreen — the mcp:cache write section (design v7 S2.2)", () =>
     expect(within(box).getByText(/Ask to clear the site cache/i)).toBeTruthy();
     const checkbox = within(box).getByRole("checkbox");
     // Never ticked by default; the operator opts in.
-    expect(checkbox.getAttribute("aria-checked") ?? (checkbox as HTMLInputElement).checked).toMatch(
-      /false/,
-    );
-    expect(checkbox.hasAttribute("disabled")).toBe(false);
+    expect((checkbox as HTMLInputElement).checked).toBe(false);
+    expect((checkbox as HTMLInputElement).disabled).toBe(false);
     fireEvent.click(checkbox);
-    expect(checkbox.getAttribute("aria-checked")).toBe("true");
+    expect((checkbox as HTMLInputElement).checked).toBe(true);
   });
 
   it("does NOT show the write box when the client did not ask for mcp:cache", () => {
