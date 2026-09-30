@@ -33,6 +33,7 @@ type inventoryPageDTO struct {
 	MinAgentVersion string            `json:"min_agent_version"`
 	LastCheckedAt   *time.Time        `json:"last_checked_at"`
 	TitlesIncluded  bool              `json:"titles_included"`
+	Truncated       bool              `json:"truncated"`
 	NextAfterPostID *int64            `json:"next_after_post_id"`
 	Pages           []inventoryRowDTO `json:"pages"`
 }
@@ -40,7 +41,7 @@ type inventoryPageDTO struct {
 func toInventoryPageDTO(p InventoryPage) inventoryPageDTO {
 	out := inventoryPageDTO{
 		State: p.State, AgentVersion: p.AgentVersion, MinAgentVersion: p.MinAgent,
-		LastCheckedAt: p.LastCheckedAt, TitlesIncluded: p.TitlesIncluded,
+		LastCheckedAt: p.LastCheckedAt, TitlesIncluded: p.TitlesIncluded, Truncated: p.Truncated,
 		NextAfterPostID: p.NextAfterPost, Pages: make([]inventoryRowDTO, 0, len(p.Rows)),
 	}
 	for _, r := range p.Rows {

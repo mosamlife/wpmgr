@@ -14171,8 +14171,13 @@ components:
         checked_at: { type: string, format: date-time }
     ContentInventoryPage:
       type: object
-      required: [state, min_agent_version, titles_included, pages]
+      required: [state, min_agent_version, titles_included, truncated, pages]
       properties:
+        truncated:
+          type: boolean
+          description: >-
+            True when the last check stopped at the page cap, so the list is a
+            sample of the site. Held per instance; false when unknown.
         state:
           type: string
           enum: [ok, agent_update_needed, not_connected]

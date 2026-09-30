@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -35,7 +36,7 @@ const (
 	// callTimeout bounds one agent call.
 	callTimeout = 25 * time.Second
 	// RefreshTimeout bounds a whole refresh (the River job timeout).
-	RefreshTimeout = 4 * time.Minute
+	RefreshTimeout = maxPages*callTimeout + time.Minute
 )
 
 var (
@@ -73,6 +74,9 @@ type Service struct {
 	agent  ProbeClient
 	logger *slog.Logger
 	now    func() time.Time
+
+	truncMu sync.Mutex
+	trunc   map[uuid.UUID]bool
 }
 
 // NewService builds the service. agent may be nil in a build without the agent
@@ -153,6 +157,11 @@ func (s *Service) Refresh(ctx context.Context, tenantID, siteID uuid.UUID, sched
 		offset = *resp.NextOffset
 	}
 
+	// A post can appear on two pages when the site changes between calls; the
+	// upsert would reject the whole statement on a repeated key, so the last
+	// row seen wins.
+	rows = dedupeRows(rows)
+	s.setTruncated(siteID, truncated)
 	checkedAt := s.now().UTC()
 	if err := s.repo.ReplaceInventory(ctx, tenantID, siteID, checkedAt, rows); err != nil {
 		return RefreshResult{}, err
@@ -164,20 +173,16 @@ func (s *Service) Refresh(ctx context.Context, tenantID, siteID uuid.UUID, sched
 	return RefreshResult{Stored: len(rows), SkippedUnknown: skipped, Truncated: truncated, CheckedAt: checkedAt}, nil
 }
 
-// builderish marks a plugin slug as one that may own a page's layout. It only
-// orders the hint list, because the agent takes at most 32 slugs.
-var builderish = regexp.MustCompile(`(?i)(builder|elementor|divi|bricks|oxygen|breakdance|brizy|composer|siteorigin|panels|fusion|layout|page-?build|visual|beaver|kadence|spectra|blocks|gutenberg)`)
-
-// BuildIndicators derives the site-level hints from the site's own inventory
-// (the update inventory the control plane already holds) and the allowlist's
-// plugin directories. The agent reports a hint only for an entry that is
-// active, so inactive entries cost nothing but a slot; active entries are
-// preferred, and builder-looking names first.
+// BuildIndicators derives the site-level builder hints. It sends ONLY hints
+// for builders on the platform allowlist: a plugin directory named by an
+// allowlist row's descriptor.plugin_dir, and the active theme only when it
+// matches an allowlist row's theme_slug. The agent treats every hint it finds
+// as a possible builder, so an ordinary plugin or theme sent here would strip
+// the classic verdict from every page on the site.
 func BuildIndicators(components []byte, integrations []Integration) agentcmd.ContentProbeIndicators {
 	var comp struct {
 		Plugins []struct {
-			Slug   string `json:"slug"`
-			Active bool   `json:"active"`
+			Slug string `json:"slug"`
 		} `json:"plugins"`
 		Themes []struct {
 			Slug   string `json:"slug"`
@@ -186,30 +191,38 @@ func BuildIndicators(components []byte, integrations []Integration) agentcmd.Con
 	}
 	_ = json.Unmarshal(components, &comp) // an unreadable inventory yields no hints
 
-	plugins := make(map[string]bool)
+	installed := make(map[string]bool)
 	for _, p := range comp.Plugins {
 		slug := p.Slug
 		if i := strings.Index(slug, "/"); i >= 0 {
 			slug = slug[:i]
 		}
-		slug = strings.TrimSuffix(slug, ".php")
-		if slugRe.MatchString(slug) && p.Active {
-			plugins[slug] = true
+		installed[strings.TrimSuffix(slug, ".php")] = true
+	}
+	activeThemes := make(map[string]bool)
+	for _, t := range comp.Themes {
+		if t.Active {
+			activeThemes[t.Slug] = true
 		}
 	}
-	// Allowlisted plugin directories are always offered.
+
+	plugins := make(map[string]bool)
+	themes := make(map[string]bool)
 	for _, it := range integrations {
 		var d struct {
 			PluginDir string `json:"plugin_dir"`
+			ThemeSlug string `json:"theme_slug"`
 		}
-		if json.Unmarshal(it.Descriptor, &d) == nil && slugRe.MatchString(d.PluginDir) {
+		if json.Unmarshal(it.Descriptor, &d) != nil {
+			continue
+		}
+		// The agent reports a hint only for an active entry, so offering an
+		// allowlisted directory the site does not have costs a slot and no more.
+		if slugRe.MatchString(d.PluginDir) && installed[d.PluginDir] {
 			plugins[d.PluginDir] = true
 		}
-	}
-	themes := make(map[string]bool)
-	for _, t := range comp.Themes {
-		if slugRe.MatchString(t.Slug) && t.Active {
-			themes[t.Slug] = true
+		if slugRe.MatchString(d.ThemeSlug) && activeThemes[d.ThemeSlug] {
+			themes[d.ThemeSlug] = true
 		}
 	}
 	return agentcmd.ContentProbeIndicators{
@@ -224,17 +237,48 @@ func capOrdered(set map[string]bool, max int) []string {
 	for s := range set {
 		out = append(out, s)
 	}
-	sort.Slice(out, func(i, j int) bool {
-		bi, bj := builderish.MatchString(out[i]), builderish.MatchString(out[j])
-		if bi != bj {
-			return bi
-		}
-		return out[i] < out[j]
-	})
+	sort.Strings(out)
 	if len(out) > max {
 		out = out[:max]
 	}
 	return out
+}
+
+func dedupeRows(rows []Row) []Row {
+	idx := make(map[int64]int, len(rows))
+	out := make([]Row, 0, len(rows))
+	for _, r := range rows {
+		if i, ok := idx[r.PostID]; ok {
+			out[i] = r
+			continue
+		}
+		idx[r.PostID] = len(out)
+		out = append(out, r)
+	}
+	return out
+}
+
+// setTruncated remembers whether a site's last refresh hit the page cap. It is
+// held in memory on the instance that ran the refresh: the inventory has no
+// column for it, so another instance, or a restart, reports it as unknown
+// (false) until the next refresh.
+func (s *Service) setTruncated(siteID uuid.UUID, v bool) {
+	s.truncMu.Lock()
+	defer s.truncMu.Unlock()
+	if s.trunc == nil {
+		s.trunc = map[uuid.UUID]bool{}
+	}
+	if v {
+		s.trunc[siteID] = true
+	} else {
+		delete(s.trunc, siteID)
+	}
+}
+
+func (s *Service) isTruncated(siteID uuid.UUID) bool {
+	s.truncMu.Lock()
+	defer s.truncMu.Unlock()
+	return s.trunc[siteID]
 }
 
 // ---------------------------------------------------------------------------
@@ -253,6 +297,7 @@ type InventoryPage struct {
 	NextAfterPost  *int64
 	LastCheckedAt  *time.Time
 	TitlesIncluded bool
+	Truncated      bool
 }
 
 // Inventory returns one page of a site's inventory. withTitles says whether
@@ -276,7 +321,7 @@ func (s *Service) Inventory(ctx context.Context, p domain.Principal, siteID uuid
 	if err != nil {
 		return InventoryPage{}, err
 	}
-	page := InventoryPage{MinAgent: MinAgentVersionForContentProbe, AgentVersion: humantext.CapBytes(humantext.Clean(target.AgentVersion), 32), TitlesIncluded: withTitles}
+	page := InventoryPage{MinAgent: MinAgentVersionForContentProbe, AgentVersion: humantext.CapBytes(humantext.Clean(target.AgentVersion), 32), TitlesIncluded: withTitles, Truncated: s.isTruncated(siteID)}
 	switch {
 	case !AgentMeetsFloor(target.AgentVersion):
 		page.State = StateAgentUpdateNeeded
@@ -389,7 +434,9 @@ func (s *Service) UpsertIntegration(ctx context.Context, in AdminUpsertInput) (I
 		return IntegrationRecord{}, domain.Validation("invalid_descriptor", "descriptor must be a JSON object")
 	}
 	for k := range d {
-		if _, ok := descriptorKeys[k]; !ok {
+		_, agentKey := descriptorKeys[k]
+		_, adminKey := adminOnlyDescriptorKeys[k]
+		if !agentKey && !adminKey {
 			return IntegrationRecord{}, domain.Validation("invalid_descriptor", "descriptor has a field the agent does not accept")
 		}
 	}
