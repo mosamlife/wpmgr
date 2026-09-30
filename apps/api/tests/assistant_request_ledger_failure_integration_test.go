@@ -2,6 +2,14 @@
 // injected in the database, not in Go: INSERT on audit_log is revoked from the
 // application role, so the approval's own RecordInTx reaches the append and
 // the append is refused. The approval must not survive it.
+//
+// What this pins is that the approval and its ledger row share one
+// transaction. A refused append aborts that transaction, and Postgres will
+// not commit an aborted transaction whatever the Go code then returns, so the
+// approval is rolled back even if the append's error were ignored. Moving the
+// append into a transaction of its own, after the approval commits, is the
+// regression that leaves an approved row with no ledger entry, and it turns
+// this test red.
 package tests
 
 import (
