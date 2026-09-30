@@ -4,7 +4,7 @@ import { screen, fireEvent, within } from "@testing-library/react";
 import { renderWithProviders } from "@/test/render";
 
 import { ConsentScreen, type ConsentScreenProps } from "./consent-screen";
-import { parseConsentContext, SCOPE_CACHE, SCOPE_READ } from "./consent-context";
+import { parseConsentContext, SCOPE_CACHE, SCOPE_READ, SCOPE_SITE } from "./consent-context";
 import { bannedWordHits } from "./site-enforcement";
 import type { ScopedSite } from "./site-scope";
 
@@ -610,5 +610,118 @@ describe("ConsentScreen — the mcp:cache write section (design v7 S2.2)", () =>
     renderWithProviders(<ConsentScreen {...props({ consent: noCaps })} />);
     expect(screen.queryByTestId("consent-unknown-capability-effect")).toBeNull();
     expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The mcp:site site-tools section
+// ---------------------------------------------------------------------------
+describe("ConsentScreen — the mcp:site site-tools section", () => {
+  const READ = { name: "mcp.sites.read", effect: "read" };
+  const ABILITY_READ = { name: "mcp.ability.read", effect: "read" };
+  const ABILITY_REQUEST = { name: "mcp.ability.request", effect: "request" };
+
+  function siteConsent(
+    scopes: readonly string[] = [SCOPE_READ, SCOPE_SITE],
+    conferrable: readonly { name: string; effect: string }[] = [
+      READ,
+      ABILITY_READ,
+      ABILITY_REQUEST,
+    ],
+  ) {
+    return parseConsentContext({
+      client_id: "c_site",
+      client_name_unverified: "Test Client",
+      identity_verified: false,
+      redirect_uri: "https://x.example/cb",
+      redirect_host: "x.example",
+      scopes,
+      grant_lifetime_days: 90,
+      conferrable_capabilities: conferrable,
+    });
+  }
+
+  const readBox = () => screen.getByTestId("ability-box-mcp.ability.read") as HTMLInputElement;
+  const requestBox = () =>
+    screen.getByTestId("ability-box-mcp.ability.request") as HTMLInputElement;
+
+  function approveCall(onApprove: ReturnType<typeof vi.fn>) {
+    fireEvent.submit(screen.getByTestId("consent-approve").closest("form")!);
+    expect(onApprove).toHaveBeenCalledTimes(1);
+    return onApprove.mock.calls[0]![0] as { capabilities?: string[] };
+  }
+
+  it("recognises mcp:site, renders both boxes unticked, and leaves Approve enabled", async () => {
+    renderWithProviders(<ConsentScreen {...props({ consent: siteConsent() })} />, {
+      withRouter: true,
+    });
+    await screen.findByTestId("consent-site-capability");
+    expect(screen.queryByTestId("consent-unrecognised-scope")).toBeNull();
+    expect(readBox().checked).toBe(false);
+    expect(requestBox().checked).toBe(false);
+    expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(false);
+  });
+
+  it("sends the fleet reads only when neither box is ticked", async () => {
+    const onApprove = vi.fn();
+    renderWithProviders(<ConsentScreen {...props({ consent: siteConsent(), onApprove })} />, {
+      withRouter: true,
+    });
+    await screen.findByTestId("consent-site-capability");
+    expect(approveCall(onApprove).capabilities).toEqual(["mcp.sites.read"]);
+  });
+
+  it("sends exactly what is ticked: the read alone, then the request alone, then both", async () => {
+    const cases: { read: boolean; request: boolean; want: string[] }[] = [
+      { read: true, request: false, want: ["mcp.sites.read", "mcp.ability.read"] },
+      { read: false, request: true, want: ["mcp.sites.read", "mcp.ability.request"] },
+      {
+        read: true,
+        request: true,
+        want: ["mcp.sites.read", "mcp.ability.read", "mcp.ability.request"],
+      },
+    ];
+    for (const c of cases) {
+      const onApprove = vi.fn();
+      const { unmount } = renderWithProviders(
+        <ConsentScreen {...props({ consent: siteConsent(), onApprove })} />,
+        { withRouter: true },
+      );
+      await screen.findByTestId("consent-site-capability");
+      if (c.read) fireEvent.click(readBox());
+      if (c.request) fireEvent.click(requestBox());
+      expect(approveCall(onApprove).capabilities).toEqual(c.want);
+      unmount();
+    }
+  });
+
+  it("does not send a capability the server did not offer, even if ticked", async () => {
+    const onApprove = vi.fn();
+    const consent = siteConsent([SCOPE_READ, SCOPE_SITE], [READ, ABILITY_READ]);
+    renderWithProviders(<ConsentScreen {...props({ consent, onApprove })} />, {
+      withRouter: true,
+    });
+    await screen.findByTestId("consent-site-capability");
+    fireEvent.click(readBox());
+    fireEvent.click(requestBox());
+    expect(approveCall(onApprove).capabilities).toEqual(["mcp.sites.read", "mcp.ability.read"]);
+  });
+
+  it("blocks Approve for a site-only request until a box is ticked", async () => {
+    const consent = siteConsent(
+      [SCOPE_SITE],
+      [ABILITY_READ, ABILITY_REQUEST],
+    );
+    renderWithProviders(<ConsentScreen {...props({ consent })} />, { withRouter: true });
+    await screen.findByTestId("consent-site-capability");
+    expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(true);
+    expect(screen.getByTestId("consent-nothing-to-confer")).toBeTruthy();
+    fireEvent.click(readBox());
+    expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(false);
+  });
+
+  it("does not show the site-tools box when the client did not ask for mcp:site", () => {
+    renderWithProviders(<ConsentScreen {...props()} />);
+    expect(screen.queryByTestId("consent-site-capability")).toBeNull();
   });
 });
