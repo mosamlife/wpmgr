@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { buildMetadata, buildBreadcrumbLd, buildFAQPageLd } from "@/lib/seo";
 import { JsonLd } from "@/lib/json-ld";
 import { LegalPage } from "@/components/templates/legal-page";
-import { COMPANY, LEGAL_EFFECTIVE_DATE, LEGAL_CONTACT_HREF, STRIPE, RAZORPAY } from "@/lib/content/legal";
+import { COMPANY, LEGAL_EFFECTIVE_DATE, LEGAL_CONTACT_HREF, STRIPE, RAZORPAY, RAZORPAY_SELLER } from "@/lib/content/legal";
 
 export const metadata: Metadata = buildMetadata({
   title: "Refund Policy",
@@ -136,8 +136,8 @@ export default function RefundsPage() {
                 Approved refunds are issued back through whichever payment provider processed the
                 original payment, to the original payment method used for the purchase. For
                 payments processed through Stripe, {COMPANY.legalName} issues the refund directly.
-                For payments processed through Razorpay, the refund is issued by that route&apos;s
-                seller, confirmed separately (see our Terms of Service). Depending on your bank or
+                For payments processed through Razorpay, {RAZORPAY_SELLER.legalName} issues the
+                refund. Depending on your bank or
                 card issuer, a refund can take several business days to appear on your statement
                 after it is issued. We are not able to refund to a different payment method or
                 account than the one that made the original payment.
