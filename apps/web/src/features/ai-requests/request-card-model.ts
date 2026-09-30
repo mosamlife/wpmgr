@@ -69,7 +69,7 @@ export function setUpForLine(request: AssistantRequest): SetUpForLine {
 /** The "If you approve" paragraph, which never differs by anything but scope. */
 export function ifApproveCopy(scope: AssistantRequest["scope"]): string {
   return scope === "url"
-    ? "WPMgr deletes its own cached files for this page address. It skips every hosting cache, because none is yet confirmed to clear only this site. It also removes this address from your CDN in WPMgr. Pages load slower until the cache refills."
+    ? "WPMgr deletes its own cached files for this page address. It skips every hosting cache, because none is yet confirmed to clear only this site. If this site uses a CDN set up in WPMgr, it also removes this address from that CDN. Pages load slower until the cache refills."
     : "WPMgr deletes its own cached files for this site. It skips every hosting cache, because none is yet confirmed to clear only this site. Pages load slower until the cache refills.";
 }
 
@@ -146,6 +146,16 @@ export function decidedByLine(
   return { verb, text: `${verb} by ${request.decided_by_name ?? "someone"} at ${time}.` };
 }
 
+/**
+ * The site's own failure text, carried as plain data for the caller to render
+ * as a text node. Empty or absent is null.
+ */
+function siteSaid(request: AssistantRequest): string | null {
+  const t = request.site_reported_text;
+  if (typeof t !== "string" || t.trim() === "") return null;
+  return `The site said: ${t}`;
+}
+
 /** One rendered card-state line, everything after the always-shown facts. */
 export interface RequestStatusLine {
   readonly kind:
@@ -212,18 +222,28 @@ export function requestStatusLine(
             text +=
               " The site did not confirm that it skipped hosting caches WPMgr has not confirmed.";
           }
+          if (request.wpmgr_cdn === "failed") {
+            text +=
+              " Removing it from your CDN failed, so visitors may see the old page until the CDN copy expires.";
+          }
           return { kind: "done_purged", text };
         }
-        case "site_reported_failure":
+        case "site_reported_failure": {
+          const said = siteSaid(request);
           return {
             kind: "done_site_reported_failure",
             text: "The site said clearing did not complete. Part of its cache may have been cleared.",
+            ...(said !== null ? { detail: said } : {}),
           };
-        case "agent_failed":
+        }
+        case "agent_failed": {
+          const said = siteSaid(request);
           return {
             kind: "done_agent_failed",
             text: "The site's agent failed while clearing. Part of its cache may have been cleared.",
+            ...(said !== null ? { detail: said } : {}),
           };
+        }
         case "outcome_unknown":
           return {
             kind: "done_outcome_unknown",
@@ -231,7 +251,15 @@ export function requestStatusLine(
           };
         case "not_sent": {
           const reason = notSentReasonText(request.not_sent_reason);
-          return { kind: "done_not_sent", text: `Nothing was sent: ${reason}. Nothing ran.` };
+          const line: RequestStatusLine = {
+            kind: "done_not_sent",
+            text: `Nothing was sent: ${reason}. Nothing ran.`,
+          };
+          if (request.not_sent_reason === "dispatch_deadline_passed") {
+            const last = waitingReasonText(request.last_attempt_code);
+            if (last !== null) return { ...line, detail: `Last attempt: ${last}.` };
+          }
+          return line;
         }
         default:
           return { kind: "unknown", text: "This request's outcome is not one this page knows." };
