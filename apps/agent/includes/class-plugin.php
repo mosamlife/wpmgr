@@ -55,6 +55,7 @@ use WPMgr\Agent\Commands\SyncMediaConfigCommand;
 use WPMgr\Agent\Commands\SyncSecurityConfigCommand;
 use WPMgr\Agent\Commands\UnblockIpCommand;
 use WPMgr\Agent\Commands\UpdateCommand;
+use WPMgr\Agent\Commands\ContentProbeCommand;
 use WPMgr\Agent\Commands\ContentUpdateCommand;
 use WPMgr\Agent\Commands\CacheEnableCommand;
 use WPMgr\Agent\Commands\CacheDisableCommand;
@@ -2024,6 +2025,9 @@ final class Plugin
             // (wp-includes/revision.php), so without that pre-flight the
             // overwritten version would not be retained anywhere.
             new ContentUpdateCommand(),
+            // Read-only ownership probe for content_update: says whether
+            // post_content is what a visitor sees for a page. Writes nothing.
+            new ContentProbeCommand(),
             // M5.6 / ADR-033: BackupCommand validates the signed CP request,
             // dedups, seeds the wpmgr_backup_tasks row, schedules the
             // watchdog cron event, then hands off via wp_schedule_single_event
