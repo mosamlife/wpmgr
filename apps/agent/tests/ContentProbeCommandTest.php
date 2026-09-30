@@ -309,6 +309,37 @@ final class ContentProbeCommandTest extends TestCase
         $this->assertStringNotContainsString('"a":1', (string) json_encode($r));
     }
 
+    public function test_version_constant_named_for_a_version_is_reported_and_others_are_null(): void
+    {
+        if (!defined('WPMGR_PROBE_TEST_VERSION')) {
+            define('WPMGR_PROBE_TEST_VERSION', '3.4.5');
+        }
+        if (!defined('WPMGR_PROBE_ODD_VERSION')) {
+            define('WPMGR_PROBE_ODD_VERSION', 'not a version at all');
+        }
+        $this->seedPost(60, '');
+        $this->meta[60] = ['_acme_enabled' => '1', '_acme_data' => '{"a":1}'];
+
+        $ok  = $this->probe(['post_id' => 60, 'descriptors' => [$this->descriptor(['version_constant' => 'WPMGR_PROBE_TEST_VERSION'])]]);
+        $odd = $this->probe(['post_id' => 60, 'descriptors' => [$this->descriptor(['version_constant' => 'WPMGR_PROBE_ODD_VERSION'])]]);
+
+        $this->assertSame('3.4.5', $ok['owner']['version']);
+        $this->assertSame('builder', $odd['verdict']);
+        $this->assertNull($odd['owner']['version']);
+    }
+
+    public function test_mode_flag_is_reported_only_with_a_payload(): void
+    {
+        $this->seedPost(61, '');
+        $this->registerAbility('acme-builder/get-page');
+        $this->meta[61] = ['_acme_enabled' => '1'];
+
+        $r = $this->probe(['post_id' => 61, 'descriptors' => [$this->descriptor(['ability_names' => ['acme-builder/get-page']])]]);
+
+        $this->assertSame('flag_without_payload', $r['matches'][0]['evidence']);
+        $this->assertFalse($r['matches'][0]['mode_flag']);
+    }
+
     public function test_stale_payload_is_never_classic(): void
     {
         $this->seedPost(16, 'Looks classic.');
@@ -430,6 +461,11 @@ final class ContentProbeCommandTest extends TestCase
     {
         return [
             'lowercase constant' => [['version_constant' => 'acme_version']],
+            'credential constant' => [['version_constant' => 'DB_PASSWORD']],
+            'salt constant'      => [['version_constant' => 'AUTH_SALT']],
+            'not version named'  => [['version_constant' => 'ABSPATH']],
+            'secret version name' => [['version_constant' => 'STRIPE_SECRET_VERSION']],
+            'key version name'   => [['version_constant' => 'API_KEY_VERSION']],
             'bad meta key'       => [['payload_keys' => ['bad key!']]],
             'bad ability name'   => [['ability_names' => ['Acme/Get']]],
             'callable field'     => [['callback' => 'system']],

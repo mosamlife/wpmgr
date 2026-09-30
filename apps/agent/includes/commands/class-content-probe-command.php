@@ -78,7 +78,10 @@ final class ContentProbeCommand implements CommandInterface
 
     private const LIVE_DOMAIN = 'wpmgr.content_probe.live.v1';
 
-    private const RE_CONSTANT   = '/^[A-Z][A-Z0-9_]{2,63}$/';
+    /** A version constant is named for a version; nothing else is read. */
+    private const RE_CONSTANT   = '/^[A-Z][A-Z0-9_]{1,55}_VERSION$/';
+    /** Credential-shaped names are refused even when they end in _VERSION. */
+    private const RE_CONSTANT_DENY = '/(^DB_|KEY|SALT|PASSWORD|SECRET|TOKEN)/';
     private const RE_META_KEY   = '/^[A-Za-z0-9_\-]{1,128}$/';
     private const RE_ABILITY    = '/^[a-z0-9-]+\/[a-z0-9-]+$/';
     private const RE_NAMESPACE  = '/^[a-z0-9-]{1,64}$/';
@@ -351,7 +354,7 @@ final class ContentProbeCommand implements CommandInterface
             return 'invalid namespace';
         }
         $constant = $raw['version_constant'] ?? null;
-        if ($constant !== null && (!is_string($constant) || preg_match(self::RE_CONSTANT, $constant) !== 1)) {
+        if ($constant !== null && (!is_string($constant) || preg_match(self::RE_CONSTANT, $constant) !== 1 || preg_match(self::RE_CONSTANT_DENY, $constant) === 1)) {
             return 'invalid version_constant';
         }
         $versionAbility = $raw['version_ability'] ?? null;
@@ -905,6 +908,7 @@ final class ContentProbeCommand implements CommandInterface
         $id      = (int) $post->ID;
         $content = $this->content($post);
         $bytes   = strlen($this->title($post)) + strlen($content);
+        $budget  = self::PROBE_LIMIT_BYTES - $bytes;
 
         $matches  = [];
         $matchRaw = [];
@@ -919,17 +923,18 @@ final class ContentProbeCommand implements CommandInterface
             }
         }
 
+        try {
         foreach ($descriptors as $d) {
             if (!$d['enabled'] || !($site['live'][$d['integration_id']]['live'] ?? false)) {
                 continue;
             }
-            $flagRaw  = $this->metaBytes($id, $d['flag_key']);
+            $flagRaw  = $this->metaBytes($id, $d['flag_key'], $budget);
             $flagOn   = $flagRaw !== null && in_array($flagRaw, $d['flag_on'], true);
             $payload  = [];
             $payloadBytes = 0;
             $payloadPresent = false;
             foreach ($d['payload_keys'] as $k) {
-                $payload[$k]   = $this->metaBytes($id, $k);
+                $payload[$k]   = $this->metaBytes($id, $k, $budget);
                 $bytes        += strlen((string) $payload[$k]);
                 $payloadBytes += strlen((string) $payload[$k]);
                 $payloadPresent = $payloadPresent || $this->nonEmptyPayload($payload[$k]);
@@ -937,7 +942,7 @@ final class ContentProbeCommand implements CommandInterface
             $draft = [];
             $draftPresent = false;
             foreach ($d['draft_keys'] as $k) {
-                $draft[$k]     = $this->metaBytes($id, $k);
+                $draft[$k]     = $this->metaBytes($id, $k, $budget);
                 $bytes        += strlen((string) $draft[$k]);
                 $draftPresent = $draftPresent || $this->nonEmptyPayload($draft[$k]);
             }
@@ -954,7 +959,7 @@ final class ContentProbeCommand implements CommandInterface
 
             $matches[]  = [
                 'integration_id'   => $d['integration_id'],
-                'mode_flag'        => $flagOn,
+                'mode_flag'        => $flagOn && $payloadPresent,
                 'payload_present'  => $payloadPresent,
                 'payload_bytes'    => $payloadBytes,
                 'draft_present'    => $draftPresent,
@@ -962,6 +967,12 @@ final class ContentProbeCommand implements CommandInterface
                 'evidence'         => $evidence,
             ];
             $matchRaw[] = ['flag_key' => $d['flag_key'], 'flag_raw' => $flagRaw, 'payload' => $payload, 'draft' => $draft];
+        }
+        } catch (\LengthException $e) {
+            // Over the per-probe read budget: nothing more is loaded.
+            return [
+                'matches' => [], 'match_raw' => [], 'hints' => [], 'bytes' => self::PROBE_LIMIT_BYTES + 1,
+            ] + $this->verdict('unrecognised_builder', 3, 'unrecognised_builder');
         }
 
         // Unclaimed meta-prefix hints need the post's own meta keys.
@@ -1126,6 +1137,25 @@ final class ContentProbeCommand implements CommandInterface
     }
 
     /**
+     * Byte length of a stored meta value via a length-only query, or null when
+     * the database handle is unavailable.
+     *
+     * @param int    $id  Post ID.
+     * @param string $key Meta key.
+     * @return int|null
+     */
+    private function storedLength(int $id, string $key): ?int
+    {
+        global $wpdb;
+        if (!is_object($wpdb) || !method_exists($wpdb, 'get_var') || !method_exists($wpdb, 'prepare') || !isset($wpdb->postmeta)) {
+            return null;
+        }
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- length-only read so a large value is never loaded
+        $len = $wpdb->get_var($wpdb->prepare("SELECT MAX(LENGTH(meta_value)) FROM {$wpdb->postmeta} WHERE post_id = %d AND meta_key = %s", $id, $key)); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name from core
+        return is_numeric($len) ? (int) $len : null;
+    }
+
+    /**
      * Stored bytes of one meta key: null when the key is absent, the string as
      * stored otherwise. Non-string values are serialised deterministically.
      *
@@ -1133,10 +1163,18 @@ final class ContentProbeCommand implements CommandInterface
      * @param string $key Meta key.
      * @return string|null
      */
-    private function metaBytes(int $id, string $key): ?string
+    private function metaBytes(int $id, string $key, int &$budget): ?string
     {
         if (!metadata_exists('post', $id, $key)) {
             return null;
+        }
+        // Size is checked before the value is loaded.
+        $length = $this->storedLength($id, $key);
+        if ($length !== null) {
+            $budget -= $length;
+            if ($budget < 0) {
+                throw new \LengthException('probe read budget exceeded');
+            }
         }
         $value = get_post_meta($id, $key, true);
         if (is_string($value)) {
