@@ -157,6 +157,14 @@ type Snapshot struct {
 	// this snapshot. A locked snapshot is never auto-deleted regardless of
 	// retention_days or keep_last; it must be explicitly unlocked first.
 	Locked bool
+	// AttemptError (GH #791, m148) is the control plane's description of the
+	// most recent failed attempt to start this backup on the site, while the
+	// control plane is still retrying (status=="running" only). '' means no
+	// attempt is currently failing. Distinct from Error, which is the FINAL
+	// reason a backup failed — a running row never has Error set, and a
+	// failed row's AttemptError is left as it was at the moment it failed
+	// (see FailStalledBackupSnapshot for the one place the two are combined).
+	AttemptError string
 }
 
 // ---------------------------------------------------------------------------

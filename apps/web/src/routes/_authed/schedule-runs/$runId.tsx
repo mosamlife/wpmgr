@@ -117,7 +117,10 @@ function resolveTriggeredBy(run: ScheduleRun): ReactNode {
   return "schedule";
 }
 
-function ScheduleRunDetailView({ run }: { run: ScheduleRun }) {
+/** Exported for `-runId.attempt-error.test.tsx` — mirrors `SiteShell`'s
+ * pattern of testing the prop-driven view directly rather than navigating
+ * the full router. */
+export function ScheduleRunDetailView({ run }: { run: ScheduleRun }) {
   const terminal = isScheduleRunTerminal(run.status);
 
   // Resolve the originating site for the back-link.
@@ -176,6 +179,25 @@ function ScheduleRunDetailView({ run }: { run: ScheduleRun }) {
               {run.error}
             </span>
           ) : null}
+        </div>
+      ) : null}
+
+      {/* GH #791 — the run is still being retried; show the last attempt's
+          error (never the final `error` field, which stays empty while
+          running). */}
+      {run.status === "running" && run.attempt_error ? (
+        <div
+          role="status"
+          className="flex items-center gap-3 rounded-md border border-border bg-muted/30 p-3"
+        >
+          <StatusChip
+            tone={SCHEDULE_STATUS_TONE.running}
+            label={SCHEDULE_STATUS_LABEL.running}
+            pulse
+          />
+          <span className="text-sm text-warning-subtle-fg">
+            Last error: {run.attempt_error}
+          </span>
         </div>
       ) : null}
 
@@ -250,8 +272,13 @@ function ScheduleRunDetailView({ run }: { run: ScheduleRun }) {
                 ),
               },
               {
+                // GH #791 adv-review finding 11 — a running run's last
+                // attempt error is already shown once, above, in the
+                // status banner; repeating it here as "Last error: X" made
+                // the same text appear twice on the page. This row stays
+                // for the terminal `error` field only.
                 label: "Error",
-                value: run.error ?? "–",
+                value: run.status === "running" ? "–" : (run.error ?? "–"),
               },
             ]}
           />

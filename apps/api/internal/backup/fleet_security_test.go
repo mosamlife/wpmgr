@@ -85,6 +85,9 @@ func (r *secFleetRepo) MarkSnapshotStalled(_ context.Context, _, _ uuid.UUID) (b
 func (r *secFleetRepo) ClearSnapshotStalled(_ context.Context, _, _ uuid.UUID) (bool, error) {
 	panic("secFleetRepo.ClearSnapshotStalled not implemented")
 }
+func (r *secFleetRepo) SetSnapshotAttemptError(_ context.Context, _, _ uuid.UUID, _ string) (int64, error) {
+	panic("secFleetRepo.SetSnapshotAttemptError not implemented")
+}
 func (r *secFleetRepo) GetLatestCompletedSnapshot(_ context.Context, _, _ uuid.UUID) (Snapshot, error) {
 	panic("secFleetRepo.GetLatestCompletedSnapshot not implemented")
 }

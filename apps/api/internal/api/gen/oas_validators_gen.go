@@ -2684,9 +2684,13 @@ func (s BackupEventPhase) Validate() error {
 		return nil
 	case "failed":
 		return nil
+	case "started":
+		return nil
 	case "stalled":
 		return nil
 	case "resumed":
+		return nil
+	case "retrying":
 		return nil
 	default:
 		return errors.Errorf("invalid value: %v", s)

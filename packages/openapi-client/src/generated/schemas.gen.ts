@@ -3535,15 +3535,17 @@ export const BackupEventSchema = {
         "submitting_manifest",
         "completed",
         "failed",
+        "started",
         "stalled",
         "resumed",
+        "retrying",
       ],
     },
     phase_detail: {
       type: "object",
       additionalProperties: true,
       description:
-        "Pass-through of the agent's POST /progress payload (e.g. chunk counters).",
+        "Pass-through of the agent's POST /progress payload (e.g. chunk counters).\nFor `retrying`, a control-plane hint that a backup command could not\nbe delivered to the site and will be retried automatically,\n`phase_detail.error` carries the reason in the control plane's own\nwords (the same text as `attempt_error`). A restore is never\nretried automatically, so it never sends `retrying`; a failed\nrestore sends `failed`.\n",
     },
     status: {
       type: "string",
@@ -3624,6 +3626,13 @@ export const BackupSnapshotSchema = {
     },
     error: {
       type: "string",
+      description:
+        "Why the backup failed. Set only once `status` is `failed`; a\nrunning backup's retry reason is `attempt_error`, never this field.\n",
+    },
+    attempt_error: {
+      type: "string",
+      description:
+        "While `status` is `running`: why the last attempt to start the\nbackup on the site failed, in the control plane's own words, while\nit retries automatically. Cleared as soon as the site responds.\nAbsent when no attempt is failing.\n",
     },
     progress: {
       type: "object",
@@ -4712,6 +4721,11 @@ export const ScheduleRunSchema = {
     error: {
       type: "string",
       description: "Human-readable error message when status is `failed`.",
+    },
+    attempt_error: {
+      type: "string",
+      description:
+        "While `status` is `running`: why the last attempt to start the\nbackup on the site failed, while the control plane retries it\nautomatically. Absent when no attempt is failing.\n",
     },
     triggered_by: {
       type: "string",

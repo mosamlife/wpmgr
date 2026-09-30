@@ -104,6 +104,14 @@ type Repo interface {
 	// transitioned (0 or 1); the caller uses this to decide whether to publish
 	// the 'failed' SSE event and send the failure notification. Tenant-scoped.
 	FailStalledSnapshot(ctx context.Context, tenantID, snapshotID uuid.UUID, errMsg string) (int64, error)
+	// SetSnapshotAttemptError (GH #791) records the control plane's
+	// description of the most recent failed attempt to start this backup on
+	// the site, while it is still retrying. Guarded on status='running' by
+	// the underlying query, so a pending/completed/failed row is never
+	// touched. Returns rows-affected: 1 = recorded, 0 = the row is not
+	// running (or is gone) — the caller must not publish anything for it.
+	// Tenant-scoped.
+	SetSnapshotAttemptError(ctx context.Context, tenantID, snapshotID uuid.UUID, msg string) (int64, error)
 	// GetLatestCompletedSnapshot returns the most recent completed snapshot for
 	// (tenantID, siteID). Used by resolveChainForSite to determine is_incremental.
 	// Returns domain.NotFound when no completed snapshot exists.
@@ -832,6 +840,23 @@ func (r *pgRepo) FailStalledSnapshot(ctx context.Context, tenantID, snapshotID u
 		})
 		if err != nil {
 			return domain.Internal("backup_snapshot_stall_fail_failed", "failed to hard-fail stalled snapshot").WithCause(err)
+		}
+		n = rows
+		return nil
+	})
+	return n, err
+}
+
+// SetSnapshotAttemptError (GH #791) is tenant-scoped; the underlying query's
+// status='running' guard is the entire contract — see the Repo interface doc.
+func (r *pgRepo) SetSnapshotAttemptError(ctx context.Context, tenantID, snapshotID uuid.UUID, msg string) (int64, error) {
+	var n int64
+	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		rows, err := sqlc.New(tx).SetBackupSnapshotAttemptError(ctx, sqlc.SetBackupSnapshotAttemptErrorParams{
+			AttemptError: msg, ID: snapshotID, TenantID: tenantID,
+		})
+		if err != nil {
+			return domain.Internal("backup_snapshot_attempt_error_set_failed", "failed to record snapshot attempt error").WithCause(err)
 		}
 		n = rows
 		return nil
@@ -1922,6 +1947,7 @@ func toSnapshot(s sqlc.BackupSnapshot) Snapshot {
 		Archived:     s.Archived,
 		CreatedAt:    s.CreatedAt,
 		UpdatedAt:    s.UpdatedAt,
+		AttemptError: s.AttemptError,
 	}
 	if s.CreatedBy.Valid {
 		id := uuid.UUID(s.CreatedBy.Bytes)
@@ -2126,14 +2152,15 @@ const snapshotSelectColumns = `SELECT id, tenant_id, site_id, created_by, kind, 
         started_at, finished_at, created_at, updated_at,
         is_incremental, parent_snapshot_id, base_snapshot_id, chain_id, generation,
         cycle_files_scanned, cycle_files_changed, cycle_files_deleted, cycle_bytes_uploaded,
-        locked, destination_id, stalled_at`
+        locked, destination_id, stalled_at, attempt_error`
 
 // scanSnapshotWithChainFields scans a row that includes the ADR-048 chain
 // columns (is_incremental … cycle_bytes_uploaded) plus the m49 locked column,
-// the M7 / ADR-036 P1 destination_id column, and the m104 / GH #279 stalled_at
-// column. The SELECT must project all standard snapshot columns plus the four
-// chain UUID columns, the four cycle counter columns, locked, destination_id,
-// and stalled_at (appended last) — in the exact order listed here.
+// the M7 / ADR-036 P1 destination_id column, the m104 / GH #279 stalled_at
+// column, and the m148 / GH #791 attempt_error column. The SELECT must
+// project all standard snapshot columns plus the four chain UUID columns, the
+// four cycle counter columns, locked, destination_id, stalled_at and
+// attempt_error (appended last) — in the exact order listed here.
 func scanSnapshotWithChainFields(row rowScanner) (Snapshot, error) {
 	var (
 		s               Snapshot
@@ -2154,7 +2181,7 @@ func scanSnapshotWithChainFields(row rowScanner) (Snapshot, error) {
 		&s.CreatedAt, &s.UpdatedAt,
 		&s.IsIncremental, &parentID, &baseID, &chainID, &s.Generation,
 		&s.CycleFilesScanned, &s.CycleFilesChanged, &s.CycleFilesDeleted, &s.CycleBytesUploaded,
-		&s.Locked, &destinationID, &stalledAt,
+		&s.Locked, &destinationID, &stalledAt, &s.AttemptError,
 	)
 	if err != nil {
 		return Snapshot{}, err
