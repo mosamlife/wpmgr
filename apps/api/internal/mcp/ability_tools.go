@@ -60,7 +60,7 @@ const (
 	abilityRunDefaultOutputBytes  = 256 * 1024
 	abilityRunDefaultInputBytes   = 64 * 1024
 	abilityRunTimeout             = 10 * time.Second
-	abilityInventoryStaleAfter    = 26 * time.Hour
+	abilityInventoryStaleAfter    = 32 * time.Hour
 	abilityDescribeSchemaMaxBytes = 32 * 1024
 )
 
@@ -82,6 +82,9 @@ const (
 	notRunnableOwnerMismatch = "owner_mismatch"
 	notRunnableAgentOutdated = "agent_outdated"
 	notRunnableNotOnSite     = "not_on_site"
+	// notRunnableNotInventoried: WPMgr has not read this site's abilities
+	// yet; a check has been queued.
+	notRunnableNotInventoried = "not_inventoried_yet"
 )
 
 // Closed class order for discover.
@@ -102,6 +105,8 @@ const (
 	msgAbilityOutdated     = "This site's WPMgr agent is too old to run abilities. The agent must be updated to " +
 		agentcmd.MinAgentVersionForAbilityEngine + " or later."
 	msgAbilityRequestAbsent = "no such request for this connection"
+	msgAbilityNotInventoried = "WPMgr has not read this site's abilities yet. A check has been queued; " +
+		"try again in a few minutes."
 )
 
 // Operator-facing refusal reasons.
@@ -132,6 +137,40 @@ type abilityEngine struct {
 	entry     EntryEncoder
 	cursorKey []byte
 	readLimit *abilityReadLimiter
+	refresh   AbilityRefresher
+}
+
+// AbilityRefresher queues one site's inventory refresh. It is unique per
+// site inside its window, so calling it on every read of a never-inventoried
+// site queues at most one job per window. main.go wires the abilities
+// package's River enqueuer after River starts.
+type AbilityRefresher func(ctx context.Context, tenantID, siteID uuid.UUID) (queued bool, err error)
+
+// SetAbilityRefresher wires the refresh enqueuer (nil leaves reads honest but
+// unable to queue).
+func (s *Service) SetAbilityRefresher(r AbilityRefresher) {
+	if s.abilities != nil {
+		s.abilities.refresh = r
+	}
+}
+
+// requestAbilityRefresh queues a refresh for a site that has never been
+// inventoried. Best effort: a failure is not the caller's problem, and the
+// daily sweep remains.
+func (s *Service) requestAbilityRefresh(ctx context.Context, tenantID, siteID uuid.UUID) {
+	if s.abilities == nil || s.abilities.refresh == nil {
+		return
+	}
+	_, _ = s.abilities.refresh(ctx, tenantID, siteID)
+}
+
+func containsClassified(cs []classified, name string) bool {
+	for _, c := range cs {
+		if c.name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // EntryEncoder returns the exact catalogue entry bytes to send and their
@@ -488,6 +527,32 @@ func (s *Service) siteClassified(ctx context.Context, eng *abilityEngine, site a
 			continue
 		}
 		out = append(out, classify(inv[i].Name, byName[inv[i].Name], &inv[i], site.row.AgentVersion))
+	}
+	if run == nil {
+		// Never inventoried. WPMgr's own abilities are still listed, with the
+		// honest reason: the agent is below the engine's floor (from the
+		// site's known agent_version), or the first check has been queued.
+		reason := notRunnableNotInventoried
+		if !abilityAgentMeetsFloor(site.row.AgentVersion, nil) {
+			reason = notRunnableAgentOutdated
+		} else {
+			s.requestAbilityRefresh(ctx, site.p.TenantID, site.row.ID)
+		}
+		for _, e := range cat {
+			if e.Source != "wpmgr" || !abilityNamePattern.MatchString(e.Name) {
+				continue
+			}
+			if _, own := ownAbilityInputSchemas[e.Name]; !own {
+				continue
+			}
+			c := classify(e.Name, byName[e.Name], nil, site.row.AgentVersion)
+			if c.entry != nil && c.reason != nil && *c.reason == notRunnableNotOnSite {
+				c.reason = abilityStrPtr(reason)
+			}
+			if !containsClassified(out, e.Name) {
+				out = append(out, c)
+			}
+		}
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		a, b := out[i], out[j]
@@ -1121,6 +1186,12 @@ func (s *Service) runSiteAbility(ctx context.Context, auth AuthorizedRequest, ra
 			return "", refuse(reasonAgentOutdated, domain.Conflict(ErrCodeSiteAgentOutdated,
 				msgAbilityOutdated).WithDetails(map[string]any{
 				"min_agent_version": agentcmd.MinAgentVersionForAbilityEngine, "retryable": false,
+			}))
+		}
+		if code == notRunnableNotInventoried {
+			return "", refuse(reasonAbilityNotRunnable, domain.Unavailable(ErrCodeSiteUnreachable,
+				msgAbilityNotInventoried).WithDetails(map[string]any{
+				"not_runnable_reason": code, "retryable": true,
 			}))
 		}
 		return "", notRunnableRefusal(code)

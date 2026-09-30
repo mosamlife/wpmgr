@@ -2308,7 +2308,12 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	dbCleanScheduleWorker.SetEnqueuer(dbCleanEnqueuer, cfg.PublicBaseURL)
 	contentEnqueuer := content.NewRiverEnqueuer(riverClient)
 	contentSweepWorker.SetEnqueuer(contentEnqueuer)
-	abilitySweepWorker.SetEnqueuer(abilities.NewRiverEnqueuer(riverClient))
+	abilityEnqueuer := abilities.NewRiverEnqueuer(riverClient)
+	abilitySweepWorker.SetEnqueuer(abilityEnqueuer)
+	// A read of a never-inventoried site queues that site's refresh.
+	mcpSvc.SetAbilityRefresher(func(ctx context.Context, tenantID, siteID uuid.UUID) (bool, error) {
+		return abilityEnqueuer.EnqueueRefresh(ctx, abilities.RefreshArgs{TenantID: tenantID, SiteID: siteID}, time.Time{})
+	})
 	contentH.SetEnqueuer(contentEnqueuer)
 	// The AI request scan enqueues one dispatch job per due approved request.
 	assistantReqScanWorker.SetEnqueuer(assistantrequest.NewRiverEnqueuer(riverClient))
@@ -3926,7 +3931,10 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 		periodics = append(periodics, river.NewPeriodicJob(
 			river.PeriodicInterval(abilities.SweepInterval),
 			func() (river.JobArgs, *river.InsertOpts) { return abilities.SweepArgs{}, nil },
-			&river.PeriodicJobOpts{RunOnStart: false},
+			// RunOnStart: the inventory must fill without waiting a day
+			// after a deploy. The refresh job is unique per site per
+			// window, so a restart loop cannot storm the fleet.
+			&river.PeriodicJobOpts{RunOnStart: true},
 		))
 	}
 	if d.dbCleanScheduleWorker != nil {
