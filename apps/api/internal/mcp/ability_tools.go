@@ -728,6 +728,7 @@ func (s *Service) discoverSiteAbilities(ctx context.Context, auth AuthorizedRequ
 	if err != nil {
 		return "", err
 	}
+	gateWriteCapability(all, auth)
 	snapshot := uuid.Nil
 	if run != nil {
 		snapshot = run.SnapshotID
@@ -910,6 +911,7 @@ func (s *Service) describeSiteAbility(ctx context.Context, auth AuthorizedReques
 	if err != nil {
 		return "", err
 	}
+	gateWriteCapability(all, auth)
 	var c *classified
 	for i := range all {
 		if all[i].name == name {

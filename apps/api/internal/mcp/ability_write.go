@@ -179,6 +179,21 @@ func (s *Service) EnableAbilityWrites(store AbilityRequestStore) error {
 // ownWriteAbilities are the write entries this control plane can run.
 var ownWriteAbilities = map[string]struct{}{AbilityPageCreate: {}}
 
+// gateWriteCapability marks every write entry not runnable, with reason
+// capability_not_held, for a connection without CapAbilityRequest, so
+// discover and describe say what run would answer (v4 §1.4).
+func gateWriteCapability(all []classified, auth AuthorizedRequest) {
+	if auth.Capabilities.Allows(CapAbilityRequest) {
+		return
+	}
+	for i := range all {
+		if all[i].entry != nil && all[i].entry.Class == "write" {
+			all[i].runnable = false
+			all[i].reason = abilityStrPtr(notRunnableCapabilityNotHeld)
+		}
+	}
+}
+
 // writeEntryRunnable is classify's write arm: the reason a reviewed,
 // admitted, enabled wpmgr write entry cannot run on this site, or "".
 func writeEntryRunnable(e *sqlc.AbilityCatalogue, inv *sqlc.SiteAbilityInventory, agentVersion string) string {
