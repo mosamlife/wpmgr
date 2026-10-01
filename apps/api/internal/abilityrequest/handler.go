@@ -39,6 +39,33 @@ func (h *Handler) Register(r *gin.RouterGroup) {
 		authz.RequirePermission(authz.PermSiteContentEdit), httpx.RequireJSONBody(), h.approve)
 	g.POST("/ai/ability-requests/:requestId/decline",
 		authz.RequirePermission(authz.PermSiteContentEdit), httpx.RequireJSONBody(), h.decline)
+	g.POST("/ai/ability-requests/:requestId/undo",
+		authz.RequirePermission(authz.PermSiteContentEdit), httpx.RequireJSONBody(), h.undo)
+}
+
+func (h *Handler) undo(c *gin.Context) {
+	p, ok := principal(c)
+	if !ok {
+		return
+	}
+	if err := requireSession(p); err != nil {
+		httpx.Error(c, err)
+		return
+	}
+	siteID, ok := parseID(c, "siteId")
+	if !ok {
+		return
+	}
+	requestID, ok := parseID(c, "requestId")
+	if !ok {
+		return
+	}
+	row, err := h.svc.Undo(c.Request.Context(), p, siteID, requestID)
+	if err != nil {
+		httpx.Error(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, toDTO(row, true))
 }
 
 // RequestDTO is one ability request on the wire. site_label, site_host,
