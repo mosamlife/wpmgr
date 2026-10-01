@@ -147,3 +147,21 @@ describe("AI page-creation actions", () => {
     expect(humanizeTargetType("assistant_ability_request")).toBe("AI change request");
   });
 });
+
+describe("AI page request lifecycle actions", () => {
+  it("pins each label and severity", () => {
+    const expected: Array<[string, string, string]> = [
+      ["assistant.ability_request.approved", "Approved AI page request", "sensitive"],
+      ["assistant.ability_request.declined", "Declined AI page request", "read"],
+      ["assistant.ability_request.expired", "AI page request expired unanswered", "read"],
+      ["assistant.ability_request.withdrawn", "Withdrew AI page request", "read"],
+      ["assistant.ability_request.not_sent", "AI page request not sent", "read"],
+      ["assistant.ability_request.dispatched", "Sent AI page request to the site", "write"],
+      ["assistant.ability_request.failed", "AI page request failed", "sensitive"],
+    ];
+    for (const [key, label, severity] of expected) {
+      expect(actionLabel(key)).toBe(label);
+      expect(classifySeverity(key)).toBe(severity);
+    }
+  });
+});

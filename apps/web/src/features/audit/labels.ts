@@ -269,6 +269,13 @@ const ACTION_LABELS: Record<string, string> = {
   "assistant.request.completed": "AI change applied",
   "assistant.request.undone": "AI change undone",
   "site.content_editing.enabled": "AI page creation turned on",
+  "assistant.ability_request.approved": "Approved AI page request",
+  "assistant.ability_request.declined": "Declined AI page request",
+  "assistant.ability_request.expired": "AI page request expired unanswered",
+  "assistant.ability_request.withdrawn": "Withdrew AI page request",
+  "assistant.ability_request.not_sent": "AI page request not sent",
+  "assistant.ability_request.dispatched": "Sent AI page request to the site",
+  "assistant.ability_request.failed": "AI page request failed",
 };
 
 /** Turn "some.dotted_key" into "Some dotted key" — a dot never survives. */
@@ -367,6 +374,8 @@ const SENSITIVE_ACTIONS = new Set<string>([
   "assistant.request.approved",
   "assistant.request.failed",
   "site.content_editing.enabled",
+  "assistant.ability_request.approved",
+  "assistant.ability_request.failed",
 ]);
 
 // Forces "write" for keys the stem heuristic below cannot see the verb of
@@ -382,6 +391,7 @@ const WRITE_OVERRIDES = new Set<string>([
   // The AI's change landed on the site, and a person's undo of it.
   "assistant.request.completed",
   "assistant.request.undone",
+  "assistant.ability_request.dispatched",
 ]);
 
 // The heuristic below would otherwise flag these as writes (they contain a
