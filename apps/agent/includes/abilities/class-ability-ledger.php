@@ -17,8 +17,9 @@ if (!defined('ABSPATH')) {
  * A row holds the ability, the created object ids, the before and after
  * fingerprints, the phase, the undo state and the stored result.
  *
- * In-flight claims (Sec-F3) are options too: one per request and one per
- * target post, taken with add_option() and released in a finally block.
+ * In-flight claims (Sec-F3) are options rows too: one per request and one per
+ * target post, taken with an atomic INSERT IGNORE and released in a finally
+ * block.
  *
  * Object ids used by undo come only from the row for the token-bound
  * request_id. Nothing in the call's input is ever read for them.
@@ -83,7 +84,12 @@ final class AbilityLedger
      */
     public static function inflight(string $requestId): bool
     {
-        return get_option(self::INFLIGHT_PREFIX . strtolower($requestId), null) !== null;
+        global $wpdb;
+        $name = self::INFLIGHT_PREFIX . strtolower($requestId);
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- the claim row is written by a raw INSERT IGNORE, so it is read raw too; the options cache never holds it
+        $found = $wpdb->get_var($wpdb->prepare("SELECT option_id FROM {$wpdb->options} WHERE option_name = %s", $name));
+
+        return $found !== null;
     }
 
     /**
@@ -94,7 +100,24 @@ final class AbilityLedger
      */
     public static function claimRequest(string $requestId): bool
     {
-        return (bool) add_option(self::INFLIGHT_PREFIX . strtolower($requestId), (string) time(), '', false);
+        return self::claim(self::INFLIGHT_PREFIX . strtolower($requestId));
+    }
+
+    /**
+     * Atomic claim (Sec-F3). core's add_option() writes with ON DUPLICATE KEY
+     * UPDATE, so two racers can both succeed; INSERT IGNORE on the unique
+     * option_name lets exactly one of them insert the row.
+     *
+     * @param string $name Option name.
+     * @return bool True only when this call inserted the row.
+     */
+    private static function claim(string $name): bool
+    {
+        global $wpdb;
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- an atomic claim must be one INSERT IGNORE on the unique key; add_option() is not atomic under a race
+        $rows = $wpdb->query($wpdb->prepare("INSERT IGNORE INTO {$wpdb->options} (option_name, option_value, autoload) VALUES (%s, %s, 'no')", $name, (string) time()));
+
+        return $rows === 1;
     }
 
     /**
@@ -114,7 +137,7 @@ final class AbilityLedger
      */
     public static function claimTarget(int $postId): bool
     {
-        return (bool) add_option(self::TARGET_PREFIX . $postId, (string) time(), '', false);
+        return self::claim(self::TARGET_PREFIX . $postId);
     }
 
     /**
