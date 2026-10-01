@@ -275,6 +275,11 @@ final class PageCreateWriteTest extends TestCase
                 if (is_string($sql) && str_starts_with($sql, 'DELETE FROM wp_options WHERE option_name = %s AND option_value = %s')) {
                     return $this->t->deleteIf((string) $args[0], (string) $args[1]);
                 }
+                // An unconditional delete executes too, so a release that
+                // ignores the holder's value is visible to the tests.
+                if (is_string($sql) && preg_match('/^DELETE FROM wp_options WHERE option_name = %s\s*$/', $sql) === 1) {
+                    return $this->t->deleteAny((string) $args[0]);
+                }
                 return 0;
             }
 
@@ -316,6 +321,16 @@ final class PageCreateWriteTest extends TestCase
             return 0;
         }
         $this->options[$name] = $new;
+        return 1;
+    }
+
+    /** Fake-wpdb hook: DELETE ... WHERE option_name = ?. */
+    public function deleteAny(string $name): int
+    {
+        if (!array_key_exists($name, $this->options)) {
+            return 0;
+        }
+        unset($this->options[$name]);
         return 1;
     }
 
