@@ -602,6 +602,7 @@ final class PageCreateWriteTest extends TestCase
     {
         $f            = self::fixture();
         $this->siteId = (string) $f['site_id'];
+        $this->options[Settings::OPTION_SITE_ID] = $this->siteId;
         $this->enable();
 
         // Precheck: Go's exact p, never re-encoded; pd is over these bytes.
