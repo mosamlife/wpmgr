@@ -193,6 +193,63 @@ type AppAlertRollout struct {
 	DecidedAt    time.Time `json:"decided_at"`
 }
 
+type AssistantAbilityRequest struct {
+	ID                 uuid.UUID          `json:"id"`
+	TenantID           uuid.UUID          `json:"tenant_id"`
+	SiteID             uuid.UUID          `json:"site_id"`
+	ProposedByGrantID  uuid.UUID          `json:"proposed_by_grant_id"`
+	EntryID            uuid.UUID          `json:"entry_id"`
+	EntrySha256        string             `json:"entry_sha256"`
+	AbilityName        string             `json:"ability_name"`
+	OperatorPermission string             `json:"operator_permission"`
+	InputJson          string             `json:"input_json"`
+	InputSha256        string             `json:"input_sha256"`
+	TargetPostID       *int64             `json:"target_post_id"`
+	TargetKey          *string            `json:"target_key"`
+	PrecheckDigest     string             `json:"precheck_digest"`
+	PreviewDigest      *string            `json:"preview_digest"`
+	BaseFingerprint    string             `json:"base_fingerprint"`
+	SiteLabel          string             `json:"site_label"`
+	SiteHost           string             `json:"site_host"`
+	GrantLabel         string             `json:"grant_label"`
+	GrantVia           string             `json:"grant_via"`
+	SetupClient        *string            `json:"setup_client"`
+	TitleExcerpt       *string            `json:"title_excerpt"`
+	Editor             *string            `json:"editor"`
+	PostType           *string            `json:"post_type"`
+	EffectCopy         string             `json:"effect_copy"`
+	Snapshot           string             `json:"snapshot"`
+	CardCopyVersion    int32              `json:"card_copy_version"`
+	DigestNonce        string             `json:"digest_nonce"`
+	PresentedDigest    string             `json:"presented_digest"`
+	State              string             `json:"state"`
+	CreatedAt          time.Time          `json:"created_at"`
+	ExpiresAt          time.Time          `json:"expires_at"`
+	DecidedAt          pgtype.Timestamptz `json:"decided_at"`
+	DecidedByUserID    pgtype.UUID        `json:"decided_by_user_id"`
+	WithdrawnAt        pgtype.Timestamptz `json:"withdrawn_at"`
+	DispatchDeadlineAt pgtype.Timestamptz `json:"dispatch_deadline_at"`
+	ClaimedAt          pgtype.Timestamptz `json:"claimed_at"`
+	DispatchAttempts   int32              `json:"dispatch_attempts"`
+	LastAttemptAt      pgtype.Timestamptz `json:"last_attempt_at"`
+	LastAttemptCode    *string            `json:"last_attempt_code"`
+	UnknownSince       pgtype.Timestamptz `json:"unknown_since"`
+	LedgerCheckedAt    pgtype.Timestamptz `json:"ledger_checked_at"`
+	Outcome            *string            `json:"outcome"`
+	OutcomeAt          pgtype.Timestamptz `json:"outcome_at"`
+	OutcomeCode        *string            `json:"outcome_code"`
+	NotSentReason      *string            `json:"not_sent_reason"`
+	CreatedPostID      *int64             `json:"created_post_id"`
+	Restored           *bool              `json:"restored"`
+	Trashed            *bool              `json:"trashed"`
+	SiteReportedText   *string            `json:"site_reported_text"`
+	UndoState          *string            `json:"undo_state"`
+	UndoAvailableUntil pgtype.Timestamptz `json:"undo_available_until"`
+	UndoByUserID       pgtype.UUID        `json:"undo_by_user_id"`
+	UndoStartedAt      pgtype.Timestamptz `json:"undo_started_at"`
+	UndoFinishedAt     pgtype.Timestamptz `json:"undo_finished_at"`
+}
+
 type AssistantCachePurgeRequest struct {
 	ID                   uuid.UUID          `json:"id"`
 	TenantID             uuid.UUID          `json:"tenant_id"`

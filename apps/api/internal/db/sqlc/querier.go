@@ -13,6 +13,10 @@ import (
 )
 
 type Querier interface {
+	// The per-site serialisation (ADR-061 A4): another ability write on this
+	// site was sent and has no outcome yet, including one whose outcome is
+	// being resolved through the ledger. Single-site.
+	AbilityRequestInFlightOnSite(ctx context.Context, arg AbilityRequestInFlightOnSiteParams) (bool, error)
 	// ---------------------------------------------------------------------------
 	// email_alert_state  (m62 — per-site durable alert throttle)
 	// ---------------------------------------------------------------------------
@@ -245,6 +249,11 @@ type Querier interface {
 	// has already excluded sites the caller cannot access via CanAccessSite
 	// before this runs).
 	ApplyTagDeltaToSite(ctx context.Context, arg ApplyTagDeltaToSiteParams) (int64, error)
+	// The digest, the state and the window are all in the WHERE clause;
+	// decided_at and dispatch_deadline_at come from now(). No row
+	// (pgx.ErrNoRows) is the refusal: already decided, withdrawn, expired, or the
+	// card the approver saw is not the one stored.
+	ApproveAbilityRequest(ctx context.Context, arg ApproveAbilityRequestParams) (AssistantAbilityRequest, error)
 	// The digest, the state and the window are all in the WHERE clause, and
 	// decided_at is now(). No row (pgx.ErrNoRows) is the refusal: already
 	// decided, withdrawn, expired, or the facts changed under the reader.
@@ -281,6 +290,12 @@ type Querier interface {
 	AttachAgentAndConnect(ctx context.Context, arg AttachAgentAndConnectParams) (Site, error)
 	// Re-enrollment: rotate the agent key and mark the site active/enrolled again.
 	AttachAgentToSite(ctx context.Context, arg AttachAgentToSiteParams) (Site, error)
+	// ---------------------------------------------------------------------------
+	// A person's undo of a done request, approver-side principal. The agent
+	// takes the object id from its own ledger row for this request id (W3).
+	// ---------------------------------------------------------------------------
+	// Compare-and-set: one undo per request, inside the window.
+	BeginAbilityRequestUndo(ctx context.Context, arg BeginAbilityRequestUndoParams) (int64, error)
 	// revoked/disconnected/archived → pending_enrollment (operator). Bumps the
 	// generation counter and clears archived_at so the row leaves the archived list.
 	// The next consume increments nothing further — generation already advanced.
@@ -426,6 +441,16 @@ type Querier interface {
 	// two_factor_enabled is recomputed by the service after this call (it may
 	// remain true if WebAuthn credentials still exist).
 	ClearUserTOTPSecret(ctx context.Context, userID uuid.UUID) error
+	CloseAbilityRequestPastDeadline(ctx context.Context, arg CloseAbilityRequestPastDeadlineParams) (int64, error)
+	// A terminal close before anything is reserved, for every pre-send reason
+	// (grant_inactive, assistant_paused, organisation_deleted,
+	// capability_not_held, site_absent, forbidden_by_context, agent_outdated,
+	// dispatch_deadline_passed, entry_changed, entry_disabled). 0 rows: another
+	// path got there first; write nothing. The approver stays.
+	CloseApprovedAbilityRequestNotSent(ctx context.Context, arg CloseApprovedAbilityRequestNotSentParams) (int64, error)
+	// An approved row not yet reserved is closed as not sent; its approver stays
+	// recorded. A reserved row is left alone: that write has started.
+	CloseApprovedAbilityRequestsForGrant(ctx context.Context, arg CloseApprovedAbilityRequestsForGrantParams) ([]uuid.UUID, error)
 	// A terminal close before anything is reserved. The SAME statement serves:
 	//   * closeWithoutSite (exception 11), tenant transaction, reasons
 	//     grant_inactive, assistant_paused, capability_not_held, site_absent;
@@ -520,6 +545,12 @@ type Querier interface {
 	ConsumeSiteBoundPairingCode(ctx context.Context, arg ConsumeSiteBoundPairingCodeParams) (ConsumeSiteBoundPairingCodeRow, error)
 	// Mark a challenge used on successful verification.
 	ConsumeTwoFactorChallenge(ctx context.Context, id uuid.UUID) (TwoFactorChallenge, error)
+	// The per-connection daily cap (30), shared across entries: rows created in
+	// the window, any state, any site the transaction admits. Connection-scoped.
+	CountAbilityRequestsForGrantSince(ctx context.Context, arg CountAbilityRequestsForGrantSinceParams) (int64, error)
+	// The per-site hourly cap (12), every connection. Run it under a principal
+	// that admits the site.
+	CountAbilityRequestsOnSiteSince(ctx context.Context, arg CountAbilityRequestsOnSiteSinceParams) (int64, error)
 	// Count remaining (unused) recovery codes. Shown in the Security settings card.
 	CountActiveRecoveryCodes(ctx context.Context, userID uuid.UUID) (int64, error)
 	// Wraps the SECURITY DEFINER billing_count_active_sites() so the count is
@@ -545,6 +576,14 @@ type Querier interface {
 	// Guards unlink: removing the last identity from a user with no password would
 	// lock them out of their own account permanently.
 	CountIdentitiesForUser(ctx context.Context, userID uuid.UUID) (int64, error)
+	CountLivePendingAbilityRequests(ctx context.Context, tenantID uuid.UUID) (int64, error)
+	// The per-connection waiting cap (10). Counts every site the transaction
+	// admits, so it must run connection-scoped.
+	CountLivePendingAbilityRequestsForGrant(ctx context.Context, arg CountLivePendingAbilityRequestsForGrantParams) (int64, error)
+	// The per-connection per-site waiting cap, narrowed to one ability when
+	// ability_name is given (5 pending creations per connection per site).
+	CountLivePendingAbilityRequestsForGrantSite(ctx context.Context, arg CountLivePendingAbilityRequestsForGrantSiteParams) (int64, error)
+	CountLivePendingAbilityRequestsForSite(ctx context.Context, arg CountLivePendingAbilityRequestsForSiteParams) (int64, error)
 	// The queue badge.
 	CountLivePendingAssistantCachePurgeRequests(ctx context.Context, tenantID uuid.UUID) (int64, error)
 	// The per-connection waiting cap. Counts across EVERY site the transaction
@@ -863,6 +902,8 @@ type Querier interface {
 	// not an error, and skips creating the duplicate task.
 	CreateUpdateTask(ctx context.Context, arg CreateUpdateTaskParams) (UpdateTask, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
+	// A lapsed row is not declined; the sweeper expires it. No row is the refusal.
+	DeclineAbilityRequest(ctx context.Context, arg DeclineAbilityRequestParams) (AssistantAbilityRequest, error)
 	// A lapsed row is not declined: its honest state is 'expired', which the
 	// sweeper writes. No row (pgx.ErrNoRows) is the refusal.
 	DeclineAssistantCachePurgeRequest(ctx context.Context, arg DeclineAssistantCachePurgeRequestParams) (AssistantCachePurgeRequest, error)
@@ -1062,6 +1103,7 @@ type Querier interface {
 	// TestGH408_BackfillFromSystemAuditLogFindsLaneAOrgDeletes drains after
 	// backfilling for this reason.
 	EnqueueTenantObjectReclaim(ctx context.Context, arg EnqueueTenantObjectReclaimParams) (int64, error)
+	ExpireAbilityRequest(ctx context.Context, arg ExpireAbilityRequestParams) (int64, error)
 	// Never writes decided_by_user_id (m133 (7)(f)).
 	ExpireAssistantCachePurgeRequest(ctx context.Context, arg ExpireAssistantCachePurgeRequestParams) (int64, error)
 	// The grace window, applied at fire time: 'scheduled' -> 'expired' for a run
@@ -1118,6 +1160,27 @@ type Querier interface {
 	// 'expired' with tasks still 'scheduled' is exactly the stranded shape
 	// CountUnfinishedTasksForRun's comment describes.
 	ExpireDueUpdateRun(ctx context.Context, arg ExpireDueUpdateRunParams) (UpdateRun, error)
+	// assistant_ability_requests (m156): every statement over the kind-generic
+	// ability request table.
+	//
+	// WHICH TRANSACTION, PER STATEMENT. As db/query/assistant_requests.sql (m151),
+	// whose header defines the principals named here: connection-scoped,
+	// single-site, approver, revoker, tenant, agent scan. The advisory locks are
+	// m151's TakeAssistantRequestXactLock / TryAssistantRequestXactLock, reused.
+	//
+	// TIME IS THE DATABASE'S. Every window is measured against now() in the
+	// database; lengths arrive as whole seconds. decided_at, dispatch_deadline_at
+	// and claimed_at are always computed in the statement that sets them.
+	//
+	// digest_nonce and input_json appear only in full-row reads (`*`). The status
+	// reads return a narrow projection with no digest, nonce, input, grant label,
+	// setup client, decider or site-reported text.
+	// ---------------------------------------------------------------------------
+	// Creation (internal/mcp write rail), connection-scoped, after the grant lock
+	// ---------------------------------------------------------------------------
+	// This connection's own lapsed waiting rows on this site become 'expired'
+	// before the caps are counted and the insert runs.
+	ExpireLapsedPendingAbilityRequestsForGrantSite(ctx context.Context, arg ExpireLapsedPendingAbilityRequestsForGrantSiteParams) ([]uuid.UUID, error)
 	// ---------------------------------------------------------------------------
 	// Creation (internal/mcp write rail), connection-scoped, after the grant lock
 	// ---------------------------------------------------------------------------
@@ -1174,6 +1237,8 @@ type Querier interface {
 	// expanded). Returns pgx.ErrNoRows when no tenant matches — the caller then
 	// treats the event as "unknown customer" (record + warn, change nothing).
 	FindTenantByProviderCustomer(ctx context.Context, arg FindTenantByProviderCustomerParams) (uuid.UUID, error)
+	// undo_result is one of undone, refused_conflict, refused_published, failed.
+	FinishAbilityRequestUndo(ctx context.Context, arg FinishAbilityRequestUndoParams) (int64, error)
 	// Terminalizes ONE task that never left 'scheduled'. The counterpart to
 	// FinishUpdateTask, which cannot be used here: its precondition is
 	// status IN ('pending','running'), so a scheduled task is not "open" by its
@@ -1307,6 +1372,13 @@ type Querier interface {
 	GetAPIKeyByPrefix(ctx context.Context, prefix string) (ApiKey, error)
 	// One entry by its stable id. pgx.ErrNoRows when it does not exist.
 	GetAbilityCatalogueEntry(ctx context.Context, entryID uuid.UUID) (AbilityCatalogue, error)
+	// One row for the detail card and the undo action.
+	GetAbilityRequestForSite(ctx context.Context, arg GetAbilityRequestForSiteParams) (AssistantAbilityRequest, error)
+	// ---------------------------------------------------------------------------
+	// Status tool (internal/mcp), connection-scoped. Narrow projection.
+	// site_id = ANY(@site_ids) is the connection's current scope.
+	// ---------------------------------------------------------------------------
+	GetAbilityRequestStatusForGrant(ctx context.Context, arg GetAbilityRequestStatusForGrantParams) (GetAbilityRequestStatusForGrantRow, error)
 	// Auth-time allowlist resolver: returns all non-expired site shares for a given
 	// (user, tenant) pair. The result is used to build the AllowedSiteIDs list for a
 	// site-scoped principal. Run under InUserTx (app.user_id set) or directly with
@@ -1326,6 +1398,13 @@ type Querier interface {
 	// default for a tenant with no persisted alert_configs row yet, so that path
 	// and the persisted column's own DEFAULT never disagree.
 	GetAppAlertRolloutDefault(ctx context.Context) (bool, error)
+	// Single-site. past_deadline and entry_current are computed in the database:
+	// entry_current is false when the catalogue entry this row was approved
+	// against has a different entry_sha256 now, is disabled, is no longer
+	// admitted, or is gone (W1: close not_sent / entry_changed or
+	// entry_disabled). ability_catalogue is global and readable in any
+	// transaction.
+	GetApprovedAbilityRequestForDispatch(ctx context.Context, arg GetApprovedAbilityRequestForDispatchParams) (GetApprovedAbilityRequestForDispatchRow, error)
 	// Single-site, opened with AssertSingleSiteTx. past_deadline is computed by
 	// the database clock. No row: the row is no longer approved (another path
 	// closed or reserved it) or is not visible under this principal.
@@ -1662,6 +1741,15 @@ type Querier interface {
 	// Enroll path (app.enroll GUC): resolve a presented code by its hash before the
 	// tenant is known.
 	GetPairingCodeByHash(ctx context.Context, codeHash string) (PairingCode, error)
+	// ---------------------------------------------------------------------------
+	// Approve and decline, approver's own principal. The service re-checks the
+	// approver holds operator_permission on the site (W1) before either.
+	// ---------------------------------------------------------------------------
+	GetPendingAbilityRequestForSite(ctx context.Context, arg GetPendingAbilityRequestForSiteParams) (AssistantAbilityRequest, error)
+	// The dedupe read after a conflict. target_key is 'post:<id>' or
+	// 'new:<input_sha256>' (m156 header). pgx.ErrNoRows means a person decided
+	// the row in between; the caller retries the insert once.
+	GetPendingAbilityRequestForTarget(ctx context.Context, arg GetPendingAbilityRequestForTargetParams) (AssistantAbilityRequest, error)
 	// The dedupe read after a conflict. pgx.ErrNoRows means a person decided the
 	// row in between; the caller retries the insert once.
 	GetPendingAssistantCachePurgeRequestForGrantSite(ctx context.Context, arg GetPendingAssistantCachePurgeRequestForGrantSiteParams) (AssistantCachePurgeRequest, error)
@@ -2049,6 +2137,8 @@ type Querier interface {
 	GetWebAuthnCredentialByCredentialID(ctx context.Context, credentialID []byte) (WebauthnCredential, error)
 	// Load and return the registration session for a user (most recent, non-expired).
 	GetWebAuthnRegistrationSession(ctx context.Context, userID uuid.UUID) (WebauthnRegistrationSession, error)
+	// "Could not tell" after the resolution window (engine v4 §2.7: 15 minutes).
+	GiveUpAbilityRequestOutcome(ctx context.Context, arg GiveUpAbilityRequestOutcomeParams) (int64, error)
 	// Permanently removes the client row. ON DELETE SET NULL on sites.client_id
 	// handles the unassignment automatically in the same statement.
 	HardDeleteClient(ctx context.Context, arg HardDeleteClientParams) (int64, error)
@@ -2076,6 +2166,11 @@ type Querier interface {
 	// status after initial delivery). Body is only stored when body_stored=true.
 	// m62: connection_key + attachments added (additive; old agents send '' / '[]').
 	IngestEmailLogEntry(ctx context.Context, arg IngestEmailLogEntryParams) (SiteEmailLog, error)
+	// ON CONFLICT names the one-pending index's columns and predicate. A conflict
+	// inserts nothing and returns NO ROW (pgx.ErrNoRows): the caller reads the
+	// waiting row with GetPendingAbilityRequestForTarget. state is always
+	// 'pending'; target_key is generated and never written.
+	InsertAbilityRequest(ctx context.Context, arg InsertAbilityRequestParams) (AssistantAbilityRequest, error)
 	// Agent-auth path (app.agent GUC). The unique (site_id, nonce) index makes a
 	// replayed nonce a no-op via ON CONFLICT, returning 0 rows affected.
 	InsertAgentNonce(ctx context.Context, arg InsertAgentNonceParams) (int64, error)
@@ -2248,6 +2343,12 @@ type Querier interface {
 	ListAbilityCatalogue(ctx context.Context) ([]AbilityCatalogue, error)
 	// Newest first, for the admin screen.
 	ListAbilityCatalogueAudit(ctx context.Context, arg ListAbilityCatalogueAuditParams) ([]AbilityCatalogueAudit, error)
+	// ---------------------------------------------------------------------------
+	// Queue and banner, caller's own principal. Row security narrows a site
+	// collaborator to their own sites.
+	// ---------------------------------------------------------------------------
+	ListAbilityRequests(ctx context.Context, arg ListAbilityRequestsParams) ([]AssistantAbilityRequest, error)
+	ListAbilityRequestsForSite(ctx context.Context, arg ListAbilityRequestsForSiteParams) ([]AssistantAbilityRequest, error)
 	// All unused recovery codes for a user (used_at IS NULL).
 	// Ordered by created_at ASC, id ASC for stable pagination.
 	ListActiveRecoveryCodes(ctx context.Context, userID uuid.UUID) ([]UserRecoveryCode, error)
@@ -2716,6 +2817,9 @@ type Querier interface {
 	// invisible to ALL of those call sites in one place, the instant DELETE
 	// /orgs/{orgId} commits, without a per-call-site patch.
 	ListMembershipsForUser(ctx context.Context, userID uuid.UUID) ([]Membership, error)
+	// List mode: this connection's requests with no final result yet, newest
+	// first (engine v4 §1.5: at most 20).
+	ListOpenAbilityRequestStatusForGrant(ctx context.Context, arg ListOpenAbilityRequestStatusForGrantParams) ([]ListOpenAbilityRequestStatusForGrantRow, error)
 	// List mode: this connection's requests that have no final result yet
 	// (waiting, approved, or sent with no outcome), newest first.
 	ListOpenAssistantCachePurgeRequestStatusForGrant(ctx context.Context, arg ListOpenAssistantCachePurgeRequestStatusForGrantParams) ([]ListOpenAssistantCachePurgeRequestStatusForGrantRow, error)
@@ -3184,6 +3288,9 @@ type Querier interface {
 	// Also returns beacon_key_hash_prev so the handler can accept the grace-window
 	// previous key during rotation.
 	LookupRumBeaconKey(ctx context.Context, beaconKeyHash []byte) (LookupRumBeaconKeyRow, error)
+	// The send's reply was lost or timed out. The row waits in 'outcome_unknown'
+	// with outcome NULL while the ledger is polled (engine v4 §2.7).
+	MarkAbilityRequestOutcomeUnknown(ctx context.Context, arg MarkAbilityRequestOutcomeUnknownParams) (int64, error)
 	// Used on the Redis-hot-path success: Redis already produced the payload, but
 	// we still UPDATE the PG row so the audit/observability story is complete.
 	// Idempotent: returns 0 if another path already marked it (safe).
@@ -3511,6 +3618,16 @@ type Querier interface {
 	ReCheckMCPRequestAuthorizationInTenantTx(ctx context.Context, arg ReCheckMCPRequestAuthorizationInTenantTxParams) (ReCheckMCPRequestAuthorizationInTenantTxRow, error)
 	RecolorTag(ctx context.Context, arg RecolorTagParams) (SiteTag, error)
 	// A transient reason; the row stays approved. Single-site.
+	RecordAbilityRequestDispatchAttempt(ctx context.Context, arg RecordAbilityRequestDispatchAttemptParams) (int64, error)
+	RecordAbilityRequestLedgerCheck(ctx context.Context, arg RecordAbilityRequestLedgerCheckParams) (int64, error)
+	// Compare-and-set on "sent with no outcome", from 'dispatched' (the worker's
+	// reply) or a resolving 'outcome_unknown' (the ledger's answer). 0 rows:
+	// another path already recorded one; write nothing. The state is derived
+	// from the outcome; the table CHECK enforces the pairing. Passing 'not_sent'
+	// needs not_sent_reason 'transport_pre_send'. undo_available_until set
+	// opens the person's undo (undo_state 'available') on a done row.
+	RecordAbilityRequestOutcome(ctx context.Context, arg RecordAbilityRequestOutcomeParams) (int64, error)
+	// A transient reason; the row stays approved. Single-site.
 	RecordAssistantCachePurgeDispatchAttempt(ctx context.Context, arg RecordAssistantCachePurgeDispatchAttemptParams) (int64, error)
 	// Compare-and-set on "sent with no outcome". 0 rows: the reconciler already
 	// closed it; write nothing. not_sent_reason is set only with outcome
@@ -3716,6 +3833,11 @@ type Querier interface {
 	// Replays events after a client cursor (?since / Last-Event-ID). ULIDs sort
 	// lexicographically, so event_id > $2 is monotonic-after.
 	ReplaySiteEvents(ctx context.Context, arg ReplaySiteEventsParams) ([]SiteEvent, error)
+	// The one reservation point. The deadline and the approved entry hash are in
+	// the WHERE clause, so nothing is reserved after the deadline or against an
+	// entry that changed. 0 rows: another replica, the revoke cascade, a close,
+	// the sweeper or a catalogue change won; roll back.
+	ReserveAbilityRequestForDispatch(ctx context.Context, arg ReserveAbilityRequestForDispatchParams) (int64, error)
 	// The one reservation point. Moves the row to 'dispatched' naming the
 	// cache_purge_audit row written in the same transaction. The deadline is in
 	// the WHERE clause, so nothing is reserved after it. 0 rows: another replica,
@@ -3876,7 +3998,13 @@ type Querier interface {
 	// is exactly what a merge needs when a site already carries both the source
 	// and the survivor name.
 	RewriteSiteTagName(ctx context.Context, arg RewriteSiteTagNameParams) error
+	ScanApprovedAbilityRequestsPastDeadline(ctx context.Context, rowLimit int32) ([]ScanApprovedAbilityRequestsPastDeadlineRow, error)
 	ScanApprovedAssistantCachePurgeRequestsPastDeadline(ctx context.Context, arg ScanApprovedAssistantCachePurgeRequestsPastDeadlineParams) ([]ScanApprovedAssistantCachePurgeRequestsPastDeadlineRow, error)
+	// ---------------------------------------------------------------------------
+	// Dispatch worker
+	// ---------------------------------------------------------------------------
+	// Agent scan (InAgentTx), plain SELECT. Backoff per row as m151's.
+	ScanDueApprovedAbilityRequests(ctx context.Context, arg ScanDueApprovedAbilityRequestsParams) ([]ScanDueApprovedAbilityRequestsRow, error)
 	// ---------------------------------------------------------------------------
 	// Dispatch worker (internal/assistantrequest)
 	// ---------------------------------------------------------------------------
@@ -3886,10 +4014,24 @@ type Querier interface {
 	// overflow.
 	ScanDueApprovedAssistantCachePurgeRequests(ctx context.Context, arg ScanDueApprovedAssistantCachePurgeRequestsParams) ([]ScanDueApprovedAssistantCachePurgeRequestsRow, error)
 	// ---------------------------------------------------------------------------
+	// Sweeper and reconciler. Each is a plain agent scan, then a per-row
+	// compare-and-set in a tenant transaction.
+	// ---------------------------------------------------------------------------
+	ScanLapsedPendingAbilityRequests(ctx context.Context, rowLimit int32) ([]ScanLapsedPendingAbilityRequestsRow, error)
+	// ---------------------------------------------------------------------------
 	// Sweeper and reconciler (internal/assistantrequest). Each is a plain agent
 	// scan, then a per-row compare-and-set in a tenant transaction.
 	// ---------------------------------------------------------------------------
 	ScanLapsedPendingAssistantCachePurgeRequests(ctx context.Context, rowLimit int32) ([]ScanLapsedPendingAssistantCachePurgeRequestsRow, error)
+	// Rows waiting in outcome_unknown whose ledger was not checked in the last
+	// poll interval. The caller sends ability_run{mode:"ledger"} and records the
+	// answer with RecordAbilityRequestOutcome, or the check with
+	// RecordAbilityRequestLedgerCheck.
+	ScanResolvingAbilityRequests(ctx context.Context, arg ScanResolvingAbilityRequestsParams) ([]ScanResolvingAbilityRequestsRow, error)
+	// Sent, no reply recorded, older than the write budget: the worker died
+	// between send and record. Each is moved to outcome_unknown with
+	// MarkAbilityRequestOutcomeUnknown, never retried.
+	ScanStaleDispatchedAbilityRequests(ctx context.Context, arg ScanStaleDispatchedAbilityRequestsParams) ([]ScanStaleDispatchedAbilityRequestsRow, error)
 	ScanStaleDispatchedAssistantCachePurgeRequests(ctx context.Context, arg ScanStaleDispatchedAssistantCachePurgeRequestsParams) ([]ScanStaleDispatchedAssistantCachePurgeRequestsRow, error)
 	// Stamp the in-flight db_clean job id + start time for the watchdog.
 	// Runs under app.agent (cross-tenant scheduled path) or InTenantTx (operator).
@@ -4540,6 +4682,11 @@ type Querier interface {
 	// silent steady-state tick - so the caller can detect "materially worse
 	// since we last said anything" without a second table.
 	UpsertTenantAppAlertBreaker(ctx context.Context, arg UpsertTenantAppAlertBreakerParams) (TenantAppAlertBreaker, error)
+	// ---------------------------------------------------------------------------
+	// Revoke cascade, in the revoke transaction, org-scoped revoker.
+	// ---------------------------------------------------------------------------
+	// Names nobody: decided_by_user_id and decided_at stay NULL.
+	WithdrawPendingAbilityRequestsForGrant(ctx context.Context, arg WithdrawPendingAbilityRequestsForGrantParams) ([]uuid.UUID, error)
 	// ---------------------------------------------------------------------------
 	// Revoke cascade (mcp.Repo.CloseAssistantRequestsForGrantTx), in the revoke
 	// transaction, org-scoped revoker. Pending rows first, then approved rows.
