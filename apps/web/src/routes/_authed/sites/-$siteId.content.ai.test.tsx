@@ -290,13 +290,28 @@ describe("card states", () => {
     expect(c.queryByRole("button", { name: "Approve" })).toBeNull();
   });
 
-  it("shows the site's own failure text as a text node", async () => {
+  it("renders AI-chosen text as a literal text node and never prints the raw outcome code", async () => {
+    const evil = "<img src=x onerror=alert(1)>";
     listReqs.mockResolvedValue(
-      okList([req({ state: "failed", outcome: "refused", outcome_code: "<b>nope</b>" })]),
+      okList([
+        req({
+          state: "failed",
+          outcome: "refused",
+          outcome_code: "<b>nope</b>",
+          input_json: input({
+            title: evil,
+            outline: [{ type: "heading", level: 2, text: evil }],
+          }),
+        }),
+      ]),
     );
     renderTab();
-    const c = within(await card());
-    expect(c.getByText("The site said: <b>nope</b>")).toBeInTheDocument();
+    const el = await card();
+    const c = within(el);
+    expect(c.getAllByText(evil).length).toBeGreaterThan(0);
+    expect(el.querySelector("img")).toBeNull();
+    expect(el.textContent).not.toContain("<b>nope</b>");
+    expect(el.textContent).not.toContain("The site said");
   });
 
   it("done: 'Draft created', an edit link when the site address is known, and Undo inside the window", async () => {
