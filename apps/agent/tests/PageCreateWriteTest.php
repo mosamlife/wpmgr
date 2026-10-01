@@ -598,6 +598,46 @@ final class PageCreateWriteTest extends TestCase
         $this->assertFalse($r['inflight']);
     }
 
+    public function test_go_fixture_replays_precheck_write_and_revert_byte_for_byte(): void
+    {
+        $f            = self::fixture();
+        $this->siteId = (string) $f['site_id'];
+        $this->enable();
+
+        // Precheck: Go's exact p, never re-encoded; pd is over these bytes.
+        $this->assertSame(hash('sha256', (string) $f['entry']), $f['entry_sha256'], 'the fixture entry hashes to its entry_sha256');
+        $this->assertStringContainsString('"entry_sha256":"' . $f['entry_sha256'] . '"', (string) $f['precheck']['p']);
+        $pre = $this->callP((string) $f['precheck']['p']);
+        $this->assertTrue($pre['ok'] ?? false, (string) json_encode($pre));
+        $this->assertSame('prechecked', $pre['outcome']);
+
+        // The stand-in digests are refused, and nothing is created.
+        $standIn = (string) $f['write']['p'];
+        $stale   = $this->callP($standIn);
+        $this->assertFalse($stale['ok'] ?? true);
+        $this->assertSame('preview_changed', $stale['code'] ?? null, (string) json_encode($stale));
+        $this->assertSame([], $this->posts);
+
+        // Write: substitute the real digests as plain text, keeping Go's encoding.
+        $oldPre  = (string) $f['write']['expected']['precheck_digest'];
+        $oldPrev = (string) $f['write']['expected']['preview_digest'];
+        $this->assertSame(1, substr_count($standIn, $oldPre));
+        $this->assertSame(1, substr_count($standIn, $oldPrev));
+        $writeP = str_replace([$oldPre, $oldPrev], [(string) $pre['precheck_digest'], (string) $pre['preview_digest']], $standIn);
+        $w      = $this->callP($writeP);
+        $this->assertTrue($w['ok'] ?? false, (string) json_encode($w));
+        $this->assertSame('created', $w['outcome']);
+        $id = (int) $w['post_id'];
+        $this->assertSame('draft', $this->posts[$id]->post_status);
+        $this->assertSame('page', $this->posts[$id]->post_type);
+        $this->assertSame('Café launch 🚀', $this->posts[$id]->post_title);
+
+        // Revert: Go's exact p; the post id comes from the ledger.
+        $r = $this->callP((string) $f['revert']['p']);
+        $this->assertTrue($r['ok'] ?? false, (string) json_encode($r));
+        $this->assertSame('trash', $this->posts[$id]->post_status);
+    }
+
     // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
@@ -670,15 +710,26 @@ final class PageCreateWriteTest extends TestCase
      */
     private function entry(array $overrides = []): string
     {
-        return (string) json_encode($overrides + [
-            'name'     => OwnAbilities::NAME_PAGE_CREATE,
-            'source'   => 'wpmgr',
-            'class'    => 'write',
-            'status'   => 'admitted',
-            'enabled'  => true,
-            'approval_mode' => 'per_call',
-            'snapshot' => 'created_post_trash',
-        ]);
+        // Built from Go's own entry, so the field names are the wire's names.
+        $base = json_decode((string) self::fixture()['entry'], true);
+        self::assertIsArray($base);
+
+        return (string) json_encode(array_merge($base, $overrides));
+    }
+
+    /**
+     * The golden fixture Go writes (TestPageCreateFixture). Never hand-edited.
+     *
+     * @return array<string,mixed>
+     */
+    private static function fixture(): array
+    {
+        $raw = file_get_contents(__DIR__ . '/fixtures/ability-run/page-create.json');
+        self::assertIsString($raw, 'the Go page-create fixture is missing');
+        $f = json_decode($raw, true);
+        self::assertIsArray($f, 'the Go page-create fixture is not JSON');
+
+        return $f;
     }
 
     /**
