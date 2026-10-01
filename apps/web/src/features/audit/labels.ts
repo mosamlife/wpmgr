@@ -265,6 +265,10 @@ const ACTION_LABELS: Record<string, string> = {
   "assistant.request.dispatched": "Sent AI cache-clear request",
   "assistant.request.expired": "AI cache-clear request expired unanswered",
   "assistant.request.failed": "AI cache-clear request failed",
+  // AI page creation (engine slice E2).
+  "assistant.request.completed": "AI change applied",
+  "assistant.request.undone": "AI change undone",
+  "site.content_editing.enabled": "AI page creation turned on",
 };
 
 /** Turn "some.dotted_key" into "Some dotted key" — a dot never survives. */
@@ -362,6 +366,7 @@ const SENSITIVE_ACTIONS = new Set<string>([
   "mcp.tool.called",
   "assistant.request.approved",
   "assistant.request.failed",
+  "site.content_editing.enabled",
 ]);
 
 // Forces "write" for keys the stem heuristic below cannot see the verb of
@@ -374,6 +379,9 @@ const WRITE_OVERRIDES = new Set<string>([
   // "dispatch" has no write-shaped stem, but this is the moment WPMgr commits
   // to sending an approved AI cache clear to the site's agent (S2.7).
   "assistant.request.dispatched",
+  // The AI's change landed on the site, and a person's undo of it.
+  "assistant.request.completed",
+  "assistant.request.undone",
 ]);
 
 // The heuristic below would otherwise flag these as writes (they contain a

@@ -59,7 +59,10 @@ const BROWSER_SIGN_IN_CAPTION =
  * dedicated browser-sign-in line when it did not, and the raw `grant_via`
  * as a last resort so the row is never blank.
  */
-export function setUpForLine(request: AssistantRequest): SetUpForLine {
+export function setUpForLine(request: {
+  grant_via: string;
+  setup_client?: string | null;
+}): SetUpForLine {
   if (request.grant_via === "browser_sign_in") {
     return { primary: "Set up by browser sign-in", caption: BROWSER_SIGN_IN_CAPTION };
   }
