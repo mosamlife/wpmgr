@@ -592,6 +592,10 @@ final class AbilityRunCommand implements CommandInterface
                 if (!hash_equals($afterFp, PageCreateBuilder::documentFingerprint($post))) {
                     return $this->fail('conflict', 'someone edited this draft after it was created');
                 }
+                $touched = $this->touchedBySomeone($postId);
+                if ($touched !== null) {
+                    return $this->fail('created_post_touched', $touched);
+                }
 
                 if (!$this->trashOwn($postId)) {
                     return $this->fail('revert_failed', 'the draft could not be moved to the trash');
@@ -610,6 +614,37 @@ final class AbilityRunCommand implements CommandInterface
         } finally {
             AbilityLedger::releaseTarget($postId);
         }
+    }
+
+    /**
+     * Undo refuses a draft a person has touched: any autosave (by any user),
+     * any revision, or a live edit lock. Decided before anything is trashed.
+     * Fails closed when the lock check cannot be loaded.
+     *
+     * @param int $postId Post id.
+     * @return string|null Why it was refused, or null when untouched.
+     */
+    private function touchedBySomeone(int $postId): ?string
+    {
+        // User id 0 (the int) means an autosave by any user.
+        if (wp_get_post_autosave($postId, 0) !== false) {
+            return 'someone has unsaved changes to this draft; open it in WordPress';
+        }
+        $revisions = wp_get_post_revisions($postId, ['check_enabled' => false, 'numberposts' => 1]);
+        if (!empty($revisions)) {
+            return 'this draft has saved revisions; open it in WordPress';
+        }
+        if (!function_exists('wp_check_post_lock') && defined('ABSPATH') && is_readable(ABSPATH . 'wp-admin/includes/post.php')) {
+            require_once ABSPATH . 'wp-admin/includes/post.php';
+        }
+        if (!function_exists('wp_check_post_lock')) {
+            return 'whether someone is editing this draft could not be checked';
+        }
+        if (wp_check_post_lock($postId) !== false) {
+            return 'someone is editing this draft right now';
+        }
+
+        return null;
     }
 
     /**

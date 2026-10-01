@@ -244,6 +244,7 @@ var AbilityRunRefusalCodes = map[string]struct{}{
 	"create_content_invalid":         {},
 	"created_post_missing":           {},
 	"created_post_published":         {},
+	"created_post_touched":           {},
 	"editor_unavailable":             {},
 	"entry_approval_invalid":         {},
 	"ledger_ability_mismatch":        {},

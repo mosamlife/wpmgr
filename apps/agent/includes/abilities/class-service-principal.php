@@ -91,6 +91,22 @@ final class ServicePrincipal
         add_filter('wp_authenticate_user', [self::class, 'refuseAuthenticateUser'], PHP_INT_MAX, 2);
         add_filter('wp_is_application_passwords_available_for_user', [self::class, 'refuseAppPasswords'], PHP_INT_MAX, 2);
         add_filter('allow_password_reset', [self::class, 'refusePasswordReset'], PHP_INT_MAX, 2);
+        add_filter('determine_current_user', [self::class, 'refuseCurrentUser'], PHP_INT_MAX, 1);
+    }
+
+    /**
+     * determine_current_user filter: no request ever resolves to the service
+     * user, whatever cookie or auth handler named it. The engine switches to
+     * it in-process with wp_set_current_user(), which does not run this filter.
+     *
+     * @param mixed $userId Resolved user id so far.
+     * @return mixed
+     */
+    public static function refuseCurrentUser($userId)
+    {
+        $id = self::userId();
+
+        return ($id > 0 && is_numeric($userId) && (int) $userId === $id) ? 0 : $userId;
     }
 
     /**
