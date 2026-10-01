@@ -13,6 +13,7 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -99,6 +100,10 @@ type Service struct {
 	audit   *audit.Recorder
 	logger  *slog.Logger
 	enabled bool
+	agent   AbilityAgent
+	entry   EntryEncoder
+	rules   ContextRules
+	now     func() time.Time
 	// siteAccess decides whether p may act on siteID. Production is
 	// authz.AuthorizeSite; tests replace it.
 	siteAccess func(ctx context.Context, p domain.Principal, siteID uuid.UUID) bool
@@ -109,7 +114,7 @@ func NewService(pool *db.Pool, grants GrantVerdicts, az GrantAuthorizer, rec *au
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Service{pool: pool, grants: grants, authz: az, audit: rec, logger: logger, siteAccess: authz.AuthorizeSite}
+	return &Service{pool: pool, grants: grants, authz: az, audit: rec, logger: logger, siteAccess: authz.AuthorizeSite, now: time.Now}
 }
 
 // SetWriteToolsEnabled is WPMGR_MCP_WRITE_TOOLS.

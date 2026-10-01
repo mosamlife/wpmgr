@@ -453,6 +453,15 @@ const (
 	ActionAssistantRequestNotSent    = "assistant.request.not_sent"
 	ActionAssistantRequestDispatched = "assistant.request.dispatched"
 	ActionAssistantRequestFailed     = "assistant.request.failed"
+	// ActionAssistantRequestCompleted is an ability request whose write the
+	// site applied (outcome created or applied).
+	ActionAssistantRequestCompleted = "assistant.request.completed"
+	// ActionAssistantRequestUndone is a person's undo of a done ability
+	// request; metadata.result is the undo result.
+	ActionAssistantRequestUndone = "assistant.request.undone"
+	// ActionSiteContentEditingEnabled is an operator enabling content
+	// editing (the agent's service principal) on a site.
+	ActionSiteContentEditingEnabled = "site.content_editing.enabled"
 	// ActionMCPToolCalled is recorded per successful tool invocation on the
 	// transport path (internal/mcp.Service.RecordToolCall), BEST-EFFORT like
 	// most of this log (Record, not RecordInTx): there is no companion write
