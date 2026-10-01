@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/abilityrequest"
 	"github.com/mosamlife/wpmgr/apps/api/internal/activity"
 	"github.com/mosamlife/wpmgr/apps/api/internal/admin"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agent"
@@ -275,6 +276,11 @@ type Deps struct {
 	// GET /sites/{siteId}/ai/requests, POST .../ai/requests/{requestId}/approve
 	// and /decline). Nil leaves them unmounted.
 	AssistantRequestH *assistantrequest.Handler
+	// AbilityRequestH serves the ability request queue, approve, decline and
+	// undo, and the site's content-editing state and enable action
+	// (/sites/{siteId}/ai/ability-requests..., /sites/{siteId}/ai/content-editing...).
+	// Nil leaves them unmounted.
+	AbilityRequestH *abilityrequest.Handler
 	// MCPDiscoveryH serves the two unauthenticated OAuth discovery documents:
 	// GET /.well-known/oauth-authorization-server (RFC 8414) and GET
 	// /.well-known/oauth-protected-resource (RFC 9728), the second also at its
@@ -625,6 +631,9 @@ func New(deps Deps) *Server {
 	// RequireTenant apply before the per-route gates inside Register.
 	if deps.AssistantRequestH != nil {
 		deps.AssistantRequestH.Register(v1)
+	}
+	if deps.AbilityRequestH != nil {
+		deps.AbilityRequestH.Register(v1)
 	}
 	deps.TenantH.Register(v1)
 	deps.SiteH.Register(v1)

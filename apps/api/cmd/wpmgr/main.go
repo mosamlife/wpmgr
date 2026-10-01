@@ -28,6 +28,7 @@ import (
 	"github.com/riverqueue/river/rivermigrate"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/abilities"
+	"github.com/mosamlife/wpmgr/apps/api/internal/abilityrequest"
 	"github.com/mosamlife/wpmgr/apps/api/internal/activity"
 	"github.com/mosamlife/wpmgr/apps/api/internal/admin"
 	"github.com/mosamlife/wpmgr/apps/api/internal/admingate"
@@ -1825,8 +1826,35 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		if err := mcpSvc.EnableAbilityTools(mcpRepo, mcpAbilityAgent, abilities.SendableEntry, cfg.Auth.SessionSecret); err != nil {
 			return fmt.Errorf("enable MCP ability tools: %w", err)
 		}
+		// The write branch of site_ability_run (E2). Writes also need the
+		// write-tools switch, which the run tool checks per call.
+		if err := mcpSvc.EnableAbilityWrites(mcpRepo); err != nil {
+			return fmt.Errorf("enable MCP ability writes: %w", err)
+		}
 	default:
 		return fmt.Errorf("WPMGR_MCP_ABILITY_TOOLS must be \"on\" or \"off\"")
+	}
+	// Ability requests (E2): approve, decline, undo, the content-editing
+	// enable action, and the dispatch worker, sweeper and reconciler. The
+	// same write-tools switch as the AI cache clears; the workers run either
+	// way so rows always close.
+	abilityReqSvc := abilityrequest.NewService(pool, mcpRepo, mcpSvc, auditRec, logger)
+	abilityReqSvc.SetWriteToolsEnabled(writeToolsOn)
+	if ocCmdClient != nil {
+		abilityReqSvc.SetSender(ocCmdClient, abilities.SendableEntry, mcpSvc)
+		abilityReqSvc.SetEnabler(ocCmdClient)
+	}
+	abilityReqScanWorker := abilityrequest.NewScanWorker(abilityReqSvc)
+	abilityReqDispatchWorker := abilityrequest.NewDispatchWorker(abilityReqSvc)
+	abilityReqSweepWorker := abilityrequest.NewSweepWorker(abilityReqSvc)
+	abilityReqReconcileWorker := abilityrequest.NewReconcileWorker(abilityReqSvc)
+	abilityReqH := abilityrequest.NewHandler(abilityReqSvc)
+	// Stamp WPMgr's own seeded catalogue entries (NULL hash) so requests
+	// made against them can be dispatched (W1 compares the stamped hash).
+	if n, err := abilities.StampOwnEntryHashes(ctx, pool, logger); err != nil {
+		logger.Error("ability catalogue stamp failed", slog.Any("error", err))
+	} else {
+		logger.Info("ability catalogue stamp", slog.Int("stamped", n))
 	}
 	ocH := objectcache.NewHandler(ocSvc, auditRec)
 	ocGCWorker := objectcache.NewObjectCacheStatsHistoryGCWorker(ocRepo, logger)
@@ -2111,6 +2139,11 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		assistantReqDispatchWorker:  assistantReqDispatchWorker,
 		assistantReqSweepWorker:     assistantReqSweepWorker,
 		assistantReqReconcileWorker: assistantReqReconcileWorker,
+		// Ability requests (E2), always wired.
+		abilityReqScanWorker:      abilityReqScanWorker,
+		abilityReqDispatchWorker:  abilityReqDispatchWorker,
+		abilityReqSweepWorker:     abilityReqSweepWorker,
+		abilityReqReconcileWorker: abilityReqReconcileWorker,
 		// m59 Phase 3 — email log retention GC (always wired).
 		emailLogGCWorker: emailLogGCWorker,
 		// GH #461 — webhook dedup GC (always wired; 7-day retention).
@@ -2317,6 +2350,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	contentH.SetEnqueuer(contentEnqueuer)
 	// The AI request scan enqueues one dispatch job per due approved request.
 	assistantReqScanWorker.SetEnqueuer(assistantrequest.NewRiverEnqueuer(riverClient))
+	abilityReqScanWorker.SetEnqueuer(abilityrequest.NewRiverEnqueuer(riverClient))
 
 	// ADR-046 Performance Suite: wire the RUCSS enqueuer + perf ingest service
 	// now that River has started. The ingest service stashes the agent-posted
@@ -3015,6 +3049,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		MCPTransportH:     mcpTransportH,
 		MCPOAuthH:         mcpOAuthH,
 		AssistantRequestH: assistantReqH,
+		AbilityRequestH:   abilityReqH,
 		MCPDiscoveryH:     mcpDiscoveryH,
 		FilesH:            filesH,
 		UpdateH:           updateH,
@@ -3558,6 +3593,11 @@ type riverDeps struct {
 	assistantReqDispatchWorker  *assistantrequest.DispatchWorker
 	assistantReqSweepWorker     *assistantrequest.SweepWorker
 	assistantReqReconcileWorker *assistantrequest.ReconcileWorker
+	// Ability requests (E2): scan, dispatch, sweeper, reconciler.
+	abilityReqScanWorker      *abilityrequest.ScanWorker
+	abilityReqDispatchWorker  *abilityrequest.DispatchWorker
+	abilityReqSweepWorker     *abilityrequest.SweepWorker
+	abilityReqReconcileWorker *abilityrequest.ReconcileWorker
 	// m59 Phase 3 — email log retention GC (always wired).
 	emailLogGCWorker *email.EmailLogGCWorker
 	// GH #461 — webhook dedup GC (always wired; 7-day retention).
@@ -4069,6 +4109,35 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 			river.NewPeriodicJob(
 				river.PeriodicInterval(assistantrequest.SweepInterval),
 				func() (river.JobArgs, *river.InsertOpts) { return assistantrequest.ReconcileArgs{}, nil },
+				&river.PeriodicJobOpts{RunOnStart: true},
+			),
+		)
+	}
+
+	// Ability requests (E2): same cadence as the AI cache clears.
+	if d.abilityReqScanWorker != nil && d.abilityReqDispatchWorker != nil &&
+		d.abilityReqSweepWorker != nil && d.abilityReqReconcileWorker != nil {
+		river.AddWorker(workers, d.abilityReqScanWorker)
+		river.AddWorker(workers, d.abilityReqDispatchWorker)
+		river.AddWorker(workers, d.abilityReqSweepWorker)
+		river.AddWorker(workers, d.abilityReqReconcileWorker)
+		for q, qc := range abilityrequest.Queues() {
+			queues[q] = qc
+		}
+		periodics = append(periodics,
+			river.NewPeriodicJob(
+				river.PeriodicInterval(abilityrequest.ScanInterval),
+				func() (river.JobArgs, *river.InsertOpts) { return abilityrequest.ScanArgs{}, nil },
+				&river.PeriodicJobOpts{RunOnStart: true},
+			),
+			river.NewPeriodicJob(
+				river.PeriodicInterval(abilityrequest.SweepInterval),
+				func() (river.JobArgs, *river.InsertOpts) { return abilityrequest.SweepArgs{}, nil },
+				&river.PeriodicJobOpts{RunOnStart: true},
+			),
+			river.NewPeriodicJob(
+				river.PeriodicInterval(abilityrequest.SweepInterval),
+				func() (river.JobArgs, *river.InsertOpts) { return abilityrequest.ReconcileArgs{}, nil },
 				&river.PeriodicJobOpts{RunOnStart: true},
 			),
 		)

@@ -2,10 +2,12 @@ package abilities
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
@@ -49,6 +51,20 @@ func StampOwnEntryHashes(ctx context.Context, pool *db.Pool, logger *slog.Logger
 			})
 			return err
 		})
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "55000" {
+			// Another replica stamped it first. Re-read and report what is
+			// stored; SendableEntry refuses at send if it is not our hash.
+			var now sqlc.AbilityCatalogue
+			_ = pool.InAgentTx(ctx, func(tx pgx.Tx) error {
+				var rerr error
+				now, rerr = sqlc.New(tx).GetAbilityCatalogueEntry(ctx, r.EntryID)
+				return rerr
+			})
+			logger.InfoContext(ctx, "ability catalogue: entry already stamped", slog.String("name", r.Name),
+				slog.Bool("matches", now.EntrySha256 != nil && *now.EntrySha256 == sum))
+			continue
+		}
 		if err != nil {
 			logger.WarnContext(ctx, "ability catalogue: stamp refused", slog.String("name", r.Name), slog.Any("error", err))
 			continue
