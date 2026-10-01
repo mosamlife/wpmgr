@@ -67,7 +67,7 @@ const (
 	msgAbilityLimited = "This connection has reached a limit on ability requests. Nothing was asked. " +
 		"Wait retry_after_seconds before asking again."
 	msgAbilitySiteAnswer    = "the site's answer could not be checked, so nothing was asked"
-	msgAbilityEditingOff    = "Content editing is not enabled on this site. A person must enable it in WPMgr (site settings, Content) before the AI can create pages. Nothing was asked."
+	msgAbilityEditingOff    = "Content editing is not enabled on this site. A person must enable it in WPMgr (the site's Content tab) before the AI can create pages. Nothing was asked."
 	msgAbilityWriteOutdated = "This site's WPMgr agent is too old to create pages. The agent must be updated to " +
 		agentcmd.MinAgentVersionForPageCreate + " or later. Nothing was asked."
 )
