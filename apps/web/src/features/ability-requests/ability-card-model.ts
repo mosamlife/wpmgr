@@ -108,8 +108,8 @@ export type AbilityStatusKind =
 export interface AbilityStatus {
   readonly kind: AbilityStatusKind;
   readonly text: string;
-  /** Site-supplied text, shown after "The site said:" as a text node. */
-  readonly siteSaid?: string;
+  /** A draft may exist on the site: the card offers the edit link. */
+  readonly draftMayExist?: boolean;
 }
 
 /** The undo window is open: done, not yet undone or tried, and still in time. */
@@ -119,6 +119,10 @@ export function undoOpen(r: AbilityRequest, now: Date): boolean {
   if (!r.undo_available_until) return false;
   const until = new Date(r.undo_available_until).getTime();
   return !Number.isNaN(until) && until > now.getTime();
+}
+
+function hasCreatedPost(r: AbilityRequest): boolean {
+  return typeof r.created_post_id === "number" && Number.isInteger(r.created_post_id) && r.created_post_id > 0;
 }
 
 export function abilityStatus(r: AbilityRequest): AbilityStatus {
@@ -134,6 +138,13 @@ export function abilityStatus(r: AbilityRequest): AbilityStatus {
     case "dispatched":
       return { kind: "running", text: `WPMgr is creating the draft ${noun}.` };
     case "outcome_unknown":
+      if (hasCreatedPost(r) && r.trashed !== true) {
+        return {
+          kind: "unknown_outcome",
+          text: `WPMgr could not confirm the result. A draft ${noun} may exist on the site. Check it, and delete it there if you do not want it.`,
+          draftMayExist: true,
+        };
+      }
       return { kind: "unknown_outcome", text: "WPMgr is checking whether the draft was created." };
     case "done": {
       if (r.undo_state === "undone" || r.trashed === true) {
@@ -163,26 +174,38 @@ export function abilityStatus(r: AbilityRequest): AbilityStatus {
       return { kind: "done", text: "Draft created." };
     }
     case "failed": {
-      const said = r.outcome_code ?? undefined;
-      const extra = said !== undefined && said.trim() !== "" ? { siteSaid: said } : {};
+      if (hasCreatedPost(r)) {
+        if (r.trashed === true) {
+          return {
+            kind: "failed",
+            text: `Something went wrong on the site, and a draft ${noun} was created and then moved to the trash. Nothing is left to clean up unless you want to check the trash in WordPress.`,
+          };
+        }
+        const why =
+          r.outcome === "verify_mismatch"
+            ? `The site's ${noun} did not match what you approved, so WPMgr cannot vouch for it.`
+            : `Something went wrong on the site partway through.`;
+        return {
+          kind: "failed",
+          text: `${why} A draft ${noun} may exist on the site. Check it, and delete it there if you do not want it.`,
+          draftMayExist: true,
+        };
+      }
       if (r.outcome === "verify_mismatch") {
         return {
           kind: "failed",
           text: `The site's ${noun} did not match what you approved, so WPMgr cannot vouch for it. Check the site's drafts.`,
-          ...extra,
         };
       }
       if (r.outcome === "refused") {
         return {
           kind: "failed",
           text: `The site refused to create the draft ${noun}. Nothing was created.`,
-          ...extra,
         };
       }
       return {
         kind: "failed",
         text: `The draft ${noun} was not created because something went wrong on the site.`,
-        ...extra,
       };
     }
     case "not_sent":

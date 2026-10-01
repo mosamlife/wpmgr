@@ -60,7 +60,7 @@ export function AbilityRequestCard({
   const setUpFor = setUpForLine(request);
   const busy = approvePending || declinePending;
   const canUndo = undoOpen(request, now);
-  const editHref = status.kind === "done" ? editDraftHref(siteUrl, request.created_post_id) : null;
+  const editHref = status.kind === "done" || status.draftMayExist === true ? editDraftHref(siteUrl, request.created_post_id) : null;
   const title = abilityCardTitle(request);
 
   return (
@@ -108,9 +108,6 @@ export function AbilityRequestCard({
       {pending ? null : (
         <div className="space-y-1">
           <p className="text-sm text-foreground">{status.text}</p>
-          {status.siteSaid ? (
-            <p className="text-sm text-muted-foreground">The site said: {status.siteSaid}</p>
-          ) : null}
           {editHref ? (
             <a
               href={editHref}
