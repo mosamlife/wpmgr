@@ -4517,6 +4517,77 @@ export type PurgeRequest = {
   delete_everything?: boolean;
 };
 
+export type AbilityRequestApproveBody = {
+  /**
+   * The digest the queue returned for this request.
+   */
+  presented_digest: string;
+};
+
+export type AbilityRequestList = {
+  requests: Array<AbilityRequest>;
+  limit: number;
+  offset: number;
+};
+
+/**
+ * One AI site-change request. `site_label`, `site_host`, `grant_label`
+ * and `title_excerpt` came from a site or an AI connection: render each
+ * as plain text. `input_json` is the exact input the AI chose, shown in
+ * full on the card.
+ *
+ */
+export type AbilityRequest = {
+  id: string;
+  site_id: string;
+  ability_name: string;
+  input_json: string;
+  title_excerpt?: string;
+  editor?: string;
+  post_type?: string;
+  effect_copy: "draft" | "live" | "none";
+  snapshot: string;
+  site_label: string;
+  site_host: string;
+  grant_label: string;
+  grant_via: string;
+  setup_client?: string;
+  card_copy_version: number;
+  presented_digest?: string;
+  state:
+    | "pending"
+    | "approved"
+    | "declined"
+    | "withdrawn"
+    | "expired"
+    | "dispatched"
+    | "outcome_unknown"
+    | "done"
+    | "failed"
+    | "not_sent";
+  created_at: string;
+  expires_at: string;
+  decided_at?: string;
+  outcome?: string;
+  outcome_code?: string;
+  not_sent_reason?: string;
+  created_post_id?: number;
+  trashed?: boolean;
+  undo_state?: string;
+  undo_available_until?: string;
+};
+
+export type ContentEditingState = {
+  site_id: string;
+  enabled: boolean;
+  enabled_at?: string;
+  /**
+   * The WordPress user id of the site's content service user.
+   */
+  principal_user_id?: number;
+  enabled_by?: string;
+};
+
 export type AssistantRequestApproveBody = {
   /**
    * The digest the queue returned for this request.
@@ -17936,6 +18007,252 @@ export type DeclineAssistantRequestResponses = {
 
 export type DeclineAssistantRequestResponse =
   DeclineAssistantRequestResponses[keyof DeclineAssistantRequestResponses];
+
+export type ListSiteAbilityRequestsData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: {
+    limit?: number;
+    offset?: number;
+  };
+  url: "/api/v1/sites/{siteId}/ai/ability-requests";
+};
+
+export type ListSiteAbilityRequestsErrors = {
+  /**
+   * Missing site.content.edit
+   */
+  403: Error;
+  /**
+   * The site is not the caller's
+   */
+  404: Error;
+};
+
+export type ListSiteAbilityRequestsError =
+  ListSiteAbilityRequestsErrors[keyof ListSiteAbilityRequestsErrors];
+
+export type ListSiteAbilityRequestsResponses = {
+  /**
+   * A page of requests
+   */
+  200: AbilityRequestList;
+};
+
+export type ListSiteAbilityRequestsResponse =
+  ListSiteAbilityRequestsResponses[keyof ListSiteAbilityRequestsResponses];
+
+export type ApproveAbilityRequestData = {
+  body: AbilityRequestApproveBody;
+  path: {
+    siteId: string;
+    requestId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/ai/ability-requests/{requestId}/approve";
+};
+
+export type ApproveAbilityRequestErrors = {
+  /**
+   * Not a signed-in person, or missing the permission
+   */
+  403: Error;
+  /**
+   * The site is not the caller's
+   */
+  404: Error;
+  /**
+   * Nothing was approved; the error code names why
+   */
+  409: Error;
+  /**
+   * The body was not application/json
+   */
+  415: Error;
+};
+
+export type ApproveAbilityRequestError =
+  ApproveAbilityRequestErrors[keyof ApproveAbilityRequestErrors];
+
+export type ApproveAbilityRequestResponses = {
+  /**
+   * Approved; the request now waits for the worker
+   */
+  200: AbilityRequest;
+};
+
+export type ApproveAbilityRequestResponse =
+  ApproveAbilityRequestResponses[keyof ApproveAbilityRequestResponses];
+
+export type DeclineAbilityRequestData = {
+  body: {
+    [key: string]: unknown;
+  };
+  path: {
+    siteId: string;
+    requestId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/ai/ability-requests/{requestId}/decline";
+};
+
+export type DeclineAbilityRequestErrors = {
+  /**
+   * Not a signed-in person, or missing the permission
+   */
+  403: Error;
+  /**
+   * The site is not the caller's
+   */
+  404: Error;
+  /**
+   * The request is no longer waiting
+   */
+  409: Error;
+  /**
+   * The body was not application/json
+   */
+  415: Error;
+};
+
+export type DeclineAbilityRequestError =
+  DeclineAbilityRequestErrors[keyof DeclineAbilityRequestErrors];
+
+export type DeclineAbilityRequestResponses = {
+  /**
+   * Declined
+   */
+  200: AbilityRequest;
+};
+
+export type DeclineAbilityRequestResponse =
+  DeclineAbilityRequestResponses[keyof DeclineAbilityRequestResponses];
+
+export type UndoAbilityRequestData = {
+  body: {
+    [key: string]: unknown;
+  };
+  path: {
+    siteId: string;
+    requestId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/ai/ability-requests/{requestId}/undo";
+};
+
+export type UndoAbilityRequestErrors = {
+  /**
+   * Not a signed-in person, or missing the permission
+   */
+  403: Error;
+  /**
+   * The site is not the caller's
+   */
+  404: Error;
+  /**
+   * The change can no longer be undone from WPMgr
+   */
+  409: Error;
+  /**
+   * The body was not application/json
+   */
+  415: Error;
+};
+
+export type UndoAbilityRequestError =
+  UndoAbilityRequestErrors[keyof UndoAbilityRequestErrors];
+
+export type UndoAbilityRequestResponses = {
+  /**
+   * The undo ran; undo_state names its result
+   */
+  200: AbilityRequest;
+};
+
+export type UndoAbilityRequestResponse =
+  UndoAbilityRequestResponses[keyof UndoAbilityRequestResponses];
+
+export type GetSiteContentEditingData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/ai/content-editing";
+};
+
+export type GetSiteContentEditingErrors = {
+  /**
+   * Missing site.content.read
+   */
+  403: Error;
+  /**
+   * The site is not the caller's
+   */
+  404: Error;
+};
+
+export type GetSiteContentEditingError =
+  GetSiteContentEditingErrors[keyof GetSiteContentEditingErrors];
+
+export type GetSiteContentEditingResponses = {
+  /**
+   * The site's content-editing state
+   */
+  200: ContentEditingState;
+};
+
+export type GetSiteContentEditingResponse =
+  GetSiteContentEditingResponses[keyof GetSiteContentEditingResponses];
+
+export type EnableSiteContentEditingData = {
+  body: {
+    [key: string]: unknown;
+  };
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/ai/content-editing/enable";
+};
+
+export type EnableSiteContentEditingErrors = {
+  /**
+   * Not a signed-in person, or missing site.content.edit
+   */
+  403: Error;
+  /**
+   * The site is not the caller's
+   */
+  404: Error;
+  /**
+   * The agent is too old, or the site refused
+   */
+  409: Error;
+  /**
+   * The body was not application/json
+   */
+  415: Error;
+  /**
+   * The site could not be reached
+   */
+  503: Error;
+};
+
+export type EnableSiteContentEditingError =
+  EnableSiteContentEditingErrors[keyof EnableSiteContentEditingErrors];
+
+export type EnableSiteContentEditingResponses = {
+  /**
+   * Enabled
+   */
+  200: ContentEditingState;
+};
+
+export type EnableSiteContentEditingResponse =
+  EnableSiteContentEditingResponses[keyof EnableSiteContentEditingResponses];
 
 export type PurgeCacheData = {
   body: PurgeRequest;

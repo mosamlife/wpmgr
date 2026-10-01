@@ -527,6 +527,15 @@ type Invoker interface {
 	//
 	// POST /api/v1/sites/{siteId}/files/upload/apply
 	ApplySiteFileUpload(ctx context.Context, request *ApplyUploadRequest, params ApplySiteFileUploadParams) (ApplySiteFileUploadRes, error)
+	// ApproveAbilityRequest invokes approveAbilityRequest operation.
+	//
+	// Approves one waiting request, once. Only a signed-in person may approve, and the service re-checks
+	// that the person holds the permission the request names (`operator_permission`) on this site. The
+	// body carries the `presented_digest` the queue returned; a stale digest is refused with 409. A worker
+	// then sends the change to the site, re-checking everything first.
+	//
+	// POST /api/v1/sites/{siteId}/ai/ability-requests/{requestId}/approve
+	ApproveAbilityRequest(ctx context.Context, request *AbilityRequestApproveBody, params ApproveAbilityRequestParams) (ApproveAbilityRequestRes, error)
 	// ApproveAssistantRequest invokes approveAssistantRequest operation.
 	//
 	// Approves one waiting request. Only a person signed in to the dashboard may approve; an API key gets
@@ -1014,6 +1023,13 @@ type Invoker interface {
 	//
 	// POST /api/v1/updates
 	CreateUpdateRun(ctx context.Context, request *UpdateRunCreate) (CreateUpdateRunRes, error)
+	// DeclineAbilityRequest invokes declineAbilityRequest operation.
+	//
+	// Declines one waiting request. Only a signed-in person holding the request's permission on this site
+	// may decline. The body must be JSON (an empty object is fine).
+	//
+	// POST /api/v1/sites/{siteId}/ai/ability-requests/{requestId}/decline
+	DeclineAbilityRequest(ctx context.Context, request *DeclineAbilityRequestReq, params DeclineAbilityRequestParams) (DeclineAbilityRequestRes, error)
 	// DeclineAssistantRequest invokes declineAssistantRequest operation.
 	//
 	// Declines one waiting request. Only a person signed in to the dashboard may decline. The body must be
@@ -1263,6 +1279,15 @@ type Invoker interface {
 	//
 	// POST /api/v1/sites/{siteId}/perf/object-cache/enable
 	EnableObjectCache(ctx context.Context, params EnableObjectCacheParams) (EnableObjectCacheRes, error)
+	// EnableSiteContentEditing invokes enableSiteContentEditing operation.
+	//
+	// Asks the site's agent to create (or confirm) the WPMgr content service user that every approved AI
+	// change runs as. That user can edit pages and posts and cannot publish, delete, install plugins,
+	// manage users or change settings. Only a signed-in person may enable it. The body must be JSON (an
+	// empty object is fine).
+	//
+	// POST /api/v1/sites/{siteId}/ai/content-editing/enable
+	EnableSiteContentEditing(ctx context.Context, request *EnableSiteContentEditingReq, params EnableSiteContentEditingParams) (EnableSiteContentEditingRes, error)
 	// Enroll invokes enroll operation.
 	//
 	// Called by an agent (NOT an authenticated control-plane user) to enroll a site using a pairing code.
@@ -1910,6 +1935,13 @@ type Invoker interface {
 	//
 	// GET /api/v1/sites/{siteId}/updates/available
 	GetSiteAvailableUpdates(ctx context.Context, params GetSiteAvailableUpdatesParams) (GetSiteAvailableUpdatesRes, error)
+	// GetSiteContentEditing invokes getSiteContentEditing operation.
+	//
+	// Until content editing is enabled, an AI connection's page-creation requests for this site are
+	// refused. Requires `site.content.read`.
+	//
+	// GET /api/v1/sites/{siteId}/ai/content-editing
+	GetSiteContentEditing(ctx context.Context, params GetSiteContentEditingParams) (GetSiteContentEditingRes, error)
 	// GetSiteContentInventory invokes getSiteContentInventory operation.
 	//
 	// One page of the site's page-ownership inventory, ordered by `post_id` ascending. Page it by passing
@@ -2433,6 +2465,14 @@ type Invoker interface {
 	//
 	// GET /api/v1/shared-with-me
 	ListSharedWithMe(ctx context.Context) (ListSharedWithMeRes, error)
+	// ListSiteAbilityRequests invokes listSiteAbilityRequests operation.
+	//
+	// Requests an AI connection made through `site_ability_run` for a reviewed write ability (today
+	// `wpmgr/page-create`), newest first. Requires `site.content.edit` and access to the site.
+	// `presented_digest` is returned only to a signed-in person.
+	//
+	// GET /api/v1/sites/{siteId}/ai/ability-requests
+	ListSiteAbilityRequests(ctx context.Context, params ListSiteAbilityRequestsParams) (ListSiteAbilityRequestsRes, error)
 	// ListSiteActivity invokes listSiteActivity operation.
 	//
 	// Returns the agent-captured WordPress activity events for the site, newest first. Each event carries
@@ -3706,6 +3746,15 @@ type Invoker interface {
 	//
 	// POST /api/v1/sites/{siteId}/security/unblock-ip
 	UnblockSiteIP(ctx context.Context, request *UnblockIPRequest, params UnblockSiteIPParams) (UnblockSiteIPRes, error)
+	// UndoAbilityRequest invokes undoAbilityRequest operation.
+	//
+	// Undoes a done request inside its undo window, once. For a created page this moves the draft to the
+	// trash, only while it is unchanged and still a draft. The site takes the page from its own record of
+	// this request; nothing in the call names it. `undo_state` in the answer is the result: undone,
+	// refused_conflict, refused_published or failed.
+	//
+	// POST /api/v1/sites/{siteId}/ai/ability-requests/{requestId}/undo
+	UndoAbilityRequest(ctx context.Context, request *UndoAbilityRequestReq, params UndoAbilityRequestParams) (UndoAbilityRequestRes, error)
 	// UnlinkMyIdentity invokes unlinkMyIdentity operation.
 	//
 	// REFUSES WITH 409 WHEN IT WOULD LEAVE THE ACCOUNT WITH NO WAY TO SIGN IN, which is the case where
@@ -8166,6 +8215,130 @@ func (c *Client) sendApplySiteFileUpload(ctx context.Context, request *ApplyUplo
 
 	stage = "DecodeResponse"
 	result, err := decodeApplySiteFileUploadResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// ApproveAbilityRequest invokes approveAbilityRequest operation.
+//
+// Approves one waiting request, once. Only a signed-in person may approve, and the service re-checks
+// that the person holds the permission the request names (`operator_permission`) on this site. The
+// body carries the `presented_digest` the queue returned; a stale digest is refused with 409. A worker
+// then sends the change to the site, re-checking everything first.
+//
+// POST /api/v1/sites/{siteId}/ai/ability-requests/{requestId}/approve
+func (c *Client) ApproveAbilityRequest(ctx context.Context, request *AbilityRequestApproveBody, params ApproveAbilityRequestParams) (ApproveAbilityRequestRes, error) {
+	res, err := c.sendApproveAbilityRequest(ctx, request, params)
+	return res, err
+}
+
+func (c *Client) sendApproveAbilityRequest(ctx context.Context, request *AbilityRequestApproveBody, params ApproveAbilityRequestParams) (res ApproveAbilityRequestRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("approveAbilityRequest"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/api/v1/sites/{siteId}/ai/ability-requests/{requestId}/approve"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, ApproveAbilityRequestOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [5]string
+	pathParts[0] = "/api/v1/sites/"
+	{
+		// Encode "siteId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "siteId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.SiteId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/ai/ability-requests/"
+	{
+		// Encode "requestId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "requestId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.RequestId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[3] = encoded
+	}
+	pathParts[4] = "/approve"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeApproveAbilityRequestRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeApproveAbilityRequestResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}
@@ -12869,6 +13042,128 @@ func (c *Client) sendCreateUpdateRun(ctx context.Context, request *UpdateRunCrea
 	return result, nil
 }
 
+// DeclineAbilityRequest invokes declineAbilityRequest operation.
+//
+// Declines one waiting request. Only a signed-in person holding the request's permission on this site
+// may decline. The body must be JSON (an empty object is fine).
+//
+// POST /api/v1/sites/{siteId}/ai/ability-requests/{requestId}/decline
+func (c *Client) DeclineAbilityRequest(ctx context.Context, request *DeclineAbilityRequestReq, params DeclineAbilityRequestParams) (DeclineAbilityRequestRes, error) {
+	res, err := c.sendDeclineAbilityRequest(ctx, request, params)
+	return res, err
+}
+
+func (c *Client) sendDeclineAbilityRequest(ctx context.Context, request *DeclineAbilityRequestReq, params DeclineAbilityRequestParams) (res DeclineAbilityRequestRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("declineAbilityRequest"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/api/v1/sites/{siteId}/ai/ability-requests/{requestId}/decline"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, DeclineAbilityRequestOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [5]string
+	pathParts[0] = "/api/v1/sites/"
+	{
+		// Encode "siteId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "siteId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.SiteId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/ai/ability-requests/"
+	{
+		// Encode "requestId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "requestId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.RequestId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[3] = encoded
+	}
+	pathParts[4] = "/decline"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeDeclineAbilityRequestRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeDeclineAbilityRequestResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // DeclineAssistantRequest invokes declineAssistantRequest operation.
 //
 // Declines one waiting request. Only a person signed in to the dashboard may decline. The body must be
@@ -16228,6 +16523,111 @@ func (c *Client) sendEnableObjectCache(ctx context.Context, params EnableObjectC
 
 	stage = "DecodeResponse"
 	result, err := decodeEnableObjectCacheResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// EnableSiteContentEditing invokes enableSiteContentEditing operation.
+//
+// Asks the site's agent to create (or confirm) the WPMgr content service user that every approved AI
+// change runs as. That user can edit pages and posts and cannot publish, delete, install plugins,
+// manage users or change settings. Only a signed-in person may enable it. The body must be JSON (an
+// empty object is fine).
+//
+// POST /api/v1/sites/{siteId}/ai/content-editing/enable
+func (c *Client) EnableSiteContentEditing(ctx context.Context, request *EnableSiteContentEditingReq, params EnableSiteContentEditingParams) (EnableSiteContentEditingRes, error) {
+	res, err := c.sendEnableSiteContentEditing(ctx, request, params)
+	return res, err
+}
+
+func (c *Client) sendEnableSiteContentEditing(ctx context.Context, request *EnableSiteContentEditingReq, params EnableSiteContentEditingParams) (res EnableSiteContentEditingRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("enableSiteContentEditing"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/api/v1/sites/{siteId}/ai/content-editing/enable"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, EnableSiteContentEditingOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/sites/"
+	{
+		// Encode "siteId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "siteId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.SiteId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/ai/content-editing/enable"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeEnableSiteContentEditingRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeEnableSiteContentEditingResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}
@@ -23950,6 +24350,106 @@ func (c *Client) sendGetSiteAvailableUpdates(ctx context.Context, params GetSite
 	return result, nil
 }
 
+// GetSiteContentEditing invokes getSiteContentEditing operation.
+//
+// Until content editing is enabled, an AI connection's page-creation requests for this site are
+// refused. Requires `site.content.read`.
+//
+// GET /api/v1/sites/{siteId}/ai/content-editing
+func (c *Client) GetSiteContentEditing(ctx context.Context, params GetSiteContentEditingParams) (GetSiteContentEditingRes, error) {
+	res, err := c.sendGetSiteContentEditing(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendGetSiteContentEditing(ctx context.Context, params GetSiteContentEditingParams) (res GetSiteContentEditingRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("getSiteContentEditing"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/sites/{siteId}/ai/content-editing"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, GetSiteContentEditingOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/sites/"
+	{
+		// Encode "siteId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "siteId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.SiteId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/ai/content-editing"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeGetSiteContentEditingResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // GetSiteContentInventory invokes getSiteContentInventory operation.
 //
 // One page of the site's page-ownership inventory, ordered by `post_id` ascending. Page it by passing
@@ -31640,6 +32140,145 @@ func (c *Client) sendListSharedWithMe(ctx context.Context) (res ListSharedWithMe
 
 	stage = "DecodeResponse"
 	result, err := decodeListSharedWithMeResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// ListSiteAbilityRequests invokes listSiteAbilityRequests operation.
+//
+// Requests an AI connection made through `site_ability_run` for a reviewed write ability (today
+// `wpmgr/page-create`), newest first. Requires `site.content.edit` and access to the site.
+// `presented_digest` is returned only to a signed-in person.
+//
+// GET /api/v1/sites/{siteId}/ai/ability-requests
+func (c *Client) ListSiteAbilityRequests(ctx context.Context, params ListSiteAbilityRequestsParams) (ListSiteAbilityRequestsRes, error) {
+	res, err := c.sendListSiteAbilityRequests(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendListSiteAbilityRequests(ctx context.Context, params ListSiteAbilityRequestsParams) (res ListSiteAbilityRequestsRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("listSiteAbilityRequests"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/sites/{siteId}/ai/ability-requests"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, ListSiteAbilityRequestsOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/sites/"
+	{
+		// Encode "siteId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "siteId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.SiteId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/ai/ability-requests"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeQueryParams"
+	q := uri.NewQueryEncoder()
+	{
+		// Encode "limit" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "limit",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Limit.Get(); ok {
+				return e.EncodeValue(conv.Int32ToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	{
+		// Encode "offset" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "offset",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Offset.Get(); ok {
+				return e.EncodeValue(conv.Int32ToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	u.RawQuery = q.Values().Encode()
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeListSiteAbilityRequestsResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}
@@ -45895,6 +46534,130 @@ func (c *Client) sendUnblockSiteIP(ctx context.Context, request *UnblockIPReques
 
 	stage = "DecodeResponse"
 	result, err := decodeUnblockSiteIPResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// UndoAbilityRequest invokes undoAbilityRequest operation.
+//
+// Undoes a done request inside its undo window, once. For a created page this moves the draft to the
+// trash, only while it is unchanged and still a draft. The site takes the page from its own record of
+// this request; nothing in the call names it. `undo_state` in the answer is the result: undone,
+// refused_conflict, refused_published or failed.
+//
+// POST /api/v1/sites/{siteId}/ai/ability-requests/{requestId}/undo
+func (c *Client) UndoAbilityRequest(ctx context.Context, request *UndoAbilityRequestReq, params UndoAbilityRequestParams) (UndoAbilityRequestRes, error) {
+	res, err := c.sendUndoAbilityRequest(ctx, request, params)
+	return res, err
+}
+
+func (c *Client) sendUndoAbilityRequest(ctx context.Context, request *UndoAbilityRequestReq, params UndoAbilityRequestParams) (res UndoAbilityRequestRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("undoAbilityRequest"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/api/v1/sites/{siteId}/ai/ability-requests/{requestId}/undo"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, UndoAbilityRequestOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [5]string
+	pathParts[0] = "/api/v1/sites/"
+	{
+		// Encode "siteId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "siteId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.SiteId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/ai/ability-requests/"
+	{
+		// Encode "requestId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "requestId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.RequestId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[3] = encoded
+	}
+	pathParts[4] = "/undo"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeUndoAbilityRequestRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeUndoAbilityRequestResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}

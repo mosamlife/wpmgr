@@ -145,6 +145,10 @@ type ApplySiteFileUploadRes interface {
 	applySiteFileUploadRes()
 }
 
+type ApproveAbilityRequestRes interface {
+	approveAbilityRequestRes()
+}
+
 type ApproveAssistantRequestRes interface {
 	approveAssistantRequestRes()
 }
@@ -317,6 +321,10 @@ type CreateUpdateRunRes interface {
 	createUpdateRunRes()
 }
 
+type DeclineAbilityRequestRes interface {
+	declineAbilityRequestRes()
+}
+
 type DeclineAssistantRequestRes interface {
 	declineAssistantRequestRes()
 }
@@ -415,6 +423,10 @@ type DownloadPortalReportRes interface {
 
 type EnableObjectCacheRes interface {
 	enableObjectCacheRes()
+}
+
+type EnableSiteContentEditingRes interface {
+	enableSiteContentEditingRes()
 }
 
 type EnrollRes interface {
@@ -649,6 +661,10 @@ type GetSiteAvailableUpdatesRes interface {
 	getSiteAvailableUpdatesRes()
 }
 
+type GetSiteContentEditingRes interface {
+	getSiteContentEditingRes()
+}
+
 type GetSiteContentInventoryRes interface {
 	getSiteContentInventoryRes()
 }
@@ -863,6 +879,10 @@ type ListScheduleRunsRes interface {
 
 type ListSharedWithMeRes interface {
 	listSharedWithMeRes()
+}
+
+type ListSiteAbilityRequestsRes interface {
+	listSiteAbilityRequestsRes()
 }
 
 type ListSiteAssistantRequestsRes interface {
@@ -1285,6 +1305,10 @@ type ToggleScanFindingIgnoreRes interface {
 
 type UnblockSiteIPRes interface {
 	unblockSiteIPRes()
+}
+
+type UndoAbilityRequestRes interface {
+	undoAbilityRequestRes()
 }
 
 type UnlinkMyIdentityRes interface {

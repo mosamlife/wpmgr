@@ -486,6 +486,20 @@ func encodeApplySiteFileUploadRequest(
 	return nil
 }
 
+func encodeApproveAbilityRequestRequest(
+	req *AbilityRequestApproveBody,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	e := new(jx.Encoder)
+	{
+		req.Encode(e)
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
 func encodeApproveAssistantRequestRequest(
 	req *AssistantRequestApproveBody,
 	r *http.Request,
@@ -1020,6 +1034,20 @@ func encodeCreateUpdateRunRequest(
 	return nil
 }
 
+func encodeDeclineAbilityRequestRequest(
+	req *DeclineAbilityRequestReq,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	e := new(jx.Encoder)
+	{
+		req.Encode(e)
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
 func encodeDeclineAssistantRequestRequest(
 	req *DeclineAssistantRequestReq,
 	r *http.Request,
@@ -1126,6 +1154,20 @@ func encodeDeleteWebAuthnCredentialRequest(
 
 func encodeDisableTotpRequest(
 	req *DisableTotpReq,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	e := new(jx.Encoder)
+	{
+		req.Encode(e)
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
+func encodeEnableSiteContentEditingRequest(
+	req *EnableSiteContentEditingReq,
 	r *http.Request,
 ) error {
 	const contentType = "application/json"
@@ -2310,6 +2352,20 @@ func encodeTriggerDbScanRequest(
 
 func encodeUnblockSiteIPRequest(
 	req *UnblockIPRequest,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	e := new(jx.Encoder)
+	{
+		req.Encode(e)
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
+func encodeUndoAbilityRequestRequest(
+	req *UndoAbilityRequestReq,
 	r *http.Request,
 ) error {
 	const contentType = "application/json"
