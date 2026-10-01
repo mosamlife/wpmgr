@@ -312,6 +312,12 @@ func startPostgres(t testing.TB) *db.Pool {
 		"REVOKE DELETE, TRUNCATE ON site_ability_inventory_runs FROM wpmgr_app",
 		// m155 site_ability_inventory: TRUNCATE revoked in the migration.
 		"REVOKE TRUNCATE ON site_ability_inventory FROM wpmgr_app",
+		// m156's assistant_ability_requests is m151's shape: the same three
+		// statements, revoke-then-grant, so its immutability and
+		// undeletability proofs run against a real install's privileges.
+		"REVOKE UPDATE ON assistant_ability_requests FROM wpmgr_app",
+		"GRANT UPDATE (state, decided_at, decided_by_user_id, withdrawn_at, dispatch_deadline_at, claimed_at, dispatch_attempts, last_attempt_at, last_attempt_code, unknown_since, ledger_checked_at, outcome, outcome_at, outcome_code, not_sent_reason, created_post_id, restored, trashed, site_reported_text, undo_state, undo_available_until, undo_by_user_id, undo_started_at, undo_finished_at) ON assistant_ability_requests TO wpmgr_app",
+		"REVOKE DELETE, TRUNCATE ON assistant_ability_requests FROM wpmgr_app",
 	} {
 		if _, err := ownerPool.Exec(ctx, stmt); err != nil {
 			setupFatalf(t, err, "postgres: provision app role ("+stmt+")")
