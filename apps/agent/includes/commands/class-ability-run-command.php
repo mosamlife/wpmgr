@@ -218,7 +218,7 @@ final class AbilityRunCommand implements CommandInterface
             }
         }
         if ($class === 'write') {
-            if (($entry->approval ?? null) !== 'per_call') {
+            if (($entry->approval_mode ?? null) !== 'per_call') {
                 return $this->fail('entry_approval_invalid', 'a write entry must require approval per call');
             }
             if (($entry->snapshot ?? null) !== 'created_post_trash') {

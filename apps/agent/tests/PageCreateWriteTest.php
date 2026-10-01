@@ -483,7 +483,7 @@ final class PageCreateWriteTest extends TestCase
     public function test_a_write_entry_needs_per_call_approval_and_a_snapshot(): void
     {
         $this->enable();
-        $noApproval = $this->write(self::REQ_A, $this->input(), str_repeat('a', 64), str_repeat('b', 64), ['approval' => 'none']);
+        $noApproval = $this->write(self::REQ_A, $this->input(), str_repeat('a', 64), str_repeat('b', 64), ['approval_mode' => 'none']);
         $this->assertSame('entry_approval_invalid', $noApproval['code']);
         $noSnapshot = $this->write(self::REQ_A, $this->input(), str_repeat('a', 64), str_repeat('b', 64), ['snapshot' => 'none']);
         $this->assertSame('snapshot_strategy_invalid', $noSnapshot['code']);
@@ -676,7 +676,7 @@ final class PageCreateWriteTest extends TestCase
             'class'    => 'write',
             'status'   => 'admitted',
             'enabled'  => true,
-            'approval' => 'per_call',
+            'approval_mode' => 'per_call',
             'snapshot' => 'created_post_trash',
         ]);
     }
