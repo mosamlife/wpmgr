@@ -288,6 +288,8 @@ final class PageCreateBuilder
             (string) ($post->post_name ?? ''),
             (string) ($post->post_password ?? ''),
             (string) ($post->post_modified_gmt ?? ''),
+            (int) ($post->post_parent ?? 0),
+            (int) ($post->menu_order ?? 0),
         ]));
     }
 

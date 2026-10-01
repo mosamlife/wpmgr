@@ -19,7 +19,9 @@ if (!defined('ABSPATH')) {
  *
  * In-flight claims (Sec-F3) are options rows too: one per request and one per
  * target post, taken with an atomic INSERT IGNORE and released in a finally
- * block.
+ * block. A claim older than CLAIM_TTL is stale: it is not in flight, and the
+ * next caller takes it over with one conditional UPDATE, so exactly one taker
+ * wins. A release deletes only the claim this process holds.
  *
  * Object ids used by undo come only from the row for the token-bound
  * request_id. Nothing in the call's input is ever read for them.
@@ -29,6 +31,17 @@ final class AbilityLedger
     private const ROW_PREFIX      = 'wpmgr_ability_ledger_';
     private const INFLIGHT_PREFIX = 'wpmgr_ability_inflight_';
     private const TARGET_PREFIX   = 'wpmgr_ability_target_';
+
+    /**
+     * Seconds after which a claim is stale. A page-create run is one insert
+     * and one read-back, bounded by the control plane's per-call timeout and
+     * by PHP's max_execution_time; this sits well above both, and well inside
+     * the control plane's ledger resolution window.
+     */
+    public const CLAIM_TTL = 300;
+
+    /** @var array<string,string> Claim values this process holds, by option name. */
+    private static array $held = [];
 
     /**
      * The row for a request, or null.
@@ -84,12 +97,9 @@ final class AbilityLedger
      */
     public static function inflight(string $requestId): bool
     {
-        global $wpdb;
-        $name = self::INFLIGHT_PREFIX . strtolower($requestId);
-        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- the claim row is written by a raw INSERT IGNORE, so it is read raw too; the options cache never holds it
-        $found = $wpdb->get_var($wpdb->prepare("SELECT option_id FROM {$wpdb->options} WHERE option_name = %s", $name));
+        $value = self::claimValue(self::INFLIGHT_PREFIX . strtolower($requestId));
 
-        return $found !== null;
+        return $value !== null && !self::isStale($value);
     }
 
     /**
@@ -106,18 +116,88 @@ final class AbilityLedger
     /**
      * Atomic claim (Sec-F3). core's add_option() writes with ON DUPLICATE KEY
      * UPDATE, so two racers can both succeed; INSERT IGNORE on the unique
-     * option_name lets exactly one of them insert the row.
+     * option_name lets exactly one of them insert the row. A stale claim is
+     * taken over by an UPDATE conditional on the stale value, which only one
+     * racer can match.
      *
      * @param string $name Option name.
-     * @return bool True only when this call inserted the row.
+     * @return bool True only when this call now holds the claim.
      */
     private static function claim(string $name): bool
     {
         global $wpdb;
-        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- an atomic claim must be one INSERT IGNORE on the unique key; add_option() is not atomic under a race
-        $rows = $wpdb->query($wpdb->prepare("INSERT IGNORE INTO {$wpdb->options} (option_name, option_value, autoload) VALUES (%s, %s, 'no')", $name, (string) time()));
+        $mine = time() . ':' . bin2hex(random_bytes(8));
 
-        return $rows === 1;
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- an atomic claim must be one INSERT IGNORE on the unique key; add_option() is not atomic under a race
+        $rows = $wpdb->query($wpdb->prepare("INSERT IGNORE INTO {$wpdb->options} (option_name, option_value, autoload) VALUES (%s, %s, 'no')", $name, $mine));
+        if ($rows === 1) {
+            self::$held[$name] = $mine;
+
+            return true;
+        }
+
+        $old = self::claimValue($name);
+        if ($old === null || !self::isStale($old)) {
+            return false;
+        }
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- the takeover must be one UPDATE conditional on the stale value so only one taker wins; update_option() is not conditional
+        $rows = $wpdb->query($wpdb->prepare("UPDATE {$wpdb->options} SET option_value = %s WHERE option_name = %s AND option_value = %s", $mine, $name, $old));
+        if ($rows !== 1) {
+            return false;
+        }
+        self::$held[$name] = $mine;
+
+        return true;
+    }
+
+    /**
+     * The raw claim value, or null when there is no claim.
+     *
+     * @param string $name Option name.
+     * @return string|null
+     */
+    private static function claimValue(string $name): ?string
+    {
+        global $wpdb;
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- the claim row is written raw, so it is read raw too; the options cache never holds it
+        $value = $wpdb->get_var($wpdb->prepare("SELECT option_value FROM {$wpdb->options} WHERE option_name = %s", $name));
+
+        return is_string($value) ? $value : null;
+    }
+
+    /**
+     * Is a claim value stale? An unreadable value is stale: it can never be
+     * released by its owner's value match, so it must not block forever.
+     *
+     * @param string $value Claim value ("<unix time>:<nonce>").
+     * @return bool
+     */
+    private static function isStale(string $value): bool
+    {
+        if (preg_match('/^([0-9]{1,12})(?::|$)/', $value, $m) !== 1) {
+            return true;
+        }
+
+        return time() - (int) $m[1] >= self::CLAIM_TTL;
+    }
+
+    /**
+     * Release a claim, only when this process still holds it: a claim taken
+     * over after it went stale belongs to its new holder.
+     *
+     * @param string $name Option name.
+     * @return void
+     */
+    private static function release(string $name): void
+    {
+        global $wpdb;
+        $mine = self::$held[$name] ?? null;
+        unset(self::$held[$name]);
+        if ($mine === null) {
+            return;
+        }
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- the release must delete only the value this process wrote; delete_option() would delete a new holder's claim
+        $wpdb->query($wpdb->prepare("DELETE FROM {$wpdb->options} WHERE option_name = %s AND option_value = %s", $name, $mine));
     }
 
     /**
@@ -126,7 +206,7 @@ final class AbilityLedger
      */
     public static function releaseRequest(string $requestId): void
     {
-        delete_option(self::INFLIGHT_PREFIX . strtolower($requestId));
+        self::release(self::INFLIGHT_PREFIX . strtolower($requestId));
     }
 
     /**
@@ -146,6 +226,6 @@ final class AbilityLedger
      */
     public static function releaseTarget(int $postId): void
     {
-        delete_option(self::TARGET_PREFIX . $postId);
+        self::release(self::TARGET_PREFIX . $postId);
     }
 }

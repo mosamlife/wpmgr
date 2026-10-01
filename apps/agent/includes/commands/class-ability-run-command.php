@@ -178,7 +178,9 @@ final class AbilityRunCommand implements CommandInterface
         if (!is_string($name) || preg_match(self::RE_NAME, $name) !== 1) {
             return $this->fail('bad_ability_name', 'entry.name is not a valid ability name');
         }
-        if (($entry->enabled ?? null) !== true) {
+        // Undo of what was already created stays available on a disabled
+        // entry; every other mode needs it enabled.
+        if (($entry->enabled ?? null) !== true && $mode !== 'revert') {
             return $this->fail('ability_disabled', 'the entry is not enabled');
         }
         if (($entry->status ?? null) !== 'admitted') {
@@ -455,7 +457,19 @@ final class AbilityRunCommand implements CommandInterface
 
             return $result;
         }
-        AbilityLedger::update($requestId, ['phase' => 'post_created', 'created_post_id' => $postId]);
+        if (!AbilityLedger::update($requestId, ['phase' => 'post_created', 'created_post_id' => $postId])) {
+            // Undo could never find this draft, so it is not left behind.
+            $trashed = $this->trashOwn($postId);
+            $result  = $this->fail('snapshot_failed', 'the ledger could not record the created draft; it was moved to the trash', false, ['post_id' => $postId, 'trashed' => $trashed]);
+            AbilityLedger::update($requestId, [
+                'phase'           => 'failed',
+                'created_post_id' => $postId,
+                'undo_state'      => $trashed ? 'trashed' : 'none',
+                'result'          => $result,
+            ]);
+
+            return $result;
+        }
 
         // 6. Verify the stored post (Sec-B2 for creation).
         clean_post_cache($postId);
@@ -488,12 +502,18 @@ final class AbilityRunCommand implements CommandInterface
             'after_fp'       => $afterFp,
             'verify'         => ['content_equal' => true, 'title_equal' => true, 'status' => 'draft'],
         ];
-        AbilityLedger::update($requestId, [
+        // The draft exists and its id is recorded, so the caller is told it
+        // was created even when the completed state cannot be recorded; the
+        // ledger then reports the created post id with no stored result.
+        $recorded = AbilityLedger::update($requestId, [
             'phase'      => 'completed',
             'after_fp'   => $afterFp,
             'undo_state' => 'available',
             'result'     => $result,
         ]);
+        if (!$recorded) {
+            $result['ledger_recorded'] = false;
+        }
 
         return $result;
     }
