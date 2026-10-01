@@ -374,8 +374,8 @@ final class AbilityRunCommand implements CommandInterface
 
         // Simulate the save this principal gets (kses included). Any change
         // to our bytes refuses the write; a sanitiser never edits it for us.
-        $simContent = wp_unslash(apply_filters('content_save_pre', wp_slash($content)));
-        $simTitle   = wp_unslash(apply_filters('title_save_pre', wp_slash($spec['title'])));
+        $simContent = wp_unslash(apply_filters('content_save_pre', wp_slash($content))); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- core's own save filter, applied to simulate exactly what wp_insert_post will do
+        $simTitle   = wp_unslash(apply_filters('title_save_pre', wp_slash($spec['title']))); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- core's own save filter, applied to simulate exactly what wp_insert_post will do
         if ($simContent !== $content || wp_kses_post($content) !== $content || $simTitle !== $spec['title']) {
             return ['refusal' => $this->fail('sanitiser_changed_new_content', 'the site would change this content on save')] + $empty;
         }
@@ -513,22 +513,23 @@ final class AbilityRunCommand implements CommandInterface
         if (!is_object($stored)) {
             return 'the created draft could not be read back';
         }
-        if ((string) $stored->post_status !== 'draft') {
+        $v = get_object_vars($stored);
+        if ((string) ($v['post_status'] ?? '') !== 'draft') {
             return 'the created post is not a draft';
         }
-        if ((string) $stored->post_type !== $spec['post_type']) {
+        if ((string) ($v['post_type'] ?? '') !== $spec['post_type']) {
             return 'the created post has another type';
         }
-        if ((int) $stored->post_author !== $principal) {
+        if ((int) ($v['post_author'] ?? 0) !== $principal) {
             return 'the created post has another author';
         }
-        if ((string) $stored->post_title !== $built['title']) {
+        if ((string) ($v['post_title'] ?? '') !== $built['title']) {
             return 'the stored title differs from what was built';
         }
-        if ((string) $stored->post_content !== $built['content']) {
+        if ((string) ($v['post_content'] ?? '') !== $built['content']) {
             return 'the stored content differs from what was built';
         }
-        if ((string) get_post_meta((int) $stored->ID, self::META_CREATED_BY, true) !== $requestId) {
+        if ((string) get_post_meta((int) ($v['ID'] ?? 0), self::META_CREATED_BY, true) !== $requestId) {
             return 'the created post is not marked with this request';
         }
 

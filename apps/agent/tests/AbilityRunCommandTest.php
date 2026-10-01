@@ -99,6 +99,7 @@ final class AbilityRunCommandTest extends TestCase
         $this->options[Settings::OPTION_SITE_ID] = $this->siteId;
         $GLOBALS['wpdb'] = new class {
             public string $prefix = 'wp_';
+            public string $options = 'wp_options';
             public string $last_error = '';
 
             public function prepare(string $q, ...$args): string
