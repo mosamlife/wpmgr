@@ -268,10 +268,12 @@ describe("card states", () => {
     ["approved, not started", { state: "approved", decided_at: "2026-09-30T09:05:00Z" }, /Not started yet/],
     ["sent, no outcome yet", { state: "dispatched" }, /WPMgr is creating the draft page/],
     ["outcome unknown", { state: "outcome_unknown" }, /WPMgr is checking whether the draft was created/],
-    ["undone", { state: "done", outcome: "created", created_post_id: 7, undo_state: "undone", trashed: true }, /Moved to the trash/],
-    ["undo refused, published", { state: "done", outcome: "created", created_post_id: 7, undo_state: "refused_published" }, /has been published since/],
-    ["undo refused, edited", { state: "done", outcome: "created", created_post_id: 7, undo_state: "refused_conflict" }, /was edited since/],
-    ["undo failed", { state: "done", outcome: "created", created_post_id: 7, undo_state: "failed" }, /could not move the draft to the trash/],
+    ["undo in progress", { state: "done", outcome: "created", created_post_id: 7, undo_state: "in_progress", undo_available_until: FUTURE }, /moving the draft to the trash/],
+    ["undo available", { state: "done", outcome: "created", created_post_id: 7, undo_state: "available", undo_available_until: FUTURE }, /Draft created\./],
+    ["undone", { state: "done", outcome: "created", created_post_id: 7, undo_available_until: FUTURE, undo_state: "undone", trashed: true }, /Moved to the trash/],
+    ["undo refused, published", { state: "done", outcome: "created", created_post_id: 7, undo_available_until: FUTURE, undo_state: "refused_published" }, /has been published since/],
+    ["undo refused, edited", { state: "done", outcome: "created", created_post_id: 7, undo_available_until: FUTURE, undo_state: "refused_conflict" }, /was edited since/],
+    ["undo failed", { state: "done", outcome: "created", created_post_id: 7, undo_available_until: FUTURE, undo_state: "failed" }, /could not move the draft to the trash/],
     ["failed, site refused", { state: "failed", outcome: "refused", outcome_code: "created_post_published" }, /The site refused to create the draft page/],
     ["failed, mismatch", { state: "failed", outcome: "verify_mismatch" }, /did not match what you approved/],
     ["failed, other", { state: "failed", outcome: "failed" }, /something went wrong on the site/],
@@ -299,10 +301,10 @@ describe("card states", () => {
 
   it("done: 'Draft created', an edit link when the site address is known, and Undo inside the window", async () => {
     listReqs.mockResolvedValue(
-      okList([req({ state: "done", outcome: "created", created_post_id: 42, undo_available_until: FUTURE })]),
+      okList([req({ state: "done", outcome: "created", created_post_id: 42, undo_state: "available", undo_available_until: FUTURE })]),
     );
     undoReq.mockResolvedValue({
-      data: req({ state: "done", outcome: "created", created_post_id: 42, undo_state: "undone", trashed: true }),
+      data: req({ state: "done", outcome: "created", created_post_id: 42, undo_available_until: FUTURE, undo_state: "undone", trashed: true }),
       error: undefined,
       response: { status: 200 },
     });
@@ -316,9 +318,21 @@ describe("card states", () => {
     expect(undoReq).toHaveBeenCalledWith({ path: { siteId: "site-1", requestId: "r-1" }, body: {} });
   });
 
+  it.each(["in_progress", "undone", "refused_published", "refused_conflict", "failed"] as const)(
+    "done: no Undo when undo_state is %s",
+    async (undo_state) => {
+      listReqs.mockResolvedValue(
+        okList([req({ state: "done", outcome: "created", created_post_id: 42, undo_state, undo_available_until: FUTURE })]),
+      );
+      renderTab();
+      const c = within(await card());
+      expect(c.queryByRole("button", { name: "Undo" })).toBeNull();
+    },
+  );
+
   it("done: no Undo once the window has passed", async () => {
     listReqs.mockResolvedValue(
-      okList([req({ state: "done", outcome: "created", created_post_id: 42, undo_available_until: PAST })]),
+      okList([req({ state: "done", outcome: "created", created_post_id: 42, undo_state: "available", undo_available_until: PAST })]),
     );
     renderTab();
     const c = within(await card());

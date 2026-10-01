@@ -115,7 +115,7 @@ export interface AbilityStatus {
 /** The undo window is open: done, not yet undone or tried, and still in time. */
 export function undoOpen(r: AbilityRequest, now: Date): boolean {
   if (r.state !== "done" || r.outcome !== "created") return false;
-  if (r.undo_state != null || r.trashed === true) return false;
+  if (r.undo_state !== "available" || r.trashed === true) return false;
   if (!r.undo_available_until) return false;
   const until = new Date(r.undo_available_until).getTime();
   return !Number.isNaN(until) && until > now.getTime();
@@ -138,6 +138,9 @@ export function abilityStatus(r: AbilityRequest): AbilityStatus {
     case "done": {
       if (r.undo_state === "undone" || r.trashed === true) {
         return { kind: "undone", text: "Moved to the trash." };
+      }
+      if (r.undo_state === "in_progress") {
+        return { kind: "running", text: "WPMgr is moving the draft to the trash." };
       }
       if (r.undo_state === "refused_published") {
         return {
