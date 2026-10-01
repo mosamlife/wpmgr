@@ -70,7 +70,7 @@ func TestLedgerVerdict(t *testing.T) {
 }
 
 func TestUndoResultFor(t *testing.T) {
-	cases := map[string]string{"created_post_published": UndoRefusedPublished, "conflict": UndoRefusedConflict, "revert_failed": UndoFailed}
+	cases := map[string]string{"created_post_published": UndoRefusedPublished, "conflict": UndoRefusedConflict, "created_post_touched": UndoRefusedConflict, "revert_failed": UndoFailed}
 	for code, want := range cases {
 		if got := undoResultFor(agentcmd.AbilityRunResponse{}, &agentcmd.AbilityRunRefusal{Code: code}); got != want {
 			t.Errorf("%s: got %s want %s", code, got, want)

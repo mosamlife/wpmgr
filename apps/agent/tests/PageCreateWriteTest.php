@@ -69,6 +69,15 @@ final class PageCreateWriteTest extends TestCase
 
     private bool $blockEditor = true;
 
+    /** @var array<int,int> post id => author of an autosave revision. */
+    private array $autosaves = [];
+
+    /** @var array<int,int> post id => number of revisions. */
+    private array $revisions = [];
+
+    /** @var array<int,int> post id => user holding the edit lock. */
+    private array $locks = [];
+
     private string $cpSecret;
 
     private string $siteId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
@@ -189,6 +198,20 @@ final class PageCreateWriteTest extends TestCase
             }
             return $id;
         });
+        Functions\when('wp_get_post_autosave')->alias(function ($id, $user = 0) {
+            if (!isset($this->autosaves[(int) $id])) {
+                return false;
+            }
+            // Core: user id int 0 means any user's autosave.
+            if ($user !== 0 && $this->autosaves[(int) $id] !== (int) $user) {
+                return false;
+            }
+            $r            = new \stdClass();
+            $r->post_type = 'revision';
+            return $r;
+        });
+        Functions\when('wp_get_post_revisions')->alias(fn ($id, $args = null) => array_fill(0, $this->revisions[(int) $id] ?? 0, new \stdClass()));
+        Functions\when('wp_check_post_lock')->alias(fn ($id) => $this->locks[(int) $id] ?? false);
         Functions\when('wp_trash_post')->alias(function ($id) {
             if (!isset($this->posts[(int) $id])) {
                 return false;
@@ -557,6 +580,62 @@ final class PageCreateWriteTest extends TestCase
 
         $this->assertSame('conflict', $r['code']);
         $this->assertSame('draft', $this->posts[$id]->post_status);
+    }
+
+    public function test_revert_of_a_draft_with_another_users_autosave_is_refused(): void
+    {
+        $id                   = $this->createOne(self::REQ_A);
+        $this->autosaves[$id] = 1;
+
+        $r = $this->revert(self::REQ_A);
+
+        $this->assertFalse($r['ok']);
+        $this->assertSame('created_post_touched', $r['code'], (string) json_encode($r));
+        $this->assertSame('draft', $this->posts[$id]->post_status);
+        $this->assertSame(0, $this->currentUser);
+    }
+
+    public function test_revert_of_a_draft_with_a_revision_is_refused(): void
+    {
+        $id                   = $this->createOne(self::REQ_A);
+        $this->revisions[$id] = 1;
+
+        $this->assertSame('created_post_touched', $this->revert(self::REQ_A)['code']);
+        $this->assertSame('draft', $this->posts[$id]->post_status);
+    }
+
+    public function test_revert_of_a_draft_someone_has_open_is_refused(): void
+    {
+        $id               = $this->createOne(self::REQ_A);
+        $this->locks[$id] = 1;
+
+        $this->assertSame('created_post_touched', $this->revert(self::REQ_A)['code']);
+        $this->assertSame('draft', $this->posts[$id]->post_status);
+
+        unset($this->locks[$id]);
+        $this->assertSame('reverted', $this->revert(self::REQ_A)['outcome'], 'once untouched again, undo proceeds');
+        $this->assertSame('trash', $this->posts[$id]->post_status);
+    }
+
+    public function test_the_service_user_is_never_the_current_user_of_a_request(): void
+    {
+        $id = (int) $this->enable()['user_id'];
+
+        $this->assertSame(0, ServicePrincipal::refuseCurrentUser($id));
+        $this->assertSame(0, ServicePrincipal::refuseCurrentUser((string) $id));
+        $this->assertSame(1, ServicePrincipal::refuseCurrentUser(1), 'other users are untouched');
+        $this->assertFalse(ServicePrincipal::refuseCurrentUser(false), 'no user stays no user');
+
+        ServicePrincipal::register();
+        $hooked = array_map(static fn ($f) => $f[0] . '@' . $f[2], $this->filters);
+        $this->assertContains('determine_current_user@' . PHP_INT_MAX, $hooked);
+
+        // The engine's in-process switch does not go through the filter, so a
+        // write and a revert still run as the principal past the live-drift check.
+        $post = $this->createOne(self::REQ_A);
+        $this->assertSame((string) $id, (string) $this->posts[$post]->post_author);
+        $this->assertSame('reverted', $this->revert(self::REQ_A)['outcome']);
+        $this->assertSame(0, $this->currentUser);
     }
 
     public function test_revert_of_a_published_post_is_refused(): void
