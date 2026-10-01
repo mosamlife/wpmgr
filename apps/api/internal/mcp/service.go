@@ -2614,6 +2614,13 @@ func (s *Service) RevokeConnection(ctx context.Context, p domain.Principal, gran
 			if err != nil {
 				return err
 			}
+			// The ability requests (m156) close in the same transaction,
+			// under the grant lock just taken and before the first audit
+			// row, so the lock order matches every other writer.
+			abilityWithdrawn, abilityNotSent, err := closeAbilityRequestsForGrant(ctx, s.store, tx, p.TenantID, grantID)
+			if err != nil {
+				return err
+			}
 			// THE ACTOR IS WHICHEVER CREDENTIAL AUTHENTICATED, resolved by
 			// audit.ActorFor rather than hardcoded.
 			//
@@ -2663,6 +2670,10 @@ func (s *Service) RevokeConnection(ctx context.Context, p domain.Principal, gran
 				}); aerr != nil {
 					return aerr
 				}
+			}
+			if aerr := recordAbilityRevokeCascade(ctx, s.audit, tx, p.TenantID, grantID, actorType, actorID,
+				abilityWithdrawn, abilityNotSent); aerr != nil {
+				return aerr
 			}
 			_, aerr := s.audit.RecordInTx(ctx, tx, audit.Event{
 				TenantID:   p.TenantID,
