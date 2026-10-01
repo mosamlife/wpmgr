@@ -138,6 +138,9 @@ type abilityEngine struct {
 	cursorKey []byte
 	readLimit *abilityReadLimiter
 	refresh   AbilityRefresher
+	// writes is the write branch's store (EnableAbilityWrites); nil
+	// refuses every write entry as writes_not_available.
+	writes AbilityRequestStore
 }
 
 // AbilityRefresher queues one site's inventory refresh. It is unique per
@@ -478,6 +481,13 @@ func classify(name string, entries []sqlc.AbilityCatalogue, inv *sqlc.SiteAbilit
 		return not(notRunnableDisabled)
 	case e.Source != "wpmgr":
 		return not(notRunnableNotYet)
+	case e.Class == "write":
+		if r := writeEntryRunnable(e, inv, agentVersion); r != "" {
+			return not(r)
+		}
+		c.runnable = true
+		c.classOrder = abilityClassOrder[c.class]
+		return c
 	case e.Class != "read":
 		return not(notRunnableWritesOff)
 	case inv == nil:
@@ -823,6 +833,15 @@ var ownAbilityInputSchemas = map[string]json.RawMessage{
 		`"post_id":{"type":"integer","minimum":1},` +
 		`"max_bytes":{"type":"integer","minimum":256,"maximum":65536}},` +
 		`"required":["post_id"],"additionalProperties":false}`),
+	AbilityPageCreate: json.RawMessage(`{"type":"object","properties":{` +
+		`"post_type":{"type":"string","enum":["page","post"]},` +
+		`"editor":{"type":"string","enum":["wordpress_blocks","wordpress_classic"]},` +
+		`"title":{"type":"string","minLength":1,"maxLength":200},` +
+		`"outline":{"type":"array","minItems":1,"maxItems":200,"items":{"oneOf":[` +
+		`{"type":"object","properties":{"type":{"const":"heading"},"level":{"type":"integer","minimum":2,"maximum":4},"text":{"type":"string"}},"required":["type","level","text"],"additionalProperties":false},` +
+		`{"type":"object","properties":{"type":{"const":"paragraph"},"text":{"type":"string"}},"required":["type","text"],"additionalProperties":false},` +
+		`{"type":"object","properties":{"type":{"const":"list"},"ordered":{"type":"boolean"},"items":{"type":"array","minItems":1,"maxItems":50,"items":{"type":"string"}}},"required":["type","ordered","items"],"additionalProperties":false}]}}},` +
+		`"required":["post_type","editor","title","outline"],"additionalProperties":false}`),
 }
 
 type describeWPMgr struct {
@@ -1196,6 +1215,12 @@ func (s *Service) runSiteAbility(ctx context.Context, auth AuthorizedRequest, ra
 	if c == nil {
 		return "", notRunnableRefusal(notRunnableNotOnSite)
 	}
+	// The entry decides the effect (v4 §1.4): a write entry goes to the
+	// request rail and never runs here.
+	if c.entry != nil && c.entry.Class == "write" && c.entry.Source == "wpmgr" &&
+		c.entry.Status == "admitted" && c.entry.Enabled {
+		return s.runSiteAbilityWrite(ctx, auth, eng, site, c, input)
+	}
 	if !c.runnable || c.entry == nil || c.entry.Source != "wpmgr" || c.entry.Class != "read" {
 		code := notRunnableNotYet
 		if c.reason != nil {
@@ -1412,8 +1437,9 @@ func projectOutput(v any, s *outShape) any {
 // site_ability_request_status (E1: there are no ability requests yet)
 // ---------------------------------------------------------------------------
 
-func (s *Service) siteAbilityRequestStatus(_ context.Context, auth AuthorizedRequest, raw json.RawMessage) (string, error) {
-	if _, err := s.requireAbilityEngine(); err != nil {
+func (s *Service) siteAbilityRequestStatus(ctx context.Context, auth AuthorizedRequest, raw json.RawMessage) (string, error) {
+	eng, err := s.requireAbilityEngine()
+	if err != nil {
 		return "", err
 	}
 	m, ref := decodeAbilityArgs(raw, "request_id")
@@ -1428,12 +1454,6 @@ func (s *Service) siteAbilityRequestStatus(_ context.Context, auth AuthorizedReq
 		if _, err := uuid.Parse(idText); err != nil {
 			return "", argRefusal(reasonInvalidArguments, "request_id", idText, msgAbilityRequestAbsent, nil)
 		}
-		// No ability request rows exist in E1: every id is absent, answered
-		// exactly as an out-of-scope site is.
-		return "", absentRefusal(reasonRequestAbsent, map[string]any{"request_id": idText})
 	}
-	if auth.Sites.IsEmpty() {
-		return "", scopeEmptyRefusal()
-	}
-	return `{"requests":[],"supported":false,"poll_after_seconds":30}`, nil
+	return s.abilityRequestStatus(ctx, eng, auth, idText, present)
 }
