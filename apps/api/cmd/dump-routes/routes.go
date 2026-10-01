@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/abilities"
+	"github.com/mosamlife/wpmgr/apps/api/internal/abilityrequest"
 	"github.com/mosamlife/wpmgr/apps/api/internal/activity"
 	"github.com/mosamlife/wpmgr/apps/api/internal/admin"
 	"github.com/mosamlife/wpmgr/apps/api/internal/admingate"
@@ -301,6 +302,7 @@ func buildEngine() (engine *gin.Engine, omittedDepsFields []string, err error) {
 	// The AI request queue and the site-nested approve and decline routes,
 	// built as cmd/wpmgr/main.go builds them. The switch is left off: this
 	// engine only lists routes.
+	abilityReqH := abilityrequest.NewHandler(abilityrequest.NewService(pool, mcpRepo, mcpSvc, auditRec, logger))
 	assistantReqH := assistantrequest.NewHandler(
 		assistantrequest.NewService(assistantrequest.NewRepo(pool), mcpRepo, mcpSvc, auditRec, logger))
 
@@ -380,6 +382,7 @@ func buildEngine() (engine *gin.Engine, omittedDepsFields []string, err error) {
 		MCPOAuthH:              mcpOAuthH,
 		MCPDiscoveryH:          mcpDiscoveryH,
 		AssistantRequestH:      assistantReqH,
+		AbilityRequestH:        abilityReqH,
 		BillingSuspensionGate:  billingSvc.SuspensionGate(),
 		ServiceName:            "wpmgr-dump-routes",
 		Version:                "dump-routes",

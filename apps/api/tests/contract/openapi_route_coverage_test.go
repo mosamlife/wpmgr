@@ -36,6 +36,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/abilities"
+	"github.com/mosamlife/wpmgr/apps/api/internal/abilityrequest"
 	"github.com/mosamlife/wpmgr/apps/api/internal/activity"
 	"github.com/mosamlife/wpmgr/apps/api/internal/admin"
 	"github.com/mosamlife/wpmgr/apps/api/internal/admingate"
@@ -406,6 +407,7 @@ func buildFullEngine(t *testing.T, pool *db.Pool) *gin.Engine {
 
 	// The AI request queue and its site-nested approve and decline routes.
 	mcpRepo := mcp.NewRepo(pool)
+	abilityReqH := abilityrequest.NewHandler(abilityrequest.NewService(pool, mcpRepo, mcp.NewService(mcpRepo), auditRec, logger))
 	assistantReqH := assistantrequest.NewHandler(assistantrequest.NewService(
 		assistantrequest.NewRepo(pool), mcpRepo, mcp.NewService(mcpRepo), auditRec, logger))
 
@@ -428,6 +430,7 @@ func buildFullEngine(t *testing.T, pool *db.Pool) *gin.Engine {
 		APIKeyH:                apikey.NewHandler(apiKeySvc, auditRec),
 		AuditH:                 audit.NewHandler(auditRec),
 		AssistantRequestH:      assistantReqH,
+		AbilityRequestH:        abilityReqH,
 		TenantH:                tenant.NewHandler(tenantSvc, auditRec),
 		SiteH:                  siteH,
 		SiteEventsH:            siteEventsH,
