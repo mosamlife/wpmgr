@@ -280,10 +280,14 @@ final class AbilityRunCommandTest extends TestCase
         $this->assertSame('ability_unknown', $r['code']);
     }
 
-    public function test_write_and_revert_modes_are_not_available(): void
+    public function test_write_and_revert_modes_refuse_a_read_ability(): void
     {
         foreach (['write', 'revert'] as $mode) {
-            $this->assertSame('mode_not_available', $this->callP($this->p($mode, OwnAbilities::NAME_FACTS))['code']);
+            $this->assertSame('bad_request_id', $this->callP($this->p($mode, OwnAbilities::NAME_FACTS))['code']);
+            $this->assertSame(
+                'mode_class_mismatch',
+                $this->callP($this->p($mode, OwnAbilities::NAME_FACTS, ['request_id' => self::REQ_ID]))['code']
+            );
         }
         $this->assertSame('bad_mode', $this->callP($this->p('bogus', OwnAbilities::NAME_FACTS))['code']);
     }
@@ -482,7 +486,7 @@ final class AbilityRunCommandTest extends TestCase
             $this->assertSame('wpmgr', $row['owner_kind']);
             $this->assertFalse($row['owner_mismatch']);
             $this->assertMatchesRegularExpression('/^sha256:[0-9a-f]{64}$/', $row['schema_struct_sha256']);
-            $this->assertSame('read', $row['class']);
+            $this->assertSame($row['name'] === OwnAbilities::NAME_PAGE_CREATE ? 'write' : 'read', $row['class']);
         }
     }
 
