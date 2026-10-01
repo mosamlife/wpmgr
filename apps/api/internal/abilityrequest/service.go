@@ -223,7 +223,7 @@ func (s *Service) Approve(ctx context.Context, approver domain.Principal, siteID
 		}
 		_, err = s.audit.RecordInTx(ctx, tx, audit.Event{
 			TenantID: approver.TenantID, ActorType: audit.ActorUser, ActorID: approver.UserID.String(),
-			Action: audit.ActionAssistantRequestApproved, TargetType: audit.TargetTypeAssistantAbilityRequest,
+			Action: audit.ActionAbilityRequestApproved, TargetType: audit.TargetTypeAssistantAbilityRequest,
 			TargetID: approved.ID.String(), Metadata: decisionMetadata(approved, true),
 		})
 		return err
@@ -268,7 +268,7 @@ func (s *Service) Decline(ctx context.Context, decider domain.Principal, siteID,
 		}
 		_, err = s.audit.RecordInTx(ctx, tx, audit.Event{
 			TenantID: decider.TenantID, ActorType: audit.ActorUser, ActorID: decider.UserID.String(),
-			Action: audit.ActionAssistantRequestDeclined, TargetType: audit.TargetTypeAssistantAbilityRequest,
+			Action: audit.ActionAbilityRequestDeclined, TargetType: audit.TargetTypeAssistantAbilityRequest,
 			TargetID: declined.ID.String(), Metadata: decisionMetadata(declined, false),
 		})
 		return err

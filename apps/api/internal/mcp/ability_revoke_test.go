@@ -39,8 +39,8 @@ func TestRevokeCascade_ClosesAndAuditsAbilityRequests(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(rec.events) != 2 ||
-		rec.events[0].Action != audit.ActionAssistantRequestWithdrawn || rec.events[0].TargetID != w.String() ||
-		rec.events[1].Action != audit.ActionAssistantRequestNotSent || rec.events[1].TargetID != n.String() ||
+		rec.events[0].Action != audit.ActionAbilityRequestWithdrawn || rec.events[0].TargetID != w.String() ||
+		rec.events[1].Action != audit.ActionAbilityRequestNotSent || rec.events[1].TargetID != n.String() ||
 		rec.events[0].TargetType != audit.TargetTypeAssistantAbilityRequest {
 		t.Fatalf("audit rows wrong: %+v", rec.events)
 	}

@@ -335,7 +335,7 @@ func (s *Service) closeNotSent(ctx context.Context, tx pgx.Tx, q *sqlc.Queries, 
 	if n != 1 {
 		return nil
 	}
-	return s.record(ctx, tx, tenantID, requestID, audit.ActionAssistantRequestNotSent, map[string]any{"reason": reason})
+	return s.record(ctx, tx, tenantID, requestID, audit.ActionAbilityRequestNotSent, map[string]any{"reason": reason})
 }
 
 // closeWithoutSite is for reasons decided before a site principal exists.
@@ -608,7 +608,7 @@ func (s *Service) reserve(ctx context.Context, p domain.Principal, a DispatchArg
 		if n != 1 {
 			return errLostReservation
 		}
-		if err := s.record(ctx, tx, a.TenantID, a.RequestID, audit.ActionAssistantRequestDispatched, map[string]any{
+		if err := s.record(ctx, tx, a.TenantID, a.RequestID, audit.ActionAbilityRequestDispatched, map[string]any{
 			"site_id": a.SiteID.String(), "ability": plan.row.AbilityName, "entry_sha256": plan.row.EntrySha256,
 			"input_sha256": plan.row.InputSha256, "precheck_digest": plan.row.PrecheckDigest,
 		}); err != nil {
@@ -739,7 +739,7 @@ func (s *Service) writeOutcomeTx(ctx context.Context, tx pgx.Tx, q *sqlc.Queries
 		if err != nil || n != 1 {
 			return err
 		}
-		return s.record(ctx, tx, tenantID, requestID, audit.ActionAssistantRequestFailed, map[string]any{"class": OutcomeUnknown})
+		return s.record(ctx, tx, tenantID, requestID, audit.ActionAbilityRequestFailed, map[string]any{"class": OutcomeUnknown})
 	}
 	n, err := q.RecordAbilityRequestOutcome(ctx, sqlc.RecordAbilityRequestOutcomeParams{
 		Outcome: oc.outcome, OutcomeCode: oc.code, NotSentReason: oc.notSentReason,
@@ -764,12 +764,12 @@ func (s *Service) writeOutcomeTx(ctx context.Context, tx pgx.Tx, q *sqlc.Queries
 	if oc.trashed != nil {
 		md["trashed"] = *oc.trashed
 	}
-	action := audit.ActionAssistantRequestFailed
+	action := audit.ActionAbilityRequestFailed
 	switch oc.outcome {
 	case OutcomeCreated:
 		action = audit.ActionAssistantRequestCompleted
 	case OutcomeNotSent:
-		action = audit.ActionAssistantRequestNotSent
+		action = audit.ActionAbilityRequestNotSent
 	}
 	return s.record(ctx, tx, tenantID, requestID, action, md)
 }
@@ -795,7 +795,7 @@ func (s *Service) sweepExpired(ctx context.Context) error {
 			if err != nil || n != 1 {
 				return err
 			}
-			return s.record(ctx, tx, tenantID, id, audit.ActionAssistantRequestExpired, map[string]any{"expired_by": "sweeper"})
+			return s.record(ctx, tx, tenantID, id, audit.ActionAbilityRequestExpired, map[string]any{"expired_by": "sweeper"})
 		}))
 	}
 	return errors.Join(errs...)
@@ -818,7 +818,7 @@ func (s *Service) sweepPastDeadline(ctx context.Context) error {
 			if err != nil || n != 1 {
 				return err
 			}
-			return s.record(ctx, tx, tenantID, id, audit.ActionAssistantRequestNotSent,
+			return s.record(ctx, tx, tenantID, id, audit.ActionAbilityRequestNotSent,
 				map[string]any{"reason": ReasonDispatchDeadlinePassed, "closed_by": "sweeper"})
 		}))
 	}
@@ -937,7 +937,7 @@ func (s *Service) resolveOne(ctx context.Context, r sqlc.ScanResolvingAbilityReq
 			if err != nil || n != 1 {
 				return err
 			}
-			return s.record(ctx, tx, r.TenantID, r.ID, audit.ActionAssistantRequestFailed,
+			return s.record(ctx, tx, r.TenantID, r.ID, audit.ActionAbilityRequestFailed,
 				map[string]any{"class": OutcomeUnknown, "closed_by": "ledger_window"})
 		}
 		_, err := q.RecordAbilityRequestLedgerCheck(ctx, sqlc.RecordAbilityRequestLedgerCheckParams{TenantID: r.TenantID, ID: r.ID})

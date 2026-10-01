@@ -453,6 +453,16 @@ const (
 	ActionAssistantRequestNotSent    = "assistant.request.not_sent"
 	ActionAssistantRequestDispatched = "assistant.request.dispatched"
 	ActionAssistantRequestFailed     = "assistant.request.failed"
+	// The ability request (m156) lifecycle. Distinct from the cache-clear
+	// actions above so the audit log never labels a page approval as a cache
+	// clear. TargetType is TargetTypeAssistantAbilityRequest.
+	ActionAbilityRequestApproved   = "assistant.ability_request.approved"
+	ActionAbilityRequestDeclined   = "assistant.ability_request.declined"
+	ActionAbilityRequestExpired    = "assistant.ability_request.expired"
+	ActionAbilityRequestWithdrawn  = "assistant.ability_request.withdrawn"
+	ActionAbilityRequestNotSent    = "assistant.ability_request.not_sent"
+	ActionAbilityRequestDispatched = "assistant.ability_request.dispatched"
+	ActionAbilityRequestFailed     = "assistant.ability_request.failed"
 	// ActionAssistantRequestCompleted is an ability request whose write the
 	// site applied (outcome created or applied).
 	ActionAssistantRequestCompleted = "assistant.request.completed"

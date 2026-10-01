@@ -39,7 +39,7 @@ func recordAbilityRevokeCascade(ctx context.Context, rec auditInTx, tx pgx.Tx, t
 	for _, id := range withdrawn {
 		if _, err := rec.RecordInTx(ctx, tx, audit.Event{
 			TenantID: tenantID, ActorType: actorType, ActorID: actorID,
-			Action: audit.ActionAssistantRequestWithdrawn, TargetType: audit.TargetTypeAssistantAbilityRequest,
+			Action: audit.ActionAbilityRequestWithdrawn, TargetType: audit.TargetTypeAssistantAbilityRequest,
 			TargetID: id.String(),
 			Metadata: map[string]any{"reason": "connection_revoked", "proposed_by_grant_id": grantID.String()},
 		}); err != nil {
@@ -49,7 +49,7 @@ func recordAbilityRevokeCascade(ctx context.Context, rec auditInTx, tx pgx.Tx, t
 	for _, id := range notSent {
 		if _, err := rec.RecordInTx(ctx, tx, audit.Event{
 			TenantID: tenantID, ActorType: actorType, ActorID: actorID,
-			Action: audit.ActionAssistantRequestNotSent, TargetType: audit.TargetTypeAssistantAbilityRequest,
+			Action: audit.ActionAbilityRequestNotSent, TargetType: audit.TargetTypeAssistantAbilityRequest,
 			TargetID: id.String(),
 			Metadata: map[string]any{
 				"reason": "grant_inactive", "closed_by": "connection_revoked", "proposed_by_grant_id": grantID.String(),

@@ -50,7 +50,7 @@ const (
 	abilityRequestWindow             = 24 * time.Hour
 	abilityStatusListLimit           = 20
 	abilityTitleExcerptRunes         = 200
-	abilityRequestReviewPathTemplate = "/sites/%s/ai/ability-requests"
+	abilityRequestReviewPathTemplate = "/sites/%s/content"
 
 	limitScopeAbilityPending      = "pending_ability_requests"
 	limitScopeAbilityGrantDaily   = "ability_grant_daily"
@@ -61,8 +61,9 @@ const (
 )
 
 const (
-	msgAbilityCreated = "Nothing has changed yet. A person must approve this in WPMgr. Call " +
-		"site_ability_request_status with this request_id to learn the outcome."
+	msgAbilityCreated = "Nothing has changed yet. A person must approve this in WPMgr. Review it on " +
+		"the site's Content tab in WPMgr. Call site_ability_request_status with this request_id to " +
+		"learn the outcome."
 	msgAbilityLimited = "This connection has reached a limit on ability requests. Nothing was asked. " +
 		"Wait retry_after_seconds before asking again."
 	msgAbilitySiteAnswer    = "the site's answer could not be checked, so nothing was asked"
@@ -750,7 +751,7 @@ func (s *Service) recordAbilityCreation(ctx context.Context, tx pgx.Tx, auth Aut
 		if _, err := s.audit.RecordInTx(ctx, tx, audit.Event{
 			TenantID:   auth.TenantID,
 			ActorType:  audit.ActorSystem,
-			Action:     audit.ActionAssistantRequestExpired,
+			Action:     audit.ActionAbilityRequestExpired,
 			TargetType: audit.TargetTypeAssistantAbilityRequest,
 			TargetID:   id.String(),
 			Metadata:   map[string]any{"request_id": id.String(), "expired_by": "creation"},
