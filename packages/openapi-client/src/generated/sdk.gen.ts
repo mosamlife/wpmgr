@@ -116,6 +116,9 @@ import type {
   ApplySiteFileUploadData,
   ApplySiteFileUploadErrors,
   ApplySiteFileUploadResponses,
+  ApproveAbilityRequestData,
+  ApproveAbilityRequestErrors,
+  ApproveAbilityRequestResponses,
   ApproveAssistantRequestData,
   ApproveAssistantRequestErrors,
   ApproveAssistantRequestResponses,
@@ -257,6 +260,9 @@ import type {
   CreateUpdateRunData,
   CreateUpdateRunErrors,
   CreateUpdateRunResponses,
+  DeclineAbilityRequestData,
+  DeclineAbilityRequestErrors,
+  DeclineAbilityRequestResponses,
   DeclineAssistantRequestData,
   DeclineAssistantRequestErrors,
   DeclineAssistantRequestResponses,
@@ -344,6 +350,9 @@ import type {
   EnableObjectCacheData,
   EnableObjectCacheErrors,
   EnableObjectCacheResponses,
+  EnableSiteContentEditingData,
+  EnableSiteContentEditingErrors,
+  EnableSiteContentEditingResponses,
   EnrollData,
   EnrollErrors,
   EnrollResponses,
@@ -550,6 +559,9 @@ import type {
   GetSiteAvailableUpdatesData,
   GetSiteAvailableUpdatesErrors,
   GetSiteAvailableUpdatesResponses,
+  GetSiteContentEditingData,
+  GetSiteContentEditingErrors,
+  GetSiteContentEditingResponses,
   GetSiteContentInventoryData,
   GetSiteContentInventoryErrors,
   GetSiteContentInventoryResponses,
@@ -738,6 +750,9 @@ import type {
   ListSharedWithMeData,
   ListSharedWithMeErrors,
   ListSharedWithMeResponses,
+  ListSiteAbilityRequestsData,
+  ListSiteAbilityRequestsErrors,
+  ListSiteAbilityRequestsResponses,
   ListSiteActivityData,
   ListSiteActivityResponses,
   ListSiteAssistantRequestsData,
@@ -1099,6 +1114,9 @@ import type {
   UnblockSiteIpData,
   UnblockSiteIpErrors,
   UnblockSiteIpResponses,
+  UndoAbilityRequestData,
+  UndoAbilityRequestErrors,
+  UndoAbilityRequestResponses,
   UnlinkMyIdentityData,
   UnlinkMyIdentityErrors,
   UnlinkMyIdentityResponses,
@@ -6710,6 +6728,144 @@ export const declineAssistantRequest = <ThrowOnError extends boolean = false>(
     ThrowOnError
   >({
     url: "/api/v1/sites/{siteId}/ai/requests/{requestId}/decline",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * List AI site-change requests for one site
+ *
+ * Requests an AI connection made through `site_ability_run` for a
+ * reviewed write ability (today `wpmgr/page-create`), newest first.
+ * Requires `site.content.edit` and access to the site. `presented_digest`
+ * is returned only to a signed-in person.
+ *
+ */
+export const listSiteAbilityRequests = <ThrowOnError extends boolean = false>(
+  options: Options<ListSiteAbilityRequestsData, ThrowOnError>,
+) =>
+  (options.client ?? client).get<
+    ListSiteAbilityRequestsResponses,
+    ListSiteAbilityRequestsErrors,
+    ThrowOnError
+  >({ url: "/api/v1/sites/{siteId}/ai/ability-requests", ...options });
+
+/**
+ * Approve one AI site-change request
+ *
+ * Approves one waiting request, once. Only a signed-in person may
+ * approve, and the service re-checks that the person holds the
+ * permission the request names (`operator_permission`) on this site.
+ * The body carries the `presented_digest` the queue returned; a stale
+ * digest is refused with 409. A worker then sends the change to the
+ * site, re-checking everything first.
+ *
+ */
+export const approveAbilityRequest = <ThrowOnError extends boolean = false>(
+  options: Options<ApproveAbilityRequestData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    ApproveAbilityRequestResponses,
+    ApproveAbilityRequestErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/sites/{siteId}/ai/ability-requests/{requestId}/approve",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Decline one AI site-change request
+ *
+ * Declines one waiting request. Only a signed-in person holding the
+ * request's permission on this site may decline. The body must be JSON
+ * (an empty object is fine).
+ *
+ */
+export const declineAbilityRequest = <ThrowOnError extends boolean = false>(
+  options: Options<DeclineAbilityRequestData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    DeclineAbilityRequestResponses,
+    DeclineAbilityRequestErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/sites/{siteId}/ai/ability-requests/{requestId}/decline",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Undo one completed AI site change
+ *
+ * Undoes a done request inside its undo window, once. For a created
+ * page this moves the draft to the trash, only while it is unchanged
+ * and still a draft. The site takes the page from its own record of
+ * this request; nothing in the call names it. `undo_state` in the
+ * answer is the result: undone, refused_conflict, refused_published or
+ * failed.
+ *
+ */
+export const undoAbilityRequest = <ThrowOnError extends boolean = false>(
+  options: Options<UndoAbilityRequestData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    UndoAbilityRequestResponses,
+    UndoAbilityRequestErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/sites/{siteId}/ai/ability-requests/{requestId}/undo",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Read whether content editing is enabled on a site
+ *
+ * Until content editing is enabled, an AI connection's page-creation
+ * requests for this site are refused. Requires `site.content.read`.
+ *
+ */
+export const getSiteContentEditing = <ThrowOnError extends boolean = false>(
+  options: Options<GetSiteContentEditingData, ThrowOnError>,
+) =>
+  (options.client ?? client).get<
+    GetSiteContentEditingResponses,
+    GetSiteContentEditingErrors,
+    ThrowOnError
+  >({ url: "/api/v1/sites/{siteId}/ai/content-editing", ...options });
+
+/**
+ * Enable content editing on a site
+ *
+ * Asks the site's agent to create (or confirm) the WPMgr content service
+ * user that every approved AI change runs as. That user can edit pages
+ * and posts and cannot publish, delete, install plugins, manage users or
+ * change settings. Only a signed-in person may enable it. The body must
+ * be JSON (an empty object is fine).
+ *
+ */
+export const enableSiteContentEditing = <ThrowOnError extends boolean = false>(
+  options: Options<EnableSiteContentEditingData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    EnableSiteContentEditingResponses,
+    EnableSiteContentEditingErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/sites/{siteId}/ai/content-editing/enable",
     ...options,
     headers: {
       "Content-Type": "application/json",

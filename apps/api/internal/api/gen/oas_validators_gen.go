@@ -952,6 +952,120 @@ func (s AbilityCatalogueInputStatus) Validate() error {
 	}
 }
 
+func (s *AbilityRequest) Validate() error {
+	if s == nil {
+		return validate.ErrNilPointer
+	}
+
+	var failures []validate.FieldError
+	if err := func() error {
+		if err := s.EffectCopy.Validate(); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "effect_copy",
+			Error: err,
+		})
+	}
+	if err := func() error {
+		if err := s.State.Validate(); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "state",
+			Error: err,
+		})
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+	return nil
+}
+
+func (s AbilityRequestEffectCopy) Validate() error {
+	switch s {
+	case "draft":
+		return nil
+	case "live":
+		return nil
+	case "none":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
+}
+
+func (s *AbilityRequestList) Validate() error {
+	if s == nil {
+		return validate.ErrNilPointer
+	}
+
+	var failures []validate.FieldError
+	if err := func() error {
+		if s.Requests == nil {
+			return errors.New("nil is invalid value")
+		}
+		var failures []validate.FieldError
+		for i, elem := range s.Requests {
+			if err := func() error {
+				if err := elem.Validate(); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				failures = append(failures, validate.FieldError{
+					Name:  fmt.Sprintf("[%d]", i),
+					Error: err,
+				})
+			}
+		}
+		if len(failures) > 0 {
+			return &validate.Error{Fields: failures}
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "requests",
+			Error: err,
+		})
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+	return nil
+}
+
+func (s AbilityRequestState) Validate() error {
+	switch s {
+	case "pending":
+		return nil
+	case "approved":
+		return nil
+	case "declined":
+		return nil
+	case "withdrawn":
+		return nil
+	case "expired":
+		return nil
+	case "dispatched":
+		return nil
+	case "outcome_unknown":
+		return nil
+	case "done":
+		return nil
+	case "failed":
+		return nil
+	case "not_sent":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
+}
+
 func (s *AcceptInvitationRequest) Validate() error {
 	if s == nil {
 		return validate.ErrNilPointer

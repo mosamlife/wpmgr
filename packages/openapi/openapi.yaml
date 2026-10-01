@@ -9340,6 +9340,286 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /api/v1/sites/{siteId}/ai/ability-requests:
+    get:
+      operationId: listSiteAbilityRequests
+      summary: List AI site-change requests for one site
+      description: |
+        Requests an AI connection made through `site_ability_run` for a
+        reviewed write ability (today `wpmgr/page-create`), newest first.
+        Requires `site.content.edit` and access to the site. `presented_digest`
+        is returned only to a signed-in person.
+      tags: [ai-requests]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: A page of requests
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AbilityRequestList"
+        "403":
+          description: Missing site.content.edit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: The site is not the caller's
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/sites/{siteId}/ai/ability-requests/{requestId}/approve:
+    post:
+      operationId: approveAbilityRequest
+      summary: Approve one AI site-change request
+      description: |
+        Approves one waiting request, once. Only a signed-in person may
+        approve, and the service re-checks that the person holds the
+        permission the request names (`operator_permission`) on this site.
+        The body carries the `presented_digest` the queue returned; a stale
+        digest is refused with 409. A worker then sends the change to the
+        site, re-checking everything first.
+      tags: [ai-requests]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+        - name: requestId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AbilityRequestApproveBody"
+      responses:
+        "200":
+          description: Approved; the request now waits for the worker
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AbilityRequest"
+        "403":
+          description: Not a signed-in person, or missing the permission
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: The site is not the caller's
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Nothing was approved; the error code names why
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "415":
+          description: The body was not application/json
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/sites/{siteId}/ai/ability-requests/{requestId}/decline:
+    post:
+      operationId: declineAbilityRequest
+      summary: Decline one AI site-change request
+      description: |
+        Declines one waiting request. Only a signed-in person holding the
+        request's permission on this site may decline. The body must be JSON
+        (an empty object is fine).
+      tags: [ai-requests]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+        - name: requestId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Declined
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AbilityRequest"
+        "403":
+          description: Not a signed-in person, or missing the permission
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: The site is not the caller's
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: The request is no longer waiting
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "415":
+          description: The body was not application/json
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/sites/{siteId}/ai/ability-requests/{requestId}/undo:
+    post:
+      operationId: undoAbilityRequest
+      summary: Undo one completed AI site change
+      description: |
+        Undoes a done request inside its undo window, once. For a created
+        page this moves the draft to the trash, only while it is unchanged
+        and still a draft. The site takes the page from its own record of
+        this request; nothing in the call names it. `undo_state` in the
+        answer is the result: undone, refused_conflict, refused_published or
+        failed.
+      tags: [ai-requests]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+        - name: requestId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: The undo ran; undo_state names its result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AbilityRequest"
+        "403":
+          description: Not a signed-in person, or missing the permission
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: The site is not the caller's
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: The change can no longer be undone from WPMgr
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "415":
+          description: The body was not application/json
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/sites/{siteId}/ai/content-editing:
+    get:
+      operationId: getSiteContentEditing
+      summary: Read whether content editing is enabled on a site
+      description: |
+        Until content editing is enabled, an AI connection's page-creation
+        requests for this site are refused. Requires `site.content.read`.
+      tags: [ai-requests]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      responses:
+        "200":
+          description: The site's content-editing state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContentEditingState"
+        "403":
+          description: Missing site.content.read
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: The site is not the caller's
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/sites/{siteId}/ai/content-editing/enable:
+    post:
+      operationId: enableSiteContentEditing
+      summary: Enable content editing on a site
+      description: |
+        Asks the site's agent to create (or confirm) the WPMgr content service
+        user that every approved AI change runs as. That user can edit pages
+        and posts and cannot publish, delete, install plugins, manage users or
+        change settings. Only a signed-in person may enable it. The body must
+        be JSON (an empty object is fine).
+      tags: [ai-requests]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Enabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContentEditingState"
+        "403":
+          description: Not a signed-in person, or missing site.content.edit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: The site is not the caller's
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: The agent is too old, or the site refused
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "415":
+          description: The body was not application/json
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The site could not be reached
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /api/v1/sites/{siteId}/perf/cache/purge:
     post:
       operationId: purgeCache
@@ -19667,6 +19947,88 @@ components:
           description: |
             With `scope: all`, also clears every cached artifact. Requires the
             `site.cache.delete-everything` permission.
+    AbilityRequestApproveBody:
+      type: object
+      required: [presented_digest]
+      properties:
+        presented_digest:
+          type: string
+          description: The digest the queue returned for this request.
+    AbilityRequestList:
+      type: object
+      required: [requests, limit, offset]
+      properties:
+        requests:
+          type: array
+          items:
+            $ref: "#/components/schemas/AbilityRequest"
+        limit: { type: integer, format: int32 }
+        offset: { type: integer, format: int32 }
+    AbilityRequest:
+      type: object
+      description: |
+        One AI site-change request. `site_label`, `site_host`, `grant_label`
+        and `title_excerpt` came from a site or an AI connection: render each
+        as plain text. `input_json` is the exact input the AI chose, shown in
+        full on the card.
+      required:
+        - id
+        - site_id
+        - ability_name
+        - input_json
+        - effect_copy
+        - snapshot
+        - site_label
+        - site_host
+        - grant_label
+        - grant_via
+        - card_copy_version
+        - state
+        - created_at
+        - expires_at
+      properties:
+        id: { type: string, format: uuid }
+        site_id: { type: string, format: uuid }
+        ability_name: { type: string }
+        input_json: { type: string }
+        title_excerpt: { type: string, nullable: true }
+        editor: { type: string, nullable: true }
+        post_type: { type: string, nullable: true }
+        effect_copy: { type: string, enum: [draft, live, none] }
+        snapshot: { type: string }
+        site_label: { type: string }
+        site_host: { type: string }
+        grant_label: { type: string }
+        grant_via: { type: string }
+        setup_client: { type: string, nullable: true }
+        card_copy_version: { type: integer, format: int32 }
+        presented_digest: { type: string }
+        state:
+          type: string
+          enum: [pending, approved, declined, withdrawn, expired, dispatched, outcome_unknown, done, failed, not_sent]
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+        decided_at: { type: string, format: date-time, nullable: true }
+        outcome: { type: string, nullable: true }
+        outcome_code: { type: string, nullable: true }
+        not_sent_reason: { type: string, nullable: true }
+        created_post_id: { type: integer, format: int64, nullable: true }
+        trashed: { type: boolean, nullable: true }
+        undo_state: { type: string, nullable: true }
+        undo_available_until: { type: string, format: date-time, nullable: true }
+    ContentEditingState:
+      type: object
+      required: [site_id, enabled]
+      properties:
+        site_id: { type: string, format: uuid }
+        enabled: { type: boolean }
+        enabled_at: { type: string, format: date-time, nullable: true }
+        principal_user_id:
+          type: integer
+          format: int64
+          nullable: true
+          description: The WordPress user id of the site's content service user.
+        enabled_by: { type: string, format: uuid, nullable: true }
     AssistantRequestApproveBody:
       type: object
       required: [presented_digest]

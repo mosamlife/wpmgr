@@ -7760,6 +7760,206 @@ export const PurgeRequestSchema = {
   },
 } as const;
 
+export const AbilityRequestApproveBodySchema = {
+  type: "object",
+  required: ["presented_digest"],
+  properties: {
+    presented_digest: {
+      type: "string",
+      description: "The digest the queue returned for this request.",
+    },
+  },
+} as const;
+
+export const AbilityRequestListSchema = {
+  type: "object",
+  required: ["requests", "limit", "offset"],
+  properties: {
+    requests: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/AbilityRequest",
+      },
+    },
+    limit: {
+      type: "integer",
+      format: "int32",
+    },
+    offset: {
+      type: "integer",
+      format: "int32",
+    },
+  },
+} as const;
+
+export const AbilityRequestSchema = {
+  type: "object",
+  description:
+    "One AI site-change request. `site_label`, `site_host`, `grant_label`\nand `title_excerpt` came from a site or an AI connection: render each\nas plain text. `input_json` is the exact input the AI chose, shown in\nfull on the card.\n",
+  required: [
+    "id",
+    "site_id",
+    "ability_name",
+    "input_json",
+    "effect_copy",
+    "snapshot",
+    "site_label",
+    "site_host",
+    "grant_label",
+    "grant_via",
+    "card_copy_version",
+    "state",
+    "created_at",
+    "expires_at",
+  ],
+  properties: {
+    id: {
+      type: "string",
+      format: "uuid",
+    },
+    site_id: {
+      type: "string",
+      format: "uuid",
+    },
+    ability_name: {
+      type: "string",
+    },
+    input_json: {
+      type: "string",
+    },
+    title_excerpt: {
+      type: "string",
+      nullable: true,
+    },
+    editor: {
+      type: "string",
+      nullable: true,
+    },
+    post_type: {
+      type: "string",
+      nullable: true,
+    },
+    effect_copy: {
+      type: "string",
+      enum: ["draft", "live", "none"],
+    },
+    snapshot: {
+      type: "string",
+    },
+    site_label: {
+      type: "string",
+    },
+    site_host: {
+      type: "string",
+    },
+    grant_label: {
+      type: "string",
+    },
+    grant_via: {
+      type: "string",
+    },
+    setup_client: {
+      type: "string",
+      nullable: true,
+    },
+    card_copy_version: {
+      type: "integer",
+      format: "int32",
+    },
+    presented_digest: {
+      type: "string",
+    },
+    state: {
+      type: "string",
+      enum: [
+        "pending",
+        "approved",
+        "declined",
+        "withdrawn",
+        "expired",
+        "dispatched",
+        "outcome_unknown",
+        "done",
+        "failed",
+        "not_sent",
+      ],
+    },
+    created_at: {
+      type: "string",
+      format: "date-time",
+    },
+    expires_at: {
+      type: "string",
+      format: "date-time",
+    },
+    decided_at: {
+      type: "string",
+      format: "date-time",
+      nullable: true,
+    },
+    outcome: {
+      type: "string",
+      nullable: true,
+    },
+    outcome_code: {
+      type: "string",
+      nullable: true,
+    },
+    not_sent_reason: {
+      type: "string",
+      nullable: true,
+    },
+    created_post_id: {
+      type: "integer",
+      format: "int64",
+      nullable: true,
+    },
+    trashed: {
+      type: "boolean",
+      nullable: true,
+    },
+    undo_state: {
+      type: "string",
+      nullable: true,
+    },
+    undo_available_until: {
+      type: "string",
+      format: "date-time",
+      nullable: true,
+    },
+  },
+} as const;
+
+export const ContentEditingStateSchema = {
+  type: "object",
+  required: ["site_id", "enabled"],
+  properties: {
+    site_id: {
+      type: "string",
+      format: "uuid",
+    },
+    enabled: {
+      type: "boolean",
+    },
+    enabled_at: {
+      type: "string",
+      format: "date-time",
+      nullable: true,
+    },
+    principal_user_id: {
+      type: "integer",
+      format: "int64",
+      nullable: true,
+      description: "The WordPress user id of the site's content service user.",
+    },
+    enabled_by: {
+      type: "string",
+      format: "uuid",
+      nullable: true,
+    },
+  },
+} as const;
+
 export const AssistantRequestApproveBodySchema = {
   type: "object",
   required: ["presented_digest"],

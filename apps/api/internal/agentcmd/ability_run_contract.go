@@ -35,10 +35,19 @@ const CmdAbilityRun = "ability_run"
 // before sending.
 const MinAgentVersionForAbilityEngine = "0.61.155"
 
-// Ability-run modes this control plane sends in E1.
+// MinAgentVersionForPageCreate is the first agent release that ships the
+// write and revert modes, the ledger, the service principal and
+// content_editing_enable, which wpmgr/page-create needs. An older agent
+// refuses those modes; the write branch of site_ability_run refuses before
+// asking.
+const MinAgentVersionForPageCreate = "0.61.156"
+
+// Ability-run modes.
 const (
 	AbilityRunModeRead     = "read"
 	AbilityRunModePrecheck = "precheck"
+	AbilityRunModeWrite    = "write"
+	AbilityRunModeRevert   = "revert"
 	AbilityRunModeLedger   = "ledger"
 )
 
@@ -59,17 +68,28 @@ type AbilityRunCall struct {
 	Entry       []byte
 	EntrySHA256 string
 	Input       []byte
+	// Expected is required for write and refused for every other mode: the
+	// digests the person approved, which the agent recomputes before any
+	// effect.
+	Expected *AbilityRunExpected
+}
+
+// AbilityRunExpected is write's expected{} member.
+type AbilityRunExpected struct {
+	PrecheckDigest string `json:"precheck_digest"`
+	PreviewDigest  string `json:"preview_digest"`
 }
 
 // abilityRunP is p's shape. Field order is the wire order. Every value is a
 // string, so the encoding is fully determined by encoding/json's string
 // escaping, and the digest is taken over the bytes produced here.
 type abilityRunP struct {
-	Mode        string `json:"mode"`
-	RequestID   string `json:"request_id"`
-	Entry       string `json:"entry,omitempty"`
-	EntrySHA256 string `json:"entry_sha256,omitempty"`
-	Input       string `json:"input,omitempty"`
+	Mode        string              `json:"mode"`
+	RequestID   string              `json:"request_id"`
+	Entry       string              `json:"entry,omitempty"`
+	EntrySHA256 string              `json:"entry_sha256,omitempty"`
+	Input       string              `json:"input,omitempty"`
+	Expected    *AbilityRunExpected `json:"expected,omitempty"`
 }
 
 // abilityRunBody is the outer body, exactly {"p": "..."}.
@@ -87,9 +107,21 @@ func SHA256Hex(b []byte) string {
 // so tests (and the shared fixture) can pin the bytes.
 func BuildAbilityRunParams(call AbilityRunCall) (p []byte, pd string, err error) {
 	switch call.Mode {
-	case AbilityRunModeRead, AbilityRunModePrecheck, AbilityRunModeLedger:
+	case AbilityRunModeRead, AbilityRunModePrecheck, AbilityRunModeLedger, AbilityRunModeRevert:
+		if call.Expected != nil {
+			return nil, "", fmt.Errorf("ability_run: expected is only sent with write")
+		}
+	case AbilityRunModeWrite:
+		if call.Expected == nil || !hex64.MatchString(call.Expected.PrecheckDigest) ||
+			!hex64.MatchString(call.Expected.PreviewDigest) {
+			return nil, "", fmt.Errorf("ability_run: write needs expected precheck and preview digests")
+		}
 	default:
 		return nil, "", fmt.Errorf("ability_run: unknown mode %q", call.Mode)
+	}
+	if call.Mode == AbilityRunModeRevert && len(call.Input) != 0 {
+		// W3: the agent takes the object from its ledger, never from input.
+		return nil, "", fmt.Errorf("ability_run: revert takes no input")
 	}
 	if call.RequestID == uuid.Nil {
 		return nil, "", fmt.Errorf("ability_run: request_id is required")
@@ -106,18 +138,19 @@ func BuildAbilityRunParams(call AbilityRunCall) (p []byte, pd string, err error)
 			return nil, "", fmt.Errorf("ability_run: entry_sha256 does not match the entry bytes")
 		}
 		input := call.Input
-		if len(input) == 0 {
+		if len(input) == 0 && call.Mode != AbilityRunModeRevert {
 			input = []byte("{}")
 		}
 		if len(input) > AbilityRunMaxInputBytes {
 			return nil, "", fmt.Errorf("ability_run: input exceeds %d bytes", AbilityRunMaxInputBytes)
 		}
-		if !json.Valid(input) || !isJSONObject(input) {
+		if call.Mode != AbilityRunModeRevert && (!json.Valid(input) || !isJSONObject(input)) {
 			return nil, "", fmt.Errorf("ability_run: input must be JSON object text")
 		}
 		pv.Entry = string(call.Entry)
 		pv.EntrySHA256 = call.EntrySHA256
 		pv.Input = string(input)
+		pv.Expected = call.Expected
 	}
 	p, err = json.Marshal(pv)
 	if err != nil {
@@ -128,6 +161,8 @@ func BuildAbilityRunParams(call AbilityRunCall) (p []byte, pd string, err error)
 	}
 	return p, SHA256Hex(p), nil
 }
+
+var hex64 = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 func isJSONObject(b []byte) bool {
 	for _, c := range b {
@@ -164,6 +199,17 @@ type AbilityRunResponse struct {
 	Found           bool            `json:"found"`
 	Inflight        bool            `json:"inflight"`
 	Result          json.RawMessage `json:"result"`
+	// Preview is precheck's rendered page (post_type, editor, status,
+	// title, content). Site-rendered bytes of OUR builder; still untrusted.
+	Preview json.RawMessage `json:"preview"`
+
+	// write, revert and ledger
+	PostID        int64  `json:"post_id"`
+	CreatedPostID *int64 `json:"created_post_id"`
+	Phase         string `json:"phase"`
+	UndoState     string `json:"undo_state"`
+	Trashed       bool   `json:"trashed"`
+	AfterFP       string `json:"after_fp"`
 
 	// refusal
 	Code       string          `json:"code,omitempty"`
@@ -178,6 +224,10 @@ type AbilityRunRefusal struct {
 	Code      string
 	Detail    string
 	Retryable bool
+	// PostID and Trashed are set on a write's verify_mismatch: the draft
+	// it created and whether the automatic undo trashed it.
+	PostID  int64
+	Trashed bool
 }
 
 func (e *AbilityRunRefusal) Error() string {
@@ -187,28 +237,53 @@ func (e *AbilityRunRefusal) Error() string {
 // AbilityRunRefusalCodes is the closed set of refusal codes the agent emits
 // (class-ability-run-command.php and the own abilities).
 var AbilityRunRefusalCodes = map[string]struct{}{
-	"ability_denied":            {},
-	"ability_disabled":          {},
-	"ability_intercepted":       {},
-	"ability_not_admitted":      {},
-	"ability_not_runnable_yet":  {},
-	"ability_unknown":           {},
-	"bad_ability_name":          {},
-	"bad_entry":                 {},
-	"bad_input":                 {},
-	"bad_mode":                  {},
-	"bad_params":                {},
-	"bad_request_id":            {},
-	"disabled_on_site":          {},
-	"entry_source_mismatch":     {},
-	"integration_entry_changed": {},
-	"internal":                  {},
-	"mode_class_mismatch":       {},
-	"mode_not_available":        {},
-	"output_too_large":          {},
-	"params_too_large":          {},
-	"post_not_readable":         {},
-	"token_params_mismatch":     {},
+	"ability_denied":                 {},
+	"bad_expected":                   {},
+	"conflict":                       {},
+	"content_editing_not_enabled":    {},
+	"create_content_invalid":         {},
+	"created_post_missing":           {},
+	"created_post_published":         {},
+	"created_post_touched":           {},
+	"editor_unavailable":             {},
+	"entry_approval_invalid":         {},
+	"ledger_ability_mismatch":        {},
+	"not_revertible":                 {},
+	"nothing_to_revert":              {},
+	"preview_changed":                {},
+	"principal_capabilities_drifted": {},
+	"principal_create_failed":        {},
+	"principal_login_taken":          {},
+	"principal_missing":              {},
+	"refused_by_site":                {},
+	"request_in_flight":              {},
+	"revert_failed":                  {},
+	"sanitiser_changed_new_content":  {},
+	"snapshot_failed":                {},
+	"snapshot_strategy_invalid":      {},
+	"target_in_flight":               {},
+	"verify_mismatch":                {},
+	"ability_disabled":               {},
+	"ability_intercepted":            {},
+	"ability_not_admitted":           {},
+	"ability_not_runnable_yet":       {},
+	"ability_unknown":                {},
+	"bad_ability_name":               {},
+	"bad_entry":                      {},
+	"bad_input":                      {},
+	"bad_mode":                       {},
+	"bad_params":                     {},
+	"bad_request_id":                 {},
+	"disabled_on_site":               {},
+	"entry_source_mismatch":          {},
+	"integration_entry_changed":      {},
+	"internal":                       {},
+	"mode_class_mismatch":            {},
+	"mode_not_available":             {},
+	"output_too_large":               {},
+	"params_too_large":               {},
+	"post_not_readable":              {},
+	"token_params_mismatch":          {},
 }
 
 var abilityRunCodeRe = regexp.MustCompile(`^[a-z0-9_]{1,40}$`)
@@ -262,5 +337,7 @@ func abilityRunRefusalOf(out AbilityRunResponse) *AbilityRunRefusal {
 		Code:      code,
 		Detail:    humantext.CapBytes(humantext.Clean(out.Detail), 200),
 		Retryable: out.Retryable,
+		PostID:    out.PostID,
+		Trashed:   out.Trashed,
 	}
 }

@@ -68,6 +68,12 @@ type ApplySiteFileUploadParams struct {
 	SiteId uuid.UUID
 }
 
+// ApproveAbilityRequestParams is parameters of approveAbilityRequest operation.
+type ApproveAbilityRequestParams struct {
+	SiteId    uuid.UUID
+	RequestId uuid.UUID
+}
+
 // ApproveAssistantRequestParams is parameters of approveAssistantRequest operation.
 type ApproveAssistantRequestParams struct {
 	SiteId    uuid.UUID
@@ -188,6 +194,12 @@ type CreateSiteFileArchiveParams struct {
 // CreateSiteShareParams is parameters of createSiteShare operation.
 type CreateSiteShareParams struct {
 	SiteId uuid.UUID
+}
+
+// DeclineAbilityRequestParams is parameters of declineAbilityRequest operation.
+type DeclineAbilityRequestParams struct {
+	SiteId    uuid.UUID
+	RequestId uuid.UUID
 }
 
 // DeclineAssistantRequestParams is parameters of declineAssistantRequest operation.
@@ -351,6 +363,11 @@ type EnableCacheParams struct {
 
 // EnableObjectCacheParams is parameters of enableObjectCache operation.
 type EnableObjectCacheParams struct {
+	SiteId uuid.UUID
+}
+
+// EnableSiteContentEditingParams is parameters of enableSiteContentEditing operation.
+type EnableSiteContentEditingParams struct {
 	SiteId uuid.UUID
 }
 
@@ -663,6 +680,11 @@ type GetSiteAutologinPolicyParams struct {
 
 // GetSiteAvailableUpdatesParams is parameters of getSiteAvailableUpdates operation.
 type GetSiteAvailableUpdatesParams struct {
+	SiteId uuid.UUID
+}
+
+// GetSiteContentEditingParams is parameters of getSiteContentEditing operation.
+type GetSiteContentEditingParams struct {
 	SiteId uuid.UUID
 }
 
@@ -1028,6 +1050,13 @@ type ListScheduleRunsParams struct {
 	Status OptListScheduleRunsStatus `json:",omitempty,omitzero"`
 	Limit  OptInt32                  `json:",omitempty,omitzero"`
 	Offset OptInt32                  `json:",omitempty,omitzero"`
+}
+
+// ListSiteAbilityRequestsParams is parameters of listSiteAbilityRequests operation.
+type ListSiteAbilityRequestsParams struct {
+	SiteId uuid.UUID
+	Limit  OptInt32 `json:",omitempty,omitzero"`
+	Offset OptInt32 `json:",omitempty,omitzero"`
 }
 
 // ListSiteActivityParams is parameters of listSiteActivity operation.
@@ -1680,6 +1709,12 @@ type TriggerDbScanParams struct {
 // UnblockSiteIPParams is parameters of unblockSiteIP operation.
 type UnblockSiteIPParams struct {
 	SiteId uuid.UUID
+}
+
+// UndoAbilityRequestParams is parameters of undoAbilityRequest operation.
+type UndoAbilityRequestParams struct {
+	SiteId    uuid.UUID
+	RequestId uuid.UUID
 }
 
 // UnlinkMyIdentityParams is parameters of unlinkMyIdentity operation.

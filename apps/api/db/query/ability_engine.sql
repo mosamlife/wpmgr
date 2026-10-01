@@ -61,6 +61,17 @@ SELECT * FROM admin_upsert_ability_catalogue_entry(
     sqlc.narg(entry_sha256)::text
 );
 
+-- name: StampWpmgrAbilityEntryHash :one
+-- m157. Stores the Go-computed canonical entry hash on a WPMgr-owned entry
+-- whose hash is still NULL, and audits it with a NULL actor. Needs no
+-- superadmin: it can only move NULL to a hash, on a source = 'wpmgr' row.
+-- Refusals: P0002 no entry, 22023 not 64 lowercase hex, 42501 not a wpmgr
+-- row, 55000 already stamped (a concurrent stamper lost the race; re-read).
+SELECT * FROM stamp_wpmgr_ability_entry_hash(
+    sqlc.arg(entry_id)::uuid,
+    sqlc.arg(entry_sha256)::text
+);
+
 -- name: ListAbilityCatalogueAudit :many
 -- Newest first, for the admin screen.
 SELECT * FROM ability_catalogue_audit

@@ -1319,6 +1319,514 @@ func (s *AbilityCatalogueInputStatus) UnmarshalText(data []byte) error {
 	}
 }
 
+// One AI site-change request. `site_label`, `site_host`, `grant_label` and `title_excerpt` came from a
+// site or an AI connection: render each as plain text. `input_json` is the exact input the AI chose,
+// shown in full on the card.
+// Ref: #/components/schemas/AbilityRequest
+type AbilityRequest struct {
+	ID                 uuid.UUID                `json:"id"`
+	SiteID             uuid.UUID                `json:"site_id"`
+	AbilityName        string                   `json:"ability_name"`
+	InputJSON          string                   `json:"input_json"`
+	TitleExcerpt       OptNilString             `json:"title_excerpt"`
+	Editor             OptNilString             `json:"editor"`
+	PostType           OptNilString             `json:"post_type"`
+	EffectCopy         AbilityRequestEffectCopy `json:"effect_copy"`
+	Snapshot           string                   `json:"snapshot"`
+	SiteLabel          string                   `json:"site_label"`
+	SiteHost           string                   `json:"site_host"`
+	GrantLabel         string                   `json:"grant_label"`
+	GrantVia           string                   `json:"grant_via"`
+	SetupClient        OptNilString             `json:"setup_client"`
+	CardCopyVersion    int32                    `json:"card_copy_version"`
+	PresentedDigest    OptString                `json:"presented_digest"`
+	State              AbilityRequestState      `json:"state"`
+	CreatedAt          time.Time                `json:"created_at"`
+	ExpiresAt          time.Time                `json:"expires_at"`
+	DecidedAt          OptNilDateTime           `json:"decided_at"`
+	Outcome            OptNilString             `json:"outcome"`
+	OutcomeCode        OptNilString             `json:"outcome_code"`
+	NotSentReason      OptNilString             `json:"not_sent_reason"`
+	CreatedPostID      OptNilInt64              `json:"created_post_id"`
+	Trashed            OptNilBool               `json:"trashed"`
+	UndoState          OptNilString             `json:"undo_state"`
+	UndoAvailableUntil OptNilDateTime           `json:"undo_available_until"`
+}
+
+// GetID returns the value of ID.
+func (s *AbilityRequest) GetID() uuid.UUID {
+	return s.ID
+}
+
+// GetSiteID returns the value of SiteID.
+func (s *AbilityRequest) GetSiteID() uuid.UUID {
+	return s.SiteID
+}
+
+// GetAbilityName returns the value of AbilityName.
+func (s *AbilityRequest) GetAbilityName() string {
+	return s.AbilityName
+}
+
+// GetInputJSON returns the value of InputJSON.
+func (s *AbilityRequest) GetInputJSON() string {
+	return s.InputJSON
+}
+
+// GetTitleExcerpt returns the value of TitleExcerpt.
+func (s *AbilityRequest) GetTitleExcerpt() OptNilString {
+	return s.TitleExcerpt
+}
+
+// GetEditor returns the value of Editor.
+func (s *AbilityRequest) GetEditor() OptNilString {
+	return s.Editor
+}
+
+// GetPostType returns the value of PostType.
+func (s *AbilityRequest) GetPostType() OptNilString {
+	return s.PostType
+}
+
+// GetEffectCopy returns the value of EffectCopy.
+func (s *AbilityRequest) GetEffectCopy() AbilityRequestEffectCopy {
+	return s.EffectCopy
+}
+
+// GetSnapshot returns the value of Snapshot.
+func (s *AbilityRequest) GetSnapshot() string {
+	return s.Snapshot
+}
+
+// GetSiteLabel returns the value of SiteLabel.
+func (s *AbilityRequest) GetSiteLabel() string {
+	return s.SiteLabel
+}
+
+// GetSiteHost returns the value of SiteHost.
+func (s *AbilityRequest) GetSiteHost() string {
+	return s.SiteHost
+}
+
+// GetGrantLabel returns the value of GrantLabel.
+func (s *AbilityRequest) GetGrantLabel() string {
+	return s.GrantLabel
+}
+
+// GetGrantVia returns the value of GrantVia.
+func (s *AbilityRequest) GetGrantVia() string {
+	return s.GrantVia
+}
+
+// GetSetupClient returns the value of SetupClient.
+func (s *AbilityRequest) GetSetupClient() OptNilString {
+	return s.SetupClient
+}
+
+// GetCardCopyVersion returns the value of CardCopyVersion.
+func (s *AbilityRequest) GetCardCopyVersion() int32 {
+	return s.CardCopyVersion
+}
+
+// GetPresentedDigest returns the value of PresentedDigest.
+func (s *AbilityRequest) GetPresentedDigest() OptString {
+	return s.PresentedDigest
+}
+
+// GetState returns the value of State.
+func (s *AbilityRequest) GetState() AbilityRequestState {
+	return s.State
+}
+
+// GetCreatedAt returns the value of CreatedAt.
+func (s *AbilityRequest) GetCreatedAt() time.Time {
+	return s.CreatedAt
+}
+
+// GetExpiresAt returns the value of ExpiresAt.
+func (s *AbilityRequest) GetExpiresAt() time.Time {
+	return s.ExpiresAt
+}
+
+// GetDecidedAt returns the value of DecidedAt.
+func (s *AbilityRequest) GetDecidedAt() OptNilDateTime {
+	return s.DecidedAt
+}
+
+// GetOutcome returns the value of Outcome.
+func (s *AbilityRequest) GetOutcome() OptNilString {
+	return s.Outcome
+}
+
+// GetOutcomeCode returns the value of OutcomeCode.
+func (s *AbilityRequest) GetOutcomeCode() OptNilString {
+	return s.OutcomeCode
+}
+
+// GetNotSentReason returns the value of NotSentReason.
+func (s *AbilityRequest) GetNotSentReason() OptNilString {
+	return s.NotSentReason
+}
+
+// GetCreatedPostID returns the value of CreatedPostID.
+func (s *AbilityRequest) GetCreatedPostID() OptNilInt64 {
+	return s.CreatedPostID
+}
+
+// GetTrashed returns the value of Trashed.
+func (s *AbilityRequest) GetTrashed() OptNilBool {
+	return s.Trashed
+}
+
+// GetUndoState returns the value of UndoState.
+func (s *AbilityRequest) GetUndoState() OptNilString {
+	return s.UndoState
+}
+
+// GetUndoAvailableUntil returns the value of UndoAvailableUntil.
+func (s *AbilityRequest) GetUndoAvailableUntil() OptNilDateTime {
+	return s.UndoAvailableUntil
+}
+
+// SetID sets the value of ID.
+func (s *AbilityRequest) SetID(val uuid.UUID) {
+	s.ID = val
+}
+
+// SetSiteID sets the value of SiteID.
+func (s *AbilityRequest) SetSiteID(val uuid.UUID) {
+	s.SiteID = val
+}
+
+// SetAbilityName sets the value of AbilityName.
+func (s *AbilityRequest) SetAbilityName(val string) {
+	s.AbilityName = val
+}
+
+// SetInputJSON sets the value of InputJSON.
+func (s *AbilityRequest) SetInputJSON(val string) {
+	s.InputJSON = val
+}
+
+// SetTitleExcerpt sets the value of TitleExcerpt.
+func (s *AbilityRequest) SetTitleExcerpt(val OptNilString) {
+	s.TitleExcerpt = val
+}
+
+// SetEditor sets the value of Editor.
+func (s *AbilityRequest) SetEditor(val OptNilString) {
+	s.Editor = val
+}
+
+// SetPostType sets the value of PostType.
+func (s *AbilityRequest) SetPostType(val OptNilString) {
+	s.PostType = val
+}
+
+// SetEffectCopy sets the value of EffectCopy.
+func (s *AbilityRequest) SetEffectCopy(val AbilityRequestEffectCopy) {
+	s.EffectCopy = val
+}
+
+// SetSnapshot sets the value of Snapshot.
+func (s *AbilityRequest) SetSnapshot(val string) {
+	s.Snapshot = val
+}
+
+// SetSiteLabel sets the value of SiteLabel.
+func (s *AbilityRequest) SetSiteLabel(val string) {
+	s.SiteLabel = val
+}
+
+// SetSiteHost sets the value of SiteHost.
+func (s *AbilityRequest) SetSiteHost(val string) {
+	s.SiteHost = val
+}
+
+// SetGrantLabel sets the value of GrantLabel.
+func (s *AbilityRequest) SetGrantLabel(val string) {
+	s.GrantLabel = val
+}
+
+// SetGrantVia sets the value of GrantVia.
+func (s *AbilityRequest) SetGrantVia(val string) {
+	s.GrantVia = val
+}
+
+// SetSetupClient sets the value of SetupClient.
+func (s *AbilityRequest) SetSetupClient(val OptNilString) {
+	s.SetupClient = val
+}
+
+// SetCardCopyVersion sets the value of CardCopyVersion.
+func (s *AbilityRequest) SetCardCopyVersion(val int32) {
+	s.CardCopyVersion = val
+}
+
+// SetPresentedDigest sets the value of PresentedDigest.
+func (s *AbilityRequest) SetPresentedDigest(val OptString) {
+	s.PresentedDigest = val
+}
+
+// SetState sets the value of State.
+func (s *AbilityRequest) SetState(val AbilityRequestState) {
+	s.State = val
+}
+
+// SetCreatedAt sets the value of CreatedAt.
+func (s *AbilityRequest) SetCreatedAt(val time.Time) {
+	s.CreatedAt = val
+}
+
+// SetExpiresAt sets the value of ExpiresAt.
+func (s *AbilityRequest) SetExpiresAt(val time.Time) {
+	s.ExpiresAt = val
+}
+
+// SetDecidedAt sets the value of DecidedAt.
+func (s *AbilityRequest) SetDecidedAt(val OptNilDateTime) {
+	s.DecidedAt = val
+}
+
+// SetOutcome sets the value of Outcome.
+func (s *AbilityRequest) SetOutcome(val OptNilString) {
+	s.Outcome = val
+}
+
+// SetOutcomeCode sets the value of OutcomeCode.
+func (s *AbilityRequest) SetOutcomeCode(val OptNilString) {
+	s.OutcomeCode = val
+}
+
+// SetNotSentReason sets the value of NotSentReason.
+func (s *AbilityRequest) SetNotSentReason(val OptNilString) {
+	s.NotSentReason = val
+}
+
+// SetCreatedPostID sets the value of CreatedPostID.
+func (s *AbilityRequest) SetCreatedPostID(val OptNilInt64) {
+	s.CreatedPostID = val
+}
+
+// SetTrashed sets the value of Trashed.
+func (s *AbilityRequest) SetTrashed(val OptNilBool) {
+	s.Trashed = val
+}
+
+// SetUndoState sets the value of UndoState.
+func (s *AbilityRequest) SetUndoState(val OptNilString) {
+	s.UndoState = val
+}
+
+// SetUndoAvailableUntil sets the value of UndoAvailableUntil.
+func (s *AbilityRequest) SetUndoAvailableUntil(val OptNilDateTime) {
+	s.UndoAvailableUntil = val
+}
+
+func (*AbilityRequest) approveAbilityRequestRes() {}
+func (*AbilityRequest) declineAbilityRequestRes() {}
+func (*AbilityRequest) undoAbilityRequestRes()    {}
+
+// Ref: #/components/schemas/AbilityRequestApproveBody
+type AbilityRequestApproveBody struct {
+	// The digest the queue returned for this request.
+	PresentedDigest string `json:"presented_digest"`
+}
+
+// GetPresentedDigest returns the value of PresentedDigest.
+func (s *AbilityRequestApproveBody) GetPresentedDigest() string {
+	return s.PresentedDigest
+}
+
+// SetPresentedDigest sets the value of PresentedDigest.
+func (s *AbilityRequestApproveBody) SetPresentedDigest(val string) {
+	s.PresentedDigest = val
+}
+
+type AbilityRequestEffectCopy string
+
+const (
+	AbilityRequestEffectCopyDraft AbilityRequestEffectCopy = "draft"
+	AbilityRequestEffectCopyLive  AbilityRequestEffectCopy = "live"
+	AbilityRequestEffectCopyNone  AbilityRequestEffectCopy = "none"
+)
+
+// AllValues returns all AbilityRequestEffectCopy values.
+func (AbilityRequestEffectCopy) AllValues() []AbilityRequestEffectCopy {
+	return []AbilityRequestEffectCopy{
+		AbilityRequestEffectCopyDraft,
+		AbilityRequestEffectCopyLive,
+		AbilityRequestEffectCopyNone,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityRequestEffectCopy) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityRequestEffectCopyDraft:
+		return []byte(s), nil
+	case AbilityRequestEffectCopyLive:
+		return []byte(s), nil
+	case AbilityRequestEffectCopyNone:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityRequestEffectCopy) UnmarshalText(data []byte) error {
+	switch AbilityRequestEffectCopy(data) {
+	case AbilityRequestEffectCopyDraft:
+		*s = AbilityRequestEffectCopyDraft
+		return nil
+	case AbilityRequestEffectCopyLive:
+		*s = AbilityRequestEffectCopyLive
+		return nil
+	case AbilityRequestEffectCopyNone:
+		*s = AbilityRequestEffectCopyNone
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Ref: #/components/schemas/AbilityRequestList
+type AbilityRequestList struct {
+	Requests []AbilityRequest `json:"requests"`
+	Limit    int32            `json:"limit"`
+	Offset   int32            `json:"offset"`
+}
+
+// GetRequests returns the value of Requests.
+func (s *AbilityRequestList) GetRequests() []AbilityRequest {
+	return s.Requests
+}
+
+// GetLimit returns the value of Limit.
+func (s *AbilityRequestList) GetLimit() int32 {
+	return s.Limit
+}
+
+// GetOffset returns the value of Offset.
+func (s *AbilityRequestList) GetOffset() int32 {
+	return s.Offset
+}
+
+// SetRequests sets the value of Requests.
+func (s *AbilityRequestList) SetRequests(val []AbilityRequest) {
+	s.Requests = val
+}
+
+// SetLimit sets the value of Limit.
+func (s *AbilityRequestList) SetLimit(val int32) {
+	s.Limit = val
+}
+
+// SetOffset sets the value of Offset.
+func (s *AbilityRequestList) SetOffset(val int32) {
+	s.Offset = val
+}
+
+func (*AbilityRequestList) listSiteAbilityRequestsRes() {}
+
+type AbilityRequestState string
+
+const (
+	AbilityRequestStatePending        AbilityRequestState = "pending"
+	AbilityRequestStateApproved       AbilityRequestState = "approved"
+	AbilityRequestStateDeclined       AbilityRequestState = "declined"
+	AbilityRequestStateWithdrawn      AbilityRequestState = "withdrawn"
+	AbilityRequestStateExpired        AbilityRequestState = "expired"
+	AbilityRequestStateDispatched     AbilityRequestState = "dispatched"
+	AbilityRequestStateOutcomeUnknown AbilityRequestState = "outcome_unknown"
+	AbilityRequestStateDone           AbilityRequestState = "done"
+	AbilityRequestStateFailed         AbilityRequestState = "failed"
+	AbilityRequestStateNotSent        AbilityRequestState = "not_sent"
+)
+
+// AllValues returns all AbilityRequestState values.
+func (AbilityRequestState) AllValues() []AbilityRequestState {
+	return []AbilityRequestState{
+		AbilityRequestStatePending,
+		AbilityRequestStateApproved,
+		AbilityRequestStateDeclined,
+		AbilityRequestStateWithdrawn,
+		AbilityRequestStateExpired,
+		AbilityRequestStateDispatched,
+		AbilityRequestStateOutcomeUnknown,
+		AbilityRequestStateDone,
+		AbilityRequestStateFailed,
+		AbilityRequestStateNotSent,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityRequestState) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityRequestStatePending:
+		return []byte(s), nil
+	case AbilityRequestStateApproved:
+		return []byte(s), nil
+	case AbilityRequestStateDeclined:
+		return []byte(s), nil
+	case AbilityRequestStateWithdrawn:
+		return []byte(s), nil
+	case AbilityRequestStateExpired:
+		return []byte(s), nil
+	case AbilityRequestStateDispatched:
+		return []byte(s), nil
+	case AbilityRequestStateOutcomeUnknown:
+		return []byte(s), nil
+	case AbilityRequestStateDone:
+		return []byte(s), nil
+	case AbilityRequestStateFailed:
+		return []byte(s), nil
+	case AbilityRequestStateNotSent:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityRequestState) UnmarshalText(data []byte) error {
+	switch AbilityRequestState(data) {
+	case AbilityRequestStatePending:
+		*s = AbilityRequestStatePending
+		return nil
+	case AbilityRequestStateApproved:
+		*s = AbilityRequestStateApproved
+		return nil
+	case AbilityRequestStateDeclined:
+		*s = AbilityRequestStateDeclined
+		return nil
+	case AbilityRequestStateWithdrawn:
+		*s = AbilityRequestStateWithdrawn
+		return nil
+	case AbilityRequestStateExpired:
+		*s = AbilityRequestStateExpired
+		return nil
+	case AbilityRequestStateDispatched:
+		*s = AbilityRequestStateDispatched
+		return nil
+	case AbilityRequestStateOutcomeUnknown:
+		*s = AbilityRequestStateOutcomeUnknown
+		return nil
+	case AbilityRequestStateDone:
+		*s = AbilityRequestStateDone
+		return nil
+	case AbilityRequestStateFailed:
+		*s = AbilityRequestStateFailed
+		return nil
+	case AbilityRequestStateNotSent:
+		*s = AbilityRequestStateNotSent
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
 type AcceptInvitationBadRequest Error
 
 func (*AcceptInvitationBadRequest) acceptInvitationRes() {}
@@ -10267,6 +10775,22 @@ func (s *ApplyUploadResult) SetMtime(val int64) {
 
 func (*ApplyUploadResult) applySiteFileUploadRes() {}
 
+type ApproveAbilityRequestConflict Error
+
+func (*ApproveAbilityRequestConflict) approveAbilityRequestRes() {}
+
+type ApproveAbilityRequestForbidden Error
+
+func (*ApproveAbilityRequestForbidden) approveAbilityRequestRes() {}
+
+type ApproveAbilityRequestNotFound Error
+
+func (*ApproveAbilityRequestNotFound) approveAbilityRequestRes() {}
+
+type ApproveAbilityRequestUnsupportedMediaType Error
+
+func (*ApproveAbilityRequestUnsupportedMediaType) approveAbilityRequestRes() {}
+
 type ApproveAssistantRequestConflict Error
 
 func (*ApproveAssistantRequestConflict) approveAssistantRequestRes() {}
@@ -16359,6 +16883,69 @@ func (s *ConnectedIdentity) SetLastLoginAt(val OptNilDateTime) {
 	s.LastLoginAt = val
 }
 
+// Ref: #/components/schemas/ContentEditingState
+type ContentEditingState struct {
+	SiteID    uuid.UUID      `json:"site_id"`
+	Enabled   bool           `json:"enabled"`
+	EnabledAt OptNilDateTime `json:"enabled_at"`
+	// The WordPress user id of the site's content service user.
+	PrincipalUserID OptNilInt64 `json:"principal_user_id"`
+	EnabledBy       OptNilUUID  `json:"enabled_by"`
+}
+
+// GetSiteID returns the value of SiteID.
+func (s *ContentEditingState) GetSiteID() uuid.UUID {
+	return s.SiteID
+}
+
+// GetEnabled returns the value of Enabled.
+func (s *ContentEditingState) GetEnabled() bool {
+	return s.Enabled
+}
+
+// GetEnabledAt returns the value of EnabledAt.
+func (s *ContentEditingState) GetEnabledAt() OptNilDateTime {
+	return s.EnabledAt
+}
+
+// GetPrincipalUserID returns the value of PrincipalUserID.
+func (s *ContentEditingState) GetPrincipalUserID() OptNilInt64 {
+	return s.PrincipalUserID
+}
+
+// GetEnabledBy returns the value of EnabledBy.
+func (s *ContentEditingState) GetEnabledBy() OptNilUUID {
+	return s.EnabledBy
+}
+
+// SetSiteID sets the value of SiteID.
+func (s *ContentEditingState) SetSiteID(val uuid.UUID) {
+	s.SiteID = val
+}
+
+// SetEnabled sets the value of Enabled.
+func (s *ContentEditingState) SetEnabled(val bool) {
+	s.Enabled = val
+}
+
+// SetEnabledAt sets the value of EnabledAt.
+func (s *ContentEditingState) SetEnabledAt(val OptNilDateTime) {
+	s.EnabledAt = val
+}
+
+// SetPrincipalUserID sets the value of PrincipalUserID.
+func (s *ContentEditingState) SetPrincipalUserID(val OptNilInt64) {
+	s.PrincipalUserID = val
+}
+
+// SetEnabledBy sets the value of EnabledBy.
+func (s *ContentEditingState) SetEnabledBy(val OptNilUUID) {
+	s.EnabledBy = val
+}
+
+func (*ContentEditingState) enableSiteContentEditingRes() {}
+func (*ContentEditingState) getSiteContentEditingRes()    {}
+
 // Ref: #/components/schemas/ContentFleetBuilderShare
 type ContentFleetBuilderShare struct {
 	IntegrationID string       `json:"integration_id"`
@@ -19506,6 +20093,24 @@ func (*DbTableActionResponse) runDbTableActionRes() {}
 // Per-table result, keyed by table name (agent-defined shape).
 type DbTableActionResponseResults struct{}
 
+type DeclineAbilityRequestConflict Error
+
+func (*DeclineAbilityRequestConflict) declineAbilityRequestRes() {}
+
+type DeclineAbilityRequestForbidden Error
+
+func (*DeclineAbilityRequestForbidden) declineAbilityRequestRes() {}
+
+type DeclineAbilityRequestNotFound Error
+
+func (*DeclineAbilityRequestNotFound) declineAbilityRequestRes() {}
+
+type DeclineAbilityRequestReq struct{}
+
+type DeclineAbilityRequestUnsupportedMediaType Error
+
+func (*DeclineAbilityRequestUnsupportedMediaType) declineAbilityRequestRes() {}
+
 type DeclineAssistantRequestConflict Error
 
 func (*DeclineAssistantRequestConflict) declineAssistantRequestRes() {}
@@ -21395,6 +22000,28 @@ func (s *EmailWebhookConfigResponse) SetWebhookRouteToken(val OptNilString) {
 
 func (*EmailWebhookConfigResponse) putOrgEmailWebhookConfigRes()  {}
 func (*EmailWebhookConfigResponse) putSiteEmailWebhookConfigRes() {}
+
+type EnableSiteContentEditingConflict Error
+
+func (*EnableSiteContentEditingConflict) enableSiteContentEditingRes() {}
+
+type EnableSiteContentEditingForbidden Error
+
+func (*EnableSiteContentEditingForbidden) enableSiteContentEditingRes() {}
+
+type EnableSiteContentEditingNotFound Error
+
+func (*EnableSiteContentEditingNotFound) enableSiteContentEditingRes() {}
+
+type EnableSiteContentEditingReq struct{}
+
+type EnableSiteContentEditingServiceUnavailable Error
+
+func (*EnableSiteContentEditingServiceUnavailable) enableSiteContentEditingRes() {}
+
+type EnableSiteContentEditingUnsupportedMediaType Error
+
+func (*EnableSiteContentEditingUnsupportedMediaType) enableSiteContentEditingRes() {}
 
 type EnrollConflict Error
 
@@ -26041,6 +26668,14 @@ type GetSiteAutologinPolicyNotFound Error
 
 func (*GetSiteAutologinPolicyNotFound) getSiteAutologinPolicyRes() {}
 
+type GetSiteContentEditingForbidden Error
+
+func (*GetSiteContentEditingForbidden) getSiteContentEditingRes() {}
+
+type GetSiteContentEditingNotFound Error
+
+func (*GetSiteContentEditingNotFound) getSiteContentEditingRes() {}
+
 type GetSiteContentInventoryBadRequest Error
 
 func (*GetSiteContentInventoryBadRequest) getSiteContentInventoryRes() {}
@@ -27995,6 +28630,14 @@ func (s *ListScheduleRunsStatus) UnmarshalText(data []byte) error {
 		return errors.Errorf("invalid value: %q", data)
 	}
 }
+
+type ListSiteAbilityRequestsForbidden Error
+
+func (*ListSiteAbilityRequestsForbidden) listSiteAbilityRequestsRes() {}
+
+type ListSiteAbilityRequestsNotFound Error
+
+func (*ListSiteAbilityRequestsNotFound) listSiteAbilityRequestsRes() {}
 
 type ListSiteActivitySeverity string
 
@@ -58236,6 +58879,24 @@ func (*UnblockSiteIPServiceUnavailable) unblockSiteIPRes() {}
 type UnblockSiteIPUnprocessableEntity Error
 
 func (*UnblockSiteIPUnprocessableEntity) unblockSiteIPRes() {}
+
+type UndoAbilityRequestConflict Error
+
+func (*UndoAbilityRequestConflict) undoAbilityRequestRes() {}
+
+type UndoAbilityRequestForbidden Error
+
+func (*UndoAbilityRequestForbidden) undoAbilityRequestRes() {}
+
+type UndoAbilityRequestNotFound Error
+
+func (*UndoAbilityRequestNotFound) undoAbilityRequestRes() {}
+
+type UndoAbilityRequestReq struct{}
+
+type UndoAbilityRequestUnsupportedMediaType Error
+
+func (*UndoAbilityRequestUnsupportedMediaType) undoAbilityRequestRes() {}
 
 type UnlinkMyIdentityConflict Error
 

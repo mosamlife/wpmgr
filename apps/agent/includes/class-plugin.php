@@ -704,6 +704,8 @@ final class Plugin
         // the same abilities in-process either way.
         add_action('wp_abilities_api_categories_init', [OwnAbilities::class, 'registerCategory']);
         add_action('wp_abilities_api_init', [OwnAbilities::class, 'registerAbilities']);
+        // The content service principal can never sign in, by any route.
+        \WPMgr\Agent\Abilities\ServicePrincipal::register();
 
         add_action('rest_api_init', [$this->router, 'registerRoutes']);
         add_action('rest_api_init', [$this, 'registerAutologinRoute']);
@@ -2040,6 +2042,9 @@ final class Plugin
             // for WPMgr's own wpmgr/* abilities only. Params are digest-bound
             // to the token (claim pd) over the exact JSON bytes.
             new AbilityRunCommand(),
+            // Creates the content service principal (role + login-less user)
+            // on an explicit signed enable; never at enrolment.
+            new \WPMgr\Agent\Commands\ContentEditingEnableCommand(),
             // M5.6 / ADR-033: BackupCommand validates the signed CP request,
             // dedups, seeds the wpmgr_backup_tasks row, schedules the
             // watchdog cron event, then hands off via wp_schedule_single_event

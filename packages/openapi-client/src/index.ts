@@ -130,6 +130,13 @@ export {
   listSiteAssistantRequests,
   approveAssistantRequest,
   declineAssistantRequest,
+  // AI site-change requests (page create, approved per call)
+  listSiteAbilityRequests,
+  approveAbilityRequest,
+  declineAbilityRequest,
+  undoAbilityRequest,
+  getSiteContentEditing,
+  enableSiteContentEditing,
   // search-replace (#188)
   runSearchReplace,
   // db snapshots (#189)
@@ -551,6 +558,16 @@ export type {
   ListSiteAssistantRequestsData,
   ApproveAssistantRequestData,
   DeclineAssistantRequestData,
+  // AI site-change requests. AbilityRequest and AbilityRequestList are
+  // exported below with the nullable-field patch.
+  AbilityRequestApproveBody,
+  ContentEditingState,
+  ListSiteAbilityRequestsData,
+  ApproveAbilityRequestData,
+  DeclineAbilityRequestData,
+  UndoAbilityRequestData,
+  GetSiteContentEditingData,
+  EnableSiteContentEditingData,
   // search-replace (#188)
   SearchReplaceRequest,
   SearchReplaceResult,
@@ -1031,3 +1048,43 @@ export type ListAssistantRequestsResponse = AssistantRequestList;
 export type ListSiteAssistantRequestsResponse = AssistantRequestList;
 export type ApproveAssistantRequestResponse = AssistantRequest;
 export type DeclineAssistantRequestResponse = AssistantRequest;
+
+// --- AI site-change requests: nullable-field patch --------------------------
+// Same spec-authoring gap as AssistantRequest above: `nullable: true` is not a
+// JSON Schema 2020-12 keyword, so the generated type omits `| null` for fields
+// the server sends as JSON null (apps/api/internal/abilityrequest/handler.go's
+// RequestDTO types them as pointers without omitempty).
+import type {
+  AbilityRequest as GeneratedAbilityRequest,
+  AbilityRequestList as GeneratedAbilityRequestList,
+  ContentEditingState as GeneratedContentEditingState,
+} from "./generated/types.gen";
+
+type PatchedAbilityRequestFields = {
+  title_excerpt?: GeneratedAbilityRequest["title_excerpt"] | null;
+  editor?: GeneratedAbilityRequest["editor"] | null;
+  post_type?: GeneratedAbilityRequest["post_type"] | null;
+  setup_client?: GeneratedAbilityRequest["setup_client"] | null;
+  decided_at?: GeneratedAbilityRequest["decided_at"] | null;
+  outcome?: GeneratedAbilityRequest["outcome"] | null;
+  outcome_code?: GeneratedAbilityRequest["outcome_code"] | null;
+  not_sent_reason?: GeneratedAbilityRequest["not_sent_reason"] | null;
+  created_post_id?: GeneratedAbilityRequest["created_post_id"] | null;
+  trashed?: GeneratedAbilityRequest["trashed"] | null;
+  undo_state?: GeneratedAbilityRequest["undo_state"] | null;
+  undo_available_until?: GeneratedAbilityRequest["undo_available_until"] | null;
+};
+
+export type AbilityRequest = Omit<GeneratedAbilityRequest, keyof PatchedAbilityRequestFields> &
+  PatchedAbilityRequestFields;
+
+export type AbilityRequestList = Omit<GeneratedAbilityRequestList, "requests"> & {
+  requests: AbilityRequest[];
+};
+
+export type ListSiteAbilityRequestsResponse = AbilityRequestList;
+export type ApproveAbilityRequestResponse = AbilityRequest;
+export type DeclineAbilityRequestResponse = AbilityRequest;
+export type UndoAbilityRequestResponse = AbilityRequest;
+export type GetSiteContentEditingResponse = GeneratedContentEditingState;
+export type EnableSiteContentEditingResponse = GeneratedContentEditingState;

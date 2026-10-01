@@ -319,7 +319,7 @@ func TestAbilityCatalogueReadOnlyForAppRole(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if len(audit) != 1 || audit[0].ActorUserID != admin || audit[0].Action != "update" ||
+		if len(audit) != 1 || !audit[0].ActorUserID.Valid || uuid.UUID(audit[0].ActorUserID.Bytes) != admin || audit[0].Action != "update" ||
 			audit[0].BeforeRowSha256 == nil || *audit[0].BeforeRowSha256 == audit[0].AfterRowSha256 ||
 			audit[0].BeforeEntrySha256 != nil || audit[0].AfterEntrySha256 == nil ||
 			audit[0].BeforeEnabled == nil || !*audit[0].BeforeEnabled || audit[0].AfterEnabled {

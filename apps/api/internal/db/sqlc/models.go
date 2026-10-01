@@ -50,18 +50,18 @@ type AbilityCatalogue struct {
 }
 
 type AbilityCatalogueAudit struct {
-	ID                int64     `json:"id"`
-	EntryID           uuid.UUID `json:"entry_id"`
-	Name              string    `json:"name"`
-	Action            string    `json:"action"`
-	ActorUserID       uuid.UUID `json:"actor_user_id"`
-	BeforeRowSha256   *string   `json:"before_row_sha256"`
-	AfterRowSha256    string    `json:"after_row_sha256"`
-	BeforeEntrySha256 *string   `json:"before_entry_sha256"`
-	AfterEntrySha256  *string   `json:"after_entry_sha256"`
-	BeforeEnabled     *bool     `json:"before_enabled"`
-	AfterEnabled      bool      `json:"after_enabled"`
-	At                time.Time `json:"at"`
+	ID                int64       `json:"id"`
+	EntryID           uuid.UUID   `json:"entry_id"`
+	Name              string      `json:"name"`
+	Action            string      `json:"action"`
+	ActorUserID       pgtype.UUID `json:"actor_user_id"`
+	BeforeRowSha256   *string     `json:"before_row_sha256"`
+	AfterRowSha256    string      `json:"after_row_sha256"`
+	BeforeEntrySha256 *string     `json:"before_entry_sha256"`
+	AfterEntrySha256  *string     `json:"after_entry_sha256"`
+	BeforeEnabled     *bool       `json:"before_enabled"`
+	AfterEnabled      bool        `json:"after_enabled"`
+	At                time.Time   `json:"at"`
 }
 
 type AgentActivityLog struct {
@@ -191,6 +191,63 @@ type AppAlertRollout struct {
 	Singleton    bool      `json:"singleton"`
 	FreshInstall bool      `json:"fresh_install"`
 	DecidedAt    time.Time `json:"decided_at"`
+}
+
+type AssistantAbilityRequest struct {
+	ID                 uuid.UUID          `json:"id"`
+	TenantID           uuid.UUID          `json:"tenant_id"`
+	SiteID             uuid.UUID          `json:"site_id"`
+	ProposedByGrantID  uuid.UUID          `json:"proposed_by_grant_id"`
+	EntryID            uuid.UUID          `json:"entry_id"`
+	EntrySha256        string             `json:"entry_sha256"`
+	AbilityName        string             `json:"ability_name"`
+	OperatorPermission string             `json:"operator_permission"`
+	InputJson          string             `json:"input_json"`
+	InputSha256        string             `json:"input_sha256"`
+	TargetPostID       *int64             `json:"target_post_id"`
+	TargetKey          *string            `json:"target_key"`
+	PrecheckDigest     string             `json:"precheck_digest"`
+	PreviewDigest      *string            `json:"preview_digest"`
+	BaseFingerprint    string             `json:"base_fingerprint"`
+	SiteLabel          string             `json:"site_label"`
+	SiteHost           string             `json:"site_host"`
+	GrantLabel         string             `json:"grant_label"`
+	GrantVia           string             `json:"grant_via"`
+	SetupClient        *string            `json:"setup_client"`
+	TitleExcerpt       *string            `json:"title_excerpt"`
+	Editor             *string            `json:"editor"`
+	PostType           *string            `json:"post_type"`
+	EffectCopy         string             `json:"effect_copy"`
+	Snapshot           string             `json:"snapshot"`
+	CardCopyVersion    int32              `json:"card_copy_version"`
+	DigestNonce        string             `json:"digest_nonce"`
+	PresentedDigest    string             `json:"presented_digest"`
+	State              string             `json:"state"`
+	CreatedAt          time.Time          `json:"created_at"`
+	ExpiresAt          time.Time          `json:"expires_at"`
+	DecidedAt          pgtype.Timestamptz `json:"decided_at"`
+	DecidedByUserID    pgtype.UUID        `json:"decided_by_user_id"`
+	WithdrawnAt        pgtype.Timestamptz `json:"withdrawn_at"`
+	DispatchDeadlineAt pgtype.Timestamptz `json:"dispatch_deadline_at"`
+	ClaimedAt          pgtype.Timestamptz `json:"claimed_at"`
+	DispatchAttempts   int32              `json:"dispatch_attempts"`
+	LastAttemptAt      pgtype.Timestamptz `json:"last_attempt_at"`
+	LastAttemptCode    *string            `json:"last_attempt_code"`
+	UnknownSince       pgtype.Timestamptz `json:"unknown_since"`
+	LedgerCheckedAt    pgtype.Timestamptz `json:"ledger_checked_at"`
+	Outcome            *string            `json:"outcome"`
+	OutcomeAt          pgtype.Timestamptz `json:"outcome_at"`
+	OutcomeCode        *string            `json:"outcome_code"`
+	NotSentReason      *string            `json:"not_sent_reason"`
+	CreatedPostID      *int64             `json:"created_post_id"`
+	Restored           *bool              `json:"restored"`
+	Trashed            *bool              `json:"trashed"`
+	SiteReportedText   *string            `json:"site_reported_text"`
+	UndoState          *string            `json:"undo_state"`
+	UndoAvailableUntil pgtype.Timestamptz `json:"undo_available_until"`
+	UndoByUserID       pgtype.UUID        `json:"undo_by_user_id"`
+	UndoStartedAt      pgtype.Timestamptz `json:"undo_started_at"`
+	UndoFinishedAt     pgtype.Timestamptz `json:"undo_finished_at"`
 }
 
 type AssistantCachePurgeRequest struct {
@@ -1001,46 +1058,49 @@ type ScanRunHash struct {
 }
 
 type Site struct {
-	ID                     uuid.UUID          `json:"id"`
-	TenantID               uuid.UUID          `json:"tenant_id"`
-	Url                    string             `json:"url"`
-	Name                   string             `json:"name"`
-	Status                 string             `json:"status"`
-	WpVersion              string             `json:"wp_version"`
-	PhpVersion             string             `json:"php_version"`
-	AgentVersion           string             `json:"agent_version"`
-	AgentPublicKey         string             `json:"agent_public_key"`
-	EnrolledAt             pgtype.Timestamptz `json:"enrolled_at"`
-	LastSeenAt             pgtype.Timestamptz `json:"last_seen_at"`
-	HealthStatus           string             `json:"health_status"`
-	ServerInfo             string             `json:"server_info"`
-	Multisite              bool               `json:"multisite"`
-	ActiveTheme            string             `json:"active_theme"`
-	Components             []byte             `json:"components"`
-	ComponentsUpdatedAt    pgtype.Timestamptz `json:"components_updated_at"`
-	Tags                   []string           `json:"tags"`
-	AgeRecipient           string             `json:"age_recipient"`
-	WpTimezone             string             `json:"wp_timezone"`
-	WpGmtOffset            float32            `json:"wp_gmt_offset"`
-	HostProvider           string             `json:"host_provider"`
-	HostProviderOrg        string             `json:"host_provider_org"`
-	HostProviderIp         string             `json:"host_provider_ip"`
-	HostProviderCheckedAt  pgtype.Timestamptz `json:"host_provider_checked_at"`
-	ConnectionState        string             `json:"connection_state"`
-	ConnectionGeneration   int32              `json:"connection_generation"`
-	DisconnectedAt         pgtype.Timestamptz `json:"disconnected_at"`
-	DisconnectedReason     *string            `json:"disconnected_reason"`
-	ArchivedAt             pgtype.Timestamptz `json:"archived_at"`
-	MissedHeartbeats       int32              `json:"missed_heartbeats"`
-	ClientID               pgtype.UUID        `json:"client_id"`
-	AppProbePath           *string            `json:"app_probe_path"`
-	AppAlertsDisabled      bool               `json:"app_alerts_disabled"`
-	MonitoringPausedAt     pgtype.Timestamptz `json:"monitoring_paused_at"`
-	MonitoringPausedBy     pgtype.UUID        `json:"monitoring_paused_by"`
-	MonitoringPausedReason string             `json:"monitoring_paused_reason"`
-	MonitoringResumeAt     pgtype.Timestamptz `json:"monitoring_resume_at"`
-	CreatedAt              time.Time          `json:"created_at"`
-	UpdatedAt              time.Time          `json:"updated_at"`
+	ID                            uuid.UUID          `json:"id"`
+	TenantID                      uuid.UUID          `json:"tenant_id"`
+	Url                           string             `json:"url"`
+	Name                          string             `json:"name"`
+	Status                        string             `json:"status"`
+	WpVersion                     string             `json:"wp_version"`
+	PhpVersion                    string             `json:"php_version"`
+	AgentVersion                  string             `json:"agent_version"`
+	AgentPublicKey                string             `json:"agent_public_key"`
+	EnrolledAt                    pgtype.Timestamptz `json:"enrolled_at"`
+	LastSeenAt                    pgtype.Timestamptz `json:"last_seen_at"`
+	HealthStatus                  string             `json:"health_status"`
+	ServerInfo                    string             `json:"server_info"`
+	Multisite                     bool               `json:"multisite"`
+	ActiveTheme                   string             `json:"active_theme"`
+	Components                    []byte             `json:"components"`
+	ComponentsUpdatedAt           pgtype.Timestamptz `json:"components_updated_at"`
+	Tags                          []string           `json:"tags"`
+	AgeRecipient                  string             `json:"age_recipient"`
+	WpTimezone                    string             `json:"wp_timezone"`
+	WpGmtOffset                   float32            `json:"wp_gmt_offset"`
+	HostProvider                  string             `json:"host_provider"`
+	HostProviderOrg               string             `json:"host_provider_org"`
+	HostProviderIp                string             `json:"host_provider_ip"`
+	HostProviderCheckedAt         pgtype.Timestamptz `json:"host_provider_checked_at"`
+	ConnectionState               string             `json:"connection_state"`
+	ConnectionGeneration          int32              `json:"connection_generation"`
+	DisconnectedAt                pgtype.Timestamptz `json:"disconnected_at"`
+	DisconnectedReason            *string            `json:"disconnected_reason"`
+	ArchivedAt                    pgtype.Timestamptz `json:"archived_at"`
+	MissedHeartbeats              int32              `json:"missed_heartbeats"`
+	ClientID                      pgtype.UUID        `json:"client_id"`
+	AppProbePath                  *string            `json:"app_probe_path"`
+	AppAlertsDisabled             bool               `json:"app_alerts_disabled"`
+	MonitoringPausedAt            pgtype.Timestamptz `json:"monitoring_paused_at"`
+	MonitoringPausedBy            pgtype.UUID        `json:"monitoring_paused_by"`
+	MonitoringPausedReason        string             `json:"monitoring_paused_reason"`
+	MonitoringResumeAt            pgtype.Timestamptz `json:"monitoring_resume_at"`
+	ContentEditingEnabledAt       pgtype.Timestamptz `json:"content_editing_enabled_at"`
+	ContentEditingPrincipalUserID *int64             `json:"content_editing_principal_user_id"`
+	ContentEditingEnabledBy       pgtype.UUID        `json:"content_editing_enabled_by"`
+	CreatedAt                     time.Time          `json:"created_at"`
+	UpdatedAt                     time.Time          `json:"updated_at"`
 }
 
 type SiteAbilityInventory struct {
