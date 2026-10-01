@@ -15,6 +15,7 @@ use Brain\Monkey\Functions;
 use ReflectionProperty;
 use WPMgr\Agent\Abilities\AbilityLedger;
 use WPMgr\Agent\Abilities\OwnAbilities;
+use WPMgr\Agent\Abilities\PageCreateBuilder;
 use WPMgr\Agent\Abilities\ServicePrincipal;
 use WPMgr\Agent\Commands\AbilityRunCommand;
 use WPMgr\Agent\Commands\ContentEditingEnableCommand;
@@ -69,6 +70,9 @@ final class PageCreateWriteTest extends TestCase
 
     private bool $blockEditor = true;
 
+    /** A ledger phase whose update_option write fails. */
+    private ?string $failLedgerPhase = null;
+
     /** @var array<int,int> post id => author of an autosave revision. */
     private array $autosaves = [];
 
@@ -95,6 +99,9 @@ final class PageCreateWriteTest extends TestCase
         }
 
         Functions\when('update_option')->alias(function ($name, $value) {
+            if (is_array($value) && $this->failLedgerPhase !== null && ($value['phase'] ?? null) === $this->failLedgerPhase) {
+                return false;
+            }
             $this->options[$name] = $value;
             return true;
         });
@@ -192,6 +199,8 @@ final class PageCreateWriteTest extends TestCase
             $p->post_name        = '';
             $p->post_password    = '';
             $p->post_modified_gmt = '2026-10-01 10:00:00';
+            $p->post_parent      = (int) ($data['post_parent'] ?? 0);
+            $p->menu_order       = (int) ($data['menu_order'] ?? 0);
             $this->posts[$id]    = $p;
             foreach ((array) ($data['meta_input'] ?? []) as $k => $v) {
                 $this->meta[$id][$k] = stripslashes((string) $v);
@@ -248,8 +257,8 @@ final class PageCreateWriteTest extends TestCase
             public function get_var(string $q): ?string
             {
                 [$sql, $args] = json_decode($q, true) ?? [$q, []];
-                if (is_string($sql) && str_starts_with($sql, 'SELECT option_id FROM')) {
-                    return $this->t->optionExists((string) $args[0]) ? '1' : null;
+                if (is_string($sql) && str_starts_with($sql, 'SELECT option_value FROM')) {
+                    return $this->t->rawOption((string) $args[0]);
                 }
                 return null;
             }
@@ -259,6 +268,12 @@ final class PageCreateWriteTest extends TestCase
                 [$sql, $args] = json_decode($q, true) ?? [$q, []];
                 if (is_string($sql) && str_starts_with($sql, 'INSERT IGNORE INTO')) {
                     return $this->t->insertIgnore((string) $args[0], (string) $args[1]);
+                }
+                if (is_string($sql) && str_starts_with($sql, 'UPDATE wp_options SET option_value = %s WHERE option_name = %s AND option_value = %s')) {
+                    return $this->t->updateIf((string) $args[1], (string) $args[2], (string) $args[0]);
+                }
+                if (is_string($sql) && str_starts_with($sql, 'DELETE FROM wp_options WHERE option_name = %s AND option_value = %s')) {
+                    return $this->t->deleteIf((string) $args[0], (string) $args[1]);
                 }
                 return 0;
             }
@@ -288,10 +303,30 @@ final class PageCreateWriteTest extends TestCase
         parent::tear_down();
     }
 
-    /** Fake-wpdb hook: does an options row exist. */
-    public function optionExists(string $name): bool
+    /** Fake-wpdb hook: the raw value of an options row, or null. */
+    public function rawOption(string $name): ?string
     {
-        return array_key_exists($name, $this->options);
+        return array_key_exists($name, $this->options) ? (string) $this->options[$name] : null;
+    }
+
+    /** Fake-wpdb hook: UPDATE ... WHERE option_name = ? AND option_value = ?. */
+    public function updateIf(string $name, string $old, string $new): int
+    {
+        if (!array_key_exists($name, $this->options) || (string) $this->options[$name] !== $old) {
+            return 0;
+        }
+        $this->options[$name] = $new;
+        return 1;
+    }
+
+    /** Fake-wpdb hook: DELETE ... WHERE option_name = ? AND option_value = ?. */
+    public function deleteIf(string $name, string $value): int
+    {
+        if (!array_key_exists($name, $this->options) || (string) $this->options[$name] !== $value) {
+            return 0;
+        }
+        unset($this->options[$name]);
+        return 1;
     }
 
     /** Fake-wpdb hook: INSERT IGNORE semantics on the unique option_name. */
@@ -675,6 +710,151 @@ final class PageCreateWriteTest extends TestCase
         $this->assertSame('completed', $r['phase']);
         $this->assertSame($id, $r['created_post_id']);
         $this->assertFalse($r['inflight']);
+    }
+
+    // -------------------------------------------------------------------------
+    // Stale claims, checked ledger writes, undo on a disabled entry, placement
+    // -------------------------------------------------------------------------
+
+    public function test_a_stale_request_claim_is_not_in_flight_and_is_taken_over_once(): void
+    {
+        $name                 = 'wpmgr_ability_inflight_' . self::REQ_A;
+        $stale                = (string) (time() - AbilityLedger::CLAIM_TTL - 1) . ':deadbeef';
+        $this->options[$name] = $stale;
+
+        $this->assertFalse(AbilityLedger::inflight(self::REQ_A), 'a stale claim is not in flight');
+        $this->assertTrue(AbilityLedger::claimRequest(self::REQ_A), 'a stale claim is taken over');
+        $this->assertNotSame($stale, $this->options[$name]);
+        $this->assertTrue(AbilityLedger::inflight(self::REQ_A));
+        $this->assertFalse(AbilityLedger::claimRequest(self::REQ_A), 'the fresh claim blocks a second taker');
+
+        // A fresh claim held elsewhere is never taken over.
+        $this->options['wpmgr_ability_inflight_' . self::REQ_B] = time() . ':cafe';
+        $this->assertFalse(AbilityLedger::claimRequest(self::REQ_B));
+
+        // A second taker racing on the same stale value matches nothing.
+        $this->assertSame(0, $this->updateIf($name, $stale, 'x'));
+        AbilityLedger::releaseRequest(self::REQ_A);
+    }
+
+    public function test_a_write_after_a_leaked_claim_goes_stale_proceeds(): void
+    {
+        $this->enable();
+        $pre = $this->precheck(self::REQ_A, $this->input());
+        $this->options['wpmgr_ability_inflight_' . self::REQ_A] = (string) (time() - AbilityLedger::CLAIM_TTL - 5);
+
+        $r = $this->write(self::REQ_A, $this->input(), $pre['precheck_digest'], $pre['preview_digest']);
+
+        $this->assertSame('created', $r['outcome'] ?? null, (string) json_encode($r));
+        $this->assertArrayNotHasKey('wpmgr_ability_inflight_' . self::REQ_A, $this->options, 'the taken-over claim is released');
+        $ledger = $this->callP((string) json_encode(['mode' => 'ledger', 'request_id' => self::REQ_A]));
+        $this->assertFalse($ledger['inflight']);
+    }
+
+    public function test_a_release_never_deletes_a_claim_taken_over_by_another(): void
+    {
+        $name = 'wpmgr_ability_inflight_' . self::REQ_A;
+        $this->assertTrue(AbilityLedger::claimRequest(self::REQ_A));
+        $other                = time() . ':newholder';
+        $this->options[$name] = $other;
+
+        AbilityLedger::releaseRequest(self::REQ_A);
+
+        $this->assertSame($other, $this->options[$name]);
+    }
+
+    public function test_a_stale_target_claim_does_not_block_revert(): void
+    {
+        $id = $this->createOne(self::REQ_A);
+        $this->options['wpmgr_ability_target_' . $id] = time() . ':held';
+        $this->assertSame('target_in_flight', $this->revert(self::REQ_A)['code'] ?? null);
+
+        $this->options['wpmgr_ability_target_' . $id] = (string) (time() - AbilityLedger::CLAIM_TTL - 1) . ':leaked';
+        $r = $this->revert(self::REQ_A);
+
+        $this->assertSame('reverted', $r['outcome'] ?? null, (string) json_encode($r));
+        $this->assertArrayNotHasKey('wpmgr_ability_target_' . $id, $this->options);
+    }
+
+    public function test_a_failed_post_id_record_trashes_the_draft_and_refuses(): void
+    {
+        $this->enable();
+        $pre                   = $this->precheck(self::REQ_A, $this->input());
+        $this->failLedgerPhase = 'post_created';
+
+        $r = $this->write(self::REQ_A, $this->input(), $pre['precheck_digest'], $pre['preview_digest']);
+
+        $this->assertFalse($r['ok'], (string) json_encode($r));
+        $this->assertSame('snapshot_failed', $r['code']);
+        $this->assertTrue($r['trashed']);
+        $this->assertSame('trash', $this->posts[$r['post_id']]->post_status);
+        $ledger = AbilityLedger::get(self::REQ_A);
+        $this->assertSame('failed', $ledger['phase']);
+        $this->assertSame($r['post_id'], $ledger['created_post_id']);
+    }
+
+    public function test_a_failed_completed_record_still_reports_the_creation(): void
+    {
+        $this->enable();
+        $pre                   = $this->precheck(self::REQ_A, $this->input());
+        $this->failLedgerPhase = 'completed';
+
+        $r = $this->write(self::REQ_A, $this->input(), $pre['precheck_digest'], $pre['preview_digest']);
+
+        $this->assertTrue($r['ok'], (string) json_encode($r));
+        $this->assertSame('created', $r['outcome']);
+        $this->assertFalse($r['ledger_recorded']);
+        $this->assertSame('draft', $this->posts[$r['post_id']]->post_status);
+        $ledger = $this->callP((string) json_encode(['mode' => 'ledger', 'request_id' => self::REQ_A]));
+        $this->assertSame('post_created', $ledger['phase']);
+        $this->assertSame($r['post_id'], $ledger['created_post_id'], 'the ledger still names the created post');
+        $this->assertFalse($ledger['inflight']);
+    }
+
+    public function test_revert_runs_on_a_disabled_entry_but_precheck_and_write_do_not(): void
+    {
+        $id  = $this->createOne(self::REQ_A);
+        $pre = $this->precheck(self::REQ_B, $this->input());
+
+        $offPre = $this->callP($this->p('precheck', self::REQ_B, $this->input(), null, ['enabled' => false]));
+        $this->assertSame('ability_disabled', $offPre['code'] ?? null);
+        $offWrite = $this->write(self::REQ_B, $this->input(), $pre['precheck_digest'], $pre['preview_digest'], ['enabled' => false]);
+        $this->assertSame('ability_disabled', $offWrite['code'] ?? null);
+        $this->assertNull(AbilityLedger::get(self::REQ_B));
+
+        $entry   = $this->entry(['enabled' => false]);
+        $badHash = $this->callP((string) json_encode(['mode' => 'revert', 'request_id' => self::REQ_A, 'entry' => $entry, 'entry_sha256' => str_repeat('0', 64)]));
+        $this->assertSame('integration_entry_changed', $badHash['code'] ?? null, 'the entry hash still binds a revert');
+        $noApproval = $this->entry(['enabled' => false, 'approval_mode' => 'none']);
+        $r          = $this->callP((string) json_encode(['mode' => 'revert', 'request_id' => self::REQ_A, 'entry' => $noApproval, 'entry_sha256' => hash('sha256', $noApproval)]));
+        $this->assertSame('entry_approval_invalid', $r['code'] ?? null);
+        $withInput = $this->callP((string) json_encode(['mode' => 'revert', 'request_id' => self::REQ_A, 'entry' => $entry, 'entry_sha256' => hash('sha256', $entry), 'input' => '{"post_id":7}']));
+        $this->assertSame('bad_input', $withInput['code'] ?? null, 'revert still takes ids only from the ledger');
+        $this->assertSame('draft', $this->posts[$id]->post_status);
+
+        $ok = $this->callP((string) json_encode(['mode' => 'revert', 'request_id' => self::REQ_A, 'entry' => $entry, 'entry_sha256' => hash('sha256', $entry)]));
+        $this->assertSame('reverted', $ok['outcome'] ?? null, (string) json_encode($ok));
+        $this->assertSame('trash', $this->posts[$id]->post_status);
+    }
+
+    public function test_the_fingerprint_covers_placement_and_revert_refuses_a_moved_draft(): void
+    {
+        $id   = $this->createOne(self::REQ_A);
+        $post = clone $this->posts[$id];
+        $fp   = PageCreateBuilder::documentFingerprint($post);
+
+        $parent              = clone $post;
+        $parent->post_parent = 5;
+        $this->assertNotSame($fp, PageCreateBuilder::documentFingerprint($parent));
+        $order             = clone $post;
+        $order->menu_order = 3;
+        $this->assertNotSame($fp, PageCreateBuilder::documentFingerprint($order));
+
+        $this->posts[$id]->menu_order = 3;
+        $this->assertSame('conflict', $this->revert(self::REQ_A)['code'] ?? null);
+        $this->assertSame('draft', $this->posts[$id]->post_status);
+        $this->posts[$id]->menu_order = 0;
+        $this->assertSame('reverted', $this->revert(self::REQ_A)['outcome'] ?? null, 'the stored placement matches what was created');
     }
 
     public function test_go_fixture_replays_precheck_write_and_revert_byte_for_byte(): void
