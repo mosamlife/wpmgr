@@ -1868,6 +1868,8 @@ type Querier interface {
 	// archived site is visible and the caller can return a structured 409 with
 	// site_id + connection_state instead of hitting the unique-index violation.
 	GetSiteByURLForMint(ctx context.Context, arg GetSiteByURLForMintParams) (GetSiteByURLForMintRow, error)
+	// m157. The site's content-editing state. enabled_at NULL means not enabled.
+	GetSiteContentEditing(ctx context.Context, arg GetSiteContentEditingParams) (GetSiteContentEditingRow, error)
 	// The site's last refresh. pgx.ErrNoRows means the site has never been
 	// refreshed.
 	GetSiteContentInventoryRun(ctx context.Context, arg GetSiteContentInventoryRunParams) (SiteContentInventoryRun, error)
@@ -3398,6 +3400,12 @@ type Querier interface {
 	// clears the disconnected_at/reason set by a prior down transition. The legacy
 	// status='active'/health_status='healthy' mirror the new connection_state.
 	MarkSiteConnected(ctx context.Context, arg MarkSiteConnectedParams) (Site, error)
+	// m157. The enable action's one write: records the WordPress principal the
+	// agent returned and the WPMgr user who enabled it. Run in the site's tenant
+	// transaction; sites_tenant_isolation and sites_site_scope apply. No row
+	// (pgx.ErrNoRows) when the site is not visible to the caller. enabled_by must
+	// come from the authenticated actor, never request input.
+	MarkSiteContentEditingEnabled(ctx context.Context, arg MarkSiteContentEditingEnabledParams) (MarkSiteContentEditingEnabledRow, error)
 	// connected → degraded (timeout sweeper only). Legacy health_status mirrors it.
 	MarkSiteDegraded(ctx context.Context, arg MarkSiteDegradedParams) (Site, error)
 	// degraded → disconnected (timeout sweeper) OR connected/degraded → disconnected
@@ -4250,6 +4258,12 @@ type Querier interface {
 	// run this under the per-tenant org_lifecycle advisory lock (see
 	// internal/org/delete_handler.go) so the guard is authoritative, not racy.
 	SoftDeleteTenant(ctx context.Context, tenantID uuid.UUID) (Tenant, error)
+	// m157. Stores the Go-computed canonical entry hash on a WPMgr-owned entry
+	// whose hash is still NULL, and audits it with a NULL actor. Needs no
+	// superadmin: it can only move NULL to a hash, on a source = 'wpmgr' row.
+	// Refusals: P0002 no entry, 22023 not 64 lowercase hex, 42501 not a wpmgr
+	// row, 55000 already stamped (a concurrent stamper lost the race; re-read).
+	StampWpmgrAbilityEntryHash(ctx context.Context, arg StampWpmgrAbilityEntryHashParams) (AbilityCatalogue, error)
 	// assistant_cache_purge_requests (m151): every statement over the request
 	// table, plus the cache_purge_audit statements the AI clear path needs.
 	//

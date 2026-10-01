@@ -24,7 +24,7 @@ SET agent_public_key = $3,
     php_version = $5,
     updated_at = now()
 WHERE id = $1 AND tenant_id = $2
-RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, components_updated_at, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, created_at, updated_at
+RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, components_updated_at, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, content_editing_enabled_at, content_editing_principal_user_id, content_editing_enabled_by, created_at, updated_at
 `
 
 type AttachAgentToSiteParams struct {
@@ -84,6 +84,9 @@ func (q *Queries) AttachAgentToSite(ctx context.Context, arg AttachAgentToSitePa
 		&i.MonitoringPausedBy,
 		&i.MonitoringPausedReason,
 		&i.MonitoringResumeAt,
+		&i.ContentEditingEnabledAt,
+		&i.ContentEditingPrincipalUserID,
+		&i.ContentEditingEnabledBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -93,7 +96,7 @@ func (q *Queries) AttachAgentToSite(ctx context.Context, arg AttachAgentToSitePa
 const createSite = `-- name: CreateSite :one
 INSERT INTO sites (tenant_id, url, name, status, wp_version, php_version)
 VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, components_updated_at, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, created_at, updated_at
+RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, components_updated_at, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, content_editing_enabled_at, content_editing_principal_user_id, content_editing_enabled_by, created_at, updated_at
 `
 
 type CreateSiteParams struct {
@@ -156,6 +159,9 @@ func (q *Queries) CreateSite(ctx context.Context, arg CreateSiteParams) (Site, e
 		&i.MonitoringPausedBy,
 		&i.MonitoringPausedReason,
 		&i.MonitoringResumeAt,
+		&i.ContentEditingEnabledAt,
+		&i.ContentEditingPrincipalUserID,
+		&i.ContentEditingEnabledBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -166,7 +172,7 @@ const createSiteForEnroll = `-- name: CreateSiteForEnroll :one
 INSERT INTO sites (tenant_id, url, name, status, wp_version, php_version,
                    agent_public_key, enrolled_at, last_seen_at, health_status, tags)
 VALUES ($1, $2, $3, 'active', $4, $5, $6, now(), now(), 'healthy', $7)
-RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, components_updated_at, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, created_at, updated_at
+RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, components_updated_at, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, content_editing_enabled_at, content_editing_principal_user_id, content_editing_enabled_by, created_at, updated_at
 `
 
 type CreateSiteForEnrollParams struct {
@@ -229,6 +235,9 @@ func (q *Queries) CreateSiteForEnroll(ctx context.Context, arg CreateSiteForEnro
 		&i.MonitoringPausedBy,
 		&i.MonitoringPausedReason,
 		&i.MonitoringResumeAt,
+		&i.ContentEditingEnabledAt,
+		&i.ContentEditingPrincipalUserID,
+		&i.ContentEditingEnabledBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -254,7 +263,7 @@ func (q *Queries) DeleteSite(ctx context.Context, arg DeleteSiteParams) (int64, 
 }
 
 const getSite = `-- name: GetSite :one
-SELECT s.id, s.tenant_id, s.url, s.name, s.status, s.wp_version, s.php_version, s.agent_version, s.agent_public_key, s.enrolled_at, s.last_seen_at, s.health_status, s.server_info, s.multisite, s.active_theme, s.components, s.components_updated_at, s.tags, s.age_recipient, s.wp_timezone, s.wp_gmt_offset, s.host_provider, s.host_provider_org, s.host_provider_ip, s.host_provider_checked_at, s.connection_state, s.connection_generation, s.disconnected_at, s.disconnected_reason, s.archived_at, s.missed_heartbeats, s.client_id, s.app_probe_path, s.app_alerts_disabled, s.monitoring_paused_at, s.monitoring_paused_by, s.monitoring_paused_reason, s.monitoring_resume_at, s.created_at, s.updated_at,
+SELECT s.id, s.tenant_id, s.url, s.name, s.status, s.wp_version, s.php_version, s.agent_version, s.agent_public_key, s.enrolled_at, s.last_seen_at, s.health_status, s.server_info, s.multisite, s.active_theme, s.components, s.components_updated_at, s.tags, s.age_recipient, s.wp_timezone, s.wp_gmt_offset, s.host_provider, s.host_provider_org, s.host_provider_ip, s.host_provider_checked_at, s.connection_state, s.connection_generation, s.disconnected_at, s.disconnected_reason, s.archived_at, s.missed_heartbeats, s.client_id, s.app_probe_path, s.app_alerts_disabled, s.monitoring_paused_at, s.monitoring_paused_by, s.monitoring_paused_reason, s.monitoring_resume_at, s.content_editing_enabled_at, s.content_editing_principal_user_id, s.content_editing_enabled_by, s.created_at, s.updated_at,
        COALESCE(pc.cache_enabled, false) AS page_cache_enabled,
        COALESCE(oc.enabled, false) AS object_cache_enabled
 FROM sites s
@@ -271,48 +280,51 @@ type GetSiteParams struct {
 }
 
 type GetSiteRow struct {
-	ID                     uuid.UUID          `json:"id"`
-	TenantID               uuid.UUID          `json:"tenant_id"`
-	Url                    string             `json:"url"`
-	Name                   string             `json:"name"`
-	Status                 string             `json:"status"`
-	WpVersion              string             `json:"wp_version"`
-	PhpVersion             string             `json:"php_version"`
-	AgentVersion           string             `json:"agent_version"`
-	AgentPublicKey         string             `json:"agent_public_key"`
-	EnrolledAt             pgtype.Timestamptz `json:"enrolled_at"`
-	LastSeenAt             pgtype.Timestamptz `json:"last_seen_at"`
-	HealthStatus           string             `json:"health_status"`
-	ServerInfo             string             `json:"server_info"`
-	Multisite              bool               `json:"multisite"`
-	ActiveTheme            string             `json:"active_theme"`
-	Components             []byte             `json:"components"`
-	ComponentsUpdatedAt    pgtype.Timestamptz `json:"components_updated_at"`
-	Tags                   []string           `json:"tags"`
-	AgeRecipient           string             `json:"age_recipient"`
-	WpTimezone             string             `json:"wp_timezone"`
-	WpGmtOffset            float32            `json:"wp_gmt_offset"`
-	HostProvider           string             `json:"host_provider"`
-	HostProviderOrg        string             `json:"host_provider_org"`
-	HostProviderIp         string             `json:"host_provider_ip"`
-	HostProviderCheckedAt  pgtype.Timestamptz `json:"host_provider_checked_at"`
-	ConnectionState        string             `json:"connection_state"`
-	ConnectionGeneration   int32              `json:"connection_generation"`
-	DisconnectedAt         pgtype.Timestamptz `json:"disconnected_at"`
-	DisconnectedReason     *string            `json:"disconnected_reason"`
-	ArchivedAt             pgtype.Timestamptz `json:"archived_at"`
-	MissedHeartbeats       int32              `json:"missed_heartbeats"`
-	ClientID               pgtype.UUID        `json:"client_id"`
-	AppProbePath           *string            `json:"app_probe_path"`
-	AppAlertsDisabled      bool               `json:"app_alerts_disabled"`
-	MonitoringPausedAt     pgtype.Timestamptz `json:"monitoring_paused_at"`
-	MonitoringPausedBy     pgtype.UUID        `json:"monitoring_paused_by"`
-	MonitoringPausedReason string             `json:"monitoring_paused_reason"`
-	MonitoringResumeAt     pgtype.Timestamptz `json:"monitoring_resume_at"`
-	CreatedAt              time.Time          `json:"created_at"`
-	UpdatedAt              time.Time          `json:"updated_at"`
-	PageCacheEnabled       bool               `json:"page_cache_enabled"`
-	ObjectCacheEnabled     bool               `json:"object_cache_enabled"`
+	ID                            uuid.UUID          `json:"id"`
+	TenantID                      uuid.UUID          `json:"tenant_id"`
+	Url                           string             `json:"url"`
+	Name                          string             `json:"name"`
+	Status                        string             `json:"status"`
+	WpVersion                     string             `json:"wp_version"`
+	PhpVersion                    string             `json:"php_version"`
+	AgentVersion                  string             `json:"agent_version"`
+	AgentPublicKey                string             `json:"agent_public_key"`
+	EnrolledAt                    pgtype.Timestamptz `json:"enrolled_at"`
+	LastSeenAt                    pgtype.Timestamptz `json:"last_seen_at"`
+	HealthStatus                  string             `json:"health_status"`
+	ServerInfo                    string             `json:"server_info"`
+	Multisite                     bool               `json:"multisite"`
+	ActiveTheme                   string             `json:"active_theme"`
+	Components                    []byte             `json:"components"`
+	ComponentsUpdatedAt           pgtype.Timestamptz `json:"components_updated_at"`
+	Tags                          []string           `json:"tags"`
+	AgeRecipient                  string             `json:"age_recipient"`
+	WpTimezone                    string             `json:"wp_timezone"`
+	WpGmtOffset                   float32            `json:"wp_gmt_offset"`
+	HostProvider                  string             `json:"host_provider"`
+	HostProviderOrg               string             `json:"host_provider_org"`
+	HostProviderIp                string             `json:"host_provider_ip"`
+	HostProviderCheckedAt         pgtype.Timestamptz `json:"host_provider_checked_at"`
+	ConnectionState               string             `json:"connection_state"`
+	ConnectionGeneration          int32              `json:"connection_generation"`
+	DisconnectedAt                pgtype.Timestamptz `json:"disconnected_at"`
+	DisconnectedReason            *string            `json:"disconnected_reason"`
+	ArchivedAt                    pgtype.Timestamptz `json:"archived_at"`
+	MissedHeartbeats              int32              `json:"missed_heartbeats"`
+	ClientID                      pgtype.UUID        `json:"client_id"`
+	AppProbePath                  *string            `json:"app_probe_path"`
+	AppAlertsDisabled             bool               `json:"app_alerts_disabled"`
+	MonitoringPausedAt            pgtype.Timestamptz `json:"monitoring_paused_at"`
+	MonitoringPausedBy            pgtype.UUID        `json:"monitoring_paused_by"`
+	MonitoringPausedReason        string             `json:"monitoring_paused_reason"`
+	MonitoringResumeAt            pgtype.Timestamptz `json:"monitoring_resume_at"`
+	ContentEditingEnabledAt       pgtype.Timestamptz `json:"content_editing_enabled_at"`
+	ContentEditingPrincipalUserID *int64             `json:"content_editing_principal_user_id"`
+	ContentEditingEnabledBy       pgtype.UUID        `json:"content_editing_enabled_by"`
+	CreatedAt                     time.Time          `json:"created_at"`
+	UpdatedAt                     time.Time          `json:"updated_at"`
+	PageCacheEnabled              bool               `json:"page_cache_enabled"`
+	ObjectCacheEnabled            bool               `json:"object_cache_enabled"`
 }
 
 // GH #243: page_cache_enabled / object_cache_enabled surface the REAL
@@ -365,6 +377,9 @@ func (q *Queries) GetSite(ctx context.Context, arg GetSiteParams) (GetSiteRow, e
 		&i.MonitoringPausedBy,
 		&i.MonitoringPausedReason,
 		&i.MonitoringResumeAt,
+		&i.ContentEditingEnabledAt,
+		&i.ContentEditingPrincipalUserID,
+		&i.ContentEditingEnabledBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.PageCacheEnabled,
@@ -399,7 +414,7 @@ func (q *Queries) GetSiteAppHealthSettings(ctx context.Context, arg GetSiteAppHe
 
 const getSiteByAgentKey = `-- name: GetSiteByAgentKey :one
 
-SELECT id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, components_updated_at, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, created_at, updated_at FROM sites
+SELECT id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, components_updated_at, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, content_editing_enabled_at, content_editing_principal_user_id, content_editing_enabled_by, created_at, updated_at FROM sites
 WHERE agent_public_key = $1 AND agent_public_key <> ''
 `
 
@@ -448,6 +463,9 @@ func (q *Queries) GetSiteByAgentKey(ctx context.Context, agentPublicKey string) 
 		&i.MonitoringPausedBy,
 		&i.MonitoringPausedReason,
 		&i.MonitoringResumeAt,
+		&i.ContentEditingEnabledAt,
+		&i.ContentEditingPrincipalUserID,
+		&i.ContentEditingEnabledBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -456,7 +474,7 @@ func (q *Queries) GetSiteByAgentKey(ctx context.Context, agentPublicKey string) 
 
 const getSiteByURLForEnroll = `-- name: GetSiteByURLForEnroll :one
 
-SELECT id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, components_updated_at, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, created_at, updated_at FROM sites
+SELECT id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, components_updated_at, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, content_editing_enabled_at, content_editing_principal_user_id, content_editing_enabled_by, created_at, updated_at FROM sites
 WHERE tenant_id = $1 AND url = $2
 `
 
@@ -510,8 +528,42 @@ func (q *Queries) GetSiteByURLForEnroll(ctx context.Context, arg GetSiteByURLFor
 		&i.MonitoringPausedBy,
 		&i.MonitoringPausedReason,
 		&i.MonitoringResumeAt,
+		&i.ContentEditingEnabledAt,
+		&i.ContentEditingPrincipalUserID,
+		&i.ContentEditingEnabledBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getSiteContentEditing = `-- name: GetSiteContentEditing :one
+SELECT id, content_editing_enabled_at, content_editing_principal_user_id, content_editing_enabled_by
+FROM sites
+WHERE id = $1::uuid AND tenant_id = $2::uuid
+`
+
+type GetSiteContentEditingParams struct {
+	SiteID   uuid.UUID `json:"site_id"`
+	TenantID uuid.UUID `json:"tenant_id"`
+}
+
+type GetSiteContentEditingRow struct {
+	ID                            uuid.UUID          `json:"id"`
+	ContentEditingEnabledAt       pgtype.Timestamptz `json:"content_editing_enabled_at"`
+	ContentEditingPrincipalUserID *int64             `json:"content_editing_principal_user_id"`
+	ContentEditingEnabledBy       pgtype.UUID        `json:"content_editing_enabled_by"`
+}
+
+// m157. The site's content-editing state. enabled_at NULL means not enabled.
+func (q *Queries) GetSiteContentEditing(ctx context.Context, arg GetSiteContentEditingParams) (GetSiteContentEditingRow, error) {
+	row := q.db.QueryRow(ctx, getSiteContentEditing, arg.SiteID, arg.TenantID)
+	var i GetSiteContentEditingRow
+	err := row.Scan(
+		&i.ID,
+		&i.ContentEditingEnabledAt,
+		&i.ContentEditingPrincipalUserID,
+		&i.ContentEditingEnabledBy,
 	)
 	return i, err
 }
@@ -863,7 +915,7 @@ func (q *Queries) ListSiteAddressesInScope(ctx context.Context, arg ListSiteAddr
 }
 
 const listSites = `-- name: ListSites :many
-SELECT s.id, s.tenant_id, s.url, s.name, s.status, s.wp_version, s.php_version, s.agent_version, s.agent_public_key, s.enrolled_at, s.last_seen_at, s.health_status, s.server_info, s.multisite, s.active_theme, s.components, s.components_updated_at, s.tags, s.age_recipient, s.wp_timezone, s.wp_gmt_offset, s.host_provider, s.host_provider_org, s.host_provider_ip, s.host_provider_checked_at, s.connection_state, s.connection_generation, s.disconnected_at, s.disconnected_reason, s.archived_at, s.missed_heartbeats, s.client_id, s.app_probe_path, s.app_alerts_disabled, s.monitoring_paused_at, s.monitoring_paused_by, s.monitoring_paused_reason, s.monitoring_resume_at, s.created_at, s.updated_at,
+SELECT s.id, s.tenant_id, s.url, s.name, s.status, s.wp_version, s.php_version, s.agent_version, s.agent_public_key, s.enrolled_at, s.last_seen_at, s.health_status, s.server_info, s.multisite, s.active_theme, s.components, s.components_updated_at, s.tags, s.age_recipient, s.wp_timezone, s.wp_gmt_offset, s.host_provider, s.host_provider_org, s.host_provider_ip, s.host_provider_checked_at, s.connection_state, s.connection_generation, s.disconnected_at, s.disconnected_reason, s.archived_at, s.missed_heartbeats, s.client_id, s.app_probe_path, s.app_alerts_disabled, s.monitoring_paused_at, s.monitoring_paused_by, s.monitoring_paused_reason, s.monitoring_resume_at, s.content_editing_enabled_at, s.content_editing_principal_user_id, s.content_editing_enabled_by, s.created_at, s.updated_at,
        COALESCE(pc.cache_enabled, false) AS page_cache_enabled,
        COALESCE(oc.enabled, false) AS object_cache_enabled
 FROM sites s
@@ -912,48 +964,51 @@ type ListSitesParams struct {
 }
 
 type ListSitesRow struct {
-	ID                     uuid.UUID          `json:"id"`
-	TenantID               uuid.UUID          `json:"tenant_id"`
-	Url                    string             `json:"url"`
-	Name                   string             `json:"name"`
-	Status                 string             `json:"status"`
-	WpVersion              string             `json:"wp_version"`
-	PhpVersion             string             `json:"php_version"`
-	AgentVersion           string             `json:"agent_version"`
-	AgentPublicKey         string             `json:"agent_public_key"`
-	EnrolledAt             pgtype.Timestamptz `json:"enrolled_at"`
-	LastSeenAt             pgtype.Timestamptz `json:"last_seen_at"`
-	HealthStatus           string             `json:"health_status"`
-	ServerInfo             string             `json:"server_info"`
-	Multisite              bool               `json:"multisite"`
-	ActiveTheme            string             `json:"active_theme"`
-	Components             []byte             `json:"components"`
-	ComponentsUpdatedAt    pgtype.Timestamptz `json:"components_updated_at"`
-	Tags                   []string           `json:"tags"`
-	AgeRecipient           string             `json:"age_recipient"`
-	WpTimezone             string             `json:"wp_timezone"`
-	WpGmtOffset            float32            `json:"wp_gmt_offset"`
-	HostProvider           string             `json:"host_provider"`
-	HostProviderOrg        string             `json:"host_provider_org"`
-	HostProviderIp         string             `json:"host_provider_ip"`
-	HostProviderCheckedAt  pgtype.Timestamptz `json:"host_provider_checked_at"`
-	ConnectionState        string             `json:"connection_state"`
-	ConnectionGeneration   int32              `json:"connection_generation"`
-	DisconnectedAt         pgtype.Timestamptz `json:"disconnected_at"`
-	DisconnectedReason     *string            `json:"disconnected_reason"`
-	ArchivedAt             pgtype.Timestamptz `json:"archived_at"`
-	MissedHeartbeats       int32              `json:"missed_heartbeats"`
-	ClientID               pgtype.UUID        `json:"client_id"`
-	AppProbePath           *string            `json:"app_probe_path"`
-	AppAlertsDisabled      bool               `json:"app_alerts_disabled"`
-	MonitoringPausedAt     pgtype.Timestamptz `json:"monitoring_paused_at"`
-	MonitoringPausedBy     pgtype.UUID        `json:"monitoring_paused_by"`
-	MonitoringPausedReason string             `json:"monitoring_paused_reason"`
-	MonitoringResumeAt     pgtype.Timestamptz `json:"monitoring_resume_at"`
-	CreatedAt              time.Time          `json:"created_at"`
-	UpdatedAt              time.Time          `json:"updated_at"`
-	PageCacheEnabled       bool               `json:"page_cache_enabled"`
-	ObjectCacheEnabled     bool               `json:"object_cache_enabled"`
+	ID                            uuid.UUID          `json:"id"`
+	TenantID                      uuid.UUID          `json:"tenant_id"`
+	Url                           string             `json:"url"`
+	Name                          string             `json:"name"`
+	Status                        string             `json:"status"`
+	WpVersion                     string             `json:"wp_version"`
+	PhpVersion                    string             `json:"php_version"`
+	AgentVersion                  string             `json:"agent_version"`
+	AgentPublicKey                string             `json:"agent_public_key"`
+	EnrolledAt                    pgtype.Timestamptz `json:"enrolled_at"`
+	LastSeenAt                    pgtype.Timestamptz `json:"last_seen_at"`
+	HealthStatus                  string             `json:"health_status"`
+	ServerInfo                    string             `json:"server_info"`
+	Multisite                     bool               `json:"multisite"`
+	ActiveTheme                   string             `json:"active_theme"`
+	Components                    []byte             `json:"components"`
+	ComponentsUpdatedAt           pgtype.Timestamptz `json:"components_updated_at"`
+	Tags                          []string           `json:"tags"`
+	AgeRecipient                  string             `json:"age_recipient"`
+	WpTimezone                    string             `json:"wp_timezone"`
+	WpGmtOffset                   float32            `json:"wp_gmt_offset"`
+	HostProvider                  string             `json:"host_provider"`
+	HostProviderOrg               string             `json:"host_provider_org"`
+	HostProviderIp                string             `json:"host_provider_ip"`
+	HostProviderCheckedAt         pgtype.Timestamptz `json:"host_provider_checked_at"`
+	ConnectionState               string             `json:"connection_state"`
+	ConnectionGeneration          int32              `json:"connection_generation"`
+	DisconnectedAt                pgtype.Timestamptz `json:"disconnected_at"`
+	DisconnectedReason            *string            `json:"disconnected_reason"`
+	ArchivedAt                    pgtype.Timestamptz `json:"archived_at"`
+	MissedHeartbeats              int32              `json:"missed_heartbeats"`
+	ClientID                      pgtype.UUID        `json:"client_id"`
+	AppProbePath                  *string            `json:"app_probe_path"`
+	AppAlertsDisabled             bool               `json:"app_alerts_disabled"`
+	MonitoringPausedAt            pgtype.Timestamptz `json:"monitoring_paused_at"`
+	MonitoringPausedBy            pgtype.UUID        `json:"monitoring_paused_by"`
+	MonitoringPausedReason        string             `json:"monitoring_paused_reason"`
+	MonitoringResumeAt            pgtype.Timestamptz `json:"monitoring_resume_at"`
+	ContentEditingEnabledAt       pgtype.Timestamptz `json:"content_editing_enabled_at"`
+	ContentEditingPrincipalUserID *int64             `json:"content_editing_principal_user_id"`
+	ContentEditingEnabledBy       pgtype.UUID        `json:"content_editing_enabled_by"`
+	CreatedAt                     time.Time          `json:"created_at"`
+	UpdatedAt                     time.Time          `json:"updated_at"`
+	PageCacheEnabled              bool               `json:"page_cache_enabled"`
+	ObjectCacheEnabled            bool               `json:"object_cache_enabled"`
 }
 
 // Defaults to hiding archived sites (ADR-041). When sqlc.narg('state') is set
@@ -1057,6 +1112,9 @@ func (q *Queries) ListSites(ctx context.Context, arg ListSitesParams) ([]ListSit
 			&i.MonitoringPausedBy,
 			&i.MonitoringPausedReason,
 			&i.MonitoringResumeAt,
+			&i.ContentEditingEnabledAt,
+			&i.ContentEditingPrincipalUserID,
+			&i.ContentEditingEnabledBy,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.PageCacheEnabled,
@@ -1142,7 +1200,7 @@ func (q *Queries) ListSitesAgentVersions(ctx context.Context, tenantID uuid.UUID
 }
 
 const listSitesForMCPScope = `-- name: ListSitesForMCPScope :many
-SELECT s.id, s.tenant_id, s.url, s.name, s.status, s.wp_version, s.php_version, s.agent_version, s.agent_public_key, s.enrolled_at, s.last_seen_at, s.health_status, s.server_info, s.multisite, s.active_theme, s.components, s.components_updated_at, s.tags, s.age_recipient, s.wp_timezone, s.wp_gmt_offset, s.host_provider, s.host_provider_org, s.host_provider_ip, s.host_provider_checked_at, s.connection_state, s.connection_generation, s.disconnected_at, s.disconnected_reason, s.archived_at, s.missed_heartbeats, s.client_id, s.app_probe_path, s.app_alerts_disabled, s.monitoring_paused_at, s.monitoring_paused_by, s.monitoring_paused_reason, s.monitoring_resume_at, s.created_at, s.updated_at
+SELECT s.id, s.tenant_id, s.url, s.name, s.status, s.wp_version, s.php_version, s.agent_version, s.agent_public_key, s.enrolled_at, s.last_seen_at, s.health_status, s.server_info, s.multisite, s.active_theme, s.components, s.components_updated_at, s.tags, s.age_recipient, s.wp_timezone, s.wp_gmt_offset, s.host_provider, s.host_provider_org, s.host_provider_ip, s.host_provider_checked_at, s.connection_state, s.connection_generation, s.disconnected_at, s.disconnected_reason, s.archived_at, s.missed_heartbeats, s.client_id, s.app_probe_path, s.app_alerts_disabled, s.monitoring_paused_at, s.monitoring_paused_by, s.monitoring_paused_reason, s.monitoring_resume_at, s.content_editing_enabled_at, s.content_editing_principal_user_id, s.content_editing_enabled_by, s.created_at, s.updated_at
 FROM sites s
 WHERE s.tenant_id = $1
   AND s.id = ANY($2::uuid[])
@@ -1256,6 +1314,9 @@ func (q *Queries) ListSitesForMCPScope(ctx context.Context, arg ListSitesForMCPS
 			&i.MonitoringPausedBy,
 			&i.MonitoringPausedReason,
 			&i.MonitoringResumeAt,
+			&i.ContentEditingEnabledAt,
+			&i.ContentEditingPrincipalUserID,
+			&i.ContentEditingEnabledBy,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -1267,6 +1328,52 @@ func (q *Queries) ListSitesForMCPScope(ctx context.Context, arg ListSitesForMCPS
 		return nil, err
 	}
 	return items, nil
+}
+
+const markSiteContentEditingEnabled = `-- name: MarkSiteContentEditingEnabled :one
+UPDATE sites SET
+    content_editing_enabled_at = now(),
+    content_editing_principal_user_id = $1::bigint,
+    content_editing_enabled_by = $2::uuid,
+    updated_at = now()
+WHERE id = $3::uuid AND tenant_id = $4::uuid
+RETURNING id, content_editing_enabled_at, content_editing_principal_user_id, content_editing_enabled_by
+`
+
+type MarkSiteContentEditingEnabledParams struct {
+	PrincipalUserID int64     `json:"principal_user_id"`
+	EnabledBy       uuid.UUID `json:"enabled_by"`
+	SiteID          uuid.UUID `json:"site_id"`
+	TenantID        uuid.UUID `json:"tenant_id"`
+}
+
+type MarkSiteContentEditingEnabledRow struct {
+	ID                            uuid.UUID          `json:"id"`
+	ContentEditingEnabledAt       pgtype.Timestamptz `json:"content_editing_enabled_at"`
+	ContentEditingPrincipalUserID *int64             `json:"content_editing_principal_user_id"`
+	ContentEditingEnabledBy       pgtype.UUID        `json:"content_editing_enabled_by"`
+}
+
+// m157. The enable action's one write: records the WordPress principal the
+// agent returned and the WPMgr user who enabled it. Run in the site's tenant
+// transaction; sites_tenant_isolation and sites_site_scope apply. No row
+// (pgx.ErrNoRows) when the site is not visible to the caller. enabled_by must
+// come from the authenticated actor, never request input.
+func (q *Queries) MarkSiteContentEditingEnabled(ctx context.Context, arg MarkSiteContentEditingEnabledParams) (MarkSiteContentEditingEnabledRow, error) {
+	row := q.db.QueryRow(ctx, markSiteContentEditingEnabled,
+		arg.PrincipalUserID,
+		arg.EnabledBy,
+		arg.SiteID,
+		arg.TenantID,
+	)
+	var i MarkSiteContentEditingEnabledRow
+	err := row.Scan(
+		&i.ID,
+		&i.ContentEditingEnabledAt,
+		&i.ContentEditingPrincipalUserID,
+		&i.ContentEditingEnabledBy,
+	)
+	return i, err
 }
 
 const markSiteUnreachable = `-- name: MarkSiteUnreachable :execrows
@@ -1288,7 +1395,7 @@ const setSiteAgeRecipient = `-- name: SetSiteAgeRecipient :one
 UPDATE sites
 SET age_recipient = $3, updated_at = now()
 WHERE id = $1 AND tenant_id = $2
-RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, components_updated_at, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, created_at, updated_at
+RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, components_updated_at, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, content_editing_enabled_at, content_editing_principal_user_id, content_editing_enabled_by, created_at, updated_at
 `
 
 type SetSiteAgeRecipientParams struct {
@@ -1341,6 +1448,9 @@ func (q *Queries) SetSiteAgeRecipient(ctx context.Context, arg SetSiteAgeRecipie
 		&i.MonitoringPausedBy,
 		&i.MonitoringPausedReason,
 		&i.MonitoringResumeAt,
+		&i.ContentEditingEnabledAt,
+		&i.ContentEditingPrincipalUserID,
+		&i.ContentEditingEnabledBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -1372,7 +1482,7 @@ const setSiteTags = `-- name: SetSiteTags :one
 UPDATE sites
 SET tags = $3, updated_at = now()
 WHERE id = $1 AND tenant_id = $2
-RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, components_updated_at, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, created_at, updated_at
+RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, components_updated_at, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, content_editing_enabled_at, content_editing_principal_user_id, content_editing_enabled_by, created_at, updated_at
 `
 
 type SetSiteTagsParams struct {
@@ -1423,6 +1533,9 @@ func (q *Queries) SetSiteTags(ctx context.Context, arg SetSiteTagsParams) (Site,
 		&i.MonitoringPausedBy,
 		&i.MonitoringPausedReason,
 		&i.MonitoringResumeAt,
+		&i.ContentEditingEnabledAt,
+		&i.ContentEditingPrincipalUserID,
+		&i.ContentEditingEnabledBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -1435,7 +1548,7 @@ SET last_seen_at = now(),
     health_status = 'healthy',
     updated_at = now()
 WHERE id = $1 AND tenant_id = $2
-RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, components_updated_at, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, created_at, updated_at
+RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, components_updated_at, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, content_editing_enabled_at, content_editing_principal_user_id, content_editing_enabled_by, created_at, updated_at
 `
 
 type TouchSiteSeenParams struct {
@@ -1485,6 +1598,9 @@ func (q *Queries) TouchSiteSeen(ctx context.Context, arg TouchSiteSeenParams) (S
 		&i.MonitoringPausedBy,
 		&i.MonitoringPausedReason,
 		&i.MonitoringResumeAt,
+		&i.ContentEditingEnabledAt,
+		&i.ContentEditingPrincipalUserID,
+		&i.ContentEditingEnabledBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -1542,7 +1658,7 @@ SET wp_version   = $3,
     health_status = 'healthy',
     updated_at   = now()
 WHERE id = $1 AND tenant_id = $2
-RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, components_updated_at, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, created_at, updated_at
+RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, components_updated_at, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, content_editing_enabled_at, content_editing_principal_user_id, content_editing_enabled_by, created_at, updated_at
 `
 
 type UpdateSiteMetadataParams struct {
@@ -1628,6 +1744,9 @@ func (q *Queries) UpdateSiteMetadata(ctx context.Context, arg UpdateSiteMetadata
 		&i.MonitoringPausedBy,
 		&i.MonitoringPausedReason,
 		&i.MonitoringResumeAt,
+		&i.ContentEditingEnabledAt,
+		&i.ContentEditingPrincipalUserID,
+		&i.ContentEditingEnabledBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)

@@ -416,6 +416,13 @@ CREATE TABLE sites (
     monitoring_paused_reason text NOT NULL DEFAULT '',
     -- Optional auto-resume instant; NULL means "until someone resumes it".
     monitoring_resume_at     timestamptz,
+    -- m157: content editing (engine E2). Written only by the enable action.
+    -- NULL enabled_at = not enabled. principal_user_id is the WordPress user
+    -- id the agent returned (a WordPress id: bigint, no FK). enabled_by is the
+    -- WPMgr user; its FK (ON DELETE SET NULL) is added after users below.
+    content_editing_enabled_at        timestamptz,
+    content_editing_principal_user_id bigint,
+    content_editing_enabled_by        uuid,
     created_at  timestamptz NOT NULL DEFAULT now(),
     updated_at  timestamptz NOT NULL DEFAULT now(),
     -- m117: a resume time with no pause is incoherent, and a later phase reads
@@ -430,7 +437,14 @@ CREATE TABLE sites (
     -- nor require an empty reason while active, nor require resume_at to be
     -- after paused_at (a past instant sanely means "due now").
     CONSTRAINT sites_monitoring_resume_requires_pause_check
-        CHECK (monitoring_resume_at IS NULL OR monitoring_paused_at IS NOT NULL)
+        CHECK (monitoring_resume_at IS NULL OR monitoring_paused_at IS NOT NULL),
+    -- m157: enabled_at and the principal move together; the principal is a
+    -- positive WordPress user id.
+    CONSTRAINT sites_content_editing_state_check
+        CHECK (
+            (content_editing_enabled_at IS NULL) = (content_editing_principal_user_id IS NULL)
+            AND (content_editing_principal_user_id IS NULL OR content_editing_principal_user_id > 0)
+        )
 );
 
 CREATE INDEX idx_sites_connection_state ON sites (tenant_id, connection_state);
@@ -616,6 +630,12 @@ CREATE INDEX user_identities_user_id_idx
 ALTER TABLE sites
     ADD CONSTRAINT sites_monitoring_paused_by_fkey
     FOREIGN KEY (monitoring_paused_by) REFERENCES users (id)
+    ON DELETE SET NULL;
+
+-- m157: who enabled content editing, same pattern and same caveat.
+ALTER TABLE sites
+    ADD CONSTRAINT sites_content_editing_enabled_by_fkey
+    FOREIGN KEY (content_editing_enabled_by) REFERENCES users (id)
     ON DELETE SET NULL;
 
 -- m117: the auto-resume sweep's index, and deliberately NOT an index on
@@ -9148,7 +9168,14 @@ CREATE TABLE IF NOT EXISTS ability_catalogue_audit (
     action text NOT NULL
         CONSTRAINT ability_catalogue_audit_action_check
         CHECK (action IN ('insert', 'update')),
-    actor_user_id uuid NOT NULL,
+    -- m157: NULL only for a system stamp by stamp_wpmgr_ability_entry_hash.
+    actor_user_id uuid NULL,
+    CONSTRAINT ability_catalogue_audit_null_actor_is_stamp_check
+        CHECK (actor_user_id IS NOT NULL OR (
+            action = 'update'
+            AND before_entry_sha256 IS NULL
+            AND after_entry_sha256 IS NOT NULL
+            AND before_enabled IS NOT DISTINCT FROM after_enabled)),
     before_row_sha256 text NULL
         CONSTRAINT ability_catalogue_audit_before_row_check
         CHECK (before_row_sha256 ~ '^[0-9a-f]{64}$'),
@@ -9411,6 +9438,91 @@ FROM (VALUES
 WHERE NOT EXISTS (
     SELECT 1 FROM ability_catalogue c WHERE c.name = v.name
 );
+
+-- m157: wpmgr/page-create, the first admitted write.
+INSERT INTO ability_catalogue (
+    name, source, class, status, enabled, approval_mode,
+    snapshot, effect_copy, operator_permission, min_agent_version,
+    title, description
+)
+SELECT 'wpmgr/page-create', 'wpmgr', 'write', 'admitted', true, 'per_call',
+       'created_post_trash', 'draft', 'site.content.edit', '0.61.156',
+       'Create a draft page',
+       'Creates a new draft page or post from a text outline. Nothing is published. Undo moves the draft to the trash.'
+WHERE NOT EXISTS (
+    SELECT 1 FROM ability_catalogue c WHERE c.name = 'wpmgr/page-create'
+);
+
+-- m157: the narrow stamp path for WPMgr's own entries. Sets entry_sha256 only
+-- on a source = 'wpmgr' row whose hash is NULL, only to 64 lowercase hex, and
+-- audits it with a NULL actor. P0002 no entry, 22023 malformed hash, 42501 not
+-- a wpmgr row, 55000 already stamped.
+CREATE OR REPLACE FUNCTION stamp_wpmgr_ability_entry_hash(
+    p_entry_id uuid,
+    p_sha text
+)
+RETURNS ability_catalogue
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+    v_name   text;
+    v_before ability_catalogue;
+    v_after  ability_catalogue;
+BEGIN
+    IF p_sha IS NULL OR p_sha !~ '^[0-9a-f]{64}$' THEN
+        RAISE EXCEPTION 'ability_catalogue: entry hash is not 64 lowercase hex'
+            USING ERRCODE = '22023';
+    END IF;
+
+    SELECT name INTO v_name FROM ability_catalogue WHERE entry_id = p_entry_id;
+    IF v_name IS NULL THEN
+        RAISE EXCEPTION 'ability_catalogue: no entry %', p_entry_id
+            USING ERRCODE = 'P0002';
+    END IF;
+
+    PERFORM pg_advisory_xact_lock(hashtext('ability_catalogue'), hashtext(v_name));
+    SELECT * INTO v_before FROM ability_catalogue
+        WHERE entry_id = p_entry_id
+        FOR UPDATE;
+
+    IF v_before.source IS DISTINCT FROM 'wpmgr' THEN
+        RAISE EXCEPTION 'ability_catalogue: only a wpmgr entry is stamped here'
+            USING ERRCODE = '42501';
+    END IF;
+    IF v_before.entry_sha256 IS NOT NULL THEN
+        RAISE EXCEPTION 'ability_catalogue: entry % is already stamped', p_entry_id
+            USING ERRCODE = '55000';
+    END IF;
+
+    UPDATE ability_catalogue AS ac SET
+        entry_sha256 = p_sha,
+        updated_at = now()
+    WHERE ac.entry_id = p_entry_id
+      AND ac.source = 'wpmgr'
+      AND ac.entry_sha256 IS NULL
+    RETURNING ac.* INTO v_after;
+
+    INSERT INTO ability_catalogue_audit (
+        entry_id, name, action, actor_user_id,
+        before_row_sha256, after_row_sha256,
+        before_entry_sha256, after_entry_sha256,
+        before_enabled, after_enabled
+    ) VALUES (
+        v_after.entry_id, v_after.name, 'update', NULL,
+        ability_catalogue_row_sha256(v_before),
+        ability_catalogue_row_sha256(v_after),
+        v_before.entry_sha256, v_after.entry_sha256,
+        v_before.enabled, v_after.enabled
+    );
+
+    RETURN v_after;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION stamp_wpmgr_ability_entry_hash(uuid, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION stamp_wpmgr_ability_entry_hash(uuid, text) TO wpmgr_app;
 
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON ability_catalogue FROM wpmgr_app;
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON ability_catalogue_audit FROM wpmgr_app;

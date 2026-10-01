@@ -538,6 +538,65 @@ func (q *Queries) ListSiteAbilityInventory(ctx context.Context, arg ListSiteAbil
 	return items, nil
 }
 
+const stampWpmgrAbilityEntryHash = `-- name: StampWpmgrAbilityEntryHash :one
+SELECT entry_id, name, source, class, status, enabled, approval_mode, permission_mode, integration_id, owner_dir, version_min, version_max_tested, min_wp_version, min_agent_version, schema_struct_sha256, dynamic_enum_paths, title, description, usage, operator_permission, target, snapshot, preview, arg_render, effect_copy, limits, nested_allow, global_option_keys, integration_block, admission, entry_sha256, created_at, updated_at, updated_by_user_id FROM stamp_wpmgr_ability_entry_hash(
+    $1::uuid,
+    $2::text
+)
+`
+
+type StampWpmgrAbilityEntryHashParams struct {
+	EntryID     uuid.UUID `json:"entry_id"`
+	EntrySha256 string    `json:"entry_sha256"`
+}
+
+// m157. Stores the Go-computed canonical entry hash on a WPMgr-owned entry
+// whose hash is still NULL, and audits it with a NULL actor. Needs no
+// superadmin: it can only move NULL to a hash, on a source = 'wpmgr' row.
+// Refusals: P0002 no entry, 22023 not 64 lowercase hex, 42501 not a wpmgr
+// row, 55000 already stamped (a concurrent stamper lost the race; re-read).
+func (q *Queries) StampWpmgrAbilityEntryHash(ctx context.Context, arg StampWpmgrAbilityEntryHashParams) (AbilityCatalogue, error) {
+	row := q.db.QueryRow(ctx, stampWpmgrAbilityEntryHash, arg.EntryID, arg.EntrySha256)
+	var i AbilityCatalogue
+	err := row.Scan(
+		&i.EntryID,
+		&i.Name,
+		&i.Source,
+		&i.Class,
+		&i.Status,
+		&i.Enabled,
+		&i.ApprovalMode,
+		&i.PermissionMode,
+		&i.IntegrationID,
+		&i.OwnerDir,
+		&i.VersionMin,
+		&i.VersionMaxTested,
+		&i.MinWpVersion,
+		&i.MinAgentVersion,
+		&i.SchemaStructSha256,
+		&i.DynamicEnumPaths,
+		&i.Title,
+		&i.Description,
+		&i.Usage,
+		&i.OperatorPermission,
+		&i.Target,
+		&i.Snapshot,
+		&i.Preview,
+		&i.ArgRender,
+		&i.EffectCopy,
+		&i.Limits,
+		&i.NestedAllow,
+		&i.GlobalOptionKeys,
+		&i.IntegrationBlock,
+		&i.Admission,
+		&i.EntrySha256,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.UpdatedByUserID,
+	)
+	return i, err
+}
+
 const upsertSiteAbilityInventory = `-- name: UpsertSiteAbilityInventory :execrows
 INSERT INTO site_ability_inventory (
     tenant_id, site_id, name, owner_kind, owner_dir, owner_ok, owner_version,
