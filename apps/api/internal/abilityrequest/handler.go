@@ -39,6 +39,9 @@ func (h *Handler) Register(r *gin.RouterGroup) {
 		authz.RequirePermission(authz.PermSiteContentEdit), httpx.RequireJSONBody(), h.approve)
 	g.POST("/ai/ability-requests/:requestId/decline",
 		authz.RequirePermission(authz.PermSiteContentEdit), httpx.RequireJSONBody(), h.decline)
+	g.GET("/ai/content-editing", authz.RequirePermission(authz.PermSiteContentRead), h.getContentEditing)
+	g.POST("/ai/content-editing/enable",
+		authz.RequirePermission(authz.PermSiteContentEdit), httpx.RequireJSONBody(), h.enableContentEditing)
 	g.POST("/ai/ability-requests/:requestId/undo",
 		authz.RequirePermission(authz.PermSiteContentEdit), httpx.RequireJSONBody(), h.undo)
 }

@@ -491,6 +491,15 @@ func (s *Service) runSiteAbilityWrite(ctx context.Context, auth AuthorizedReques
 	if !ok {
 		return "", siteAddressUnusableRefusal()
 	}
+	// Writes are refused until a person enabled content editing on the site.
+	if !site.row.ContentEditingEnabledAt.Valid {
+		return "", &toolRefusal{
+			reason: reasonAbilityPrecheckRefused,
+			err: domain.Conflict(ErrCodeInvalidToolArguments, msgAbilityEditingOff).
+				WithDetails(map[string]any{"code": notRunnableEditingNotEnabled, "retryable": false}),
+			meta: map[string]any{"code": notRunnableEditingNotEnabled},
+		}
+	}
 	// Step 5: our schema.
 	facts, ok := validatePageCreateInput(input)
 	if !ok {

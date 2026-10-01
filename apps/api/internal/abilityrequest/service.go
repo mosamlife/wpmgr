@@ -103,6 +103,7 @@ type Service struct {
 	agent   AbilityAgent
 	entry   EntryEncoder
 	rules   ContextRules
+	enabler ContentEditingEnabler
 	now     func() time.Time
 	// siteAccess decides whether p may act on siteID. Production is
 	// authz.AuthorizeSite; tests replace it.
