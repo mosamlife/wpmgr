@@ -194,7 +194,7 @@ CREATE TABLE IF NOT EXISTS "public"."assistant_ability_requests" (
         CHECK ("preview_digest" ~ '^[0-9a-f]{64}$'),
     "base_fingerprint" text NOT NULL
         CONSTRAINT "assistant_ability_requests_base_fingerprint_shape_check"
-        CHECK ("base_fingerprint" ~ '^[!-~]{1,256}$'),
+        CHECK ("base_fingerprint" ~ '^[!-~]+$' AND octet_length("base_fingerprint") <= 256),
 
     -- THE CARD FACTS, which the digest covers.
     "site_label" text NOT NULL
