@@ -15,6 +15,7 @@
 import { describe, it, expect } from "vitest";
 
 import { actionLabel, classifySeverity } from "./labels";
+import { humanizeTargetType } from "./metadata";
 
 describe("actionLabel", () => {
   it("returns a hand-written label for a known key", () => {
@@ -126,5 +127,23 @@ describe("AI cache-clear request actions", () => {
     expect(classifySeverity("assistant.request.withdrawn")).toBe("read");
     expect(classifySeverity("assistant.request.not_sent")).toBe("read");
     expect(classifySeverity("assistant.request.expired")).toBe("read");
+  });
+});
+
+describe("AI page-creation actions", () => {
+  it("labels the completion, the undo and the switch in plain words", () => {
+    expect(actionLabel("assistant.request.completed")).toBe("AI change applied");
+    expect(actionLabel("assistant.request.undone")).toBe("AI change undone");
+    expect(actionLabel("site.content_editing.enabled")).toBe("AI page creation turned on");
+  });
+
+  it("classifies the applied change and its undo as writes, and the switch as sensitive", () => {
+    expect(classifySeverity("assistant.request.completed")).toBe("write");
+    expect(classifySeverity("assistant.request.undone")).toBe("write");
+    expect(classifySeverity("site.content_editing.enabled")).toBe("sensitive");
+  });
+
+  it("names the assistant_ability_request target type", () => {
+    expect(humanizeTargetType("assistant_ability_request")).toBe("AI change request");
   });
 });

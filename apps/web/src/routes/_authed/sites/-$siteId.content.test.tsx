@@ -26,6 +26,11 @@ vi.mock("@wpmgr/api", async (importOriginal) => {
     ...actual,
     getSiteContentInventory: (...a: unknown[]): unknown => getInv(...a),
     refreshSiteContentInventory: (...a: unknown[]): unknown => refreshInv(...a),
+    // The AI editing section above the inventory; not under test here.
+    getSiteContentEditing: () =>
+      Promise.resolve({ data: { site_id: "site-1", enabled: true }, error: undefined, response: { status: 200 } }),
+    listSiteAbilityRequests: () =>
+      Promise.resolve({ data: { requests: [], limit: 50, offset: 0 }, error: undefined, response: { status: 200 } }),
   };
 });
 
