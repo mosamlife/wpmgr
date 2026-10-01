@@ -111,53 +111,6 @@ type AbilityRequestStore interface {
 
 var _ AbilityRequestStore = (*Repo)(nil)
 
-// RunAbilityRequestTx is the ability creation transaction.
-func (r *Repo) RunAbilityRequestTx(ctx context.Context, principal domain.Principal, fn func(tx pgx.Tx, q abilityRequestQueries) error) error {
-	return r.runConnectionTx(ctx, principal, "create ability request", func(tx pgx.Tx) error {
-		return fn(tx, sqlc.New(tx))
-	})
-}
-
-// ReadAbilityRequestStatus reads one of this connection's ability requests on
-// a site still in its scope.
-func (r *Repo) ReadAbilityRequestStatus(ctx context.Context, principal domain.Principal, grantID, requestID uuid.UUID) (AbilityStatusRow, bool, error) {
-	var out AbilityStatusRow
-	var found bool
-	err := r.runConnectionTx(ctx, principal, "read ability request status", func(tx pgx.Tx) error {
-		row, err := sqlc.New(tx).GetAbilityRequestStatusForGrant(ctx, sqlc.GetAbilityRequestStatusForGrantParams{
-			TenantID: principal.TenantID, ID: requestID, ProposedByGrantID: grantID, SiteIds: principal.AllowedSiteIDs,
-		})
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		out, found = row, true
-		return nil
-	})
-	return out, found, err
-}
-
-// ListOpenAbilityRequestStatus lists this connection's open ability requests.
-func (r *Repo) ListOpenAbilityRequestStatus(ctx context.Context, principal domain.Principal, grantID uuid.UUID, limit int32) ([]AbilityStatusRow, error) {
-	var out []AbilityStatusRow
-	err := r.runConnectionTx(ctx, principal, "list ability request status", func(tx pgx.Tx) error {
-		rows, err := sqlc.New(tx).ListOpenAbilityRequestStatusForGrant(ctx, sqlc.ListOpenAbilityRequestStatusForGrantParams{
-			TenantID: principal.TenantID, ProposedByGrantID: grantID, SiteIds: principal.AllowedSiteIDs, RowLimit: limit,
-		})
-		if err != nil {
-			return err
-		}
-		out = make([]AbilityStatusRow, 0, len(rows))
-		for _, row := range rows {
-			out = append(out, AbilityStatusRow(row))
-		}
-		return nil
-	})
-	return out, err
-}
-
 // EnableAbilityWrites wires the write branch. Without it a write entry is
 // refused as writes_not_available. The server-wide write switch
 // (SetWriteToolsEnabled) must also be on.
