@@ -17,15 +17,20 @@ if (!defined('ABSPATH')) {
  * The engine never calls a site-registered ability that merely carries a
  * wpmgr/ name: resolution goes through this map only.
  *
- * All three are reads. They write nothing, and text that came from the site
+ * The three reads write nothing, and text that came from the site
  * (titles, page text, ability labels) is returned only under a
  * `from_the_site` key, so the control plane can fence it as data.
+ *
+ * wpmgr/page-create is the one write. It is never run through run() and
+ * never registered with the Abilities API: the engine's write mode drives it
+ * directly, as the service principal, under the site ledger.
  */
 final class OwnAbilities
 {
     public const NAME_INVENTORY = 'wpmgr/abilities-inventory';
     public const NAME_FACTS     = 'wpmgr/site-facts';
     public const NAME_CONTENT   = 'wpmgr/content-read';
+    public const NAME_PAGE_CREATE = 'wpmgr/page-create';
 
     private const CATEGORY = 'wpmgr';
 
@@ -53,6 +58,16 @@ final class OwnAbilities
      */
     public static function names(): array
     {
+        return [self::NAME_INVENTORY, self::NAME_FACTS, self::NAME_CONTENT, self::NAME_PAGE_CREATE];
+    }
+
+    /**
+     * Names of the read abilities, the only ones offered to the Abilities API.
+     *
+     * @return list<string>
+     */
+    public static function readNames(): array
+    {
         return [self::NAME_INVENTORY, self::NAME_FACTS, self::NAME_CONTENT];
     }
 
@@ -68,13 +83,17 @@ final class OwnAbilities
     }
 
     /**
-     * Effect class of an own ability. Every one is a read.
+     * Effect class of an own ability.
      *
      * @param string $name Ability name.
      * @return string
      */
     public static function abilityClass(string $name): string
     {
+        if ($name === self::NAME_PAGE_CREATE) {
+            return 'write';
+        }
+
         return self::has($name) ? 'read' : 'unknown';
     }
 
@@ -102,6 +121,36 @@ final class OwnAbilities
                         'max_bytes' => ['type' => 'integer', 'minimum' => 256, 'maximum' => self::TEXT_MAX_BYTES],
                     ],
                     'required'             => ['post_id'],
+                    'additionalProperties' => false,
+                ];
+            case self::NAME_PAGE_CREATE:
+                $text = ['type' => 'string', 'minLength' => 1, 'maxLength' => 5000];
+
+                return [
+                    'type'                 => 'object',
+                    'properties'           => [
+                        'post_type' => ['type' => 'string', 'enum' => ['page', 'post']],
+                        'editor'    => ['type' => 'string', 'enum' => ['wordpress_blocks', 'wordpress_classic']],
+                        'title'     => ['type' => 'string', 'minLength' => 1, 'maxLength' => 200],
+                        'outline'   => [
+                            'type'     => 'array',
+                            'minItems' => 1,
+                            'maxItems' => 200,
+                            'items'    => [
+                                'type'       => 'object',
+                                'properties' => [
+                                    'type'    => ['type' => 'string', 'enum' => ['heading', 'paragraph', 'list']],
+                                    'level'   => ['type' => 'integer', 'minimum' => 2, 'maximum' => 4],
+                                    'text'    => $text,
+                                    'ordered' => ['type' => 'boolean'],
+                                    'items'   => ['type' => 'array', 'minItems' => 1, 'maxItems' => 50, 'items' => $text],
+                                ],
+                                'required'   => ['type'],
+                                'additionalProperties' => false,
+                            ],
+                        ],
+                    ],
+                    'required'             => ['post_type', 'editor', 'title', 'outline'],
                     'additionalProperties' => false,
                 ];
             default:
@@ -209,7 +258,7 @@ final class OwnAbilities
             self::NAME_FACTS     => ['Site facts', 'WordPress and PHP versions, the active theme and builder hints.'],
             self::NAME_CONTENT   => ['Read a page', 'Reads the text of one published page or post.'],
         ];
-        foreach (self::names() as $name) {
+        foreach (self::readNames() as $name) {
             $registered = strtolower($name);
             if ($registered === '' || $registered === '0') {
                 continue;
@@ -261,7 +310,7 @@ final class OwnAbilities
                 'owner_mismatch'       => false,
                 'version'              => $version,
                 'schema_struct_sha256' => self::schemaHashOfSchema(self::inputSchema($name)),
-                'class'                => 'read',
+                'class'                => self::abilityClass($name),
             ];
         }
 
