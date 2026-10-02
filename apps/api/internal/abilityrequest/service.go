@@ -102,6 +102,7 @@ type Service struct {
 	enabled bool
 	agent   AbilityAgent
 	entry   EntryEncoder
+	route   RouteEncoder
 	rules   ContextRules
 	enabler ContentEditingEnabler
 	now     func() time.Time

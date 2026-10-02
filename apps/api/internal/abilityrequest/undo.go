@@ -57,7 +57,7 @@ func undoResultFor(resp agentcmd.AbilityRunResponse, err error) string {
 		switch refusal.Code {
 		case "created_post_published":
 			return UndoRefusedPublished
-		case "conflict", "created_post_touched", "target_in_flight":
+		case "conflict", "created_post_touched", "target_in_flight", "post_touched":
 			return UndoRefusedConflict
 		}
 	}
@@ -161,7 +161,33 @@ func (s *Service) Undo(ctx context.Context, p domain.Principal, siteID, requestI
 		return after, nil
 	}
 	result := undoResultFor(resp, sendErr)
-	return s.recordUndoFinish(ctx, s.runAsCaller, p, siteID, requestID, result, sendErr)
+	return s.recordUndoFinish(ctx, s.runAsCaller, p, siteID, requestID, result, sendErr, revertReport(resp, sendErr))
+}
+
+// revertReport is a rest-write revert's restore report for the audit row:
+// restored is false when the title and excerpt were put back but other post
+// columns the site changed during the failed write remain, which
+// columns_still_changed names from the closed post column set. The undo is
+// still recorded as undone: what WPMgr changed is back. Nil when the answer
+// carries no report.
+func revertReport(resp agentcmd.AbilityRunResponse, err error) map[string]any {
+	if err != nil || resp.Restored == nil {
+		return nil
+	}
+	md := map[string]any{"restored": *resp.Restored}
+	if cols := agentcmd.DecodePostColumns(resp.ColumnsStillChanged); len(cols) > 0 {
+		md["columns_still_changed"] = cols
+	}
+	return md
+}
+
+// reportRestored is the revert report's restored flag for the ledger row,
+// nil when the report carries none, which keeps the stored value.
+func reportRestored(report map[string]any) *bool {
+	if b, ok := report["restored"].(bool); ok {
+		return &b
+	}
+	return nil
 }
 
 // recoveryUndoWindow is how long a recovery undo, once started, stays open
@@ -361,18 +387,21 @@ func (s *Service) recordUndoRelease(ctx context.Context, run undoTxRunner, p dom
 // recordUndoFinish records the undo result on a context detached from the
 // request's cancellation, with its own budget: the row is already
 // in_progress and must not be stranded there by a client disconnect.
-func (s *Service) recordUndoFinish(ctx context.Context, run undoTxRunner, p domain.Principal, siteID, requestID uuid.UUID, result string, sendErr error) (sqlc.AssistantAbilityRequest, error) {
+func (s *Service) recordUndoFinish(ctx context.Context, run undoTxRunner, p domain.Principal, siteID, requestID uuid.UUID, result string, sendErr error, report map[string]any) (sqlc.AssistantAbilityRequest, error) {
 	var none sqlc.AssistantAbilityRequest
 	fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), undoFinishBudget)
 	defer cancel()
 	var after sqlc.AssistantAbilityRequest
 	err := run(fctx, p, func(q *sqlc.Queries, tx pgx.Tx) error {
 		if _, err := q.FinishAbilityRequestUndo(fctx, sqlc.FinishAbilityRequestUndoParams{
-			UndoResult: result, TenantID: p.TenantID, ID: requestID,
+			UndoResult: result, Restored: reportRestored(report), TenantID: p.TenantID, ID: requestID,
 		}); err != nil {
 			return err
 		}
 		md := map[string]any{"request_id": requestID.String(), "site_id": siteID.String(), "phase": "finished", "result": result}
+		for k, v := range report {
+			md[k] = v
+		}
 		var refusal *agentcmd.AbilityRunRefusal
 		if errors.As(sendErr, &refusal) {
 			md["code"] = refusal.Code

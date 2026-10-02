@@ -116,7 +116,7 @@ beforeEach(() => {
   declineMock.mockReset();
 });
 
-describe("/ai/requests AI page requests section on a failed load", () => {
+describe("/ai/requests AI requests section on a failed load", () => {
   it("hides the section quietly on a 403 (no site.content.edit)", async () => {
     listMock.mockReturnValue(ok(list([])));
     abilityListMock.mockReturnValue(
@@ -130,7 +130,7 @@ describe("/ai/requests AI page requests section on a failed load", () => {
     expect(await screen.findByTestId("ai-requests-empty")).toBeInTheDocument();
     await waitFor(() => expect(abilityListMock).toHaveBeenCalled());
     await new Promise((r) => setTimeout(r, 50));
-    expect(screen.queryByText(/could not load ai page requests/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/could not load ai requests/i)).not.toBeInTheDocument();
     expect(screen.queryByTestId("org-ability-requests")).not.toBeInTheDocument();
   });
 
@@ -144,7 +144,7 @@ describe("/ai/requests AI page requests section on a failed load", () => {
       }),
     );
     renderPage();
-    expect(await screen.findByText(/could not load ai page requests/i)).toBeInTheDocument();
+    expect(await screen.findByText(/could not load ai requests/i)).toBeInTheDocument();
   });
 });
 

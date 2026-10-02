@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/abilities"
 	"github.com/mosamlife/wpmgr/apps/api/internal/abilityrequest"
 	"github.com/mosamlife/wpmgr/apps/api/internal/activity"
 	"github.com/mosamlife/wpmgr/apps/api/internal/admin"
@@ -281,6 +282,10 @@ type Deps struct {
 	// (/sites/{siteId}/ai/ability-requests..., /sites/{siteId}/ai/content-editing...).
 	// Nil leaves them unmounted.
 	AbilityRequestH *abilityrequest.Handler
+	// AbilityTenantH serves POST /ai/abilities/{entryId}/reenable: a tenant
+	// admin or owner, or a superadmin, switches back on a vendor read that
+	// was switched off for this tenant (m160). Nil leaves it unmounted.
+	AbilityTenantH *abilities.TenantHandler
 	// MCPDiscoveryH serves the two unauthenticated OAuth discovery documents:
 	// GET /.well-known/oauth-authorization-server (RFC 8414) and GET
 	// /.well-known/oauth-protected-resource (RFC 9728), the second also at its
@@ -634,6 +639,9 @@ func New(deps Deps) *Server {
 	}
 	if deps.AbilityRequestH != nil {
 		deps.AbilityRequestH.Register(v1)
+	}
+	if deps.AbilityTenantH != nil {
+		deps.AbilityTenantH.Register(v1)
 	}
 	deps.TenantH.Register(v1)
 	deps.SiteH.Register(v1)

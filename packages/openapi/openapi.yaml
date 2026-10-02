@@ -9586,6 +9586,64 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /api/v1/ai/abilities/{entryId}/reenable:
+    post:
+      operationId: reenableAbilityForTenant
+      summary: Turn a reviewed tool back on for this account
+      description: |
+        WPMgr switches a reviewed plugin, theme or core read tool off for an
+        account as soon as it changes something on one of that account's
+        sites, or contacts another server, during a read. While it is off,
+        the AI connection is refused with `not_runnable_reason`
+        `disabled_for_your_account`. This turns it back on for the caller's
+        account only; a tool switched off for every account stays off until
+        WPMgr turns it back on. A later report from this account switches it
+        off again. The caller must be a signed-in admin or owner of the
+        account with full organisation access, or a WPMgr superadmin. The
+        change is audited as `ability.tenant_reenabled`.
+      tags: [ai-requests]
+      parameters:
+        - name: entryId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: The tool is back on for this account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AbilityTenantReenableResult"
+        "422":
+          description: entryId is not a UUID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Not a signed-in person, or not an admin or owner of the account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: The tool is not switched off for this account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "415":
+          description: The body is not JSON
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /api/v1/sites/{siteId}/ai/content-editing:
     get:
       operationId: getSiteContentEditing
@@ -10067,7 +10125,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "409":
-          $ref: "#/components/responses/Conflict"
+          description: |
+            entry_conflict or version_range_overlap: an admitted entry with
+            this name already covers part of this version range.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /api/v1/admin/abilities/catalogue/{entryId}:
     put:
       operationId: updateAdminAbilityCatalogueEntry
@@ -10107,6 +10171,97 @@ paths:
                 $ref: "#/components/schemas/Error"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          description: |
+            version_range_overlap: an admitted entry with this name already
+            covers part of this version range.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/admin/abilities/rest-routes:
+    get:
+      operationId: listAdminRestRoutes
+      summary: The reviewed REST route catalogue (superadmin)
+      description: |
+        Every route, enabled or not. `hash_current` is false when the stored
+        `route_sha256` is unset or no longer reproduces from the row; such a
+        route is not offered and nothing is sent against it.
+      tags: [admin]
+      responses:
+        "200":
+          description: Every route
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [routes]
+                properties:
+                  routes:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/RestRoute"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: superadmin_required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/admin/abilities/rest-routes/{routeId}:
+    put:
+      operationId: updateAdminRestRoute
+      summary: Edit one reviewed REST route (superadmin)
+      description: |
+        Omitted fields keep their stored values; the merge happens in the
+        write's transaction under the route's lock. The acting user is the
+        authenticated session. The server stamps a new `route_sha256` from the
+        edited row, so every request approved against the old route closes
+        unsent (route_changed, or route_disabled for a disable).
+      tags: [admin]
+      parameters:
+        - name: routeId
+          in: path
+          required: true
+          schema: { type: string, pattern: "^[a-z0-9-]{1,64}$" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RestRouteInput"
+      responses:
+        "200":
+          description: The stored route
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RestRoute"
+        "422":
+          description: |
+            invalid_body, invalid_route (details.constraint names the database
+            check), invalid_output_fields or route_not_reproducible.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: superadmin_required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: route_hash_not_moved or route_conflict.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /api/v1/sites/{siteId}/perf/db/orphans:
     get:
       operationId: getDbOrphansReport
@@ -14706,6 +14861,12 @@ components:
         integration_block: { nullable: true }
         admission: { type: object, additionalProperties: true }
         entry_sha256: { type: string, nullable: true }
+        output_fields:
+          nullable: true
+          description: |
+            The pinned output shape of a read: `{"fields":{key:shape}}`,
+            `{"items":shape}`, `"string"`, `"int"` or `"bool"`, at most 8 deep.
+            Only listed keys reach the AI.
         updated_at: { type: string, format: date-time }
     AbilityCatalogueInput:
       type: object
@@ -14744,6 +14905,74 @@ components:
         global_option_keys: { type: array, maxItems: 64, items: { type: string, maxLength: 256 } }
         integration_block: { nullable: true }
         admission: { type: object, additionalProperties: true }
+        output_fields:
+          nullable: true
+          description: |
+            The pinned output shape of a read, in the strict grammar
+            `{"fields":{key:shape}}` | `{"items":shape}` | `"string"` | `"int"` |
+            `"bool"`, keys matching `^[A-Za-z0-9_-]{1,64}$`, at most 8 deep. Any
+            other node is refused (400 invalid_output_fields). Required for a
+            vendor or core read. `limits.allowed_option_patterns` may not hold an
+            empty or wildcard-only (`*`, `**`) pattern.
+    RestRoute:
+      type: object
+      description: |
+        One reviewed WordPress REST route (m161). `route_sha256` is the sha256
+        of the exact route bytes sent to a site's agent.
+      required: [route_id, method, namespace, template, core_pattern, path_params, query_keys,
+        pinned_query, body_keys, class, output_fields, snapshot, arg_render, effect_copy, enabled,
+        title, description, hash_current, updated_at]
+      properties:
+        route_id: { type: string }
+        method: { type: string, enum: [GET, POST, PUT, PATCH, DELETE] }
+        namespace: { type: string }
+        template: { type: string }
+        core_pattern: { type: string }
+        path_params: { type: object, additionalProperties: true }
+        query_keys: { type: object, additionalProperties: true }
+        pinned_query: { type: object, additionalProperties: true }
+        body_keys: { type: object, additionalProperties: true }
+        class: { type: string, enum: [read, write] }
+        output_fields: { description: The pinned output shape, in the entry grammar. }
+        snapshot: { type: string }
+        target: { nullable: true }
+        arg_render: { type: object, additionalProperties: true }
+        operator_permission: { type: string, nullable: true }
+        effect_copy: { type: string, enum: [draft, live, none] }
+        enabled: { type: boolean }
+        min_wp_version: { type: string, nullable: true }
+        title: { type: string }
+        description: { type: string }
+        route_sha256: { type: string, nullable: true }
+        hash_current: { type: boolean }
+        updated_at: { type: string, format: date-time }
+    RestRouteInput:
+      type: object
+      description: |
+        A route edit. Every field is optional; an omitted field keeps its
+        stored value. route_id and route_sha256 are never body fields.
+        JSON members hold integers only, written plainly.
+      additionalProperties: false
+      properties:
+        method: { type: string, enum: [GET, POST, PUT, PATCH, DELETE] }
+        namespace: { type: string, maxLength: 128 }
+        template: { type: string, maxLength: 255 }
+        core_pattern: { type: string, maxLength: 255 }
+        path_params: { type: object, additionalProperties: true }
+        query_keys: { type: object, additionalProperties: true }
+        pinned_query: { type: object, additionalProperties: true }
+        body_keys: { type: object, additionalProperties: true }
+        class: { type: string, enum: [read, write] }
+        output_fields: { description: The pinned output shape, in the entry grammar. }
+        snapshot: { type: string, maxLength: 32 }
+        target: { nullable: true }
+        arg_render: { type: object, additionalProperties: true }
+        operator_permission: { type: string, maxLength: 64 }
+        effect_copy: { type: string, enum: [draft, live, none] }
+        enabled: { type: boolean }
+        min_wp_version: { type: string, maxLength: 32 }
+        title: { type: string, maxLength: 120 }
+        description: { type: string, maxLength: 1000 }
     ContentIntegrationInput:
       type: object
       required: [display_name, enabled, status]
@@ -20029,6 +20258,14 @@ components:
             $ref: "#/components/schemas/AbilityRequest"
         limit: { type: integer, format: int32 }
         offset: { type: integer, format: int32 }
+    AbilityTenantReenableResult:
+      type: object
+      required: [entry_id, reenabled]
+      properties:
+        entry_id: { type: string, format: uuid }
+        reenabled:
+          type: boolean
+          description: Always true; a tool that was not off is a 404.
     AbilityRequest:
       type: object
       description: |
@@ -20081,6 +20318,15 @@ components:
         not_sent_reason: { type: string, nullable: true }
         created_post_id: { type: integer, format: int64, nullable: true }
         trashed: { type: boolean, nullable: true }
+        restored:
+          type: boolean
+          nullable: true
+          description: |
+            A failed wpmgr/rest-write's report on putting the post back.
+            True: the whole post is as it was. False: WPMgr put back what it
+            could, but the post is not fully as it was; show the request as
+            needing attention. Null when nothing needed putting back, and for
+            every other ability.
         undo_state: { type: string, nullable: true }
         undo_available_until: { type: string, format: date-time, nullable: true }
         undo_offered:
@@ -20096,6 +20342,69 @@ components:
             True once WPMgr stopped checking the site for the outcome of a
             write whose reply was lost. The result is final: the person
             should look at the site's drafts.
+        route_id:
+          type: string
+          nullable: true
+          description: The reviewed REST route a wpmgr/rest-write request runs; null otherwise.
+        route_sha256:
+          type: string
+          nullable: true
+          description: The route hash the request was approved against; null otherwise.
+        card_facts:
+          allOf:
+            - $ref: "#/components/schemas/AbilityRequestCardFacts"
+          nullable: true
+          description: The structured card of a wpmgr/rest-write request; null otherwise.
+    AbilityRequestCardFacts:
+      type: object
+      description: |
+        A structured approval card. Every value under a `from_the_site`
+        member came from the site: render it as plain text in the "From the
+        site" slot. `after` is the value the AI asked for. The other strings
+        are WPMgr's.
+      required: [route_id, route_title, method, target, changes, effect_copy, live, effect_label,
+        undo, undo_exact, undo_note]
+      properties:
+        route_id: { type: string }
+        route_title: { type: string }
+        method: { type: string }
+        target:
+          type: object
+          required: [id, post_type, from_the_site]
+          properties:
+            id: { type: integer, format: int64 }
+            post_type: { type: string }
+            from_the_site:
+              type: object
+              required: [status, title_before]
+              properties:
+                status: { type: string }
+                title_before: { type: string }
+        changes:
+          type: array
+          items:
+            type: object
+            required: [key, label, after, from_the_site]
+            properties:
+              key: { type: string }
+              label: { type: string }
+              after: { type: string }
+              from_the_site:
+                type: object
+                required: [before]
+                properties:
+                  before: { type: string }
+        effect_copy: { type: string, enum: [draft, live, none] }
+        live: { type: boolean }
+        effect_label:
+          type: string
+          description: '"Published immediately" when live, otherwise "Saved to the post; it is not published".'
+        undo: { type: string }
+        undo_exact: { type: boolean }
+        undo_note:
+          type: string
+          nullable: true
+          description: Set when undo may not restore the exact characters of the previous value.
     ContentEditingState:
       type: object
       required: [site_id, enabled]

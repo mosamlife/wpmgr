@@ -1,6 +1,7 @@
 package abilityrequest
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -78,31 +79,37 @@ func (h *Handler) undo(c *gin.Context) {
 // grant_label and title_excerpt are text to render as text nodes. input_json
 // is the exact input the AI chose, which the card shows in full.
 type RequestDTO struct {
-	ID                 uuid.UUID  `json:"id"`
-	SiteID             uuid.UUID  `json:"site_id"`
-	AbilityName        string     `json:"ability_name"`
-	InputJSON          string     `json:"input_json"`
-	TitleExcerpt       *string    `json:"title_excerpt"`
-	Editor             *string    `json:"editor"`
-	PostType           *string    `json:"post_type"`
-	EffectCopy         string     `json:"effect_copy"`
-	Snapshot           string     `json:"snapshot"`
-	SiteLabel          string     `json:"site_label"`
-	SiteHost           string     `json:"site_host"`
-	GrantLabel         string     `json:"grant_label"`
-	GrantVia           string     `json:"grant_via"`
-	SetupClient        *string    `json:"setup_client"`
-	CardCopyVersion    int32      `json:"card_copy_version"`
-	PresentedDigest    *string    `json:"presented_digest,omitempty"`
-	State              string     `json:"state"`
-	CreatedAt          time.Time  `json:"created_at"`
-	ExpiresAt          time.Time  `json:"expires_at"`
-	DecidedAt          *time.Time `json:"decided_at"`
-	Outcome            *string    `json:"outcome"`
-	OutcomeCode        *string    `json:"outcome_code"`
-	NotSentReason      *string    `json:"not_sent_reason"`
-	CreatedPostID      *int64     `json:"created_post_id"`
-	Trashed            *bool      `json:"trashed"`
+	ID              uuid.UUID  `json:"id"`
+	SiteID          uuid.UUID  `json:"site_id"`
+	AbilityName     string     `json:"ability_name"`
+	InputJSON       string     `json:"input_json"`
+	TitleExcerpt    *string    `json:"title_excerpt"`
+	Editor          *string    `json:"editor"`
+	PostType        *string    `json:"post_type"`
+	EffectCopy      string     `json:"effect_copy"`
+	Snapshot        string     `json:"snapshot"`
+	SiteLabel       string     `json:"site_label"`
+	SiteHost        string     `json:"site_host"`
+	GrantLabel      string     `json:"grant_label"`
+	GrantVia        string     `json:"grant_via"`
+	SetupClient     *string    `json:"setup_client"`
+	CardCopyVersion int32      `json:"card_copy_version"`
+	PresentedDigest *string    `json:"presented_digest,omitempty"`
+	State           string     `json:"state"`
+	CreatedAt       time.Time  `json:"created_at"`
+	ExpiresAt       time.Time  `json:"expires_at"`
+	DecidedAt       *time.Time `json:"decided_at"`
+	Outcome         *string    `json:"outcome"`
+	OutcomeCode     *string    `json:"outcome_code"`
+	NotSentReason   *string    `json:"not_sent_reason"`
+	CreatedPostID   *int64     `json:"created_post_id"`
+	Trashed         *bool      `json:"trashed"`
+	// Restored is a failed wpmgr/rest-write's own-undo report: true when the
+	// whole post is back as it was, false when the title and excerpt were
+	// put back but other changes the site made remain (or the put-back
+	// itself failed), null when nothing needed restoring or for any other
+	// ability.
+	Restored           *bool      `json:"restored"`
 	UndoState          *string    `json:"undo_state"`
 	UndoAvailableUntil *time.Time `json:"undo_available_until"`
 	// UndoOffered is whether POST .../undo would start an undo now: a done
@@ -113,6 +120,24 @@ type RequestDTO struct {
 	// outcome of a write whose reply was lost (GH #825): the result is final
 	// and the person should look at the site's drafts.
 	ResolveGaveUp bool `json:"resolve_gave_up"`
+	// RouteID, RouteSHA256 and CardFacts are a wpmgr/rest-write request's
+	// reviewed route, its approved hash and its structured card (null for
+	// every other ability). CardFacts is the object the MCP layer built at
+	// creation: every site string in it is under a from_the_site member,
+	// cleaned and capped. It is passed through as stored, never added to.
+	RouteID     *string         `json:"route_id"`
+	RouteSHA256 *string         `json:"route_sha256"`
+	CardFacts   json.RawMessage `json:"card_facts"`
+}
+
+// cardFactsJSON is the stored card as a JSON object, or null when the row
+// has none or holds anything but an object.
+func cardFactsJSON(b []byte) json.RawMessage {
+	trimmed := bytes.TrimSpace(b)
+	if len(trimmed) == 0 || trimmed[0] != '{' || !json.Valid(trimmed) {
+		return json.RawMessage("null")
+	}
+	return append(json.RawMessage(nil), trimmed...)
 }
 
 // ListResponse is a page of the queue.
@@ -152,10 +177,13 @@ func toDTO(r sqlc.AssistantAbilityRequest, withDigest bool, agentVersion string)
 		SetupClient: r.SetupClient, CardCopyVersion: r.CardCopyVersion, State: r.State,
 		CreatedAt: r.CreatedAt, ExpiresAt: r.ExpiresAt, DecidedAt: ts(r.DecidedAt),
 		Outcome: r.Outcome, OutcomeCode: r.OutcomeCode, NotSentReason: r.NotSentReason,
-		CreatedPostID: r.CreatedPostID, Trashed: r.Trashed, UndoState: r.UndoState,
+		CreatedPostID: r.CreatedPostID, Trashed: r.Trashed, Restored: r.Restored, UndoState: r.UndoState,
 		UndoAvailableUntil: ts(r.UndoAvailableUntil),
 		UndoOffered:        UndoOffered(r, agentVersion, time.Now()),
 		ResolveGaveUp:      resolveGaveUp(r),
+		RouteID:            r.RouteID,
+		RouteSHA256:        r.RouteSha256,
+		CardFacts:          cardFactsJSON(r.CardFacts),
 	}
 	if withDigest {
 		d := r.PresentedDigest

@@ -21,9 +21,11 @@ if (!defined('ABSPATH')) {
  * (titles, page text, ability labels) is returned only under a
  * `from_the_site` key, so the control plane can fence it as data.
  *
- * wpmgr/page-create is the one write. It is never run through run() and
- * never registered with the Abilities API: the engine's write mode drives it
- * directly, as the service principal, under the site ledger.
+ * wpmgr/page-create and wpmgr/rest-write are the writes. Neither is run
+ * through run() or registered with the Abilities API: the engine's write mode
+ * drives them directly, as the service principal, under the site ledger.
+ * wpmgr/rest-read is not registered either; it runs only through the engine,
+ * against one reviewed route row (see RestCall).
  */
 final class OwnAbilities
 {
@@ -31,6 +33,8 @@ final class OwnAbilities
     public const NAME_FACTS     = 'wpmgr/site-facts';
     public const NAME_CONTENT   = 'wpmgr/content-read';
     public const NAME_PAGE_CREATE = 'wpmgr/page-create';
+    public const NAME_REST_READ   = RestCall::NAME_READ;
+    public const NAME_REST_WRITE  = RestCall::NAME_WRITE;
 
     private const CATEGORY = 'wpmgr';
 
@@ -58,7 +62,7 @@ final class OwnAbilities
      */
     public static function names(): array
     {
-        return [self::NAME_INVENTORY, self::NAME_FACTS, self::NAME_CONTENT, self::NAME_PAGE_CREATE];
+        return [self::NAME_INVENTORY, self::NAME_FACTS, self::NAME_CONTENT, self::NAME_PAGE_CREATE, self::NAME_REST_READ, self::NAME_REST_WRITE];
     }
 
     /**
@@ -90,7 +94,7 @@ final class OwnAbilities
      */
     public static function abilityClass(string $name): string
     {
-        if ($name === self::NAME_PAGE_CREATE) {
+        if ($name === self::NAME_PAGE_CREATE || $name === self::NAME_REST_WRITE) {
             return 'write';
         }
 
@@ -309,6 +313,10 @@ final class OwnAbilities
                 'owner_kind'           => 'wpmgr',
                 'owner_mismatch'       => false,
                 'version'              => $version,
+                'owner_dir'            => defined('WPMGR_AGENT_DIR') ? basename((string) constant('WPMGR_AGENT_DIR')) : '',
+                'owner_version'        => $version,
+                'owner_split'          => false,
+                'ability_class_ok'     => true,
                 'schema_struct_sha256' => self::schemaHashOfSchema(self::inputSchema($name)),
                 'class'                => self::abilityClass($name),
             ];
@@ -334,14 +342,7 @@ final class OwnAbilities
                     break;
                 }
                 $seen[$name] = true;
-                $ns          = strstr($name, '/', true);
-                $ns          = $ns === false ? $name : $ns;
-                $squat       = $ns === 'wpmgr';
-                $rows[]      = [
-                    'name'                 => $name,
-                    'owner_kind'           => $squat ? 'wpmgr_squat' : ($ns === 'core' ? 'core' : 'site'),
-                    'owner_mismatch'       => $squat,
-                    'version'              => null,
+                $rows[]      = self::siteRow($name, $ability) + [
                     'schema_struct_sha256' => AbilitySchema::hashOf($ability),
                     'from_the_site'        => [
                         'label'       => self::cap(self::text($ability, 'get_label'), self::LABEL_CAP_BYTES),
@@ -356,6 +357,38 @@ final class OwnAbilities
             'count'       => count($rows),
             'truncated'   => $truncated,
             'abilities'   => $rows,
+        ];
+    }
+
+    /**
+     * Ownership fields of one site-registered ability's inventory row.
+     *
+     * owner_kind is wpmgr_squat for a name in WPMgr's namespace that the
+     * agent did not register, else the resolved kind (core, plugin, theme,
+     * mu-plugin, unknown). owner_mismatch is true for a squat, a split owner
+     * or an overridden ability class; such a row is never attributed to its
+     * claimed owner. version mirrors owner_version for older control planes.
+     *
+     * @param string $name    Ability name.
+     * @param object $ability Registered ability.
+     * @return array<string,mixed>
+     */
+    public static function siteRow(string $name, object $ability): array
+    {
+        $ns     = strstr($name, '/', true);
+        $ns     = $ns === false ? $name : $ns;
+        $squat  = $ns === 'wpmgr';
+        $fields = AbilityOwnership::inventoryFields($ability);
+
+        return [
+            'name'             => $name,
+            'owner_kind'       => $squat ? 'wpmgr_squat' : $fields['owner_kind'],
+            'owner_mismatch'   => $squat || $fields['owner_split'] || !$fields['ability_class_ok'],
+            'version'          => $fields['owner_version'],
+            'owner_dir'        => $fields['owner_dir'],
+            'owner_version'    => $fields['owner_version'],
+            'owner_split'      => $fields['owner_split'],
+            'ability_class_ok' => $fields['ability_class_ok'],
         ];
     }
 

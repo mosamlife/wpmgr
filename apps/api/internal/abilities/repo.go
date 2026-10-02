@@ -110,7 +110,7 @@ func (r *pgRepo) ReplaceInventory(ctx context.Context, tenantID, siteID uuid.UUI
 			for _, row := range res.Rows {
 				p.Names = append(p.Names, row.Name)
 				p.OwnerKinds = append(p.OwnerKinds, row.OwnerKind)
-				p.OwnerDirs = append(p.OwnerDirs, "")
+				p.OwnerDirs = append(p.OwnerDirs, row.OwnerDir)
 				p.OwnerOks = append(p.OwnerOks, row.OwnerOK)
 				p.OwnerVersions = append(p.OwnerVersions, row.OwnerVersion)
 				p.SchemaStructSha256s = append(p.SchemaStructSha256s, row.SchemaStructSHA256)

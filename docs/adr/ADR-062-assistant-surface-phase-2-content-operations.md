@@ -1381,3 +1381,98 @@ acceptance procedure and nothing else.
 If this amendment is ever read as having touched any of those three, that
 reading is wrong: the only thing moved here is the boundary that four of
 this document's own checklist items stand at.
+
+## Amendments (2026-10-02)
+
+Three amendments record what the ability engine ships: A-062-4 (the catalogue),
+A-062-5 (reviewed REST routes) and A-062-8 (the side-effect tripwire). No
+decision text above is rewritten. The earlier first-wave table and the
+principal discussion stay as the record of how the design was reached.
+
+### A-062-4: The catalogue replaces the first-wave table
+
+What an assistant may run on a site is data, not code: one catalogue row per
+ability and version range, and one per reviewed REST route. A row is admitted
+by a person, not by the AI, and its fields are fixed by the row.
+
+- Only a superadmin can write catalogue and route rows, through a database
+  definer function that audits the change in the same statement. No other role
+  can write the tables.
+- Every command carries the sha256 of the row it was built from. The agent
+  recomputes it over the exact bytes it received and refuses a row that does not
+  match, so a row changed after it was approved is never sent.
+- A write needs a proven undo. A write entry without one is not admissible.
+- Titles and descriptions on the approval card are WPMgr's text. A vendor's own
+  label appears only in a slot marked as coming from the site.
+
+### A-062-5: `rest_call` runs reviewed WordPress REST routes as the service user
+
+The agent exposes two engine abilities, `wpmgr/rest-read` and `wpmgr/rest-write`,
+which call one WordPress REST route in-process. A route is never a string the AI
+supplies.
+
+**Who runs it.** The call runs as the WPMgr content service user and as nobody
+else. That user holds no administrator capability, so a route that needs one
+answers with core's own refusal.
+
+**Which routes.** The route comes from a reviewed row in `rest_route_catalogue`:
+a path template, a method, the typed path parameters, the query and body keys
+the route takes, the fields a response may return, and the route's WordPress
+version floor. Writes to the table are superadmin-only and audited, and the row
+is bound to its hash (A-062-4). The AI supplies a route id and typed values. Path
+parameters are positive integers matched against the template, and the agent
+builds the path and takes the method from the row. A read runs as GET and a
+write as POST.
+
+**What is never allowed.**
+- A namespace denylist lives in agent code and data cannot shorten it. It covers
+  routes that dispatch other routes, fetch remote URLs, expose abilities or MCP,
+  and administer the site (settings, plugins, themes, templates, navigation,
+  menus, patterns and block directories, users for writes, WPMgr's own routes).
+- No escalation. The keys that select a method override, batch, `_embed`,
+  `_envelope`, `_jsonp` or `_fields`, plus `password`, `context`, `status`,
+  `author`, `meta`, `slug` and `template`, can never be supplied by the AI, and
+  a catalogue row that lists one is refused. A row may pin only `context=view`
+  and a published status.
+- Only WordPress core's own handlers may answer. Four REST server filters are
+  guarded while the one request is dispatched. The matched handler and its
+  permission callback must both be core's, and the response must report the
+  reviewed route pattern. A short-circuit or rewrite by another plugin refuses
+  the call.
+
+**Reads** return published content only. A response item that is not in the
+pinned status refuses the whole call, and media attached to an unpublished post
+is dropped.
+
+**Writes** cover a page or post's title and excerpt only. Each write needs
+per-call approval on a card that shows the before and after values. The approval
+is bound to the route row's hash, so a row changed or disabled after approval is
+refused. The agent verifies the whole post row after the save, and the write can
+be undone. When the site would alter the characters on save, the card says the
+undo may not restore them exactly. A scheduled post is refused.
+
+### A-062-8: A read that writes or calls out is refused and counted
+
+Vendor and core ability reads run only on WordPress 7.1 or later. On an older
+site the tool is not available. Before the ability runs, the agent checks
+ownership of the ability by its plugin directory, the entry's version range and
+its schema hash on the site itself. Six WordPress ability filters (input
+normalisation, input validation, the pre-execute short circuit, the permission
+result, the execute result and output validation) are guarded for the one call,
+so another plugin cannot rewrite or answer it.
+
+Core abilities that WordPress offers only to administrators, or that describe
+the service account itself, are catalogued as denied.
+
+A read is observed while it runs. If it changes an option, a post, a user or a
+role, or makes an outbound HTTP request, the output is withheld, the call is
+refused, and the event appears on the request log and as a superadmin alert.
+The tool is turned off at once for the account that reported it, and an
+account admin or owner can turn it back on for that account.
+
+The tool is turned off for every account only once three distinct qualifying
+accounts have reported it. Each account counts once, however many of its sites
+report. An account qualifies if it is on a paid plan in good standing or has
+existed for at least 30 days. When a superadmin turns the tool back on, the
+count starts again, and only reports made after that point count toward the
+next fleet-wide disable. One unusual account cannot disable a tool for everyone.

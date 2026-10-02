@@ -1823,9 +1823,18 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		if ocCmdClient != nil {
 			mcpAbilityAgent = ocCmdClient
 		}
-		if err := mcpSvc.EnableAbilityTools(mcpRepo, mcpAbilityAgent, abilities.SendableEntry, cfg.Auth.SessionSecret); err != nil {
+		// The discover cursor's dedicated secret: no other key's material,
+		// and the tools refuse to start without it.
+		cursorKey := os.Getenv("WPMGR_MCP_CURSOR_KEY")
+		if err := checkMCPCursorKey(cursorKey); err != nil {
+			return err
+		}
+		if err := mcpSvc.EnableAbilityTools(mcpRepo, mcpAbilityAgent, abilities.SendableEntry, cursorKey); err != nil {
 			return fmt.Errorf("enable MCP ability tools: %w", err)
 		}
+		// wpmgr/rest-read and wpmgr/rest-write send the reviewed route row
+		// bytes (abilities.SendableRoute); without it both refuse.
+		mcpSvc.SetRouteEncoder(abilities.SendableRoute)
 		// The write branch of site_ability_run (E2). Writes also need the
 		// write-tools switch, which the run tool checks per call.
 		if err := mcpSvc.EnableAbilityWrites(mcpRepo); err != nil {
@@ -1842,6 +1851,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	abilityReqSvc.SetWriteToolsEnabled(writeToolsOn)
 	if ocCmdClient != nil {
 		abilityReqSvc.SetSender(ocCmdClient, abilities.SendableEntry, mcpSvc)
+		abilityReqSvc.SetRouteEncoder(abilities.SendableRoute)
 		abilityReqSvc.SetEnabler(ocCmdClient)
 	}
 	abilityReqScanWorker := abilityrequest.NewScanWorker(abilityReqSvc)
@@ -1850,12 +1860,20 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	abilityReqReconcileWorker := abilityrequest.NewReconcileWorker(abilityReqSvc)
 	abilityReqUndoReconcileWorker := abilityrequest.NewUndoReconcileWorker(abilityReqSvc)
 	abilityReqH := abilityrequest.NewHandler(abilityReqSvc)
+	abilityTenantH := abilities.NewTenantHandler(abilities.NewTenantRepo(pool, auditRec), admingate.NewPoolStore(pool))
 	// Stamp WPMgr's own seeded catalogue entries (NULL hash) so requests
 	// made against them can be dispatched (W1 compares the stamped hash).
 	if n, err := abilities.StampOwnEntryHashes(ctx, pool, logger); err != nil {
 		logger.Error("ability catalogue stamp failed", slog.Any("error", err))
 	} else {
 		logger.Info("ability catalogue stamp", slog.Int("stamped", n))
+	}
+	// The same for the m161 REST route catalogue: every route is NULL until
+	// stamped, and a NULL route hash fails closed at describe, run and send.
+	if n, err := abilities.StampOwnRouteHashes(ctx, pool, logger); err != nil {
+		logger.Error("rest route catalogue stamp failed", slog.Any("error", err))
+	} else {
+		logger.Info("rest route catalogue stamp", slog.Int("stamped", n))
 	}
 	ocH := objectcache.NewHandler(ocSvc, auditRec)
 	ocGCWorker := objectcache.NewObjectCacheStatsHistoryGCWorker(ocRepo, logger)
@@ -3052,6 +3070,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		MCPOAuthH:         mcpOAuthH,
 		AssistantRequestH: assistantReqH,
 		AbilityRequestH:   abilityReqH,
+		AbilityTenantH:    abilityTenantH,
 		MCPDiscoveryH:     mcpDiscoveryH,
 		FilesH:            filesH,
 		UpdateH:           updateH,
@@ -4584,4 +4603,14 @@ func newLogger(cfg config.Config) *slog.Logger {
 		handler = slog.NewTextHandler(os.Stdout, opts)
 	}
 	return slog.New(handler)
+}
+
+// checkMCPCursorKey refuses boot when the ability tools are on without their
+// cursor secret. The message names the variable and how to make a value; it
+// never echoes one.
+func checkMCPCursorKey(key string) error {
+	if len(strings.TrimSpace(key)) >= 32 {
+		return nil
+	}
+	return errors.New("WPMGR_MCP_ABILITY_TOOLS=on needs WPMGR_MCP_CURSOR_KEY: set WPMGR_MCP_CURSOR_KEY to at least 32 random characters, e.g. `openssl rand -hex 32`, or set WPMGR_MCP_ABILITY_TOOLS=off")
 }

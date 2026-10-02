@@ -317,6 +317,49 @@ if (!class_exists('WP_REST_Request')) {
             $this->params['URL'] = $params;
         }
 
+        /**
+         * @return array<string,mixed>
+         */
+        public function get_query_params(): array
+        {
+            return $this->params['GET'];
+        }
+
+        /**
+         * @param array<string,mixed> $params Query params.
+         */
+        public function set_query_params(array $params): void
+        {
+            $this->params['GET'] = $params;
+        }
+
+        /**
+         * @return array<string,mixed>
+         */
+        public function get_body_params(): array
+        {
+            return $this->params['POST'];
+        }
+
+        /**
+         * @param array<string,mixed> $params Body params.
+         */
+        public function set_body_params(array $params): void
+        {
+            $this->params['POST'] = $params;
+        }
+
+        /** @var array<string,mixed> */
+        private array $attributes = [];
+
+        /**
+         * @param array<string,mixed> $attributes Handler attributes.
+         */
+        public function set_attributes(array $attributes): void
+        {
+            $this->attributes = $attributes;
+        }
+
         public function get_param(string $key): mixed
         {
             foreach ($this->get_parameter_order() as $type) {
@@ -437,11 +480,212 @@ if (!class_exists('WP_REST_Response')) {
         }
 
         /**
+         * @return mixed
+         */
+        public function get_data()
+        {
+            return $this->data;
+        }
+
+        /**
+         * @param mixed $data Data.
+         */
+        public function set_data($data): void
+        {
+            $this->data = $data;
+        }
+
+        public string $matched_route = '';
+
+        /** @var mixed */
+        public $matched_handler = null;
+
+        public function get_matched_route(): string
+        {
+            return $this->matched_route;
+        }
+
+        public function set_matched_route(string $route): void
+        {
+            $this->matched_route = $route;
+        }
+
+        /**
+         * @return mixed
+         */
+        public function get_matched_handler()
+        {
+            return $this->matched_handler;
+        }
+
+        /**
+         * @param mixed $handler Handler.
+         */
+        public function set_matched_handler($handler): void
+        {
+            $this->matched_handler = $handler;
+        }
+
+        /**
          * @return array<string,string>
          */
         public function get_headers(): array
         {
             return $this->headers;
+        }
+    }
+}
+
+if (!class_exists('WP_REST_Server')) {
+    /**
+     * Double for core's WP_REST_Server: dispatch() and respond_to_request()
+     * run the four REST filters in core's order and with core's arguments
+     * (WordPress 7.1 class-wp-rest-server.php). Hooks are read from
+     * $GLOBALS['wp_filter'] the way the test registers them, in priority
+     * order, insertion order within a priority.
+     */
+    class WP_REST_Server
+    {
+        /** @var array<string,list<array<string,mixed>>> */
+        public array $routes = [];
+
+        /**
+         * @param string               $pattern Route regex.
+         * @param array<string,mixed>  $handler Handler.
+         */
+        public function register_route(string $pattern, array $handler): void
+        {
+            $this->routes[$pattern][] = $handler + ['methods' => [], 'args' => [], 'permission_callback' => null];
+        }
+
+        /**
+         * @param string $tag     Filter.
+         * @param mixed  ...$args Value and arguments.
+         * @return mixed
+         */
+        public static function applyHooks(string $tag, ...$args)
+        {
+            $value = $args[0] ?? null;
+            $hook  = $GLOBALS['wp_filter'][$tag] ?? null;
+            if (!is_object($hook) || !isset($hook->callbacks) || !is_array($hook->callbacks)) {
+                return $value;
+            }
+            $callbacks = $hook->callbacks;
+            ksort($callbacks);
+            foreach ($callbacks as $priority => $bucket) {
+                foreach ($bucket as $entry) {
+                    // As core's WP_Hook: a callback removed while the hook
+                    // runs does not run.
+                    $live = false;
+                    foreach ($hook->callbacks[$priority] ?? [] as $now) {
+                        if ($now['function'] === $entry['function']) {
+                            $live = true;
+                        }
+                    }
+                    if (!$live) {
+                        continue;
+                    }
+                    $args[0] = $value;
+                    $value   = call_user_func_array($entry['function'], array_slice($args, 0, (int) $entry['accepted_args']));
+                }
+            }
+
+            return $value;
+        }
+
+        /**
+         * @param mixed $request Request.
+         * @return mixed
+         */
+        public function dispatch($request)
+        {
+            $result = self::applyHooks('rest_pre_dispatch', null, $this, $request);
+            if (!empty($result)) {
+                if ($result instanceof WP_Error) {
+                    return $this->error_to_response($result);
+                }
+
+                return $result instanceof WP_REST_Response ? $result : new WP_REST_Response($result);
+            }
+            $route   = null;
+            $handler = null;
+            foreach ($this->routes as $pattern => $handlers) {
+                if (preg_match('@^' . $pattern . '$@i', $request->get_route(), $m) !== 1) {
+                    continue;
+                }
+                foreach ($handlers as $h) {
+                    if (empty($h['methods'][$request->get_method()])) {
+                        continue;
+                    }
+                    $args = [];
+                    foreach ($m as $k => $v) {
+                        if (!is_int($k)) {
+                            $args[$k] = $v;
+                        }
+                    }
+                    $request->set_url_params($args);
+                    $request->set_attributes($h);
+                    $route   = $pattern;
+                    $handler = $h;
+                    break 2;
+                }
+            }
+            if ($handler === null) {
+                return $this->error_to_response(new WP_Error('rest_no_route', 'No route was found matching the URL and request method.', ['status' => 404]));
+            }
+            $error = isset($handler['validate']) ? call_user_func($handler['validate'], $request) : null;
+
+            return $this->respond_to_request($request, (string) $route, $handler, $error);
+        }
+
+        /**
+         * @param mixed               $request  Request.
+         * @param string              $route    Route.
+         * @param array<string,mixed> $handler  Handler.
+         * @param mixed               $response Error so far.
+         * @return WP_REST_Response
+         */
+        protected function respond_to_request($request, string $route, array $handler, $response)
+        {
+            $response = self::applyHooks('rest_request_before_callbacks', $response, $handler, $request);
+            if (!($response instanceof WP_Error) && !empty($handler['permission_callback'])) {
+                $permission = call_user_func($handler['permission_callback'], $request);
+                if ($permission instanceof WP_Error) {
+                    $response = $permission;
+                } elseif (false === $permission || null === $permission) {
+                    $response = new WP_Error('rest_forbidden', 'Sorry, you are not allowed to do that.', ['status' => 403]);
+                }
+            }
+            if (!($response instanceof WP_Error)) {
+                $dispatch_result = self::applyHooks('rest_dispatch_request', null, $request, $route, $handler);
+                if (null !== $dispatch_result) {
+                    $response = $dispatch_result;
+                } else {
+                    $response = call_user_func($handler['callback'], $request);
+                }
+            }
+            $response = self::applyHooks('rest_request_after_callbacks', $response, $handler, $request);
+            if ($response instanceof WP_Error) {
+                $response = $this->error_to_response($response);
+            } elseif (!($response instanceof WP_REST_Response)) {
+                $response = new WP_REST_Response($response);
+            }
+            $response->set_matched_route($route);
+            $response->set_matched_handler($handler);
+
+            return $response;
+        }
+
+        /**
+         * @param WP_Error $error Error.
+         * @return WP_REST_Response
+         */
+        protected function error_to_response(WP_Error $error): WP_REST_Response
+        {
+            $data   = $error->get_error_data();
+            $status = (int) ($data['status'] ?? 500);
+
+            return new WP_REST_Response(['code' => $error->get_error_code(), 'message' => $error->get_error_message(), 'data' => $data], $status);
         }
     }
 }
@@ -625,6 +869,226 @@ if (!class_exists('Plugin_Upgrader')) {
          */
         public function maintenance_mode($enable = false): void
         {
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Abilities API doubles (WordPress 7.1 shapes).
+//
+// WP_Filter_Sentinel is core's per-call short-circuit default: an empty final
+// class compared by identity. WP_Ability mirrors the parts of core's class the
+// ownership check reads: the two protected callback properties and the
+// execution-path methods, with the same names and visibility. Tests subclass
+// it to model an ability_class override. Neither double carries behaviour the
+// agent depends on beyond its shape.
+// ---------------------------------------------------------------------------
+
+if (!class_exists('WP_Filter_Sentinel')) {
+    final class WP_Filter_Sentinel
+    {
+    }
+}
+
+if (!class_exists('WP_Ability')) {
+    /**
+     * Follows core 7.1's WP_Ability execution path method for method: the
+     * same filters with the same arguments in the same order, the real
+     * per-call sentinel, input passed to a callback only when an input schema
+     * exists, callback throws turned into a WP_Error, and schema validation
+     * through rest_validate_value_from_schema(). Translated messages are
+     * replaced by fixed text; nothing the agent reads depends on them.
+     */
+    class WP_Ability
+    {
+        /** @var string */
+        protected $name;
+
+        /** @var array<string,mixed> */
+        protected $input_schema = [];
+
+        /** @var array<string,mixed> */
+        protected $output_schema = [];
+
+        /** @var callable */
+        protected $execute_callback;
+
+        /** @var callable */
+        protected $permission_callback;
+
+        /**
+         * @param string              $name Ability name.
+         * @param array<string,mixed> $args execute_callback, permission_callback,
+         *                                  input_schema, output_schema.
+         */
+        public function __construct(string $name, array $args)
+        {
+            $this->name                = $name;
+            $this->execute_callback    = $args['execute_callback'] ?? null;
+            $this->permission_callback = $args['permission_callback'] ?? null;
+            $this->input_schema        = $args['input_schema'] ?? [];
+            $this->output_schema       = $args['output_schema'] ?? [];
+        }
+
+        public function get_name(): string
+        {
+            return $this->name;
+        }
+
+        /** @return array<string,mixed> */
+        public function get_input_schema(): array
+        {
+            return $this->input_schema;
+        }
+
+        /** @return array<string,mixed> */
+        public function get_output_schema(): array
+        {
+            return $this->output_schema;
+        }
+
+        /** @param mixed $input Input. @return mixed */
+        public function normalize_input($input = null)
+        {
+            if (null === $input) {
+                $input_schema = $this->get_input_schema();
+                if (array_key_exists('default', $input_schema)) {
+                    $input = $input_schema['default'];
+                }
+            }
+
+            return apply_filters('wp_ability_normalize_input', $input, $this->name, $this);
+        }
+
+        /** @param mixed $input Input. @return mixed */
+        public function validate_input($input = null)
+        {
+            $input_schema = $this->get_input_schema();
+            if (empty($input_schema)) {
+                if (null === $input) {
+                    return true;
+                }
+
+                return new WP_Error('ability_missing_input_schema', 'no input schema');
+            }
+            $valid_input = rest_validate_value_from_schema($input, $input_schema, 'input');
+            $is_valid    = is_wp_error($valid_input) ? new WP_Error('ability_invalid_input', 'invalid input') : true;
+
+            $validity = apply_filters('wp_ability_validate_input', $is_valid, $input, $this->name);
+            if (false === $validity) {
+                return new WP_Error('ability_invalid_input', 'Invalid input.');
+            }
+            if (is_wp_error($validity)) {
+                return $validity;
+            }
+
+            return true;
+        }
+
+        /** @param mixed $input Input. @return mixed */
+        protected function invoke_callback(callable $callback, $input = null)
+        {
+            $args = [];
+            if (!empty($this->get_input_schema())) {
+                $args[] = $input;
+            }
+            try {
+                return $callback(...$args);
+            } catch (\Throwable $e) {
+                return new WP_Error('ability_callback_exception', 'callback threw');
+            }
+        }
+
+        /** @param mixed $input Input. @return mixed */
+        public function check_permissions($input = null)
+        {
+            if (!is_callable($this->permission_callback)) {
+                return new WP_Error('ability_invalid_permission_callback', 'no permission callback');
+            }
+            $permission = $this->invoke_callback($this->permission_callback, $input);
+            $result     = apply_filters('wp_ability_permission_result', $permission, $this->name, $input, $this);
+            if (!is_bool($result) && !is_wp_error($result)) {
+                $result = false;
+            }
+
+            return $result;
+        }
+
+        /** @param mixed $input Input. @return mixed */
+        protected function do_execute($input = null)
+        {
+            if (!is_callable($this->execute_callback)) {
+                $result = new WP_Error('ability_invalid_execute_callback', 'no execute callback');
+            } else {
+                $result = $this->invoke_callback($this->execute_callback, $input);
+            }
+
+            return apply_filters('wp_ability_execute_result', $result, $this->name, $input, $this);
+        }
+
+        /** @param mixed $output Output. @return mixed */
+        protected function validate_output($output)
+        {
+            $output_schema = $this->get_output_schema();
+            if (empty($output_schema)) {
+                $is_valid = true;
+            } else {
+                $valid    = rest_validate_value_from_schema($output, $output_schema, 'output');
+                $is_valid = is_wp_error($valid) ? new WP_Error('ability_invalid_output', 'invalid output') : true;
+            }
+            $validity = apply_filters('wp_ability_validate_output', $is_valid, $output, $this->name);
+            if (false === $validity) {
+                return new WP_Error('ability_invalid_output', 'Invalid output.');
+            }
+            if (is_wp_error($validity)) {
+                return $validity;
+            }
+
+            return true;
+        }
+
+        /** @param mixed $input Input. @return mixed */
+        public function execute($input = null)
+        {
+            do_action('wp_ability_invoked', $this->name, $input, $this);
+
+            $pre_execute_sentinel = new WP_Filter_Sentinel();
+
+            $pre = apply_filters('wp_pre_execute_ability', $pre_execute_sentinel, $this->name, $input, $this);
+            if ($pre !== $pre_execute_sentinel) {
+                return $pre;
+            }
+
+            $input = $this->normalize_input($input);
+            if (is_wp_error($input)) {
+                return $input;
+            }
+
+            $is_valid = $this->validate_input($input);
+            if (is_wp_error($is_valid)) {
+                return $is_valid;
+            }
+
+            $has_permissions = $this->check_permissions($input);
+            if (true !== $has_permissions) {
+                return new WP_Error('ability_invalid_permissions', 'no permission');
+            }
+
+            do_action('wp_before_execute_ability', $this->name, $input, $this);
+
+            $result = $this->do_execute($input);
+            if (is_wp_error($result)) {
+                return $result;
+            }
+
+            $is_valid = $this->validate_output($result);
+            if (is_wp_error($is_valid)) {
+                return $is_valid;
+            }
+
+            do_action('wp_after_execute_ability', $this->name, $input, $result, $this);
+
+            return $result;
         }
     }
 }

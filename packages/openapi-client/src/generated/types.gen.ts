@@ -148,6 +148,13 @@ export type AbilityCatalogueEntry = {
     [key: string]: unknown;
   };
   entry_sha256?: string;
+  /**
+   * The pinned output shape of a read: `{"fields":{key:shape}}`,
+   * `{"items":shape}`, `"string"`, `"int"` or `"bool"`, at most 8 deep.
+   * Only listed keys reach the AI.
+   *
+   */
+  output_fields?: unknown;
   updated_at: string;
 };
 
@@ -193,6 +200,101 @@ export type AbilityCatalogueInput = {
   admission?: {
     [key: string]: unknown;
   };
+  /**
+   * The pinned output shape of a read, in the strict grammar
+   * `{"fields":{key:shape}}` | `{"items":shape}` | `"string"` | `"int"` |
+   * `"bool"`, keys matching `^[A-Za-z0-9_-]{1,64}$`, at most 8 deep. Any
+   * other node is refused (400 invalid_output_fields). Required for a
+   * vendor or core read. `limits.allowed_option_patterns` may not hold an
+   * empty or wildcard-only (`*`, `**`) pattern.
+   *
+   */
+  output_fields?: unknown;
+};
+
+/**
+ * One reviewed WordPress REST route (m161). `route_sha256` is the sha256
+ * of the exact route bytes sent to a site's agent.
+ *
+ */
+export type RestRoute = {
+  route_id: string;
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  namespace: string;
+  template: string;
+  core_pattern: string;
+  path_params: {
+    [key: string]: unknown;
+  };
+  query_keys: {
+    [key: string]: unknown;
+  };
+  pinned_query: {
+    [key: string]: unknown;
+  };
+  body_keys: {
+    [key: string]: unknown;
+  };
+  class: "read" | "write";
+  /**
+   * The pinned output shape
+   */
+  output_fields: unknown;
+  snapshot: string;
+  target?: unknown;
+  arg_render: {
+    [key: string]: unknown;
+  };
+  operator_permission?: string;
+  effect_copy: "draft" | "live" | "none";
+  enabled: boolean;
+  min_wp_version?: string;
+  title: string;
+  description: string;
+  route_sha256?: string;
+  hash_current: boolean;
+  updated_at: string;
+};
+
+/**
+ * A route edit. Every field is optional; an omitted field keeps its
+ * stored value. route_id and route_sha256 are never body fields.
+ * JSON members hold integers only, written plainly.
+ *
+ */
+export type RestRouteInput = {
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  namespace?: string;
+  template?: string;
+  core_pattern?: string;
+  path_params?: {
+    [key: string]: unknown;
+  };
+  query_keys?: {
+    [key: string]: unknown;
+  };
+  pinned_query?: {
+    [key: string]: unknown;
+  };
+  body_keys?: {
+    [key: string]: unknown;
+  };
+  class?: "read" | "write";
+  /**
+   * The pinned output shape
+   */
+  output_fields?: unknown;
+  snapshot?: string;
+  target?: unknown;
+  arg_render?: {
+    [key: string]: unknown;
+  };
+  operator_permission?: string;
+  effect_copy?: "draft" | "live" | "none";
+  enabled?: boolean;
+  min_wp_version?: string;
+  title?: string;
+  description?: string;
 };
 
 export type ContentIntegrationInput = {
@@ -4540,6 +4642,14 @@ export type AbilityRequestList = {
   offset: number;
 };
 
+export type AbilityTenantReenableResult = {
+  entry_id: string;
+  /**
+   * Always true; a tool that was not off is a 404.
+   */
+  reenabled: boolean;
+};
+
 /**
  * One AI site-change request. `site_label`, `site_host`, `grant_label`
  * and `title_excerpt` came from a site or an AI connection: render each
@@ -4583,6 +4693,15 @@ export type AbilityRequest = {
   not_sent_reason?: string;
   created_post_id?: number;
   trashed?: boolean;
+  /**
+   * A failed wpmgr/rest-write's report on putting the post back.
+   * True: the whole post is as it was. False: WPMgr put back what it
+   * could, but the post is not fully as it was; show the request as
+   * needing attention. Null when nothing needed putting back, and for
+   * every other ability.
+   *
+   */
+  restored?: boolean;
   undo_state?: string;
   undo_available_until?: string;
   /**
@@ -4600,6 +4719,59 @@ export type AbilityRequest = {
    *
    */
   resolve_gave_up: boolean;
+  /**
+   * The reviewed REST route a wpmgr/rest-write request runs; null otherwise.
+   */
+  route_id?: string;
+  /**
+   * The route hash the request was approved against; null otherwise.
+   */
+  route_sha256?: string;
+  /**
+   * The structured card of a wpmgr/rest-write request; null otherwise.
+   */
+  card_facts?: AbilityRequestCardFacts;
+};
+
+/**
+ * A structured approval card. Every value under a `from_the_site`
+ * member came from the site: render it as plain text in the "From the
+ * site" slot. `after` is the value the AI asked for. The other strings
+ * are WPMgr's.
+ *
+ */
+export type AbilityRequestCardFacts = {
+  route_id: string;
+  route_title: string;
+  method: string;
+  target: {
+    id: number;
+    post_type: string;
+    from_the_site: {
+      status: string;
+      title_before: string;
+    };
+  };
+  changes: Array<{
+    key: string;
+    label: string;
+    after: string;
+    from_the_site: {
+      before: string;
+    };
+  }>;
+  effect_copy: "draft" | "live" | "none";
+  live: boolean;
+  /**
+   * "Published immediately" when live, otherwise "Saved to the post; it is not published".
+   */
+  effect_label: string;
+  undo: string;
+  undo_exact: boolean;
+  /**
+   * Set when undo may not restore the exact characters of the previous value.
+   */
+  undo_note: string;
 };
 
 export type ContentEditingState = {
@@ -18248,6 +18420,49 @@ export type UndoAbilityRequestResponses = {
 export type UndoAbilityRequestResponse =
   UndoAbilityRequestResponses[keyof UndoAbilityRequestResponses];
 
+export type ReenableAbilityForTenantData = {
+  body: {
+    [key: string]: unknown;
+  };
+  path: {
+    entryId: string;
+  };
+  query?: never;
+  url: "/api/v1/ai/abilities/{entryId}/reenable";
+};
+
+export type ReenableAbilityForTenantErrors = {
+  /**
+   * Not a signed-in person, or not an admin or owner of the account
+   */
+  403: Error;
+  /**
+   * The tool is not switched off for this account
+   */
+  404: Error;
+  /**
+   * The body is not JSON
+   */
+  415: Error;
+  /**
+   * entryId is not a UUID
+   */
+  422: Error;
+};
+
+export type ReenableAbilityForTenantError =
+  ReenableAbilityForTenantErrors[keyof ReenableAbilityForTenantErrors];
+
+export type ReenableAbilityForTenantResponses = {
+  /**
+   * The tool is back on for this account
+   */
+  200: AbilityTenantReenableResult;
+};
+
+export type ReenableAbilityForTenantResponse =
+  ReenableAbilityForTenantResponses[keyof ReenableAbilityForTenantResponses];
+
 export type GetSiteContentEditingData = {
   body?: never;
   path: {
@@ -18744,7 +18959,9 @@ export type CreateAdminAbilityCatalogueEntryErrors = {
    */
   403: Error;
   /**
-   * Conflict — resource is referenced and cannot be deleted
+   * entry_conflict or version_range_overlap: an admitted entry with
+   * this name already covers part of this version range.
+   *
    */
   409: Error;
 };
@@ -18788,6 +19005,12 @@ export type UpdateAdminAbilityCatalogueEntryErrors = {
    * Resource not found
    */
   404: Error;
+  /**
+   * version_range_overlap: an admitted entry with this name already
+   * covers part of this version range.
+   *
+   */
+  409: Error;
 };
 
 export type UpdateAdminAbilityCatalogueEntryError =
@@ -18802,6 +19025,86 @@ export type UpdateAdminAbilityCatalogueEntryResponses = {
 
 export type UpdateAdminAbilityCatalogueEntryResponse =
   UpdateAdminAbilityCatalogueEntryResponses[keyof UpdateAdminAbilityCatalogueEntryResponses];
+
+export type ListAdminRestRoutesData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/api/v1/admin/abilities/rest-routes";
+};
+
+export type ListAdminRestRoutesErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * superadmin_required
+   */
+  403: Error;
+};
+
+export type ListAdminRestRoutesError =
+  ListAdminRestRoutesErrors[keyof ListAdminRestRoutesErrors];
+
+export type ListAdminRestRoutesResponses = {
+  /**
+   * Every route
+   */
+  200: {
+    routes: Array<RestRoute>;
+  };
+};
+
+export type ListAdminRestRoutesResponse =
+  ListAdminRestRoutesResponses[keyof ListAdminRestRoutesResponses];
+
+export type UpdateAdminRestRouteData = {
+  body: RestRouteInput;
+  path: {
+    routeId: string;
+  };
+  query?: never;
+  url: "/api/v1/admin/abilities/rest-routes/{routeId}";
+};
+
+export type UpdateAdminRestRouteErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * superadmin_required
+   */
+  403: Error;
+  /**
+   * Resource not found
+   */
+  404: Error;
+  /**
+   * route_hash_not_moved or route_conflict.
+   */
+  409: Error;
+  /**
+   * invalid_body, invalid_route (details.constraint names the database
+   * check), invalid_output_fields or route_not_reproducible.
+   *
+   */
+  422: Error;
+};
+
+export type UpdateAdminRestRouteError =
+  UpdateAdminRestRouteErrors[keyof UpdateAdminRestRouteErrors];
+
+export type UpdateAdminRestRouteResponses = {
+  /**
+   * The stored route
+   */
+  200: RestRoute;
+};
+
+export type UpdateAdminRestRouteResponse =
+  UpdateAdminRestRouteResponses[keyof UpdateAdminRestRouteResponses];
 
 export type GetDbOrphansReportData = {
   body?: never;

@@ -50,7 +50,7 @@ WHERE tenant_id = $3
   AND presented_digest = $6
   AND state = 'pending'
   AND expires_at > now()
-RETURNING id, tenant_id, site_id, proposed_by_grant_id, entry_id, entry_sha256, ability_name, operator_permission, input_json, input_sha256, target_post_id, target_key, precheck_digest, preview_digest, base_fingerprint, site_label, site_host, grant_label, grant_via, setup_client, title_excerpt, editor, post_type, effect_copy, snapshot, card_copy_version, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, dispatch_deadline_at, claimed_at, dispatch_attempts, last_attempt_at, last_attempt_code, unknown_since, ledger_checked_at, outcome, outcome_at, outcome_code, not_sent_reason, created_post_id, restored, trashed, site_reported_text, undo_state, undo_available_until, undo_by_user_id, undo_started_at, undo_finished_at
+RETURNING id, tenant_id, site_id, proposed_by_grant_id, entry_id, entry_sha256, ability_name, operator_permission, input_json, input_sha256, target_post_id, target_key, precheck_digest, preview_digest, base_fingerprint, site_label, site_host, grant_label, grant_via, setup_client, title_excerpt, editor, post_type, effect_copy, snapshot, card_copy_version, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, dispatch_deadline_at, claimed_at, dispatch_attempts, last_attempt_at, last_attempt_code, unknown_since, ledger_checked_at, outcome, outcome_at, outcome_code, not_sent_reason, created_post_id, restored, trashed, site_reported_text, undo_state, undo_available_until, undo_by_user_id, undo_started_at, undo_finished_at, route_id, route_sha256, card_facts
 `
 
 type ApproveAbilityRequestParams struct {
@@ -131,6 +131,9 @@ func (q *Queries) ApproveAbilityRequest(ctx context.Context, arg ApproveAbilityR
 		&i.UndoByUserID,
 		&i.UndoStartedAt,
 		&i.UndoFinishedAt,
+		&i.RouteID,
+		&i.RouteSha256,
+		&i.CardFacts,
 	)
 	return i, err
 }
@@ -257,7 +260,8 @@ type CloseApprovedAbilityRequestNotSentParams struct {
 // A terminal close before anything is reserved, for every pre-send reason
 // (grant_inactive, assistant_paused, organisation_deleted,
 // capability_not_held, site_absent, forbidden_by_context, agent_outdated,
-// dispatch_deadline_passed, entry_changed, entry_disabled). 0 rows: another
+// dispatch_deadline_passed, entry_changed, entry_disabled, and m161's
+// route_changed, route_disabled). 0 rows: another
 // path got there first; write nothing. The approver stays.
 func (q *Queries) CloseApprovedAbilityRequestNotSent(ctx context.Context, arg CloseApprovedAbilityRequestNotSentParams) (int64, error) {
 	result, err := q.db.Exec(ctx, closeApprovedAbilityRequestNotSent, arg.NotSentReason, arg.TenantID, arg.ID)
@@ -450,7 +454,7 @@ WHERE tenant_id = $2
   AND site_id = $4
   AND state = 'pending'
   AND expires_at > now()
-RETURNING id, tenant_id, site_id, proposed_by_grant_id, entry_id, entry_sha256, ability_name, operator_permission, input_json, input_sha256, target_post_id, target_key, precheck_digest, preview_digest, base_fingerprint, site_label, site_host, grant_label, grant_via, setup_client, title_excerpt, editor, post_type, effect_copy, snapshot, card_copy_version, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, dispatch_deadline_at, claimed_at, dispatch_attempts, last_attempt_at, last_attempt_code, unknown_since, ledger_checked_at, outcome, outcome_at, outcome_code, not_sent_reason, created_post_id, restored, trashed, site_reported_text, undo_state, undo_available_until, undo_by_user_id, undo_started_at, undo_finished_at
+RETURNING id, tenant_id, site_id, proposed_by_grant_id, entry_id, entry_sha256, ability_name, operator_permission, input_json, input_sha256, target_post_id, target_key, precheck_digest, preview_digest, base_fingerprint, site_label, site_host, grant_label, grant_via, setup_client, title_excerpt, editor, post_type, effect_copy, snapshot, card_copy_version, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, dispatch_deadline_at, claimed_at, dispatch_attempts, last_attempt_at, last_attempt_code, unknown_since, ledger_checked_at, outcome, outcome_at, outcome_code, not_sent_reason, created_post_id, restored, trashed, site_reported_text, undo_state, undo_available_until, undo_by_user_id, undo_started_at, undo_finished_at, route_id, route_sha256, card_facts
 `
 
 type DeclineAbilityRequestParams struct {
@@ -524,6 +528,9 @@ func (q *Queries) DeclineAbilityRequest(ctx context.Context, arg DeclineAbilityR
 		&i.UndoByUserID,
 		&i.UndoStartedAt,
 		&i.UndoFinishedAt,
+		&i.RouteID,
+		&i.RouteSha256,
+		&i.CardFacts,
 	)
 	return i, err
 }
@@ -611,9 +618,10 @@ func (q *Queries) ExpireLapsedPendingAbilityRequestsForGrantSite(ctx context.Con
 
 const finishAbilityRequestUndo = `-- name: FinishAbilityRequestUndo :execrows
 UPDATE assistant_ability_requests
-SET undo_state = $1::text, undo_finished_at = now()
-WHERE tenant_id = $2
-  AND id = $3
+SET undo_state = $1::text, undo_finished_at = now(),
+    restored = COALESCE($2::boolean, restored)
+WHERE tenant_id = $3
+  AND id = $4
   AND (state = 'done'
        OR (state IN ('failed', 'outcome_unknown')
            AND created_post_id IS NOT NULL
@@ -623,14 +631,22 @@ WHERE tenant_id = $2
 
 type FinishAbilityRequestUndoParams struct {
 	UndoResult string    `json:"undo_result"`
+	Restored   *bool     `json:"restored"`
 	TenantID   uuid.UUID `json:"tenant_id"`
 	ID         uuid.UUID `json:"id"`
 }
 
 // undo_result is one of undone, refused_conflict, refused_published, failed.
 // Covers a done row's undo and a recovery undo (GH #826) alike.
+// restored is the agent's revert report (false: other post columns the site
+// changed remain); NULL, as on a failure or refusal, keeps the stored value.
 func (q *Queries) FinishAbilityRequestUndo(ctx context.Context, arg FinishAbilityRequestUndoParams) (int64, error) {
-	result, err := q.db.Exec(ctx, finishAbilityRequestUndo, arg.UndoResult, arg.TenantID, arg.ID)
+	result, err := q.db.Exec(ctx, finishAbilityRequestUndo,
+		arg.UndoResult,
+		arg.Restored,
+		arg.TenantID,
+		arg.ID,
+	)
 	if err != nil {
 		return 0, err
 	}
@@ -638,7 +654,7 @@ func (q *Queries) FinishAbilityRequestUndo(ctx context.Context, arg FinishAbilit
 }
 
 const getAbilityRequestForSite = `-- name: GetAbilityRequestForSite :one
-SELECT id, tenant_id, site_id, proposed_by_grant_id, entry_id, entry_sha256, ability_name, operator_permission, input_json, input_sha256, target_post_id, target_key, precheck_digest, preview_digest, base_fingerprint, site_label, site_host, grant_label, grant_via, setup_client, title_excerpt, editor, post_type, effect_copy, snapshot, card_copy_version, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, dispatch_deadline_at, claimed_at, dispatch_attempts, last_attempt_at, last_attempt_code, unknown_since, ledger_checked_at, outcome, outcome_at, outcome_code, not_sent_reason, created_post_id, restored, trashed, site_reported_text, undo_state, undo_available_until, undo_by_user_id, undo_started_at, undo_finished_at
+SELECT id, tenant_id, site_id, proposed_by_grant_id, entry_id, entry_sha256, ability_name, operator_permission, input_json, input_sha256, target_post_id, target_key, precheck_digest, preview_digest, base_fingerprint, site_label, site_host, grant_label, grant_via, setup_client, title_excerpt, editor, post_type, effect_copy, snapshot, card_copy_version, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, dispatch_deadline_at, claimed_at, dispatch_attempts, last_attempt_at, last_attempt_code, unknown_since, ledger_checked_at, outcome, outcome_at, outcome_code, not_sent_reason, created_post_id, restored, trashed, site_reported_text, undo_state, undo_available_until, undo_by_user_id, undo_started_at, undo_finished_at, route_id, route_sha256, card_facts
 FROM assistant_ability_requests
 WHERE tenant_id = $1
   AND id = $2
@@ -710,6 +726,9 @@ func (q *Queries) GetAbilityRequestForSite(ctx context.Context, arg GetAbilityRe
 		&i.UndoByUserID,
 		&i.UndoStartedAt,
 		&i.UndoFinishedAt,
+		&i.RouteID,
+		&i.RouteSha256,
+		&i.CardFacts,
 	)
 	return i, err
 }
@@ -808,7 +827,7 @@ func (q *Queries) GetAbilityRequestStatusForGrant(ctx context.Context, arg GetAb
 }
 
 const getApprovedAbilityRequestForDispatch = `-- name: GetApprovedAbilityRequestForDispatch :one
-SELECT r.id, r.tenant_id, r.site_id, r.proposed_by_grant_id, r.entry_id, r.entry_sha256, r.ability_name, r.operator_permission, r.input_json, r.input_sha256, r.target_post_id, r.target_key, r.precheck_digest, r.preview_digest, r.base_fingerprint, r.site_label, r.site_host, r.grant_label, r.grant_via, r.setup_client, r.title_excerpt, r.editor, r.post_type, r.effect_copy, r.snapshot, r.card_copy_version, r.digest_nonce, r.presented_digest, r.state, r.created_at, r.expires_at, r.decided_at, r.decided_by_user_id, r.withdrawn_at, r.dispatch_deadline_at, r.claimed_at, r.dispatch_attempts, r.last_attempt_at, r.last_attempt_code, r.unknown_since, r.ledger_checked_at, r.outcome, r.outcome_at, r.outcome_code, r.not_sent_reason, r.created_post_id, r.restored, r.trashed, r.site_reported_text, r.undo_state, r.undo_available_until, r.undo_by_user_id, r.undo_started_at, r.undo_finished_at,
+SELECT r.id, r.tenant_id, r.site_id, r.proposed_by_grant_id, r.entry_id, r.entry_sha256, r.ability_name, r.operator_permission, r.input_json, r.input_sha256, r.target_post_id, r.target_key, r.precheck_digest, r.preview_digest, r.base_fingerprint, r.site_label, r.site_host, r.grant_label, r.grant_via, r.setup_client, r.title_excerpt, r.editor, r.post_type, r.effect_copy, r.snapshot, r.card_copy_version, r.digest_nonce, r.presented_digest, r.state, r.created_at, r.expires_at, r.decided_at, r.decided_by_user_id, r.withdrawn_at, r.dispatch_deadline_at, r.claimed_at, r.dispatch_attempts, r.last_attempt_at, r.last_attempt_code, r.unknown_since, r.ledger_checked_at, r.outcome, r.outcome_at, r.outcome_code, r.not_sent_reason, r.created_post_id, r.restored, r.trashed, r.site_reported_text, r.undo_state, r.undo_available_until, r.undo_by_user_id, r.undo_started_at, r.undo_finished_at, r.route_id, r.route_sha256, r.card_facts,
        (r.dispatch_deadline_at <= now())::boolean AS past_deadline,
        EXISTS (
            SELECT 1 FROM ability_catalogue c
@@ -820,7 +839,21 @@ SELECT r.id, r.tenant_id, r.site_id, r.proposed_by_grant_id, r.entry_id, r.entry
            WHERE c.entry_id = r.entry_id
              AND c.enabled
              AND c.status = 'admitted'
-       )::boolean AS entry_enabled
+       )::boolean AS entry_enabled,
+       -- m161: true for a row that names no route; otherwise the route still
+       -- carries the hash the row was approved against (route_changed) and is
+       -- an enabled write route (route_disabled).
+       (r.route_id IS NULL OR EXISTS (
+           SELECT 1 FROM rest_route_catalogue rr
+           WHERE rr.route_id = r.route_id
+             AND rr.route_sha256 = r.route_sha256
+       ))::boolean AS route_hash_current,
+       (r.route_id IS NULL OR EXISTS (
+           SELECT 1 FROM rest_route_catalogue rr
+           WHERE rr.route_id = r.route_id
+             AND rr.enabled
+             AND rr.class = 'write'
+       ))::boolean AS route_enabled
 FROM assistant_ability_requests r
 WHERE r.tenant_id = $1
   AND r.id = $2
@@ -837,6 +870,8 @@ type GetApprovedAbilityRequestForDispatchRow struct {
 	PastDeadline            bool                    `json:"past_deadline"`
 	EntryHashCurrent        bool                    `json:"entry_hash_current"`
 	EntryEnabled            bool                    `json:"entry_enabled"`
+	RouteHashCurrent        bool                    `json:"route_hash_current"`
+	RouteEnabled            bool                    `json:"route_enabled"`
 }
 
 // Single-site. past_deadline and entry_current are computed in the database:
@@ -903,16 +938,21 @@ func (q *Queries) GetApprovedAbilityRequestForDispatch(ctx context.Context, arg 
 		&i.AssistantAbilityRequest.UndoByUserID,
 		&i.AssistantAbilityRequest.UndoStartedAt,
 		&i.AssistantAbilityRequest.UndoFinishedAt,
+		&i.AssistantAbilityRequest.RouteID,
+		&i.AssistantAbilityRequest.RouteSha256,
+		&i.AssistantAbilityRequest.CardFacts,
 		&i.PastDeadline,
 		&i.EntryHashCurrent,
 		&i.EntryEnabled,
+		&i.RouteHashCurrent,
+		&i.RouteEnabled,
 	)
 	return i, err
 }
 
 const getPendingAbilityRequestForSite = `-- name: GetPendingAbilityRequestForSite :one
 
-SELECT id, tenant_id, site_id, proposed_by_grant_id, entry_id, entry_sha256, ability_name, operator_permission, input_json, input_sha256, target_post_id, target_key, precheck_digest, preview_digest, base_fingerprint, site_label, site_host, grant_label, grant_via, setup_client, title_excerpt, editor, post_type, effect_copy, snapshot, card_copy_version, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, dispatch_deadline_at, claimed_at, dispatch_attempts, last_attempt_at, last_attempt_code, unknown_since, ledger_checked_at, outcome, outcome_at, outcome_code, not_sent_reason, created_post_id, restored, trashed, site_reported_text, undo_state, undo_available_until, undo_by_user_id, undo_started_at, undo_finished_at
+SELECT id, tenant_id, site_id, proposed_by_grant_id, entry_id, entry_sha256, ability_name, operator_permission, input_json, input_sha256, target_post_id, target_key, precheck_digest, preview_digest, base_fingerprint, site_label, site_host, grant_label, grant_via, setup_client, title_excerpt, editor, post_type, effect_copy, snapshot, card_copy_version, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, dispatch_deadline_at, claimed_at, dispatch_attempts, last_attempt_at, last_attempt_code, unknown_since, ledger_checked_at, outcome, outcome_at, outcome_code, not_sent_reason, created_post_id, restored, trashed, site_reported_text, undo_state, undo_available_until, undo_by_user_id, undo_started_at, undo_finished_at, route_id, route_sha256, card_facts
 FROM assistant_ability_requests
 WHERE tenant_id = $1
   AND id = $2
@@ -988,12 +1028,15 @@ func (q *Queries) GetPendingAbilityRequestForSite(ctx context.Context, arg GetPe
 		&i.UndoByUserID,
 		&i.UndoStartedAt,
 		&i.UndoFinishedAt,
+		&i.RouteID,
+		&i.RouteSha256,
+		&i.CardFacts,
 	)
 	return i, err
 }
 
 const getPendingAbilityRequestForTarget = `-- name: GetPendingAbilityRequestForTarget :one
-SELECT id, tenant_id, site_id, proposed_by_grant_id, entry_id, entry_sha256, ability_name, operator_permission, input_json, input_sha256, target_post_id, target_key, precheck_digest, preview_digest, base_fingerprint, site_label, site_host, grant_label, grant_via, setup_client, title_excerpt, editor, post_type, effect_copy, snapshot, card_copy_version, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, dispatch_deadline_at, claimed_at, dispatch_attempts, last_attempt_at, last_attempt_code, unknown_since, ledger_checked_at, outcome, outcome_at, outcome_code, not_sent_reason, created_post_id, restored, trashed, site_reported_text, undo_state, undo_available_until, undo_by_user_id, undo_started_at, undo_finished_at
+SELECT id, tenant_id, site_id, proposed_by_grant_id, entry_id, entry_sha256, ability_name, operator_permission, input_json, input_sha256, target_post_id, target_key, precheck_digest, preview_digest, base_fingerprint, site_label, site_host, grant_label, grant_via, setup_client, title_excerpt, editor, post_type, effect_copy, snapshot, card_copy_version, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, dispatch_deadline_at, claimed_at, dispatch_attempts, last_attempt_at, last_attempt_code, unknown_since, ledger_checked_at, outcome, outcome_at, outcome_code, not_sent_reason, created_post_id, restored, trashed, site_reported_text, undo_state, undo_available_until, undo_by_user_id, undo_started_at, undo_finished_at, route_id, route_sha256, card_facts
 FROM assistant_ability_requests
 WHERE tenant_id = $1
   AND site_id = $2
@@ -1078,6 +1121,9 @@ func (q *Queries) GetPendingAbilityRequestForTarget(ctx context.Context, arg Get
 		&i.UndoByUserID,
 		&i.UndoStartedAt,
 		&i.UndoFinishedAt,
+		&i.RouteID,
+		&i.RouteSha256,
+		&i.CardFacts,
 	)
 	return i, err
 }
@@ -1115,7 +1161,8 @@ INSERT INTO assistant_ability_requests (
     precheck_digest, preview_digest, base_fingerprint,
     site_label, site_host, grant_label, grant_via, setup_client,
     title_excerpt, editor, post_type, effect_copy, snapshot, card_copy_version,
-    digest_nonce, presented_digest, state, expires_at
+    digest_nonce, presented_digest, state, expires_at,
+    route_id, route_sha256, card_facts
 ) VALUES (
     $1, $2, $3,
     $4, $5, $6, $7,
@@ -1124,12 +1171,13 @@ INSERT INTO assistant_ability_requests (
     $14, $15, $16, $17, $18,
     $19, $20, $21,
     $22, $23, $24,
-    $25, $26, 'pending', $27
+    $25, $26, 'pending', $27,
+    $28, $29, $30
 )
 ON CONFLICT (tenant_id, site_id, proposed_by_grant_id, ability_name, target_key)
     WHERE state = 'pending'
 DO NOTHING
-RETURNING id, tenant_id, site_id, proposed_by_grant_id, entry_id, entry_sha256, ability_name, operator_permission, input_json, input_sha256, target_post_id, target_key, precheck_digest, preview_digest, base_fingerprint, site_label, site_host, grant_label, grant_via, setup_client, title_excerpt, editor, post_type, effect_copy, snapshot, card_copy_version, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, dispatch_deadline_at, claimed_at, dispatch_attempts, last_attempt_at, last_attempt_code, unknown_since, ledger_checked_at, outcome, outcome_at, outcome_code, not_sent_reason, created_post_id, restored, trashed, site_reported_text, undo_state, undo_available_until, undo_by_user_id, undo_started_at, undo_finished_at
+RETURNING id, tenant_id, site_id, proposed_by_grant_id, entry_id, entry_sha256, ability_name, operator_permission, input_json, input_sha256, target_post_id, target_key, precheck_digest, preview_digest, base_fingerprint, site_label, site_host, grant_label, grant_via, setup_client, title_excerpt, editor, post_type, effect_copy, snapshot, card_copy_version, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, dispatch_deadline_at, claimed_at, dispatch_attempts, last_attempt_at, last_attempt_code, unknown_since, ledger_checked_at, outcome, outcome_at, outcome_code, not_sent_reason, created_post_id, restored, trashed, site_reported_text, undo_state, undo_available_until, undo_by_user_id, undo_started_at, undo_finished_at, route_id, route_sha256, card_facts
 `
 
 type InsertAbilityRequestParams struct {
@@ -1160,12 +1208,17 @@ type InsertAbilityRequestParams struct {
 	DigestNonce        string    `json:"digest_nonce"`
 	PresentedDigest    string    `json:"presented_digest"`
 	ExpiresAt          time.Time `json:"expires_at"`
+	RouteID            *string   `json:"route_id"`
+	RouteSha256        *string   `json:"route_sha256"`
+	CardFacts          []byte    `json:"card_facts"`
 }
 
 // ON CONFLICT names the one-pending index's columns and predicate. A conflict
 // inserts nothing and returns NO ROW (pgx.ErrNoRows): the caller reads the
 // waiting row with GetPendingAbilityRequestForTarget. state is always
-// 'pending'; target_key is generated and never written.
+// 'pending'; target_key is generated and never written. m161: route_id,
+// route_sha256 and card_facts are set together for wpmgr/rest-write and are
+// NULL for every other ability (the table's CHECKs refuse anything else).
 func (q *Queries) InsertAbilityRequest(ctx context.Context, arg InsertAbilityRequestParams) (AssistantAbilityRequest, error) {
 	row := q.db.QueryRow(ctx, insertAbilityRequest,
 		arg.TenantID,
@@ -1195,6 +1248,9 @@ func (q *Queries) InsertAbilityRequest(ctx context.Context, arg InsertAbilityReq
 		arg.DigestNonce,
 		arg.PresentedDigest,
 		arg.ExpiresAt,
+		arg.RouteID,
+		arg.RouteSha256,
+		arg.CardFacts,
 	)
 	var i AssistantAbilityRequest
 	err := row.Scan(
@@ -1252,13 +1308,16 @@ func (q *Queries) InsertAbilityRequest(ctx context.Context, arg InsertAbilityReq
 		&i.UndoByUserID,
 		&i.UndoStartedAt,
 		&i.UndoFinishedAt,
+		&i.RouteID,
+		&i.RouteSha256,
+		&i.CardFacts,
 	)
 	return i, err
 }
 
 const listAbilityRequests = `-- name: ListAbilityRequests :many
 
-SELECT id, tenant_id, site_id, proposed_by_grant_id, entry_id, entry_sha256, ability_name, operator_permission, input_json, input_sha256, target_post_id, target_key, precheck_digest, preview_digest, base_fingerprint, site_label, site_host, grant_label, grant_via, setup_client, title_excerpt, editor, post_type, effect_copy, snapshot, card_copy_version, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, dispatch_deadline_at, claimed_at, dispatch_attempts, last_attempt_at, last_attempt_code, unknown_since, ledger_checked_at, outcome, outcome_at, outcome_code, not_sent_reason, created_post_id, restored, trashed, site_reported_text, undo_state, undo_available_until, undo_by_user_id, undo_started_at, undo_finished_at
+SELECT id, tenant_id, site_id, proposed_by_grant_id, entry_id, entry_sha256, ability_name, operator_permission, input_json, input_sha256, target_post_id, target_key, precheck_digest, preview_digest, base_fingerprint, site_label, site_host, grant_label, grant_via, setup_client, title_excerpt, editor, post_type, effect_copy, snapshot, card_copy_version, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, dispatch_deadline_at, claimed_at, dispatch_attempts, last_attempt_at, last_attempt_code, unknown_since, ledger_checked_at, outcome, outcome_at, outcome_code, not_sent_reason, created_post_id, restored, trashed, site_reported_text, undo_state, undo_available_until, undo_by_user_id, undo_started_at, undo_finished_at, route_id, route_sha256, card_facts
 FROM assistant_ability_requests
 WHERE tenant_id = $1
 ORDER BY created_at DESC, id DESC
@@ -1339,6 +1398,9 @@ func (q *Queries) ListAbilityRequests(ctx context.Context, arg ListAbilityReques
 			&i.UndoByUserID,
 			&i.UndoStartedAt,
 			&i.UndoFinishedAt,
+			&i.RouteID,
+			&i.RouteSha256,
+			&i.CardFacts,
 		); err != nil {
 			return nil, err
 		}
@@ -1351,7 +1413,7 @@ func (q *Queries) ListAbilityRequests(ctx context.Context, arg ListAbilityReques
 }
 
 const listAbilityRequestsForSite = `-- name: ListAbilityRequestsForSite :many
-SELECT id, tenant_id, site_id, proposed_by_grant_id, entry_id, entry_sha256, ability_name, operator_permission, input_json, input_sha256, target_post_id, target_key, precheck_digest, preview_digest, base_fingerprint, site_label, site_host, grant_label, grant_via, setup_client, title_excerpt, editor, post_type, effect_copy, snapshot, card_copy_version, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, dispatch_deadline_at, claimed_at, dispatch_attempts, last_attempt_at, last_attempt_code, unknown_since, ledger_checked_at, outcome, outcome_at, outcome_code, not_sent_reason, created_post_id, restored, trashed, site_reported_text, undo_state, undo_available_until, undo_by_user_id, undo_started_at, undo_finished_at
+SELECT id, tenant_id, site_id, proposed_by_grant_id, entry_id, entry_sha256, ability_name, operator_permission, input_json, input_sha256, target_post_id, target_key, precheck_digest, preview_digest, base_fingerprint, site_label, site_host, grant_label, grant_via, setup_client, title_excerpt, editor, post_type, effect_copy, snapshot, card_copy_version, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, dispatch_deadline_at, claimed_at, dispatch_attempts, last_attempt_at, last_attempt_code, unknown_since, ledger_checked_at, outcome, outcome_at, outcome_code, not_sent_reason, created_post_id, restored, trashed, site_reported_text, undo_state, undo_available_until, undo_by_user_id, undo_started_at, undo_finished_at, route_id, route_sha256, card_facts
 FROM assistant_ability_requests
 WHERE tenant_id = $1
   AND site_id = $2
@@ -1435,6 +1497,9 @@ func (q *Queries) ListAbilityRequestsForSite(ctx context.Context, arg ListAbilit
 			&i.UndoByUserID,
 			&i.UndoStartedAt,
 			&i.UndoFinishedAt,
+			&i.RouteID,
+			&i.RouteSha256,
+			&i.CardFacts,
 		); err != nil {
 			return nil, err
 		}
@@ -1553,7 +1618,7 @@ func (q *Queries) ListOpenAbilityRequestStatusForGrant(ctx context.Context, arg 
 }
 
 const listOrgAbilityRequests = `-- name: ListOrgAbilityRequests :many
-SELECT id, tenant_id, site_id, proposed_by_grant_id, entry_id, entry_sha256, ability_name, operator_permission, input_json, input_sha256, target_post_id, target_key, precheck_digest, preview_digest, base_fingerprint, site_label, site_host, grant_label, grant_via, setup_client, title_excerpt, editor, post_type, effect_copy, snapshot, card_copy_version, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, dispatch_deadline_at, claimed_at, dispatch_attempts, last_attempt_at, last_attempt_code, unknown_since, ledger_checked_at, outcome, outcome_at, outcome_code, not_sent_reason, created_post_id, restored, trashed, site_reported_text, undo_state, undo_available_until, undo_by_user_id, undo_started_at, undo_finished_at
+SELECT id, tenant_id, site_id, proposed_by_grant_id, entry_id, entry_sha256, ability_name, operator_permission, input_json, input_sha256, target_post_id, target_key, precheck_digest, preview_digest, base_fingerprint, site_label, site_host, grant_label, grant_via, setup_client, title_excerpt, editor, post_type, effect_copy, snapshot, card_copy_version, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, dispatch_deadline_at, claimed_at, dispatch_attempts, last_attempt_at, last_attempt_code, unknown_since, ledger_checked_at, outcome, outcome_at, outcome_code, not_sent_reason, created_post_id, restored, trashed, site_reported_text, undo_state, undo_available_until, undo_by_user_id, undo_started_at, undo_finished_at, route_id, route_sha256, card_facts
 FROM assistant_ability_requests
 WHERE tenant_id = $1
   AND ($2::text IS NULL OR state = $2::text)
@@ -1641,6 +1706,9 @@ func (q *Queries) ListOrgAbilityRequests(ctx context.Context, arg ListOrgAbility
 			&i.UndoByUserID,
 			&i.UndoStartedAt,
 			&i.UndoFinishedAt,
+			&i.RouteID,
+			&i.RouteSha256,
+			&i.CardFacts,
 		); err != nil {
 			return nil, err
 		}
@@ -1904,6 +1972,13 @@ WHERE r.tenant_id = $1
         AND c.enabled
         AND c.status = 'admitted'
   )
+  AND (r.route_id IS NULL OR EXISTS (
+      SELECT 1 FROM rest_route_catalogue rr
+      WHERE rr.route_id = r.route_id
+        AND rr.route_sha256 = r.route_sha256
+        AND rr.enabled
+        AND rr.class = 'write'
+  ))
 `
 
 type ReserveAbilityRequestForDispatchParams struct {
@@ -1913,7 +1988,8 @@ type ReserveAbilityRequestForDispatchParams struct {
 
 // The one reservation point. The deadline and the approved entry hash are in
 // the WHERE clause, so nothing is reserved after the deadline or against an
-// entry that changed. 0 rows: another replica, the revoke cascade, a close,
+// entry that changed. m161: a row naming a REST route is reserved only while
+// that route carries the approved route_sha256 and is an enabled write route. 0 rows: another replica, the revoke cascade, a close,
 // the sweeper or a catalogue change won; roll back.
 func (q *Queries) ReserveAbilityRequestForDispatch(ctx context.Context, arg ReserveAbilityRequestForDispatchParams) (int64, error) {
 	result, err := q.db.Exec(ctx, reserveAbilityRequestForDispatch, arg.TenantID, arg.ID)

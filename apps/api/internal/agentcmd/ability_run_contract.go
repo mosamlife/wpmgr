@@ -49,6 +49,11 @@ const MinAgentVersionForPageCreate = "0.61.156"
 // the control plane neither offers nor starts one until the site runs it.
 const MinAgentVersionForRecoveryUndo = "0.61.157"
 
+// MinAgentVersionForRestCall is the first agent release that ships
+// wpmgr/rest-read and wpmgr/rest-write (reviewed REST routes, RC1). An older
+// agent answers ability_unknown; discover, describe and run refuse first.
+const MinAgentVersionForRestCall = "0.61.158"
+
 // ErrAbilityRunMalformed marks a 2xx ability_run reply the control plane
 // could not use: a body that did not decode, or an answer for another mode or
 // entry. Resending the same call gets the same answer.
@@ -77,6 +82,7 @@ const (
 	AbilityRunMaxPBytes     = 262144
 	AbilityRunMaxEntryBytes = 65536
 	AbilityRunMaxInputBytes = 65536
+	AbilityRunMaxRouteBytes = 65536
 )
 
 // AbilityRunCall is one call. Entry and Input are exact JSON text: they are
@@ -92,12 +98,21 @@ type AbilityRunCall struct {
 	// digests the person approved, which the agent recomputes before any
 	// effect.
 	Expected *AbilityRunExpected
+	// Route and RouteSHA256 are wpmgr/rest-read and wpmgr/rest-write's
+	// reviewed route row (exact JSON text) and the hex sha256 of those bytes.
+	// Empty for every other ability and for revert and ledger.
+	Route       []byte
+	RouteSHA256 string
 }
 
 // AbilityRunExpected is write's expected{} member.
+//
+// page-create sends precheck_digest and preview_digest; rest-write sends
+// precheck_digest and base_fingerprint.
 type AbilityRunExpected struct {
-	PrecheckDigest string `json:"precheck_digest"`
-	PreviewDigest  string `json:"preview_digest"`
+	PrecheckDigest  string `json:"precheck_digest"`
+	PreviewDigest   string `json:"preview_digest,omitempty"`
+	BaseFingerprint string `json:"base_fingerprint,omitempty"`
 }
 
 // abilityRunP is p's shape. Field order is the wire order. Every value is a
@@ -109,6 +124,8 @@ type abilityRunP struct {
 	Entry       string              `json:"entry,omitempty"`
 	EntrySHA256 string              `json:"entry_sha256,omitempty"`
 	Input       string              `json:"input,omitempty"`
+	Route       string              `json:"route,omitempty"`
+	RouteSHA256 string              `json:"route_sha256,omitempty"`
 	Expected    *AbilityRunExpected `json:"expected,omitempty"`
 }
 
@@ -132,9 +149,15 @@ func BuildAbilityRunParams(call AbilityRunCall) (p []byte, pd string, err error)
 			return nil, "", fmt.Errorf("ability_run: expected is only sent with write")
 		}
 	case AbilityRunModeWrite:
-		if call.Expected == nil || !hex64.MatchString(call.Expected.PrecheckDigest) ||
-			!hex64.MatchString(call.Expected.PreviewDigest) {
+		if call.Expected == nil || !hex64.MatchString(call.Expected.PrecheckDigest) {
 			return nil, "", fmt.Errorf("ability_run: write needs expected precheck and preview digests")
+		}
+		if len(call.Route) == 0 {
+			if !hex64.MatchString(call.Expected.PreviewDigest) || call.Expected.BaseFingerprint != "" {
+				return nil, "", fmt.Errorf("ability_run: write needs expected precheck and preview digests")
+			}
+		} else if !hex64.MatchString(call.Expected.BaseFingerprint) || call.Expected.PreviewDigest != "" {
+			return nil, "", fmt.Errorf("ability_run: a route write needs expected precheck digest and base fingerprint")
 		}
 	default:
 		return nil, "", fmt.Errorf("ability_run: unknown mode %q", call.Mode)
@@ -142,6 +165,19 @@ func BuildAbilityRunParams(call AbilityRunCall) (p []byte, pd string, err error)
 	if call.Mode == AbilityRunModeRevert && len(call.Input) != 0 {
 		// W3: the agent takes the object from its ledger, never from input.
 		return nil, "", fmt.Errorf("ability_run: revert takes no input")
+	}
+	if len(call.Route) != 0 || call.RouteSHA256 != "" {
+		switch call.Mode {
+		case AbilityRunModeRead, AbilityRunModePrecheck, AbilityRunModeWrite:
+		default:
+			return nil, "", fmt.Errorf("ability_run: a route is only sent with read, precheck and write")
+		}
+		if len(call.Route) > AbilityRunMaxRouteBytes || !json.Valid(call.Route) || !isJSONObject(call.Route) {
+			return nil, "", fmt.Errorf("ability_run: route must be JSON object text of at most %d bytes", AbilityRunMaxRouteBytes)
+		}
+		if SHA256Hex(call.Route) != call.RouteSHA256 {
+			return nil, "", fmt.Errorf("ability_run: route_sha256 does not match the route bytes")
+		}
 	}
 	if call.RequestID == uuid.Nil {
 		return nil, "", fmt.Errorf("ability_run: request_id is required")
@@ -170,6 +206,8 @@ func BuildAbilityRunParams(call AbilityRunCall) (p []byte, pd string, err error)
 		pv.Entry = string(call.Entry)
 		pv.EntrySHA256 = call.EntrySHA256
 		pv.Input = string(input)
+		pv.Route = string(call.Route)
+		pv.RouteSHA256 = call.RouteSHA256
 		pv.Expected = call.Expected
 	}
 	p, err = json.Marshal(pv)
@@ -236,6 +274,38 @@ type AbilityRunResponse struct {
 	Detail     string          `json:"detail,omitempty"`
 	Retryable  bool            `json:"retryable,omitempty"`
 	Violations json.RawMessage `json:"violations,omitempty"`
+
+	// vendor and core reads (E3): the resolved owner and the abilities the
+	// call invoked on success; side_effects and error_code on a refusal.
+	Owner            *AbilityRunOwner `json:"owner,omitempty"`
+	AbilitiesInvoked []string         `json:"abilities_invoked,omitempty"`
+	SideEffects      json.RawMessage  `json:"side_effects,omitempty"`
+	ErrorCode        string           `json:"error_code,omitempty"`
+
+	// rest-read and rest-write (E3-A3): the route the agent ran, and
+	// precheck's target facts and changes. Every string in TargetFacts and
+	// Changes is SITE TEXT.
+	RouteID     string          `json:"route_id,omitempty"`
+	RouteSHA256 string          `json:"route_sha256,omitempty"`
+	TargetFacts json.RawMessage `json:"target_facts,omitempty"`
+	Changes     json.RawMessage `json:"changes,omitempty"`
+	UndoExact   *bool           `json:"undo_exact,omitempty"`
+	Live        *bool           `json:"live,omitempty"`
+	Restored    *bool           `json:"restored,omitempty"`
+	Exact       *bool           `json:"exact,omitempty"`
+	// Columns is side_effect_detected's list of changed post columns, a
+	// closed label set (anything else becomes "unknown").
+	Columns json.RawMessage `json:"columns,omitempty"`
+	// ColumnsStillChanged names the post columns a failed rest-write, or a
+	// person's revert of one, left different from before the write: the
+	// title and excerpt were put back, these were not. Same closed label
+	// set as Columns. Changed is false on a failed write that changed
+	// nothing, so there was nothing to restore.
+	ColumnsStillChanged json.RawMessage `json:"columns_still_changed,omitempty"`
+	Changed             *bool           `json:"changed,omitempty"`
+
+	// Raw is the exact reply body, for the strict vendor read decode.
+	Raw json.RawMessage `json:"-"`
 }
 
 // AbilityRunRefusal is an ok=false reply. Code is from the closed set below
@@ -249,6 +319,25 @@ type AbilityRunRefusal struct {
 	// whether the site trashed it.
 	PostID  int64
 	Trashed bool
+	// Violations are the agent's fixed guard labels (ability_intercepted,
+	// nested_ability_refused, read_side_effect_detected).
+	Violations []string
+	// SideEffects is read_side_effect_detected's record. Its option names and
+	// hosts are SITE TEXT.
+	SideEffects *AbilityRunSideEffects
+	// ErrorCode is ability_failed's code from the ability itself: SITE TEXT,
+	// cleaned and capped.
+	ErrorCode string
+	// Columns are side_effect_detected's changed post columns, from a
+	// closed set.
+	Columns []string
+	// Restored, Exact and ColumnsStillChanged are a failed rest-write's
+	// own-undo report. Restored is nil when the agent sent none, and also
+	// when it said the write changed nothing (there was nothing to put
+	// back). ColumnsStillChanged is from the closed post column set.
+	Restored            *bool
+	Exact               *bool
+	ColumnsStillChanged []string
 }
 
 func (e *AbilityRunRefusal) Error() string {
@@ -305,6 +394,42 @@ var AbilityRunRefusalCodes = map[string]struct{}{
 	"params_too_large":               {},
 	"post_not_readable":              {},
 	"token_params_mismatch":          {},
+	// Vendor and core reads (E3, agent 0.61.158).
+	"vendor_writes_not_in_this_version": {},
+	"permission_mode_not_assertable":    {},
+	"wp_too_old_for_vendor_reads":       {},
+	"ability_not_on_site":               {},
+	"ability_class_overridden":          {},
+	"ability_owner_split":               {},
+	"ability_owner_mismatch":            {},
+	"builder_version_unverified":        {},
+	"ability_schema_changed":            {},
+	"ability_input_invalid":             {},
+	"read_side_effect_detected":         {},
+	"principal_switched":                {},
+	"nested_ability_refused":            {},
+	"ability_permission_denied":         {},
+	"ability_failed":                    {},
+	"ability_output_invalid":            {},
+	// REST routes (E3-A3, agent 0.61.158).
+	"route_not_reviewed":           {},
+	"route_disabled":               {},
+	"route_entry_changed":          {},
+	"route_namespace_refused":      {},
+	"route_param_invalid":          {},
+	"route_key_not_allowed":        {},
+	"route_key_forbidden":          {},
+	"route_wp_version_unsupported": {},
+	"rest_handler_not_core":        {},
+	"rest_intercepted":             {},
+	"rest_error":                   {},
+	"rest_not_published":           {},
+	"post_not_editable":            {},
+	"sanitiser_changed_value":      {},
+	"side_effect_detected":         {},
+	"post_touched":                 {},
+	"post_content_would_change":    {},
+	"post_scheduled":               {},
 }
 
 var abilityRunCodeRe = regexp.MustCompile(`^[a-z0-9_]{1,40}$`)
@@ -337,6 +462,7 @@ func (c *Client) AbilityRun(ctx context.Context, siteID uuid.UUID, siteURL strin
 	if err := json.Unmarshal(data, &out); err != nil {
 		return AbilityRunResponse{}, &malformedError{fmt.Errorf("decode ability_run response: %w", err)}
 	}
+	out.Raw = append(json.RawMessage(nil), data...)
 	if !out.OK {
 		return out, abilityRunRefusalOf(out)
 	}
@@ -355,10 +481,28 @@ func abilityRunRefusalOf(out AbilityRunResponse) *AbilityRunRefusal {
 		code = "unknown"
 	}
 	return &AbilityRunRefusal{
-		Code:      code,
-		Detail:    humantext.CapBytes(humantext.Clean(out.Detail), 200),
-		Retryable: out.Retryable,
-		PostID:    out.PostID,
-		Trashed:   out.Trashed,
+		Code:        code,
+		Detail:      humantext.CapBytes(humantext.Clean(out.Detail), 200),
+		Retryable:   out.Retryable,
+		PostID:      out.PostID,
+		Trashed:     out.Trashed,
+		Violations:  decodeRefusalViolations(out.Code, out.Violations),
+		Columns:     DecodePostColumns(out.Columns),
+		SideEffects: decodeSideEffects(out.SideEffects),
+		ErrorCode:   humantext.CapBytes(humantext.Clean(out.ErrorCode), vendorErrorCodeBytes),
+
+		Restored:            RestoreReport(out.Restored, out.Changed),
+		Exact:               out.Exact,
+		ColumnsStillChanged: DecodePostColumns(out.ColumnsStillChanged),
 	}
+}
+
+// RestoreReport is a failed write's restored flag as recorded: nil when the
+// agent sent none or said the write changed nothing, else the agent's flag.
+func RestoreReport(restored, changed *bool) *bool {
+	if restored == nil || (changed != nil && !*changed) {
+		return nil
+	}
+	v := *restored
+	return &v
 }

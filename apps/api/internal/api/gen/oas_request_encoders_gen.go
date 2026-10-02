@@ -1854,6 +1854,20 @@ func encodeRebaselineAuditIntegrityRequest(
 	return nil
 }
 
+func encodeReenableAbilityForTenantRequest(
+	req *ReenableAbilityForTenantReq,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	e := new(jx.Encoder)
+	{
+		req.Encode(e)
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
 func encodeRegenerateRecoveryCodesRequest(
 	req *RegenerateRecoveryCodesReq,
 	r *http.Request,
@@ -2380,6 +2394,20 @@ func encodeUndoAbilityRequestRequest(
 
 func encodeUpdateAdminAbilityCatalogueEntryRequest(
 	req *AbilityCatalogueInput,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	e := new(jx.Encoder)
+	{
+		req.Encode(e)
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
+func encodeUpdateAdminRestRouteRequest(
+	req *RestRouteInput,
 	r *http.Request,
 ) error {
 	const contentType = "application/json"

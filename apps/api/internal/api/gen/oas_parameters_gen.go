@@ -1406,6 +1406,11 @@ type RecheckSiteParams struct {
 	SiteId uuid.UUID
 }
 
+// ReenableAbilityForTenantParams is parameters of reenableAbilityForTenant operation.
+type ReenableAbilityForTenantParams struct {
+	EntryId uuid.UUID
+}
+
 // RefreshSiteContentInventoryParams is parameters of refreshSiteContentInventory operation.
 type RefreshSiteContentInventoryParams struct {
 	SiteId uuid.UUID
@@ -1738,6 +1743,11 @@ type UnlockBackupParams struct {
 // UpdateAdminAbilityCatalogueEntryParams is parameters of updateAdminAbilityCatalogueEntry operation.
 type UpdateAdminAbilityCatalogueEntryParams struct {
 	EntryId uuid.UUID
+}
+
+// UpdateAdminRestRouteParams is parameters of updateAdminRestRoute operation.
+type UpdateAdminRestRouteParams struct {
+	RouteId string
 }
 
 // UpdateClientParams is parameters of updateClient operation.

@@ -777,6 +777,10 @@ type ListAdminContentIntegrationsRes interface {
 	listAdminContentIntegrationsRes()
 }
 
+type ListAdminRestRoutesRes interface {
+	listAdminRestRoutesRes()
+}
+
 type ListAdminUserSitesRes interface {
 	listAdminUserSitesRes()
 }
@@ -1097,6 +1101,10 @@ type RecheckSiteRes interface {
 	recheckSiteRes()
 }
 
+type ReenableAbilityForTenantRes interface {
+	reenableAbilityForTenantRes()
+}
+
 type RefreshSiteContentInventoryRes interface {
 	refreshSiteContentInventoryRes()
 }
@@ -1325,6 +1333,10 @@ type UnlockBackupRes interface {
 
 type UpdateAdminAbilityCatalogueEntryRes interface {
 	updateAdminAbilityCatalogueEntryRes()
+}
+
+type UpdateAdminRestRouteRes interface {
+	updateAdminRestRouteRes()
 }
 
 type UpdateClientRes interface {

@@ -5,6 +5,8 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { setUpForLine } from "@/features/ai-requests/request-card-model";
 
+import { isRestWrite } from "./rest-card-model";
+import { StructuredAbilityCard } from "./structured-card";
 import {
   NOT_SHOWABLE_COPY,
   NOTHING_PUBLISHED,
@@ -39,7 +41,13 @@ export interface AbilityRequestCardProps {
   className?: string;
 }
 
-export function AbilityRequestCard({
+export function AbilityRequestCard(props: AbilityRequestCardProps) {
+  const canUndo = useUndoWindowOpen(props.request.undo_offered, props.request.undo_available_until);
+  if (isRestWrite(props.request)) return <StructuredAbilityCard {...props} canUndo={canUndo} />;
+  return <PageCreateCard {...props} canUndo={canUndo} />;
+}
+
+function PageCreateCard({
   request,
   siteUrl,
   onApprove,
@@ -51,13 +59,13 @@ export function AbilityRequestCard({
   notice,
   autoFocusDecline = false,
   className,
-}: AbilityRequestCardProps) {
+  canUndo,
+}: AbilityRequestCardProps & { canUndo: boolean }) {
   const pending = isPending(request);
   const status = abilityStatus(request);
   const preview = parsePagePreview(request.input_json);
   const setUpFor = setUpForLine(request);
   const busy = approvePending || declinePending;
-  const canUndo = useUndoWindowOpen(request.undo_offered, request.undo_available_until);
   const editHref = status.kind === "done" || status.draftMayExist === true ? editDraftHref(siteUrl, request.created_post_id) : null;
   const title = abilityCardTitle(request);
 

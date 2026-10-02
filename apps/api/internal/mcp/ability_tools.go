@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/hmac"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -85,6 +84,9 @@ const (
 	// notRunnableNotInventoried: WPMgr has not read this site's abilities
 	// yet; a check has been queued.
 	notRunnableNotInventoried = "not_inventoried_yet"
+	// notRunnableDisabledForAccount: the entry is switched off for this
+	// tenant (m160) after a read through it changed one of its sites.
+	notRunnableDisabledForAccount = "disabled_for_your_account"
 )
 
 // Closed class order for discover.
@@ -104,6 +106,8 @@ const (
 	msgAbilityAgentRefused = "the site refused the call"
 	msgAbilityOutdated     = "This site's WPMgr agent is too old to run abilities. The agent must be updated to " +
 		agentcmd.MinAgentVersionForAbilityEngine + " or later."
+	msgAbilityOutdatedVendor = "This site's WPMgr agent is too old to run this tool. The agent must be updated to " +
+		agentcmd.MinAgentVersionForVendorReads + " or later."
 	msgAbilityRequestAbsent  = "no such request for this connection"
 	msgAbilityNotInventoried = "WPMgr has not read this site's abilities yet. A check has been queued; " +
 		"try again in a few minutes."
@@ -138,9 +142,15 @@ type abilityEngine struct {
 	cursorKey []byte
 	readLimit *abilityReadLimiter
 	refresh   AbilityRefresher
+	// sideEffects counts read_side_effect_detected per catalogue entry and
+	// site (m160); nil when the store does not implement it.
+	sideEffects AbilitySideEffectRecorder
 	// writes is the write branch's store (EnableAbilityWrites); nil
 	// refuses every write entry as writes_not_available.
 	writes AbilityRequestStore
+	// route encodes a reviewed REST route row (SetRouteEncoder); nil leaves
+	// wpmgr/rest-read and wpmgr/rest-write with no routes.
+	route RouteEncoder
 }
 
 // AbilityRefresher queues one site's inventory refresh. It is unique per
@@ -187,10 +197,11 @@ type EntryEncoder func(sqlc.AbilityCatalogue) ([]byte, string, error)
 var ErrAbilityToolsUnavailable = errors.New("mcp: ability tools cannot be switched on")
 
 // EnableAbilityTools switches the four ability tools on (WPMGR_MCP_ABILITY_TOOLS).
-// secret derives the discover cursor's DEDICATED HMAC key: it is never the
-// consent-ticket key, and a label separates it from every other derivation.
-// A nil agent leaves discover and describe working and run refusing as
-// unreachable.
+// secret is the discover cursor's DEDICATED secret (WPMGR_MCP_CURSOR_KEY): it
+// is no other key's material, and a label separates the derived key from
+// every other derivation. An empty secret refuses: the tools do not start
+// with a cursor key nobody configured. A nil agent leaves discover and
+// describe working and run refusing as unreachable.
 func (s *Service) EnableAbilityTools(store AbilityStore, agent AbilityAgent, entry EntryEncoder, secret string) error {
 	if store == nil || entry == nil {
 		return fmt.Errorf("%w: no store or entry encoder", ErrAbilityToolsUnavailable)
@@ -198,18 +209,16 @@ func (s *Service) EnableAbilityTools(store AbilityStore, agent AbilityAgent, ent
 	if s.audit == nil {
 		return fmt.Errorf("%w: no audit recorder", ErrAbilityToolsUnavailable)
 	}
-	var key []byte
 	if strings.TrimSpace(secret) == "" {
-		key = make([]byte, 32)
-		if _, err := rand.Read(key); err != nil {
-			return fmt.Errorf("%w: %v", ErrAbilityToolsUnavailable, err)
-		}
-	} else {
-		m := hmac.New(sha256.New, []byte(secret))
-		m.Write([]byte("wpmgr/mcp/ability-discover-cursor/v1"))
-		key = m.Sum(nil)
+		return fmt.Errorf("%w: no cursor key (WPMGR_MCP_CURSOR_KEY)", ErrAbilityToolsUnavailable)
 	}
+	m := hmac.New(sha256.New, []byte(secret))
+	m.Write([]byte("wpmgr/mcp/ability-discover-cursor/v2"))
+	key := m.Sum(nil)
 	s.abilities = &abilityEngine{store: store, agent: agent, entry: entry, cursorKey: key, readLimit: newAbilityReadLimiter()}
+	if rec, ok := store.(AbilitySideEffectRecorder); ok {
+		s.abilities.sideEffects = rec
+	}
 	return nil
 }
 
@@ -423,19 +432,38 @@ type classified struct {
 
 func abilityStrPtr(s string) *string { return &s }
 
-// pickCatalogueEntry chooses the entry for a name: the first admitted and
-// enabled one, else the first. E1 does not match vendor version ranges;
-// vendor entries never run in E1.
-func pickCatalogueEntry(entries []sqlc.AbilityCatalogue) *sqlc.AbilityCatalogue {
+// pickCatalogueEntry chooses the entry for a name. A WPMgr entry has no
+// version range: the first admitted and enabled one wins. A vendor or core
+// entry must also cover the site's reported owner version: the single
+// admitted, enabled entry whose [version_min, version_max_tested] contains it
+// (m159 guarantees at most one). When admitted, enabled entries exist but none
+// covers the version, the first of them is returned with versionMiss true
+// (builder_version_unverified). With no admitted, enabled entry, the first
+// entry is returned so its own state names the reason.
+func pickCatalogueEntry(entries []sqlc.AbilityCatalogue, inv *sqlc.SiteAbilityInventory) (e *sqlc.AbilityCatalogue, versionMiss bool) {
+	var firstLive *sqlc.AbilityCatalogue
 	for i := range entries {
-		if entries[i].Status == "admitted" && entries[i].Enabled {
-			return &entries[i]
+		x := &entries[i]
+		if x.Status != "admitted" || !x.Enabled {
+			continue
+		}
+		if x.Source == "wpmgr" || x.Class != "read" {
+			return x, false
+		}
+		if firstLive == nil {
+			firstLive = x
+		}
+		if inv != nil && versionInEntryRange(inv.OwnerVersion, x) {
+			return x, false
 		}
 	}
-	if len(entries) > 0 {
-		return &entries[0]
+	if firstLive != nil {
+		return firstLive, inv != nil
 	}
-	return nil
+	if len(entries) > 0 {
+		return &entries[0], false
+	}
+	return nil, false
 }
 
 func sourceOfName(name string) string {
@@ -450,12 +478,13 @@ func sourceOfName(name string) string {
 	}
 }
 
-// classify decides one ability's class and runnability. The E1 scope guard
-// lives here and again in runSiteAbility and in the agent: only source wpmgr
-// runs, and only class read.
-func classify(name string, entries []sqlc.AbilityCatalogue, inv *sqlc.SiteAbilityInventory, agentVersion string) classified {
+// classify decides one ability's class and runnability. The scope guard
+// lives here and again in runSiteAbility and in the agent: a WPMgr entry runs
+// as before; a vendor or core entry runs only as a READ, and only when every
+// check in vendorReadRunnable passes.
+func classify(name string, entries []sqlc.AbilityCatalogue, inv *sqlc.SiteAbilityInventory, agentVersion, wpVersion string) classified {
 	c := classified{name: name, inventory: inv, approval: "per_call", wpmgrFirst: strings.HasPrefix(name, "wpmgr/")}
-	e := pickCatalogueEntry(entries)
+	e, versionMiss := pickCatalogueEntry(entries, inv)
 	not := func(r string) classified {
 		c.runnable = false
 		c.reason = abilityStrPtr(r)
@@ -479,8 +508,19 @@ func classify(name string, entries []sqlc.AbilityCatalogue, inv *sqlc.SiteAbilit
 		return not(notRunnableNotAdmitted)
 	case !e.Enabled:
 		return not(notRunnableDisabled)
-	case e.Source != "wpmgr":
+	case e.Source != "wpmgr" && e.Class != "read":
+		// Vendor and core writes do not run in this version.
 		return not(notRunnableNotYet)
+	case e.Source != "wpmgr":
+		if versionMiss {
+			return not(notRunnableVersionUnverified)
+		}
+		if r := vendorReadRunnable(e, inv, agentVersion, wpVersion); r != "" {
+			return not(r)
+		}
+		c.runnable = true
+		c.classOrder = abilityClassOrder[c.class]
+		return c
 	case e.Class == "write":
 		if r := writeEntryRunnable(e, inv, agentVersion); r != "" {
 			return not(r)
@@ -495,6 +535,8 @@ func classify(name string, entries []sqlc.AbilityCatalogue, inv *sqlc.SiteAbilit
 	case inv.OwnerOk != nil && !*inv.OwnerOk:
 		return not(notRunnableOwnerMismatch)
 	case !abilityAgentMeetsFloor(agentVersion, e.MinAgentVersion):
+		return not(notRunnableAgentOutdated)
+	case isRestAbility(name) && !abilityAgentMeetsFloor(agentVersion, abilityStrPtr(agentcmd.MinAgentVersionForRestCall)):
 		return not(notRunnableAgentOutdated)
 	}
 	c.runnable = true
@@ -522,7 +564,7 @@ func (s *Service) siteClassified(ctx context.Context, eng *abilityEngine, site a
 	if err != nil {
 		return nil, nil, fmt.Errorf("read site abilities: %w", err)
 	}
-	cat, err := eng.store.AbilityCatalogue(ctx, site.p)
+	cat, tenantOff, err := eng.store.AbilityCatalogue(ctx, site.p)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read ability catalogue: %w", err)
 	}
@@ -535,7 +577,7 @@ func (s *Service) siteClassified(ctx context.Context, eng *abilityEngine, site a
 		if !abilityNamePattern.MatchString(inv[i].Name) {
 			continue
 		}
-		out = append(out, classify(inv[i].Name, byName[inv[i].Name], &inv[i], site.row.AgentVersion))
+		out = append(out, offForTenant(classify(inv[i].Name, byName[inv[i].Name], &inv[i], site.row.AgentVersion, site.row.WpVersion), tenantOff))
 	}
 	if run == nil {
 		// Never inventoried. WPMgr's own abilities are still listed, with the
@@ -554,7 +596,7 @@ func (s *Service) siteClassified(ctx context.Context, eng *abilityEngine, site a
 			if _, own := ownAbilityInputSchemas[e.Name]; !own {
 				continue
 			}
-			c := classify(e.Name, byName[e.Name], nil, site.row.AgentVersion)
+			c := offForTenant(classify(e.Name, byName[e.Name], nil, site.row.AgentVersion, site.row.WpVersion), tenantOff)
 			if c.entry != nil && c.reason != nil && *c.reason == notRunnableNotOnSite {
 				c.reason = abilityStrPtr(reason)
 			}
@@ -843,6 +885,8 @@ var ownAbilityInputSchemas = map[string]json.RawMessage{
 		`{"type":"object","properties":{"type":{"const":"paragraph"},"text":{"type":"string"}},"required":["type","text"],"additionalProperties":false},` +
 		`{"type":"object","properties":{"type":{"const":"list"},"ordered":{"type":"boolean"},"items":{"type":"array","minItems":1,"maxItems":50,"items":{"type":"string"}}},"required":["type","ordered","items"],"additionalProperties":false}]}}},` +
 		`"required":["post_type","editor","title","outline"],"additionalProperties":false}`),
+	AbilityRestRead:  restInputSchema,
+	AbilityRestWrite: restInputSchema,
 }
 
 type describeWPMgr struct {
@@ -866,11 +910,15 @@ type describeResult struct {
 	Source            string            `json:"source"`
 	RunnableHere      bool              `json:"runnable_here"`
 	NotRunnableReason *string           `json:"not_runnable_reason"`
+	NotRunnableText   *string           `json:"not_runnable_text,omitempty"` // our sentence for disabled_for_your_account only
 	WPMgr             *describeWPMgr    `json:"wpmgr"`
 	InputSchema       json.RawMessage   `json:"input_schema"`
 	SchemaTooLarge    bool              `json:"schema_too_large,omitempty"`
 	FromTheSite       *describeFromSite `json:"from_the_site"`
 	AsOf              *string           `json:"as_of"`
+	// Routes is wpmgr/rest-read's and wpmgr/rest-write's list of reviewed
+	// routes: the only route_id values input may name. Every string is ours.
+	Routes []describeRoute `json:"routes,omitempty"`
 }
 
 // abilityNameArg reads `name`, tolerating the fence marker discover puts on a
@@ -928,6 +976,9 @@ func (s *Service) describeSiteAbility(ctx context.Context, auth AuthorizedReques
 		Name: c.name, Class: c.class, Source: c.source,
 		RunnableHere: c.runnable, NotRunnableReason: c.reason,
 	}
+	if c.reason != nil && *c.reason == notRunnableDisabledForAccount {
+		res.NotRunnableText = abilityStrPtr(msgAbilityDisabledForAccount)
+	}
 	if c.entry == nil {
 		res.Name = fenceSiteText(c.name)
 	}
@@ -943,6 +994,17 @@ func (s *Service) describeSiteAbility(ctx context.Context, auth AuthorizedReques
 		res.WPMgr = &describeWPMgr{
 			Title: c.entry.Title, Description: c.entry.Description, Approval: c.entry.ApprovalMode,
 			EffectCopy: c.entry.EffectCopy, Usage: c.entry.Usage, Limits: limits,
+		}
+	}
+	if isRestAbility(c.name) && c.source == "wpmgr" {
+		routes, err := eng.offeredRoutes(ctx, site.p, restClassOf(c.name))
+		if err != nil {
+			return "", err
+		}
+		res.Routes = describeRoutesOf(routes)
+		if len(routes) == 0 && res.RunnableHere {
+			res.RunnableHere = false
+			res.NotRunnableReason = abilityStrPtr(notRunnableNoRoutes)
 		}
 	}
 	// denied: our words only, no schema, no site text.
@@ -1143,12 +1205,25 @@ type runResult struct {
 	AsOf      string          `json:"as_of"`
 	Output    json.RawMessage `json:"output"`
 	Truncated bool            `json:"truncated"`
+	// Owner is a vendor or core read's resolved owner. Dir and version are
+	// the site's own strings, fenced.
+	Owner *runOwner `json:"owner,omitempty"`
+}
+
+type runOwner struct {
+	Kind    string `json:"kind"`
+	Dir     string `json:"dir"`
+	Version string `json:"version"`
 }
 
 func notRunnableRefusal(code string) *toolRefusal {
+	msg := msgAbilityNotRunnable
+	if code == notRunnableDisabledForAccount {
+		msg = msgAbilityDisabledForAccount
+	}
 	return &toolRefusal{
 		reason: reasonAbilityNotRunnable,
-		err: domain.Validation(ErrCodeInvalidToolArguments, msgAbilityNotRunnable).
+		err: domain.Validation(ErrCodeInvalidToolArguments, msg).
 			WithDetails(map[string]any{"argument": "name", "not_runnable_reason": code, "retryable": false}),
 		meta: map[string]any{"not_runnable_reason": code},
 	}
@@ -1223,15 +1298,23 @@ func (s *Service) runSiteAbility(ctx context.Context, auth AuthorizedRequest, ra
 		c.entry.Status == "admitted" && c.entry.Enabled {
 		return s.runSiteAbilityWrite(ctx, auth, eng, site, c, input)
 	}
-	if !c.runnable || c.entry == nil || c.entry.Source != "wpmgr" || c.entry.Class != "read" {
+	vendor := c.entry != nil && c.entry.Source != "wpmgr"
+	if !c.runnable || c.entry == nil || c.entry.Class != "read" {
 		code := notRunnableNotYet
 		if c.reason != nil {
 			code = *c.reason
 		}
 		if code == notRunnableAgentOutdated {
+			floor, msg := agentcmd.MinAgentVersionForAbilityEngine, msgAbilityOutdated
+			if vendor {
+				floor, msg = agentcmd.MinAgentVersionForVendorReads, msgAbilityOutdatedVendor
+			}
+			if isRestAbility(name) {
+				floor, msg = agentcmd.MinAgentVersionForRestCall, msgAbilityRestOutdated
+			}
 			return "", refuse(reasonAgentOutdated, domain.Conflict(ErrCodeSiteAgentOutdated,
-				msgAbilityOutdated).WithDetails(map[string]any{
-				"min_agent_version": agentcmd.MinAgentVersionForAbilityEngine, "retryable": false,
+				msg).WithDetails(map[string]any{
+				"min_agent_version": floor, "retryable": false,
 			}))
 		}
 		if code == notRunnableNotInventoried {
@@ -1258,8 +1341,13 @@ func (s *Service) runSiteAbility(ctx context.Context, auth AuthorizedRequest, ra
 		return "", refuse(reasonSiteUnreachable, domain.Unavailable(ErrCodeSiteUnreachable,
 			msgSiteUnreachable).WithDetails(map[string]any{"retryable": true}))
 	}
-	// 5. Our own schema, checked here too; the agent re-validates.
-	if bad := validateOwnInput(name, input); bad {
+	if name == AbilityRestRead && !vendor {
+		return s.runRestRead(ctx, auth, eng, site, c, input)
+	}
+	// 5. Our own schema, checked here too; the agent re-validates. A vendor
+	// read's input is validated by the agent against the live schema, whose
+	// structure the entry pins.
+	if bad := !vendor && validateOwnInput(name, input); bad {
 		return "", argRefusal(reasonInvalidArguments, "input", "", msgAbilityArgInput, ownAbilityInputSchemas[name])
 	}
 	// The read limits (v4 §1.4), per connection: 30 a minute per site, 600 a
@@ -1287,6 +1375,12 @@ func (s *Service) runSiteAbility(ctx context.Context, auth AuthorizedRequest, ra
 	cancel()
 	if err != nil {
 		var refusal *agentcmd.AbilityRunRefusal
+		if errors.As(err, &refusal) && vendor {
+			if refusal.Code == "read_side_effect_detected" {
+				s.reportReadSideEffect(ctx, auth, site, c.entry, refusal)
+			}
+			return "", vendorRefusal(refusal)
+		}
 		if errors.As(err, &refusal) {
 			return "", &toolRefusal{
 				reason: reasonAbilityAgentRefused,
@@ -1298,9 +1392,22 @@ func (s *Service) runSiteAbility(ctx context.Context, auth AuthorizedRequest, ra
 		return "", refuse(reasonSiteUnreachable, domain.Unavailable(ErrCodeSiteUnreachable,
 			msgSiteUnreachable).WithDetails(map[string]any{"retryable": true}))
 	}
-	out, truncated := fenceAbilityOutput(name, resp.Output, abilityRunDefaultOutputBytes)
+	output := resp.Output
+	var owner *runOwner
+	if vendor {
+		// The vendor reply is decoded strictly; anything off-contract is
+		// treated as an unreachable site and nothing it said is returned.
+		vr, derr := agentcmd.DecodeVendorRead(resp.Raw, name, entrySum)
+		if derr != nil {
+			return "", refuse(reasonSiteUnreachable, domain.Unavailable(ErrCodeSiteUnreachable,
+				msgSiteUnreachable).WithDetails(map[string]any{"retryable": false}))
+		}
+		output = vr.Output
+		owner = &runOwner{Kind: vr.Owner.Kind, Dir: fenceSiteText(vr.Owner.Dir), Version: fenceSiteText(vr.Owner.Version)}
+	}
+	out, truncated := fenceAbilityOutput(name, c.entry, output, abilityRunDefaultOutputBytes)
 	b, err := json.Marshal(runResult{
-		Name: name, AsOf: s.now().UTC().Format(time.RFC3339), Output: out, Truncated: truncated,
+		Name: name, AsOf: s.now().UTC().Format(time.RFC3339), Output: out, Truncated: truncated, Owner: owner,
 	})
 	if err != nil {
 		return "", fmt.Errorf("encode run result: %w", err)
@@ -1346,6 +1453,9 @@ func validateOwnInput(name string, input []byte) bool {
 type outShape struct {
 	fields map[string]*outShape
 	items  *outShape
+	// scalar is a typed leaf from output_fields: "string", "int" or
+	// "bool". Empty is any scalar (the own shapes).
+	scalar string
 }
 
 var leaf = &outShape{}
@@ -1382,8 +1492,20 @@ var ownAbilityOutputShapes = map[string]*outShape{
 // shape: only allowlisted keys survive, a value of the wrong kind is dropped,
 // and every string leaf is fenced. Over the byte cap the output is withheld
 // and truncated is true.
-func fenceAbilityOutput(name string, raw json.RawMessage, maxBytes int) (json.RawMessage, bool) {
+//
+// An own ability's shape is ours (ownAbilityOutputShapes). Any other entry's
+// shape is its pinned output_fields: an entry without a valid one returns no
+// output, and a key it does not list never reaches the answer.
+func fenceAbilityOutput(name string, e *sqlc.AbilityCatalogue, raw json.RawMessage, maxBytes int) (json.RawMessage, bool) {
 	shape, ok := ownAbilityOutputShapes[name]
+	if e != nil && e.Source != "wpmgr" {
+		ok = false
+		if s, err := parseOutShape(e.OutputFields); err == nil {
+			shape, ok = s, true
+		}
+	} else if !strings.HasPrefix(name, "wpmgr/") {
+		ok = false
+	}
 	if len(raw) == 0 || !ok {
 		return json.RawMessage(`null`), false
 	}
@@ -1427,12 +1549,24 @@ func projectOutput(v any, s *outShape) any {
 	}
 	switch t := v.(type) {
 	case string:
-		return fenceSiteText(t)
-	case json.Number, bool, nil:
-		return t
-	default:
-		return nil // an object or array where a scalar belongs
+		if s.scalar == "" || s.scalar == "string" {
+			return fenceSiteText(t)
+		}
+	case json.Number:
+		if s.scalar == "" {
+			return t
+		}
+		if _, err := t.Int64(); err == nil && s.scalar == "int" {
+			return t
+		}
+	case bool:
+		if s.scalar == "" || s.scalar == "bool" {
+			return t
+		}
+	case nil:
+		return nil
 	}
+	return nil // a value of the wrong kind, or an object or array where a scalar belongs
 }
 
 // ---------------------------------------------------------------------------

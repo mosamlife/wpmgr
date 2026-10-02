@@ -25,6 +25,7 @@ var (
 	abilityNameRe = regexp.MustCompile(`^[a-z0-9-]{1,64}/[a-z0-9-]{1,64}$`)
 	hex64Re       = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	versionRe     = regexp.MustCompile(`^[0-9A-Za-z.+-]{1,32}$`)
+	ownerDirRe    = regexp.MustCompile(`^[A-Za-z0-9._-]{1,100}$`)
 )
 
 // Caps, in runes, matching the m155 column CHECKs.
@@ -36,16 +37,13 @@ const (
 )
 
 // ownerKindMap maps the agent's closed owner_kind set onto the column's.
-// ok is the owner_ok value to store. A kind outside this map fails the reply.
+// ok is the owner_ok value to store before the C2 fields are read. A kind
+// outside this map fails the reply.
 //
+//	core, plugin, theme, mu-plugin, unknown  the resolved owner (C2, agent 0.61.157+)
 //	wpmgr        our own ability, registered by the agent plugin
 //	wpmgr_squat  another plugin registered a name in our namespace
-//	core         WordPress core
-//	site         anything else; the agent does not yet resolve the owner
-//
-// TODO(C2, engine slice E3): once the agent resolves ownership (C2) it emits
-// the column's own kinds (core, plugin, theme, mu-plugin, unknown) directly;
-// drop the agent-only kinds from this map then.
+//	site         an older agent that did not resolve the owner; stored as unknown
 var ownerKindMap = map[string]struct{ kind, ok string }{
 	"wpmgr":       {"plugin", "true"},
 	"wpmgr_squat": {"unknown", "false"},
@@ -69,6 +67,10 @@ type wireAbility struct {
 	OwnerKind          string  `json:"owner_kind"`
 	OwnerMismatch      bool    `json:"owner_mismatch"`
 	Version            *string `json:"version"`
+	OwnerDir           *string `json:"owner_dir"`
+	OwnerVersion       *string `json:"owner_version"`
+	OwnerSplit         *bool   `json:"owner_split"`
+	AbilityClassOK     *bool   `json:"ability_class_ok"`
 	SchemaStructSHA256 *string `json:"schema_struct_sha256"`
 	FromTheSite        *struct {
 		Label       string `json:"label"`
@@ -107,11 +109,27 @@ func ValidateInventory(output json.RawMessage) (InventoryResult, error) {
 		}
 		seen[a.Name] = struct{}{}
 		row := InventoryRow{Name: a.Name, OwnerKind: mapped.kind, OwnerOK: mapped.ok}
+		// C2: an agent that resolved ownership reports owner_split and
+		// ability_class_ok; the owner is verified only when both are clean.
+		if a.OwnerSplit != nil && a.AbilityClassOK != nil && mapped.kind != "unknown" && mapped.ok == "" {
+			if !*a.OwnerSplit && *a.AbilityClassOK {
+				row.OwnerOK = "true"
+			} else {
+				row.OwnerOK = "false"
+			}
+		}
 		if a.OwnerMismatch {
 			row.OwnerOK = "false"
 		}
-		if a.Version != nil && versionRe.MatchString(*a.Version) {
-			row.OwnerVersion = *a.Version
+		version := a.OwnerVersion
+		if version == nil {
+			version = a.Version
+		}
+		if version != nil && versionRe.MatchString(*version) {
+			row.OwnerVersion = *version
+		}
+		if a.OwnerDir != nil && mapped.kind != "core" && mapped.kind != "unknown" && ownerDirRe.MatchString(*a.OwnerDir) {
+			row.OwnerDir = *a.OwnerDir
 		}
 		// The agent reports "sha256:<hex>"; the column holds bare hex.
 		if a.SchemaStructSHA256 != nil {

@@ -76,6 +76,8 @@ const NOT_SENT_TEXT: Record<string, string> = {
   transport_pre_send: "WPMgr could not reach the site",
   entry_changed: "the AI tool changed after you approved it",
   entry_disabled: "the AI tool was switched off after you approved it",
+  route_changed: "WPMgr's rules for this change were updated after you approved; ask the AI again",
+  route_disabled: "this kind of change is turned off",
 };
 
 export function notSentText(reason: string | null | undefined): string {
@@ -101,6 +103,27 @@ const REFUSAL_ADVICE: Record<string, string> = {
   bad_input: "The AI's page outline wasn't valid. Ask it to try again.",
   disabled_on_site: "AI page creation is turned off for this site.",
   ability_disabled: "AI page creation is turned off for this site.",
+  post_content_would_change:
+    "This page contains content the WPMgr user can't save, so WPMgr won't change its title. Edit it in WordPress.",
+  post_not_editable: "The WPMgr user is not allowed to edit this page.",
+  post_touched: "The page was edited on the site after you approved. Ask the AI again.",
+  sanitiser_changed_value:
+    "This site changes text on save in a way WPMgr can't approve. Ask the AI to simplify the text.",
+  side_effect_detected: "The site did something unexpected while saving, so WPMgr stopped. Check the page in WordPress.",
+  route_changed: "WPMgr's rules for this change were updated after you approved. Ask the AI again.",
+  route_disabled: "This kind of change is turned off.",
+  route_entry_changed: "WPMgr's rules for this change were updated after you approved. Ask the AI again.",
+  route_not_reviewed: "This kind of change has not been reviewed for this site yet.",
+  route_namespace_refused: "WPMgr does not allow this kind of change.",
+  route_key_forbidden: "The AI asked to change a field WPMgr does not allow.",
+  route_key_not_allowed: "The AI asked to change a field WPMgr does not allow.",
+  route_param_invalid: "The AI's request wasn't valid. Ask it to try again.",
+  route_wp_version_unsupported: "This site's WordPress version does not support this change.",
+  rest_not_published: "The site did not accept this change.",
+  rest_intercepted: "A plugin on the site intercepted the change, so WPMgr stopped.",
+  rest_handler_not_core: "A plugin on the site replaced the handler for this change, so WPMgr stopped.",
+  rest_error: "The site reported an error. Check the page in WordPress.",
+  post_scheduled: "This page is scheduled; change its title in WordPress.",
 };
 
 /** Plain advice for a refusal or failure code, or null when the code is not one an operator can act on. */

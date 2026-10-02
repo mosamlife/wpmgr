@@ -86,7 +86,7 @@ func (s *Service) EnableContentEditing(ctx context.Context, p domain.Principal, 
 	if err != nil {
 		return ContentEditingState{}, domain.Internal("content_editing_read_failed", "failed to read the site").WithCause(err)
 	}
-	if !agentMeetsFloor(site.AgentVersion) {
+	if !agentMeetsFloor(site.AgentVersion, "") {
 		return ContentEditingState{}, domain.Conflict("content_editing_agent_outdated",
 			"This site's WPMgr agent must be updated to "+agentcmd.MinAgentVersionForPageCreate+" or later before content editing can be enabled.")
 	}

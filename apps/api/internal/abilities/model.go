@@ -54,6 +54,9 @@ type Entry struct {
 	GlobalOptionKeys   []string        `json:"global_option_keys"`
 	IntegrationBlock   json.RawMessage `json:"integration_block"`
 	Admission          json.RawMessage `json:"admission"`
+	// OutputFields is LAST (m159): wire order is hash order, so a member
+	// added anywhere else would reorder the bytes of every existing entry.
+	OutputFields json.RawMessage `json:"output_fields"`
 }
 
 // rawOrNull canonicalises a jsonb member: decoded (numbers kept as their
@@ -97,7 +100,7 @@ func EntryFromRow(r sqlc.AbilityCatalogue) Entry {
 		Snapshot: r.Snapshot, Preview: r.Preview, ArgRender: rawOrNull(r.ArgRender),
 		EffectCopy: r.EffectCopy, Limits: rawOrNull(r.Limits), NestedAllow: nonNil(r.NestedAllow),
 		GlobalOptionKeys: nonNil(r.GlobalOptionKeys), IntegrationBlock: rawOrNull(r.IntegrationBlock),
-		Admission: rawOrNull(r.Admission),
+		Admission: rawOrNull(r.Admission), OutputFields: rawOrNull(r.OutputFields),
 	}
 }
 
@@ -138,6 +141,7 @@ func SendableEntry(r sqlc.AbilityCatalogue) ([]byte, string, error) {
 type InventoryRow struct {
 	Name               string
 	OwnerKind          string
+	OwnerDir           string // "" for core, unknown, or none reported
 	OwnerOK            string // "true", "false" or "" (unknown)
 	OwnerVersion       string
 	SchemaStructSHA256 string

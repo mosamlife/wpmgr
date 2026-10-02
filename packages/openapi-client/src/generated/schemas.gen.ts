@@ -423,6 +423,11 @@ export const AbilityCatalogueEntrySchema = {
       type: "string",
       nullable: true,
     },
+    output_fields: {
+      nullable: true,
+      description:
+        'The pinned output shape of a read: `{"fields":{key:shape}}`,\n`{"items":shape}`, `"string"`, `"int"` or `"bool"`, at most 8 deep.\nOnly listed keys reach the AI.\n',
+    },
     updated_at: {
       type: "string",
       format: "date-time",
@@ -560,6 +565,205 @@ export const AbilityCatalogueInputSchema = {
     admission: {
       type: "object",
       additionalProperties: true,
+    },
+    output_fields: {
+      nullable: true,
+      description:
+        'The pinned output shape of a read, in the strict grammar\n`{"fields":{key:shape}}` | `{"items":shape}` | `"string"` | `"int"` |\n`"bool"`, keys matching `^[A-Za-z0-9_-]{1,64}$`, at most 8 deep. Any\nother node is refused (400 invalid_output_fields). Required for a\nvendor or core read. `limits.allowed_option_patterns` may not hold an\nempty or wildcard-only (`*`, `**`) pattern.\n',
+    },
+  },
+} as const;
+
+export const RestRouteSchema = {
+  type: "object",
+  description:
+    "One reviewed WordPress REST route (m161). `route_sha256` is the sha256\nof the exact route bytes sent to a site's agent.\n",
+  required: [
+    "route_id",
+    "method",
+    "namespace",
+    "template",
+    "core_pattern",
+    "path_params",
+    "query_keys",
+    "pinned_query",
+    "body_keys",
+    "class",
+    "output_fields",
+    "snapshot",
+    "arg_render",
+    "effect_copy",
+    "enabled",
+    "title",
+    "description",
+    "hash_current",
+    "updated_at",
+  ],
+  properties: {
+    route_id: {
+      type: "string",
+    },
+    method: {
+      type: "string",
+      enum: ["GET", "POST", "PUT", "PATCH", "DELETE"],
+    },
+    namespace: {
+      type: "string",
+    },
+    template: {
+      type: "string",
+    },
+    core_pattern: {
+      type: "string",
+    },
+    path_params: {
+      type: "object",
+      additionalProperties: true,
+    },
+    query_keys: {
+      type: "object",
+      additionalProperties: true,
+    },
+    pinned_query: {
+      type: "object",
+      additionalProperties: true,
+    },
+    body_keys: {
+      type: "object",
+      additionalProperties: true,
+    },
+    class: {
+      type: "string",
+      enum: ["read", "write"],
+    },
+    output_fields: {
+      description: "The pinned output shape",
+      "in the entry grammar.": null,
+    },
+    snapshot: {
+      type: "string",
+    },
+    target: {
+      nullable: true,
+    },
+    arg_render: {
+      type: "object",
+      additionalProperties: true,
+    },
+    operator_permission: {
+      type: "string",
+      nullable: true,
+    },
+    effect_copy: {
+      type: "string",
+      enum: ["draft", "live", "none"],
+    },
+    enabled: {
+      type: "boolean",
+    },
+    min_wp_version: {
+      type: "string",
+      nullable: true,
+    },
+    title: {
+      type: "string",
+    },
+    description: {
+      type: "string",
+    },
+    route_sha256: {
+      type: "string",
+      nullable: true,
+    },
+    hash_current: {
+      type: "boolean",
+    },
+    updated_at: {
+      type: "string",
+      format: "date-time",
+    },
+  },
+} as const;
+
+export const RestRouteInputSchema = {
+  type: "object",
+  description:
+    "A route edit. Every field is optional; an omitted field keeps its\nstored value. route_id and route_sha256 are never body fields.\nJSON members hold integers only, written plainly.\n",
+  additionalProperties: false,
+  properties: {
+    method: {
+      type: "string",
+      enum: ["GET", "POST", "PUT", "PATCH", "DELETE"],
+    },
+    namespace: {
+      type: "string",
+      maxLength: 128,
+    },
+    template: {
+      type: "string",
+      maxLength: 255,
+    },
+    core_pattern: {
+      type: "string",
+      maxLength: 255,
+    },
+    path_params: {
+      type: "object",
+      additionalProperties: true,
+    },
+    query_keys: {
+      type: "object",
+      additionalProperties: true,
+    },
+    pinned_query: {
+      type: "object",
+      additionalProperties: true,
+    },
+    body_keys: {
+      type: "object",
+      additionalProperties: true,
+    },
+    class: {
+      type: "string",
+      enum: ["read", "write"],
+    },
+    output_fields: {
+      description: "The pinned output shape",
+      "in the entry grammar.": null,
+    },
+    snapshot: {
+      type: "string",
+      maxLength: 32,
+    },
+    target: {
+      nullable: true,
+    },
+    arg_render: {
+      type: "object",
+      additionalProperties: true,
+    },
+    operator_permission: {
+      type: "string",
+      maxLength: 64,
+    },
+    effect_copy: {
+      type: "string",
+      enum: ["draft", "live", "none"],
+    },
+    enabled: {
+      type: "boolean",
+    },
+    min_wp_version: {
+      type: "string",
+      maxLength: 32,
+    },
+    title: {
+      type: "string",
+      maxLength: 120,
+    },
+    description: {
+      type: "string",
+      maxLength: 1000,
     },
   },
 } as const;
@@ -7818,6 +8022,21 @@ export const AbilityRequestListSchema = {
   },
 } as const;
 
+export const AbilityTenantReenableResultSchema = {
+  type: "object",
+  required: ["entry_id", "reenabled"],
+  properties: {
+    entry_id: {
+      type: "string",
+      format: "uuid",
+    },
+    reenabled: {
+      type: "boolean",
+      description: "Always true; a tool that was not off is a 404.",
+    },
+  },
+} as const;
+
 export const AbilityRequestSchema = {
   type: "object",
   description:
@@ -7946,6 +8165,12 @@ export const AbilityRequestSchema = {
       type: "boolean",
       nullable: true,
     },
+    restored: {
+      type: "boolean",
+      nullable: true,
+      description:
+        "A failed wpmgr/rest-write's report on putting the post back.\nTrue: the whole post is as it was. False: WPMgr put back what it\ncould, but the post is not fully as it was; show the request as\nneeding attention. Null when nothing needed putting back, and for\nevery other ability.\n",
+    },
     undo_state: {
       type: "string",
       nullable: true,
@@ -7964,6 +8189,134 @@ export const AbilityRequestSchema = {
       type: "boolean",
       description:
         "True once WPMgr stopped checking the site for the outcome of a\nwrite whose reply was lost. The result is final: the person\nshould look at the site's drafts.\n",
+    },
+    route_id: {
+      type: "string",
+      nullable: true,
+      description:
+        "The reviewed REST route a wpmgr/rest-write request runs; null otherwise.",
+    },
+    route_sha256: {
+      type: "string",
+      nullable: true,
+      description:
+        "The route hash the request was approved against; null otherwise.",
+    },
+    card_facts: {
+      allOf: [
+        {
+          $ref: "#/components/schemas/AbilityRequestCardFacts",
+        },
+      ],
+      nullable: true,
+      description:
+        "The structured card of a wpmgr/rest-write request; null otherwise.",
+    },
+  },
+} as const;
+
+export const AbilityRequestCardFactsSchema = {
+  type: "object",
+  description:
+    'A structured approval card. Every value under a `from_the_site`\nmember came from the site: render it as plain text in the "From the\nsite" slot. `after` is the value the AI asked for. The other strings\nare WPMgr\'s.\n',
+  required: [
+    "route_id",
+    "route_title",
+    "method",
+    "target",
+    "changes",
+    "effect_copy",
+    "live",
+    "effect_label",
+    "undo",
+    "undo_exact",
+    "undo_note",
+  ],
+  properties: {
+    route_id: {
+      type: "string",
+    },
+    route_title: {
+      type: "string",
+    },
+    method: {
+      type: "string",
+    },
+    target: {
+      type: "object",
+      required: ["id", "post_type", "from_the_site"],
+      properties: {
+        id: {
+          type: "integer",
+          format: "int64",
+        },
+        post_type: {
+          type: "string",
+        },
+        from_the_site: {
+          type: "object",
+          required: ["status", "title_before"],
+          properties: {
+            status: {
+              type: "string",
+            },
+            title_before: {
+              type: "string",
+            },
+          },
+        },
+      },
+    },
+    changes: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["key", "label", "after", "from_the_site"],
+        properties: {
+          key: {
+            type: "string",
+          },
+          label: {
+            type: "string",
+          },
+          after: {
+            type: "string",
+          },
+          from_the_site: {
+            type: "object",
+            required: ["before"],
+            properties: {
+              before: {
+                type: "string",
+              },
+            },
+          },
+        },
+      },
+    },
+    effect_copy: {
+      type: "string",
+      enum: ["draft", "live", "none"],
+    },
+    live: {
+      type: "boolean",
+    },
+    effect_label: {
+      type: "string",
+      description:
+        '"Published immediately" when live, otherwise "Saved to the post; it is not published".',
+    },
+    undo: {
+      type: "string",
+    },
+    undo_exact: {
+      type: "boolean",
+    },
+    undo_note: {
+      type: "string",
+      nullable: true,
+      description:
+        "Set when undo may not restore the exact characters of the previous value.",
     },
   },
 } as const;

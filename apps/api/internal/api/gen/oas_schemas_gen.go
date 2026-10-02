@@ -54,7 +54,10 @@ type AbilityCatalogueEntry struct {
 	IntegrationBlock   jx.Raw                              `json:"integration_block"`
 	Admission          AbilityCatalogueEntryAdmission      `json:"admission"`
 	EntrySHA256        OptNilString                        `json:"entry_sha256"`
-	UpdatedAt          time.Time                           `json:"updated_at"`
+	// The pinned output shape of a read: `{"fields":{key:shape}}`, `{"items":shape}`, `"string"`, `"int"`
+	// or `"bool"`, at most 8 deep. Only listed keys reach the AI.
+	OutputFields jx.Raw    `json:"output_fields"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 // GetEntryID returns the value of EntryID.
@@ -210,6 +213,11 @@ func (s *AbilityCatalogueEntry) GetAdmission() AbilityCatalogueEntryAdmission {
 // GetEntrySHA256 returns the value of EntrySHA256.
 func (s *AbilityCatalogueEntry) GetEntrySHA256() OptNilString {
 	return s.EntrySHA256
+}
+
+// GetOutputFields returns the value of OutputFields.
+func (s *AbilityCatalogueEntry) GetOutputFields() jx.Raw {
+	return s.OutputFields
 }
 
 // GetUpdatedAt returns the value of UpdatedAt.
@@ -370,6 +378,11 @@ func (s *AbilityCatalogueEntry) SetAdmission(val AbilityCatalogueEntryAdmission)
 // SetEntrySHA256 sets the value of EntrySHA256.
 func (s *AbilityCatalogueEntry) SetEntrySHA256(val OptNilString) {
 	s.EntrySHA256 = val
+}
+
+// SetOutputFields sets the value of OutputFields.
+func (s *AbilityCatalogueEntry) SetOutputFields(val jx.Raw) {
+	s.OutputFields = val
 }
 
 // SetUpdatedAt sets the value of UpdatedAt.
@@ -720,6 +733,11 @@ type AbilityCatalogueInput struct {
 	GlobalOptionKeys   []string                               `json:"global_option_keys"`
 	IntegrationBlock   jx.Raw                                 `json:"integration_block"`
 	Admission          OptAbilityCatalogueInputAdmission      `json:"admission"`
+	// The pinned output shape of a read, in the strict grammar `{"fields":{key:shape}}` |
+	// `{"items":shape}` | `"string"` | `"int"` | `"bool"`, keys matching `^[A-Za-z0-9_-]{1,64}$`, at most
+	// 8 deep. Any other node is refused (400 invalid_output_fields). Required for a vendor or core read.
+	// `limits.allowed_option_patterns` may not hold an empty or wildcard-only (`*`, `**`) pattern.
+	OutputFields jx.Raw `json:"output_fields"`
 }
 
 // GetName returns the value of Name.
@@ -867,6 +885,11 @@ func (s *AbilityCatalogueInput) GetAdmission() OptAbilityCatalogueInputAdmission
 	return s.Admission
 }
 
+// GetOutputFields returns the value of OutputFields.
+func (s *AbilityCatalogueInput) GetOutputFields() jx.Raw {
+	return s.OutputFields
+}
+
 // SetName sets the value of Name.
 func (s *AbilityCatalogueInput) SetName(val OptString) {
 	s.Name = val
@@ -1010,6 +1033,11 @@ func (s *AbilityCatalogueInput) SetIntegrationBlock(val jx.Raw) {
 // SetAdmission sets the value of Admission.
 func (s *AbilityCatalogueInput) SetAdmission(val OptAbilityCatalogueInputAdmission) {
 	s.Admission = val
+}
+
+// SetOutputFields sets the value of OutputFields.
+func (s *AbilityCatalogueInput) SetOutputFields(val jx.Raw) {
+	s.OutputFields = val
 }
 
 type AbilityCatalogueInputAdmission map[string]jx.Raw
@@ -1324,39 +1352,49 @@ func (s *AbilityCatalogueInputStatus) UnmarshalText(data []byte) error {
 // shown in full on the card.
 // Ref: #/components/schemas/AbilityRequest
 type AbilityRequest struct {
-	ID                 uuid.UUID                `json:"id"`
-	SiteID             uuid.UUID                `json:"site_id"`
-	AbilityName        string                   `json:"ability_name"`
-	InputJSON          string                   `json:"input_json"`
-	TitleExcerpt       OptNilString             `json:"title_excerpt"`
-	Editor             OptNilString             `json:"editor"`
-	PostType           OptNilString             `json:"post_type"`
-	EffectCopy         AbilityRequestEffectCopy `json:"effect_copy"`
-	Snapshot           string                   `json:"snapshot"`
-	SiteLabel          string                   `json:"site_label"`
-	SiteHost           string                   `json:"site_host"`
-	GrantLabel         string                   `json:"grant_label"`
-	GrantVia           string                   `json:"grant_via"`
-	SetupClient        OptNilString             `json:"setup_client"`
-	CardCopyVersion    int32                    `json:"card_copy_version"`
-	PresentedDigest    OptString                `json:"presented_digest"`
-	State              AbilityRequestState      `json:"state"`
-	CreatedAt          time.Time                `json:"created_at"`
-	ExpiresAt          time.Time                `json:"expires_at"`
-	DecidedAt          OptNilDateTime           `json:"decided_at"`
-	Outcome            OptNilString             `json:"outcome"`
-	OutcomeCode        OptNilString             `json:"outcome_code"`
-	NotSentReason      OptNilString             `json:"not_sent_reason"`
-	CreatedPostID      OptNilInt64              `json:"created_post_id"`
-	Trashed            OptNilBool               `json:"trashed"`
-	UndoState          OptNilString             `json:"undo_state"`
-	UndoAvailableUntil OptNilDateTime           `json:"undo_available_until"`
+	ID              uuid.UUID                `json:"id"`
+	SiteID          uuid.UUID                `json:"site_id"`
+	AbilityName     string                   `json:"ability_name"`
+	InputJSON       string                   `json:"input_json"`
+	TitleExcerpt    OptNilString             `json:"title_excerpt"`
+	Editor          OptNilString             `json:"editor"`
+	PostType        OptNilString             `json:"post_type"`
+	EffectCopy      AbilityRequestEffectCopy `json:"effect_copy"`
+	Snapshot        string                   `json:"snapshot"`
+	SiteLabel       string                   `json:"site_label"`
+	SiteHost        string                   `json:"site_host"`
+	GrantLabel      string                   `json:"grant_label"`
+	GrantVia        string                   `json:"grant_via"`
+	SetupClient     OptNilString             `json:"setup_client"`
+	CardCopyVersion int32                    `json:"card_copy_version"`
+	PresentedDigest OptString                `json:"presented_digest"`
+	State           AbilityRequestState      `json:"state"`
+	CreatedAt       time.Time                `json:"created_at"`
+	ExpiresAt       time.Time                `json:"expires_at"`
+	DecidedAt       OptNilDateTime           `json:"decided_at"`
+	Outcome         OptNilString             `json:"outcome"`
+	OutcomeCode     OptNilString             `json:"outcome_code"`
+	NotSentReason   OptNilString             `json:"not_sent_reason"`
+	CreatedPostID   OptNilInt64              `json:"created_post_id"`
+	Trashed         OptNilBool               `json:"trashed"`
+	// A failed wpmgr/rest-write's report on putting the post back. True: the whole post is as it was.
+	// False: WPMgr put back what it could, but the post is not fully as it was; show the request as
+	// needing attention. Null when nothing needed putting back, and for every other ability.
+	Restored           OptNilBool     `json:"restored"`
+	UndoState          OptNilString   `json:"undo_state"`
+	UndoAvailableUntil OptNilDateTime `json:"undo_available_until"`
 	// Whether `POST .../undo` would start an undo now: a done request inside its undo window, or the draft
 	// a failed or given-up page creation left on the site. Show the undo action exactly when this is true.
 	UndoOffered bool `json:"undo_offered"`
 	// True once WPMgr stopped checking the site for the outcome of a write whose reply was lost. The
 	// result is final: the person should look at the site's drafts.
 	ResolveGaveUp bool `json:"resolve_gave_up"`
+	// The reviewed REST route a wpmgr/rest-write request runs; null otherwise.
+	RouteID OptNilString `json:"route_id"`
+	// The route hash the request was approved against; null otherwise.
+	RouteSHA256 OptNilString `json:"route_sha256"`
+	// The structured card of a wpmgr/rest-write request; null otherwise.
+	CardFacts OptNilAbilityRequestCardFacts `json:"card_facts"`
 }
 
 // GetID returns the value of ID.
@@ -1484,6 +1522,11 @@ func (s *AbilityRequest) GetTrashed() OptNilBool {
 	return s.Trashed
 }
 
+// GetRestored returns the value of Restored.
+func (s *AbilityRequest) GetRestored() OptNilBool {
+	return s.Restored
+}
+
 // GetUndoState returns the value of UndoState.
 func (s *AbilityRequest) GetUndoState() OptNilString {
 	return s.UndoState
@@ -1502,6 +1545,21 @@ func (s *AbilityRequest) GetUndoOffered() bool {
 // GetResolveGaveUp returns the value of ResolveGaveUp.
 func (s *AbilityRequest) GetResolveGaveUp() bool {
 	return s.ResolveGaveUp
+}
+
+// GetRouteID returns the value of RouteID.
+func (s *AbilityRequest) GetRouteID() OptNilString {
+	return s.RouteID
+}
+
+// GetRouteSHA256 returns the value of RouteSHA256.
+func (s *AbilityRequest) GetRouteSHA256() OptNilString {
+	return s.RouteSHA256
+}
+
+// GetCardFacts returns the value of CardFacts.
+func (s *AbilityRequest) GetCardFacts() OptNilAbilityRequestCardFacts {
+	return s.CardFacts
 }
 
 // SetID sets the value of ID.
@@ -1629,6 +1687,11 @@ func (s *AbilityRequest) SetTrashed(val OptNilBool) {
 	s.Trashed = val
 }
 
+// SetRestored sets the value of Restored.
+func (s *AbilityRequest) SetRestored(val OptNilBool) {
+	s.Restored = val
+}
+
 // SetUndoState sets the value of UndoState.
 func (s *AbilityRequest) SetUndoState(val OptNilString) {
 	s.UndoState = val
@@ -1649,6 +1712,21 @@ func (s *AbilityRequest) SetResolveGaveUp(val bool) {
 	s.ResolveGaveUp = val
 }
 
+// SetRouteID sets the value of RouteID.
+func (s *AbilityRequest) SetRouteID(val OptNilString) {
+	s.RouteID = val
+}
+
+// SetRouteSHA256 sets the value of RouteSHA256.
+func (s *AbilityRequest) SetRouteSHA256(val OptNilString) {
+	s.RouteSHA256 = val
+}
+
+// SetCardFacts sets the value of CardFacts.
+func (s *AbilityRequest) SetCardFacts(val OptNilAbilityRequestCardFacts) {
+	s.CardFacts = val
+}
+
 func (*AbilityRequest) approveAbilityRequestRes() {}
 func (*AbilityRequest) declineAbilityRequestRes() {}
 func (*AbilityRequest) undoAbilityRequestRes()    {}
@@ -1667,6 +1745,306 @@ func (s *AbilityRequestApproveBody) GetPresentedDigest() string {
 // SetPresentedDigest sets the value of PresentedDigest.
 func (s *AbilityRequestApproveBody) SetPresentedDigest(val string) {
 	s.PresentedDigest = val
+}
+
+// A structured approval card. Every value under a `from_the_site` member came from the site: render it
+// as plain text in the "From the site" slot. `after` is the value the AI asked for. The other strings
+// are WPMgr's.
+// Ref: #/components/schemas/AbilityRequestCardFacts
+type AbilityRequestCardFacts struct {
+	RouteID    string                               `json:"route_id"`
+	RouteTitle string                               `json:"route_title"`
+	Method     string                               `json:"method"`
+	Target     AbilityRequestCardFactsTarget        `json:"target"`
+	Changes    []AbilityRequestCardFactsChangesItem `json:"changes"`
+	EffectCopy AbilityRequestCardFactsEffectCopy    `json:"effect_copy"`
+	Live       bool                                 `json:"live"`
+	// "Published immediately" when live, otherwise "Saved to the post; it is not published".
+	EffectLabel string `json:"effect_label"`
+	Undo        string `json:"undo"`
+	UndoExact   bool   `json:"undo_exact"`
+	// Set when undo may not restore the exact characters of the previous value.
+	UndoNote NilString `json:"undo_note"`
+}
+
+// GetRouteID returns the value of RouteID.
+func (s *AbilityRequestCardFacts) GetRouteID() string {
+	return s.RouteID
+}
+
+// GetRouteTitle returns the value of RouteTitle.
+func (s *AbilityRequestCardFacts) GetRouteTitle() string {
+	return s.RouteTitle
+}
+
+// GetMethod returns the value of Method.
+func (s *AbilityRequestCardFacts) GetMethod() string {
+	return s.Method
+}
+
+// GetTarget returns the value of Target.
+func (s *AbilityRequestCardFacts) GetTarget() AbilityRequestCardFactsTarget {
+	return s.Target
+}
+
+// GetChanges returns the value of Changes.
+func (s *AbilityRequestCardFacts) GetChanges() []AbilityRequestCardFactsChangesItem {
+	return s.Changes
+}
+
+// GetEffectCopy returns the value of EffectCopy.
+func (s *AbilityRequestCardFacts) GetEffectCopy() AbilityRequestCardFactsEffectCopy {
+	return s.EffectCopy
+}
+
+// GetLive returns the value of Live.
+func (s *AbilityRequestCardFacts) GetLive() bool {
+	return s.Live
+}
+
+// GetEffectLabel returns the value of EffectLabel.
+func (s *AbilityRequestCardFacts) GetEffectLabel() string {
+	return s.EffectLabel
+}
+
+// GetUndo returns the value of Undo.
+func (s *AbilityRequestCardFacts) GetUndo() string {
+	return s.Undo
+}
+
+// GetUndoExact returns the value of UndoExact.
+func (s *AbilityRequestCardFacts) GetUndoExact() bool {
+	return s.UndoExact
+}
+
+// GetUndoNote returns the value of UndoNote.
+func (s *AbilityRequestCardFacts) GetUndoNote() NilString {
+	return s.UndoNote
+}
+
+// SetRouteID sets the value of RouteID.
+func (s *AbilityRequestCardFacts) SetRouteID(val string) {
+	s.RouteID = val
+}
+
+// SetRouteTitle sets the value of RouteTitle.
+func (s *AbilityRequestCardFacts) SetRouteTitle(val string) {
+	s.RouteTitle = val
+}
+
+// SetMethod sets the value of Method.
+func (s *AbilityRequestCardFacts) SetMethod(val string) {
+	s.Method = val
+}
+
+// SetTarget sets the value of Target.
+func (s *AbilityRequestCardFacts) SetTarget(val AbilityRequestCardFactsTarget) {
+	s.Target = val
+}
+
+// SetChanges sets the value of Changes.
+func (s *AbilityRequestCardFacts) SetChanges(val []AbilityRequestCardFactsChangesItem) {
+	s.Changes = val
+}
+
+// SetEffectCopy sets the value of EffectCopy.
+func (s *AbilityRequestCardFacts) SetEffectCopy(val AbilityRequestCardFactsEffectCopy) {
+	s.EffectCopy = val
+}
+
+// SetLive sets the value of Live.
+func (s *AbilityRequestCardFacts) SetLive(val bool) {
+	s.Live = val
+}
+
+// SetEffectLabel sets the value of EffectLabel.
+func (s *AbilityRequestCardFacts) SetEffectLabel(val string) {
+	s.EffectLabel = val
+}
+
+// SetUndo sets the value of Undo.
+func (s *AbilityRequestCardFacts) SetUndo(val string) {
+	s.Undo = val
+}
+
+// SetUndoExact sets the value of UndoExact.
+func (s *AbilityRequestCardFacts) SetUndoExact(val bool) {
+	s.UndoExact = val
+}
+
+// SetUndoNote sets the value of UndoNote.
+func (s *AbilityRequestCardFacts) SetUndoNote(val NilString) {
+	s.UndoNote = val
+}
+
+type AbilityRequestCardFactsChangesItem struct {
+	Key         string                                        `json:"key"`
+	Label       string                                        `json:"label"`
+	After       string                                        `json:"after"`
+	FromTheSite AbilityRequestCardFactsChangesItemFromTheSite `json:"from_the_site"`
+}
+
+// GetKey returns the value of Key.
+func (s *AbilityRequestCardFactsChangesItem) GetKey() string {
+	return s.Key
+}
+
+// GetLabel returns the value of Label.
+func (s *AbilityRequestCardFactsChangesItem) GetLabel() string {
+	return s.Label
+}
+
+// GetAfter returns the value of After.
+func (s *AbilityRequestCardFactsChangesItem) GetAfter() string {
+	return s.After
+}
+
+// GetFromTheSite returns the value of FromTheSite.
+func (s *AbilityRequestCardFactsChangesItem) GetFromTheSite() AbilityRequestCardFactsChangesItemFromTheSite {
+	return s.FromTheSite
+}
+
+// SetKey sets the value of Key.
+func (s *AbilityRequestCardFactsChangesItem) SetKey(val string) {
+	s.Key = val
+}
+
+// SetLabel sets the value of Label.
+func (s *AbilityRequestCardFactsChangesItem) SetLabel(val string) {
+	s.Label = val
+}
+
+// SetAfter sets the value of After.
+func (s *AbilityRequestCardFactsChangesItem) SetAfter(val string) {
+	s.After = val
+}
+
+// SetFromTheSite sets the value of FromTheSite.
+func (s *AbilityRequestCardFactsChangesItem) SetFromTheSite(val AbilityRequestCardFactsChangesItemFromTheSite) {
+	s.FromTheSite = val
+}
+
+type AbilityRequestCardFactsChangesItemFromTheSite struct {
+	Before string `json:"before"`
+}
+
+// GetBefore returns the value of Before.
+func (s *AbilityRequestCardFactsChangesItemFromTheSite) GetBefore() string {
+	return s.Before
+}
+
+// SetBefore sets the value of Before.
+func (s *AbilityRequestCardFactsChangesItemFromTheSite) SetBefore(val string) {
+	s.Before = val
+}
+
+type AbilityRequestCardFactsEffectCopy string
+
+const (
+	AbilityRequestCardFactsEffectCopyDraft AbilityRequestCardFactsEffectCopy = "draft"
+	AbilityRequestCardFactsEffectCopyLive  AbilityRequestCardFactsEffectCopy = "live"
+	AbilityRequestCardFactsEffectCopyNone  AbilityRequestCardFactsEffectCopy = "none"
+)
+
+// AllValues returns all AbilityRequestCardFactsEffectCopy values.
+func (AbilityRequestCardFactsEffectCopy) AllValues() []AbilityRequestCardFactsEffectCopy {
+	return []AbilityRequestCardFactsEffectCopy{
+		AbilityRequestCardFactsEffectCopyDraft,
+		AbilityRequestCardFactsEffectCopyLive,
+		AbilityRequestCardFactsEffectCopyNone,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityRequestCardFactsEffectCopy) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityRequestCardFactsEffectCopyDraft:
+		return []byte(s), nil
+	case AbilityRequestCardFactsEffectCopyLive:
+		return []byte(s), nil
+	case AbilityRequestCardFactsEffectCopyNone:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityRequestCardFactsEffectCopy) UnmarshalText(data []byte) error {
+	switch AbilityRequestCardFactsEffectCopy(data) {
+	case AbilityRequestCardFactsEffectCopyDraft:
+		*s = AbilityRequestCardFactsEffectCopyDraft
+		return nil
+	case AbilityRequestCardFactsEffectCopyLive:
+		*s = AbilityRequestCardFactsEffectCopyLive
+		return nil
+	case AbilityRequestCardFactsEffectCopyNone:
+		*s = AbilityRequestCardFactsEffectCopyNone
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type AbilityRequestCardFactsTarget struct {
+	ID          int64                                    `json:"id"`
+	PostType    string                                   `json:"post_type"`
+	FromTheSite AbilityRequestCardFactsTargetFromTheSite `json:"from_the_site"`
+}
+
+// GetID returns the value of ID.
+func (s *AbilityRequestCardFactsTarget) GetID() int64 {
+	return s.ID
+}
+
+// GetPostType returns the value of PostType.
+func (s *AbilityRequestCardFactsTarget) GetPostType() string {
+	return s.PostType
+}
+
+// GetFromTheSite returns the value of FromTheSite.
+func (s *AbilityRequestCardFactsTarget) GetFromTheSite() AbilityRequestCardFactsTargetFromTheSite {
+	return s.FromTheSite
+}
+
+// SetID sets the value of ID.
+func (s *AbilityRequestCardFactsTarget) SetID(val int64) {
+	s.ID = val
+}
+
+// SetPostType sets the value of PostType.
+func (s *AbilityRequestCardFactsTarget) SetPostType(val string) {
+	s.PostType = val
+}
+
+// SetFromTheSite sets the value of FromTheSite.
+func (s *AbilityRequestCardFactsTarget) SetFromTheSite(val AbilityRequestCardFactsTargetFromTheSite) {
+	s.FromTheSite = val
+}
+
+type AbilityRequestCardFactsTargetFromTheSite struct {
+	Status      string `json:"status"`
+	TitleBefore string `json:"title_before"`
+}
+
+// GetStatus returns the value of Status.
+func (s *AbilityRequestCardFactsTargetFromTheSite) GetStatus() string {
+	return s.Status
+}
+
+// GetTitleBefore returns the value of TitleBefore.
+func (s *AbilityRequestCardFactsTargetFromTheSite) GetTitleBefore() string {
+	return s.TitleBefore
+}
+
+// SetStatus sets the value of Status.
+func (s *AbilityRequestCardFactsTargetFromTheSite) SetStatus(val string) {
+	s.Status = val
+}
+
+// SetTitleBefore sets the value of TitleBefore.
+func (s *AbilityRequestCardFactsTargetFromTheSite) SetTitleBefore(val string) {
+	s.TitleBefore = val
 }
 
 type AbilityRequestEffectCopy string
@@ -1903,6 +2281,35 @@ func (s *AbilityRequestState) UnmarshalText(data []byte) error {
 		return errors.Errorf("invalid value: %q", data)
 	}
 }
+
+// Ref: #/components/schemas/AbilityTenantReenableResult
+type AbilityTenantReenableResult struct {
+	EntryID uuid.UUID `json:"entry_id"`
+	// Always true; a tool that was not off is a 404.
+	Reenabled bool `json:"reenabled"`
+}
+
+// GetEntryID returns the value of EntryID.
+func (s *AbilityTenantReenableResult) GetEntryID() uuid.UUID {
+	return s.EntryID
+}
+
+// GetReenabled returns the value of Reenabled.
+func (s *AbilityTenantReenableResult) GetReenabled() bool {
+	return s.Reenabled
+}
+
+// SetEntryID sets the value of EntryID.
+func (s *AbilityTenantReenableResult) SetEntryID(val uuid.UUID) {
+	s.EntryID = val
+}
+
+// SetReenabled sets the value of Reenabled.
+func (s *AbilityTenantReenableResult) SetReenabled(val bool) {
+	s.Reenabled = val
+}
+
+func (*AbilityTenantReenableResult) reenableAbilityForTenantRes() {}
 
 type AcceptInvitationBadRequest Error
 
@@ -28457,6 +28864,30 @@ type ListAdminContentIntegrationsUnauthorized Error
 
 func (*ListAdminContentIntegrationsUnauthorized) listAdminContentIntegrationsRes() {}
 
+type ListAdminRestRoutesForbidden Error
+
+func (*ListAdminRestRoutesForbidden) listAdminRestRoutesRes() {}
+
+type ListAdminRestRoutesOK struct {
+	Routes []RestRoute `json:"routes"`
+}
+
+// GetRoutes returns the value of Routes.
+func (s *ListAdminRestRoutesOK) GetRoutes() []RestRoute {
+	return s.Routes
+}
+
+// SetRoutes sets the value of Routes.
+func (s *ListAdminRestRoutesOK) SetRoutes(val []RestRoute) {
+	s.Routes = val
+}
+
+func (*ListAdminRestRoutesOK) listAdminRestRoutesRes() {}
+
+type ListAdminRestRoutesUnauthorized Error
+
+func (*ListAdminRestRoutesUnauthorized) listAdminRestRoutesRes() {}
+
 type ListAdminUserSitesForbidden Error
 
 func (*ListAdminUserSitesForbidden) listAdminUserSitesRes() {}
@@ -38171,6 +38602,74 @@ func (o OptMultipartFile) Or(d ht.MultipartFile) ht.MultipartFile {
 	return d
 }
 
+// NewOptNilAbilityRequestCardFacts returns new OptNilAbilityRequestCardFacts with value set to v.
+func NewOptNilAbilityRequestCardFacts(v AbilityRequestCardFacts) OptNilAbilityRequestCardFacts {
+	return OptNilAbilityRequestCardFacts{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilAbilityRequestCardFacts is optional nullable AbilityRequestCardFacts.
+type OptNilAbilityRequestCardFacts struct {
+	Value AbilityRequestCardFacts
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilAbilityRequestCardFacts was set.
+func (o OptNilAbilityRequestCardFacts) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilAbilityRequestCardFacts) Reset() {
+	var v AbilityRequestCardFacts
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilAbilityRequestCardFacts) SetTo(v AbilityRequestCardFacts) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilAbilityRequestCardFacts) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilAbilityRequestCardFacts) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v AbilityRequestCardFacts
+	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilAbilityRequestCardFacts) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilAbilityRequestCardFacts) Get() (v AbilityRequestCardFacts, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilAbilityRequestCardFacts) Or(d AbilityRequestCardFacts) AbilityRequestCardFacts {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptNilAgentMetadataAgentSelfUpdate returns new OptNilAgentMetadataAgentSelfUpdate with value set to v.
 func NewOptNilAgentMetadataAgentSelfUpdate(v AgentMetadataAgentSelfUpdate) OptNilAgentMetadataAgentSelfUpdate {
 	return OptNilAgentMetadataAgentSelfUpdate{
@@ -41257,6 +41756,374 @@ func (o OptRegisterRequestPlan) Get() (v RegisterRequestPlan, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptRegisterRequestPlan) Or(d RegisterRequestPlan) RegisterRequestPlan {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptRestRouteInputArgRender returns new OptRestRouteInputArgRender with value set to v.
+func NewOptRestRouteInputArgRender(v RestRouteInputArgRender) OptRestRouteInputArgRender {
+	return OptRestRouteInputArgRender{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptRestRouteInputArgRender is optional RestRouteInputArgRender.
+type OptRestRouteInputArgRender struct {
+	Value RestRouteInputArgRender
+	Set   bool
+}
+
+// IsSet returns true if OptRestRouteInputArgRender was set.
+func (o OptRestRouteInputArgRender) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptRestRouteInputArgRender) Reset() {
+	var v RestRouteInputArgRender
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptRestRouteInputArgRender) SetTo(v RestRouteInputArgRender) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptRestRouteInputArgRender) Get() (v RestRouteInputArgRender, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptRestRouteInputArgRender) Or(d RestRouteInputArgRender) RestRouteInputArgRender {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptRestRouteInputBodyKeys returns new OptRestRouteInputBodyKeys with value set to v.
+func NewOptRestRouteInputBodyKeys(v RestRouteInputBodyKeys) OptRestRouteInputBodyKeys {
+	return OptRestRouteInputBodyKeys{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptRestRouteInputBodyKeys is optional RestRouteInputBodyKeys.
+type OptRestRouteInputBodyKeys struct {
+	Value RestRouteInputBodyKeys
+	Set   bool
+}
+
+// IsSet returns true if OptRestRouteInputBodyKeys was set.
+func (o OptRestRouteInputBodyKeys) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptRestRouteInputBodyKeys) Reset() {
+	var v RestRouteInputBodyKeys
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptRestRouteInputBodyKeys) SetTo(v RestRouteInputBodyKeys) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptRestRouteInputBodyKeys) Get() (v RestRouteInputBodyKeys, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptRestRouteInputBodyKeys) Or(d RestRouteInputBodyKeys) RestRouteInputBodyKeys {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptRestRouteInputClass returns new OptRestRouteInputClass with value set to v.
+func NewOptRestRouteInputClass(v RestRouteInputClass) OptRestRouteInputClass {
+	return OptRestRouteInputClass{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptRestRouteInputClass is optional RestRouteInputClass.
+type OptRestRouteInputClass struct {
+	Value RestRouteInputClass
+	Set   bool
+}
+
+// IsSet returns true if OptRestRouteInputClass was set.
+func (o OptRestRouteInputClass) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptRestRouteInputClass) Reset() {
+	var v RestRouteInputClass
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptRestRouteInputClass) SetTo(v RestRouteInputClass) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptRestRouteInputClass) Get() (v RestRouteInputClass, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptRestRouteInputClass) Or(d RestRouteInputClass) RestRouteInputClass {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptRestRouteInputEffectCopy returns new OptRestRouteInputEffectCopy with value set to v.
+func NewOptRestRouteInputEffectCopy(v RestRouteInputEffectCopy) OptRestRouteInputEffectCopy {
+	return OptRestRouteInputEffectCopy{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptRestRouteInputEffectCopy is optional RestRouteInputEffectCopy.
+type OptRestRouteInputEffectCopy struct {
+	Value RestRouteInputEffectCopy
+	Set   bool
+}
+
+// IsSet returns true if OptRestRouteInputEffectCopy was set.
+func (o OptRestRouteInputEffectCopy) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptRestRouteInputEffectCopy) Reset() {
+	var v RestRouteInputEffectCopy
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptRestRouteInputEffectCopy) SetTo(v RestRouteInputEffectCopy) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptRestRouteInputEffectCopy) Get() (v RestRouteInputEffectCopy, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptRestRouteInputEffectCopy) Or(d RestRouteInputEffectCopy) RestRouteInputEffectCopy {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptRestRouteInputMethod returns new OptRestRouteInputMethod with value set to v.
+func NewOptRestRouteInputMethod(v RestRouteInputMethod) OptRestRouteInputMethod {
+	return OptRestRouteInputMethod{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptRestRouteInputMethod is optional RestRouteInputMethod.
+type OptRestRouteInputMethod struct {
+	Value RestRouteInputMethod
+	Set   bool
+}
+
+// IsSet returns true if OptRestRouteInputMethod was set.
+func (o OptRestRouteInputMethod) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptRestRouteInputMethod) Reset() {
+	var v RestRouteInputMethod
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptRestRouteInputMethod) SetTo(v RestRouteInputMethod) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptRestRouteInputMethod) Get() (v RestRouteInputMethod, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptRestRouteInputMethod) Or(d RestRouteInputMethod) RestRouteInputMethod {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptRestRouteInputPathParams returns new OptRestRouteInputPathParams with value set to v.
+func NewOptRestRouteInputPathParams(v RestRouteInputPathParams) OptRestRouteInputPathParams {
+	return OptRestRouteInputPathParams{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptRestRouteInputPathParams is optional RestRouteInputPathParams.
+type OptRestRouteInputPathParams struct {
+	Value RestRouteInputPathParams
+	Set   bool
+}
+
+// IsSet returns true if OptRestRouteInputPathParams was set.
+func (o OptRestRouteInputPathParams) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptRestRouteInputPathParams) Reset() {
+	var v RestRouteInputPathParams
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptRestRouteInputPathParams) SetTo(v RestRouteInputPathParams) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptRestRouteInputPathParams) Get() (v RestRouteInputPathParams, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptRestRouteInputPathParams) Or(d RestRouteInputPathParams) RestRouteInputPathParams {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptRestRouteInputPinnedQuery returns new OptRestRouteInputPinnedQuery with value set to v.
+func NewOptRestRouteInputPinnedQuery(v RestRouteInputPinnedQuery) OptRestRouteInputPinnedQuery {
+	return OptRestRouteInputPinnedQuery{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptRestRouteInputPinnedQuery is optional RestRouteInputPinnedQuery.
+type OptRestRouteInputPinnedQuery struct {
+	Value RestRouteInputPinnedQuery
+	Set   bool
+}
+
+// IsSet returns true if OptRestRouteInputPinnedQuery was set.
+func (o OptRestRouteInputPinnedQuery) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptRestRouteInputPinnedQuery) Reset() {
+	var v RestRouteInputPinnedQuery
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptRestRouteInputPinnedQuery) SetTo(v RestRouteInputPinnedQuery) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptRestRouteInputPinnedQuery) Get() (v RestRouteInputPinnedQuery, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptRestRouteInputPinnedQuery) Or(d RestRouteInputPinnedQuery) RestRouteInputPinnedQuery {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptRestRouteInputQueryKeys returns new OptRestRouteInputQueryKeys with value set to v.
+func NewOptRestRouteInputQueryKeys(v RestRouteInputQueryKeys) OptRestRouteInputQueryKeys {
+	return OptRestRouteInputQueryKeys{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptRestRouteInputQueryKeys is optional RestRouteInputQueryKeys.
+type OptRestRouteInputQueryKeys struct {
+	Value RestRouteInputQueryKeys
+	Set   bool
+}
+
+// IsSet returns true if OptRestRouteInputQueryKeys was set.
+func (o OptRestRouteInputQueryKeys) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptRestRouteInputQueryKeys) Reset() {
+	var v RestRouteInputQueryKeys
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptRestRouteInputQueryKeys) SetTo(v RestRouteInputQueryKeys) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptRestRouteInputQueryKeys) Get() (v RestRouteInputQueryKeys, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptRestRouteInputQueryKeys) Or(d RestRouteInputQueryKeys) RestRouteInputQueryKeys {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -47090,6 +47957,24 @@ func (s *RecoveryCodesResponse) SetRecoveryCodes(val []string) {
 func (*RecoveryCodesResponse) confirmTotpEnrollmentRes()   {}
 func (*RecoveryCodesResponse) regenerateRecoveryCodesRes() {}
 
+type ReenableAbilityForTenantForbidden Error
+
+func (*ReenableAbilityForTenantForbidden) reenableAbilityForTenantRes() {}
+
+type ReenableAbilityForTenantNotFound Error
+
+func (*ReenableAbilityForTenantNotFound) reenableAbilityForTenantRes() {}
+
+type ReenableAbilityForTenantReq struct{}
+
+type ReenableAbilityForTenantUnprocessableEntity Error
+
+func (*ReenableAbilityForTenantUnprocessableEntity) reenableAbilityForTenantRes() {}
+
+type ReenableAbilityForTenantUnsupportedMediaType Error
+
+func (*ReenableAbilityForTenantUnsupportedMediaType) reenableAbilityForTenantRes() {}
+
 type RefreshSiteContentInventoryAccepted struct {
 	Status RefreshSiteContentInventoryAcceptedStatus `json:"status"`
 }
@@ -47780,6 +48665,896 @@ func (s *ResetPasswordReq) SetPassword(val string) {
 type ResetPasswordUnprocessableEntity Error
 
 func (*ResetPasswordUnprocessableEntity) resetPasswordRes() {}
+
+// One reviewed WordPress REST route (m161). `route_sha256` is the sha256 of the exact route bytes sent
+// to a site's agent.
+// Ref: #/components/schemas/RestRoute
+type RestRoute struct {
+	RouteID     string               `json:"route_id"`
+	Method      RestRouteMethod      `json:"method"`
+	Namespace   string               `json:"namespace"`
+	Template    string               `json:"template"`
+	CorePattern string               `json:"core_pattern"`
+	PathParams  RestRoutePathParams  `json:"path_params"`
+	QueryKeys   RestRouteQueryKeys   `json:"query_keys"`
+	PinnedQuery RestRoutePinnedQuery `json:"pinned_query"`
+	BodyKeys    RestRouteBodyKeys    `json:"body_keys"`
+	Class       RestRouteClass       `json:"class"`
+	// The pinned output shape.
+	OutputFields       jx.Raw              `json:"output_fields"`
+	Snapshot           string              `json:"snapshot"`
+	Target             jx.Raw              `json:"target"`
+	ArgRender          RestRouteArgRender  `json:"arg_render"`
+	OperatorPermission OptNilString        `json:"operator_permission"`
+	EffectCopy         RestRouteEffectCopy `json:"effect_copy"`
+	Enabled            bool                `json:"enabled"`
+	MinWpVersion       OptNilString        `json:"min_wp_version"`
+	Title              string              `json:"title"`
+	Description        string              `json:"description"`
+	RouteSHA256        OptNilString        `json:"route_sha256"`
+	HashCurrent        bool                `json:"hash_current"`
+	UpdatedAt          time.Time           `json:"updated_at"`
+}
+
+// GetRouteID returns the value of RouteID.
+func (s *RestRoute) GetRouteID() string {
+	return s.RouteID
+}
+
+// GetMethod returns the value of Method.
+func (s *RestRoute) GetMethod() RestRouteMethod {
+	return s.Method
+}
+
+// GetNamespace returns the value of Namespace.
+func (s *RestRoute) GetNamespace() string {
+	return s.Namespace
+}
+
+// GetTemplate returns the value of Template.
+func (s *RestRoute) GetTemplate() string {
+	return s.Template
+}
+
+// GetCorePattern returns the value of CorePattern.
+func (s *RestRoute) GetCorePattern() string {
+	return s.CorePattern
+}
+
+// GetPathParams returns the value of PathParams.
+func (s *RestRoute) GetPathParams() RestRoutePathParams {
+	return s.PathParams
+}
+
+// GetQueryKeys returns the value of QueryKeys.
+func (s *RestRoute) GetQueryKeys() RestRouteQueryKeys {
+	return s.QueryKeys
+}
+
+// GetPinnedQuery returns the value of PinnedQuery.
+func (s *RestRoute) GetPinnedQuery() RestRoutePinnedQuery {
+	return s.PinnedQuery
+}
+
+// GetBodyKeys returns the value of BodyKeys.
+func (s *RestRoute) GetBodyKeys() RestRouteBodyKeys {
+	return s.BodyKeys
+}
+
+// GetClass returns the value of Class.
+func (s *RestRoute) GetClass() RestRouteClass {
+	return s.Class
+}
+
+// GetOutputFields returns the value of OutputFields.
+func (s *RestRoute) GetOutputFields() jx.Raw {
+	return s.OutputFields
+}
+
+// GetSnapshot returns the value of Snapshot.
+func (s *RestRoute) GetSnapshot() string {
+	return s.Snapshot
+}
+
+// GetTarget returns the value of Target.
+func (s *RestRoute) GetTarget() jx.Raw {
+	return s.Target
+}
+
+// GetArgRender returns the value of ArgRender.
+func (s *RestRoute) GetArgRender() RestRouteArgRender {
+	return s.ArgRender
+}
+
+// GetOperatorPermission returns the value of OperatorPermission.
+func (s *RestRoute) GetOperatorPermission() OptNilString {
+	return s.OperatorPermission
+}
+
+// GetEffectCopy returns the value of EffectCopy.
+func (s *RestRoute) GetEffectCopy() RestRouteEffectCopy {
+	return s.EffectCopy
+}
+
+// GetEnabled returns the value of Enabled.
+func (s *RestRoute) GetEnabled() bool {
+	return s.Enabled
+}
+
+// GetMinWpVersion returns the value of MinWpVersion.
+func (s *RestRoute) GetMinWpVersion() OptNilString {
+	return s.MinWpVersion
+}
+
+// GetTitle returns the value of Title.
+func (s *RestRoute) GetTitle() string {
+	return s.Title
+}
+
+// GetDescription returns the value of Description.
+func (s *RestRoute) GetDescription() string {
+	return s.Description
+}
+
+// GetRouteSHA256 returns the value of RouteSHA256.
+func (s *RestRoute) GetRouteSHA256() OptNilString {
+	return s.RouteSHA256
+}
+
+// GetHashCurrent returns the value of HashCurrent.
+func (s *RestRoute) GetHashCurrent() bool {
+	return s.HashCurrent
+}
+
+// GetUpdatedAt returns the value of UpdatedAt.
+func (s *RestRoute) GetUpdatedAt() time.Time {
+	return s.UpdatedAt
+}
+
+// SetRouteID sets the value of RouteID.
+func (s *RestRoute) SetRouteID(val string) {
+	s.RouteID = val
+}
+
+// SetMethod sets the value of Method.
+func (s *RestRoute) SetMethod(val RestRouteMethod) {
+	s.Method = val
+}
+
+// SetNamespace sets the value of Namespace.
+func (s *RestRoute) SetNamespace(val string) {
+	s.Namespace = val
+}
+
+// SetTemplate sets the value of Template.
+func (s *RestRoute) SetTemplate(val string) {
+	s.Template = val
+}
+
+// SetCorePattern sets the value of CorePattern.
+func (s *RestRoute) SetCorePattern(val string) {
+	s.CorePattern = val
+}
+
+// SetPathParams sets the value of PathParams.
+func (s *RestRoute) SetPathParams(val RestRoutePathParams) {
+	s.PathParams = val
+}
+
+// SetQueryKeys sets the value of QueryKeys.
+func (s *RestRoute) SetQueryKeys(val RestRouteQueryKeys) {
+	s.QueryKeys = val
+}
+
+// SetPinnedQuery sets the value of PinnedQuery.
+func (s *RestRoute) SetPinnedQuery(val RestRoutePinnedQuery) {
+	s.PinnedQuery = val
+}
+
+// SetBodyKeys sets the value of BodyKeys.
+func (s *RestRoute) SetBodyKeys(val RestRouteBodyKeys) {
+	s.BodyKeys = val
+}
+
+// SetClass sets the value of Class.
+func (s *RestRoute) SetClass(val RestRouteClass) {
+	s.Class = val
+}
+
+// SetOutputFields sets the value of OutputFields.
+func (s *RestRoute) SetOutputFields(val jx.Raw) {
+	s.OutputFields = val
+}
+
+// SetSnapshot sets the value of Snapshot.
+func (s *RestRoute) SetSnapshot(val string) {
+	s.Snapshot = val
+}
+
+// SetTarget sets the value of Target.
+func (s *RestRoute) SetTarget(val jx.Raw) {
+	s.Target = val
+}
+
+// SetArgRender sets the value of ArgRender.
+func (s *RestRoute) SetArgRender(val RestRouteArgRender) {
+	s.ArgRender = val
+}
+
+// SetOperatorPermission sets the value of OperatorPermission.
+func (s *RestRoute) SetOperatorPermission(val OptNilString) {
+	s.OperatorPermission = val
+}
+
+// SetEffectCopy sets the value of EffectCopy.
+func (s *RestRoute) SetEffectCopy(val RestRouteEffectCopy) {
+	s.EffectCopy = val
+}
+
+// SetEnabled sets the value of Enabled.
+func (s *RestRoute) SetEnabled(val bool) {
+	s.Enabled = val
+}
+
+// SetMinWpVersion sets the value of MinWpVersion.
+func (s *RestRoute) SetMinWpVersion(val OptNilString) {
+	s.MinWpVersion = val
+}
+
+// SetTitle sets the value of Title.
+func (s *RestRoute) SetTitle(val string) {
+	s.Title = val
+}
+
+// SetDescription sets the value of Description.
+func (s *RestRoute) SetDescription(val string) {
+	s.Description = val
+}
+
+// SetRouteSHA256 sets the value of RouteSHA256.
+func (s *RestRoute) SetRouteSHA256(val OptNilString) {
+	s.RouteSHA256 = val
+}
+
+// SetHashCurrent sets the value of HashCurrent.
+func (s *RestRoute) SetHashCurrent(val bool) {
+	s.HashCurrent = val
+}
+
+// SetUpdatedAt sets the value of UpdatedAt.
+func (s *RestRoute) SetUpdatedAt(val time.Time) {
+	s.UpdatedAt = val
+}
+
+func (*RestRoute) updateAdminRestRouteRes() {}
+
+type RestRouteArgRender map[string]jx.Raw
+
+func (s *RestRouteArgRender) init() RestRouteArgRender {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+type RestRouteBodyKeys map[string]jx.Raw
+
+func (s *RestRouteBodyKeys) init() RestRouteBodyKeys {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+type RestRouteClass string
+
+const (
+	RestRouteClassRead  RestRouteClass = "read"
+	RestRouteClassWrite RestRouteClass = "write"
+)
+
+// AllValues returns all RestRouteClass values.
+func (RestRouteClass) AllValues() []RestRouteClass {
+	return []RestRouteClass{
+		RestRouteClassRead,
+		RestRouteClassWrite,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s RestRouteClass) MarshalText() ([]byte, error) {
+	switch s {
+	case RestRouteClassRead:
+		return []byte(s), nil
+	case RestRouteClassWrite:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *RestRouteClass) UnmarshalText(data []byte) error {
+	switch RestRouteClass(data) {
+	case RestRouteClassRead:
+		*s = RestRouteClassRead
+		return nil
+	case RestRouteClassWrite:
+		*s = RestRouteClassWrite
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type RestRouteEffectCopy string
+
+const (
+	RestRouteEffectCopyDraft RestRouteEffectCopy = "draft"
+	RestRouteEffectCopyLive  RestRouteEffectCopy = "live"
+	RestRouteEffectCopyNone  RestRouteEffectCopy = "none"
+)
+
+// AllValues returns all RestRouteEffectCopy values.
+func (RestRouteEffectCopy) AllValues() []RestRouteEffectCopy {
+	return []RestRouteEffectCopy{
+		RestRouteEffectCopyDraft,
+		RestRouteEffectCopyLive,
+		RestRouteEffectCopyNone,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s RestRouteEffectCopy) MarshalText() ([]byte, error) {
+	switch s {
+	case RestRouteEffectCopyDraft:
+		return []byte(s), nil
+	case RestRouteEffectCopyLive:
+		return []byte(s), nil
+	case RestRouteEffectCopyNone:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *RestRouteEffectCopy) UnmarshalText(data []byte) error {
+	switch RestRouteEffectCopy(data) {
+	case RestRouteEffectCopyDraft:
+		*s = RestRouteEffectCopyDraft
+		return nil
+	case RestRouteEffectCopyLive:
+		*s = RestRouteEffectCopyLive
+		return nil
+	case RestRouteEffectCopyNone:
+		*s = RestRouteEffectCopyNone
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// A route edit. Every field is optional; an omitted field keeps its stored value. route_id and
+// route_sha256 are never body fields. JSON members hold integers only, written plainly.
+// Ref: #/components/schemas/RestRouteInput
+type RestRouteInput struct {
+	Method      OptRestRouteInputMethod      `json:"method"`
+	Namespace   OptString                    `json:"namespace"`
+	Template    OptString                    `json:"template"`
+	CorePattern OptString                    `json:"core_pattern"`
+	PathParams  OptRestRouteInputPathParams  `json:"path_params"`
+	QueryKeys   OptRestRouteInputQueryKeys   `json:"query_keys"`
+	PinnedQuery OptRestRouteInputPinnedQuery `json:"pinned_query"`
+	BodyKeys    OptRestRouteInputBodyKeys    `json:"body_keys"`
+	Class       OptRestRouteInputClass       `json:"class"`
+	// The pinned output shape.
+	OutputFields       jx.Raw                      `json:"output_fields"`
+	Snapshot           OptString                   `json:"snapshot"`
+	Target             jx.Raw                      `json:"target"`
+	ArgRender          OptRestRouteInputArgRender  `json:"arg_render"`
+	OperatorPermission OptString                   `json:"operator_permission"`
+	EffectCopy         OptRestRouteInputEffectCopy `json:"effect_copy"`
+	Enabled            OptBool                     `json:"enabled"`
+	MinWpVersion       OptString                   `json:"min_wp_version"`
+	Title              OptString                   `json:"title"`
+	Description        OptString                   `json:"description"`
+}
+
+// GetMethod returns the value of Method.
+func (s *RestRouteInput) GetMethod() OptRestRouteInputMethod {
+	return s.Method
+}
+
+// GetNamespace returns the value of Namespace.
+func (s *RestRouteInput) GetNamespace() OptString {
+	return s.Namespace
+}
+
+// GetTemplate returns the value of Template.
+func (s *RestRouteInput) GetTemplate() OptString {
+	return s.Template
+}
+
+// GetCorePattern returns the value of CorePattern.
+func (s *RestRouteInput) GetCorePattern() OptString {
+	return s.CorePattern
+}
+
+// GetPathParams returns the value of PathParams.
+func (s *RestRouteInput) GetPathParams() OptRestRouteInputPathParams {
+	return s.PathParams
+}
+
+// GetQueryKeys returns the value of QueryKeys.
+func (s *RestRouteInput) GetQueryKeys() OptRestRouteInputQueryKeys {
+	return s.QueryKeys
+}
+
+// GetPinnedQuery returns the value of PinnedQuery.
+func (s *RestRouteInput) GetPinnedQuery() OptRestRouteInputPinnedQuery {
+	return s.PinnedQuery
+}
+
+// GetBodyKeys returns the value of BodyKeys.
+func (s *RestRouteInput) GetBodyKeys() OptRestRouteInputBodyKeys {
+	return s.BodyKeys
+}
+
+// GetClass returns the value of Class.
+func (s *RestRouteInput) GetClass() OptRestRouteInputClass {
+	return s.Class
+}
+
+// GetOutputFields returns the value of OutputFields.
+func (s *RestRouteInput) GetOutputFields() jx.Raw {
+	return s.OutputFields
+}
+
+// GetSnapshot returns the value of Snapshot.
+func (s *RestRouteInput) GetSnapshot() OptString {
+	return s.Snapshot
+}
+
+// GetTarget returns the value of Target.
+func (s *RestRouteInput) GetTarget() jx.Raw {
+	return s.Target
+}
+
+// GetArgRender returns the value of ArgRender.
+func (s *RestRouteInput) GetArgRender() OptRestRouteInputArgRender {
+	return s.ArgRender
+}
+
+// GetOperatorPermission returns the value of OperatorPermission.
+func (s *RestRouteInput) GetOperatorPermission() OptString {
+	return s.OperatorPermission
+}
+
+// GetEffectCopy returns the value of EffectCopy.
+func (s *RestRouteInput) GetEffectCopy() OptRestRouteInputEffectCopy {
+	return s.EffectCopy
+}
+
+// GetEnabled returns the value of Enabled.
+func (s *RestRouteInput) GetEnabled() OptBool {
+	return s.Enabled
+}
+
+// GetMinWpVersion returns the value of MinWpVersion.
+func (s *RestRouteInput) GetMinWpVersion() OptString {
+	return s.MinWpVersion
+}
+
+// GetTitle returns the value of Title.
+func (s *RestRouteInput) GetTitle() OptString {
+	return s.Title
+}
+
+// GetDescription returns the value of Description.
+func (s *RestRouteInput) GetDescription() OptString {
+	return s.Description
+}
+
+// SetMethod sets the value of Method.
+func (s *RestRouteInput) SetMethod(val OptRestRouteInputMethod) {
+	s.Method = val
+}
+
+// SetNamespace sets the value of Namespace.
+func (s *RestRouteInput) SetNamespace(val OptString) {
+	s.Namespace = val
+}
+
+// SetTemplate sets the value of Template.
+func (s *RestRouteInput) SetTemplate(val OptString) {
+	s.Template = val
+}
+
+// SetCorePattern sets the value of CorePattern.
+func (s *RestRouteInput) SetCorePattern(val OptString) {
+	s.CorePattern = val
+}
+
+// SetPathParams sets the value of PathParams.
+func (s *RestRouteInput) SetPathParams(val OptRestRouteInputPathParams) {
+	s.PathParams = val
+}
+
+// SetQueryKeys sets the value of QueryKeys.
+func (s *RestRouteInput) SetQueryKeys(val OptRestRouteInputQueryKeys) {
+	s.QueryKeys = val
+}
+
+// SetPinnedQuery sets the value of PinnedQuery.
+func (s *RestRouteInput) SetPinnedQuery(val OptRestRouteInputPinnedQuery) {
+	s.PinnedQuery = val
+}
+
+// SetBodyKeys sets the value of BodyKeys.
+func (s *RestRouteInput) SetBodyKeys(val OptRestRouteInputBodyKeys) {
+	s.BodyKeys = val
+}
+
+// SetClass sets the value of Class.
+func (s *RestRouteInput) SetClass(val OptRestRouteInputClass) {
+	s.Class = val
+}
+
+// SetOutputFields sets the value of OutputFields.
+func (s *RestRouteInput) SetOutputFields(val jx.Raw) {
+	s.OutputFields = val
+}
+
+// SetSnapshot sets the value of Snapshot.
+func (s *RestRouteInput) SetSnapshot(val OptString) {
+	s.Snapshot = val
+}
+
+// SetTarget sets the value of Target.
+func (s *RestRouteInput) SetTarget(val jx.Raw) {
+	s.Target = val
+}
+
+// SetArgRender sets the value of ArgRender.
+func (s *RestRouteInput) SetArgRender(val OptRestRouteInputArgRender) {
+	s.ArgRender = val
+}
+
+// SetOperatorPermission sets the value of OperatorPermission.
+func (s *RestRouteInput) SetOperatorPermission(val OptString) {
+	s.OperatorPermission = val
+}
+
+// SetEffectCopy sets the value of EffectCopy.
+func (s *RestRouteInput) SetEffectCopy(val OptRestRouteInputEffectCopy) {
+	s.EffectCopy = val
+}
+
+// SetEnabled sets the value of Enabled.
+func (s *RestRouteInput) SetEnabled(val OptBool) {
+	s.Enabled = val
+}
+
+// SetMinWpVersion sets the value of MinWpVersion.
+func (s *RestRouteInput) SetMinWpVersion(val OptString) {
+	s.MinWpVersion = val
+}
+
+// SetTitle sets the value of Title.
+func (s *RestRouteInput) SetTitle(val OptString) {
+	s.Title = val
+}
+
+// SetDescription sets the value of Description.
+func (s *RestRouteInput) SetDescription(val OptString) {
+	s.Description = val
+}
+
+type RestRouteInputArgRender map[string]jx.Raw
+
+func (s *RestRouteInputArgRender) init() RestRouteInputArgRender {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+type RestRouteInputBodyKeys map[string]jx.Raw
+
+func (s *RestRouteInputBodyKeys) init() RestRouteInputBodyKeys {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+type RestRouteInputClass string
+
+const (
+	RestRouteInputClassRead  RestRouteInputClass = "read"
+	RestRouteInputClassWrite RestRouteInputClass = "write"
+)
+
+// AllValues returns all RestRouteInputClass values.
+func (RestRouteInputClass) AllValues() []RestRouteInputClass {
+	return []RestRouteInputClass{
+		RestRouteInputClassRead,
+		RestRouteInputClassWrite,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s RestRouteInputClass) MarshalText() ([]byte, error) {
+	switch s {
+	case RestRouteInputClassRead:
+		return []byte(s), nil
+	case RestRouteInputClassWrite:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *RestRouteInputClass) UnmarshalText(data []byte) error {
+	switch RestRouteInputClass(data) {
+	case RestRouteInputClassRead:
+		*s = RestRouteInputClassRead
+		return nil
+	case RestRouteInputClassWrite:
+		*s = RestRouteInputClassWrite
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type RestRouteInputEffectCopy string
+
+const (
+	RestRouteInputEffectCopyDraft RestRouteInputEffectCopy = "draft"
+	RestRouteInputEffectCopyLive  RestRouteInputEffectCopy = "live"
+	RestRouteInputEffectCopyNone  RestRouteInputEffectCopy = "none"
+)
+
+// AllValues returns all RestRouteInputEffectCopy values.
+func (RestRouteInputEffectCopy) AllValues() []RestRouteInputEffectCopy {
+	return []RestRouteInputEffectCopy{
+		RestRouteInputEffectCopyDraft,
+		RestRouteInputEffectCopyLive,
+		RestRouteInputEffectCopyNone,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s RestRouteInputEffectCopy) MarshalText() ([]byte, error) {
+	switch s {
+	case RestRouteInputEffectCopyDraft:
+		return []byte(s), nil
+	case RestRouteInputEffectCopyLive:
+		return []byte(s), nil
+	case RestRouteInputEffectCopyNone:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *RestRouteInputEffectCopy) UnmarshalText(data []byte) error {
+	switch RestRouteInputEffectCopy(data) {
+	case RestRouteInputEffectCopyDraft:
+		*s = RestRouteInputEffectCopyDraft
+		return nil
+	case RestRouteInputEffectCopyLive:
+		*s = RestRouteInputEffectCopyLive
+		return nil
+	case RestRouteInputEffectCopyNone:
+		*s = RestRouteInputEffectCopyNone
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type RestRouteInputMethod string
+
+const (
+	RestRouteInputMethodGET    RestRouteInputMethod = "GET"
+	RestRouteInputMethodPOST   RestRouteInputMethod = "POST"
+	RestRouteInputMethodPUT    RestRouteInputMethod = "PUT"
+	RestRouteInputMethodPATCH  RestRouteInputMethod = "PATCH"
+	RestRouteInputMethodDELETE RestRouteInputMethod = "DELETE"
+)
+
+// AllValues returns all RestRouteInputMethod values.
+func (RestRouteInputMethod) AllValues() []RestRouteInputMethod {
+	return []RestRouteInputMethod{
+		RestRouteInputMethodGET,
+		RestRouteInputMethodPOST,
+		RestRouteInputMethodPUT,
+		RestRouteInputMethodPATCH,
+		RestRouteInputMethodDELETE,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s RestRouteInputMethod) MarshalText() ([]byte, error) {
+	switch s {
+	case RestRouteInputMethodGET:
+		return []byte(s), nil
+	case RestRouteInputMethodPOST:
+		return []byte(s), nil
+	case RestRouteInputMethodPUT:
+		return []byte(s), nil
+	case RestRouteInputMethodPATCH:
+		return []byte(s), nil
+	case RestRouteInputMethodDELETE:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *RestRouteInputMethod) UnmarshalText(data []byte) error {
+	switch RestRouteInputMethod(data) {
+	case RestRouteInputMethodGET:
+		*s = RestRouteInputMethodGET
+		return nil
+	case RestRouteInputMethodPOST:
+		*s = RestRouteInputMethodPOST
+		return nil
+	case RestRouteInputMethodPUT:
+		*s = RestRouteInputMethodPUT
+		return nil
+	case RestRouteInputMethodPATCH:
+		*s = RestRouteInputMethodPATCH
+		return nil
+	case RestRouteInputMethodDELETE:
+		*s = RestRouteInputMethodDELETE
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type RestRouteInputPathParams map[string]jx.Raw
+
+func (s *RestRouteInputPathParams) init() RestRouteInputPathParams {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+type RestRouteInputPinnedQuery map[string]jx.Raw
+
+func (s *RestRouteInputPinnedQuery) init() RestRouteInputPinnedQuery {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+type RestRouteInputQueryKeys map[string]jx.Raw
+
+func (s *RestRouteInputQueryKeys) init() RestRouteInputQueryKeys {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+type RestRouteMethod string
+
+const (
+	RestRouteMethodGET    RestRouteMethod = "GET"
+	RestRouteMethodPOST   RestRouteMethod = "POST"
+	RestRouteMethodPUT    RestRouteMethod = "PUT"
+	RestRouteMethodPATCH  RestRouteMethod = "PATCH"
+	RestRouteMethodDELETE RestRouteMethod = "DELETE"
+)
+
+// AllValues returns all RestRouteMethod values.
+func (RestRouteMethod) AllValues() []RestRouteMethod {
+	return []RestRouteMethod{
+		RestRouteMethodGET,
+		RestRouteMethodPOST,
+		RestRouteMethodPUT,
+		RestRouteMethodPATCH,
+		RestRouteMethodDELETE,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s RestRouteMethod) MarshalText() ([]byte, error) {
+	switch s {
+	case RestRouteMethodGET:
+		return []byte(s), nil
+	case RestRouteMethodPOST:
+		return []byte(s), nil
+	case RestRouteMethodPUT:
+		return []byte(s), nil
+	case RestRouteMethodPATCH:
+		return []byte(s), nil
+	case RestRouteMethodDELETE:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *RestRouteMethod) UnmarshalText(data []byte) error {
+	switch RestRouteMethod(data) {
+	case RestRouteMethodGET:
+		*s = RestRouteMethodGET
+		return nil
+	case RestRouteMethodPOST:
+		*s = RestRouteMethodPOST
+		return nil
+	case RestRouteMethodPUT:
+		*s = RestRouteMethodPUT
+		return nil
+	case RestRouteMethodPATCH:
+		*s = RestRouteMethodPATCH
+		return nil
+	case RestRouteMethodDELETE:
+		*s = RestRouteMethodDELETE
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type RestRoutePathParams map[string]jx.Raw
+
+func (s *RestRoutePathParams) init() RestRoutePathParams {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+type RestRoutePinnedQuery map[string]jx.Raw
+
+func (s *RestRoutePinnedQuery) init() RestRoutePinnedQuery {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+type RestRouteQueryKeys map[string]jx.Raw
+
+func (s *RestRouteQueryKeys) init() RestRouteQueryKeys {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
 
 type RestoreAdminAccountForbidden Error
 
@@ -59151,6 +60926,10 @@ type UpdateAdminAbilityCatalogueEntryBadRequest Error
 
 func (*UpdateAdminAbilityCatalogueEntryBadRequest) updateAdminAbilityCatalogueEntryRes() {}
 
+type UpdateAdminAbilityCatalogueEntryConflict Error
+
+func (*UpdateAdminAbilityCatalogueEntryConflict) updateAdminAbilityCatalogueEntryRes() {}
+
 type UpdateAdminAbilityCatalogueEntryForbidden Error
 
 func (*UpdateAdminAbilityCatalogueEntryForbidden) updateAdminAbilityCatalogueEntryRes() {}
@@ -59162,6 +60941,26 @@ func (*UpdateAdminAbilityCatalogueEntryNotFound) updateAdminAbilityCatalogueEntr
 type UpdateAdminAbilityCatalogueEntryUnauthorized Error
 
 func (*UpdateAdminAbilityCatalogueEntryUnauthorized) updateAdminAbilityCatalogueEntryRes() {}
+
+type UpdateAdminRestRouteConflict Error
+
+func (*UpdateAdminRestRouteConflict) updateAdminRestRouteRes() {}
+
+type UpdateAdminRestRouteForbidden Error
+
+func (*UpdateAdminRestRouteForbidden) updateAdminRestRouteRes() {}
+
+type UpdateAdminRestRouteNotFound Error
+
+func (*UpdateAdminRestRouteNotFound) updateAdminRestRouteRes() {}
+
+type UpdateAdminRestRouteUnauthorized Error
+
+func (*UpdateAdminRestRouteUnauthorized) updateAdminRestRouteRes() {}
+
+type UpdateAdminRestRouteUnprocessableEntity Error
+
+func (*UpdateAdminRestRouteUnprocessableEntity) updateAdminRestRouteRes() {}
 
 // All fields are optional (PATCH semantics).
 // Ref: #/components/schemas/UpdateAgencyClientRequest

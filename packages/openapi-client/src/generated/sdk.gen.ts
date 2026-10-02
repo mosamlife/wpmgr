@@ -654,6 +654,9 @@ import type {
   ListAdminContentIntegrationsData,
   ListAdminContentIntegrationsErrors,
   ListAdminContentIntegrationsResponses,
+  ListAdminRestRoutesData,
+  ListAdminRestRoutesErrors,
+  ListAdminRestRoutesResponses,
   ListAdminUsersData,
   ListAdminUsersErrors,
   ListAdminUserSitesData,
@@ -929,6 +932,9 @@ import type {
   RecheckSiteData,
   RecheckSiteErrors,
   RecheckSiteResponses,
+  ReenableAbilityForTenantData,
+  ReenableAbilityForTenantErrors,
+  ReenableAbilityForTenantResponses,
   RefreshSiteContentInventoryData,
   RefreshSiteContentInventoryErrors,
   RefreshSiteContentInventoryResponses,
@@ -1129,6 +1135,9 @@ import type {
   UpdateAdminAbilityCatalogueEntryData,
   UpdateAdminAbilityCatalogueEntryErrors,
   UpdateAdminAbilityCatalogueEntryResponses,
+  UpdateAdminRestRouteData,
+  UpdateAdminRestRouteErrors,
+  UpdateAdminRestRouteResponses,
   UpdateClientData,
   UpdateClientErrors,
   UpdateClientResponses,
@@ -6860,6 +6869,37 @@ export const undoAbilityRequest = <ThrowOnError extends boolean = false>(
   });
 
 /**
+ * Turn a reviewed tool back on for this account
+ *
+ * WPMgr switches a reviewed plugin, theme or core read tool off for an
+ * account as soon as it changes something on one of that account's
+ * sites, or contacts another server, during a read. While it is off,
+ * the AI connection is refused with `not_runnable_reason`
+ * `disabled_for_your_account`. This turns it back on for the caller's
+ * account only; a tool switched off for every account stays off until
+ * WPMgr turns it back on. A later report from this account switches it
+ * off again. The caller must be a signed-in admin or owner of the
+ * account with full organisation access, or a WPMgr superadmin. The
+ * change is audited as `ability.tenant_reenabled`.
+ *
+ */
+export const reenableAbilityForTenant = <ThrowOnError extends boolean = false>(
+  options: Options<ReenableAbilityForTenantData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    ReenableAbilityForTenantResponses,
+    ReenableAbilityForTenantErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/ai/abilities/{entryId}/reenable",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
  * Read whether content editing is enabled on a site
  *
  * Until content editing is enabled, an AI connection's page-creation
@@ -7185,6 +7225,49 @@ export const updateAdminAbilityCatalogueEntry = <
     ThrowOnError
   >({
     url: "/api/v1/admin/abilities/catalogue/{entryId}",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * The reviewed REST route catalogue (superadmin)
+ *
+ * Every route, enabled or not. `hash_current` is false when the stored
+ * `route_sha256` is unset or no longer reproduces from the row; such a
+ * route is not offered and nothing is sent against it.
+ *
+ */
+export const listAdminRestRoutes = <ThrowOnError extends boolean = false>(
+  options?: Options<ListAdminRestRoutesData, ThrowOnError>,
+) =>
+  (options?.client ?? client).get<
+    ListAdminRestRoutesResponses,
+    ListAdminRestRoutesErrors,
+    ThrowOnError
+  >({ url: "/api/v1/admin/abilities/rest-routes", ...options });
+
+/**
+ * Edit one reviewed REST route (superadmin)
+ *
+ * Omitted fields keep their stored values; the merge happens in the
+ * write's transaction under the route's lock. The acting user is the
+ * authenticated session. The server stamps a new `route_sha256` from the
+ * edited row, so every request approved against the old route closes
+ * unsent (route_changed, or route_disabled for a disable).
+ *
+ */
+export const updateAdminRestRoute = <ThrowOnError extends boolean = false>(
+  options: Options<UpdateAdminRestRouteData, ThrowOnError>,
+) =>
+  (options.client ?? client).put<
+    UpdateAdminRestRouteResponses,
+    UpdateAdminRestRouteErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/admin/abilities/rest-routes/{routeId}",
     ...options,
     headers: {
       "Content-Type": "application/json",

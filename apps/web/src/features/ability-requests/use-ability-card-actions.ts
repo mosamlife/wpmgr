@@ -40,7 +40,12 @@ export function useAbilityCardActions() {
     approve.mutate(
       { siteId: r.site_id, requestId: r.id, presentedDigest: r.presented_digest },
       {
-        onSuccess: () => toast.success("Approved. WPMgr will create the draft shortly."),
+        onSuccess: () =>
+          toast.success(
+            r.ability_name === "wpmgr/rest-write"
+              ? "Approved. WPMgr will make the change shortly."
+              : "Approved. WPMgr will create the draft shortly.",
+          ),
         onError: (err) => setNotice(r.id, err.code === CODE_REQUEST_CHANGED ? CHANGED_COPY : err.message),
       },
     );
@@ -63,18 +68,29 @@ export function useAbilityCardActions() {
       { siteId: r.site_id, requestId: r.id },
       {
         onSuccess: (done) => {
+          const rest = r.ability_name === "wpmgr/rest-write";
           switch (done.undo_state) {
             case "undone":
-              toast.success("Moved to the trash.");
+              toast.success(rest ? "Put back the way it was." : "Moved to the trash.");
               break;
             case "refused_published":
-              toast.error("The draft has been published since, so WPMgr left it alone.");
+              toast.error(
+                rest ? "WPMgr could not undo this change." : "The draft has been published since, so WPMgr left it alone.",
+              );
               break;
             case "refused_conflict":
-              toast.error("The draft was edited since, so WPMgr left it alone.");
+              toast.error(
+                rest
+                  ? "Someone edited this page after the change, so WPMgr left it as it is."
+                  : "The draft was edited since, so WPMgr left it alone.",
+              );
               break;
             case "failed":
-              toast.error("WPMgr could not move the draft to the trash.");
+              toast.error(
+                rest
+                  ? "WPMgr could not put the old title back. Check the page in WordPress."
+                  : "WPMgr could not move the draft to the trash.",
+              );
               break;
             default:
               break;

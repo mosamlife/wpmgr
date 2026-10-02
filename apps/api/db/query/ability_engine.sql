@@ -25,7 +25,8 @@ WHERE entry_id = sqlc.arg(entry_id)::uuid;
 -- inserts; a non-NULL entry_id updates that entry (SQLSTATE P0002 if absent,
 -- 22023 if the name would change). Refuses with 42501 unless actor_user_id
 -- names a superadmin, and writes an ability_catalogue_audit row in the same
--- statement.
+-- statement. m159: refuses 23P01 (ability_catalogue_range_overlap) when an
+-- admitted entry of the same name overlaps this admitted version range.
 SELECT * FROM admin_upsert_ability_catalogue_entry(
     sqlc.arg(actor_user_id)::uuid,
     sqlc.narg(entry_id)::uuid,
@@ -58,7 +59,8 @@ SELECT * FROM admin_upsert_ability_catalogue_entry(
     sqlc.arg(global_option_keys)::text[],
     sqlc.narg(integration_block)::jsonb,
     sqlc.arg(admission)::jsonb,
-    sqlc.narg(entry_sha256)::text
+    sqlc.narg(entry_sha256)::text,
+    sqlc.narg(output_fields)::jsonb
 );
 
 -- name: StampWpmgrAbilityEntryHash :one
@@ -71,6 +73,54 @@ SELECT * FROM stamp_wpmgr_ability_entry_hash(
     sqlc.arg(entry_id)::uuid,
     sqlc.arg(entry_sha256)::text
 );
+
+-- name: RecordAbilityReadSideEffect :one
+-- m160 (owner ruling 4, amended 2026-10-02). Records that a vendor read was
+-- caught writing or calling out on this site. Run it in the site's tenant
+-- transaction (InTenantTx): the definer takes the tenant from app.tenant_id
+-- and refuses a tenant_id argument that differs or a site that is not that
+-- tenant's. It disables the entry for the reporting tenant at once, then
+-- returns the number of distinct QUALIFIED (paid or aged) tenants counted
+-- since the last superadmin re-enable. The report that makes a new qualified
+-- tenant the third or later disables an enabled entry fleet-wide with a
+-- NULL-actor audit row. Run it in its own READ COMMITTED transaction.
+-- Refusals, nothing recorded: 22023 a NULL argument; 42501 wrong tenant, a
+-- site not of the tenant, or the entry is not a vendor read; P0002 no entry.
+SELECT record_ability_read_side_effect(
+    sqlc.arg(entry_id)::uuid,
+    sqlc.arg(site_id)::uuid,
+    sqlc.arg(tenant_id)::uuid
+)::int AS qualified_tenants;
+
+-- name: IsAbilityDisabledForTenant :one
+-- m160 R4. True when the entry is switched off for this tenant. Run in the
+-- tenant's transaction; RLS confines it to app.tenant_id.
+SELECT EXISTS (
+    SELECT 1 FROM ability_tenant_disables
+    WHERE tenant_id = sqlc.arg(tenant_id)::uuid
+      AND entry_id = sqlc.arg(entry_id)::uuid
+      AND reenabled_at IS NULL
+)::bool AS disabled;
+
+-- name: ListAbilityTenantDisabledEntryIDs :many
+-- m160 R4. Every entry switched off for this tenant, for filtering a whole
+-- catalogue read in one statement. Run in the tenant's transaction.
+SELECT entry_id FROM ability_tenant_disables
+WHERE tenant_id = sqlc.arg(tenant_id)::uuid
+  AND reenabled_at IS NULL
+ORDER BY entry_id;
+
+-- name: ReenableAbilityForTenant :execrows
+-- m160 R4. A tenant admin or superadmin switches the entry back on for this
+-- tenant; the row stays as the record. The caller checks the role. Returns 0
+-- when the entry was not disabled for the tenant. Run in the tenant's
+-- transaction. A later side-effect report from this tenant disables it again.
+UPDATE ability_tenant_disables SET
+    reenabled_at = now(),
+    reenabled_by_user_id = sqlc.arg(user_id)::uuid
+WHERE tenant_id = sqlc.arg(tenant_id)::uuid
+  AND entry_id = sqlc.arg(entry_id)::uuid
+  AND reenabled_at IS NULL;
 
 -- name: ListAbilityCatalogueAudit :many
 -- Newest first, for the admin screen.
