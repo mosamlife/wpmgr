@@ -16,6 +16,7 @@ use Brain\Monkey\Functions;
 use ReflectionProperty;
 use WPMgr\Agent\Abilities\AbilityDenylist;
 use WPMgr\Agent\Abilities\AbilityGuards;
+use WPMgr\Agent\Abilities\AbilityInterception;
 use WPMgr\Agent\Abilities\OwnAbilities;
 use WPMgr\Agent\Commands\AbilityRunCommand;
 use WPMgr\Agent\Commands\CommandEffect;
@@ -81,6 +82,7 @@ final class AbilityRunCommandTest extends TestCase
         Functions\when('get_post')->alias(fn ($id) => $this->posts[(int) $id] ?? null);
         Functions\when('add_filter')->alias(function ($name, $cb, $prio = 10) {
             $this->filters[] = [(string) $name, $cb, (int) $prio];
+            $this->syncWpFilter();
             return true;
         });
         Functions\when('remove_filter')->alias(function ($name, $cb, $prio = 10) {
@@ -89,6 +91,7 @@ final class AbilityRunCommandTest extends TestCase
                     unset($this->filters[$i]);
                 }
             }
+            $this->syncWpFilter();
             return true;
         });
 
@@ -571,12 +574,10 @@ final class AbilityRunCommandTest extends TestCase
         $g = new AbilityGuards();
         $g->arm('acme/outer');
 
-        // Recorder sees the value, a later filter rewrites it: the guard reverts and flags.
-        $rows = array_values(array_filter($this->filters, static fn ($r) => $r[0] === AbilityGuards::FILTER_INPUT));
-        $this->assertCount(2, $rows);
-        ($rows[0][1])(['a' => 1]);
-        $reverted = ($rows[1][1])(['a' => 2]);
-        $this->assertSame(['a' => 1], $reverted);
+        // Recorder sees the value, a later filter rewrites it: the input guard
+        // flags it and aborts the call before anything else runs.
+        $this->filters[] = [AbilityGuards::FILTER_INPUT, static fn () => ['a' => 2], 10];
+        $this->assertSame([true, 'ability_intercepted/input'], $this->applyOrAbort(AbilityGuards::FILTER_INPUT, ['a' => 1], 'acme/outer', null));
 
         $outer = new \WP_Filter_Sentinel();
         $this->assertSame($outer, $this->applyFilters(AbilityGuards::FILTER_PRE, $outer, 'acme/outer', []), 'the outer call itself passes');
@@ -667,9 +668,14 @@ final class AbilityRunCommandTest extends TestCase
         $this->filters[] = [$filter, static fn () => true, 10];
         $error           = new \WP_Error('ability_invalid_' . substr($label, 9), 'bad');
 
-        $out = $this->applyFilters($filter, $error, ['x' => 1], 'acme/outer');
+        [$aborted, $out] = $this->applyOrAbort($filter, $error, ['x' => 1], 'acme/outer');
 
-        $this->assertSame($error, $out, 'the schema failure is restored');
+        if ($label === 'validate_input') {
+            $this->assertSame([true, 'ability_intercepted/validate_input'], [$aborted, $out], 'input validation runs before the callback, so the call aborts');
+        } else {
+            $this->assertFalse($aborted);
+            $this->assertSame($error, $out, 'the schema failure is restored');
+        }
         $this->assertSame([$label], $g->violations());
         $g->disarm();
     }
@@ -735,8 +741,115 @@ final class AbilityRunCommandTest extends TestCase
         // And the permission guard itself sees it too.
         $g->arm('acme/outer');
         $this->filters[] = [AbilityGuards::FILTER_PERMISSION, static fn () => true, PHP_INT_MAX];
-        $this->applyFilters(AbilityGuards::FILTER_PERMISSION, false, 'acme/outer', [], null);
+        $this->assertSame([true, 'ability_intercepted/permission'], $this->applyOrAbort(AbilityGuards::FILTER_PERMISSION, false, 'acme/outer', [], null), 'the permission filter aborts before the callback');
         $this->assertContains('permission_order', $g->violations());
+        $g->disarm();
+    }
+
+    public function test_a_permission_flip_staged_from_an_input_filter_aborts_before_permission_runs(): void
+    {
+        $GLOBALS['wp_version'] = '7.1.0';
+        $g = new AbilityGuards();
+        $g->arm('acme/outer');
+        $this->filters[] = [AbilityGuards::FILTER_INPUT, function ($v) {
+            $this->filters[] = [AbilityGuards::FILTER_PERMISSION, static fn () => true, PHP_INT_MAX];
+            $this->syncWpFilter();
+            return $v;
+        }, 10];
+
+        $this->assertSame([true, 'ability_intercepted/input'], $this->applyOrAbort(AbilityGuards::FILTER_INPUT, ['a' => 1], 'acme/outer', null));
+        $this->assertContains('permission_order', $g->violations());
+        $g->disarm();
+    }
+
+    public function test_removing_our_permission_guard_from_an_input_filter_aborts(): void
+    {
+        $GLOBALS['wp_version'] = '7.1.0';
+        $g = new AbilityGuards();
+        $g->arm('acme/outer');
+        $this->filters[] = [AbilityGuards::FILTER_INPUT, function ($v) {
+            $this->filters   = array_values(array_filter($this->filters, static fn ($r) => !($r[0] === AbilityGuards::FILTER_PERMISSION && $r[2] === PHP_INT_MAX)));
+            $this->filters[] = [AbilityGuards::FILTER_PERMISSION, static fn () => true, PHP_INT_MAX];
+            $this->syncWpFilter();
+            return $v;
+        }, 10];
+
+        $this->assertSame([true, 'ability_intercepted/input'], $this->applyOrAbort(AbilityGuards::FILTER_INPUT, ['a' => 1], 'acme/outer', null));
+        $this->assertContains('permission_order', $g->violations());
+        $g->disarm();
+    }
+
+    public function test_replacing_the_permission_hook_from_an_input_filter_aborts(): void
+    {
+        $GLOBALS['wp_version'] = '7.1.0';
+        $g = new AbilityGuards();
+        $g->arm('acme/outer');
+        $this->filters[] = [AbilityGuards::FILTER_INPUT, function ($v) {
+            $this->filters   = array_values(array_filter($this->filters, static fn ($r) => $r[0] !== AbilityGuards::FILTER_PERMISSION));
+            $this->filters[] = [AbilityGuards::FILTER_PERMISSION, static fn () => true, 10];
+            $this->syncWpFilter();
+            return $v;
+        }, 10];
+
+        $this->assertSame([true, 'ability_intercepted/input'], $this->applyOrAbort(AbilityGuards::FILTER_INPUT, ['a' => 1], 'acme/outer', null));
+        $this->assertContains('permission_order', $g->violations());
+        $g->disarm();
+    }
+
+    public function test_a_nested_apply_of_the_permission_filter_cannot_launder_a_flip(): void
+    {
+        $GLOBALS['wp_version'] = '7.1.0';
+        $g     = new AbilityGuards();
+        $g->arm('acme/outer');
+        $depth = 0;
+        $this->filters[] = [AbilityGuards::FILTER_PERMISSION, function ($v, ...$rest) use (&$depth) {
+            if ($depth > 0) {
+                return $v;
+            }
+            $depth++;
+            $this->applyFilters(AbilityGuards::FILTER_PERMISSION, true, ...$rest);
+            $depth--;
+            return true;
+        }, 10];
+
+        $this->assertSame([true, 'ability_intercepted/permission'], $this->applyOrAbort(AbilityGuards::FILTER_PERMISSION, false, 'acme/outer', [], null));
+        $this->assertContains('permission', $g->violations());
+        $g->disarm();
+    }
+
+    public function test_a_nested_apply_of_the_result_filter_is_refused_at_finish(): void
+    {
+        $GLOBALS['wp_version'] = '7.1.0';
+        $g     = new AbilityGuards();
+        $g->arm('acme/outer');
+        $depth = 0;
+        $this->filters[] = [AbilityGuards::FILTER_RESULT, function ($v, ...$rest) use (&$depth) {
+            if ($depth > 0) {
+                return $v;
+            }
+            $depth++;
+            $this->applyFilters(AbilityGuards::FILTER_RESULT, ['attacker' => 1], ...$rest);
+            $depth--;
+            return ['attacker' => 1];
+        }, 10];
+
+        $this->assertSame(['real' => 1], $this->applyFilters(AbilityGuards::FILTER_RESULT, ['real' => 1], 'acme/outer', [], null), 'the recorded value is restored');
+        $this->assertFalse($g->finish());
+        $this->assertContains('result', $g->violations());
+        $g->disarm();
+    }
+
+    public function test_a_recorder_without_its_guard_is_refused_at_finish(): void
+    {
+        $GLOBALS['wp_version'] = '7.1.0';
+        $g = new AbilityGuards();
+        $g->arm('acme/outer');
+        $this->syncWpFilter();
+        $recorder = array_values(array_filter($this->filters, static fn ($r) => $r[0] === AbilityGuards::FILTER_RESULT && $r[2] === PHP_INT_MIN))[0][1];
+        $recorder(['r' => 1], 'acme/outer', [], null);
+
+        $this->assertFalse($g->finish());
+        $this->assertContains('result_unpaired', $g->violations());
         $g->disarm();
     }
 
@@ -764,6 +877,7 @@ final class AbilityRunCommandTest extends TestCase
         $this->assertTrue($this->applyFilters(AbilityGuards::FILTER_PERMISSION, true, 'acme/outer', [], null));
         $this->assertSame(['r' => 1], $this->applyFilters(AbilityGuards::FILTER_RESULT, ['r' => 1], 'acme/outer', [], null));
         $this->assertTrue($this->applyFilters(AbilityGuards::FILTER_VALIDATE_OUTPUT, true, ['r' => 1], 'acme/outer'));
+        $this->assertTrue($g->finish(), 'the end-of-call check accepts it');
         $this->assertSame([], $g->violations());
         $g->disarm();
     }
@@ -788,6 +902,21 @@ final class AbilityRunCommandTest extends TestCase
 
         $this->assertFalse($r['ok']);
         $this->assertSame('ability_not_runnable_yet', $r['code']);
+    }
+
+    /**
+     * applyFilters(), reporting an AbilityInterception instead of throwing.
+     *
+     * @param mixed ...$args Value, then the extra arguments.
+     * @return array{0:bool,1:mixed} [aborted, value or exception message]
+     */
+    private function applyOrAbort(string $name, mixed ...$args): array
+    {
+        try {
+            return [false, $this->applyFilters($name, ...$args)];
+        } catch (AbilityInterception $e) {
+            return [true, $e->getMessage()];
+        }
     }
 
     /**

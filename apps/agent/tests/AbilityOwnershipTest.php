@@ -265,6 +265,57 @@ class ' . $n['otherTool'] . ' extends ' . $n['tool'] . ' { protected function pa
         $this->assertNull(AbilityOwnership::refusal($this->ability([$base, 'run'], [$base, 'perm']), 'plugin', 'acmebuild', $this->roots));
     }
 
+    public function test_a_static_closure_late_bound_to_another_plugins_subclass_is_split(): void
+    {
+        $x    = $this->sfx;
+        $base = 'LateBase' . $x;
+        $sub  = 'LateSub' . $x;
+        $lib  = $this->write('content/plugins/acmebuild/late.php', '<?php class ' . $base . ' {
+  public static function makeRun() { return static function ($i = null) { return static::payload(); }; }
+  public static function makePerm() { return static function ($i = null) { return static::allowed(); }; }
+  protected static function payload() { return "owner"; } protected static function allowed() { return false; } }');
+        $oth  = $this->write('content/plugins/other/late.php', '<?php class ' . $sub . ' extends ' . $base . ' {
+  protected static function payload() { return "other"; } protected static function allowed() { return true; } }');
+        require_once $lib;
+        require_once $oth;
+
+        $this->assertSame(AbilityOwnership::REFUSE_SPLIT, AbilityOwnership::refusal($this->ability($sub::makeRun(), $sub::makePerm()), 'plugin', 'acmebuild', $this->roots));
+        $this->assertNull(AbilityOwnership::refusal($this->ability($base::makeRun(), $base::makePerm()), 'plugin', 'acmebuild', $this->roots), 'the owner\'s own class still classifies as the owner');
+    }
+
+    public function test_an_owner_closure_capturing_another_plugins_callable_or_object_is_split(): void
+    {
+        $x     = $this->sfx;
+        $wrap  = 'own_wrap_' . $x;
+        $oRun  = 'other_run_' . $x;
+        $oCls  = 'OtherCaptured' . $x;
+        $lib   = $this->write('content/plugins/acmebuild/wrap.php', '<?php function ' . $wrap . '($c) { return function (...$a) use ($c) { return is_callable($c) ? $c(...$a) : $c; }; }');
+        $oth   = $this->write('content/plugins/other/run.php', '<?php function ' . $oRun . '($i = null) { return "other"; } class ' . $oCls . ' { public $v = 1; }');
+        require_once $lib;
+        require_once $oth;
+
+        $this->assertSame(AbilityOwnership::REFUSE_SPLIT, AbilityOwnership::refusal($this->ability($wrap($oRun), $wrap($oRun)), 'plugin', 'acmebuild', $this->roots), 'a captured function');
+        $this->assertSame(AbilityOwnership::REFUSE_SPLIT, AbilityOwnership::refusal($this->ability($wrap(new $oCls()), $wrap(new $oCls())), 'plugin', 'acmebuild', $this->roots), 'a captured object');
+        $this->assertSame(AbilityOwnership::REFUSE_SPLIT, AbilityOwnership::refusal($this->ability($wrap([[$oRun]]), $wrap([[$oRun]])), 'plugin', 'acmebuild', $this->roots), 'a callable inside a captured array');
+
+        // Built-in functions and plain data captured by the owner stay the owner's.
+        $this->assertNull(AbilityOwnership::refusal($this->ability($wrap('strlen'), $wrap(['k' => 'v', 3])), 'plugin', 'acmebuild', $this->roots));
+    }
+
+    public function test_captures_nested_past_the_depth_bound_are_unknown(): void
+    {
+        $x    = $this->sfx;
+        $wrap = 'own_nest_' . $x;
+        $lib  = $this->write('content/plugins/acmebuild/nest.php', '<?php function ' . $wrap . '($c) { return function () use ($c) { return $c; }; }');
+        require_once $lib;
+        $deep = 'strlen';
+        for ($i = 0; $i < 8; $i++) {
+            $deep = $wrap($deep);
+        }
+
+        $this->assertNull(AbilityOwnership::sourceFiles($deep));
+    }
+
     public function test_core_mu_plugin_and_theme_kinds(): void
     {
         $core = $this->functionIn('wp/wp-includes/functions.php');
