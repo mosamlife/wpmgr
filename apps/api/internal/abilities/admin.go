@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/agentcmd"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
@@ -58,6 +60,7 @@ type CatalogueInput struct {
 	GlobalOptionKeys   *[]string        `json:"global_option_keys"`
 	IntegrationBlock   *json.RawMessage `json:"integration_block"`
 	Admission          *json.RawMessage `json:"admission"`
+	OutputFields       *json.RawMessage `json:"output_fields"`
 }
 
 // nullableRaw turns a JSON null into a nil column value.
@@ -126,6 +129,7 @@ func (in CatalogueInput) merge(base sqlc.AbilityCatalogue) sqlc.AbilityCatalogue
 	a(&base.GlobalOptionKeys, in.GlobalOptionKeys)
 	r(&base.IntegrationBlock, in.IntegrationBlock)
 	r(&base.Admission, in.Admission)
+	r(&base.OutputFields, in.OutputFields)
 	return base
 }
 
@@ -153,6 +157,9 @@ func mapCatalogueErr(err error) error {
 			return domain.NotFound("entry_not_found", "catalogue entry not found")
 		case "23505":
 			return domain.Conflict("entry_conflict", "an entry with this name and version range exists")
+		case "23P01":
+			return domain.Conflict("version_range_overlap",
+				"an admitted entry with this name already covers part of this version range")
 		}
 	}
 	return err
@@ -247,6 +254,9 @@ func (r *AdminRepo) Upsert(ctx context.Context, actor uuid.UUID, entryID *uuid.U
 		if err := requireCanonicalJSONNumbers(row); err != nil {
 			return err
 		}
+		if err := validateEntryShape(row); err != nil {
+			return err
+		}
 		_, sum, err := EntryBytes(row)
 		if err != nil {
 			return err
@@ -286,4 +296,43 @@ func (r *AdminRepo) Upsert(ctx context.Context, actor uuid.UUID, entryID *uuid.U
 		return sqlc.AbilityCatalogue{}, fmt.Errorf("upsert ability catalogue entry: %w", mapCatalogueErr(err))
 	}
 	return out, nil
+}
+
+// wildcardOnlyPattern is an allowed_option_patterns entry made of nothing but
+// "*" (the agent's only wildcard): it would let a read write any option unrecorded.
+var wildcardOnlyPattern = regexp.MustCompile(`^\*+$`)
+
+// validateEntryShape checks what the database cannot spell: output_fields in
+// the strict output-shape grammar (an unknown node kind is refused here, at
+// save, never at run), and limits.allowed_option_patterns holding no
+// wildcard-only entry.
+func validateEntryShape(r sqlc.AbilityCatalogue) error {
+	if len(r.OutputFields) > 0 && string(r.OutputFields) != "null" {
+		if _, err := agentcmd.ParseOutputShape(r.OutputFields); err != nil {
+			return domain.Validation("invalid_output_fields",
+				`output_fields must be {"fields":{...}}, {"items":...}, "string", "int" or "bool", at most 8 deep`)
+		}
+	}
+	if len(r.Limits) == 0 {
+		return nil
+	}
+	var limits map[string]json.RawMessage
+	if err := json.Unmarshal(r.Limits, &limits); err != nil {
+		return domain.Validation("invalid_entry", "limits must be a JSON object")
+	}
+	raw, ok := limits["allowed_option_patterns"]
+	if !ok || string(raw) == "null" {
+		return nil
+	}
+	var patterns []string
+	if err := json.Unmarshal(raw, &patterns); err != nil {
+		return domain.Validation("invalid_entry", "limits.allowed_option_patterns must be a list of strings")
+	}
+	for _, p := range patterns {
+		if strings.TrimSpace(p) == "" || wildcardOnlyPattern.MatchString(strings.TrimSpace(p)) {
+			return domain.Validation("invalid_entry",
+				"limits.allowed_option_patterns may not hold an empty or wildcard-only pattern")
+		}
+	}
+	return nil
 }

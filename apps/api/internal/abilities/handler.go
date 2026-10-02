@@ -75,6 +75,7 @@ type catalogueEntryDTO struct {
 	IntegrationBlock   json.RawMessage `json:"integration_block"`
 	Admission          json.RawMessage `json:"admission"`
 	EntrySHA256        *string         `json:"entry_sha256"`
+	OutputFields       json.RawMessage `json:"output_fields"`
 	UpdatedAt          string          `json:"updated_at"`
 }
 
@@ -89,7 +90,7 @@ func toCatalogueDTO(r sqlc.AbilityCatalogue) catalogueEntryDTO {
 		Target: rawOrNull(r.Target), Snapshot: r.Snapshot, Preview: r.Preview, ArgRender: rawOrNull(r.ArgRender),
 		EffectCopy: r.EffectCopy, Limits: rawOrNull(r.Limits), NestedAllow: nonNil(r.NestedAllow),
 		GlobalOptionKeys: nonNil(r.GlobalOptionKeys), IntegrationBlock: rawOrNull(r.IntegrationBlock),
-		Admission: rawOrNull(r.Admission), EntrySHA256: r.EntrySha256,
+		Admission: rawOrNull(r.Admission), EntrySHA256: r.EntrySha256, OutputFields: rawOrNull(r.OutputFields),
 		UpdatedAt: r.UpdatedAt.UTC().Format(time.RFC3339),
 	}
 }

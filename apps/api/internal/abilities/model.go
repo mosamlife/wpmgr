@@ -141,6 +141,7 @@ func SendableEntry(r sqlc.AbilityCatalogue) ([]byte, string, error) {
 type InventoryRow struct {
 	Name               string
 	OwnerKind          string
+	OwnerDir           string // "" for core, unknown, or none reported
 	OwnerOK            string // "true", "false" or "" (unknown)
 	OwnerVersion       string
 	SchemaStructSHA256 string

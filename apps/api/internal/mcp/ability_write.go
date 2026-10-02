@@ -891,7 +891,10 @@ func (s *Service) abilityRequestStatus(ctx context.Context, eng *abilityEngine, 
 		if err != nil {
 			return "", fmt.Errorf("read ability request status: %w", err)
 		}
-		if !found {
+		// R5: the grant's CURRENT site scope applies to every row, here as
+		// well as in the scoped transaction: a site dropped from the grant
+		// answers the same as a request that never existed.
+		if !found || !auth.Sites.Allows(row.SiteID) {
 			return "", absentRefusal(reasonRequestAbsent, map[string]any{"request_id": idText})
 		}
 		b, err := json.Marshal(map[string]any{
@@ -905,6 +908,9 @@ func (s *Service) abilityRequestStatus(ctx context.Context, eng *abilityEngine, 
 	}
 	list := make([]abilityStatus, 0, len(rows))
 	for _, r := range rows {
+		if !auth.Sites.Allows(r.SiteID) {
+			continue
+		}
 		list = append(list, abilityStatusFromRow(r, now))
 	}
 	b, err := json.Marshal(map[string]any{
