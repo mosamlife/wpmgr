@@ -187,12 +187,18 @@ func (s *AbilityCatalogueEntry) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
+		if len(s.OutputFields) != 0 {
+			e.FieldStart("output_fields")
+			e.Raw(s.OutputFields)
+		}
+	}
+	{
 		e.FieldStart("updated_at")
 		json.EncodeDateTime(e, s.UpdatedAt)
 	}
 }
 
-var jsonFieldsNameOfAbilityCatalogueEntry = [32]string{
+var jsonFieldsNameOfAbilityCatalogueEntry = [33]string{
 	0:  "entry_id",
 	1:  "name",
 	2:  "source",
@@ -224,7 +230,8 @@ var jsonFieldsNameOfAbilityCatalogueEntry = [32]string{
 	28: "integration_block",
 	29: "admission",
 	30: "entry_sha256",
-	31: "updated_at",
+	31: "output_fields",
+	32: "updated_at",
 }
 
 // Decode decodes AbilityCatalogueEntry from json.
@@ -232,7 +239,7 @@ func (s *AbilityCatalogueEntry) Decode(d *jx.Decoder) error {
 	if s == nil {
 		return errors.New("invalid: unable to decode AbilityCatalogueEntry to nil")
 	}
-	var requiredBitSet [4]uint8
+	var requiredBitSet [5]uint8
 
 	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
 		switch string(k) {
@@ -590,8 +597,19 @@ func (s *AbilityCatalogueEntry) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"entry_sha256\"")
 			}
+		case "output_fields":
+			if err := func() error {
+				v, err := d.RawAppend(nil)
+				s.OutputFields = jx.Raw(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"output_fields\"")
+			}
 		case "updated_at":
-			requiredBitSet[3] |= 1 << 7
+			requiredBitSet[4] |= 1 << 0
 			if err := func() error {
 				v, err := json.DecodeDateTime(d)
 				s.UpdatedAt = v
@@ -611,11 +629,12 @@ func (s *AbilityCatalogueEntry) Decode(d *jx.Decoder) error {
 	}
 	// Validate required fields.
 	var failures []validate.FieldError
-	for i, mask := range [4]uint8{
+	for i, mask := range [5]uint8{
 		0b11111111,
 		0b10000000,
 		0b10100011,
-		0b10101111,
+		0b00101111,
+		0b00000001,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.
@@ -1278,9 +1297,15 @@ func (s *AbilityCatalogueInput) encodeFields(e *jx.Encoder) {
 			s.Admission.Encode(e)
 		}
 	}
+	{
+		if len(s.OutputFields) != 0 {
+			e.FieldStart("output_fields")
+			e.Raw(s.OutputFields)
+		}
+	}
 }
 
-var jsonFieldsNameOfAbilityCatalogueInput = [29]string{
+var jsonFieldsNameOfAbilityCatalogueInput = [30]string{
 	0:  "name",
 	1:  "source",
 	2:  "class",
@@ -1310,6 +1335,7 @@ var jsonFieldsNameOfAbilityCatalogueInput = [29]string{
 	26: "global_option_keys",
 	27: "integration_block",
 	28: "admission",
+	29: "output_fields",
 }
 
 // Decode decodes AbilityCatalogueInput from json.
@@ -1638,6 +1664,17 @@ func (s *AbilityCatalogueInput) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"admission\"")
+			}
+		case "output_fields":
+			if err := func() error {
+				v, err := d.RawAppend(nil)
+				s.OutputFields = jx.Raw(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"output_fields\"")
 			}
 		default:
 			return errors.Errorf("unexpected field %q", k)
@@ -136524,6 +136561,44 @@ func (s *UpdateAdminAbilityCatalogueEntryBadRequest) MarshalJSON() ([]byte, erro
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *UpdateAdminAbilityCatalogueEntryBadRequest) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes UpdateAdminAbilityCatalogueEntryConflict as json.
+func (s *UpdateAdminAbilityCatalogueEntryConflict) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes UpdateAdminAbilityCatalogueEntryConflict from json.
+func (s *UpdateAdminAbilityCatalogueEntryConflict) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode UpdateAdminAbilityCatalogueEntryConflict to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = UpdateAdminAbilityCatalogueEntryConflict(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *UpdateAdminAbilityCatalogueEntryConflict) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *UpdateAdminAbilityCatalogueEntryConflict) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }

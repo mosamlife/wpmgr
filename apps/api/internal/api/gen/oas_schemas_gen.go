@@ -54,7 +54,10 @@ type AbilityCatalogueEntry struct {
 	IntegrationBlock   jx.Raw                              `json:"integration_block"`
 	Admission          AbilityCatalogueEntryAdmission      `json:"admission"`
 	EntrySHA256        OptNilString                        `json:"entry_sha256"`
-	UpdatedAt          time.Time                           `json:"updated_at"`
+	// The pinned output shape of a read: `{"fields":{key:shape}}`, `{"items":shape}`, `"string"`, `"int"`
+	// or `"bool"`, at most 8 deep. Only listed keys reach the AI.
+	OutputFields jx.Raw    `json:"output_fields"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 // GetEntryID returns the value of EntryID.
@@ -210,6 +213,11 @@ func (s *AbilityCatalogueEntry) GetAdmission() AbilityCatalogueEntryAdmission {
 // GetEntrySHA256 returns the value of EntrySHA256.
 func (s *AbilityCatalogueEntry) GetEntrySHA256() OptNilString {
 	return s.EntrySHA256
+}
+
+// GetOutputFields returns the value of OutputFields.
+func (s *AbilityCatalogueEntry) GetOutputFields() jx.Raw {
+	return s.OutputFields
 }
 
 // GetUpdatedAt returns the value of UpdatedAt.
@@ -370,6 +378,11 @@ func (s *AbilityCatalogueEntry) SetAdmission(val AbilityCatalogueEntryAdmission)
 // SetEntrySHA256 sets the value of EntrySHA256.
 func (s *AbilityCatalogueEntry) SetEntrySHA256(val OptNilString) {
 	s.EntrySHA256 = val
+}
+
+// SetOutputFields sets the value of OutputFields.
+func (s *AbilityCatalogueEntry) SetOutputFields(val jx.Raw) {
+	s.OutputFields = val
 }
 
 // SetUpdatedAt sets the value of UpdatedAt.
@@ -720,6 +733,11 @@ type AbilityCatalogueInput struct {
 	GlobalOptionKeys   []string                               `json:"global_option_keys"`
 	IntegrationBlock   jx.Raw                                 `json:"integration_block"`
 	Admission          OptAbilityCatalogueInputAdmission      `json:"admission"`
+	// The pinned output shape of a read, in the strict grammar `{"fields":{key:shape}}` |
+	// `{"items":shape}` | `"string"` | `"int"` | `"bool"`, keys matching `^[A-Za-z0-9_-]{1,64}$`, at most
+	// 8 deep. Any other node is refused (400 invalid_output_fields). Required for a vendor or core read.
+	// `limits.allowed_option_patterns` may not hold an empty or wildcard-only (`*`, `**`) pattern.
+	OutputFields jx.Raw `json:"output_fields"`
 }
 
 // GetName returns the value of Name.
@@ -867,6 +885,11 @@ func (s *AbilityCatalogueInput) GetAdmission() OptAbilityCatalogueInputAdmission
 	return s.Admission
 }
 
+// GetOutputFields returns the value of OutputFields.
+func (s *AbilityCatalogueInput) GetOutputFields() jx.Raw {
+	return s.OutputFields
+}
+
 // SetName sets the value of Name.
 func (s *AbilityCatalogueInput) SetName(val OptString) {
 	s.Name = val
@@ -1010,6 +1033,11 @@ func (s *AbilityCatalogueInput) SetIntegrationBlock(val jx.Raw) {
 // SetAdmission sets the value of Admission.
 func (s *AbilityCatalogueInput) SetAdmission(val OptAbilityCatalogueInputAdmission) {
 	s.Admission = val
+}
+
+// SetOutputFields sets the value of OutputFields.
+func (s *AbilityCatalogueInput) SetOutputFields(val jx.Raw) {
+	s.OutputFields = val
 }
 
 type AbilityCatalogueInputAdmission map[string]jx.Raw
@@ -58918,6 +58946,10 @@ func (*UnlinkMyIdentityUnauthorized) unlinkMyIdentityRes() {}
 type UpdateAdminAbilityCatalogueEntryBadRequest Error
 
 func (*UpdateAdminAbilityCatalogueEntryBadRequest) updateAdminAbilityCatalogueEntryRes() {}
+
+type UpdateAdminAbilityCatalogueEntryConflict Error
+
+func (*UpdateAdminAbilityCatalogueEntryConflict) updateAdminAbilityCatalogueEntryRes() {}
 
 type UpdateAdminAbilityCatalogueEntryForbidden Error
 

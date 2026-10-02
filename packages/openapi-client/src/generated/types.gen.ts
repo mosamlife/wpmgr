@@ -148,6 +148,13 @@ export type AbilityCatalogueEntry = {
     [key: string]: unknown;
   };
   entry_sha256?: string;
+  /**
+   * The pinned output shape of a read: `{"fields":{key:shape}}`,
+   * `{"items":shape}`, `"string"`, `"int"` or `"bool"`, at most 8 deep.
+   * Only listed keys reach the AI.
+   *
+   */
+  output_fields?: unknown;
   updated_at: string;
 };
 
@@ -193,6 +200,16 @@ export type AbilityCatalogueInput = {
   admission?: {
     [key: string]: unknown;
   };
+  /**
+   * The pinned output shape of a read, in the strict grammar
+   * `{"fields":{key:shape}}` | `{"items":shape}` | `"string"` | `"int"` |
+   * `"bool"`, keys matching `^[A-Za-z0-9_-]{1,64}$`, at most 8 deep. Any
+   * other node is refused (400 invalid_output_fields). Required for a
+   * vendor or core read. `limits.allowed_option_patterns` may not hold an
+   * empty or wildcard-only (`*`, `**`) pattern.
+   *
+   */
+  output_fields?: unknown;
 };
 
 export type ContentIntegrationInput = {
@@ -18670,7 +18687,9 @@ export type CreateAdminAbilityCatalogueEntryErrors = {
    */
   403: Error;
   /**
-   * Conflict — resource is referenced and cannot be deleted
+   * entry_conflict or version_range_overlap: an admitted entry with
+   * this name already covers part of this version range.
+   *
    */
   409: Error;
 };
@@ -18714,6 +18733,12 @@ export type UpdateAdminAbilityCatalogueEntryErrors = {
    * Resource not found
    */
   404: Error;
+  /**
+   * version_range_overlap: an admitted entry with this name already
+   * covers part of this version range.
+   *
+   */
+  409: Error;
 };
 
 export type UpdateAdminAbilityCatalogueEntryError =

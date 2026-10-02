@@ -423,6 +423,11 @@ export const AbilityCatalogueEntrySchema = {
       type: "string",
       nullable: true,
     },
+    output_fields: {
+      nullable: true,
+      description:
+        'The pinned output shape of a read: `{"fields":{key:shape}}`,\n`{"items":shape}`, `"string"`, `"int"` or `"bool"`, at most 8 deep.\nOnly listed keys reach the AI.\n',
+    },
     updated_at: {
       type: "string",
       format: "date-time",
@@ -560,6 +565,11 @@ export const AbilityCatalogueInputSchema = {
     admission: {
       type: "object",
       additionalProperties: true,
+    },
+    output_fields: {
+      nullable: true,
+      description:
+        'The pinned output shape of a read, in the strict grammar\n`{"fields":{key:shape}}` | `{"items":shape}` | `"string"` | `"int"` |\n`"bool"`, keys matching `^[A-Za-z0-9_-]{1,64}$`, at most 8 deep. Any\nother node is refused (400 invalid_output_fields). Required for a\nvendor or core read. `limits.allowed_option_patterns` may not hold an\nempty or wildcard-only (`*`, `**`) pattern.\n',
     },
   },
 } as const;

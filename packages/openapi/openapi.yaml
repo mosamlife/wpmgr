@@ -10016,7 +10016,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "409":
-          $ref: "#/components/responses/Conflict"
+          description: |
+            entry_conflict or version_range_overlap: an admitted entry with
+            this name already covers part of this version range.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /api/v1/admin/abilities/catalogue/{entryId}:
     put:
       operationId: updateAdminAbilityCatalogueEntry
@@ -10056,6 +10062,14 @@ paths:
                 $ref: "#/components/schemas/Error"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          description: |
+            version_range_overlap: an admitted entry with this name already
+            covers part of this version range.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /api/v1/sites/{siteId}/perf/db/orphans:
     get:
       operationId: getDbOrphansReport
@@ -14655,6 +14669,12 @@ components:
         integration_block: { nullable: true }
         admission: { type: object, additionalProperties: true }
         entry_sha256: { type: string, nullable: true }
+        output_fields:
+          nullable: true
+          description: |
+            The pinned output shape of a read: `{"fields":{key:shape}}`,
+            `{"items":shape}`, `"string"`, `"int"` or `"bool"`, at most 8 deep.
+            Only listed keys reach the AI.
         updated_at: { type: string, format: date-time }
     AbilityCatalogueInput:
       type: object
@@ -14693,6 +14713,15 @@ components:
         global_option_keys: { type: array, maxItems: 64, items: { type: string, maxLength: 256 } }
         integration_block: { nullable: true }
         admission: { type: object, additionalProperties: true }
+        output_fields:
+          nullable: true
+          description: |
+            The pinned output shape of a read, in the strict grammar
+            `{"fields":{key:shape}}` | `{"items":shape}` | `"string"` | `"int"` |
+            `"bool"`, keys matching `^[A-Za-z0-9_-]{1,64}$`, at most 8 deep. Any
+            other node is refused (400 invalid_output_fields). Required for a
+            vendor or core read. `limits.allowed_option_patterns` may not hold an
+            empty or wildcard-only (`*`, `**`) pattern.
     ContentIntegrationInput:
       type: object
       required: [display_name, enabled, status]
