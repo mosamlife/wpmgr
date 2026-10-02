@@ -3,9 +3,13 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"regexp"
 	"strings"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentcmd"
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
@@ -187,7 +191,7 @@ func vendorAgentMeetsFloor(v string, entryMin *string) bool {
 //
 //	{"fields":{"<key>":<shape>,...}} | {"items":<shape>} | "string" | "int" | "bool"
 //
-// Keys match ^[A-Za-z0-9_-]{1,64}$, depth is at most 8 (the m158 CHECK), and
+// Keys match ^[A-Za-z0-9_-]{1,64}$, depth is at most 8 (the m159 CHECK), and
 // any other node is refused. The admin write refuses a bad shape; a bad shape
 // at run time withholds the output.
 // ---------------------------------------------------------------------------
@@ -266,6 +270,46 @@ func fenceSiteList(in []string) []string {
 	return out
 }
 
+// AbilitySideEffectRecorder records one site on which a vendor read was
+// caught with side effects and returns the entry's distinct-site count. At 3
+// the database disables the entry fleet-wide and audits it (m160).
+type AbilitySideEffectRecorder interface {
+	RecordAbilityReadSideEffect(ctx context.Context, tenantID, entryID, siteID uuid.UUID) (int32, error)
+}
+
+// abilitySideEffectDisableAt is m160's threshold, for the log line only: the
+// database decides.
+const abilitySideEffectDisableAt = 3
+
+// recordSideEffectSite counts the site against the entry. Best effort: a
+// refusal (42501 not a vendor read, P0002 no entry) or any other failure is
+// logged and the call stays refused.
+func (s *Service) recordSideEffectSite(ctx context.Context, tenantID, siteID uuid.UUID, e *sqlc.AbilityCatalogue) {
+	if s.abilities == nil || s.abilities.sideEffects == nil {
+		return
+	}
+	n, err := s.abilities.sideEffects.RecordAbilityReadSideEffect(ctx, tenantID, e.EntryID, siteID)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		level := slog.LevelError
+		if errors.As(err, &pgErr) && (pgErr.Code == "42501" || pgErr.Code == "P0002") {
+			level = slog.LevelWarn
+		}
+		slog.Log(ctx, level, "ability read side effect: site not counted",
+			slog.String("entry_id", e.EntryID.String()), slog.String("site_id", siteID.String()), slog.Any("error", err))
+		return
+	}
+	if n >= abilitySideEffectDisableAt {
+		slog.ErrorContext(ctx, "ability read side effect: entry disabled fleet-wide or already disabled",
+			slog.String("alert", "superadmin"),
+			slog.String("action", ActionAbilityReadSideEffect),
+			slog.String("ability", e.Name),
+			slog.String("entry_id", e.EntryID.String()),
+			slog.Int("distinct_sites", int(n)),
+		)
+	}
+}
+
 // ActionAbilityReadSideEffect is the audit action for a vendor read that
 // changed the site or called out (owner ruling 4).
 const ActionAbilityReadSideEffect = "ability.read_side_effect"
@@ -291,6 +335,7 @@ func (s *Service) reportReadSideEffect(ctx context.Context, auth AuthorizedReque
 		slog.String("tenant_id", auth.TenantID.String()),
 		slog.String("site_id", site.row.ID.String()),
 	)
+	s.recordSideEffectSite(ctx, auth.TenantID, site.row.ID, e)
 	if s.audit == nil {
 		return
 	}

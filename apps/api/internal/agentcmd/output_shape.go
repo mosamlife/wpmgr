@@ -8,7 +8,7 @@ import (
 )
 
 // OutputShape is a catalogue entry's pinned output shape (output_fields), in
-// the grammar the agent projects with and the m158 CHECK enforces:
+// the grammar the agent projects with and the m159 CHECK enforces:
 //
 //	{"fields":{"<key>":<shape>,...}} | {"items":<shape>} | "string" | "int" | "bool"
 //

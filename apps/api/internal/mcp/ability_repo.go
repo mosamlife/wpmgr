@@ -49,6 +49,23 @@ func (r *Repo) SiteAbilities(ctx context.Context, p domain.Principal, siteID uui
 	return run, rows, err
 }
 
+// RecordAbilityReadSideEffect implements AbilitySideEffectRecorder: m160's
+// definer, in its own short READ COMMITTED transaction (the pool default), as
+// the application role.
+func (r *Repo) RecordAbilityReadSideEffect(ctx context.Context, tenantID, entryID, siteID uuid.UUID) (int32, error) {
+	var n int32
+	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		var err error
+		n, err = sqlc.New(tx).RecordAbilityReadSideEffect(ctx, sqlc.RecordAbilityReadSideEffectParams{
+			EntryID: entryID, SiteID: siteID, TenantID: tenantID,
+		})
+		return err
+	})
+	return n, err
+}
+
+var _ AbilitySideEffectRecorder = (*Repo)(nil)
+
 // AbilityCatalogue implements AbilityStore.
 func (r *Repo) AbilityCatalogue(ctx context.Context, p domain.Principal) ([]sqlc.AbilityCatalogue, error) {
 	var out []sqlc.AbilityCatalogue

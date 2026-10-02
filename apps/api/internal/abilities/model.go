@@ -54,7 +54,7 @@ type Entry struct {
 	GlobalOptionKeys   []string        `json:"global_option_keys"`
 	IntegrationBlock   json.RawMessage `json:"integration_block"`
 	Admission          json.RawMessage `json:"admission"`
-	// OutputFields is LAST (m158): wire order is hash order, so a member
+	// OutputFields is LAST (m159): wire order is hash order, so a member
 	// added anywhere else would reorder the bytes of every existing entry.
 	OutputFields json.RawMessage `json:"output_fields"`
 }

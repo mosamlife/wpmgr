@@ -139,6 +139,9 @@ type abilityEngine struct {
 	cursorKey []byte
 	readLimit *abilityReadLimiter
 	refresh   AbilityRefresher
+	// sideEffects counts read_side_effect_detected per catalogue entry and
+	// site (m160); nil when the store does not implement it.
+	sideEffects AbilitySideEffectRecorder
 	// writes is the write branch's store (EnableAbilityWrites); nil
 	// refuses every write entry as writes_not_available.
 	writes AbilityRequestStore
@@ -207,6 +210,9 @@ func (s *Service) EnableAbilityTools(store AbilityStore, agent AbilityAgent, ent
 	m.Write([]byte("wpmgr/mcp/ability-discover-cursor/v2"))
 	key := m.Sum(nil)
 	s.abilities = &abilityEngine{store: store, agent: agent, entry: entry, cursorKey: key, readLimit: newAbilityReadLimiter()}
+	if rec, ok := store.(AbilitySideEffectRecorder); ok {
+		s.abilities.sideEffects = rec
+	}
 	return nil
 }
 
@@ -424,7 +430,7 @@ func abilityStrPtr(s string) *string { return &s }
 // version range: the first admitted and enabled one wins. A vendor or core
 // entry must also cover the site's reported owner version: the single
 // admitted, enabled entry whose [version_min, version_max_tested] contains it
-// (m158 guarantees at most one). When admitted, enabled entries exist but none
+// (m159 guarantees at most one). When admitted, enabled entries exist but none
 // covers the version, the first of them is returned with versionMiss true
 // (builder_version_unverified). With no admitted, enabled entry, the first
 // entry is returned so its own state names the reason.

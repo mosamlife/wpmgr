@@ -9,7 +9,7 @@ import (
 )
 
 // sharedCompareFixture is also replayed against the SQL wpmgr_version_cmp
-// (m158) by tests/ability_catalogue_c1_integration_test.go, so the database
+// (m159) by tests/ability_catalogue_c1_integration_test.go, so the database
 // and Go order plugin versions identically.
 const sharedCompareFixture = "../../db/testdata/wpmgr_version_cmp_cases.json"
 
