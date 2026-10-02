@@ -233,6 +233,26 @@ class ' . $n['otherTool'] . ' extends ' . $n['tool'] . ' { protected function pa
         $perm       = \Closure::bind($c2, $o, $n['otherTool']);
 
         $this->assertSame(AbilityOwnership::REFUSE_SPLIT, AbilityOwnership::refusal($this->ability($exec, $perm), 'plugin', 'acmebuild', $this->roots));
+
+        // Rebound to the other plugin's object while keeping the owner's
+        // scope: $this still dispatches to the other plugin's overrides.
+        $exec = \Closure::bind($c1, $o, $n['tool']);
+        $perm = \Closure::bind($c2, $o, $n['tool']);
+        $this->assertSame(AbilityOwnership::REFUSE_SPLIT, AbilityOwnership::refusal($this->ability($exec, $perm), 'plugin', 'acmebuild', $this->roots), 'owner scope, foreign object');
+    }
+
+    public function test_an_owner_class_using_a_trait_from_another_plugin_is_split(): void
+    {
+        $x     = $this->sfx;
+        $trait = 'ForeignTrait' . $x;
+        $cls   = 'OwnUsesForeign' . $x;
+        $t     = $this->write('content/plugins/other/trait.php', '<?php trait ' . $trait . ' { protected function helper() { return "other"; } }');
+        $c     = $this->write('content/plugins/acmebuild/uses.php', '<?php class ' . $cls . ' { use ' . $trait . '; public function run($i = null) { return $this->helper(); } public function perm($i = null) { return true; } }');
+        require_once $t;
+        require_once $c;
+        $o = new $cls();
+
+        $this->assertSame(AbilityOwnership::REFUSE_SPLIT, AbilityOwnership::refusal($this->ability([$o, 'run'], [$o, 'perm']), 'plugin', 'acmebuild', $this->roots));
     }
 
     public function test_the_owners_own_objects_and_closures_still_classify_as_the_owner(): void
