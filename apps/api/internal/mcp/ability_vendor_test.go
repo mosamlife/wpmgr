@@ -267,6 +267,24 @@ func mustJSON(v any) string {
 	return string(b)
 }
 
+// The new counts reach both the model-facing details and the audit metadata.
+func TestVendorRefusal_PostMetaAndTermsSurfaced(t *testing.T) {
+	r := &agentcmd.AbilityRunRefusal{
+		Code: "read_side_effect_detected",
+		SideEffects: &agentcmd.AbilityRunSideEffects{
+			Options: []string{}, HTTPHosts: []string{}, Blocked: []string{"user_meta_unknown"},
+			PostMeta: 7, Terms: 9,
+		},
+	}
+	ref := vendorRefusal(r)
+	for name, v := range map[string]any{"details": ref.err.Details, "meta": ref.meta} {
+		s := mustJSON(v)
+		if !strings.Contains(s, `"post_meta":7`) || !strings.Contains(s, `"terms":9`) || !strings.Contains(s, "user_meta_unknown") {
+			t.Errorf("%s missing new fields: %s", name, s)
+		}
+	}
+}
+
 // R5: a cursor sealed for site A is refused for site B in the same tenant
 // and grant.
 func TestDiscoverCursor_BoundToSite(t *testing.T) {
