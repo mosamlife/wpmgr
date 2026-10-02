@@ -1,5 +1,5 @@
 {
-  "note": "Shared by internal/wpversion (Go Compare) and tests/ (SQL wpmgr_version_cmp, m158). Each case is [a, b, want].",
+  "note": "Shared by internal/wpversion (Go Compare) and tests/ (SQL wpmgr_version_cmp, m159). Each case is [a, b, want].",
   "cases": [
     ["1.0", "1.0", 0],
     ["1.0.0", "1.0", 0],

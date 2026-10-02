@@ -21,7 +21,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
 )
 
-// m158 (engine E3, D1). Every write below goes through the SECURITY DEFINER
+// m159 (engine E3, D1). Every write below goes through the SECURITY DEFINER
 // admin_upsert_ability_catalogue_entry on the wpmgr_app pool inside InUserTx,
 // the path the admin repo takes.
 

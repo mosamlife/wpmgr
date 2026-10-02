@@ -1,4 +1,4 @@
--- m158: ability_catalogue C1 constraints, pinned output fields, and the three
+-- m159: ability_catalogue C1 constraints, pinned output fields, and the three
 -- core abilities seeded as denied.
 --
 -- Engine slice E3, part D1. Five parts.
@@ -48,7 +48,7 @@
 -- class <> 'read' OR source = 'wpmgr' OR output_fields IS NOT NULL.
 --
 -- ability_catalogue_row_sha256() now includes it. That changes every row
--- hash; audit rows written before m158 keep the hashes the old function
+-- hash; audit rows written before m159 keep the hashes the old function
 -- computed, and nothing chains them.
 --
 -- The Go wire entry gains output_fields as its LAST member, so the canonical
@@ -90,7 +90,7 @@
 -- CONVERGE PATH
 -- ===========================================================================
 --
--- None needed: m158 is new. Every step is guarded (ADD COLUMN IF NOT EXISTS,
+-- None needed: m159 is new. Every step is guarded (ADD COLUMN IF NOT EXISTS,
 -- constraint-existence checks, CREATE OR REPLACE, DROP FUNCTION IF EXISTS on
 -- the old signature, NOT EXISTS seeds), and the hash clear touches only rows
 -- still carrying a hash, which the boot stamp re-fills.
@@ -277,7 +277,7 @@ BEGIN
         SELECT count(*) INTO v_bad FROM "public"."ability_catalogue"
         WHERE NOT ("source" = 'wpmgr' OR "class" = 'denied' OR "schema_struct_sha256" IS NOT NULL);
         IF v_bad <> 0 THEN
-            RAISE EXCEPTION 'm158: % ability_catalogue row(s) are not source wpmgr, not denied, and carry no schema_struct_sha256; pin or retire them before this migration can apply', v_bad
+            RAISE EXCEPTION 'm159: % ability_catalogue row(s) are not source wpmgr, not denied, and carry no schema_struct_sha256; pin or retire them before this migration can apply', v_bad
                 USING ERRCODE = '23514';
         END IF;
         ALTER TABLE "public"."ability_catalogue"
@@ -296,7 +296,7 @@ BEGIN
         SELECT count(*) INTO v_bad FROM "public"."ability_catalogue"
         WHERE NOT ("class" <> 'read' OR "source" = 'wpmgr' OR "output_fields" IS NOT NULL);
         IF v_bad <> 0 THEN
-            RAISE EXCEPTION 'm158: % non-wpmgr read row(s) in ability_catalogue have no output_fields; pin or retire them before this migration can apply', v_bad
+            RAISE EXCEPTION 'm159: % non-wpmgr read row(s) in ability_catalogue have no output_fields; pin or retire them before this migration can apply', v_bad
                 USING ERRCODE = '23514';
         END IF;
         ALTER TABLE "public"."ability_catalogue"
@@ -316,7 +316,7 @@ BEGIN
         WHERE "version_min" IS NOT NULL AND "version_max_tested" IS NOT NULL
           AND wpmgr_version_cmp("version_min", "version_max_tested") > 0;
         IF v_bad <> 0 THEN
-            RAISE EXCEPTION 'm158: % ability_catalogue row(s) have version_min above version_max_tested; fix them before this migration can apply', v_bad
+            RAISE EXCEPTION 'm159: % ability_catalogue row(s) have version_min above version_max_tested; fix them before this migration can apply', v_bad
                 USING ERRCODE = '23514';
         END IF;
         ALTER TABLE "public"."ability_catalogue"
@@ -339,7 +339,7 @@ BEGIN
       AND (y.version_min IS NULL OR x.version_max_tested IS NULL
            OR wpmgr_version_cmp(y.version_min, x.version_max_tested) <= 0);
     IF v_bad <> 0 THEN
-        RAISE EXCEPTION 'm158: % pair(s) of admitted ability_catalogue rows have overlapping version ranges; fix them before this migration can apply', v_bad
+        RAISE EXCEPTION 'm159: % pair(s) of admitted ability_catalogue rows have overlapping version ranges; fix them before this migration can apply', v_bad
             USING ERRCODE = '23P01';
     END IF;
 END;

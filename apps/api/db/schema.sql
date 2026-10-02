@@ -9025,7 +9025,7 @@ CREATE POLICY site_content_inventory_runs_site_scope
 -- ability_catalogue
 -- ---------------------------------------------------------------------------
 
--- m158: plugin version ordering (matches Go wpversion.Compare) and the
+-- m159: plugin version ordering (matches Go wpversion.Compare) and the
 -- output_fields shape grammar, both used by ability_catalogue CHECKs.
 CREATE OR REPLACE FUNCTION wpmgr_version_tokens(v text)
 RETURNS text[]
@@ -9272,7 +9272,7 @@ CREATE TABLE IF NOT EXISTS ability_catalogue (
         CONSTRAINT ability_catalogue_entry_sha256_check
         CHECK (entry_sha256 ~ '^[0-9a-f]{64}$'),
 
-    -- m158 (C1): a non-wpmgr entry pins its schema unless it is denied; a
+    -- m159 (C1): a non-wpmgr entry pins its schema unless it is denied; a
     -- non-wpmgr read pins its output; a range is ordered.
     CONSTRAINT ability_catalogue_schema_pinned_check
         CHECK (source = 'wpmgr' OR class = 'denied' OR schema_struct_sha256 IS NOT NULL),
@@ -9294,7 +9294,7 @@ CREATE TABLE IF NOT EXISTS ability_catalogue (
     updated_at timestamptz NOT NULL DEFAULT now(),
     -- NULL only for a row the migration seeded.
     updated_by_user_id uuid NULL,
-    -- m158: the pinned output shape of a read. Last, as ADD COLUMN placed it,
+    -- m159: the pinned output shape of a read. Last, as ADD COLUMN placed it,
     -- so SELECT * through the definer scans in the physical order.
     output_fields jsonb NULL
         CONSTRAINT ability_catalogue_output_fields_shape_check
@@ -9637,7 +9637,7 @@ WHERE NOT EXISTS (
     SELECT 1 FROM ability_catalogue c WHERE c.name = 'wpmgr/page-create'
 );
 
--- m158: the three core abilities, seeded denied with our copy.
+-- m159: the three core abilities, seeded denied with our copy.
 INSERT INTO ability_catalogue
     (name, source, class, status, enabled, approval_mode,
      title, description, admission)
