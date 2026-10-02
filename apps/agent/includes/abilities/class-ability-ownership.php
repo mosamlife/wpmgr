@@ -418,9 +418,10 @@ final class AbilityOwnership
                 if ($scope !== null) {
                     $classes[] = $scope;
                 }
-                // The class static:: resolves to. Without the accessor the
-                // late-bound class cannot be read, so the owner is unknown.
-                if (!method_exists($ref, 'getClosureCalledClass')) {
+                // The class static:: resolves to. Without the accessor (it
+                // arrived in PHP 8.1.8) the late-bound class cannot be read,
+                // so the owner is unknown.
+                if (PHP_VERSION_ID < 80108) {
                     return null;
                 }
                 $called = $ref->getClosureCalledClass();
@@ -453,9 +454,14 @@ final class AbilityOwnership
             return null;
         }
 
-        if (in_array(null, $classes, true)) {
-            return null;
+        $resolved = [];
+        foreach ($classes as $class) {
+            if ($class === null) {
+                return null;
+            }
+            $resolved[] = $class;
         }
+        $classes = $resolved;
         $own = self::canonicalFile($ref->getFileName());
         if ($own === null) {
             return null;
@@ -502,7 +508,7 @@ final class AbilityOwnership
      *
      * @param mixed                          $value   Captured value.
      * @param int                            $depth   Nesting depth.
-     * @param list<\ReflectionClass<object>|null> $classes Class list to extend.
+     * @param list<\ReflectionClass<object>> $classes Class list to extend.
      * @return list<string>|null Null when a captured callable is unresolvable.
      */
     private static function capturedSources($value, int $depth, array &$classes): ?array
