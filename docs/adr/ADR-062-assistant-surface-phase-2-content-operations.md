@@ -1467,6 +1467,12 @@ the service account itself, are catalogued as denied.
 A read is observed while it runs. If it changes an option, a post, a user or a
 role, or makes an outbound HTTP request, the output is withheld, the call is
 refused, and the event appears on the request log and as a superadmin alert.
-The entry is switched off for the whole fleet only after the same behaviour is
-seen on three different sites, so one unusual site cannot disable a tool
-everywhere.
+The tool is turned off at once for the account that reported it, and an
+account admin or owner can turn it back on for that account.
+
+The tool is turned off for every account only once three distinct qualifying
+accounts have reported it. Each account counts once, however many of its sites
+report. An account qualifies if it is on a paid plan in good standing or has
+existed for at least 30 days. When a superadmin turns the tool back on, the
+count starts again, and only reports made after that point count toward the
+next fleet-wide disable. One unusual account cannot disable a tool for everyone.
