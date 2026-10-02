@@ -309,6 +309,10 @@ final class OwnAbilities
                 'owner_kind'           => 'wpmgr',
                 'owner_mismatch'       => false,
                 'version'              => $version,
+                'owner_dir'            => defined('WPMGR_AGENT_DIR') ? basename((string) constant('WPMGR_AGENT_DIR')) : '',
+                'owner_version'        => $version,
+                'owner_split'          => false,
+                'ability_class_ok'     => true,
                 'schema_struct_sha256' => self::schemaHashOfSchema(self::inputSchema($name)),
                 'class'                => self::abilityClass($name),
             ];
@@ -334,14 +338,7 @@ final class OwnAbilities
                     break;
                 }
                 $seen[$name] = true;
-                $ns          = strstr($name, '/', true);
-                $ns          = $ns === false ? $name : $ns;
-                $squat       = $ns === 'wpmgr';
-                $rows[]      = [
-                    'name'                 => $name,
-                    'owner_kind'           => $squat ? 'wpmgr_squat' : ($ns === 'core' ? 'core' : 'site'),
-                    'owner_mismatch'       => $squat,
-                    'version'              => null,
+                $rows[]      = self::siteRow($name, $ability) + [
                     'schema_struct_sha256' => AbilitySchema::hashOf($ability),
                     'from_the_site'        => [
                         'label'       => self::cap(self::text($ability, 'get_label'), self::LABEL_CAP_BYTES),
@@ -356,6 +353,38 @@ final class OwnAbilities
             'count'       => count($rows),
             'truncated'   => $truncated,
             'abilities'   => $rows,
+        ];
+    }
+
+    /**
+     * Ownership fields of one site-registered ability's inventory row.
+     *
+     * owner_kind is wpmgr_squat for a name in WPMgr's namespace that the
+     * agent did not register, else the resolved kind (core, plugin, theme,
+     * mu-plugin, unknown). owner_mismatch is true for a squat, a split owner
+     * or an overridden ability class; such a row is never attributed to its
+     * claimed owner. version mirrors owner_version for older control planes.
+     *
+     * @param string $name    Ability name.
+     * @param object $ability Registered ability.
+     * @return array<string,mixed>
+     */
+    public static function siteRow(string $name, object $ability): array
+    {
+        $ns     = strstr($name, '/', true);
+        $ns     = $ns === false ? $name : $ns;
+        $squat  = $ns === 'wpmgr';
+        $fields = AbilityOwnership::inventoryFields($ability);
+
+        return [
+            'name'             => $name,
+            'owner_kind'       => $squat ? 'wpmgr_squat' : $fields['owner_kind'],
+            'owner_mismatch'   => $squat || $fields['owner_split'] || !$fields['ability_class_ok'],
+            'version'          => $fields['owner_version'],
+            'owner_dir'        => $fields['owner_dir'],
+            'owner_version'    => $fields['owner_version'],
+            'owner_split'      => $fields['owner_split'],
+            'ability_class_ok' => $fields['ability_class_ok'],
         ];
     }
 

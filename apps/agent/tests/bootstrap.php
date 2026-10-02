@@ -628,3 +628,104 @@ if (!class_exists('Plugin_Upgrader')) {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Abilities API doubles (WordPress 7.1 shapes).
+//
+// WP_Filter_Sentinel is core's per-call short-circuit default: an empty final
+// class compared by identity. WP_Ability mirrors the parts of core's class the
+// ownership check reads: the two protected callback properties and the
+// execution-path methods, with the same names and visibility. Tests subclass
+// it to model an ability_class override. Neither double carries behaviour the
+// agent depends on beyond its shape.
+// ---------------------------------------------------------------------------
+
+if (!class_exists('WP_Filter_Sentinel')) {
+    final class WP_Filter_Sentinel
+    {
+    }
+}
+
+if (!class_exists('WP_Ability')) {
+    class WP_Ability
+    {
+        /** @var string */
+        protected $name;
+
+        /** @var callable */
+        protected $execute_callback;
+
+        /** @var callable */
+        protected $permission_callback;
+
+        /**
+         * @param string              $name Ability name.
+         * @param array<string,mixed> $args execute_callback, permission_callback.
+         */
+        public function __construct(string $name, array $args)
+        {
+            $this->name                = $name;
+            $this->execute_callback    = $args['execute_callback'] ?? null;
+            $this->permission_callback = $args['permission_callback'] ?? null;
+        }
+
+        public function get_name(): string
+        {
+            return $this->name;
+        }
+
+        /** @return array<string,mixed> */
+        public function get_input_schema(): array
+        {
+            return [];
+        }
+
+        /** @return array<string,mixed> */
+        public function get_output_schema(): array
+        {
+            return [];
+        }
+
+        /** @param mixed $input Input. @return mixed */
+        public function normalize_input($input = null)
+        {
+            return $input;
+        }
+
+        /** @param mixed $input Input. @return mixed */
+        public function validate_input($input = null)
+        {
+            return true;
+        }
+
+        /** @param mixed $input Input. @return mixed */
+        protected function invoke_callback(callable $callback, $input = null)
+        {
+            return $callback($input);
+        }
+
+        /** @param mixed $input Input. @return mixed */
+        public function check_permissions($input = null)
+        {
+            return $this->invoke_callback($this->permission_callback, $input);
+        }
+
+        /** @param mixed $input Input. @return mixed */
+        protected function do_execute($input = null)
+        {
+            return $this->invoke_callback($this->execute_callback, $input);
+        }
+
+        /** @param mixed $output Output. @return mixed */
+        protected function validate_output($output)
+        {
+            return true;
+        }
+
+        /** @param mixed $input Input. @return mixed */
+        public function execute($input = null)
+        {
+            return $this->do_execute($input);
+        }
+    }
+}

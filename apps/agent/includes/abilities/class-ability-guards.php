@@ -14,11 +14,16 @@ if (!defined('ABSPATH')) {
  * the Abilities API.
  *
  * On WordPress 7.1+ other plugins can rewrite an ability's input, short-circuit
- * its execution, or change its permission result or output through four
- * filters. While armed, this class records each value at the earliest priority
- * and compares it at the latest one; any difference is a violation, and the
- * caller refuses the call. It also refuses every ability other than the one
- * outer call (and its declared nested allow-list), and refuses re-entry.
+ * its execution, or change its input validation, permission result, output or
+ * output validation through six filters. While armed, this class records each
+ * value at the earliest priority and compares it at the latest one; any
+ * difference is a violation, and the caller refuses the call. It also refuses
+ * every ability other than the one outer call (and its declared nested
+ * allow-list), and refuses re-entry.
+ *
+ * The short-circuit filter's default is a per-call sentinel object, not null:
+ * pass-through means the value at the latest priority is the very instance
+ * recorded at the earliest one, and that instance is a sentinel.
  *
  * Armed only between arm() and disarm(), and only for the outer call. The
  * engine's own wpmgr/* handlers do not go through WP_Ability::execute, so in
@@ -30,6 +35,10 @@ final class AbilityGuards
     public const FILTER_PRE        = 'wp_pre_execute_ability';
     public const FILTER_PERMISSION = 'wp_ability_permission_result';
     public const FILTER_RESULT     = 'wp_ability_execute_result';
+    public const FILTER_VALIDATE_INPUT  = 'wp_ability_validate_input';
+    public const FILTER_VALIDATE_OUTPUT = 'wp_ability_validate_output';
+
+    private const SENTINEL_CLASS = 'WP_Filter_Sentinel';
 
     private bool $armed = false;
 
@@ -41,6 +50,9 @@ final class AbilityGuards
     /** @var array<string,mixed> Recorded values by filter. */
     private array $recorded = [];
 
+    /** @var list<mixed> Short-circuit defaults seen at the earliest priority, innermost last. */
+    private array $preStack = [];
+
     /** @var list<string> */
     private array $violations = [];
 
@@ -51,7 +63,7 @@ final class AbilityGuards
     private array $hooks = [];
 
     /**
-     * Do the four filters exist on this WordPress? They arrive in 7.1.
+     * Do the guarded filters exist on this WordPress? They arrive in 7.1.
      *
      * @return bool
      */
@@ -95,6 +107,7 @@ final class AbilityGuards
         $this->recorded   = [];
         $this->violations = [];
         $this->entered    = [];
+        $this->preStack   = [];
         $this->armed      = true;
 
         $record = function (string $key): callable {
@@ -119,13 +132,23 @@ final class AbilityGuards
             };
         };
 
+        $preRecord = function (...$args) {
+            $value = $args[0] ?? null;
+            if ($this->armed) {
+                $this->preStack[] = $value;
+            }
+
+            return $value;
+        };
         $pre = function (...$args) {
             $value = $args[0] ?? null;
             $name  = isset($args[1]) && is_string($args[1]) ? $args[1] : '';
             if (!$this->armed) {
                 return $value;
             }
-            if ($value !== null) {
+            $hadRecord = $this->preStack !== [];
+            $recorded  = array_pop($this->preStack);
+            if (!$hadRecord || $value !== $recorded || !self::isSentinel($recorded)) {
                 $this->violations[] = 'short_circuit';
 
                 return new \WP_Error('wpmgr_ability_intercepted', 'ability_intercepted/short_circuit');
@@ -151,7 +174,29 @@ final class AbilityGuards
         $this->hook(self::FILTER_PERMISSION, $guard('permission', 'permission'), PHP_INT_MAX);
         $this->hook(self::FILTER_RESULT, $record('result'), PHP_INT_MIN);
         $this->hook(self::FILTER_RESULT, $guard('result', 'result'), PHP_INT_MAX);
+        $this->hook(self::FILTER_VALIDATE_INPUT, $record('validate_input'), PHP_INT_MIN);
+        $this->hook(self::FILTER_VALIDATE_INPUT, $guard('validate_input', 'validate_input'), PHP_INT_MAX);
+        $this->hook(self::FILTER_VALIDATE_OUTPUT, $record('validate_output'), PHP_INT_MIN);
+        $this->hook(self::FILTER_VALIDATE_OUTPUT, $guard('validate_output', 'validate_output'), PHP_INT_MAX);
+        $this->hook(self::FILTER_PRE, $preRecord, PHP_INT_MIN);
         $this->hook(self::FILTER_PRE, $pre, PHP_INT_MAX);
+    }
+
+    /**
+     * Is $value core's short-circuit default? On a WordPress that defines the
+     * sentinel class only an instance of it qualifies; without the class, the
+     * historical null default does.
+     *
+     * @param mixed $value Value recorded at the earliest priority.
+     * @return bool
+     */
+    private static function isSentinel($value): bool
+    {
+        if (class_exists(self::SENTINEL_CLASS, false)) {
+            return is_object($value) && is_a($value, self::SENTINEL_CLASS);
+        }
+
+        return $value === null;
     }
 
     /**
@@ -161,7 +206,8 @@ final class AbilityGuards
      */
     public function disarm(): void
     {
-        $this->armed = false;
+        $this->armed    = false;
+        $this->preStack = [];
         foreach ($this->hooks as [$filter, $callback, $priority]) {
             remove_filter($filter, $callback, $priority);
         }
