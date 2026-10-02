@@ -287,7 +287,7 @@ This plugin ships two minified JavaScript files. Their human-readable source and
 The entries below summarize the notable changes since 0.31.1. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
 
 = 0.61.157 =
-* Improved: AI page creation. Page titles and text can contain "&" and bracketed numbers such as [1] and are stored as literal text. A draft left behind by an interrupted AI request can be moved to the trash from WPMgr as long as nobody has edited it. Undo of an AI-created draft can be retried if the site was briefly unreachable. Clearer messages when an AI page request is refused.
+* Improved: AI page creation. Page titles and text can contain "&" and bracketed numbers such as [1] and are stored as literal text. A draft left behind by an interrupted AI request can be moved to the trash from WPMgr as long as nobody has edited it.
 
 = 0.61.156 =
 * Added: AI page creation, off by default. When you turn it on for a site from its Content tab, an AI connected through WPMgr can request a new draft page (headings, paragraphs and lists, in the block editor or the classic editor), and a person approves each request in WPMgr. The page is always created as a draft by a dedicated WPMgr content user that cannot log in, and it can be moved to the trash while nobody has touched it.
@@ -485,7 +485,7 @@ The entries below summarize the notable changes since 0.31.1. This project ships
 == Upgrade Notice ==
 
 = 0.61.157 =
-Improves AI page creation: titles and text with "&" or bracketed numbers are stored as literal text, an interrupted request's untouched draft can be moved to the trash, undo can be retried, and refusal messages are clearer.
+Improves AI page creation: titles and text with "&" or bracketed numbers are stored as literal text, and an interrupted request's untouched draft can be moved to the trash.
 
 = 0.61.156 =
 Adds AI page creation, off by default and turned on per site from the Content tab. A person approves each request in WPMgr. Pages are always created as drafts by a dedicated content user that cannot log in, and can be moved to the trash while untouched.
