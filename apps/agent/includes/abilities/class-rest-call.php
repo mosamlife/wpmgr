@@ -45,6 +45,22 @@ final class RestCall
         'status'  => ['publish', 'inherit'],
     ];
 
+    /**
+     * The posts table's columns, the closed list a write's side-effect
+     * report names. A post_fields write may change only the two fields and
+     * the modified dates.
+     */
+    public const POST_COLUMNS = [
+        'ID', 'post_author', 'post_date', 'post_date_gmt', 'post_content', 'post_title',
+        'post_excerpt', 'post_status', 'comment_status', 'ping_status', 'post_password',
+        'post_name', 'to_ping', 'pinged', 'post_modified', 'post_modified_gmt',
+        'post_content_filtered', 'post_parent', 'guid', 'menu_order', 'post_type',
+        'post_mime_type', 'comment_count',
+    ];
+
+    /** Columns a post_fields write is expected to move. */
+    public const POST_FIELDS_MOVING = ['post_title', 'post_excerpt', 'post_modified', 'post_modified_gmt'];
+
     /** The only body keys a post_fields write may carry. */
     public const POST_FIELDS = ['title' => 'post_title', 'excerpt' => 'post_excerpt'];
 
@@ -537,10 +553,35 @@ final class RestCall
     }
 
     /**
-     * Ruling 5: reads return published content only. With a pinned status,
-     * every returned object (the one item, or every list item) must carry
-     * exactly that status; the pinned list query does not filter a
-     * single-item read, so this is checked on the response itself.
+     * The status a post-like read must pin, or null when the route is not
+     * post-like: pages and posts must pin publish, media must pin inherit.
+     *
+     * @param array<string,mixed> $route Parsed route.
+     * @return string|null
+     */
+    public static function requiredStatus(array $route): ?string
+    {
+        $segments = explode('/', strtolower(ltrim((string) $route['template'], '/')));
+        if (($segments[0] ?? '') !== 'wp' || ($segments[1] ?? '') !== 'v2') {
+            return null;
+        }
+        switch ($segments[2] ?? '') {
+            case 'pages':
+            case 'posts':
+                return 'publish';
+            case 'media':
+                return 'inherit';
+            default:
+                return null;
+        }
+    }
+
+    /**
+     * Ruling 5: reads return published content only. Every returned object
+     * (the one item, or every list item) must carry exactly the pinned
+     * status; the pinned list query does not filter a single-item read, so
+     * this is checked on the response itself. A post-like route without the
+     * status it must pin fails closed.
      *
      * @param mixed               $data  Response data, decoded to arrays.
      * @param array<string,mixed> $route Parsed route.
@@ -548,7 +589,11 @@ final class RestCall
      */
     public static function publishedOnly($data, array $route): bool
     {
-        $status = $route['pinned_query']['status'] ?? null;
+        $status   = $route['pinned_query']['status'] ?? null;
+        $required = self::requiredStatus($route);
+        if ($required !== null && $status !== $required) {
+            return false;
+        }
         if (!is_string($status)) {
             return true;
         }
@@ -567,10 +612,11 @@ final class RestCall
 
     /**
      * Ruling 5 for media: an attachment inherits its parent's read
-     * permission, so a media list can include files attached to a draft.
-     * For a route pinned to status inherit, drop every list item whose
-     * parent is set and is not a published post. An item without a readable
-     * parent id is dropped too.
+     * permission, so media can be attached to a draft. For a route pinned to
+     * status inherit, drop every list item whose parent is set and is not a
+     * published post; an item without a readable parent id is dropped too.
+     * A single item with such a parent comes back as null, which the caller
+     * refuses.
      *
      * @param mixed               $data  Response data, decoded to arrays.
      * @param array<string,mixed> $route Parsed route.
@@ -578,25 +624,37 @@ final class RestCall
      */
     public static function dropUnpublishedParents($data, array $route)
     {
-        if (($route['pinned_query']['status'] ?? null) !== 'inherit' || !is_array($data) || !array_is_list($data)) {
+        if (($route['pinned_query']['status'] ?? null) !== 'inherit' || !is_array($data)) {
             return $data;
+        }
+        if (!array_is_list($data)) {
+            return self::parentPublished($data) ? $data : null;
         }
         $out = [];
         foreach ($data as $item) {
-            $parent = is_array($item) ? ($item['post'] ?? null) : null;
-            if ($parent === null && is_array($item) && array_key_exists('post', $item)) {
-                $parent = 0;
+            if (is_array($item) && self::parentPublished($item)) {
+                $out[] = $item;
             }
-            if (!is_int($parent) || $parent < 0) {
-                continue;
-            }
-            if ($parent > 0 && (!function_exists('get_post_status') || get_post_status($parent) !== 'publish')) {
-                continue;
-            }
-            $out[] = $item;
         }
 
         return $out;
+    }
+
+    /**
+     * @param array<string,mixed> $item One media item.
+     * @return bool
+     */
+    private static function parentPublished(array $item): bool
+    {
+        if (!array_key_exists('post', $item)) {
+            return false;
+        }
+        $parent = $item['post'] ?? 0;
+        if (!is_int($parent) || $parent < 0) {
+            return false;
+        }
+
+        return $parent === 0 || (function_exists('get_post_status') && get_post_status($parent) === 'publish');
     }
 
     /**
@@ -627,13 +685,27 @@ final class RestCall
      */
     public static function postFingerprint(object $post): string
     {
+        $v = get_object_vars($post);
+        $f = static function (string $k) use ($v): string {
+            $x = $v[$k] ?? '';
+
+            return is_scalar($x) ? (string) $x : '';
+        };
+
         return hash('sha256', (string) json_encode([
-            (int) ($post->ID ?? 0),
-            (string) ($post->post_type ?? ''),
-            (string) ($post->post_status ?? ''),
-            (string) ($post->post_modified_gmt ?? ''),
-            (string) ($post->post_title ?? ''),
-            (string) ($post->post_excerpt ?? ''),
+            (int) $f('ID'),
+            $f('post_type'),
+            $f('post_status'),
+            $f('post_modified_gmt'),
+            $f('post_title'),
+            $f('post_excerpt'),
+            $f('post_content'),
+            (int) $f('post_author'),
+            $f('post_name'),
+            (int) $f('post_parent'),
+            $f('post_password'),
+            (int) $f('menu_order'),
+            $f('comment_status'),
         ]));
     }
 

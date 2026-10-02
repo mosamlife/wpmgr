@@ -319,7 +319,7 @@ final class AbilityRunCommand implements CommandInterface
             return $this->restRead($route, $call, $entrySha, $routeSha);
         }
         if ($mode === 'precheck') {
-            return $this->asPrincipal(function () use ($route, $call, $requestId, $entrySha, $routeSha, $inputSha): array {
+            return $this->asPrincipal(function (int $principal) use ($route, $call, $requestId, $entrySha, $routeSha, $inputSha): array {
                 $effects = new AbilitySideEffects();
                 $effects->arm();
                 try {
@@ -330,8 +330,9 @@ final class AbilityRunCommand implements CommandInterface
                 if ($effects->detected()) {
                     return $this->fail('read_side_effect_detected', 'the precheck changed the site or called out', false, ['side_effects' => $effects->details()]);
                 }
+                $intact = $this->principalRefusal($principal);
 
-                return $out;
+                return $intact ?? $out;
             });
         }
 
@@ -405,7 +406,7 @@ final class AbilityRunCommand implements CommandInterface
                 return $this->fail('rest_error', 'the route output could not be read', false, ['status' => (int) $d['status'], 'error_code' => 'output_invalid']);
             }
             $data = RestCall::dropUnpublishedParents($data, $route);
-            if (!RestCall::publishedOnly($data, $route)) {
+            if ($data === null || !RestCall::publishedOnly($data, $route)) {
                 return $this->fail('rest_not_published', 'the route returned content that is not published; nothing was returned');
             }
             $output  = VendorAbility::project($data, $route['output_fields']);
@@ -441,12 +442,9 @@ final class AbilityRunCommand implements CommandInterface
      */
     private function restOutcomeRefusal(array $d, int $principal, bool $strict): ?array
     {
-        if (!function_exists('get_current_user_id') || (int) get_current_user_id() !== $principal) {
-            return $this->fail('principal_switched', 'the current user changed during the call; its output was withheld');
-        }
-        $drift = ServicePrincipal::liveDrift();
-        if ($drift !== null) {
-            return $this->fail('principal_capabilities_drifted', $drift);
+        $intact = $this->principalRefusal($principal);
+        if ($intact !== null) {
+            return $intact;
         }
         if ($d['handler_refused']) {
             return $this->fail('rest_handler_not_core', 'the route is not answered by WordPress core');
@@ -460,6 +458,25 @@ final class AbilityRunCommand implements CommandInterface
         }
         if ($d['status'] >= 400 || $d['status'] < 100) {
             return $this->fail('rest_error', 'the route refused the call', false, ['status' => $d['status'], 'error_code' => $this->restErrorCode($d['response'])]);
+        }
+
+        return null;
+    }
+
+    /**
+     * The refusal when the current user is no longer the intact principal.
+     *
+     * @param int $principal Service user.
+     * @return array<string,mixed>|null
+     */
+    private function principalRefusal(int $principal): ?array
+    {
+        if (!function_exists('get_current_user_id') || (int) get_current_user_id() !== $principal) {
+            return $this->fail('principal_switched', 'the current user changed during the call; its output was withheld');
+        }
+        $drift = ServicePrincipal::liveDrift();
+        if ($drift !== null) {
+            return $this->fail('principal_capabilities_drifted', $drift);
         }
 
         return null;
@@ -617,6 +634,9 @@ final class AbilityRunCommand implements CommandInterface
         if ($stored['changed'] !== null) {
             return $this->fail('sanitiser_changed_value', 'the site would change the ' . $stored['changed'] . ' on save', false, ['key' => $stored['changed']]);
         }
+        if ($this->restExistingChanges($post) !== []) {
+            return $this->contentWouldChange();
+        }
         $baseFp  = RestCall::postFingerprint($post);
         $changes = [];
         foreach ($stored['stored'] as $key => $bytes) {
@@ -649,6 +669,98 @@ final class AbilityRunCommand implements CommandInterface
             ],
             'changes'          => $changes,
             'undo_exact'       => $this->restUndoExact($post),
+        ];
+    }
+
+    /**
+     * The columns of the existing row, other than title and excerpt, that a
+     * save by the current user would change: every save-time field filter
+     * core applies through sanitize_post(..., 'db') when wp_update_post
+     * re-saves the merged row, kses included for a user without
+     * unfiltered_html.
+     *
+     * @param object $post Post.
+     * @return list<string>
+     */
+    private function restExistingChanges(object $post): array
+    {
+        $changed = [];
+        $vars    = get_object_vars($post);
+        foreach (RestCall::POST_COLUMNS as $column) {
+            if (in_array($column, ['ID', 'comment_count'], true) || in_array($column, RestCall::POST_FIELDS_MOVING, true)
+                || !array_key_exists($column, $vars) || !is_scalar($vars[$column])) {
+                continue;
+            }
+            $value = (string) $vars[$column];
+            $saved = wp_unslash(sanitize_post_field($column, wp_slash($value), (int) self::pf($post, 'ID'), 'db'));
+            if (!is_scalar($saved) || (string) $saved !== $value) {
+                $changed[] = $column;
+            }
+        }
+
+        return $changed;
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function contentWouldChange(): array
+    {
+        return $this->fail('post_content_would_change', 'this page has content the WPMgr user may not save; edit the title in WordPress');
+    }
+
+    /**
+     * Columns other than title, excerpt and the modified dates that differ
+     * between the row before and after the write, from the closed column
+     * list.
+     *
+     * @param object $before Before.
+     * @param object $after  After.
+     * @return list<string>
+     */
+    private function restOtherColumnsChanged(object $before, object $after): array
+    {
+        $out = [];
+        foreach (RestCall::POST_COLUMNS as $column) {
+            if (in_array($column, RestCall::POST_FIELDS_MOVING, true) || $column === 'comment_count') {
+                continue;
+            }
+            if (self::pf($before, $column) !== self::pf($after, $column)) {
+                $out[] = $column;
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * Hashes of the target's post meta and term ids, recorded around a
+     * write. Plugins commonly write their own meta on save, so a change is
+     * reported, not refused.
+     *
+     * @param int $postId Post id.
+     * @return array{meta:string,terms:string}
+     */
+    private function targetState(int $postId): array
+    {
+        $meta  = function_exists('get_post_meta') ? get_post_meta($postId) : null;
+        $terms = null;
+        if (function_exists('wp_get_object_terms') && function_exists('get_object_taxonomies')) {
+            $type  = function_exists('get_post_type') ? get_post_type($postId) : false;
+            $taxes = is_string($type) ? get_object_taxonomies($type) : [];
+            $terms = $taxes === [] ? [] : wp_get_object_terms($postId, $taxes, ['fields' => 'ids']);
+        }
+        if (is_array($meta)) {
+            unset($meta['_edit_lock'], $meta['_edit_last']);
+            ksort($meta);
+        }
+        if (is_array($terms)) {
+            sort($terms);
+        }
+
+        return [
+            'meta'  => hash('sha256', (string) json_encode($meta)),
+            'terms' => hash('sha256', (string) json_encode(is_array($terms) ? $terms : null)),
         ];
     }
 
@@ -715,6 +827,9 @@ final class AbilityRunCommand implements CommandInterface
         if ($stored['changed'] !== null) {
             return $this->fail('sanitiser_changed_value', 'the site would change the ' . $stored['changed'] . ' on save', false, ['key' => $stored['changed']]);
         }
+        if ($this->restExistingChanges($post) !== []) {
+            return $this->contentWouldChange();
+        }
 
         // 4. The snapshot, before any effect, read back before the effect.
         $prior  = ['post_title' => self::pf($post, 'post_title'), 'post_excerpt' => self::pf($post, 'post_excerpt')];
@@ -748,9 +863,13 @@ final class AbilityRunCommand implements CommandInterface
         }
 
         // 5. Tripwire baseline. 6. Dispatch.
-        $baseline = $this->tripwires($postId);
+        $baseline     = $this->tripwires($postId);
+        $targetBefore = $this->targetState($postId);
         AbilityLedger::update($requestId, ['phase' => 'dispatching']);
-        $d = $this->restDispatch($route, $call);
+        // What is sent is what was approved and what verify expects stored.
+        $sent         = $call;
+        $sent['body'] = $stored['stored'];
+        $d            = $this->restDispatch($route, $sent);
 
         // 7-8. Re-read and verify the stored fields; the tripwires.
         clean_post_cache($postId);
@@ -758,12 +877,17 @@ final class AbilityRunCommand implements CommandInterface
         $changed = !is_object($after) || RestCall::postFingerprint($after) !== $baseFp;
         $refusal = $this->restOutcomeRefusal($d, $principal, false);
         $problem = $refusal === null ? $this->verifyPostFields($after, $post, $stored['stored']) : null;
+        $columns = is_object($after) ? $this->restOtherColumnsChanged($post, $after) : [];
         $tripped = $this->tripwires($postId) !== $baseline;
 
-        if ($refusal !== null || $problem !== null || $tripped || !is_object($after)) {
+        if ($refusal !== null || $problem !== null || $tripped || $columns !== [] || !is_object($after)) {
             $result = $refusal ?? $this->fail('verify_mismatch', (string) ($problem ?? 'the post could not be read back'));
+            if ($columns !== []) {
+                $result = $this->fail('side_effect_detected', 'the write changed more of this post than its title and excerpt', false, ['columns' => $columns]);
+                $changed = true;
+            }
             if ($tripped) {
-                $result = $this->fail('side_effect_detected', 'the site changed outside this post during the write');
+                $result = $this->fail('side_effect_detected', 'the site changed outside this post during the write', false, $columns !== [] ? ['columns' => $columns] : []);
             }
             // 9. Undo our own change when anything changed.
             if ($changed || $tripped) {
@@ -789,6 +913,7 @@ final class AbilityRunCommand implements CommandInterface
         $output   = in_array('after_callbacks', $d['violations'], true) || !is_object($response) || !method_exists($response, 'get_data')
             ? $this->postFieldsOutput($after)
             : VendorAbility::project(RestCall::plain($response->get_data()), $route['output_fields']);
+        $targetNow = $this->targetState($postId);
         $result   = [
             'ok'         => true,
             'outcome'    => 'updated',
@@ -801,7 +926,13 @@ final class AbilityRunCommand implements CommandInterface
             'status'     => self::pf($after, 'post_status'),
             'live'       => self::pf($after, 'post_status') === 'publish',
             'after_fp'   => $afterFp,
-            'verify'     => ['fields_equal' => true, 'tripwires' => 'clean'],
+            'verify'     => [
+                'fields_equal'         => true,
+                'other_columns'        => 'unchanged',
+                'tripwires'            => 'clean',
+                'target_meta_changed'  => $targetNow['meta'] !== $targetBefore['meta'],
+                'target_terms_changed' => $targetNow['terms'] !== $targetBefore['terms'],
+            ],
             'output'     => $output,
         ];
         $recorded = AbilityLedger::update($requestId, [
@@ -921,7 +1052,7 @@ final class AbilityRunCommand implements CommandInterface
             return $this->fail('target_in_flight', 'another engine call holds this post');
         }
         try {
-            return $this->asPrincipal(function () use ($requestId, $postId, $prior, $afterFp, $row): array {
+            return $this->asPrincipal(function (int $principal) use ($requestId, $postId, $prior, $afterFp, $row): array {
                 clean_post_cache($postId);
                 $post = get_post($postId);
                 if (!is_object($post)) {
@@ -939,6 +1070,10 @@ final class AbilityRunCommand implements CommandInterface
                     return $this->fail('revert_failed', 'the previous title and excerpt could not be put back', false, ['exact' => false]);
                 }
                 AbilityLedger::update($requestId, ['undo_state' => 'restored', 'reverted_at' => time()]);
+                $intact = $this->principalRefusal($principal);
+                if ($intact !== null) {
+                    return $intact + ['restored' => true];
+                }
 
                 return [
                     'ok'         => true,
