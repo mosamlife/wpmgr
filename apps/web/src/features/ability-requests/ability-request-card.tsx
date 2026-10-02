@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import type { AbilityRequest } from "@wpmgr/api";
 
 import { Button } from "@/components/ui/button";
@@ -56,7 +57,7 @@ export function AbilityRequestCard({
   const preview = parsePagePreview(request.input_json);
   const setUpFor = setUpForLine(request);
   const busy = approvePending || declinePending;
-  const canUndo = request.undo_offered;
+  const canUndo = useUndoWindowOpen(request.undo_offered, request.undo_available_until);
   const editHref = status.kind === "done" || status.draftMayExist === true ? editDraftHref(siteUrl, request.created_post_id) : null;
   const title = abilityCardTitle(request);
 
@@ -154,6 +155,25 @@ export function AbilityRequestCard({
       ) : null}
     </article>
   );
+}
+
+/**
+ * True while the server offered Undo and the window end is still ahead of the
+ * client clock. One timer to the expiry flips it off; no polling clock.
+ */
+function useUndoWindowOpen(offered: boolean, until: string | undefined): boolean {
+  const end = until ? Date.parse(until) : Number.NaN;
+  const [, setTick] = useState(0);
+  const open = offered && Number.isFinite(end) && end > Date.now();
+  useEffect(() => {
+    if (!offered || !Number.isFinite(end)) return;
+    const ms = end - Date.now();
+    if (ms <= 0) return;
+    // setTimeout caps at a signed 32-bit delay; a longer wait re-arms via the tick.
+    const t = setTimeout(() => setTick((n) => n + 1), Math.min(ms, 2_147_483_647));
+    return () => clearTimeout(t);
+  }, [offered, end]);
+  return open;
 }
 
 function OutlinePreview({ preview }: { preview: PagePreview }) {
