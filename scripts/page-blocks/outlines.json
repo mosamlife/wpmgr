@@ -21,6 +21,12 @@
     {"type":"heading","level":2,"text":"Q&A & more"},
     {"type":"paragraph","text":"Fish & chips && AT&T, R&D."},
     {"type":"list","ordered":false,"items":["Tom & Jerry","a&b"]}]},
+  {"name":"encoded-text","outline":[
+    {"type":"heading","level":2,"text":"Terms & Conditions [1]"},
+    {"type":"paragraph","text":"Terms & Conditions [1] and see [22], [333], [4444]."},
+    {"type":"list","ordered":false,"items":["Item [22]","Q&A;"]},
+    {"type":"paragraph","text":"Already &amp; encoded and &#60; entity."},
+    {"type":"list","ordered":true,"items":["&amp; first","&#60; second"]}]},
   {"name":"long-text","outline":[
     {"type":"paragraph","text":"LONGTEXT"},
     {"type":"list","ordered":false,"items":["LONGTEXT"]}]},
