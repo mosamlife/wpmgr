@@ -932,6 +932,9 @@ import type {
   RecheckSiteData,
   RecheckSiteErrors,
   RecheckSiteResponses,
+  ReenableAbilityForTenantData,
+  ReenableAbilityForTenantErrors,
+  ReenableAbilityForTenantResponses,
   RefreshSiteContentInventoryData,
   RefreshSiteContentInventoryErrors,
   RefreshSiteContentInventoryResponses,
@@ -6858,6 +6861,37 @@ export const undoAbilityRequest = <ThrowOnError extends boolean = false>(
     ThrowOnError
   >({
     url: "/api/v1/sites/{siteId}/ai/ability-requests/{requestId}/undo",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Turn a reviewed tool back on for this account
+ *
+ * WPMgr switches a reviewed plugin, theme or core read tool off for an
+ * account as soon as it changes something on one of that account's
+ * sites, or contacts another server, during a read. While it is off,
+ * the AI connection is refused with `not_runnable_reason`
+ * `disabled_for_your_account`. This turns it back on for the caller's
+ * account only; a tool switched off for every account stays off until
+ * WPMgr turns it back on. A later report from this account switches it
+ * off again. The caller must be a signed-in admin or owner of the
+ * account with full organisation access, or a WPMgr superadmin. The
+ * change is audited as `ability.tenant_reenabled`.
+ *
+ */
+export const reenableAbilityForTenant = <ThrowOnError extends boolean = false>(
+  options: Options<ReenableAbilityForTenantData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    ReenableAbilityForTenantResponses,
+    ReenableAbilityForTenantErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/ai/abilities/{entryId}/reenable",
     ...options,
     headers: {
       "Content-Type": "application/json",

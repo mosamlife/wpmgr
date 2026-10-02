@@ -1101,6 +1101,10 @@ type RecheckSiteRes interface {
 	recheckSiteRes()
 }
 
+type ReenableAbilityForTenantRes interface {
+	reenableAbilityForTenantRes()
+}
+
 type RefreshSiteContentInventoryRes interface {
 	refreshSiteContentInventoryRes()
 }

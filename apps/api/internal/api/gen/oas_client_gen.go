@@ -3119,6 +3119,18 @@ type Invoker interface {
 	//
 	// POST /api/v1/sites/{siteId}/recheck
 	RecheckSite(ctx context.Context, params RecheckSiteParams) (RecheckSiteRes, error)
+	// ReenableAbilityForTenant invokes reenableAbilityForTenant operation.
+	//
+	// WPMgr switches a reviewed plugin, theme or core read tool off for an account as soon as it changes
+	// something on one of that account's sites, or contacts another server, during a read. While it is
+	// off, the AI connection is refused with `not_runnable_reason` `disabled_for_your_account`. This turns
+	// it back on for the caller's account only; a tool switched off for every account stays off until
+	// WPMgr turns it back on. A later report from this account switches it off again. The caller must be a
+	// signed-in admin or owner of the account with full organisation access, or a WPMgr superadmin. The
+	// change is audited as `ability.tenant_reenabled`.
+	//
+	// POST /api/v1/ai/abilities/{entryId}/reenable
+	ReenableAbilityForTenant(ctx context.Context, request *ReenableAbilityForTenantReq, params ReenableAbilityForTenantParams) (ReenableAbilityForTenantRes, error)
 	// RefreshSiteContentInventory invokes refreshSiteContentInventory operation.
 	//
 	// Queues a check; the result appears in the inventory once it runs. Rate limited per site: a second
@@ -39513,6 +39525,114 @@ func (c *Client) sendRecheckSite(ctx context.Context, params RecheckSiteParams) 
 
 	stage = "DecodeResponse"
 	result, err := decodeRecheckSiteResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// ReenableAbilityForTenant invokes reenableAbilityForTenant operation.
+//
+// WPMgr switches a reviewed plugin, theme or core read tool off for an account as soon as it changes
+// something on one of that account's sites, or contacts another server, during a read. While it is
+// off, the AI connection is refused with `not_runnable_reason` `disabled_for_your_account`. This turns
+// it back on for the caller's account only; a tool switched off for every account stays off until
+// WPMgr turns it back on. A later report from this account switches it off again. The caller must be a
+// signed-in admin or owner of the account with full organisation access, or a WPMgr superadmin. The
+// change is audited as `ability.tenant_reenabled`.
+//
+// POST /api/v1/ai/abilities/{entryId}/reenable
+func (c *Client) ReenableAbilityForTenant(ctx context.Context, request *ReenableAbilityForTenantReq, params ReenableAbilityForTenantParams) (ReenableAbilityForTenantRes, error) {
+	res, err := c.sendReenableAbilityForTenant(ctx, request, params)
+	return res, err
+}
+
+func (c *Client) sendReenableAbilityForTenant(ctx context.Context, request *ReenableAbilityForTenantReq, params ReenableAbilityForTenantParams) (res ReenableAbilityForTenantRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("reenableAbilityForTenant"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/api/v1/ai/abilities/{entryId}/reenable"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, ReenableAbilityForTenantOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/ai/abilities/"
+	{
+		// Encode "entryId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "entryId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.EntryId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/reenable"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeReenableAbilityForTenantRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeReenableAbilityForTenantResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}

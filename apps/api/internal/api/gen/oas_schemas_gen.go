@@ -2282,6 +2282,35 @@ func (s *AbilityRequestState) UnmarshalText(data []byte) error {
 	}
 }
 
+// Ref: #/components/schemas/AbilityTenantReenableResult
+type AbilityTenantReenableResult struct {
+	EntryID uuid.UUID `json:"entry_id"`
+	// Always true; a tool that was not off is a 404.
+	Reenabled bool `json:"reenabled"`
+}
+
+// GetEntryID returns the value of EntryID.
+func (s *AbilityTenantReenableResult) GetEntryID() uuid.UUID {
+	return s.EntryID
+}
+
+// GetReenabled returns the value of Reenabled.
+func (s *AbilityTenantReenableResult) GetReenabled() bool {
+	return s.Reenabled
+}
+
+// SetEntryID sets the value of EntryID.
+func (s *AbilityTenantReenableResult) SetEntryID(val uuid.UUID) {
+	s.EntryID = val
+}
+
+// SetReenabled sets the value of Reenabled.
+func (s *AbilityTenantReenableResult) SetReenabled(val bool) {
+	s.Reenabled = val
+}
+
+func (*AbilityTenantReenableResult) reenableAbilityForTenantRes() {}
+
 type AcceptInvitationBadRequest Error
 
 func (*AcceptInvitationBadRequest) acceptInvitationRes() {}
@@ -47927,6 +47956,24 @@ func (s *RecoveryCodesResponse) SetRecoveryCodes(val []string) {
 
 func (*RecoveryCodesResponse) confirmTotpEnrollmentRes()   {}
 func (*RecoveryCodesResponse) regenerateRecoveryCodesRes() {}
+
+type ReenableAbilityForTenantBadRequest Error
+
+func (*ReenableAbilityForTenantBadRequest) reenableAbilityForTenantRes() {}
+
+type ReenableAbilityForTenantForbidden Error
+
+func (*ReenableAbilityForTenantForbidden) reenableAbilityForTenantRes() {}
+
+type ReenableAbilityForTenantNotFound Error
+
+func (*ReenableAbilityForTenantNotFound) reenableAbilityForTenantRes() {}
+
+type ReenableAbilityForTenantReq struct{}
+
+type ReenableAbilityForTenantUnsupportedMediaType Error
+
+func (*ReenableAbilityForTenantUnsupportedMediaType) reenableAbilityForTenantRes() {}
 
 type RefreshSiteContentInventoryAccepted struct {
 	Status RefreshSiteContentInventoryAcceptedStatus `json:"status"`

@@ -8022,6 +8022,21 @@ export const AbilityRequestListSchema = {
   },
 } as const;
 
+export const AbilityTenantReenableResultSchema = {
+  type: "object",
+  required: ["entry_id", "reenabled"],
+  properties: {
+    entry_id: {
+      type: "string",
+      format: "uuid",
+    },
+    reenabled: {
+      type: "boolean",
+      description: "Always true; a tool that was not off is a 404.",
+    },
+  },
+} as const;
+
 export const AbilityRequestSchema = {
   type: "object",
   description:

@@ -4642,6 +4642,14 @@ export type AbilityRequestList = {
   offset: number;
 };
 
+export type AbilityTenantReenableResult = {
+  entry_id: string;
+  /**
+   * Always true; a tool that was not off is a 404.
+   */
+  reenabled: boolean;
+};
+
 /**
  * One AI site-change request. `site_label`, `site_host`, `grant_label`
  * and `title_excerpt` came from a site or an AI connection: render each
@@ -18411,6 +18419,49 @@ export type UndoAbilityRequestResponses = {
 
 export type UndoAbilityRequestResponse =
   UndoAbilityRequestResponses[keyof UndoAbilityRequestResponses];
+
+export type ReenableAbilityForTenantData = {
+  body: {
+    [key: string]: unknown;
+  };
+  path: {
+    entryId: string;
+  };
+  query?: never;
+  url: "/api/v1/ai/abilities/{entryId}/reenable";
+};
+
+export type ReenableAbilityForTenantErrors = {
+  /**
+   * entryId is not a UUID
+   */
+  400: Error;
+  /**
+   * Not a signed-in person, or not an admin or owner of the account
+   */
+  403: Error;
+  /**
+   * The tool is not switched off for this account
+   */
+  404: Error;
+  /**
+   * The body is not JSON
+   */
+  415: Error;
+};
+
+export type ReenableAbilityForTenantError =
+  ReenableAbilityForTenantErrors[keyof ReenableAbilityForTenantErrors];
+
+export type ReenableAbilityForTenantResponses = {
+  /**
+   * The tool is back on for this account
+   */
+  200: AbilityTenantReenableResult;
+};
+
+export type ReenableAbilityForTenantResponse =
+  ReenableAbilityForTenantResponses[keyof ReenableAbilityForTenantResponses];
 
 export type GetSiteContentEditingData = {
   body?: never;

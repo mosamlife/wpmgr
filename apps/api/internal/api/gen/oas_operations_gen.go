@@ -331,6 +331,7 @@ const (
 	ReadSiteFileContentOperation               OperationName = "ReadSiteFileContent"
 	RebaselineAuditIntegrityOperation          OperationName = "RebaselineAuditIntegrity"
 	RecheckSiteOperation                       OperationName = "RecheckSite"
+	ReenableAbilityForTenantOperation          OperationName = "ReenableAbilityForTenant"
 	RefreshSiteContentInventoryOperation       OperationName = "RefreshSiteContentInventory"
 	RefreshSiteDiagnosticsOperation            OperationName = "RefreshSiteDiagnostics"
 	RefreshSiteScreenshotOperation             OperationName = "RefreshSiteScreenshot"

@@ -9586,6 +9586,64 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /api/v1/ai/abilities/{entryId}/reenable:
+    post:
+      operationId: reenableAbilityForTenant
+      summary: Turn a reviewed tool back on for this account
+      description: |
+        WPMgr switches a reviewed plugin, theme or core read tool off for an
+        account as soon as it changes something on one of that account's
+        sites, or contacts another server, during a read. While it is off,
+        the AI connection is refused with `not_runnable_reason`
+        `disabled_for_your_account`. This turns it back on for the caller's
+        account only; a tool switched off for every account stays off until
+        WPMgr turns it back on. A later report from this account switches it
+        off again. The caller must be a signed-in admin or owner of the
+        account with full organisation access, or a WPMgr superadmin. The
+        change is audited as `ability.tenant_reenabled`.
+      tags: [ai-requests]
+      parameters:
+        - name: entryId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: The tool is back on for this account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AbilityTenantReenableResult"
+        "400":
+          description: entryId is not a UUID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Not a signed-in person, or not an admin or owner of the account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: The tool is not switched off for this account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "415":
+          description: The body is not JSON
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /api/v1/sites/{siteId}/ai/content-editing:
     get:
       operationId: getSiteContentEditing
@@ -20200,6 +20258,14 @@ components:
             $ref: "#/components/schemas/AbilityRequest"
         limit: { type: integer, format: int32 }
         offset: { type: integer, format: int32 }
+    AbilityTenantReenableResult:
+      type: object
+      required: [entry_id, reenabled]
+      properties:
+        entry_id: { type: string, format: uuid }
+        reenabled:
+          type: boolean
+          description: Always true; a tool that was not off is a 404.
     AbilityRequest:
       type: object
       description: |
