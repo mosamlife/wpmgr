@@ -120,7 +120,7 @@ var unresolvableHandlers = map[routeKey]string{
 	{"POST", "/api/v1/sites/{siteId}/ai/ability-requests/{requestId}/decline"}: "the documented body is an empty JSON object: RequireJSONBody refuses anything but JSON (the CSRF guard) and the handler reads no field, so there is no struct to diff",
 	{"POST", "/api/v1/sites/{siteId}/ai/ability-requests/{requestId}/undo"}:    "the documented body is an empty JSON object: RequireJSONBody refuses anything but JSON (the CSRF guard) and the handler reads no field, so there is no struct to diff",
 	{"POST", "/api/v1/ai/abilities/{entryId}/reenable"}:                        "the documented body is an empty JSON object: RequireJSONBody refuses anything but JSON (the CSRF guard) and the handler reads no field, so there is no struct to diff",
-	{"POST", "/api/v1/sites/{siteId}/ai/content-editing/enable"}:              "the documented body is an empty JSON object: RequireJSONBody refuses anything but JSON (the CSRF guard) and the handler reads no field, so there is no struct to diff",
+	{"POST", "/api/v1/sites/{siteId}/ai/content-editing/enable"}:               "the documented body is an empty JSON object: RequireJSONBody refuses anything but JSON (the CSRF guard) and the handler reads no field, so there is no struct to diff",
 }
 
 // ---------------------------------------------------------------------------
