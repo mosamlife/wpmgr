@@ -23,7 +23,7 @@
 #                             stale on every unrelated edit gets deleted.
 #
 #   PARAM <Method>.<param>    A uuid.UUID / []uuid.UUID parameter on the Store
-#                             interface. EVERY uuid parameter on that interface
+#                             or requestStore interface. EVERY uuid parameter on that interface
 #                             needs an entry, not only the site-looking ones,
 #                             because `GetSiteByID(ctx, tenantID, id uuid.UUID)`
 #                             is a site id wearing a name a pattern would not
@@ -96,6 +96,12 @@ PARAM RecordClientIdentity.grantID                      # grant row id, from the
 PARAM TouchActivity.tenantID                            # tenant of the resolved principal
 PARAM TouchActivity.grantID                             # grant row id, from the authenticated grant
 PARAM TouchActivity.tokenID                             # token row id, from the authenticated token
+# requestStore (cache_purge_repo.go), read by Rule B alongside Store. Both
+# methods scope by the connection's principal inside runConnectionTx, and the
+# query filters on tenant, grant AND site_id = ANY(the principal's sites).
+PARAM ReadRequestStatus.grantID                         # auth.GrantID, from the authenticated connection (cache_purge_status.go:227)
+PARAM ReadRequestStatus.requestID                       # a request id from the tool argument, matched under the connection's grant and the site-scoped tx (cache_purge_status.go:227, db/query/assistant_requests.sql:123-126)
+PARAM ListOpenRequestStatus.grantID                     # auth.GrantID, from the authenticated connection (cache_purge_status.go:207)
 PARAM RevokeGrantWithTokens.grantID                     # operator-facing revoke, dashboard principal, not the MCP surface
 # grantID here IS request-supplied -- the :connectionId path parameter of
 # GET /api/v1/mcp/connections/:connectionId/status (handler.go:184). Allowlisted

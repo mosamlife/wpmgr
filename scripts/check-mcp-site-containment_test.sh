@@ -113,8 +113,20 @@ make_tree() {
     >"$mcp/service.go"
 }
 
+# The unexported requestStore interface in `go doc -u` format. Extra methods
+# are appended from "$@". make_store_doc appends it, so every fixture carries
+# both interfaces the guard reads.
+request_store_block() {
+  printf '\ntype requestStore interface {\n'
+  printf '\tListSiteAddressesInScope(ctx context.Context, principal domain.Principal) ([]siteAddressRow, error)\n'
+  printf '\tReadRequestStatus(ctx context.Context, principal domain.Principal, grantID, requestID uuid.UUID) (requestStatusRow, bool, error)\n'
+  for extra in "$@"; do printf '\t%s\n' "$extra"; done
+  printf '}\n'
+}
+
 # The mcp.Store interface in `go doc -u` format: a tab-indented method per
-# line, doc comments as `\t//`. Extra methods are appended from "$@".
+# line, doc comments as `\t//`. Extra methods are appended from "$@" to Store;
+# REQUEST_STORE_EXTRA (one method, optional) is appended to requestStore.
 make_store_doc() {
   out="$1"; shift
   {
@@ -128,6 +140,7 @@ make_store_doc() {
     printf '\tListSitesForRead(ctx context.Context, tenantID uuid.UUID, limit int32) ([]sqlc.ListSitesRow, bool, error)\n'
     for extra in "$@"; do printf '\t%s\n' "$extra"; done
     printf '}\n'
+    if [ -n "${REQUEST_STORE_EXTRA:-}" ]; then request_store_block "$REQUEST_STORE_EXTRA"; else request_store_block; fi
   } >"$out"
 }
 
@@ -143,6 +156,8 @@ make_allow() {
     printf 'PARAM ResolveScopeSites.tagIDs        # chokepoint input\n'
     printf 'PARAM ResolveScopeSites.siteIDs       # chokepoint input\n'
     printf 'PARAM ListSitesForRead.tenantID       # tenant of the resolved principal\n'
+    printf 'PARAM ReadRequestStatus.grantID       # auth.GrantID\n'
+    printf 'PARAM ReadRequestStatus.requestID     # request id, looked up under the grant\n'
     for extra in "$@"; do printf '%s\n' "$extra"; done
   } >"$out"
 }
@@ -259,7 +274,20 @@ run_case "ok-doc-comment-period-is-not-a-split-call" 0 "check-mcp-site-containme
   --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$DOC"
 rm -f "$TREE/apps/api/internal/mcp/iface.go"
 
-run_case "ok-doc-comments-are-not-methods" 0 "Rule B  6 uuid parameter(s)" "VIOLATION" -- \
+# A new requestStore method with an unreviewed uuid parameter is the bypass
+# Rule B used to miss, because it read Store alone.
+REQUEST_STORE_EXTRA='Foo(ctx context.Context, siteID uuid.UUID) error' make_store_doc "$DOC"
+run_case "bypass-request-store-unreviewed-uuid-param" 1 "PARAM Foo.siteID" - -- \
+  --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$DOC"
+make_store_doc "$DOC"
+
+# The same method with no uuid is ordinary work.
+REQUEST_STORE_EXTRA='CountOpen(ctx context.Context, limit int32) (int, error)' make_store_doc "$DOC"
+run_case "ok-request-store-method-without-uuid" 0 "check-mcp-site-containment: OK" "VIOLATION" -- \
+  --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$DOC"
+make_store_doc "$DOC"
+
+run_case "ok-doc-comments-are-not-methods" 0 "Rule B  8 uuid parameter(s)" "VIOLATION" -- \
   --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$DOC"
 
 # ============================================================================
@@ -669,9 +697,32 @@ printf 'some other output entirely\n' >"$WORK/wrong.doc"
 run_case "broken-store-doc-interface-renamed" 2 "does not contain 'type Store interface'" "containment: OK" -- \
   --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$WORK/wrong.doc"
 
+# requestStore missing from the extraction is a guard that reads half the
+# boundary. Exit 2 with its own name in the message, never 0.
+{ make_store_doc "$WORK/two.doc"; sed '/^type requestStore interface/,$d' "$WORK/two.doc" >"$WORK/onlystore.doc"; }
+run_case "broken-request-store-missing-from-doc" 2 "does not contain 'type requestStore interface'" "containment: OK" -- \
+  --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$WORK/onlystore.doc"
+
+# The real extraction path (no --store-doc): a `go doc` that fails, or that
+# exits 0 and prints nothing for requestStore, must be exit 2. A fake go on
+# PATH stands in, because the failure is the subject.
+mkdir -p "$WORK/fakego-fail" "$WORK/fakego-empty"
+printf '#!/bin/sh\necho "go doc: boom" >&2\nexit 1\n' >"$WORK/fakego-fail/go"
+printf '#!/bin/sh\nfor a; do last="$a"; done\n[ "$last" = Store ] && cat "%s"\nexit 0\n' "$WORK/onlystore.doc" >"$WORK/fakego-empty/go"
+chmod +x "$WORK/fakego-fail/go" "$WORK/fakego-empty/go"
+PATH_SAVE="$PATH"
+PATH="$WORK/fakego-fail:$PATH_SAVE"
+run_case "broken-go-doc-fails" 2 "failed (exit 1)" "containment: OK" -- \
+  --api-root "$TREE/apps/api" --allowlist "$ALLOW"
+PATH="$WORK/fakego-empty:$PATH_SAVE"
+run_case "broken-go-doc-finds-no-request-store" 2 "does not contain 'type requestStore interface'" "containment: OK" -- \
+  --api-root "$TREE/apps/api" --allowlist "$ALLOW"
+PATH="$PATH_SAVE"
+
 # The chokepoint gone from the interface is not "no site-scope surface".
 printf '%s\n' 'type Store interface {' '	ListTagIDs(ctx context.Context, tenantID uuid.UUID) ([]uuid.UUID, error)' '}' \
   >"$WORK/nochoke.doc"
+request_store_block >>"$WORK/nochoke.doc"
 run_case "broken-store-doc-lost-the-chokepoint" 2 "no longer declares ResolveScopeSites" "containment: OK" -- \
   --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$WORK/nochoke.doc"
 
@@ -679,6 +730,7 @@ run_case "broken-store-doc-lost-the-chokepoint" 2 "no longer declares ResolveSco
 # is the shape that would otherwise pass on ANY tree.
 printf '%s\n' 'type Store interface {' '  ResolveScopeSites(ctx context.Context) error' '}' \
   >"$WORK/unparseable.doc"
+printf '\ntype requestStore interface {\n  ReadRequestStatus(ctx context.Context) error\n}\n' >>"$WORK/unparseable.doc"
 run_case "broken-store-doc-no-methods-parsed" 2 "parsed ZERO methods" "containment: OK" -- \
   --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$WORK/unparseable.doc"
 
@@ -687,6 +739,7 @@ run_case "broken-store-doc-no-methods-parsed" 2 "parsed ZERO methods" "containme
 # the exact defect that would have made the whole of Rule B vacuous.
 printf '%s\n' 'type Store interface {' '	ResolveScopeSites(ctx context.Context, mode string) error' '}' \
   >"$WORK/nouuid.doc"
+printf '\ntype requestStore interface {\n\tListSiteAddressesInScope(ctx context.Context) error\n}\n' >>"$WORK/nouuid.doc"
 run_case "broken-store-doc-zero-uuid-parameters" 2 "found ZERO uuid parameters" "containment: OK" -- \
   --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$WORK/nouuid.doc"
 

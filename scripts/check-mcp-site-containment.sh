@@ -35,9 +35,11 @@
 #      body, a cache, the grant column read directly) is a resolution that never
 #      happened, and its own doc comment says so.
 #
-#   B. THE STORE INTERFACE'S uuid SURFACE. Package mcp reaches the database
-#      through exactly one interface, mcp.Store. Every uuid.UUID / []uuid.UUID
-#      parameter on it must be allowlisted BY NAME -- not only the ones spelled
+#   B. THE STORE INTERFACES' uuid SURFACE. Package mcp reaches the database
+#      through two interfaces: mcp.Store, and the unexported requestStore that
+#      the request rail and the status tool use (cache_purge_repo.go). Both are
+#      read; the list is STORE_IFACES below. Every uuid.UUID / []uuid.UUID
+#      parameter on either must be allowlisted BY NAME -- not only the ones spelled
 #      "site". A bypass does not announce itself:
 #
 #          GetSiteByID(ctx context.Context, tenantID, id uuid.UUID) (...)
@@ -226,7 +228,9 @@ API_ROOT="$REPO_ROOT/apps/api"
 MCP_PKG_REL="internal/mcp"
 ALLOWLIST="$REPO_ROOT/infra/mcp-site-containment-allowlist.txt"
 STORE_DOC=""
-STORE_DOC_CMD_DEFAULT="${WPMGR_MCP_STORE_DOC_CMD:-go doc -u ./internal/mcp Store}"
+# The interfaces through which package mcp reaches the database. Rule B reads
+# every one of them; a name added here is a name that must extract.
+STORE_IFACES="Store requestStore"
 
 # The chokepoint, and the SiteSet constructor that is its second half. Named
 # once, here, so the two rules and the error messages cannot drift apart.
@@ -240,7 +244,7 @@ usage() {
     '  --api-root DIR     apps/api tree to check (default: <repo>/apps/api)' \
     '  --allowlist FILE   reviewed site-scope surface, with reasons' \
     "                     (default: infra/mcp-site-containment-allowlist.txt)" \
-    '  --store-doc FILE   read the mcp.Store interface from FILE instead of' \
+    '  --store-doc FILE   read the Store and requestStore interfaces from FILE instead of' \
     '                     running `go doc` (the self-test uses this; so can you,' \
     "                     on a machine with no Go toolchain)" \
     '  -h, --help         this text' \
@@ -560,19 +564,24 @@ if [ -n "$STORE_DOC" ]; then
   cat "$STORE_DOC" >"$STORE_DOC_FILE"
 else
   # A DoD step that cannot find its binary fails loudly, never skips.
-  command -v go >/dev/null 2>&1 || broken "the go toolchain is not on PATH, so the Store interface cannot be read. Install Go, or pass --store-doc FILE. This check is NOT skippable."
-  ( cd "$API_ROOT" && GOWORK=off $STORE_DOC_CMD_DEFAULT ) >"$STORE_DOC_FILE" 2>"$TMPDIR_RUN/store.err"
-  rc=$?
-  if [ "$rc" -ne 0 ]; then
-    printf 'check-mcp-site-containment: `%s` failed (exit %d) in %s:\n' "$STORE_DOC_CMD_DEFAULT" "$rc" "$API_ROOT" >&2
-    sed 's/^/    /' "$TMPDIR_RUN/store.err" >&2
-    broken "could not read the mcp.Store interface. A package that does not compile is not a package with no violations."
-  fi
+  command -v go >/dev/null 2>&1 || broken "the go toolchain is not on PATH, so the Store interfaces cannot be read. Install Go, or pass --store-doc FILE. This check is NOT skippable."
+  : >"$STORE_DOC_FILE"
+  for iface in $STORE_IFACES; do
+    ( cd "$API_ROOT" && GOWORK=off go doc -u ./internal/mcp "$iface" ) >>"$STORE_DOC_FILE" 2>"$TMPDIR_RUN/store.err"
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+      printf 'check-mcp-site-containment: `go doc -u ./internal/mcp %s` failed (exit %d) in %s:\n' "$iface" "$rc" "$API_ROOT" >&2
+      sed 's/^/    /' "$TMPDIR_RUN/store.err" >&2
+      broken "could not read the mcp $iface interface. A package that does not compile is not a package with no violations."
+    fi
+  done
 fi
 
 [ -s "$STORE_DOC_FILE" ] || broken "the mcp.Store interface extraction produced NO OUTPUT. Rule B cannot report containment on an empty interface."
-grep -q 'type Store interface' "$STORE_DOC_FILE" \
-  || broken "the extraction does not contain 'type Store interface' -- the interface was renamed, or the doc format changed. Rule B is measuring nothing."
+for iface in $STORE_IFACES; do
+  grep -q "type $iface interface" "$STORE_DOC_FILE" \
+    || broken "the extraction does not contain 'type $iface interface' -- the interface was renamed, or the doc format changed. Rule B is measuring nothing."
+done
 grep -q "$CHOKEPOINT(" "$STORE_DOC_FILE" \
   || broken "the mcp.Store interface no longer declares $CHOKEPOINT. Either the chokepoint left the interface, or the extraction is wrong; both mean Rule B's baseline is gone."
 
@@ -657,16 +666,21 @@ awk '
 
 # Zero uuid parameters on an interface that HEAD declares with many is an
 # extraction failure, not a clean surface.
-[ -s "$FOUND_PARAM" ] || broken "found ZERO uuid parameters on mcp.Store. HEAD declares several, so this is a parse failure, and a parse failure that reports containment is the defect this guard exists to prevent."
+[ -s "$FOUND_PARAM" ] || broken "found ZERO uuid parameters on the mcp Store interfaces. HEAD declares several, so this is a parse failure, and a parse failure that reports containment is the defect this guard exists to prevent."
 
 while IFS= read -r entry; do
   if ! grep -qxF "$entry" "$ALLOW_PARAM"; then
     meth="${entry%%.*}"
     parm="${entry#*.}"
-    loc="$(grep -n "$meth(" "$MCP_DIR/repo.go" 2>/dev/null | head -1 | cut -d: -f1)"
-    [ -n "$loc" ] || loc="?"
-    violation "unreviewed uuid parameter on the mcp.Store database boundary:
-    $MCP_PKG_REL/repo.go:$loc  $meth(... $parm ...)
+    loc="?"
+    for f in "$MCP_DIR"/*.go; do
+      case "$f" in *_test.go) continue ;; esac
+      [ -f "$f" ] || continue
+      n="$(grep -n "^func (r \*Repo) $meth(" "$f" 2>/dev/null | head -1 | cut -d: -f1)"
+      if [ -n "$n" ]; then loc="${f#"$MCP_DIR"/}:$n"; break; fi
+    done
+    violation "unreviewed uuid parameter on the mcp Store / requestStore database boundary:
+    $MCP_PKG_REL/$loc  $meth(... $parm ...)
     Rule B (ADR-061 A11.4): '$parm' is a uuid this surface hands to the database.
     If it is a SITE ID that came from a request, this is the bypass: A11 says no
     handler may pass a request-supplied site id anywhere but $CHOKEPOINT, and a
@@ -679,7 +693,7 @@ done <"$FOUND_PARAM"
 while IFS= read -r entry; do
   [ -n "$entry" ] || continue
   if ! grep -qxF "$entry" "$FOUND_PARAM"; then
-    violation "stale allowlist entry: PARAM $entry is not on the mcp.Store interface.
+    violation "stale allowlist entry: PARAM $entry is not on the Store or requestStore interface.
     The method or the parameter was renamed or removed. Delete the entry, or
     correct it -- an allowlist naming things that no longer exist is not
     protecting the things that do."
@@ -962,7 +976,7 @@ fi
 
 printf 'check-mcp-site-containment: OK\n'
 printf '  Rule A  %s chokepoint / %s call site(s), all reviewed\n' "$n_call" "$SITESET_CTOR"
-printf '  Rule B  %s uuid parameter(s) on the mcp.Store boundary, all reviewed\n' "$n_param"
-printf '  Rule C  %s file(s) reading tool arguments (0 is the Phase 1 state)\n' "$n_toolargs"
+printf '  Rule B  %s uuid parameter(s) on the mcp Store and requestStore boundaries, all reviewed\n' "$n_param"
+printf '  Rule C  %s file(s) reading tool arguments, each one a reviewed TOOLARGS entry\n' "$n_toolargs"
 printf '  Rule D  no second database path in package mcp\n'
 exit 0
