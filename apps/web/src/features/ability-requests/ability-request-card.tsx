@@ -161,19 +161,20 @@ export function AbilityRequestCard({
  * True while the server offered Undo and the window end is still ahead of the
  * client clock. One timer to the expiry flips it off; no polling clock.
  */
-function useUndoWindowOpen(offered: boolean, until: string | undefined): boolean {
-  const end = until ? Date.parse(until) : Number.NaN;
-  const [, setTick] = useState(0);
-  const open = offered && Number.isFinite(end) && end > Date.now();
+function useUndoWindowOpen(offered: boolean, until: string | null | undefined): boolean {
+  // No window end means a recovery undo, which has no expiry of its own.
+  const end = until ? Date.parse(until) : null;
+  const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    if (!offered || !Number.isFinite(end)) return;
-    const ms = end - Date.now();
-    if (ms <= 0) return;
-    // setTimeout caps at a signed 32-bit delay; a longer wait re-arms via the tick.
-    const t = setTimeout(() => setTick((n) => n + 1), Math.min(ms, 2_147_483_647));
+    if (!offered || end === null || !Number.isFinite(end) || end <= now) return;
+    // One timer to the expiry. setTimeout caps at a signed 32-bit delay, so a
+    // longer wait re-arms itself because `now` is a dependency.
+    const t = setTimeout(() => setNow(Date.now()), Math.min(Math.max(end - Date.now(), 0), 2_147_483_647));
     return () => clearTimeout(t);
-  }, [offered, end]);
-  return open;
+  }, [offered, end, now]);
+  if (!offered) return false;
+  if (end === null) return true;
+  return Number.isFinite(end) && end > now;
 }
 
 function OutlinePreview({ preview }: { preview: PagePreview }) {

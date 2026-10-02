@@ -357,13 +357,13 @@ describe("card states", () => {
     expect(c.queryByRole("button", { name: "Undo" })).toBeNull();
   });
 
-  it("done: Undo shows when undo_offered is true even with a window field already in the past", async () => {
+  it("done: no Undo when undo_offered is true but the window already passed by the client clock", async () => {
     listReqs.mockResolvedValue(
       okList([req({ state: "done", outcome: "created", created_post_id: 42, undo_state: "available", undo_available_until: PAST, undo_offered: true })]),
     );
     renderTab();
     const c = within(await card());
-    expect(c.getByRole("button", { name: "Undo" })).toBeInTheDocument();
+    expect(c.queryByRole("button", { name: "Undo" })).toBeNull();
   });
 
   it("failed with a post id and undo_offered: says a draft may exist, offers the trash, and Undo calls the undo route", async () => {

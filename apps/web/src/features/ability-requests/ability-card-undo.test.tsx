@@ -54,6 +54,10 @@ describe("Undo window", () => {
     renderCard(mk({ undo_offered: false }));
     expect(screen.queryByRole("button", { name: "Undo" })).toBeNull();
   });
+  it("stays visible with no window end (recovery undo)", () => {
+    renderCard(mk({ undo_available_until: null }));
+    expect(screen.queryByRole("button", { name: "Undo" })).not.toBeNull();
+  });
   it("is hidden when the window already passed", () => {
     renderCard(mk({ undo_available_until: "2026-10-01T09:59:00Z" }));
     expect(screen.queryByRole("button", { name: "Undo" })).toBeNull();
