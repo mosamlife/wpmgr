@@ -18,12 +18,16 @@ import { Route } from "./requests";
 // apps/api/internal/mcp/ability_rest.go and apps/api/internal/abilityrequest/
 // worker.go write.
 
-const { listMock, abilityListMock, approveAbilityMock, undoAbilityMock } = vi.hoisted(() => ({
+const { listMock, abilityListMock, approveAbilityMock, undoAbilityMock, toastError, toastSuccess } = vi.hoisted(() => ({
+  toastError: vi.fn(),
+  toastSuccess: vi.fn(),
   listMock: vi.fn(),
   abilityListMock: vi.fn(),
   approveAbilityMock: vi.fn(),
   undoAbilityMock: vi.fn(),
 }));
+
+vi.mock("sonner", () => ({ toast: { error: toastError, success: toastSuccess } }));
 
 vi.mock("@wpmgr/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@wpmgr/api")>();
@@ -116,6 +120,8 @@ beforeEach(() => {
   abilityListMock.mockReset();
   approveAbilityMock.mockReset();
   undoAbilityMock.mockReset();
+  toastError.mockReset();
+  toastSuccess.mockReset();
 });
 afterEach(() => vi.useRealTimers());
 
@@ -127,7 +133,7 @@ describe("rest-write structured card", () => {
     expect(within(card).getByTestId("effect-line")).toHaveTextContent("Published immediately");
     expect(within(card).getByTestId("effect-line").className).toContain("destructive");
     expect(within(card).getByTestId("rest-target")).toHaveTextContent("page #412");
-    expect(within(card).getByTestId("rest-target")).toHaveTextContent("Status: publish");
+    expect(within(card).getByTestId("rest-target")).toHaveTextContent("Status: Published");
     const changes = within(card).getByTestId("rest-changes");
     expect(changes).toHaveTextContent("Title");
     expect(changes).toHaveTextContent("About us");
@@ -254,12 +260,77 @@ describe("rest-write structured card", () => {
     ).toBeInTheDocument();
   });
 
-  it("a failed row with restored=false says other changes remain", async () => {
+  it("a failed row with restored=false does not claim the old title was put back", async () => {
     renderPage([restRow({ state: "failed", outcome: "failed", restored: false, decided_at: "2026-10-01T09:58:00Z" })]);
     const card = await screen.findByRole("article");
     expect(card).toHaveTextContent(
-      "WPMgr put the title and excerpt back, but the site also changed other parts of this page during the save. Check the page in WordPress.",
+      "The change failed and WPMgr may not have put the old title back. Check the page in WordPress.",
     );
+    expect(card).not.toHaveTextContent("put the title and excerpt back");
+  });
+
+  it("a failed row settled as interrupted says the new title may be live", async () => {
+    renderPage([
+      restRow({ state: "failed", outcome: "failed", outcome_code: "interrupted", decided_at: "2026-10-01T09:58:00Z" }),
+    ]);
+    const card = await screen.findByRole("article");
+    expect(card).toHaveTextContent(
+      "WPMgr lost contact during the change, so the new title may be live. Check the page in WordPress.",
+    );
+    expect(card).not.toHaveTextContent("not made");
+  });
+
+  it.each([
+    ["publish", "Published"],
+    ["draft", "Draft"],
+    ["private", "Private"],
+    ["pending", "Pending review"],
+    ["future", "Scheduled"],
+  ])("shows WordPress status %s as %s", async (status, word) => {
+    renderPage([
+      restRow({
+        card_facts: facts({ target: { id: 412, post_type: "page", from_the_site: { status, title_before: "About us" } } }),
+      }),
+    ]);
+    const card = await screen.findByRole("article");
+    expect(within(card).getByTestId("rest-target")).toHaveTextContent(`Status: ${word}`);
+  });
+
+  it("the list heading is not page-specific", async () => {
+    renderPage([restRow()]);
+    expect(await screen.findByRole("heading", { name: "AI requests" })).toBeInTheDocument();
+  });
+
+  it("uptime-probe codes get no advice on a rest-write failure", async () => {
+    renderPage([
+      restRow({ state: "failed", outcome: "refused", outcome_code: "rest_maintenance", decided_at: "2026-10-01T09:58:00Z" }),
+    ]);
+    const card = await screen.findByRole("article");
+    expect(card).toHaveTextContent("The site refused the change. Nothing was changed.");
+    expect(card).not.toHaveTextContent("maintenance mode");
+  });
+
+  it.each([
+    ["refused_conflict", "Someone edited this page after the change, so WPMgr left it as it is."],
+    ["failed", "WPMgr could not put the old title back. Check the page in WordPress."],
+    ["refused_published", "WPMgr could not undo this change."],
+  ])("undo result %s on a rest-write toasts rest-write wording", async (undo_state, text) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+    undoAbilityMock.mockReturnValue(ok(restRow({ state: "done", outcome: "applied", undo_state })));
+    renderPage([
+      restRow({
+        state: "done",
+        outcome: "applied",
+        decided_at: "2026-10-01T09:58:00Z",
+        undo_offered: true,
+        undo_available_until: "2026-10-01T10:30:00Z",
+      }),
+    ]);
+    const card = await screen.findByRole("article");
+    fireEvent.click(within(card).getByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith(text));
+    expect(toastError.mock.calls[0]![0]).not.toMatch(/draft/i);
   });
 
   it("a failed row with restored=true says nothing was left changed", async () => {
@@ -268,7 +339,16 @@ describe("rest-write structured card", () => {
     expect(card).toHaveTextContent("The change didn't go through; nothing was left changed.");
   });
 
-  it("an undone row with restored=false says other changes remain", async () => {
+  it("an undone row says it was put back", async () => {
+    // The server does not set restored on undo today, so restored is absent.
+    renderPage([restRow({ state: "done", outcome: "applied", undo_state: "undone", decided_at: "2026-10-01T09:58:00Z" })]);
+    const card = await screen.findByRole("article");
+    expect(card).toHaveTextContent("Put back the way it was.");
+  });
+
+  // Pending a backend change: the server never sets restored on an undone row
+  // today, so this shape cannot occur yet. The card branch is kept for when it does.
+  it.skip("an undone row with restored=false says other changes remain", async () => {
     renderPage([
       restRow({ state: "done", outcome: "applied", undo_state: "undone", restored: false, decided_at: "2026-10-01T09:58:00Z" }),
     ]);
