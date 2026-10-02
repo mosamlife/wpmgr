@@ -11,6 +11,7 @@ declare(strict_types=1);
 namespace WPMgr\Agent\Tests;
 
 use Brain\Monkey;
+use Brain\Monkey\Filters;
 use Brain\Monkey\Functions;
 use ReflectionProperty;
 use WPMgr\Agent\Abilities\AbilityLedger;
@@ -67,6 +68,9 @@ final class PageCreateWriteTest extends TestCase
 
     /** Whether the fake wp_insert_post alters content (a sanitiser plugin). */
     private bool $mangleOnInsert = false;
+
+    /** Whether the fake wp_trash_post fails. */
+    private bool $failTrash = false;
 
     private bool $blockEditor = true;
 
@@ -198,7 +202,12 @@ final class PageCreateWriteTest extends TestCase
             $p->post_excerpt     = '';
             $p->post_name        = '';
             $p->post_password    = '';
-            $p->post_modified_gmt = '2026-10-01 10:00:00';
+            // Core on insert of a draft: a floating GMT date, and the
+            // modified dates equal to the dates.
+            $p->post_date         = '2026-10-01 10:00:00';
+            $p->post_date_gmt     = '0000-00-00 00:00:00';
+            $p->post_modified     = $p->post_date;
+            $p->post_modified_gmt = $p->post_date_gmt;
             $p->post_parent      = (int) ($data['post_parent'] ?? 0);
             $p->menu_order       = (int) ($data['menu_order'] ?? 0);
             $this->posts[$id]    = $p;
@@ -222,7 +231,7 @@ final class PageCreateWriteTest extends TestCase
         Functions\when('wp_get_post_revisions')->alias(fn ($id, $args = null) => array_fill(0, $this->revisions[(int) $id] ?? 0, new \stdClass()));
         Functions\when('wp_check_post_lock')->alias(fn ($id) => $this->locks[(int) $id] ?? false);
         Functions\when('wp_trash_post')->alias(function ($id) {
-            if (!isset($this->posts[(int) $id])) {
+            if ($this->failTrash || !isset($this->posts[(int) $id])) {
                 return false;
             }
             $this->posts[(int) $id]->post_status = 'trash';
@@ -492,7 +501,9 @@ final class PageCreateWriteTest extends TestCase
         $this->enable();
         $bad = [
             '<b>bold</b>', '[gallery]', '{{ x }}', '{% if %}', 'a <!-- c', 'x > y', "two\nlines",
-            "rtl\u{202E}override", '&amp;', '&#60;script', 'tick`',
+            "rtl\u{202E}override", 'tick`',
+            '[1 ids="x"]', '[gallery ids="1"]', '[/gallery]', '[[1]]', '[1', 'note 1]', '[12345]', '[ 1 ]',
+            '<script>alert(1)</script>', '<!-- wp:html -->x<!-- /wp:html -->',
         ];
         foreach ($bad as $text) {
             $input = (string) json_encode([
@@ -514,6 +525,55 @@ final class PageCreateWriteTest extends TestCase
         ]);
         $this->assertSame('create_content_invalid', $this->precheck(self::REQ_A, $badTitle)['code']);
         $this->assertSame([], $this->posts);
+    }
+
+    public function test_ordinary_punctuation_round_trips_and_stays_literal_text(): void
+    {
+        $this->enable();
+        // Core's entity normaliser for a principal without unfiltered_html:
+        // a bare & becomes &amp;, a valid reference is kept.
+        Filters\expectApplied('title_save_pre')->andReturnUsing(
+            static fn ($t) => (string) preg_replace('/&(?!amp;|#0[0-9]{2};)/', '&amp;', (string) $t)
+        );
+        $text  = 'See [1] and [22]. Q&A; next, &amp; &#60;script &copy;';
+        $input = (string) json_encode([
+            'post_type' => 'page', 'editor' => 'wordpress_blocks', 'title' => 'Terms & Conditions [1]',
+            'outline'   => [
+                ['type' => 'paragraph', 'text' => $text],
+                ['type' => 'list', 'ordered' => false, 'items' => ['Q&A', '[3]']],
+            ],
+        ]);
+
+        $pre = $this->precheck(self::REQ_A, $input);
+        $this->assertTrue($pre['ok'], (string) json_encode($pre));
+        $this->assertSame('Terms & Conditions [1]', $pre['preview']['title'], 'the preview title is the plain text the person approves');
+        $r = $this->write(self::REQ_A, $input, $pre['precheck_digest'], $pre['preview_digest']);
+        $this->assertTrue($r['ok'], (string) json_encode($r));
+
+        $post = $this->posts[$r['post_id']];
+        $this->assertSame('Terms &amp; Conditions &#091;1&#093;', $post->post_title);
+        $this->assertStringContainsString(
+            '<p>See &#091;1&#093; and &#091;22&#093;. Q&amp;A; next, &amp;amp; &amp;#60;script &amp;copy;</p>',
+            $post->post_content
+        );
+        $this->assertSame($pre['preview']['content'], $post->post_content);
+        // No bracket byte is stored, so the shortcode parser has no opening tag to match.
+        $this->assertStringNotContainsString('[', $post->post_content);
+        $this->assertStringNotContainsString(']', $post->post_content);
+        $this->assertStringNotContainsString('[', $post->post_title);
+        // Rendered as HTML, the stored bytes read back exactly as typed.
+        $this->assertSame('Terms & Conditions [1]', html_entity_decode($post->post_title, ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+        $this->assertStringContainsString($text, html_entity_decode($post->post_content, ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+    }
+
+    public function test_a_save_filter_that_changes_the_title_still_refuses(): void
+    {
+        $this->enable();
+        Filters\expectApplied('title_save_pre')->andReturnUsing(static fn ($t) => (string) $t . '!');
+
+        $r = $this->precheck(self::REQ_A, $this->input());
+
+        $this->assertSame('sanitiser_changed_new_content', $r['code'] ?? null, (string) json_encode($r));
     }
 
     public function test_a_pd_mismatch_is_refused(): void
@@ -826,6 +886,118 @@ final class PageCreateWriteTest extends TestCase
         $this->assertFalse($ledger['inflight']);
     }
 
+    public function test_a_draft_left_without_a_completed_record_can_be_undone(): void
+    {
+        $id = $this->leftInPostCreated(self::REQ_A);
+
+        $r = $this->revert(self::REQ_A);
+
+        $this->assertTrue($r['ok'] ?? false, (string) json_encode($r));
+        $this->assertSame('reverted', $r['outcome']);
+        $this->assertSame('trash', $this->posts[$id]->post_status);
+        $this->assertSame('trashed', AbilityLedger::get(self::REQ_A)['undo_state']);
+        $this->assertSame('already_reverted', $this->revert(self::REQ_A)['outcome'] ?? null);
+        $this->assertFalse(AbilityLedger::inflight(self::REQ_A), 'the request claim is released');
+    }
+
+    /**
+     * @return array<string,array{0:string}>
+     */
+    public static function touches(): array
+    {
+        $out = [];
+        foreach (['modified', 'modified_gmt', 'author', 'marker', 'revision', 'autosave', 'lock', 'status'] as $t) {
+            $out[$t] = [$t];
+        }
+
+        return $out;
+    }
+
+    /**
+     * @dataProvider touches
+     */
+    public function test_a_touched_draft_left_without_a_completed_record_is_refused(string $touch): void
+    {
+        $id = $this->leftInPostCreated(self::REQ_A);
+        switch ($touch) {
+            case 'modified':
+                $this->posts[$id]->post_modified = '2026-10-01 10:05:00';
+                break;
+            case 'modified_gmt':
+                $this->posts[$id]->post_modified_gmt = '2026-10-01 10:05:00';
+                break;
+            case 'author':
+                $this->posts[$id]->post_author = 1;
+                break;
+            case 'marker':
+                $this->meta[$id][AbilityRunCommand::META_CREATED_BY] = self::REQ_B;
+                break;
+            case 'revision':
+                $this->revisions[$id] = 1;
+                break;
+            case 'autosave':
+                $this->autosaves[$id] = 1;
+                break;
+            case 'lock':
+                $this->locks[$id] = 1;
+                break;
+            case 'status':
+                $this->posts[$id]->post_status = 'pending';
+                break;
+        }
+
+        $r = $this->revert(self::REQ_A);
+
+        $this->assertFalse($r['ok'] ?? true, (string) json_encode($r));
+        $this->assertContains($r['code'] ?? null, ['conflict', 'created_post_touched'], (string) json_encode($r));
+        $this->assertNotSame('trash', $this->posts[$id]->post_status);
+        $this->assertSame('none', AbilityLedger::get(self::REQ_A)['undo_state']);
+    }
+
+    public function test_a_draft_whose_write_is_still_running_is_not_undone(): void
+    {
+        $id = $this->leftInPostCreated(self::REQ_A);
+        $this->assertTrue(AbilityLedger::claimRequest(self::REQ_A));
+
+        $r = $this->revert(self::REQ_A);
+
+        $this->assertSame('request_in_flight', $r['code'] ?? null, (string) json_encode($r));
+        $this->assertSame('draft', $this->posts[$id]->post_status);
+    }
+
+    public function test_a_mismatched_draft_whose_cleanup_failed_can_be_undone_later(): void
+    {
+        $this->enable();
+        $pre                  = $this->precheck(self::REQ_A, $this->input());
+        $this->mangleOnInsert = true;
+        $this->failTrash      = true;
+        $w                    = $this->write(self::REQ_A, $this->input(), $pre['precheck_digest'], $pre['preview_digest']);
+        $this->assertSame('verify_mismatch', $w['code'] ?? null, (string) json_encode($w));
+        $this->assertFalse($w['trashed']);
+        $id = (int) $w['post_id'];
+        $this->assertSame('draft', $this->posts[$id]->post_status);
+        $this->assertSame('failed', AbilityLedger::get(self::REQ_A)['phase']);
+
+        $this->failTrash = false;
+        $r               = $this->revert(self::REQ_A);
+
+        $this->assertSame('reverted', $r['outcome'] ?? null, (string) json_encode($r));
+        $this->assertSame('trash', $this->posts[$id]->post_status);
+    }
+
+    public function test_a_failed_write_that_created_nothing_is_not_revertible(): void
+    {
+        $this->enable();
+        AbilityLedger::create(self::REQ_A, [
+            'request_id' => self::REQ_A, 'ability' => OwnAbilities::NAME_PAGE_CREATE, 'phase' => 'failed',
+            'created_post_id' => 0, 'after_fp' => '', 'undo_state' => 'none',
+        ]);
+        $this->assertSame('not_revertible', $this->revert(self::REQ_A)['code'] ?? null);
+
+        AbilityLedger::update(self::REQ_A, ['phase' => 'completed', 'created_post_id' => 5]);
+        $this->assertSame('not_revertible', $this->revert(self::REQ_A)['code'] ?? null, 'a completed row without its fingerprint is not undone');
+    }
+
     public function test_revert_runs_on_a_disabled_entry_but_precheck_and_write_do_not(): void
     {
         $id  = $this->createOne(self::REQ_A);
@@ -916,6 +1088,20 @@ final class PageCreateWriteTest extends TestCase
     // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
+
+    /** A draft whose write stopped after the insert: the completed record failed. */
+    private function leftInPostCreated(string $rid): int
+    {
+        $this->enable();
+        $pre                   = $this->precheck($rid, $this->input());
+        $this->failLedgerPhase = 'completed';
+        $r                     = $this->write($rid, $this->input(), $pre['precheck_digest'], $pre['preview_digest']);
+        $this->failLedgerPhase = null;
+        $this->assertSame('created', $r['outcome'] ?? null, (string) json_encode($r));
+        $this->assertSame('post_created', AbilityLedger::get($rid)['phase']);
+
+        return (int) $r['post_id'];
+    }
 
     private function createOne(string $rid): int
     {

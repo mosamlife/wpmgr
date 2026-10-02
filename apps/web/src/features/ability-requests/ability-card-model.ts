@@ -57,6 +57,9 @@ export function editorName(editor: string | null | undefined): string {
 }
 
 export const NOTHING_PUBLISHED = "Nothing is published. Undo moves the draft to the trash.";
+export const GAVE_UP_COPY =
+  "WPMgr could not confirm whether the draft was created. Check the site's drafts.";
+export const UNDO_RETRY_COPY = "The site didn't answer. Try Undo again.";
 export const CHANGED_COPY = "This request changed. Ask the AI again.";
 export const NOT_SHOWABLE_COPY =
   "WPMgr cannot show this request in full, so it cannot be approved here. Decline it and ask the AI again.";
@@ -80,6 +83,30 @@ export function notSentText(reason: string | null | undefined): string {
   return Object.prototype.hasOwnProperty.call(NOT_SENT_TEXT, reason)
     ? NOT_SENT_TEXT[reason]!
     : "WPMgr could not send it";
+}
+
+const REFUSAL_ADVICE: Record<string, string> = {
+  content_editing_not_enabled: "Turn AI page creation on again from this tab.",
+  principal_capabilities_drifted: "Turn AI page creation on again from this tab.",
+  principal_missing: "Turn AI page creation on again from this tab.",
+  principal_create_failed: "Turn AI page creation on again from this tab.",
+  principal_login_taken: "Turn AI page creation on again from this tab.",
+  editor_unavailable: "This site's editor isn't available.",
+  preview_changed: "The site changed since you approved. Ask the AI to try again.",
+  entry_approval_invalid: "The site changed since you approved. Ask the AI to try again.",
+  integration_entry_changed: "The site changed since you approved. Ask the AI to try again.",
+  sanitiser_changed_new_content:
+    "This site changes page text on save in a way WPMgr can't approve. Ask the AI to simplify the text.",
+  create_content_invalid: "The AI's page outline wasn't valid. Ask it to try again.",
+  bad_input: "The AI's page outline wasn't valid. Ask it to try again.",
+  disabled_on_site: "AI page creation is turned off for this site.",
+  ability_disabled: "AI page creation is turned off for this site.",
+};
+
+/** Plain advice for a refusal or failure code, or null when the code is not one an operator can act on. */
+export function refusalAdvice(code: string | null | undefined): string | null {
+  if (!code) return null;
+  return Object.prototype.hasOwnProperty.call(REFUSAL_ADVICE, code) ? REFUSAL_ADVICE[code]! : null;
 }
 
 export function clockTime(iso: string | null | undefined): string {
@@ -112,17 +139,45 @@ export interface AbilityStatus {
   readonly draftMayExist?: boolean;
 }
 
-/** The undo window is open: done, not yet undone or tried, and still in time. */
-export function undoOpen(r: AbilityRequest, now: Date): boolean {
-  if (r.state !== "done" || r.outcome !== "created") return false;
-  if (r.undo_state !== "available" || r.trashed === true) return false;
-  if (!r.undo_available_until) return false;
-  const until = new Date(r.undo_available_until).getTime();
-  return !Number.isNaN(until) && until > now.getTime();
-}
-
 function hasCreatedPost(r: AbilityRequest): boolean {
   return typeof r.created_post_id === "number" && Number.isInteger(r.created_post_id) && r.created_post_id > 0;
+}
+
+/**
+ * What a recovery undo did, read from undo_state. The server sets only
+ * undo_state ("undone", "in_progress", "refused_conflict", "refused_published",
+ * "failed") and leaves `trashed` as it was, on done, failed and
+ * outcome_unknown rows alike. Null when no undo result applies.
+ */
+function undoStatus(r: AbilityRequest, trashedCounts: boolean): AbilityStatus | null {
+  if (r.undo_state === "undone" || (trashedCounts && r.trashed === true)) {
+    return { kind: "undone", text: "Moved to the trash." };
+  }
+  if (r.undo_state === "in_progress") {
+    return { kind: "running", text: "WPMgr is moving the draft to the trash." };
+  }
+  if (r.undo_state === "refused_published") {
+    return {
+      kind: "undo_refused",
+      text: "The draft has been published since, so WPMgr left it alone. Remove it in WordPress if you do not want it.",
+      draftMayExist: true,
+    };
+  }
+  if (r.undo_state === "refused_conflict") {
+    return {
+      kind: "undo_refused",
+      text: "The draft was edited since, so WPMgr left it alone. Remove it in WordPress if you do not want it.",
+      draftMayExist: true,
+    };
+  }
+  if (r.undo_state === "failed") {
+    return {
+      kind: "undo_failed",
+      text: "WPMgr could not move the draft to the trash. Remove it in WordPress if you do not want it.",
+      draftMayExist: true,
+    };
+  }
+  return null;
 }
 
 export function abilityStatus(r: AbilityRequest): AbilityStatus {
@@ -137,7 +192,18 @@ export function abilityStatus(r: AbilityRequest): AbilityStatus {
       };
     case "dispatched":
       return { kind: "running", text: `WPMgr is creating the draft ${noun}.` };
-    case "outcome_unknown":
+    case "outcome_unknown": {
+      const undone = undoStatus(r, false);
+      if (undone) return undone;
+      if (r.resolve_gave_up) {
+        return {
+          kind: "unknown_outcome",
+          text: GAVE_UP_COPY,
+          // The edit link is offered when the post id is known (the card
+          // still needs a site address to build it).
+          draftMayExist: hasCreatedPost(r) && r.trashed !== true,
+        };
+      }
       if (hasCreatedPost(r) && r.trashed !== true) {
         return {
           kind: "unknown_outcome",
@@ -146,34 +212,13 @@ export function abilityStatus(r: AbilityRequest): AbilityStatus {
         };
       }
       return { kind: "unknown_outcome", text: "WPMgr is checking whether the draft was created." };
+    }
     case "done": {
-      if (r.undo_state === "undone" || r.trashed === true) {
-        return { kind: "undone", text: "Moved to the trash." };
-      }
-      if (r.undo_state === "in_progress") {
-        return { kind: "running", text: "WPMgr is moving the draft to the trash." };
-      }
-      if (r.undo_state === "refused_published") {
-        return {
-          kind: "undo_refused",
-          text: "The draft has been published since, so WPMgr left it alone. Remove it in WordPress if you do not want it.",
-        };
-      }
-      if (r.undo_state === "refused_conflict") {
-        return {
-          kind: "undo_refused",
-          text: "The draft was edited since, so WPMgr left it alone. Remove it in WordPress if you do not want it.",
-        };
-      }
-      if (r.undo_state === "failed") {
-        return {
-          kind: "undo_failed",
-          text: "WPMgr could not move the draft to the trash. Remove it in WordPress if you do not want it.",
-        };
-      }
-      return { kind: "done", text: "Draft created." };
+      return undoStatus(r, true) ?? { kind: "done", text: "Draft created." };
     }
     case "failed": {
+      const undone = undoStatus(r, false);
+      if (undone) return undone;
       if (hasCreatedPost(r)) {
         if (r.trashed === true) {
           return {
@@ -187,7 +232,9 @@ export function abilityStatus(r: AbilityRequest): AbilityStatus {
             : `Something went wrong on the site partway through.`;
         return {
           kind: "failed",
-          text: `${why} A draft ${noun} may exist on the site. Check it, and delete it there if you do not want it.`,
+          text: r.undo_offered
+            ? `${why} A draft ${noun} may exist on the site. Move it to the trash if you do not want it.`
+            : `${why} A draft ${noun} may exist on the site. Check it, and delete it there if you do not want it.`,
           draftMayExist: true,
         };
       }
@@ -197,15 +244,16 @@ export function abilityStatus(r: AbilityRequest): AbilityStatus {
           text: `The site's ${noun} did not match what you approved, so WPMgr cannot vouch for it. Check the site's drafts.`,
         };
       }
+      const advice = refusalAdvice(r.outcome_code);
       if (r.outcome === "refused") {
         return {
           kind: "failed",
-          text: `The site refused to create the draft ${noun}. Nothing was created.`,
+          text: `The site refused to create the draft ${noun}. Nothing was created.${advice ? ` ${advice}` : ""}`,
         };
       }
       return {
         kind: "failed",
-        text: `The draft ${noun} was not created because something went wrong on the site.`,
+        text: `The draft ${noun} was not created because something went wrong on the site.${advice ? ` ${advice}` : ""}`,
       };
     }
     case "not_sent":

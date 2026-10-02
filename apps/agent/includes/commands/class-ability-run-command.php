@@ -317,7 +317,7 @@ final class AbilityRunCommand implements CommandInterface
                         'post_type' => $spec['post_type'],
                         'editor'    => $spec['editor'],
                         'status'    => 'draft',
-                        'title'     => $built['title'],
+                        'title'     => $spec['title'],
                         'content'   => $built['content'],
                     ],
                 ];
@@ -369,6 +369,7 @@ final class AbilityRunCommand implements CommandInterface
         }
 
         $content = PageCreateBuilder::render($spec);
+        $title   = PageCreateBuilder::storedTitle($spec['title']);
         $problem = PageCreateBuilder::retokenise($content);
         if ($problem !== null) {
             return ['refusal' => $this->fail('create_content_invalid', $problem)] + $empty;
@@ -377,14 +378,16 @@ final class AbilityRunCommand implements CommandInterface
         // Simulate the save this principal gets (kses included). Any change
         // to our bytes refuses the write; a sanitiser never edits it for us.
         $simContent = wp_unslash(apply_filters('content_save_pre', wp_slash($content))); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- core's own save filter, applied to simulate exactly what wp_insert_post will do
-        $simTitle   = wp_unslash(apply_filters('title_save_pre', wp_slash($spec['title']))); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- core's own save filter, applied to simulate exactly what wp_insert_post will do
-        if ($simContent !== $content || wp_kses_post($content) !== $content || $simTitle !== $spec['title']) {
+        $simTitle   = wp_unslash(apply_filters('title_save_pre', wp_slash($title))); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- core's own save filter, applied to simulate exactly what wp_insert_post will do
+        if ($simContent !== $content || wp_kses_post($content) !== $content || $simTitle !== $title) {
             return ['refusal' => $this->fail('sanitiser_changed_new_content', 'the site would change this content on save')] + $empty;
         }
 
         return [
             'content'          => $content,
-            'title'            => $spec['title'],
+            // The stored title is a fixed function of the plain title the
+            // digest binds, so the digest still names exactly what is stored.
+            'title'            => $title,
             'preview_digest'   => PageCreateBuilder::previewDigest($spec, $content),
             'base_fingerprint' => PageCreateBuilder::baseFingerprint($spec['post_type']),
         ];
@@ -585,15 +588,51 @@ final class AbilityRunCommand implements CommandInterface
         }
         $postId  = (int) ($row['created_post_id'] ?? 0);
         $afterFp = $row['after_fp'] ?? '';
-        if (($row['phase'] ?? null) !== 'completed' || $postId < 1 || !is_string($afterFp) || $afterFp === '') {
-            return $this->fail('not_revertible', 'this request did not complete a creation');
+        $phase   = $row['phase'] ?? null;
+        if ($postId < 1 || !is_string($afterFp)) {
+            return $this->fail('not_revertible', 'this request did not create a draft');
+        }
+        $completed = $phase === 'completed' && $afterFp !== '';
+        // A draft whose write stopped before the completed record (interrupted,
+        // or its cleanup failed) is still undoable, under a stricter unchanged
+        // check because no after-fingerprint was recorded.
+        $recovered = !$completed && $afterFp === ''
+            && in_array($phase, ['post_created', 'failed'], true)
+            && ($row['undo_state'] ?? null) === 'none';
+        if (!$completed && !$recovered) {
+            return $this->fail('not_revertible', 'this request did not create a draft that can be undone');
         }
 
+        // A recovered draft may belong to a write still running: undo waits.
+        if ($recovered && !AbilityLedger::claimRequest($requestId)) {
+            return $this->fail('request_in_flight', 'this request is still running');
+        }
+        try {
+            return $this->pageCreateRevertClaimed($requestId, $postId, $completed ? $afterFp : null);
+        } finally {
+            if ($recovered) {
+                AbilityLedger::releaseRequest($requestId);
+            }
+        }
+    }
+
+    /**
+     * Revert under the target claim. $afterFp null means no after-fingerprint
+     * was recorded: the draft must then be authored by the principal and
+     * never modified since insert.
+     *
+     * @param string      $requestId Request id.
+     * @param int         $postId    Post id, from the ledger row.
+     * @param string|null $afterFp   Recorded after-fingerprint, or null.
+     * @return array<string,mixed>
+     */
+    private function pageCreateRevertClaimed(string $requestId, int $postId, ?string $afterFp): array
+    {
         if (!AbilityLedger::claimTarget($postId)) {
             return $this->fail('target_in_flight', 'another engine call holds this post');
         }
         try {
-            return $this->asPrincipal(function () use ($requestId, $postId, $afterFp): array {
+            return $this->asPrincipal(function (int $principal) use ($requestId, $postId, $afterFp): array {
                 clean_post_cache($postId);
                 $post = get_post($postId);
                 if (!is_object($post)) {
@@ -609,8 +648,20 @@ final class AbilityRunCommand implements CommandInterface
                 if ((string) get_post_meta($postId, self::META_CREATED_BY, true) !== $requestId) {
                     return $this->fail('conflict', 'the post is not the one this request created');
                 }
-                if (!hash_equals($afterFp, PageCreateBuilder::documentFingerprint($post))) {
+                if ($afterFp !== null && !hash_equals($afterFp, PageCreateBuilder::documentFingerprint($post))) {
                     return $this->fail('conflict', 'someone edited this draft after it was created');
+                }
+                if ($afterFp === null) {
+                    if ((int) $post->post_author !== $principal) {
+                        return $this->fail('conflict', 'the draft has another author now');
+                    }
+                    // Core stamps the modified dates equal to the dates on
+                    // insert and moves them on every later save.
+                    $v = get_object_vars($post);
+                    if ((string) ($v['post_modified_gmt'] ?? '') !== (string) ($v['post_date_gmt'] ?? "\0")
+                        || (string) ($v['post_modified'] ?? '') !== (string) ($v['post_date'] ?? "\0")) {
+                        return $this->fail('conflict', 'someone edited this draft after it was created');
+                    }
                 }
                 $touched = $this->touchedBySomeone($postId);
                 if ($touched !== null) {

@@ -231,6 +231,18 @@ WHERE tenant_id = @tenant_id
 ORDER BY created_at DESC, id DESC
 LIMIT @row_limit OFFSET @row_offset;
 
+-- name: ListOrgAbilityRequests :many
+-- The org-wide AI requests queue (GH #828): every site the caller's row
+-- security admits, optionally narrowed to one state, newest first. A NULL
+-- state_filter lists every state. Same columns as ListAbilityRequestsForSite.
+-- The badge count is CountLivePendingAbilityRequests.
+SELECT *
+FROM assistant_ability_requests
+WHERE tenant_id = @tenant_id
+  AND (sqlc.narg(state_filter)::text IS NULL OR state = sqlc.narg(state_filter)::text)
+ORDER BY created_at DESC, id DESC
+LIMIT @row_limit OFFSET @row_offset;
+
 -- name: GetAbilityRequestForSite :one
 -- One row for the detail card and the undo action.
 SELECT *
@@ -367,7 +379,9 @@ WHERE tenant_id = @tenant_id
 -- another path already recorded one; write nothing. The state is derived
 -- from the outcome; the table CHECK enforces the pairing. Passing 'not_sent'
 -- needs not_sent_reason 'transport_pre_send'. undo_available_until set
--- opens the person's undo (undo_state 'available') on a done row.
+-- opens the person's undo (undo_state 'available') on a done row. A row with
+-- any undo_state already set is never matched (GH #826): this statement
+-- rewrites the undo columns, and must not reset an undo that is running.
 UPDATE assistant_ability_requests
 SET state = CASE sqlc.arg(outcome)::text
                 WHEN 'created' THEN 'done'
@@ -393,7 +407,8 @@ SET state = CASE sqlc.arg(outcome)::text
 WHERE tenant_id = @tenant_id
   AND id = @id
   AND state IN ('dispatched', 'outcome_unknown')
-  AND outcome IS NULL;
+  AND outcome IS NULL
+  AND undo_state IS NULL;
 
 -- ---------------------------------------------------------------------------
 -- Sweeper and reconciler. Each is a plain agent scan, then a per-row
@@ -494,11 +509,78 @@ WHERE tenant_id = @tenant_id
   AND undo_state = 'available'
   AND undo_available_until > now();
 
+-- name: BeginAbilityRequestRecoveryUndo :execrows
+-- GH #826. Compare-and-set from no undo to in_progress on a write that
+-- failed or was given up on but left the post it created (a draft) on the
+-- site. Only a final outcome qualifies: a resolving outcome_unknown row
+-- (outcome NULL) may still be answered by the ledger through
+-- RecordAbilityRequestOutcome, so it is refused here. The undo window opens
+-- now, window_seconds long; a zero or negative window matches nothing.
+UPDATE assistant_ability_requests
+SET undo_state = 'in_progress', undo_started_at = now(),
+    undo_by_user_id = sqlc.arg(undo_by_user_id)::uuid,
+    undo_available_until = now() + (sqlc.arg(window_seconds)::int * interval '1 second')
+WHERE tenant_id = @tenant_id
+  AND id = @id
+  AND site_id = @site_id
+  AND state IN ('failed', 'outcome_unknown')
+  AND created_post_id IS NOT NULL
+  AND outcome IS NOT NULL
+  AND undo_state IS NULL
+  AND sqlc.arg(window_seconds)::int > 0;
+
 -- name: FinishAbilityRequestUndo :execrows
 -- undo_result is one of undone, refused_conflict, refused_published, failed.
+-- Covers a done row's undo and a recovery undo (GH #826) alike.
 UPDATE assistant_ability_requests
 SET undo_state = sqlc.arg(undo_result)::text, undo_finished_at = now()
 WHERE tenant_id = @tenant_id
   AND id = @id
-  AND state = 'done'
+  AND (state = 'done'
+       OR (state IN ('failed', 'outcome_unknown')
+           AND created_post_id IS NOT NULL
+           AND outcome IS NOT NULL))
   AND undo_state = 'in_progress';
+
+-- name: ReleaseAbilityRequestUndo :execrows
+-- A retryable undo failure (GH #824): in_progress goes back to available,
+-- still inside the undo window, so the person can try again. The CHECKs
+-- require the starter and start time to be NULL whenever undo is available,
+-- and undo_finished_at is already NULL while in progress. Past the window
+-- this matches nothing; the caller then finishes the undo as 'failed'.
+-- A recovery undo (GH #826) goes back to no undo at all, window cleared,
+-- because BeginAbilityRequestRecoveryUndo starts only from undo_state NULL;
+-- the person can begin it again, with a fresh window.
+UPDATE assistant_ability_requests
+SET undo_state = CASE WHEN state = 'done' THEN 'available' ELSE NULL END,
+    undo_available_until = CASE WHEN state = 'done' THEN undo_available_until ELSE NULL END,
+    undo_started_at = NULL, undo_by_user_id = NULL
+WHERE tenant_id = @tenant_id
+  AND id = @id
+  AND (state = 'done'
+       OR (state IN ('failed', 'outcome_unknown')
+           AND created_post_id IS NOT NULL
+           AND outcome IS NOT NULL))
+  AND undo_state = 'in_progress'
+  AND undo_available_until > now();
+
+-- name: ListStuckAbilityRequestUndos :many
+-- Agent scan (InAgentTx), plain SELECT, as ScanResolvingAbilityRequests: undos
+-- started longer ago than the threshold with nothing recorded since (GH
+-- #824). The caller checks the site ledger and records the answer per row
+-- with FinishAbilityRequestUndo or ReleaseAbilityRequestUndo in a tenant
+-- transaction. Includes recovery undos (GH #826).
+-- Random order, not oldest first: a row whose site stays unreachable keeps
+-- its in_progress state, so a fixed order would hand the same row_limit rows
+-- to every pass and never reach the rest. Random sampling gives every stuck
+-- row an equal chance on each pass without a cursor column.
+SELECT id, tenant_id, site_id, undo_started_at, undo_available_until
+FROM assistant_ability_requests
+WHERE (state = 'done'
+      OR (state IN ('failed', 'outcome_unknown')
+          AND created_post_id IS NOT NULL
+          AND outcome IS NOT NULL))
+  AND undo_state = 'in_progress'
+  AND undo_started_at < now() - (sqlc.arg(stale_after_seconds)::int * interval '1 second')
+ORDER BY random()
+LIMIT @row_limit;

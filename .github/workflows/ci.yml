@@ -697,6 +697,36 @@ jobs:
       - name: Routing smoke test (real infra/Dockerfile.web image vs stub upstream)
         run: infra/nginx/routing_smoke_test.sh
 
+  # ---- Page builder block markup ----
+  # The agent's generated block markup must parse and validate under the real
+  # @wordpress/blocks, for the minimum supported WordPress (6.2) and current.
+  # The package sets are pinned by the lockfiles under scripts/page-blocks.
+  # The guard's self-test runs first so a guard that fails open cannot pass.
+  page-blocks:
+    name: Page block markup (WP 6.2 and latest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          extensions: mbstring
+          coverage: none
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Page block guard self-test
+        run: scripts/check-page-blocks_test.sh
+
+      - name: Validate generated page markup
+        run: scripts/check-page-blocks.sh
+
   # ---- PHP agent ----
   php:
     name: PHP (agent)

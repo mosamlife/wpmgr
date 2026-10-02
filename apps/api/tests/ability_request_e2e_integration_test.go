@@ -40,6 +40,15 @@ type e2Agent struct {
 	modes   []string
 	last    agentcmd.AbilityRunCall
 	enabled int
+	// override, when set and returning handled, answers a call in place of
+	// the defaults below (GH #824, #826 tests).
+	override func(call agentcmd.AbilityRunCall) (resp agentcmd.AbilityRunResponse, err error, handled bool)
+}
+
+func (a *e2Agent) setOverride(f func(call agentcmd.AbilityRunCall) (agentcmd.AbilityRunResponse, error, bool)) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.override = f
 }
 
 func e2Arr(items ...string) []byte {
@@ -57,6 +66,11 @@ func (a *e2Agent) AbilityRun(_ context.Context, _ uuid.UUID, _ string, call agen
 	defer a.mu.Unlock()
 	a.modes = append(a.modes, call.Mode)
 	a.last = call
+	if a.override != nil {
+		if resp, err, handled := a.override(call); handled {
+			return resp, err
+		}
+	}
 	switch call.Mode {
 	case agentcmd.AbilityRunModePrecheck:
 		var in struct {

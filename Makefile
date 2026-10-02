@@ -213,6 +213,16 @@ check-versions: ## Check every version-naming surface (docs, marketing, agent)
 check-versions-test: ## Run the version surface guard's regression suite
 	scripts/check-version-surfaces_test.sh
 
+# The agent's generated block markup, validated by the real @wordpress/blocks
+# on the pinned WP 6.2 and latest package sets (CI job page-blocks).
+.PHONY: check-page-blocks
+check-page-blocks: ## Validate the page builder's block markup per WordPress version
+	scripts/check-page-blocks.sh
+
+.PHONY: check-page-blocks-test
+check-page-blocks-test: ## Run the page block guard's regression suite
+	scripts/check-page-blocks_test.sh
+
 # The load-balancer url-map. Twice in one day a route shipped, deployed and was
 # unreachable because the API mounted it and the LB did not route it — POST
 # /mcp, then very nearly the OAuth discovery documents. Both answer 200

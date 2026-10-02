@@ -290,6 +290,13 @@ type Querier interface {
 	AttachAgentAndConnect(ctx context.Context, arg AttachAgentAndConnectParams) (Site, error)
 	// Re-enrollment: rotate the agent key and mark the site active/enrolled again.
 	AttachAgentToSite(ctx context.Context, arg AttachAgentToSiteParams) (Site, error)
+	// GH #826. Compare-and-set from no undo to in_progress on a write that
+	// failed or was given up on but left the post it created (a draft) on the
+	// site. Only a final outcome qualifies: a resolving outcome_unknown row
+	// (outcome NULL) may still be answered by the ledger through
+	// RecordAbilityRequestOutcome, so it is refused here. The undo window opens
+	// now, window_seconds long; a zero or negative window matches nothing.
+	BeginAbilityRequestRecoveryUndo(ctx context.Context, arg BeginAbilityRequestRecoveryUndoParams) (int64, error)
 	// ---------------------------------------------------------------------------
 	// A person's undo of a done request, approver-side principal. The agent
 	// takes the object id from its own ledger row for this request id (W3).
@@ -1238,6 +1245,7 @@ type Querier interface {
 	// treats the event as "unknown customer" (record + warn, change nothing).
 	FindTenantByProviderCustomer(ctx context.Context, arg FindTenantByProviderCustomerParams) (uuid.UUID, error)
 	// undo_result is one of undone, refused_conflict, refused_published, failed.
+	// Covers a done row's undo and a recovery undo (GH #826) alike.
 	FinishAbilityRequestUndo(ctx context.Context, arg FinishAbilityRequestUndoParams) (int64, error)
 	// Terminalizes ONE task that never left 'scheduled'. The counterpart to
 	// FinishUpdateTask, which cannot be used here: its precondition is
@@ -2839,6 +2847,11 @@ type Querier interface {
 	// the table reads as empty, so an operator cannot discover the id that a
 	// "SET app.tenant_id first" instruction would need them to supply.
 	ListOpenTenantObjectReclaims(ctx context.Context, rowLimit int32) ([]TenantObjectReclaim, error)
+	// The org-wide AI requests queue (GH #828): every site the caller's row
+	// security admits, optionally narrowed to one state, newest first. A NULL
+	// state_filter lists every state. Same columns as ListAbilityRequestsForSite.
+	// The badge count is CountLivePendingAbilityRequests.
+	ListOrgAbilityRequests(ctx context.Context, arg ListOrgAbilityRequestsParams) ([]AssistantAbilityRequest, error)
 	// Keyset-paginated newest-first history (ADR-064 Decision 5). Cursor is the
 	// version number itself, not created_at/id: version is unique, monotonic and
 	// gap-free per tenant (org_context_versions_version_key), which is strictly
@@ -3080,6 +3093,16 @@ type Querier interface {
 	// makes the predicate selective. Cross-tenant select via the GC RLS policy
 	// (app.agent='on').
 	ListStalledRunningSnapshots(ctx context.Context, arg ListStalledRunningSnapshotsParams) ([]ListStalledRunningSnapshotsRow, error)
+	// Agent scan (InAgentTx), plain SELECT, as ScanResolvingAbilityRequests: undos
+	// started longer ago than the threshold with nothing recorded since (GH
+	// #824). The caller checks the site ledger and records the answer per row
+	// with FinishAbilityRequestUndo or ReleaseAbilityRequestUndo in a tenant
+	// transaction. Includes recovery undos (GH #826).
+	// Random order, not oldest first: a row whose site stays unreachable keeps
+	// its in_progress state, so a fixed order would hand the same row_limit rows
+	// to every pass and never reach the rest. Random sampling gives every stuck
+	// row an equal chance on each pass without a cursor column.
+	ListStuckAbilityRequestUndos(ctx context.Context, arg ListStuckAbilityRequestUndosParams) ([]ListStuckAbilityRequestUndosRow, error)
 	// The tasks that have exhausted @max_attempts and therefore no longer appear in
 	// the due query above. The rows are kept deliberately (they are the last record
 	// that those objects exist), but kept is not the same as visible: without this
@@ -3633,7 +3656,9 @@ type Querier interface {
 	// another path already recorded one; write nothing. The state is derived
 	// from the outcome; the table CHECK enforces the pairing. Passing 'not_sent'
 	// needs not_sent_reason 'transport_pre_send'. undo_available_until set
-	// opens the person's undo (undo_state 'available') on a done row.
+	// opens the person's undo (undo_state 'available') on a done row. A row with
+	// any undo_state already set is never matched (GH #826): this statement
+	// rewrites the undo columns, and must not reset an undo that is running.
 	RecordAbilityRequestOutcome(ctx context.Context, arg RecordAbilityRequestOutcomeParams) (int64, error)
 	// A transient reason; the row stays approved. Single-site.
 	RecordAssistantCachePurgeDispatchAttempt(ctx context.Context, arg RecordAssistantCachePurgeDispatchAttemptParams) (int64, error)
@@ -3797,6 +3822,15 @@ type Querier interface {
 	// and refuse a requested scope set it does not contain, so widening it here
 	// widens what the client may ever be granted.
 	RegisterMCPOAuthClient(ctx context.Context, arg RegisterMCPOAuthClientParams) (int64, error)
+	// A retryable undo failure (GH #824): in_progress goes back to available,
+	// still inside the undo window, so the person can try again. The CHECKs
+	// require the starter and start time to be NULL whenever undo is available,
+	// and undo_finished_at is already NULL while in progress. Past the window
+	// this matches nothing; the caller then finishes the undo as 'failed'.
+	// A recovery undo (GH #826) goes back to no undo at all, window cleared,
+	// because BeginAbilityRequestRecoveryUndo starts only from undo_state NULL;
+	// the person can begin it again, with a fresh window.
+	ReleaseAbilityRequestUndo(ctx context.Context, arg ReleaseAbilityRequestUndoParams) (int64, error)
 	// ReleaseTenantAssistantKillSwitch clears the pause after an incident.
 	//
 	// IT CLEARS THE REASON IN THE SAME STATEMENT, and it must: the reason is part

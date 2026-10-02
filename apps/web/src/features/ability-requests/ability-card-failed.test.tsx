@@ -25,6 +25,8 @@ const base: AbilityRequest = {
   created_at: "2026-10-01T10:00:00Z",
   expires_at: "2026-10-01T11:00:00Z",
   post_type: "page",
+  undo_offered: false,
+  resolve_gave_up: false,
 };
 const mk = (o: Partial<AbilityRequest>): AbilityRequest => ({ ...base, ...o });
 
@@ -74,7 +76,7 @@ describe("abilityStatus on failed and unknown rows", () => {
 });
 
 describe("AbilityRequestCard on a failed row with a post id", () => {
-  const props = { now: new Date("2026-10-01T10:30:00Z"), onApprove: vi.fn(), onDecline: vi.fn(), onUndo: vi.fn() };
+  const props = { onApprove: vi.fn(), onDecline: vi.fn(), onUndo: vi.fn() };
 
   it("shows the edit link when the site address is known and never prints the code", () => {
     render(
@@ -98,5 +100,80 @@ describe("AbilityRequestCard on a failed row with a post id", () => {
   it("shows no link without a post id", () => {
     render(<AbilityRequestCard {...props} siteUrl="https://shop.example" request={mk({ outcome: "failed" })} />);
     expect(screen.queryByRole("link")).toBeNull();
+  });
+});
+
+describe("abilityStatus plain-English refusals", () => {
+  const refused = (code: string) => abilityStatus(mk({ outcome: "refused", outcome_code: code })).text;
+  const generic = "The site refused to create the draft page. Nothing was created.";
+  const groups: Array<[string[], string]> = [
+    [
+      ["content_editing_not_enabled", "principal_capabilities_drifted", "principal_missing"],
+      "Turn AI page creation on again from this tab.",
+    ],
+    [["editor_unavailable"], "This site's editor isn't available."],
+    [["preview_changed", "entry_approval_invalid"], "The site changed since you approved. Ask the AI to try again."],
+    [["sanitiser_changed_new_content"], "Ask the AI to simplify the text."],
+    [["create_content_invalid", "bad_input"], "The AI's page outline wasn't valid. Ask it to try again."],
+    [["disabled_on_site", "ability_disabled"], "AI page creation is turned off for this site."],
+  ];
+  for (const [codes, advice] of groups) {
+    for (const code of codes) {
+      it(`${code} shows its advice and never the code`, () => {
+        const t = refused(code);
+        expect(t).toContain(advice);
+        expect(t).not.toContain(code);
+        expect(t).toContain("Nothing was created");
+      });
+    }
+  }
+  it("a failed row with a refusal code also gets the advice", () => {
+    expect(abilityStatus(mk({ outcome: "failed", outcome_code: "editor_unavailable" })).text).toContain(
+      "editor isn't available",
+    );
+  });
+  it.each(["agent_outdated", "conflict", "created_post_touched", "target_in_flight"])(
+    "%s is not an outcome code and gets no advice",
+    (code) => {
+      expect(refused(code)).toBe(generic);
+    },
+  );
+  it("an unknown code falls back to the generic text without printing it", () => {
+    expect(refused("something_new")).toBe(generic);
+  });
+  it("a prototype key is not a code", () => {
+    expect(refused("constructor")).toBe(generic);
+  });
+});
+
+describe("abilityStatus after a recovery undo on failed and unknown rows", () => {
+  // The server writes only undo_state; trashed stays null.
+  const cases: Array<[string, string, string, boolean]> = [
+    ["undone", "undone", "Moved to the trash.", false],
+    ["in_progress", "running", "moving the draft to the trash", false],
+    ["refused_published", "undo_refused", "has been published since", true],
+    ["refused_conflict", "undo_refused", "was edited since", true],
+    ["failed", "undo_failed", "could not move the draft to the trash", true],
+  ];
+  for (const [undo_state, kind, text, link] of cases) {
+    it(`failed + ${undo_state}`, () => {
+      const s = abilityStatus(mk({ outcome: "failed", created_post_id: 7, trashed: null, undo_state }));
+      expect(s.kind).toBe(kind);
+      expect(s.text).toContain(text);
+      expect(s.text).not.toContain("delete it there");
+      expect(s.draftMayExist === true).toBe(link);
+    });
+    it(`outcome_unknown + ${undo_state}`, () => {
+      const s = abilityStatus(
+        mk({ state: "outcome_unknown", outcome: "outcome_unknown", created_post_id: 9, trashed: null, undo_state }),
+      );
+      expect(s.kind).toBe(kind);
+      expect(s.text).toContain(text);
+      expect(s.draftMayExist === true).toBe(link);
+    });
+  }
+  it("undo_state available still shows the may-exist copy", () => {
+    const s = abilityStatus(mk({ outcome: "failed", created_post_id: 7, undo_state: "available" }));
+    expect(s.text).toContain("may exist");
   });
 });

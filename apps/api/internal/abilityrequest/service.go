@@ -311,6 +311,92 @@ func (s *Service) List(ctx context.Context, p domain.Principal, siteID *uuid.UUI
 	return rows, nil
 }
 
+// AgentVersions returns the recorded agent version of each site whose rows
+// could offer a recovery undo (a failed or outcome_unknown row), for the
+// card's undo_offered. Done rows need no version. It reads under the
+// caller's principal. On a read error it logs and returns what it has: a
+// missing version offers no recovery undo, which is the safe answer.
+func (s *Service) AgentVersions(ctx context.Context, p domain.Principal, rows []sqlc.AssistantAbilityRequest) map[uuid.UUID]string {
+	out := map[uuid.UUID]string{}
+	want := map[uuid.UUID]struct{}{}
+	for _, r := range rows {
+		if r.State == "failed" || r.State == "outcome_unknown" {
+			want[r.SiteID] = struct{}{}
+		}
+	}
+	if len(want) == 0 {
+		return out
+	}
+	err := s.runAsCaller(ctx, p, func(q *sqlc.Queries, _ pgx.Tx) error {
+		if len(want) == 1 {
+			for id := range want {
+				site, err := q.GetSite(ctx, sqlc.GetSiteParams{TenantID: p.TenantID, ID: id})
+				if err != nil {
+					return err
+				}
+				out[id] = site.AgentVersion
+			}
+			return nil
+		}
+		sites, err := q.ListSitesAgentVersions(ctx, p.TenantID)
+		if err != nil {
+			return err
+		}
+		for _, site := range sites {
+			if _, ok := want[site.ID]; ok {
+				out[site.ID] = site.AgentVersion
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		s.logger.WarnContext(ctx, "ability request: agent versions not read; no recovery undo offered",
+			slog.Any("error", err))
+	}
+	return out
+}
+
+// requestStates is m156's closed state set, the org list's filter values.
+var requestStates = map[string]struct{}{
+	"pending": {}, "approved": {}, "declined": {}, "withdrawn": {}, "expired": {},
+	"dispatched": {}, "outcome_unknown": {}, "done": {}, "failed": {}, "not_sent": {},
+}
+
+// OrgQueue is a page of the organisation-wide queue and the badge count.
+type OrgQueue struct {
+	Requests     []sqlc.AssistantAbilityRequest
+	PendingCount int64
+}
+
+// ListOrg is the organisation-wide queue (GH #828), optionally narrowed to
+// one state, with the number still waiting for a decision. Both reads run
+// under the caller's own principal, so a site collaborator sees and counts
+// only their own sites.
+func (s *Service) ListOrg(ctx context.Context, p domain.Principal, state *string, limit, offset int32) (OrgQueue, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	var out OrgQueue
+	err := s.runAsCaller(ctx, p, func(q *sqlc.Queries, _ pgx.Tx) error {
+		var err error
+		out.Requests, err = q.ListOrgAbilityRequests(ctx, sqlc.ListOrgAbilityRequestsParams{
+			TenantID: p.TenantID, StateFilter: state, RowLimit: limit, RowOffset: offset,
+		})
+		if err != nil {
+			return err
+		}
+		out.PendingCount, err = q.CountLivePendingAbilityRequests(ctx, p.TenantID)
+		return err
+	})
+	if err != nil {
+		return OrgQueue{}, domain.Internal("ability_requests_list_failed", "failed to list AI requests").WithCause(err)
+	}
+	return out, nil
+}
+
 // decisionMetadata is the audit metadata of approve and decline. The hash
 // chain covers it.
 func decisionMetadata(r sqlc.AssistantAbilityRequest, withDigest bool) map[string]any {

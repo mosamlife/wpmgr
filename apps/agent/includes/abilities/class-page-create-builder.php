@@ -21,10 +21,13 @@ if (!defined('ABSPATH')) {
  *                {"type":"paragraph","text":"..."}
  *                {"type":"list","ordered":bool,"items":["...", ...]}  (1..50 items)
  *
- * Text only. Every text value is plain characters: no markup, no shortcode
- * brackets, no template syntax, no control or bidi-override characters.
- * Anything outside the grammar is refused, never stripped. The rendered bytes
- * are then retokenised and every tag must be one this builder emits.
+ * Text only. Every text value is plain characters: no markup, no template
+ * syntax, no control or bidi-override characters, and no square bracket except
+ * a bracketed number such as [1]. Anything outside the grammar is refused,
+ * never stripped. Text is stored escaped: `&` as `&amp;` and brackets as
+ * numeric references, so entity-like text renders literally and no bracket
+ * byte reaches the stored post. The rendered bytes are then retokenised and
+ * every tag must be one this builder emits.
  */
 final class PageCreateBuilder
 {
@@ -42,7 +45,10 @@ final class PageCreateBuilder
     private const MAX_TOTAL_CHARS = 60000;
 
     /** Sequences refused anywhere in text (Sec-F6). */
-    private const FORBIDDEN_SEQUENCES = ['<', '>', '[', ']', '{{', '}}', '{%', '%}', '<!--', '-->', '`'];
+    private const FORBIDDEN_SEQUENCES = ['<', '>', '{{', '}}', '{%', '%}', '<!--', '-->', '`'];
+
+    /** The only bracketed text allowed: a number of one to four digits. */
+    private const BRACKETED_NUMBER = '/\[[0-9]{1,4}\]/';
 
     /** Tags the renderer may emit; the retokenisation pass allows only these. */
     private const ALLOWED_TAGS = [
@@ -261,6 +267,18 @@ final class PageCreateBuilder
     }
 
     /**
+     * The exact post_title bytes stored for a plain-text title: the same
+     * escaping as body text, which every save filter leaves byte-identical.
+     *
+     * @param string $title Plain-text title, already validated.
+     * @return string
+     */
+    public static function storedTitle(string $title): string
+    {
+        return self::text($title);
+    }
+
+    /**
      * The base fingerprint for a new object: the created-object key.
      *
      * @param string $postType Post type.
@@ -317,26 +335,30 @@ final class PageCreateBuilder
         }
         foreach (self::FORBIDDEN_SEQUENCES as $seq) {
             if (strpos($text, $seq) !== false) {
-                return 'contains a forbidden sequence';
+                return 'contains "' . $seq . '"; write plain text with no markup, comments or template syntax';
             }
         }
-        if (preg_match('/&(#[0-9]+|#x[0-9a-f]+|[a-z][a-z0-9]*);/i', $text) === 1) {
-            return 'contains an HTML entity';
+        $unbracketed = (string) preg_replace(self::BRACKETED_NUMBER, '', $text);
+        if (strpos($unbracketed, '[') !== false || strpos($unbracketed, ']') !== false) {
+            return 'contains a square bracket; only a bracketed number such as [1] is allowed, so use parentheses instead';
         }
 
         return null;
     }
 
     /**
-     * Escape text for an HTML text node. Only `&` can need escaping, since
-     * `<` and `>` are refused before this runs.
+     * Escape text for an HTML text node. `<` and `>` are refused before this
+     * runs. `&` is always escaped, so an entity-like input renders literally.
+     * Brackets become the numeric references core's entity normaliser keeps
+     * unchanged (three-digit form), so the stored bytes hold no `[` or `]`
+     * and the shortcode parser never sees an opening bracket.
      *
      * @param string $text Text.
      * @return string
      */
     private static function text(string $text): string
     {
-        return htmlspecialchars($text, ENT_NOQUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        return str_replace(['[', ']'], ['&#091;', '&#093;'], htmlspecialchars($text, ENT_NOQUOTES | ENT_SUBSTITUTE, 'UTF-8'));
     }
 
     /**
