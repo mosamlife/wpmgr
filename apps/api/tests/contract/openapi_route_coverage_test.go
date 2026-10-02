@@ -431,6 +431,7 @@ func buildFullEngine(t *testing.T, pool *db.Pool) *gin.Engine {
 		AuditH:                 audit.NewHandler(auditRec),
 		AssistantRequestH:      assistantReqH,
 		AbilityRequestH:        abilityReqH,
+		AbilityTenantH:         abilities.NewTenantHandler(abilities.NewTenantRepo(pool, auditRec), admingate.NewPoolStore(pool)),
 		TenantH:                tenant.NewHandler(tenantSvc, auditRec),
 		SiteH:                  siteH,
 		SiteEventsH:            siteEventsH,
