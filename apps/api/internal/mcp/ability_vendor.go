@@ -47,20 +47,42 @@ const MinWPVersionForVendorReads = "7.1"
 // notRunnableCopy is our plain text for each not-runnable reason, for the
 // operator and the AI alike. No site text appears in it.
 var notRunnableCopy = map[string]string{
-	notRunnableNotReviewed:       "WPMgr has not reviewed this tool, so it cannot run.",
-	notRunnableDenied:            "WPMgr does not allow this tool.",
-	notRunnableNotAdmitted:       "This tool is not approved for use yet.",
-	notRunnableDisabled:          "This tool is switched off in WPMgr.",
-	notRunnableNotYet:            "WPMgr can read with this tool but not change anything yet.",
-	notRunnableWritesOff:         "Changes through this tool are not available.",
-	notRunnableOwnerMismatch:     "The tool on this site does not come from the plugin WPMgr reviewed.",
-	notRunnableAgentOutdated:     "This site's WPMgr agent is too old to run this tool. Update the agent.",
-	notRunnableNotOnSite:         "This site does not offer this tool.",
-	notRunnableNotInventoried:    "WPMgr has not read this site's tools yet. A check has been queued.",
-	notRunnableVersionUnverified: "The installed version of the plugin that provides this tool has not been reviewed.",
-	notRunnableSchemaChanged:     "This tool's inputs on this site differ from the version WPMgr reviewed.",
-	notRunnableWPTooOld:          "This tool needs WordPress 7.1 or later.",
-	notRunnablePermissionMode:    "This tool can run only with WPMgr's own limited permissions.",
+	notRunnableNotReviewed:        "WPMgr has not reviewed this tool, so it cannot run.",
+	notRunnableDenied:             "WPMgr does not allow this tool.",
+	notRunnableNotAdmitted:        "This tool is not approved for use yet.",
+	notRunnableDisabled:           "This tool is switched off in WPMgr.",
+	notRunnableNotYet:             "WPMgr can read with this tool but not change anything yet.",
+	notRunnableWritesOff:          "Changes through this tool are not available.",
+	notRunnableOwnerMismatch:      "The tool on this site does not come from the plugin WPMgr reviewed.",
+	notRunnableAgentOutdated:      "This site's WPMgr agent is too old to run this tool. Update the agent.",
+	notRunnableNotOnSite:          "This site does not offer this tool.",
+	notRunnableNotInventoried:     "WPMgr has not read this site's tools yet. A check has been queued.",
+	notRunnableVersionUnverified:  "The installed version of the plugin that provides this tool has not been reviewed.",
+	notRunnableSchemaChanged:      "This tool's inputs on this site differ from the version WPMgr reviewed.",
+	notRunnableWPTooOld:           "This tool needs WordPress 7.1 or later.",
+	notRunnablePermissionMode:     "This tool can run only with WPMgr's own limited permissions.",
+	notRunnableDisabledForAccount: msgAbilityDisabledForAccount,
+}
+
+// msgAbilityDisabledForAccount is the plain text for a vendor read switched
+// off for the caller's tenant (m160, owner ruling 2026-10-02).
+const msgAbilityDisabledForAccount = "WPMgr turned this tool off for your account after it changed " +
+	"something on one of your sites during a read. A WPMgr admin on your account can turn it back on."
+
+// offForTenant applies the per-tenant disable to a classified ability: an
+// entry switched off for this tenant is not runnable, whatever else holds.
+// A fleet-wide disable keeps its own reason; it is the broader one.
+func offForTenant(c classified, off map[uuid.UUID]bool) classified {
+	if c.entry == nil || !off[c.entry.EntryID] {
+		return c
+	}
+	if c.reason != nil && (*c.reason == notRunnableDisabled || *c.reason == notRunnableDenied) {
+		return c
+	}
+	c.runnable = false
+	c.reason = abilityStrPtr(notRunnableDisabledForAccount)
+	c.classOrder = abilityClassOrder[c.class]
+	return c
 }
 
 // agentRefusalCopy is our plain text for each refusal code the agent can
@@ -294,20 +316,24 @@ func fenceSiteList(in []string) []string {
 	return out
 }
 
-// AbilitySideEffectRecorder records one site on which a vendor read was
-// caught with side effects and returns the entry's distinct-site count. At 3
-// the database disables the entry fleet-wide and audits it (m160).
+// AbilitySideEffectRecorder records a vendor read caught with side effects on
+// one of the reporting tenant's sites (m160, owner ruling 2026-10-02). The
+// database switches the entry off for that tenant at once and returns the
+// number of distinct qualified (paid or aged) tenants that reported it since
+// the last superadmin re-enable; at 3 it disables the entry fleet-wide and
+// audits it.
 type AbilitySideEffectRecorder interface {
 	RecordAbilityReadSideEffect(ctx context.Context, tenantID, entryID, siteID uuid.UUID) (int32, error)
 }
 
-// abilitySideEffectDisableAt is m160's threshold, for the log line only: the
-// database decides.
+// abilitySideEffectDisableAt is m160's qualified-tenant threshold, for the
+// log line only: the database decides.
 const abilitySideEffectDisableAt = 3
 
-// recordSideEffectSite counts the site against the entry. Best effort: a
-// refusal (42501 not a vendor read, P0002 no entry) or any other failure is
-// logged and the call stays refused.
+// recordSideEffectSite reports the site against the entry. Best effort: a
+// refusal (42501 not a vendor read, a wrong tenant or a site not of the
+// tenant; P0002 no entry) or any other failure is logged and the call stays
+// refused.
 func (s *Service) recordSideEffectSite(ctx context.Context, tenantID, siteID uuid.UUID, e *sqlc.AbilityCatalogue) {
 	if s.abilities == nil || s.abilities.sideEffects == nil {
 		return
@@ -319,7 +345,7 @@ func (s *Service) recordSideEffectSite(ctx context.Context, tenantID, siteID uui
 		if errors.As(err, &pgErr) && (pgErr.Code == "42501" || pgErr.Code == "P0002") {
 			level = slog.LevelWarn
 		}
-		slog.Log(ctx, level, "ability read side effect: site not counted",
+		slog.Log(ctx, level, "ability read side effect: not recorded",
 			slog.String("entry_id", e.EntryID.String()), slog.String("site_id", siteID.String()), slog.Any("error", err))
 		return
 	}
@@ -329,7 +355,7 @@ func (s *Service) recordSideEffectSite(ctx context.Context, tenantID, siteID uui
 			slog.String("action", ActionAbilityReadSideEffect),
 			slog.String("ability", e.Name),
 			slog.String("entry_id", e.EntryID.String()),
-			slog.Int("distinct_sites", int(n)),
+			slog.Int("qualified_tenants", int(n)),
 		)
 	}
 }

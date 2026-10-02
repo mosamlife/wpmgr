@@ -23,8 +23,11 @@ type AbilityStore interface {
 	// keyed by site id, in ONE transaction. run is nil when the site has never
 	// been refreshed.
 	SiteAbilities(ctx context.Context, p domain.Principal, siteID uuid.UUID) (run *sqlc.SiteAbilityInventoryRun, rows []sqlc.SiteAbilityInventory, err error)
-	// AbilityCatalogue reads every catalogue entry (any status).
-	AbilityCatalogue(ctx context.Context, p domain.Principal) ([]sqlc.AbilityCatalogue, error)
+	// AbilityCatalogue reads every catalogue entry (any status) and, in the
+	// SAME transaction, the entries switched off for p's tenant (m160): a
+	// vendor read caught changing a site is off for its reporting tenant at
+	// once, whatever the fleet-wide state.
+	AbilityCatalogue(ctx context.Context, p domain.Principal) ([]sqlc.AbilityCatalogue, map[uuid.UUID]bool, error)
 }
 
 // SiteAbilities implements AbilityStore.
@@ -50,8 +53,9 @@ func (r *Repo) SiteAbilities(ctx context.Context, p domain.Principal, siteID uui
 }
 
 // RecordAbilityReadSideEffect implements AbilitySideEffectRecorder: m160's
-// definer, in its own short READ COMMITTED transaction (the pool default), as
-// the application role.
+// definer, in the site's own tenant transaction (the definer takes the tenant
+// from app.tenant_id), short and READ COMMITTED (the pool default), as the
+// application role. It returns the qualified-tenant count.
 func (r *Repo) RecordAbilityReadSideEffect(ctx context.Context, tenantID, entryID, siteID uuid.UUID) (int32, error) {
 	var n int32
 	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
@@ -67,12 +71,27 @@ func (r *Repo) RecordAbilityReadSideEffect(ctx context.Context, tenantID, entryI
 var _ AbilitySideEffectRecorder = (*Repo)(nil)
 
 // AbilityCatalogue implements AbilityStore.
-func (r *Repo) AbilityCatalogue(ctx context.Context, p domain.Principal) ([]sqlc.AbilityCatalogue, error) {
+func (r *Repo) AbilityCatalogue(ctx context.Context, p domain.Principal) ([]sqlc.AbilityCatalogue, map[uuid.UUID]bool, error) {
 	var out []sqlc.AbilityCatalogue
+	var off map[uuid.UUID]bool
 	err := r.pool.RunTenantTx(ctx, p, func(tx pgx.Tx) error {
+		q := sqlc.New(tx)
 		var err error
-		out, err = sqlc.New(tx).ListAbilityCatalogue(ctx)
-		return err
+		if out, err = q.ListAbilityCatalogue(ctx); err != nil {
+			return err
+		}
+		ids, err := q.ListAbilityTenantDisabledEntryIDs(ctx, p.TenantID)
+		if err != nil {
+			return err
+		}
+		off = make(map[uuid.UUID]bool, len(ids))
+		for _, id := range ids {
+			off[id] = true
+		}
+		return nil
 	})
-	return out, err
+	if err != nil {
+		return nil, nil, err
+	}
+	return out, off, nil
 }

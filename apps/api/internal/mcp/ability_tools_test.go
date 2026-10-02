@@ -27,6 +27,7 @@ type fakeAbilityStore struct {
 	run  *sqlc.SiteAbilityInventoryRun
 	rows []sqlc.SiteAbilityInventory
 	cat  []sqlc.AbilityCatalogue
+	off  map[uuid.UUID]bool
 }
 
 func (f *fakeAbilityStore) SiteAbilities(_ context.Context, _ domain.Principal, siteID uuid.UUID) (*sqlc.SiteAbilityInventoryRun, []sqlc.SiteAbilityInventory, error) {
@@ -39,8 +40,8 @@ func (f *fakeAbilityStore) SiteAbilities(_ context.Context, _ domain.Principal, 
 	return f.run, out, nil
 }
 
-func (f *fakeAbilityStore) AbilityCatalogue(context.Context, domain.Principal) ([]sqlc.AbilityCatalogue, error) {
-	return f.cat, nil
+func (f *fakeAbilityStore) AbilityCatalogue(context.Context, domain.Principal) ([]sqlc.AbilityCatalogue, map[uuid.UUID]bool, error) {
+	return f.cat, f.off, nil
 }
 
 type fakeAbilityAgent struct {

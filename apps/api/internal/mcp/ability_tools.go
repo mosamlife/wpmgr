@@ -84,6 +84,9 @@ const (
 	// notRunnableNotInventoried: WPMgr has not read this site's abilities
 	// yet; a check has been queued.
 	notRunnableNotInventoried = "not_inventoried_yet"
+	// notRunnableDisabledForAccount: the entry is switched off for this
+	// tenant (m160) after a read through it changed one of its sites.
+	notRunnableDisabledForAccount = "disabled_for_your_account"
 )
 
 // Closed class order for discover.
@@ -561,7 +564,7 @@ func (s *Service) siteClassified(ctx context.Context, eng *abilityEngine, site a
 	if err != nil {
 		return nil, nil, fmt.Errorf("read site abilities: %w", err)
 	}
-	cat, err := eng.store.AbilityCatalogue(ctx, site.p)
+	cat, tenantOff, err := eng.store.AbilityCatalogue(ctx, site.p)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read ability catalogue: %w", err)
 	}
@@ -574,7 +577,7 @@ func (s *Service) siteClassified(ctx context.Context, eng *abilityEngine, site a
 		if !abilityNamePattern.MatchString(inv[i].Name) {
 			continue
 		}
-		out = append(out, classify(inv[i].Name, byName[inv[i].Name], &inv[i], site.row.AgentVersion, site.row.WpVersion))
+		out = append(out, offForTenant(classify(inv[i].Name, byName[inv[i].Name], &inv[i], site.row.AgentVersion, site.row.WpVersion), tenantOff))
 	}
 	if run == nil {
 		// Never inventoried. WPMgr's own abilities are still listed, with the
@@ -593,7 +596,7 @@ func (s *Service) siteClassified(ctx context.Context, eng *abilityEngine, site a
 			if _, own := ownAbilityInputSchemas[e.Name]; !own {
 				continue
 			}
-			c := classify(e.Name, byName[e.Name], nil, site.row.AgentVersion, site.row.WpVersion)
+			c := offForTenant(classify(e.Name, byName[e.Name], nil, site.row.AgentVersion, site.row.WpVersion), tenantOff)
 			if c.entry != nil && c.reason != nil && *c.reason == notRunnableNotOnSite {
 				c.reason = abilityStrPtr(reason)
 			}
@@ -907,6 +910,7 @@ type describeResult struct {
 	Source            string            `json:"source"`
 	RunnableHere      bool              `json:"runnable_here"`
 	NotRunnableReason *string           `json:"not_runnable_reason"`
+	NotRunnableText   *string           `json:"not_runnable_text,omitempty"` // our sentence for disabled_for_your_account only
 	WPMgr             *describeWPMgr    `json:"wpmgr"`
 	InputSchema       json.RawMessage   `json:"input_schema"`
 	SchemaTooLarge    bool              `json:"schema_too_large,omitempty"`
@@ -971,6 +975,9 @@ func (s *Service) describeSiteAbility(ctx context.Context, auth AuthorizedReques
 	res := describeResult{
 		Name: c.name, Class: c.class, Source: c.source,
 		RunnableHere: c.runnable, NotRunnableReason: c.reason,
+	}
+	if c.reason != nil && *c.reason == notRunnableDisabledForAccount {
+		res.NotRunnableText = abilityStrPtr(msgAbilityDisabledForAccount)
 	}
 	if c.entry == nil {
 		res.Name = fenceSiteText(c.name)
@@ -1210,9 +1217,13 @@ type runOwner struct {
 }
 
 func notRunnableRefusal(code string) *toolRefusal {
+	msg := msgAbilityNotRunnable
+	if code == notRunnableDisabledForAccount {
+		msg = msgAbilityDisabledForAccount
+	}
 	return &toolRefusal{
 		reason: reasonAbilityNotRunnable,
-		err: domain.Validation(ErrCodeInvalidToolArguments, msgAbilityNotRunnable).
+		err: domain.Validation(ErrCodeInvalidToolArguments, msg).
 			WithDetails(map[string]any{"argument": "name", "not_runnable_reason": code, "retryable": false}),
 		meta: map[string]any{"not_runnable_reason": code},
 	}
