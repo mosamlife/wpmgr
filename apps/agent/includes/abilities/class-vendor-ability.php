@@ -365,9 +365,10 @@ final class VendorAbility
      */
     private static function restoreHookState(array $state): void
     {
-        if (isset($GLOBALS['wp_current_filter']) && is_array($GLOBALS['wp_current_filter'])
+        // Popped one entry at a time, the way core closes each level.
+        while (isset($GLOBALS['wp_current_filter']) && is_array($GLOBALS['wp_current_filter'])
             && count($GLOBALS['wp_current_filter']) > $state['depth']) {
-            $GLOBALS['wp_current_filter'] = array_slice($GLOBALS['wp_current_filter'], 0, $state['depth']);
+            array_pop($GLOBALS['wp_current_filter']);
         }
         $props = self::hookProps();
         if ($props === null || !is_array($GLOBALS['wp_filter'] ?? null)) {
