@@ -2,7 +2,8 @@
 // token, on the wpmgr_app pool with the real audit recorder and the real
 // m160 definer. A fake agent answers. The superuser connection only arranges
 // site state and reads counts; it never stands in for the application.
-// Capped data: at most four tenants, seven sites, one catalogue entry.
+// Capped data: at most three tenants and six sites a test, one catalogue
+// entry.
 package tests
 
 import (
