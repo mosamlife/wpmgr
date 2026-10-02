@@ -7781,6 +7781,32 @@ export const AbilityRequestApproveBodySchema = {
   },
 } as const;
 
+export const AbilityRequestOrgListSchema = {
+  type: "object",
+  required: ["requests", "pending_count", "limit", "offset"],
+  properties: {
+    requests: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/AbilityRequest",
+      },
+    },
+    pending_count: {
+      type: "integer",
+      format: "int64",
+      description: "Requests still waiting for a decision (the badge).",
+    },
+    limit: {
+      type: "integer",
+      format: "int32",
+    },
+    offset: {
+      type: "integer",
+      format: "int32",
+    },
+  },
+} as const;
+
 export const AbilityRequestListSchema = {
   type: "object",
   required: ["requests", "limit", "offset"],
@@ -7821,6 +7847,8 @@ export const AbilityRequestSchema = {
     "state",
     "created_at",
     "expires_at",
+    "undo_offered",
+    "resolve_gave_up",
   ],
   properties: {
     id: {
@@ -7936,6 +7964,16 @@ export const AbilityRequestSchema = {
       type: "string",
       format: "date-time",
       nullable: true,
+    },
+    undo_offered: {
+      type: "boolean",
+      description:
+        "Whether `POST .../undo` would start an undo now: a done request\ninside its undo window, or the draft a failed or given-up page\ncreation left on the site. Show the undo action exactly when\nthis is true.\n",
+    },
+    resolve_gave_up: {
+      type: "boolean",
+      description:
+        "True once WPMgr stopped checking the site for the outcome of a\nwrite whose reply was lost. The result is final: the person\nshould look at the site's drafts.\n",
     },
   },
 } as const;

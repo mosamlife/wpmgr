@@ -812,6 +812,13 @@ type IsolateUnusedMediaParams struct {
 	SiteId uuid.UUID
 }
 
+// ListAbilityRequestsParams is parameters of listAbilityRequests operation.
+type ListAbilityRequestsParams struct {
+	State  OptListAbilityRequestsState `json:",omitempty,omitzero"`
+	Limit  OptInt32                    `json:",omitempty,omitzero"`
+	Offset OptInt32                    `json:",omitempty,omitzero"`
+}
+
 // ListAdminAccountsParams is parameters of listAdminAccounts operation.
 type ListAdminAccountsParams struct {
 	// Case-insensitive substring match against org name, org slug, or owner email.

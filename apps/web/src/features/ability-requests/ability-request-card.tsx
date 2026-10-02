@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import type { AbilityRequest } from "@wpmgr/api";
 
 import { Button } from "@/components/ui/button";
@@ -14,7 +15,6 @@ import {
   editorName,
   isPending,
   parsePagePreview,
-  undoOpen,
   type PagePreview,
 } from "./ability-card-model";
 
@@ -27,7 +27,6 @@ export interface AbilityRequestCardProps {
   request: AbilityRequest;
   /** The site's own address, for the "edit the draft" link. Unknown is fine. */
   siteUrl?: string | null;
-  now: Date;
   onApprove: (request: AbilityRequest) => void;
   onDecline: (request: AbilityRequest) => void;
   onUndo: (request: AbilityRequest) => void;
@@ -43,7 +42,6 @@ export interface AbilityRequestCardProps {
 export function AbilityRequestCard({
   request,
   siteUrl,
-  now,
   onApprove,
   onDecline,
   onUndo,
@@ -59,7 +57,7 @@ export function AbilityRequestCard({
   const preview = parsePagePreview(request.input_json);
   const setUpFor = setUpForLine(request);
   const busy = approvePending || declinePending;
-  const canUndo = undoOpen(request, now);
+  const canUndo = useUndoWindowOpen(request.undo_offered, request.undo_available_until);
   const editHref = status.kind === "done" || status.draftMayExist === true ? editDraftHref(siteUrl, request.created_post_id) : null;
   const title = abilityCardTitle(request);
 
@@ -157,6 +155,26 @@ export function AbilityRequestCard({
       ) : null}
     </article>
   );
+}
+
+/**
+ * True while the server offered Undo and the window end is still ahead of the
+ * client clock. One timer to the expiry flips it off; no polling clock.
+ */
+function useUndoWindowOpen(offered: boolean, until: string | null | undefined): boolean {
+  // No window end means a recovery undo, which has no expiry of its own.
+  const end = until ? Date.parse(until) : null;
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!offered || end === null || !Number.isFinite(end) || end <= now) return;
+    // One timer to the expiry. setTimeout caps at a signed 32-bit delay, so a
+    // longer wait re-arms itself because `now` is a dependency.
+    const t = setTimeout(() => setNow(Date.now()), Math.min(Math.max(end - Date.now(), 0), 2_147_483_647));
+    return () => clearTimeout(t);
+  }, [offered, end, now]);
+  if (!offered) return false;
+  if (end === null) return true;
+  return Number.isFinite(end) && end > now;
 }
 
 function OutlinePreview({ preview }: { preview: PagePreview }) {

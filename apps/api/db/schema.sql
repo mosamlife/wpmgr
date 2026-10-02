@@ -10210,8 +10210,12 @@ CREATE TABLE IF NOT EXISTS assistant_ability_requests (
             'refused_published',
             'failed'
         )),
+    -- m158 (GH #826): also a failed or outcome_unknown row that names the
+    -- post it created, so the draft a failed write left can be undone.
     CONSTRAINT assistant_ability_requests_undo_only_when_done_check
-        CHECK (undo_state IS NULL OR state = 'done'),
+        CHECK (undo_state IS NULL
+               OR state = 'done'
+               OR (state IN ('failed', 'outcome_unknown') AND created_post_id IS NOT NULL)),
     undo_available_until timestamptz NULL,
     CONSTRAINT assistant_ability_requests_undo_has_window_check
         CHECK ((undo_state IS NULL) = (undo_available_until IS NULL)),

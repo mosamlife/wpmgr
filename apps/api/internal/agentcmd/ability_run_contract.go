@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 
@@ -41,6 +42,25 @@ const MinAgentVersionForAbilityEngine = "0.61.155"
 // refuses those modes; the write branch of site_ability_run refuses before
 // asking.
 const MinAgentVersionForPageCreate = "0.61.156"
+
+// MinAgentVersionForRecoveryUndo is the first agent release whose revert
+// mode undoes the draft a failed or given-up write left on the site (GH
+// #826). An older agent answers a recovery revert with not_revertible, so
+// the control plane neither offers nor starts one until the site runs it.
+const MinAgentVersionForRecoveryUndo = "0.61.157"
+
+// ErrAbilityRunMalformed marks a 2xx ability_run reply the control plane
+// could not use: a body that did not decode, or an answer for another mode or
+// entry. Resending the same call gets the same answer.
+var ErrAbilityRunMalformed = errors.New("agentcmd: malformed ability_run answer")
+
+// malformedError carries ErrAbilityRunMalformed without changing the message.
+type malformedError struct{ err error }
+
+func (e *malformedError) Error() string { return e.err.Error() }
+func (e *malformedError) Unwrap() []error {
+	return []error{e.err, ErrAbilityRunMalformed}
+}
 
 // Ability-run modes.
 const (
@@ -234,8 +254,9 @@ type AbilityRunRefusal struct {
 	Code      string
 	Detail    string
 	Retryable bool
-	// PostID and Trashed are set on a write's verify_mismatch: the draft
-	// it created and whether the automatic undo trashed it.
+	// PostID and Trashed are set on a write's verify_mismatch and on a
+	// snapshot_failed that came after the insert: the draft it created and
+	// whether the site trashed it.
 	PostID  int64
 	Trashed bool
 	// Violations are the agent's fixed guard labels (ability_intercepted,
@@ -350,17 +371,17 @@ func (c *Client) AbilityRun(ctx context.Context, siteID uuid.UUID, siteURL strin
 		return out, err
 	}
 	if err := json.Unmarshal(data, &out); err != nil {
-		return AbilityRunResponse{}, fmt.Errorf("decode ability_run response: %w", err)
+		return AbilityRunResponse{}, &malformedError{fmt.Errorf("decode ability_run response: %w", err)}
 	}
 	out.Raw = append(json.RawMessage(nil), data...)
 	if !out.OK {
 		return out, abilityRunRefusalOf(out)
 	}
 	if out.Mode != call.Mode {
-		return AbilityRunResponse{}, fmt.Errorf("ability_run: agent answered mode %q for %q", out.Mode, call.Mode)
+		return AbilityRunResponse{}, &malformedError{fmt.Errorf("ability_run: agent answered mode %q for %q", out.Mode, call.Mode)}
 	}
 	if call.Mode == AbilityRunModeRead && out.EntrySHA256 != call.EntrySHA256 {
-		return AbilityRunResponse{}, fmt.Errorf("ability_run: agent answered for a different entry")
+		return AbilityRunResponse{}, &malformedError{errors.New("ability_run: agent answered for a different entry")}
 	}
 	return out, nil
 }

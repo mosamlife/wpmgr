@@ -1379,6 +1379,12 @@ type AbilityRequest struct {
 	Trashed            OptNilBool               `json:"trashed"`
 	UndoState          OptNilString             `json:"undo_state"`
 	UndoAvailableUntil OptNilDateTime           `json:"undo_available_until"`
+	// Whether `POST .../undo` would start an undo now: a done request inside its undo window, or the draft
+	// a failed or given-up page creation left on the site. Show the undo action exactly when this is true.
+	UndoOffered bool `json:"undo_offered"`
+	// True once WPMgr stopped checking the site for the outcome of a write whose reply was lost. The
+	// result is final: the person should look at the site's drafts.
+	ResolveGaveUp bool `json:"resolve_gave_up"`
 }
 
 // GetID returns the value of ID.
@@ -1516,6 +1522,16 @@ func (s *AbilityRequest) GetUndoAvailableUntil() OptNilDateTime {
 	return s.UndoAvailableUntil
 }
 
+// GetUndoOffered returns the value of UndoOffered.
+func (s *AbilityRequest) GetUndoOffered() bool {
+	return s.UndoOffered
+}
+
+// GetResolveGaveUp returns the value of ResolveGaveUp.
+func (s *AbilityRequest) GetResolveGaveUp() bool {
+	return s.ResolveGaveUp
+}
+
 // SetID sets the value of ID.
 func (s *AbilityRequest) SetID(val uuid.UUID) {
 	s.ID = val
@@ -1651,6 +1667,16 @@ func (s *AbilityRequest) SetUndoAvailableUntil(val OptNilDateTime) {
 	s.UndoAvailableUntil = val
 }
 
+// SetUndoOffered sets the value of UndoOffered.
+func (s *AbilityRequest) SetUndoOffered(val bool) {
+	s.UndoOffered = val
+}
+
+// SetResolveGaveUp sets the value of ResolveGaveUp.
+func (s *AbilityRequest) SetResolveGaveUp(val bool) {
+	s.ResolveGaveUp = val
+}
+
 func (*AbilityRequest) approveAbilityRequestRes() {}
 func (*AbilityRequest) declineAbilityRequestRes() {}
 func (*AbilityRequest) undoAbilityRequestRes()    {}
@@ -1757,6 +1783,57 @@ func (s *AbilityRequestList) SetOffset(val int32) {
 }
 
 func (*AbilityRequestList) listSiteAbilityRequestsRes() {}
+
+// Ref: #/components/schemas/AbilityRequestOrgList
+type AbilityRequestOrgList struct {
+	Requests []AbilityRequest `json:"requests"`
+	// Requests still waiting for a decision (the badge).
+	PendingCount int64 `json:"pending_count"`
+	Limit        int32 `json:"limit"`
+	Offset       int32 `json:"offset"`
+}
+
+// GetRequests returns the value of Requests.
+func (s *AbilityRequestOrgList) GetRequests() []AbilityRequest {
+	return s.Requests
+}
+
+// GetPendingCount returns the value of PendingCount.
+func (s *AbilityRequestOrgList) GetPendingCount() int64 {
+	return s.PendingCount
+}
+
+// GetLimit returns the value of Limit.
+func (s *AbilityRequestOrgList) GetLimit() int32 {
+	return s.Limit
+}
+
+// GetOffset returns the value of Offset.
+func (s *AbilityRequestOrgList) GetOffset() int32 {
+	return s.Offset
+}
+
+// SetRequests sets the value of Requests.
+func (s *AbilityRequestOrgList) SetRequests(val []AbilityRequest) {
+	s.Requests = val
+}
+
+// SetPendingCount sets the value of PendingCount.
+func (s *AbilityRequestOrgList) SetPendingCount(val int64) {
+	s.PendingCount = val
+}
+
+// SetLimit sets the value of Limit.
+func (s *AbilityRequestOrgList) SetLimit(val int32) {
+	s.Limit = val
+}
+
+// SetOffset sets the value of Offset.
+func (s *AbilityRequestOrgList) SetOffset(val int32) {
+	s.Offset = val
+}
+
+func (*AbilityRequestOrgList) listAbilityRequestsRes() {}
 
 type AbilityRequestState string
 
@@ -28243,6 +28320,111 @@ func (s *InviteRequest) SetRole(val Role) {
 	s.Role = val
 }
 
+type ListAbilityRequestsForbidden Error
+
+func (*ListAbilityRequestsForbidden) listAbilityRequestsRes() {}
+
+type ListAbilityRequestsState string
+
+const (
+	ListAbilityRequestsStatePending        ListAbilityRequestsState = "pending"
+	ListAbilityRequestsStateApproved       ListAbilityRequestsState = "approved"
+	ListAbilityRequestsStateDeclined       ListAbilityRequestsState = "declined"
+	ListAbilityRequestsStateWithdrawn      ListAbilityRequestsState = "withdrawn"
+	ListAbilityRequestsStateExpired        ListAbilityRequestsState = "expired"
+	ListAbilityRequestsStateDispatched     ListAbilityRequestsState = "dispatched"
+	ListAbilityRequestsStateOutcomeUnknown ListAbilityRequestsState = "outcome_unknown"
+	ListAbilityRequestsStateDone           ListAbilityRequestsState = "done"
+	ListAbilityRequestsStateFailed         ListAbilityRequestsState = "failed"
+	ListAbilityRequestsStateNotSent        ListAbilityRequestsState = "not_sent"
+)
+
+// AllValues returns all ListAbilityRequestsState values.
+func (ListAbilityRequestsState) AllValues() []ListAbilityRequestsState {
+	return []ListAbilityRequestsState{
+		ListAbilityRequestsStatePending,
+		ListAbilityRequestsStateApproved,
+		ListAbilityRequestsStateDeclined,
+		ListAbilityRequestsStateWithdrawn,
+		ListAbilityRequestsStateExpired,
+		ListAbilityRequestsStateDispatched,
+		ListAbilityRequestsStateOutcomeUnknown,
+		ListAbilityRequestsStateDone,
+		ListAbilityRequestsStateFailed,
+		ListAbilityRequestsStateNotSent,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s ListAbilityRequestsState) MarshalText() ([]byte, error) {
+	switch s {
+	case ListAbilityRequestsStatePending:
+		return []byte(s), nil
+	case ListAbilityRequestsStateApproved:
+		return []byte(s), nil
+	case ListAbilityRequestsStateDeclined:
+		return []byte(s), nil
+	case ListAbilityRequestsStateWithdrawn:
+		return []byte(s), nil
+	case ListAbilityRequestsStateExpired:
+		return []byte(s), nil
+	case ListAbilityRequestsStateDispatched:
+		return []byte(s), nil
+	case ListAbilityRequestsStateOutcomeUnknown:
+		return []byte(s), nil
+	case ListAbilityRequestsStateDone:
+		return []byte(s), nil
+	case ListAbilityRequestsStateFailed:
+		return []byte(s), nil
+	case ListAbilityRequestsStateNotSent:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *ListAbilityRequestsState) UnmarshalText(data []byte) error {
+	switch ListAbilityRequestsState(data) {
+	case ListAbilityRequestsStatePending:
+		*s = ListAbilityRequestsStatePending
+		return nil
+	case ListAbilityRequestsStateApproved:
+		*s = ListAbilityRequestsStateApproved
+		return nil
+	case ListAbilityRequestsStateDeclined:
+		*s = ListAbilityRequestsStateDeclined
+		return nil
+	case ListAbilityRequestsStateWithdrawn:
+		*s = ListAbilityRequestsStateWithdrawn
+		return nil
+	case ListAbilityRequestsStateExpired:
+		*s = ListAbilityRequestsStateExpired
+		return nil
+	case ListAbilityRequestsStateDispatched:
+		*s = ListAbilityRequestsStateDispatched
+		return nil
+	case ListAbilityRequestsStateOutcomeUnknown:
+		*s = ListAbilityRequestsStateOutcomeUnknown
+		return nil
+	case ListAbilityRequestsStateDone:
+		*s = ListAbilityRequestsStateDone
+		return nil
+	case ListAbilityRequestsStateFailed:
+		*s = ListAbilityRequestsStateFailed
+		return nil
+	case ListAbilityRequestsStateNotSent:
+		*s = ListAbilityRequestsStateNotSent
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type ListAbilityRequestsUnprocessableEntity Error
+
+func (*ListAbilityRequestsUnprocessableEntity) listAbilityRequestsRes() {}
+
 type ListAdminAbilityCatalogueForbidden Error
 
 func (*ListAdminAbilityCatalogueForbidden) listAdminAbilityCatalogueRes() {}
@@ -36815,6 +36997,52 @@ func (o OptInt64) Get() (v int64, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptInt64) Or(d int64) int64 {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptListAbilityRequestsState returns new OptListAbilityRequestsState with value set to v.
+func NewOptListAbilityRequestsState(v ListAbilityRequestsState) OptListAbilityRequestsState {
+	return OptListAbilityRequestsState{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptListAbilityRequestsState is optional ListAbilityRequestsState.
+type OptListAbilityRequestsState struct {
+	Value ListAbilityRequestsState
+	Set   bool
+}
+
+// IsSet returns true if OptListAbilityRequestsState was set.
+func (o OptListAbilityRequestsState) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptListAbilityRequestsState) Reset() {
+	var v ListAbilityRequestsState
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptListAbilityRequestsState) SetTo(v ListAbilityRequestsState) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptListAbilityRequestsState) Get() (v ListAbilityRequestsState, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptListAbilityRequestsState) Or(d ListAbilityRequestsState) ListAbilityRequestsState {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -58921,6 +59149,10 @@ type UndoAbilityRequestNotFound Error
 func (*UndoAbilityRequestNotFound) undoAbilityRequestRes() {}
 
 type UndoAbilityRequestReq struct{}
+
+type UndoAbilityRequestServiceUnavailable Error
+
+func (*UndoAbilityRequestServiceUnavailable) undoAbilityRequestRes() {}
 
 type UndoAbilityRequestUnsupportedMediaType Error
 

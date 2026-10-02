@@ -132,6 +132,7 @@ export {
   declineAssistantRequest,
   // AI site-change requests (page create, approved per call)
   listSiteAbilityRequests,
+  listAbilityRequests,
   approveAbilityRequest,
   declineAbilityRequest,
   undoAbilityRequest,
@@ -563,6 +564,7 @@ export type {
   AbilityRequestApproveBody,
   ContentEditingState,
   ListSiteAbilityRequestsData,
+  ListAbilityRequestsData,
   ApproveAbilityRequestData,
   DeclineAbilityRequestData,
   UndoAbilityRequestData,
@@ -1057,6 +1059,7 @@ export type DeclineAssistantRequestResponse = AssistantRequest;
 import type {
   AbilityRequest as GeneratedAbilityRequest,
   AbilityRequestList as GeneratedAbilityRequestList,
+  AbilityRequestOrgList as GeneratedAbilityRequestOrgList,
   ContentEditingState as GeneratedContentEditingState,
 } from "./generated/types.gen";
 
@@ -1082,6 +1085,11 @@ export type AbilityRequestList = Omit<GeneratedAbilityRequestList, "requests"> &
   requests: AbilityRequest[];
 };
 
+export type AbilityRequestOrgList = Omit<GeneratedAbilityRequestOrgList, "requests"> & {
+  requests: AbilityRequest[];
+};
+
+export type ListAbilityRequestsResponse = AbilityRequestOrgList;
 export type ListSiteAbilityRequestsResponse = AbilityRequestList;
 export type ApproveAbilityRequestResponse = AbilityRequest;
 export type DeclineAbilityRequestResponse = AbilityRequest;

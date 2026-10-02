@@ -492,11 +492,14 @@ func (s *Service) runSiteAbilityWrite(ctx context.Context, auth AuthorizedReques
 					meta: map[string]any{"code": refusal.Code},
 				}
 			}
+			details := map[string]any{"code": refusal.Code, "retryable": refusal.Retryable}
+			if hint := precheckRefusalHint(refusal.Code); hint != "" {
+				details["hint"] = hint
+			}
 			return "", &toolRefusal{
 				reason: reasonAbilityPrecheckRefused,
-				err: domain.Validation(ErrCodeInvalidToolArguments, msgAbilityAgentRefused).
-					WithDetails(map[string]any{"code": refusal.Code, "retryable": refusal.Retryable}),
-				meta: map[string]any{"code": refusal.Code},
+				err:    domain.Validation(ErrCodeInvalidToolArguments, msgAbilityAgentRefused).WithDetails(details),
+				meta:   map[string]any{"code": refusal.Code},
 			}
 		}
 		return "", refuse(reasonSiteUnreachable, domain.Unavailable(ErrCodeSiteUnreachable,
@@ -521,6 +524,36 @@ func (s *Service) runSiteAbilityWrite(ctx context.Context, auth AuthorizedReques
 		return "", fmt.Errorf("encode ability request result: %w", err)
 	}
 	return string(b), nil
+}
+
+// Fixed hints for a precheck refused over its input (GH #823). The site's
+// own detail text is untrusted and never reaches the AI; these are ours, and
+// they describe the rules the page-create builder enforces on every text
+// value.
+const (
+	hintCreateContentInvalid = "Write the title and every outline text as plain text. " +
+		"Use parentheses instead of square brackets (only a bracketed number such as [1] is allowed). " +
+		"No HTML, shortcodes, comments or template syntax: none of < > {{ }} {% %} or backticks. " +
+		"No line breaks, control characters or invisible formatting characters; put each paragraph in its own outline node. " +
+		"No empty text. A title is at most 200 characters, each text at most 5000, the whole page at most 60000."
+	hintBadInput = "The input does not match the ability's schema. Call site_ability_describe and send only the fields it lists, " +
+		"with the types it gives."
+	hintSanitiserChanged = "This site would alter the content when saving it. Remove anything that looks like markup, " +
+		"shortcodes, entities or special characters, and write plain sentences."
+)
+
+// precheckRefusalHint maps an input-related refusal code to a fixed hint,
+// or "" for a code that is not about the input.
+func precheckRefusalHint(code string) string {
+	switch code {
+	case "create_content_invalid":
+		return hintCreateContentInvalid
+	case "bad_input":
+		return hintBadInput
+	case "sanitiser_changed_new_content":
+		return hintSanitiserChanged
+	}
+	return ""
 }
 
 // abilityRequestFacts are the stored facts a request's digest covers.

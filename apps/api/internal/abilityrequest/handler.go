@@ -33,6 +33,9 @@ func NewHandler(svc *Service) *Handler { return &Handler{svc: svc} }
 // re-checks the row's own operator_permission (W1). Decisions take JSON only
 // (the CSRF guard for a cookie-authenticated change).
 func (h *Handler) Register(r *gin.RouterGroup) {
+	// The organisation-wide queue (GH #828). Row security narrows a site
+	// collaborator to their own sites.
+	r.GET("/ai/ability-requests", authz.RequirePermission(authz.PermSiteContentEdit), h.listForOrg)
 	g := r.Group("/sites/:siteId", authz.RequireSiteAccess("siteId"))
 	g.GET("/ai/ability-requests", authz.RequirePermission(authz.PermSiteContentEdit), h.listForSite)
 	g.POST("/ai/ability-requests/:requestId/approve",
@@ -68,7 +71,7 @@ func (h *Handler) undo(c *gin.Context) {
 		httpx.Error(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, toDTO(row, true))
+	c.JSON(http.StatusOK, h.rowDTO(c, p, row))
 }
 
 // RequestDTO is one ability request on the wire. site_label, site_host,
@@ -102,6 +105,14 @@ type RequestDTO struct {
 	Trashed            *bool      `json:"trashed"`
 	UndoState          *string    `json:"undo_state"`
 	UndoAvailableUntil *time.Time `json:"undo_available_until"`
+	// UndoOffered is whether POST .../undo would start an undo now: a done
+	// row's undo inside its window, or the recovery undo of a draft a failed
+	// or given-up write left on the site (GH #826).
+	UndoOffered bool `json:"undo_offered"`
+	// ResolveGaveUp is true once WPMgr stopped checking the site for the
+	// outcome of a write whose reply was lost (GH #825): the result is final
+	// and the person should look at the site's drafts.
+	ResolveGaveUp bool `json:"resolve_gave_up"`
 }
 
 // ListResponse is a page of the queue.
@@ -109,6 +120,14 @@ type ListResponse struct {
 	Requests []RequestDTO `json:"requests"`
 	Limit    int32        `json:"limit"`
 	Offset   int32        `json:"offset"`
+}
+
+// OrgListResponse is a page of the organisation-wide queue with the badge.
+type OrgListResponse struct {
+	Requests     []RequestDTO `json:"requests"`
+	PendingCount int64        `json:"pending_count"`
+	Limit        int32        `json:"limit"`
+	Offset       int32        `json:"offset"`
 }
 
 // ApproveBody is the approve request body.
@@ -124,7 +143,7 @@ func ts(t pgtype.Timestamptz) *time.Time {
 	return &v
 }
 
-func toDTO(r sqlc.AssistantAbilityRequest, withDigest bool) RequestDTO {
+func toDTO(r sqlc.AssistantAbilityRequest, withDigest bool, agentVersion string) RequestDTO {
 	out := RequestDTO{
 		ID: r.ID, SiteID: r.SiteID, AbilityName: r.AbilityName, InputJSON: r.InputJson,
 		TitleExcerpt: r.TitleExcerpt, Editor: r.Editor, PostType: r.PostType,
@@ -135,12 +154,21 @@ func toDTO(r sqlc.AssistantAbilityRequest, withDigest bool) RequestDTO {
 		Outcome: r.Outcome, OutcomeCode: r.OutcomeCode, NotSentReason: r.NotSentReason,
 		CreatedPostID: r.CreatedPostID, Trashed: r.Trashed, UndoState: r.UndoState,
 		UndoAvailableUntil: ts(r.UndoAvailableUntil),
+		UndoOffered:        UndoOffered(r, agentVersion, time.Now()),
+		ResolveGaveUp:      resolveGaveUp(r),
 	}
 	if withDigest {
 		d := r.PresentedDigest
 		out.PresentedDigest = &d
 	}
 	return out
+}
+
+// rowDTO is one row's wire form after a mutation, with its site's agent
+// version when the row could offer a recovery undo.
+func (h *Handler) rowDTO(c *gin.Context, p domain.Principal, row sqlc.AssistantAbilityRequest) RequestDTO {
+	rows := []sqlc.AssistantAbilityRequest{row}
+	return toDTO(row, true, h.svc.AgentVersions(c.Request.Context(), p, rows)[row.SiteID])
 }
 
 func principal(c *gin.Context) (domain.Principal, bool) {
@@ -183,8 +211,50 @@ func (h *Handler) listForSite(c *gin.Context) {
 	}
 	out := ListResponse{Requests: make([]RequestDTO, 0, len(rows)), Limit: limit, Offset: offset}
 	withDigest := p.Type == domain.PrincipalUser
+	versions := h.svc.AgentVersions(c.Request.Context(), p, rows)
 	for _, r := range rows {
-		out.Requests = append(out.Requests, toDTO(r, withDigest))
+		out.Requests = append(out.Requests, toDTO(r, withDigest, versions[r.SiteID]))
+	}
+	c.JSON(http.StatusOK, out)
+}
+
+// resolveGaveUp: the ledger window closed with no answer. The worker's
+// give-up records outcome 'outcome_unknown' on a row still in state
+// 'outcome_unknown'; while resolving, outcome is NULL.
+func resolveGaveUp(r sqlc.AssistantAbilityRequest) bool {
+	return r.State == "outcome_unknown" && r.Outcome != nil && *r.Outcome == OutcomeUnknown
+}
+
+func (h *Handler) listForOrg(c *gin.Context) {
+	p, ok := principal(c)
+	if !ok {
+		return
+	}
+	limit, offset := int32(50), int32(0)
+	if n, err := strconv.Atoi(c.Query("limit")); err == nil && n > 0 && n <= 100 {
+		limit = int32(n)
+	}
+	if n, err := strconv.Atoi(c.Query("offset")); err == nil && n >= 0 && n <= 1_000_000 {
+		offset = int32(n)
+	}
+	var state *string
+	if v := c.Query("state"); v != "" {
+		if _, known := requestStates[v]; !known {
+			httpx.Error(c, domain.Validation("invalid_state", "state is not a known request state"))
+			return
+		}
+		state = &v
+	}
+	q, err := h.svc.ListOrg(c.Request.Context(), p, state, limit, offset)
+	if err != nil {
+		httpx.Error(c, err)
+		return
+	}
+	out := OrgListResponse{Requests: make([]RequestDTO, 0, len(q.Requests)), PendingCount: q.PendingCount, Limit: limit, Offset: offset}
+	withDigest := p.Type == domain.PrincipalUser
+	versions := h.svc.AgentVersions(c.Request.Context(), p, q.Requests)
+	for _, r := range q.Requests {
+		out.Requests = append(out.Requests, toDTO(r, withDigest, versions[r.SiteID]))
 	}
 	c.JSON(http.StatusOK, out)
 }
@@ -216,7 +286,7 @@ func (h *Handler) approve(c *gin.Context) {
 		httpx.Error(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, toDTO(row, true))
+	c.JSON(http.StatusOK, h.rowDTO(c, p, row))
 }
 
 func (h *Handler) decline(c *gin.Context) {
@@ -241,5 +311,5 @@ func (h *Handler) decline(c *gin.Context) {
 		httpx.Error(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, toDTO(row, true))
+	c.JSON(http.StatusOK, h.rowDTO(c, p, row))
 }

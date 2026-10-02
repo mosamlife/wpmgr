@@ -652,11 +652,20 @@ func createdOutcome(postID int64, now time.Time) writeOutcome {
 
 func refusedOutcome(code, detail string, postID int64, trashed bool) writeOutcome {
 	oc := writeOutcome{outcome: OutcomeRefused, code: strp(code)}
-	if code == "verify_mismatch" {
+	switch code {
+	case "verify_mismatch":
 		oc.outcome = OutcomeVerifyMismatch
 		oc.trashed = &trashed
 		if postID > 0 {
 			oc.createdPostID = &postID
+		}
+	case "snapshot_failed":
+		// After the insert, the site names the draft it created and whether
+		// it trashed it: recorded so the draft is visible, and recoverable
+		// when it was not trashed. Before the insert nothing was created.
+		if postID > 0 {
+			oc.createdPostID = &postID
+			oc.trashed = &trashed
 		}
 	}
 	if d := humantext.CapBytes(humantext.Clean(detail), maxSiteReportedText); d != "" {

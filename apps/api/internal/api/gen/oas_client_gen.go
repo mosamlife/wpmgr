@@ -2170,6 +2170,15 @@ type Invoker interface {
 	//
 	// POST /api/v1/sites/{siteId}/media/clean/isolate
 	IsolateUnusedMedia(ctx context.Context, request *MediaCleanIsolateRequest, params IsolateUnusedMediaParams) (*MediaCleanIsolateResult, error)
+	// ListAbilityRequests invokes listAbilityRequests operation.
+	//
+	// This organisation's AI site-change requests the caller can see, newest first, optionally narrowed to
+	// one `state`, with the number still waiting for a decision (the badge). A site collaborator sees and
+	// counts only requests on their own sites. Requires `site.content.edit`. `presented_digest` is
+	// returned only to a signed-in person.
+	//
+	// GET /api/v1/ai/ability-requests
+	ListAbilityRequests(ctx context.Context, params ListAbilityRequestsParams) (ListAbilityRequestsRes, error)
 	// ListAdminAbilityCatalogue invokes listAdminAbilityCatalogue operation.
 	//
 	// The reviewed-ability catalogue (superadmin).
@@ -3748,10 +3757,14 @@ type Invoker interface {
 	UnblockSiteIP(ctx context.Context, request *UnblockIPRequest, params UnblockSiteIPParams) (UnblockSiteIPRes, error)
 	// UndoAbilityRequest invokes undoAbilityRequest operation.
 	//
-	// Undoes a done request inside its undo window, once. For a created page this moves the draft to the
+	// Undoes a done request inside its undo window, or removes the draft a failed or given-up page
+	// creation left on the site. Offered exactly when the request's `undo_offered` is true; the server
+	// decides which undo runs from the request's state. For a created page this moves the draft to the
 	// trash, only while it is unchanged and still a draft. The site takes the page from its own record of
 	// this request; nothing in the call names it. `undo_state` in the answer is the result: undone,
-	// refused_conflict, refused_published or failed.
+	// refused_conflict, refused_published or failed. When the site did not settle the undo (unreachable,
+	// or busy with this request) the answer is 503 `ability_request_undo_retry` and the undo is offered
+	// again.
 	//
 	// POST /api/v1/sites/{siteId}/ai/ability-requests/{requestId}/undo
 	UndoAbilityRequest(ctx context.Context, request *UndoAbilityRequestReq, params UndoAbilityRequestParams) (UndoAbilityRequestRes, error)
@@ -27292,6 +27305,144 @@ func (c *Client) sendIsolateUnusedMedia(ctx context.Context, request *MediaClean
 	return result, nil
 }
 
+// ListAbilityRequests invokes listAbilityRequests operation.
+//
+// This organisation's AI site-change requests the caller can see, newest first, optionally narrowed to
+// one `state`, with the number still waiting for a decision (the badge). A site collaborator sees and
+// counts only requests on their own sites. Requires `site.content.edit`. `presented_digest` is
+// returned only to a signed-in person.
+//
+// GET /api/v1/ai/ability-requests
+func (c *Client) ListAbilityRequests(ctx context.Context, params ListAbilityRequestsParams) (ListAbilityRequestsRes, error) {
+	res, err := c.sendListAbilityRequests(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendListAbilityRequests(ctx context.Context, params ListAbilityRequestsParams) (res ListAbilityRequestsRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("listAbilityRequests"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/ai/ability-requests"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, ListAbilityRequestsOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/api/v1/ai/ability-requests"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeQueryParams"
+	q := uri.NewQueryEncoder()
+	{
+		// Encode "state" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "state",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.State.Get(); ok {
+				return e.EncodeValue(conv.StringToString(string(val)))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	{
+		// Encode "limit" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "limit",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Limit.Get(); ok {
+				return e.EncodeValue(conv.Int32ToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	{
+		// Encode "offset" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "offset",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Offset.Get(); ok {
+				return e.EncodeValue(conv.Int32ToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	u.RawQuery = q.Values().Encode()
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeListAbilityRequestsResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // ListAdminAbilityCatalogue invokes listAdminAbilityCatalogue operation.
 //
 // The reviewed-ability catalogue (superadmin).
@@ -46543,10 +46694,14 @@ func (c *Client) sendUnblockSiteIP(ctx context.Context, request *UnblockIPReques
 
 // UndoAbilityRequest invokes undoAbilityRequest operation.
 //
-// Undoes a done request inside its undo window, once. For a created page this moves the draft to the
+// Undoes a done request inside its undo window, or removes the draft a failed or given-up page
+// creation left on the site. Offered exactly when the request's `undo_offered` is true; the server
+// decides which undo runs from the request's state. For a created page this moves the draft to the
 // trash, only while it is unchanged and still a draft. The site takes the page from its own record of
 // this request; nothing in the call names it. `undo_state` in the answer is the result: undone,
-// refused_conflict, refused_published or failed.
+// refused_conflict, refused_published or failed. When the site did not settle the undo (unreachable,
+// or busy with this request) the answer is 503 `ability_request_undo_retry` and the undo is offered
+// again.
 //
 // POST /api/v1/sites/{siteId}/ai/ability-requests/{requestId}/undo
 func (c *Client) UndoAbilityRequest(ctx context.Context, request *UndoAbilityRequestReq, params UndoAbilityRequestParams) (UndoAbilityRequestRes, error) {

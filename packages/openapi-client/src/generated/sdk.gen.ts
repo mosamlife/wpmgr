@@ -642,6 +642,9 @@ import type {
   InviteMemberResponses,
   IsolateUnusedMediaData,
   IsolateUnusedMediaResponses,
+  ListAbilityRequestsData,
+  ListAbilityRequestsErrors,
+  ListAbilityRequestsResponses,
   ListAdminAbilityCatalogueData,
   ListAdminAbilityCatalogueErrors,
   ListAdminAbilityCatalogueResponses,
@@ -6736,6 +6739,26 @@ export const declineAssistantRequest = <ThrowOnError extends boolean = false>(
   });
 
 /**
+ * List AI site-change requests across the organisation
+ *
+ * This organisation's AI site-change requests the caller can see,
+ * newest first, optionally narrowed to one `state`, with the number
+ * still waiting for a decision (the badge). A site collaborator sees
+ * and counts only requests on their own sites. Requires
+ * `site.content.edit`. `presented_digest` is returned only to a
+ * signed-in person.
+ *
+ */
+export const listAbilityRequests = <ThrowOnError extends boolean = false>(
+  options?: Options<ListAbilityRequestsData, ThrowOnError>,
+) =>
+  (options?.client ?? client).get<
+    ListAbilityRequestsResponses,
+    ListAbilityRequestsErrors,
+    ThrowOnError
+  >({ url: "/api/v1/ai/ability-requests", ...options });
+
+/**
  * List AI site-change requests for one site
  *
  * Requests an AI connection made through `site_ability_run` for a
@@ -6805,14 +6828,19 @@ export const declineAbilityRequest = <ThrowOnError extends boolean = false>(
   });
 
 /**
- * Undo one completed AI site change
+ * Undo one AI site change
  *
- * Undoes a done request inside its undo window, once. For a created
- * page this moves the draft to the trash, only while it is unchanged
- * and still a draft. The site takes the page from its own record of
- * this request; nothing in the call names it. `undo_state` in the
- * answer is the result: undone, refused_conflict, refused_published or
- * failed.
+ * Undoes a done request inside its undo window, or removes the draft a
+ * failed or given-up page creation left on the site. Offered exactly
+ * when the request's `undo_offered` is true; the server decides which
+ * undo runs from the request's state. For a created page this moves
+ * the draft to the trash, only while it is unchanged and still a
+ * draft. The site takes the page from its own record of this request;
+ * nothing in the call names it. `undo_state` in the answer is the
+ * result: undone, refused_conflict, refused_published or failed. When
+ * the site did not settle the undo (unreachable, or busy with this
+ * request) the answer is 503 `ability_request_undo_retry` and the undo
+ * is offered again.
  *
  */
 export const undoAbilityRequest = <ThrowOnError extends boolean = false>(
