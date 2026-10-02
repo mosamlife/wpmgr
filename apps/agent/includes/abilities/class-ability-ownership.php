@@ -354,7 +354,8 @@ final class AbilityOwnership
                 $ref = new \ReflectionFunction($cb);
             } elseif (is_string($cb) && $cb !== '') {
                 if (strpos($cb, '::') !== false) {
-                    $ref = new \ReflectionMethod($cb);
+                    [$cls, $method] = explode('::', $cb, 2);
+                    $ref            = new \ReflectionMethod($cls, $method);
                 } elseif (function_exists($cb)) {
                     $ref = new \ReflectionFunction($cb);
                 } else {

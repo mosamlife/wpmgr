@@ -558,7 +558,7 @@ final class AbilityRunCommandTest extends TestCase
         $r = $this->callP($this->p('read', OwnAbilities::NAME_CONTENT, [], '{"post_id":9}'));
 
         $this->assertTrue($r['ok']);
-        $this->assertSame(7, $seen, 'guards and recorders are installed while the ability runs');
+        $this->assertSame(12, $seen, 'a recorder and a guard on each of the six filters are installed while the ability runs');
         $this->assertSame([], $this->filters, 'and every one is removed afterwards');
 
         $GLOBALS['wp_version'] = '7.0.9';
@@ -578,11 +578,13 @@ final class AbilityRunCommandTest extends TestCase
         $reverted = ($rows[1][1])(['a' => 2]);
         $this->assertSame(['a' => 1], $reverted);
 
-        $pre = array_values(array_filter($this->filters, static fn ($r) => $r[0] === AbilityGuards::FILTER_PRE))[0][1];
-        $this->assertInstanceOf(\WP_Error::class, $pre('fake', 'acme/outer', []));
-        $this->assertNull($pre(null, 'acme/outer', []), 'the outer call itself passes');
-        $this->assertInstanceOf(\WP_Error::class, $pre(null, 'acme/outer', []), 're-entry is refused');
-        $this->assertInstanceOf(\WP_Error::class, $pre(null, 'acme/other', []), 'a nested ability is refused');
+        $outer = new \WP_Filter_Sentinel();
+        $this->assertSame($outer, $this->applyFilters(AbilityGuards::FILTER_PRE, $outer, 'acme/outer', []), 'the outer call itself passes');
+        $this->assertInstanceOf(\WP_Error::class, $this->applyFilters(AbilityGuards::FILTER_PRE, new \WP_Filter_Sentinel(), 'acme/outer', []), 're-entry is refused');
+        $this->assertInstanceOf(\WP_Error::class, $this->applyFilters(AbilityGuards::FILTER_PRE, new \WP_Filter_Sentinel(), 'acme/other', []), 'a nested ability is refused');
+
+        $this->filters[] = [AbilityGuards::FILTER_PRE, static fn () => 'fake', 10];
+        $this->assertInstanceOf(\WP_Error::class, $this->applyFilters(AbilityGuards::FILTER_PRE, new \WP_Filter_Sentinel(), 'acme/outer', []));
 
         $v = $g->violations();
         $this->assertContains('input', $v);
@@ -591,7 +593,134 @@ final class AbilityRunCommandTest extends TestCase
         $this->assertContains('nested_ability_refused', $v);
 
         $g->disarm();
-        $this->assertSame([], $this->filters);
+        $this->assertSame([], array_values(array_filter($this->filters, static fn ($r) => $r[2] !== 10)), 'every guard hook is removed');
+    }
+
+    public function test_a_real_sentinel_passes_through_the_short_circuit_guard(): void
+    {
+        $GLOBALS['wp_version'] = '7.1.0';
+        $g = new AbilityGuards();
+        $g->arm('acme/outer');
+
+        // A third-party filter that returns $pre unchanged is pass-through.
+        $this->filters[] = [AbilityGuards::FILTER_PRE, static fn ($pre) => $pre, 10];
+        $sentinel = new \WP_Filter_Sentinel();
+        $out      = $this->applyFilters(AbilityGuards::FILTER_PRE, $sentinel, 'acme/outer', []);
+
+        $this->assertSame($sentinel, $out, 'core compares the returned value to its own sentinel by identity');
+        $this->assertSame([], $g->violations());
+        $g->disarm();
+    }
+
+    /**
+     * @return array<string,array{0:mixed}>
+     */
+    public static function shortCircuitValues(): array
+    {
+        return [
+            'null'               => [null],
+            'false'              => [false],
+            'a fresh sentinel'   => ['fresh'],
+            'a cached response'  => [['ok' => true]],
+        ];
+    }
+
+    /**
+     * @dataProvider shortCircuitValues
+     *
+     * @param mixed $replacement Value a third-party filter returns.
+     */
+    public function test_replacing_the_sentinel_with_anything_is_a_short_circuit(mixed $replacement): void
+    {
+        $GLOBALS['wp_version'] = '7.1.0';
+        $g = new AbilityGuards();
+        $g->arm('acme/outer');
+        $replacement     = $replacement === 'fresh' ? new \WP_Filter_Sentinel() : $replacement;
+        $this->filters[] = [AbilityGuards::FILTER_PRE, static fn () => $replacement, 10];
+
+        $out = $this->applyFilters(AbilityGuards::FILTER_PRE, new \WP_Filter_Sentinel(), 'acme/outer', []);
+
+        $this->assertInstanceOf(\WP_Error::class, $out);
+        $this->assertSame(['short_circuit'], $g->violations());
+        $g->disarm();
+    }
+
+    /**
+     * @return array<string,array{0:string,1:string}>
+     */
+    public static function validateFilters(): array
+    {
+        return [
+            'input'  => [AbilityGuards::FILTER_VALIDATE_INPUT, 'validate_input'],
+            'output' => [AbilityGuards::FILTER_VALIDATE_OUTPUT, 'validate_output'],
+        ];
+    }
+
+    /**
+     * @dataProvider validateFilters
+     */
+    public function test_a_validate_filter_flipping_wp_error_to_true_is_a_violation(string $filter, string $label): void
+    {
+        $GLOBALS['wp_version'] = '7.1.0';
+        $g = new AbilityGuards();
+        $g->arm('acme/outer');
+        $this->filters[] = [$filter, static fn () => true, 10];
+        $error           = new \WP_Error('ability_invalid_' . substr($label, 9), 'bad');
+
+        $out = $this->applyFilters($filter, $error, ['x' => 1], 'acme/outer');
+
+        $this->assertSame($error, $out, 'the schema failure is restored');
+        $this->assertSame([$label], $g->violations());
+        $g->disarm();
+    }
+
+    /**
+     * @dataProvider validateFilters
+     */
+    public function test_an_untouched_validate_result_is_not_a_violation(string $filter, string $label): void
+    {
+        $GLOBALS['wp_version'] = '7.1.0';
+        $g = new AbilityGuards();
+        $g->arm('acme/outer');
+        $this->filters[] = [$filter, static fn ($v) => $v, 10];
+
+        $this->assertTrue($this->applyFilters($filter, true, ['x' => 1], 'acme/outer'));
+        $error = new \WP_Error('e', 'bad');
+        $this->assertSame($error, $this->applyFilters($filter, $error, ['x' => 1], 'acme/outer'));
+        $this->assertSame([], $g->violations(), $label);
+        $g->disarm();
+    }
+
+    public function test_a_vendor_ability_stays_unrunnable_with_a_resolved_owner(): void
+    {
+        $r = $this->callP($this->p('read', 'bricks/get-page-elements', [], '{}', [
+            'source'        => 'vendor',
+            'status'        => 'admitted',
+            'owner_kind'    => 'plugin',
+            'owner_dir'     => 'bricks',
+            'owner_version' => '2.4.1',
+        ]));
+
+        $this->assertFalse($r['ok']);
+        $this->assertSame('ability_not_runnable_yet', $r['code']);
+    }
+
+    /**
+     * Run the captured filters for $name in priority order, the way
+     * apply_filters() does, threading the first argument through.
+     *
+     * @param mixed ...$args Value, then the extra arguments.
+     * @return mixed
+     */
+    private function applyFilters(string $name, mixed ...$args): mixed
+    {
+        $rows = array_values(array_filter($this->filters, static fn ($r) => $r[0] === $name));
+        usort($rows, static fn ($a, $b) => $a[2] <=> $b[2]);
+        foreach ($rows as $row) {
+            $args[0] = ($row[1])(...$args);
+        }
+
+        return $args[0];
     }
 
     // -------------------------------------------------------------------------
