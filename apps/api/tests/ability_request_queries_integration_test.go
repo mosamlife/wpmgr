@@ -631,3 +631,65 @@ func TestAbilityRequestM158UndoCheckAsAppRole(t *testing.T) {
 		t.Fatalf("m158 CHECK proof: %v", err)
 	}
 }
+
+func arqFinish(t *testing.T, pool *db.Pool, tenant, id uuid.UUID, result string, restored *bool) {
+	t.Helper()
+	if err := pool.RunTenantTx(context.Background(), acprOrgPrincipal(tenant), func(tx pgx.Tx) error {
+		mcpAssertAndReportRole(t, tx, "RunTenantTx (finish undo with restored)")
+		n, err := sqlc.New(tx).FinishAbilityRequestUndo(context.Background(), sqlc.FinishAbilityRequestUndoParams{
+			UndoResult: result, Restored: restored, TenantID: tenant, ID: id,
+		})
+		if err == nil && n != 1 {
+			t.Fatalf("finish undo %s matched %d rows, want 1", id, n)
+		}
+		return err
+	}); err != nil {
+		t.Fatalf("finish undo %s: %v", id, err)
+	}
+}
+
+func arqRestored(t *testing.T, pool *db.Pool, tenant, id uuid.UUID) *bool {
+	t.Helper()
+	var restored *bool
+	if err := pool.InTenantTx(context.Background(), tenant, func(tx pgx.Tx) error {
+		return tx.QueryRow(context.Background(),
+			`SELECT restored FROM assistant_ability_requests WHERE id = $1`, id).Scan(&restored)
+	}); err != nil {
+		t.Fatalf("read restored of %s: %v", id, err)
+	}
+	return restored
+}
+
+// TestAbilityRequestUndoFinishRecordsRestoredAsAppRole proves, as wpmgr_app
+// under m156's column grant, that a partial undo records restored=false and
+// that a finish with no report (a failure or refusal) keeps the stored value,
+// NULL or not.
+//
+// Mutation: dropping the restored assignment from FinishAbilityRequestUndo
+// fires "PARTIAL UNDO NOT RECORDED"; replacing the COALESCE with a plain
+// assignment fires "FAILURE CLOBBERED RESTORED".
+func TestAbilityRequestUndoFinishRecordsRestoredAsAppRole(t *testing.T) {
+	pool := startPostgres(t)
+	tenant := seedTenant(t, pool, "arq-rst-"+uuid.NewString()[:8])
+	site := seedSite(t, pool, tenant, "")
+	no, yes := false, true
+
+	partial := arqDoneInUndo(t, pool, tenant, site, "rst-1")
+	arqFinish(t, pool, tenant, partial.ID, "undone", &no)
+	if got := arqRestored(t, pool, tenant, partial.ID); got == nil || *got {
+		t.Fatalf("PARTIAL UNDO NOT RECORDED: restored=%v, want false", got)
+	}
+
+	kept := arqDoneInUndo(t, pool, tenant, site, "rst-2")
+	arqExec(t, pool, tenant, `UPDATE assistant_ability_requests SET restored = $2 WHERE id = $1`, kept.ID, yes)
+	arqFinish(t, pool, tenant, kept.ID, "failed", nil)
+	if got := arqRestored(t, pool, tenant, kept.ID); got == nil || !*got {
+		t.Fatalf("FAILURE CLOBBERED RESTORED: restored=%v, want the stored true", got)
+	}
+
+	null := arqDoneInUndo(t, pool, tenant, site, "rst-3")
+	arqFinish(t, pool, tenant, null.ID, "refused_conflict", nil)
+	if got := arqRestored(t, pool, tenant, null.ID); got != nil {
+		t.Fatalf("FAILURE CLOBBERED RESTORED: restored=%v, want NULL kept", *got)
+	}
+}
