@@ -383,6 +383,7 @@ func buildEngine() (engine *gin.Engine, omittedDepsFields []string, err error) {
 		MCPDiscoveryH:          mcpDiscoveryH,
 		AssistantRequestH:      assistantReqH,
 		AbilityRequestH:        abilityReqH,
+		AbilityTenantH:         abilities.NewTenantHandler(abilities.NewTenantRepo(pool, auditRec), admingate.NewPoolStore(pool)),
 		BillingSuspensionGate:  billingSvc.SuspensionGate(),
 		ServiceName:            "wpmgr-dump-routes",
 		Version:                "dump-routes",

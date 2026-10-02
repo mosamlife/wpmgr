@@ -1860,6 +1860,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	abilityReqReconcileWorker := abilityrequest.NewReconcileWorker(abilityReqSvc)
 	abilityReqUndoReconcileWorker := abilityrequest.NewUndoReconcileWorker(abilityReqSvc)
 	abilityReqH := abilityrequest.NewHandler(abilityReqSvc)
+	abilityTenantH := abilities.NewTenantHandler(abilities.NewTenantRepo(pool, auditRec), admingate.NewPoolStore(pool))
 	// Stamp WPMgr's own seeded catalogue entries (NULL hash) so requests
 	// made against them can be dispatched (W1 compares the stamped hash).
 	if n, err := abilities.StampOwnEntryHashes(ctx, pool, logger); err != nil {
@@ -3069,6 +3070,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		MCPOAuthH:         mcpOAuthH,
 		AssistantRequestH: assistantReqH,
 		AbilityRequestH:   abilityReqH,
+		AbilityTenantH:    abilityTenantH,
 		MCPDiscoveryH:     mcpDiscoveryH,
 		FilesH:            filesH,
 		UpdateH:           updateH,
