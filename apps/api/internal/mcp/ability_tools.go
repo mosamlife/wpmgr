@@ -1171,6 +1171,15 @@ type runResult struct {
 	AsOf      string          `json:"as_of"`
 	Output    json.RawMessage `json:"output"`
 	Truncated bool            `json:"truncated"`
+	// Owner is a vendor or core read's resolved owner. Dir and version are
+	// the site's own strings, fenced.
+	Owner *runOwner `json:"owner,omitempty"`
+}
+
+type runOwner struct {
+	Kind    string `json:"kind"`
+	Dir     string `json:"dir"`
+	Version string `json:"version"`
 }
 
 func notRunnableRefusal(code string) *toolRefusal {
@@ -1340,6 +1349,7 @@ func (s *Service) runSiteAbility(ctx context.Context, auth AuthorizedRequest, ra
 			msgSiteUnreachable).WithDetails(map[string]any{"retryable": true}))
 	}
 	output := resp.Output
+	var owner *runOwner
 	if vendor {
 		// The vendor reply is decoded strictly; anything off-contract is
 		// treated as an unreachable site and nothing it said is returned.
@@ -1349,10 +1359,11 @@ func (s *Service) runSiteAbility(ctx context.Context, auth AuthorizedRequest, ra
 				msgSiteUnreachable).WithDetails(map[string]any{"retryable": false}))
 		}
 		output = vr.Output
+		owner = &runOwner{Kind: vr.Owner.Kind, Dir: fenceSiteText(vr.Owner.Dir), Version: fenceSiteText(vr.Owner.Version)}
 	}
 	out, truncated := fenceAbilityOutput(name, c.entry, output, abilityRunDefaultOutputBytes)
 	b, err := json.Marshal(runResult{
-		Name: name, AsOf: s.now().UTC().Format(time.RFC3339), Output: out, Truncated: truncated,
+		Name: name, AsOf: s.now().UTC().Format(time.RFC3339), Output: out, Truncated: truncated, Owner: owner,
 	})
 	if err != nil {
 		return "", fmt.Errorf("encode run result: %w", err)
