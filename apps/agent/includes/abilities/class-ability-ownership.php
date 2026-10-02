@@ -199,7 +199,7 @@ final class AbilityOwnership
                 continue;
             }
             $real = @realpath($path);
-            if (!is_string($real) || $real === '' || $real === '/') {
+            if (!is_string($real) || $real === '/') {
                 continue;
             }
             $out[$key] = rtrim(str_replace('\\', '/', $real), '/') . '/';
@@ -385,7 +385,7 @@ final class AbilityOwnership
         }
         $real = @realpath($file);
 
-        return is_string($real) && $real !== '' ? str_replace('\\', '/', $real) : null;
+        return is_string($real) ? str_replace('\\', '/', $real) : null;
     }
 
     /**
@@ -446,14 +446,14 @@ final class AbilityOwnership
         $out     = [];
         $entries = @scandir($root);
         foreach (is_array($entries) ? $entries : [] as $entry) {
-            if (!is_string($entry) || $entry === '' || $entry === '.' || $entry === '..') {
+            if ($entry === '' || $entry === '.' || $entry === '..') {
                 continue;
             }
             if (!@is_link($root . $entry)) {
                 continue;
             }
             $target = @realpath($root . $entry);
-            if (!is_string($target) || $target === '' || $target === '/') {
+            if (!is_string($target) || $target === '/') {
                 continue;
             }
             $out[$entry] = rtrim(str_replace('\\', '/', $target), '/');
