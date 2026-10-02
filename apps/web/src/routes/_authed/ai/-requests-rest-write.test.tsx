@@ -340,15 +340,12 @@ describe("rest-write structured card", () => {
   });
 
   it("an undone row says it was put back", async () => {
-    // The server does not set restored on undo today, so restored is absent.
     renderPage([restRow({ state: "done", outcome: "applied", undo_state: "undone", decided_at: "2026-10-01T09:58:00Z" })]);
     const card = await screen.findByRole("article");
     expect(card).toHaveTextContent("Put back the way it was.");
   });
 
-  // Pending a backend change: the server never sets restored on an undone row
-  // today, so this shape cannot occur yet. The card branch is kept for when it does.
-  it.skip("an undone row with restored=false says other changes remain", async () => {
+  it("an undone row with restored=false says other changes remain", async () => {
     renderPage([
       restRow({ state: "done", outcome: "applied", undo_state: "undone", restored: false, decided_at: "2026-10-01T09:58:00Z" }),
     ]);
