@@ -32,6 +32,9 @@ if (!defined('ABSPATH')) {
  * re-adding the option, is put back to the value read before the call and
  * refuses the call.
  *
+ * A call that leaves another blog active is switched back to the blog it
+ * started on before the comparison, and refuses.
+ *
  * Any record means the read was not a read: the caller withholds the output
  * and refuses the call. Writes other than the blocked ones are not undone.
  *
@@ -89,6 +92,12 @@ final class AbilitySideEffects
      */
     private array $snapshot = [];
 
+    /** Blog active when armed; 0 when unknown. */
+    private int $armedBlog = 0;
+
+    /** Depth of the blog switch stack when armed. */
+    private int $armedDepth = 0;
+
     /** @var array<string,true> Raw hosts. */
     private array $hosts = [];
 
@@ -132,8 +141,10 @@ final class AbilitySideEffects
         $this->terms    = 0;
         $this->hosts    = [];
         $this->blocked  = [];
-        $this->snapshot = $this->readPrivileges();
-        $this->armed    = true;
+        $this->armedBlog  = function_exists('get_current_blog_id') ? (int) get_current_blog_id() : 0;
+        $this->armedDepth = self::switchDepth();
+        $this->snapshot   = $this->readPrivileges();
+        $this->armed      = true;
 
         $option = function ($name = null): void {
             $this->option($name);
@@ -274,9 +285,49 @@ final class AbilitySideEffects
         }
         $this->hooks = [];
         if ($wasArmed) {
+            // Back on the armed blog first: the snapshot is that blog's, and
+            // the rest of the command runs for that blog.
+            $this->returnToArmedBlog();
             $this->restorePrivileges();
         }
         $this->snapshot = [];
+    }
+
+    /**
+     * Undo a blog switch the call left open, and record it: a read that ends
+     * on another blog refuses.
+     *
+     * @return void
+     */
+    private function returnToArmedBlog(): void
+    {
+        if ($this->armedBlog === 0 || !function_exists('get_current_blog_id')) {
+            return;
+        }
+        $depth = self::switchDepth();
+        if ($depth === $this->armedDepth && (int) get_current_blog_id() === $this->armedBlog) {
+            return;
+        }
+        $this->blocked['blog_switched'] = true;
+        // Unwind the switches the call pushed, bounded by how many it pushed.
+        for ($i = $depth - $this->armedDepth; $i > 0 && function_exists('restore_current_blog'); $i--) {
+            restore_current_blog();
+        }
+        if ((int) get_current_blog_id() !== $this->armedBlog && function_exists('switch_to_blog')) {
+            switch_to_blog($this->armedBlog);
+        }
+    }
+
+    /**
+     * Depth of core's blog switch stack.
+     *
+     * @return int
+     */
+    private static function switchDepth(): int
+    {
+        $stack = $GLOBALS['_wp_switched_stack'] ?? null;
+
+        return is_array($stack) ? count($stack) : 0;
     }
 
     /**
