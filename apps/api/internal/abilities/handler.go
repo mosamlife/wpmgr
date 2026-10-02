@@ -40,6 +40,10 @@ func (h *AdminHandler) RegisterAdmin(g *gin.RouterGroup) {
 	g.GET("/abilities/catalogue", h.list)
 	g.POST("/abilities/catalogue", h.create)
 	g.PUT("/abilities/catalogue/:entryId", h.update)
+	if h.routeStore() != nil {
+		g.GET("/abilities/rest-routes", h.listRoutes)
+		g.PUT("/abilities/rest-routes/:routeId", h.updateRoute)
+	}
 }
 
 // catalogueEntryDTO is one entry on the wire.
