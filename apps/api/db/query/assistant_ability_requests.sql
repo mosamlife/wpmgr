@@ -74,7 +74,9 @@ WHERE tenant_id = @tenant_id
 -- ON CONFLICT names the one-pending index's columns and predicate. A conflict
 -- inserts nothing and returns NO ROW (pgx.ErrNoRows): the caller reads the
 -- waiting row with GetPendingAbilityRequestForTarget. state is always
--- 'pending'; target_key is generated and never written.
+-- 'pending'; target_key is generated and never written. m161: route_id,
+-- route_sha256 and card_facts are set together for wpmgr/rest-write and are
+-- NULL for every other ability (the table's CHECKs refuse anything else).
 INSERT INTO assistant_ability_requests (
     tenant_id, site_id, proposed_by_grant_id,
     entry_id, entry_sha256, ability_name, operator_permission,
@@ -82,7 +84,8 @@ INSERT INTO assistant_ability_requests (
     precheck_digest, preview_digest, base_fingerprint,
     site_label, site_host, grant_label, grant_via, setup_client,
     title_excerpt, editor, post_type, effect_copy, snapshot, card_copy_version,
-    digest_nonce, presented_digest, state, expires_at
+    digest_nonce, presented_digest, state, expires_at,
+    route_id, route_sha256, card_facts
 ) VALUES (
     @tenant_id, @site_id, @proposed_by_grant_id,
     @entry_id, @entry_sha256, @ability_name, @operator_permission,
@@ -91,7 +94,8 @@ INSERT INTO assistant_ability_requests (
     @site_label, @site_host, @grant_label, @grant_via, sqlc.narg(setup_client),
     sqlc.narg(title_excerpt), sqlc.narg(editor), sqlc.narg(post_type),
     @effect_copy, @snapshot, @card_copy_version,
-    @digest_nonce, @presented_digest, 'pending', @expires_at
+    @digest_nonce, @presented_digest, 'pending', @expires_at,
+    sqlc.narg(route_id), sqlc.narg(route_sha256), sqlc.narg(card_facts)
 )
 ON CONFLICT (tenant_id, site_id, proposed_by_grant_id, ability_name, target_key)
     WHERE state = 'pending'
@@ -302,7 +306,21 @@ SELECT sqlc.embed(r),
            WHERE c.entry_id = r.entry_id
              AND c.enabled
              AND c.status = 'admitted'
-       )::boolean AS entry_enabled
+       )::boolean AS entry_enabled,
+       -- m161: true for a row that names no route; otherwise the route still
+       -- carries the hash the row was approved against (route_changed) and is
+       -- an enabled write route (route_disabled).
+       (r.route_id IS NULL OR EXISTS (
+           SELECT 1 FROM rest_route_catalogue rr
+           WHERE rr.route_id = r.route_id
+             AND rr.route_sha256 = r.route_sha256
+       ))::boolean AS route_hash_current,
+       (r.route_id IS NULL OR EXISTS (
+           SELECT 1 FROM rest_route_catalogue rr
+           WHERE rr.route_id = r.route_id
+             AND rr.enabled
+             AND rr.class = 'write'
+       ))::boolean AS route_enabled
 FROM assistant_ability_requests r
 WHERE r.tenant_id = @tenant_id
   AND r.id = @id
@@ -312,7 +330,8 @@ WHERE r.tenant_id = @tenant_id
 -- A terminal close before anything is reserved, for every pre-send reason
 -- (grant_inactive, assistant_paused, organisation_deleted,
 -- capability_not_held, site_absent, forbidden_by_context, agent_outdated,
--- dispatch_deadline_passed, entry_changed, entry_disabled). 0 rows: another
+-- dispatch_deadline_passed, entry_changed, entry_disabled, and m161's
+-- route_changed, route_disabled). 0 rows: another
 -- path got there first; write nothing. The approver stays.
 UPDATE assistant_ability_requests
 SET state = 'not_sent', outcome = 'not_sent',
@@ -347,7 +366,8 @@ SELECT EXISTS (
 -- name: ReserveAbilityRequestForDispatch :execrows
 -- The one reservation point. The deadline and the approved entry hash are in
 -- the WHERE clause, so nothing is reserved after the deadline or against an
--- entry that changed. 0 rows: another replica, the revoke cascade, a close,
+-- entry that changed. m161: a row naming a REST route is reserved only while
+-- that route carries the approved route_sha256 and is an enabled write route. 0 rows: another replica, the revoke cascade, a close,
 -- the sweeper or a catalogue change won; roll back.
 UPDATE assistant_ability_requests r
 SET state = 'dispatched', claimed_at = now()
@@ -361,7 +381,14 @@ WHERE r.tenant_id = @tenant_id
         AND c.entry_sha256 = r.entry_sha256
         AND c.enabled
         AND c.status = 'admitted'
-  );
+  )
+  AND (r.route_id IS NULL OR EXISTS (
+      SELECT 1 FROM rest_route_catalogue rr
+      WHERE rr.route_id = r.route_id
+        AND rr.route_sha256 = r.route_sha256
+        AND rr.enabled
+        AND rr.class = 'write'
+  ));
 
 -- name: MarkAbilityRequestOutcomeUnknown :execrows
 -- The send's reply was lost or timed out. The row waits in 'outcome_unknown'

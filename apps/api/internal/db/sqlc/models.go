@@ -256,6 +256,9 @@ type AssistantAbilityRequest struct {
 	UndoByUserID       pgtype.UUID        `json:"undo_by_user_id"`
 	UndoStartedAt      pgtype.Timestamptz `json:"undo_started_at"`
 	UndoFinishedAt     pgtype.Timestamptz `json:"undo_finished_at"`
+	RouteID            *string            `json:"route_id"`
+	RouteSha256        *string            `json:"route_sha256"`
+	CardFacts          []byte             `json:"card_facts"`
 }
 
 type AssistantCachePurgeRequest struct {
@@ -913,6 +916,47 @@ type ReportSchedule struct {
 	LastRunAt        pgtype.Timestamptz `json:"last_run_at"`
 	CreatedAt        time.Time          `json:"created_at"`
 	UpdatedAt        time.Time          `json:"updated_at"`
+}
+
+type RestRouteCatalogue struct {
+	RouteID            string      `json:"route_id"`
+	Method             string      `json:"method"`
+	Namespace          string      `json:"namespace"`
+	Template           string      `json:"template"`
+	CorePattern        string      `json:"core_pattern"`
+	PathParams         []byte      `json:"path_params"`
+	QueryKeys          []byte      `json:"query_keys"`
+	PinnedQuery        []byte      `json:"pinned_query"`
+	BodyKeys           []byte      `json:"body_keys"`
+	Class              string      `json:"class"`
+	OutputFields       []byte      `json:"output_fields"`
+	Snapshot           string      `json:"snapshot"`
+	Target             []byte      `json:"target"`
+	ArgRender          []byte      `json:"arg_render"`
+	OperatorPermission *string     `json:"operator_permission"`
+	EffectCopy         string      `json:"effect_copy"`
+	Enabled            bool        `json:"enabled"`
+	MinWpVersion       *string     `json:"min_wp_version"`
+	Title              string      `json:"title"`
+	Description        string      `json:"description"`
+	RouteSha256        *string     `json:"route_sha256"`
+	CreatedAt          time.Time   `json:"created_at"`
+	UpdatedAt          time.Time   `json:"updated_at"`
+	UpdatedByUserID    pgtype.UUID `json:"updated_by_user_id"`
+}
+
+type RestRouteCatalogueAudit struct {
+	ID                int64       `json:"id"`
+	RouteID           string      `json:"route_id"`
+	Action            string      `json:"action"`
+	ActorUserID       pgtype.UUID `json:"actor_user_id"`
+	BeforeRowSha256   *string     `json:"before_row_sha256"`
+	AfterRowSha256    string      `json:"after_row_sha256"`
+	BeforeRouteSha256 *string     `json:"before_route_sha256"`
+	AfterRouteSha256  *string     `json:"after_route_sha256"`
+	BeforeEnabled     *bool       `json:"before_enabled"`
+	AfterEnabled      bool        `json:"after_enabled"`
+	At                time.Time   `json:"at"`
 }
 
 type RestoreRun struct {

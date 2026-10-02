@@ -194,6 +194,12 @@ type Querier interface {
 	// refuses (SQLSTATE 42501) unless actor_user_id names a superadmin, and it
 	// writes a content_integrations_audit row in the same statement.
 	AdminUpsertContentIntegration(ctx context.Context, arg AdminUpsertContentIntegrationParams) (ContentIntegration, error)
+	// The superadmin write path. Call it only behind requireSuperadmin.
+	// create true inserts (23505 if the route exists); false updates (P0002 if it
+	// does not). Refuses 42501 unless actor_user_id names a superadmin, 22023 on
+	// a NULL create flag or route_id, 23514 on any row CHECK, and writes a
+	// rest_route_catalogue_audit row in the same statement.
+	AdminUpsertRestRoute(ctx context.Context, arg AdminUpsertRestRouteParams) (RestRouteCatalogue, error)
 	// Tenants where @user_id is the ONLY member (so deleting them orphans the org),
 	// with each tenant's name + site count. Run under Pool.InAgentTx
 	// (memberships_agent + sites_agent) so the cross-tenant read is allowed.
@@ -453,7 +459,8 @@ type Querier interface {
 	// A terminal close before anything is reserved, for every pre-send reason
 	// (grant_inactive, assistant_paused, organisation_deleted,
 	// capability_not_held, site_absent, forbidden_by_context, agent_outdated,
-	// dispatch_deadline_passed, entry_changed, entry_disabled). 0 rows: another
+	// dispatch_deadline_passed, entry_changed, entry_disabled, and m161's
+	// route_changed, route_disabled). 0 rows: another
 	// path got there first; write nothing. The approver stays.
 	CloseApprovedAbilityRequestNotSent(ctx context.Context, arg CloseApprovedAbilityRequestNotSentParams) (int64, error)
 	// An approved row not yet reserved is closed as not sent; its approver stays
@@ -1784,6 +1791,8 @@ type Querier interface {
 	// report_schedules — singleton schedule per client
 	// ---------------------------------------------------------------------------
 	GetReportSchedule(ctx context.Context, arg GetReportScheduleParams) (ReportSchedule, error)
+	// One route by id. pgx.ErrNoRows when it does not exist.
+	GetRestRoute(ctx context.Context, routeID string) (RestRouteCatalogue, error)
 	GetRucssJob(ctx context.Context, arg GetRucssJobParams) (RucssJob, error)
 	// ---------------------------------------------------------------------------
 	// rucss_results
@@ -2180,7 +2189,9 @@ type Querier interface {
 	// ON CONFLICT names the one-pending index's columns and predicate. A conflict
 	// inserts nothing and returns NO ROW (pgx.ErrNoRows): the caller reads the
 	// waiting row with GetPendingAbilityRequestForTarget. state is always
-	// 'pending'; target_key is generated and never written.
+	// 'pending'; target_key is generated and never written. m161: route_id,
+	// route_sha256 and card_facts are set together for wpmgr/rest-write and are
+	// NULL for every other ability (the table's CHECKs refuse anything else).
 	InsertAbilityRequest(ctx context.Context, arg InsertAbilityRequestParams) (AssistantAbilityRequest, error)
 	// Agent-auth path (app.agent GUC). The unique (site_id, nonce) index makes a
 	// replayed nonce a no-op via ON CONFLICT, returning 0 rows affected.
@@ -2686,6 +2697,13 @@ type Querier interface {
 	ListEmailSuppressionDeltas(ctx context.Context, arg ListEmailSuppressionDeltasParams) ([]EmailSuppression, error)
 	// The rows the probe is sent. A disabled row is the kill switch.
 	ListEnabledContentIntegrations(ctx context.Context) ([]ContentIntegration, error)
+	// m161: rest_route_catalogue (global allowlist of reviewed WordPress REST
+	// routes). See the migration header for the grant model. The table is global
+	// and its one policy is FOR SELECT USING (true), so every read here works in
+	// any transaction.
+	// The routes the engine may offer: enabled. A disabled route is its kill
+	// switch.
+	ListEnabledRestRoutes(ctx context.Context) ([]RestRouteCatalogue, error)
 	// ---------------------------------------------------------------------------
 	// Health-check job (runs in each enrolled site's tenant scope).
 	// ---------------------------------------------------------------------------
@@ -2880,6 +2898,10 @@ type Querier interface {
 	// because batch inserts can share created_at and a bare compare skips co-timestamped rows
 	// (standing keyset-cursor-composite rule).
 	ListReports(ctx context.Context, arg ListReportsParams) ([]GeneratedReport, error)
+	// Newest first, for the admin screen.
+	ListRestRouteAudit(ctx context.Context, arg ListRestRouteAuditParams) ([]RestRouteCatalogueAudit, error)
+	// Every route, enabled or not, for the admin screen and the boot stamp.
+	ListRestRoutes(ctx context.Context) ([]RestRouteCatalogue, error)
 	ListRucssResultsForSite(ctx context.Context, arg ListRucssResultsForSiteParams) ([]RucssResult, error)
 	// All runs for a site (upcoming + past), newest scheduled_for first.
 	ListScheduleRunsBySite(ctx context.Context, arg ListScheduleRunsBySiteParams) ([]BackupScheduleRun, error)
@@ -3886,7 +3908,8 @@ type Querier interface {
 	ReplaySiteEvents(ctx context.Context, arg ReplaySiteEventsParams) ([]SiteEvent, error)
 	// The one reservation point. The deadline and the approved entry hash are in
 	// the WHERE clause, so nothing is reserved after the deadline or against an
-	// entry that changed. 0 rows: another replica, the revoke cascade, a close,
+	// entry that changed. m161: a row naming a REST route is reserved only while
+	// that route carries the approved route_sha256 and is an enabled write route. 0 rows: another replica, the revoke cascade, a close,
 	// the sweeper or a catalogue change won; roll back.
 	ReserveAbilityRequestForDispatch(ctx context.Context, arg ReserveAbilityRequestForDispatchParams) (int64, error)
 	// The one reservation point. Moves the row to 'dispatched' naming the
@@ -4307,6 +4330,11 @@ type Querier interface {
 	// Refusals: P0002 no entry, 22023 not 64 lowercase hex, 42501 not a wpmgr
 	// row, 55000 already stamped (a concurrent stamper lost the race; re-read).
 	StampWpmgrAbilityEntryHash(ctx context.Context, arg StampWpmgrAbilityEntryHashParams) (AbilityCatalogue, error)
+	// m161, m157's stamp for routes. Stores the Go-computed route hash on a route
+	// whose hash is still NULL, and audits it with a NULL actor. Needs no
+	// superadmin. Refusals: 22023 not 64 lowercase hex, P0002 no route, 55000
+	// already stamped (a concurrent stamper lost the race; re-read).
+	StampWpmgrRestRouteHash(ctx context.Context, arg StampWpmgrRestRouteHashParams) (RestRouteCatalogue, error)
 	// assistant_cache_purge_requests (m151): every statement over the request
 	// table, plus the cache_purge_audit statements the AI clear path needs.
 	//
