@@ -339,6 +339,44 @@ if (!function_exists('get_option')) {
     }
 }
 
+if (!function_exists('get_current_blog_id')) {
+    /**
+     * Current blog id — default stub is the main site.
+     *
+     * @return int
+     */
+    function get_current_blog_id(): int
+    {
+        return 1;
+    }
+}
+
+if (!function_exists('switch_to_blog')) {
+    /**
+     * Switch blog — default stub does nothing.
+     *
+     * @param int  $new_blog_id Blog id.
+     * @param bool $deprecated  Unused.
+     * @return bool
+     */
+    function switch_to_blog($new_blog_id, $deprecated = null): bool
+    {
+        return true;
+    }
+}
+
+if (!function_exists('restore_current_blog')) {
+    /**
+     * Restore blog — default stub has nothing to restore.
+     *
+     * @return bool
+     */
+    function restore_current_blog(): bool
+    {
+        return false;
+    }
+}
+
 if (!function_exists('get_site_option')) {
     /**
      * Retrieves a network-scoped option — default stub returns $default.

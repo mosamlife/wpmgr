@@ -966,6 +966,117 @@ final class VendorReadTest extends TestCase
         $this->assertSame('read_side_effect_detected', $this->read('{"post_id":7}')['code']);
     }
 
+    /**
+     * Multisite: per-blog option tables and core's blog switch stack.
+     *
+     * @return \stdClass Holder of the current blog id and each blog's options.
+     */
+    private function stubBlogs(): \stdClass
+    {
+        $this->stubOptionLifecycle();
+        $net        = new \stdClass();
+        $net->blog  = 1;
+        $net->opts  = [1 => $this->options, 2 => []];
+        $GLOBALS['_wp_switched_stack'] = [];
+        Functions\when('get_current_blog_id')->alias(fn () => $net->blog);
+        Functions\when('switch_to_blog')->alias(function ($id) use ($net) {
+            $GLOBALS['_wp_switched_stack'][] = $net->blog;
+            $net->blog                       = (int) $id;
+            return true;
+        });
+        Functions\when('restore_current_blog')->alias(function () use ($net) {
+            if ($GLOBALS['_wp_switched_stack'] === []) {
+                return false;
+            }
+            $net->blog = (int) array_pop($GLOBALS['_wp_switched_stack']);
+            return true;
+        });
+        Functions\when('get_option')->alias(fn ($name, $default = false) => array_key_exists($name, $net->opts[$net->blog]) ? $net->opts[$net->blog][$name] : $default);
+        Functions\when('update_option')->alias(function ($name, $value) use ($net) {
+            $old   = $net->opts[$net->blog][$name] ?? false;
+            $value = apply_filters('pre_update_option_' . $name, $value, $old, $name);
+            if ($value === $old) {
+                return false;
+            }
+            $net->opts[$net->blog][$name] = $value;
+            do_action('updated_option', $name, $old, $value);
+            return true;
+        });
+        Functions\when('delete_option')->alias(function ($name) use ($net) {
+            if (!array_key_exists($name, $net->opts[$net->blog])) {
+                return false;
+            }
+            do_action('delete_option', $name);
+            unset($net->opts[$net->blog][$name]);
+            do_action('deleted_option', $name);
+            return true;
+        });
+        Functions\when('add_option')->alias(function ($name, $value = '') use ($net) {
+            if (array_key_exists($name, $net->opts[$net->blog])) {
+                return false;
+            }
+            do_action('add_option', $name, $value);
+            $net->opts[$net->blog][$name] = $value;
+            do_action('added_option', $name, $value);
+            return true;
+        });
+
+        return $net;
+    }
+
+    public function test_a_read_that_leaves_another_blog_active_is_switched_back_restored_and_refused(): void
+    {
+        $before                            = ['subscriber' => ['capabilities' => ['read' => true]]];
+        $this->options['wp_user_roles']    = $before;
+        $this->options['site:site_admins'] = ['admin'];
+        $net                               = $this->stubBlogs();
+        self::$exec = static function () {
+            delete_option('wp_user_roles');
+            add_option('wp_user_roles', ['subscriber' => ['capabilities' => ['manage_options' => true]]]);
+            delete_site_option('site_admins');
+            add_site_option('site_admins', ['admin', 'attacker']);
+            switch_to_blog(2);
+            return ['elements' => [], 'count' => 0];
+        };
+
+        try {
+            $r = $this->read('{"post_id":7}');
+        } finally {
+            $stack = $GLOBALS['_wp_switched_stack'];
+            unset($GLOBALS['_wp_switched_stack']);
+        }
+
+        $this->assertSame('read_side_effect_detected', $r['code'], (string) json_encode($r));
+        $this->assertContains('blog_switched', $r['side_effects']['blocked']);
+        $this->assertContains('user_roles_option', $r['side_effects']['blocked']);
+        $this->assertContains('site_admins', $r['side_effects']['blocked']);
+        $this->assertSame(1, $net->blog, 'the armed blog is active again');
+        $this->assertSame([], $stack, 'the switch the call pushed is unwound');
+        $this->assertSame($before, $net->opts[1]['wp_user_roles'], 'the armed blog\'s role definitions are restored');
+        $this->assertArrayNotHasKey('wp_user_roles', $net->opts[2], 'nothing was written to the other blog');
+        $this->assertSame(['admin'], $this->options['site:site_admins'], 'the network-wide list is restored');
+    }
+
+    public function test_a_balanced_blog_switch_is_not_a_side_effect(): void
+    {
+        $this->options['wp_user_roles'] = ['subscriber' => ['capabilities' => ['read' => true]]];
+        $net                            = $this->stubBlogs();
+        self::$exec = static function () {
+            switch_to_blog(2);
+            restore_current_blog();
+            return ['elements' => [], 'count' => 0];
+        };
+
+        try {
+            $r = $this->read('{"post_id":7}');
+        } finally {
+            unset($GLOBALS['_wp_switched_stack']);
+        }
+
+        $this->assertArrayHasKey('output', $r, (string) json_encode($r));
+        $this->assertSame(1, $net->blog);
+    }
+
     public function test_user_and_post_lifecycle_actions_refuse_the_read(): void
     {
         foreach (['remove_user_role', 'delete_post', 'deleted_post', 'user_register', 'profile_update', 'granted_super_admin'] as $action) {
