@@ -110,10 +110,10 @@ final class AbilityOwnership
         $classOk   = self::abilityClassOk($ability);
         [$exec, $perm] = self::callbacks($ability);
 
-        $a = self::classifyPath(self::sourceFile($exec), $roots);
-        $b = self::classifyPath(self::sourceFile($perm), $roots);
+        $a = self::classifyCallback($exec, $roots);
+        $b = self::classifyCallback($perm, $roots);
 
-        if ($a !== $b) {
+        if ($a === null || $b === null || $a !== $b) {
             return [
                 'owner_kind'       => self::KIND_UNKNOWN,
                 'owner_dir'        => '',
@@ -347,20 +347,73 @@ final class AbilityOwnership
     }
 
     /**
-     * Canonical source file of a callable, or null when it has none.
+     * One owner for everything a callback runs, or null when its files span
+     * more than one owner.
+     *
+     * @param mixed                $cb    A callback as stored on the ability.
+     * @param array<string,string> $roots Canonical roots.
+     * @return array{kind:string,dir:string}|null
+     */
+    private static function classifyCallback($cb, array $roots): ?array
+    {
+        $files = self::sourceFiles($cb);
+        if ($files === null) {
+            return ['kind' => self::KIND_UNKNOWN, 'dir' => ''];
+        }
+        $owner = null;
+        foreach ($files as $file) {
+            $c = self::classifyPath($file, $roots);
+            if ($owner !== null && $c !== $owner) {
+                return null;
+            }
+            $owner = $c;
+        }
+
+        return $owner ?? ['kind' => self::KIND_UNKNOWN, 'dir' => ''];
+    }
+
+    /**
+     * Canonical source file of a callable's own body, or null when it has none.
      *
      * @param mixed $cb A callback as stored on the ability.
      * @return string|null
      */
     public static function sourceFile($cb): ?string
     {
+        $files = self::sourceFiles($cb);
+
+        return $files === null ? null : $files[0];
+    }
+
+    /**
+     * Every canonical source file whose code a callable can run: its own body
+     * first, then, for a method or a closure bound to an object or scoped to
+     * a class, the file of that class, each ancestor and each trait they use.
+     * A method body can call helpers resolved on the object, so all of them
+     * count. Null when any user-defined part has no canonical file.
+     *
+     * @param mixed $cb A callback as stored on the ability.
+     * @return non-empty-list<string>|null
+     */
+    public static function sourceFiles($cb): ?array
+    {
+        $classes = [];
         try {
             if ($cb instanceof \Closure) {
-                $ref = new \ReflectionFunction($cb);
+                $ref  = new \ReflectionFunction($cb);
+                $bound = $ref->getClosureThis();
+                if ($bound !== null) {
+                    $classes[] = new \ReflectionClass($bound);
+                }
+                $scope = $ref->getClosureScopeClass();
+                if ($scope !== null) {
+                    $classes[] = $scope;
+                }
             } elseif (is_string($cb) && $cb !== '') {
                 if (strpos($cb, '::') !== false) {
                     [$cls, $method] = explode('::', $cb, 2);
                     $ref            = new \ReflectionMethod($cls, $method);
+                    $classes[]      = new \ReflectionClass($cls);
                 } elseif (function_exists($cb)) {
                     $ref = new \ReflectionFunction($cb);
                 } else {
@@ -369,9 +422,11 @@ final class AbilityOwnership
             } elseif (is_array($cb) && count($cb) === 2 && isset($cb[0], $cb[1]) && is_string($cb[1])
                 && (is_object($cb[0]) || is_string($cb[0]))
             ) {
-                $ref = new \ReflectionMethod($cb[0], $cb[1]);
+                $ref       = new \ReflectionMethod($cb[0], $cb[1]);
+                $classes[] = new \ReflectionClass($cb[0]);
             } elseif (is_object($cb) && method_exists($cb, '__invoke')) {
-                $ref = new \ReflectionMethod($cb, '__invoke');
+                $ref       = new \ReflectionMethod($cb, '__invoke');
+                $classes[] = new \ReflectionClass($cb);
             } else {
                 return null;
             }
@@ -379,7 +434,44 @@ final class AbilityOwnership
             return null;
         }
 
-        $file = $ref->getFileName();
+        $own = self::canonicalFile($ref->getFileName());
+        if ($own === null) {
+            return null;
+        }
+        $files = [$own];
+        $seen  = [];
+        while ($classes !== []) {
+            $class = array_pop($classes);
+            $name  = $class->getName();
+            if (isset($seen[$name])) {
+                continue;
+            }
+            $seen[$name] = true;
+            if (!$class->isInternal()) {
+                $file = self::canonicalFile($class->getFileName());
+                if ($file === null) {
+                    return null;
+                }
+                $files[] = $file;
+            }
+            foreach ($class->getTraits() as $trait) {
+                $classes[] = $trait;
+            }
+            $parent = $class->getParentClass();
+            if ($parent !== false) {
+                $classes[] = $parent;
+            }
+        }
+
+        return array_values(array_unique($files));
+    }
+
+    /**
+     * @param string|false $file A reflected file name.
+     * @return string|null realpath() of it, with '/' separators.
+     */
+    private static function canonicalFile($file): ?string
+    {
         if (!is_string($file) || $file === '') {
             return null;
         }
