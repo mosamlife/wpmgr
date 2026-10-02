@@ -360,16 +360,14 @@ final class AbilityOwnership
         if ($files === null) {
             return ['kind' => self::KIND_UNKNOWN, 'dir' => ''];
         }
-        $owner = null;
+        $owner = self::classifyPath($files[0], $roots);
         foreach ($files as $file) {
-            $c = self::classifyPath($file, $roots);
-            if ($owner !== null && $c !== $owner) {
+            if (self::classifyPath($file, $roots) !== $owner) {
                 return null;
             }
-            $owner = $c;
         }
 
-        return $owner ?? ['kind' => self::KIND_UNKNOWN, 'dir' => ''];
+        return $owner;
     }
 
     /**
@@ -413,7 +411,7 @@ final class AbilityOwnership
                 if (strpos($cb, '::') !== false) {
                     [$cls, $method] = explode('::', $cb, 2);
                     $ref            = new \ReflectionMethod($cls, $method);
-                    $classes[]      = new \ReflectionClass($cls);
+                    $classes[]      = self::classOf($cls);
                 } elseif (function_exists($cb)) {
                     $ref = new \ReflectionFunction($cb);
                 } else {
@@ -423,7 +421,7 @@ final class AbilityOwnership
                 && (is_object($cb[0]) || is_string($cb[0]))
             ) {
                 $ref       = new \ReflectionMethod($cb[0], $cb[1]);
-                $classes[] = new \ReflectionClass($cb[0]);
+                $classes[] = self::classOf($cb[0]);
             } elseif (is_object($cb) && method_exists($cb, '__invoke')) {
                 $ref       = new \ReflectionMethod($cb, '__invoke');
                 $classes[] = new \ReflectionClass($cb);
@@ -434,6 +432,9 @@ final class AbilityOwnership
             return null;
         }
 
+        if (in_array(null, $classes, true)) {
+            return null;
+        }
         $own = self::canonicalFile($ref->getFileName());
         if ($own === null) {
             return null;
@@ -464,6 +465,19 @@ final class AbilityOwnership
         }
 
         return array_values(array_unique($files));
+    }
+
+    /**
+     * @param object|string $target An object or a class name.
+     * @return \ReflectionClass<object>|null
+     */
+    private static function classOf($target): ?\ReflectionClass
+    {
+        if (is_object($target)) {
+            return new \ReflectionClass($target);
+        }
+
+        return class_exists($target) ? new \ReflectionClass($target) : null;
     }
 
     /**
