@@ -65,11 +65,22 @@ type AbilityCatalogueAudit struct {
 	At                time.Time   `json:"at"`
 }
 
-type AbilityReadSideEffectSite struct {
-	EntryID   uuid.UUID `json:"entry_id"`
-	SiteID    uuid.UUID `json:"site_id"`
-	TenantID  uuid.UUID `json:"tenant_id"`
-	FirstSeen time.Time `json:"first_seen"`
+type AbilityReadSideEffectReport struct {
+	EntryID     uuid.UUID          `json:"entry_id"`
+	Epoch       int64              `json:"epoch"`
+	TenantID    uuid.UUID          `json:"tenant_id"`
+	FirstSiteID uuid.UUID          `json:"first_site_id"`
+	Qualified   bool               `json:"qualified"`
+	FirstSeen   time.Time          `json:"first_seen"`
+	QualifiedAt pgtype.Timestamptz `json:"qualified_at"`
+}
+
+type AbilityTenantDisable struct {
+	TenantID          uuid.UUID          `json:"tenant_id"`
+	EntryID           uuid.UUID          `json:"entry_id"`
+	DisabledAt        time.Time          `json:"disabled_at"`
+	ReenabledAt       pgtype.Timestamptz `json:"reenabled_at"`
+	ReenabledByUserID pgtype.UUID        `json:"reenabled_by_user_id"`
 }
 
 type AgentActivityLog struct {

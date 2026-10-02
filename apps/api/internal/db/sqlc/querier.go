@@ -2341,6 +2341,9 @@ type Querier interface {
 	InvalidateUserEmailVerificationTokens(ctx context.Context, userID uuid.UUID) error
 	// Burn all outstanding reset tokens for a user (after a successful reset/change).
 	InvalidateUserPasswordResetTokens(ctx context.Context, userID uuid.UUID) error
+	// m160 R4. True when the entry is switched off for this tenant. Run in the
+	// tenant's transaction; RLS confines it to app.tenant_id.
+	IsAbilityDisabledForTenant(ctx context.Context, arg IsAbilityDisabledForTenantParams) (bool, error)
 	// Returns true when the given email_hash is suppressed for this tenant at either
 	// the fleet level (site_id IS NULL) or the specific site.
 	// Runs under InAgentTx (pre-send check from the delta-fetch query) or InTenantTx.
@@ -2371,6 +2374,9 @@ type Querier interface {
 	// ---------------------------------------------------------------------------
 	ListAbilityRequests(ctx context.Context, arg ListAbilityRequestsParams) ([]AssistantAbilityRequest, error)
 	ListAbilityRequestsForSite(ctx context.Context, arg ListAbilityRequestsForSiteParams) ([]AssistantAbilityRequest, error)
+	// m160 R4. Every entry switched off for this tenant, for filtering a whole
+	// catalogue read in one statement. Run in the tenant's transaction.
+	ListAbilityTenantDisabledEntryIDs(ctx context.Context, tenantID uuid.UUID) ([]uuid.UUID, error)
 	// All unused recovery codes for a user (used_at IS NULL).
 	// Ordered by created_at ASC, id ASC for stable pagination.
 	ListActiveRecoveryCodes(ctx context.Context, userID uuid.UUID) ([]UserRecoveryCode, error)
@@ -3671,13 +3677,17 @@ type Querier interface {
 	// parameter, so this is a primary-key probe and costs no extra round trip.
 	ReCheckMCPRequestAuthorizationInTenantTx(ctx context.Context, arg ReCheckMCPRequestAuthorizationInTenantTxParams) (ReCheckMCPRequestAuthorizationInTenantTxRow, error)
 	RecolorTag(ctx context.Context, arg RecolorTagParams) (SiteTag, error)
-	// m160 (owner ruling 4). Records that a vendor read was caught writing or
-	// calling out on this site and returns the entry's distinct-site count. The
-	// report from a NEW site that brings the count to 3 or more disables an
-	// enabled entry fleet-wide and audits it with a NULL actor. A repeat report
-	// from a counted site changes nothing. Run it in its own READ COMMITTED
-	// transaction. Refusals: 22023 a NULL argument, P0002 no entry, 42501 the
-	// entry is not a vendor read (nothing recorded).
+	// m160 (owner ruling 4, amended 2026-10-02). Records that a vendor read was
+	// caught writing or calling out on this site. Run it in the site's tenant
+	// transaction (InTenantTx): the definer takes the tenant from app.tenant_id
+	// and refuses a tenant_id argument that differs or a site that is not that
+	// tenant's. It disables the entry for the reporting tenant at once, then
+	// returns the number of distinct QUALIFIED (paid or aged) tenants counted
+	// since the last superadmin re-enable. The report that makes a new qualified
+	// tenant the third or later disables an enabled entry fleet-wide with a
+	// NULL-actor audit row. Run it in its own READ COMMITTED transaction.
+	// Refusals, nothing recorded: 22023 a NULL argument; 42501 wrong tenant, a
+	// site not of the tenant, or the entry is not a vendor read; P0002 no entry.
 	RecordAbilityReadSideEffect(ctx context.Context, arg RecordAbilityReadSideEffectParams) (int32, error)
 	// A transient reason; the row stays approved. Single-site.
 	RecordAbilityRequestDispatchAttempt(ctx context.Context, arg RecordAbilityRequestDispatchAttemptParams) (int64, error)
@@ -3708,6 +3718,11 @@ type Querier interface {
 	// first would hide it. So protocol_version is passed through as NULL when the
 	// header was absent -- it must NOT be defaulted to a string here.
 	RecordMCPGrantClientIdentityInTenantTx(ctx context.Context, arg RecordMCPGrantClientIdentityInTenantTxParams) (McpGrant, error)
+	// m160 R4. A tenant admin or superadmin switches the entry back on for this
+	// tenant; the row stays as the record. The caller checks the role. Returns 0
+	// when the entry was not disabled for the tenant. Run in the tenant's
+	// transaction. A later side-effect report from this tenant disables it again.
+	ReenableAbilityForTenant(ctx context.Context, arg ReenableAbilityForTenantParams) (int64, error)
 	// Rotate the token of a still-pending invitation: overwrite token_hash (kills
 	// the old link), reset expiry + attempts, and clear any prior soft-revoke.
 	// Only an un-accepted row is touched (RETURNING -> ErrNoRows if already

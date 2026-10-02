@@ -307,6 +307,29 @@ func (q *Queries) GetSiteAbilityInventoryRun(ctx context.Context, arg GetSiteAbi
 	return i, err
 }
 
+const isAbilityDisabledForTenant = `-- name: IsAbilityDisabledForTenant :one
+SELECT EXISTS (
+    SELECT 1 FROM ability_tenant_disables
+    WHERE tenant_id = $1::uuid
+      AND entry_id = $2::uuid
+      AND reenabled_at IS NULL
+)::bool AS disabled
+`
+
+type IsAbilityDisabledForTenantParams struct {
+	TenantID uuid.UUID `json:"tenant_id"`
+	EntryID  uuid.UUID `json:"entry_id"`
+}
+
+// m160 R4. True when the entry is switched off for this tenant. Run in the
+// tenant's transaction; RLS confines it to app.tenant_id.
+func (q *Queries) IsAbilityDisabledForTenant(ctx context.Context, arg IsAbilityDisabledForTenantParams) (bool, error) {
+	row := q.db.QueryRow(ctx, isAbilityDisabledForTenant, arg.TenantID, arg.EntryID)
+	var disabled bool
+	err := row.Scan(&disabled)
+	return disabled, err
+}
+
 const listAbilityCatalogue = `-- name: ListAbilityCatalogue :many
 SELECT entry_id, name, source, class, status, enabled, approval_mode, permission_mode, integration_id, owner_dir, version_min, version_max_tested, min_wp_version, min_agent_version, schema_struct_sha256, dynamic_enum_paths, title, description, usage, operator_permission, target, snapshot, preview, arg_render, effect_copy, limits, nested_allow, global_option_keys, integration_block, admission, entry_sha256, created_at, updated_at, updated_by_user_id, output_fields FROM ability_catalogue
 ORDER BY name, version_min NULLS FIRST
@@ -408,6 +431,35 @@ func (q *Queries) ListAbilityCatalogueAudit(ctx context.Context, arg ListAbility
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAbilityTenantDisabledEntryIDs = `-- name: ListAbilityTenantDisabledEntryIDs :many
+SELECT entry_id FROM ability_tenant_disables
+WHERE tenant_id = $1::uuid
+  AND reenabled_at IS NULL
+ORDER BY entry_id
+`
+
+// m160 R4. Every entry switched off for this tenant, for filtering a whole
+// catalogue read in one statement. Run in the tenant's transaction.
+func (q *Queries) ListAbilityTenantDisabledEntryIDs(ctx context.Context, tenantID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, listAbilityTenantDisabledEntryIDs, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []uuid.UUID
+	for rows.Next() {
+		var entry_id uuid.UUID
+		if err := rows.Scan(&entry_id); err != nil {
+			return nil, err
+		}
+		items = append(items, entry_id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -551,7 +603,7 @@ SELECT record_ability_read_side_effect(
     $1::uuid,
     $2::uuid,
     $3::uuid
-)::int AS distinct_sites
+)::int AS qualified_tenants
 `
 
 type RecordAbilityReadSideEffectParams struct {
@@ -560,18 +612,49 @@ type RecordAbilityReadSideEffectParams struct {
 	TenantID uuid.UUID `json:"tenant_id"`
 }
 
-// m160 (owner ruling 4). Records that a vendor read was caught writing or
-// calling out on this site and returns the entry's distinct-site count. The
-// report from a NEW site that brings the count to 3 or more disables an
-// enabled entry fleet-wide and audits it with a NULL actor. A repeat report
-// from a counted site changes nothing. Run it in its own READ COMMITTED
-// transaction. Refusals: 22023 a NULL argument, P0002 no entry, 42501 the
-// entry is not a vendor read (nothing recorded).
+// m160 (owner ruling 4, amended 2026-10-02). Records that a vendor read was
+// caught writing or calling out on this site. Run it in the site's tenant
+// transaction (InTenantTx): the definer takes the tenant from app.tenant_id
+// and refuses a tenant_id argument that differs or a site that is not that
+// tenant's. It disables the entry for the reporting tenant at once, then
+// returns the number of distinct QUALIFIED (paid or aged) tenants counted
+// since the last superadmin re-enable. The report that makes a new qualified
+// tenant the third or later disables an enabled entry fleet-wide with a
+// NULL-actor audit row. Run it in its own READ COMMITTED transaction.
+// Refusals, nothing recorded: 22023 a NULL argument; 42501 wrong tenant, a
+// site not of the tenant, or the entry is not a vendor read; P0002 no entry.
 func (q *Queries) RecordAbilityReadSideEffect(ctx context.Context, arg RecordAbilityReadSideEffectParams) (int32, error) {
 	row := q.db.QueryRow(ctx, recordAbilityReadSideEffect, arg.EntryID, arg.SiteID, arg.TenantID)
-	var distinct_sites int32
-	err := row.Scan(&distinct_sites)
-	return distinct_sites, err
+	var qualified_tenants int32
+	err := row.Scan(&qualified_tenants)
+	return qualified_tenants, err
+}
+
+const reenableAbilityForTenant = `-- name: ReenableAbilityForTenant :execrows
+UPDATE ability_tenant_disables SET
+    reenabled_at = now(),
+    reenabled_by_user_id = $1::uuid
+WHERE tenant_id = $2::uuid
+  AND entry_id = $3::uuid
+  AND reenabled_at IS NULL
+`
+
+type ReenableAbilityForTenantParams struct {
+	UserID   uuid.UUID `json:"user_id"`
+	TenantID uuid.UUID `json:"tenant_id"`
+	EntryID  uuid.UUID `json:"entry_id"`
+}
+
+// m160 R4. A tenant admin or superadmin switches the entry back on for this
+// tenant; the row stays as the record. The caller checks the role. Returns 0
+// when the entry was not disabled for the tenant. Run in the tenant's
+// transaction. A later side-effect report from this tenant disables it again.
+func (q *Queries) ReenableAbilityForTenant(ctx context.Context, arg ReenableAbilityForTenantParams) (int64, error) {
+	result, err := q.db.Exec(ctx, reenableAbilityForTenant, arg.UserID, arg.TenantID, arg.EntryID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const stampWpmgrAbilityEntryHash = `-- name: StampWpmgrAbilityEntryHash :one

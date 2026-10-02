@@ -9740,34 +9740,110 @@ GRANT SELECT ON ability_catalogue TO wpmgr_app;
 GRANT SELECT ON ability_catalogue_audit TO wpmgr_app;
 
 -- ---------------------------------------------------------------------------
--- ability_read_side_effect_sites (m160, owner ruling 4)
+-- m160 (owner ruling 4, amended 2026-10-02): vendor read side-effect disable.
+-- Per tenant at once (ability_tenant_disables, FORCE RLS, tenant isolation);
+-- fleet-wide on 3 distinct qualified (paid or aged) tenants per epoch
+-- (ability_read_side_effect_reports, global, definer-only). See the migration
+-- header for the rules, the epoch and the single-DSN caveat.
+-- ---------------------------------------------------------------------------
+-- 1. Qualification
 -- ---------------------------------------------------------------------------
 
--- GLOBAL, definer-only: one row per (entry, site) on which a vendor read was
--- caught writing or calling out. ENABLE RLS with no policy, not FORCE, and ALL
--- revoked from wpmgr_app: only record_ability_read_side_effect touches it. No
--- FK to sites or tenants and no cascade, so a deletion never lowers a count.
--- See the migration header for the single-DSN caveat.
-CREATE TABLE IF NOT EXISTS ability_read_side_effect_sites (
-    entry_id uuid NOT NULL REFERENCES ability_catalogue (entry_id),
-    site_id uuid NOT NULL,
+CREATE OR REPLACE FUNCTION ability_side_effect_tenant_min_age()
+RETURNS interval
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT interval '30 days' $$;
+
+CREATE OR REPLACE FUNCTION ability_side_effect_tenant_qualifies(p_tenant_id uuid)
+RETURNS boolean
+LANGUAGE sql
+STABLE
+SET search_path = public, pg_temp
+AS $$
+    SELECT COALESCE((
+        SELECT t.deleted_at IS NULL
+           AND t.suspended_at IS NULL
+           AND (
+                (t.plan <> 'free'
+                 AND (t.plan_status = 'active'
+                      OR (t.plan_status = 'past_due' AND t.grace_until > now())))
+             OR t.created_at <= now() - ability_side_effect_tenant_min_age()
+           )
+        FROM tenants AS t
+        WHERE t.id = p_tenant_id
+    ), false)
+$$;
+
+REVOKE ALL ON FUNCTION ability_side_effect_tenant_qualifies(uuid) FROM PUBLIC;
+
+-- ---------------------------------------------------------------------------
+-- 2. The fleet counting table
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS ability_read_side_effect_reports (
+    entry_id uuid NOT NULL
+        REFERENCES ability_catalogue (entry_id),
+    epoch bigint NOT NULL
+        CONSTRAINT ability_read_side_effect_reports_epoch_check CHECK (epoch >= 0),
     tenant_id uuid NOT NULL,
+    first_site_id uuid NOT NULL,
+    qualified boolean NOT NULL,
     first_seen timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (entry_id, site_id)
+    qualified_at timestamptz NULL,
+    CONSTRAINT ability_read_side_effect_reports_qualified_at_check
+        CHECK (qualified = (qualified_at IS NOT NULL)),
+    PRIMARY KEY (entry_id, epoch, tenant_id)
 );
 
-CREATE INDEX IF NOT EXISTS ability_read_side_effect_sites_tenant_idx
-    ON ability_read_side_effect_sites (tenant_id);
+CREATE INDEX IF NOT EXISTS ability_read_side_effect_reports_tenant_idx
+    ON ability_read_side_effect_reports (tenant_id);
 
-ALTER TABLE ability_read_side_effect_sites ENABLE ROW LEVEL SECURITY;
+ALTER TABLE ability_read_side_effect_reports ENABLE ROW LEVEL SECURITY;
 
-REVOKE ALL ON ability_read_side_effect_sites FROM PUBLIC;
-REVOKE ALL ON ability_read_side_effect_sites FROM wpmgr_app;
+REVOKE ALL ON ability_read_side_effect_reports FROM PUBLIC;
 
--- Records one site, returns the entry's distinct-site count, and when a NEW
--- site brings it to 3 or more disables an enabled entry with a NULL-actor
--- audit row. Takes m155's per-name advisory lock. 22023 NULL argument, P0002
--- no entry, 42501 not a vendor read.
+-- ---------------------------------------------------------------------------
+-- 3. The per-tenant disable
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS ability_tenant_disables (
+    tenant_id uuid NOT NULL
+        REFERENCES tenants (id) ON DELETE CASCADE,
+    entry_id uuid NOT NULL
+        REFERENCES ability_catalogue (entry_id),
+    disabled_at timestamptz NOT NULL DEFAULT now(),
+    reenabled_at timestamptz NULL,
+    reenabled_by_user_id uuid NULL,
+    CONSTRAINT ability_tenant_disables_reenabled_check
+        CHECK ((reenabled_at IS NULL) = (reenabled_by_user_id IS NULL)),
+    PRIMARY KEY (tenant_id, entry_id)
+);
+
+CREATE INDEX IF NOT EXISTS ability_tenant_disables_tenant_id_idx
+    ON ability_tenant_disables (tenant_id);
+
+ALTER TABLE ability_tenant_disables ENABLE ROW LEVEL SECURITY;
+ALTER TABLE ability_tenant_disables FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY ability_tenant_disables_tenant_isolation
+    ON ability_tenant_disables
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+REVOKE ALL ON ability_tenant_disables FROM PUBLIC;
+
+-- The migration skips these when it runs as wpmgr_app (single-DSN).
+REVOKE ALL ON ability_read_side_effect_reports FROM wpmgr_app;
+REVOKE ALL ON ability_tenant_disables FROM wpmgr_app;
+GRANT SELECT ON ability_tenant_disables TO wpmgr_app;
+GRANT UPDATE (reenabled_at, reenabled_by_user_id)
+    ON ability_tenant_disables TO wpmgr_app;
+
+-- ---------------------------------------------------------------------------
+-- 4. The function
+-- ---------------------------------------------------------------------------
+
 CREATE OR REPLACE FUNCTION record_ability_read_side_effect(
     p_entry_id uuid,
     p_site_id uuid,
@@ -9779,8 +9855,11 @@ SECURITY DEFINER
 SET search_path = public, pg_temp
 AS $$
 DECLARE
+    v_tenant uuid;
     v_name   text;
-    v_new    boolean;
+    v_epoch  bigint;
+    v_qual   boolean;
+    v_newly  boolean;
     v_count  int;
     v_before ability_catalogue;
     v_after  ability_catalogue;
@@ -9790,12 +9869,26 @@ BEGIN
             USING ERRCODE = '22023';
     END IF;
 
+    -- R5: the tenant is the transaction's, never the parameter's.
+    v_tenant := nullif(current_setting('app.tenant_id', true), '')::uuid;
+    IF v_tenant IS NULL OR v_tenant <> p_tenant_id THEN
+        RAISE EXCEPTION 'ability_read_side_effect: not the tenant of this transaction'
+            USING ERRCODE = '42501';
+    END IF;
+    PERFORM 1 FROM sites WHERE id = p_site_id AND tenant_id = v_tenant;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'ability_read_side_effect: not a site of this tenant'
+            USING ERRCODE = '42501';
+    END IF;
+
     SELECT name INTO v_name FROM ability_catalogue WHERE entry_id = p_entry_id;
     IF v_name IS NULL THEN
         RAISE EXCEPTION 'ability_catalogue: no entry %', p_entry_id
             USING ERRCODE = 'P0002';
     END IF;
 
+    -- m155's writer lock, then the row: serialises every reporter and every
+    -- admin write of this name, including a superadmin re-enable.
     PERFORM pg_advisory_xact_lock(hashtext('ability_catalogue'), hashtext(v_name));
     SELECT * INTO v_before FROM ability_catalogue
         WHERE entry_id = p_entry_id
@@ -9806,16 +9899,40 @@ BEGIN
             USING ERRCODE = '42501';
     END IF;
 
-    INSERT INTO ability_read_side_effect_sites (entry_id, site_id, tenant_id)
-    VALUES (p_entry_id, p_site_id, p_tenant_id)
-    ON CONFLICT (entry_id, site_id) DO NOTHING;
-    v_new := FOUND;
+    -- R4: off for this tenant at once. A re-enabled row is disabled again; a
+    -- row already disabled keeps its first disabled_at.
+    INSERT INTO ability_tenant_disables (tenant_id, entry_id)
+    VALUES (v_tenant, p_entry_id)
+    ON CONFLICT (tenant_id, entry_id) DO UPDATE SET
+        disabled_at = now(),
+        reenabled_at = NULL,
+        reenabled_by_user_id = NULL
+    WHERE ability_tenant_disables.reenabled_at IS NOT NULL;
+
+    -- R3: the epoch is the latest superadmin re-enable.
+    SELECT COALESCE(max(a.id), 0) INTO v_epoch
+    FROM ability_catalogue_audit AS a
+    WHERE a.entry_id = p_entry_id
+      AND a.before_enabled IS FALSE
+      AND a.after_enabled IS TRUE;
+
+    -- R1 + R2: one row per tenant per epoch; qualified only moves to true.
+    v_qual := ability_side_effect_tenant_qualifies(v_tenant);
+    INSERT INTO ability_read_side_effect_reports AS r
+        (entry_id, epoch, tenant_id, first_site_id, qualified, qualified_at)
+    VALUES (p_entry_id, v_epoch, v_tenant, p_site_id, v_qual,
+            CASE WHEN v_qual THEN now() END)
+    ON CONFLICT (entry_id, epoch, tenant_id) DO UPDATE SET
+        qualified = true,
+        qualified_at = now()
+    WHERE NOT r.qualified AND EXCLUDED.qualified;
+    v_newly := FOUND AND v_qual;
 
     SELECT count(*) INTO v_count
-    FROM ability_read_side_effect_sites
-    WHERE entry_id = p_entry_id;
+    FROM ability_read_side_effect_reports
+    WHERE entry_id = p_entry_id AND epoch = v_epoch AND qualified;
 
-    IF v_new AND v_count >= 3 AND v_before.enabled THEN
+    IF v_newly AND v_count >= 3 AND v_before.enabled THEN
         UPDATE ability_catalogue AS ac SET
             enabled = false,
             updated_at = now(),
