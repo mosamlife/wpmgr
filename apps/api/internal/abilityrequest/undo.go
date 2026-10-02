@@ -181,6 +181,15 @@ func revertReport(resp agentcmd.AbilityRunResponse, err error) map[string]any {
 	return md
 }
 
+// reportRestored is the revert report's restored flag for the ledger row,
+// nil when the report carries none, which keeps the stored value.
+func reportRestored(report map[string]any) *bool {
+	if b, ok := report["restored"].(bool); ok {
+		return &b
+	}
+	return nil
+}
+
 // recoveryUndoWindow is how long a recovery undo, once started, stays open
 // for a retry (GH #826). A released recovery undo starts afresh.
 const recoveryUndoWindow = 15 * time.Minute
@@ -385,7 +394,7 @@ func (s *Service) recordUndoFinish(ctx context.Context, run undoTxRunner, p doma
 	var after sqlc.AssistantAbilityRequest
 	err := run(fctx, p, func(q *sqlc.Queries, tx pgx.Tx) error {
 		if _, err := q.FinishAbilityRequestUndo(fctx, sqlc.FinishAbilityRequestUndoParams{
-			UndoResult: result, TenantID: p.TenantID, ID: requestID,
+			UndoResult: result, Restored: reportRestored(report), TenantID: p.TenantID, ID: requestID,
 		}); err != nil {
 			return err
 		}

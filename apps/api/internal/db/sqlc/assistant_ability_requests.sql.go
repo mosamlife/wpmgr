@@ -618,9 +618,10 @@ func (q *Queries) ExpireLapsedPendingAbilityRequestsForGrantSite(ctx context.Con
 
 const finishAbilityRequestUndo = `-- name: FinishAbilityRequestUndo :execrows
 UPDATE assistant_ability_requests
-SET undo_state = $1::text, undo_finished_at = now()
-WHERE tenant_id = $2
-  AND id = $3
+SET undo_state = $1::text, undo_finished_at = now(),
+    restored = COALESCE($2::boolean, restored)
+WHERE tenant_id = $3
+  AND id = $4
   AND (state = 'done'
        OR (state IN ('failed', 'outcome_unknown')
            AND created_post_id IS NOT NULL
@@ -630,14 +631,22 @@ WHERE tenant_id = $2
 
 type FinishAbilityRequestUndoParams struct {
 	UndoResult string    `json:"undo_result"`
+	Restored   *bool     `json:"restored"`
 	TenantID   uuid.UUID `json:"tenant_id"`
 	ID         uuid.UUID `json:"id"`
 }
 
 // undo_result is one of undone, refused_conflict, refused_published, failed.
 // Covers a done row's undo and a recovery undo (GH #826) alike.
+// restored is the agent's revert report (false: other post columns the site
+// changed remain); NULL, as on a failure or refusal, keeps the stored value.
 func (q *Queries) FinishAbilityRequestUndo(ctx context.Context, arg FinishAbilityRequestUndoParams) (int64, error) {
-	result, err := q.db.Exec(ctx, finishAbilityRequestUndo, arg.UndoResult, arg.TenantID, arg.ID)
+	result, err := q.db.Exec(ctx, finishAbilityRequestUndo,
+		arg.UndoResult,
+		arg.Restored,
+		arg.TenantID,
+		arg.ID,
+	)
 	if err != nil {
 		return 0, err
 	}

@@ -559,8 +559,11 @@ WHERE tenant_id = @tenant_id
 -- name: FinishAbilityRequestUndo :execrows
 -- undo_result is one of undone, refused_conflict, refused_published, failed.
 -- Covers a done row's undo and a recovery undo (GH #826) alike.
+-- restored is the agent's revert report (false: other post columns the site
+-- changed remain); NULL, as on a failure or refusal, keeps the stored value.
 UPDATE assistant_ability_requests
-SET undo_state = sqlc.arg(undo_result)::text, undo_finished_at = now()
+SET undo_state = sqlc.arg(undo_result)::text, undo_finished_at = now(),
+    restored = COALESCE(sqlc.narg(restored)::boolean, restored)
 WHERE tenant_id = @tenant_id
   AND id = @id
   AND (state = 'done'

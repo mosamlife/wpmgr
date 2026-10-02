@@ -1254,6 +1254,8 @@ type Querier interface {
 	FindTenantByProviderCustomer(ctx context.Context, arg FindTenantByProviderCustomerParams) (uuid.UUID, error)
 	// undo_result is one of undone, refused_conflict, refused_published, failed.
 	// Covers a done row's undo and a recovery undo (GH #826) alike.
+	// restored is the agent's revert report (false: other post columns the site
+	// changed remain); NULL, as on a failure or refusal, keeps the stored value.
 	FinishAbilityRequestUndo(ctx context.Context, arg FinishAbilityRequestUndoParams) (int64, error)
 	// Terminalizes ONE task that never left 'scheduled'. The counterpart to
 	// FinishUpdateTask, which cannot be used here: its precondition is
