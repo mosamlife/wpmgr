@@ -130,12 +130,13 @@ func versionInEntryRange(v *string, e *sqlc.AbilityCatalogue) bool {
 // bareSHA strips the agent's "sha256:" prefix; the catalogue holds bare hex.
 func bareSHA(s string) string { return strings.TrimPrefix(strings.TrimSpace(s), "sha256:") }
 
-var wpVersionShape = regexp.MustCompile(`^[0-9]+(\.[0-9]+){1,3}`)
+// wpVersionShape is anchored at both ends. Go's $ without the m flag is the
+// end of the text, so a trailing newline does not match.
+var wpVersionShape = regexp.MustCompile(`^[0-9]+(\.[0-9]+){1,3}$`)
 
 // wpMeetsVendorFloor reports whether the site's WordPress version is at
 // least 7.1. An empty or malformed version does not.
 func wpMeetsVendorFloor(v string) bool {
-	v = strings.TrimSpace(v)
 	if !wpVersionShape.MatchString(v) {
 		return false
 	}

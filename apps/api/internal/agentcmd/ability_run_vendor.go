@@ -27,10 +27,53 @@ var (
 	vendorOwnerDirRe   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 	vendorVersionRe    = regexp.MustCompile(`^[0-9A-Za-z._+~-]{1,64}$`)
 	vendorAbilityRe    = regexp.MustCompile(`^[a-z0-9-]{1,64}/[a-z0-9-]{1,64}$`)
-	vendorLabelRe      = regexp.MustCompile(`^[a-z0-9_]{1,64}$`)
 	vendorOwnerKinds   = map[string]struct{}{"core": {}, "plugin": {}, "theme": {}, "mu-plugin": {}}
 	errVendorReadShape = errors.New("ability_run: vendor read reply broke the contract")
 )
+
+// vendorViolationLabels is the CLOSED set of guard violation labels the agent
+// emits (the interception guards and the vendor call). The agent is
+// untrusted: a label outside this set is replaced by "unknown", so no
+// site-chosen string reaches the model or an audit row as our own word.
+var vendorViolationLabels = func() map[string]struct{} {
+	m := map[string]struct{}{
+		"hook_order": {}, "nested_ability_refused": {}, "nested_reentry": {},
+		"sentinel_result": {}, "uncaught_exception": {},
+	}
+	for _, k := range []string{"input", "permission", "result", "validate_input", "validate_output", "short_circuit"} {
+		m[k] = struct{}{}
+		m[k+"_order"] = struct{}{}
+		m[k+"_unpaired"] = struct{}{}
+	}
+	return m
+}()
+
+// vendorBlockedLabels is the CLOSED set of blocked-write labels the
+// side-effect recorder emits.
+var vendorBlockedLabels = map[string]struct{}{
+	"user_capabilities_meta": {}, "user_level_meta": {}, "user_roles_option": {}, "site_admins": {},
+}
+
+// closedLabels maps each entry onto the closed set ("unknown" otherwise),
+// drops repeats, and keeps at most max.
+func closedLabels(in []string, set map[string]struct{}, max int) []string {
+	out := make([]string, 0, len(in))
+	seen := make(map[string]struct{}, len(in))
+	for _, v := range in {
+		if _, ok := set[v]; !ok {
+			v = "unknown"
+		}
+		if _, dup := seen[v]; dup {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+		if len(out) == max {
+			break
+		}
+	}
+	return out
+}
 
 // AbilityRunOwner is the owner the agent resolved for a vendor or core read.
 // Kind is from a closed set; Dir and Version are SITE TEXT (pattern-checked,
@@ -147,11 +190,7 @@ func decodeSideEffects(raw json.RawMessage) *AbilityRunSideEffects {
 		return nil
 	}
 	// Blocked is the agent's own fixed labels; anything else is replaced.
-	for i, b := range se.Blocked {
-		if !vendorLabelRe.MatchString(b) {
-			se.Blocked[i] = "unknown"
-		}
-	}
+	se.Blocked = closedLabels(se.Blocked, vendorBlockedLabels, len(vendorBlockedLabels)+1)
 	return &se
 }
 
@@ -165,13 +204,5 @@ func decodeViolations(raw json.RawMessage) []string {
 	if json.Unmarshal(raw, &vs) != nil {
 		return []string{"unknown"}
 	}
-	if len(vs) > vendorMaxViolations {
-		vs = vs[:vendorMaxViolations]
-	}
-	for i, v := range vs {
-		if !vendorLabelRe.MatchString(v) {
-			vs[i] = "unknown"
-		}
-	}
-	return vs
+	return closedLabels(vs, vendorViolationLabels, vendorMaxViolations)
 }

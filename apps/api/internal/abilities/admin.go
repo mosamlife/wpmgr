@@ -302,12 +302,20 @@ func (r *AdminRepo) Upsert(ctx context.Context, actor uuid.UUID, entryID *uuid.U
 // "*" (the agent's only wildcard): it would let a read write any option unrecorded.
 var wildcardOnlyPattern = regexp.MustCompile(`^\*+$`)
 
+// outputFieldsMaxBytes matches m159's octet_length(output_fields::text) cap.
+const outputFieldsMaxBytes = 16384
+
 // validateEntryShape checks what the database cannot spell: output_fields in
 // the strict output-shape grammar (an unknown node kind is refused here, at
 // save, never at run), and limits.allowed_option_patterns holding no
 // wildcard-only entry.
 func validateEntryShape(r sqlc.AbilityCatalogue) error {
 	if len(r.OutputFields) > 0 && string(r.OutputFields) != "null" {
+		// m159's CHECK caps output_fields at 16 KiB of jsonb text; refuse it
+		// here as a validation error rather than a database refusal.
+		if jsonbTextLen(r.OutputFields) > outputFieldsMaxBytes {
+			return domain.Validation("invalid_output_fields", "output_fields may be at most 16 KiB")
+		}
 		if _, err := agentcmd.ParseOutputShape(r.OutputFields); err != nil {
 			return domain.Validation("invalid_output_fields",
 				`output_fields must be {"fields":{...}}, {"items":...}, "string", "int" or "bool", at most 8 deep`)
@@ -335,4 +343,30 @@ func validateEntryShape(r sqlc.AbilityCatalogue) error {
 		}
 	}
 	return nil
+}
+
+// jsonbTextLen is the length of raw as Postgres prints jsonb: compact, with
+// one space after every ':' and ',' outside strings. A duplicate key, which
+// jsonb drops, makes it overcount; the database CHECK stays the backstop.
+// Invalid JSON returns its raw length.
+func jsonbTextLen(raw []byte) int {
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, raw); err != nil {
+		return len(raw)
+	}
+	b := buf.Bytes()
+	n, inStr, esc := len(b), false, false
+	for _, c := range b {
+		switch {
+		case esc:
+			esc = false
+		case inStr && c == '\\':
+			esc = true
+		case c == '"':
+			inStr = !inStr
+		case !inStr && (c == ':' || c == ','):
+			n++
+		}
+	}
+	return n
 }
