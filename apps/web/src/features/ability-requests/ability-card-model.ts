@@ -57,6 +57,9 @@ export function editorName(editor: string | null | undefined): string {
 }
 
 export const NOTHING_PUBLISHED = "Nothing is published. Undo moves the draft to the trash.";
+export const GAVE_UP_COPY =
+  "WPMgr could not confirm whether the draft was created. Check the site's drafts.";
+export const UNDO_RETRY_COPY = "The site didn't answer. Try Undo again.";
 export const CHANGED_COPY = "This request changed. Ask the AI again.";
 export const NOT_SHOWABLE_COPY =
   "WPMgr cannot show this request in full, so it cannot be approved here. Decline it and ask the AI again.";
@@ -136,15 +139,6 @@ export interface AbilityStatus {
   readonly draftMayExist?: boolean;
 }
 
-/** The undo window is open: done, not yet undone or tried, and still in time. */
-export function undoOpen(r: AbilityRequest, now: Date): boolean {
-  if (r.state !== "done" || r.outcome !== "created") return false;
-  if (r.undo_state !== "available" || r.trashed === true) return false;
-  if (!r.undo_available_until) return false;
-  const until = new Date(r.undo_available_until).getTime();
-  return !Number.isNaN(until) && until > now.getTime();
-}
-
 function hasCreatedPost(r: AbilityRequest): boolean {
   return typeof r.created_post_id === "number" && Number.isInteger(r.created_post_id) && r.created_post_id > 0;
 }
@@ -162,6 +156,15 @@ export function abilityStatus(r: AbilityRequest): AbilityStatus {
     case "dispatched":
       return { kind: "running", text: `WPMgr is creating the draft ${noun}.` };
     case "outcome_unknown":
+      if (r.resolve_gave_up) {
+        return {
+          kind: "unknown_outcome",
+          text: GAVE_UP_COPY,
+          // The edit link is offered when the post id is known (the card
+          // still needs a site address to build it).
+          draftMayExist: hasCreatedPost(r) && r.trashed !== true,
+        };
+      }
       if (hasCreatedPost(r) && r.trashed !== true) {
         return {
           kind: "unknown_outcome",
@@ -211,7 +214,9 @@ export function abilityStatus(r: AbilityRequest): AbilityStatus {
             : `Something went wrong on the site partway through.`;
         return {
           kind: "failed",
-          text: `${why} A draft ${noun} may exist on the site. Check it, and delete it there if you do not want it.`,
+          text: r.undo_offered
+            ? `${why} A draft ${noun} may exist on the site. Move it to the trash if you do not want it.`
+            : `${why} A draft ${noun} may exist on the site. Check it, and delete it there if you do not want it.`,
           draftMayExist: true,
         };
       }

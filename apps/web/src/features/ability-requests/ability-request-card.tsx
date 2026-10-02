@@ -14,7 +14,6 @@ import {
   editorName,
   isPending,
   parsePagePreview,
-  undoOpen,
   type PagePreview,
 } from "./ability-card-model";
 
@@ -27,7 +26,6 @@ export interface AbilityRequestCardProps {
   request: AbilityRequest;
   /** The site's own address, for the "edit the draft" link. Unknown is fine. */
   siteUrl?: string | null;
-  now: Date;
   onApprove: (request: AbilityRequest) => void;
   onDecline: (request: AbilityRequest) => void;
   onUndo: (request: AbilityRequest) => void;
@@ -43,7 +41,6 @@ export interface AbilityRequestCardProps {
 export function AbilityRequestCard({
   request,
   siteUrl,
-  now,
   onApprove,
   onDecline,
   onUndo,
@@ -59,7 +56,7 @@ export function AbilityRequestCard({
   const preview = parsePagePreview(request.input_json);
   const setUpFor = setUpForLine(request);
   const busy = approvePending || declinePending;
-  const canUndo = undoOpen(request, now);
+  const canUndo = request.undo_offered;
   const editHref = status.kind === "done" || status.draftMayExist === true ? editDraftHref(siteUrl, request.created_post_id) : null;
   const title = abilityCardTitle(request);
 

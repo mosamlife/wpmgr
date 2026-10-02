@@ -13,10 +13,12 @@ import {
   declineAbilityRequest,
   enableSiteContentEditing,
   getSiteContentEditing,
+  listAbilityRequests,
   listSiteAbilityRequests,
   undoAbilityRequest,
   type AbilityRequest,
   type AbilityRequestList,
+  type AbilityRequestOrgList,
   type ApiError,
   type ContentEditingState,
 } from "@wpmgr/api";
@@ -28,6 +30,7 @@ import {
 export const abilityRequestKeys = {
   all: ["ability-requests"] as const,
   site: (siteId: string) => [...abilityRequestKeys.all, "site", siteId] as const,
+  org: () => [...abilityRequestKeys.all, "org"] as const,
   editing: (siteId: string) => ["content-editing", siteId] as const,
 };
 
@@ -49,6 +52,8 @@ export class AbilityRequestError extends Error {
 /** Server code for a stale presented_digest (service.go CodeRequestChanged). */
 export const CODE_REQUEST_CHANGED = "ability_request_changed";
 /** content_editing.go: the site's agent is below the page-create floor. */
+/** undo.go CodeUndoRetry: the site did not settle the undo; it is open again (HTTP 503). */
+export const CODE_UNDO_RETRY = "ability_request_undo_retry";
 export const CODE_AGENT_OUTDATED = "content_editing_agent_outdated";
 
 function isApiError(value: unknown): value is ApiError {
@@ -96,6 +101,47 @@ export function useAbilityRequestPages(
   });
 }
 
+/**
+ * The organisation-wide queue (GET /api/v1/ai/ability-requests, GH #828).
+ * `pending_count` is the server's whole-queue figure for the tab badge.
+ */
+export function useOrgAbilityRequestPages(): UseInfiniteQueryResult<
+  InfiniteData<AbilityRequestOrgList, number>,
+  Error
+> {
+  return useInfiniteQuery({
+    queryKey: [...abilityRequestKeys.org(), "paged"] as const,
+    initialPageParam: 0,
+    queryFn: async ({ pageParam }): Promise<AbilityRequestOrgList> => {
+      const { data, error, response } = await listAbilityRequests({
+        query: { limit: ABILITY_PAGE_SIZE, offset: pageParam },
+      });
+      const status = response?.status;
+      if (error) throw toAbilityError(error, status);
+      if (!data) throw new AbilityRequestError("empty_response", "Empty response", status);
+      return data;
+    },
+    getNextPageParam: (last) =>
+      last.requests.length >= ABILITY_PAGE_SIZE ? last.offset + last.requests.length : undefined,
+    refetchInterval: 30_000,
+  });
+}
+
+/** The badge count alone: one row, same key family as the list so decisions invalidate it. */
+export function useOrgAbilityPendingCount(): UseQueryResult<AbilityRequestOrgList, Error> {
+  return useQuery({
+    queryKey: [...abilityRequestKeys.org(), "count"] as const,
+    queryFn: async (): Promise<AbilityRequestOrgList> => {
+      const { data, error, response } = await listAbilityRequests({ query: { limit: 1, offset: 0 } });
+      const status = response?.status;
+      if (error) throw toAbilityError(error, status);
+      if (!data) throw new AbilityRequestError("empty_response", "Empty response", status);
+      return data;
+    },
+    refetchInterval: 30_000,
+  });
+}
+
 interface DecideVars {
   readonly siteId: string;
   readonly requestId: string;
@@ -117,6 +163,7 @@ function useAbilityMutation<V extends DecideVars>(
     // the list must show where it went.
     onSettled: (_d, _e, vars) => {
       void qc.invalidateQueries({ queryKey: abilityRequestKeys.site(vars.siteId) });
+      void qc.invalidateQueries({ queryKey: abilityRequestKeys.org() });
     },
   });
 }
