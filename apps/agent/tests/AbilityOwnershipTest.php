@@ -316,6 +316,48 @@ class ' . $n['otherTool'] . ' extends ' . $n['tool'] . ' { protected function pa
         $this->assertNull(AbilityOwnership::sourceFiles($deep));
     }
 
+    public function test_deep_plain_data_does_not_count_against_the_depth_bound(): void
+    {
+        $x    = $this->sfx;
+        $wrap = 'own_plain_' . $x;
+        $lib  = $this->write('content/plugins/acmebuild/plain.php', '<?php function ' . $wrap . '($c) { return function ($input = null) use ($c) { return true; }; }');
+        require_once $lib;
+        $deep = ['type' => 'string'];
+        for ($i = 0; $i < 10; $i++) {
+            $deep = ['properties' => ['items' => $deep], 'n' => $i, 'flag' => true, 'none' => null];
+        }
+
+        $this->assertNull(
+            AbilityOwnership::refusal($this->ability($wrap($deep), $wrap(['slug' => 'x', 'limit' => 5])), 'plugin', 'acmebuild', $this->roots),
+            'a deeply nested configuration array stays the owner\'s'
+        );
+        $this->assertSame(
+            AbilityOwnership::REFUSE_SPLIT,
+            AbilityOwnership::refusal($this->ability($wrap(new \WP_Error('x', 'y')), $wrap(new \WP_Error('x', 'y'))), 'plugin', 'acmebuild', $this->roots),
+            'a captured object outside the owner stays strict'
+        );
+        $this->assertSame(
+            AbilityOwnership::REFUSE_SPLIT,
+            AbilityOwnership::refusal($this->ability($wrap(['a' => [['b' => new \WP_Error('x', 'y')]]]), $wrap([])), 'plugin', 'acmebuild', $this->roots),
+            'an object inside captured data stays strict'
+        );
+    }
+
+    public function test_a_mu_plugin_vendor_entry_is_refused_as_unverifiable(): void
+    {
+        $fn      = $this->functionIn('content/mu-plugins/loader.php');
+        $ability = $this->ability($fn, $fn);
+        $this->assertNull(AbilityOwnership::refusal($ability, 'mu-plugin', 'loader.php', $this->roots), 'the owner itself resolves');
+
+        $entry = (object) [
+            'source' => 'vendor', 'owner_kind' => 'mu-plugin', 'owner_dir' => 'loader.php',
+            'version_min' => '0', 'version_max_tested' => '999', 'schema_struct_sha256' => 'sha256:x',
+        ];
+        $r = \WPMgr\Agent\Abilities\VendorAbility::verify($ability, $entry, $this->roots, []);
+
+        $this->assertSame('builder_version_unverified', $r['refusal']['code'] ?? null);
+    }
+
     public function test_core_mu_plugin_and_theme_kinds(): void
     {
         $core = $this->functionIn('wp/wp-includes/functions.php');

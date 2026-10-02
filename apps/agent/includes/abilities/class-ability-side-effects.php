@@ -135,7 +135,7 @@ final class AbilitySideEffects
         };
         $meta = function ($check = null, $objectId = 0, $key = '') {
             if ($this->armed && is_string($key) && preg_match(self::BLOCKED_META, $key, $m) === 1) {
-                $this->blocked['user_' . $m[1] . '_meta'] = true;
+                $this->blocked[$m[1] === 'capabilities' ? 'user_capabilities_meta' : 'user_level_meta'] = true;
 
                 return false;
             }
