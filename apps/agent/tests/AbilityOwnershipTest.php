@@ -176,6 +176,75 @@ final class AbilityOwnershipTest extends TestCase
         );
     }
 
+    /**
+     * The owner plugin ships a trait, a base class and a tool whose closures
+     * call helpers on $this; a second plugin reuses each so its own code runs.
+     *
+     * @return array<string,string> Class names by role.
+     */
+    private function builderAndOther(): array
+    {
+        $x = $this->sfx;
+        $n = [
+            'trait' => 'OwnTrait' . $x, 'base' => 'OwnBase' . $x, 'tool' => 'OwnTool' . $x,
+            'viaTrait' => 'OtherViaTrait' . $x, 'viaInherit' => 'OtherViaInherit' . $x, 'otherTool' => 'OtherTool' . $x,
+        ];
+        $lib = $this->write('content/plugins/acmebuild/lib.php', '<?php
+trait ' . $n['trait'] . ' { public function run($i = null) { return $this->payload(); } public function perm($i = null) { return $this->allowed(); } }
+class ' . $n['base'] . ' { public function run($i = null) { return $this->payload(); } public function perm($i = null) { return $this->allowed(); }
+  protected function payload() { return "owner"; } protected function allowed() { return false; } }
+class ' . $n['tool'] . ' { public function closures() { return [function ($i = null) { return $this->payload(); }, function ($i = null) { return $this->allowed(); }]; }
+  protected function payload() { return "owner"; } protected function allowed() { return false; } }
+');
+        $other = $this->write('content/plugins/other/main.php', '<?php
+class ' . $n['viaTrait'] . ' { use ' . $n['trait'] . '; protected function payload() { return "other"; } protected function allowed() { return true; } }
+class ' . $n['viaInherit'] . ' extends ' . $n['base'] . ' { protected function payload() { return "other"; } protected function allowed() { return true; } }
+class ' . $n['otherTool'] . ' extends ' . $n['tool'] . ' { protected function payload() { return "other"; } protected function allowed() { return true; } }
+');
+        require_once $lib;
+        require_once $other;
+
+        return $n;
+    }
+
+    public function test_a_trait_method_used_by_another_plugin_is_split(): void
+    {
+        $n = $this->builderAndOther();
+        $o = new $n['viaTrait']();
+
+        $this->assertSame(AbilityOwnership::REFUSE_SPLIT, AbilityOwnership::refusal($this->ability([$o, 'run'], [$o, 'perm']), 'plugin', 'acmebuild', $this->roots));
+    }
+
+    public function test_an_inherited_method_with_helpers_overridden_by_another_plugin_is_split(): void
+    {
+        $n = $this->builderAndOther();
+        $o = new $n['viaInherit']();
+
+        $this->assertSame(AbilityOwnership::REFUSE_SPLIT, AbilityOwnership::refusal($this->ability([$o, 'run'], [$o, 'perm']), 'plugin', 'acmebuild', $this->roots));
+        $this->assertSame(AbilityOwnership::REFUSE_SPLIT, AbilityOwnership::refusal($this->ability($n['viaInherit'] . '::run', $n['viaInherit'] . '::perm'), 'plugin', 'acmebuild', $this->roots), 'the Class::method form');
+    }
+
+    public function test_an_owner_closure_rebound_to_another_plugins_object_is_split(): void
+    {
+        $n          = $this->builderAndOther();
+        [$c1, $c2]  = (new $n['tool']())->closures();
+        $o          = new $n['otherTool']();
+        $exec       = \Closure::bind($c1, $o, $n['otherTool']);
+        $perm       = \Closure::bind($c2, $o, $n['otherTool']);
+
+        $this->assertSame(AbilityOwnership::REFUSE_SPLIT, AbilityOwnership::refusal($this->ability($exec, $perm), 'plugin', 'acmebuild', $this->roots));
+    }
+
+    public function test_the_owners_own_objects_and_closures_still_classify_as_the_owner(): void
+    {
+        $n         = $this->builderAndOther();
+        [$c1, $c2] = (new $n['tool']())->closures();
+        $base      = new $n['base']();
+
+        $this->assertNull(AbilityOwnership::refusal($this->ability($c1, $c2), 'plugin', 'acmebuild', $this->roots));
+        $this->assertNull(AbilityOwnership::refusal($this->ability([$base, 'run'], [$base, 'perm']), 'plugin', 'acmebuild', $this->roots));
+    }
+
     public function test_core_mu_plugin_and_theme_kinds(): void
     {
         $core = $this->functionIn('wp/wp-includes/functions.php');
@@ -329,9 +398,14 @@ final class AbilityOwnershipTest extends TestCase
      */
     private function closureIn(string $rel): \Closure
     {
-        $file = $this->write($rel, '<?php return static function ($input = null) { return true; };');
+        // Made inside a plain function, so the closure has no bound object and
+        // no class scope (one written directly in an included file would
+        // inherit this test class as its scope).
+        $fn   = 'wpmgr_ownership_mk_' . $this->sfx . '_' . substr(hash('sha256', $rel), 0, 8);
+        $file = $this->write($rel, '<?php function ' . $fn . '() { return static function ($input = null) { return true; }; }');
+        require_once $file;
 
-        return require $file;
+        return $fn();
     }
 
     /**

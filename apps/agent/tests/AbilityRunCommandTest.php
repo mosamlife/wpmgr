@@ -134,7 +134,7 @@ final class AbilityRunCommandTest extends TestCase
         if (is_file($this->keyFile)) {
             @unlink($this->keyFile);
         }
-        unset($GLOBALS['wpdb'], $GLOBALS['wp_version']);
+        unset($GLOBALS['wpdb'], $GLOBALS['wp_version'], $GLOBALS['wp_filter']);
         Monkey\tearDown();
         parent::tear_down();
     }
@@ -691,6 +691,91 @@ final class AbilityRunCommandTest extends TestCase
         $g->disarm();
     }
 
+    public function test_an_earliest_filter_registered_before_arm_is_a_violation(): void
+    {
+        $GLOBALS['wp_version'] = '7.1.0';
+        // Registered first, so it runs ahead of our recorder in the same bucket.
+        $this->filters[] = [AbilityGuards::FILTER_PRE, static fn () => new \WP_Filter_Sentinel(), PHP_INT_MIN];
+        $g = new AbilityGuards();
+        $g->arm('acme/outer');
+
+        $out = $this->applyFilters(AbilityGuards::FILTER_PRE, new \WP_Filter_Sentinel(), 'acme/outer', []);
+
+        $this->assertInstanceOf(\WP_Error::class, $out);
+        $this->assertContains('short_circuit_order', $g->violations());
+        $g->disarm();
+    }
+
+    public function test_a_latest_short_circuit_added_after_arm_is_a_violation(): void
+    {
+        $GLOBALS['wp_version'] = '7.1.0';
+        $g = new AbilityGuards();
+        $g->arm('acme/outer');
+        // Added after arm (as from wp_ability_invoked), so it runs after our guard.
+        $this->filters[] = [AbilityGuards::FILTER_PRE, static fn () => ['attacker' => 'chosen'], PHP_INT_MAX];
+
+        $this->applyFilters(AbilityGuards::FILTER_PRE, new \WP_Filter_Sentinel(), 'acme/outer', []);
+
+        $this->assertContains('short_circuit_order', $g->violations());
+        $g->disarm();
+    }
+
+    public function test_a_latest_permission_flip_added_after_arm_is_refused_before_anything_runs(): void
+    {
+        $GLOBALS['wp_version'] = '7.1.0';
+        $g = new AbilityGuards();
+        $g->arm('acme/outer');
+        $this->filters[] = [AbilityGuards::FILTER_PERMISSION, static fn () => true, PHP_INT_MAX];
+
+        // The short-circuit guard runs before permission and execution.
+        $out = $this->applyFilters(AbilityGuards::FILTER_PRE, new \WP_Filter_Sentinel(), 'acme/outer', []);
+        $this->assertInstanceOf(\WP_Error::class, $out, 'core returns the short-circuit value; nothing else runs');
+        $this->assertContains('permission_order', $g->violations());
+
+        // And the permission guard itself sees it too.
+        $g->arm('acme/outer');
+        $this->filters[] = [AbilityGuards::FILTER_PERMISSION, static fn () => true, PHP_INT_MAX];
+        $this->applyFilters(AbilityGuards::FILTER_PERMISSION, false, 'acme/outer', [], null);
+        $this->assertContains('permission_order', $g->violations());
+        $g->disarm();
+    }
+
+    public function test_ordinary_priority_filters_on_every_guarded_tag_are_not_violations(): void
+    {
+        $GLOBALS['wp_version'] = '7.1.0';
+        $tags = [
+            AbilityGuards::FILTER_PRE, AbilityGuards::FILTER_INPUT, AbilityGuards::FILTER_PERMISSION,
+            AbilityGuards::FILTER_RESULT, AbilityGuards::FILTER_VALIDATE_INPUT, AbilityGuards::FILTER_VALIDATE_OUTPUT,
+        ];
+        foreach ($tags as $tag) {
+            $this->filters[] = [$tag, static fn ($v) => $v, 10];
+        }
+        $g = new AbilityGuards();
+        $g->arm('acme/outer');
+        foreach ($tags as $tag) {
+            // A late registration at an ordinary priority stays inside our edges.
+            $this->filters[] = [$tag, static fn ($v) => $v, 1000];
+        }
+
+        $s = new \WP_Filter_Sentinel();
+        $this->assertSame($s, $this->applyFilters(AbilityGuards::FILTER_PRE, $s, 'acme/outer', []));
+        $this->assertSame(['a' => 1], $this->applyFilters(AbilityGuards::FILTER_INPUT, ['a' => 1], 'acme/outer', null));
+        $this->assertTrue($this->applyFilters(AbilityGuards::FILTER_VALIDATE_INPUT, true, ['a' => 1], 'acme/outer'));
+        $this->assertTrue($this->applyFilters(AbilityGuards::FILTER_PERMISSION, true, 'acme/outer', [], null));
+        $this->assertSame(['r' => 1], $this->applyFilters(AbilityGuards::FILTER_RESULT, ['r' => 1], 'acme/outer', [], null));
+        $this->assertTrue($this->applyFilters(AbilityGuards::FILTER_VALIDATE_OUTPUT, true, ['r' => 1], 'acme/outer'));
+        $this->assertSame([], $g->violations());
+        $g->disarm();
+    }
+
+    public function test_a_sentinel_as_the_final_result_is_refused(): void
+    {
+        $g = new AbilityGuards();
+        $this->assertFalse($g->checkResult(new \WP_Filter_Sentinel()));
+        $this->assertSame(['sentinel_result'], $g->violations());
+        $this->assertTrue((new AbilityGuards())->checkResult(['output' => []]));
+    }
+
     public function test_a_vendor_ability_stays_unrunnable_with_a_resolved_owner(): void
     {
         $r = $this->callP($this->p('read', 'acmebuild/get-page-elements', [], '{}', [
@@ -706,6 +791,29 @@ final class AbilityRunCommandTest extends TestCase
     }
 
     /**
+     * Mirror the captured filters into $GLOBALS['wp_filter'] in core's shape:
+     * per tag an object whose public `callbacks` maps priority (ascending) to
+     * entries in registration order, each carrying its `function`.
+     */
+    private function syncWpFilter(): void
+    {
+        $registry = [];
+        foreach ($this->filters as [$tag, $cb, $prio]) {
+            if (!isset($registry[$tag])) {
+                $registry[$tag] = new class {
+                    /** @var array<int,array<int,array{function:callable,accepted_args:int}>> */
+                    public array $callbacks = [];
+                };
+            }
+            $registry[$tag]->callbacks[$prio][] = ['function' => $cb, 'accepted_args' => 4];
+        }
+        foreach ($registry as $hook) {
+            ksort($hook->callbacks);
+        }
+        $GLOBALS['wp_filter'] = $registry;
+    }
+
+    /**
      * Run the captured filters for $name in priority order, the way
      * apply_filters() does, threading the first argument through.
      *
@@ -714,6 +822,7 @@ final class AbilityRunCommandTest extends TestCase
      */
     private function applyFilters(string $name, mixed ...$args): mixed
     {
+        $this->syncWpFilter();
         $rows = array_values(array_filter($this->filters, static fn ($r) => $r[0] === $name));
         usort($rows, static fn ($a, $b) => $a[2] <=> $b[2]);
         foreach ($rows as $row) {
