@@ -156,8 +156,10 @@ func TestStampWpmgrAbilityEntryHashAsAppRole(t *testing.T) {
 
 		// A vendor row with a NULL hash: the superadmin path creates it, the
 		// stamp must refuse it and leave it NULL.
+		// m159 requires a non-wpmgr read to pin its schema and output shape.
 		ownerDir := "some-builder"
 		vmin := "1.0.0"
+		schemaSha := "0000000000000000000000000000000000000000000000000000000000000002"
 		vendor, err := q.AdminUpsertAbilityCatalogueEntry(ctx, sqlc.AdminUpsertAbilityCatalogueEntryParams{
 			ActorUserID: admin, Name: "vendor-m157/read-thing", Source: "vendor", Class: "read",
 			Status: "detect_only", Enabled: true, ApprovalMode: "none", PermissionMode: "principal",
@@ -165,6 +167,7 @@ func TestStampWpmgrAbilityEntryHashAsAppRole(t *testing.T) {
 			DynamicEnumPaths: []string{}, Title: "Vendor read", Description: "A vendor read.", Snapshot: "none",
 			ArgRender: []byte(`{}`), EffectCopy: "none", Limits: []byte(`{}`),
 			NestedAllow: []string{}, GlobalOptionKeys: []string{}, Admission: []byte(`{}`),
+			SchemaStructSha256: &schemaSha, OutputFields: []byte(`{"fields":{"id":"int"}}`),
 		})
 		if err != nil {
 			return err
