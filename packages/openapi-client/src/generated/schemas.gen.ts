@@ -574,6 +574,200 @@ export const AbilityCatalogueInputSchema = {
   },
 } as const;
 
+export const RestRouteSchema = {
+  type: "object",
+  description:
+    "One reviewed WordPress REST route (m161). `route_sha256` is the sha256\nof the exact route bytes sent to a site's agent.\n",
+  required: [
+    "route_id",
+    "method",
+    "namespace",
+    "template",
+    "core_pattern",
+    "path_params",
+    "query_keys",
+    "pinned_query",
+    "body_keys",
+    "class",
+    "output_fields",
+    "snapshot",
+    "arg_render",
+    "effect_copy",
+    "enabled",
+    "title",
+    "description",
+    "hash_current",
+    "updated_at",
+  ],
+  properties: {
+    route_id: {
+      type: "string",
+    },
+    method: {
+      type: "string",
+      enum: ["GET", "POST", "PUT", "PATCH", "DELETE"],
+    },
+    namespace: {
+      type: "string",
+    },
+    template: {
+      type: "string",
+    },
+    core_pattern: {
+      type: "string",
+    },
+    path_params: {
+      type: "object",
+      additionalProperties: true,
+    },
+    query_keys: {
+      type: "object",
+      additionalProperties: true,
+    },
+    pinned_query: {
+      type: "object",
+      additionalProperties: true,
+    },
+    body_keys: {
+      type: "object",
+      additionalProperties: true,
+    },
+    class: {
+      type: "string",
+      enum: ["read", "write"],
+    },
+    output_fields: {
+      description: "The pinned output shape",
+      "in the entry grammar.": null,
+    },
+    snapshot: {
+      type: "string",
+    },
+    target: {
+      nullable: true,
+    },
+    arg_render: {
+      type: "object",
+      additionalProperties: true,
+    },
+    operator_permission: {
+      type: "string",
+      nullable: true,
+    },
+    effect_copy: {
+      type: "string",
+      enum: ["draft", "live", "none"],
+    },
+    enabled: {
+      type: "boolean",
+    },
+    min_wp_version: {
+      type: "string",
+      nullable: true,
+    },
+    title: {
+      type: "string",
+    },
+    description: {
+      type: "string",
+    },
+    route_sha256: {
+      type: "string",
+      nullable: true,
+    },
+    hash_current: {
+      type: "boolean",
+    },
+    updated_at: {
+      type: "string",
+      format: "date-time",
+    },
+  },
+} as const;
+
+export const RestRouteInputSchema = {
+  type: "object",
+  description:
+    "A route edit. Every field is optional; an omitted field keeps its\nstored value. route_id and route_sha256 are never body fields.\nJSON members hold integers only, written plainly.\n",
+  additionalProperties: false,
+  properties: {
+    method: {
+      type: "string",
+      enum: ["GET", "POST", "PUT", "PATCH", "DELETE"],
+    },
+    namespace: {
+      type: "string",
+      maxLength: 128,
+    },
+    template: {
+      type: "string",
+      maxLength: 255,
+    },
+    core_pattern: {
+      type: "string",
+      maxLength: 255,
+    },
+    path_params: {
+      type: "object",
+      additionalProperties: true,
+    },
+    query_keys: {
+      type: "object",
+      additionalProperties: true,
+    },
+    pinned_query: {
+      type: "object",
+      additionalProperties: true,
+    },
+    body_keys: {
+      type: "object",
+      additionalProperties: true,
+    },
+    class: {
+      type: "string",
+      enum: ["read", "write"],
+    },
+    output_fields: {
+      description: "The pinned output shape",
+      "in the entry grammar.": null,
+    },
+    snapshot: {
+      type: "string",
+      maxLength: 32,
+    },
+    target: {
+      nullable: true,
+    },
+    arg_render: {
+      type: "object",
+      additionalProperties: true,
+    },
+    operator_permission: {
+      type: "string",
+      maxLength: 64,
+    },
+    effect_copy: {
+      type: "string",
+      enum: ["draft", "live", "none"],
+    },
+    enabled: {
+      type: "boolean",
+    },
+    min_wp_version: {
+      type: "string",
+      maxLength: 32,
+    },
+    title: {
+      type: "string",
+      maxLength: 120,
+    },
+    description: {
+      type: "string",
+      maxLength: 1000,
+    },
+  },
+} as const;
+
 export const ContentIntegrationInputSchema = {
   type: "object",
   required: ["display_name", "enabled", "status"],

@@ -654,6 +654,9 @@ import type {
   ListAdminContentIntegrationsData,
   ListAdminContentIntegrationsErrors,
   ListAdminContentIntegrationsResponses,
+  ListAdminRestRoutesData,
+  ListAdminRestRoutesErrors,
+  ListAdminRestRoutesResponses,
   ListAdminUsersData,
   ListAdminUsersErrors,
   ListAdminUserSitesData,
@@ -1129,6 +1132,9 @@ import type {
   UpdateAdminAbilityCatalogueEntryData,
   UpdateAdminAbilityCatalogueEntryErrors,
   UpdateAdminAbilityCatalogueEntryResponses,
+  UpdateAdminRestRouteData,
+  UpdateAdminRestRouteErrors,
+  UpdateAdminRestRouteResponses,
   UpdateClientData,
   UpdateClientErrors,
   UpdateClientResponses,
@@ -7185,6 +7191,49 @@ export const updateAdminAbilityCatalogueEntry = <
     ThrowOnError
   >({
     url: "/api/v1/admin/abilities/catalogue/{entryId}",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * The reviewed REST route catalogue (superadmin)
+ *
+ * Every route, enabled or not. `hash_current` is false when the stored
+ * `route_sha256` is unset or no longer reproduces from the row; such a
+ * route is not offered and nothing is sent against it.
+ *
+ */
+export const listAdminRestRoutes = <ThrowOnError extends boolean = false>(
+  options?: Options<ListAdminRestRoutesData, ThrowOnError>,
+) =>
+  (options?.client ?? client).get<
+    ListAdminRestRoutesResponses,
+    ListAdminRestRoutesErrors,
+    ThrowOnError
+  >({ url: "/api/v1/admin/abilities/rest-routes", ...options });
+
+/**
+ * Edit one reviewed REST route (superadmin)
+ *
+ * Omitted fields keep their stored values; the merge happens in the
+ * write's transaction under the route's lock. The acting user is the
+ * authenticated session. The server stamps a new `route_sha256` from the
+ * edited row, so every request approved against the old route closes
+ * unsent (route_changed, or route_disabled for a disable).
+ *
+ */
+export const updateAdminRestRoute = <ThrowOnError extends boolean = false>(
+  options: Options<UpdateAdminRestRouteData, ThrowOnError>,
+) =>
+  (options.client ?? client).put<
+    UpdateAdminRestRouteResponses,
+    UpdateAdminRestRouteErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/admin/abilities/rest-routes/{routeId}",
     ...options,
     headers: {
       "Content-Type": "application/json",

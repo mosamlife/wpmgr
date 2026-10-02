@@ -1740,6 +1740,11 @@ type UpdateAdminAbilityCatalogueEntryParams struct {
 	EntryId uuid.UUID
 }
 
+// UpdateAdminRestRouteParams is parameters of updateAdminRestRoute operation.
+type UpdateAdminRestRouteParams struct {
+	RouteId string
+}
+
 // UpdateClientParams is parameters of updateClient operation.
 type UpdateClientParams struct {
 	ClientId uuid.UUID

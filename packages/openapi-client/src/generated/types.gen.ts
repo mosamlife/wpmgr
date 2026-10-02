@@ -212,6 +212,91 @@ export type AbilityCatalogueInput = {
   output_fields?: unknown;
 };
 
+/**
+ * One reviewed WordPress REST route (m161). `route_sha256` is the sha256
+ * of the exact route bytes sent to a site's agent.
+ *
+ */
+export type RestRoute = {
+  route_id: string;
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  namespace: string;
+  template: string;
+  core_pattern: string;
+  path_params: {
+    [key: string]: unknown;
+  };
+  query_keys: {
+    [key: string]: unknown;
+  };
+  pinned_query: {
+    [key: string]: unknown;
+  };
+  body_keys: {
+    [key: string]: unknown;
+  };
+  class: "read" | "write";
+  /**
+   * The pinned output shape
+   */
+  output_fields: unknown;
+  snapshot: string;
+  target?: unknown;
+  arg_render: {
+    [key: string]: unknown;
+  };
+  operator_permission?: string;
+  effect_copy: "draft" | "live" | "none";
+  enabled: boolean;
+  min_wp_version?: string;
+  title: string;
+  description: string;
+  route_sha256?: string;
+  hash_current: boolean;
+  updated_at: string;
+};
+
+/**
+ * A route edit. Every field is optional; an omitted field keeps its
+ * stored value. route_id and route_sha256 are never body fields.
+ * JSON members hold integers only, written plainly.
+ *
+ */
+export type RestRouteInput = {
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  namespace?: string;
+  template?: string;
+  core_pattern?: string;
+  path_params?: {
+    [key: string]: unknown;
+  };
+  query_keys?: {
+    [key: string]: unknown;
+  };
+  pinned_query?: {
+    [key: string]: unknown;
+  };
+  body_keys?: {
+    [key: string]: unknown;
+  };
+  class?: "read" | "write";
+  /**
+   * The pinned output shape
+   */
+  output_fields?: unknown;
+  snapshot?: string;
+  target?: unknown;
+  arg_render?: {
+    [key: string]: unknown;
+  };
+  operator_permission?: string;
+  effect_copy?: "draft" | "live" | "none";
+  enabled?: boolean;
+  min_wp_version?: string;
+  title?: string;
+  description?: string;
+};
+
 export type ContentIntegrationInput = {
   display_name: string;
   enabled: boolean;
@@ -18827,6 +18912,86 @@ export type UpdateAdminAbilityCatalogueEntryResponses = {
 
 export type UpdateAdminAbilityCatalogueEntryResponse =
   UpdateAdminAbilityCatalogueEntryResponses[keyof UpdateAdminAbilityCatalogueEntryResponses];
+
+export type ListAdminRestRoutesData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/api/v1/admin/abilities/rest-routes";
+};
+
+export type ListAdminRestRoutesErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * superadmin_required
+   */
+  403: Error;
+};
+
+export type ListAdminRestRoutesError =
+  ListAdminRestRoutesErrors[keyof ListAdminRestRoutesErrors];
+
+export type ListAdminRestRoutesResponses = {
+  /**
+   * Every route
+   */
+  200: {
+    routes: Array<RestRoute>;
+  };
+};
+
+export type ListAdminRestRoutesResponse =
+  ListAdminRestRoutesResponses[keyof ListAdminRestRoutesResponses];
+
+export type UpdateAdminRestRouteData = {
+  body: RestRouteInput;
+  path: {
+    routeId: string;
+  };
+  query?: never;
+  url: "/api/v1/admin/abilities/rest-routes/{routeId}";
+};
+
+export type UpdateAdminRestRouteErrors = {
+  /**
+   * invalid_body, invalid_route (details.constraint names the database
+   * check), invalid_output_fields or route_not_reproducible.
+   *
+   */
+  400: Error;
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * superadmin_required
+   */
+  403: Error;
+  /**
+   * Resource not found
+   */
+  404: Error;
+  /**
+   * route_hash_not_moved or route_conflict.
+   */
+  409: Error;
+};
+
+export type UpdateAdminRestRouteError =
+  UpdateAdminRestRouteErrors[keyof UpdateAdminRestRouteErrors];
+
+export type UpdateAdminRestRouteResponses = {
+  /**
+   * The stored route
+   */
+  200: RestRoute;
+};
+
+export type UpdateAdminRestRouteResponse =
+  UpdateAdminRestRouteResponses[keyof UpdateAdminRestRouteResponses];
 
 export type GetDbOrphansReportData = {
   body?: never;

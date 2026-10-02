@@ -10121,6 +10121,89 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /api/v1/admin/abilities/rest-routes:
+    get:
+      operationId: listAdminRestRoutes
+      summary: The reviewed REST route catalogue (superadmin)
+      description: |
+        Every route, enabled or not. `hash_current` is false when the stored
+        `route_sha256` is unset or no longer reproduces from the row; such a
+        route is not offered and nothing is sent against it.
+      tags: [admin]
+      responses:
+        "200":
+          description: Every route
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [routes]
+                properties:
+                  routes:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/RestRoute"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: superadmin_required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/admin/abilities/rest-routes/{routeId}:
+    put:
+      operationId: updateAdminRestRoute
+      summary: Edit one reviewed REST route (superadmin)
+      description: |
+        Omitted fields keep their stored values; the merge happens in the
+        write's transaction under the route's lock. The acting user is the
+        authenticated session. The server stamps a new `route_sha256` from the
+        edited row, so every request approved against the old route closes
+        unsent (route_changed, or route_disabled for a disable).
+      tags: [admin]
+      parameters:
+        - name: routeId
+          in: path
+          required: true
+          schema: { type: string, pattern: "^[a-z0-9-]{1,64}$" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RestRouteInput"
+      responses:
+        "200":
+          description: The stored route
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RestRoute"
+        "400":
+          description: |
+            invalid_body, invalid_route (details.constraint names the database
+            check), invalid_output_fields or route_not_reproducible.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: superadmin_required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: route_hash_not_moved or route_conflict.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /api/v1/sites/{siteId}/perf/db/orphans:
     get:
       operationId: getDbOrphansReport
@@ -14773,6 +14856,65 @@ components:
             other node is refused (400 invalid_output_fields). Required for a
             vendor or core read. `limits.allowed_option_patterns` may not hold an
             empty or wildcard-only (`*`, `**`) pattern.
+    RestRoute:
+      type: object
+      description: |
+        One reviewed WordPress REST route (m161). `route_sha256` is the sha256
+        of the exact route bytes sent to a site's agent.
+      required: [route_id, method, namespace, template, core_pattern, path_params, query_keys,
+        pinned_query, body_keys, class, output_fields, snapshot, arg_render, effect_copy, enabled,
+        title, description, hash_current, updated_at]
+      properties:
+        route_id: { type: string }
+        method: { type: string, enum: [GET, POST, PUT, PATCH, DELETE] }
+        namespace: { type: string }
+        template: { type: string }
+        core_pattern: { type: string }
+        path_params: { type: object, additionalProperties: true }
+        query_keys: { type: object, additionalProperties: true }
+        pinned_query: { type: object, additionalProperties: true }
+        body_keys: { type: object, additionalProperties: true }
+        class: { type: string, enum: [read, write] }
+        output_fields: { description: The pinned output shape, in the entry grammar. }
+        snapshot: { type: string }
+        target: { nullable: true }
+        arg_render: { type: object, additionalProperties: true }
+        operator_permission: { type: string, nullable: true }
+        effect_copy: { type: string, enum: [draft, live, none] }
+        enabled: { type: boolean }
+        min_wp_version: { type: string, nullable: true }
+        title: { type: string }
+        description: { type: string }
+        route_sha256: { type: string, nullable: true }
+        hash_current: { type: boolean }
+        updated_at: { type: string, format: date-time }
+    RestRouteInput:
+      type: object
+      description: |
+        A route edit. Every field is optional; an omitted field keeps its
+        stored value. route_id and route_sha256 are never body fields.
+        JSON members hold integers only, written plainly.
+      additionalProperties: false
+      properties:
+        method: { type: string, enum: [GET, POST, PUT, PATCH, DELETE] }
+        namespace: { type: string, maxLength: 128 }
+        template: { type: string, maxLength: 255 }
+        core_pattern: { type: string, maxLength: 255 }
+        path_params: { type: object, additionalProperties: true }
+        query_keys: { type: object, additionalProperties: true }
+        pinned_query: { type: object, additionalProperties: true }
+        body_keys: { type: object, additionalProperties: true }
+        class: { type: string, enum: [read, write] }
+        output_fields: { description: The pinned output shape, in the entry grammar. }
+        snapshot: { type: string, maxLength: 32 }
+        target: { nullable: true }
+        arg_render: { type: object, additionalProperties: true }
+        operator_permission: { type: string, maxLength: 64 }
+        effect_copy: { type: string, enum: [draft, live, none] }
+        enabled: { type: boolean }
+        min_wp_version: { type: string, maxLength: 32 }
+        title: { type: string, maxLength: 120 }
+        description: { type: string, maxLength: 1000 }
     ContentIntegrationInput:
       type: object
       required: [display_name, enabled, status]
