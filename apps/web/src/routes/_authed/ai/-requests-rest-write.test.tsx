@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { screen, fireEvent, waitFor, within } from "@testing-library/react";
 import type { AbilityRequest } from "@wpmgr/api";
 
+type AbilityRequestCardFacts = NonNullable<AbilityRequest["card_facts"]>;
+
 import { createTestQueryClient, renderWithProviders } from "@/test/render";
 import { authKeys } from "@/features/auth/use-auth";
 
@@ -43,7 +45,7 @@ function ok(data: unknown) {
   return Promise.resolve({ data, error: undefined, response: { status: 200 } });
 }
 
-function facts(over: Record<string, unknown> = {}) {
+function facts(over: Partial<AbilityRequestCardFacts> = {}): AbilityRequestCardFacts {
   return {
     route_id: "wp-v2-pages-update-fields",
     route_title: "Change a page's title or excerpt",
@@ -61,12 +63,13 @@ function facts(over: Record<string, unknown> = {}) {
     effect_label: "Published immediately",
     undo: "post_fields",
     undo_exact: true,
-    undo_note: null,
+    // The server sends null when the undo is exact (the generated type says string).
+    undo_note: null as unknown as string,
     ...over,
   };
 }
 
-type RestRow = AbilityRequest & { route_id: string; route_sha256: string; card_facts: unknown };
+type RestRow = AbilityRequest;
 
 function restRow(over: Partial<RestRow> = {}): RestRow {
   return {
@@ -188,7 +191,7 @@ describe("rest-write structured card", () => {
   });
 
   it("a card whose facts are not in the expected shape cannot be approved", async () => {
-    renderPage([restRow({ card_facts: { route_title: "x" } })]);
+    renderPage([restRow({ card_facts: { route_title: "x" } as unknown as AbilityRequestCardFacts })]);
     const card = await screen.findByRole("article");
     expect(within(card).getByRole("button", { name: "Approve" })).toBeDisabled();
     expect(card).toHaveTextContent("cannot show this request in full");
@@ -262,9 +265,9 @@ describe("rest-write structured card", () => {
         title: "Spring sale",
         outline: [{ type: "paragraph", text: "Big savings." }],
       }),
-      effect_copy: "draft",
+      effect_copy: "draft" as const,
       card_facts: undefined,
-    } as RestRow;
+    };
     renderPage([pc]);
     const card = await screen.findByRole("article", { name: /Create a draft page/ });
     expect(within(card).getByTestId("ability-outline")).toHaveTextContent("Spring sale");

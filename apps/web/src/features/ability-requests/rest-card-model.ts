@@ -11,6 +11,8 @@ import { clockTime, notSentText, refusalAdvice, type AbilityStatus } from "./abi
 export const REST_WRITE_ABILITY = "wpmgr/rest-write";
 
 const factsSchema = z.object({
+  route_id: z.string(),
+  effect_copy: z.string(),
   route_title: z.string(),
   method: z.string(),
   target: z.object({
@@ -26,38 +28,28 @@ const factsSchema = z.object({
       from_the_site: z.object({ before: z.string() }),
     }),
   ),
-  live: z.boolean().optional(),
+  live: z.boolean(),
   effect_label: z.string(),
-  undo: z.string().optional(),
+  undo: z.string(),
+  undo_exact: z.boolean(),
   undo_note: z.string().nullish(),
 });
 
 export type RestCardFacts = z.infer<typeof factsSchema>;
 
-/** `card_facts` is not in the generated type until the contract carries it; read it defensively. */
-type WithFacts = AbilityRequest & { card_facts?: unknown };
-
 export function isRestWrite(r: AbilityRequest): boolean {
   return r.ability_name === REST_WRITE_ABILITY;
 }
 
-/** Parses the stored card facts (an object, or the JSON text of one). Null when it is not the shape the card can show in full. */
+/** Validates the row's card_facts as defence; null when it is not the shape the card can show in full. */
 export function parseRestCardFacts(r: AbilityRequest): RestCardFacts | null {
-  let raw: unknown = (r as WithFacts).card_facts;
-  if (typeof raw === "string") {
-    try {
-      raw = JSON.parse(raw);
-    } catch {
-      return null;
-    }
-  }
-  const parsed = factsSchema.safeParse(raw);
+  const parsed = factsSchema.safeParse(r.card_facts);
   return parsed.success ? parsed.data : null;
 }
 
 /** The effect line is a warning only for the live label the server wrote. */
 export function isPublishedImmediately(f: RestCardFacts): boolean {
-  return f.live === true;
+  return f.live;
 }
 
 export const REST_NOT_SHOWABLE_COPY =
