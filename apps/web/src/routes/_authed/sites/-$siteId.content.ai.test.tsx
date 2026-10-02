@@ -110,6 +110,8 @@ function req(over: Partial<AbilityRequest> = {}): AbilityRequest {
     trashed: null,
     undo_state: null,
     undo_available_until: null,
+    undo_offered: false,
+    resolve_gave_up: false,
     ...over,
   };
 }
@@ -316,7 +318,7 @@ describe("card states", () => {
 
   it("done: 'Draft created', an edit link when the site address is known, and Undo inside the window", async () => {
     listReqs.mockResolvedValue(
-      okList([req({ state: "done", outcome: "created", created_post_id: 42, undo_state: "available", undo_available_until: FUTURE })]),
+      okList([req({ state: "done", outcome: "created", created_post_id: 42, undo_state: "available", undo_available_until: FUTURE, undo_offered: true })]),
     );
     undoReq.mockResolvedValue({
       data: req({ state: "done", outcome: "created", created_post_id: 42, undo_available_until: FUTURE, undo_state: "undone", trashed: true }),
@@ -345,14 +347,99 @@ describe("card states", () => {
     },
   );
 
-  it("done: no Undo once the window has passed", async () => {
+  it("done: no Undo when the server says undo_offered is false, whatever the window fields say", async () => {
     listReqs.mockResolvedValue(
-      okList([req({ state: "done", outcome: "created", created_post_id: 42, undo_state: "available", undo_available_until: PAST })]),
+      okList([req({ state: "done", outcome: "created", created_post_id: 42, undo_state: "available", undo_available_until: FUTURE, undo_offered: false })]),
     );
     renderTab();
     const c = within(await card());
     expect(c.getByText("Draft created.")).toBeInTheDocument();
     expect(c.queryByRole("button", { name: "Undo" })).toBeNull();
+  });
+
+  it("done: Undo shows when undo_offered is true even with a window field already in the past", async () => {
+    listReqs.mockResolvedValue(
+      okList([req({ state: "done", outcome: "created", created_post_id: 42, undo_state: "available", undo_available_until: PAST, undo_offered: true })]),
+    );
+    renderTab();
+    const c = within(await card());
+    expect(c.getByRole("button", { name: "Undo" })).toBeInTheDocument();
+  });
+
+  it("failed with a post id and undo_offered: says a draft may exist, offers the trash, and Undo calls the undo route", async () => {
+    listReqs.mockResolvedValue(
+      okList([req({ state: "failed", outcome: "failed", outcome_code: "interrupted", created_post_id: 7, undo_offered: true })]),
+    );
+    undoReq.mockResolvedValue({
+      data: req({ state: "failed", outcome: "failed", created_post_id: 7, undo_state: "undone", trashed: true }),
+      error: undefined,
+      response: { status: 200 },
+    });
+    renderTab();
+    const c = within(await card());
+    expect(c.getByText(/A draft page may exist on the site\. Move it to the trash/)).toBeInTheDocument();
+    expect(c.getByRole("link", { name: "Edit the draft in WordPress" })).toBeInTheDocument();
+    fireEvent.click(c.getByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(undoReq).toHaveBeenCalledWith({ path: { siteId: "site-1", requestId: "r-1" }, body: {} }));
+  });
+
+  it("failed with a post id but undo_offered false: no Undo", async () => {
+    listReqs.mockResolvedValue(
+      okList([req({ state: "failed", outcome: "failed", created_post_id: 7, undo_offered: false })]),
+    );
+    renderTab();
+    const c = within(await card());
+    expect(c.getByText(/may exist/)).toBeInTheDocument();
+    expect(c.queryByRole("button", { name: "Undo" })).toBeNull();
+  });
+
+  it("resolve_gave_up: shows the final state and the edit link when a post id is known", async () => {
+    listReqs.mockResolvedValue(
+      okList([req({ state: "outcome_unknown", outcome: "outcome_unknown", created_post_id: 9, resolve_gave_up: true })]),
+    );
+    renderTab();
+    const c = within(await card());
+    expect(
+      c.getByText("WPMgr could not confirm whether the draft was created. Check the site's drafts."),
+    ).toBeInTheDocument();
+    expect(c.queryByText(/is checking/)).toBeNull();
+    expect(c.getByRole("link", { name: "Edit the draft in WordPress" })).toHaveAttribute(
+      "href",
+      "https://shop.example.com/wp-admin/post.php?post=9&action=edit",
+    );
+  });
+
+  it("resolve_gave_up without a post id: final state, no link", async () => {
+    listReqs.mockResolvedValue(
+      okList([req({ state: "outcome_unknown", outcome: "outcome_unknown", resolve_gave_up: true })]),
+    );
+    renderTab();
+    const c = within(await card());
+    expect(c.getByText(/could not confirm whether the draft was created/)).toBeInTheDocument();
+    expect(c.queryByRole("link")).toBeNull();
+  });
+
+  it("outcome_unknown still resolving (resolve_gave_up false) keeps the checking text", async () => {
+    listReqs.mockResolvedValue(okList([req({ state: "outcome_unknown", resolve_gave_up: false })]));
+    renderTab();
+    const c = within(await card());
+    expect(c.getByText(/is checking whether the draft was created/)).toBeInTheDocument();
+  });
+
+  it("undo 503 ability_request_undo_retry: says try again, refetches, and keeps the Undo button", async () => {
+    listReqs.mockResolvedValue(
+      okList([req({ state: "done", outcome: "created", created_post_id: 42, undo_state: "available", undo_available_until: FUTURE, undo_offered: true })]),
+    );
+    undoReq.mockResolvedValue(
+      fail(503, "ability_request_undo_retry", "The site did not confirm the undo. It is still available; try again in a moment."),
+    );
+    renderTab();
+    const c = within(await card());
+    const callsBefore = listReqs.mock.calls.length;
+    fireEvent.click(c.getByRole("button", { name: "Undo" }));
+    expect(await c.findByRole("alert")).toHaveTextContent("The site didn't answer. Try Undo again.");
+    await waitFor(() => expect(listReqs.mock.calls.length).toBeGreaterThan(callsBefore));
+    expect(c.getByRole("button", { name: "Undo" })).toBeInTheDocument();
   });
 
   it("lists a waiting request above decided ones", async () => {

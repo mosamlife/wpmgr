@@ -25,6 +25,8 @@ const base: AbilityRequest = {
   created_at: "2026-10-01T10:00:00Z",
   expires_at: "2026-10-01T11:00:00Z",
   post_type: "page",
+  undo_offered: false,
+  resolve_gave_up: false,
 };
 const mk = (o: Partial<AbilityRequest>): AbilityRequest => ({ ...base, ...o });
 
@@ -74,7 +76,7 @@ describe("abilityStatus on failed and unknown rows", () => {
 });
 
 describe("AbilityRequestCard on a failed row with a post id", () => {
-  const props = { now: new Date("2026-10-01T10:30:00Z"), onApprove: vi.fn(), onDecline: vi.fn(), onUndo: vi.fn() };
+  const props = { onApprove: vi.fn(), onDecline: vi.fn(), onUndo: vi.fn() };
 
   it("shows the edit link when the site address is known and never prints the code", () => {
     render(
