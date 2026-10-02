@@ -49,6 +49,11 @@ const MinAgentVersionForPageCreate = "0.61.156"
 // the control plane neither offers nor starts one until the site runs it.
 const MinAgentVersionForRecoveryUndo = "0.61.157"
 
+// MinAgentVersionForRestCall is the first agent release that ships
+// wpmgr/rest-read and wpmgr/rest-write (reviewed REST routes, RC1). An older
+// agent answers ability_unknown; discover, describe and run refuse first.
+const MinAgentVersionForRestCall = "0.61.158"
+
 // ErrAbilityRunMalformed marks a 2xx ability_run reply the control plane
 // could not use: a body that did not decode, or an answer for another mode or
 // entry. Resending the same call gets the same answer.
@@ -77,6 +82,7 @@ const (
 	AbilityRunMaxPBytes     = 262144
 	AbilityRunMaxEntryBytes = 65536
 	AbilityRunMaxInputBytes = 65536
+	AbilityRunMaxRouteBytes = 65536
 )
 
 // AbilityRunCall is one call. Entry and Input are exact JSON text: they are
@@ -92,12 +98,21 @@ type AbilityRunCall struct {
 	// digests the person approved, which the agent recomputes before any
 	// effect.
 	Expected *AbilityRunExpected
+	// Route and RouteSHA256 are wpmgr/rest-read and wpmgr/rest-write's
+	// reviewed route row (exact JSON text) and the hex sha256 of those bytes.
+	// Empty for every other ability and for revert and ledger.
+	Route       []byte
+	RouteSHA256 string
 }
 
 // AbilityRunExpected is write's expected{} member.
+//
+// page-create sends precheck_digest and preview_digest; rest-write sends
+// precheck_digest and base_fingerprint.
 type AbilityRunExpected struct {
-	PrecheckDigest string `json:"precheck_digest"`
-	PreviewDigest  string `json:"preview_digest"`
+	PrecheckDigest  string `json:"precheck_digest"`
+	PreviewDigest   string `json:"preview_digest,omitempty"`
+	BaseFingerprint string `json:"base_fingerprint,omitempty"`
 }
 
 // abilityRunP is p's shape. Field order is the wire order. Every value is a
@@ -109,6 +124,8 @@ type abilityRunP struct {
 	Entry       string              `json:"entry,omitempty"`
 	EntrySHA256 string              `json:"entry_sha256,omitempty"`
 	Input       string              `json:"input,omitempty"`
+	Route       string              `json:"route,omitempty"`
+	RouteSHA256 string              `json:"route_sha256,omitempty"`
 	Expected    *AbilityRunExpected `json:"expected,omitempty"`
 }
 
@@ -132,9 +149,15 @@ func BuildAbilityRunParams(call AbilityRunCall) (p []byte, pd string, err error)
 			return nil, "", fmt.Errorf("ability_run: expected is only sent with write")
 		}
 	case AbilityRunModeWrite:
-		if call.Expected == nil || !hex64.MatchString(call.Expected.PrecheckDigest) ||
-			!hex64.MatchString(call.Expected.PreviewDigest) {
+		if call.Expected == nil || !hex64.MatchString(call.Expected.PrecheckDigest) {
 			return nil, "", fmt.Errorf("ability_run: write needs expected precheck and preview digests")
+		}
+		if len(call.Route) == 0 {
+			if !hex64.MatchString(call.Expected.PreviewDigest) || call.Expected.BaseFingerprint != "" {
+				return nil, "", fmt.Errorf("ability_run: write needs expected precheck and preview digests")
+			}
+		} else if !hex64.MatchString(call.Expected.BaseFingerprint) || call.Expected.PreviewDigest != "" {
+			return nil, "", fmt.Errorf("ability_run: a route write needs expected precheck digest and base fingerprint")
 		}
 	default:
 		return nil, "", fmt.Errorf("ability_run: unknown mode %q", call.Mode)
@@ -142,6 +165,19 @@ func BuildAbilityRunParams(call AbilityRunCall) (p []byte, pd string, err error)
 	if call.Mode == AbilityRunModeRevert && len(call.Input) != 0 {
 		// W3: the agent takes the object from its ledger, never from input.
 		return nil, "", fmt.Errorf("ability_run: revert takes no input")
+	}
+	if len(call.Route) != 0 || call.RouteSHA256 != "" {
+		switch call.Mode {
+		case AbilityRunModeRead, AbilityRunModePrecheck, AbilityRunModeWrite:
+		default:
+			return nil, "", fmt.Errorf("ability_run: a route is only sent with read, precheck and write")
+		}
+		if len(call.Route) > AbilityRunMaxRouteBytes || !json.Valid(call.Route) || !isJSONObject(call.Route) {
+			return nil, "", fmt.Errorf("ability_run: route must be JSON object text of at most %d bytes", AbilityRunMaxRouteBytes)
+		}
+		if SHA256Hex(call.Route) != call.RouteSHA256 {
+			return nil, "", fmt.Errorf("ability_run: route_sha256 does not match the route bytes")
+		}
 	}
 	if call.RequestID == uuid.Nil {
 		return nil, "", fmt.Errorf("ability_run: request_id is required")
@@ -170,6 +206,8 @@ func BuildAbilityRunParams(call AbilityRunCall) (p []byte, pd string, err error)
 		pv.Entry = string(call.Entry)
 		pv.EntrySHA256 = call.EntrySHA256
 		pv.Input = string(input)
+		pv.Route = string(call.Route)
+		pv.RouteSHA256 = call.RouteSHA256
 		pv.Expected = call.Expected
 	}
 	p, err = json.Marshal(pv)
@@ -243,6 +281,18 @@ type AbilityRunResponse struct {
 	AbilitiesInvoked []string         `json:"abilities_invoked,omitempty"`
 	SideEffects      json.RawMessage  `json:"side_effects,omitempty"`
 	ErrorCode        string           `json:"error_code,omitempty"`
+
+	// rest-read and rest-write (E3-A3): the route the agent ran, and
+	// precheck's target facts and changes. Every string in TargetFacts and
+	// Changes is SITE TEXT.
+	RouteID     string          `json:"route_id,omitempty"`
+	RouteSHA256 string          `json:"route_sha256,omitempty"`
+	TargetFacts json.RawMessage `json:"target_facts,omitempty"`
+	Changes     json.RawMessage `json:"changes,omitempty"`
+	UndoExact   *bool           `json:"undo_exact,omitempty"`
+	Live        *bool           `json:"live,omitempty"`
+	Restored    *bool           `json:"restored,omitempty"`
+	Exact       *bool           `json:"exact,omitempty"`
 
 	// Raw is the exact reply body, for the strict vendor read decode.
 	Raw json.RawMessage `json:"-"`
@@ -341,6 +391,23 @@ var AbilityRunRefusalCodes = map[string]struct{}{
 	"ability_permission_denied":         {},
 	"ability_failed":                    {},
 	"ability_output_invalid":            {},
+	// REST routes (E3-A3, agent 0.61.158).
+	"route_not_reviewed":           {},
+	"route_disabled":               {},
+	"route_entry_changed":          {},
+	"route_namespace_refused":      {},
+	"route_param_invalid":          {},
+	"route_key_not_allowed":        {},
+	"route_key_forbidden":          {},
+	"route_wp_version_unsupported": {},
+	"rest_handler_not_core":        {},
+	"rest_intercepted":             {},
+	"rest_error":                   {},
+	"rest_not_published":           {},
+	"post_not_editable":            {},
+	"sanitiser_changed_value":      {},
+	"side_effect_detected":         {},
+	"post_touched":                 {},
 }
 
 var abilityRunCodeRe = regexp.MustCompile(`^[a-z0-9_]{1,40}$`)
@@ -397,7 +464,7 @@ func abilityRunRefusalOf(out AbilityRunResponse) *AbilityRunRefusal {
 		Retryable:   out.Retryable,
 		PostID:      out.PostID,
 		Trashed:     out.Trashed,
-		Violations:  decodeViolations(out.Violations),
+		Violations:  decodeRefusalViolations(out.Code, out.Violations),
 		SideEffects: decodeSideEffects(out.SideEffects),
 		ErrorCode:   humantext.CapBytes(humantext.Clean(out.ErrorCode), vendorErrorCodeBytes),
 	}

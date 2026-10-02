@@ -196,6 +196,29 @@ func decodeSideEffects(raw json.RawMessage) *AbilityRunSideEffects {
 
 // decodeViolations decodes violations[]: the agent's fixed guard labels.
 // A label outside the shape becomes "unknown"; past the bound the list is cut.
+// restViolationLabels is rest_intercepted's CLOSED set (class-rest-guards.php):
+// the REST filter at which another plugin interfered.
+var restViolationLabels = map[string]struct{}{
+	"pre_dispatch": {}, "before_callbacks": {}, "dispatch": {}, "after_callbacks": {},
+}
+
+// decodeRefusalViolations picks the closed label set by refusal code: a
+// rest_intercepted refusal carries REST filter labels, every other refusal
+// the ability guard labels. A label outside the set becomes "unknown".
+func decodeRefusalViolations(code string, raw json.RawMessage) []string {
+	if code != "rest_intercepted" {
+		return decodeViolations(raw)
+	}
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil
+	}
+	var vs []string
+	if json.Unmarshal(raw, &vs) != nil {
+		return []string{"unknown"}
+	}
+	return closedLabels(vs, restViolationLabels, vendorMaxViolations)
+}
+
 func decodeViolations(raw json.RawMessage) []string {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return nil
