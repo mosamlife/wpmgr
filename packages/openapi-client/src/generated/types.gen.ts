@@ -18433,10 +18433,6 @@ export type ReenableAbilityForTenantData = {
 
 export type ReenableAbilityForTenantErrors = {
   /**
-   * entryId is not a UUID
-   */
-  400: Error;
-  /**
    * Not a signed-in person, or not an admin or owner of the account
    */
   403: Error;
@@ -18448,6 +18444,10 @@ export type ReenableAbilityForTenantErrors = {
    * The body is not JSON
    */
   415: Error;
+  /**
+   * entryId is not a UUID
+   */
+  422: Error;
 };
 
 export type ReenableAbilityForTenantError =

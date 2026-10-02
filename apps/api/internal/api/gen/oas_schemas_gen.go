@@ -47957,10 +47957,6 @@ func (s *RecoveryCodesResponse) SetRecoveryCodes(val []string) {
 func (*RecoveryCodesResponse) confirmTotpEnrollmentRes()   {}
 func (*RecoveryCodesResponse) regenerateRecoveryCodesRes() {}
 
-type ReenableAbilityForTenantBadRequest Error
-
-func (*ReenableAbilityForTenantBadRequest) reenableAbilityForTenantRes() {}
-
 type ReenableAbilityForTenantForbidden Error
 
 func (*ReenableAbilityForTenantForbidden) reenableAbilityForTenantRes() {}
@@ -47970,6 +47966,10 @@ type ReenableAbilityForTenantNotFound Error
 func (*ReenableAbilityForTenantNotFound) reenableAbilityForTenantRes() {}
 
 type ReenableAbilityForTenantReq struct{}
+
+type ReenableAbilityForTenantUnprocessableEntity Error
+
+func (*ReenableAbilityForTenantUnprocessableEntity) reenableAbilityForTenantRes() {}
 
 type ReenableAbilityForTenantUnsupportedMediaType Error
 

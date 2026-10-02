@@ -9620,7 +9620,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AbilityTenantReenableResult"
-        "400":
+        "422":
           description: entryId is not a UUID
           content:
             application/json:
