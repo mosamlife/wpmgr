@@ -562,6 +562,10 @@ final class AbilityRunCommand implements CommandInterface
             || !current_user_can('edit_post', $postId)) {
             return ['refusal' => $this->fail('post_not_editable', 'no ' . $type . ' with that id that the service user may edit')];
         }
+        // Core publishes a past-due scheduled post when it is updated.
+        if (self::pf($post, 'post_status') === 'future') {
+            return ['refusal' => $this->fail('post_scheduled', 'this page is scheduled; change its title in WordPress')];
+        }
 
         return ['post' => $post];
     }
@@ -720,9 +724,13 @@ final class AbilityRunCommand implements CommandInterface
      */
     private function restOtherColumnsChanged(object $before, object $after): array
     {
-        $out = [];
+        $out      = [];
+        $redating = self::coreRedatesOnUpdate($before);
         foreach (RestCall::POST_COLUMNS as $column) {
             if (in_array($column, RestCall::POST_FIELDS_MOVING, true) || $column === 'comment_count') {
+                continue;
+            }
+            if ($redating && $column === 'post_date') {
                 continue;
             }
             if (self::pf($before, $column) !== self::pf($after, $column)) {
@@ -731,6 +739,22 @@ final class AbilityRunCommand implements CommandInterface
         }
 
         return $out;
+    }
+
+    /**
+     * Does core's wp_update_post() set post_date to the current time on this
+     * update? It does for a draft, pending or auto-draft post whose
+     * post_date_gmt is the zero date, unless the update sets edit_date; the
+     * update this engine sends never does. Only post_date moves: core then
+     * leaves post_date_gmt at the zero date for such a post.
+     *
+     * @param object $post Post before the update.
+     * @return bool
+     */
+    private static function coreRedatesOnUpdate(object $post): bool
+    {
+        return in_array(self::pf($post, 'post_status'), ['draft', 'pending', 'auto-draft'], true)
+            && self::pf($post, 'post_date_gmt') === '0000-00-00 00:00:00';
     }
 
     /**
@@ -888,20 +912,37 @@ final class AbilityRunCommand implements CommandInterface
             if ($tripped) {
                 $result = $this->fail('side_effect_detected', 'the site changed outside this post during the write', false, $columns !== [] ? ['columns' => $columns] : []);
             }
-            // 9. Undo our own change when anything changed.
+            // 9. Undo our own change when anything changed. Restored means
+            //    the whole row is back as it was, apart from the modified
+            //    dates; anything still different is named and left
+            //    undoable by a person.
+            $ledgerFields = ['phase' => 'failed', 'undo_state' => 'none'];
             if ($changed || $tripped) {
-                $undo               = $this->restorePrior($postId, $prior);
-                $result['restored'] = $undo['restored'];
-                $result['exact']    = $undo['exact'];
+                $undo = $this->restorePrior($postId, $prior);
+                clean_post_cache($postId);
+                $now  = get_post($postId);
+                $left = is_object($now) ? $this->restOtherColumnsChanged($post, $now) : RestCall::POST_COLUMNS;
+                $result['restored'] = $undo['restored'] && $left === [];
+                $result['exact']    = $undo['exact'] && $left === [];
+                if ($left !== []) {
+                    $result['columns_still_changed'] = array_values($left);
+                }
+                if ($result['restored']) {
+                    $ledgerFields['undo_state'] = 'restored';
+                } elseif (is_object($now)) {
+                    $ledgerFields = [
+                        'phase'                 => 'failed_needs_attention',
+                        'undo_state'            => 'available',
+                        'after_fp'              => RestCall::postFingerprint($now),
+                        'touch_marker'          => $this->touchMarker($postId),
+                        'columns_still_changed' => array_values($left),
+                    ];
+                }
             } else {
                 $result['restored'] = false;
                 $result['changed']  = false;
             }
-            AbilityLedger::update($requestId, [
-                'phase'      => 'failed',
-                'undo_state' => ($result['restored'] ?? false) === true ? 'restored' : 'none',
-                'result'     => $result,
-            ]);
+            AbilityLedger::update($requestId, $ledgerFields + ['result' => $result]);
 
             return $result;
         }
@@ -1037,12 +1078,12 @@ final class AbilityRunCommand implements CommandInterface
             return $this->fail('ledger_ability_mismatch', 'the ledger row is for another ability');
         }
         $postId = (int) ($row['target_post_id'] ?? 0);
-        if (($row['undo_state'] ?? null) === 'restored') {
-            return ['ok' => true, 'outcome' => 'already_reverted', 'mode' => 'revert', 'request_id' => $requestId, 'post_id' => $postId, 'restored' => true];
+        if (in_array($row['undo_state'] ?? null, ['restored', 'restored_fields_only'], true)) {
+            return ['ok' => true, 'outcome' => 'already_reverted', 'mode' => 'revert', 'request_id' => $requestId, 'post_id' => $postId, 'restored' => ($row['undo_state'] ?? null) === 'restored'];
         }
         $prior   = $row['prior'] ?? null;
         $afterFp = $row['after_fp'] ?? null;
-        if (($row['phase'] ?? null) !== 'completed' || ($row['undo_state'] ?? null) !== 'available'
+        if (!in_array($row['phase'] ?? null, ['completed', 'failed_needs_attention'], true) || ($row['undo_state'] ?? null) !== 'available'
             || $postId < 1 || !is_array($prior) || !is_string($afterFp) || $afterFp === ''
             || !is_string($prior['post_title'] ?? null) || !is_string($prior['post_excerpt'] ?? null)) {
             return $this->fail('not_revertible', 'this request has no change that can be undone');
@@ -1068,21 +1109,28 @@ final class AbilityRunCommand implements CommandInterface
                 if (!$undo['restored']) {
                     return $this->fail('revert_failed', 'the previous title and excerpt could not be put back', false, ['exact' => false]);
                 }
-                AbilityLedger::update($requestId, ['undo_state' => 'restored', 'reverted_at' => time()]);
+                // Columns another plugin changed during a failed write are
+                // not ours to put back; they are reported, not claimed.
+                $left = is_array($row['columns_still_changed'] ?? null) ? array_values(array_intersect(RestCall::POST_COLUMNS, $row['columns_still_changed'])) : [];
+                AbilityLedger::update($requestId, ['undo_state' => $left === [] ? 'restored' : 'restored_fields_only', 'reverted_at' => time()]);
                 $intact = $this->principalRefusal($principal);
                 if ($intact !== null) {
-                    return $intact + ['restored' => true];
+                    return $intact + ['restored' => $left === []];
                 }
-
-                return [
+                $out = [
                     'ok'         => true,
                     'outcome'    => 'reverted',
                     'mode'       => 'revert',
                     'request_id' => $requestId,
                     'post_id'    => $postId,
-                    'restored'   => true,
-                    'exact'      => $undo['exact'],
+                    'restored'   => $left === [],
+                    'exact'      => $undo['exact'] && $left === [],
                 ];
+                if ($left !== []) {
+                    $out['columns_still_changed'] = $left;
+                }
+
+                return $out;
             });
         } finally {
             AbilityLedger::releaseTarget($postId);
