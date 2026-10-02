@@ -572,7 +572,7 @@ final class VendorReadTest extends TestCase
         $r = $this->read('{"post_id":7}');
 
         $this->assertSame('read_side_effect_detected', $r['code'], (string) json_encode($r));
-        $this->assertSame(['options' => [], 'posts' => 0, 'roles' => 0, 'users' => 0, 'http_hosts' => ['example.org'], 'blocked' => []], $r['side_effects']);
+        $this->assertSame(['options' => [], 'posts' => 0, 'roles' => 0, 'users' => 0, 'post_meta' => 0, 'terms' => 0, 'http_hosts' => ['example.org'], 'blocked' => []], $r['side_effects']);
         $this->assertArrayNotHasKey('output', $r);
         $this->assertSame([], $this->networkCalls, 'the request never left the site');
     }
@@ -775,6 +775,178 @@ final class VendorReadTest extends TestCase
 
         update_user_meta(6, 'wp_capabilities', ['editor' => true]);
         $this->assertSame(['editor' => true], $this->userMeta[6]['wp_capabilities'], 'outside the call nothing is blocked');
+    }
+
+    /**
+     * Core's add, delete and network option paths over the test's option
+     * store, firing the hooks core fires.
+     */
+    private function stubOptionLifecycle(): void
+    {
+        Functions\when('delete_option')->alias(function ($name) {
+            if (!array_key_exists($name, $this->options)) {
+                return false;
+            }
+            do_action('delete_option', $name);
+            unset($this->options[$name]);
+            do_action('deleted_option', $name);
+            return true;
+        });
+        Functions\when('add_option')->alias(function ($name, $value = '') {
+            if (array_key_exists($name, $this->options)) {
+                return false;
+            }
+            do_action('add_option', $name, $value);
+            $this->options[$name] = $value;
+            do_action('added_option', $name, $value);
+            return true;
+        });
+        Functions\when('get_site_option')->alias(fn ($name, $default = false) => array_key_exists('site:' . $name, $this->options) ? $this->options['site:' . $name] : $default);
+        Functions\when('update_site_option')->alias(function ($name, $value) {
+            $this->options['site:' . $name] = $value;
+            return true;
+        });
+        Functions\when('delete_site_option')->alias(function ($name) {
+            do_action('pre_delete_site_option_' . $name, $name, 1);
+            unset($this->options['site:' . $name]);
+            return true;
+        });
+        Functions\when('add_site_option')->alias(function ($name, $value) {
+            $value = apply_filters('pre_add_site_option_' . $name, $value, $name, 1);
+            $this->options['site:' . $name] = $value;
+            return true;
+        });
+    }
+
+    public function test_deleting_and_re_adding_the_role_definitions_is_undone_and_refused(): void
+    {
+        $this->stubOptionLifecycle();
+        $before                         = ['subscriber' => ['capabilities' => ['read' => true]]];
+        $this->options['wp_user_roles'] = $before;
+        self::$exec = static function () {
+            delete_option('wp_user_roles');
+            add_option('wp_user_roles', ['subscriber' => ['capabilities' => ['read' => true, 'manage_options' => true]]]);
+            return ['elements' => [], 'count' => 0];
+        };
+
+        $r = $this->read('{"post_id":7}');
+
+        $this->assertSame('read_side_effect_detected', $r['code'], (string) json_encode($r));
+        $this->assertSame(['user_roles_option'], $r['side_effects']['blocked']);
+        $this->assertSame($before, $this->options['wp_user_roles'], 'the role definitions are back to their value before the call');
+    }
+
+    public function test_a_role_definition_change_no_hook_saw_is_undone_and_refused(): void
+    {
+        $this->stubOptionLifecycle();
+        $before                         = ['subscriber' => ['capabilities' => ['read' => true]]];
+        $this->options['wp_user_roles'] = $before;
+        $store                          = &$this->options;
+        self::$exec = static function () use (&$store) {
+            $store['wp_user_roles'] = ['subscriber' => ['capabilities' => ['manage_options' => true]]];
+            return ['elements' => [], 'count' => 0];
+        };
+
+        $r = $this->read('{"post_id":7}');
+
+        $this->assertSame('read_side_effect_detected', $r['code'], (string) json_encode($r));
+        $this->assertSame(['user_roles_option'], $r['side_effects']['blocked']);
+        $this->assertSame($before, $this->options['wp_user_roles']);
+    }
+
+    public function test_role_definitions_added_where_none_existed_are_removed(): void
+    {
+        $this->stubOptionLifecycle();
+        unset($this->options['wp_user_roles']);
+        self::$exec = static function () {
+            add_option('wp_user_roles', ['subscriber' => ['capabilities' => ['manage_options' => true]]]);
+            return ['elements' => [], 'count' => 0];
+        };
+
+        $r = $this->read('{"post_id":7}');
+
+        $this->assertSame('read_side_effect_detected', $r['code'], (string) json_encode($r));
+        $this->assertArrayNotHasKey('wp_user_roles', $this->options);
+    }
+
+    public function test_deleting_and_re_adding_the_super_admin_list_is_undone_and_refused(): void
+    {
+        $this->stubOptionLifecycle();
+        $this->options['site:site_admins'] = ['admin'];
+        self::$exec = static function () {
+            delete_site_option('site_admins');
+            add_site_option('site_admins', ['admin', 'attacker']);
+            return ['elements' => [], 'count' => 0];
+        };
+
+        $r = $this->read('{"post_id":7}');
+
+        $this->assertSame('read_side_effect_detected', $r['code'], (string) json_encode($r));
+        $this->assertSame(['site_admins'], $r['side_effects']['blocked']);
+        $this->assertSame(['admin'], $this->options['site:site_admins']);
+    }
+
+    public function test_an_unchanged_privilege_state_is_left_alone(): void
+    {
+        $this->stubOptionLifecycle();
+        $writes = 0;
+        Functions\when('update_site_option')->alias(function () use (&$writes) {
+            $writes++;
+            return true;
+        });
+        $this->options['wp_user_roles']    = ['subscriber' => ['capabilities' => ['read' => true]]];
+        $this->options['site:site_admins'] = ['admin'];
+
+        $r = $this->read('{"post_id":7}');
+
+        $this->assertArrayHasKey('output', $r, (string) json_encode($r));
+        $this->assertSame(0, $writes);
+    }
+
+    public function test_capability_meta_written_by_meta_id_is_blocked(): void
+    {
+        Functions\when('get_metadata_by_mid')->alias(fn ($type, $mid) => (object) ['meta_key' => $mid === 9 ? 'wp_capabilities' : 'nickname']);
+        $results = [];
+        self::$exec = static function () use (&$results) {
+            $results[] = apply_filters('delete_user_metadata_by_mid', null, 9);
+            $results[] = apply_filters('update_user_metadata_by_mid', null, 10, 10, 'wp_user_level');
+            $results[] = apply_filters('delete_user_metadata_by_mid', null, 11);
+            return ['elements' => [], 'count' => 0];
+        };
+
+        $r = $this->read('{"post_id":7}');
+
+        $this->assertSame([false, false, null], $results);
+        $this->assertSame(['user_capabilities_meta', 'user_level_meta'], $r['side_effects']['blocked']);
+    }
+
+    public function test_post_meta_and_term_writes_refuse_the_read_with_counts(): void
+    {
+        self::$exec = static function () {
+            do_action('added_post_meta', 1, 7, 'k', 'v');
+            do_action('updated_post_meta', 2, 7, 'k', 'v');
+            do_action('deleted_post_meta', [3, 4], 7, 'k', 'v');
+            do_action('set_object_terms', 7, [1], [1], 'category', false, []);
+            do_action('deleted_term_relationships', 7, [1], 'category');
+            return ['elements' => [], 'count' => 0];
+        };
+
+        $r = $this->read('{"post_id":7}');
+
+        $this->assertSame('read_side_effect_detected', $r['code'], (string) json_encode($r));
+        $this->assertSame(4, $r['side_effects']['post_meta']);
+        $this->assertSame(2, $r['side_effects']['terms']);
+        $this->assertArrayNotHasKey('output', $r);
+    }
+
+    public function test_a_single_post_meta_write_refuses_the_read(): void
+    {
+        self::$exec = static function () {
+            do_action('updated_post_meta', 2, 7, 'k', 'v');
+            return ['elements' => [], 'count' => 0];
+        };
+
+        $this->assertSame('read_side_effect_detected', $this->read('{"post_id":7}')['code']);
     }
 
     public function test_user_and_post_lifecycle_actions_refuse_the_read(): void
