@@ -1826,8 +1826,8 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		// The discover cursor's dedicated secret: no other key's material,
 		// and the tools refuse to start without it.
 		cursorKey := os.Getenv("WPMGR_MCP_CURSOR_KEY")
-		if len(strings.TrimSpace(cursorKey)) < 32 {
-			return fmt.Errorf("WPMGR_MCP_ABILITY_TOOLS=on needs WPMGR_MCP_CURSOR_KEY (at least 32 characters)")
+		if err := checkMCPCursorKey(cursorKey); err != nil {
+			return err
 		}
 		if err := mcpSvc.EnableAbilityTools(mcpRepo, mcpAbilityAgent, abilities.SendableEntry, cursorKey); err != nil {
 			return fmt.Errorf("enable MCP ability tools: %w", err)
@@ -4601,4 +4601,14 @@ func newLogger(cfg config.Config) *slog.Logger {
 		handler = slog.NewTextHandler(os.Stdout, opts)
 	}
 	return slog.New(handler)
+}
+
+// checkMCPCursorKey refuses boot when the ability tools are on without their
+// cursor secret. The message names the variable and how to make a value; it
+// never echoes one.
+func checkMCPCursorKey(key string) error {
+	if len(strings.TrimSpace(key)) >= 32 {
+		return nil
+	}
+	return errors.New("WPMGR_MCP_ABILITY_TOOLS=on needs WPMGR_MCP_CURSOR_KEY: set WPMGR_MCP_CURSOR_KEY to at least 32 random characters, e.g. `openssl rand -hex 32`, or set WPMGR_MCP_ABILITY_TOOLS=off")
 }
