@@ -95,3 +95,14 @@ func (r *Repo) AbilityCatalogue(ctx context.Context, p domain.Principal) ([]sqlc
 	}
 	return out, off, nil
 }
+
+// RestRoutes implements RestRouteStore: every route, enabled or not.
+func (r *Repo) RestRoutes(ctx context.Context, p domain.Principal) ([]sqlc.RestRouteCatalogue, error) {
+	var out []sqlc.RestRouteCatalogue
+	err := r.pool.RunTenantTx(ctx, p, func(tx pgx.Tx) error {
+		var err error
+		out, err = sqlc.New(tx).ListRestRoutes(ctx)
+		return err
+	})
+	return out, err
+}
