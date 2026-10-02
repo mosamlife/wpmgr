@@ -64,6 +64,9 @@ final class AbilityOwnership
 
     private const BASE_CLASS = 'WP_Ability';
 
+    /** Deepest nesting of captured callables or values followed. */
+    private const MAX_CAPTURE_DEPTH = 4;
+
     /** @var array<string,array<string,string>> Symlinked entries per root. */
     private static array $links = [];
 
@@ -385,17 +388,25 @@ final class AbilityOwnership
 
     /**
      * Every canonical source file whose code a callable can run: its own body
-     * first, then, for a method or a closure bound to an object or scoped to
-     * a class, the file of that class, each ancestor and each trait they use.
-     * A method body can call helpers resolved on the object, so all of them
-     * count. Null when any user-defined part has no canonical file.
+     * first, then, for a method or a closure bound to an object, scoped to a
+     * class or late-bound to a called class, the file of that class, each
+     * ancestor and each trait they use. A closure also counts everything it
+     * captured: each captured callable's own sources and each captured
+     * object's class chain, to a bounded depth. A method body can call helpers
+     * resolved on the object, so all of them count. Null when any
+     * user-defined part has no canonical file, or the depth bound is reached.
      *
-     * @param mixed $cb A callback as stored on the ability.
+     * @param mixed $cb    A callback as stored on the ability.
+     * @param int   $depth Nesting depth of captured callables.
      * @return non-empty-list<string>|null
      */
-    public static function sourceFiles($cb): ?array
+    public static function sourceFiles($cb, int $depth = 0): ?array
     {
-        $classes = [];
+        if ($depth > self::MAX_CAPTURE_DEPTH) {
+            return null;
+        }
+        $classes  = [];
+        $captured = [];
         try {
             if ($cb instanceof \Closure) {
                 $ref  = new \ReflectionFunction($cb);
@@ -407,6 +418,16 @@ final class AbilityOwnership
                 if ($scope !== null) {
                     $classes[] = $scope;
                 }
+                // The class static:: resolves to. Without the accessor the
+                // late-bound class cannot be read, so the owner is unknown.
+                if (!method_exists($ref, 'getClosureCalledClass')) {
+                    return null;
+                }
+                $called = $ref->getClosureCalledClass();
+                if ($called !== null) {
+                    $classes[] = $called;
+                }
+                $captured = $ref->getClosureUsedVariables();
             } elseif (is_string($cb) && $cb !== '') {
                 if (strpos($cb, '::') !== false) {
                     [$cls, $method] = explode('::', $cb, 2);
@@ -440,7 +461,14 @@ final class AbilityOwnership
             return null;
         }
         $files = [$own];
-        $seen  = [];
+        foreach ($captured as $value) {
+            $more = self::capturedSources($value, $depth + 1, $classes);
+            if ($more === null) {
+                return null;
+            }
+            array_push($files, ...$more);
+        }
+        $seen = [];
         while ($classes !== []) {
             $class = array_pop($classes);
             $name  = $class->getName();
@@ -465,6 +493,64 @@ final class AbilityOwnership
         }
 
         return array_values(array_unique($files));
+    }
+
+    /**
+     * Sources of one value a closure captured. A user-defined callable adds
+     * its own sources; an object adds its class to $classes; an array is
+     * walked. Built-in functions and plain data add nothing.
+     *
+     * @param mixed                          $value   Captured value.
+     * @param int                            $depth   Nesting depth.
+     * @param list<\ReflectionClass<object>|null> $classes Class list to extend.
+     * @return list<string>|null Null when a captured callable is unresolvable.
+     */
+    private static function capturedSources($value, int $depth, array &$classes): ?array
+    {
+        if ($depth > self::MAX_CAPTURE_DEPTH) {
+            return null;
+        }
+        if (is_string($value)) {
+            if ($value === '' || !is_callable($value)) {
+                return [];
+            }
+            if (strpos($value, '::') === false) {
+                try {
+                    if ((new \ReflectionFunction($value))->isInternal()) {
+                        return [];
+                    }
+                } catch (\Throwable $e) {
+                    return null;
+                }
+            }
+
+            return self::sourceFiles($value, $depth);
+        }
+        if (is_array($value)) {
+            if (count($value) === 2 && isset($value[0], $value[1]) && is_string($value[1])
+                && (is_object($value[0]) || is_string($value[0])) && is_callable($value)
+            ) {
+                return self::sourceFiles($value, $depth);
+            }
+            $out = [];
+            foreach ($value as $item) {
+                $more = self::capturedSources($item, $depth + 1, $classes);
+                if ($more === null) {
+                    return null;
+                }
+                array_push($out, ...$more);
+            }
+
+            return $out;
+        }
+        if ($value instanceof \Closure || (is_object($value) && method_exists($value, '__invoke'))) {
+            return self::sourceFiles($value, $depth);
+        }
+        if (is_object($value)) {
+            $classes[] = new \ReflectionClass($value);
+        }
+
+        return [];
     }
 
     /**
