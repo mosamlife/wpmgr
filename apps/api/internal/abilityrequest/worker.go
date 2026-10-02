@@ -68,6 +68,7 @@ const (
 // Outcomes (m156's closed set).
 const (
 	OutcomeCreated        = "created"
+	OutcomeApplied        = "applied"
 	OutcomeRefused        = "refused"
 	OutcomeVerifyMismatch = "verify_mismatch"
 	OutcomeFailed         = "failed"
@@ -88,6 +89,9 @@ const (
 	ReasonTransportPreSend       = "transport_pre_send"
 	ReasonEntryChanged           = "entry_changed"
 	ReasonEntryDisabled          = "entry_disabled"
+	// m161: the REST route a rest-write request was approved against.
+	ReasonRouteChanged  = "route_changed"
+	ReasonRouteDisabled = "route_disabled"
 )
 
 // Transient reasons; the row stays approved.
@@ -111,6 +115,14 @@ type EntryEncoder func(sqlc.AbilityCatalogue) ([]byte, string, error)
 type ContextRules interface {
 	ForbiddenByContext(ctx context.Context, tenantID, siteID uuid.UUID, tool string) (matchedEntry string, forbidden bool, err error)
 }
+
+// RouteEncoder is abilities.SendableRoute, handed in by main.go.
+type RouteEncoder func(sqlc.RestRouteCatalogue) ([]byte, string, error)
+
+// SetRouteEncoder wires the route bytes for wpmgr/rest-write. Without it a
+// request naming a route waits with write_tools_disabled and the sweeper
+// closes it at its deadline.
+func (s *Service) SetRouteEncoder(route RouteEncoder) { s.route = route }
 
 // SetSender wires the send path. Without it every approved row waits with
 // write_tools_disabled and the sweeper closes it at its deadline.
@@ -384,14 +396,46 @@ func (e *transientError) Error() string { return "ability request not started: "
 var errLostReservation = errors.New("ability request: reservation lost to another path")
 
 type dispatchPlan struct {
-	row     sqlc.AssistantAbilityRequest
-	siteURL string
-	entry   []byte
-	sum     string
+	row      sqlc.AssistantAbilityRequest
+	siteURL  string
+	entry    []byte
+	sum      string
+	route    []byte
+	routeSum string
 }
 
-func agentMeetsFloor(v string) bool {
-	return v != "" && wpversion.Compare(v, agentcmd.MinAgentVersionForPageCreate) >= 0
+// agentFloorFor is the first agent release that runs a request's ability.
+func agentFloorFor(abilityName string) string {
+	if abilityName == mcp.AbilityRestWrite {
+		return agentcmd.MinAgentVersionForRestCall
+	}
+	return agentcmd.MinAgentVersionForPageCreate
+}
+
+func agentMeetsFloor(v, abilityName string) bool {
+	return v != "" && wpversion.Compare(v, agentFloorFor(abilityName)) >= 0
+}
+
+// routeSendable is W1 for a route (m161). It returns the bytes to send for a
+// request approved against approvedSum, or reason route_changed: the bytes
+// sent are the current row's, and only when they hash to the APPROVED hash
+// (the stored hash alone is not enough: a row edited outside the admin write
+// keeps its old stored hash) and the input still names that route.
+func routeSendable(enc RouteEncoder, r sqlc.RestRouteCatalogue, approvedSum, inputJSON string) ([]byte, string, string) {
+	if !r.Enabled || r.Class != "write" {
+		return nil, "", ReasonRouteDisabled
+	}
+	b, sum, err := enc(r)
+	if err != nil || sum != approvedSum || r.RouteSha256 == nil || *r.RouteSha256 != approvedSum {
+		return nil, "", ReasonRouteChanged
+	}
+	var in struct {
+		RouteID string `json:"route_id"`
+	}
+	if json.Unmarshal([]byte(inputJSON), &in) != nil || in.RouteID != r.RouteID {
+		return nil, "", ReasonRouteChanged
+	}
+	return b, sum, ""
 }
 
 func connectedEnough(state string) bool { return state == "connected" || state == "degraded" }
@@ -454,13 +498,23 @@ func (s *Service) dispatch(ctx context.Context, a DispatchArgs) error {
 	resp, sendErr := s.agent.AbilityRun(sendCtx, a.SiteID, plan.siteURL, agentcmd.AbilityRunCall{
 		Mode: agentcmd.AbilityRunModeWrite, RequestID: a.RequestID,
 		Entry: plan.entry, EntrySHA256: plan.sum, Input: []byte(plan.row.InputJson),
-		Expected: &agentcmd.AbilityRunExpected{
-			PrecheckDigest: plan.row.PrecheckDigest, PreviewDigest: derefOr(plan.row.PreviewDigest, ""),
-		},
+		Route: plan.route, RouteSHA256: plan.routeSum,
+		Expected: writeExpected(plan),
 	})
 	cancel()
 	// (5) The outcome.
 	return s.recordOutcome(ctx, p, a, classifyWrite(resp, sendErr, s.now()))
+}
+
+// writeExpected is write's expected{}: the preview digest for page-create,
+// the base fingerprint for a route write.
+func writeExpected(plan dispatchPlan) *agentcmd.AbilityRunExpected {
+	if plan.row.RouteID != nil {
+		return &agentcmd.AbilityRunExpected{PrecheckDigest: plan.row.PrecheckDigest, BaseFingerprint: plan.row.BaseFingerprint}
+	}
+	return &agentcmd.AbilityRunExpected{
+		PrecheckDigest: plan.row.PrecheckDigest, PreviewDigest: derefOr(plan.row.PreviewDigest, ""),
+	}
 }
 
 func derefOr(p *string, d string) string {
@@ -504,7 +558,11 @@ func (s *Service) checkSite(ctx context.Context, p domain.Principal, a DispatchA
 			reason = ReasonEntryDisabled
 		case !row.EntryHashCurrent: // W1
 			reason = ReasonEntryChanged
-		case !agentMeetsFloor(site.AgentVersion):
+		case !row.RouteEnabled: // W1, m161
+			reason = ReasonRouteDisabled
+		case !row.RouteHashCurrent: // W1, m161
+			reason = ReasonRouteChanged
+		case !agentMeetsFloor(site.AgentVersion, plan.row.AbilityName):
 			reason = ReasonAgentOutdated
 		}
 		if reason != "" {
@@ -525,6 +583,30 @@ func (s *Service) checkSite(ctx context.Context, p domain.Principal, a DispatchA
 			done = true
 			return s.closeNotSent(ctx, tx, q, a.TenantID, a.RequestID, ReasonEntryChanged)
 		}
+		if (plan.row.AbilityName == mcp.AbilityRestWrite) != (plan.row.RouteID != nil) {
+			// The table CHECK pairs them; a row that breaks it is never sent.
+			done = true
+			return s.closeNotSent(ctx, tx, q, a.TenantID, a.RequestID, ReasonRouteChanged)
+		}
+		if plan.row.RouteID != nil {
+			if s.route == nil {
+				return nil // sendOn() is false: recorded as write_tools_disabled below
+			}
+			rr, err := q.GetRestRoute(ctx, *plan.row.RouteID)
+			if errors.Is(err, pgx.ErrNoRows) {
+				done = true
+				return s.closeNotSent(ctx, tx, q, a.TenantID, a.RequestID, ReasonRouteDisabled)
+			}
+			if err != nil {
+				return fmt.Errorf("read rest route: %w", err)
+			}
+			var why string
+			plan.route, plan.routeSum, why = routeSendable(s.route, rr, derefOr(plan.row.RouteSha256, ""), plan.row.InputJson)
+			if why != "" {
+				done = true
+				return s.closeNotSent(ctx, tx, q, a.TenantID, a.RequestID, why)
+			}
+		}
 		plan.siteURL = site.Url
 		return nil
 	})
@@ -538,7 +620,7 @@ func (s *Service) checkSite(ctx context.Context, p domain.Principal, a DispatchA
 		_, forbidden, ctxErr = s.rules.ForbiddenByContext(ctx, a.TenantID, a.SiteID, mcp.ToolSiteAbilityRun)
 	}
 	switch {
-	case !s.sendOn():
+	case !s.sendOn(), plan.row.RouteID != nil && s.route == nil:
 		transient = AttemptWriteToolsDisabled
 	case ctxErr != nil:
 		transient = AttemptContextUnavailable
@@ -650,6 +732,15 @@ func createdOutcome(postID int64, now time.Time) writeOutcome {
 	}
 }
 
+// appliedOutcome is a route write that changed the target post: the post id
+// is the row's target_post_id, and the person's undo opens.
+func appliedOutcome(now time.Time) writeOutcome {
+	return writeOutcome{
+		outcome:   OutcomeApplied,
+		undoUntil: pgtype.Timestamptz{Time: now.Add(undoRetention), Valid: true},
+	}
+}
+
 func refusedOutcome(code, detail string, postID int64, trashed bool) writeOutcome {
 	oc := writeOutcome{outcome: OutcomeRefused, code: strp(code)}
 	switch code {
@@ -693,6 +784,9 @@ func outcomeFromStored(raw json.RawMessage, now time.Time) (writeOutcome, bool) 
 	if r.OK && r.Outcome == "created" {
 		return createdOutcome(r.PostID, now), true
 	}
+	if r.OK && r.Outcome == "updated" {
+		return appliedOutcome(now), true
+	}
 	if !r.OK && r.Code != "" {
 		code := r.Code
 		if _, known := agentcmd.AbilityRunRefusalCodes[code]; !known {
@@ -710,6 +804,8 @@ func classifyWrite(resp agentcmd.AbilityRunResponse, err error, now time.Time) w
 		switch resp.Outcome {
 		case "created":
 			return createdOutcome(resp.PostID, now)
+		case "updated":
+			return appliedOutcome(now)
 		case "already_applied":
 			if oc, ok := outcomeFromStored(resp.Result, now); ok {
 				return oc
@@ -775,7 +871,7 @@ func (s *Service) writeOutcomeTx(ctx context.Context, tx pgx.Tx, q *sqlc.Queries
 	}
 	action := audit.ActionAbilityRequestFailed
 	switch oc.outcome {
-	case OutcomeCreated:
+	case OutcomeCreated, OutcomeApplied:
 		action = audit.ActionAssistantRequestCompleted
 	case OutcomeNotSent:
 		action = audit.ActionAbilityRequestNotSent

@@ -145,6 +145,9 @@ type abilityEngine struct {
 	// writes is the write branch's store (EnableAbilityWrites); nil
 	// refuses every write entry as writes_not_available.
 	writes AbilityRequestStore
+	// route encodes a reviewed REST route row (SetRouteEncoder); nil leaves
+	// wpmgr/rest-read and wpmgr/rest-write with no routes.
+	route RouteEncoder
 }
 
 // AbilityRefresher queues one site's inventory refresh. It is unique per
@@ -530,6 +533,8 @@ func classify(name string, entries []sqlc.AbilityCatalogue, inv *sqlc.SiteAbilit
 		return not(notRunnableOwnerMismatch)
 	case !abilityAgentMeetsFloor(agentVersion, e.MinAgentVersion):
 		return not(notRunnableAgentOutdated)
+	case isRestAbility(name) && !abilityAgentMeetsFloor(agentVersion, abilityStrPtr(agentcmd.MinAgentVersionForRestCall)):
+		return not(notRunnableAgentOutdated)
 	}
 	c.runnable = true
 	c.classOrder = abilityClassOrder[c.class]
@@ -877,6 +882,8 @@ var ownAbilityInputSchemas = map[string]json.RawMessage{
 		`{"type":"object","properties":{"type":{"const":"paragraph"},"text":{"type":"string"}},"required":["type","text"],"additionalProperties":false},` +
 		`{"type":"object","properties":{"type":{"const":"list"},"ordered":{"type":"boolean"},"items":{"type":"array","minItems":1,"maxItems":50,"items":{"type":"string"}}},"required":["type","ordered","items"],"additionalProperties":false}]}}},` +
 		`"required":["post_type","editor","title","outline"],"additionalProperties":false}`),
+	AbilityRestRead:  restInputSchema,
+	AbilityRestWrite: restInputSchema,
 }
 
 type describeWPMgr struct {
@@ -905,6 +912,9 @@ type describeResult struct {
 	SchemaTooLarge    bool              `json:"schema_too_large,omitempty"`
 	FromTheSite       *describeFromSite `json:"from_the_site"`
 	AsOf              *string           `json:"as_of"`
+	// Routes is wpmgr/rest-read's and wpmgr/rest-write's list of reviewed
+	// routes: the only route_id values input may name. Every string is ours.
+	Routes []describeRoute `json:"routes,omitempty"`
 }
 
 // abilityNameArg reads `name`, tolerating the fence marker discover puts on a
@@ -977,6 +987,17 @@ func (s *Service) describeSiteAbility(ctx context.Context, auth AuthorizedReques
 		res.WPMgr = &describeWPMgr{
 			Title: c.entry.Title, Description: c.entry.Description, Approval: c.entry.ApprovalMode,
 			EffectCopy: c.entry.EffectCopy, Usage: c.entry.Usage, Limits: limits,
+		}
+	}
+	if isRestAbility(c.name) && c.source == "wpmgr" {
+		routes, err := eng.offeredRoutes(ctx, site.p, restClassOf(c.name))
+		if err != nil {
+			return "", err
+		}
+		res.Routes = describeRoutesOf(routes)
+		if len(routes) == 0 && res.RunnableHere {
+			res.RunnableHere = false
+			res.NotRunnableReason = abilityStrPtr(notRunnableNoRoutes)
 		}
 	}
 	// denied: our words only, no schema, no site text.
@@ -1277,6 +1298,9 @@ func (s *Service) runSiteAbility(ctx context.Context, auth AuthorizedRequest, ra
 			if vendor {
 				floor, msg = agentcmd.MinAgentVersionForVendorReads, msgAbilityOutdatedVendor
 			}
+			if isRestAbility(name) {
+				floor, msg = agentcmd.MinAgentVersionForRestCall, msgAbilityRestOutdated
+			}
 			return "", refuse(reasonAgentOutdated, domain.Conflict(ErrCodeSiteAgentOutdated,
 				msg).WithDetails(map[string]any{
 				"min_agent_version": floor, "retryable": false,
@@ -1305,6 +1329,9 @@ func (s *Service) runSiteAbility(ctx context.Context, auth AuthorizedRequest, ra
 	if !agentConnectedEnough(site.row.ConnectionState) || eng.agent == nil {
 		return "", refuse(reasonSiteUnreachable, domain.Unavailable(ErrCodeSiteUnreachable,
 			msgSiteUnreachable).WithDetails(map[string]any{"retryable": true}))
+	}
+	if name == AbilityRestRead && !vendor {
+		return s.runRestRead(ctx, auth, eng, site, c, input)
 	}
 	// 5. Our own schema, checked here too; the agent re-validates. A vendor
 	// read's input is validated by the agent against the live schema, whose

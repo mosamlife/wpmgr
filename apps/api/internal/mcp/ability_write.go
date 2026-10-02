@@ -131,7 +131,15 @@ func (s *Service) EnableAbilityWrites(store AbilityRequestStore) error {
 // ---------------------------------------------------------------------------
 
 // ownWriteAbilities are the write entries this control plane can run.
-var ownWriteAbilities = map[string]struct{}{AbilityPageCreate: {}}
+var ownWriteAbilities = map[string]struct{}{AbilityPageCreate: {}, AbilityRestWrite: {}}
+
+// writeAgentFloor is the first agent release that runs a write entry.
+func writeAgentFloor(name string) string {
+	if name == AbilityRestWrite {
+		return agentcmd.MinAgentVersionForRestCall
+	}
+	return agentcmd.MinAgentVersionForPageCreate
+}
 
 // gateWriteCapability marks every write entry not runnable, with reason
 // capability_not_held, for a connection without CapAbilityRequest, so
@@ -167,7 +175,7 @@ func writeEntryRunnable(e *sqlc.AbilityCatalogue, inv *sqlc.SiteAbilityInventory
 		return notRunnableOwnerMismatch
 	}
 	if !abilityAgentMeetsFloor(agentVersion, e.MinAgentVersion) ||
-		!abilityAgentMeetsFloor(agentVersion, abilityStrPtr(agentcmd.MinAgentVersionForPageCreate)) {
+		!abilityAgentMeetsFloor(agentVersion, abilityStrPtr(writeAgentFloor(e.Name))) {
 		return notRunnableAgentOutdated
 	}
 	return ""
@@ -415,9 +423,13 @@ func (s *Service) runSiteAbilityWrite(ctx context.Context, auth AuthorizedReques
 	}
 	if c.reason != nil {
 		if *c.reason == notRunnableAgentOutdated {
+			msg := msgAbilityWriteOutdated
+			if c.name == AbilityRestWrite {
+				msg = msgAbilityRestOutdated
+			}
 			return "", refuse(reasonAgentOutdated, domain.Conflict(ErrCodeSiteAgentOutdated,
-				msgAbilityWriteOutdated).WithDetails(map[string]any{
-				"min_agent_version": agentcmd.MinAgentVersionForPageCreate, "retryable": false,
+				msg).WithDetails(map[string]any{
+				"min_agent_version": writeAgentFloor(c.name), "retryable": false,
 			}))
 		}
 		return "", notRunnableRefusal(*c.reason)
@@ -453,6 +465,9 @@ func (s *Service) runSiteAbilityWrite(ctx context.Context, auth AuthorizedReques
 				WithDetails(map[string]any{"code": notRunnableEditingNotEnabled, "retryable": false}),
 			meta: map[string]any{"code": notRunnableEditingNotEnabled},
 		}
+	}
+	if e.Name == AbilityRestWrite {
+		return s.runRestWrite(ctx, auth, eng, site, e, self.host, input)
 	}
 	// Step 5: our schema.
 	facts, ok := validatePageCreateInput(input)

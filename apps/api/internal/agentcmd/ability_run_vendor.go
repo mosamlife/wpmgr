@@ -219,6 +219,35 @@ func decodeRefusalViolations(code string, raw json.RawMessage) []string {
 	return closedLabels(vs, restViolationLabels, vendorMaxViolations)
 }
 
+// postColumnLabels is the CLOSED set of wp_posts columns side_effect_detected
+// may name.
+var postColumnLabels = func() map[string]struct{} {
+	m := map[string]struct{}{}
+	for _, c := range []string{
+		"ID", "post_author", "post_date", "post_date_gmt", "post_content", "post_title",
+		"post_excerpt", "post_status", "comment_status", "ping_status", "post_password",
+		"post_name", "to_ping", "pinged", "post_modified", "post_modified_gmt",
+		"post_content_filtered", "post_parent", "guid", "menu_order", "post_type",
+		"post_mime_type", "comment_count",
+	} {
+		m[c] = struct{}{}
+	}
+	return m
+}()
+
+// decodePostColumns maps side_effect_detected's column names onto the
+// closed set; a name outside it becomes "unknown".
+func decodePostColumns(raw json.RawMessage) []string {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil
+	}
+	var vs []string
+	if json.Unmarshal(raw, &vs) != nil {
+		return []string{"unknown"}
+	}
+	return closedLabels(vs, postColumnLabels, len(postColumnLabels)+1)
+}
+
 func decodeViolations(raw json.RawMessage) []string {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return nil

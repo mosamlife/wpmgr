@@ -1832,6 +1832,9 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		if err := mcpSvc.EnableAbilityTools(mcpRepo, mcpAbilityAgent, abilities.SendableEntry, cursorKey); err != nil {
 			return fmt.Errorf("enable MCP ability tools: %w", err)
 		}
+		// wpmgr/rest-read and wpmgr/rest-write send the reviewed route row
+		// bytes (abilities.SendableRoute); without it both refuse.
+		mcpSvc.SetRouteEncoder(abilities.SendableRoute)
 		// The write branch of site_ability_run (E2). Writes also need the
 		// write-tools switch, which the run tool checks per call.
 		if err := mcpSvc.EnableAbilityWrites(mcpRepo); err != nil {
@@ -1848,6 +1851,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	abilityReqSvc.SetWriteToolsEnabled(writeToolsOn)
 	if ocCmdClient != nil {
 		abilityReqSvc.SetSender(ocCmdClient, abilities.SendableEntry, mcpSvc)
+		abilityReqSvc.SetRouteEncoder(abilities.SendableRoute)
 		abilityReqSvc.SetEnabler(ocCmdClient)
 	}
 	abilityReqScanWorker := abilityrequest.NewScanWorker(abilityReqSvc)
@@ -1862,6 +1866,13 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		logger.Error("ability catalogue stamp failed", slog.Any("error", err))
 	} else {
 		logger.Info("ability catalogue stamp", slog.Int("stamped", n))
+	}
+	// The same for the m161 REST route catalogue: every route is NULL until
+	// stamped, and a NULL route hash fails closed at describe, run and send.
+	if n, err := abilities.StampOwnRouteHashes(ctx, pool, logger); err != nil {
+		logger.Error("rest route catalogue stamp failed", slog.Any("error", err))
+	} else {
+		logger.Info("rest route catalogue stamp", slog.Int("stamped", n))
 	}
 	ocH := objectcache.NewHandler(ocSvc, auditRec)
 	ocGCWorker := objectcache.NewObjectCacheStatsHistoryGCWorker(ocRepo, logger)

@@ -91,6 +91,24 @@ var agentRefusalCopy = map[string]string{
 	"ability_output_invalid":            "The tool returned a result WPMgr could not read.",
 	"output_too_large":                  "The tool's result was too large to return.",
 	"internal":                          "The site hit an internal error.",
+	"route_not_reviewed":                "The site refused WPMgr's review record for this route.",
+	"route_disabled":                    "This route is switched off in WPMgr.",
+	"route_entry_changed":               "WPMgr's review record for this route changed; nothing ran.",
+	"route_namespace_refused":           "The WPMgr agent never calls this kind of route.",
+	"route_param_invalid":               "A value in the input is not one this route accepts.",
+	"route_key_not_allowed":             "The input has a key this route does not take.",
+	"route_key_forbidden":               "The input has a key WPMgr sets itself and never accepts.",
+	"route_wp_version_unsupported":      "This route needs a newer WordPress.",
+	"rest_handler_not_core":             "Another plugin answers this route instead of WordPress, so WPMgr refused to call it.",
+	"rest_intercepted":                  "Another plugin interfered with the call, so WPMgr withheld the result.",
+	"rest_error":                        "WordPress refused the call.",
+	"rest_not_published":                "The route returned content that is not published, so WPMgr returned nothing.",
+	"post_not_editable":                 "There is no page or post of that kind with that id that WPMgr may edit.",
+	"sanitiser_changed_value":           "This site would alter the text when saving it, so nothing was asked.",
+	"side_effect_detected":              "The site changed something else during the call.",
+	"post_touched":                      "Someone has edited this post since WPMgr changed it.",
+	"post_content_would_change":         msgPostContentWouldChange,
+	"mode_class_mismatch":               "The site refused the call: the route does not match the tool.",
 }
 
 func notRunnableText(code string) string {
@@ -238,6 +256,10 @@ func vendorRefusal(r *agentcmd.AbilityRunRefusal) *toolRefusal {
 	if len(r.Violations) > 0 {
 		details["violations"] = r.Violations
 		meta["violations"] = r.Violations
+	}
+	if len(r.Columns) > 0 {
+		details["columns"] = r.Columns
+		meta["columns"] = r.Columns
 	}
 	fromSite := map[string]any{}
 	if r.ErrorCode != "" {

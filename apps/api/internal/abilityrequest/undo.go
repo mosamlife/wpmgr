@@ -57,7 +57,7 @@ func undoResultFor(resp agentcmd.AbilityRunResponse, err error) string {
 		switch refusal.Code {
 		case "created_post_published":
 			return UndoRefusedPublished
-		case "conflict", "created_post_touched", "target_in_flight":
+		case "conflict", "created_post_touched", "target_in_flight", "post_touched":
 			return UndoRefusedConflict
 		}
 	}

@@ -293,6 +293,9 @@ type AbilityRunResponse struct {
 	Live        *bool           `json:"live,omitempty"`
 	Restored    *bool           `json:"restored,omitempty"`
 	Exact       *bool           `json:"exact,omitempty"`
+	// Columns is side_effect_detected's list of changed post columns, a
+	// closed label set (anything else becomes "unknown").
+	Columns json.RawMessage `json:"columns,omitempty"`
 
 	// Raw is the exact reply body, for the strict vendor read decode.
 	Raw json.RawMessage `json:"-"`
@@ -318,6 +321,9 @@ type AbilityRunRefusal struct {
 	// ErrorCode is ability_failed's code from the ability itself: SITE TEXT,
 	// cleaned and capped.
 	ErrorCode string
+	// Columns are side_effect_detected's changed post columns, from a
+	// closed set.
+	Columns []string
 }
 
 func (e *AbilityRunRefusal) Error() string {
@@ -408,6 +414,7 @@ var AbilityRunRefusalCodes = map[string]struct{}{
 	"sanitiser_changed_value":      {},
 	"side_effect_detected":         {},
 	"post_touched":                 {},
+	"post_content_would_change":    {},
 }
 
 var abilityRunCodeRe = regexp.MustCompile(`^[a-z0-9_]{1,40}$`)
@@ -465,6 +472,7 @@ func abilityRunRefusalOf(out AbilityRunResponse) *AbilityRunRefusal {
 		PostID:      out.PostID,
 		Trashed:     out.Trashed,
 		Violations:  decodeRefusalViolations(out.Code, out.Violations),
+		Columns:     decodePostColumns(out.Columns),
 		SideEffects: decodeSideEffects(out.SideEffects),
 		ErrorCode:   humantext.CapBytes(humantext.Clean(out.ErrorCode), vendorErrorCodeBytes),
 	}
