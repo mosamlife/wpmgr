@@ -2839,6 +2839,11 @@ type Querier interface {
 	// the table reads as empty, so an operator cannot discover the id that a
 	// "SET app.tenant_id first" instruction would need them to supply.
 	ListOpenTenantObjectReclaims(ctx context.Context, rowLimit int32) ([]TenantObjectReclaim, error)
+	// The org-wide AI requests queue (GH #828): every site the caller's row
+	// security admits, optionally narrowed to one state, newest first. A NULL
+	// state_filter lists every state. Same columns as ListAbilityRequestsForSite.
+	// The badge count is CountLivePendingAbilityRequests.
+	ListOrgAbilityRequests(ctx context.Context, arg ListOrgAbilityRequestsParams) ([]AssistantAbilityRequest, error)
 	// Keyset-paginated newest-first history (ADR-064 Decision 5). Cursor is the
 	// version number itself, not created_at/id: version is unique, monotonic and
 	// gap-free per tenant (org_context_versions_version_key), which is strictly
@@ -3080,6 +3085,12 @@ type Querier interface {
 	// makes the predicate selective. Cross-tenant select via the GC RLS policy
 	// (app.agent='on').
 	ListStalledRunningSnapshots(ctx context.Context, arg ListStalledRunningSnapshotsParams) ([]ListStalledRunningSnapshotsRow, error)
+	// Agent scan (InAgentTx), plain SELECT, as ScanResolvingAbilityRequests: undos
+	// started longer ago than the threshold with nothing recorded since (GH
+	// #824). The caller checks the site ledger and records the answer per row
+	// with FinishAbilityRequestUndo or ReleaseAbilityRequestUndo in a tenant
+	// transaction.
+	ListStuckAbilityRequestUndos(ctx context.Context, arg ListStuckAbilityRequestUndosParams) ([]ListStuckAbilityRequestUndosRow, error)
 	// The tasks that have exhausted @max_attempts and therefore no longer appear in
 	// the due query above. The rows are kept deliberately (they are the last record
 	// that those objects exist), but kept is not the same as visible: without this
@@ -3797,6 +3808,12 @@ type Querier interface {
 	// and refuse a requested scope set it does not contain, so widening it here
 	// widens what the client may ever be granted.
 	RegisterMCPOAuthClient(ctx context.Context, arg RegisterMCPOAuthClientParams) (int64, error)
+	// A retryable undo failure (GH #824): in_progress goes back to available,
+	// still inside the undo window, so the person can try again. The CHECKs
+	// require the starter and start time to be NULL whenever undo is available,
+	// and undo_finished_at is already NULL while in progress. Past the window
+	// this matches nothing; the caller then finishes the undo as 'failed'.
+	ReleaseAbilityRequestUndo(ctx context.Context, arg ReleaseAbilityRequestUndoParams) (int64, error)
 	// ReleaseTenantAssistantKillSwitch clears the pause after an incident.
 	//
 	// IT CLEARS THE REASON IN THE SAME STATEMENT, and it must: the reason is part

@@ -231,6 +231,18 @@ WHERE tenant_id = @tenant_id
 ORDER BY created_at DESC, id DESC
 LIMIT @row_limit OFFSET @row_offset;
 
+-- name: ListOrgAbilityRequests :many
+-- The org-wide AI requests queue (GH #828): every site the caller's row
+-- security admits, optionally narrowed to one state, newest first. A NULL
+-- state_filter lists every state. Same columns as ListAbilityRequestsForSite.
+-- The badge count is CountLivePendingAbilityRequests.
+SELECT *
+FROM assistant_ability_requests
+WHERE tenant_id = @tenant_id
+  AND (sqlc.narg(state_filter)::text IS NULL OR state = sqlc.narg(state_filter)::text)
+ORDER BY created_at DESC, id DESC
+LIMIT @row_limit OFFSET @row_offset;
+
 -- name: GetAbilityRequestForSite :one
 -- One row for the detail card and the undo action.
 SELECT *
@@ -502,3 +514,31 @@ WHERE tenant_id = @tenant_id
   AND id = @id
   AND state = 'done'
   AND undo_state = 'in_progress';
+
+-- name: ReleaseAbilityRequestUndo :execrows
+-- A retryable undo failure (GH #824): in_progress goes back to available,
+-- still inside the undo window, so the person can try again. The CHECKs
+-- require the starter and start time to be NULL whenever undo is available,
+-- and undo_finished_at is already NULL while in progress. Past the window
+-- this matches nothing; the caller then finishes the undo as 'failed'.
+UPDATE assistant_ability_requests
+SET undo_state = 'available', undo_started_at = NULL, undo_by_user_id = NULL
+WHERE tenant_id = @tenant_id
+  AND id = @id
+  AND state = 'done'
+  AND undo_state = 'in_progress'
+  AND undo_available_until > now();
+
+-- name: ListStuckAbilityRequestUndos :many
+-- Agent scan (InAgentTx), plain SELECT, as ScanResolvingAbilityRequests: undos
+-- started longer ago than the threshold with nothing recorded since (GH
+-- #824). The caller checks the site ledger and records the answer per row
+-- with FinishAbilityRequestUndo or ReleaseAbilityRequestUndo in a tenant
+-- transaction.
+SELECT id, tenant_id, site_id, undo_started_at, undo_available_until
+FROM assistant_ability_requests
+WHERE state = 'done'
+  AND undo_state = 'in_progress'
+  AND undo_started_at < now() - (sqlc.arg(stale_after_seconds)::int * interval '1 second')
+ORDER BY undo_started_at ASC, id ASC
+LIMIT @row_limit;

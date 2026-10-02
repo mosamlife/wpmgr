@@ -1505,6 +1505,160 @@ func (q *Queries) ListOpenAbilityRequestStatusForGrant(ctx context.Context, arg 
 	return items, nil
 }
 
+const listOrgAbilityRequests = `-- name: ListOrgAbilityRequests :many
+SELECT id, tenant_id, site_id, proposed_by_grant_id, entry_id, entry_sha256, ability_name, operator_permission, input_json, input_sha256, target_post_id, target_key, precheck_digest, preview_digest, base_fingerprint, site_label, site_host, grant_label, grant_via, setup_client, title_excerpt, editor, post_type, effect_copy, snapshot, card_copy_version, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, dispatch_deadline_at, claimed_at, dispatch_attempts, last_attempt_at, last_attempt_code, unknown_since, ledger_checked_at, outcome, outcome_at, outcome_code, not_sent_reason, created_post_id, restored, trashed, site_reported_text, undo_state, undo_available_until, undo_by_user_id, undo_started_at, undo_finished_at
+FROM assistant_ability_requests
+WHERE tenant_id = $1
+  AND ($2::text IS NULL OR state = $2::text)
+ORDER BY created_at DESC, id DESC
+LIMIT $4 OFFSET $3
+`
+
+type ListOrgAbilityRequestsParams struct {
+	TenantID    uuid.UUID `json:"tenant_id"`
+	StateFilter *string   `json:"state_filter"`
+	RowOffset   int32     `json:"row_offset"`
+	RowLimit    int32     `json:"row_limit"`
+}
+
+// The org-wide AI requests queue (GH #828): every site the caller's row
+// security admits, optionally narrowed to one state, newest first. A NULL
+// state_filter lists every state. Same columns as ListAbilityRequestsForSite.
+// The badge count is CountLivePendingAbilityRequests.
+func (q *Queries) ListOrgAbilityRequests(ctx context.Context, arg ListOrgAbilityRequestsParams) ([]AssistantAbilityRequest, error) {
+	rows, err := q.db.Query(ctx, listOrgAbilityRequests,
+		arg.TenantID,
+		arg.StateFilter,
+		arg.RowOffset,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AssistantAbilityRequest
+	for rows.Next() {
+		var i AssistantAbilityRequest
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.SiteID,
+			&i.ProposedByGrantID,
+			&i.EntryID,
+			&i.EntrySha256,
+			&i.AbilityName,
+			&i.OperatorPermission,
+			&i.InputJson,
+			&i.InputSha256,
+			&i.TargetPostID,
+			&i.TargetKey,
+			&i.PrecheckDigest,
+			&i.PreviewDigest,
+			&i.BaseFingerprint,
+			&i.SiteLabel,
+			&i.SiteHost,
+			&i.GrantLabel,
+			&i.GrantVia,
+			&i.SetupClient,
+			&i.TitleExcerpt,
+			&i.Editor,
+			&i.PostType,
+			&i.EffectCopy,
+			&i.Snapshot,
+			&i.CardCopyVersion,
+			&i.DigestNonce,
+			&i.PresentedDigest,
+			&i.State,
+			&i.CreatedAt,
+			&i.ExpiresAt,
+			&i.DecidedAt,
+			&i.DecidedByUserID,
+			&i.WithdrawnAt,
+			&i.DispatchDeadlineAt,
+			&i.ClaimedAt,
+			&i.DispatchAttempts,
+			&i.LastAttemptAt,
+			&i.LastAttemptCode,
+			&i.UnknownSince,
+			&i.LedgerCheckedAt,
+			&i.Outcome,
+			&i.OutcomeAt,
+			&i.OutcomeCode,
+			&i.NotSentReason,
+			&i.CreatedPostID,
+			&i.Restored,
+			&i.Trashed,
+			&i.SiteReportedText,
+			&i.UndoState,
+			&i.UndoAvailableUntil,
+			&i.UndoByUserID,
+			&i.UndoStartedAt,
+			&i.UndoFinishedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listStuckAbilityRequestUndos = `-- name: ListStuckAbilityRequestUndos :many
+SELECT id, tenant_id, site_id, undo_started_at, undo_available_until
+FROM assistant_ability_requests
+WHERE state = 'done'
+  AND undo_state = 'in_progress'
+  AND undo_started_at < now() - ($1::int * interval '1 second')
+ORDER BY undo_started_at ASC, id ASC
+LIMIT $2
+`
+
+type ListStuckAbilityRequestUndosParams struct {
+	StaleAfterSeconds int32 `json:"stale_after_seconds"`
+	RowLimit          int32 `json:"row_limit"`
+}
+
+type ListStuckAbilityRequestUndosRow struct {
+	ID                 uuid.UUID          `json:"id"`
+	TenantID           uuid.UUID          `json:"tenant_id"`
+	SiteID             uuid.UUID          `json:"site_id"`
+	UndoStartedAt      pgtype.Timestamptz `json:"undo_started_at"`
+	UndoAvailableUntil pgtype.Timestamptz `json:"undo_available_until"`
+}
+
+// Agent scan (InAgentTx), plain SELECT, as ScanResolvingAbilityRequests: undos
+// started longer ago than the threshold with nothing recorded since (GH
+// #824). The caller checks the site ledger and records the answer per row
+// with FinishAbilityRequestUndo or ReleaseAbilityRequestUndo in a tenant
+// transaction.
+func (q *Queries) ListStuckAbilityRequestUndos(ctx context.Context, arg ListStuckAbilityRequestUndosParams) ([]ListStuckAbilityRequestUndosRow, error) {
+	rows, err := q.db.Query(ctx, listStuckAbilityRequestUndos, arg.StaleAfterSeconds, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListStuckAbilityRequestUndosRow
+	for rows.Next() {
+		var i ListStuckAbilityRequestUndosRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.SiteID,
+			&i.UndoStartedAt,
+			&i.UndoAvailableUntil,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markAbilityRequestOutcomeUnknown = `-- name: MarkAbilityRequestOutcomeUnknown :execrows
 UPDATE assistant_ability_requests
 SET state = 'outcome_unknown', unknown_since = now()
@@ -1637,6 +1791,34 @@ func (q *Queries) RecordAbilityRequestOutcome(ctx context.Context, arg RecordAbi
 		arg.TenantID,
 		arg.ID,
 	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const releaseAbilityRequestUndo = `-- name: ReleaseAbilityRequestUndo :execrows
+UPDATE assistant_ability_requests
+SET undo_state = 'available', undo_started_at = NULL, undo_by_user_id = NULL
+WHERE tenant_id = $1
+  AND id = $2
+  AND state = 'done'
+  AND undo_state = 'in_progress'
+  AND undo_available_until > now()
+`
+
+type ReleaseAbilityRequestUndoParams struct {
+	TenantID uuid.UUID `json:"tenant_id"`
+	ID       uuid.UUID `json:"id"`
+}
+
+// A retryable undo failure (GH #824): in_progress goes back to available,
+// still inside the undo window, so the person can try again. The CHECKs
+// require the starter and start time to be NULL whenever undo is available,
+// and undo_finished_at is already NULL while in progress. Past the window
+// this matches nothing; the caller then finishes the undo as 'failed'.
+func (q *Queries) ReleaseAbilityRequestUndo(ctx context.Context, arg ReleaseAbilityRequestUndoParams) (int64, error) {
+	result, err := q.db.Exec(ctx, releaseAbilityRequestUndo, arg.TenantID, arg.ID)
 	if err != nil {
 		return 0, err
 	}
