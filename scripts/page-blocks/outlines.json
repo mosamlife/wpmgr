@@ -1,0 +1,34 @@
+[
+  {"name":"headings-h2-h4","outline":[
+    {"type":"heading","level":2,"text":"Section heading"},
+    {"type":"heading","level":3,"text":"Sub heading"},
+    {"type":"heading","level":4,"text":"Minor heading"}]},
+  {"name":"paragraphs","outline":[
+    {"type":"paragraph","text":"A plain paragraph with a comma, a colon: and a quote \" and an apostrophe '."},
+    {"type":"paragraph","text":"Second paragraph."}]},
+  {"name":"lists","outline":[
+    {"type":"list","ordered":false,"items":["one","two","three"]},
+    {"type":"list","ordered":true,"items":["first","second"]}]},
+  {"name":"unicode","outline":[
+    {"type":"heading","level":2,"text":"Café déjà vu 東京 العربية Ελληνικά"},
+    {"type":"paragraph","text":"Ünïcödé — “curly” quotes, ellipsis… and non-breaking space here."},
+    {"type":"list","ordered":false,"items":["日本語","Привет","naïve"]}]},
+  {"name":"emoji","outline":[
+    {"type":"heading","level":3,"text":"Launch 🚀 day 🎯"},
+    {"type":"paragraph","text":"Fine 👍🏽 and flags 🇮🇳 and keycap 1️⃣."},
+    {"type":"list","ordered":true,"items":["🎉 party","🔥 hot"]}]},
+  {"name":"ampersand","outline":[
+    {"type":"heading","level":2,"text":"Q&A & more"},
+    {"type":"paragraph","text":"Fish & chips && AT&T, R&D."},
+    {"type":"list","ordered":false,"items":["Tom & Jerry","a&b"]}]},
+  {"name":"long-text","outline":[
+    {"type":"paragraph","text":"LONGTEXT"},
+    {"type":"list","ordered":false,"items":["LONGTEXT"]}]},
+  {"name":"mixed","outline":[
+    {"type":"heading","level":2,"text":"Intro"},
+    {"type":"paragraph","text":"Body."},
+    {"type":"heading","level":3,"text":"Steps"},
+    {"type":"list","ordered":true,"items":["a","b"]},
+    {"type":"heading","level":4,"text":"Notes"},
+    {"type":"paragraph","text":"End."}]}
+]
