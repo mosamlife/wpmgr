@@ -3098,6 +3098,10 @@ type Querier interface {
 	// #824). The caller checks the site ledger and records the answer per row
 	// with FinishAbilityRequestUndo or ReleaseAbilityRequestUndo in a tenant
 	// transaction. Includes recovery undos (GH #826).
+	// Random order, not oldest first: a row whose site stays unreachable keeps
+	// its in_progress state, so a fixed order would hand the same row_limit rows
+	// to every pass and never reach the rest. Random sampling gives every stuck
+	// row an equal chance on each pass without a cursor column.
 	ListStuckAbilityRequestUndos(ctx context.Context, arg ListStuckAbilityRequestUndosParams) ([]ListStuckAbilityRequestUndosRow, error)
 	// The tasks that have exhausted @max_attempts and therefore no longer appear in
 	// the due query above. The rows are kept deliberately (they are the last record

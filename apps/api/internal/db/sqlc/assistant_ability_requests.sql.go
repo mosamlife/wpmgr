@@ -1661,7 +1661,7 @@ WHERE (state = 'done'
           AND outcome IS NOT NULL))
   AND undo_state = 'in_progress'
   AND undo_started_at < now() - ($1::int * interval '1 second')
-ORDER BY undo_started_at ASC, id ASC
+ORDER BY random()
 LIMIT $2
 `
 
@@ -1683,6 +1683,10 @@ type ListStuckAbilityRequestUndosRow struct {
 // #824). The caller checks the site ledger and records the answer per row
 // with FinishAbilityRequestUndo or ReleaseAbilityRequestUndo in a tenant
 // transaction. Includes recovery undos (GH #826).
+// Random order, not oldest first: a row whose site stays unreachable keeps
+// its in_progress state, so a fixed order would hand the same row_limit rows
+// to every pass and never reach the rest. Random sampling gives every stuck
+// row an equal chance on each pass without a cursor column.
 func (q *Queries) ListStuckAbilityRequestUndos(ctx context.Context, arg ListStuckAbilityRequestUndosParams) ([]ListStuckAbilityRequestUndosRow, error) {
 	rows, err := q.db.Query(ctx, listStuckAbilityRequestUndos, arg.StaleAfterSeconds, arg.RowLimit)
 	if err != nil {
