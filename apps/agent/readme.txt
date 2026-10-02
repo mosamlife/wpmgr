@@ -4,7 +4,7 @@ Tags: backup, security, performance, updates, site management
 Requires at least: 6.2
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 0.61.157
+Stable tag: 0.61.158
 License: MIT
 License URI: https://opensource.org/licenses/MIT
 
@@ -286,6 +286,10 @@ This plugin ships two minified JavaScript files. Their human-readable source and
 
 The entries below summarize the notable changes since 0.31.1. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
 
+= 0.61.158 =
+* Added: An AI connected through WPMgr can read the site's published pages, posts, media, categories and tags through WordPress's own REST API, as the dedicated WPMgr content user. With per-request approval in WPMgr it can change a page or post title or excerpt, with undo, and it refuses pages whose other content the WPMgr user may not save.
+* Added: It can use reviewed read tools that other plugins register with the WordPress Abilities API (WordPress 7.1 or later). A read that tries to change settings or contact other servers is refused, and admin-rights changes are put back.
+
 = 0.61.157 =
 * Improved: AI page creation. Page titles and text can contain "&" and bracketed numbers such as [1] and are stored as literal text. A draft left behind by an interrupted AI request can be moved to the trash from WPMgr as long as nobody has edited it.
 
@@ -483,6 +487,9 @@ The entries below summarize the notable changes since 0.31.1. This project ships
 * New: WOFF2 font transcoding. TTF, OTF and WOFF are converted on the control plane; the flag defaults to off.
 
 == Upgrade Notice ==
+
+= 0.61.158 =
+Lets a connected AI read published content and, with your approval in WPMgr, change page and post titles and excerpts, with undo. Also runs reviewed read-only tools from other plugins.
 
 = 0.61.157 =
 Improves AI page creation: titles and text with "&" or bracketed numbers are stored as literal text, and an interrupted request's untouched draft can be moved to the trash.
