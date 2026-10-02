@@ -56,6 +56,9 @@ final class AbilityGuards
     /** @var list<string> */
     private array $violations = [];
 
+    /** @var array<string,string> Violation label stem per guarded filter. */
+    private array $edgeKeys = [];
+
     /** @var array<string,int> Entries per ability name. */
     private array $entered = [];
 
@@ -110,37 +113,51 @@ final class AbilityGuards
         $this->preStack   = [];
         $this->armed      = true;
 
-        $record = function (string $key): callable {
-            return function (...$args) use ($key) {
+        $record = function (string $filter, string $key): callable {
+            $self = null;
+            $self = function (...$args) use ($filter, $key, &$self) {
                 if ($this->armed) {
                     $this->recorded[$key] = $args[0] ?? null;
+                    $this->assertEdge($filter, $self, true, $key);
                 }
 
                 return $args[0] ?? null;
             };
+
+            return $self;
         };
-        $guard = function (string $key, string $label): callable {
-            return function (...$args) use ($key, $label) {
+        $guard = function (string $filter, string $key): callable {
+            $self = null;
+            $self = function (...$args) use ($filter, $key, &$self) {
                 $value = $args[0] ?? null;
-                if ($this->armed && array_key_exists($key, $this->recorded) && $this->recorded[$key] !== $value) {
-                    $this->violations[] = $label;
+                if (!$this->armed) {
+                    return $value;
+                }
+                $this->assertEdge($filter, $self, false, $key);
+                if (array_key_exists($key, $this->recorded) && $this->recorded[$key] !== $value) {
+                    $this->violations[] = $key;
 
                     return $this->recorded[$key];
                 }
 
                 return $value;
             };
+
+            return $self;
         };
 
-        $preRecord = function (...$args) {
+        $preRecord = null;
+        $preRecord = function (...$args) use (&$preRecord) {
             $value = $args[0] ?? null;
             if ($this->armed) {
                 $this->preStack[] = $value;
+                $this->assertEdge(self::FILTER_PRE, $preRecord, true, 'short_circuit');
             }
 
             return $value;
         };
-        $pre = function (...$args) {
+        $pre = null;
+        $pre = function (...$args) use (&$pre) {
             $value = $args[0] ?? null;
             $name  = isset($args[1]) && is_string($args[1]) ? $args[1] : '';
             if (!$this->armed) {
@@ -148,7 +165,12 @@ final class AbilityGuards
             }
             $hadRecord = $this->preStack !== [];
             $recorded  = array_pop($this->preStack);
-            if (!$hadRecord || $value !== $recorded || !self::isSentinel($recorded)) {
+            $edgeOk    = $this->assertEdge(self::FILTER_PRE, $pre, false, 'short_circuit');
+            // Before anything runs, every guarded filter must still be
+            // bracketed by our recorder and guard, so a callback staged
+            // outside them is refused before the callbacks execute.
+            $edgeOk = $this->assertAllEdges() && $edgeOk;
+            if (!$edgeOk || !$hadRecord || $value !== $recorded || !self::isSentinel($recorded)) {
                 $this->violations[] = 'short_circuit';
 
                 return new \WP_Error('wpmgr_ability_intercepted', 'ability_intercepted/short_circuit');
@@ -168,18 +190,104 @@ final class AbilityGuards
             return $value;
         };
 
-        $this->hook(self::FILTER_INPUT, $record('input'), PHP_INT_MIN);
-        $this->hook(self::FILTER_INPUT, $guard('input', 'input'), PHP_INT_MAX);
-        $this->hook(self::FILTER_PERMISSION, $record('permission'), PHP_INT_MIN);
-        $this->hook(self::FILTER_PERMISSION, $guard('permission', 'permission'), PHP_INT_MAX);
-        $this->hook(self::FILTER_RESULT, $record('result'), PHP_INT_MIN);
-        $this->hook(self::FILTER_RESULT, $guard('result', 'result'), PHP_INT_MAX);
-        $this->hook(self::FILTER_VALIDATE_INPUT, $record('validate_input'), PHP_INT_MIN);
-        $this->hook(self::FILTER_VALIDATE_INPUT, $guard('validate_input', 'validate_input'), PHP_INT_MAX);
-        $this->hook(self::FILTER_VALIDATE_OUTPUT, $record('validate_output'), PHP_INT_MIN);
-        $this->hook(self::FILTER_VALIDATE_OUTPUT, $guard('validate_output', 'validate_output'), PHP_INT_MAX);
+        $pairs = [
+            self::FILTER_INPUT           => 'input',
+            self::FILTER_PERMISSION      => 'permission',
+            self::FILTER_RESULT          => 'result',
+            self::FILTER_VALIDATE_INPUT  => 'validate_input',
+            self::FILTER_VALIDATE_OUTPUT => 'validate_output',
+        ];
+        $this->edgeKeys = $pairs + [self::FILTER_PRE => 'short_circuit'];
+        foreach ($pairs as $filter => $key) {
+            $this->hook($filter, $record($filter, $key), PHP_INT_MIN);
+            $this->hook($filter, $guard($filter, $key), PHP_INT_MAX);
+        }
         $this->hook(self::FILTER_PRE, $preRecord, PHP_INT_MIN);
         $this->hook(self::FILTER_PRE, $pre, PHP_INT_MAX);
+    }
+
+    /**
+     * Record a violation unless $callback is, at this moment, the first entry
+     * of the lowest-priority bucket ($first) or the last entry of the
+     * highest-priority bucket (!$first) registered for $filter. A callback
+     * that sits outside ours, whenever and however it was added, could change
+     * the value after our comparison or before our recording; so could one we
+     * cannot see. Either is a violation labelled "<key>_order".
+     *
+     * @param string   $filter   Filter name.
+     * @param callable $callback Our own callback for this edge.
+     * @param bool     $first    True for the earliest edge, false for the latest.
+     * @param string   $key      Violation label stem.
+     * @return bool True when our callback holds the edge.
+     */
+    private function assertEdge(string $filter, $callback, bool $first, string $key): bool
+    {
+        if (!self::holdsEdge($filter, $callback, $first)) {
+            $this->violations[] = $key . '_order';
+
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * assertEdge() for every hook this instance installed.
+     *
+     * @return bool True when every edge is held.
+     */
+    private function assertAllEdges(): bool
+    {
+        $ok = true;
+        foreach ($this->hooks as [$filter, $callback, $priority]) {
+            $key = $this->edgeKeys[$filter] ?? 'hook';
+            if (!$this->assertEdge($filter, $callback, $priority === PHP_INT_MIN, $key)) {
+                $ok = false;
+            }
+        }
+
+        return $ok;
+    }
+
+    /**
+     * @param string   $filter   Filter name.
+     * @param callable $callback Callback.
+     * @param bool     $first    Earliest edge when true, latest when false.
+     * @return bool
+     */
+    private static function holdsEdge(string $filter, $callback, bool $first): bool
+    {
+        $registry = $GLOBALS['wp_filter'] ?? null;
+        $hook     = is_array($registry) ? ($registry[$filter] ?? null) : null;
+        if (!is_object($hook) || !property_exists($hook, 'callbacks') || !is_array($hook->callbacks) || $hook->callbacks === []) {
+            return false;
+        }
+        $priorities = array_keys($hook->callbacks);
+        $bucket     = $hook->callbacks[$first ? min($priorities) : max($priorities)];
+        if (!is_array($bucket) || $bucket === []) {
+            return false;
+        }
+        $entry = $first ? reset($bucket) : end($bucket);
+
+        return is_array($entry) && array_key_exists('function', $entry) && $entry['function'] === $callback;
+    }
+
+    /**
+     * Refuse a value that reached the caller as core's short-circuit sentinel:
+     * a pass-through default must never be the result of a call.
+     *
+     * @param mixed $result The value the call returned.
+     * @return bool True when $result is acceptable.
+     */
+    public function checkResult($result): bool
+    {
+        if (is_object($result) && is_a($result, self::SENTINEL_CLASS)) {
+            $this->violations[] = 'sentinel_result';
+
+            return false;
+        }
+
+        return true;
     }
 
     /**

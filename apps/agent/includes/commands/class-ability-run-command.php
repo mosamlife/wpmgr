@@ -806,6 +806,9 @@ final class AbilityRunCommand implements CommandInterface
         }
         try {
             $result = OwnAbilities::run($name, $input);
+            if ($armed) {
+                $guards->checkResult($result);
+            }
         } finally {
             if ($armed) {
                 $guards->disarm();
