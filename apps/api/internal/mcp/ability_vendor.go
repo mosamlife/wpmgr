@@ -293,6 +293,7 @@ func vendorRefusal(r *agentcmd.AbilityRunRefusal) *toolRefusal {
 			"options":    fenceSiteList(se.Options),
 			"http_hosts": fenceSiteList(se.HTTPHosts),
 			"posts":      se.Posts, "roles": se.Roles, "users": se.Users,
+			"post_meta": se.PostMeta, "terms": se.Terms,
 			"blocked": se.Blocked,
 		}
 		fromSite["side_effects"] = fenced

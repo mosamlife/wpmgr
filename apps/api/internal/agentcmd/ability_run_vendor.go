@@ -52,6 +52,7 @@ var vendorViolationLabels = func() map[string]struct{} {
 // side-effect recorder emits.
 var vendorBlockedLabels = map[string]struct{}{
 	"user_capabilities_meta": {}, "user_level_meta": {}, "user_roles_option": {}, "site_admins": {},
+	"user_meta_unknown": {},
 }
 
 // closedLabels maps each entry onto the closed set ("unknown" otherwise),
@@ -88,10 +89,13 @@ type AbilityRunOwner struct {
 // Options and HTTPHosts are SITE TEXT: names a plugin chose. Blocked holds the
 // agent's own fixed labels.
 type AbilityRunSideEffects struct {
-	Options   []string `json:"options"`
-	Posts     int64    `json:"posts"`
-	Roles     int64    `json:"roles"`
-	Users     int64    `json:"users"`
+	Options []string `json:"options"`
+	Posts   int64    `json:"posts"`
+	Roles   int64    `json:"roles"`
+	Users   int64    `json:"users"`
+	// PostMeta and Terms are absent from older agents; absent decodes as 0.
+	PostMeta  int64    `json:"post_meta"`
+	Terms     int64    `json:"terms"`
 	HTTPHosts []string `json:"http_hosts"`
 	Blocked   []string `json:"blocked"`
 }
@@ -186,7 +190,7 @@ func decodeSideEffects(raw json.RawMessage) *AbilityRunSideEffects {
 	}
 	if se.Options == nil || se.HTTPHosts == nil || se.Blocked == nil ||
 		len(se.Options) > vendorMaxNames || len(se.HTTPHosts) > vendorMaxNames || len(se.Blocked) > vendorMaxNames ||
-		se.Posts < 0 || se.Roles < 0 || se.Users < 0 {
+		se.Posts < 0 || se.Roles < 0 || se.Users < 0 || se.PostMeta < 0 || se.Terms < 0 {
 		return nil
 	}
 	// Blocked is the agent's own fixed labels; anything else is replaced.
