@@ -6,14 +6,14 @@ import (
 )
 
 func TestDecodeSideEffects_NewShape(t *testing.T) {
-	se := decodeSideEffects(json.RawMessage(`{"options":["o"],"posts":1,"roles":2,"users":3,"post_meta":4,"terms":5,"http_hosts":["h"],"blocked":["user_meta_unknown"]}`))
+	se := decodeSideEffects(json.RawMessage(`{"options":["o"],"posts":1,"roles":2,"users":3,"post_meta":4,"terms":5,"http_hosts":["h"],"blocked":["user_meta_unknown","blog_switched"]}`))
 	if se == nil {
 		t.Fatal("new shape refused")
 	}
 	if se.PostMeta != 4 || se.Terms != 5 || se.Users != 3 {
 		t.Fatalf("counts = %+v", se)
 	}
-	if len(se.Blocked) != 1 || se.Blocked[0] != "user_meta_unknown" {
+	if len(se.Blocked) != 2 || se.Blocked[0] != "user_meta_unknown" || se.Blocked[1] != "blog_switched" {
 		t.Fatalf("blocked = %v", se.Blocked)
 	}
 }

@@ -52,7 +52,7 @@ var vendorViolationLabels = func() map[string]struct{} {
 // side-effect recorder emits.
 var vendorBlockedLabels = map[string]struct{}{
 	"user_capabilities_meta": {}, "user_level_meta": {}, "user_roles_option": {}, "site_admins": {},
-	"user_meta_unknown": {},
+	"user_meta_unknown": {}, "blog_switched": {},
 }
 
 // closedLabels maps each entry onto the closed set ("unknown" otherwise),
