@@ -10519,16 +10519,21 @@ BEGIN
                OR jsonb_typeof(v -> 'min') <> 'number'
                OR jsonb_typeof(v -> 'max') <> 'number'
                OR (v ->> 'min') !~ '^-?[0-9]{1,10}$'
-               OR (v ->> 'max') !~ '^-?[0-9]{1,10}$'
-               OR (v ->> 'min')::bigint > (v ->> 'max')::bigint THEN
+               OR (v ->> 'max') !~ '^-?[0-9]{1,10}$' THEN
+                RETURN false;
+            END IF;
+            -- A separate statement: the casts run only after the shape is known.
+            IF (v ->> 'min')::bigint > (v ->> 'max')::bigint THEN
                 RETURN false;
             END IF;
         ELSIF t = 'string' THEN
             IF NOT (v ? 'max_len')
                OR (v ?| ARRAY['min', 'max', 'values', 'max_items'])
                OR jsonb_typeof(v -> 'max_len') <> 'number'
-               OR (v ->> 'max_len') !~ '^[0-9]{1,5}$'
-               OR (v ->> 'max_len')::int NOT BETWEEN 1 AND 10000 THEN
+               OR (v ->> 'max_len') !~ '^[0-9]{1,5}$' THEN
+                RETURN false;
+            END IF;
+            IF (v ->> 'max_len')::int NOT BETWEEN 1 AND 10000 THEN
                 RETURN false;
             END IF;
         ELSIF t = 'enum' THEN
@@ -10547,8 +10552,10 @@ BEGIN
             IF NOT (v ? 'max_items')
                OR (v ?| ARRAY['min', 'max', 'max_len', 'values'])
                OR jsonb_typeof(v -> 'max_items') <> 'number'
-               OR (v ->> 'max_items') !~ '^[0-9]{1,3}$'
-               OR (v ->> 'max_items')::int NOT BETWEEN 1 AND 100 THEN
+               OR (v ->> 'max_items') !~ '^[0-9]{1,3}$' THEN
+                RETURN false;
+            END IF;
+            IF (v ->> 'max_items')::int NOT BETWEEN 1 AND 100 THEN
                 RETURN false;
             END IF;
         ELSE
@@ -10609,14 +10616,14 @@ CREATE TABLE IF NOT EXISTS rest_route_catalogue (
         CHECK (namespace ~ '^[a-z0-9_-]{1,64}(/[a-z0-9_.-]{1,32}){0,2}$'),
     -- Our path, with {param} placeholders the agent fills from typed path
     -- params only.
-    template text NOT NULL
-        CONSTRAINT rest_route_catalogue_template_check
+    template text NOT NULL,
+    CONSTRAINT rest_route_catalogue_template_check
         CHECK (template ~ '^/[a-z0-9_./{}-]{1,200}$'
                AND (template = '/' || namespace
                     OR starts_with(template, '/' || namespace || '/'))),
     -- The exact registered route string the matched handler must report.
-    core_pattern text NOT NULL
-        CONSTRAINT rest_route_catalogue_core_pattern_check
+    core_pattern text NOT NULL,
+    CONSTRAINT rest_route_catalogue_core_pattern_check
         CHECK (core_pattern ~ '^/[!-~]{1,255}$'
                AND starts_with(core_pattern, '/' || namespace)),
     path_params jsonb NOT NULL DEFAULT '{}'::jsonb
@@ -10641,10 +10648,10 @@ CREATE TABLE IF NOT EXISTS rest_route_catalogue (
     snapshot text NOT NULL DEFAULT 'none'
         CONSTRAINT rest_route_catalogue_snapshot_check
         CHECK (snapshot IN ('none', 'post_fields')),
-    target jsonb NULL
-        CONSTRAINT rest_route_catalogue_target_check
-        -- coalesce: a missing kind or param makes ->> NULL, and a NULL CHECK
-        -- passes.
+    target jsonb NULL,
+    -- coalesce: a missing kind or param makes ->> NULL, and a NULL CHECK
+    -- passes.
+    CONSTRAINT rest_route_catalogue_target_check
         CHECK (target IS NULL OR coalesce(
             jsonb_typeof(target) = 'object'
             AND target ->> 'kind' = 'post'

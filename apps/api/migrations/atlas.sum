@@ -1,4 +1,4 @@
-h1:KtLOx7Cggq8V1gCqOuAkVV67whrZzLqPo5rwHw3Hx2I=
+h1:QR8BBY5PDh37C4Y4yS7nxH3EvHktIsdcwUCZ8WqvJlU=
 20260527115454_initial.sql h1:WfgbwGaDre3ilGSUpQWqeGW9gLACxOAIXvyRENhSX6w=
 20260527130000_auth_multitenancy.sql h1:dbQRjlWWYbkuHrqKHqZTPt1Z8Txoo58fe/Mr9HW/Plk=
 20260527172114_m2_site_registry.sql h1:RxL0mxr9jcC85gh8pcYnG0ge3IXy4+sGpLHS8YHMDDw=
@@ -165,4 +165,4 @@ h1:KtLOx7Cggq8V1gCqOuAkVV67whrZzLqPo5rwHw3Hx2I=
 20261001020000_m158_ability_request_recovery_undo.sql h1:SkoBR0My21JE0Fin5gj+Fu6JjppHoHTJVU+39fMN5vk=
 20261002000000_m159_ability_catalogue_c1.sql h1:Fp/AC4ccabuGISUhhDsTwAtqcLmX7MVZ6X37KzE9Emw=
 20261002010000_m160_ability_read_side_effect_disable.sql h1:vwIEY3A8pJvtPbRMcqntE/d7aRWxPoFUCeEeWSg3e/k=
-20261002020000_m161_rest_route_catalogue.sql h1:liE+GXaQmiXLrt8eeH0Y+tMziyCa/xItCRlAPuRPbvY=
+20261002020000_m161_rest_route_catalogue.sql h1:nHA+EPLZchUFEHUIWZQEsqsZJ0HagkNU38FeAaoUd7k=

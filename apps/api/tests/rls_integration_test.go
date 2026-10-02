@@ -314,6 +314,11 @@ func startPostgres(t testing.TB) *db.Pool {
 		// blanket GRANT above hands wpmgr_app the four privileges no real
 		// install has, and the refusal proof tests a database nobody runs.
 		"REVOKE ALL ON ability_read_side_effect_sites FROM wpmgr_app",
+		// m161's rest_route_catalogue and its audit, for the same reason as
+		// m155's ability_catalogue: SELECT-only for wpmgr_app, written only
+		// through the SECURITY DEFINER admin_upsert_rest_route and
+		// stamp_wpmgr_rest_route_hash.
+		"REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON rest_route_catalogue, rest_route_catalogue_audit FROM wpmgr_app",
 		// m155 site_ability_inventory_runs: no DELETE for wpmgr_app in the migration.
 		"REVOKE DELETE, TRUNCATE ON site_ability_inventory_runs FROM wpmgr_app",
 		// m155 site_ability_inventory: TRUNCATE revoked in the migration.
