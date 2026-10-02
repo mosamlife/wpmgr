@@ -154,7 +154,7 @@ func toDTO(r sqlc.AssistantAbilityRequest, withDigest bool, agentVersion string)
 		Outcome: r.Outcome, OutcomeCode: r.OutcomeCode, NotSentReason: r.NotSentReason,
 		CreatedPostID: r.CreatedPostID, Trashed: r.Trashed, UndoState: r.UndoState,
 		UndoAvailableUntil: ts(r.UndoAvailableUntil),
-		UndoOffered:        undoOffered(r, agentVersion, time.Now()),
+		UndoOffered:        UndoOffered(r, agentVersion, time.Now()),
 		ResolveGaveUp:      resolveGaveUp(r),
 	}
 	if withDigest {

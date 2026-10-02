@@ -36,7 +36,7 @@ func TestUndoKindFor_RecoveryNeedsAgentVersion(t *testing.T) {
 		if got := undoKindFor(recovery, c.version, now); got != c.want {
 			t.Errorf("recovery row, agent %q: got %d, want %d", c.version, got, c.want)
 		}
-		if undoOffered(recovery, c.version, now) != (c.want != undoKindNone) {
+		if UndoOffered(recovery, c.version, now) != (c.want != undoKindNone) {
 			t.Errorf("recovery row, agent %q: undo_offered disagrees", c.version)
 		}
 	}

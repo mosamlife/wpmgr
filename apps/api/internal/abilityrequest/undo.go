@@ -230,8 +230,8 @@ func recoveryUndoSupported(agentVersion string) bool {
 	return agentVersion != "" && wpversion.Compare(agentVersion, agentcmd.MinAgentVersionForRecoveryUndo) >= 0
 }
 
-// undoOffered is the card's "Undo" button, computed server-side.
-func undoOffered(r sqlc.AssistantAbilityRequest, agentVersion string, now time.Time) bool {
+// UndoOffered is the card's "Undo" button, computed server-side.
+func UndoOffered(r sqlc.AssistantAbilityRequest, agentVersion string, now time.Time) bool {
 	return undoKindFor(r, agentVersion, now) != undoKindNone
 }
 

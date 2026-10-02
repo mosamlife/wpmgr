@@ -8,7 +8,9 @@ package tests
 import (
 	"context"
 	"errors"
+	"net/http"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/riverqueue/river"
@@ -39,7 +41,74 @@ func (w *e2World) failedDraft(t *testing.T) uuid.UUID {
 	if state != "failed" || outcome == nil || *outcome != abilityrequest.OutcomeVerifyMismatch || post == nil || *post != 42 || undo != nil {
 		t.Fatalf("arranged row: state=%s outcome=%v post=%v undo=%v", state, outcome, post, undo)
 	}
+	// The recovery undo needs an agent that ships the recovery revert.
+	w.setAgentVersion(t, agentcmd.MinAgentVersionForRecoveryUndo)
 	return id
+}
+
+// setAgentVersion records the site's agent version, as the agent's
+// heartbeat would.
+func (w *e2World) setAgentVersion(t *testing.T, v string) {
+	t.Helper()
+	if _, err := w.admin.Exec(context.Background(), `UPDATE sites SET agent_version = $2 WHERE id = $1`, w.site, v); err != nil {
+		t.Fatalf("arrange agent version: %v", err)
+	}
+}
+
+// TestAbilityRequestRecoveryUndoAgentGate (GH #826): a site whose agent is
+// older than MinAgentVersionForRecoveryUndo is neither offered nor allowed
+// the recovery undo, and nothing is sent to it; on the floor version it is
+// offered. The version is read as wpmgr_app through the service.
+func TestAbilityRequestRecoveryUndoAgentGate(t *testing.T) {
+	ctx := context.Background()
+	w := newE2World(t, true)
+	id := w.failedDraft(t)
+
+	offered := func() bool {
+		t.Helper()
+		rows, err := w.svc.List(ctx, w.person, &w.site, 50, 0)
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		versions := w.svc.AgentVersions(ctx, w.person, rows)
+		for _, r := range rows {
+			if r.ID == id {
+				return abilityrequest.UndoOffered(r, versions[r.SiteID], time.Now())
+			}
+		}
+		t.Fatalf("request %s not listed", id)
+		return false
+	}
+
+	w.setAgentVersion(t, "0.61.156")
+	if offered() {
+		t.Fatal("undo_offered on a 0.61.156 site, whose agent answers not_revertible")
+	}
+	w.agent.setOverride(func(call agentcmd.AbilityRunCall) (agentcmd.AbilityRunResponse, error, bool) {
+		if call.Mode == agentcmd.AbilityRunModeRevert {
+			t.Errorf("a revert was sent to a site below the recovery floor")
+		}
+		return agentcmd.AbilityRunResponse{}, nil, false
+	})
+	_, err := w.svc.Undo(ctx, w.person, w.site, id)
+	wantCode(t, err, abilityrequest.CodeUndoUnavailable)
+
+	if domain.HTTPStatus(err) != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", domain.HTTPStatus(err))
+	}
+	if _, _, _, undo, _ := w.row(t, id); undo != nil {
+		t.Fatalf("undo_state = %v after a gated refusal, want none", *undo)
+	}
+	w.agent.setOverride(nil)
+
+	w.setAgentVersion(t, agentcmd.MinAgentVersionForRecoveryUndo)
+	if !offered() {
+		t.Fatal("undo not offered on a site at the recovery floor")
+	}
+	got, err := w.svc.Undo(ctx, w.person, w.site, id)
+	if err != nil || got.UndoState == nil || *got.UndoState != abilityrequest.UndoDone {
+		t.Fatalf("recovery undo at the floor: %v %v", got.UndoState, err)
+	}
 }
 
 func wantCode(t *testing.T, err error, code string) {
