@@ -22,6 +22,11 @@ use WPMgr\Agent\Abilities\AbilityLedger;
 use WPMgr\Agent\Abilities\RestCall;
 use WPMgr\Agent\Abilities\ServicePrincipal;
 use WPMgr\Agent\Commands\AbilityRunCommand;
+use WPMgr\Agent\Connector;
+use WPMgr\Agent\Keystore;
+use WPMgr\Agent\Router;
+use WPMgr\Agent\Settings;
+use WPMgr\Agent\Support\AuthHeaderShield;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
 /**
@@ -237,6 +242,14 @@ final class RestCallTest extends TestCase
                 return (string) json_encode(['q' => $q, 'a' => $a]);
             }
 
+            public string $last_error = '';
+
+            /** @param array<string,mixed> $row */
+            public function insert(string $t, array $row, $f = null): int
+            {
+                return 1;
+            }
+
             public function esc_like(string $s): string
             {
                 return $s;
@@ -254,7 +267,7 @@ final class RestCallTest extends TestCase
                     $this->t->options[$a[0]] = $a[1];
                     return 1;
                 }
-                if (str_starts_with($q, 'DELETE')) {
+                if (str_starts_with($q, 'DELETE FROM wp_options WHERE option_name = %s AND option_value = %s')) {
                     if (($this->t->options[$a[0]] ?? null) === $a[1]) {
                         unset($this->t->options[$a[0]]);
                         return 1;
@@ -432,10 +445,11 @@ final class RestCallTest extends TestCase
 
     private static function fixture(string $name): string
     {
+        // The bytes as Go wrote them: never trimmed, never re-encoded.
         $text = file_get_contents(__DIR__ . '/fixtures/rest-call/' . $name . '.json');
         self::assertIsString($text);
 
-        return rtrim($text, "\n");
+        return $text;
     }
 
     private static function entry(string $name): string
@@ -1141,6 +1155,115 @@ final class RestCallTest extends TestCase
         };
         $out = $this->writeCall('revert', []);
         $this->assertSame('principal_capabilities_drifted', $out['code']);
+    }
+
+    // ------------------------------------------------------------------
+    // Cross-language contract
+    // ------------------------------------------------------------------
+
+    public function test_go_rest_write_fixture_replays_precheck_write_and_revert_byte_for_byte(): void
+    {
+        $raw = file_get_contents(__DIR__ . '/fixtures/ability-run/rest-write.json');
+        $this->assertIsString($raw);
+        $f = json_decode($raw, true);
+        $this->assertIsArray($f);
+
+        // The real signed path: an Ed25519 command token carrying pd, then
+        // Router::authorizeCommand() and Router::handleCommand().
+        $keyFile = sys_get_temp_dir() . '/wpmgr-agent-a3-' . bin2hex(random_bytes(8)) . '.key';
+        if (!defined('WPMGR_AGENT_KEY_FILE')) {
+            define('WPMGR_AGENT_KEY_FILE', $keyFile);
+        }
+        Functions\when('is_user_logged_in')->justReturn(false);
+        Functions\when('register_rest_route')->justReturn(true);
+        $pair   = sodium_crypto_sign_keypair();
+        $secret = sodium_crypto_sign_secretkey($pair);
+        $keys   = new Keystore();
+        $keys->storeControlPlanePublicKey(sodium_crypto_sign_publickey($pair));
+        $siteId = (string) $f['site_id'];
+        $this->options[Settings::OPTION_SITE_ID] = $siteId;
+        $this->resetShieldStash();
+        $router = new Router(new Connector($keys, new Settings()), [new AbilityRunCommand()]);
+        $call   = function (string $p) use ($router, $secret, $siteId): array {
+            $b64    = static fn (string $d): string => rtrim(strtr(base64_encode($d), '+/', '-_'), '=');
+            $claims = ['aud' => $siteId, 'cmd' => 'ability_run', 'jti' => bin2hex(random_bytes(8)), 'exp' => time() + 30, 'pd' => hash('sha256', $p)];
+            $seg    = [$b64((string) json_encode(['alg' => 'EdDSA', 'typ' => 'JWT'])), $b64((string) json_encode($claims))];
+            $seg[]  = $b64(sodium_crypto_sign_detached(implode('.', $seg), $secret));
+            $req    = new \WP_REST_Request('POST', '/wpmgr/v1/command/ability_run');
+            $req->set_url_params(['command' => 'ability_run']);
+            $req->set_header('Content-Type', 'application/json');
+            $req->set_header('Accept', 'application/json');
+            $req->set_header('Authorization', 'Bearer ' . implode('.', $seg));
+            $req->set_body((string) json_encode(['p' => $p]));
+            $this->assertTrue($router->authorizeCommand($req, 'ability_run'), 'the signed request was not authorized');
+            $res = $router->handleCommand($req);
+            $this->assertInstanceOf(\WP_REST_Response::class, $res);
+            $this->assertIsArray($res->data);
+
+            return $res->data;
+        };
+
+        $this->addPost(412);
+        $prior = ['Old title', 'Old excerpt'];
+
+        // The fixture's own hashes hold over Go's exact bytes.
+        $this->assertSame(hash('sha256', (string) $f['entry']), $f['entry_sha256']);
+        $this->assertSame(hash('sha256', (string) $f['route']), $f['route_sha256']);
+        $this->assertStringContainsString('"route_sha256":"' . $f['route_sha256'] . '"', (string) $f['precheck']['p']);
+
+        // Precheck: Go's exact p.
+        $pre = $call((string) $f['precheck']['p']);
+        $this->assertTrue($pre['ok'] ?? false, (string) json_encode($pre));
+        $this->assertSame('prechecked', $pre['outcome']);
+        $input   = json_decode((string) $f['input'], true);
+        $title   = RestCall::storedValue((string) $input['body']['title']);
+        $excerpt = RestCall::storedValue((string) $input['body']['excerpt']);
+        $this->assertSame('Café &amp; croissants 🥐', $title);
+        $this->assertSame(['key' => 'title', 'before' => 'Old title', 'after' => $input['body']['title'], 'stored' => $title], $pre['changes'][0]);
+
+        // The stand-ins are refused and nothing changes.
+        $standIn = (string) $f['write']['p'];
+        $stale   = $call($standIn);
+        $this->assertFalse($stale['ok'] ?? true);
+        $this->assertSame('conflict', $stale['code'] ?? null, (string) json_encode($stale));
+        $this->assertSame($prior, [$this->posts[412]->post_title, $this->posts[412]->post_excerpt]);
+
+        // Write: the real digests substituted as plain text, Go's encoding kept.
+        $oldPre  = (string) $f['write']['expected']['precheck_digest'];
+        $oldBase = (string) $f['write']['expected']['base_fingerprint'];
+        $this->assertSame(1, substr_count($standIn, $oldPre));
+        $this->assertSame(1, substr_count($standIn, $oldBase));
+        $writeP = str_replace([$oldPre, $oldBase], [(string) $pre['precheck_digest'], (string) $pre['base_fingerprint']], $standIn);
+        $w      = $call($writeP);
+        $this->assertTrue($w['ok'] ?? false, (string) json_encode($w));
+        $this->assertSame('updated', $w['outcome']);
+        $this->assertSame($title, $this->posts[412]->post_title, 'stored == the approved escaped bytes');
+        $this->assertSame($excerpt, $this->posts[412]->post_excerpt);
+
+        // Revert: Go's exact p; the post and prior bytes come from the ledger.
+        $r = $call((string) $f['revert']['p']);
+        $this->assertTrue($r['ok'] ?? false, (string) json_encode($r));
+        $this->assertSame('reverted', $r['outcome']);
+        $this->assertSame($prior, [$this->posts[412]->post_title, $this->posts[412]->post_excerpt]);
+        $this->resetShieldStash();
+    }
+
+    public function test_go_closed_post_column_list_equals_the_agent_list(): void
+    {
+        $go = file_get_contents(dirname(__DIR__, 2) . '/api/internal/agentcmd/ability_run_vendor.go');
+        $this->assertIsString($go);
+        $start = strpos($go, 'var postColumnLabels');
+        $this->assertNotFalse($start, 'Go postColumnLabels not found');
+        $body = substr($go, $start, (int) strpos($go, 'return m', $start) - $start);
+        preg_match_all('/"([A-Za-z_]+)"/', (string) substr($body, (int) strpos($body, '[]string{')), $m);
+        $this->assertNotSame([], $m[1]);
+        $this->assertSame(RestCall::POST_COLUMNS, $m[1]);
+    }
+
+    private function resetShieldStash(): void
+    {
+        $prop = new \ReflectionProperty(AuthHeaderShield::class, 'stashedBearer');
+        $prop->setValue(null, null);
     }
 
     /**
