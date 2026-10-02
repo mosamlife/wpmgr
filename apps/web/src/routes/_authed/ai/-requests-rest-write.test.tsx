@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { screen, fireEvent, waitFor, within } from "@testing-library/react";
-import type { AbilityRequest, Me } from "@wpmgr/api";
+import type { AbilityRequest } from "@wpmgr/api";
 
 import { createTestQueryClient, renderWithProviders } from "@/test/render";
 import { authKeys } from "@/features/auth/use-auth";
@@ -92,7 +92,7 @@ function restRow(over: Partial<RestRow> = {}): RestRow {
     route_sha256: "a".repeat(64),
     card_facts: facts(),
     ...over,
-  } as RestRow;
+  };
 }
 
 function renderPage(rows: RestRow[], pending = rows.filter((r) => r.state === "pending").length) {
@@ -104,7 +104,7 @@ function renderPage(rows: RestRow[], pending = rows.filter((r) => r.state === "p
     memberships: [{ user_id: "user-1", tenant_id: TENANT, role: "admin" }],
     active_tenant_id: TENANT,
     scope: "org",
-  } as unknown as Me);
+  });
   return renderWithProviders(<RequestsPage />, { withRouter: true, initialPath: "/ai/requests", queryClient });
 }
 
