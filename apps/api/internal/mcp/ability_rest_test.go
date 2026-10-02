@@ -42,6 +42,10 @@ func restReadRoute() sqlc.RestRouteCatalogue {
 
 func TestCheckRestInput(t *testing.T) {
 	w, r := restWriteRoute(), restReadRoute()
+	// A row that (against m161's CHECK) lists a forbidden key: the code list
+	// refuses it anyway.
+	badRow := restReadRoute()
+	badRow.QueryKeys = []byte(`{"status":{"type":"enum","values":["draft"]}}`)
 	cases := []struct {
 		name  string
 		route sqlc.RestRouteCatalogue
@@ -53,6 +57,7 @@ func TestCheckRestInput(t *testing.T) {
 		{"route_id names another route", w, `{"route_id":"wp-v2-posts-update-fields","path":{"id":412},"body":{"title":"x"}}`, false},
 		{"raw route key", w, `{"route_id":"wp-v2-pages-update-fields","route":"/wp/v2/users","path":{"id":412},"body":{"title":"x"}}`, false},
 		{"forbidden status", r, `{"route_id":"wp-v2-pages-list","query":{"status":"draft"}}`, false},
+		{"forbidden status listed by a bad row", badRow, `{"route_id":"wp-v2-pages-list","query":{"status":"draft"}}`, false},
 		{"forbidden _method", w, `{"route_id":"wp-v2-pages-update-fields","path":{"id":412},"query":{"_method":"DELETE"},"body":{"title":"x"}}`, false},
 		{"unlisted body key", w, `{"route_id":"wp-v2-pages-update-fields","path":{"id":412},"body":{"content":"x"}}`, false},
 		{"path id as string", w, `{"route_id":"wp-v2-pages-update-fields","path":{"id":"412"},"body":{"title":"x"}}`, false},
