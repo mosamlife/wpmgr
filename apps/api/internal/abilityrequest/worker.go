@@ -718,6 +718,24 @@ type writeOutcome struct {
 	trashed       *bool
 	siteText      *string
 	undoUntil     pgtype.Timestamptz
+	// restored and columnsStillChanged are a failed rest-write's own-undo
+	// report (agentcmd.AbilityRunRefusal). restored is recorded on the row;
+	// the columns, from the closed post column set, go to the audit row.
+	restored            *bool
+	columnsStillChanged []string
+}
+
+// withRestoreReport adds a failed write's own-undo report to a refusal
+// outcome. Only a failed outcome carries one.
+func (oc writeOutcome) withRestoreReport(restored *bool, columns []string) writeOutcome {
+	if oc.outcome != OutcomeRefused && oc.outcome != OutcomeVerifyMismatch && oc.outcome != OutcomeFailed {
+		return oc
+	}
+	oc.restored = restored
+	if len(columns) > 0 {
+		oc.columnsStillChanged = columns
+	}
+	return oc
 }
 
 func strp(s string) *string { return &s }
@@ -774,6 +792,10 @@ type ledgerResult struct {
 	Code    string `json:"code"`
 	Detail  string `json:"detail"`
 	Trashed bool   `json:"trashed"`
+	// A failed rest-write's own-undo report, as in a direct refusal.
+	Restored            *bool           `json:"restored"`
+	Changed             *bool           `json:"changed"`
+	ColumnsStillChanged json.RawMessage `json:"columns_still_changed"`
 }
 
 func outcomeFromStored(raw json.RawMessage, now time.Time) (writeOutcome, bool) {
@@ -792,7 +814,8 @@ func outcomeFromStored(raw json.RawMessage, now time.Time) (writeOutcome, bool) 
 		if _, known := agentcmd.AbilityRunRefusalCodes[code]; !known {
 			code = "unknown"
 		}
-		return refusedOutcome(code, r.Detail, r.PostID, r.Trashed), true
+		return refusedOutcome(code, r.Detail, r.PostID, r.Trashed).withRestoreReport(
+			agentcmd.RestoreReport(r.Restored, r.Changed), agentcmd.DecodePostColumns(r.ColumnsStillChanged)), true
 	}
 	return writeOutcome{}, false
 }
@@ -818,7 +841,8 @@ func classifyWrite(resp agentcmd.AbilityRunResponse, err error, now time.Time) w
 		if refusal.Code == "request_in_flight" {
 			return writeOutcome{} // ours is running on the site; the ledger answers
 		}
-		return refusedOutcome(refusal.Code, refusal.Detail, refusal.PostID, refusal.Trashed)
+		return refusedOutcome(refusal.Code, refusal.Detail, refusal.PostID, refusal.Trashed).withRestoreReport(
+			refusal.Restored, refusal.ColumnsStillChanged)
 	}
 	if errors.Is(err, agentcmd.ErrCommandNotSent) {
 		return writeOutcome{outcome: OutcomeNotSent, notSentReason: strp(ReasonTransportPreSend)}
@@ -848,7 +872,7 @@ func (s *Service) writeOutcomeTx(ctx context.Context, tx pgx.Tx, q *sqlc.Queries
 	}
 	n, err := q.RecordAbilityRequestOutcome(ctx, sqlc.RecordAbilityRequestOutcomeParams{
 		Outcome: oc.outcome, OutcomeCode: oc.code, NotSentReason: oc.notSentReason,
-		CreatedPostID: oc.createdPostID, Trashed: oc.trashed, SiteReportedText: oc.siteText,
+		CreatedPostID: oc.createdPostID, Restored: oc.restored, Trashed: oc.trashed, SiteReportedText: oc.siteText,
 		UndoAvailableUntil: oc.undoUntil, TenantID: tenantID, ID: requestID,
 	})
 	if err != nil {
@@ -868,6 +892,12 @@ func (s *Service) writeOutcomeTx(ctx context.Context, tx pgx.Tx, q *sqlc.Queries
 	}
 	if oc.trashed != nil {
 		md["trashed"] = *oc.trashed
+	}
+	if oc.restored != nil {
+		md["restored"] = *oc.restored
+	}
+	if len(oc.columnsStillChanged) > 0 {
+		md["columns_still_changed"] = oc.columnsStillChanged
 	}
 	action := audit.ActionAbilityRequestFailed
 	switch oc.outcome {

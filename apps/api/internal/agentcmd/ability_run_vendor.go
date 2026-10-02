@@ -235,9 +235,10 @@ var postColumnLabels = func() map[string]struct{} {
 	return m
 }()
 
-// decodePostColumns maps side_effect_detected's column names onto the
-// closed set; a name outside it becomes "unknown".
-func decodePostColumns(raw json.RawMessage) []string {
+// DecodePostColumns maps a list of wp_posts column names (side_effect_detected's
+// columns, a rest-write's columns_still_changed) onto the closed set; a name
+// outside it becomes "unknown".
+func DecodePostColumns(raw json.RawMessage) []string {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return nil
 	}

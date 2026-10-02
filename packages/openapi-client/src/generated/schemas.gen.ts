@@ -8150,6 +8150,12 @@ export const AbilityRequestSchema = {
       type: "boolean",
       nullable: true,
     },
+    restored: {
+      type: "boolean",
+      nullable: true,
+      description:
+        "A failed wpmgr/rest-write's report on putting the post back.\nTrue: the whole post is as it was. False: WPMgr put back what it\ncould, but the post is not fully as it was; show the request as\nneeding attention. Null when nothing needed putting back, and for\nevery other ability.\n",
+    },
     undo_state: {
       type: "string",
       nullable: true,

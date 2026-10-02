@@ -296,6 +296,13 @@ type AbilityRunResponse struct {
 	// Columns is side_effect_detected's list of changed post columns, a
 	// closed label set (anything else becomes "unknown").
 	Columns json.RawMessage `json:"columns,omitempty"`
+	// ColumnsStillChanged names the post columns a failed rest-write, or a
+	// person's revert of one, left different from before the write: the
+	// title and excerpt were put back, these were not. Same closed label
+	// set as Columns. Changed is false on a failed write that changed
+	// nothing, so there was nothing to restore.
+	ColumnsStillChanged json.RawMessage `json:"columns_still_changed,omitempty"`
+	Changed             *bool           `json:"changed,omitempty"`
 
 	// Raw is the exact reply body, for the strict vendor read decode.
 	Raw json.RawMessage `json:"-"`
@@ -324,6 +331,13 @@ type AbilityRunRefusal struct {
 	// Columns are side_effect_detected's changed post columns, from a
 	// closed set.
 	Columns []string
+	// Restored, Exact and ColumnsStillChanged are a failed rest-write's
+	// own-undo report. Restored is nil when the agent sent none, and also
+	// when it said the write changed nothing (there was nothing to put
+	// back). ColumnsStillChanged is from the closed post column set.
+	Restored            *bool
+	Exact               *bool
+	ColumnsStillChanged []string
 }
 
 func (e *AbilityRunRefusal) Error() string {
@@ -415,6 +429,7 @@ var AbilityRunRefusalCodes = map[string]struct{}{
 	"side_effect_detected":         {},
 	"post_touched":                 {},
 	"post_content_would_change":    {},
+	"post_scheduled":               {},
 }
 
 var abilityRunCodeRe = regexp.MustCompile(`^[a-z0-9_]{1,40}$`)
@@ -472,8 +487,22 @@ func abilityRunRefusalOf(out AbilityRunResponse) *AbilityRunRefusal {
 		PostID:      out.PostID,
 		Trashed:     out.Trashed,
 		Violations:  decodeRefusalViolations(out.Code, out.Violations),
-		Columns:     decodePostColumns(out.Columns),
+		Columns:     DecodePostColumns(out.Columns),
 		SideEffects: decodeSideEffects(out.SideEffects),
 		ErrorCode:   humantext.CapBytes(humantext.Clean(out.ErrorCode), vendorErrorCodeBytes),
+
+		Restored:            RestoreReport(out.Restored, out.Changed),
+		Exact:               out.Exact,
+		ColumnsStillChanged: DecodePostColumns(out.ColumnsStillChanged),
 	}
+}
+
+// RestoreReport is a failed write's restored flag as recorded: nil when the
+// agent sent none or said the write changed nothing, else the agent's flag.
+func RestoreReport(restored, changed *bool) *bool {
+	if restored == nil || (changed != nil && !*changed) {
+		return nil
+	}
+	v := *restored
+	return &v
 }

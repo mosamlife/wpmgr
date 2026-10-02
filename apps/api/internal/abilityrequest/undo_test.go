@@ -31,7 +31,7 @@ func TestRecordUndoFinish_CancelledRequestStillRecords(t *testing.T) {
 		// pgx refuses to begin a transaction on a done context; mirror that.
 		return ctx.Err()
 	}
-	_, err := s.recordUndoFinish(reqCtx, run, session(authz.RoleOwner), uuid.New(), uuid.New(), UndoFailed, errors.New("transport"))
+	_, err := s.recordUndoFinish(reqCtx, run, session(authz.RoleOwner), uuid.New(), uuid.New(), UndoFailed, errors.New("transport"), nil)
 	if err != nil {
 		t.Fatalf("a cancelled request left the undo unrecorded: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestRecordUndoFinish_RecordFailureIsInternal(t *testing.T) {
 	run := func(context.Context, domain.Principal, func(*sqlc.Queries, pgx.Tx) error) error {
 		return errors.New("db down")
 	}
-	_, err := s.recordUndoFinish(context.Background(), run, session(authz.RoleOwner), uuid.New(), uuid.New(), UndoDone, nil)
+	_, err := s.recordUndoFinish(context.Background(), run, session(authz.RoleOwner), uuid.New(), uuid.New(), UndoDone, nil, nil)
 	de, ok := domain.AsDomain(err)
 	if !ok || de.Code != "ability_request_undo_unrecorded" {
 		t.Fatalf("got %v, want ability_request_undo_unrecorded", err)

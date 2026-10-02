@@ -108,6 +108,7 @@ var agentRefusalCopy = map[string]string{
 	"side_effect_detected":              "The site changed something else during the call.",
 	"post_touched":                      "Someone has edited this post since WPMgr changed it.",
 	"post_content_would_change":         msgPostContentWouldChange,
+	"post_scheduled":                    "This page is scheduled; change its title in WordPress.",
 	"mode_class_mismatch":               "The site refused the call: the route does not match the tool.",
 }
 

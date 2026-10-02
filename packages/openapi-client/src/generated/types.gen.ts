@@ -4685,6 +4685,15 @@ export type AbilityRequest = {
   not_sent_reason?: string;
   created_post_id?: number;
   trashed?: boolean;
+  /**
+   * A failed wpmgr/rest-write's report on putting the post back.
+   * True: the whole post is as it was. False: WPMgr put back what it
+   * could, but the post is not fully as it was; show the request as
+   * needing attention. Null when nothing needed putting back, and for
+   * every other ability.
+   *
+   */
+  restored?: boolean;
   undo_state?: string;
   undo_available_until?: string;
   /**

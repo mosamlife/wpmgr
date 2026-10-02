@@ -2254,6 +2254,12 @@ func (s *AbilityRequest) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
+		if s.Restored.Set {
+			e.FieldStart("restored")
+			s.Restored.Encode(e)
+		}
+	}
+	{
 		if s.UndoState.Set {
 			e.FieldStart("undo_state")
 			s.UndoState.Encode(e)
@@ -2293,7 +2299,7 @@ func (s *AbilityRequest) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfAbilityRequest = [32]string{
+var jsonFieldsNameOfAbilityRequest = [33]string{
 	0:  "id",
 	1:  "site_id",
 	2:  "ability_name",
@@ -2319,13 +2325,14 @@ var jsonFieldsNameOfAbilityRequest = [32]string{
 	22: "not_sent_reason",
 	23: "created_post_id",
 	24: "trashed",
-	25: "undo_state",
-	26: "undo_available_until",
-	27: "undo_offered",
-	28: "resolve_gave_up",
-	29: "route_id",
-	30: "route_sha256",
-	31: "card_facts",
+	25: "restored",
+	26: "undo_state",
+	27: "undo_available_until",
+	28: "undo_offered",
+	29: "resolve_gave_up",
+	30: "route_id",
+	31: "route_sha256",
+	32: "card_facts",
 }
 
 // Decode decodes AbilityRequest from json.
@@ -2333,7 +2340,7 @@ func (s *AbilityRequest) Decode(d *jx.Decoder) error {
 	if s == nil {
 		return errors.New("invalid: unable to decode AbilityRequest to nil")
 	}
-	var requiredBitSet [4]uint8
+	var requiredBitSet [5]uint8
 
 	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
 		switch string(k) {
@@ -2611,6 +2618,16 @@ func (s *AbilityRequest) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"trashed\"")
 			}
+		case "restored":
+			if err := func() error {
+				s.Restored.Reset()
+				if err := s.Restored.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"restored\"")
+			}
 		case "undo_state":
 			if err := func() error {
 				s.UndoState.Reset()
@@ -2632,7 +2649,7 @@ func (s *AbilityRequest) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"undo_available_until\"")
 			}
 		case "undo_offered":
-			requiredBitSet[3] |= 1 << 3
+			requiredBitSet[3] |= 1 << 4
 			if err := func() error {
 				v, err := d.Bool()
 				s.UndoOffered = bool(v)
@@ -2644,7 +2661,7 @@ func (s *AbilityRequest) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"undo_offered\"")
 			}
 		case "resolve_gave_up":
-			requiredBitSet[3] |= 1 << 4
+			requiredBitSet[3] |= 1 << 5
 			if err := func() error {
 				v, err := d.Bool()
 				s.ResolveGaveUp = bool(v)
@@ -2694,11 +2711,12 @@ func (s *AbilityRequest) Decode(d *jx.Decoder) error {
 	}
 	// Validate required fields.
 	var failures []validate.FieldError
-	for i, mask := range [4]uint8{
+	for i, mask := range [5]uint8{
 		0b10001111,
 		0b01011111,
 		0b00000111,
-		0b00011000,
+		0b00110000,
+		0b00000000,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.

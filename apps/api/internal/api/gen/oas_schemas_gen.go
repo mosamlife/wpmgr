@@ -1352,33 +1352,37 @@ func (s *AbilityCatalogueInputStatus) UnmarshalText(data []byte) error {
 // shown in full on the card.
 // Ref: #/components/schemas/AbilityRequest
 type AbilityRequest struct {
-	ID                 uuid.UUID                `json:"id"`
-	SiteID             uuid.UUID                `json:"site_id"`
-	AbilityName        string                   `json:"ability_name"`
-	InputJSON          string                   `json:"input_json"`
-	TitleExcerpt       OptNilString             `json:"title_excerpt"`
-	Editor             OptNilString             `json:"editor"`
-	PostType           OptNilString             `json:"post_type"`
-	EffectCopy         AbilityRequestEffectCopy `json:"effect_copy"`
-	Snapshot           string                   `json:"snapshot"`
-	SiteLabel          string                   `json:"site_label"`
-	SiteHost           string                   `json:"site_host"`
-	GrantLabel         string                   `json:"grant_label"`
-	GrantVia           string                   `json:"grant_via"`
-	SetupClient        OptNilString             `json:"setup_client"`
-	CardCopyVersion    int32                    `json:"card_copy_version"`
-	PresentedDigest    OptString                `json:"presented_digest"`
-	State              AbilityRequestState      `json:"state"`
-	CreatedAt          time.Time                `json:"created_at"`
-	ExpiresAt          time.Time                `json:"expires_at"`
-	DecidedAt          OptNilDateTime           `json:"decided_at"`
-	Outcome            OptNilString             `json:"outcome"`
-	OutcomeCode        OptNilString             `json:"outcome_code"`
-	NotSentReason      OptNilString             `json:"not_sent_reason"`
-	CreatedPostID      OptNilInt64              `json:"created_post_id"`
-	Trashed            OptNilBool               `json:"trashed"`
-	UndoState          OptNilString             `json:"undo_state"`
-	UndoAvailableUntil OptNilDateTime           `json:"undo_available_until"`
+	ID              uuid.UUID                `json:"id"`
+	SiteID          uuid.UUID                `json:"site_id"`
+	AbilityName     string                   `json:"ability_name"`
+	InputJSON       string                   `json:"input_json"`
+	TitleExcerpt    OptNilString             `json:"title_excerpt"`
+	Editor          OptNilString             `json:"editor"`
+	PostType        OptNilString             `json:"post_type"`
+	EffectCopy      AbilityRequestEffectCopy `json:"effect_copy"`
+	Snapshot        string                   `json:"snapshot"`
+	SiteLabel       string                   `json:"site_label"`
+	SiteHost        string                   `json:"site_host"`
+	GrantLabel      string                   `json:"grant_label"`
+	GrantVia        string                   `json:"grant_via"`
+	SetupClient     OptNilString             `json:"setup_client"`
+	CardCopyVersion int32                    `json:"card_copy_version"`
+	PresentedDigest OptString                `json:"presented_digest"`
+	State           AbilityRequestState      `json:"state"`
+	CreatedAt       time.Time                `json:"created_at"`
+	ExpiresAt       time.Time                `json:"expires_at"`
+	DecidedAt       OptNilDateTime           `json:"decided_at"`
+	Outcome         OptNilString             `json:"outcome"`
+	OutcomeCode     OptNilString             `json:"outcome_code"`
+	NotSentReason   OptNilString             `json:"not_sent_reason"`
+	CreatedPostID   OptNilInt64              `json:"created_post_id"`
+	Trashed         OptNilBool               `json:"trashed"`
+	// A failed wpmgr/rest-write's report on putting the post back. True: the whole post is as it was.
+	// False: WPMgr put back what it could, but the post is not fully as it was; show the request as
+	// needing attention. Null when nothing needed putting back, and for every other ability.
+	Restored           OptNilBool     `json:"restored"`
+	UndoState          OptNilString   `json:"undo_state"`
+	UndoAvailableUntil OptNilDateTime `json:"undo_available_until"`
 	// Whether `POST .../undo` would start an undo now: a done request inside its undo window, or the draft
 	// a failed or given-up page creation left on the site. Show the undo action exactly when this is true.
 	UndoOffered bool `json:"undo_offered"`
@@ -1516,6 +1520,11 @@ func (s *AbilityRequest) GetCreatedPostID() OptNilInt64 {
 // GetTrashed returns the value of Trashed.
 func (s *AbilityRequest) GetTrashed() OptNilBool {
 	return s.Trashed
+}
+
+// GetRestored returns the value of Restored.
+func (s *AbilityRequest) GetRestored() OptNilBool {
+	return s.Restored
 }
 
 // GetUndoState returns the value of UndoState.
@@ -1676,6 +1685,11 @@ func (s *AbilityRequest) SetCreatedPostID(val OptNilInt64) {
 // SetTrashed sets the value of Trashed.
 func (s *AbilityRequest) SetTrashed(val OptNilBool) {
 	s.Trashed = val
+}
+
+// SetRestored sets the value of Restored.
+func (s *AbilityRequest) SetRestored(val OptNilBool) {
+	s.Restored = val
 }
 
 // SetUndoState sets the value of UndoState.

@@ -20252,6 +20252,15 @@ components:
         not_sent_reason: { type: string, nullable: true }
         created_post_id: { type: integer, format: int64, nullable: true }
         trashed: { type: boolean, nullable: true }
+        restored:
+          type: boolean
+          nullable: true
+          description: |
+            A failed wpmgr/rest-write's report on putting the post back.
+            True: the whole post is as it was. False: WPMgr put back what it
+            could, but the post is not fully as it was; show the request as
+            needing attention. Null when nothing needed putting back, and for
+            every other ability.
         undo_state: { type: string, nullable: true }
         undo_available_until: { type: string, format: date-time, nullable: true }
         undo_offered:
