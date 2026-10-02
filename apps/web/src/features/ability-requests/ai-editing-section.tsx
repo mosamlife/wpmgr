@@ -108,14 +108,14 @@ function AbilityRequestList({ siteId, siteUrl }: { siteId: string; siteUrl?: str
 
   return (
     <div className="space-y-3" data-testid="ability-requests">
-      <h2 className="text-sm font-semibold text-foreground">AI page requests</h2>
+      <h2 className="text-sm font-semibold text-foreground">AI requests</h2>
       {query.isPending ? (
         <div aria-hidden="true" className="space-y-3">
           <Skeleton className="h-40 w-full" />
         </div>
       ) : query.isError && loaded.length === 0 ? (
         <PageError
-          what="Could not load AI page requests."
+          what="Could not load AI requests."
           why={query.error.message}
           onRetry={() => void query.refetch()}
           retryLabel="Reload requests"
@@ -123,7 +123,7 @@ function AbilityRequestList({ siteId, siteUrl }: { siteId: string; siteUrl?: str
         />
       ) : requests.length === 0 ? (
         <p data-testid="ability-requests-empty" className="text-sm text-muted-foreground">
-          No AI page requests for this site yet.
+          No AI requests for this site yet.
         </p>
       ) : (
         <div className="space-y-4">

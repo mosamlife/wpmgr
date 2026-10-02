@@ -8,6 +8,7 @@ import {
   REST_NOT_SHOWABLE_COPY,
   isPublishedImmediately,
   parseRestCardFacts,
+  postStatusWord,
   restCardTitle,
   restWriteStatus,
 } from "./rest-card-model";
@@ -90,7 +91,7 @@ export function StructuredAbilityCard(props: AbilityRequestCardProps & { canUndo
               {facts.target.post_type} #{facts.target.id}
             </p>
             <p className="text-xs font-medium text-muted-foreground">From the site</p>
-            <p className="break-words text-sm text-muted-foreground">Status: {facts.target.from_the_site.status}</p>
+            <p className="break-words text-sm text-muted-foreground">Status: {postStatusWord(facts.target.from_the_site.status)}</p>
             <p className="break-words text-sm text-muted-foreground">
               Current title: {facts.target.from_the_site.title_before}
             </p>

@@ -37,6 +37,19 @@ const factsSchema = z.object({
 
 export type RestCardFacts = z.infer<typeof factsSchema>;
 
+const POST_STATUS_WORDS: Record<string, string> = {
+  publish: "Published",
+  draft: "Draft",
+  private: "Private",
+  pending: "Pending review",
+  future: "Scheduled",
+};
+
+/** Plain-English word for a WordPress post status; an unknown status is shown as the site sent it. */
+export function postStatusWord(status: string): string {
+  return Object.prototype.hasOwnProperty.call(POST_STATUS_WORDS, status) ? POST_STATUS_WORDS[status]! : status;
+}
+
 export function isRestWrite(r: AbilityRequest): boolean {
   return r.ability_name === REST_WRITE_ABILITY;
 }
@@ -112,9 +125,15 @@ export function restWriteStatus(r: AbilityRequest): AbilityStatus {
         r.outcome === "refused"
           ? "The site refused the change. Nothing was changed."
           : "The change was not made because something went wrong on the site.";
+      if (r.outcome_code === "interrupted") {
+        return {
+          kind: "failed",
+          text: "WPMgr lost contact during the change, so the new title may be live. Check the page in WordPress.",
+        };
+      }
       if (r.restored === false) {
         lead =
-          "WPMgr put the title and excerpt back, but the site also changed other parts of this page during the save. Check the page in WordPress.";
+          "The change failed and WPMgr may not have put the old title back. Check the page in WordPress.";
       } else if (r.restored === true) {
         lead = "The change didn't go through; nothing was left changed.";
       }

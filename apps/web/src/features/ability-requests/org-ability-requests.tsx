@@ -8,7 +8,7 @@ import { AbilityRequestCard } from "./ability-request-card";
 import { useAbilityCardActions } from "./use-ability-card-actions";
 import { AbilityRequestError, useOrgAbilityRequestPages } from "./use-ability-requests";
 
-// AI page requests across every site, under /ai/requests beside the cache
+// AI requests across every site, under /ai/requests beside the cache
 // clear requests. Each card carries approve, decline and undo inline (the same
 // card and handlers as a site's Content tab) and links to that site's Content
 // tab. The badge count is the server's pending_count, never the page length.
@@ -33,15 +33,15 @@ export function OrgAbilityRequests() {
   }
 
   return (
-    <section aria-label="AI page requests" data-testid="org-ability-requests" className="space-y-4">
-      <h2 className="text-sm font-semibold text-foreground">AI page requests</h2>
+    <section aria-label="AI requests" data-testid="org-ability-requests" className="space-y-4">
+      <h2 className="text-sm font-semibold text-foreground">AI requests</h2>
       {query.isPending ? (
         <div aria-hidden="true">
           <Skeleton className="h-40 w-full" />
         </div>
       ) : query.isError && loaded.length === 0 ? (
         <PageError
-          what="Could not load AI page requests."
+          what="Could not load AI requests."
           why={query.error.message}
           onRetry={() => void query.refetch()}
           retryLabel="Reload page requests"
@@ -49,7 +49,7 @@ export function OrgAbilityRequests() {
         />
       ) : requests.length === 0 ? (
         <p data-testid="org-ability-requests-empty" className="text-sm text-muted-foreground">
-          No AI page requests yet.
+          No AI requests yet.
         </p>
       ) : (
         <div className="space-y-4">
