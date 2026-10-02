@@ -317,6 +317,49 @@ if (!class_exists('WP_REST_Request')) {
             $this->params['URL'] = $params;
         }
 
+        /**
+         * @return array<string,mixed>
+         */
+        public function get_query_params(): array
+        {
+            return $this->params['GET'];
+        }
+
+        /**
+         * @param array<string,mixed> $params Query params.
+         */
+        public function set_query_params(array $params): void
+        {
+            $this->params['GET'] = $params;
+        }
+
+        /**
+         * @return array<string,mixed>
+         */
+        public function get_body_params(): array
+        {
+            return $this->params['POST'];
+        }
+
+        /**
+         * @param array<string,mixed> $params Body params.
+         */
+        public function set_body_params(array $params): void
+        {
+            $this->params['POST'] = $params;
+        }
+
+        /** @var array<string,mixed> */
+        private array $attributes = [];
+
+        /**
+         * @param array<string,mixed> $attributes Handler attributes.
+         */
+        public function set_attributes(array $attributes): void
+        {
+            $this->attributes = $attributes;
+        }
+
         public function get_param(string $key): mixed
         {
             foreach ($this->get_parameter_order() as $type) {
@@ -437,11 +480,201 @@ if (!class_exists('WP_REST_Response')) {
         }
 
         /**
+         * @return mixed
+         */
+        public function get_data()
+        {
+            return $this->data;
+        }
+
+        /**
+         * @param mixed $data Data.
+         */
+        public function set_data($data): void
+        {
+            $this->data = $data;
+        }
+
+        public string $matched_route = '';
+
+        /** @var mixed */
+        public $matched_handler = null;
+
+        public function get_matched_route(): string
+        {
+            return $this->matched_route;
+        }
+
+        public function set_matched_route(string $route): void
+        {
+            $this->matched_route = $route;
+        }
+
+        /**
+         * @return mixed
+         */
+        public function get_matched_handler()
+        {
+            return $this->matched_handler;
+        }
+
+        /**
+         * @param mixed $handler Handler.
+         */
+        public function set_matched_handler($handler): void
+        {
+            $this->matched_handler = $handler;
+        }
+
+        /**
          * @return array<string,string>
          */
         public function get_headers(): array
         {
             return $this->headers;
+        }
+    }
+}
+
+if (!class_exists('WP_REST_Server')) {
+    /**
+     * Double for core's WP_REST_Server: dispatch() and respond_to_request()
+     * run the four REST filters in core's order and with core's arguments
+     * (WordPress 7.1 class-wp-rest-server.php). Hooks are read from
+     * $GLOBALS['wp_filter'] the way the test registers them, in priority
+     * order, insertion order within a priority.
+     */
+    class WP_REST_Server
+    {
+        /** @var array<string,list<array<string,mixed>>> */
+        public array $routes = [];
+
+        /**
+         * @param string               $pattern Route regex.
+         * @param array<string,mixed>  $handler Handler.
+         */
+        public function register_route(string $pattern, array $handler): void
+        {
+            $this->routes[$pattern][] = $handler + ['methods' => [], 'args' => [], 'permission_callback' => null];
+        }
+
+        /**
+         * @param string $tag     Filter.
+         * @param mixed  ...$args Value and arguments.
+         * @return mixed
+         */
+        public static function applyHooks(string $tag, ...$args)
+        {
+            $value = $args[0] ?? null;
+            $hook  = $GLOBALS['wp_filter'][$tag] ?? null;
+            if (!is_object($hook) || !isset($hook->callbacks) || !is_array($hook->callbacks)) {
+                return $value;
+            }
+            $callbacks = $hook->callbacks;
+            ksort($callbacks);
+            foreach ($callbacks as $bucket) {
+                foreach ($bucket as $entry) {
+                    $args[0] = $value;
+                    $value   = call_user_func_array($entry['function'], array_slice($args, 0, (int) $entry['accepted_args']));
+                }
+            }
+
+            return $value;
+        }
+
+        /**
+         * @param mixed $request Request.
+         * @return mixed
+         */
+        public function dispatch($request)
+        {
+            $result = self::applyHooks('rest_pre_dispatch', null, $this, $request);
+            if (!empty($result)) {
+                if ($result instanceof WP_Error) {
+                    return $this->error_to_response($result);
+                }
+
+                return $result instanceof WP_REST_Response ? $result : new WP_REST_Response($result);
+            }
+            $route   = null;
+            $handler = null;
+            foreach ($this->routes as $pattern => $handlers) {
+                if (preg_match('@^' . $pattern . '$@i', $request->get_route(), $m) !== 1) {
+                    continue;
+                }
+                foreach ($handlers as $h) {
+                    if (empty($h['methods'][$request->get_method()])) {
+                        continue;
+                    }
+                    $args = [];
+                    foreach ($m as $k => $v) {
+                        if (!is_int($k)) {
+                            $args[$k] = $v;
+                        }
+                    }
+                    $request->set_url_params($args);
+                    $request->set_attributes($h);
+                    $route   = $pattern;
+                    $handler = $h;
+                    break 2;
+                }
+            }
+            if ($handler === null) {
+                return $this->error_to_response(new WP_Error('rest_no_route', 'No route was found matching the URL and request method.', ['status' => 404]));
+            }
+            $error = isset($handler['validate']) ? call_user_func($handler['validate'], $request) : null;
+
+            return $this->respond_to_request($request, (string) $route, $handler, $error);
+        }
+
+        /**
+         * @param mixed               $request  Request.
+         * @param string              $route    Route.
+         * @param array<string,mixed> $handler  Handler.
+         * @param mixed               $response Error so far.
+         * @return WP_REST_Response
+         */
+        protected function respond_to_request($request, string $route, array $handler, $response)
+        {
+            $response = self::applyHooks('rest_request_before_callbacks', $response, $handler, $request);
+            if (!($response instanceof WP_Error) && !empty($handler['permission_callback'])) {
+                $permission = call_user_func($handler['permission_callback'], $request);
+                if ($permission instanceof WP_Error) {
+                    $response = $permission;
+                } elseif (false === $permission || null === $permission) {
+                    $response = new WP_Error('rest_forbidden', 'Sorry, you are not allowed to do that.', ['status' => 403]);
+                }
+            }
+            if (!($response instanceof WP_Error)) {
+                $dispatch_result = self::applyHooks('rest_dispatch_request', null, $request, $route, $handler);
+                if (null !== $dispatch_result) {
+                    $response = $dispatch_result;
+                } else {
+                    $response = call_user_func($handler['callback'], $request);
+                }
+            }
+            $response = self::applyHooks('rest_request_after_callbacks', $response, $handler, $request);
+            if ($response instanceof WP_Error) {
+                $response = $this->error_to_response($response);
+            } elseif (!($response instanceof WP_REST_Response)) {
+                $response = new WP_REST_Response($response);
+            }
+            $response->set_matched_route($route);
+            $response->set_matched_handler($handler);
+
+            return $response;
+        }
+
+        /**
+         * @param WP_Error $error Error.
+         * @return WP_REST_Response
+         */
+        protected function error_to_response(WP_Error $error): WP_REST_Response
+        {
+            $data   = $error->get_error_data();
+            $status = (int) ($data['status'] ?? 500);
+
+            return new WP_REST_Response(['code' => $error->get_error_code(), 'message' => $error->get_error_message(), 'data' => $data], $status);
         }
     }
 }

@@ -188,6 +188,12 @@ final class RestCall
             }
         }
 
+        // No key is both pinned and supplied, nor in two parts at once.
+        $all = array_merge(array_keys($pinned), array_keys($specs['path_params']), array_keys($specs['query_keys']), array_keys($specs['body_keys']));
+        if (count($all) !== count(array_unique(array_map('strval', $all)))) {
+            return self::refusal('route_not_reviewed', 'a route key appears in more than one place');
+        }
+
         // Every placeholder in the template is a path param, and every path
         // param is a required int placeholder.
         preg_match_all('/\{([a-z][a-z0-9_]{0,31})\}/', $template, $m);
@@ -253,10 +259,10 @@ final class RestCall
         if (($row['snapshot'] ?? null) !== 'post_fields') {
             return 'a write route needs the post_fields snapshot';
         }
-        // A pinned or free query value on a POST would be read as a body
-        // field by the route, so a write takes neither.
-        if ($pinned !== [] || $specs['query_keys'] !== []) {
-            return 'a write route takes no query values';
+        // WordPress reads query values ahead of URL values for a POST, so a
+        // write pins nothing but context=view and takes no free query value.
+        if (array_diff_key($pinned, ['context' => true]) !== [] || $specs['query_keys'] !== []) {
+            return 'a write route takes no query values but context=view';
         }
         if ($specs['body_keys'] === []) {
             return 'a write route needs body keys';
