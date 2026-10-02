@@ -1385,6 +1385,12 @@ type AbilityRequest struct {
 	// True once WPMgr stopped checking the site for the outcome of a write whose reply was lost. The
 	// result is final: the person should look at the site's drafts.
 	ResolveGaveUp bool `json:"resolve_gave_up"`
+	// The reviewed REST route a wpmgr/rest-write request runs; null otherwise.
+	RouteID OptNilString `json:"route_id"`
+	// The route hash the request was approved against; null otherwise.
+	RouteSHA256 OptNilString `json:"route_sha256"`
+	// The structured card of a wpmgr/rest-write request; null otherwise.
+	CardFacts OptNilAbilityRequestCardFacts `json:"card_facts"`
 }
 
 // GetID returns the value of ID.
@@ -1532,6 +1538,21 @@ func (s *AbilityRequest) GetResolveGaveUp() bool {
 	return s.ResolveGaveUp
 }
 
+// GetRouteID returns the value of RouteID.
+func (s *AbilityRequest) GetRouteID() OptNilString {
+	return s.RouteID
+}
+
+// GetRouteSHA256 returns the value of RouteSHA256.
+func (s *AbilityRequest) GetRouteSHA256() OptNilString {
+	return s.RouteSHA256
+}
+
+// GetCardFacts returns the value of CardFacts.
+func (s *AbilityRequest) GetCardFacts() OptNilAbilityRequestCardFacts {
+	return s.CardFacts
+}
+
 // SetID sets the value of ID.
 func (s *AbilityRequest) SetID(val uuid.UUID) {
 	s.ID = val
@@ -1677,6 +1698,21 @@ func (s *AbilityRequest) SetResolveGaveUp(val bool) {
 	s.ResolveGaveUp = val
 }
 
+// SetRouteID sets the value of RouteID.
+func (s *AbilityRequest) SetRouteID(val OptNilString) {
+	s.RouteID = val
+}
+
+// SetRouteSHA256 sets the value of RouteSHA256.
+func (s *AbilityRequest) SetRouteSHA256(val OptNilString) {
+	s.RouteSHA256 = val
+}
+
+// SetCardFacts sets the value of CardFacts.
+func (s *AbilityRequest) SetCardFacts(val OptNilAbilityRequestCardFacts) {
+	s.CardFacts = val
+}
+
 func (*AbilityRequest) approveAbilityRequestRes() {}
 func (*AbilityRequest) declineAbilityRequestRes() {}
 func (*AbilityRequest) undoAbilityRequestRes()    {}
@@ -1695,6 +1731,306 @@ func (s *AbilityRequestApproveBody) GetPresentedDigest() string {
 // SetPresentedDigest sets the value of PresentedDigest.
 func (s *AbilityRequestApproveBody) SetPresentedDigest(val string) {
 	s.PresentedDigest = val
+}
+
+// A structured approval card. Every value under a `from_the_site` member came from the site: render it
+// as plain text in the "From the site" slot. `after` is the value the AI asked for. The other strings
+// are WPMgr's.
+// Ref: #/components/schemas/AbilityRequestCardFacts
+type AbilityRequestCardFacts struct {
+	RouteID    string                               `json:"route_id"`
+	RouteTitle string                               `json:"route_title"`
+	Method     string                               `json:"method"`
+	Target     AbilityRequestCardFactsTarget        `json:"target"`
+	Changes    []AbilityRequestCardFactsChangesItem `json:"changes"`
+	EffectCopy AbilityRequestCardFactsEffectCopy    `json:"effect_copy"`
+	Live       bool                                 `json:"live"`
+	// "Published immediately" when live, otherwise "Saved to the post; it is not published".
+	EffectLabel string `json:"effect_label"`
+	Undo        string `json:"undo"`
+	UndoExact   bool   `json:"undo_exact"`
+	// Set when undo may not restore the exact characters of the previous value.
+	UndoNote NilString `json:"undo_note"`
+}
+
+// GetRouteID returns the value of RouteID.
+func (s *AbilityRequestCardFacts) GetRouteID() string {
+	return s.RouteID
+}
+
+// GetRouteTitle returns the value of RouteTitle.
+func (s *AbilityRequestCardFacts) GetRouteTitle() string {
+	return s.RouteTitle
+}
+
+// GetMethod returns the value of Method.
+func (s *AbilityRequestCardFacts) GetMethod() string {
+	return s.Method
+}
+
+// GetTarget returns the value of Target.
+func (s *AbilityRequestCardFacts) GetTarget() AbilityRequestCardFactsTarget {
+	return s.Target
+}
+
+// GetChanges returns the value of Changes.
+func (s *AbilityRequestCardFacts) GetChanges() []AbilityRequestCardFactsChangesItem {
+	return s.Changes
+}
+
+// GetEffectCopy returns the value of EffectCopy.
+func (s *AbilityRequestCardFacts) GetEffectCopy() AbilityRequestCardFactsEffectCopy {
+	return s.EffectCopy
+}
+
+// GetLive returns the value of Live.
+func (s *AbilityRequestCardFacts) GetLive() bool {
+	return s.Live
+}
+
+// GetEffectLabel returns the value of EffectLabel.
+func (s *AbilityRequestCardFacts) GetEffectLabel() string {
+	return s.EffectLabel
+}
+
+// GetUndo returns the value of Undo.
+func (s *AbilityRequestCardFacts) GetUndo() string {
+	return s.Undo
+}
+
+// GetUndoExact returns the value of UndoExact.
+func (s *AbilityRequestCardFacts) GetUndoExact() bool {
+	return s.UndoExact
+}
+
+// GetUndoNote returns the value of UndoNote.
+func (s *AbilityRequestCardFacts) GetUndoNote() NilString {
+	return s.UndoNote
+}
+
+// SetRouteID sets the value of RouteID.
+func (s *AbilityRequestCardFacts) SetRouteID(val string) {
+	s.RouteID = val
+}
+
+// SetRouteTitle sets the value of RouteTitle.
+func (s *AbilityRequestCardFacts) SetRouteTitle(val string) {
+	s.RouteTitle = val
+}
+
+// SetMethod sets the value of Method.
+func (s *AbilityRequestCardFacts) SetMethod(val string) {
+	s.Method = val
+}
+
+// SetTarget sets the value of Target.
+func (s *AbilityRequestCardFacts) SetTarget(val AbilityRequestCardFactsTarget) {
+	s.Target = val
+}
+
+// SetChanges sets the value of Changes.
+func (s *AbilityRequestCardFacts) SetChanges(val []AbilityRequestCardFactsChangesItem) {
+	s.Changes = val
+}
+
+// SetEffectCopy sets the value of EffectCopy.
+func (s *AbilityRequestCardFacts) SetEffectCopy(val AbilityRequestCardFactsEffectCopy) {
+	s.EffectCopy = val
+}
+
+// SetLive sets the value of Live.
+func (s *AbilityRequestCardFacts) SetLive(val bool) {
+	s.Live = val
+}
+
+// SetEffectLabel sets the value of EffectLabel.
+func (s *AbilityRequestCardFacts) SetEffectLabel(val string) {
+	s.EffectLabel = val
+}
+
+// SetUndo sets the value of Undo.
+func (s *AbilityRequestCardFacts) SetUndo(val string) {
+	s.Undo = val
+}
+
+// SetUndoExact sets the value of UndoExact.
+func (s *AbilityRequestCardFacts) SetUndoExact(val bool) {
+	s.UndoExact = val
+}
+
+// SetUndoNote sets the value of UndoNote.
+func (s *AbilityRequestCardFacts) SetUndoNote(val NilString) {
+	s.UndoNote = val
+}
+
+type AbilityRequestCardFactsChangesItem struct {
+	Key         string                                        `json:"key"`
+	Label       string                                        `json:"label"`
+	After       string                                        `json:"after"`
+	FromTheSite AbilityRequestCardFactsChangesItemFromTheSite `json:"from_the_site"`
+}
+
+// GetKey returns the value of Key.
+func (s *AbilityRequestCardFactsChangesItem) GetKey() string {
+	return s.Key
+}
+
+// GetLabel returns the value of Label.
+func (s *AbilityRequestCardFactsChangesItem) GetLabel() string {
+	return s.Label
+}
+
+// GetAfter returns the value of After.
+func (s *AbilityRequestCardFactsChangesItem) GetAfter() string {
+	return s.After
+}
+
+// GetFromTheSite returns the value of FromTheSite.
+func (s *AbilityRequestCardFactsChangesItem) GetFromTheSite() AbilityRequestCardFactsChangesItemFromTheSite {
+	return s.FromTheSite
+}
+
+// SetKey sets the value of Key.
+func (s *AbilityRequestCardFactsChangesItem) SetKey(val string) {
+	s.Key = val
+}
+
+// SetLabel sets the value of Label.
+func (s *AbilityRequestCardFactsChangesItem) SetLabel(val string) {
+	s.Label = val
+}
+
+// SetAfter sets the value of After.
+func (s *AbilityRequestCardFactsChangesItem) SetAfter(val string) {
+	s.After = val
+}
+
+// SetFromTheSite sets the value of FromTheSite.
+func (s *AbilityRequestCardFactsChangesItem) SetFromTheSite(val AbilityRequestCardFactsChangesItemFromTheSite) {
+	s.FromTheSite = val
+}
+
+type AbilityRequestCardFactsChangesItemFromTheSite struct {
+	Before string `json:"before"`
+}
+
+// GetBefore returns the value of Before.
+func (s *AbilityRequestCardFactsChangesItemFromTheSite) GetBefore() string {
+	return s.Before
+}
+
+// SetBefore sets the value of Before.
+func (s *AbilityRequestCardFactsChangesItemFromTheSite) SetBefore(val string) {
+	s.Before = val
+}
+
+type AbilityRequestCardFactsEffectCopy string
+
+const (
+	AbilityRequestCardFactsEffectCopyDraft AbilityRequestCardFactsEffectCopy = "draft"
+	AbilityRequestCardFactsEffectCopyLive  AbilityRequestCardFactsEffectCopy = "live"
+	AbilityRequestCardFactsEffectCopyNone  AbilityRequestCardFactsEffectCopy = "none"
+)
+
+// AllValues returns all AbilityRequestCardFactsEffectCopy values.
+func (AbilityRequestCardFactsEffectCopy) AllValues() []AbilityRequestCardFactsEffectCopy {
+	return []AbilityRequestCardFactsEffectCopy{
+		AbilityRequestCardFactsEffectCopyDraft,
+		AbilityRequestCardFactsEffectCopyLive,
+		AbilityRequestCardFactsEffectCopyNone,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityRequestCardFactsEffectCopy) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityRequestCardFactsEffectCopyDraft:
+		return []byte(s), nil
+	case AbilityRequestCardFactsEffectCopyLive:
+		return []byte(s), nil
+	case AbilityRequestCardFactsEffectCopyNone:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityRequestCardFactsEffectCopy) UnmarshalText(data []byte) error {
+	switch AbilityRequestCardFactsEffectCopy(data) {
+	case AbilityRequestCardFactsEffectCopyDraft:
+		*s = AbilityRequestCardFactsEffectCopyDraft
+		return nil
+	case AbilityRequestCardFactsEffectCopyLive:
+		*s = AbilityRequestCardFactsEffectCopyLive
+		return nil
+	case AbilityRequestCardFactsEffectCopyNone:
+		*s = AbilityRequestCardFactsEffectCopyNone
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type AbilityRequestCardFactsTarget struct {
+	ID          int64                                    `json:"id"`
+	PostType    string                                   `json:"post_type"`
+	FromTheSite AbilityRequestCardFactsTargetFromTheSite `json:"from_the_site"`
+}
+
+// GetID returns the value of ID.
+func (s *AbilityRequestCardFactsTarget) GetID() int64 {
+	return s.ID
+}
+
+// GetPostType returns the value of PostType.
+func (s *AbilityRequestCardFactsTarget) GetPostType() string {
+	return s.PostType
+}
+
+// GetFromTheSite returns the value of FromTheSite.
+func (s *AbilityRequestCardFactsTarget) GetFromTheSite() AbilityRequestCardFactsTargetFromTheSite {
+	return s.FromTheSite
+}
+
+// SetID sets the value of ID.
+func (s *AbilityRequestCardFactsTarget) SetID(val int64) {
+	s.ID = val
+}
+
+// SetPostType sets the value of PostType.
+func (s *AbilityRequestCardFactsTarget) SetPostType(val string) {
+	s.PostType = val
+}
+
+// SetFromTheSite sets the value of FromTheSite.
+func (s *AbilityRequestCardFactsTarget) SetFromTheSite(val AbilityRequestCardFactsTargetFromTheSite) {
+	s.FromTheSite = val
+}
+
+type AbilityRequestCardFactsTargetFromTheSite struct {
+	Status      string `json:"status"`
+	TitleBefore string `json:"title_before"`
+}
+
+// GetStatus returns the value of Status.
+func (s *AbilityRequestCardFactsTargetFromTheSite) GetStatus() string {
+	return s.Status
+}
+
+// GetTitleBefore returns the value of TitleBefore.
+func (s *AbilityRequestCardFactsTargetFromTheSite) GetTitleBefore() string {
+	return s.TitleBefore
+}
+
+// SetStatus sets the value of Status.
+func (s *AbilityRequestCardFactsTargetFromTheSite) SetStatus(val string) {
+	s.Status = val
+}
+
+// SetTitleBefore sets the value of TitleBefore.
+func (s *AbilityRequestCardFactsTargetFromTheSite) SetTitleBefore(val string) {
+	s.TitleBefore = val
 }
 
 type AbilityRequestEffectCopy string
@@ -38217,6 +38553,74 @@ func (o OptMultipartFile) Get() (v ht.MultipartFile, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptMultipartFile) Or(d ht.MultipartFile) ht.MultipartFile {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptNilAbilityRequestCardFacts returns new OptNilAbilityRequestCardFacts with value set to v.
+func NewOptNilAbilityRequestCardFacts(v AbilityRequestCardFacts) OptNilAbilityRequestCardFacts {
+	return OptNilAbilityRequestCardFacts{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilAbilityRequestCardFacts is optional nullable AbilityRequestCardFacts.
+type OptNilAbilityRequestCardFacts struct {
+	Value AbilityRequestCardFacts
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilAbilityRequestCardFacts was set.
+func (o OptNilAbilityRequestCardFacts) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilAbilityRequestCardFacts) Reset() {
+	var v AbilityRequestCardFacts
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilAbilityRequestCardFacts) SetTo(v AbilityRequestCardFacts) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilAbilityRequestCardFacts) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilAbilityRequestCardFacts) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v AbilityRequestCardFacts
+	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilAbilityRequestCardFacts) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilAbilityRequestCardFacts) Get() (v AbilityRequestCardFacts, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilAbilityRequestCardFacts) Or(d AbilityRequestCardFacts) AbilityRequestCardFacts {
 	if v, ok := o.Get(); ok {
 		return v
 	}

@@ -1,6 +1,7 @@
 package abilityrequest
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -113,6 +114,24 @@ type RequestDTO struct {
 	// outcome of a write whose reply was lost (GH #825): the result is final
 	// and the person should look at the site's drafts.
 	ResolveGaveUp bool `json:"resolve_gave_up"`
+	// RouteID, RouteSHA256 and CardFacts are a wpmgr/rest-write request's
+	// reviewed route, its approved hash and its structured card (null for
+	// every other ability). CardFacts is the object the MCP layer built at
+	// creation: every site string in it is under a from_the_site member,
+	// cleaned and capped. It is passed through as stored, never added to.
+	RouteID     *string         `json:"route_id"`
+	RouteSHA256 *string         `json:"route_sha256"`
+	CardFacts   json.RawMessage `json:"card_facts"`
+}
+
+// cardFactsJSON is the stored card as a JSON object, or null when the row
+// has none or holds anything but an object.
+func cardFactsJSON(b []byte) json.RawMessage {
+	trimmed := bytes.TrimSpace(b)
+	if len(trimmed) == 0 || trimmed[0] != '{' || !json.Valid(trimmed) {
+		return json.RawMessage("null")
+	}
+	return append(json.RawMessage(nil), trimmed...)
 }
 
 // ListResponse is a page of the queue.
@@ -156,6 +175,9 @@ func toDTO(r sqlc.AssistantAbilityRequest, withDigest bool, agentVersion string)
 		UndoAvailableUntil: ts(r.UndoAvailableUntil),
 		UndoOffered:        UndoOffered(r, agentVersion, time.Now()),
 		ResolveGaveUp:      resolveGaveUp(r),
+		RouteID:            r.RouteID,
+		RouteSHA256:        r.RouteSha256,
+		CardFacts:          cardFactsJSON(r.CardFacts),
 	}
 	if withDigest {
 		d := r.PresentedDigest

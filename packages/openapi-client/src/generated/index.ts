@@ -418,6 +418,7 @@ export {
   type AbilityCatalogueInput,
   type AbilityRequest,
   type AbilityRequestApproveBody,
+  type AbilityRequestCardFacts,
   type AbilityRequestList,
   type AbilityRequestOrgList,
   type AcceptInvitationData,

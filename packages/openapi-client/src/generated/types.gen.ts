@@ -4702,6 +4702,59 @@ export type AbilityRequest = {
    *
    */
   resolve_gave_up: boolean;
+  /**
+   * The reviewed REST route a wpmgr/rest-write request runs; null otherwise.
+   */
+  route_id?: string;
+  /**
+   * The route hash the request was approved against; null otherwise.
+   */
+  route_sha256?: string;
+  /**
+   * The structured card of a wpmgr/rest-write request; null otherwise.
+   */
+  card_facts?: AbilityRequestCardFacts;
+};
+
+/**
+ * A structured approval card. Every value under a `from_the_site`
+ * member came from the site: render it as plain text in the "From the
+ * site" slot. `after` is the value the AI asked for. The other strings
+ * are WPMgr's.
+ *
+ */
+export type AbilityRequestCardFacts = {
+  route_id: string;
+  route_title: string;
+  method: string;
+  target: {
+    id: number;
+    post_type: string;
+    from_the_site: {
+      status: string;
+      title_before: string;
+    };
+  };
+  changes: Array<{
+    key: string;
+    label: string;
+    after: string;
+    from_the_site: {
+      before: string;
+    };
+  }>;
+  effect_copy: "draft" | "live" | "none";
+  live: boolean;
+  /**
+   * "Published immediately" when live, otherwise "Saved to the post; it is not published".
+   */
+  effect_label: string;
+  undo: string;
+  undo_exact: boolean;
+  /**
+   * Set when undo may not restore the exact characters of the previous value.
+   */
+  undo_note: string;
 };
 
 export type ContentEditingState = {

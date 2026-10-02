@@ -8169,6 +8169,134 @@ export const AbilityRequestSchema = {
       description:
         "True once WPMgr stopped checking the site for the outcome of a\nwrite whose reply was lost. The result is final: the person\nshould look at the site's drafts.\n",
     },
+    route_id: {
+      type: "string",
+      nullable: true,
+      description:
+        "The reviewed REST route a wpmgr/rest-write request runs; null otherwise.",
+    },
+    route_sha256: {
+      type: "string",
+      nullable: true,
+      description:
+        "The route hash the request was approved against; null otherwise.",
+    },
+    card_facts: {
+      allOf: [
+        {
+          $ref: "#/components/schemas/AbilityRequestCardFacts",
+        },
+      ],
+      nullable: true,
+      description:
+        "The structured card of a wpmgr/rest-write request; null otherwise.",
+    },
+  },
+} as const;
+
+export const AbilityRequestCardFactsSchema = {
+  type: "object",
+  description:
+    'A structured approval card. Every value under a `from_the_site`\nmember came from the site: render it as plain text in the "From the\nsite" slot. `after` is the value the AI asked for. The other strings\nare WPMgr\'s.\n',
+  required: [
+    "route_id",
+    "route_title",
+    "method",
+    "target",
+    "changes",
+    "effect_copy",
+    "live",
+    "effect_label",
+    "undo",
+    "undo_exact",
+    "undo_note",
+  ],
+  properties: {
+    route_id: {
+      type: "string",
+    },
+    route_title: {
+      type: "string",
+    },
+    method: {
+      type: "string",
+    },
+    target: {
+      type: "object",
+      required: ["id", "post_type", "from_the_site"],
+      properties: {
+        id: {
+          type: "integer",
+          format: "int64",
+        },
+        post_type: {
+          type: "string",
+        },
+        from_the_site: {
+          type: "object",
+          required: ["status", "title_before"],
+          properties: {
+            status: {
+              type: "string",
+            },
+            title_before: {
+              type: "string",
+            },
+          },
+        },
+      },
+    },
+    changes: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["key", "label", "after", "from_the_site"],
+        properties: {
+          key: {
+            type: "string",
+          },
+          label: {
+            type: "string",
+          },
+          after: {
+            type: "string",
+          },
+          from_the_site: {
+            type: "object",
+            required: ["before"],
+            properties: {
+              before: {
+                type: "string",
+              },
+            },
+          },
+        },
+      },
+    },
+    effect_copy: {
+      type: "string",
+      enum: ["draft", "live", "none"],
+    },
+    live: {
+      type: "boolean",
+    },
+    effect_label: {
+      type: "string",
+      description:
+        '"Published immediately" when live, otherwise "Saved to the post; it is not published".',
+    },
+    undo: {
+      type: "string",
+    },
+    undo_exact: {
+      type: "boolean",
+    },
+    undo_note: {
+      type: "string",
+      nullable: true,
+      description:
+        "Set when undo may not restore the exact characters of the previous value.",
+    },
   },
 } as const;
 
