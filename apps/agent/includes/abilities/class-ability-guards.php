@@ -16,10 +16,17 @@ if (!defined('ABSPATH')) {
  * On WordPress 7.1+ other plugins can rewrite an ability's input, short-circuit
  * its execution, or change its input validation, permission result, output or
  * output validation through six filters. While armed, this class records each
- * value at the earliest priority and compares it at the latest one; any
- * difference is a violation, and the caller refuses the call. It also refuses
- * every ability other than the one outer call (and its declared nested
- * allow-list), and refuses re-entry.
+ * value at the earliest priority and compares it at the latest one, pairing
+ * the two by nesting depth; any difference is a violation, and the caller
+ * refuses the call. It also refuses every ability other than the one outer
+ * call (and its declared nested allow-list), and refuses re-entry.
+ *
+ * Each recorder must be the first callback and each guard the last one on
+ * its filter, every time either runs, and the two must run the same number of
+ * times. A filter that runs before the execute callback (input, input
+ * validation, permission) aborts the call by throwing AbilityInterception on
+ * any violation, so the callback does not run; the later filters record the
+ * violation and finish() refuses the result.
  *
  * The short-circuit filter's default is a per-call sentinel object, not null:
  * pass-through means the value at the latest priority is the very instance
@@ -47,11 +54,17 @@ final class AbilityGuards
     /** @var list<string> */
     private array $nestedAllow = [];
 
-    /** @var array<string,mixed> Recorded values by filter. */
-    private array $recorded = [];
+    /** Labels whose violations abort the call before the execute callback. */
+    private const ABORTING = ['input' => true, 'validate_input' => true, 'permission' => true];
 
-    /** @var list<mixed> Short-circuit defaults seen at the earliest priority, innermost last. */
-    private array $preStack = [];
+    /** @var array<string,list<mixed>> Values recorded at the earliest priority, innermost last, per label. */
+    private array $stacks = [];
+
+    /** @var array<string,int> Recorder runs per label. */
+    private array $recorderRuns = [];
+
+    /** @var array<string,int> Guard runs per label. */
+    private array $guardRuns = [];
 
     /** @var list<string> */
     private array $violations = [];
@@ -107,21 +120,28 @@ final class AbilityGuards
             $nestedAllow,
             static fn ($n) => is_string($n) && !AbilityDenylist::denies($n)
         ));
-        $this->recorded   = [];
-        $this->violations = [];
-        $this->entered    = [];
-        $this->preStack   = [];
-        $this->armed      = true;
+        $this->stacks       = [];
+        $this->recorderRuns = [];
+        $this->guardRuns    = [];
+        $this->violations   = [];
+        $this->entered      = [];
+        $this->armed        = true;
 
         $record = function (string $filter, string $key): callable {
             $self = null;
             $self = function (...$args) use ($filter, $key, &$self) {
+                $value = $args[0] ?? null;
                 if ($this->armed) {
-                    $this->recorded[$key] = $args[0] ?? null;
-                    $this->assertEdge($filter, $self, true, $key);
+                    $this->stacks[$key][]      = $value;
+                    $this->recorderRuns[$key] = ($this->recorderRuns[$key] ?? 0) + 1;
+                    $ok = $this->assertEdge($filter, $self, true, $key);
+                    $ok = $this->assertAllEdges() && $ok;
+                    if (!$ok) {
+                        $this->abortIfEarly($key);
+                    }
                 }
 
-                return $args[0] ?? null;
+                return $value;
             };
 
             return $self;
@@ -133,11 +153,15 @@ final class AbilityGuards
                 if (!$this->armed) {
                     return $value;
                 }
-                $this->assertEdge($filter, $self, false, $key);
-                if (array_key_exists($key, $this->recorded) && $this->recorded[$key] !== $value) {
+                [$ok, $recorded] = $this->closePair($filter, $self, $key);
+                if ($ok && $recorded !== $value) {
                     $this->violations[] = $key;
+                    $ok                 = false;
+                }
+                if (!$ok) {
+                    $this->abortIfEarly($key);
 
-                    return $this->recorded[$key];
+                    return $recorded;
                 }
 
                 return $value;
@@ -150,7 +174,8 @@ final class AbilityGuards
         $preRecord = function (...$args) use (&$preRecord) {
             $value = $args[0] ?? null;
             if ($this->armed) {
-                $this->preStack[] = $value;
+                $this->stacks['short_circuit'][]      = $value;
+                $this->recorderRuns['short_circuit'] = ($this->recorderRuns['short_circuit'] ?? 0) + 1;
                 $this->assertEdge(self::FILTER_PRE, $preRecord, true, 'short_circuit');
             }
 
@@ -163,14 +188,11 @@ final class AbilityGuards
             if (!$this->armed) {
                 return $value;
             }
-            $hadRecord = $this->preStack !== [];
-            $recorded  = array_pop($this->preStack);
-            $edgeOk    = $this->assertEdge(self::FILTER_PRE, $pre, false, 'short_circuit');
             // Before anything runs, every guarded filter must still be
             // bracketed by our recorder and guard, so a callback staged
             // outside them is refused before the callbacks execute.
-            $edgeOk = $this->assertAllEdges() && $edgeOk;
-            if (!$edgeOk || !$hadRecord || $value !== $recorded || !self::isSentinel($recorded)) {
+            [$ok, $recorded] = $this->closePair(self::FILTER_PRE, $pre, 'short_circuit');
+            if (!$ok || $value !== $recorded || !self::isSentinel($recorded)) {
                 $this->violations[] = 'short_circuit';
 
                 return new \WP_Error('wpmgr_ability_intercepted', 'ability_intercepted/short_circuit');
@@ -204,6 +226,64 @@ final class AbilityGuards
         }
         $this->hook(self::FILTER_PRE, $preRecord, PHP_INT_MIN);
         $this->hook(self::FILTER_PRE, $pre, PHP_INT_MAX);
+    }
+
+    /**
+     * The guard half of a pair: count the run, check every edge, and pop the
+     * value its recorder pushed at the same depth.
+     *
+     * @param string   $filter   Filter name.
+     * @param callable $callback The guard itself.
+     * @param string   $key      Violation label.
+     * @return array{0:bool,1:mixed} Whether all is well, and the recorded value.
+     */
+    private function closePair(string $filter, $callback, string $key): array
+    {
+        $this->guardRuns[$key] = ($this->guardRuns[$key] ?? 0) + 1;
+        $ok = $this->assertEdge($filter, $callback, false, $key);
+        $ok = $this->assertAllEdges() && $ok;
+        if (($this->stacks[$key] ?? []) === []) {
+            $this->violations[] = $key . '_unpaired';
+
+            return [false, null];
+        }
+        $recorded = array_pop($this->stacks[$key]);
+
+        return [$ok, $recorded];
+    }
+
+    /**
+     * Abort the ability call when $key is a filter that runs before the
+     * execute callback.
+     *
+     * @param string $key Violation label.
+     * @return void
+     * @throws AbilityInterception For an early filter.
+     */
+    private function abortIfEarly(string $key): void
+    {
+        if (isset(self::ABORTING[$key])) {
+            throw new AbilityInterception('ability_intercepted/' . $key); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- a fixed internal label, caught by the engine and never printed.
+        }
+    }
+
+    /**
+     * The end-of-call check, run before the result is accepted and while still
+     * armed: every edge is still ours, every recorder run was paired with a
+     * guard run, and nothing is left on a stack.
+     *
+     * @return bool True when the call may be accepted.
+     */
+    public function finish(): bool
+    {
+        $this->assertAllEdges();
+        foreach ($this->edgeKeys as $key) {
+            if (($this->recorderRuns[$key] ?? 0) !== ($this->guardRuns[$key] ?? 0) || ($this->stacks[$key] ?? []) !== []) {
+                $this->violations[] = $key . '_unpaired';
+            }
+        }
+
+        return $this->violations === [];
     }
 
     /**
@@ -262,6 +342,9 @@ final class AbilityGuards
         if (!is_object($hook) || !property_exists($hook, 'callbacks') || !is_array($hook->callbacks) || $hook->callbacks === []) {
             return false;
         }
+        if (class_exists('WP_Hook', false) && !($hook instanceof \WP_Hook)) {
+            return false;
+        }
         $priorities = array_keys($hook->callbacks);
         $bucket     = $hook->callbacks[$first ? min($priorities) : max($priorities)];
         if (!is_array($bucket) || $bucket === []) {
@@ -314,8 +397,8 @@ final class AbilityGuards
      */
     public function disarm(): void
     {
-        $this->armed    = false;
-        $this->preStack = [];
+        $this->armed  = false;
+        $this->stacks = [];
         foreach ($this->hooks as [$filter, $callback, $priority]) {
             remove_filter($filter, $callback, $priority);
         }

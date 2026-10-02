@@ -6,6 +6,7 @@ namespace WPMgr\Agent\Commands;
 
 use WPMgr\Agent\Abilities\AbilityDenylist;
 use WPMgr\Agent\Abilities\AbilityGuards;
+use WPMgr\Agent\Abilities\AbilityInterception;
 use WPMgr\Agent\Abilities\AbilityLedger;
 use WPMgr\Agent\Abilities\OwnAbilities;
 use WPMgr\Agent\Abilities\PageCreateBuilder;
@@ -804,10 +805,18 @@ final class AbilityRunCommand implements CommandInterface
         if ($armed) {
             $guards->arm($name);
         }
+        $result = null;
         try {
-            $result = OwnAbilities::run($name, $input);
+            try {
+                $result = OwnAbilities::run($name, $input);
+            } catch (AbilityInterception $e) {
+                // The guards recorded why; the violations below refuse.
+                $result = null;
+            }
             if ($armed) {
+                // Before disarm: the end-of-call check needs the hooks in place.
                 $guards->checkResult($result);
+                $guards->finish();
             }
         } finally {
             if ($armed) {
