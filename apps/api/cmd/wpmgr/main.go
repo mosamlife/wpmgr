@@ -1848,6 +1848,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	abilityReqDispatchWorker := abilityrequest.NewDispatchWorker(abilityReqSvc)
 	abilityReqSweepWorker := abilityrequest.NewSweepWorker(abilityReqSvc)
 	abilityReqReconcileWorker := abilityrequest.NewReconcileWorker(abilityReqSvc)
+	abilityReqUndoReconcileWorker := abilityrequest.NewUndoReconcileWorker(abilityReqSvc)
 	abilityReqH := abilityrequest.NewHandler(abilityReqSvc)
 	// Stamp WPMgr's own seeded catalogue entries (NULL hash) so requests
 	// made against them can be dispatched (W1 compares the stamped hash).
@@ -2140,10 +2141,11 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		assistantReqSweepWorker:     assistantReqSweepWorker,
 		assistantReqReconcileWorker: assistantReqReconcileWorker,
 		// Ability requests (E2), always wired.
-		abilityReqScanWorker:      abilityReqScanWorker,
-		abilityReqDispatchWorker:  abilityReqDispatchWorker,
-		abilityReqSweepWorker:     abilityReqSweepWorker,
-		abilityReqReconcileWorker: abilityReqReconcileWorker,
+		abilityReqScanWorker:          abilityReqScanWorker,
+		abilityReqDispatchWorker:      abilityReqDispatchWorker,
+		abilityReqSweepWorker:         abilityReqSweepWorker,
+		abilityReqReconcileWorker:     abilityReqReconcileWorker,
+		abilityReqUndoReconcileWorker: abilityReqUndoReconcileWorker,
 		// m59 Phase 3 — email log retention GC (always wired).
 		emailLogGCWorker: emailLogGCWorker,
 		// GH #461 — webhook dedup GC (always wired; 7-day retention).
@@ -3594,10 +3596,11 @@ type riverDeps struct {
 	assistantReqSweepWorker     *assistantrequest.SweepWorker
 	assistantReqReconcileWorker *assistantrequest.ReconcileWorker
 	// Ability requests (E2): scan, dispatch, sweeper, reconciler.
-	abilityReqScanWorker      *abilityrequest.ScanWorker
-	abilityReqDispatchWorker  *abilityrequest.DispatchWorker
-	abilityReqSweepWorker     *abilityrequest.SweepWorker
-	abilityReqReconcileWorker *abilityrequest.ReconcileWorker
+	abilityReqScanWorker          *abilityrequest.ScanWorker
+	abilityReqDispatchWorker      *abilityrequest.DispatchWorker
+	abilityReqSweepWorker         *abilityrequest.SweepWorker
+	abilityReqReconcileWorker     *abilityrequest.ReconcileWorker
+	abilityReqUndoReconcileWorker *abilityrequest.UndoReconcileWorker
 	// m59 Phase 3 — email log retention GC (always wired).
 	emailLogGCWorker *email.EmailLogGCWorker
 	// GH #461 — webhook dedup GC (always wired; 7-day retention).
@@ -4116,11 +4119,13 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 
 	// Ability requests (E2): same cadence as the AI cache clears.
 	if d.abilityReqScanWorker != nil && d.abilityReqDispatchWorker != nil &&
-		d.abilityReqSweepWorker != nil && d.abilityReqReconcileWorker != nil {
+		d.abilityReqSweepWorker != nil && d.abilityReqReconcileWorker != nil &&
+		d.abilityReqUndoReconcileWorker != nil {
 		river.AddWorker(workers, d.abilityReqScanWorker)
 		river.AddWorker(workers, d.abilityReqDispatchWorker)
 		river.AddWorker(workers, d.abilityReqSweepWorker)
 		river.AddWorker(workers, d.abilityReqReconcileWorker)
+		river.AddWorker(workers, d.abilityReqUndoReconcileWorker)
 		for q, qc := range abilityrequest.Queues() {
 			queues[q] = qc
 		}
@@ -4138,6 +4143,11 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 			river.NewPeriodicJob(
 				river.PeriodicInterval(abilityrequest.SweepInterval),
 				func() (river.JobArgs, *river.InsertOpts) { return abilityrequest.ReconcileArgs{}, nil },
+				&river.PeriodicJobOpts{RunOnStart: true},
+			),
+			river.NewPeriodicJob(
+				river.PeriodicInterval(abilityrequest.UndoReconcileInterval),
+				func() (river.JobArgs, *river.InsertOpts) { return abilityrequest.UndoReconcileArgs{}, nil },
 				&river.PeriodicJobOpts{RunOnStart: true},
 			),
 		)

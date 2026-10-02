@@ -311,6 +311,47 @@ func (s *Service) List(ctx context.Context, p domain.Principal, siteID *uuid.UUI
 	return rows, nil
 }
 
+// requestStates is m156's closed state set, the org list's filter values.
+var requestStates = map[string]struct{}{
+	"pending": {}, "approved": {}, "declined": {}, "withdrawn": {}, "expired": {},
+	"dispatched": {}, "outcome_unknown": {}, "done": {}, "failed": {}, "not_sent": {},
+}
+
+// OrgQueue is a page of the organisation-wide queue and the badge count.
+type OrgQueue struct {
+	Requests     []sqlc.AssistantAbilityRequest
+	PendingCount int64
+}
+
+// ListOrg is the organisation-wide queue (GH #828), optionally narrowed to
+// one state, with the number still waiting for a decision. Both reads run
+// under the caller's own principal, so a site collaborator sees and counts
+// only their own sites.
+func (s *Service) ListOrg(ctx context.Context, p domain.Principal, state *string, limit, offset int32) (OrgQueue, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	var out OrgQueue
+	err := s.runAsCaller(ctx, p, func(q *sqlc.Queries, _ pgx.Tx) error {
+		var err error
+		out.Requests, err = q.ListOrgAbilityRequests(ctx, sqlc.ListOrgAbilityRequestsParams{
+			TenantID: p.TenantID, StateFilter: state, RowLimit: limit, RowOffset: offset,
+		})
+		if err != nil {
+			return err
+		}
+		out.PendingCount, err = q.CountLivePendingAbilityRequests(ctx, p.TenantID)
+		return err
+	})
+	if err != nil {
+		return OrgQueue{}, domain.Internal("ability_requests_list_failed", "failed to list AI requests").WithCause(err)
+	}
+	return out, nil
+}
+
 // decisionMetadata is the audit metadata of approve and decline. The hash
 // chain covers it.
 func decisionMetadata(r sqlc.AssistantAbilityRequest, withDigest bool) map[string]any {

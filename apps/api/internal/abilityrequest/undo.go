@@ -77,6 +77,7 @@ func (s *Service) Undo(ctx context.Context, p domain.Principal, siteID, requestI
 	var siteURL string
 	var entryBytes []byte
 	var entrySum string
+	var recovery bool
 	err := s.runAsCaller(ctx, p, func(q *sqlc.Queries, tx pgx.Tx) error {
 		var err error
 		row, err = q.GetAbilityRequestForSite(ctx, sqlc.GetAbilityRequestForSiteParams{TenantID: p.TenantID, ID: requestID, SiteID: siteID})
@@ -86,6 +87,11 @@ func (s *Service) Undo(ctx context.Context, p domain.Principal, siteID, requestI
 		if err := s.requireOperatorPermission(ctx, p, row); err != nil {
 			return err
 		}
+		kind := undoKindFor(row, s.clock())
+		if kind == undoKindNone {
+			return domain.Conflict(CodeUndoUnavailable, "This change can no longer be undone from WPMgr.")
+		}
+		recovery = kind == undoKindRecovery
 		site, err := q.GetSite(ctx, sqlc.GetSiteParams{TenantID: p.TenantID, ID: siteID})
 		if err != nil {
 			return err
@@ -99,9 +105,17 @@ func (s *Service) Undo(ctx context.Context, p domain.Principal, siteID, requestI
 		if err != nil {
 			return fmt.Errorf("encode catalogue entry: %w", err)
 		}
-		n, err := q.BeginAbilityRequestUndo(ctx, sqlc.BeginAbilityRequestUndoParams{
-			UndoByUserID: p.UserID, TenantID: p.TenantID, ID: requestID, SiteID: siteID,
-		})
+		var n int64
+		if recovery {
+			n, err = q.BeginAbilityRequestRecoveryUndo(ctx, sqlc.BeginAbilityRequestRecoveryUndoParams{
+				UndoByUserID: p.UserID, WindowSeconds: int32(recoveryUndoWindow / time.Second),
+				TenantID: p.TenantID, ID: requestID, SiteID: siteID,
+			})
+		} else {
+			n, err = q.BeginAbilityRequestUndo(ctx, sqlc.BeginAbilityRequestUndoParams{
+				UndoByUserID: p.UserID, TenantID: p.TenantID, ID: requestID, SiteID: siteID,
+			})
+		}
 		if err != nil {
 			return err
 		}
@@ -115,7 +129,7 @@ func (s *Service) Undo(ctx context.Context, p domain.Principal, siteID, requestI
 			TenantID: p.TenantID, ActorType: audit.ActorUser, ActorID: p.UserID.String(),
 			Action: audit.ActionAssistantRequestUndone, TargetType: audit.TargetTypeAssistantAbilityRequest,
 			TargetID: requestID.String(),
-			Metadata: map[string]any{"request_id": requestID.String(), "site_id": siteID.String(), "phase": "started"},
+			Metadata: map[string]any{"request_id": requestID.String(), "site_id": siteID.String(), "phase": "started", "recovery": recovery},
 		})
 		return err
 	})
@@ -134,8 +148,163 @@ func (s *Service) Undo(ctx context.Context, p domain.Principal, siteID, requestI
 		Mode: agentcmd.AbilityRunModeRevert, RequestID: requestID, Entry: entryBytes, EntrySHA256: entrySum,
 	})
 	cancelSend()
+	if undoRetryable(sendErr) {
+		after, released, err := s.recordUndoRelease(ctx, s.runAsCaller, p, siteID, requestID, sendErr)
+		if err != nil {
+			return none, err
+		}
+		if released {
+			return none, errUndoRetry()
+		}
+		return after, nil
+	}
 	result := undoResultFor(resp, sendErr)
 	return s.recordUndoFinish(ctx, s.runAsCaller, p, siteID, requestID, result, sendErr)
+}
+
+// recoveryUndoWindow is how long a recovery undo, once started, stays open
+// for a retry (GH #826). A released recovery undo starts afresh.
+const recoveryUndoWindow = 15 * time.Minute
+
+// CodeUndoRetry: the site did not settle the undo; it is open again.
+const CodeUndoRetry = "ability_request_undo_retry"
+
+func errUndoRetry() error {
+	return domain.ServiceUnavailable(CodeUndoRetry,
+		"The site did not confirm the undo. It is still available; try again in a moment.")
+}
+
+func (s *Service) clock() time.Time {
+	if s.now == nil {
+		return time.Now()
+	}
+	return s.now()
+}
+
+type undoKind int
+
+const (
+	undoKindNone undoKind = iota
+	undoKindDone
+	undoKindRecovery
+)
+
+// undoKindFor decides which undo, if any, a row offers a person now. A done
+// row offers the normal undo while it is available and inside its window. A
+// failed or given-up write that recorded the post it created, whose draft
+// was not already trashed, and whose site record is still retained, offers
+// the recovery undo while no undo has started. The database statements
+// re-check the same conditions; this decides which one to run and what the
+// card offers.
+func undoKindFor(r sqlc.AssistantAbilityRequest, now time.Time) undoKind {
+	switch r.State {
+	case "done":
+		if r.UndoState != nil && *r.UndoState == "available" &&
+			r.UndoAvailableUntil.Valid && r.UndoAvailableUntil.Time.After(now) {
+			return undoKindDone
+		}
+	case "failed", "outcome_unknown":
+		if r.UndoState != nil || r.Outcome == nil || r.CreatedPostID == nil || *r.CreatedPostID < 1 {
+			return undoKindNone
+		}
+		if r.Trashed != nil && *r.Trashed {
+			return undoKindNone
+		}
+		if !r.OutcomeAt.Valid || now.Sub(r.OutcomeAt.Time) >= undoRetention {
+			return undoKindNone
+		}
+		return undoKindRecovery
+	}
+	return undoKindNone
+}
+
+// undoOffered is the card's "Undo" button, computed server-side.
+func undoOffered(r sqlc.AssistantAbilityRequest, now time.Time) bool {
+	return undoKindFor(r, now) != undoKindNone
+}
+
+// undoRetryable is true when the revert's answer settles nothing: the call
+// did not reach the site or its reply was lost, or the site was busy with
+// this request or its post. The undo is released so the person can retry; a
+// revert that did run answers already_reverted next time.
+func undoRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	var refusal *agentcmd.AbilityRunRefusal
+	if errors.As(err, &refusal) {
+		return refusal.Code == "target_in_flight" || refusal.Code == "request_in_flight"
+	}
+	return true
+}
+
+// releaseOrFail puts an in-progress undo back for a retry, in the caller's
+// transaction. Past its window nothing is released and the undo is finished
+// as failed instead. It returns which happened, or "" when the undo was no
+// longer in progress (another path settled it first).
+func releaseOrFail(ctx context.Context, q *sqlc.Queries, tenantID, requestID uuid.UUID) (string, error) {
+	n, err := q.ReleaseAbilityRequestUndo(ctx, sqlc.ReleaseAbilityRequestUndoParams{TenantID: tenantID, ID: requestID})
+	if err != nil {
+		return "", err
+	}
+	if n == 1 {
+		return undoReleased, nil
+	}
+	n, err = q.FinishAbilityRequestUndo(ctx, sqlc.FinishAbilityRequestUndoParams{
+		UndoResult: UndoFailed, TenantID: tenantID, ID: requestID,
+	})
+	if err != nil || n != 1 {
+		return "", err
+	}
+	return UndoFailed, nil
+}
+
+// undoReleased is releaseOrFail's "open again" answer; never stored.
+const undoReleased = "released"
+
+// recordUndoRelease records a retryable undo answer on a detached context,
+// as recordUndoFinish does.
+func (s *Service) recordUndoRelease(ctx context.Context, run undoTxRunner, p domain.Principal, siteID, requestID uuid.UUID, sendErr error) (sqlc.AssistantAbilityRequest, bool, error) {
+	var none sqlc.AssistantAbilityRequest
+	fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), undoFinishBudget)
+	defer cancel()
+	var after sqlc.AssistantAbilityRequest
+	var released bool
+	err := run(fctx, p, func(q *sqlc.Queries, tx pgx.Tx) error {
+		settled, err := releaseOrFail(fctx, q, p.TenantID, requestID)
+		if err != nil {
+			return err
+		}
+		released = settled == undoReleased
+		md := map[string]any{"request_id": requestID.String(), "site_id": siteID.String(), "phase": "released"}
+		if !released {
+			md["phase"], md["result"] = "finished", UndoFailed
+		}
+		var refusal *agentcmd.AbilityRunRefusal
+		if errors.As(sendErr, &refusal) {
+			md["code"] = refusal.Code
+		} else {
+			md["code"] = "transport"
+		}
+		if s.audit == nil {
+			return errors.New("audit recorder not wired")
+		}
+		if _, err := s.audit.RecordInTx(fctx, tx, audit.Event{
+			TenantID: p.TenantID, ActorType: audit.ActorUser, ActorID: p.UserID.String(),
+			Action: audit.ActionAssistantRequestUndone, TargetType: audit.TargetTypeAssistantAbilityRequest,
+			TargetID: requestID.String(), Metadata: md,
+		}); err != nil {
+			return err
+		}
+		after, err = q.GetAbilityRequestForSite(fctx, sqlc.GetAbilityRequestForSiteParams{TenantID: p.TenantID, ID: requestID, SiteID: siteID})
+		return err
+	})
+	if err != nil {
+		s.logger.ErrorContext(fctx, "ability request: undo release not recorded",
+			slog.String("request_id", requestID.String()), slog.Any("error", err))
+		return none, false, domain.Internal("ability_request_undo_unrecorded", "The undo's result could not be recorded.").WithCause(err)
+	}
+	return after, released, nil
 }
 
 // recordUndoFinish records the undo result on a context detached from the
