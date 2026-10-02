@@ -74,6 +74,20 @@ SELECT * FROM stamp_wpmgr_ability_entry_hash(
     sqlc.arg(entry_sha256)::text
 );
 
+-- name: RecordAbilityReadSideEffect :one
+-- m160 (owner ruling 4). Records that a vendor read was caught writing or
+-- calling out on this site and returns the entry's distinct-site count. The
+-- report from a NEW site that brings the count to 3 or more disables an
+-- enabled entry fleet-wide and audits it with a NULL actor. A repeat report
+-- from a counted site changes nothing. Run it in its own READ COMMITTED
+-- transaction. Refusals: 22023 a NULL argument, P0002 no entry, 42501 the
+-- entry is not a vendor read (nothing recorded).
+SELECT record_ability_read_side_effect(
+    sqlc.arg(entry_id)::uuid,
+    sqlc.arg(site_id)::uuid,
+    sqlc.arg(tenant_id)::uuid
+)::int AS distinct_sites;
+
 -- name: ListAbilityCatalogueAudit :many
 -- Newest first, for the admin screen.
 SELECT * FROM ability_catalogue_audit

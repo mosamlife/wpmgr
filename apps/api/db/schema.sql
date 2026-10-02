@@ -9326,14 +9326,19 @@ CREATE TABLE IF NOT EXISTS ability_catalogue_audit (
     action text NOT NULL
         CONSTRAINT ability_catalogue_audit_action_check
         CHECK (action IN ('insert', 'update')),
-    -- m157: NULL only for a system stamp by stamp_wpmgr_ability_entry_hash.
+    -- NULL only for a system write: m157's stamp by
+    -- stamp_wpmgr_ability_entry_hash, or m160's read side-effect auto-disable
+    -- by record_ability_read_side_effect.
     actor_user_id uuid NULL,
-    CONSTRAINT ability_catalogue_audit_null_actor_is_stamp_check
-        CHECK (actor_user_id IS NOT NULL OR (
-            action = 'update'
-            AND before_entry_sha256 IS NULL
-            AND after_entry_sha256 IS NOT NULL
-            AND before_enabled IS NOT DISTINCT FROM after_enabled)),
+    CONSTRAINT ability_catalogue_audit_null_actor_is_system_check
+        CHECK (actor_user_id IS NOT NULL OR (action = 'update' AND (
+            (before_entry_sha256 IS NULL
+             AND after_entry_sha256 IS NOT NULL
+             AND before_enabled IS NOT DISTINCT FROM after_enabled)
+            OR
+            (before_entry_sha256 IS NOT DISTINCT FROM after_entry_sha256
+             AND before_enabled IS TRUE
+             AND after_enabled IS FALSE)))),
     before_row_sha256 text NULL
         CONSTRAINT ability_catalogue_audit_before_row_check
         CHECK (before_row_sha256 ~ '^[0-9a-f]{64}$'),
@@ -9733,6 +9738,116 @@ REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON ability_catalogue FROM wpmgr_app;
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON ability_catalogue_audit FROM wpmgr_app;
 GRANT SELECT ON ability_catalogue TO wpmgr_app;
 GRANT SELECT ON ability_catalogue_audit TO wpmgr_app;
+
+-- ---------------------------------------------------------------------------
+-- ability_read_side_effect_sites (m160, owner ruling 4)
+-- ---------------------------------------------------------------------------
+
+-- GLOBAL, definer-only: one row per (entry, site) on which a vendor read was
+-- caught writing or calling out. ENABLE RLS with no policy, not FORCE, and ALL
+-- revoked from wpmgr_app: only record_ability_read_side_effect touches it. No
+-- FK to sites or tenants and no cascade, so a deletion never lowers a count.
+-- See the migration header for the single-DSN caveat.
+CREATE TABLE IF NOT EXISTS ability_read_side_effect_sites (
+    entry_id uuid NOT NULL REFERENCES ability_catalogue (entry_id),
+    site_id uuid NOT NULL,
+    tenant_id uuid NOT NULL,
+    first_seen timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (entry_id, site_id)
+);
+
+CREATE INDEX IF NOT EXISTS ability_read_side_effect_sites_tenant_idx
+    ON ability_read_side_effect_sites (tenant_id);
+
+ALTER TABLE ability_read_side_effect_sites ENABLE ROW LEVEL SECURITY;
+
+REVOKE ALL ON ability_read_side_effect_sites FROM PUBLIC;
+REVOKE ALL ON ability_read_side_effect_sites FROM wpmgr_app;
+
+-- Records one site, returns the entry's distinct-site count, and when a NEW
+-- site brings it to 3 or more disables an enabled entry with a NULL-actor
+-- audit row. Takes m155's per-name advisory lock. 22023 NULL argument, P0002
+-- no entry, 42501 not a vendor read.
+CREATE OR REPLACE FUNCTION record_ability_read_side_effect(
+    p_entry_id uuid,
+    p_site_id uuid,
+    p_tenant_id uuid
+)
+RETURNS int
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+    v_name   text;
+    v_new    boolean;
+    v_count  int;
+    v_before ability_catalogue;
+    v_after  ability_catalogue;
+BEGIN
+    IF p_entry_id IS NULL OR p_site_id IS NULL OR p_tenant_id IS NULL THEN
+        RAISE EXCEPTION 'ability_read_side_effect: entry, site and tenant are required'
+            USING ERRCODE = '22023';
+    END IF;
+
+    SELECT name INTO v_name FROM ability_catalogue WHERE entry_id = p_entry_id;
+    IF v_name IS NULL THEN
+        RAISE EXCEPTION 'ability_catalogue: no entry %', p_entry_id
+            USING ERRCODE = 'P0002';
+    END IF;
+
+    PERFORM pg_advisory_xact_lock(hashtext('ability_catalogue'), hashtext(v_name));
+    SELECT * INTO v_before FROM ability_catalogue
+        WHERE entry_id = p_entry_id
+        FOR UPDATE;
+
+    IF v_before.source IS DISTINCT FROM 'vendor' OR v_before.class IS DISTINCT FROM 'read' THEN
+        RAISE EXCEPTION 'ability_read_side_effect: only a vendor read is recorded'
+            USING ERRCODE = '42501';
+    END IF;
+
+    INSERT INTO ability_read_side_effect_sites (entry_id, site_id, tenant_id)
+    VALUES (p_entry_id, p_site_id, p_tenant_id)
+    ON CONFLICT (entry_id, site_id) DO NOTHING;
+    v_new := FOUND;
+
+    SELECT count(*) INTO v_count
+    FROM ability_read_side_effect_sites
+    WHERE entry_id = p_entry_id;
+
+    IF v_new AND v_count >= 3 AND v_before.enabled THEN
+        UPDATE ability_catalogue AS ac SET
+            enabled = false,
+            updated_at = now(),
+            updated_by_user_id = NULL
+        WHERE ac.entry_id = p_entry_id
+        RETURNING ac.* INTO v_after;
+
+        INSERT INTO ability_catalogue_audit (
+            entry_id, name, action, actor_user_id,
+            before_row_sha256, after_row_sha256,
+            before_entry_sha256, after_entry_sha256,
+            before_enabled, after_enabled
+        ) VALUES (
+            v_after.entry_id,
+            v_after.name,
+            'update',
+            NULL,
+            ability_catalogue_row_sha256(v_before),
+            ability_catalogue_row_sha256(v_after),
+            v_before.entry_sha256,
+            v_after.entry_sha256,
+            v_before.enabled,
+            v_after.enabled
+        );
+    END IF;
+
+    RETURN v_count;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION record_ability_read_side_effect(uuid, uuid, uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION record_ability_read_side_effect(uuid, uuid, uuid) TO wpmgr_app;
 
 -- ---------------------------------------------------------------------------
 -- site_ability_inventory

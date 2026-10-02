@@ -65,6 +65,13 @@ type AbilityCatalogueAudit struct {
 	At                time.Time   `json:"at"`
 }
 
+type AbilityReadSideEffectSite struct {
+	EntryID   uuid.UUID `json:"entry_id"`
+	SiteID    uuid.UUID `json:"site_id"`
+	TenantID  uuid.UUID `json:"tenant_id"`
+	FirstSeen time.Time `json:"first_seen"`
+}
+
 type AgentActivityLog struct {
 	ID          int64     `json:"id"`
 	TenantID    uuid.UUID `json:"tenant_id"`

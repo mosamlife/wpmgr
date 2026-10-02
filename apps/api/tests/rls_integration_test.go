@@ -308,6 +308,12 @@ func startPostgres(t testing.TB) *db.Pool {
 		// content_integrations: SELECT-only for wpmgr_app, written only through
 		// the SECURITY DEFINER admin_upsert_ability_catalogue_entry.
 		"REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON ability_catalogue, ability_catalogue_audit FROM wpmgr_app",
+		// m160's ability_read_side_effect_sites is definer-only: the migration
+		// revokes ALL from wpmgr_app, and the one path in is the SECURITY
+		// DEFINER record_ability_read_side_effect. Without this line the
+		// blanket GRANT above hands wpmgr_app the four privileges no real
+		// install has, and the refusal proof tests a database nobody runs.
+		"REVOKE ALL ON ability_read_side_effect_sites FROM wpmgr_app",
 		// m155 site_ability_inventory_runs: no DELETE for wpmgr_app in the migration.
 		"REVOKE DELETE, TRUNCATE ON site_ability_inventory_runs FROM wpmgr_app",
 		// m155 site_ability_inventory: TRUNCATE revoked in the migration.

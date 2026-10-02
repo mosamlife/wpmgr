@@ -3649,6 +3649,14 @@ type Querier interface {
 	// parameter, so this is a primary-key probe and costs no extra round trip.
 	ReCheckMCPRequestAuthorizationInTenantTx(ctx context.Context, arg ReCheckMCPRequestAuthorizationInTenantTxParams) (ReCheckMCPRequestAuthorizationInTenantTxRow, error)
 	RecolorTag(ctx context.Context, arg RecolorTagParams) (SiteTag, error)
+	// m160 (owner ruling 4). Records that a vendor read was caught writing or
+	// calling out on this site and returns the entry's distinct-site count. The
+	// report from a NEW site that brings the count to 3 or more disables an
+	// enabled entry fleet-wide and audits it with a NULL actor. A repeat report
+	// from a counted site changes nothing. Run it in its own READ COMMITTED
+	// transaction. Refusals: 22023 a NULL argument, P0002 no entry, 42501 the
+	// entry is not a vendor read (nothing recorded).
+	RecordAbilityReadSideEffect(ctx context.Context, arg RecordAbilityReadSideEffectParams) (int32, error)
 	// A transient reason; the row stays approved. Single-site.
 	RecordAbilityRequestDispatchAttempt(ctx context.Context, arg RecordAbilityRequestDispatchAttemptParams) (int64, error)
 	RecordAbilityRequestLedgerCheck(ctx context.Context, arg RecordAbilityRequestLedgerCheckParams) (int64, error)

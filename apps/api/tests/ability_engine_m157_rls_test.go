@@ -195,8 +195,8 @@ func TestStampWpmgrAbilityEntryHashAsAppRole(t *testing.T) {
 		var def string
 		if err := tx.QueryRow(ctx, `SELECT pg_get_constraintdef(oid) FROM pg_constraint
 			WHERE conrelid = 'public.ability_catalogue_audit'::regclass
-			  AND conname = 'ability_catalogue_audit_null_actor_is_stamp_check'`).Scan(&def); err != nil {
-			t.Fatalf("INDETERMINATE: ability_catalogue_audit_null_actor_is_stamp_check missing: %v", err)
+			  AND conname = 'ability_catalogue_audit_null_actor_is_system_check'`).Scan(&def); err != nil {
+			t.Fatalf("INDETERMINATE: ability_catalogue_audit_null_actor_is_system_check missing: %v", err)
 		}
 
 		// EXECUTE is wpmgr_app's and not PUBLIC's.

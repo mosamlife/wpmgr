@@ -546,6 +546,34 @@ func (q *Queries) ListSiteAbilityInventory(ctx context.Context, arg ListSiteAbil
 	return items, nil
 }
 
+const recordAbilityReadSideEffect = `-- name: RecordAbilityReadSideEffect :one
+SELECT record_ability_read_side_effect(
+    $1::uuid,
+    $2::uuid,
+    $3::uuid
+)::int AS distinct_sites
+`
+
+type RecordAbilityReadSideEffectParams struct {
+	EntryID  uuid.UUID `json:"entry_id"`
+	SiteID   uuid.UUID `json:"site_id"`
+	TenantID uuid.UUID `json:"tenant_id"`
+}
+
+// m160 (owner ruling 4). Records that a vendor read was caught writing or
+// calling out on this site and returns the entry's distinct-site count. The
+// report from a NEW site that brings the count to 3 or more disables an
+// enabled entry fleet-wide and audits it with a NULL actor. A repeat report
+// from a counted site changes nothing. Run it in its own READ COMMITTED
+// transaction. Refusals: 22023 a NULL argument, P0002 no entry, 42501 the
+// entry is not a vendor read (nothing recorded).
+func (q *Queries) RecordAbilityReadSideEffect(ctx context.Context, arg RecordAbilityReadSideEffectParams) (int32, error) {
+	row := q.db.QueryRow(ctx, recordAbilityReadSideEffect, arg.EntryID, arg.SiteID, arg.TenantID)
+	var distinct_sites int32
+	err := row.Scan(&distinct_sites)
+	return distinct_sites, err
+}
+
 const stampWpmgrAbilityEntryHash = `-- name: StampWpmgrAbilityEntryHash :one
 SELECT entry_id, name, source, class, status, enabled, approval_mode, permission_mode, integration_id, owner_dir, version_min, version_max_tested, min_wp_version, min_agent_version, schema_struct_sha256, dynamic_enum_paths, title, description, usage, operator_permission, target, snapshot, preview, arg_render, effect_copy, limits, nested_allow, global_option_keys, integration_block, admission, entry_sha256, created_at, updated_at, updated_by_user_id, output_fields FROM stamp_wpmgr_ability_entry_hash(
     $1::uuid,
