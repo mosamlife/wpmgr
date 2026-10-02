@@ -254,6 +254,37 @@ describe("rest-write structured card", () => {
     ).toBeInTheDocument();
   });
 
+  it("a failed row with restored=false says other changes remain", async () => {
+    renderPage([restRow({ state: "failed", outcome: "failed", restored: false, decided_at: "2026-10-01T09:58:00Z" })]);
+    const card = await screen.findByRole("article");
+    expect(card).toHaveTextContent(
+      "WPMgr put the title and excerpt back, but the site also changed other parts of this page during the save. Check the page in WordPress.",
+    );
+  });
+
+  it("a failed row with restored=true says nothing was left changed", async () => {
+    renderPage([restRow({ state: "failed", outcome: "failed", restored: true, decided_at: "2026-10-01T09:58:00Z" })]);
+    const card = await screen.findByRole("article");
+    expect(card).toHaveTextContent("The change didn't go through; nothing was left changed.");
+  });
+
+  it("an undone row with restored=false says other changes remain", async () => {
+    renderPage([
+      restRow({ state: "done", outcome: "applied", undo_state: "undone", restored: false, decided_at: "2026-10-01T09:58:00Z" }),
+    ]);
+    const card = await screen.findByRole("article");
+    expect(card).toHaveTextContent(
+      "Title and excerpt put back. Other changes the site made remain; check the page in WordPress.",
+    );
+  });
+
+  it("post_scheduled says to change the title in WordPress", async () => {
+    renderPage([
+      restRow({ state: "failed", outcome: "refused", outcome_code: "post_scheduled", decided_at: "2026-10-01T09:58:00Z" }),
+    ]);
+    expect(await screen.findByText(/This page is scheduled; change its title in WordPress\./)).toBeInTheDocument();
+  });
+
   it("a page-create row on the same list still renders the page-create card", async () => {
     const pc = {
       ...restRow(),
