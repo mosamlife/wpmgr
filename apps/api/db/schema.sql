@@ -9025,6 +9025,147 @@ CREATE POLICY site_content_inventory_runs_site_scope
 -- ability_catalogue
 -- ---------------------------------------------------------------------------
 
+-- m158: plugin version ordering (matches Go wpversion.Compare) and the
+-- output_fields shape grammar, both used by ability_catalogue CHECKs.
+CREATE OR REPLACE FUNCTION wpmgr_version_tokens(v text)
+RETURNS text[]
+LANGUAGE plpgsql
+IMMUTABLE STRICT PARALLEL SAFE
+SET search_path = pg_catalog, pg_temp
+AS $$
+DECLARE
+    part text;
+    out  text[] := '{}';
+BEGIN
+    IF v = '' THEN
+        RETURN ARRAY['#'];
+    END IF;
+    v := translate(v, '_-+', '...');
+    FOREACH part IN ARRAY string_to_array(v, '.') LOOP
+        IF part = '' THEN
+            out := out || '#'::text;
+        ELSE
+            out := out || ARRAY(
+                SELECT m[1] FROM regexp_matches(part, '([0-9]+|[^0-9]+)', 'g') AS m
+            );
+        END IF;
+    END LOOP;
+    RETURN out;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION wpmgr_version_rank(tok text)
+RETURNS int
+LANGUAGE sql
+IMMUTABLE STRICT PARALLEL SAFE
+SET search_path = pg_catalog, pg_temp
+AS $$
+    SELECT CASE lower(tok)
+        WHEN 'dev' THEN 0
+        WHEN 'alpha' THEN 1 WHEN 'a' THEN 1
+        WHEN 'beta' THEN 2 WHEN 'b' THEN 2
+        WHEN 'rc' THEN 3
+        WHEN '#' THEN 4
+        WHEN 'pl' THEN 6 WHEN 'p' THEN 6
+        ELSE 5
+    END;
+$$;
+
+CREATE OR REPLACE FUNCTION wpmgr_version_cmp(a text, b text)
+RETURNS int
+LANGUAGE plpgsql
+IMMUTABLE STRICT PARALLEL SAFE
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+    ta text[];
+    tb text[];
+    x  text;
+    y  text;
+    xn boolean;
+    yn boolean;
+    rx int;
+    ry int;
+    i  int;
+    n  int;
+BEGIN
+    IF a = '*' THEN a := ''; END IF;
+    IF b = '*' THEN b := ''; END IF;
+    ta := wpmgr_version_tokens(a);
+    tb := wpmgr_version_tokens(b);
+    n := greatest(coalesce(array_length(ta, 1), 0), coalesce(array_length(tb, 1), 0));
+    FOR i IN 1..n LOOP
+        x := coalesce(ta[i], '0');
+        y := coalesce(tb[i], '0');
+        xn := x ~ '^[0-9]+$';
+        yn := y ~ '^[0-9]+$';
+        IF xn AND yn THEN
+            x := ltrim(x, '0');
+            y := ltrim(y, '0');
+            IF length(x) <> length(y) THEN
+                RETURN sign(length(x) - length(y))::int;
+            END IF;
+            IF x COLLATE "C" < y COLLATE "C" THEN RETURN -1; END IF;
+            IF x COLLATE "C" > y COLLATE "C" THEN RETURN 1; END IF;
+        ELSE
+            rx := CASE WHEN xn THEN 5 ELSE wpmgr_version_rank(x) END;
+            ry := CASE WHEN yn THEN 5 ELSE wpmgr_version_rank(y) END;
+            IF rx <> ry THEN
+                RETURN sign(rx - ry)::int;
+            END IF;
+        END IF;
+    END LOOP;
+    RETURN 0;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION wpmgr_version_tokens(text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION wpmgr_version_rank(text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION wpmgr_version_cmp(text, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION wpmgr_version_tokens(text) TO wpmgr_app;
+GRANT EXECUTE ON FUNCTION wpmgr_version_rank(text) TO wpmgr_app;
+GRANT EXECUTE ON FUNCTION wpmgr_version_cmp(text, text) TO wpmgr_app;
+
+CREATE OR REPLACE FUNCTION ability_output_shape_valid(s jsonb, depth int)
+RETURNS boolean
+LANGUAGE plpgsql
+IMMUTABLE STRICT PARALLEL SAFE
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+    k text;
+    v jsonb;
+BEGIN
+    IF depth > 8 THEN
+        RETURN false;
+    END IF;
+    IF jsonb_typeof(s) = 'string' THEN
+        RETURN s #>> '{}' IN ('string', 'int', 'bool');
+    END IF;
+    IF jsonb_typeof(s) <> 'object' THEN
+        RETURN false;
+    END IF;
+    IF s ?& ARRAY['fields'] AND (SELECT count(*) FROM jsonb_object_keys(s)) = 1 THEN
+        IF jsonb_typeof(s -> 'fields') <> 'object' THEN
+            RETURN false;
+        END IF;
+        FOR k, v IN SELECT * FROM jsonb_each(s -> 'fields') LOOP
+            IF k !~ '^[A-Za-z0-9_-]{1,64}$' OR NOT ability_output_shape_valid(v, depth + 1) THEN
+                RETURN false;
+            END IF;
+        END LOOP;
+        RETURN true;
+    END IF;
+    IF s ?& ARRAY['items'] AND (SELECT count(*) FROM jsonb_object_keys(s)) = 1 THEN
+        RETURN ability_output_shape_valid(s -> 'items', depth + 1);
+    END IF;
+    RETURN false;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION ability_output_shape_valid(jsonb, int) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION ability_output_shape_valid(jsonb, int) TO wpmgr_app;
+
 CREATE TABLE IF NOT EXISTS ability_catalogue (
     entry_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     name text NOT NULL
@@ -9131,6 +9272,16 @@ CREATE TABLE IF NOT EXISTS ability_catalogue (
         CONSTRAINT ability_catalogue_entry_sha256_check
         CHECK (entry_sha256 ~ '^[0-9a-f]{64}$'),
 
+    -- m158 (C1): a non-wpmgr entry pins its schema unless it is denied; a
+    -- non-wpmgr read pins its output; a range is ordered.
+    CONSTRAINT ability_catalogue_schema_pinned_check
+        CHECK (source = 'wpmgr' OR class = 'denied' OR schema_struct_sha256 IS NOT NULL),
+    CONSTRAINT ability_catalogue_output_fields_check
+        CHECK (class <> 'read' OR source = 'wpmgr' OR output_fields IS NOT NULL),
+    CONSTRAINT ability_catalogue_version_order_check
+        CHECK (version_min IS NULL OR version_max_tested IS NULL
+               OR wpmgr_version_cmp(version_min, version_max_tested) <= 0),
+
     -- A write is approved per call, has an undo, and names the permission
     -- its approver must hold.
     CONSTRAINT ability_catalogue_write_rules_check
@@ -9142,7 +9293,14 @@ CREATE TABLE IF NOT EXISTS ability_catalogue (
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
     -- NULL only for a row the migration seeded.
-    updated_by_user_id uuid NULL
+    updated_by_user_id uuid NULL,
+    -- m158: the pinned output shape of a read. Last, as ADD COLUMN placed it,
+    -- so SELECT * through the definer scans in the physical order.
+    output_fields jsonb NULL
+        CONSTRAINT ability_catalogue_output_fields_shape_check
+        CHECK (output_fields IS NULL OR (
+            octet_length(output_fields::text) <= 16384
+            AND ability_output_shape_valid(output_fields, 0)))
 );
 
 -- One entry per name and range start. NULLS NOT DISTINCT so two wpmgr or core
@@ -9243,7 +9401,8 @@ AS $$
         'global_option_keys', to_jsonb(r.global_option_keys),
         'integration_block', r.integration_block,
         'admission', r.admission,
-        'entry_sha256', r.entry_sha256
+        'entry_sha256', r.entry_sha256,
+        'output_fields', r.output_fields
     )::text, 'UTF8')), 'hex');
 $$;
 
@@ -9282,7 +9441,8 @@ CREATE OR REPLACE FUNCTION admin_upsert_ability_catalogue_entry(
     p_global_option_keys text[],
     p_integration_block jsonb,
     p_admission jsonb,
-    p_entry_sha256 text
+    p_entry_sha256 text,
+    p_output_fields jsonb
 )
 RETURNS ability_catalogue
 LANGUAGE plpgsql
@@ -9292,6 +9452,7 @@ AS $$
 DECLARE
     v_before ability_catalogue;
     v_after  ability_catalogue;
+    v_clash  uuid;
 BEGIN
     IF p_actor_user_id IS NULL OR NOT EXISTS (
         SELECT 1 FROM users u
@@ -9301,9 +9462,44 @@ BEGIN
             USING ERRCODE = '42501';
     END IF;
 
-    -- Serialise writers of one ability name, so two concurrent writers cannot
-    -- both read the same before-state and audit it twice.
+    -- Serialise writers of one ability name (m155's key, which the Go admin
+    -- repo and m157's stamp also take): the overlap check below and the write
+    -- that follows it see no concurrent writer of this name.
     PERFORM pg_advisory_xact_lock(hashtext('ability_catalogue'), hashtext(p_name));
+
+    IF p_entry_id IS NOT NULL THEN
+        SELECT * INTO v_before FROM ability_catalogue
+            WHERE entry_id = p_entry_id
+            FOR UPDATE;
+        IF v_before.entry_id IS NULL THEN
+            RAISE EXCEPTION 'ability_catalogue: no entry %', p_entry_id
+                USING ERRCODE = 'P0002';
+        END IF;
+        IF v_before.name <> p_name THEN
+            -- The lock above is keyed on p_name; renaming would escape it.
+            RAISE EXCEPTION 'ability_catalogue: an entry''s name cannot change'
+                USING ERRCODE = '22023';
+        END IF;
+    END IF;
+
+    -- One admitted version range per name at any version.
+    IF p_status = 'admitted' THEN
+        SELECT c.entry_id INTO v_clash
+        FROM ability_catalogue c
+        WHERE c.name = p_name
+          AND c.status = 'admitted'
+          AND c.entry_id IS DISTINCT FROM p_entry_id
+          AND (c.version_min IS NULL OR p_version_max_tested IS NULL
+               OR wpmgr_version_cmp(c.version_min, p_version_max_tested) <= 0)
+          AND (p_version_min IS NULL OR c.version_max_tested IS NULL
+               OR wpmgr_version_cmp(p_version_min, c.version_max_tested) <= 0)
+        LIMIT 1;
+        IF v_clash IS NOT NULL THEN
+            RAISE EXCEPTION 'ability_catalogue_range_overlap'
+                USING ERRCODE = '23P01',
+                      DETAIL = format('admitted entry %s of %s overlaps this version range', v_clash, p_name);
+        END IF;
+    END IF;
 
     IF p_entry_id IS NULL THEN
         INSERT INTO ability_catalogue AS ac (
@@ -9313,7 +9509,7 @@ BEGIN
             dynamic_enum_paths, title, description, usage, operator_permission,
             target, snapshot, preview, arg_render, effect_copy, limits,
             nested_allow, global_option_keys, integration_block, admission,
-            entry_sha256, updated_at, updated_by_user_id
+            entry_sha256, output_fields, updated_at, updated_by_user_id
         ) VALUES (
             p_name, p_source, p_class, p_status, p_enabled, p_approval_mode,
             coalesce(p_permission_mode, 'principal'),
@@ -9327,23 +9523,10 @@ BEGIN
             coalesce(p_nested_allow, '{}'::text[]),
             coalesce(p_global_option_keys, '{}'::text[]),
             p_integration_block, coalesce(p_admission, '{}'::jsonb),
-            p_entry_sha256, now(), p_actor_user_id
+            p_entry_sha256, p_output_fields, now(), p_actor_user_id
         )
         RETURNING ac.* INTO v_after;
     ELSE
-        SELECT * INTO v_before FROM ability_catalogue
-            WHERE entry_id = p_entry_id
-            FOR UPDATE;
-        IF v_before.entry_id IS NULL THEN
-            RAISE EXCEPTION 'ability_catalogue: no entry %', p_entry_id
-                USING ERRCODE = 'P0002';
-        END IF;
-        IF v_before.name <> p_name THEN
-            -- The lock above is keyed on p_name; renaming would escape it.
-            RAISE EXCEPTION 'ability_catalogue: an entry''s name cannot change'
-                USING ERRCODE = '22023';
-        END IF;
-
         UPDATE ability_catalogue AS ac SET
             source = p_source,
             class = p_class,
@@ -9374,6 +9557,7 @@ BEGIN
             integration_block = p_integration_block,
             admission = coalesce(p_admission, '{}'::jsonb),
             entry_sha256 = p_entry_sha256,
+            output_fields = p_output_fields,
             updated_at = now(),
             updated_by_user_id = p_actor_user_id
         WHERE ac.entry_id = p_entry_id
@@ -9406,12 +9590,12 @@ $$;
 REVOKE ALL ON FUNCTION admin_upsert_ability_catalogue_entry(
     uuid, uuid, text, text, text, text, boolean, text, text, text, text, text,
     text, text, text, text, text[], text, text, text, text, jsonb, text, text,
-    jsonb, text, jsonb, text[], text[], jsonb, jsonb, text
+    jsonb, text, jsonb, text[], text[], jsonb, jsonb, text, jsonb
 ) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION admin_upsert_ability_catalogue_entry(
     uuid, uuid, text, text, text, text, boolean, text, text, text, text, text,
     text, text, text, text, text[], text, text, text, text, jsonb, text, text,
-    jsonb, text, jsonb, text[], text[], jsonb, jsonb, text
+    jsonb, text, jsonb, text[], text[], jsonb, jsonb, text, jsonb
 ) TO wpmgr_app;
 
 -- ---------------------------------------------------------------------------
@@ -9451,6 +9635,27 @@ SELECT 'wpmgr/page-create', 'wpmgr', 'write', 'admitted', true, 'per_call',
        'Creates a new draft page or post from a text outline. Nothing is published. Undo moves the draft to the trash.'
 WHERE NOT EXISTS (
     SELECT 1 FROM ability_catalogue c WHERE c.name = 'wpmgr/page-create'
+);
+
+-- m158: the three core abilities, seeded denied with our copy.
+INSERT INTO ability_catalogue
+    (name, source, class, status, enabled, approval_mode,
+     title, description, admission)
+SELECT v.name, 'core', 'denied', 'detect_only', true, 'none',
+       v.title, v.description, jsonb_build_object('denied_reason', v.reason)
+FROM (VALUES
+    ('core/get-site-info', 'Site information (not available)',
+     'WordPress offers this only to administrators. WPMgr''s site connection deliberately is not one, so it cannot use it. WPMgr reads the same facts its own way.',
+     'principal_lacks_permission'),
+    ('core/get-environment-info', 'Server environment (not available)',
+     'WordPress offers this only to administrators. WPMgr''s site connection deliberately is not one, so it cannot use it. WPMgr reads the same facts its own way.',
+     'principal_lacks_permission'),
+    ('core/get-user-info', 'Current user profile (not available)',
+     'This would only describe WPMgr''s own connection account on the site, not any person, so WPMgr never runs it.',
+     'discloses_service_account')
+) AS v(name, title, description, reason)
+WHERE NOT EXISTS (
+    SELECT 1 FROM ability_catalogue c WHERE c.name = v.name
 );
 
 -- m157: the narrow stamp path for WPMgr's own entries. Sets entry_sha256 only

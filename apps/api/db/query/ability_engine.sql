@@ -25,7 +25,8 @@ WHERE entry_id = sqlc.arg(entry_id)::uuid;
 -- inserts; a non-NULL entry_id updates that entry (SQLSTATE P0002 if absent,
 -- 22023 if the name would change). Refuses with 42501 unless actor_user_id
 -- names a superadmin, and writes an ability_catalogue_audit row in the same
--- statement.
+-- statement. m158: refuses 23P01 (ability_catalogue_range_overlap) when an
+-- admitted entry of the same name overlaps this admitted version range.
 SELECT * FROM admin_upsert_ability_catalogue_entry(
     sqlc.arg(actor_user_id)::uuid,
     sqlc.narg(entry_id)::uuid,
@@ -58,7 +59,8 @@ SELECT * FROM admin_upsert_ability_catalogue_entry(
     sqlc.arg(global_option_keys)::text[],
     sqlc.narg(integration_block)::jsonb,
     sqlc.arg(admission)::jsonb,
-    sqlc.narg(entry_sha256)::text
+    sqlc.narg(entry_sha256)::text,
+    sqlc.narg(output_fields)::jsonb
 );
 
 -- name: StampWpmgrAbilityEntryHash :one

@@ -14,7 +14,7 @@ import (
 )
 
 const adminUpsertAbilityCatalogueEntry = `-- name: AdminUpsertAbilityCatalogueEntry :one
-SELECT entry_id, name, source, class, status, enabled, approval_mode, permission_mode, integration_id, owner_dir, version_min, version_max_tested, min_wp_version, min_agent_version, schema_struct_sha256, dynamic_enum_paths, title, description, usage, operator_permission, target, snapshot, preview, arg_render, effect_copy, limits, nested_allow, global_option_keys, integration_block, admission, entry_sha256, created_at, updated_at, updated_by_user_id FROM admin_upsert_ability_catalogue_entry(
+SELECT entry_id, name, source, class, status, enabled, approval_mode, permission_mode, integration_id, owner_dir, version_min, version_max_tested, min_wp_version, min_agent_version, schema_struct_sha256, dynamic_enum_paths, title, description, usage, operator_permission, target, snapshot, preview, arg_render, effect_copy, limits, nested_allow, global_option_keys, integration_block, admission, entry_sha256, created_at, updated_at, updated_by_user_id, output_fields FROM admin_upsert_ability_catalogue_entry(
     $1::uuid,
     $2::uuid,
     $3::text,
@@ -46,7 +46,8 @@ SELECT entry_id, name, source, class, status, enabled, approval_mode, permission
     $29::text[],
     $30::jsonb,
     $31::jsonb,
-    $32::text
+    $32::text,
+    $33::jsonb
 )
 `
 
@@ -83,13 +84,15 @@ type AdminUpsertAbilityCatalogueEntryParams struct {
 	IntegrationBlock   []byte      `json:"integration_block"`
 	Admission          []byte      `json:"admission"`
 	EntrySha256        *string     `json:"entry_sha256"`
+	OutputFields       []byte      `json:"output_fields"`
 }
 
 // The ONLY write path. Call it only behind requireSuperadmin. entry_id NULL
 // inserts; a non-NULL entry_id updates that entry (SQLSTATE P0002 if absent,
 // 22023 if the name would change). Refuses with 42501 unless actor_user_id
 // names a superadmin, and writes an ability_catalogue_audit row in the same
-// statement.
+// statement. m158: refuses 23P01 (ability_catalogue_range_overlap) when an
+// admitted entry of the same name overlaps this admitted version range.
 func (q *Queries) AdminUpsertAbilityCatalogueEntry(ctx context.Context, arg AdminUpsertAbilityCatalogueEntryParams) (AbilityCatalogue, error) {
 	row := q.db.QueryRow(ctx, adminUpsertAbilityCatalogueEntry,
 		arg.ActorUserID,
@@ -124,6 +127,7 @@ func (q *Queries) AdminUpsertAbilityCatalogueEntry(ctx context.Context, arg Admi
 		arg.IntegrationBlock,
 		arg.Admission,
 		arg.EntrySha256,
+		arg.OutputFields,
 	)
 	var i AbilityCatalogue
 	err := row.Scan(
@@ -161,6 +165,7 @@ func (q *Queries) AdminUpsertAbilityCatalogueEntry(ctx context.Context, arg Admi
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.UpdatedByUserID,
+		&i.OutputFields,
 	)
 	return i, err
 }
@@ -189,7 +194,7 @@ func (q *Queries) DeleteStaleSiteAbilityInventory(ctx context.Context, arg Delet
 }
 
 const getAbilityCatalogueEntry = `-- name: GetAbilityCatalogueEntry :one
-SELECT entry_id, name, source, class, status, enabled, approval_mode, permission_mode, integration_id, owner_dir, version_min, version_max_tested, min_wp_version, min_agent_version, schema_struct_sha256, dynamic_enum_paths, title, description, usage, operator_permission, target, snapshot, preview, arg_render, effect_copy, limits, nested_allow, global_option_keys, integration_block, admission, entry_sha256, created_at, updated_at, updated_by_user_id FROM ability_catalogue
+SELECT entry_id, name, source, class, status, enabled, approval_mode, permission_mode, integration_id, owner_dir, version_min, version_max_tested, min_wp_version, min_agent_version, schema_struct_sha256, dynamic_enum_paths, title, description, usage, operator_permission, target, snapshot, preview, arg_render, effect_copy, limits, nested_allow, global_option_keys, integration_block, admission, entry_sha256, created_at, updated_at, updated_by_user_id, output_fields FROM ability_catalogue
 WHERE entry_id = $1::uuid
 `
 
@@ -232,6 +237,7 @@ func (q *Queries) GetAbilityCatalogueEntry(ctx context.Context, entryID uuid.UUI
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.UpdatedByUserID,
+		&i.OutputFields,
 	)
 	return i, err
 }
@@ -302,7 +308,7 @@ func (q *Queries) GetSiteAbilityInventoryRun(ctx context.Context, arg GetSiteAbi
 }
 
 const listAbilityCatalogue = `-- name: ListAbilityCatalogue :many
-SELECT entry_id, name, source, class, status, enabled, approval_mode, permission_mode, integration_id, owner_dir, version_min, version_max_tested, min_wp_version, min_agent_version, schema_struct_sha256, dynamic_enum_paths, title, description, usage, operator_permission, target, snapshot, preview, arg_render, effect_copy, limits, nested_allow, global_option_keys, integration_block, admission, entry_sha256, created_at, updated_at, updated_by_user_id FROM ability_catalogue
+SELECT entry_id, name, source, class, status, enabled, approval_mode, permission_mode, integration_id, owner_dir, version_min, version_max_tested, min_wp_version, min_agent_version, schema_struct_sha256, dynamic_enum_paths, title, description, usage, operator_permission, target, snapshot, preview, arg_render, effect_copy, limits, nested_allow, global_option_keys, integration_block, admission, entry_sha256, created_at, updated_at, updated_by_user_id, output_fields FROM ability_catalogue
 ORDER BY name, version_min NULLS FIRST
 `
 
@@ -351,6 +357,7 @@ func (q *Queries) ListAbilityCatalogue(ctx context.Context) ([]AbilityCatalogue,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.UpdatedByUserID,
+			&i.OutputFields,
 		); err != nil {
 			return nil, err
 		}
@@ -410,7 +417,7 @@ func (q *Queries) ListAbilityCatalogueAudit(ctx context.Context, arg ListAbility
 
 const listAdmittedAbilityCatalogue = `-- name: ListAdmittedAbilityCatalogue :many
 
-SELECT entry_id, name, source, class, status, enabled, approval_mode, permission_mode, integration_id, owner_dir, version_min, version_max_tested, min_wp_version, min_agent_version, schema_struct_sha256, dynamic_enum_paths, title, description, usage, operator_permission, target, snapshot, preview, arg_render, effect_copy, limits, nested_allow, global_option_keys, integration_block, admission, entry_sha256, created_at, updated_at, updated_by_user_id FROM ability_catalogue
+SELECT entry_id, name, source, class, status, enabled, approval_mode, permission_mode, integration_id, owner_dir, version_min, version_max_tested, min_wp_version, min_agent_version, schema_struct_sha256, dynamic_enum_paths, title, description, usage, operator_permission, target, snapshot, preview, arg_render, effect_copy, limits, nested_allow, global_option_keys, integration_block, admission, entry_sha256, created_at, updated_at, updated_by_user_id, output_fields FROM ability_catalogue
 WHERE status = 'admitted' AND enabled
 ORDER BY name, version_min NULLS FIRST
 `
@@ -465,6 +472,7 @@ func (q *Queries) ListAdmittedAbilityCatalogue(ctx context.Context) ([]AbilityCa
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.UpdatedByUserID,
+			&i.OutputFields,
 		); err != nil {
 			return nil, err
 		}
@@ -539,7 +547,7 @@ func (q *Queries) ListSiteAbilityInventory(ctx context.Context, arg ListSiteAbil
 }
 
 const stampWpmgrAbilityEntryHash = `-- name: StampWpmgrAbilityEntryHash :one
-SELECT entry_id, name, source, class, status, enabled, approval_mode, permission_mode, integration_id, owner_dir, version_min, version_max_tested, min_wp_version, min_agent_version, schema_struct_sha256, dynamic_enum_paths, title, description, usage, operator_permission, target, snapshot, preview, arg_render, effect_copy, limits, nested_allow, global_option_keys, integration_block, admission, entry_sha256, created_at, updated_at, updated_by_user_id FROM stamp_wpmgr_ability_entry_hash(
+SELECT entry_id, name, source, class, status, enabled, approval_mode, permission_mode, integration_id, owner_dir, version_min, version_max_tested, min_wp_version, min_agent_version, schema_struct_sha256, dynamic_enum_paths, title, description, usage, operator_permission, target, snapshot, preview, arg_render, effect_copy, limits, nested_allow, global_option_keys, integration_block, admission, entry_sha256, created_at, updated_at, updated_by_user_id, output_fields FROM stamp_wpmgr_ability_entry_hash(
     $1::uuid,
     $2::text
 )
@@ -593,6 +601,7 @@ func (q *Queries) StampWpmgrAbilityEntryHash(ctx context.Context, arg StampWpmgr
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.UpdatedByUserID,
+		&i.OutputFields,
 	)
 	return i, err
 }

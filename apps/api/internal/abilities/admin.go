@@ -267,6 +267,7 @@ func (r *AdminRepo) Upsert(ctx context.Context, actor uuid.UUID, entryID *uuid.U
 			Preview: row.Preview, ArgRender: row.ArgRender, EffectCopy: row.EffectCopy, Limits: row.Limits,
 			NestedAllow: nonNil(row.NestedAllow), GlobalOptionKeys: nonNil(row.GlobalOptionKeys),
 			IntegrationBlock: row.IntegrationBlock, Admission: row.Admission, EntrySha256: &sum,
+			OutputFields: row.OutputFields,
 		})
 		if err != nil {
 			return mapCatalogueErr(err)

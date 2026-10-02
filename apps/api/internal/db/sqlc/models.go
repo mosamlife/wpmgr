@@ -47,6 +47,7 @@ type AbilityCatalogue struct {
 	CreatedAt          time.Time   `json:"created_at"`
 	UpdatedAt          time.Time   `json:"updated_at"`
 	UpdatedByUserID    pgtype.UUID `json:"updated_by_user_id"`
+	OutputFields       []byte      `json:"output_fields"`
 }
 
 type AbilityCatalogueAudit struct {
