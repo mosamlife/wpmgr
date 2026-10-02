@@ -87,6 +87,8 @@ final class RestCallTest extends TestCase
     /** @var array<int,array<string,list<string>>> */
     public array $meta = [];
 
+    private int $clock = 0;
+
     protected function set_up(): void
     {
         parent::set_up();
@@ -201,7 +203,15 @@ final class RestCallTest extends TestCase
         Functions\when('wp_update_post')->alias(function (array $data) {
             ($this->duringSanitise)();
             $id     = (int) $data['ID'];
-            $merged = array_merge(get_object_vars($this->posts[$id]), array_map(fn ($v) => is_string($v) ? stripslashes($v) : $v, $data));
+            $old    = $this->posts[$id];
+            // As core: a never-dated draft is dated now on every update
+            // unless edit_date is set.
+            $clear  = in_array($old->post_status, ['draft', 'pending', 'auto-draft'], true)
+                && empty($data['edit_date']) && ($old->post_date_gmt ?? '') === '0000-00-00 00:00:00';
+            $merged = array_merge(get_object_vars($old), array_map(fn ($v) => is_string($v) ? stripslashes($v) : $v, $data));
+            if ($clear) {
+                $merged['post_date'] = '2026-10-02 12:' . sprintf('%02d', ++$this->clock) . ':00';
+            }
             unset($merged['ID']);
             foreach ($merged as $k => $v) {
                 if (is_string($v)) {
@@ -433,6 +443,8 @@ final class RestCallTest extends TestCase
         $p->post_title        = $title;
         $p->post_excerpt      = 'Old excerpt';
         $p->post_modified_gmt = '2026-09-01 10:00:00';
+        $p->post_date         = '2026-09-01 10:00:00';
+        $p->post_date_gmt     = '2026-09-01 10:00:00';
         $p->post_parent       = $parent;
         $p->post_content      = '<!-- wp:paragraph --><p>Intro &amp; more</p><!-- /wp:paragraph -->';
         $p->post_author       = 3;
@@ -1053,7 +1065,7 @@ final class RestCallTest extends TestCase
         $this->assertSame([], $this->calls);
     }
 
-    public function test_a_plugin_changing_other_columns_during_the_update_is_undone_and_named(): void
+    public function test_a_plugin_changing_other_columns_is_reported_honestly_and_stays_undoable(): void
     {
         $this->addPost(412);
         $this->plugin('wp_insert_post_data', function ($data) {
@@ -1065,8 +1077,81 @@ final class RestCallTest extends TestCase
         $out = $this->precheckAndWrite('New');
         $this->assertSame('side_effect_detected', $out['code'], (string) json_encode($out));
         $this->assertSame(['post_author', 'post_content', 'post_name'], $out['columns']);
-        $this->assertTrue($out['restored']);
+        // Title and excerpt are back, but the row is not: never claimed restored.
         $this->assertSame('Old title', $this->posts[412]->post_title);
+        $this->assertSame('replaced', $this->posts[412]->post_content);
+        $this->assertFalse($out['restored']);
+        $this->assertFalse($out['exact']);
+        $this->assertSame(['post_author', 'post_content', 'post_name'], $out['columns_still_changed']);
+        $row = AbilityLedger::get(self::REQ);
+        $this->assertSame('failed_needs_attention', $row['phase']);
+        $this->assertSame('available', $row['undo_state']);
+
+        // A person's undo is not blocked, and is just as honest.
+        $r = $this->writeCall('revert', []);
+        $this->assertTrue($r['ok'], (string) json_encode($r));
+        $this->assertSame('reverted', $r['outcome']);
+        $this->assertFalse($r['restored']);
+        $this->assertSame(['post_author', 'post_content', 'post_name'], $r['columns_still_changed']);
+        $this->assertSame('Old title', $this->posts[412]->post_title);
+        $again = $this->writeCall('revert', []);
+        $this->assertSame('already_reverted', $again['outcome']);
+        $this->assertFalse($again['restored']);
+    }
+
+    public function test_a_clean_failed_write_is_restored_and_says_so(): void
+    {
+        $this->addPost(412);
+        $this->mangle = fn ($t) => $t . ' (edited by a filter)';
+        $out = $this->precheckAndWrite('New');
+        $this->assertSame('verify_mismatch', $out['code']);
+        $this->assertTrue($out['restored']);
+        $this->assertArrayNotHasKey('columns_still_changed', $out);
+        $this->assertSame('restored', AbilityLedger::get(self::REQ)['undo_state']);
+    }
+
+    public function test_a_never_dated_draft_can_be_retitled_and_undone(): void
+    {
+        $this->addPost(412, 'draft');
+        $this->posts[412]->post_date_gmt = '0000-00-00 00:00:00';
+        $out = $this->precheckAndWrite('New');
+        $this->assertTrue($out['ok'], (string) json_encode($out));
+        $this->assertNotSame('2026-09-01 10:00:00', $this->posts[412]->post_date, 'core re-dated the draft');
+        $r = $this->writeCall('revert', []);
+        $this->assertTrue($r['ok'], (string) json_encode($r));
+        $this->assertTrue($r['restored']);
+        $this->assertSame('Old title', $this->posts[412]->post_title);
+    }
+
+    public function test_a_failed_write_to_a_never_dated_draft_is_restored_without_a_date_side_effect(): void
+    {
+        $this->addPost(412, 'draft');
+        $this->posts[412]->post_date_gmt = '0000-00-00 00:00:00';
+        $this->mangle = fn ($t) => $t . ' (edited by a filter)';
+        $out = $this->precheckAndWrite('New');
+        $this->assertSame('verify_mismatch', $out['code'], (string) json_encode($out));
+        $this->assertTrue($out['restored']);
+        $this->assertArrayNotHasKey('columns_still_changed', $out);
+    }
+
+    public function test_a_dated_draft_whose_date_moves_is_still_a_side_effect(): void
+    {
+        $this->addPost(412, 'draft');
+        $this->plugin('wp_insert_post_data', function ($data) {
+            $data['post_date'] = '2030-01-01 00:00:00';
+            return $data;
+        }, 10, 2);
+        $out = $this->precheckAndWrite('New');
+        $this->assertSame('side_effect_detected', $out['code']);
+        $this->assertSame(['post_date'], $out['columns']);
+    }
+
+    public function test_a_scheduled_post_is_refused(): void
+    {
+        $this->addPost(412, 'future');
+        $out = $this->writeCall('precheck', self::retitle('New'));
+        $this->assertSame('post_scheduled', $out['code']);
+        $this->assertSame([], $this->calls);
     }
 
     public function test_the_bytes_sent_are_the_approved_stored_bytes(): void
