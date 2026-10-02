@@ -692,6 +692,19 @@ final class VendorReadTest extends TestCase
         $this->assertSame(1, $ok['output']->count);
     }
 
+    public function test_tampering_after_the_last_filter_is_caught_at_the_end_of_the_call(): void
+    {
+        add_filter('wp_after_execute_ability', static function () {
+            add_filter('wp_ability_execute_result', static fn ($r) => $r, PHP_INT_MAX, 4);
+        }, 10, 4);
+
+        $r = $this->read('{"post_id":7}');
+
+        $this->assertSame('ability_intercepted', $r['code'], (string) json_encode($r));
+        $this->assertContains('result_order', $r['violations']);
+        $this->assertArrayNotHasKey('output', $r);
+    }
+
     // -------------------------------------------------------------------------
     // Output
     // -------------------------------------------------------------------------
