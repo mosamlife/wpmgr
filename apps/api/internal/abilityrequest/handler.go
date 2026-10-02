@@ -71,7 +71,7 @@ func (h *Handler) undo(c *gin.Context) {
 		httpx.Error(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, toDTO(row, true))
+	c.JSON(http.StatusOK, h.rowDTO(c, p, row))
 }
 
 // RequestDTO is one ability request on the wire. site_label, site_host,
@@ -143,7 +143,7 @@ func ts(t pgtype.Timestamptz) *time.Time {
 	return &v
 }
 
-func toDTO(r sqlc.AssistantAbilityRequest, withDigest bool) RequestDTO {
+func toDTO(r sqlc.AssistantAbilityRequest, withDigest bool, agentVersion string) RequestDTO {
 	out := RequestDTO{
 		ID: r.ID, SiteID: r.SiteID, AbilityName: r.AbilityName, InputJSON: r.InputJson,
 		TitleExcerpt: r.TitleExcerpt, Editor: r.Editor, PostType: r.PostType,
@@ -154,7 +154,7 @@ func toDTO(r sqlc.AssistantAbilityRequest, withDigest bool) RequestDTO {
 		Outcome: r.Outcome, OutcomeCode: r.OutcomeCode, NotSentReason: r.NotSentReason,
 		CreatedPostID: r.CreatedPostID, Trashed: r.Trashed, UndoState: r.UndoState,
 		UndoAvailableUntil: ts(r.UndoAvailableUntil),
-		UndoOffered:        undoOffered(r, time.Now()),
+		UndoOffered:        undoOffered(r, agentVersion, time.Now()),
 		ResolveGaveUp:      resolveGaveUp(r),
 	}
 	if withDigest {
@@ -162,6 +162,13 @@ func toDTO(r sqlc.AssistantAbilityRequest, withDigest bool) RequestDTO {
 		out.PresentedDigest = &d
 	}
 	return out
+}
+
+// rowDTO is one row's wire form after a mutation, with its site's agent
+// version when the row could offer a recovery undo.
+func (h *Handler) rowDTO(c *gin.Context, p domain.Principal, row sqlc.AssistantAbilityRequest) RequestDTO {
+	rows := []sqlc.AssistantAbilityRequest{row}
+	return toDTO(row, true, h.svc.AgentVersions(c.Request.Context(), p, rows)[row.SiteID])
 }
 
 func principal(c *gin.Context) (domain.Principal, bool) {
@@ -204,8 +211,9 @@ func (h *Handler) listForSite(c *gin.Context) {
 	}
 	out := ListResponse{Requests: make([]RequestDTO, 0, len(rows)), Limit: limit, Offset: offset}
 	withDigest := p.Type == domain.PrincipalUser
+	versions := h.svc.AgentVersions(c.Request.Context(), p, rows)
 	for _, r := range rows {
-		out.Requests = append(out.Requests, toDTO(r, withDigest))
+		out.Requests = append(out.Requests, toDTO(r, withDigest, versions[r.SiteID]))
 	}
 	c.JSON(http.StatusOK, out)
 }
@@ -244,8 +252,9 @@ func (h *Handler) listForOrg(c *gin.Context) {
 	}
 	out := OrgListResponse{Requests: make([]RequestDTO, 0, len(q.Requests)), PendingCount: q.PendingCount, Limit: limit, Offset: offset}
 	withDigest := p.Type == domain.PrincipalUser
+	versions := h.svc.AgentVersions(c.Request.Context(), p, q.Requests)
 	for _, r := range q.Requests {
-		out.Requests = append(out.Requests, toDTO(r, withDigest))
+		out.Requests = append(out.Requests, toDTO(r, withDigest, versions[r.SiteID]))
 	}
 	c.JSON(http.StatusOK, out)
 }
@@ -277,7 +286,7 @@ func (h *Handler) approve(c *gin.Context) {
 		httpx.Error(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, toDTO(row, true))
+	c.JSON(http.StatusOK, h.rowDTO(c, p, row))
 }
 
 func (h *Handler) decline(c *gin.Context) {
@@ -302,5 +311,5 @@ func (h *Handler) decline(c *gin.Context) {
 		httpx.Error(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, toDTO(row, true))
+	c.JSON(http.StatusOK, h.rowDTO(c, p, row))
 }

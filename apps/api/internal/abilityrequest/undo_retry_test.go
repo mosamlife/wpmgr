@@ -110,10 +110,10 @@ func TestUndoKindFor(t *testing.T) {
 	}
 	for _, c := range cases {
 		row := c.row(recovery)
-		if got := undoKindFor(row, now); got != c.want {
+		if got := undoKindFor(row, "0.61.157", now); got != c.want {
 			t.Errorf("%s: got %d, want %d", c.name, got, c.want)
 		}
-		if undoOffered(row, now) != (c.want != undoKindNone) {
+		if undoOffered(row, "0.61.157", now) != (c.want != undoKindNone) {
 			t.Errorf("%s: undo_offered disagrees with the undo the service would run", c.name)
 		}
 	}

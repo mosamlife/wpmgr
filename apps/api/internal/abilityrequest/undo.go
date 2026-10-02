@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,6 +15,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
+	"github.com/mosamlife/wpmgr/apps/api/internal/wpversion"
 )
 
 // Undo results (m156 undo_state).
@@ -87,15 +89,15 @@ func (s *Service) Undo(ctx context.Context, p domain.Principal, siteID, requestI
 		if err := s.requireOperatorPermission(ctx, p, row); err != nil {
 			return err
 		}
-		kind := undoKindFor(row, s.clock())
-		if kind == undoKindNone {
-			return domain.Conflict(CodeUndoUnavailable, "This change can no longer be undone from WPMgr.")
-		}
-		recovery = kind == undoKindRecovery
 		site, err := q.GetSite(ctx, sqlc.GetSiteParams{TenantID: p.TenantID, ID: siteID})
 		if err != nil {
 			return err
 		}
+		kind := undoKindFor(row, site.AgentVersion, s.clock())
+		if kind == undoKindNone {
+			return domain.Conflict(CodeUndoUnavailable, "This change can no longer be undone from WPMgr.")
+		}
+		recovery = kind == undoKindRecovery
 		siteURL = site.Url
 		e, err := q.GetAbilityCatalogueEntry(ctx, row.EntryID)
 		if err != nil {
@@ -193,10 +195,11 @@ const (
 // row offers the normal undo while it is available and inside its window. A
 // failed or given-up write that recorded the post it created, whose draft
 // was not already trashed, and whose site record is still retained, offers
-// the recovery undo while no undo has started. The database statements
-// re-check the same conditions; this decides which one to run and what the
-// card offers.
-func undoKindFor(r sqlc.AssistantAbilityRequest, now time.Time) undoKind {
+// the recovery undo while no undo has started, but only when the site's
+// recorded agent version (agentVersion) ships the recovery revert: an older
+// agent answers not_revertible. The database statements re-check the row
+// conditions; this decides which one to run and what the card offers.
+func undoKindFor(r sqlc.AssistantAbilityRequest, agentVersion string, now time.Time) undoKind {
 	switch r.State {
 	case "done":
 		if r.UndoState != nil && *r.UndoState == "available" &&
@@ -213,20 +216,41 @@ func undoKindFor(r sqlc.AssistantAbilityRequest, now time.Time) undoKind {
 		if !r.OutcomeAt.Valid || now.Sub(r.OutcomeAt.Time) >= undoRetention {
 			return undoKindNone
 		}
+		if !recoveryUndoSupported(agentVersion) {
+			return undoKindNone
+		}
 		return undoKindRecovery
 	}
 	return undoKindNone
 }
 
+// recoveryUndoSupported: the site's recorded agent version ships the
+// recovery revert. An empty or unparseable version offers nothing.
+func recoveryUndoSupported(agentVersion string) bool {
+	return agentVersion != "" && wpversion.Compare(agentVersion, agentcmd.MinAgentVersionForRecoveryUndo) >= 0
+}
+
 // undoOffered is the card's "Undo" button, computed server-side.
-func undoOffered(r sqlc.AssistantAbilityRequest, now time.Time) bool {
-	return undoKindFor(r, now) != undoKindNone
+func undoOffered(r sqlc.AssistantAbilityRequest, agentVersion string, now time.Time) bool {
+	return undoKindFor(r, agentVersion, now) != undoKindNone
 }
 
 // undoRetryable is true when the revert's answer settles nothing: the call
-// did not reach the site or its reply was lost, or the site was busy with
-// this request or its post. The undo is released so the person can retry; a
-// revert that did run answers already_reverted next time.
+// did not reach the site, timed out, or its reply was lost, or the site was
+// busy with this request or its post. The undo is released so the person can
+// retry; a revert that did run answers already_reverted next time.
+//
+// A definite answer that a resend cannot change is not retryable and
+// finishes the undo as failed: any other refusal, a 4xx from the site (the
+// token rejected, the route gone because the plugin was removed, a bad
+// request) other than 408, 425 and 429, and a reply that did not decode.
+//
+// A recovery undo answered not_revertible is final too, and is not released:
+// the gate on MinAgentVersionForRecoveryUndo means the site's agent knows the
+// recovery revert, so not_revertible is its ledger saying this request left
+// nothing it can undo. Released, the button would come back and fail the
+// same way on every press; failed, the card says so and the person deals
+// with the draft on the site.
 func undoRetryable(err error) bool {
 	if err == nil {
 		return false
@@ -234,6 +258,26 @@ func undoRetryable(err error) bool {
 	var refusal *agentcmd.AbilityRunRefusal
 	if errors.As(err, &refusal) {
 		return refusal.Code == "target_in_flight" || refusal.Code == "request_in_flight"
+	}
+	if errors.Is(err, agentcmd.ErrAbilityRunMalformed) {
+		return false
+	}
+	var cmdErr *agentcmd.CommandError
+	if errors.As(err, &cmdErr) {
+		return !permanentHTTPStatus(cmdErr.Status)
+	}
+	return true
+}
+
+// permanentHTTPStatus is a 4xx a resend of the same call would get again.
+// 408, 425 and 429 are about timing, not the call.
+func permanentHTTPStatus(status int) bool {
+	if status < 400 || status >= 500 {
+		return false
+	}
+	switch status {
+	case http.StatusRequestTimeout, http.StatusTooEarly, http.StatusTooManyRequests:
+		return false
 	}
 	return true
 }
