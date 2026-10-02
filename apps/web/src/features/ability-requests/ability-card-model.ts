@@ -149,8 +149,8 @@ function hasCreatedPost(r: AbilityRequest): boolean {
  * "failed") and leaves `trashed` as it was, on done, failed and
  * outcome_unknown rows alike. Null when no undo result applies.
  */
-function undoStatus(r: AbilityRequest): AbilityStatus | null {
-  if (r.undo_state === "undone" || r.trashed === true) {
+function undoStatus(r: AbilityRequest, trashedCounts: boolean): AbilityStatus | null {
+  if (r.undo_state === "undone" || (trashedCounts && r.trashed === true)) {
     return { kind: "undone", text: "Moved to the trash." };
   }
   if (r.undo_state === "in_progress") {
@@ -193,7 +193,7 @@ export function abilityStatus(r: AbilityRequest): AbilityStatus {
     case "dispatched":
       return { kind: "running", text: `WPMgr is creating the draft ${noun}.` };
     case "outcome_unknown": {
-      const undone = undoStatus(r);
+      const undone = undoStatus(r, false);
       if (undone) return undone;
       if (r.resolve_gave_up) {
         return {
@@ -214,10 +214,10 @@ export function abilityStatus(r: AbilityRequest): AbilityStatus {
       return { kind: "unknown_outcome", text: "WPMgr is checking whether the draft was created." };
     }
     case "done": {
-      return undoStatus(r) ?? { kind: "done", text: "Draft created." };
+      return undoStatus(r, true) ?? { kind: "done", text: "Draft created." };
     }
     case "failed": {
-      const undone = undoStatus(r);
+      const undone = undoStatus(r, false);
       if (undone) return undone;
       if (hasCreatedPost(r)) {
         if (r.trashed === true) {
