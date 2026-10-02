@@ -82,6 +82,30 @@ export function notSentText(reason: string | null | undefined): string {
     : "WPMgr could not send it";
 }
 
+const REFUSAL_ADVICE: Record<string, string> = {
+  content_editing_not_enabled: "Turn AI page creation on again from this tab.",
+  principal_capabilities_drifted: "Turn AI page creation on again from this tab.",
+  principal_missing: "Turn AI page creation on again from this tab.",
+  principal_create_failed: "Turn AI page creation on again from this tab.",
+  principal_login_taken: "Turn AI page creation on again from this tab.",
+  editor_unavailable: "This site's editor isn't available.",
+  agent_outdated: "Update the WPMgr plugin on this site.",
+  preview_changed: "The site changed since you approved. Ask the AI to try again.",
+  entry_approval_invalid: "The site changed since you approved. Ask the AI to try again.",
+  integration_entry_changed: "The site changed since you approved. Ask the AI to try again.",
+  created_post_touched: "Someone edited the draft, so it was kept.",
+  conflict: "Someone edited the draft, so it was kept.",
+  created_post_published: "The draft has been published since, so it was kept.",
+  request_in_flight: "Another change is already running on this site. Try again in a moment.",
+  target_in_flight: "Another change is already running on this site. Try again in a moment.",
+};
+
+/** Plain advice for a refusal or failure code, or null when the code is not one an operator can act on. */
+export function refusalAdvice(code: string | null | undefined): string | null {
+  if (!code) return null;
+  return Object.prototype.hasOwnProperty.call(REFUSAL_ADVICE, code) ? REFUSAL_ADVICE[code]! : null;
+}
+
 export function clockTime(iso: string | null | undefined): string {
   if (!iso) return "an unrecorded time";
   const d = new Date(iso);
@@ -197,15 +221,16 @@ export function abilityStatus(r: AbilityRequest): AbilityStatus {
           text: `The site's ${noun} did not match what you approved, so WPMgr cannot vouch for it. Check the site's drafts.`,
         };
       }
+      const advice = refusalAdvice(r.outcome_code);
       if (r.outcome === "refused") {
         return {
           kind: "failed",
-          text: `The site refused to create the draft ${noun}. Nothing was created.`,
+          text: `The site refused to create the draft ${noun}. Nothing was created.${advice ? ` ${advice}` : ""}`,
         };
       }
       return {
         kind: "failed",
-        text: `The draft ${noun} was not created because something went wrong on the site.`,
+        text: `The draft ${noun} was not created because something went wrong on the site.${advice ? ` ${advice}` : ""}`,
       };
     }
     case "not_sent":

@@ -100,3 +100,39 @@ describe("AbilityRequestCard on a failed row with a post id", () => {
     expect(screen.queryByRole("link")).toBeNull();
   });
 });
+
+describe("abilityStatus plain-English refusals", () => {
+  const refused = (code: string) => abilityStatus(mk({ outcome: "refused", outcome_code: code })).text;
+  const generic = "The site refused to create the draft page. Nothing was created.";
+  const groups: Array<[string[], string]> = [
+    [
+      ["content_editing_not_enabled", "principal_capabilities_drifted", "principal_missing"],
+      "Turn AI page creation on again from this tab.",
+    ],
+    [["editor_unavailable"], "This site's editor isn't available."],
+    [["agent_outdated"], "Update the WPMgr plugin on this site."],
+    [["preview_changed", "entry_approval_invalid"], "The site changed since you approved. Ask the AI to try again."],
+    [["created_post_touched", "conflict"], "Someone edited the draft, so it was kept."],
+  ];
+  for (const [codes, advice] of groups) {
+    for (const code of codes) {
+      it(`${code} shows its advice and never the code`, () => {
+        const t = refused(code);
+        expect(t).toContain(advice);
+        expect(t).not.toContain(code);
+        expect(t).toContain("Nothing was created");
+      });
+    }
+  }
+  it("a failed row with a refusal code also gets the advice", () => {
+    expect(abilityStatus(mk({ outcome: "failed", outcome_code: "editor_unavailable" })).text).toContain(
+      "editor isn't available",
+    );
+  });
+  it("an unknown code falls back to the generic text without printing it", () => {
+    expect(refused("something_new")).toBe(generic);
+  });
+  it("a prototype key is not a code", () => {
+    expect(refused("constructor")).toBe(generic);
+  });
+});
