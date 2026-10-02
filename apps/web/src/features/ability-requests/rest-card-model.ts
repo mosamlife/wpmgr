@@ -62,7 +62,13 @@ export function restCardTitle(f: RestCardFacts | null, siteLabel: string): strin
 function undoStatusText(r: AbilityRequest): AbilityStatus | null {
   switch (r.undo_state) {
     case "undone":
-      return { kind: "undone", text: "Put back the way it was." };
+      return {
+        kind: "undone",
+        text:
+          r.restored === false
+            ? "Title and excerpt put back. Other changes the site made remain; check the page in WordPress."
+            : "Put back the way it was.",
+      };
     case "in_progress":
       return { kind: "running", text: "WPMgr is putting the old text back." };
     case "refused_conflict":
@@ -102,10 +108,16 @@ export function restWriteStatus(r: AbilityRequest): AbilityStatus {
       const undone = undoStatusText(r);
       if (undone) return undone;
       const advice = refusalAdvice(r.outcome_code);
-      const lead =
+      let lead =
         r.outcome === "refused"
           ? "The site refused the change. Nothing was changed."
           : "The change was not made because something went wrong on the site.";
+      if (r.restored === false) {
+        lead =
+          "WPMgr put the title and excerpt back, but the site also changed other parts of this page during the save. Check the page in WordPress.";
+      } else if (r.restored === true) {
+        lead = "The change didn't go through; nothing was left changed.";
+      }
       return { kind: "failed", text: advice ? `${lead} ${advice}` : lead };
     }
     case "not_sent":

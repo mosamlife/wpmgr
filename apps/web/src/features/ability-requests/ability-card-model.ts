@@ -132,6 +132,7 @@ const REFUSAL_ADVICE: Record<string, string> = {
   rest_gateway_timeout: "The site did not answer in time. Try again later.",
   rest_non_json: "The site's reply could not be read.",
   rest_unexpected: "The site's reply was not what WPMgr expected.",
+  post_scheduled: "This page is scheduled; change its title in WordPress.",
 };
 
 /** Plain advice for a refusal or failure code, or null when the code is not one an operator can act on. */
