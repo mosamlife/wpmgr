@@ -2228,9 +2228,17 @@ func (s *AbilityRequest) encodeFields(e *jx.Encoder) {
 			s.UndoAvailableUntil.Encode(e, json.EncodeDateTime)
 		}
 	}
+	{
+		e.FieldStart("undo_offered")
+		e.Bool(s.UndoOffered)
+	}
+	{
+		e.FieldStart("resolve_gave_up")
+		e.Bool(s.ResolveGaveUp)
+	}
 }
 
-var jsonFieldsNameOfAbilityRequest = [27]string{
+var jsonFieldsNameOfAbilityRequest = [29]string{
 	0:  "id",
 	1:  "site_id",
 	2:  "ability_name",
@@ -2258,6 +2266,8 @@ var jsonFieldsNameOfAbilityRequest = [27]string{
 	24: "trashed",
 	25: "undo_state",
 	26: "undo_available_until",
+	27: "undo_offered",
+	28: "resolve_gave_up",
 }
 
 // Decode decodes AbilityRequest from json.
@@ -2563,6 +2573,30 @@ func (s *AbilityRequest) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"undo_available_until\"")
 			}
+		case "undo_offered":
+			requiredBitSet[3] |= 1 << 3
+			if err := func() error {
+				v, err := d.Bool()
+				s.UndoOffered = bool(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"undo_offered\"")
+			}
+		case "resolve_gave_up":
+			requiredBitSet[3] |= 1 << 4
+			if err := func() error {
+				v, err := d.Bool()
+				s.ResolveGaveUp = bool(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"resolve_gave_up\"")
+			}
 		default:
 			return d.Skip()
 		}
@@ -2576,7 +2610,7 @@ func (s *AbilityRequest) Decode(d *jx.Decoder) error {
 		0b10001111,
 		0b01011111,
 		0b00000111,
-		0b00000000,
+		0b00011000,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.
@@ -2896,6 +2930,163 @@ func (s *AbilityRequestList) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *AbilityRequestList) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *AbilityRequestOrgList) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *AbilityRequestOrgList) encodeFields(e *jx.Encoder) {
+	{
+		e.FieldStart("requests")
+		e.ArrStart()
+		for _, elem := range s.Requests {
+			elem.Encode(e)
+		}
+		e.ArrEnd()
+	}
+	{
+		e.FieldStart("pending_count")
+		e.Int64(s.PendingCount)
+	}
+	{
+		e.FieldStart("limit")
+		e.Int32(s.Limit)
+	}
+	{
+		e.FieldStart("offset")
+		e.Int32(s.Offset)
+	}
+}
+
+var jsonFieldsNameOfAbilityRequestOrgList = [4]string{
+	0: "requests",
+	1: "pending_count",
+	2: "limit",
+	3: "offset",
+}
+
+// Decode decodes AbilityRequestOrgList from json.
+func (s *AbilityRequestOrgList) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AbilityRequestOrgList to nil")
+	}
+	var requiredBitSet [1]uint8
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "requests":
+			requiredBitSet[0] |= 1 << 0
+			if err := func() error {
+				s.Requests = make([]AbilityRequest, 0)
+				if err := d.Arr(func(d *jx.Decoder) error {
+					var elem AbilityRequest
+					if err := elem.Decode(d); err != nil {
+						return err
+					}
+					s.Requests = append(s.Requests, elem)
+					return nil
+				}); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"requests\"")
+			}
+		case "pending_count":
+			requiredBitSet[0] |= 1 << 1
+			if err := func() error {
+				v, err := d.Int64()
+				s.PendingCount = int64(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"pending_count\"")
+			}
+		case "limit":
+			requiredBitSet[0] |= 1 << 2
+			if err := func() error {
+				v, err := d.Int32()
+				s.Limit = int32(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"limit\"")
+			}
+		case "offset":
+			requiredBitSet[0] |= 1 << 3
+			if err := func() error {
+				v, err := d.Int32()
+				s.Offset = int32(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"offset\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode AbilityRequestOrgList")
+	}
+	// Validate required fields.
+	var failures []validate.FieldError
+	for i, mask := range [1]uint8{
+		0b00001111,
+	} {
+		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
+			// Mask only required fields and check equality to mask using XOR.
+			//
+			// If XOR result is not zero, result is not equal to expected, so some fields are missed.
+			// Bits of fields which would be set are actually bits of missed fields.
+			missed := bits.OnesCount8(result)
+			for bitN := 0; bitN < missed; bitN++ {
+				bitIdx := bits.TrailingZeros8(result)
+				fieldIdx := i*8 + bitIdx
+				var name string
+				if fieldIdx < len(jsonFieldsNameOfAbilityRequestOrgList) {
+					name = jsonFieldsNameOfAbilityRequestOrgList[fieldIdx]
+				} else {
+					name = strconv.Itoa(fieldIdx)
+				}
+				failures = append(failures, validate.FieldError{
+					Name:  name,
+					Error: validate.ErrFieldRequired,
+				})
+				// Reset bit.
+				result &^= 1 << bitIdx
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *AbilityRequestOrgList) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AbilityRequestOrgList) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -75636,6 +75827,82 @@ func (s *InviteRequest) UnmarshalJSON(data []byte) error {
 	return s.Decode(d)
 }
 
+// Encode encodes ListAbilityRequestsForbidden as json.
+func (s *ListAbilityRequestsForbidden) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes ListAbilityRequestsForbidden from json.
+func (s *ListAbilityRequestsForbidden) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode ListAbilityRequestsForbidden to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = ListAbilityRequestsForbidden(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *ListAbilityRequestsForbidden) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *ListAbilityRequestsForbidden) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes ListAbilityRequestsUnprocessableEntity as json.
+func (s *ListAbilityRequestsUnprocessableEntity) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes ListAbilityRequestsUnprocessableEntity from json.
+func (s *ListAbilityRequestsUnprocessableEntity) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode ListAbilityRequestsUnprocessableEntity to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = ListAbilityRequestsUnprocessableEntity(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *ListAbilityRequestsUnprocessableEntity) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *ListAbilityRequestsUnprocessableEntity) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
 // Encode encodes ListAdminAbilityCatalogueForbidden as json.
 func (s *ListAdminAbilityCatalogueForbidden) Encode(e *jx.Encoder) {
 	unwrapped := (*Error)(s)
@@ -136334,6 +136601,44 @@ func (s *UndoAbilityRequestReq) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *UndoAbilityRequestReq) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes UndoAbilityRequestServiceUnavailable as json.
+func (s *UndoAbilityRequestServiceUnavailable) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes UndoAbilityRequestServiceUnavailable from json.
+func (s *UndoAbilityRequestServiceUnavailable) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode UndoAbilityRequestServiceUnavailable to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = UndoAbilityRequestServiceUnavailable(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *UndoAbilityRequestServiceUnavailable) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *UndoAbilityRequestServiceUnavailable) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }

@@ -228,6 +228,7 @@ const (
 	IngestRumBeaconOperation                   OperationName = "IngestRumBeacon"
 	InviteMemberOperation                      OperationName = "InviteMember"
 	IsolateUnusedMediaOperation                OperationName = "IsolateUnusedMedia"
+	ListAbilityRequestsOperation               OperationName = "ListAbilityRequests"
 	ListAdminAbilityCatalogueOperation         OperationName = "ListAdminAbilityCatalogue"
 	ListAdminAccountsOperation                 OperationName = "ListAdminAccounts"
 	ListAdminContentIntegrationsOperation      OperationName = "ListAdminContentIntegrations"

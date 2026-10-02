@@ -9340,6 +9340,46 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /api/v1/ai/ability-requests:
+    get:
+      operationId: listAbilityRequests
+      summary: List AI site-change requests across the organisation
+      description: |
+        This organisation's AI site-change requests the caller can see,
+        newest first, optionally narrowed to one `state`, with the number
+        still waiting for a decision (the badge). A site collaborator sees
+        and counts only requests on their own sites. Requires
+        `site.content.edit`. `presented_digest` is returned only to a
+        signed-in person.
+      tags: [ai-requests]
+      parameters:
+        - name: state
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [pending, approved, declined, withdrawn, expired, dispatched, outcome_unknown, done, failed, not_sent]
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: A page of requests
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AbilityRequestOrgList"
+        "403":
+          description: Missing site.content.edit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: Unknown state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /api/v1/sites/{siteId}/ai/ability-requests:
     get:
       operationId: listSiteAbilityRequests
@@ -9483,14 +9523,19 @@ paths:
   /api/v1/sites/{siteId}/ai/ability-requests/{requestId}/undo:
     post:
       operationId: undoAbilityRequest
-      summary: Undo one completed AI site change
+      summary: Undo one AI site change
       description: |
-        Undoes a done request inside its undo window, once. For a created
-        page this moves the draft to the trash, only while it is unchanged
-        and still a draft. The site takes the page from its own record of
-        this request; nothing in the call names it. `undo_state` in the
-        answer is the result: undone, refused_conflict, refused_published or
-        failed.
+        Undoes a done request inside its undo window, or removes the draft a
+        failed or given-up page creation left on the site. Offered exactly
+        when the request's `undo_offered` is true; the server decides which
+        undo runs from the request's state. For a created page this moves
+        the draft to the trash, only while it is unchanged and still a
+        draft. The site takes the page from its own record of this request;
+        nothing in the call names it. `undo_state` in the answer is the
+        result: undone, refused_conflict, refused_published or failed. When
+        the site did not settle the undo (unreachable, or busy with this
+        request) the answer is 503 `ability_request_undo_retry` and the undo
+        is offered again.
       tags: [ai-requests]
       parameters:
         - $ref: "#/components/parameters/SiteId"
@@ -9525,6 +9570,12 @@ paths:
                 $ref: "#/components/schemas/Error"
         "409":
           description: The change can no longer be undone from WPMgr
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The site did not settle the undo; it is offered again
           content:
             application/json:
               schema:
@@ -19954,6 +20005,20 @@ components:
         presented_digest:
           type: string
           description: The digest the queue returned for this request.
+    AbilityRequestOrgList:
+      type: object
+      required: [requests, pending_count, limit, offset]
+      properties:
+        requests:
+          type: array
+          items:
+            $ref: "#/components/schemas/AbilityRequest"
+        pending_count:
+          type: integer
+          format: int64
+          description: Requests still waiting for a decision (the badge).
+        limit: { type: integer, format: int32 }
+        offset: { type: integer, format: int32 }
     AbilityRequestList:
       type: object
       required: [requests, limit, offset]
@@ -19986,6 +20051,8 @@ components:
         - state
         - created_at
         - expires_at
+        - undo_offered
+        - resolve_gave_up
       properties:
         id: { type: string, format: uuid }
         site_id: { type: string, format: uuid }
@@ -20016,6 +20083,19 @@ components:
         trashed: { type: boolean, nullable: true }
         undo_state: { type: string, nullable: true }
         undo_available_until: { type: string, format: date-time, nullable: true }
+        undo_offered:
+          type: boolean
+          description: |
+            Whether `POST .../undo` would start an undo now: a done request
+            inside its undo window, or the draft a failed or given-up page
+            creation left on the site. Show the undo action exactly when
+            this is true.
+        resolve_gave_up:
+          type: boolean
+          description: |
+            True once WPMgr stopped checking the site for the outcome of a
+            write whose reply was lost. The result is final: the person
+            should look at the site's drafts.
     ContentEditingState:
       type: object
       required: [site_id, enabled]

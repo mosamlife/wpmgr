@@ -761,6 +761,10 @@ type InviteMemberRes interface {
 	inviteMemberRes()
 }
 
+type ListAbilityRequestsRes interface {
+	listAbilityRequestsRes()
+}
+
 type ListAdminAbilityCatalogueRes interface {
 	listAdminAbilityCatalogueRes()
 }

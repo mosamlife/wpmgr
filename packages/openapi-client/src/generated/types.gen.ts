@@ -4524,6 +4524,16 @@ export type AbilityRequestApproveBody = {
   presented_digest: string;
 };
 
+export type AbilityRequestOrgList = {
+  requests: Array<AbilityRequest>;
+  /**
+   * Requests still waiting for a decision (the badge).
+   */
+  pending_count: number;
+  limit: number;
+  offset: number;
+};
+
 export type AbilityRequestList = {
   requests: Array<AbilityRequest>;
   limit: number;
@@ -4575,6 +4585,21 @@ export type AbilityRequest = {
   trashed?: boolean;
   undo_state?: string;
   undo_available_until?: string;
+  /**
+   * Whether `POST .../undo` would start an undo now: a done request
+   * inside its undo window, or the draft a failed or given-up page
+   * creation left on the site. Show the undo action exactly when
+   * this is true.
+   *
+   */
+  undo_offered: boolean;
+  /**
+   * True once WPMgr stopped checking the site for the outcome of a
+   * write whose reply was lost. The result is final: the person
+   * should look at the site's drafts.
+   *
+   */
+  resolve_gave_up: boolean;
 };
 
 export type ContentEditingState = {
@@ -18008,6 +18033,51 @@ export type DeclineAssistantRequestResponses = {
 export type DeclineAssistantRequestResponse =
   DeclineAssistantRequestResponses[keyof DeclineAssistantRequestResponses];
 
+export type ListAbilityRequestsData = {
+  body?: never;
+  path?: never;
+  query?: {
+    state?:
+      | "pending"
+      | "approved"
+      | "declined"
+      | "withdrawn"
+      | "expired"
+      | "dispatched"
+      | "outcome_unknown"
+      | "done"
+      | "failed"
+      | "not_sent";
+    limit?: number;
+    offset?: number;
+  };
+  url: "/api/v1/ai/ability-requests";
+};
+
+export type ListAbilityRequestsErrors = {
+  /**
+   * Missing site.content.edit
+   */
+  403: Error;
+  /**
+   * Unknown state
+   */
+  422: Error;
+};
+
+export type ListAbilityRequestsError =
+  ListAbilityRequestsErrors[keyof ListAbilityRequestsErrors];
+
+export type ListAbilityRequestsResponses = {
+  /**
+   * A page of requests
+   */
+  200: AbilityRequestOrgList;
+};
+
+export type ListAbilityRequestsResponse =
+  ListAbilityRequestsResponses[keyof ListAbilityRequestsResponses];
+
 export type ListSiteAbilityRequestsData = {
   body?: never;
   path: {
@@ -18159,6 +18229,10 @@ export type UndoAbilityRequestErrors = {
    * The body was not application/json
    */
   415: Error;
+  /**
+   * The site did not settle the undo; it is offered again
+   */
+  503: Error;
 };
 
 export type UndoAbilityRequestError =
