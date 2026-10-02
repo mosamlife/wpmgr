@@ -1,0 +1,177 @@
+package agentcmd
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"regexp"
+)
+
+// MinAgentVersionForVendorReads is the first agent release that runs a
+// reviewed vendor or core READ entry (engine slice E3): the C1 checks, the
+// interception guards, the side-effect recorder and the pinned output shape.
+// An older agent refuses such an entry; the run tool refuses before asking.
+const MinAgentVersionForVendorReads = "0.61.158"
+
+// Vendor read reply limits. The agent caps each list at 50 names; a reply
+// over these bounds breaks the contract.
+const (
+	vendorMaxNames       = 64
+	vendorMaxInvoked     = 32
+	vendorMaxViolations  = 32
+	vendorErrorCodeBytes = 64
+)
+
+var (
+	vendorOwnerDirRe   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+	vendorVersionRe    = regexp.MustCompile(`^[0-9A-Za-z._+~-]{1,64}$`)
+	vendorAbilityRe    = regexp.MustCompile(`^[a-z0-9-]{1,64}/[a-z0-9-]{1,64}$`)
+	vendorLabelRe      = regexp.MustCompile(`^[a-z0-9_]{1,64}$`)
+	vendorOwnerKinds   = map[string]struct{}{"core": {}, "plugin": {}, "theme": {}, "mu-plugin": {}}
+	errVendorReadShape = errors.New("ability_run: vendor read reply broke the contract")
+)
+
+// AbilityRunOwner is the owner the agent resolved for a vendor or core read.
+// Kind is from a closed set; Dir and Version are SITE TEXT (pattern-checked,
+// still untrusted).
+type AbilityRunOwner struct {
+	Kind    string `json:"kind"`
+	Dir     string `json:"dir"`
+	Version string `json:"version"`
+}
+
+// AbilityRunSideEffects is read_side_effect_detected's side_effects member.
+// Options and HTTPHosts are SITE TEXT: names a plugin chose. Blocked holds the
+// agent's own fixed labels.
+type AbilityRunSideEffects struct {
+	Options   []string `json:"options"`
+	Posts     int64    `json:"posts"`
+	Roles     int64    `json:"roles"`
+	Users     int64    `json:"users"`
+	HTTPHosts []string `json:"http_hosts"`
+	Blocked   []string `json:"blocked"`
+}
+
+// VendorRead is a decoded, validated vendor or core read success.
+type VendorRead struct {
+	Ability          string
+	EntrySHA256      string
+	Owner            AbilityRunOwner
+	AbilitiesInvoked []string
+	Output           json.RawMessage
+}
+
+// vendorReadWire is the exact success shape; nothing else may appear.
+type vendorReadWire struct {
+	OK               *bool            `json:"ok"`
+	Outcome          string           `json:"outcome"`
+	Mode             string           `json:"mode"`
+	Ability          string           `json:"ability"`
+	EntrySHA256      string           `json:"entry_sha256"`
+	Owner            *AbilityRunOwner `json:"owner"`
+	AbilitiesInvoked []string         `json:"abilities_invoked"`
+	Output           json.RawMessage  `json:"output"`
+}
+
+// DecodeVendorRead strictly decodes a vendor/core read success from the raw
+// reply bytes: unknown members, a missing member, a mode or outcome other
+// than read/completed, an ability or entry hash other than the one sent, an
+// owner kind outside the closed set, or a list over its bound all fail.
+func DecodeVendorRead(raw []byte, ability, entrySHA256 string) (VendorRead, error) {
+	var w vendorReadWire
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&w); err != nil {
+		return VendorRead{}, fmt.Errorf("%w: %v", errVendorReadShape, err)
+	}
+	if dec.More() {
+		return VendorRead{}, fmt.Errorf("%w: trailing data", errVendorReadShape)
+	}
+	switch {
+	case w.OK == nil || !*w.OK:
+		return VendorRead{}, fmt.Errorf("%w: ok", errVendorReadShape)
+	case w.Outcome != "completed" || w.Mode != AbilityRunModeRead:
+		return VendorRead{}, fmt.Errorf("%w: outcome or mode", errVendorReadShape)
+	case w.Ability != ability:
+		return VendorRead{}, fmt.Errorf("%w: ability", errVendorReadShape)
+	case w.EntrySHA256 != entrySHA256:
+		return VendorRead{}, fmt.Errorf("%w: entry_sha256", errVendorReadShape)
+	case w.Owner == nil:
+		return VendorRead{}, fmt.Errorf("%w: owner", errVendorReadShape)
+	case w.AbilitiesInvoked == nil || len(w.AbilitiesInvoked) > vendorMaxInvoked:
+		return VendorRead{}, fmt.Errorf("%w: abilities_invoked", errVendorReadShape)
+	case len(bytes.TrimSpace(w.Output)) == 0:
+		return VendorRead{}, fmt.Errorf("%w: output", errVendorReadShape)
+	}
+	if _, ok := vendorOwnerKinds[w.Owner.Kind]; !ok {
+		return VendorRead{}, fmt.Errorf("%w: owner kind", errVendorReadShape)
+	}
+	if w.Owner.Kind == "core" {
+		if w.Owner.Dir != "" {
+			return VendorRead{}, fmt.Errorf("%w: core owner dir", errVendorReadShape)
+		}
+	} else if !vendorOwnerDirRe.MatchString(w.Owner.Dir) {
+		return VendorRead{}, fmt.Errorf("%w: owner dir", errVendorReadShape)
+	}
+	if !vendorVersionRe.MatchString(w.Owner.Version) {
+		return VendorRead{}, fmt.Errorf("%w: owner version", errVendorReadShape)
+	}
+	for _, n := range w.AbilitiesInvoked {
+		if !vendorAbilityRe.MatchString(n) {
+			return VendorRead{}, fmt.Errorf("%w: abilities_invoked name", errVendorReadShape)
+		}
+	}
+	return VendorRead{
+		Ability: w.Ability, EntrySHA256: w.EntrySHA256, Owner: *w.Owner,
+		AbilitiesInvoked: w.AbilitiesInvoked, Output: w.Output,
+	}, nil
+}
+
+// decodeSideEffects strictly decodes side_effects. Nil when absent or
+// malformed: the refusal code stands on its own, and a malformed detail is
+// not repeated.
+func decodeSideEffects(raw json.RawMessage) *AbilityRunSideEffects {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil
+	}
+	var se AbilityRunSideEffects
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if dec.Decode(&se) != nil {
+		return nil
+	}
+	if se.Options == nil || se.HTTPHosts == nil || se.Blocked == nil ||
+		len(se.Options) > vendorMaxNames || len(se.HTTPHosts) > vendorMaxNames || len(se.Blocked) > vendorMaxNames ||
+		se.Posts < 0 || se.Roles < 0 || se.Users < 0 {
+		return nil
+	}
+	// Blocked is the agent's own fixed labels; anything else is replaced.
+	for i, b := range se.Blocked {
+		if !vendorLabelRe.MatchString(b) {
+			se.Blocked[i] = "unknown"
+		}
+	}
+	return &se
+}
+
+// decodeViolations decodes violations[]: the agent's fixed guard labels.
+// A label outside the shape becomes "unknown"; past the bound the list is cut.
+func decodeViolations(raw json.RawMessage) []string {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil
+	}
+	var vs []string
+	if json.Unmarshal(raw, &vs) != nil {
+		return []string{"unknown"}
+	}
+	if len(vs) > vendorMaxViolations {
+		vs = vs[:vendorMaxViolations]
+	}
+	for i, v := range vs {
+		if !vendorLabelRe.MatchString(v) {
+			vs[i] = "unknown"
+		}
+	}
+	return vs
+}

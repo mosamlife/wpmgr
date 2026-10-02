@@ -216,6 +216,16 @@ type AbilityRunResponse struct {
 	Detail     string          `json:"detail,omitempty"`
 	Retryable  bool            `json:"retryable,omitempty"`
 	Violations json.RawMessage `json:"violations,omitempty"`
+
+	// vendor and core reads (E3): the resolved owner and the abilities the
+	// call invoked on success; side_effects and error_code on a refusal.
+	Owner            *AbilityRunOwner `json:"owner,omitempty"`
+	AbilitiesInvoked []string         `json:"abilities_invoked,omitempty"`
+	SideEffects      json.RawMessage  `json:"side_effects,omitempty"`
+	ErrorCode        string           `json:"error_code,omitempty"`
+
+	// Raw is the exact reply body, for the strict vendor read decode.
+	Raw json.RawMessage `json:"-"`
 }
 
 // AbilityRunRefusal is an ok=false reply. Code is from the closed set below
@@ -228,6 +238,15 @@ type AbilityRunRefusal struct {
 	// it created and whether the automatic undo trashed it.
 	PostID  int64
 	Trashed bool
+	// Violations are the agent's fixed guard labels (ability_intercepted,
+	// nested_ability_refused, read_side_effect_detected).
+	Violations []string
+	// SideEffects is read_side_effect_detected's record. Its option names and
+	// hosts are SITE TEXT.
+	SideEffects *AbilityRunSideEffects
+	// ErrorCode is ability_failed's code from the ability itself: SITE TEXT,
+	// cleaned and capped.
+	ErrorCode string
 }
 
 func (e *AbilityRunRefusal) Error() string {
@@ -284,6 +303,23 @@ var AbilityRunRefusalCodes = map[string]struct{}{
 	"params_too_large":               {},
 	"post_not_readable":              {},
 	"token_params_mismatch":          {},
+	// Vendor and core reads (E3, agent 0.61.158).
+	"vendor_writes_not_in_this_version": {},
+	"permission_mode_not_assertable":    {},
+	"wp_too_old_for_vendor_reads":       {},
+	"ability_not_on_site":               {},
+	"ability_class_overridden":          {},
+	"ability_owner_split":               {},
+	"ability_owner_mismatch":            {},
+	"builder_version_unverified":        {},
+	"ability_schema_changed":            {},
+	"ability_input_invalid":             {},
+	"read_side_effect_detected":         {},
+	"principal_switched":                {},
+	"nested_ability_refused":            {},
+	"ability_permission_denied":         {},
+	"ability_failed":                    {},
+	"ability_output_invalid":            {},
 }
 
 var abilityRunCodeRe = regexp.MustCompile(`^[a-z0-9_]{1,40}$`)
@@ -316,6 +352,7 @@ func (c *Client) AbilityRun(ctx context.Context, siteID uuid.UUID, siteURL strin
 	if err := json.Unmarshal(data, &out); err != nil {
 		return AbilityRunResponse{}, fmt.Errorf("decode ability_run response: %w", err)
 	}
+	out.Raw = append(json.RawMessage(nil), data...)
 	if !out.OK {
 		return out, abilityRunRefusalOf(out)
 	}
@@ -334,10 +371,13 @@ func abilityRunRefusalOf(out AbilityRunResponse) *AbilityRunRefusal {
 		code = "unknown"
 	}
 	return &AbilityRunRefusal{
-		Code:      code,
-		Detail:    humantext.CapBytes(humantext.Clean(out.Detail), 200),
-		Retryable: out.Retryable,
-		PostID:    out.PostID,
-		Trashed:   out.Trashed,
+		Code:        code,
+		Detail:      humantext.CapBytes(humantext.Clean(out.Detail), 200),
+		Retryable:   out.Retryable,
+		PostID:      out.PostID,
+		Trashed:     out.Trashed,
+		Violations:  decodeViolations(out.Violations),
+		SideEffects: decodeSideEffects(out.SideEffects),
+		ErrorCode:   humantext.CapBytes(humantext.Clean(out.ErrorCode), vendorErrorCodeBytes),
 	}
 }

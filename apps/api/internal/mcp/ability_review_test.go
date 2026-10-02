@@ -22,7 +22,7 @@ func TestAbilityOutput_UnexpectedKeysAreDropped(t *testing.T) {
 			`":"z","from_the_site":{"label":"L","` + planted + `":"w"}}]}`,
 	}
 	for name, raw := range cases {
-		out, truncated := fenceAbilityOutput(name, json.RawMessage(raw), abilityRunDefaultOutputBytes)
+		out, truncated := fenceAbilityOutput(name, nil, json.RawMessage(raw), abilityRunDefaultOutputBytes)
 		if truncated {
 			t.Fatalf("%s: truncated", name)
 		}
@@ -34,7 +34,7 @@ func TestAbilityOutput_UnexpectedKeysAreDropped(t *testing.T) {
 		}
 	}
 	// An ability with no known shape returns no output at all.
-	if out, _ := fenceAbilityOutput("vendor/x", json.RawMessage(`{"a":"b"}`), 1024); string(out) != "null" {
+	if out, _ := fenceAbilityOutput("vendor/x", nil, json.RawMessage(`{"a":"b"}`), 1024); string(out) != "null" {
 		t.Fatalf("unshaped output = %s", out)
 	}
 }

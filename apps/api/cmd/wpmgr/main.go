@@ -1823,7 +1823,13 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		if ocCmdClient != nil {
 			mcpAbilityAgent = ocCmdClient
 		}
-		if err := mcpSvc.EnableAbilityTools(mcpRepo, mcpAbilityAgent, abilities.SendableEntry, cfg.Auth.SessionSecret); err != nil {
+		// The discover cursor's dedicated secret: no other key's material,
+		// and the tools refuse to start without it.
+		cursorKey := os.Getenv("WPMGR_MCP_CURSOR_KEY")
+		if len(strings.TrimSpace(cursorKey)) < 32 {
+			return fmt.Errorf("WPMGR_MCP_ABILITY_TOOLS=on needs WPMGR_MCP_CURSOR_KEY (at least 32 characters)")
+		}
+		if err := mcpSvc.EnableAbilityTools(mcpRepo, mcpAbilityAgent, abilities.SendableEntry, cursorKey); err != nil {
 			return fmt.Errorf("enable MCP ability tools: %w", err)
 		}
 		// The write branch of site_ability_run (E2). Writes also need the
