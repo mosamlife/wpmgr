@@ -360,8 +360,8 @@ final class RestCall
                 }
             }
             $checked = self::typed($given, $route[$specField], $part);
-            if (isset($checked['refusal'])) {
-                return $checked;
+            if (!isset($checked['values'])) {
+                return ['refusal' => $checked['refusal'] ?? ['code' => 'route_param_invalid', 'detail' => 'input.' . $part . ' is not valid']];
             }
             $parts[$part] = $checked['values'];
         }

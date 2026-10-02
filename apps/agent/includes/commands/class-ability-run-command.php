@@ -540,8 +540,8 @@ final class AbilityRunCommand implements CommandInterface
         clean_post_cache($postId);
         $post = get_post($postId);
         $type = (string) ($route['target']['post_type'] ?? '');
-        if (!is_object($post) || (string) $post->post_type !== $type
-            || in_array((string) $post->post_status, ['trash', 'auto-draft', 'inherit'], true)
+        if (!is_object($post) || self::pf($post, 'post_type') !== $type
+            || in_array(self::pf($post, 'post_status'), ['trash', 'auto-draft', 'inherit'], true)
             || !current_user_can('edit_post', $postId)) {
             return ['refusal' => $this->fail('post_not_editable', 'no ' . $type . ' with that id that the service user may edit')];
         }
@@ -622,12 +622,12 @@ final class AbilityRunCommand implements CommandInterface
         foreach ($stored['stored'] as $key => $bytes) {
             $changes[] = [
                 'key'    => $key,
-                'before' => (string) $post->{RestCall::POST_FIELDS[$key]},
+                'before' => self::pf($post, RestCall::POST_FIELDS[$key]),
                 'after'  => (string) $call['body'][$key],
                 'stored' => $bytes,
             ];
         }
-        $status = (string) $post->post_status;
+        $status = self::pf($post, 'post_status');
 
         return [
             'ok'               => true,
@@ -641,11 +641,11 @@ final class AbilityRunCommand implements CommandInterface
             'precheck_digest'  => RestCall::precheckDigest($entrySha, $routeSha, $inputSha, $baseFp),
             'target_facts'     => [
                 'id'             => $postId,
-                'post_type'      => (string) $post->post_type,
+                'post_type'      => self::pf($post, 'post_type'),
                 'status'         => $status,
                 'live'           => $status === 'publish',
-                'title_before'   => (string) $post->post_title,
-                'excerpt_before' => (string) $post->post_excerpt,
+                'title_before'   => self::pf($post, 'post_title'),
+                'excerpt_before' => self::pf($post, 'post_excerpt'),
             ],
             'changes'          => $changes,
             'undo_exact'       => $this->restUndoExact($post),
@@ -661,8 +661,8 @@ final class AbilityRunCommand implements CommandInterface
     private function restUndoExact(object $post): bool
     {
         foreach (RestCall::POST_FIELDS as $field) {
-            $prior = (string) $post->{$field};
-            if ($this->restSimulate($field, $prior, (int) $post->ID) !== $prior) {
+            $prior = self::pf($post, $field);
+            if ($this->restSimulate($field, $prior, (int) self::pf($post, 'ID')) !== $prior) {
                 return false;
             }
         }
@@ -717,7 +717,7 @@ final class AbilityRunCommand implements CommandInterface
         }
 
         // 4. The snapshot, before any effect, read back before the effect.
-        $prior  = ['post_title' => (string) $post->post_title, 'post_excerpt' => (string) $post->post_excerpt];
+        $prior  = ['post_title' => self::pf($post, 'post_title'), 'post_excerpt' => self::pf($post, 'post_excerpt')];
         $ledger = [
             'request_id'      => $requestId,
             'ability'         => OwnAbilities::NAME_REST_WRITE,
@@ -797,9 +797,9 @@ final class AbilityRunCommand implements CommandInterface
             'request_id' => $requestId,
             'route_id'   => $route['route_id'],
             'post_id'    => $postId,
-            'post_type'  => (string) $after->post_type,
-            'status'     => (string) $after->post_status,
-            'live'       => (string) $after->post_status === 'publish',
+            'post_type'  => self::pf($after, 'post_type'),
+            'status'     => self::pf($after, 'post_status'),
+            'live'       => self::pf($after, 'post_status') === 'publish',
             'after_fp'   => $afterFp,
             'verify'     => ['fields_equal' => true, 'tripwires' => 'clean'],
             'output'     => $output,
@@ -831,12 +831,12 @@ final class AbilityRunCommand implements CommandInterface
         if (!is_object($after)) {
             return 'the post could not be read back';
         }
-        if ((string) $after->post_type !== (string) $before->post_type || (string) $after->post_status !== (string) $before->post_status) {
+        if (self::pf($after, 'post_type') !== self::pf($before, 'post_type') || self::pf($after, 'post_status') !== self::pf($before, 'post_status')) {
             return 'the post type or status changed';
         }
         foreach (RestCall::POST_FIELDS as $key => $field) {
-            $want = array_key_exists($key, $stored) ? $stored[$key] : (string) $before->{$field};
-            if ((string) $after->{$field} !== $want) {
+            $want = array_key_exists($key, $stored) ? $stored[$key] : self::pf($before, $field);
+            if (self::pf($after, $field) !== $want) {
                 return 'the stored ' . $key . ' differs from what was approved';
             }
         }
@@ -863,11 +863,11 @@ final class AbilityRunCommand implements CommandInterface
         if (!is_object($now)) {
             return ['restored' => false, 'exact' => false];
         }
-        $exact = (string) $now->post_title === $title && (string) $now->post_excerpt === $excerpt;
+        $exact = self::pf($now, 'post_title') === $title && self::pf($now, 'post_excerpt') === $excerpt;
 
         return [
-            'restored' => $exact || ((string) $now->post_title === $this->restSimulate('post_title', $title, $postId)
-                && (string) $now->post_excerpt === $this->restSimulate('post_excerpt', $excerpt, $postId)),
+            'restored' => $exact || (self::pf($now, 'post_title') === $this->restSimulate('post_title', $title, $postId)
+                && self::pf($now, 'post_excerpt') === $this->restSimulate('post_excerpt', $excerpt, $postId)),
             'exact'    => $exact,
         ];
     }
@@ -882,9 +882,9 @@ final class AbilityRunCommand implements CommandInterface
     private function postFieldsOutput(object $post): array
     {
         return [
-            'id'           => (int) $post->ID,
-            'modified_gmt' => (string) $post->post_modified_gmt,
-            'status'       => (string) $post->post_status,
+            'id'           => (int) self::pf($post, 'ID'),
+            'modified_gmt' => self::pf($post, 'post_modified_gmt'),
+            'status'       => self::pf($post, 'post_status'),
         ];
     }
 
@@ -1049,6 +1049,20 @@ final class AbilityRunCommand implements CommandInterface
     }
 
     // ---------------------------------------------------------------------
+    /**
+     * A post field as a string, read without assuming the object's class.
+     *
+     * @param object $post  Post.
+     * @param string $field Field.
+     * @return string
+     */
+    private static function pf(object $post, string $field): string
+    {
+        $v = get_object_vars($post)[$field] ?? '';
+
+        return is_scalar($v) ? (string) $v : '';
+    }
+
     // wpmgr/page-create
     // ---------------------------------------------------------------------
 
