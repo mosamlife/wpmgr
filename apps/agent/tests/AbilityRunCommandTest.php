@@ -693,11 +693,11 @@ final class AbilityRunCommandTest extends TestCase
 
     public function test_a_vendor_ability_stays_unrunnable_with_a_resolved_owner(): void
     {
-        $r = $this->callP($this->p('read', 'bricks/get-page-elements', [], '{}', [
+        $r = $this->callP($this->p('read', 'acmebuild/get-page-elements', [], '{}', [
             'source'        => 'vendor',
             'status'        => 'admitted',
             'owner_kind'    => 'plugin',
-            'owner_dir'     => 'bricks',
+            'owner_dir'     => 'acmebuild',
             'owner_version' => '2.4.1',
         ]));
 

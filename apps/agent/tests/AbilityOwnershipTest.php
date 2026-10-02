@@ -95,37 +95,37 @@ final class AbilityOwnershipTest extends TestCase
 
     public function test_both_callbacks_in_one_plugin_classify_as_that_plugin(): void
     {
-        $exec = $this->closureIn('content/plugins/bricks/includes/abilities.php');
-        $perm = $this->functionIn('content/plugins/bricks/bricks.php');
+        $exec = $this->closureIn('content/plugins/acmebuild/includes/abilities.php');
+        $perm = $this->functionIn('content/plugins/acmebuild/acmebuild.php');
 
         $c = AbilityOwnership::classify($this->ability($exec, $perm), $this->roots);
 
-        $this->assertSame(['owner_kind' => 'plugin', 'owner_dir' => 'bricks', 'owner_split' => false, 'ability_class_ok' => true], $c);
-        $this->assertNull(AbilityOwnership::refusal($this->ability($exec, $perm), 'plugin', 'bricks', $this->roots));
+        $this->assertSame(['owner_kind' => 'plugin', 'owner_dir' => 'acmebuild', 'owner_split' => false, 'ability_class_ok' => true], $c);
+        $this->assertNull(AbilityOwnership::refusal($this->ability($exec, $perm), 'plugin', 'acmebuild', $this->roots));
     }
 
     public function test_plugin_dir_with_the_owner_name_as_prefix_is_not_the_owner(): void
     {
-        $exec = $this->closureIn('content/plugins/bricks-evil/x.php');
-        $perm = $this->closureIn('content/plugins/bricks-evil/y.php');
+        $exec = $this->closureIn('content/plugins/acmebuild-evil/x.php');
+        $perm = $this->closureIn('content/plugins/acmebuild-evil/y.php');
         $a    = $this->ability($exec, $perm);
 
-        $this->assertSame('bricks-evil', AbilityOwnership::classify($a, $this->roots)['owner_dir']);
-        $this->assertSame(AbilityOwnership::REFUSE_MISMATCH, AbilityOwnership::refusal($a, 'plugin', 'bricks', $this->roots));
+        $this->assertSame('acmebuild-evil', AbilityOwnership::classify($a, $this->roots)['owner_dir']);
+        $this->assertSame(AbilityOwnership::REFUSE_MISMATCH, AbilityOwnership::refusal($a, 'plugin', 'acmebuild', $this->roots));
     }
 
     public function test_a_symlinked_plugin_dir_resolves_to_its_link_name_and_not_to_a_prefix_sibling(): void
     {
-        $this->closureIn('shared/bricks/x.php');
-        symlink($this->base . '/shared/bricks', $this->base . '/content/plugins/bricks');
-        $linked = $this->closureIn('content/plugins/bricks/y.php');
+        $this->closureIn('shared/acmebuild/x.php');
+        symlink($this->base . '/shared/acmebuild', $this->base . '/content/plugins/acmebuild');
+        $linked = $this->closureIn('content/plugins/acmebuild/y.php');
         $this->assertSame(
-            ['kind' => 'plugin', 'dir' => 'bricks'],
+            ['kind' => 'plugin', 'dir' => 'acmebuild'],
             AbilityOwnership::classifyPath(AbilityOwnership::sourceFile($linked), $this->roots)
         );
 
         // A sibling of the link target whose name starts with the target's.
-        $sibling = $this->closureIn('shared/bricks-evil/z.php');
+        $sibling = $this->closureIn('shared/acmebuild-evil/z.php');
         $this->assertSame(
             ['kind' => 'unknown', 'dir' => ''],
             AbilityOwnership::classifyPath(AbilityOwnership::sourceFile($sibling), $this->roots)
@@ -134,30 +134,30 @@ final class AbilityOwnershipTest extends TestCase
 
     public function test_permission_callback_from_another_plugin_is_owner_split(): void
     {
-        $exec = $this->closureIn('content/plugins/bricks/a.php');
+        $exec = $this->closureIn('content/plugins/acmebuild/a.php');
         $perm = $this->closureIn('content/plugins/evil/b.php');
         $a    = $this->ability($exec, $perm);
 
         $c = AbilityOwnership::classify($a, $this->roots);
         $this->assertTrue($c['owner_split']);
         $this->assertSame('unknown', $c['owner_kind']);
-        $this->assertSame(AbilityOwnership::REFUSE_SPLIT, AbilityOwnership::refusal($a, 'plugin', 'bricks', $this->roots));
+        $this->assertSame(AbilityOwnership::REFUSE_SPLIT, AbilityOwnership::refusal($a, 'plugin', 'acmebuild', $this->roots));
     }
 
     public function test_execute_callback_from_another_plugin_is_owner_split(): void
     {
-        $a = $this->ability($this->closureIn('content/plugins/evil/a.php'), $this->closureIn('content/plugins/bricks/b.php'));
+        $a = $this->ability($this->closureIn('content/plugins/evil/a.php'), $this->closureIn('content/plugins/acmebuild/b.php'));
 
-        $this->assertSame(AbilityOwnership::REFUSE_SPLIT, AbilityOwnership::refusal($a, 'plugin', 'bricks', $this->roots));
+        $this->assertSame(AbilityOwnership::REFUSE_SPLIT, AbilityOwnership::refusal($a, 'plugin', 'acmebuild', $this->roots));
     }
 
     public function test_callbacks_swapped_at_registration_by_a_second_plugin_are_refused(): void
     {
         $args = [
-            'execute_callback'    => $this->closureIn('content/plugins/bricks/a.php'),
-            'permission_callback' => $this->closureIn('content/plugins/bricks/b.php'),
+            'execute_callback'    => $this->closureIn('content/plugins/acmebuild/a.php'),
+            'permission_callback' => $this->closureIn('content/plugins/acmebuild/b.php'),
         ];
-        $this->assertNull(AbilityOwnership::refusal(new \WP_Ability('bricks/get', $args), 'plugin', 'bricks', $this->roots));
+        $this->assertNull(AbilityOwnership::refusal(new \WP_Ability('acmebuild/get', $args), 'plugin', 'acmebuild', $this->roots));
 
         // The second plugin's registration-args filter, as core applies it
         // before constructing the ability.
@@ -168,11 +168,11 @@ final class AbilityOwnershipTest extends TestCase
 
         $this->assertSame(
             AbilityOwnership::REFUSE_SPLIT,
-            AbilityOwnership::refusal(new \WP_Ability('bricks/get', $swapOne($args)), 'plugin', 'bricks', $this->roots)
+            AbilityOwnership::refusal(new \WP_Ability('acmebuild/get', $swapOne($args)), 'plugin', 'acmebuild', $this->roots)
         );
         $this->assertSame(
             AbilityOwnership::REFUSE_MISMATCH,
-            AbilityOwnership::refusal(new \WP_Ability('bricks/get', $swapBoth($args)), 'plugin', 'bricks', $this->roots)
+            AbilityOwnership::refusal(new \WP_Ability('acmebuild/get', $swapBoth($args)), 'plugin', 'acmebuild', $this->roots)
         );
     }
 
@@ -224,29 +224,29 @@ final class AbilityOwnershipTest extends TestCase
 
     public function test_a_subclass_overriding_execute_is_refused(): void
     {
-        $exec = $this->closureIn('content/plugins/bricks/a.php');
-        $perm = $this->closureIn('content/plugins/bricks/b.php');
-        $a    = new OwnershipTestOverridingAbility('bricks/get', ['execute_callback' => $exec, 'permission_callback' => $perm]);
+        $exec = $this->closureIn('content/plugins/acmebuild/a.php');
+        $perm = $this->closureIn('content/plugins/acmebuild/b.php');
+        $a    = new OwnershipTestOverridingAbility('acmebuild/get', ['execute_callback' => $exec, 'permission_callback' => $perm]);
 
         $this->assertFalse(AbilityOwnership::abilityClassOk($a));
-        $this->assertSame(AbilityOwnership::REFUSE_CLASS, AbilityOwnership::refusal($a, 'plugin', 'bricks', $this->roots));
+        $this->assertSame(AbilityOwnership::REFUSE_CLASS, AbilityOwnership::refusal($a, 'plugin', 'acmebuild', $this->roots));
     }
 
     public function test_a_subclass_overriding_a_protected_execution_method_is_refused(): void
     {
-        $a = new OwnershipTestOverridingInvokeAbility('bricks/get', []);
+        $a = new OwnershipTestOverridingInvokeAbility('acmebuild/get', []);
 
         $this->assertFalse(AbilityOwnership::abilityClassOk($a));
     }
 
     public function test_a_subclass_that_overrides_nothing_on_the_execution_path_is_accepted(): void
     {
-        $exec = $this->closureIn('content/plugins/bricks/a.php');
-        $perm = $this->closureIn('content/plugins/bricks/b.php');
-        $a    = new OwnershipTestHarmlessAbility('bricks/get', ['execute_callback' => $exec, 'permission_callback' => $perm]);
+        $exec = $this->closureIn('content/plugins/acmebuild/a.php');
+        $perm = $this->closureIn('content/plugins/acmebuild/b.php');
+        $a    = new OwnershipTestHarmlessAbility('acmebuild/get', ['execute_callback' => $exec, 'permission_callback' => $perm]);
 
         $this->assertTrue(AbilityOwnership::abilityClassOk($a));
-        $this->assertNull(AbilityOwnership::refusal($a, 'plugin', 'bricks', $this->roots));
+        $this->assertNull(AbilityOwnership::refusal($a, 'plugin', 'acmebuild', $this->roots));
     }
 
     public function test_an_object_that_is_not_a_wp_ability_is_not_ok(): void
@@ -263,20 +263,20 @@ final class AbilityOwnershipTest extends TestCase
         // Injected, not mocked: a mocked get_plugins() would exist for the
         // rest of the process and change what other suites see.
         $plugins = [
-            'bricks-evil/bricks-evil.php' => ['Version' => '9.9.9'],
-            'bricks/bricks.php'           => ['Version' => '2.4.1'],
+            'acmebuild-evil/acmebuild-evil.php' => ['Version' => '9.9.9'],
+            'acmebuild/acmebuild.php'           => ['Version' => '2.4.1'],
         ];
-        $a = $this->ability($this->closureIn('content/plugins/bricks/a.php'), $this->closureIn('content/plugins/bricks/b.php'));
+        $a = $this->ability($this->closureIn('content/plugins/acmebuild/a.php'), $this->closureIn('content/plugins/acmebuild/b.php'));
 
         $this->assertSame([
             'owner_kind'       => 'plugin',
-            'owner_dir'        => 'bricks',
+            'owner_dir'        => 'acmebuild',
             'owner_version'    => '2.4.1',
             'owner_split'      => false,
             'ability_class_ok' => true,
         ], AbilityOwnership::inventoryFields($a, $this->roots, $plugins));
         $this->assertSame('hello', AbilityOwnership::ownerVersion('plugin', 'hello.php', ['hello.php' => ['Version' => 'hello']]), 'a single-file plugin');
-        $this->assertNull(AbilityOwnership::ownerVersion('plugin', 'bricks', ['bricks-pro/x.php' => ['Version' => '1']]), 'a prefix sibling is not the plugin');
+        $this->assertNull(AbilityOwnership::ownerVersion('plugin', 'acmebuild', ['acmebuild-pro/x.php' => ['Version' => '1']]), 'a prefix sibling is not the plugin');
     }
 
     public function test_core_version_comes_from_wp_version(): void
