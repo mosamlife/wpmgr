@@ -816,6 +816,9 @@ final class AbilityRunCommand implements CommandInterface
         if (!hash_equals($expBase, $baseFp)) {
             return $this->fail('conflict', 'the post changed after it was checked');
         }
+        if ($this->restExistingChanges($post) !== []) {
+            return $this->contentWouldChange();
+        }
         $locked = $this->postLocked($postId);
         if ($locked !== false) {
             return $this->fail('conflict', $locked === null ? 'whether someone is editing this post could not be checked' : 'someone is editing this post right now', false, ['reason' => 'editor_open']);
@@ -827,10 +830,6 @@ final class AbilityRunCommand implements CommandInterface
         if ($stored['changed'] !== null) {
             return $this->fail('sanitiser_changed_value', 'the site would change the ' . $stored['changed'] . ' on save', false, ['key' => $stored['changed']]);
         }
-        if ($this->restExistingChanges($post) !== []) {
-            return $this->contentWouldChange();
-        }
-
         // 4. The snapshot, before any effect, read back before the effect.
         $prior  = ['post_title' => self::pf($post, 'post_title'), 'post_excerpt' => self::pf($post, 'post_excerpt')];
         $ledger = [

@@ -73,6 +73,15 @@ final class RestCallTest extends TestCase
 
     private bool $canEdit = true;
 
+    /** A hostile filter that grants every capability. */
+    public bool $grantAll = false;
+
+    /** Runs whenever a save filter is simulated. */
+    public \Closure $duringSanitise;
+
+    /** @var array<int,array<string,list<string>>> */
+    public array $meta = [];
+
     protected function set_up(): void
     {
         parent::set_up();
@@ -91,6 +100,10 @@ final class RestCallTest extends TestCase
         $this->autosaves             = [];
         $this->locks                 = [];
         $this->canEdit               = true;
+        $this->grantAll              = false;
+        $this->duringSanitise        = static function (): void {
+        };
+        $this->meta                  = [];
         $this->currentUser           = 0;
 
         $this->installCoreHandlers();
@@ -127,6 +140,9 @@ final class RestCallTest extends TestCase
         Functions\when('current_user_can')->alias(function ($cap, ...$args) {
             if ($this->currentUser !== self::PRINCIPAL) {
                 return false;
+            }
+            if ($this->grantAll) {
+                return true;
             }
             if ($cap === 'edit_post') {
                 return $this->canEdit;
@@ -169,18 +185,35 @@ final class RestCallTest extends TestCase
         Functions\when('wp_unslash')->alias(fn ($v) => is_string($v) ? stripslashes($v) : $v);
         // The principal has no unfiltered_html, so the save filters run kses.
         // Entity normalisation as kses does it: a bare '&' becomes '&amp;'.
-        Functions\when('sanitize_post_field')->alias(fn ($field, $value) => self::ksesEntities((string) $value));
-        Functions\when('wp_kses_post')->alias(fn ($v) => self::ksesEntities((string) $v));
+        Functions\when('sanitize_post_field')->alias(function ($field, $value) {
+            ($this->duringSanitise)();
+            return self::kses((string) $value);
+        });
+        Functions\when('wp_kses_post')->alias(fn ($v) => self::kses((string) $v));
+        // As core: the existing row is merged with the change and the whole
+        // merged row is re-sanitised as the current user (no unfiltered_html),
+        // then wp_insert_post_data may rewrite it.
         Functions\when('wp_update_post')->alias(function (array $data) {
-            $id = (int) $data['ID'];
-            foreach (['post_title', 'post_excerpt'] as $f) {
-                if (isset($data[$f])) {
-                    $this->posts[$id]->{$f} = self::ksesEntities(stripslashes($data[$f]));
+            ($this->duringSanitise)();
+            $id     = (int) $data['ID'];
+            $merged = array_merge(get_object_vars($this->posts[$id]), array_map(fn ($v) => is_string($v) ? stripslashes($v) : $v, $data));
+            unset($merged['ID']);
+            foreach ($merged as $k => $v) {
+                if (is_string($v)) {
+                    $merged[$k] = self::kses($v);
                 }
+            }
+            $merged = \WP_REST_Server::applyHooks('wp_insert_post_data', $merged, $data);
+            foreach ($merged as $k => $v) {
+                $this->posts[$id]->{$k} = $v;
             }
             $this->posts[$id]->post_modified_gmt = '2026-10-02 12:00:' . sprintf('%02d', count($this->calls) + 10);
             return $id;
         });
+        Functions\when('get_post_meta')->alias(fn ($id) => $this->meta[(int) $id] ?? []);
+        Functions\when('get_post_type')->alias(fn ($id) => isset($this->posts[(int) $id]) ? $this->posts[(int) $id]->post_type : false);
+        Functions\when('get_object_taxonomies')->justReturn([]);
+        Functions\when('wp_get_object_terms')->justReturn([]);
         Functions\when('wp_check_post_lock')->alias(fn ($id) => !empty($this->locks[(int) $id]) ? 99 : false);
         Functions\when('wp_get_post_revisions')->alias(fn ($id) => isset($this->revisions[(int) $id]) ? [$this->revisions[(int) $id] => new \stdClass()] : []);
         Functions\when('wp_get_post_autosave')->alias(fn ($id) => $this->autosaves[(int) $id] ?? false);
@@ -264,6 +297,19 @@ final class RestCallTest extends TestCase
     // ------------------------------------------------------------------
 
     /** kses entity normalisation, reduced: a '&' that starts no entity becomes '&amp;'. */
+    /**
+     * kses as a user without unfiltered_html, reduced to what these tests
+     * need: script, iframe, form and input are removed; inline tags such as
+     * b survive; a bare '&' becomes '&amp;'. Brackets are left alone.
+     */
+    public static function kses(string $v): string
+    {
+        $v = (string) preg_replace('#<script\b[^>]*>.*?</script>#is', '', $v);
+        $v = (string) preg_replace('#</?(iframe|form|input)\b[^>]*>#i', '', $v);
+
+        return self::ksesEntities($v);
+    }
+
     public static function ksesEntities(string $v): string
     {
         return (string) preg_replace('/&(?![A-Za-z][A-Za-z0-9]{0,31};|#[0-9]{1,7};|#x[0-9A-Fa-f]{1,6};)/', '&amp;', $v);
@@ -375,6 +421,12 @@ final class RestCallTest extends TestCase
         $p->post_excerpt      = 'Old excerpt';
         $p->post_modified_gmt = '2026-09-01 10:00:00';
         $p->post_parent       = $parent;
+        $p->post_content      = '<!-- wp:paragraph --><p>Intro &amp; more</p><!-- /wp:paragraph -->';
+        $p->post_author       = 3;
+        $p->post_name         = 'old-title';
+        $p->menu_order        = 0;
+        $p->comment_status    = 'closed';
+        $p->post_password     = '';
         $this->posts[$id]     = $p;
     }
 
@@ -966,6 +1018,129 @@ final class RestCallTest extends TestCase
         $this->assertSame('post_touched', $this->writeCall('revert', [])['code']);
         $this->locks = [];
         $this->assertTrue($this->writeCall('revert', [])['ok']);
+    }
+
+    // ------------------------------------------------------------------
+    // Review: whole-row safety, approved bytes, fail-closed reads
+    // ------------------------------------------------------------------
+
+    public function test_a_page_with_content_the_principal_may_not_save_is_refused_at_precheck_and_write(): void
+    {
+        $this->addPost(412);
+        $this->posts[412]->post_content = '<!-- wp:paragraph --><p>Intro</p><!-- /wp:paragraph --><!-- wp:html --><iframe src="https://video.example.test/x"></iframe><script>window.dataLayer=[]</script><form action="/subscribe"><input name="email"></form><!-- /wp:html -->';
+        $before = $this->posts[412]->post_content;
+        $pre    = $this->writeCall('precheck', self::retitle('New'));
+        $this->assertSame('post_content_would_change', $pre['code']);
+        $this->assertSame('this page has content the WPMgr user may not save; edit the title in WordPress', $pre['detail']);
+        // A write sent anyway (a precheck from before the content changed) re-checks.
+        $out = $this->writeCall('write', self::retitle('New'), ['precheck_digest' => str_repeat('a', 64), 'base_fingerprint' => \WPMgr\Agent\Abilities\RestCall::postFingerprint($this->posts[412])]);
+        $this->assertSame('post_content_would_change', $out['code']);
+        $this->assertSame($before, $this->posts[412]->post_content);
+        $this->assertSame([], $this->calls);
+    }
+
+    public function test_a_plugin_changing_other_columns_during_the_update_is_undone_and_named(): void
+    {
+        $this->addPost(412);
+        $this->plugin('wp_insert_post_data', function ($data) {
+            $data['post_content'] = 'replaced';
+            $data['post_author']  = 1;
+            $data['post_name']    = 'hijacked';
+            return $data;
+        }, 10, 2);
+        $out = $this->precheckAndWrite('New');
+        $this->assertSame('side_effect_detected', $out['code'], (string) json_encode($out));
+        $this->assertSame(['post_author', 'post_content', 'post_name'], $out['columns']);
+        $this->assertTrue($out['restored']);
+        $this->assertSame('Old title', $this->posts[412]->post_title);
+    }
+
+    public function test_the_bytes_sent_are_the_approved_stored_bytes(): void
+    {
+        $this->addPost(412);
+        $plain = 'Top [10] tips <b>now</b> & more';
+        $pre   = $this->writeCall('precheck', self::retitle($plain));
+        $this->assertTrue($pre['ok'], (string) json_encode($pre));
+        $stored = 'Top &#091;10&#093; tips &lt;b&gt;now&lt;/b&gt; &amp; more';
+        $this->assertSame($stored, $pre['changes'][0]['stored']);
+        $sent = null;
+        $this->plugin('rest_request_before_callbacks', function ($response, $handler, $request) use (&$sent) {
+            $sent = $request->get_body_params();
+            return $response;
+        }, 10);
+        $out = $this->writeCall('write', self::retitle($plain), ['precheck_digest' => $pre['precheck_digest'], 'base_fingerprint' => $pre['base_fingerprint']]);
+        $this->assertTrue($out['ok'], (string) json_encode($out));
+        $this->assertSame(['title' => $stored], $sent);
+        $this->assertSame($stored, $this->posts[412]->post_title);
+    }
+
+    public function test_the_fingerprint_covers_content_and_author(): void
+    {
+        $this->addPost(412);
+        $pre = $this->writeCall('precheck', self::retitle('New'));
+        $this->posts[412]->post_content = 'edited by a person';
+        $this->assertSame('conflict', $this->writeCall('write', self::retitle('New'), ['precheck_digest' => $pre['precheck_digest'], 'base_fingerprint' => $pre['base_fingerprint']])['code']);
+        $this->posts[412]->post_content = '<!-- wp:paragraph --><p>Intro &amp; more</p><!-- /wp:paragraph -->';
+        $this->posts[412]->post_author  = 9;
+        $this->assertSame('conflict', $this->writeCall('write', self::retitle('New'), ['precheck_digest' => $pre['precheck_digest'], 'base_fingerprint' => $pre['base_fingerprint']])['code']);
+    }
+
+    public function test_target_meta_changes_are_recorded(): void
+    {
+        $this->addPost(412);
+        $this->alsoDo = function () {
+            $this->meta[412]['_some_seo_title'] = ['x'];
+        };
+        $out = $this->precheckAndWrite('New');
+        $this->assertTrue($out['ok'], (string) json_encode($out));
+        $this->assertTrue($out['verify']['target_meta_changed']);
+        $this->assertFalse($out['verify']['target_terms_changed']);
+    }
+
+    public function test_a_post_like_read_without_a_pinned_status_fails_closed(): void
+    {
+        $this->addPost(1);
+        $route = $this->listRoute('/wp/v2/pages', ['context' => 'view']);
+        $this->assertSame('rest_not_published', $this->readCall(['route_id' => 'test-pages-list'], $route)['code']);
+        $this->assertFalse(RestCall::publishedOnly([['status' => 'publish']], ['template' => '/wp/v2/media', 'pinned_query' => ['status' => 'publish']]));
+        $this->assertTrue(RestCall::publishedOnly(['post' => []], ['template' => '/wp/v2/types', 'pinned_query' => []]));
+    }
+
+    public function test_a_single_media_item_on_a_draft_parent_is_refused(): void
+    {
+        $this->addPost(22, 'inherit', 'attachment', 'on draft', 11);
+        Functions\when('get_post_status')->alias(fn ($id) => [11 => 'draft', 10 => 'publish'][(int) $id] ?? false);
+        $this->server->register_route('/wp/v2/media/(?P<id>[\d]+)', ['methods' => ['GET' => true], 'callback' => 'wpmgr_test_core_rest_get', 'permission_callback' => 'wpmgr_test_core_rest_permission']);
+        $row = json_decode(self::fixture('read-wp-v2-pages-get'), true);
+        $row['route_id']     = 'test-media-get';
+        $row['template']     = '/wp/v2/media/{id}';
+        $row['core_pattern'] = '/wp/v2/media/(?P<id>[\d]+)';
+        $row['pinned_query'] = ['status' => 'inherit', 'context' => 'view'];
+        $text = (string) json_encode($row);
+        $out  = $this->readCall(['route_id' => 'test-media-get', 'path' => ['id' => 22]], $text);
+        $this->assertSame('rest_not_published', $out['code'], (string) json_encode($out));
+        $this->posts[22]->post_parent = 10;
+        $this->assertTrue($this->readCall(['route_id' => 'test-media-get', 'path' => ['id' => 22]], $text)['ok']);
+    }
+
+    public function test_a_capability_granted_during_precheck_refuses_it(): void
+    {
+        $this->addPost(412);
+        $this->duringSanitise = function (): void {
+            $this->grantAll = true;
+        };
+        $this->assertSame('principal_capabilities_drifted', $this->writeCall('precheck', self::retitle('New'))['code']);
+    }
+
+    public function test_a_capability_granted_during_revert_is_reported(): void
+    {
+        $this->addPost(412);
+        $this->assertTrue($this->precheckAndWrite('New')['ok']);
+        $this->duringSanitise = function (): void {
+            $this->grantAll = true;
+        };
+        $out = $this->writeCall('revert', []);
+        $this->assertSame('principal_capabilities_drifted', $out['code']);
     }
 
     /**
