@@ -10475,7 +10475,7 @@ GRANT UPDATE (
 -- 1a. Validators (before the CHECKs that use them)
 -- ---------------------------------------------------------------------------
 
--- A typed key spec: {key: {type: int|string|enum|int_list, ...}}.
+-- A typed key spec: {key: {"type": int|string|enum|int_list, ...}}.
 --   int:      min, max (integers, min <= max)
 --   string:   max_len (1..10000)
 --   enum:     values (1..32 strings, ^[a-z0-9_-]{1,32}$)
@@ -10593,6 +10593,26 @@ AS $$
     SELECT NOT EXISTS (SELECT 1 FROM jsonb_object_keys(a) AS k WHERE b ? k);
 $$;
 
+-- True when the template's {placeholders} are exactly the keys of
+-- path_params, each once, and the template has no other brace.
+CREATE OR REPLACE FUNCTION rest_route_template_params_match(t text, p jsonb)
+RETURNS boolean
+LANGUAGE sql
+IMMUTABLE STRICT PARALLEL SAFE
+SET search_path = public, pg_temp
+AS $$
+    SELECT coalesce((SELECT array_agg(m[1] ORDER BY m[1])
+                     FROM regexp_matches(t, '\{([a-z][a-z0-9_]{0,31})\}', 'g') AS m), '{}'::text[])
+         = coalesce((SELECT array_agg(k ORDER BY k)
+                     FROM jsonb_object_keys(p) AS k), '{}'::text[])
+       AND length(t) - length(replace(t, '{', ''))
+         = (SELECT count(*) FROM regexp_matches(t, '\{[a-z][a-z0-9_]{0,31}\}', 'g'))
+       AND length(t) - length(replace(t, '}', ''))
+         = (SELECT count(*) FROM regexp_matches(t, '\{[a-z][a-z0-9_]{0,31}\}', 'g'));
+$$;
+
+REVOKE ALL ON FUNCTION rest_route_template_params_match(text, jsonb) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION rest_route_template_params_match(text, jsonb) TO wpmgr_app;
 REVOKE ALL ON FUNCTION rest_route_params_valid(jsonb) FROM PUBLIC;
 REVOKE ALL ON FUNCTION rest_route_pinned_valid(jsonb) FROM PUBLIC;
 REVOKE ALL ON FUNCTION rest_route_keys_disjoint(jsonb, jsonb) FROM PUBLIC;
@@ -10619,8 +10639,12 @@ CREATE TABLE IF NOT EXISTS rest_route_catalogue (
     template text NOT NULL,
     CONSTRAINT rest_route_catalogue_template_check
         CHECK (template ~ '^/[a-z0-9_./{}-]{1,200}$'
+               AND position('..' IN template) = 0
                AND (template = '/' || namespace
                     OR starts_with(template, '/' || namespace || '/'))),
+    -- Every {placeholder} is a path param and every path param is used once.
+    CONSTRAINT rest_route_catalogue_template_params_check
+        CHECK (rest_route_template_params_match(template, path_params)),
     -- The exact registered route string the matched handler must report.
     core_pattern text NOT NULL,
     CONSTRAINT rest_route_catalogue_core_pattern_check
@@ -10629,6 +10653,9 @@ CREATE TABLE IF NOT EXISTS rest_route_catalogue (
     path_params jsonb NOT NULL DEFAULT '{}'::jsonb
         CONSTRAINT rest_route_catalogue_path_params_check
         CHECK (rest_route_params_valid(path_params)),
+    -- A path param is an int: nothing but digits ever reaches the path.
+    CONSTRAINT rest_route_catalogue_path_params_int_check
+        CHECK (NOT jsonb_path_exists(path_params, '$.* ? (@.type != "int")')),
     query_keys jsonb NOT NULL DEFAULT '{}'::jsonb
         CONSTRAINT rest_route_catalogue_query_keys_check
         CHECK (rest_route_params_valid(query_keys)),
@@ -10655,7 +10682,7 @@ CREATE TABLE IF NOT EXISTS rest_route_catalogue (
         CHECK (target IS NULL OR coalesce(
             jsonb_typeof(target) = 'object'
             AND target ->> 'kind' = 'post'
-            AND path_params ? (target ->> 'param'), false)),
+            AND path_params -> (target ->> 'param') ->> 'type' = 'int', false)),
     arg_render jsonb NOT NULL DEFAULT '{}'::jsonb
         CONSTRAINT rest_route_catalogue_arg_render_check
         CHECK (jsonb_typeof(arg_render) = 'object'
@@ -10698,11 +10725,19 @@ CREATE TABLE IF NOT EXISTS rest_route_catalogue (
     CONSTRAINT rest_route_catalogue_keys_disjoint_check
         CHECK (rest_route_keys_disjoint(pinned_query, query_keys)
                AND rest_route_keys_disjoint(pinned_query, body_keys)
+               AND rest_route_keys_disjoint(pinned_query, path_params)
                AND rest_route_keys_disjoint(path_params, query_keys)
                AND rest_route_keys_disjoint(path_params, body_keys)),
     CONSTRAINT rest_route_catalogue_forbidden_keys_check
         CHECK (NOT (query_keys ?| ARRAY['context', 'status', 'author', 'password', 'meta', 'slug', 'template'])
                AND NOT (body_keys ?| ARRAY['context', 'status', 'author', 'password', 'meta', 'slug', 'template'])),
+    -- A write pins nothing but context=view. WordPress reads GET parameters
+    -- ahead of URL parameters for a POST, so a pinned status, author or
+    -- similar key on a write would change what the write does.
+    CONSTRAINT rest_route_catalogue_write_pins_check
+        CHECK (class <> 'write'
+               OR ((pinned_query - 'context') = '{}'::jsonb
+                   AND coalesce(pinned_query ->> 'context', 'view') = 'view')),
     -- Owner ruling 5: v1 reads are published content only.
     CONSTRAINT rest_route_catalogue_published_only_check
         CHECK (coalesce(pinned_query ->> 'context', 'view') = 'view'
@@ -10798,6 +10833,23 @@ AS $$
         'title', r.title,
         'description', r.description,
         'route_sha256', r.route_sha256
+    )::text, 'UTF8')), 'hex');
+$$;
+
+-- The hash of what the route DOES: every column except route_sha256, enabled
+-- and the bookkeeping columns. A superadmin edit that changes it must not
+-- keep the stored route_sha256 (see admin_upsert_rest_route).
+CREATE OR REPLACE FUNCTION rest_route_catalogue_content_sha256(
+    r rest_route_catalogue
+)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+SET search_path = public, pg_temp
+AS $$
+    SELECT encode(sha256(convert_to((
+        to_jsonb(r) - 'route_sha256' - 'enabled' - 'created_at'
+                    - 'updated_at' - 'updated_by_user_id'
     )::text, 'UTF8')), 'hex');
 $$;
 
@@ -10909,6 +10961,19 @@ BEGIN
             updated_by_user_id = p_actor_user_id
         WHERE rc.route_id = p_route_id
         RETURNING rc.* INTO v_after;
+
+        -- An edit that changes what the route does cannot keep the hash the
+        -- old content was approved under: an approved request would then
+        -- still match and run the new content. NULL (re-stamp at boot) or a
+        -- new hash is required. Raising here rolls the UPDATE back.
+        IF v_before.route_sha256 IS NOT NULL
+           AND v_after.route_sha256 IS NOT DISTINCT FROM v_before.route_sha256
+           AND rest_route_catalogue_content_sha256(v_before)
+               <> rest_route_catalogue_content_sha256(v_after) THEN
+            RAISE EXCEPTION 'rest_route_catalogue_hash_not_moved'
+                USING ERRCODE = '22023',
+                      DETAIL = format('route %s changed but kept route_sha256', p_route_id);
+        END IF;
     END IF;
 
     INSERT INTO rest_route_catalogue_audit (

@@ -246,8 +246,10 @@ func TestRestRouteM161AppCannotWrite(t *testing.T) {
 // update cannot stand in for each other, and the stamp moves NULL to a hash
 // exactly once with a NULL-actor audit row.
 //
-// Mutation: ALTER TABLE rest_route_catalogue DROP CONSTRAINT
-// rest_route_catalogue_write_rules_check -> "WRITE WITHOUT SNAPSHOT" goes red.
+// Mutations: ALTER TABLE rest_route_catalogue DROP CONSTRAINT
+// rest_route_catalogue_write_rules_check -> "WRITE WITHOUT SNAPSHOT" goes red;
+// DROP CONSTRAINT rest_route_catalogue_write_pins_check -> "WRITE PINS STATUS"
+// goes red.
 func TestRestRouteM161RowRules(t *testing.T) {
 	ctx, app, _, root := c1World(t)
 
@@ -270,7 +272,9 @@ func TestRestRouteM161RowRules(t *testing.T) {
 				p.Class, p.Snapshot, p.EffectCopy, p.Target, p.BodyKeys = "read", "none", "none", nil, []byte(`{}`)
 			}},
 		{"CALLER-SUPPLIED STATUS", "rest_route_catalogue_forbidden_keys_check",
-			func(p *sqlc.AdminUpsertRestRouteParams) { p.QueryKeys = []byte(`{"status":{"type":"string","max_len":10}}`) }},
+			func(p *sqlc.AdminUpsertRestRouteParams) {
+				p.QueryKeys = []byte(`{"status":{"type":"string","max_len":10}}`)
+			}},
 		{"PINNED CONTEXT EDIT", "rest_route_catalogue_published_only_check",
 			func(p *sqlc.AdminUpsertRestRouteParams) { p.PinnedQuery = []byte(`{"context":"edit"}`) }},
 		{"PINNED AND CALLER KEY", "rest_route_catalogue_keys_disjoint_check",
@@ -284,6 +288,25 @@ func TestRestRouteM161RowRules(t *testing.T) {
 			func(p *sqlc.AdminUpsertRestRouteParams) { p.BodyKeys = []byte(`{"title":{"type":"blob"}}`) }},
 		{"TEMPLATE OUTSIDE NAMESPACE", "rest_route_catalogue_template_check",
 			func(p *sqlc.AdminUpsertRestRouteParams) { p.Template = "/wp-abilities/v1/run" }},
+		{"WRITE PINS STATUS", "rest_route_catalogue_write_pins_check",
+			func(p *sqlc.AdminUpsertRestRouteParams) { p.PinnedQuery = []byte(`{"status":"publish"}`) }},
+		{"PINNED PATH PARAM", "rest_route_catalogue_keys_disjoint_check",
+			func(p *sqlc.AdminUpsertRestRouteParams) {
+				m161AsRead(p)
+				p.PinnedQuery = []byte(`{"id":"5","context":"view"}`)
+			}},
+		{"STRING PATH PARAM", "rest_route_catalogue_path_params_int_check",
+			func(p *sqlc.AdminUpsertRestRouteParams) {
+				p.PathParams = []byte(`{"id":{"type":"string","max_len":20}}`)
+			}},
+		{"DOT-DOT TEMPLATE", "rest_route_catalogue_template_check",
+			func(p *sqlc.AdminUpsertRestRouteParams) { p.Template = "/wp/v2/pages/../users/{id}" }},
+		{"PLACEHOLDER NOT A PATH PARAM", "rest_route_catalogue_template_params_check",
+			func(p *sqlc.AdminUpsertRestRouteParams) { p.Template = "/wp/v2/pages/{post}" }},
+		{"PATH PARAM NOT IN TEMPLATE", "rest_route_catalogue_template_params_check",
+			func(p *sqlc.AdminUpsertRestRouteParams) { p.Template = "/wp/v2/pages" }},
+		{"STRAY BRACE", "rest_route_catalogue_template_params_check",
+			func(p *sqlc.AdminUpsertRestRouteParams) { p.Template = "/wp/v2/pages/{id}/{" }},
 	}
 	for i, c := range cases {
 		p := m161Route(root, "m161-fault-"+string(rune('a'+i)))
@@ -300,8 +323,7 @@ func TestRestRouteM161RowRules(t *testing.T) {
 		t.Fatalf("POSITIVE CONTROL: the honest write route was refused: %v", err)
 	}
 	read := m161Route(root, "m161-honest-read")
-	read.Method, read.Class, read.Snapshot, read.EffectCopy, read.Target, read.BodyKeys, read.OperatorPermission =
-		"GET", "read", "none", "none", nil, []byte(`{}`), nil
+	m161AsRead(&read)
 	read.PinnedQuery = []byte(`{"status":"publish","context":"view"}`)
 	if _, err := m161Upsert(ctx, app, root, read); err != nil {
 		t.Fatalf("POSITIVE CONTROL: the honest read route was refused: %v", err)
@@ -340,6 +362,40 @@ func TestRestRouteM161RowRules(t *testing.T) {
 		a[0].AfterRouteSha256 == nil || *a[0].AfterRouteSha256 != sha {
 		t.Fatalf("STAMP AUDIT: %+v, want a NULL-actor update from no hash to the stamped hash on top", a)
 	}
+
+	// An edit cannot keep the hash: content changed with the stored hash is
+	// refused and changes nothing; the kill switch alone may keep it; a
+	// content change with a NULL hash (re-stamp) lands.
+	//
+	// Mutation: delete the rest_route_catalogue_hash_not_moved IF block in
+	// admin_upsert_rest_route -> "EDIT KEPT THE HASH" goes red.
+	keep := m161EditOf(root, stamped)
+	keep.BodyKeys = []byte(`{"title":{"type":"string","max_len":120}}`)
+	_, err = m161Upsert(ctx, app, root, keep)
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "22023" || pgErr.Message != "rest_route_catalogue_hash_not_moved" {
+		t.Fatalf("EDIT KEPT THE HASH: a content edit keeping route_sha256 answered %v, want 22023 rest_route_catalogue_hash_not_moved", err)
+	}
+	if cur := m161GetRoute(t, ctx, app, root, row.RouteID); string(cur.BodyKeys) == string(keep.BodyKeys) {
+		t.Fatalf("EDIT KEPT THE HASH: the refused edit was stored")
+	}
+	off := m161EditOf(root, stamped)
+	off.Enabled = false
+	if _, err := m161Upsert(ctx, app, root, off); err != nil {
+		t.Fatalf("OVER-FIRING: the kill switch alone (hash unchanged) was refused: %v", err)
+	}
+	restamp := m161EditOf(root, m161GetRoute(t, ctx, app, root, row.RouteID))
+	restamp.BodyKeys = keep.BodyKeys
+	restamp.RouteSha256 = nil
+	if got, err := m161Upsert(ctx, app, root, restamp); err != nil || got.RouteSha256 != nil {
+		t.Fatalf("OVER-FIRING: a content edit clearing the hash answered %v (hash %v), want success and NULL", err, got.RouteSha256)
+	}
+}
+
+// m161AsRead turns the honest write route into an honest read route.
+func m161AsRead(p *sqlc.AdminUpsertRestRouteParams) {
+	p.Method, p.Class, p.Snapshot, p.EffectCopy, p.Target, p.BodyKeys, p.OperatorPermission =
+		"GET", "read", "none", "none", nil, []byte(`{}`), nil
 }
 
 // TestRestRouteM161RequestRouteFacts: a rest-write request cannot be written
@@ -478,91 +534,174 @@ func TestRestRouteM161RequestSiteScope(t *testing.T) {
 	}
 }
 
-// TestRestRouteM161ReservationNeedsApprovedRoute: an approved rest-write
-// against the stamped route is reservable; once a superadmin edits the route
-// (its hash moves), the dispatch read reports route_hash_current false and
-// the reservation reserves nothing.
-//
-// Mutation: delete the "AND (r.route_id IS NULL OR EXISTS (...))" clause from
-// ReserveAbilityRequestForDispatch and regenerate -> "RESERVED AGAINST A
-// CHANGED ROUTE" goes red.
-func TestRestRouteM161ReservationNeedsApprovedRoute(t *testing.T) {
-	ctx, app, _, root := c1World(t)
-	tenant := seedTenant(t, app, "m161-r-"+uuid.NewString()[:8])
-	site := seedSite(t, app, tenant, "")
+// m161EditOf builds a superadmin update that rewrites cur unchanged; callers
+// change one field.
+func m161EditOf(actor uuid.UUID, cur sqlc.RestRouteCatalogue) sqlc.AdminUpsertRestRouteParams {
+	return sqlc.AdminUpsertRestRouteParams{
+		ActorUserID: actor, CreateRoute: false, RouteID: cur.RouteID, Method: cur.Method,
+		Namespace: cur.Namespace, Template: cur.Template, CorePattern: cur.CorePattern,
+		PathParams: cur.PathParams, QueryKeys: cur.QueryKeys, PinnedQuery: cur.PinnedQuery,
+		BodyKeys: cur.BodyKeys, Class: cur.Class, OutputFields: cur.OutputFields,
+		Snapshot: cur.Snapshot, Target: cur.Target, ArgRender: cur.ArgRender,
+		OperatorPermission: cur.OperatorPermission, EffectCopy: cur.EffectCopy,
+		Enabled: cur.Enabled, MinWpVersion: cur.MinWpVersion, Title: cur.Title,
+		Description: cur.Description, RouteSha256: cur.RouteSha256,
+	}
+}
 
+func m161GetRoute(t *testing.T, ctx context.Context, app *db.Pool, actor uuid.UUID, id string) sqlc.RestRouteCatalogue {
+	t.Helper()
+	var cur sqlc.RestRouteCatalogue
+	if err := app.InUserTx(ctx, actor, func(tx pgx.Tx) error {
+		var err error
+		cur, err = sqlc.New(tx).GetRestRoute(ctx, id)
+		return err
+	}); err != nil {
+		t.Fatalf("read route %s: %v", id, err)
+	}
+	return cur
+}
+
+// m161Reserve runs the shipped dispatch read and reservation for one row in
+// the tenant's transaction, then rolls back so the row stays approved.
+func m161Reserve(t *testing.T, ctx context.Context, app *db.Pool, tenant, id uuid.UUID) (int64, sqlc.GetApprovedAbilityRequestForDispatchRow) {
+	t.Helper()
+	var n int64
+	var got sqlc.GetApprovedAbilityRequestForDispatchRow
+	if err := app.InTenantTx(ctx, tenant, func(tx pgx.Tx) error {
+		mcpAssertAndReportRole(t, tx, "InTenantTx (m161 reserve)")
+		q := sqlc.New(tx)
+		var err error
+		got, err = q.GetApprovedAbilityRequestForDispatch(ctx, sqlc.GetApprovedAbilityRequestForDispatchParams{TenantID: tenant, ID: id})
+		if err != nil {
+			return err
+		}
+		n, err = q.ReserveAbilityRequestForDispatch(ctx, sqlc.ReserveAbilityRequestForDispatchParams{TenantID: tenant, ID: id})
+		if err != nil {
+			return err
+		}
+		return errM161Rollback
+	}); err != nil && !errors.Is(err, errM161Rollback) {
+		t.Fatalf("reserve: %v", err)
+	}
+	return n, got
+}
+
+// m161DispatchWorld stamps the wpmgr/rest-write entry and the named routes,
+// and returns the entry id and hash and each route's stamped hash.
+func m161DispatchWorld(t *testing.T, ctx context.Context, app *db.Pool, root uuid.UUID, routes ...string) (uuid.UUID, string, map[string]string) {
+	t.Helper()
 	var entry uuid.UUID
 	if err := app.InUserTx(ctx, root, func(tx pgx.Tx) error {
 		return tx.QueryRow(ctx, `SELECT entry_id FROM ability_catalogue WHERE name = 'wpmgr/rest-write'`).Scan(&entry)
 	}); err != nil {
 		t.Fatalf("INDETERMINATE: wpmgr/rest-write seed missing: %v", err)
 	}
-	entrySha, routeSha := acprHex("m161-entry"), acprHex("m161-route-v1")
+	entrySha := acprHex("m161-entry")
 	if err := app.InUserTx(ctx, root, func(tx pgx.Tx) error {
 		_, err := sqlc.New(tx).StampWpmgrAbilityEntryHash(ctx, sqlc.StampWpmgrAbilityEntryHashParams{EntryID: entry, EntrySha256: entrySha})
 		return err
 	}); err != nil {
 		t.Fatalf("stamp entry: %v", err)
 	}
-	if _, err := m161Stamp(ctx, app, root, "wp-v2-pages-update-fields", routeSha); err != nil {
-		t.Fatalf("stamp route: %v", err)
-	}
-
-	reserve := func(row sqlc.AssistantAbilityRequest) (int64, bool) {
-		var n int64
-		var current bool
-		if err := app.InTenantTx(ctx, tenant, func(tx pgx.Tx) error {
-			mcpAssertAndReportRole(t, tx, "InTenantTx (m161 reserve)")
-			q := sqlc.New(tx)
-			got, err := q.GetApprovedAbilityRequestForDispatch(ctx, sqlc.GetApprovedAbilityRequestForDispatchParams{TenantID: tenant, ID: row.ID})
-			if err != nil {
-				return err
-			}
-			current = got.RouteHashCurrent && got.RouteEnabled && got.EntryHashCurrent
-			n, err = q.ReserveAbilityRequestForDispatch(ctx, sqlc.ReserveAbilityRequestForDispatchParams{TenantID: tenant, ID: row.ID})
-			if err != nil {
-				return err
-			}
-			// Leave the row approved for the next probe.
-			return errM161Rollback
-		}); err != nil && !errors.Is(err, errM161Rollback) {
-			t.Fatalf("reserve: %v", err)
+	shas := map[string]string{}
+	for _, r := range routes {
+		shas[r] = acprHex("m161-route-" + r)
+		if _, err := m161Stamp(ctx, app, root, r, shas[r]); err != nil {
+			t.Fatalf("stamp route %s: %v", r, err)
 		}
-		return n, current
 	}
+	return entry, entrySha, shas
+}
 
-	row := aarInsert(t, app, acprSitePrincipal(tenant, site),
-		m161RestWriteParams(tenant, site, uuid.New(), entry, entrySha, routeSha, "reserve"))
+// m161ApprovedRequest inserts and approves one rest-write request naming
+// route (with routeSha) on site.
+func m161ApprovedRequest(t *testing.T, app *db.Pool, tenant, site, entry uuid.UUID, entrySha, route, routeSha, seed string) sqlc.AssistantAbilityRequest {
+	t.Helper()
+	arg := m161RestWriteParams(tenant, site, uuid.New(), entry, entrySha, routeSha, seed)
+	arg.RouteID = acprStr(route)
+	row := aarInsert(t, app, acprSitePrincipal(tenant, site), arg)
 	if _, err := aarApprove(t, app, row, row.PresentedDigest); err != nil {
-		t.Fatalf("approve: %v", err)
+		t.Fatalf("approve %s: %v", seed, err)
 	}
-	if n, current := reserve(row); n != 1 || !current {
-		t.Fatalf("POSITIVE CONTROL: the approved rest-write against the current route reserved %d rows (current=%t), want 1 and true", n, current)
+	return row
+}
+
+// TestRestRouteM161ReservationNeedsApprovedRoute: an approved rest-write
+// against the stamped route is reservable; once a superadmin edits the route
+// (its hash moves), the dispatch read reports route_hash_current false and
+// the reservation reserves nothing.
+//
+// Mutation: delete "AND rr.route_sha256 = r.route_sha256" from
+// ReserveAbilityRequestForDispatch and regenerate -> "RESERVED AGAINST A
+// CHANGED ROUTE" goes red.
+func TestRestRouteM161ReservationNeedsApprovedRoute(t *testing.T) {
+	ctx, app, _, root := c1World(t)
+	tenant := seedTenant(t, app, "m161-r-"+uuid.NewString()[:8])
+	site := seedSite(t, app, tenant, "")
+	const route = "wp-v2-pages-update-fields"
+	entry, entrySha, shas := m161DispatchWorld(t, ctx, app, root, route)
+
+	row := m161ApprovedRequest(t, app, tenant, site, entry, entrySha, route, shas[route], "reserve")
+	if n, got := m161Reserve(t, ctx, app, tenant, row.ID); n != 1 || !got.RouteHashCurrent || !got.RouteEnabled || !got.EntryHashCurrent {
+		t.Fatalf("POSITIVE CONTROL: the approved rest-write against the current route reserved %d rows (%+v), want 1 and all current", n, got)
 	}
 
-	// A superadmin edits the route: its hash moves to a new value.
-	var cur sqlc.RestRouteCatalogue
-	if err := app.InUserTx(ctx, root, func(tx pgx.Tx) error {
-		var err error
-		cur, err = sqlc.New(tx).GetRestRoute(ctx, "wp-v2-pages-update-fields")
-		return err
-	}); err != nil {
-		t.Fatalf("read route: %v", err)
-	}
-	edit := sqlc.AdminUpsertRestRouteParams{
-		ActorUserID: root, CreateRoute: false, RouteID: cur.RouteID, Method: cur.Method,
-		Namespace: cur.Namespace, Template: cur.Template, CorePattern: cur.CorePattern,
-		PathParams: cur.PathParams, QueryKeys: cur.QueryKeys, PinnedQuery: cur.PinnedQuery,
-		BodyKeys: []byte(`{"title":{"type":"string","max_len":100}}`), Class: cur.Class,
-		OutputFields: cur.OutputFields, Snapshot: cur.Snapshot, Target: cur.Target,
-		ArgRender: cur.ArgRender, OperatorPermission: cur.OperatorPermission,
-		EffectCopy: cur.EffectCopy, Enabled: cur.Enabled, MinWpVersion: cur.MinWpVersion,
-		Title: cur.Title, Description: cur.Description, RouteSha256: acprStr(acprHex("m161-route-v2")),
-	}
+	edit := m161EditOf(root, m161GetRoute(t, ctx, app, root, route))
+	edit.BodyKeys = []byte(`{"title":{"type":"string","max_len":100}}`)
+	edit.RouteSha256 = acprStr(acprHex("m161-route-v2"))
 	if _, err := m161Upsert(ctx, app, root, edit); err != nil {
 		t.Fatalf("superadmin route edit: %v", err)
 	}
-	if n, current := reserve(row); n != 0 || current {
-		t.Fatalf("RESERVED AGAINST A CHANGED ROUTE: reserved %d rows (route current=%t) after the route hash moved, want 0 and false", n, current)
+	if n, got := m161Reserve(t, ctx, app, tenant, row.ID); n != 0 || got.RouteHashCurrent {
+		t.Fatalf("RESERVED AGAINST A CHANGED ROUTE: reserved %d rows (route current=%t) after the route hash moved, want 0 and false", n, got.RouteHashCurrent)
+	}
+}
+
+// TestRestRouteM161KillSwitchAndClass: a route disabled with its hash
+// unchanged is not reserved and the dispatch read reports it not enabled
+// (route_disabled); a request naming a read-class route is not reserved
+// either, though its hash is current.
+//
+// Mutations:
+//   - delete "AND rr.enabled" from ReserveAbilityRequestForDispatch and
+//     regenerate -> "RESERVED ON A DISABLED ROUTE" goes red.
+//   - delete "AND rr.class = 'write'" from ReserveAbilityRequestForDispatch
+//     and regenerate -> "RESERVED ON A READ ROUTE" goes red.
+func TestRestRouteM161KillSwitchAndClass(t *testing.T) {
+	ctx, app, _, root := c1World(t)
+	tenant := seedTenant(t, app, "m161-k-"+uuid.NewString()[:8])
+	site := seedSite(t, app, tenant, "")
+	const write, read = "wp-v2-pages-update-fields", "wp-v2-pages-get"
+	entry, entrySha, shas := m161DispatchWorld(t, ctx, app, root, write, read)
+
+	row := m161ApprovedRequest(t, app, tenant, site, entry, entrySha, write, shas[write], "kill")
+	if n, _ := m161Reserve(t, ctx, app, tenant, row.ID); n != 1 {
+		t.Fatalf("POSITIVE CONTROL: the approved rest-write reserved %d rows before the kill switch, want 1", n)
+	}
+
+	off := m161EditOf(root, m161GetRoute(t, ctx, app, root, write))
+	off.Enabled = false
+	if _, err := m161Upsert(ctx, app, root, off); err != nil {
+		t.Fatalf("kill switch (enabled=false, hash unchanged) refused: %v", err)
+	}
+	if cur := m161GetRoute(t, ctx, app, root, write); cur.Enabled || cur.RouteSha256 == nil || *cur.RouteSha256 != shas[write] {
+		t.Fatalf("INDETERMINATE: after the kill switch the route is enabled=%t hash=%v, want false and unchanged", cur.Enabled, cur.RouteSha256)
+	}
+	n, got := m161Reserve(t, ctx, app, tenant, row.ID)
+	if n != 0 {
+		t.Fatalf("RESERVED ON A DISABLED ROUTE: reserved %d rows, want 0", n)
+	}
+	if !got.RouteHashCurrent || got.RouteEnabled {
+		t.Fatalf("DISPATCH READ: route_hash_current=%t route_enabled=%t on a disabled route, want true and false (route_disabled)", got.RouteHashCurrent, got.RouteEnabled)
+	}
+
+	readRow := m161ApprovedRequest(t, app, tenant, site, entry, entrySha, read, shas[read], "read-class")
+	n, got = m161Reserve(t, ctx, app, tenant, readRow.ID)
+	if n != 0 {
+		t.Fatalf("RESERVED ON A READ ROUTE: a rest-write naming read route %s reserved %d rows, want 0", read, n)
+	}
+	if !got.RouteHashCurrent || got.RouteEnabled {
+		t.Fatalf("DISPATCH READ: route_hash_current=%t route_enabled=%t on a read route, want true and false", got.RouteHashCurrent, got.RouteEnabled)
 	}
 }
