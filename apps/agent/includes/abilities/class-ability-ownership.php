@@ -253,11 +253,14 @@ final class AbilityOwnership
     /**
      * Version of the owner, or null when it cannot be read.
      *
-     * @param string $kind Owner kind.
-     * @param string $dir  Owner directory.
+     * @param string                   $kind    Owner kind.
+     * @param string                   $dir     Owner directory.
+     * @param array<string,mixed>|null $plugins Installed plugins keyed by
+     *                                          plugin file; read from core
+     *                                          when null.
      * @return string|null
      */
-    public static function ownerVersion(string $kind, string $dir): ?string
+    public static function ownerVersion(string $kind, string $dir, ?array $plugins = null): ?string
     {
         if ($kind === self::KIND_CORE) {
             $v = AbilityGuards::wpVersion();
@@ -268,7 +271,7 @@ final class AbilityOwnership
             return null;
         }
         if ($kind === self::KIND_PLUGIN) {
-            foreach (self::installedPlugins() as $file => $data) {
+            foreach ($plugins ?? self::installedPlugins() as $file => $data) {
                 if (!is_string($file) || !is_array($data)) {
                     continue;
                 }
@@ -302,16 +305,18 @@ final class AbilityOwnership
      *
      * @param object                    $ability A registered ability.
      * @param array<string,string>|null $roots   Canonical roots.
+     * @param array<string,mixed>|null  $plugins Installed plugins; read from
+     *                                           core when null.
      * @return array{owner_kind:string,owner_dir:string,owner_version:string|null,owner_split:bool,ability_class_ok:bool}
      */
-    public static function inventoryFields(object $ability, ?array $roots = null): array
+    public static function inventoryFields(object $ability, ?array $roots = null, ?array $plugins = null): array
     {
         $c = self::classify($ability, $roots);
 
         return [
             'owner_kind'       => $c['owner_kind'],
             'owner_dir'        => $c['owner_dir'],
-            'owner_version'    => $c['owner_split'] ? null : self::ownerVersion($c['owner_kind'], $c['owner_dir']),
+            'owner_version'    => $c['owner_split'] ? null : self::ownerVersion($c['owner_kind'], $c['owner_dir'], $plugins),
             'owner_split'      => $c['owner_split'],
             'ability_class_ok' => $c['ability_class_ok'],
         ];

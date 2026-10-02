@@ -11,7 +11,6 @@ declare(strict_types=1);
 namespace WPMgr\Agent\Tests;
 
 use Brain\Monkey;
-use Brain\Monkey\Functions;
 use WPMgr\Agent\Abilities\AbilityOwnership;
 use WPMgr\Agent\Abilities\OwnAbilities;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
@@ -261,10 +260,12 @@ final class AbilityOwnershipTest extends TestCase
 
     public function test_inventory_fields_carry_the_plugin_version(): void
     {
-        Functions\when('get_plugins')->justReturn([
+        // Injected, not mocked: a mocked get_plugins() would exist for the
+        // rest of the process and change what other suites see.
+        $plugins = [
             'bricks-evil/bricks-evil.php' => ['Version' => '9.9.9'],
             'bricks/bricks.php'           => ['Version' => '2.4.1'],
-        ]);
+        ];
         $a = $this->ability($this->closureIn('content/plugins/bricks/a.php'), $this->closureIn('content/plugins/bricks/b.php'));
 
         $this->assertSame([
@@ -273,7 +274,9 @@ final class AbilityOwnershipTest extends TestCase
             'owner_version'    => '2.4.1',
             'owner_split'      => false,
             'ability_class_ok' => true,
-        ], AbilityOwnership::inventoryFields($a, $this->roots));
+        ], AbilityOwnership::inventoryFields($a, $this->roots, $plugins));
+        $this->assertSame('hello', AbilityOwnership::ownerVersion('plugin', 'hello.php', ['hello.php' => ['Version' => 'hello']]), 'a single-file plugin');
+        $this->assertNull(AbilityOwnership::ownerVersion('plugin', 'bricks', ['bricks-pro/x.php' => ['Version' => '1']]), 'a prefix sibling is not the plugin');
     }
 
     public function test_core_version_comes_from_wp_version(): void
@@ -290,7 +293,6 @@ final class AbilityOwnershipTest extends TestCase
 
     public function test_site_row_marks_a_squat_split_or_overridden_ability_as_mismatched(): void
     {
-        Functions\when('get_plugins')->justReturn([]);
         $ok = $this->ability('strlen', 'strlen');
 
         $squat = OwnAbilities::siteRow('wpmgr/fake', $ok);
