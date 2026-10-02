@@ -96,6 +96,9 @@ final class VendorReadTest extends TestCase
     /** @var array<int,array<string,mixed>> */
     private array $userMeta = [];
 
+    /** In-memory role reloads seen by the wp_roles() stub. */
+    public int $roleReloads = 0;
+
     /** @var list<int> User ids the permission callback ran as. */
     public static array $permSawUser = [];
 
@@ -783,6 +786,18 @@ final class VendorReadTest extends TestCase
      */
     private function stubOptionLifecycle(): void
     {
+        $this->roleReloads = 0;
+        $registry          = new class ($this) {
+            public function __construct(private VendorReadTest $t)
+            {
+            }
+
+            public function for_site(): void
+            {
+                $this->t->roleReloads++;
+            }
+        };
+        Functions\when('wp_roles')->justReturn($registry);
         Functions\when('delete_option')->alias(function ($name) {
             if (!array_key_exists($name, $this->options)) {
                 return false;
@@ -834,6 +849,7 @@ final class VendorReadTest extends TestCase
         $this->assertSame('read_side_effect_detected', $r['code'], (string) json_encode($r));
         $this->assertSame(['user_roles_option'], $r['side_effects']['blocked']);
         $this->assertSame($before, $this->options['wp_user_roles'], 'the role definitions are back to their value before the call');
+        $this->assertSame(1, $this->roleReloads, 'the in-memory role definitions are reloaded');
     }
 
     public function test_a_role_definition_change_no_hook_saw_is_undone_and_refused(): void
@@ -901,6 +917,7 @@ final class VendorReadTest extends TestCase
 
         $this->assertArrayHasKey('output', $r, (string) json_encode($r));
         $this->assertSame(0, $writes);
+        $this->assertSame(0, $this->roleReloads);
     }
 
     public function test_capability_meta_written_by_meta_id_is_blocked(): void
