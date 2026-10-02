@@ -17,6 +17,8 @@ if (!defined('ABSPATH')) {
  *   match one of the entry's pinned patterns (limits.allowed_option_patterns,
  *   "*" is the only wildcard, the match is anchored at both ends);
  * - every post inserted, updated or deleted;
+ * - every post meta row added, updated or deleted, and every change to an
+ *   object's term relationships;
  * - every user role set, added or removed, every user registered or updated,
  *   and every super-admin grant;
  * - every outbound HTTP request made through the WordPress HTTP API, which it
@@ -24,8 +26,11 @@ if (!defined('ABSPATH')) {
  *   a host the entry pins in limits.http_hosts is let through unrecorded.
  *
  * Privilege writes are blocked as well as recorded: user capability and user
- * level meta, the stored role definitions and the network super-admin list
- * keep their values for the duration of the call.
+ * level meta keep their values for the duration of the call, and the stored
+ * role definitions and the super-admin list are read before the call and
+ * compared after it. Any difference, including one made by deleting and
+ * re-adding the option, is put back to the value read before the call and
+ * refuses the call.
  *
  * Any record means the read was not a read: the caller withholds the output
  * and refuses the call. Writes other than the blocked ones are not undone.
@@ -39,6 +44,9 @@ if (!defined('ABSPATH')) {
 final class AbilitySideEffects
 {
     public const HTTP_REFUSED = 'wpmgr_outbound_http_refused';
+
+    /** Value standing for an option that does not exist. */
+    private const ABSENT = "\0wpmgr_absent";
 
     /** Stand-in for a reported name outside the safe character set. */
     public const UNPRINTABLE = '(unprintable)';
@@ -68,6 +76,18 @@ final class AbilitySideEffects
     private int $roles = 0;
 
     private int $users = 0;
+
+    private int $postMeta = 0;
+
+    private int $terms = 0;
+
+    /**
+     * Privilege options read before the call: label, scope, name and value
+     * (ABSENT when the option did not exist).
+     *
+     * @var list<array{0:string,1:string,2:string,3:mixed}>
+     */
+    private array $snapshot = [];
 
     /** @var array<string,true> Raw hosts. */
     private array $hosts = [];
@@ -107,10 +127,13 @@ final class AbilitySideEffects
         $this->options = [];
         $this->posts   = 0;
         $this->roles   = 0;
-        $this->users   = 0;
-        $this->hosts   = [];
-        $this->blocked = [];
-        $this->armed   = true;
+        $this->users    = 0;
+        $this->postMeta = 0;
+        $this->terms    = 0;
+        $this->hosts    = [];
+        $this->blocked  = [];
+        $this->snapshot = $this->readPrivileges();
+        $this->armed    = true;
 
         $option = function ($name = null): void {
             $this->option($name);
@@ -130,6 +153,16 @@ final class AbilitySideEffects
                 $this->users++;
             }
         };
+        $postMeta = function ($ids = null): void {
+            if ($this->armed) {
+                $this->postMeta += is_array($ids) ? max(1, count($ids)) : 1;
+            }
+        };
+        $terms = function (): void {
+            if ($this->armed) {
+                $this->terms++;
+            }
+        };
         $http = function ($pre = false, $args = [], $url = '') {
             return $this->http($pre, $url);
         };
@@ -141,6 +174,45 @@ final class AbilitySideEffects
             }
 
             return $check;
+        };
+        $metaByMid = function ($check = null, $metaId = 0, $value = null, $key = null) {
+            if (!$this->armed) {
+                return $check;
+            }
+            if (!is_string($key)) {
+                $row = function_exists('get_metadata_by_mid') ? get_metadata_by_mid('user', (int) $metaId) : false;
+                $key = is_object($row) && isset($row->meta_key) && is_string($row->meta_key) ? $row->meta_key : null;
+            }
+            if ($key === null) {
+                // Unknown row: refuse rather than risk a capability write.
+                $this->blocked['user_meta_unknown'] = true;
+
+                return false;
+            }
+            if (preg_match(self::BLOCKED_META, $key, $m) === 1) {
+                $this->blocked[$m[1] === 'capabilities' ? 'user_capabilities_meta' : 'user_level_meta'] = true;
+
+                return false;
+            }
+
+            return $check;
+        };
+        $privilegeOption = function ($name = null): void {
+            if (!$this->armed || !is_string($name)) {
+                return;
+            }
+            foreach ($this->snapshot as [$label, , $option]) {
+                if ($option === $name) {
+                    $this->blocked[$label] = true;
+                }
+            }
+        };
+        $siteAdmins = function ($value = null) {
+            if ($this->armed) {
+                $this->blocked['site_admins'] = true;
+            }
+
+            return $value;
         };
         $keepOld = function (string $label): callable {
             return function ($value = null, $old = null) use ($label) {
@@ -165,10 +237,21 @@ final class AbilitySideEffects
         $this->hook('granted_super_admin', $role, 0);
         $this->hook('user_register', $user, 0);
         $this->hook('profile_update', $user, 0);
+        $this->hook('added_post_meta', $postMeta, 0);
+        $this->hook('updated_post_meta', $postMeta, 0);
+        $this->hook('deleted_post_meta', $postMeta, 1);
+        $this->hook('set_object_terms', $terms, 0);
+        $this->hook('deleted_term_relationships', $terms, 0);
+        $this->hook('add_option', $privilegeOption, 1);
+        $this->hook('delete_option', $privilegeOption, 1);
+        $this->hook('pre_add_site_option_site_admins', $siteAdmins, 1, PHP_INT_MAX);
+        $this->hook('pre_delete_site_option_site_admins', $siteAdmins, 1);
         $this->hook('pre_http_request', $http, 3, PHP_INT_MAX);
         foreach (['update_user_metadata', 'add_user_metadata', 'delete_user_metadata'] as $tag) {
             $this->hook($tag, $meta, 3, PHP_INT_MAX);
         }
+        $this->hook('update_user_metadata_by_mid', $metaByMid, 4, PHP_INT_MAX);
+        $this->hook('delete_user_metadata_by_mid', $metaByMid, 2, PHP_INT_MAX);
         $prefix = self::dbPrefix();
         if ($prefix !== '') {
             $this->hook('pre_update_option_' . $prefix . 'user_roles', $keepOld('user_roles_option'), 2, PHP_INT_MAX);
@@ -177,17 +260,23 @@ final class AbilitySideEffects
     }
 
     /**
-     * Remove every recorder and block.
+     * Remove every recorder and block, then put back any privilege option
+     * that no longer holds the value read before the call.
      *
      * @return void
      */
     public function disarm(): void
     {
+        $wasArmed    = $this->armed;
         $this->armed = false;
         foreach ($this->hooks as [$tag, $callback, , $priority]) {
             remove_filter($tag, $callback, $priority);
         }
         $this->hooks = [];
+        if ($wasArmed) {
+            $this->restorePrivileges();
+        }
+        $this->snapshot = [];
     }
 
     /**
@@ -198,14 +287,14 @@ final class AbilitySideEffects
     public function detected(): bool
     {
         return $this->options !== [] || $this->posts > 0 || $this->roles > 0 || $this->users > 0
-            || $this->hosts !== [] || $this->blocked !== [];
+            || $this->postMeta > 0 || $this->terms > 0 || $this->hosts !== [] || $this->blocked !== [];
     }
 
     /**
      * The records, in the shape the control plane counts. Names outside the
      * safe character set are replaced by UNPRINTABLE.
      *
-     * @return array{options:list<string>,posts:int,roles:int,users:int,http_hosts:list<string>,blocked:list<string>}
+     * @return array{options:list<string>,posts:int,roles:int,users:int,post_meta:int,terms:int,http_hosts:list<string>,blocked:list<string>}
      */
     public function details(): array
     {
@@ -225,9 +314,68 @@ final class AbilitySideEffects
             'posts'      => $this->posts,
             'roles'      => $this->roles,
             'users'      => $this->users,
+            'post_meta'  => $this->postMeta,
+            'terms'      => $this->terms,
             'http_hosts' => $hosts,
             'blocked'    => array_keys($this->blocked),
         ];
+    }
+
+    /**
+     * The privilege options as they stand now.
+     *
+     * @return list<array{0:string,1:string,2:string,3:mixed}>
+     */
+    private function readPrivileges(): array
+    {
+        $out    = [];
+        $prefix = self::dbPrefix();
+        if ($prefix !== '' && function_exists('get_option')) {
+            $name  = $prefix . 'user_roles';
+            $out[] = ['user_roles_option', 'site', $name, get_option($name, self::ABSENT)];
+        }
+        if (function_exists('get_site_option')) {
+            $out[] = ['site_admins', 'network', 'site_admins', get_site_option('site_admins', self::ABSENT)];
+        }
+
+        return $out;
+    }
+
+    /**
+     * Put back every privilege option whose value moved during the call, and
+     * record it as blocked.
+     *
+     * @return void
+     */
+    private function restorePrivileges(): void
+    {
+        $changed = false;
+        foreach ($this->snapshot as [$label, $scope, $name, $before]) {
+            $now = $scope === 'site' ? get_option($name, self::ABSENT) : get_site_option($name, self::ABSENT);
+            if ($now === $before) {
+                continue;
+            }
+            $this->blocked[$label] = true;
+            $changed               = true;
+            if ($scope === 'site') {
+                if ($before === self::ABSENT) {
+                    delete_option($name);
+                } else {
+                    update_option($name, $before);
+                }
+            } elseif ($before === self::ABSENT) {
+                delete_site_option($name);
+            } else {
+                update_site_option($name, $before);
+            }
+        }
+        // The in-memory role definitions are reloaded from the restored option.
+        if ($changed && function_exists('wp_roles')) {
+            $roles = wp_roles();
+            if (is_object($roles) && method_exists($roles, 'for_site')) {
+                $roles->for_site();
+            }
+        }
     }
 
     /**
