@@ -416,6 +416,17 @@ final class AbilityGuards
     }
 
     /**
+     * Ability names admitted past the short-circuit guard since arm(), in
+     * the order they first ran.
+     *
+     * @return list<string>
+     */
+    public function invoked(): array
+    {
+        return array_map('strval', array_keys($this->entered));
+    }
+
+    /**
      * @param string   $filter   Filter name.
      * @param callable $callback Callback.
      * @param int      $priority Priority.

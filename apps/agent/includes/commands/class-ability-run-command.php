@@ -8,9 +8,11 @@ use WPMgr\Agent\Abilities\AbilityDenylist;
 use WPMgr\Agent\Abilities\AbilityGuards;
 use WPMgr\Agent\Abilities\AbilityInterception;
 use WPMgr\Agent\Abilities\AbilityLedger;
+use WPMgr\Agent\Abilities\AbilitySideEffects;
 use WPMgr\Agent\Abilities\OwnAbilities;
 use WPMgr\Agent\Abilities\PageCreateBuilder;
 use WPMgr\Agent\Abilities\ServicePrincipal;
+use WPMgr\Agent\Abilities\VendorAbility;
 
 // Direct-file-access guard: keep above the docblock.
 if (!defined('ABSPATH')) {
@@ -40,8 +42,10 @@ if (!defined('ABSPATH')) {
  *   input       string, JSON text of an object (default "{}"); revert takes none
  *   expected    object {precheck_digest, preview_digest} (write)
  *
- * This slice runs only WPMgr's own wpmgr/* abilities. Any other name is
- * refused in code, whatever the entry says. Nothing is ever retried.
+ * WPMgr's own wpmgr/* abilities run through their own handlers. Any other
+ * ability (a vendor's or core's) runs only in read mode, only on WordPress
+ * 7.1+, only as the service principal, and only while the live ability still
+ * matches its reviewed entry (see vendorRead()). Nothing is ever retried.
  *
  * The one write is wpmgr/page-create: it creates a DRAFT post or page owned
  * by the content service principal, never publishes, verifies the stored
@@ -193,9 +197,10 @@ final class AbilityRunCommand implements CommandInterface
             return $this->fail('ability_denied', 'this ability is denied by the agent');
         }
 
-        // 5. E1 scope: only WPMgr's own abilities run.
+        // 5. Scope: WPMgr's own abilities take their own path; any other
+        //    ability can only be read, under the checks in vendorRead().
         if (strncmp($name, 'wpmgr/', 6) !== 0) {
-            return $this->fail('ability_not_runnable_yet', 'only WPMgr\'s own abilities can run on this agent version');
+            return $this->vendorRead($mode, $name, $entry, $entrySha, $req);
         }
         if (!OwnAbilities::has($name)) {
             return $this->fail('ability_unknown', 'this agent does not implement that ability');
@@ -846,6 +851,98 @@ final class AbilityRunCommand implements CommandInterface
             'entry_sha256' => $entrySha,
             'output'       => $output,
         ];
+    }
+
+    /**
+     * Read through a vendor or core ability.
+     *
+     * Order: the entry (source, class and mode, permission mode, output
+     * shape), the WordPress floor, the live ability (present, plain class,
+     * owner, owner version, schema), the input against the live schema,
+     * then the call as the service principal under the interception guards
+     * and the side-effect recorder. A recorded side effect or a guard
+     * violation refuses the call and withholds the output; otherwise the
+     * output is projected onto the entry's pinned shape and capped.
+     *
+     * @param string $mode     Mode.
+     * @param string $name     Ability name.
+     * @param object $entry    Decoded entry.
+     * @param string $entrySha Entry hash.
+     * @param object $req      Decoded p.
+     * @return array<string,mixed>
+     */
+    private function vendorRead(string $mode, string $name, object $entry, string $entrySha, object $req): array
+    {
+        $bad = VendorAbility::entryRefusal($entry, $name, $mode);
+        if ($bad !== null) {
+            return $this->fail($bad['code'], $bad['detail']);
+        }
+        if (!AbilityGuards::supported()) {
+            return $this->fail('wp_too_old_for_vendor_reads', 'reading through this ability needs WordPress 7.1 or later');
+        }
+
+        $inputText = $req->input ?? '{}';
+        if (!is_string($inputText) || strlen($inputText) > self::MAX_INPUT_BYTES || !is_object(json_decode($inputText, false, 32))) {
+            return $this->fail('bad_input', 'input must be JSON text of an object');
+        }
+
+        $ability = VendorAbility::resolve($name);
+        if ($ability === null) {
+            return $this->fail('ability_not_on_site', 'this site has no ability by that name');
+        }
+        $verified = VendorAbility::verify($ability, $entry);
+        if (isset($verified['refusal'])) {
+            return $this->fail($verified['refusal']['code'], $verified['refusal']['detail']);
+        }
+        $owner = $verified['owner'] ?? null;
+        if ($owner === null) {
+            return $this->fail('ability_owner_mismatch', 'the ability owner could not be resolved');
+        }
+        $prepared = VendorAbility::prepareInput($ability, $inputText);
+        if (isset($prepared['refusal'])) {
+            return $this->fail($prepared['refusal']['code'], $prepared['refusal']['detail']);
+        }
+
+        $limits  = is_object($entry->limits ?? null) ? $entry->limits : new \stdClass();
+        $effects = new AbilitySideEffects(
+            array_values((array) ($limits->allowed_option_patterns ?? [])),
+            array_values((array) ($limits->http_hosts ?? []))
+        );
+        $nested  = array_values((array) ($entry->nested_allow ?? []));
+        $input   = $prepared['input'] ?? null;
+        $shape   = json_decode((string) json_encode($entry->output_fields ?? null), true);
+
+        return $this->asPrincipal(function () use ($ability, $name, $input, $nested, $effects, $entrySha, $owner, $shape): array {
+            $call    = VendorAbility::call($ability, $name, $input, $nested, $effects);
+            $refusal = VendorAbility::outcomeRefusal($call, $effects);
+            if ($refusal !== null) {
+                return $this->fail($refusal['code'], $refusal['detail'], false, $refusal['extra']);
+            }
+
+            $raw = json_encode($call['result']);
+            if (!is_string($raw)) {
+                return $this->fail('ability_output_invalid', 'the ability output is not JSON-encodable');
+            }
+            $output  = VendorAbility::project(json_decode($raw, true, 64), $shape);
+            $encoded = json_encode($output);
+            if (!is_string($encoded)) {
+                return $this->fail('ability_output_invalid', 'the ability output is not JSON-encodable');
+            }
+            if (strlen($encoded) > self::MAX_OUTPUT_BYTES) {
+                return $this->fail('output_too_large', 'the ability output exceeds the cap');
+            }
+
+            return [
+                'ok'                => true,
+                'outcome'           => 'completed',
+                'mode'              => 'read',
+                'ability'           => $name,
+                'entry_sha256'      => $entrySha,
+                'owner'             => $owner,
+                'abilities_invoked' => $call['invoked'],
+                'output'            => $output,
+            ];
+        });
     }
 
     /**
