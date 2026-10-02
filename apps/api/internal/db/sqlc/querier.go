@@ -290,6 +290,13 @@ type Querier interface {
 	AttachAgentAndConnect(ctx context.Context, arg AttachAgentAndConnectParams) (Site, error)
 	// Re-enrollment: rotate the agent key and mark the site active/enrolled again.
 	AttachAgentToSite(ctx context.Context, arg AttachAgentToSiteParams) (Site, error)
+	// GH #826. Compare-and-set from no undo to in_progress on a write that
+	// failed or was given up on but left the post it created (a draft) on the
+	// site. Only a final outcome qualifies: a resolving outcome_unknown row
+	// (outcome NULL) may still be answered by the ledger through
+	// RecordAbilityRequestOutcome, so it is refused here. The undo window opens
+	// now, window_seconds long; a zero or negative window matches nothing.
+	BeginAbilityRequestRecoveryUndo(ctx context.Context, arg BeginAbilityRequestRecoveryUndoParams) (int64, error)
 	// ---------------------------------------------------------------------------
 	// A person's undo of a done request, approver-side principal. The agent
 	// takes the object id from its own ledger row for this request id (W3).
@@ -1238,6 +1245,7 @@ type Querier interface {
 	// treats the event as "unknown customer" (record + warn, change nothing).
 	FindTenantByProviderCustomer(ctx context.Context, arg FindTenantByProviderCustomerParams) (uuid.UUID, error)
 	// undo_result is one of undone, refused_conflict, refused_published, failed.
+	// Covers a done row's undo and a recovery undo (GH #826) alike.
 	FinishAbilityRequestUndo(ctx context.Context, arg FinishAbilityRequestUndoParams) (int64, error)
 	// Terminalizes ONE task that never left 'scheduled'. The counterpart to
 	// FinishUpdateTask, which cannot be used here: its precondition is
@@ -3089,7 +3097,7 @@ type Querier interface {
 	// started longer ago than the threshold with nothing recorded since (GH
 	// #824). The caller checks the site ledger and records the answer per row
 	// with FinishAbilityRequestUndo or ReleaseAbilityRequestUndo in a tenant
-	// transaction.
+	// transaction. Includes recovery undos (GH #826).
 	ListStuckAbilityRequestUndos(ctx context.Context, arg ListStuckAbilityRequestUndosParams) ([]ListStuckAbilityRequestUndosRow, error)
 	// The tasks that have exhausted @max_attempts and therefore no longer appear in
 	// the due query above. The rows are kept deliberately (they are the last record
@@ -3644,7 +3652,9 @@ type Querier interface {
 	// another path already recorded one; write nothing. The state is derived
 	// from the outcome; the table CHECK enforces the pairing. Passing 'not_sent'
 	// needs not_sent_reason 'transport_pre_send'. undo_available_until set
-	// opens the person's undo (undo_state 'available') on a done row.
+	// opens the person's undo (undo_state 'available') on a done row. A row with
+	// any undo_state already set is never matched (GH #826): this statement
+	// rewrites the undo columns, and must not reset an undo that is running.
 	RecordAbilityRequestOutcome(ctx context.Context, arg RecordAbilityRequestOutcomeParams) (int64, error)
 	// A transient reason; the row stays approved. Single-site.
 	RecordAssistantCachePurgeDispatchAttempt(ctx context.Context, arg RecordAssistantCachePurgeDispatchAttemptParams) (int64, error)
@@ -3813,6 +3823,9 @@ type Querier interface {
 	// require the starter and start time to be NULL whenever undo is available,
 	// and undo_finished_at is already NULL while in progress. Past the window
 	// this matches nothing; the caller then finishes the undo as 'failed'.
+	// A recovery undo (GH #826) goes back to no undo at all, window cleared,
+	// because BeginAbilityRequestRecoveryUndo starts only from undo_state NULL;
+	// the person can begin it again, with a fresh window.
 	ReleaseAbilityRequestUndo(ctx context.Context, arg ReleaseAbilityRequestUndoParams) (int64, error)
 	// ReleaseTenantAssistantKillSwitch clears the pause after an incident.
 	//
