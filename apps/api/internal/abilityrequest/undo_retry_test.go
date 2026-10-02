@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentcmd"
@@ -170,6 +171,43 @@ func TestRecordUndoRelease_CancelledRequestStillRecords(t *testing.T) {
 	}
 	if dl, ok := finishCtx.Deadline(); !ok || time.Until(dl) <= 0 || time.Until(dl) > undoFinishBudget {
 		t.Fatal("the release transaction has no bounded deadline")
+	}
+}
+
+// zeroRowsDB answers every write with 0 rows affected and every read with an
+// empty scan: an undo some other path already settled.
+type zeroRowsDB struct{ reads int }
+
+type emptyRow struct{}
+
+func (emptyRow) Scan(...any) error { return nil }
+
+func (zeroRowsDB) Exec(context.Context, string, ...any) (pgconn.CommandTag, error) {
+	return pgconn.NewCommandTag("UPDATE 0"), nil
+}
+func (zeroRowsDB) Query(context.Context, string, ...any) (pgx.Rows, error) {
+	return nil, errors.New("unexpected query")
+}
+func (d *zeroRowsDB) QueryRow(context.Context, string, ...any) pgx.Row { d.reads++; return emptyRow{} }
+
+// A release that finds the undo already settled records no audit event and
+// reports the row as it now stands, not a failure. The service has no audit
+// recorder, so any attempt to record one errors.
+func TestRecordUndoRelease_AlreadySettledAuditsNothing(t *testing.T) {
+	s := &Service{logger: slog.Default()}
+	db := &zeroRowsDB{}
+	run := func(ctx context.Context, _ domain.Principal, fn func(*sqlc.Queries, pgx.Tx) error) error {
+		return fn(sqlc.New(db), nil)
+	}
+	_, released, err := s.recordUndoRelease(context.Background(), run, session(authz.RoleOwner), uuid.New(), uuid.New(), errors.New("transport"))
+	if err != nil {
+		t.Fatalf("an undo settled elsewhere was treated as an error or audited: %v", err)
+	}
+	if released {
+		t.Fatal("reported released though nothing was released")
+	}
+	if db.reads != 1 {
+		t.Fatalf("row re-read %d times, want 1", db.reads)
 	}
 }
 

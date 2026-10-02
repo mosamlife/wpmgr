@@ -320,6 +320,13 @@ func (s *Service) recordUndoRelease(ctx context.Context, run undoTxRunner, p dom
 			return err
 		}
 		released = settled == undoReleased
+		if settled == "" {
+			// Another path settled the undo first: nothing changed here, so
+			// nothing is audited; the caller gets the row as it now stands.
+			var err error
+			after, err = q.GetAbilityRequestForSite(fctx, sqlc.GetAbilityRequestForSiteParams{TenantID: p.TenantID, ID: requestID, SiteID: siteID})
+			return err
+		}
 		md := map[string]any{"request_id": requestID.String(), "site_id": siteID.String(), "phase": "released"}
 		if !released {
 			md["phase"], md["result"] = "finished", UndoFailed
