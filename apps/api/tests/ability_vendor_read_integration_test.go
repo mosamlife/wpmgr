@@ -2,11 +2,13 @@
 // token, on the wpmgr_app pool with the real audit recorder and the real
 // m160 definer. A fake agent answers. The superuser connection only arranges
 // site state and reads counts; it never stands in for the application.
-// Capped data: one tenant, four sites, one catalogue entry.
+// Capped data: at most four tenants, seven sites, one catalogue entry.
 package tests
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -60,6 +62,7 @@ type vrWorld struct {
 	agent      *vrAgent
 	eng        *gin.Engine
 	bearer     string
+	repo       *mcp.Repo
 }
 
 // vrRefresh stores one vendor inventory row for a site, as the refresh job
@@ -124,7 +127,58 @@ func newVRWorld(t *testing.T) *vrWorld {
 	}
 	w.eng = mountLikeProduction(t, msvc, domain.Principal{TenantID: w.tenant, Scope: domain.ScopeOrg})
 	w.bearer = e2Grant(t, repo, w.tenant, w.inScope)
+	w.repo = repo
 	return w
+}
+
+// vrQualify makes a tenant count towards the fleet threshold: a paid, active
+// plan (m160's "paid or aged").
+func vrQualify(t *testing.T, adm *db.Pool, tenant uuid.UUID) {
+	t.Helper()
+	if _, err := adm.Exec(context.Background(),
+		`UPDATE tenants SET plan = 'starter', plan_status = 'active' WHERE id = $1`, tenant); err != nil {
+		t.Fatalf("qualify tenant: %v", err)
+	}
+}
+
+// vrTenant arranges one more qualified tenant with one connected, inventoried
+// site and its own grant, on the same engine, and returns its bearer.
+func (w *vrWorld) vrTenant(t *testing.T) (tenant, site uuid.UUID, bearer string) {
+	t.Helper()
+	ctx := context.Background()
+	r := uuid.NewString()[:8]
+	tenant = seedTenant(t, w.app, "vr-"+r)
+	vrQualify(t, w.admin, tenant)
+	site = seedSite(t, w.app, tenant, "https://vr-"+r+".test")
+	if _, err := w.admin.Exec(ctx, `UPDATE sites SET connection_state = 'connected', agent_version = $2, wp_version = '7.1' WHERE tenant_id = $1`,
+		tenant, agentcmd.MinAgentVersionForVendorReads); err != nil {
+		t.Fatalf("arrange site: %v", err)
+	}
+	vrRefresh(t, w.app, tenant, site, w.entry.Name)
+	return tenant, site, e2Grant(t, w.repo, tenant, []uuid.UUID{site})
+}
+
+func (w *vrWorld) runAs(t *testing.T, bearer string, site uuid.UUID) cpeRPC {
+	t.Helper()
+	return cpeCall(t, w.eng, bearer, mcp.ToolSiteAbilityRun, map[string]any{
+		"site_id": site.String(), "name": w.entry.Name,
+	})
+}
+
+func vrReason(res cpeRPC) string {
+	r, _ := res.data["not_runnable_reason"].(string)
+	return r
+}
+
+func (w *vrWorld) auditCount(t *testing.T, tenant uuid.UUID, action string) int {
+	t.Helper()
+	var n int
+	if err := w.admin.QueryRow(context.Background(),
+		`SELECT count(*) FROM audit_log WHERE tenant_id = $1 AND action = $2 AND target_id = $3`,
+		tenant, action, w.entry.EntryID.String()).Scan(&n); err != nil {
+		t.Fatalf("count audit %s: %v", action, err)
+	}
+	return n
 }
 
 func (w *vrWorld) run(t *testing.T, site uuid.UUID) cpeRPC {
@@ -152,45 +206,158 @@ func TestAbilityVendorRead_OutOfScopeIdentical(t *testing.T) {
 	}
 }
 
-// TestAbilityVendorRead_SideEffectRecordsAndDisables: three distinct sites
-// report read_side_effect_detected; each call is refused and audited, and
-// the third disables the entry fleet-wide with one NULL-actor audit row.
+// TestAbilityVendorRead_SideEffectRecordsAndDisables (owner ruling
+// 2026-10-02): one qualified tenant with three sites switches the entry off
+// for ITSELF at the first report, and its other sites are refused before the
+// agent is asked, while the fleet entry stays enabled. Two more qualified
+// tenants reporting make three, and the third disables the entry fleet-wide
+// with one NULL-actor audit row.
 func TestAbilityVendorRead_SideEffectRecordsAndDisables(t *testing.T) {
 	w := newVRWorld(t)
 	ctx := context.Background()
-	for i, site := range w.inScope {
+	vrQualify(t, w.admin, w.tenant)
+
+	first := w.run(t, w.inScope[0])
+	if first.code == 0 || first.result != nil {
+		t.Fatalf("a side-effecting read returned a result: %s", first.raw)
+	}
+	if strings.Contains(first.raw, `"vr_option"`) {
+		t.Fatalf("unfenced site text: %s", first.raw)
+	}
+	if !m160DisabledFor(t, ctx, w.app, w.tenant, w.tenant, w.entry.EntryID) {
+		t.Fatal("the reporting tenant's switch is not on after its first report")
+	}
+	m160WantEnabled(t, ctx, w.app, w.root, w.entry.EntryID, "one tenant reported", true)
+
+	for i, site := range w.inScope[1:] {
 		res := w.run(t, site)
-		if res.code == 0 || res.result != nil {
-			t.Fatalf("site %d: a side-effecting read returned a result: %s", i, res.raw)
+		if res.code == 0 || vrReason(res) != "disabled_for_your_account" {
+			t.Fatalf("site %d: want disabled_for_your_account, got %s", i+1, res.raw)
 		}
-		if strings.Contains(res.raw, `"vr_option"`) {
-			t.Fatalf("site %d: unfenced site text: %s", i, res.raw)
+		if !strings.Contains(res.msg, "turned this tool off for your account") {
+			t.Fatalf("site %d: message %q", i+1, res.msg)
 		}
-		enabled := m160Entry(t, ctx, w.app, w.root, w.entry.EntryID).Enabled
-		if want := i < 2; enabled != want {
-			t.Fatalf("after site %d: enabled=%v, want %v", i, enabled, want)
-		}
+	}
+	if n := w.agent.calls(); n != 1 {
+		t.Fatalf("agent calls = %d, want 1: the tenant switch must refuse before the agent", n)
+	}
+	m160WantEnabled(t, ctx, w.app, w.root, w.entry.EntryID, "one tenant, three sites", true)
+	if n := w.auditCount(t, w.tenant, mcp.ActionAbilityReadSideEffect); n != 1 {
+		t.Fatalf("ability.read_side_effect rows = %d, want 1", n)
+	}
+
+	// Two more qualified tenants: the third distinct one disables the fleet.
+	_, siteB, bearerB := w.vrTenant(t)
+	_, siteC, bearerC := w.vrTenant(t)
+	if res := w.runAs(t, bearerB, siteB); res.code == 0 {
+		t.Fatalf("tenant B's read returned a result: %s", res.raw)
+	}
+	m160WantEnabled(t, ctx, w.app, w.root, w.entry.EntryID, "two tenants reported", true)
+	if res := w.runAs(t, bearerC, siteC); res.code == 0 {
+		t.Fatalf("tenant C's read returned a result: %s", res.raw)
+	}
+	m160WantEnabled(t, ctx, w.app, w.root, w.entry.EntryID, "three tenants reported", false)
+	if n := m160SystemDisables(m160Audit(t, ctx, w.app, w.root, w.entry.EntryID)); n != 1 {
+		t.Fatalf("system disable audit rows = %d, want 1", n)
 	}
 	if n := w.agent.calls(); n != 3 {
 		t.Fatalf("agent calls = %d, want 3", n)
 	}
-	if n := m160SystemDisables(m160Audit(t, ctx, w.app, w.root, w.entry.EntryID)); n != 1 {
-		t.Fatalf("system disable audit rows = %d, want 1", n)
-	}
-	var rows int
-	if err := w.admin.QueryRow(ctx, `SELECT count(*) FROM audit_log WHERE tenant_id = $1 AND action = $2 AND target_id = $3`,
-		w.tenant, mcp.ActionAbilityReadSideEffect, w.entry.EntryID.String()).Scan(&rows); err != nil {
-		t.Fatalf("count audit: %v", err)
-	}
-	if rows != 3 {
-		t.Fatalf("ability.read_side_effect rows = %d, want 3", rows)
-	}
-	// A fourth call: the entry is disabled, so the agent is not asked.
-	res := w.run(t, w.inScope[0])
-	if res.code == 0 {
-		t.Fatalf("disabled entry ran: %s", res.raw)
+	// A later call from tenant B: the fleet switch wins, the agent is not asked.
+	if res := w.runAs(t, bearerB, siteB); res.code == 0 || vrReason(res) != "disabled" {
+		t.Fatalf("fleet-disabled entry: %s", res.raw)
 	}
 	if n := w.agent.calls(); n != 3 {
 		t.Fatalf("a disabled entry reached the agent (calls=%d)", n)
+	}
+}
+
+// vrReenableEngine mounts the re-enable route as server.New does, on the
+// wpmgr_app pool with the real audit recorder, behind a stand-in for session
+// auth that carries p.
+func vrReenableEngine(w *vrWorld, p domain.Principal, sa abilities.SuperadminChecker) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	eng := gin.New()
+	g := eng.Group("/api/v1", func(c *gin.Context) {
+		c.Request = c.Request.WithContext(domain.WithPrincipal(c.Request.Context(), p))
+		c.Next()
+	})
+	abilities.NewTenantHandler(abilities.NewTenantRepo(w.app, audit.NewRecorder(w.app, domain.SystemClock{})), sa).Register(g)
+	return eng
+}
+
+func vrReenable(eng *gin.Engine, entry uuid.UUID) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/ai/abilities/"+entry.String()+"/reenable", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	eng.ServeHTTP(rec, req)
+	return rec
+}
+
+type vrNoSuperadmin struct{}
+
+func (vrNoSuperadmin) IsSuperadmin(context.Context, uuid.UUID) (bool, error) { return false, nil }
+
+// TestAbilityVendorRead_TenantReenable: after a report the tenant is refused
+// with disabled_for_your_account. A non-admin of the tenant cannot switch it
+// back on, nor can an admin of another tenant; the tenant's admin can, it is
+// audited, and the next read reaches the agent again.
+func TestAbilityVendorRead_TenantReenable(t *testing.T) {
+	w := newVRWorld(t)
+	ctx := context.Background()
+	r := uuid.NewString()[:8]
+	admin := seedUser(t, w.admin, "vr-admin-"+r+"@example.test", "Admin", true)
+	operator := seedUser(t, w.admin, "vr-op-"+r+"@example.test", "Operator", true)
+	otherTenant := seedTenant(t, w.app, "vr-other-"+r)
+	otherAdmin := seedUser(t, w.admin, "vr-other-"+r+"@example.test", "Other", true)
+
+	if res := w.run(t, w.inScope[0]); res.code == 0 {
+		t.Fatalf("a side-effecting read returned a result: %s", res.raw)
+	}
+	if res := w.run(t, w.inScope[1]); vrReason(res) != "disabled_for_your_account" {
+		t.Fatalf("want disabled_for_your_account, got %s", res.raw)
+	}
+	if n := w.agent.calls(); n != 1 {
+		t.Fatalf("agent calls = %d, want 1", n)
+	}
+
+	user := func(id, tenant uuid.UUID, role string) domain.Principal {
+		return domain.Principal{Type: domain.PrincipalUser, UserID: id, TenantID: tenant, Role: role, Scope: domain.ScopeOrg}
+	}
+	if rec := vrReenable(vrReenableEngine(w, user(operator, w.tenant, "operator"), vrNoSuperadmin{}), w.entry.EntryID); rec.Code != http.StatusForbidden {
+		t.Fatalf("operator: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := vrReenable(vrReenableEngine(w, user(otherAdmin, otherTenant, "admin"), vrNoSuperadmin{}), w.entry.EntryID); rec.Code != http.StatusNotFound {
+		t.Fatalf("another tenant's admin: %d %s", rec.Code, rec.Body.String())
+	}
+	if !m160DisabledFor(t, ctx, w.app, w.tenant, w.tenant, w.entry.EntryID) {
+		t.Fatal("a refused re-enable switched the tool back on")
+	}
+
+	adminEng := vrReenableEngine(w, user(admin, w.tenant, "admin"), vrNoSuperadmin{})
+	if rec := vrReenable(adminEng, w.entry.EntryID); rec.Code != http.StatusOK {
+		t.Fatalf("tenant admin: %d %s", rec.Code, rec.Body.String())
+	}
+	if m160DisabledFor(t, ctx, w.app, w.tenant, w.tenant, w.entry.EntryID) {
+		t.Fatal("the tenant admin's re-enable left the tool off")
+	}
+	if n := w.auditCount(t, w.tenant, abilities.ActionAbilityTenantReenabled); n != 1 {
+		t.Fatalf("ability.tenant_reenabled rows = %d, want 1", n)
+	}
+	var by uuid.UUID
+	if err := w.admin.QueryRow(ctx, `SELECT reenabled_by_user_id FROM ability_tenant_disables WHERE tenant_id = $1 AND entry_id = $2`,
+		w.tenant, w.entry.EntryID).Scan(&by); err != nil || by != admin {
+		t.Fatalf("reenabled_by_user_id = %s err=%v, want %s", by, err, admin)
+	}
+	if rec := vrReenable(adminEng, w.entry.EntryID); rec.Code != http.StatusNotFound {
+		t.Fatalf("second re-enable: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// Back on: the next read reaches the agent again.
+	if res := w.run(t, w.inScope[1]); vrReason(res) == "disabled_for_your_account" {
+		t.Fatalf("still refused after the re-enable: %s", res.raw)
+	}
+	if n := w.agent.calls(); n != 2 {
+		t.Fatalf("agent calls = %d, want 2", n)
 	}
 }
