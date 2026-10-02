@@ -112,9 +112,10 @@ describe("abilityStatus plain-English refusals", () => {
       "Turn AI page creation on again from this tab.",
     ],
     [["editor_unavailable"], "This site's editor isn't available."],
-    [["agent_outdated"], "Update the WPMgr plugin on this site."],
     [["preview_changed", "entry_approval_invalid"], "The site changed since you approved. Ask the AI to try again."],
-    [["created_post_touched", "conflict"], "Someone edited the draft, so it was kept."],
+    [["sanitiser_changed_new_content"], "Ask the AI to simplify the text."],
+    [["create_content_invalid", "bad_input"], "The AI's page outline wasn't valid. Ask it to try again."],
+    [["disabled_on_site", "ability_disabled"], "AI page creation is turned off for this site."],
   ];
   for (const [codes, advice] of groups) {
     for (const code of codes) {
@@ -131,10 +132,48 @@ describe("abilityStatus plain-English refusals", () => {
       "editor isn't available",
     );
   });
+  it.each(["agent_outdated", "conflict", "created_post_touched", "target_in_flight"])(
+    "%s is not an outcome code and gets no advice",
+    (code) => {
+      expect(refused(code)).toBe(generic);
+    },
+  );
   it("an unknown code falls back to the generic text without printing it", () => {
     expect(refused("something_new")).toBe(generic);
   });
   it("a prototype key is not a code", () => {
     expect(refused("constructor")).toBe(generic);
+  });
+});
+
+describe("abilityStatus after a recovery undo on failed and unknown rows", () => {
+  // The server writes only undo_state; trashed stays null.
+  const cases: Array<[string, string, string, boolean]> = [
+    ["undone", "undone", "Moved to the trash.", false],
+    ["in_progress", "running", "moving the draft to the trash", false],
+    ["refused_published", "undo_refused", "has been published since", true],
+    ["refused_conflict", "undo_refused", "was edited since", true],
+    ["failed", "undo_failed", "could not move the draft to the trash", true],
+  ];
+  for (const [undo_state, kind, text, link] of cases) {
+    it(`failed + ${undo_state}`, () => {
+      const s = abilityStatus(mk({ outcome: "failed", created_post_id: 7, trashed: null, undo_state }));
+      expect(s.kind).toBe(kind);
+      expect(s.text).toContain(text);
+      expect(s.text).not.toContain("delete it there");
+      expect(s.draftMayExist === true).toBe(link);
+    });
+    it(`outcome_unknown + ${undo_state}`, () => {
+      const s = abilityStatus(
+        mk({ state: "outcome_unknown", outcome: "outcome_unknown", created_post_id: 9, trashed: null, undo_state }),
+      );
+      expect(s.kind).toBe(kind);
+      expect(s.text).toContain(text);
+      expect(s.draftMayExist === true).toBe(link);
+    });
+  }
+  it("undo_state available still shows the may-exist copy", () => {
+    const s = abilityStatus(mk({ outcome: "failed", created_post_id: 7, undo_state: "available" }));
+    expect(s.text).toContain("may exist");
   });
 });

@@ -371,7 +371,7 @@ describe("card states", () => {
       okList([req({ state: "failed", outcome: "failed", outcome_code: "interrupted", created_post_id: 7, undo_offered: true })]),
     );
     undoReq.mockResolvedValue({
-      data: req({ state: "failed", outcome: "failed", created_post_id: 7, undo_state: "undone", trashed: true }),
+      data: req({ state: "failed", outcome: "failed", created_post_id: 7, undo_state: "undone" }),
       error: undefined,
       response: { status: 200 },
     });
@@ -381,6 +381,25 @@ describe("card states", () => {
     expect(c.getByRole("link", { name: "Edit the draft in WordPress" })).toBeInTheDocument();
     fireEvent.click(c.getByRole("button", { name: "Undo" }));
     await waitFor(() => expect(undoReq).toHaveBeenCalledWith({ path: { siteId: "site-1", requestId: "r-1" }, body: {} }));
+  });
+
+  // After the click the list refetches; the server has set only undo_state
+  // (trashed stays null), and the card must say what happened.
+  it.each([
+    ["undone", /Moved to the trash\./],
+    ["refused_published", /has been published since/],
+    ["refused_conflict", /was edited since/],
+    ["failed", /could not move the draft to the trash/],
+  ] as const)("failed row after Undo with undo_state %s shows that result", async (undo_state, text) => {
+    const before = req({ state: "failed", outcome: "failed", created_post_id: 7, undo_offered: true });
+    const after = req({ state: "failed", outcome: "failed", created_post_id: 7, undo_state, undo_offered: false });
+    listReqs.mockResolvedValueOnce(okList([before])).mockResolvedValue(okList([after]));
+    undoReq.mockResolvedValue({ data: after, error: undefined, response: { status: 200 } });
+    renderTab();
+    const c = within(await card());
+    fireEvent.click(c.getByRole("button", { name: "Undo" }));
+    expect(await c.findByText(text)).toBeInTheDocument();
+    expect(c.queryByText(/delete it there/)).toBeNull();
   });
 
   it("failed with a post id but undo_offered false: no Undo", async () => {

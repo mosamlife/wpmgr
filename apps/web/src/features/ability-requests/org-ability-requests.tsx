@@ -6,7 +6,7 @@ import { PageError } from "@/components/feedback/page-error";
 
 import { AbilityRequestCard } from "./ability-request-card";
 import { useAbilityCardActions } from "./use-ability-card-actions";
-import { useOrgAbilityRequestPages } from "./use-ability-requests";
+import { AbilityRequestError, useOrgAbilityRequestPages } from "./use-ability-requests";
 
 // AI page requests across every site, under /ai/requests beside the cache
 // clear requests. Each card carries approve, decline and undo inline (the same
@@ -25,6 +25,12 @@ export function OrgAbilityRequests() {
   const firstPendingId = requests.find((r) => r.state === "pending")?.id ?? null;
   const pendingCount = query.data?.pages[0]?.pending_count ?? 0;
   const pendingLoaded = loaded.filter((r) => r.state === "pending").length;
+
+  // A principal without site.content.edit gets 403 here. That is not a failure
+  // to report: the section is simply not theirs, so it renders nothing.
+  if (query.isError && loaded.length === 0 && query.error instanceof AbilityRequestError && query.error.status === 403) {
+    return null;
+  }
 
   return (
     <section aria-label="AI page requests" data-testid="org-ability-requests" className="space-y-4">

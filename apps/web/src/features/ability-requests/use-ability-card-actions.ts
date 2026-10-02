@@ -63,7 +63,22 @@ export function useAbilityCardActions() {
       { siteId: r.site_id, requestId: r.id },
       {
         onSuccess: (done) => {
-          if (done.undo_state === "undone") toast.success("Moved to the trash.");
+          switch (done.undo_state) {
+            case "undone":
+              toast.success("Moved to the trash.");
+              break;
+            case "refused_published":
+              toast.error("The draft has been published since, so WPMgr left it alone.");
+              break;
+            case "refused_conflict":
+              toast.error("The draft was edited since, so WPMgr left it alone.");
+              break;
+            case "failed":
+              toast.error("WPMgr could not move the draft to the trash.");
+              break;
+            default:
+              break;
+          }
         },
         onError: (err) =>
           setNotice(r.id, err.status === 503 && err.code === CODE_UNDO_RETRY ? UNDO_RETRY_COPY : err.message),

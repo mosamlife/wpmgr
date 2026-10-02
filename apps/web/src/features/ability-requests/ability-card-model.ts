@@ -92,15 +92,15 @@ const REFUSAL_ADVICE: Record<string, string> = {
   principal_create_failed: "Turn AI page creation on again from this tab.",
   principal_login_taken: "Turn AI page creation on again from this tab.",
   editor_unavailable: "This site's editor isn't available.",
-  agent_outdated: "Update the WPMgr plugin on this site.",
   preview_changed: "The site changed since you approved. Ask the AI to try again.",
   entry_approval_invalid: "The site changed since you approved. Ask the AI to try again.",
   integration_entry_changed: "The site changed since you approved. Ask the AI to try again.",
-  created_post_touched: "Someone edited the draft, so it was kept.",
-  conflict: "Someone edited the draft, so it was kept.",
-  created_post_published: "The draft has been published since, so it was kept.",
-  request_in_flight: "Another change is already running on this site. Try again in a moment.",
-  target_in_flight: "Another change is already running on this site. Try again in a moment.",
+  sanitiser_changed_new_content:
+    "This site changes page text on save in a way WPMgr can't approve. Ask the AI to simplify the text.",
+  create_content_invalid: "The AI's page outline wasn't valid. Ask it to try again.",
+  bad_input: "The AI's page outline wasn't valid. Ask it to try again.",
+  disabled_on_site: "AI page creation is turned off for this site.",
+  ability_disabled: "AI page creation is turned off for this site.",
 };
 
 /** Plain advice for a refusal or failure code, or null when the code is not one an operator can act on. */
@@ -143,6 +143,43 @@ function hasCreatedPost(r: AbilityRequest): boolean {
   return typeof r.created_post_id === "number" && Number.isInteger(r.created_post_id) && r.created_post_id > 0;
 }
 
+/**
+ * What a recovery undo did, read from undo_state. The server sets only
+ * undo_state ("undone", "in_progress", "refused_conflict", "refused_published",
+ * "failed") and leaves `trashed` as it was, on done, failed and
+ * outcome_unknown rows alike. Null when no undo result applies.
+ */
+function undoStatus(r: AbilityRequest): AbilityStatus | null {
+  if (r.undo_state === "undone" || r.trashed === true) {
+    return { kind: "undone", text: "Moved to the trash." };
+  }
+  if (r.undo_state === "in_progress") {
+    return { kind: "running", text: "WPMgr is moving the draft to the trash." };
+  }
+  if (r.undo_state === "refused_published") {
+    return {
+      kind: "undo_refused",
+      text: "The draft has been published since, so WPMgr left it alone. Remove it in WordPress if you do not want it.",
+      draftMayExist: true,
+    };
+  }
+  if (r.undo_state === "refused_conflict") {
+    return {
+      kind: "undo_refused",
+      text: "The draft was edited since, so WPMgr left it alone. Remove it in WordPress if you do not want it.",
+      draftMayExist: true,
+    };
+  }
+  if (r.undo_state === "failed") {
+    return {
+      kind: "undo_failed",
+      text: "WPMgr could not move the draft to the trash. Remove it in WordPress if you do not want it.",
+      draftMayExist: true,
+    };
+  }
+  return null;
+}
+
 export function abilityStatus(r: AbilityRequest): AbilityStatus {
   const noun = isPostRequest(r) ? "post" : "page";
   switch (r.state) {
@@ -155,7 +192,9 @@ export function abilityStatus(r: AbilityRequest): AbilityStatus {
       };
     case "dispatched":
       return { kind: "running", text: `WPMgr is creating the draft ${noun}.` };
-    case "outcome_unknown":
+    case "outcome_unknown": {
+      const undone = undoStatus(r);
+      if (undone) return undone;
       if (r.resolve_gave_up) {
         return {
           kind: "unknown_outcome",
@@ -173,34 +212,13 @@ export function abilityStatus(r: AbilityRequest): AbilityStatus {
         };
       }
       return { kind: "unknown_outcome", text: "WPMgr is checking whether the draft was created." };
+    }
     case "done": {
-      if (r.undo_state === "undone" || r.trashed === true) {
-        return { kind: "undone", text: "Moved to the trash." };
-      }
-      if (r.undo_state === "in_progress") {
-        return { kind: "running", text: "WPMgr is moving the draft to the trash." };
-      }
-      if (r.undo_state === "refused_published") {
-        return {
-          kind: "undo_refused",
-          text: "The draft has been published since, so WPMgr left it alone. Remove it in WordPress if you do not want it.",
-        };
-      }
-      if (r.undo_state === "refused_conflict") {
-        return {
-          kind: "undo_refused",
-          text: "The draft was edited since, so WPMgr left it alone. Remove it in WordPress if you do not want it.",
-        };
-      }
-      if (r.undo_state === "failed") {
-        return {
-          kind: "undo_failed",
-          text: "WPMgr could not move the draft to the trash. Remove it in WordPress if you do not want it.",
-        };
-      }
-      return { kind: "done", text: "Draft created." };
+      return undoStatus(r) ?? { kind: "done", text: "Draft created." };
     }
     case "failed": {
+      const undone = undoStatus(r);
+      if (undone) return undone;
       if (hasCreatedPost(r)) {
         if (r.trashed === true) {
           return {

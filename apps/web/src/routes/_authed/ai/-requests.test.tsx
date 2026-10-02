@@ -116,6 +116,38 @@ beforeEach(() => {
   declineMock.mockReset();
 });
 
+describe("/ai/requests AI page requests section on a failed load", () => {
+  it("hides the section quietly on a 403 (no site.content.edit)", async () => {
+    listMock.mockReturnValue(ok(list([])));
+    abilityListMock.mockReturnValue(
+      Promise.resolve({
+        data: undefined,
+        error: { code: "forbidden", message: "forbidden" },
+        response: { status: 403 },
+      }),
+    );
+    renderPage();
+    expect(await screen.findByTestId("ai-requests-empty")).toBeInTheDocument();
+    await waitFor(() => expect(abilityListMock).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByText(/could not load ai page requests/i)).not.toBeInTheDocument();
+    expect(screen.queryByTestId("org-ability-requests")).not.toBeInTheDocument();
+  });
+
+  it("still reports a 500", async () => {
+    listMock.mockReturnValue(ok(list([])));
+    abilityListMock.mockReturnValue(
+      Promise.resolve({
+        data: undefined,
+        error: { code: "internal", message: "boom" },
+        response: { status: 500 },
+      }),
+    );
+    renderPage();
+    expect(await screen.findByText(/could not load ai page requests/i)).toBeInTheDocument();
+  });
+});
+
 describe("/ai/requests renders the queue", () => {
   it("renders a genuinely empty queue as empty, not as a failure", async () => {
     listMock.mockReturnValue(ok(list([])));
