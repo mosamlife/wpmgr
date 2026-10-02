@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent\Abilities;
 
+use WPMgr\Agent\Support\ArrayShape;
+
 // Direct-file-access guard: keep above the docblock.
 if (!defined('ABSPATH')) {
     exit;
@@ -121,7 +123,7 @@ final class RestCall
             return self::refusal('route_entry_changed', 'the route row does not match its hash');
         }
         $row = json_decode($routeText, true, 16);
-        if (!is_array($row) || array_is_list($row)) {
+        if (!is_array($row) || ArrayShape::isList($row)) {
             return self::refusal('route_not_reviewed', 'the route row is not a JSON object');
         }
 
@@ -179,7 +181,7 @@ final class RestCall
         $specs = [];
         foreach (['path_params', 'query_keys', 'body_keys'] as $field) {
             $spec = $row[$field] ?? [];
-            if (!is_array($spec) || ($spec !== [] && array_is_list($spec))) {
+            if (!is_array($spec) || ($spec !== [] && ArrayShape::isList($spec))) {
                 return self::refusal('route_not_reviewed', 'the route ' . $field . ' is malformed');
             }
             foreach ($spec as $key => $def) {
@@ -194,7 +196,7 @@ final class RestCall
             $specs[$field] = $spec;
         }
         $pinned = $row['pinned_query'] ?? [];
-        if (!is_array($pinned) || ($pinned !== [] && array_is_list($pinned))) {
+        if (!is_array($pinned) || ($pinned !== [] && ArrayShape::isList($pinned))) {
             return self::refusal('route_not_reviewed', 'the route pinned_query is malformed');
         }
         foreach ($pinned as $key => $value) {
@@ -321,7 +323,7 @@ final class RestCall
                 return is_int($def['max_len'] ?? null) && $def['max_len'] >= 1 && $def['max_len'] <= 10000 ? null : 'string';
             case 'enum':
                 $values = $def['values'] ?? null;
-                if (!is_array($values) || $values === [] || !array_is_list($values)) {
+                if (!is_array($values) || $values === [] || !ArrayShape::isList($values)) {
                     return 'enum';
                 }
                 foreach ($values as $v) {
@@ -352,7 +354,7 @@ final class RestCall
             return self::refusal('bad_input', 'input must be JSON text of an object');
         }
         $input = json_decode($inputText, true, 8);
-        if (!is_array($input) || ($input !== [] && array_is_list($input)) || $input === []) {
+        if (!is_array($input) || ($input !== [] && ArrayShape::isList($input)) || $input === []) {
             return self::refusal('bad_input', 'input must be a JSON object');
         }
         foreach (array_keys($input) as $key) {
@@ -367,7 +369,7 @@ final class RestCall
         $parts = [];
         foreach (['path' => 'path_params', 'query' => 'query_keys', 'body' => 'body_keys'] as $part => $specField) {
             $given = $input[$part] ?? [];
-            if (!is_array($given) || ($given !== [] && array_is_list($given))) {
+            if (!is_array($given) || ($given !== [] && ArrayShape::isList($given))) {
                 return self::refusal('bad_input', 'input.' . $part . ' must be an object');
             }
             foreach (array_keys($given) as $key) {
@@ -468,7 +470,7 @@ final class RestCall
                     $out[$key] = $value;
                     break;
                 case 'int_list':
-                    if (!is_array($value) || !array_is_list($value) || $value === [] || count($value) > (int) $def['max_items']) {
+                    if (!is_array($value) || !ArrayShape::isList($value) || $value === [] || count($value) > (int) $def['max_items']) {
                         return $bad;
                     }
                     foreach ($value as $item) {
@@ -600,7 +602,7 @@ final class RestCall
         if (!is_array($data)) {
             return false;
         }
-        $items = array_is_list($data) ? $data : [$data];
+        $items = ArrayShape::isList($data) ? $data : [$data];
         foreach ($items as $item) {
             if (!is_array($item) || ($item['status'] ?? null) !== $status) {
                 return false;
@@ -627,7 +629,7 @@ final class RestCall
         if (($route['pinned_query']['status'] ?? null) !== 'inherit' || !is_array($data)) {
             return $data;
         }
-        if (!array_is_list($data)) {
+        if (!ArrayShape::isList($data)) {
             return self::parentPublished($data) ? $data : null;
         }
         $out = [];

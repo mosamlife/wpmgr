@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent\Abilities;
 
+use WPMgr\Agent\Support\ArrayShape;
+
 // Direct-file-access guard: keep above the docblock.
 if (!defined('ABSPATH')) {
     exit;
@@ -476,7 +478,7 @@ final class VendorAbility
             return null;
         }
         if (isset($shape['fields']) && is_array($shape['fields']) && count($shape) === 1) {
-            if (!is_array($value) || ($value !== [] && array_is_list($value))) {
+            if (!is_array($value) || ($value !== [] && ArrayShape::isList($value))) {
                 return null;
             }
             $out = new \stdClass();
@@ -490,7 +492,7 @@ final class VendorAbility
             return $out;
         }
         if (array_key_exists('items', $shape) && count($shape) === 1) {
-            if (!is_array($value) || !array_is_list($value)) {
+            if (!is_array($value) || !ArrayShape::isList($value)) {
                 return null;
             }
             $out = [];
