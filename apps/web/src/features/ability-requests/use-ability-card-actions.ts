@@ -40,7 +40,12 @@ export function useAbilityCardActions() {
     approve.mutate(
       { siteId: r.site_id, requestId: r.id, presentedDigest: r.presented_digest },
       {
-        onSuccess: () => toast.success("Approved. WPMgr will create the draft shortly."),
+        onSuccess: () =>
+          toast.success(
+            r.ability_name === "wpmgr/rest-write"
+              ? "Approved. WPMgr will make the change shortly."
+              : "Approved. WPMgr will create the draft shortly.",
+          ),
         onError: (err) => setNotice(r.id, err.code === CODE_REQUEST_CHANGED ? CHANGED_COPY : err.message),
       },
     );
@@ -65,7 +70,7 @@ export function useAbilityCardActions() {
         onSuccess: (done) => {
           switch (done.undo_state) {
             case "undone":
-              toast.success("Moved to the trash.");
+              toast.success(r.ability_name === "wpmgr/rest-write" ? "Put back the way it was." : "Moved to the trash.");
               break;
             case "refused_published":
               toast.error("The draft has been published since, so WPMgr left it alone.");
