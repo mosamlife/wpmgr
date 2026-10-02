@@ -35,6 +35,8 @@ type e3Agent struct {
 	mu     sync.Mutex
 	writes []agentcmd.AbilityRunCall
 	modes  []string
+	// writeErr, when set, is the write's answer instead of "updated".
+	writeErr error
 }
 
 func (a *e3Agent) AbilityRun(_ context.Context, _ uuid.UUID, _ string, call agentcmd.AbilityRunCall) (agentcmd.AbilityRunResponse, error) {
@@ -58,6 +60,9 @@ func (a *e3Agent) AbilityRun(_ context.Context, _ uuid.UUID, _ string, call agen
 			BaseFingerprint: base, PrecheckDigest: pre, TargetFacts: tf, Changes: ch, UndoExact: &undo}, nil
 	case agentcmd.AbilityRunModeWrite:
 		a.writes = append(a.writes, call)
+		if a.writeErr != nil {
+			return agentcmd.AbilityRunResponse{}, a.writeErr
+		}
 		return agentcmd.AbilityRunResponse{OK: true, Outcome: "updated", Mode: "write", PostID: 412}, nil
 	case agentcmd.AbilityRunModeRevert:
 		return agentcmd.AbilityRunResponse{OK: true, Outcome: "reverted", Mode: "revert", PostID: 412}, nil
