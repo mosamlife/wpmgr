@@ -224,19 +224,30 @@ final class AbilityRunCommandTest extends TestCase
     // Scope and denylist
     // -------------------------------------------------------------------------
 
-    public function test_a_vendor_ability_is_refused_even_when_the_entry_says_admitted(): void
+    public function test_a_vendor_read_is_refused_below_wordpress_7_1(): void
+    {
+        $r = $this->callP($this->p('read', 'acme-builder/get-page', [], '{}', [
+            'status' => 'admitted', 'source' => 'vendor', 'permission_mode' => 'principal', 'output_fields' => 'string',
+        ]));
+
+        $this->assertFalse($r['ok']);
+        $this->assertSame('wp_too_old_for_vendor_reads', $r['code']);
+    }
+
+    public function test_a_core_read_is_refused_below_wordpress_7_1(): void
+    {
+        $r = $this->callP($this->p('read', 'core/get-site-info', [], '{}', [
+            'source' => 'core', 'status' => 'admitted', 'permission_mode' => 'principal', 'output_fields' => 'string',
+        ]));
+
+        $this->assertSame('wp_too_old_for_vendor_reads', $r['code']);
+    }
+
+    public function test_a_vendor_entry_without_the_principal_mode_is_refused(): void
     {
         $r = $this->callP($this->p('read', 'acme-builder/get-page', [], '{}', ['status' => 'admitted', 'source' => 'vendor']));
 
-        $this->assertFalse($r['ok']);
-        $this->assertSame('ability_not_runnable_yet', $r['code']);
-    }
-
-    public function test_a_core_ability_is_refused_in_this_slice(): void
-    {
-        $r = $this->callP($this->p('read', 'core/get-site-info', [], '{}', ['source' => 'core', 'status' => 'admitted']));
-
-        $this->assertSame('ability_not_runnable_yet', $r['code']);
+        $this->assertSame('permission_mode_not_assertable', $r['code']);
     }
 
     /**
@@ -890,18 +901,19 @@ final class AbilityRunCommandTest extends TestCase
         $this->assertTrue((new AbilityGuards())->checkResult(['output' => []]));
     }
 
-    public function test_a_vendor_ability_stays_unrunnable_with_a_resolved_owner(): void
+    public function test_a_vendor_ability_is_not_found_when_the_site_has_none(): void
     {
+        $GLOBALS['wp_version'] = '7.1';
         $r = $this->callP($this->p('read', 'acmebuild/get-page-elements', [], '{}', [
-            'source'        => 'vendor',
-            'status'        => 'admitted',
-            'owner_kind'    => 'plugin',
-            'owner_dir'     => 'acmebuild',
-            'owner_version' => '2.4.1',
+            'source'          => 'vendor',
+            'status'          => 'admitted',
+            'permission_mode' => 'principal',
+            'owner_dir'       => 'acmebuild',
+            'output_fields'   => 'string',
         ]));
 
         $this->assertFalse($r['ok']);
-        $this->assertSame('ability_not_runnable_yet', $r['code']);
+        $this->assertSame('ability_not_on_site', $r['code']);
     }
 
     /**

@@ -684,3 +684,88 @@ if (!function_exists('get_file_data')) {
         return $out;
     }
 }
+
+// ---------------------------------------------------------------------------
+// Abilities API and REST schema validation
+// ---------------------------------------------------------------------------
+
+if (!function_exists('wp_get_ability')) {
+    /**
+     * Registered ability by name. No registry in the suite: tests override.
+     *
+     * @param string $name Ability name.
+     * @return WP_Ability|null
+     */
+    function wp_get_ability(string $name): ?\WP_Ability
+    {
+        return null;
+    }
+}
+
+if (!function_exists('rest_validate_value_from_schema')) {
+    /**
+     * The subset of core's schema validation the suite exercises: type
+     * (object, array, string, integer, number, boolean, null, or a list of
+     * types), required, properties, additionalProperties false, items and
+     * enum. Returns true or a WP_Error, like core.
+     *
+     * @param mixed               $value Value.
+     * @param array<string,mixed> $args  Schema.
+     * @param string              $param Parameter name.
+     * @return true|\WP_Error
+     */
+    function rest_validate_value_from_schema($value, $args, $param = '')
+    {
+        $fail  = static fn (string $why) => new \WP_Error('rest_invalid_param', $param . ': ' . $why);
+        $types = isset($args['type']) ? (array) $args['type'] : [];
+        if ($types !== []) {
+            $ok = false;
+            foreach ($types as $t) {
+                $ok = $ok || match ($t) {
+                    'object'  => is_array($value) && ($value === [] || !array_is_list($value)),
+                    'array'   => is_array($value) && array_is_list($value),
+                    'string'  => is_string($value),
+                    'integer' => is_int($value),
+                    'number'  => is_int($value) || is_float($value),
+                    'boolean' => is_bool($value),
+                    'null'    => $value === null,
+                    default   => false,
+                };
+            }
+            if (!$ok) {
+                return $fail('wrong type');
+            }
+        }
+        if (isset($args['enum']) && is_array($args['enum']) && !in_array($value, $args['enum'], true)) {
+            return $fail('not in enum');
+        }
+        if (is_array($value) && in_array('object', $types, true)) {
+            foreach ((array) ($args['required'] ?? []) as $req) {
+                if (!array_key_exists($req, $value)) {
+                    return $fail('missing ' . $req);
+                }
+            }
+            $props = (array) ($args['properties'] ?? []);
+            foreach ($value as $k => $v) {
+                if (isset($props[$k])) {
+                    $r = rest_validate_value_from_schema($v, $props[$k], $param . '[' . $k . ']');
+                    if ($r !== true) {
+                        return $r;
+                    }
+                } elseif (($args['additionalProperties'] ?? true) === false) {
+                    return $fail('unexpected ' . $k);
+                }
+            }
+        }
+        if (is_array($value) && in_array('array', $types, true) && isset($args['items'])) {
+            foreach ($value as $i => $v) {
+                $r = rest_validate_value_from_schema($v, $args['items'], $param . '[' . $i . ']');
+                if ($r !== true) {
+                    return $r;
+                }
+            }
+        }
+
+        return true;
+    }
+}

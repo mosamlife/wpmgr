@@ -647,10 +647,24 @@ if (!class_exists('WP_Filter_Sentinel')) {
 }
 
 if (!class_exists('WP_Ability')) {
+    /**
+     * Follows core 7.1's WP_Ability execution path method for method: the
+     * same filters with the same arguments in the same order, the real
+     * per-call sentinel, input passed to a callback only when an input schema
+     * exists, callback throws turned into a WP_Error, and schema validation
+     * through rest_validate_value_from_schema(). Translated messages are
+     * replaced by fixed text; nothing the agent reads depends on them.
+     */
     class WP_Ability
     {
         /** @var string */
         protected $name;
+
+        /** @var array<string,mixed> */
+        protected $input_schema = [];
+
+        /** @var array<string,mixed> */
+        protected $output_schema = [];
 
         /** @var callable */
         protected $execute_callback;
@@ -660,13 +674,16 @@ if (!class_exists('WP_Ability')) {
 
         /**
          * @param string              $name Ability name.
-         * @param array<string,mixed> $args execute_callback, permission_callback.
+         * @param array<string,mixed> $args execute_callback, permission_callback,
+         *                                  input_schema, output_schema.
          */
         public function __construct(string $name, array $args)
         {
             $this->name                = $name;
             $this->execute_callback    = $args['execute_callback'] ?? null;
             $this->permission_callback = $args['permission_callback'] ?? null;
+            $this->input_schema        = $args['input_schema'] ?? [];
+            $this->output_schema       = $args['output_schema'] ?? [];
         }
 
         public function get_name(): string
@@ -677,55 +694,157 @@ if (!class_exists('WP_Ability')) {
         /** @return array<string,mixed> */
         public function get_input_schema(): array
         {
-            return [];
+            return $this->input_schema;
         }
 
         /** @return array<string,mixed> */
         public function get_output_schema(): array
         {
-            return [];
+            return $this->output_schema;
         }
 
         /** @param mixed $input Input. @return mixed */
         public function normalize_input($input = null)
         {
-            return $input;
+            if (null === $input) {
+                $input_schema = $this->get_input_schema();
+                if (array_key_exists('default', $input_schema)) {
+                    $input = $input_schema['default'];
+                }
+            }
+
+            return apply_filters('wp_ability_normalize_input', $input, $this->name, $this);
         }
 
         /** @param mixed $input Input. @return mixed */
         public function validate_input($input = null)
         {
+            $input_schema = $this->get_input_schema();
+            if (empty($input_schema)) {
+                if (null === $input) {
+                    return true;
+                }
+
+                return new WP_Error('ability_missing_input_schema', 'no input schema');
+            }
+            $valid_input = rest_validate_value_from_schema($input, $input_schema, 'input');
+            $is_valid    = is_wp_error($valid_input) ? new WP_Error('ability_invalid_input', 'invalid input') : true;
+
+            $validity = apply_filters('wp_ability_validate_input', $is_valid, $input, $this->name);
+            if (false === $validity) {
+                return new WP_Error('ability_invalid_input', 'Invalid input.');
+            }
+            if (is_wp_error($validity)) {
+                return $validity;
+            }
+
             return true;
         }
 
         /** @param mixed $input Input. @return mixed */
         protected function invoke_callback(callable $callback, $input = null)
         {
-            return $callback($input);
+            $args = [];
+            if (!empty($this->get_input_schema())) {
+                $args[] = $input;
+            }
+            try {
+                return $callback(...$args);
+            } catch (\Throwable $e) {
+                return new WP_Error('ability_callback_exception', 'callback threw');
+            }
         }
 
         /** @param mixed $input Input. @return mixed */
         public function check_permissions($input = null)
         {
-            return $this->invoke_callback($this->permission_callback, $input);
+            if (!is_callable($this->permission_callback)) {
+                return new WP_Error('ability_invalid_permission_callback', 'no permission callback');
+            }
+            $permission = $this->invoke_callback($this->permission_callback, $input);
+            $result     = apply_filters('wp_ability_permission_result', $permission, $this->name, $input, $this);
+            if (!is_bool($result) && !is_wp_error($result)) {
+                $result = false;
+            }
+
+            return $result;
         }
 
         /** @param mixed $input Input. @return mixed */
         protected function do_execute($input = null)
         {
-            return $this->invoke_callback($this->execute_callback, $input);
+            if (!is_callable($this->execute_callback)) {
+                $result = new WP_Error('ability_invalid_execute_callback', 'no execute callback');
+            } else {
+                $result = $this->invoke_callback($this->execute_callback, $input);
+            }
+
+            return apply_filters('wp_ability_execute_result', $result, $this->name, $input, $this);
         }
 
         /** @param mixed $output Output. @return mixed */
         protected function validate_output($output)
         {
+            $output_schema = $this->get_output_schema();
+            if (empty($output_schema)) {
+                $is_valid = true;
+            } else {
+                $valid    = rest_validate_value_from_schema($output, $output_schema, 'output');
+                $is_valid = is_wp_error($valid) ? new WP_Error('ability_invalid_output', 'invalid output') : true;
+            }
+            $validity = apply_filters('wp_ability_validate_output', $is_valid, $output, $this->name);
+            if (false === $validity) {
+                return new WP_Error('ability_invalid_output', 'Invalid output.');
+            }
+            if (is_wp_error($validity)) {
+                return $validity;
+            }
+
             return true;
         }
 
         /** @param mixed $input Input. @return mixed */
         public function execute($input = null)
         {
-            return $this->do_execute($input);
+            do_action('wp_ability_invoked', $this->name, $input, $this);
+
+            $pre_execute_sentinel = new WP_Filter_Sentinel();
+
+            $pre = apply_filters('wp_pre_execute_ability', $pre_execute_sentinel, $this->name, $input, $this);
+            if ($pre !== $pre_execute_sentinel) {
+                return $pre;
+            }
+
+            $input = $this->normalize_input($input);
+            if (is_wp_error($input)) {
+                return $input;
+            }
+
+            $is_valid = $this->validate_input($input);
+            if (is_wp_error($is_valid)) {
+                return $is_valid;
+            }
+
+            $has_permissions = $this->check_permissions($input);
+            if (true !== $has_permissions) {
+                return new WP_Error('ability_invalid_permissions', 'no permission');
+            }
+
+            do_action('wp_before_execute_ability', $this->name, $input, $this);
+
+            $result = $this->do_execute($input);
+            if (is_wp_error($result)) {
+                return $result;
+            }
+
+            $is_valid = $this->validate_output($result);
+            if (is_wp_error($is_valid)) {
+                return $is_valid;
+            }
+
+            do_action('wp_after_execute_ability', $this->name, $input, $result, $this);
+
+            return $result;
         }
     }
 }
