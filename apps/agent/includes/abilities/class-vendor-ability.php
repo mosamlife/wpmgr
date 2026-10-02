@@ -161,7 +161,11 @@ final class VendorAbility
             }
         }
         $actual = AbilitySchema::hashOf($ability, $dynamic);
-        if (!is_string($pinned) || $pinned === '' || !is_string($actual) || !hash_equals($pinned, $actual)) {
+        // The catalogue pins bare lowercase hex; the agent's own hash carries
+        // a "sha256:" prefix. Both are reduced to bare hex before comparing.
+        $pinned = self::bareSha($pinned);
+        $actual = self::bareSha($actual);
+        if ($pinned === null || $actual === null || !hash_equals($pinned, $actual)) {
             return ['refusal' => self::refuse('ability_schema_changed', 'the ability\'s input schema differs from the reviewed one')];
         }
 
@@ -314,6 +318,25 @@ final class VendorAbility
         }
 
         return null;
+    }
+
+    /**
+     * A sha256 as bare lowercase hex, with an optional "sha256:" prefix
+     * removed; null for anything that is not one.
+     *
+     * @param mixed $value Candidate.
+     * @return string|null
+     */
+    public static function bareSha($value): ?string
+    {
+        if (!is_string($value)) {
+            return null;
+        }
+        if (strncmp($value, 'sha256:', 7) === 0) {
+            $value = substr($value, 7);
+        }
+
+        return preg_match('/^[0-9a-f]{64}$/', $value) === 1 ? $value : null;
     }
 
     /**

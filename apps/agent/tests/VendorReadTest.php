@@ -464,6 +464,19 @@ final class VendorReadTest extends TestCase
         $this->assertSame('ability_schema_changed', $this->read('{"post_id":7}', ['schema_struct_sha256' => null])['code']);
     }
 
+    public function test_the_catalogue_pins_the_schema_hash_as_bare_hex(): void
+    {
+        $agent = (string) AbilitySchema::hashOf($this->ability());
+        $this->assertMatchesRegularExpression('/^sha256:[0-9a-f]{64}$/', $agent, 'the inventory reports the hash with its prefix');
+        $bare = substr($agent, 7);
+        $this->assertMatchesRegularExpression('/^[0-9a-f]{64}$/', $bare, 'the catalogue column holds bare hex');
+
+        $this->assertTrue($this->read('{"post_id":7}', ['schema_struct_sha256' => $bare])['ok'], 'a catalogue entry as stored passes');
+        $this->assertTrue($this->read('{"post_id":7}', ['schema_struct_sha256' => $agent])['ok'], 'the prefixed form compares equal');
+        $this->assertSame('ability_schema_changed', $this->read('{"post_id":7}', ['schema_struct_sha256' => strtoupper($bare)])['code']);
+        $this->assertSame('ability_schema_changed', $this->read('{"post_id":7}', ['schema_struct_sha256' => str_repeat('0', 64)])['code']);
+    }
+
     public function test_an_owner_other_than_the_entrys_is_refused(): void
     {
         $this->assertSame('ability_owner_mismatch', $this->read('{"post_id":7}', ['owner_dir' => 'otherbuild'])['code']);
@@ -937,7 +950,8 @@ final class VendorReadTest extends TestCase
             'owner_dir'            => 'acmebuild',
             'version_min'          => '2.4',
             'version_max_tested'   => '2.4.1',
-            'schema_struct_sha256' => AbilitySchema::hashOf($this->ability()),
+            // Stored the way the catalogue stores it: bare lowercase hex.
+            'schema_struct_sha256' => substr((string) AbilitySchema::hashOf($this->ability()), strlen('sha256:')),
             'dynamic_enum_paths'   => [],
             'snapshot'             => 'none',
             'limits'               => new \stdClass(),
