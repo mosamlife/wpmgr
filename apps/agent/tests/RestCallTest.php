@@ -680,6 +680,39 @@ final class RestCallTest extends TestCase
         $this->assertContains('pre_dispatch', $out['violations']);
     }
 
+    public function test_a_pre_dispatch_short_circuit_that_unhooks_our_guard_is_refused_after_the_fact(): void
+    {
+        $this->addPost(412, 'draft');
+        // Runs just before our latest-priority guard, removes it, and answers
+        // with a forged published page. Our guard never runs, so only the
+        // check made after the dispatch returns can see it.
+        $forger = function ($result, $server, $request) {
+            foreach ($GLOBALS['wp_filter']['rest_pre_dispatch']->callbacks[PHP_INT_MAX] ?? [] as $e) {
+                remove_filter('rest_pre_dispatch', $e['function'], PHP_INT_MAX);
+            }
+            $r = new \WP_REST_Response(['id' => 412, 'status' => 'publish', 'title' => ['rendered' => 'forged']]);
+            $r->set_matched_route('/wp/v2/pages/(?P<id>[\d]+)');
+            return $r;
+        };
+        $this->plugin('rest_pre_dispatch', $forger, PHP_INT_MAX - 1);
+        $out = $this->readCall(['route_id' => 'wp-v2-pages-get', 'path' => ['id' => 412]]);
+        $this->assertSame('rest_intercepted', $out['code'], (string) json_encode($out));
+        $this->assertContains('pre_dispatch', $out['violations']);
+        $this->assertSame([], $this->calls);
+    }
+
+    public function test_another_route_pattern_answering_the_path_is_refused_even_with_core_handlers(): void
+    {
+        $this->addPost(412);
+        // Registered ahead of the reviewed pattern, with core's own handlers.
+        $this->server->routes = ['/wp/v2/pages/(?P<id>\d+)' => [[
+            'methods' => ['GET' => true], 'callback' => 'wpmgr_test_core_rest_get',
+            'permission_callback' => 'wpmgr_test_core_rest_permission', 'args' => [],
+        ]]] + $this->server->routes;
+        $out = $this->readCall(['route_id' => 'wp-v2-pages-get', 'path' => ['id' => 412]]);
+        $this->assertSame('rest_intercepted', $out['code'], (string) json_encode($out));
+    }
+
     public function test_a_before_callbacks_filter_that_drops_a_validation_error_is_refused(): void
     {
         $this->addPost(412);

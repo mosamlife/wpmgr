@@ -572,8 +572,19 @@ if (!class_exists('WP_REST_Server')) {
             }
             $callbacks = $hook->callbacks;
             ksort($callbacks);
-            foreach ($callbacks as $bucket) {
+            foreach ($callbacks as $priority => $bucket) {
                 foreach ($bucket as $entry) {
+                    // As core's WP_Hook: a callback removed while the hook
+                    // runs does not run.
+                    $live = false;
+                    foreach ($hook->callbacks[$priority] ?? [] as $now) {
+                        if ($now['function'] === $entry['function']) {
+                            $live = true;
+                        }
+                    }
+                    if (!$live) {
+                        continue;
+                    }
                     $args[0] = $value;
                     $value   = call_user_func_array($entry['function'], array_slice($args, 0, (int) $entry['accepted_args']));
                 }
