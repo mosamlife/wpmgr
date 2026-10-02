@@ -93,9 +93,9 @@ final class VendorAbility
      * The registered ability, or null when the site has none by that name.
      *
      * @param string $name Ability name.
-     * @return object|null
+     * @return \WP_Ability|null
      */
-    public static function resolve(string $name): ?object
+    public static function resolve(string $name): ?\WP_Ability
     {
         if (!function_exists('wp_get_ability') || !class_exists('WP_Ability', false)) {
             return null;
@@ -200,14 +200,14 @@ final class VendorAbility
      * Run the ability once, guarded and recorded. Call while the service
      * principal is the current user.
      *
-     * @param object             $ability     Registered ability.
+     * @param \WP_Ability        $ability     Registered ability.
      * @param string             $name        Ability name.
      * @param mixed              $input       Prepared input.
      * @param list<mixed>        $nestedAllow Entry's nested allow-list.
      * @param AbilitySideEffects $effects     Side-effect recorder.
      * @return array{result:mixed,violations:list<string>,invoked:list<string>}
      */
-    public static function call(object $ability, string $name, $input, array $nestedAllow, AbilitySideEffects $effects): array
+    public static function call(\WP_Ability $ability, string $name, $input, array $nestedAllow, AbilitySideEffects $effects): array
     {
         $allow = [];
         foreach ($nestedAllow as $n) {
@@ -267,8 +267,8 @@ final class VendorAbility
                 : ['code' => 'ability_intercepted', 'detail' => 'another plugin interfered with the call', 'extra' => ['violations' => $violations]];
         }
         $result = $call['result'];
-        if (is_object($result) && is_a($result, 'WP_Error')) {
-            $raw  = method_exists($result, 'get_error_code') ? $result->get_error_code() : '';
+        if ($result instanceof \WP_Error) {
+            $raw  = $result->get_error_code();
             $core = is_string($raw) ? substr((string) preg_replace('/[^a-z0-9_-]/', '', strtolower($raw)), 0, 64) : '';
             if (isset(self::ERROR_MAP[$core])) {
                 return ['code' => self::ERROR_MAP[$core], 'detail' => 'the ability refused the call', 'extra' => []];
