@@ -585,6 +585,21 @@ final class RestCallTest extends TestCase
         $this->assertArrayHasKey('route', RestCall::parseRoute(self::fixture('write-wp-v2-pages-update-fields'), hash('sha256', self::fixture('write-wp-v2-pages-update-fields')), RestCall::NAME_WRITE, '7.1'));
     }
 
+    public function test_the_precheck_digest_matches_the_one_go_computed_over_the_same_bytes(): void
+    {
+        $text = file_get_contents(__DIR__ . '/fixtures/rest-call/digest-vector.json');
+        $this->assertIsString($text);
+        $v = json_decode($text, true);
+        $this->assertIsArray($v);
+        foreach (['entry_sha256', 'route_sha256', 'input', 'base_fingerprint', 'precheck_digest'] as $key) {
+            $this->assertIsString($v[$key] ?? null, $key);
+        }
+        $this->assertSame(
+            $v['precheck_digest'],
+            RestCall::precheckDigest($v['entry_sha256'], $v['route_sha256'], hash('sha256', $v['input']), $v['base_fingerprint'])
+        );
+    }
+
     // ------------------------------------------------------------------
     // Reads
     // ------------------------------------------------------------------
