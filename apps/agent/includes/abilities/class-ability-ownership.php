@@ -67,6 +67,10 @@ final class AbilityOwnership
     /** Deepest nesting of captured callables or values followed. */
     private const MAX_CAPTURE_DEPTH = 4;
 
+    /** Bounds on the plain captured data walked without counting depth. */
+    private const MAX_PLAIN_DEPTH = 64;
+    private const MAX_PLAIN_NODES = 10000;
+
     /** @var array<string,array<string,string>> Symlinked entries per root. */
     private static array $links = [];
 
@@ -513,6 +517,12 @@ final class AbilityOwnership
      */
     private static function capturedSources($value, int $depth, array &$classes): ?array
     {
+        // Plain data runs no code, so it neither adds a source nor counts
+        // against the depth bound. Objects stay strict.
+        $budget = self::MAX_PLAIN_NODES;
+        if (self::isPlainData($value, 0, $budget)) {
+            return [];
+        }
         if ($depth > self::MAX_CAPTURE_DEPTH) {
             return null;
         }
@@ -557,6 +567,38 @@ final class AbilityOwnership
         }
 
         return [];
+    }
+
+    /**
+     * Is $value plain data: null, a bool, a number, a string that names no
+     * callable, or an array of those, within a nesting and size bound?
+     *
+     * @param mixed $value  Captured value.
+     * @param int   $level  Nesting level.
+     * @param int   $budget Nodes left to visit.
+     * @return bool False for anything else, or past the bound.
+     */
+    private static function isPlainData($value, int $level, int &$budget): bool
+    {
+        if (--$budget < 0 || $level > self::MAX_PLAIN_DEPTH) {
+            return false;
+        }
+        if ($value === null || is_bool($value) || is_int($value) || is_float($value)) {
+            return true;
+        }
+        if (is_string($value)) {
+            return $value === '' || !is_callable($value);
+        }
+        if (!is_array($value) || is_callable($value)) {
+            return false;
+        }
+        foreach ($value as $item) {
+            if (!self::isPlainData($item, $level + 1, $budget)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**

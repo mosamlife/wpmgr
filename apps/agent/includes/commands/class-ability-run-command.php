@@ -912,18 +912,20 @@ final class AbilityRunCommand implements CommandInterface
         $input   = $prepared['input'] ?? null;
         $shape   = json_decode((string) json_encode($entry->output_fields ?? null), true);
 
-        return $this->asPrincipal(function () use ($ability, $name, $input, $nested, $effects, $entrySha, $owner, $shape): array {
+        return $this->asPrincipal(function (int $principal) use ($ability, $name, $input, $nested, $effects, $entrySha, $owner, $shape): array {
             $call    = VendorAbility::call($ability, $name, $input, $nested, $effects);
-            $refusal = VendorAbility::outcomeRefusal($call, $effects);
+            $same    = function_exists('get_current_user_id') && (int) get_current_user_id() === $principal;
+            $refusal = VendorAbility::outcomeRefusal($call, $effects, $same);
             if ($refusal !== null) {
                 return $this->fail($refusal['code'], $refusal['detail'], false, $refusal['extra']);
             }
 
-            $raw = json_encode($call['result']);
-            if (!is_string($raw)) {
-                return $this->fail('ability_output_invalid', 'the ability output is not JSON-encodable');
+            $raw     = (string) $call['json'];
+            $decoded = json_decode($raw, true);
+            if ($decoded === null) {
+                return $this->fail('ability_output_invalid', 'the ability output could not be read back');
             }
-            $output  = VendorAbility::project(json_decode($raw, true, 64), $shape);
+            $output  = VendorAbility::project($decoded, $shape);
             $encoded = json_encode($output);
             if (!is_string($encoded)) {
                 return $this->fail('ability_output_invalid', 'the ability output is not JSON-encodable');

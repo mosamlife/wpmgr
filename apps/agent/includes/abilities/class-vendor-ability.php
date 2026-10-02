@@ -38,6 +38,9 @@ final class VendorAbility
 
     private const RE_DIR = '/^[A-Za-z0-9][A-Za-z0-9._-]*$/';
 
+    /** A live owner version is reported back, so it must be plain. */
+    private const RE_VERSION = '/^[0-9A-Za-z._+~-]{1,64}$/';
+
     /** Deepest output shape followed. */
     private const MAX_SHAPE_DEPTH = 16;
 
@@ -137,10 +140,15 @@ final class VendorAbility
             return ['refusal' => self::refuse($owner, 'the ability on this site is not the reviewed one')];
         }
 
+        // A must-use plugin carries no version header core reads, so its
+        // version can never be checked against a range.
+        if ($kind === AbilityOwnership::KIND_MU_PLUGIN) {
+            return ['refusal' => self::refuse('builder_version_unverified', 'a must-use plugin has no version to check')];
+        }
         $live = AbilityOwnership::ownerVersion($kind, $dir, $plugins);
         $min  = $entry->version_min ?? null;
         $max  = $entry->version_max_tested ?? null;
-        if (!is_string($live) || $live === '' || !is_string($min) || $min === '' || !is_string($max) || $max === ''
+        if (!is_string($live) || preg_match(self::RE_VERSION, $live) !== 1 || !is_string($min) || $min === '' || !is_string($max) || $max === ''
             || !VersionCompare::inRange($live, $min, $max)) {
             return ['refusal' => self::refuse('builder_version_unverified', 'the installed version is outside the reviewed range')];
         }
@@ -200,12 +208,18 @@ final class VendorAbility
      * Run the ability once, guarded and recorded. Call while the service
      * principal is the current user.
      *
+     * The result is JSON-encoded and released while the recorder is still
+     * armed, so code that runs during serialisation or destruction of the
+     * result is recorded too. Any throw from the call is caught, recorded as
+     * a violation, and never reported with its text; the hook stacks the
+     * throw left open are closed back to their state before the call.
+     *
      * @param \WP_Ability        $ability     Registered ability.
      * @param string             $name        Ability name.
      * @param mixed              $input       Prepared input.
      * @param list<mixed>        $nestedAllow Entry's nested allow-list.
      * @param AbilitySideEffects $effects     Side-effect recorder.
-     * @return array{result:mixed,violations:list<string>,invoked:list<string>}
+     * @return array{json:string|null,error_code:string|null,violations:list<string>,invoked:list<string>}
      */
     public static function call(\WP_Ability $ability, string $name, $input, array $nestedAllow, AbilitySideEffects $effects): array
     {
@@ -215,69 +229,195 @@ final class VendorAbility
                 $allow[] = $n;
             }
         }
-        $guards = new AbilityGuards();
-        $result = null;
+        $guards     = new AbilityGuards();
+        $extra      = [];
+        $json       = null;
+        $errorCode  = null;
+        $stack      = self::hookState();
         try {
             $guards->arm($name, $allow);
             try {
                 $effects->arm();
                 try {
                     $result = $ability->execute($input);
+                    $guards->checkResult($result);
+                    if ($result instanceof \WP_Error) {
+                        $errorCode = self::errorCode($result);
+                    } else {
+                        $encoded = json_encode($result);
+                        $json    = is_string($encoded) ? $encoded : null;
+                    }
+                    $result = null;
                 } catch (AbilityInterception $e) {
                     // The guards recorded why; the caller refuses.
                     $result = null;
+                    self::restoreHookState($stack);
+                } catch (\Throwable $e) {
+                    $result  = null;
+                    $extra[] = 'uncaught_exception';
+                    self::restoreHookState($stack);
                 }
             } finally {
                 $effects->disarm();
             }
             // Before disarm: the end-of-call check needs the hooks in place.
-            $guards->checkResult($result);
             $guards->finish();
         } finally {
             $guards->disarm();
         }
 
-        return ['result' => $result, 'violations' => $guards->violations(), 'invoked' => $guards->invoked()];
+        return [
+            'json'       => $json,
+            'error_code' => $errorCode,
+            'violations' => array_values(array_unique(array_merge($guards->violations(), $extra))),
+            'invoked'    => $guards->invoked(),
+        ];
     }
 
     /**
-     * The refusal for a finished call, or null when its result may be used.
-     * Side effects first, then guard violations, then a core error.
+     * The refusal for a finished call, or null when its output may be used.
+     * Side effects first, then a switched user, then violations, then the
+     * ability's own error.
      *
-     * @param array{result:mixed,violations:list<string>,invoked:list<string>} $call    From call().
-     * @param AbilitySideEffects                                                $effects Recorder.
+     * @param array{json:string|null,error_code:string|null,violations:list<string>,invoked:list<string>} $call        From call().
+     * @param AbilitySideEffects                                                                        $effects     Recorder.
+     * @param bool                                                                                      $principalOk Whether the principal is still the current user.
      * @return array{code:string,detail:string,extra:array<string,mixed>}|null
      */
-    public static function outcomeRefusal(array $call, AbilitySideEffects $effects): ?array
+    public static function outcomeRefusal(array $call, AbilitySideEffects $effects, bool $principalOk = true): ?array
     {
         $violations = $call['violations'];
+        $with       = $violations !== [] ? ['violations' => $violations] : [];
         if ($effects->detected()) {
-            $extra = ['side_effects' => $effects->details()];
-            if ($violations !== []) {
-                $extra['violations'] = $violations;
-            }
-
-            return ['code' => 'read_side_effect_detected', 'detail' => 'the read changed the site or called out; its output was withheld', 'extra' => $extra];
+            return ['code' => 'read_side_effect_detected', 'detail' => 'the read changed the site or called out; its output was withheld', 'extra' => ['side_effects' => $effects->details()] + $with];
+        }
+        if (!$principalOk) {
+            return ['code' => 'principal_switched', 'detail' => 'the current user changed during the call; its output was withheld', 'extra' => $with];
         }
         if ($violations !== []) {
             $nestedOnly = array_diff_key(array_flip($violations), self::NESTED) === [];
 
             return $nestedOnly
-                ? ['code' => 'nested_ability_refused', 'detail' => 'the ability called another ability that is not allowed', 'extra' => ['violations' => $violations]]
-                : ['code' => 'ability_intercepted', 'detail' => 'another plugin interfered with the call', 'extra' => ['violations' => $violations]];
+                ? ['code' => 'nested_ability_refused', 'detail' => 'the ability called another ability that is not allowed', 'extra' => $with]
+                : ['code' => 'ability_intercepted', 'detail' => 'the call was interfered with or did not finish', 'extra' => $with];
         }
-        $result = $call['result'];
-        if ($result instanceof \WP_Error) {
-            $raw  = $result->get_error_code();
-            $core = is_string($raw) ? substr((string) preg_replace('/[^a-z0-9_-]/', '', strtolower($raw)), 0, 64) : '';
+        $core = $call['error_code'];
+        if ($core !== null) {
             if (isset(self::ERROR_MAP[$core])) {
                 return ['code' => self::ERROR_MAP[$core], 'detail' => 'the ability refused the call', 'extra' => []];
             }
 
             return ['code' => 'ability_failed', 'detail' => 'the ability returned an error', 'extra' => ['error_code' => $core]];
         }
+        if ($call['json'] === null) {
+            return ['code' => 'ability_output_invalid', 'detail' => 'the ability output is not JSON-encodable', 'extra' => []];
+        }
 
         return null;
+    }
+
+    /**
+     * An error's code, reduced to [a-z0-9_-] and 64 bytes.
+     *
+     * @param \WP_Error $error Error.
+     * @return string
+     */
+    private static function errorCode(\WP_Error $error): string
+    {
+        $raw = $error->get_error_code();
+
+        return is_string($raw) ? substr((string) preg_replace('/[^a-z0-9_-]/', '', strtolower($raw)), 0, 64) : '';
+    }
+
+    /**
+     * The hook-execution state a throw can leave open: the current-filter
+     * stack depth and, per hook object, its nesting level and action flag.
+     *
+     * @return array{depth:int,hooks:array<string,array{0:object,1:int,2:bool}>}
+     */
+    private static function hookState(): array
+    {
+        $current = $GLOBALS['wp_current_filter'] ?? [];
+        $state   = ['depth' => is_array($current) ? count($current) : 0, 'hooks' => []];
+        $props   = self::hookProps();
+        if ($props === null || !is_array($GLOBALS['wp_filter'] ?? null)) {
+            return $state;
+        }
+        foreach ($GLOBALS['wp_filter'] as $tag => $hook) {
+            if ($hook instanceof \WP_Hook) {
+                $state['hooks'][(string) $tag] = [$hook, (int) $props['nesting_level']->getValue($hook), (bool) $props['doing_action']->getValue($hook)];
+            }
+        }
+
+        return $state;
+    }
+
+    /**
+     * Close what a throw left open: trim the current-filter stack back to its
+     * depth before the call, and return each hook object to the nesting level
+     * and action flag it had then, dropping its iteration state for the
+     * levels the throw abandoned. Safe because the throw has unwound every
+     * frame that ran at those levels. A hook first registered during the call
+     * returns to level zero.
+     *
+     * @param array{depth:int,hooks:array<string,array{0:object,1:int,2:bool}>} $state From hookState().
+     * @return void
+     */
+    private static function restoreHookState(array $state): void
+    {
+        if (isset($GLOBALS['wp_current_filter']) && is_array($GLOBALS['wp_current_filter'])
+            && count($GLOBALS['wp_current_filter']) > $state['depth']) {
+            $GLOBALS['wp_current_filter'] = array_slice($GLOBALS['wp_current_filter'], 0, $state['depth']);
+        }
+        $props = self::hookProps();
+        if ($props === null || !is_array($GLOBALS['wp_filter'] ?? null)) {
+            return;
+        }
+        foreach ($GLOBALS['wp_filter'] as $tag => $hook) {
+            if (!$hook instanceof \WP_Hook) {
+                continue;
+            }
+            $saved = $state['hooks'][(string) $tag] ?? null;
+            [$level, $doing] = $saved !== null && $saved[0] === $hook ? [$saved[1], $saved[2]] : [0, false];
+            try {
+                if ((int) $props['nesting_level']->getValue($hook) <= $level) {
+                    continue;
+                }
+                foreach (['iterations', 'current_priority'] as $name) {
+                    $value = $props[$name]->getValue($hook);
+                    if (is_array($value)) {
+                        $props[$name]->setValue($hook, array_filter($value, static fn ($k) => (int) $k < $level, ARRAY_FILTER_USE_KEY));
+                    }
+                }
+                $props['nesting_level']->setValue($hook, $level);
+                $props['doing_action']->setValue($hook, $doing);
+            } catch (\Throwable $e) {
+                continue;
+            }
+        }
+    }
+
+    /**
+     * Reflection handles on WP_Hook's execution state, or null when this
+     * WordPress does not have them.
+     *
+     * @return array<string,\ReflectionProperty>|null
+     */
+    private static function hookProps(): ?array
+    {
+        if (!class_exists('WP_Hook', false)) {
+            return null;
+        }
+        try {
+            $out = [];
+            foreach (['nesting_level', 'doing_action', 'iterations', 'current_priority'] as $name) {
+                $out[$name] = new \ReflectionProperty(\WP_Hook::class, $name);
+            }
+
+            return $out;
+        } catch (\ReflectionException $e) {
+            return null;
+        }
     }
 
     /**
