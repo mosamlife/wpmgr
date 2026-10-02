@@ -21,9 +21,11 @@ if (!defined('ABSPATH')) {
  * (titles, page text, ability labels) is returned only under a
  * `from_the_site` key, so the control plane can fence it as data.
  *
- * wpmgr/page-create is the one write. It is never run through run() and
- * never registered with the Abilities API: the engine's write mode drives it
- * directly, as the service principal, under the site ledger.
+ * wpmgr/page-create and wpmgr/rest-write are the writes. Neither is run
+ * through run() or registered with the Abilities API: the engine's write mode
+ * drives them directly, as the service principal, under the site ledger.
+ * wpmgr/rest-read is not registered either; it runs only through the engine,
+ * against one reviewed route row (see RestCall).
  */
 final class OwnAbilities
 {
@@ -31,6 +33,8 @@ final class OwnAbilities
     public const NAME_FACTS     = 'wpmgr/site-facts';
     public const NAME_CONTENT   = 'wpmgr/content-read';
     public const NAME_PAGE_CREATE = 'wpmgr/page-create';
+    public const NAME_REST_READ   = RestCall::NAME_READ;
+    public const NAME_REST_WRITE  = RestCall::NAME_WRITE;
 
     private const CATEGORY = 'wpmgr';
 
@@ -58,7 +62,7 @@ final class OwnAbilities
      */
     public static function names(): array
     {
-        return [self::NAME_INVENTORY, self::NAME_FACTS, self::NAME_CONTENT, self::NAME_PAGE_CREATE];
+        return [self::NAME_INVENTORY, self::NAME_FACTS, self::NAME_CONTENT, self::NAME_PAGE_CREATE, self::NAME_REST_READ, self::NAME_REST_WRITE];
     }
 
     /**
@@ -90,7 +94,7 @@ final class OwnAbilities
      */
     public static function abilityClass(string $name): string
     {
-        if ($name === self::NAME_PAGE_CREATE) {
+        if ($name === self::NAME_PAGE_CREATE || $name === self::NAME_REST_WRITE) {
             return 'write';
         }
 

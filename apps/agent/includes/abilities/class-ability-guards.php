@@ -335,7 +335,7 @@ final class AbilityGuards
      * @param bool     $first    Earliest edge when true, latest when false.
      * @return bool
      */
-    private static function holdsEdge(string $filter, $callback, bool $first): bool
+    public static function holdsEdge(string $filter, $callback, bool $first): bool
     {
         $registry = $GLOBALS['wp_filter'] ?? null;
         $hook     = is_array($registry) ? ($registry[$filter] ?? null) : null;
