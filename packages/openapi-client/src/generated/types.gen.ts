@@ -18957,12 +18957,6 @@ export type UpdateAdminRestRouteData = {
 
 export type UpdateAdminRestRouteErrors = {
   /**
-   * invalid_body, invalid_route (details.constraint names the database
-   * check), invalid_output_fields or route_not_reproducible.
-   *
-   */
-  400: Error;
-  /**
    * Not authenticated
    */
   401: Error;
@@ -18978,6 +18972,12 @@ export type UpdateAdminRestRouteErrors = {
    * route_hash_not_moved or route_conflict.
    */
   409: Error;
+  /**
+   * invalid_body, invalid_route (details.constraint names the database
+   * check), invalid_output_fields or route_not_reproducible.
+   *
+   */
+  422: Error;
 };
 
 export type UpdateAdminRestRouteError =

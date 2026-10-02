@@ -94,13 +94,13 @@ func TestE3RouteAdminAsAppRole(t *testing.T) {
 	// Refusals: a database CHECK names its constraint; an unknown route 404s;
 	// an invalid output shape is refused before the write.
 	rec = contentDo(engRoot, http.MethodPut, base+"/"+e3RouteID, `{"method":"GET"}`)
-	if rec.Code != http.StatusBadRequest {
+	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("a write route as GET: %d %s", rec.Code, rec.Body.String())
 	}
 	if rec := contentDo(engRoot, http.MethodPut, base+"/no-such-route", `{"title":"x"}`); rec.Code != http.StatusNotFound {
 		t.Fatalf("unknown route: %d %s", rec.Code, rec.Body.String())
 	}
-	if rec := contentDo(engRoot, http.MethodPut, base+"/"+e3RouteID, `{"output_fields":{"bogus":1}}`); rec.Code != http.StatusBadRequest {
+	if rec := contentDo(engRoot, http.MethodPut, base+"/"+e3RouteID, `{"output_fields":{"bogus":1}}`); rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("bad output_fields: %d %s", rec.Code, rec.Body.String())
 	}
 	var audits int

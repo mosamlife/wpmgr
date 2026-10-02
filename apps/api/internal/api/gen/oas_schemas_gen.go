@@ -60477,10 +60477,6 @@ type UpdateAdminAbilityCatalogueEntryUnauthorized Error
 
 func (*UpdateAdminAbilityCatalogueEntryUnauthorized) updateAdminAbilityCatalogueEntryRes() {}
 
-type UpdateAdminRestRouteBadRequest Error
-
-func (*UpdateAdminRestRouteBadRequest) updateAdminRestRouteRes() {}
-
 type UpdateAdminRestRouteConflict Error
 
 func (*UpdateAdminRestRouteConflict) updateAdminRestRouteRes() {}
@@ -60496,6 +60492,10 @@ func (*UpdateAdminRestRouteNotFound) updateAdminRestRouteRes() {}
 type UpdateAdminRestRouteUnauthorized Error
 
 func (*UpdateAdminRestRouteUnauthorized) updateAdminRestRouteRes() {}
+
+type UpdateAdminRestRouteUnprocessableEntity Error
+
+func (*UpdateAdminRestRouteUnprocessableEntity) updateAdminRestRouteRes() {}
 
 // All fields are optional (PATCH semantics).
 // Ref: #/components/schemas/UpdateAgencyClientRequest

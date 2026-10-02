@@ -10180,7 +10180,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/RestRoute"
-        "400":
+        "422":
           description: |
             invalid_body, invalid_route (details.constraint names the database
             check), invalid_output_fields or route_not_reproducible.
