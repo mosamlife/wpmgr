@@ -98,22 +98,31 @@ function json(body: unknown): Response {
   });
 }
 
+/** The URL a fetch call was made with, whichever of the three forms it took. */
+function urlOf(input: RequestInfo | URL): string {
+  if (typeof input === "string") return input;
+  if (input instanceof URL) return input.href;
+  return input.url;
+}
+
 /** A fetch that answers the two OAuth endpoints and refuses anything else. */
 function oauthFetch(authorizeBody: unknown) {
-  return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = String(input);
+  return vi.fn((input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const url = urlOf(input);
     if (url.startsWith(`${CONSENT_AUTHORIZE_PATH}?`) && (init?.method ?? "GET") === "GET") {
-      return json(authorizeBody);
+      return Promise.resolve(json(authorizeBody));
     }
     if (url === CONSENT_APPROVE_PATH && init?.method === "POST") {
-      return json({
-        grant_id: "g1",
-        code: "auth-code",
-        redirect_uri: "https://client.example/cb",
-        state: "opaque-csrf-token",
-      });
+      return Promise.resolve(
+        json({
+          grant_id: "g1",
+          code: "auth-code",
+          redirect_uri: "https://client.example/cb",
+          state: "opaque-csrf-token",
+        }),
+      );
     }
-    throw new Error(`unexpected fetch ${init?.method ?? "GET"} ${url}`);
+    return Promise.reject(new Error(`unexpected fetch ${init?.method ?? "GET"} ${url}`));
   });
 }
 
@@ -139,7 +148,7 @@ describe("/connect/ai, an app whose registration predates site tools", () => {
 
     // The real hook ran: it asked the authorize endpoint for the three scopes
     // the client asked for, not for the narrowed set.
-    const asked = new URL(String(fetchMock.mock.calls[0]![0]), "https://dashboard.example");
+    const asked = new URL(urlOf(fetchMock.mock.calls[0]![0]), "https://dashboard.example");
     expect(asked.pathname).toBe(CONSENT_AUTHORIZE_PATH);
     expect(asked.searchParams.get("scope")).toBe("mcp:read mcp:site mcp:cache");
   });
@@ -171,7 +180,7 @@ describe("/connect/ai, an app whose registration predates site tools", () => {
 
     await waitFor(() => expect(mockedNavigate).toHaveBeenCalledTimes(1));
     const post = fetchMock.mock.calls.find(
-      ([url, init]) => String(url) === CONSENT_APPROVE_PATH && init?.method === "POST",
+      ([url, init]) => urlOf(url) === CONSENT_APPROVE_PATH && init?.method === "POST",
     );
     expect(post).toBeDefined();
     const body = JSON.parse(post![1]!.body as string) as Record<string, unknown>;
