@@ -86,6 +86,12 @@ final class PageCreateWriteTest extends TestCase
     /** @var array<int,int> post id => user holding the edit lock. */
     private array $locks = [];
 
+    /** @var array<int,array<string,mixed>> attachment id => image, mime, file, meta, src. */
+    private array $attachments = [];
+
+    /** @var list<int> post ids the principal may not read. */
+    private array $unreadable = [];
+
     private string $cpSecret;
 
     private string $siteId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
@@ -167,13 +173,16 @@ final class PageCreateWriteTest extends TestCase
             $this->currentUser = (int) $id;
             return null;
         });
-        Functions\when('current_user_can')->alias(function ($cap) {
+        Functions\when('current_user_can')->alias(function ($cap, ...$args) {
             if (in_array($cap, $this->filterGrants, true)) {
                 return true;
             }
             $u = $this->users[$this->currentUser] ?? null;
             if ($u === null) {
                 return false;
+            }
+            if ($cap === 'read_post') {
+                return !in_array((int) ($args[0] ?? 0), $this->unreadable, true);
             }
             foreach ($u->roles as $r) {
                 if (!empty($this->roles[$r]->capabilities[$cap])) {
@@ -230,6 +239,28 @@ final class PageCreateWriteTest extends TestCase
         });
         Functions\when('wp_get_post_revisions')->alias(fn ($id, $args = null) => array_fill(0, $this->revisions[(int) $id] ?? 0, new \stdClass()));
         Functions\when('wp_check_post_lock')->alias(fn ($id) => $this->locks[(int) $id] ?? false);
+        // Attachments, as core answers for them.
+        Functions\when('wp_attachment_is_image')->alias(fn ($id) => (bool) ($this->attachments[(int) $id]['image'] ?? false));
+        Functions\when('get_post_mime_type')->alias(fn ($id) => $this->attachments[(int) $id]['mime'] ?? false);
+        Functions\when('wp_get_attachment_image_src')->alias(fn ($id, $size = 'thumbnail') => $this->attachments[(int) $id]['src'] ?? false);
+        Functions\when('get_attached_file')->alias(fn ($id) => $this->attachments[(int) $id]['file'] ?? false);
+        Functions\when('wp_get_attachment_metadata')->alias(fn ($id) => $this->attachments[(int) $id]['meta'] ?? false);
+        Functions\when('wp_basename')->alias(fn ($path, $suffix = '') => urldecode(basename(str_replace(['%2F', '%5C'], '/', urlencode((string) $path)), (string) $suffix)));
+        Functions\when('get_post_status')->alias(function ($id) {
+            $p = $this->posts[(int) $id] ?? null;
+            if ($p === null) {
+                return false;
+            }
+            if ($p->post_type === 'attachment' && $p->post_status === 'inherit') {
+                $parent = $this->posts[(int) $p->post_parent] ?? null;
+                if ((int) $p->post_parent === 0 || $parent === null) {
+                    return 'publish';
+                }
+                // Core answers a trashed parent's status from before the trash.
+                return $parent->post_status === 'trash' ? 'publish' : $parent->post_status;
+            }
+            return $p->post_status;
+        });
         Functions\when('wp_trash_post')->alias(function ($id) {
             if ($this->failTrash || !isset($this->posts[(int) $id])) {
                 return false;
@@ -1083,6 +1114,256 @@ final class PageCreateWriteTest extends TestCase
         $r = $this->callP((string) $f['revert']['p']);
         $this->assertTrue($r['ok'] ?? false, (string) json_encode($r));
         $this->assertSame('trash', $this->posts[$id]->post_status);
+    }
+
+    // -------------------------------------------------------------------------
+    // Layout blocks and images (GUT)
+    // -------------------------------------------------------------------------
+
+    public function test_layout_fixture_replays_through_the_command(): void
+    {
+        $this->enable();
+        $this->addFixtureImages();
+        $f = PageCreateLayoutTest::layoutFixture();
+        $doc = json_decode($f, true);
+        $this->assertIsArray($doc);
+        $this->assertSame($doc['entry'], self::fixture()['entry'], 'the layout fixture carries the seeded entry text');
+
+        foreach ($doc['cases'] as $case) {
+            $this->blockEditor = $case['preview']['editor'] === 'wordpress_blocks';
+            // The exact entry and input bytes: the digests bind them.
+            $pre = $this->callP((string) json_encode([
+                'mode'         => 'precheck',
+                'request_id'   => self::REQ_A,
+                'entry'        => $doc['entry'],
+                'entry_sha256' => $doc['entry_sha256'],
+                'input'        => $case['input'],
+            ]));
+            $this->assertTrue($pre['ok'] ?? false, $case['name'] . ': ' . json_encode($pre));
+            $this->assertSame($case['preview'], $pre['preview'], $case['name']);
+            $this->assertSame($case['base_fingerprint'], $pre['base_fingerprint'], $case['name']);
+            $this->assertSame($case['preview_digest'], $pre['preview_digest'], $case['name']);
+            $this->assertSame($case['precheck_digest'], $pre['precheck_digest'], $case['name']);
+        }
+    }
+
+    public function test_layout_write_creates_exactly_the_previewed_content(): void
+    {
+        $this->enable();
+        $this->addFixtureImages();
+        $input = (string) PageCreateLayoutTest::scenarios()[0]['input'];
+
+        $pre = $this->precheck(self::REQ_A, $input);
+        $this->assertTrue($pre['ok'] ?? false, (string) json_encode($pre));
+        $r = $this->write(self::REQ_A, $input, $pre['precheck_digest'], $pre['preview_digest']);
+
+        $this->assertSame('created', $r['outcome'] ?? null, (string) json_encode($r));
+        $this->assertSame($pre['preview']['content'], $this->posts[$r['post_id']]->post_content);
+        $this->assertSame('draft', $this->posts[$r['post_id']]->post_status);
+        $this->assertSame($pre['base_fingerprint'], AbilityLedger::get(self::REQ_A)['before_fp']);
+    }
+
+    public function test_a_text_only_precheck_answer_has_no_media_key(): void
+    {
+        $this->enable();
+        $pre = $this->precheck(self::REQ_A, $this->input());
+
+        $this->assertTrue($pre['ok'], (string) json_encode($pre));
+        $this->assertSame(['post_type', 'editor', 'status', 'title', 'content'], array_keys($pre['preview']));
+        $this->assertSame(PageCreateBuilder::baseFingerprint('page'), $pre['base_fingerprint']);
+        $this->assertSame(hash('sha256', (string) json_encode(['new_post', 'page'])), $pre['base_fingerprint'], 'the text-only fingerprint is unchanged');
+    }
+
+    public function test_an_image_precheck_answer_carries_the_facts_it_binds(): void
+    {
+        $this->enable();
+        $this->addImage(42, ['parent' => $this->addParent('publish')]);
+
+        $pre = $this->precheck(self::REQ_A, $this->imageInput(42));
+
+        $this->assertTrue($pre['ok'], (string) json_encode($pre));
+        $facts = [[
+            'id'           => 42,
+            'url'          => 'https://example.com/wp-content/uploads/2026/10/photo-42-1024x683.jpg',
+            'filename'     => 'photo-42.jpg',
+            'mime'         => 'image/jpeg',
+            'width'        => 1200,
+            'height'       => 800,
+            'modified_gmt' => '2026-10-01 09:00:00',
+        ]];
+        $this->assertSame($facts, $pre['preview']['media']);
+        $this->assertSame(PageCreateBuilder::baseFingerprint('page', $facts), $pre['base_fingerprint']);
+        $this->assertNotSame(PageCreateBuilder::baseFingerprint('page'), $pre['base_fingerprint']);
+        $this->assertStringContainsString('src="https://example.com/wp-content/uploads/2026/10/photo-42-1024x683.jpg"', $pre['preview']['content']);
+        $this->assertStringNotContainsString('/var/www', (string) json_encode($pre), 'only the base name of the file is shown');
+    }
+
+    /**
+     * @dataProvider unusableImages
+     *
+     * @param array<string,mixed> $image
+     */
+    public function test_an_image_the_principal_may_not_use_is_refused(string $why, array $image, string $code): void
+    {
+        $this->enable();
+        if (isset($image['parent_status'])) {
+            $image['parent'] = $this->addParent((string) $image['parent_status'], (string) ($image['parent_password'] ?? ''));
+        }
+        if ($image !== ['absent' => true]) {
+            $this->addImage(42, $image);
+        }
+        if (($image['unreadable'] ?? false) === true) {
+            $this->unreadable[] = 42;
+        }
+
+        $r = $this->precheck(self::REQ_A, $this->imageInput(42));
+
+        $this->assertFalse($r['ok'], $why . ': ' . json_encode($r));
+        $this->assertSame($code, $r['code'], $why);
+        $this->assertSame([], $this->meta, 'nothing is created');
+    }
+
+    /**
+     * @return array<string,array{0:string,1:array<string,mixed>,2:string}>
+     */
+    public static function unusableImages(): array
+    {
+        return [
+            'no such attachment'        => ['absent', ['absent' => true], 'image_not_available'],
+            'a page, not an attachment' => ['page', ['post_type' => 'page', 'status' => 'publish'], 'image_not_available'],
+            'not an image'              => ['pdf', ['image' => false, 'mime' => 'application/pdf'], 'image_not_available'],
+            'svg'                       => ['svg', ['mime' => 'image/svg+xml', 'file' => '/var/www/up/logo.svg'], 'image_not_available'],
+            'a draft parent'            => ['draft parent', ['parent_status' => 'draft'], 'image_not_available'],
+            'a private parent'          => ['private parent', ['parent_status' => 'private'], 'image_not_available'],
+            'a trashed parent'          => ['trashed parent', ['parent_status' => 'trash'], 'image_not_available'],
+            'a password parent'         => ['password parent', ['parent_status' => 'publish', 'parent_password' => 'secret'], 'image_not_available'],
+            'a missing parent'          => ['missing parent', ['parent' => 4242], 'image_not_available'],
+            'a trashed attachment'      => ['trashed attachment', ['status' => 'trash'], 'image_not_available'],
+            'not readable'              => ['unreadable', ['unreadable' => true], 'image_not_available'],
+            'javascript address'        => ['javascript src', ['src' => ['javascript:alert(1)', 1, 1, false]], 'image_url_unusable'],
+            'quote in the address'      => ['quote src', ['src' => ['https://example.com/a".jpg', 1, 1, false]], 'image_url_unusable'],
+            'user name in the address'  => ['userinfo src', ['src' => ['https://u@example.com/a.jpg', 1, 1, false]], 'image_url_unusable'],
+            'no address'                => ['no src', ['src' => false], 'image_url_unusable'],
+            'unreadable file name'      => ['bad file name', ['file' => "/var/www/up/\xff.jpg"], 'image_not_available'],
+        ];
+    }
+
+    public function test_an_attachment_changed_after_approval_is_preview_changed(): void
+    {
+        $this->enable();
+        $this->addImage(42);
+        $pre = $this->precheck(self::REQ_A, $this->imageInput(42));
+        $this->assertTrue($pre['ok'], (string) json_encode($pre));
+
+        // Replaced in place: same address, new modified time.
+        $this->posts[42]->post_modified_gmt = '2026-10-02 10:00:00';
+        $r = $this->write(self::REQ_A, $this->imageInput(42), $pre['precheck_digest'], $pre['preview_digest']);
+
+        $this->assertSame('preview_changed', $r['code'] ?? null, (string) json_encode($r));
+        $this->assertSame([], array_filter($this->posts, static fn ($p) => $p->post_type === 'page'), 'nothing is created');
+        $this->assertNull(AbilityLedger::get(self::REQ_A));
+    }
+
+    public function test_an_attachment_that_became_unusable_after_approval_is_refused(): void
+    {
+        $this->enable();
+        $parent = $this->addParent('publish');
+        $this->addImage(42, ['parent' => $parent]);
+        $pre = $this->precheck(self::REQ_A, $this->imageInput(42));
+        $this->assertTrue($pre['ok'], (string) json_encode($pre));
+
+        $this->posts[$parent]->post_status = 'draft';
+        $r = $this->write(self::REQ_A, $this->imageInput(42), $pre['precheck_digest'], $pre['preview_digest']);
+
+        $this->assertSame('image_not_available', $r['code'] ?? null, (string) json_encode($r));
+        $this->assertSame([], array_filter($this->posts, static fn ($p) => $p->post_type === 'page'));
+    }
+
+    public function test_classic_editor_refuses_layout_blocks_through_the_command(): void
+    {
+        $this->enable();
+        $this->blockEditor = false;
+        $input = (string) json_encode([
+            'post_type' => 'page', 'editor' => 'wordpress_classic', 'title' => 'T',
+            'outline'   => [['type' => 'columns', 'columns' => [['children' => [['type' => 'separator']]], ['children' => [['type' => 'separator']]]]]],
+        ]);
+
+        $r = $this->precheck(self::REQ_A, $input);
+
+        $this->assertSame('layout_needs_block_editor', $r['code'] ?? null, (string) json_encode($r));
+    }
+
+    public function test_a_site_that_changes_layout_markup_on_save_is_refused(): void
+    {
+        $this->enable();
+        $this->addImage(42);
+        // A kses that rewrites the void-element form, as some cores do for "/>".
+        Functions\when('wp_kses_post')->alias(static fn ($c) => str_replace(' />', '/>', (string) $c));
+
+        $r = $this->precheck(self::REQ_A, $this->imageInput(42));
+
+        $this->assertSame('sanitiser_changed_new_content', $r['code'] ?? null, (string) json_encode($r));
+    }
+
+    private function imageInput(int $id): string
+    {
+        return (string) json_encode([
+            'post_type' => 'page', 'editor' => 'wordpress_blocks', 'title' => 'Gallery',
+            'outline'   => [['type' => 'image', 'attachment_id' => $id, 'alt' => 'A photo']],
+        ]);
+    }
+
+    /**
+     * @param array<string,mixed> $o
+     */
+    private function addImage(int $id, array $o = []): void
+    {
+        $p                    = new \stdClass();
+        $p->ID                = $id;
+        $p->post_type         = $o['post_type'] ?? 'attachment';
+        $p->post_status       = $o['status'] ?? 'inherit';
+        $p->post_parent       = (int) ($o['parent'] ?? 0);
+        $p->post_password     = '';
+        $p->post_title        = 'image ' . $id;
+        $p->post_content      = '';
+        $p->post_modified_gmt = $o['modified_gmt'] ?? '2026-10-01 09:00:00';
+        $this->posts[$id]     = $p;
+        $this->attachments[$id] = [
+            'image' => $o['image'] ?? true,
+            'mime'  => $o['mime'] ?? 'image/jpeg',
+            'file'  => $o['file'] ?? '/var/www/wp-content/uploads/2026/10/photo-' . $id . '.jpg',
+            'meta'  => $o['meta'] ?? ['width' => 1200, 'height' => 800],
+            'src'   => array_key_exists('src', $o) ? $o['src'] : ['https://example.com/wp-content/uploads/2026/10/photo-' . $id . '-1024x683.jpg', 1024, 683, true],
+        ];
+    }
+
+    private function addParent(string $status, string $password = ''): int
+    {
+        $id                  = $this->nextId++;
+        $p                   = new \stdClass();
+        $p->ID               = $id;
+        $p->post_type        = 'post';
+        $p->post_status      = $status;
+        $p->post_parent      = 0;
+        $p->post_password    = $password;
+        $this->posts[$id]    = $p;
+
+        return $id;
+    }
+
+    /** The images the layout fixture's facts describe. */
+    private function addFixtureImages(): void
+    {
+        $files = [42 => '/srv/www/wp-content/uploads/2026/10/team-photo.jpg', 7 => '/srv/www/wp-content/uploads/café-menu.png', 9 => '/srv/www/wp-content/uploads/2026/09/banner.webp'];
+        foreach (PageCreateLayoutTest::media() as $id => $f) {
+            $this->addImage($id, [
+                'mime'         => $f['mime'],
+                'file'         => $files[$id],
+                'meta'         => $f['width'] === 0 ? [] : ['width' => $f['width'], 'height' => $f['height']],
+                'src'          => [$f['url'], 1024, 683, true],
+                'modified_gmt' => $f['modified_gmt'],
+            ]);
+        }
     }
 
     // -------------------------------------------------------------------------
