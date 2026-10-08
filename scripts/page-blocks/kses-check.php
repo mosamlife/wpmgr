@@ -16,6 +16,11 @@ declare(strict_types=1);
 
 // Old cores on a new PHP raise deprecations that say nothing about our bytes.
 error_reporting(E_ALL & ~E_DEPRECATED);
+// One copy of any fatal error, on stderr, without argument dumps.
+ini_set('display_errors', 'stderr');
+ini_set('log_errors', '0');
+ini_set('html_errors', '0');
+ini_set('zend.exception_ignore_args', '1');
 
 function fail(string $m): never
 {
@@ -41,6 +46,8 @@ $load = [
     'html-api/class-wp-html-text-replacement.php', 'html-api/class-wp-html-decoder.php',
     'html-api/class-wp-html-tag-processor.php',
     'kses.php',
+    // core's kses reads block comment attributes through the block parser.
+    'class-wp-block-parser-block.php', 'class-wp-block-parser-frame.php', 'class-wp-block-parser.php', 'blocks.php',
 ];
 // A core older than a file in this list simply does not have it. The files
 // below are not optional in any core: without them there is nothing to test.
@@ -60,26 +67,18 @@ if (!isset($wp_version) || $wp_version !== $expected) {
     fail('core reports version ' . var_export($wp_version ?? null, true) . ' but the pin says ' . var_export($expected, true));
 }
 
-// The few functions core defines outside the files above. The user being
-// simulated has no unfiltered_html, and a fresh site has no options set.
-if (!function_exists('get_option')) {
-    function get_option($option, $default = false)
-    {
-        return $default;
-    }
-}
-if (!function_exists('is_multisite')) {
-    function is_multisite()
-    {
-        return false;
-    }
-}
+// The one function the save chain needs that core defines outside the files
+// above: the user being simulated has no unfiltered_html.
 if (!function_exists('current_user_can')) {
     function current_user_can($capability)
     {
         return false;
     }
 }
+// core's balanceTags reads this option on every save. A fresh install stores 0
+// (no tag balancing), and there is no database here, so answer it the way core
+// lets any option be answered before it is read.
+add_filter('pre_option_use_balanceTags', static fn() => 0);
 
 // Register core's own default filters, then the sanitiser a user without
 // unfiltered_html gets (kses_init does exactly this on a real site).
@@ -98,6 +97,12 @@ $chain = [
 foreach ($chain as [$hook, $fn]) {
     if (!function_exists($fn) || has_filter($hook, $fn) === false) {
         fail("the save chain of WP $wp_version has no $fn on $hook");
+    }
+}
+// What the chain calls into; a core that boots without these cannot sanitise.
+foreach (['filter_block_content', 'parse_blocks', 'wp_kses_post', 'wp_slash', 'wp_unslash'] as $fn) {
+    if (!function_exists($fn)) {
+        fail("WP $wp_version booted without $fn()");
     }
 }
 
@@ -138,6 +143,7 @@ foreach ($files as $file) {
             fail("case #$i in $file has no name or no content; an empty page would pass for the wrong reason");
         }
         $cases++;
+        $hit = false;
 
         // Exactly what the agent runs before it writes (see the agent's page
         // create builder step): the save filters, then a direct kses pass.
@@ -145,8 +151,8 @@ foreach ($files as $file) {
         $direct     = wp_kses_post($content);
         foreach (['content_save_pre' => $viaFilters, 'wp_kses_post' => $direct] as $via => $out) {
             if ($out !== $content) {
-                $changed++;
-                $at = firstDiff($content, $out);
+                $hit = true;
+                $at  = firstDiff($content, $out);
                 echo "KSES-CHANGED $label:$name (via $via)\n";
                 echo '  in : ' . around($content, $at) . "\n";
                 echo '  out: ' . around($out, $at) . "\n";
@@ -160,12 +166,15 @@ foreach ($files as $file) {
             }
             $simTitle = wp_unslash(apply_filters('title_save_pre', wp_slash($title)));
             if ($simTitle !== $title) {
-                $changed++;
-                $at = firstDiff($title, $simTitle);
+                $hit = true;
+                $at  = firstDiff($title, $simTitle);
                 echo "KSES-CHANGED $label:$name (via title_save_pre)\n";
                 echo '  in : ' . around($title, $at) . "\n";
                 echo '  out: ' . around($simTitle, $at) . "\n";
             }
+        }
+        if ($hit) {
+            $changed++;
         }
     }
 }
