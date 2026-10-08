@@ -1,0 +1,7 @@
+{
+  "1": {"url": "https://example.test/wp-content/uploads/a.png"},
+  "42": {"url": "https://example.test/wp-content/uploads/2026/10/team-photo-1024x683.jpg"},
+  "43": {"url": "https://cdn.example.test/img/photo.jpg?w=1024&h=683&q=80"},
+  "44": {"url": "https://example.test/wp-content/uploads/caf%C3%A9%20menu(1)!$*+,;=@.png"},
+  "2147483647": {"url": "https://example.test:8443/wp-content/uploads/largest-id.webp"}
+}
