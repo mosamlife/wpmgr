@@ -152,7 +152,7 @@ describe("parseConsentContext — the consent ticket is carried, never interpret
   });
 });
 
-describe("parseConsentContext — the scopes the server withheld", () => {
+describe("parseConsentContext, the scopes the server withheld", () => {
   // The wire shape for a registration that holds mcp:read alone and asked for
   // the advertised list: `scopes` is the overlap and `unregistered_scopes` is
   // the rest, in the order the client asked. Pinned on the Go side by
