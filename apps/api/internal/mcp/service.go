@@ -574,11 +574,12 @@ type RegisteredClient struct {
 // {mcp:read} AND NOT THE WHOLE REGISTRY. The whole registry was the answer
 // while it held one member, and it would now register a client that said
 // nothing for the cache scope too, leaving the containment check in Authorize
-// and Approve with nothing to bite on. A client that wants the cache scope
-// asks for it by name at registration; one that registered without it and
-// asks at /authorize is refused there (requireScopesWithinRegistration), and
-// the consent screen tells the operator to remove the server from the client
-// and add it again.
+// and Approve with nothing to bite on. A client that wants the cache or site
+// scope names it at registration, which an MCP client does by copying the
+// advertised list (AdvertisedScopes) into its registration request. One that
+// registered without it and asks at /authorize is refused there with
+// invalid_scope naming the scope (requireScopesWithinRegistration); asking for
+// it takes a new registration.
 //
 // UNRECOGNISED TOKENS ARE DROPPED, NOT REFUSED. See ParseRegistrationScopes
 // for why registration is the one lenient reader.

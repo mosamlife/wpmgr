@@ -39,16 +39,19 @@ const ErrCodeInvalidSiteScope = "mcp_invalid_site_scope"
 // it lets the operator consent to a scope set that is not the one the client
 // asked for, and neither party ever learns they disagreed.
 //
-// It holds two entries. ScopeRead confers the read capabilities; ScopeCache,
-// seated by m150, confers CapCachePurge and nothing else. KEEP IN LOCKSTEP with
+// ScopeRead confers the read capabilities; ScopeCache, seated by m150, confers
+// CapCachePurge and nothing else; ScopeSite, seated by m154, confers the two
+// ability-engine capabilities. KEEP IN LOCKSTEP with
 // mcp_grants_oauth_scopes_vocabulary_check and
 // mcp_oauth_clients_registered_scopes_vocabulary_check, which hold the same
 // names; the m136 and m137 parity tests in apps/api/tests compare them.
 //
-// RECOGNISING a scope is not ADVERTISING it and is not DEFAULTING to it.
-// Discovery advertises AdvertisedScopes() only, registration records ScopeCache
-// only when the client asked for it, and a grant stores it only when the
-// operator consented (see Register, Approve and MintConnection).
+// ADVERTISING a scope is not DEFAULTING to it and is not CONFERRING it.
+// Discovery and the 401 challenge advertise every scope this surface can grant
+// (AdvertisedScopes), so a client that copies the advertised list can ask for
+// all of them. Registration records a scope only when the client named it, and
+// a grant confers a scope's capabilities only when the operator ticked them on
+// the consent screen (see Register, Approve and MintConnection).
 var recognisedScopes = map[Scope]struct{}{
 	ScopeCache: {},
 	ScopeRead:  {},
@@ -153,7 +156,8 @@ func splitASCIISpace(raw string) []string {
 
 // SupportedScopes lists the whole registry for error details and for the
 // token path's explicit-list grants, sorted so the output is stable across map
-// iterations. It is NOT what discovery advertises; see AdvertisedScopes.
+// iterations. Discovery reads AdvertisedScopes instead, which is written out
+// rather than derived from this; see its comment for why.
 func SupportedScopes() []string {
 	out := make([]string, 0, len(recognisedScopes))
 	for s := range recognisedScopes {
@@ -164,17 +168,30 @@ func SupportedScopes() []string {
 }
 
 // AdvertisedScopes is what the discovery documents and the 401 challenge name:
-// the read scope, and nothing else.
+// every scope this surface can grant. An MCP client selects its scope from the
+// challenge or from scopes_supported and registers and authorizes with that
+// list, so a scope missing here is a scope no standard client ever asks for,
+// and the consent screen never offers its capabilities.
 //
-// A client that reads scopes_supported and asks for every scope listed there
-// would otherwise register for, and request, the cache scope without anyone
-// having chosen it. The cache scope is reachable by a client that asks for it
-// by name, and the consent screen shows it; it is not offered to a client that
-// is merely copying the server's list back.
+// ADVERTISED, NEVER DEFAULTED, CONFERRED ONLY BY EXPLICIT OPERATOR CONSENT. A
+// client asking for mcp:site or mcp:cache gets the consent screen's boxes for
+// those capabilities, unticked; the grant holds exactly the capabilities the
+// operator ticked (Approve resolves them through resolveGrantCapabilities, and
+// an omitted list resolves to DefaultGrantCapabilities, the fleet read alone).
+// A request capability additionally requires the approving operator to hold the
+// permission it asks a person to exercise (requireCreatorMayConfer).
+//
+// WRITTEN OUT, NOT DERIVED FROM recognisedScopes. Every client copies this list
+// into the request the consent screen renders, and that screen refuses to
+// approve a scope it cannot describe. Seating a scope in the registry must
+// therefore not advertise it as a side effect; advertising is a separate edit,
+// made once the consent screen can render it.
+// TestAdvertisedScopes_AreEveryGrantableScope pins the two sets together so the
+// edit cannot be forgotten either.
 //
 // A FUNCTION returning a fresh slice, for DefaultGrantScopes' reason.
 func AdvertisedScopes() []string {
-	return []string{string(ScopeRead)}
+	return []string{string(ScopeRead), string(ScopeSite), string(ScopeCache)}
 }
 
 // ParseRegistrationScopes reads the RFC 7591 `scope` member of a registration
