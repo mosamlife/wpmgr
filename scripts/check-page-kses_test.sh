@@ -29,11 +29,14 @@ ok() { pass=$((pass + 1)); echo "ok   $1"; }
 bad() { failed=$((failed + 1)); echo "FAIL $1"; }
 
 # expect <name> <want: 0|nonzero> <env...>   runs the check; output in LAST_OUT.
+# The committed known-changes list names cases of the real generator output, so
+# it is off unless a case sets PAGE_KSES_KNOWN_FILE itself (a later NAME=value
+# wins over an earlier one).
 expect() {
   local name="$1" want="$2"
   shift 2
   local out rc
-  out="$(env "$@" "$check" 2>&1)"
+  out="$(env PAGE_KSES_KNOWN_FILE=- "$@" "$check" 2>&1)"
   rc=$?
   if [ "$want" = 0 ] && [ "$rc" -eq 0 ]; then ok "$name"
   elif [ "$want" = nonzero ] && [ "$rc" -ne 0 ]; then ok "$name"
@@ -78,11 +81,16 @@ mk layout_ok.json layout-ok "$layout_ok" "Q&amp;A it's"
 mk classic_ok.json classic-ok "$classic_ok"
 
 # --- one planted defect per file: each is something a sanitiser rewrites ---
+# (Plain assignments with unquoted variables: the form that means the same on
+# the bash 3.2 macOS ships and on the bash 5 CI runs.)
 from=' />'
 to='/>'
-mk plant_slash_all.json slash-all "${layout_ok//"$from"/"$to"}"
-mk plant_slash_img.json slash-img "${layout_ok/"$from"/"$to"}"
-mk plant_slash_classic.json slash-classic "${classic_ok//"$from"/"$to"}"
+slash_all=${layout_ok//$from/$to}
+slash_img=${layout_ok/$from/$to}
+slash_classic=${classic_ok//$from/$to}
+mk plant_slash_all.json slash-all "$slash_all"
+mk plant_slash_img.json slash-img "$slash_img"
+mk plant_slash_classic.json slash-classic "$slash_classic"
 mk plant_script.json script "${layout_ok}\n\n<script>alert(1)</script>"
 mk plant_onclick.json onclick '<p onclick=\"x()\">Hi</p>'
 mk plant_bare_amp.json bare-amp '<p>fish & chips</p>'
@@ -90,8 +98,9 @@ mk plant_javascript_href.json js-href '<p><a href=\"javascript:alert(1)\">x</a><
 # Raw apostrophe and numeric apostrophe in an attribute: core 7.x rewrites both.
 mk plant_apos_raw.json apos-raw '<img src=\"https://example.test/a.jpg\" alt=\"Bob'"'"'s dog\" class=\"wp-image-7\" />'
 mk plant_apos_num.json apos-num '<img src=\"https://example.test/a.jpg\" alt=\"Bob&#039;s dog\" class=\"wp-image-7\" />'
-# A title that title_save_pre would strip a tag from.
-mk plant_title.json title-tag '<p>fine</p>' '<b>Bold</b> title'
+# A title that title_save_pre would strip a tag from (core keeps a few inline
+# tags in a title, such as b and em, but not a div).
+mk plant_title.json title-tag '<p>fine</p>' '<div>Boxed</div> title'
 
 printf '{"cases":[]}' >"$tmp/zero_cases.json"
 mk empty_content.json empty ''
