@@ -125,8 +125,8 @@ func TestRecognisedScopes_AreExactlyReadCacheAndSite(t *testing.T) {
 	if got := scopeCapabilities[ScopeSite]; !slices.Equal(got, []Capability{CapAbilityRead, CapAbilityRequest}) {
 		t.Fatalf("mcp:site confers %v, want exactly [%s %s]", got, CapAbilityRead, CapAbilityRequest)
 	}
-	if got := AdvertisedScopes(); len(got) != 1 || got[0] != string(ScopeRead) {
-		t.Fatalf("AdvertisedScopes() = %v, want exactly [mcp:read]", got)
+	if got, want := AdvertisedScopes(), []string{string(ScopeRead), string(ScopeSite), string(ScopeCache)}; !slices.Equal(got, want) {
+		t.Fatalf("AdvertisedScopes() = %v, want exactly %v", got, want)
 	}
 	if got := scopeCapabilities[ScopeCache]; len(got) != 1 || got[0] != CapCachePurge {
 		t.Fatalf("mcp:cache confers %v, want exactly [%s]", got, CapCachePurge)
