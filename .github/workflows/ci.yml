@@ -727,6 +727,34 @@ jobs:
       - name: Validate generated page markup
         run: scripts/check-page-blocks.sh
 
+  # ---- Page builder markup under WordPress's own sanitiser ----
+  # The user the agent creates a page as has no unfiltered_html, so core rewrites
+  # any byte of our markup its sanitiser does not keep, and the agent then
+  # refuses the write. This runs every generated block and classic case through
+  # the real save filters of the WordPress cores pinned (by sha256) in
+  # scripts/page-blocks/kses-cores.txt, and fails on any change.
+  # The guard's self-test runs first so a guard that fails open cannot pass.
+  page-kses:
+    name: Page markup under core kses
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          extensions: mbstring
+          coverage: none
+
+      - name: Page kses guard self-test
+        run: scripts/check-page-kses_test.sh
+
+      - name: Page markup survives core kses
+        run: scripts/check-page-kses.sh
+
   # ---- PHP agent ----
   php:
     name: PHP (agent)

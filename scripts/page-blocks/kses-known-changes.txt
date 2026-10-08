@@ -1,0 +1,24 @@
+# Cases that a pinned WordPress core is KNOWN to rewrite when it saves them,
+# one per line:  <version> <markup file name> <case name>
+#
+# scripts/check-page-kses.sh fails on any change to the generated markup. These
+# entries are the exception, and only because of what the agent does about
+# them: before it writes a page it compares its own bytes with what the site's
+# sanitiser would store, and on any difference it refuses the write
+# (sanitiser_changed_new_content). So on a site running one of these cores, the
+# listed input ends in a refusal, never in altered content.
+#
+# What is listed: text that is the literal characters of a numeric character
+# reference (such as an ampersand, a hash and digits), which WordPress 6.2's
+# entity normaliser rewrites. The newer pinned cores keep it as written.
+#
+# Rules the check enforces, so this list cannot rot into a blanket excuse:
+#   - a listed case that is NOT changed is red ("stale"): delete the line;
+#   - every unlisted change is red;
+#   - each listed case holds nothing but that input, so it excuses nothing else.
+# Add a line only when the refusal above is the outcome you want for that input.
+6.2 blocks.json numeric-reference-text
+6.2 blocks.json numeric-reference-classic-nodes
+6.2 blocks.json numeric-reference-block-nodes
+6.2 classic.json numeric-reference-text
+6.2 classic.json numeric-reference-classic-nodes

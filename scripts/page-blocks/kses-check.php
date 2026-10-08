@@ -5,13 +5,17 @@
 // writes a page (it refuses the write when the site would alter the content),
 // run in CI against pinned cores instead of on a customer's site.
 //
-// Usage: php kses-check.php <core-root> <expected-wp-version> <markup.json>...
-//   <core-root>  holds wordpress/wp-includes/ (the php files are enough)
+// Usage: php kses-check.php <core-root> <expected-wp-version> <known-file|-> <markup.json>...
+//   <core-root>    holds wordpress/wp-includes/ (the php files are enough)
+//   <known-file>   cases a given core is KNOWN to change, one per line:
+//                  "<version> <markup file name> <case name>"; "-" for none
 //   <markup.json>  {"cases":[{"name","content","title"?}]}
 //
-// Exits non-zero on: a changed byte, a core that does not boot or is not the
-// version it claims, a save chain that is missing the sanitiser, an empty
-// markup file, a case with empty content, or zero cases checked.
+// A known case must still change (otherwise the entry is stale and the run is
+// red), and every other change is red. Exits non-zero on: an unlisted changed
+// byte, a stale known entry, a core that does not boot or is not the version it
+// claims, a save chain that is missing the sanitiser, an empty markup file, a
+// case with empty content, or zero cases checked.
 declare(strict_types=1);
 
 // Old cores on a new PHP raise deprecations that say nothing about our bytes.
@@ -28,12 +32,35 @@ function fail(string $m): never
     exit(1);
 }
 
-if ($argc < 4) {
-    fail('usage: kses-check.php <core-root> <expected-wp-version> <markup.json>...');
+if ($argc < 5) {
+    fail('usage: kses-check.php <core-root> <expected-wp-version> <known-file|-> <markup.json>...');
 }
-$root     = rtrim((string) $argv[1], '/');
-$expected = (string) $argv[2];
-$files    = array_slice($argv, 3);
+$root      = rtrim((string) $argv[1], '/');
+$expected  = (string) $argv[2];
+$knownFile = (string) $argv[3];
+$files     = array_slice($argv, 4);
+
+// Known changes for THIS core: "<markup file name>\t<case name>" => seen yet?
+$known = [];
+if ($knownFile !== '-') {
+    $lines = is_file($knownFile) ? file($knownFile, FILE_IGNORE_NEW_LINES) : false;
+    if ($lines === false) {
+        fail("cannot read the known-changes file: $knownFile");
+    }
+    foreach ($lines as $n => $line) {
+        $line = trim($line);
+        if ($line === '' || $line[0] === '#') {
+            continue;
+        }
+        $f = preg_split('/\s+/', $line);
+        if ($f === false || count($f) !== 3) {
+            fail('known-changes line ' . ($n + 1) . ' needs "<version> <markup file> <case>": ' . $line);
+        }
+        if ($f[0] === $expected) {
+            $known[$f[1] . "\t" . $f[2]] = false;
+        }
+    }
+}
 
 define('ABSPATH', $root . '/wordpress/');
 define('WPINC', 'wp-includes');
@@ -125,8 +152,9 @@ function firstDiff(string $a, string $b): int
     return $i;
 }
 
-$cases   = 0;
-$changed = 0;
+$cases     = 0;
+$changed   = 0;
+$knownSeen = 0;
 foreach ($files as $file) {
     if (!is_file($file) || filesize($file) === 0) {
         fail("markup file missing or empty: $file");
@@ -143,7 +171,7 @@ foreach ($files as $file) {
             fail("case #$i in $file has no name or no content; an empty page would pass for the wrong reason");
         }
         $cases++;
-        $hit = false;
+        $report = '';
 
         // Exactly what the agent runs before it writes (see the agent's page
         // create builder step): the save filters, then a direct kses pass.
@@ -151,11 +179,8 @@ foreach ($files as $file) {
         $direct     = wp_kses_post($content);
         foreach (['content_save_pre' => $viaFilters, 'wp_kses_post' => $direct] as $via => $out) {
             if ($out !== $content) {
-                $hit = true;
-                $at  = firstDiff($content, $out);
-                echo "KSES-CHANGED $label:$name (via $via)\n";
-                echo '  in : ' . around($content, $at) . "\n";
-                echo '  out: ' . around($out, $at) . "\n";
+                $at      = firstDiff($content, $out);
+                $report .= "  via $via\n    in : " . around($content, $at) . "\n    out: " . around($out, $at) . "\n";
             }
         }
 
@@ -166,20 +191,37 @@ foreach ($files as $file) {
             }
             $simTitle = wp_unslash(apply_filters('title_save_pre', wp_slash($title)));
             if ($simTitle !== $title) {
-                $hit = true;
-                $at  = firstDiff($title, $simTitle);
-                echo "KSES-CHANGED $label:$name (via title_save_pre)\n";
-                echo '  in : ' . around($title, $at) . "\n";
-                echo '  out: ' . around($simTitle, $at) . "\n";
+                $at      = firstDiff($title, $simTitle);
+                $report .= "  via title_save_pre\n    in : " . around($title, $at) . "\n    out: " . around($simTitle, $at) . "\n";
             }
         }
-        if ($hit) {
+        if ($report === '') {
+            continue;
+        }
+        $key = $label . "\t" . $name;
+        if (array_key_exists($key, $known)) {
+            $known[$key] = true;
+            $knownSeen++;
+            echo "KSES-KNOWN $label:$name\n$report";
+        } else {
             $changed++;
+            echo "KSES-CHANGED $label:$name\n$report";
         }
     }
 }
 if ($cases === 0) {
     fail('zero cases checked');
 }
-echo 'kses-check WP ' . $wp_version . ': ' . count($files) . ' file(s), ' . $cases . ' case(s), ' . $changed . " changed\n";
-exit($changed === 0 ? 0 : 1);
+// A known change that did not happen: the core or the builder moved, and the
+// list must move with it, or it would keep excusing nothing.
+$stale = 0;
+foreach ($known as $key => $seen) {
+    if (!$seen) {
+        $stale++;
+        [$k1, $k2] = explode("\t", (string) $key, 2);
+        echo "KSES-STALE $k1:$k2 is listed as a known change on WP $wp_version, but it was not changed (or is not in the markup)\n";
+    }
+}
+echo 'kses-check WP ' . $wp_version . ': ' . count($files) . ' file(s), ' . $cases . ' case(s), '
+    . $changed . ' changed, ' . $knownSeen . ' known, ' . $stale . " stale\n";
+exit($changed === 0 && $stale === 0 ? 0 : 1);

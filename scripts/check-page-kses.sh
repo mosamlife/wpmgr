@@ -23,6 +23,9 @@
 #                            running scripts/page-blocks/generate.php
 #   PAGE_KSES_PHP            php binary to run
 #   PAGE_KSES_CORES_FILE     the version/sha256/url table to read
+#   PAGE_KSES_KNOWN_FILE     the known-changes list (default:
+#                            scripts/page-blocks/kses-known-changes.txt); "-"
+#                            for none. Set to nothing, or a missing file, it is red.
 #   PAGE_KSES_VERSIONS       space separated versions from the table (default:
 #                            every version in it). Set to nothing, it is red.
 #   PAGE_KSES_CACHE          where verified cores are kept between runs
@@ -96,6 +99,12 @@ while IFS= read -r line || [ -n "$line" ]; do
 done <"$cores_file"
 if [ "${#table_v[@]}" -eq 0 ]; then
   die "cores file has no cores: $cores_file"
+fi
+
+# --- the known-changes list ---------------------------------------------------------
+known_file="${PAGE_KSES_KNOWN_FILE-$dir/kses-known-changes.txt}"
+if [ "$known_file" != "-" ] && [ ! -f "$known_file" ]; then
+  die "known-changes file missing: '$known_file'"
 fi
 
 # --- which versions to run --------------------------------------------------------
@@ -222,7 +231,7 @@ for v in "${selected[@]}"; do
   [ -n "$sha" ] || die "version $v is not in $cores_file"
   fetch_core "$v" "$sha" "$urls"
   echo "== WP $v"
-  if "$PHP" "$dir/kses-check.php" "$cache/$sha" "$v" "${markup_files[@]}"; then
+  if "$PHP" "$dir/kses-check.php" "$cache/$sha" "$v" "$known_file" "${markup_files[@]}"; then
     :
   else
     echo "check-page-kses: FAILED on WP $v" >&2
