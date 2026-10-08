@@ -225,17 +225,49 @@ func TestMCPOAuthAdvertisedScopesReachTheConsentAndOnlyTicksAreGranted(t *testin
 	}
 	t.Logf("STEP 5 ok: read-only request granted %v with %v", plain.Scopes, capNames(plain))
 
-	// STEP 6: that read-only registration asking for the advertised list is
-	// refused at /authorize with invalid_scope, the case an existing client meets.
+	// STEP 6: that read-only registration asking for the advertised list, which
+	// is what a client registered before the list grew sends at its next
+	// sign-in. It is offered the read scope it registered for, told which
+	// scopes were withheld, cannot spend its ticket on them, and signs in.
 	q := url.Values{
 		"response_type": {"code"}, "client_id": {readOnlyClient[0]}, "redirect_uri": {redirectURI},
 		"scope": {advertised}, "code_challenge": {"x"}, "code_challenge_method": {"S256"},
 	}
-	var oerr struct {
+	var narrowed struct {
+		Scopes        []string `json:"scopes"`
+		Unregistered  []string `json:"unregistered_scopes"`
+		ConsentTicket string   `json:"consent_ticket"`
+	}
+	if code := mcpDoJSON(t, eng, http.MethodGet, mcp.AuthorizePath+"?"+q.Encode(), nil, nil, &narrowed); code != http.StatusOK {
+		t.Fatalf("STEP 6 authorize = %d, want 200 with the request narrowed to the registration", code)
+	}
+	if !slices.Equal(narrowed.Scopes, []string{string(mcp.ScopeRead)}) {
+		t.Fatalf("STEP 6 consent scopes = %v, want [mcp:read]", narrowed.Scopes)
+	}
+	if withheld := []string{string(mcp.ScopeSite), string(mcp.ScopeCache)}; !slices.Equal(narrowed.Unregistered, withheld) {
+		t.Fatalf("STEP 6 unregistered_scopes = %v, want %v", narrowed.Unregistered, withheld)
+	}
+	var refused struct {
 		Error string `json:"error"`
 	}
-	if code := mcpDoJSON(t, eng, http.MethodGet, mcp.AuthorizePath+"?"+q.Encode(), nil, nil, &oerr); code != http.StatusBadRequest || oerr.Error != "invalid_scope" {
-		t.Fatalf("STEP 6 authorize = %d %q, want 400 invalid_scope", code, oerr.Error)
+	if code := mcpDoJSON(t, eng, http.MethodPost, mcp.ConsentPath, map[string]any{
+		"client_id": readOnlyClient[0], "redirect_uri": redirectURI, "scopes": want,
+		"state": "STEP 6", "code_challenge": "x", "code_challenge_method": "S256",
+		"name": "STEP 6 widened", "site_scope_mode": string(mcp.SiteScopeModeAll),
+		"consent_ticket": narrowed.ConsentTicket,
+	}, nil, &refused); code != http.StatusBadRequest || refused.Error != "invalid_scope" {
+		t.Fatalf("STEP 6 approval restoring the withheld scopes = %d %q, want 400 invalid_scope", code, refused.Error)
 	}
-	t.Log("STEP 6 ok: a read-only registration asking for the advertised list is refused with invalid_scope")
+	renewed := flow("STEP 6", readOnlyClient[0], advertised, readsOnly)
+	if len(renewed.Scopes) != 1 || renewed.Scopes[0] != mcp.ScopeRead {
+		t.Fatalf("STEP 6 narrowed grant scopes = %v, want [mcp:read]", renewed.Scopes)
+	}
+	for _, held := range renewed.Capabilities {
+		switch held {
+		case mcp.CapAbilityRead, mcp.CapAbilityRequest, mcp.CapCachePurge:
+			t.Fatalf("STEP 6 narrowed grant holds %q, which only a withheld scope confers", held)
+		}
+	}
+	t.Logf("STEP 6 ok: a read-only registration asking for %q signed in with %v, withheld %v",
+		advertised, renewed.Scopes, narrowed.Unregistered)
 }
