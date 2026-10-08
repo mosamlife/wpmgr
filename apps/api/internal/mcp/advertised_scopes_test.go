@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -285,21 +286,126 @@ func TestApproveTheAdvertisedList_ConfersExactlyWhatIsTicked(t *testing.T) {
 
 func ptrCaps(c []Capability) *[]Capability { return &c }
 
-// TestAuthorizeTheAdvertisedList_RefusedForAReadOnlyRegistration pins what an
-// existing client meets: one registered for mcp:read alone, asking for the
-// advertised list, is refused by name at /authorize and mints no ticket.
-func TestAuthorizeTheAdvertisedList_RefusedForAReadOnlyRegistration(t *testing.T) {
+// TestAuthorizeTheAdvertisedList_NarrowedForAReadOnlyRegistration is what an
+// existing client meets at its next sign-in. It registered for mcp:read alone
+// (m140 filled every older row with exactly that), it keeps that client_id, and
+// it asks for the advertised list it read off the challenge. The request is
+// narrowed to the registration rather than refused: the client signs in with
+// the read scope, the withheld scopes are named for the consent screen, and
+// nothing outside the registration reaches the ticket or the grant.
+func TestAuthorizeTheAdvertisedList_NarrowedForAReadOnlyRegistration(t *testing.T) {
 	store := approvalStore() // registered for mcp:read alone
-	_, err := consentSvc(store).Authorize(context.Background(), AuthorizeRequest{
-		ResponseType:        "code",
-		ClientID:            registeredClientID,
-		RedirectURI:         registeredRedirect,
-		Scope:               challengeScope(t),
-		CodeChallenge:       "a-real-challenge-value",
-		CodeChallengeMethod: CodeChallengeMethodS256,
-	})
+	if !slices.Equal(store.client.RegisteredScopes, []string{string(ScopeRead)}) {
+		t.Fatalf("fixture registered for %v; this test needs [mcp:read] alone", store.client.RegisteredScopes)
+	}
+	svc := approvalService(store)
+	consent := authorizeForTest(t, svc, challengeScope(t))
+
+	if !slices.Equal(consent.Scopes, []Scope{ScopeRead}) {
+		t.Fatalf("consent scopes = %v, want [mcp:read], the overlap with the registration", consent.Scopes)
+	}
+	if want := []Scope{ScopeSite, ScopeCache}; !slices.Equal(consent.UnregisteredScopes, want) {
+		t.Fatalf("unregistered scopes = %v, want %v in the order asked", consent.UnregisteredScopes, want)
+	}
+	claims, ok := testTicketCodec.open(consent.ConsentTicket, time.Now())
+	if !ok {
+		t.Fatal("the consent ticket does not open under the test key")
+	}
+	if !slices.Equal(claims.Scopes, []string{string(ScopeRead)}) {
+		t.Fatalf("the ticket seals %v; a scope outside the registration must never be sealed", claims.Scopes)
+	}
+	for _, c := range consent.ConferrableCapabilities {
+		switch c.Name {
+		case CapAbilityRead, CapAbilityRequest, CapCachePurge:
+			t.Errorf("the narrowed consent offers %q, which only a withheld scope confers", c.Name)
+		}
+	}
+
+	// The withheld scopes cannot be spent with this ticket: an approval body
+	// naming the request as the client sent it is refused by the binding.
+	widened := approvalFor(consent)
+	widened.Principal = operatorPrincipal()
+	widened.Consent.Scopes = []Scope{ScopeRead, ScopeSite, ScopeCache}
+	_, err := svc.Approve(context.Background(), widened)
+	if de, ok := domain.AsDomain(err); !ok || de.Code != ErrCodeScopeNotAuthorized {
+		t.Fatalf("Approve with the withheld scopes = %v, want %s", err, ErrCodeScopeNotAuthorized)
+	}
+	if len(store.approved) != 0 {
+		t.Fatalf("a refused approval wrote %d grants", len(store.approved))
+	}
+
+	// The narrowed consent approves, and the grant holds the read scope alone.
+	req := approvalFor(consent)
+	req.Principal = operatorPrincipal()
+	if _, err := svc.Approve(context.Background(), req); err != nil {
+		t.Fatalf("Approve of the narrowed consent: %v", err)
+	}
+	if len(store.approved) != 1 {
+		t.Fatalf("want 1 grant written, got %d", len(store.approved))
+	}
+	if got := store.approved[0].OauthScopes; !slices.Equal(got, []string{string(ScopeRead)}) {
+		t.Fatalf("the grant stores scopes %v, want [mcp:read]", got)
+	}
+}
+
+// TestAuthorizeHandler_NamesTheWithheldScopes reads unregistered_scopes off
+// the consent payload the dashboard renders, for a read-only registration
+// asking for the advertised list, and checks the field is [] rather than null
+// when nothing was withheld.
+func TestAuthorizeHandler_NamesTheWithheldScopes(t *testing.T) {
+	get := func(store *fakeStore) map[string]json.RawMessage {
+		t.Helper()
+		q := url.Values{
+			"response_type":         {"code"},
+			"client_id":             {registeredClientID},
+			"redirect_uri":          {registeredRedirect},
+			"scope":                 {challengeScope(t)},
+			"code_challenge":        {"a-real-challenge-value"},
+			"code_challenge_method": {CodeChallengeMethodS256},
+		}
+		w := httptest.NewRecorder()
+		newAuthorizeRouter(t, store).ServeHTTP(w,
+			httptest.NewRequest(http.MethodGet, AuthorizePath+"?"+q.Encode(), nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("GET /authorize = %d, body %s", w.Code, w.Body.String())
+		}
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+
+	raw := get(approvalStore()) // registered for mcp:read alone
+	if got := string(raw["scopes"]); got != `["mcp:read"]` {
+		t.Fatalf("scopes = %s, want [\"mcp:read\"]", got)
+	}
+	if got := string(raw["unregistered_scopes"]); got != `["mcp:site","mcp:cache"]` {
+		t.Fatalf("unregistered_scopes = %s, want [\"mcp:site\",\"mcp:cache\"]", got)
+	}
+
+	raw = get(advertisedClientStore(t)) // registered for the whole list
+	if got := string(raw["unregistered_scopes"]); got != `[]` {
+		t.Fatalf("unregistered_scopes = %s with nothing withheld, want []", got)
+	}
+}
+
+// TestAuthorizeTheAdvertisedList_RefusedWhenNothingOverlaps keeps the refusal
+// for the request narrowing cannot answer: a client registered for mcp:read
+// alone asking only for scopes it never registered for is refused by name, and
+// no ticket is sealed.
+func TestAuthorizeTheAdvertisedList_RefusedWhenNothingOverlaps(t *testing.T) {
+	store := approvalStore() // registered for mcp:read alone
+	got, err := consentSvc(store).Authorize(context.Background(),
+		authorizeReqWithScope(string(ScopeSite)+" "+string(ScopeCache)))
 	de, ok := domain.AsDomain(err)
 	if !ok || de.Code != ErrCodeInvalidScope {
-		t.Fatalf("Authorize = %v, want %s for a scope outside the registration", err, ErrCodeInvalidScope)
+		t.Fatalf("Authorize = %v, want %s when nothing overlaps the registration", err, ErrCodeInvalidScope)
+	}
+	if de.Details["unregistered_scope"] != string(ScopeSite) {
+		t.Fatalf("refusal details = %v, want unregistered_scope %q", de.Details, ScopeSite)
+	}
+	if got.ConsentTicket != "" {
+		t.Fatal("a refused authorize call still sealed a consent ticket")
 	}
 }
