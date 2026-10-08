@@ -560,6 +560,22 @@ type Querier interface {
 	ConsumeSiteBoundPairingCode(ctx context.Context, arg ConsumeSiteBoundPairingCodeParams) (ConsumeSiteBoundPairingCodeRow, error)
 	// Mark a challenge used on successful verification.
 	ConsumeTwoFactorChallenge(ctx context.Context, id uuid.UUID) (TwoFactorChallenge, error)
+	// Per site and per builder namespace ('elementor', 'bricks'): how many of the
+	// site's inventoried abilities in that namespace were registered by that
+	// builder itself. One row per (site, namespace) that has at least one
+	// inventoried ability in the namespace; a missing row means zero. Rows for
+	// sites ListAIReadinessSiteFacts does not return are to be ignored.
+	//
+	// attributed counts a row only when its owner is the builder:
+	//   elementor: owner_kind 'plugin' and owner_dir 'elementor'
+	//   bricks:    owner_kind 'theme'  and owner_dir 'bricks'
+	// and owner_ok is not false (true = verified, NULL = an agent that did not
+	// verify; false = the agent found the registration did not belong to that
+	// owner). A row in the namespace registered by anything else never counts, so
+	// another plugin naming its abilities "elementor/..." cannot make the builder
+	// look switched on. in_namespace counts every row in the namespace and is for
+	// diagnostics only; nothing may treat it as attribution.
+	CountAIReadinessAbilityOwners(ctx context.Context, arg CountAIReadinessAbilityOwnersParams) ([]CountAIReadinessAbilityOwnersRow, error)
 	// The per-connection daily cap (30), shared across entries: rows created in
 	// the window, any state, any site the transaction admits. Connection-scoped.
 	CountAbilityRequestsForGrantSince(ctx context.Context, arg CountAbilityRequestsForGrantSinceParams) (int64, error)
@@ -2365,6 +2381,69 @@ type Querier interface {
 	// caller handles the normal way (errors.Is(err, pgx.ErrNoRows)).
 	LastProcessedBillingEventOccurredAtForTenant(ctx context.Context, arg LastProcessedBillingEventOccurredAtForTenantParams) (time.Time, error)
 	LinkUserOIDC(ctx context.Context, arg LinkUserOIDCParams) (User, error)
+	// AI readiness (per-site checklist and fleet column). Two read-only queries
+	// over tables that already exist: sites (with its components JSONB) and the
+	// m155 ability inventory with its run record. No migration.
+	//
+	// WHO CALLS THEM, AND IN WHAT TRANSACTION. Both run inside the request's
+	// tenant transaction opened by db.Pool.RunTenantTx, as wpmgr_app, so the
+	// tenant and site-scope policies on all three tables apply: a site-scoped
+	// collaborator sees only the sites in app.allowed_site_ids, in both queries.
+	// One SQL text serves the per-site card (site_id set) and the fleet column
+	// (site_id NULL), so the two views cannot disagree about a site.
+	//
+	// THE EXPLICIT TENANT PREDICATE ON sites IS LOAD-BEARING, NOT DECORATION.
+	// sites carries two permissive SELECT policies keyed on app.user_id
+	// (sites_shared_read, sites_client_read). RunTenantTx sets app.user_id for
+	// every signed-in member, so without `s.tenant_id = tenant_id` a member of
+	// this tenant who also holds a share on a site in ANOTHER tenant would get
+	// that site in this tenant's rollup. On the inventory tables no such policy
+	// exists and the predicate is defence in depth.
+	//
+	// WHAT IS NEVER READ. No inventory label, description, schema or ability
+	// name leaves the database here; the inventory query returns counts only.
+	// From components it returns booleans, version strings and the builder_facts
+	// block. Plugin and theme versions are site-reported text the agent DTO caps
+	// at 64 characters and does not otherwise validate: a caller that echoes one
+	// must validate it first.
+	//
+	// A MALFORMED components DOCUMENT YIELDS NULLS, NEVER AN ERROR. Every JSONB
+	// step is guarded by jsonb_typeof, so one bad document cannot fail the whole
+	// fleet rollup.
+	// One row per enrolled, non-archived site of the tenant (or the one site
+	// named by site_id; zero rows when it is archived, never enrolled, in another
+	// tenant or outside the caller's site scope).
+	//
+	// Columns. The version and active columns are NEVER NULL: sqlc types every
+	// computed column below as non-null whatever the SQL says, so the SQL
+	// guarantees it, with the same '' convention sites.wp_version uses.
+	//   components_updated_at       NULL: the site has never pushed metadata.
+	//   content_editing_enabled_at  NULL: AI page creation is off.
+	//   elementor_installed         a plugins[] entry whose slug is
+	//                               "elementor/<file>" (the directory, exactly;
+	//                               "elementor-pro/..." is a different plugin).
+	//   elementor_version           that entry's version; '' when not installed
+	//                               or the entry carries no version string. When
+	//                               the directory holds several entries, an
+	//                               active one is preferred, then
+	//                               "elementor/elementor.php", then slug order.
+	//   elementor_active            some entry in the directory is active; false
+	//                               when not installed.
+	//   mcp_adapter_active          some plugins[] entry in directory
+	//                               "mcp-adapter" is active. Installed but
+	//                               inactive is false.
+	//   bricks_installed            a themes[] entry whose slug is "bricks". The
+	//                               parent theme of an active child theme is not
+	//                               in themes[]; that fact is
+	//                               builder_facts.theme_template.
+	//   bricks_version/_active      from that entry, as for Elementor.
+	//   builder_facts               components.builder_facts when it is a JSON
+	//                               object, else NULL (nil). NULL means "not
+	//                               reported", never "false".
+	//   abilities_checked_at,       the site's ability inventory run; all three
+	//   abilities_api_present,      NULL when the inventory has never run.
+	//   abilities_truncated
+	ListAIReadinessSiteFacts(ctx context.Context, arg ListAIReadinessSiteFactsParams) ([]ListAIReadinessSiteFactsRow, error)
 	ListAPIKeys(ctx context.Context, arg ListAPIKeysParams) ([]ApiKey, error)
 	// Every entry, any status, for the admin screen.
 	ListAbilityCatalogue(ctx context.Context) ([]AbilityCatalogue, error)
