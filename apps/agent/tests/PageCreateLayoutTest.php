@@ -481,6 +481,132 @@ final class PageCreateLayoutTest extends TestCase
     }
 
     // -------------------------------------------------------------------------
+    // Behaviour
+    // -------------------------------------------------------------------------
+
+    public function test_v1_outlines_render_byte_identical_to_the_previous_release(): void
+    {
+        $outline = [
+            ['type' => 'heading', 'level' => 2, 'text' => 'Our hours & prices'],
+            ['type' => 'heading', 'level' => 3, 'text' => 'H3 [1]'],
+            ['type' => 'heading', 'level' => 4, 'text' => 'H4'],
+            ['type' => 'paragraph', 'text' => 'Open daily. Café "Ünïcode" it\'s fine.'],
+            ['type' => 'list', 'ordered' => true, 'items' => ['One', 'Two']],
+            ['type' => 'list', 'ordered' => false, 'items' => ['Q&A']],
+        ];
+        // The bytes agent 0.61.158 wrote for this outline.
+        $blocks = "<!-- wp:heading -->\n<h2 class=\"wp-block-heading\">Our hours &amp; prices</h2>\n<!-- /wp:heading -->\n\n"
+            . "<!-- wp:heading {\"level\":3} -->\n<h3 class=\"wp-block-heading\">H3 &#091;1&#093;</h3>\n<!-- /wp:heading -->\n\n"
+            . "<!-- wp:heading {\"level\":4} -->\n<h4 class=\"wp-block-heading\">H4</h4>\n<!-- /wp:heading -->\n\n"
+            . "<!-- wp:paragraph -->\n<p>Open daily. Café \"Ünïcode\" it's fine.</p>\n<!-- /wp:paragraph -->\n\n"
+            . "<!-- wp:list {\"ordered\":true} -->\n<ol class=\"wp-block-list\"><!-- wp:list-item -->\n<li>One</li>\n<!-- /wp:list-item --><!-- wp:list-item -->\n<li>Two</li>\n<!-- /wp:list-item --></ol>\n<!-- /wp:list -->\n\n"
+            . "<!-- wp:list -->\n<ul class=\"wp-block-list\"><!-- wp:list-item -->\n<li>Q&amp;A</li>\n<!-- /wp:list-item --></ul>\n<!-- /wp:list -->";
+        $classic = "<h2>Our hours &amp; prices</h2>\n\n<h3>H3 &#091;1&#093;</h3>\n\n<h4>H4</h4>\n\n"
+            . "<p>Open daily. Café \"Ünïcode\" it's fine.</p>\n\n<ol>\n<li>One</li>\n<li>Two</li>\n</ol>\n\n<ul>\n<li>Q&amp;A</li>\n</ul>";
+
+        $b = self::validate($outline);
+        $c = self::validate($outline, 'wordpress_classic');
+        $this->assertSame($blocks, PageCreateBuilder::render($b['spec']));
+        $this->assertSame($classic, PageCreateBuilder::render($c['spec']));
+        $this->assertSame([], PageCreateBuilder::mediaIds($b['spec']));
+        $this->assertSame(hash('sha256', (string) json_encode(['new_post', 'page'])), PageCreateBuilder::baseFingerprint('page'));
+    }
+
+    public function test_alt_text_is_escaped_to_the_forms_every_core_keeps(): void
+    {
+        $r    = self::validate([['type' => 'image', 'attachment_id' => 5, 'alt' => 'Bob\'s "dog" & cat &amp;']]);
+        $html = PageCreateBuilder::render($r['spec'], [5 => ['url' => 'https://example.com/a.jpg?x=1&y=2']]);
+
+        $this->assertStringContainsString('alt="Bob&apos;s &quot;dog&quot; &amp; cat &amp;amp;"', $html);
+        $this->assertStringContainsString('src="https://example.com/a.jpg?x=1&amp;y=2"', $html);
+        $this->assertStringContainsString('class="wp-image-5" />', $html, 'void elements end in a space and a slash');
+        $this->assertStringNotContainsString('"/>', $html);
+        $this->assertStringNotContainsString("'", substr($html, (int) strpos($html, '<img')), 'no raw apostrophe in an attribute');
+    }
+
+    public function test_retokenise_accepts_every_template_and_refuses_anything_else(): void
+    {
+        foreach (json_decode(self::layoutFixture(), true)['cases'] as $case) {
+            $this->assertNull(PageCreateBuilder::retokenise($case['preview']['content']), $case['name']);
+        }
+        $img = '<img src="https://example.com/a.jpg" alt="" class="wp-image-1" />';
+        $this->assertNull(PageCreateBuilder::retokenise($img));
+        $bad = [
+            'unknown attribute' => '<img src="https://example.com/a.jpg" alt="" class="wp-image-1" onerror="alert(1)" />',
+            'attribute order'   => '<img alt="" src="https://example.com/a.jpg" class="wp-image-1" />',
+            'javascript src'    => '<img src="javascript:alert(1)" alt="" class="wp-image-1" />',
+            'protocol-relative' => '<a class="wp-block-button__link wp-element-button" href="//evil.example/">x</a>',
+            'style injection'   => '<div class="wp-block-column" style="flex-basis:50%;background:url(x)">',
+            'spacer height'     => '<div style="height:47px" aria-hidden="true" class="wp-block-spacer">',
+            'class injection'   => '<div class="wp-block-group evil">',
+            'quote in alt'      => '<img src="https://example.com/a.jpg" alt="a"b" class="wp-image-1" />',
+            'comment json'      => '<!-- wp:image {"id":1,"sizeSlug":"large","linkDestination":"none","url":"x"} -->',
+            'unknown block'     => '<!-- wp:html -->',
+            'width 100%'        => '<!-- wp:column {"width":"100%"} -->',
+            'script tag'        => '<script>',
+            'bracket in text'   => '<p>[gallery]</p>',
+        ];
+        foreach ($bad as $why => $html) {
+            $this->assertNotNull(PageCreateBuilder::retokenise($html), $why);
+        }
+    }
+
+    public function test_the_classic_editor_never_flattens_layout(): void
+    {
+        $spec = [
+            'post_type' => 'page', 'editor' => 'wordpress_classic', 'title' => 'T',
+            'outline'   => [['type' => 'group', 'children' => [['type' => 'paragraph', 'text' => 'x']]]],
+        ];
+        $this->expectException(\UnexpectedValueException::class);
+        PageCreateBuilder::render($spec);
+    }
+
+    public function test_an_image_without_a_resolved_address_is_never_rendered(): void
+    {
+        $r = self::validate([['type' => 'image', 'attachment_id' => 5, 'alt' => '']]);
+        $this->expectException(\UnexpectedValueException::class);
+        PageCreateBuilder::render($r['spec'], [5 => ['url' => 'javascript:alert(1)']]);
+    }
+
+    public function test_media_ids_are_distinct_in_document_order(): void
+    {
+        $r = self::validate([
+            ['type' => 'image', 'attachment_id' => 9, 'alt' => ''],
+            ['type' => 'group', 'children' => [
+                ['type' => 'columns', 'columns' => [
+                    ['children' => [['type' => 'image', 'attachment_id' => 3, 'alt' => '']]],
+                    ['children' => [['type' => 'image', 'attachment_id' => 9, 'alt' => '']]],
+                ]],
+            ]],
+            ['type' => 'image', 'attachment_id' => 1, 'alt' => ''],
+        ]);
+        $this->assertSame([9, 3, 1], PageCreateBuilder::mediaIds($r['spec']));
+    }
+
+    public function test_links_and_alt_count_toward_the_total(): void
+    {
+        $long = str_repeat('a', 4990);
+        $outline = [];
+        for ($i = 0; $i < 11; $i++) {
+            $outline[] = ['type' => 'paragraph', 'text' => $long];
+        }
+        // 11 x 4990 + the title = 54891; 4 buttons of 2000-byte links push it past 60000.
+        $url = 'https://example.com/' . str_repeat('b', 1980);
+        $outline[] = ['type' => 'buttons', 'buttons' => [['text' => 'a', 'url' => $url], ['text' => 'b', 'url' => $url], ['text' => 'c', 'url' => $url]]];
+        $this->assertSame('create_content_invalid', self::validate($outline)['code'] ?? 'ok');
+        array_pop($outline);
+        $this->assertArrayHasKey('spec', self::validate($outline));
+    }
+
+    public function test_limits_are_the_published_limits(): void
+    {
+        $this->assertSame(
+            '{"max_top_level_nodes":200,"max_nodes":400,"max_columns":4,"max_children":50,"max_images":20,"max_buttons":12,"max_tables":10,"max_table_rows":50,"max_table_columns":6,"max_title_chars":200,"max_text_chars":5000,"max_total_chars":60000,"max_input_bytes":65536}',
+            json_encode(PageCreateBuilder::limits())
+        );
+    }
+
+    // -------------------------------------------------------------------------
     // Helpers for the behaviour tests
     // -------------------------------------------------------------------------
 
