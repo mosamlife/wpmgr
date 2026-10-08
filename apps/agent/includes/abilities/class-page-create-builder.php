@@ -465,7 +465,8 @@ final class PageCreateBuilder
         if (preg_match('/^((?:[A-Za-z0-9-]+\.)+[A-Za-z0-9-]+)(?::([0-9]{1,5}))?$/D', $authority, $m) !== 1) {
             return 'must name a host such as example.com';
         }
-        if (isset($m[2]) && $m[2] !== '' && ((int) $m[2] < 1 || (int) $m[2] > 65535)) {
+        // PCRE omits an unmatched trailing group, so $m[2] is set only for a port.
+        if (isset($m[2]) && ((int) $m[2] < 1 || (int) $m[2] > 65535)) {
             return 'has a port out of range';
         }
 
