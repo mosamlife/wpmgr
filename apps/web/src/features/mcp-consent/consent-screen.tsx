@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { AlertTriangle, ShieldAlert } from "lucide-react";
+import { AlertTriangle, Info, ShieldAlert } from "lucide-react";
 import { z } from "zod";
 
 import { Button } from "@/components/ui/button";
@@ -51,6 +51,20 @@ import { CachePurgeCapabilityBox } from "@/features/ai-connections/cache-purge-c
 // propose behaviour for this screen to describe.
 
 export const REVOKE_LOCATION = "Settings, under AI connections";
+
+/**
+ * The sentence shown when the server withheld scopes the app asked for
+ * (`unregistered_scopes` on the consent payload).
+ *
+ * An AI app keeps the registration it made the first time it was connected, and
+ * that registration lists what it may ever ask for. One connected before WPMgr
+ * offered site tools cannot be given them from this screen: the only way to ask
+ * again is to register again, which for a standard MCP client means removing
+ * WPMgr from the app and adding it back. So the sentence says that, and offers
+ * no tick, because there is nothing here to tick.
+ */
+export const UNREGISTERED_SCOPES_NOTICE =
+  "This AI app was connected before WPMgr offered site tools. To give it site tools, remove WPMgr from the app and add it again.";
 
 // ---------------------------------------------------------------------------
 // Checklist item 1: which client is asking
@@ -249,6 +263,12 @@ function PermissionsBlock({
         </div>
       )}
 
+      {/* Where the site-tools box would be, for an app whose registration does
+          not hold mcp:site. Read from `unregisteredScopes` for this sentence
+          only: the boxes above are driven by `scopes`, so a withheld scope can
+          never grow a tick. */}
+      {consent.unregisteredScopes.length > 0 && <UnregisteredScopesNotice />}
+
       {!capabilitiesOk && (
         <p
           role="alert"
@@ -319,6 +339,24 @@ function PermissionsBlock({
         </p>
       )}
     </section>
+  );
+}
+
+/**
+ * Why an app that asked for more is being offered less. A plain informational
+ * note, not a warning: nothing is wrong with the request and nothing here is
+ * blocked, the app is simply limited to what it registered for.
+ */
+function UnregisteredScopesNotice() {
+  return (
+    <div
+      role="note"
+      data-testid="consent-unregistered-scopes"
+      className="mt-4 flex items-start gap-2 rounded-md border border-[var(--color-info)]/30 bg-[var(--color-info-subtle)] p-3 text-sm text-[var(--color-info-subtle-fg)]"
+    >
+      <Info aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
+      <p>{UNREGISTERED_SCOPES_NOTICE}</p>
+    </div>
   );
 }
 
