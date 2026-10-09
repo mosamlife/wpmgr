@@ -23,12 +23,13 @@ if (!defined('ABSPATH')) {
  * The edit lock (BuilderDocumentSnapshot::EDIT_LOCK_KEY, byte for byte) is
  * never deleted, written or guarded.
  *
- * full() is the automatic restore inside the call that wrote. Every meta row
- * of the post goes back to the snapshot's rows, in the snapshot's order (the
- * meta_ids are new, the order is kept): a key the write added is deleted, a
- * key it removed comes back with its row count. Every RESTORE_POST_COLUMNS
- * column goes back to the snapshot's bytes. The page's fingerprint must then
- * equal the one it had before the write.
+ * full() is the automatic restore inside the call that wrote. The post's meta
+ * rows, the edit lock and the derived keys aside, become exactly the
+ * snapshot's rows in the snapshot's order (the meta_ids are new, the order is
+ * kept): a key the write added is deleted, a key it removed comes back with
+ * its row count. Every RESTORE_POST_COLUMNS column goes back to the
+ * snapshot's bytes. Revisions the write made are left as they are. The
+ * page's fingerprint must then equal the one it had before the write.
  *
  * scoped() is a person's undo of one change. Only the meta keys and the posts
  * columns the change wrote go back, and only when each still holds exactly
