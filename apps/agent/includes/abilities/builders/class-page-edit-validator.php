@@ -41,7 +41,11 @@ if (!defined('ABSPATH')) {
  *     (ops_invalid);
  *   - a locked node is never the target of an operation, so it is never
  *     changed, replaced, removed or moved; it may be an anchor
- *     (node_not_editable);
+ *     (node_not_editable, locked);
+ *   - a node that holds a locked node at any depth, on the page as the
+ *     earlier operations leave it, is never removed or replaced, so a locked
+ *     node never goes with its section or column (node_not_editable,
+ *     holds_locked);
  *   - set_text names a field the node offers (node_not_editable), and the
  *     text of a button keeps page-create's button text rule (bad_input);
  *   - an insert into a node needs a node that takes children: a section, a
@@ -179,6 +183,9 @@ final class PageEditValidator
             $target = isset($op['ref']) ? (string) $op['ref'] : null;
             if ($target !== null && $kind[$target] === 'locked') {
                 return self::refuse('node_not_editable', 'locked', $i);
+            }
+            if ($target !== null && ($name === 'remove' || $name === 'replace') && self::holdsLocked($target, $kind, $parent)) {
+                return self::refuse('node_not_editable', 'holds_locked', $i);
             }
 
             switch ($name) {
@@ -611,6 +618,27 @@ final class PageEditValidator
     {
         for ($at = $node; $at !== null; $at = $parent[$at] ?? null) {
             if ($at === $ancestor) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Whether a locked node lies inside $ancestor's subtree, at any depth, as
+     * the earlier operations left the page.
+     *
+     * @param string                     $ancestor Node ref.
+     * @param array<string, string>      $kind     Kind of every node of the page before the call, by ref.
+     * @param array<string, string|null> $parent   Current parent of every node; null at the top.
+     * @return bool
+     */
+    private static function holdsLocked(string $ancestor, array $kind, array $parent): bool
+    {
+        foreach ($kind as $ref => $k) {
+            $ref = (string) $ref;
+            if ($k === 'locked' && $ref !== $ancestor && self::isWithin($ref, $ancestor, $parent)) {
                 return true;
             }
         }
