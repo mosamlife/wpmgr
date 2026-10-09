@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -11,9 +12,37 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
 )
 
+var (
+	// sentenceBreak ends a sentence at a full stop, question mark or
+	// exclamation mark followed by white space. A description is plain
+	// sentences with identifiers in backticks, which hold no such break.
+	sentenceBreak = regexp.MustCompile(`[.!?]\s+`)
+
+	// approvalDenied matches, in a lower-cased sentence, wording that takes the
+	// approval away from a person: automatic, not needed, or given without one.
+	approvalDenied = regexp.MustCompile(`\bautomatic|\bno approval\b|\bwithout (an? )?(approval|person)\b|` +
+		`\bno person\b|\bnot (needed|required)\b|\bno need\b`)
+)
+
+// saysAPersonApproves reports whether a description has a sentence that names
+// a person approving. "person" and "approv" must both be in that one sentence,
+// so a person who can only see a request does not count, and neither does
+// "approved" in some other sentence. A sentence that says the approval is
+// automatic, not needed or given without a person does not count either: put
+// such a statement in a sentence of its own.
+func saysAPersonApproves(desc string) bool {
+	for _, s := range sentenceBreak.Split(strings.ToLower(desc), -1) {
+		if strings.Contains(s, "person") && strings.Contains(s, "approv") && !approvalDenied.MatchString(s) {
+			return true
+		}
+	}
+	return false
+}
+
 // A tool whose Effect is EffectRequest writes a pending request instead of
 // acting, and a person approves it in WPMgr (registry.go, Effect). Its
-// description has to say so, and has to name the read tool that follows the
+// description has to say so in a sentence that names a person approving
+// (saysAPersonApproves), and has to name the read tool that follows the
 // request by its request_id, or a caller is told something other than what the
 // call does. site_ability_run once said that only reviewed reads run, after
 // change abilities had started going through it.
@@ -25,8 +54,9 @@ func TestRequestEffectToolsSayThatAPersonApprovesAndHowToFollow(t *testing.T) {
 			continue
 		}
 		checked = append(checked, e.Name)
-		if !strings.Contains(strings.ToLower(e.Description), "approv") {
-			t.Errorf("%q writes a request, but its description never says that a person approves it:\n%s",
+		if !saysAPersonApproves(e.Description) {
+			t.Errorf("%q writes a request, but no sentence of its description says that a person approves it "+
+				"(a sentence that says the approval is automatic or not needed does not count):\n%s",
 				e.Name, e.Description)
 		}
 		followed := false
@@ -49,6 +79,51 @@ func TestRequestEffectToolsSayThatAPersonApprovesAndHowToFollow(t *testing.T) {
 		t.Fatalf("%s is not among the request-effect tools checked %v", ToolSiteAbilityRun, checked)
 	}
 	t.Logf("request-effect tools checked: %v", checked)
+}
+
+// The predicate itself. Each row is a description, or a fragment of one, and
+// whether it names a person approving. The two shipped descriptions are cases
+// so that a predicate which refuses what ships goes red here, by name, rather
+// than only in the registry test above.
+func TestSaysAPersonApproves(t *testing.T) {
+	shipped := map[string]string{}
+	for _, e := range nonEmptyRegistry(t) {
+		shipped[e.Name] = e.Description
+	}
+	for _, name := range []string{ToolSiteAbilityRun, ToolSiteCachePurgeRequest} {
+		if shipped[name] == "" {
+			t.Fatalf("%s is not registered, so its description cannot be a case", name)
+		}
+	}
+	cases := []struct {
+		name string
+		desc string
+		want bool
+	}{
+		// What it must accept.
+		{"the run tool as shipped", shipped[ToolSiteAbilityRun], true},
+		{"the cache-clear request tool as shipped", shipped[ToolSiteCachePurgeRequest], true},
+		{"one short sentence", "A person approves it in WPMgr.", true},
+		{"any letter case", "A Person APPROVES it in WPMgr", true},
+		{"reads need no approval, in a sentence of their own",
+			"Reads need no approval. A change becomes a request that a person approves.", true},
+
+		// What it must refuse.
+		{"automatic approval", "automatically approved", false},
+		{"no approval", "no approval needed", false},
+		{"approved without a person", "approved without a person", false},
+		{"a person, but no approval word", "a person can see it", false},
+		{"empty", "", false},
+		{"a person and automatic in one sentence", "Requests from a person are approved automatically.", false},
+		{"a person's approval not needed", "A person's approval is not needed.", false},
+		{"no approval from a person", "No approval from a person is needed.", false},
+		{"person and approval in different sentences", "A person can see the request. It is approved later.", false},
+	}
+	for _, c := range cases {
+		if got := saysAPersonApproves(c.desc); got != c.want {
+			t.Errorf("%s: saysAPersonApproves(%q) = %v, want %v", c.name, c.desc, got, c.want)
+		}
+	}
 }
 
 // The run tool's description says that the result of a change carries a
