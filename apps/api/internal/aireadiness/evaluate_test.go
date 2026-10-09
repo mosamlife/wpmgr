@@ -506,6 +506,58 @@ func TestBricksAbilitiesCheck(t *testing.T) {
 	}
 }
 
+// A tool list read while the site lacked the Abilities API holds nothing a
+// switch can be read from, and WordPress shipping the API since does not make
+// that list a statement about the switch.
+func TestSwitchRowsAreUnknownWhenTheToolListWasReadWithoutTheAbilitiesAPI(t *testing.T) {
+	cases := []struct {
+		name  string
+		facts func() Facts
+		id    CheckID
+	}{
+		{"elementor", func() Facts {
+			f := withElementor(readyFacts())
+			f.ElementorAbilities = 0
+			return f
+		}, CheckElementorSwitch},
+		{"bricks", func() Facts {
+			f := withBricks(readyFacts())
+			f.BricksAbilities = 0
+			return f
+		}, CheckBricksAbilities},
+	}
+	for _, c := range cases {
+		t.Run(c.name+": read before WordPress shipped the API", func(t *testing.T) {
+			f := c.facts()
+			f.AbilitiesAPIPresent = false
+			r := Evaluate(f)
+			expect(t, find(t, r, CheckAbilitiesAPI), StatePass, ReasonNone, "")
+			expect(t, find(t, r, c.id), StateUnknown, ReasonInventoryNeverRun, "")
+			if r.Status != StatusIncomplete || r.FixCount != 0 {
+				t.Fatalf("a stale read must not be a fix: status %q fix_count %d failing %v", r.Status, r.FixCount, r.Failing())
+			}
+			if len(r.Warnings) != 0 {
+				t.Fatalf("an unknown switch must not warn: %v", r.Warnings)
+			}
+		})
+		t.Run(c.name+": rows beside a read that saw no API are not trusted", func(t *testing.T) {
+			f := c.facts()
+			f.AbilitiesAPIPresent = false
+			f.ElementorAbilities, f.BricksAbilities = 3, 3
+			expect(t, find(t, Evaluate(f), c.id), StateUnknown, ReasonInventoryNeverRun, "")
+		})
+		t.Run(c.name+": a read that saw the API and found nothing is still off", func(t *testing.T) {
+			f := c.facts()
+			f.AbilitiesAPIPresent = true
+			r := Evaluate(f)
+			expect(t, find(t, r, c.id), StateFail, ReasonNone, "")
+			if r.Status != StatusNeedsAttention || r.FixCount != 1 {
+				t.Fatalf("status %q fix_count %d, want needs_attention 1", r.Status, r.FixCount)
+			}
+		})
+	}
+}
+
 // ---- status, fix count, warnings ------------------------------------------
 
 func TestStatusRollup(t *testing.T) {

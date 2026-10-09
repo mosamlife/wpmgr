@@ -270,9 +270,11 @@ func (e *evaluator) checkContentEditing() Check {
 //
 // Dependencies come first. A failing abilities_api means the site has no tool
 // list to read; a failing or unknowable builder version means the switch may
-// not exist yet. Then: never inventoried is unknown; any attributed ability is
-// a pass; none on a list that was cut short is unknown; none on a complete
-// list is a fail.
+// not exist yet. Then: never inventoried is unknown; a tool list read while
+// the site lacked the Abilities API says nothing about the switch, so it is
+// unknown too, even if WordPress has been updated since; any attributed
+// ability is a pass; none on a list that was cut short is unknown; none on a
+// complete list is a fail.
 func (e *evaluator) switchCheck(id CheckID, needs Reason, version, api Check, attributed int64) Check {
 	switch {
 	case api.State == StateFail:
@@ -282,6 +284,8 @@ func (e *evaluator) switchCheck(id CheckID, needs Reason, version, api Check, at
 	case version.State != StatePass:
 		return unknown(id, needs, "")
 	case !e.f.InventoryChecked:
+		return unknown(id, ReasonInventoryNeverRun, "")
+	case !e.f.AbilitiesAPIPresent:
 		return unknown(id, ReasonInventoryNeverRun, "")
 	case attributed > 0:
 		return pass(id, "")
