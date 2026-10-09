@@ -23,6 +23,7 @@ namespace WPMgr\Agent\Tests;
 
 use Brain\Monkey;
 use Brain\Monkey\Functions;
+use WPMgr\Agent\Abilities\Builders\BuilderDocumentSnapshot;
 use WPMgr\Agent\Commands\MetadataCommand;
 use WPMgr\Agent\Enrollment;
 use WPMgr\Agent\Keystore;
@@ -486,6 +487,49 @@ final class LifecycleOwnedOptionsTest extends TestCase
             $this->assertSame('keep:' . $name, $this->options[$name] ?? null, "options row {$name} must survive uninstall");
             $this->assertSame('keep:' . $name, $this->network[$name] ?? null, "network row {$name} must survive uninstall");
         }
+    }
+
+    /**
+     * The page snapshots taken before a builder write live outside the
+     * namespace, under their own prefix. Uninstall removes every one of them
+     * and nothing that only resembles one.
+     */
+    public function test_uninstall_removes_snapshots(): void
+    {
+        $this->multisite = true;
+        $prefix          = 'wpmgr_ability_snap_';
+        $this->assertSame($prefix, BuilderDocumentSnapshot::OPTION_PREFIX, 'the prefix uninstall must cover');
+
+        $snapshots = [
+            $prefix . '0b5e6f3a-1c2d-4e5f-8a9b-0c1d2e3f4a5b',
+            $prefix . '0b5e6f3a-1c2d-4e5f-8a9b-000000000001',
+            $prefix . 'a-name-another-release-wrote',
+        ];
+        $foreign = [
+            'wpmgr_abilityXsnapXlookalike',
+            'my_wpmgr_ability_snap_x',
+            'WPMGR_ABILITY_SNAP_ANOTHER_PLUGIN',
+            'wpmgr_ability_snap',
+            'siteurl',
+        ];
+        foreach ($snapshots as $name) {
+            $this->options[$name] = '{"version":1}';
+        }
+        foreach ($foreign as $name) {
+            $this->options[$name] = 'keep:' . $name;
+        }
+        $this->network[$snapshots[0]] = 'a network row of the same name is not a snapshot';
+
+        $this->lifecycle()->wipeAll();
+
+        foreach ($snapshots as $name) {
+            $this->assertArrayNotHasKey($name, $this->options, "uninstall left the snapshot {$name}");
+            $this->assertContains('options:' . $name, $this->cacheDeletes, "the cache entry of {$name} must go too");
+        }
+        foreach ($foreign as $name) {
+            $this->assertSame('keep:' . $name, $this->options[$name] ?? null, "uninstall deleted {$name}, which is not a snapshot");
+        }
+        $this->assertSame('a network row of the same name is not a snapshot', $this->network[$snapshots[0]] ?? null, 'snapshots are per-site options only');
     }
 
     /**
