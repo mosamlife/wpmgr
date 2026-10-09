@@ -208,7 +208,10 @@ func TestAuthorizeGrantDerivesNothingFromAnExportedField(t *testing.T) {
 	store := &fakeStore{scopeSites: []uuid.UUID{row.ScopeSiteIds[0]}}
 	svc := NewService(store)
 
-	want, err := svc.AuthorizeGrant(ctx, tenant, grantVerdictFromGrantRow(tenant, row))
+	// Every verdict below is built from its own deep copy of the row, so an
+	// edit through one verdict's slice or pointer edits only that verdict's row
+	// and never the fixture the next one is built from.
+	want, err := svc.AuthorizeGrant(ctx, tenant, grantVerdictFromGrantRow(tenant, cloneGrantRow(row)))
 	if err != nil {
 		t.Fatalf("control: unedited verdict err = %v", err)
 	}
@@ -222,7 +225,7 @@ func TestAuthorizeGrantDerivesNothingFromAnExportedField(t *testing.T) {
 			continue
 		}
 		for _, through := range []bool{false, true} {
-			v := grantVerdictFromGrantRow(tenant, row)
+			v := grantVerdictFromGrantRow(tenant, cloneGrantRow(row))
 			if !editExportedField(t, reflect.ValueOf(&v).Elem().FieldByIndex(f.Index), f.Name, through) {
 				continue
 			}
@@ -239,7 +242,7 @@ func TestAuthorizeGrantDerivesNothingFromAnExportedField(t *testing.T) {
 	}
 
 	// The escalations the edits above cover, by name.
-	v := grantVerdictFromGrantRow(tenant, row)
+	v := grantVerdictFromGrantRow(tenant, cloneGrantRow(row))
 	v.Capabilities = append(v.Capabilities, string(CapCachePurge))
 	v.GrantID, v.GrantName = uuid.New(), "someone else's grant"
 	got, err := svc.AuthorizeGrant(ctx, tenant, v)
@@ -250,7 +253,7 @@ func TestAuthorizeGrantDerivesNothingFromAnExportedField(t *testing.T) {
 
 	// The AuthorizedRequest shares no pointer with the verdict either: an edit
 	// through its SetupClient does not reach the next derivation.
-	v = grantVerdictFromGrantRow(tenant, row)
+	v = grantVerdictFromGrantRow(tenant, cloneGrantRow(row))
 	first, err := svc.AuthorizeGrant(ctx, tenant, v)
 	if err != nil || first.SetupClient == nil {
 		t.Fatalf("control: first derivation err=%v SetupClient=%v", err, first.SetupClient)
@@ -260,6 +263,18 @@ func TestAuthorizeGrantDerivesNothingFromAnExportedField(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(again, want) {
 		t.Fatalf("an edit through a returned AuthorizedRequest reached the verdict: err=%v\n got %+v\nwant %+v", err, again, want)
 	}
+}
+
+// cloneGrantRow deep-copies a row: its slices and pointers share nothing with
+// the original.
+func cloneGrantRow(r sqlc.ReCheckMCPGrantAuthorizationInTenantTxRow) sqlc.ReCheckMCPGrantAuthorizationInTenantTxRow {
+	r.ScopeSiteIds = slices.Clone(r.ScopeSiteIds)
+	r.ScopeTagIds = slices.Clone(r.ScopeTagIds)
+	r.GrantCapabilities = slices.Clone(r.GrantCapabilities)
+	r.GrantOauthScopes = slices.Clone(r.GrantOauthScopes)
+	r.ClientID = cloneString(r.ClientID)
+	r.GrantSetupClient = cloneString(r.GrantSetupClient)
+	return r
 }
 
 // editExportedField edits one exported GrantVerdict field. through=false
