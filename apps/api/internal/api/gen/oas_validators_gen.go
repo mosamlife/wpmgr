@@ -1260,6 +1260,24 @@ func (s *AbilityRequest) Validate() error {
 		})
 	}
 	if err := func() error {
+		if value, ok := s.OutsideChange.Get(); ok {
+			if err := func() error {
+				if err := value.Validate(); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "outside_change",
+			Error: err,
+		})
+	}
+	if err := func() error {
 		if value, ok := s.UndoCode.Get(); ok {
 			if err := func() error {
 				if err := value.Validate(); err != nil {
@@ -1501,6 +1519,23 @@ func (s AbilityRequestOutcomeDetail) Validate() error {
 	case "editor_open":
 		return nil
 	case "autosave_pending":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
+}
+
+func (s AbilityRequestOutsideChange) Validate() error {
+	switch s {
+	case "active_kit":
+		return nil
+	case "other_posts":
+		return nil
+	case "terms":
+		return nil
+	case "site_settings":
+		return nil
+	case "users":
 		return nil
 	default:
 		return errors.Errorf("invalid value: %v", s)

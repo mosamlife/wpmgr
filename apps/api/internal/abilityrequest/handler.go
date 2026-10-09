@@ -106,6 +106,11 @@ type RequestDTO struct {
 	// changed_since_read, editor_open or autosave_pending (outcomeDetailFor).
 	// Null for every other row. Never the site's own words.
 	OutcomeDetail *string `json:"outcome_detail"`
+	// OutsideChange says what a wpmgr/page-edit refused with
+	// side_effect_detected changed outside the page: active_kit,
+	// other_posts, terms, site_settings or users (outsideChangeFor). Null
+	// for every other row. Never the site's own words.
+	OutsideChange *string `json:"outside_change"`
 	NotSentReason *string `json:"not_sent_reason"`
 	CreatedPostID *int64  `json:"created_post_id"`
 	Trashed       *bool   `json:"trashed"`
@@ -273,7 +278,8 @@ func toDTO(r sqlc.AssistantAbilityRequest, withDigest bool, agentVersion string,
 		SiteLabel: r.SiteLabel, SiteHost: r.SiteHost, GrantLabel: r.GrantLabel, GrantVia: r.GrantVia,
 		SetupClient: r.SetupClient, CardCopyVersion: r.CardCopyVersion, State: r.State,
 		CreatedAt: r.CreatedAt, ExpiresAt: r.ExpiresAt, DecidedAt: ts(r.DecidedAt),
-		Outcome: r.Outcome, OutcomeCode: r.OutcomeCode, OutcomeDetail: outcomeDetailFor(r), NotSentReason: r.NotSentReason,
+		Outcome: r.Outcome, OutcomeCode: r.OutcomeCode, OutcomeDetail: outcomeDetailFor(r),
+		OutsideChange: outsideChangeFor(r), NotSentReason: r.NotSentReason,
 		CreatedPostID: r.CreatedPostID, Trashed: r.Trashed, Restored: r.Restored, UndoState: r.UndoState,
 		UndoCode:           undoCodeOf(r),
 		UndoAvailableUntil: ts(r.UndoAvailableUntil),

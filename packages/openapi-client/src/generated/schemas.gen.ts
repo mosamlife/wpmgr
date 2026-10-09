@@ -8186,6 +8186,19 @@ export const AbilityRequestSchema = {
       description:
         "Which conflict refused a wpmgr/page-edit (`outcome_code`\nconflict): the page changed after the AI read it\n(changed_since_read), someone has it open in Elementor\n(editor_open), or someone has unsaved Elementor changes on it\n(autosave_pending). Null for every other request. A closed\nvalue, never the site's own words.\n",
     },
+    outside_change: {
+      type: ["string", "null"],
+      enum: [
+        "active_kit",
+        "other_posts",
+        "terms",
+        "site_settings",
+        "users",
+        null,
+      ],
+      description:
+        "What a wpmgr/page-edit refused with `outcome_code`\nside_effect_detected changed outside the page while Elementor\nsaved it: the site's active Elementor kit (active_kit), another\npost or page or its data (other_posts), categories or tags\n(terms), a site setting (site_settings), or a user account, a\nrole or the site's administrators (users). Null when the site\nnamed changes of more than one kind or of none of these, and\nfor every other request. A closed value, never the site's own\nwords.\n",
+    },
     not_sent_reason: {
       type: "string",
       nullable: true,

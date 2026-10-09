@@ -4742,6 +4742,25 @@ export type AbilityRequest = {
     | "editor_open"
     | "autosave_pending"
     | null;
+  /**
+   * What a wpmgr/page-edit refused with `outcome_code`
+   * side_effect_detected changed outside the page while Elementor
+   * saved it: the site's active Elementor kit (active_kit), another
+   * post or page or its data (other_posts), categories or tags
+   * (terms), a site setting (site_settings), or a user account, a
+   * role or the site's administrators (users). Null when the site
+   * named changes of more than one kind or of none of these, and
+   * for every other request. A closed value, never the site's own
+   * words.
+   *
+   */
+  outside_change?:
+    | "active_kit"
+    | "other_posts"
+    | "terms"
+    | "site_settings"
+    | "users"
+    | null;
   not_sent_reason?: string;
   created_post_id?: number;
   trashed?: boolean;

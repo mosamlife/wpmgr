@@ -2065,6 +2065,12 @@ type AbilityRequest struct {
 	// Elementor changes on it (autosave_pending). Null for every other request. A closed value, never the
 	// site's own words.
 	OutcomeDetail OptNilAbilityRequestOutcomeDetail `json:"outcome_detail"`
+	// What a wpmgr/page-edit refused with `outcome_code` side_effect_detected changed outside the page
+	// while Elementor saved it: the site's active Elementor kit (active_kit), another post or page or its
+	// data (other_posts), categories or tags (terms), a site setting (site_settings), or a user account, a
+	// role or the site's administrators (users). Null when the site named changes of more than one kind or
+	// of none of these, and for every other request. A closed value, never the site's own words.
+	OutsideChange OptNilAbilityRequestOutsideChange `json:"outside_change"`
 	NotSentReason OptNilString                      `json:"not_sent_reason"`
 	CreatedPostID OptNilInt64                       `json:"created_post_id"`
 	Trashed       OptNilBool                        `json:"trashed"`
@@ -2219,6 +2225,11 @@ func (s *AbilityRequest) GetOutcomeCode() OptNilString {
 // GetOutcomeDetail returns the value of OutcomeDetail.
 func (s *AbilityRequest) GetOutcomeDetail() OptNilAbilityRequestOutcomeDetail {
 	return s.OutcomeDetail
+}
+
+// GetOutsideChange returns the value of OutsideChange.
+func (s *AbilityRequest) GetOutsideChange() OptNilAbilityRequestOutsideChange {
+	return s.OutsideChange
 }
 
 // GetNotSentReason returns the value of NotSentReason.
@@ -2409,6 +2420,11 @@ func (s *AbilityRequest) SetOutcomeCode(val OptNilString) {
 // SetOutcomeDetail sets the value of OutcomeDetail.
 func (s *AbilityRequest) SetOutcomeDetail(val OptNilAbilityRequestOutcomeDetail) {
 	s.OutcomeDetail = val
+}
+
+// SetOutsideChange sets the value of OutsideChange.
+func (s *AbilityRequest) SetOutsideChange(val OptNilAbilityRequestOutsideChange) {
+	s.OutsideChange = val
 }
 
 // SetNotSentReason sets the value of NotSentReason.
@@ -2990,6 +3006,73 @@ func (s *AbilityRequestOutcomeDetail) UnmarshalText(data []byte) error {
 		return nil
 	case AbilityRequestOutcomeDetailAutosavePending:
 		*s = AbilityRequestOutcomeDetailAutosavePending
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// What a wpmgr/page-edit refused with `outcome_code` side_effect_detected changed outside the page
+// while Elementor saved it: the site's active Elementor kit (active_kit), another post or page or its
+// data (other_posts), categories or tags (terms), a site setting (site_settings), or a user account, a
+// role or the site's administrators (users). Null when the site named changes of more than one kind or
+// of none of these, and for every other request. A closed value, never the site's own words.
+type AbilityRequestOutsideChange string
+
+const (
+	AbilityRequestOutsideChangeActiveKit    AbilityRequestOutsideChange = "active_kit"
+	AbilityRequestOutsideChangeOtherPosts   AbilityRequestOutsideChange = "other_posts"
+	AbilityRequestOutsideChangeTerms        AbilityRequestOutsideChange = "terms"
+	AbilityRequestOutsideChangeSiteSettings AbilityRequestOutsideChange = "site_settings"
+	AbilityRequestOutsideChangeUsers        AbilityRequestOutsideChange = "users"
+)
+
+// AllValues returns all AbilityRequestOutsideChange values.
+func (AbilityRequestOutsideChange) AllValues() []AbilityRequestOutsideChange {
+	return []AbilityRequestOutsideChange{
+		AbilityRequestOutsideChangeActiveKit,
+		AbilityRequestOutsideChangeOtherPosts,
+		AbilityRequestOutsideChangeTerms,
+		AbilityRequestOutsideChangeSiteSettings,
+		AbilityRequestOutsideChangeUsers,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityRequestOutsideChange) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityRequestOutsideChangeActiveKit:
+		return []byte(s), nil
+	case AbilityRequestOutsideChangeOtherPosts:
+		return []byte(s), nil
+	case AbilityRequestOutsideChangeTerms:
+		return []byte(s), nil
+	case AbilityRequestOutsideChangeSiteSettings:
+		return []byte(s), nil
+	case AbilityRequestOutsideChangeUsers:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityRequestOutsideChange) UnmarshalText(data []byte) error {
+	switch AbilityRequestOutsideChange(data) {
+	case AbilityRequestOutsideChangeActiveKit:
+		*s = AbilityRequestOutsideChangeActiveKit
+		return nil
+	case AbilityRequestOutsideChangeOtherPosts:
+		*s = AbilityRequestOutsideChangeOtherPosts
+		return nil
+	case AbilityRequestOutsideChangeTerms:
+		*s = AbilityRequestOutsideChangeTerms
+		return nil
+	case AbilityRequestOutsideChangeSiteSettings:
+		*s = AbilityRequestOutsideChangeSiteSettings
+		return nil
+	case AbilityRequestOutsideChangeUsers:
+		*s = AbilityRequestOutsideChangeUsers
 		return nil
 	default:
 		return errors.Errorf("invalid value: %q", data)
@@ -41067,6 +41150,74 @@ func (o OptNilAbilityRequestOutcomeDetail) Get() (v AbilityRequestOutcomeDetail,
 
 // Or returns value if set, or given parameter if does not.
 func (o OptNilAbilityRequestOutcomeDetail) Or(d AbilityRequestOutcomeDetail) AbilityRequestOutcomeDetail {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptNilAbilityRequestOutsideChange returns new OptNilAbilityRequestOutsideChange with value set to v.
+func NewOptNilAbilityRequestOutsideChange(v AbilityRequestOutsideChange) OptNilAbilityRequestOutsideChange {
+	return OptNilAbilityRequestOutsideChange{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilAbilityRequestOutsideChange is optional nullable AbilityRequestOutsideChange.
+type OptNilAbilityRequestOutsideChange struct {
+	Value AbilityRequestOutsideChange
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilAbilityRequestOutsideChange was set.
+func (o OptNilAbilityRequestOutsideChange) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilAbilityRequestOutsideChange) Reset() {
+	var v AbilityRequestOutsideChange
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilAbilityRequestOutsideChange) SetTo(v AbilityRequestOutsideChange) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilAbilityRequestOutsideChange) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilAbilityRequestOutsideChange) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v AbilityRequestOutsideChange
+	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilAbilityRequestOutsideChange) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilAbilityRequestOutsideChange) Get() (v AbilityRequestOutsideChange, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilAbilityRequestOutsideChange) Or(d AbilityRequestOutsideChange) AbilityRequestOutsideChange {
 	if v, ok := o.Get(); ok {
 		return v
 	}
