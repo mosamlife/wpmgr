@@ -269,7 +269,7 @@ final class UpdateCommandManagedCoreTest extends TestCase
      * @param SnapshotManager|null $snapshots Snapshot spy.
      * @return array{ok:bool,results:array<int,array<string,mixed>>}
      */
-    private function run(array $params, UpdateRunner $runner, ManagedCore $core, ?SnapshotManager $snapshots = null): array
+    private function runUpdate(array $params, UpdateRunner $runner, ManagedCore $core, ?SnapshotManager $snapshots = null): array
     {
         return (new UpdateCommand($snapshots ?? $this->spySnapshots(), $runner, $core))->execute([], $params);
     }
@@ -291,7 +291,7 @@ final class UpdateCommandManagedCoreTest extends TestCase
     {
         $runner = $this->spyRunner($this->reportedUnpackFailure());
 
-        $out = $this->run(
+        $out = $this->runUpdate(
             ['snapshot' => true, 'items' => [$this->coreItem()]],
             $runner,
             $this->project(['roots/wordpress' => '^7.0'])
@@ -311,7 +311,7 @@ final class UpdateCommandManagedCoreTest extends TestCase
     {
         $runner = $this->spyRunner($this->reportedUnpackFailure());
 
-        $out = $this->run(
+        $out = $this->runUpdate(
             ['dry_run' => true, 'items' => [$this->coreItem()]],
             $runner,
             $this->project(['johnpbloch/wordpress' => '*'])
@@ -331,7 +331,7 @@ final class UpdateCommandManagedCoreTest extends TestCase
     {
         $runner = $this->spyRunner($this->reportedUnpackFailure());
 
-        $out = $this->run(['items' => [$this->coreItem()]], $runner, $this->project(null, false));
+        $out = $this->runUpdate(['items' => [$this->coreItem()]], $runner, $this->project(null, false));
 
         $result = $out['results'][0];
         $this->assertSame('skipped', $result['status']);
@@ -350,7 +350,7 @@ final class UpdateCommandManagedCoreTest extends TestCase
     {
         $runner = $this->spyRunner($this->reportedUnpackFailure());
 
-        $out = $this->run(
+        $out = $this->runUpdate(
             ['items' => [$this->coreItem()]],
             $runner,
             $this->project(['wpackagist-plugin/akismet' => '^5.0'])
@@ -366,7 +366,7 @@ final class UpdateCommandManagedCoreTest extends TestCase
     {
         $runner = $this->spyRunner($this->reportedUnpackFailure());
 
-        $this->run(['items' => [$this->coreItem()]], $runner, $this->project(null, true));
+        $this->runUpdate(['items' => [$this->coreItem()]], $runner, $this->project(null, true));
 
         $this->assertSame(1, $runner->applyCalls);
     }
@@ -383,7 +383,7 @@ final class UpdateCommandManagedCoreTest extends TestCase
         $runner    = $this->spyRunner(['ok' => false, 'log' => 'upgrader reported failure']);
         $snapshots = $this->spySnapshots();
 
-        $out = $this->run(
+        $out = $this->runUpdate(
             ['items' => [['type' => 'plugin', 'slug' => $folder . '/' . $folder . '.php', 'version' => 'latest']]],
             $runner,
             $this->project(['roots/wordpress' => '^7.0']),
@@ -402,7 +402,7 @@ final class UpdateCommandManagedCoreTest extends TestCase
     /** THE #367 COPY: core was not changed, and the log must say so plainly. */
     public function test_an_untouched_core_failure_says_core_was_not_changed(): void
     {
-        $out = $this->run(
+        $out = $this->runUpdate(
             ['items' => [$this->coreItem()]],
             $this->spyRunner($this->reportedUnpackFailure()),
             $this->project(null)
@@ -433,7 +433,7 @@ final class UpdateCommandManagedCoreTest extends TestCase
             'failure_stage'       => 'install',
         ];
 
-        $out = $this->run(['items' => [$this->coreItem()]], $this->spyRunner($touched), $this->project(null));
+        $out = $this->runUpdate(['items' => [$this->coreItem()]], $this->spyRunner($touched), $this->project(null));
 
         $this->assertSame(
             "WP_Error (files_not_writable): The update cannot be installed.\nUpdate incomplete; no pre-update snapshot was available to auto-restore.",
@@ -444,7 +444,7 @@ final class UpdateCommandManagedCoreTest extends TestCase
     /** An unclassified core failure (no destination verdict) also keeps the previous wording. */
     public function test_an_unclassified_core_failure_keeps_the_previous_wording(): void
     {
-        $out = $this->run(
+        $out = $this->runUpdate(
             ['items' => [$this->coreItem()]],
             $this->spyRunner(['ok' => false, 'log' => 'Update failed.']),
             $this->project(null)
@@ -463,7 +463,7 @@ final class UpdateCommandManagedCoreTest extends TestCase
     /** A target that is not installed carries its reason. */
     public function test_a_not_installed_skip_carries_its_reason(): void
     {
-        $out = $this->run(
+        $out = $this->runUpdate(
             ['items' => [['type' => 'plugin', 'slug' => 'absent-plugin/absent-plugin.php', 'version' => 'latest']]],
             $this->spyRunner($this->reportedUnpackFailure(), false),
             $this->project(null)
@@ -476,7 +476,7 @@ final class UpdateCommandManagedCoreTest extends TestCase
     /** The agent's own plugin carries its reason. */
     public function test_a_self_target_skip_carries_its_reason(): void
     {
-        $out = $this->run(
+        $out = $this->runUpdate(
             ['items' => [['type' => 'plugin', 'slug' => 'wpmgr-agent/wpmgr-agent.php', 'version' => 'latest']]],
             $this->spyRunner($this->reportedUnpackFailure()),
             $this->project(null)

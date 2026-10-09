@@ -134,7 +134,7 @@ final class ManagedCoreTest extends TestCase
     /**
      * @return array<string,array{string}>
      */
-    public function corePackages(): array
+    public static function corePackages(): array
     {
         $rows = [];
         foreach (ManagedCore::CORE_PACKAGES as $package) {
