@@ -498,7 +498,7 @@ sections text golden"
     "'containers'       => false,"
   mutant guard "its undo guard skipped" "rt: FAIL [4.3.4 agent-containers person-edit] refused:" \
     commands/class-ability-run-command.php \
-    '$problem = BuilderPageCreate::revertProblem($postId, $builderRow);' \
+    '$problem = BuilderPageCreate::revertProblem($postId, $builderRow, $chain);' \
     '$problem = null;'
 
   mkdir -p "$tmp/fx-empty"
