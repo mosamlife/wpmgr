@@ -52,15 +52,15 @@ func TestExchange_ScopeIsTheGrantsStoredSet(t *testing.T) {
 			if got.AccessToken == "" || store.tokensMinted != 1 {
 				t.Fatalf("no token issued (access_token %q, minted %d)", got.AccessToken, store.tokensMinted)
 			}
-			if got.Scope != tc.want {
-				t.Fatalf("scope = %q, want %q; the grant stores %v", got.Scope, tc.want, tc.held)
-			}
 			// NEVER MORE THAN THE GRANT HOLDS, checked against the stored set
 			// rather than against want, so a wrong want cannot hide a widening.
 			for _, name := range strings.Split(got.Scope, " ") {
 				if !slices.Contains(tc.held, name) {
 					t.Errorf("scope names %q, which the grant does not hold (stored %v)", name, tc.held)
 				}
+			}
+			if got.Scope != tc.want {
+				t.Errorf("scope = %q, want %q; the grant stores %v", got.Scope, tc.want, tc.held)
 			}
 		})
 	}
