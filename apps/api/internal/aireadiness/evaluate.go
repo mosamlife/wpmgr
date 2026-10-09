@@ -22,8 +22,8 @@ const (
 )
 
 // preReleaseWord is the whole vocabulary a version suffix may use: alpha, beta,
-// rc, RC, dev or build. Only digits may follow one, so a site can put a number
-// after its version but never a word of its own.
+// rc, RC, dev or build. Only a number may follow one, so a site can put a
+// number after its version but never a word of its own.
 const preReleaseWord = `(?:alpha|beta|rc|dev|build|RC)`
 
 // The shapes a site-reported value must have before Evaluate will compare it
