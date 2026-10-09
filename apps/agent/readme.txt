@@ -22,7 +22,7 @@ Every action the dashboard can ask for is on a closed, named list compiled into 
 
 = What you can do once a site is connected =
 
-**Backups and restore.** Full and incremental backups of the database and files, scheduled per site or run on demand. Archives are encrypted on the site before upload, and an incremental run uses a content-addressed chunk store so only changed blocks move. Send them to storage the dashboard manages, a folder on your own server, or your own S3-compatible bucket. Restore a whole site or pick components, with a health check afterwards and an automatic rollback if the site does not come back.
+**Backups and restore.** Full and incremental backups of the database and files, scheduled per site or run on demand. An incremental run uses a content-addressed chunk store so only changed blocks move. Send them to storage the dashboard manages, a folder on your own server, or your own S3-compatible bucket. Restore a whole site or pick components, with a health check afterwards and an automatic rollback if the site does not come back.
 
 **Updates you can undo.** Core, plugin and theme updates across every connected site, applied by WordPress's own Upgrader against WordPress.org packages. A snapshot is taken before each one, so a bad release is one click back rather than a restore from last night's backup. A watchdog recovers a site whose update died mid-write.
 
@@ -144,7 +144,7 @@ Once connected, the agent communicates only with the control-plane URL you confi
 
 - Site and environment metadata: site URL, WordPress, PHP and server versions, active theme and plugins, and Site Health diagnostics. The metadata also includes the parent theme of a child theme and, on a site running Elementor, whether Elementor's Atomic editor is switched on. Sent on connect, on a periodic heartbeat, and when you click Re-run checks. Used to display your site's status in the dashboard.
 - Update inventory: the list of available core, plugin and theme updates. Sent when inventory is refreshed. Used to show and apply updates.
-- Backup archives (encrypted): when you run or schedule a backup, the agent archives your database and/or files, encrypts the archive, and uploads it to the storage destination your control plane configured. Archive contents may include your site's content and personal data, and are encrypted before leaving the server.
+- Backup archives (not encrypted by this plugin): when you run or schedule a backup, the agent archives your database and/or files and uploads them to the storage destination your control plane configured. Protection at rest comes from that destination. Archive contents may include your site's content and personal data.
 - Rendered HTML: for CSS optimization (used-CSS generation), the agent submits rendered HTML of selected pages so unused CSS can be computed. Used only to produce optimized stylesheets.
 - Diagnostics and activity logs: error logs, performance and cache statistics, and a record of management actions, sent so they can be surfaced in the dashboard.
 
@@ -178,7 +178,7 @@ This plugin contacts external hosts only after you connect it to a control plane
 
 **WPMgr control plane (the URL you supply)**
 
-What is sent: site URL and name, WordPress and PHP versions, active plugin and theme inventory, Site Health results, rendered HTML of selected pages (for used-CSS computation), encrypted backup archives, transcoded font bytes, and cache and performance statistics.
+What is sent: site URL and name, WordPress and PHP versions, active plugin and theme inventory, Site Health results, rendered HTML of selected pages (for used-CSS computation), backup archives, transcoded font bytes, and cache and performance statistics.
 When: on enrollment, diagnostics, heartbeat, backup progress, cache and performance operations, Remove Unused CSS, autologin token consumption, database clean, font transcoding, and password breach checking. Always triggered by an action or schedule you initiate, never autonomously.
 Why: this is the dashboard that manages the site.
 Hosted at https://manage.wpmgr.app, its terms and privacy policy apply. Terms: https://manage.wpmgr.app/terms Privacy: https://manage.wpmgr.app/privacy
@@ -194,7 +194,7 @@ The control-plane hop is covered by the WPMgr terms above.
 
 **Object storage (configured by your control plane)**
 
-What is sent: encrypted backup archives, restored backup chunks, optimized media files and transcoded font bytes, over short-lived presigned URLs the control plane supplies. No storage endpoint is hardcoded in this plugin.
+What is sent: backup archives (not encrypted by this plugin), restored backup chunks, optimized media files and transcoded font bytes, over short-lived presigned URLs the control plane supplies. No storage endpoint is hardcoded in this plugin.
 When: during backup, restore, and media or font optimization operations that you initiate.
 Why: this is where your backups and optimized assets are stored.
 The hosted service uses Google Cloud Storage (storage.googleapis.com) by default; a self-hosted operator may configure any S3-compatible destination. For the hosted default, Terms: https://cloud.google.com/terms Privacy: https://policies.google.com/privacy
