@@ -1,16 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, screen, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import {
   createMemoryHistory,
   createRootRoute,
   createRouter,
   RouterProvider,
 } from "@tanstack/react-router";
-import type { Me, SiteAiReadiness } from "@wpmgr/api";
+import type { AiReadinessCheck, Me, SiteAiReadiness } from "@wpmgr/api";
 
 import { createTestQueryClient, renderWithProviders } from "@/test/render";
 import { cellFor } from "@/features/ai-readiness/readiness-cell-model";
-import { useAiReadinessRollup } from "@/features/ai-readiness/use-ai-readiness";
+import { aiReadinessKeys, useAiReadinessRollup } from "@/features/ai-readiness/use-ai-readiness";
 import {
   ADAPTER_WARNING,
   ELEMENTOR_WARNING,
@@ -50,6 +50,7 @@ const getReadiness = vi.fn();
 const getFleetReadiness = vi.fn();
 const refreshReadiness = vi.fn();
 const getEditing = vi.fn();
+const enableEditing = vi.fn();
 const listReqs = vi.fn();
 const getInv = vi.fn();
 
@@ -61,6 +62,7 @@ vi.mock("@wpmgr/api", async (importOriginal) => {
     getFleetAiReadiness: (...a: unknown[]): unknown => getFleetReadiness(...a),
     refreshSiteAiReadiness: (...a: unknown[]): unknown => refreshReadiness(...a),
     getSiteContentEditing: (...a: unknown[]): unknown => getEditing(...a),
+    enableSiteContentEditing: (...a: unknown[]): unknown => enableEditing(...a),
     listSiteAbilityRequests: (...a: unknown[]): unknown => listReqs(...a),
     getSiteContentInventory: (...a: unknown[]): unknown => getInv(...a),
   };
@@ -139,7 +141,7 @@ function renderTab(who: "operator" | "viewer" | Me = "operator", opts: { fleetRe
 }
 
 beforeEach(() => {
-  for (const m of [getReadiness, getFleetReadiness, refreshReadiness, getEditing, listReqs, getInv]) {
+  for (const m of [getReadiness, getFleetReadiness, refreshReadiness, getEditing, enableEditing, listReqs, getInv]) {
     m.mockReset();
   }
   getReadiness.mockResolvedValue(okResult(readiness()));
@@ -191,6 +193,31 @@ describe("loading and load failure", () => {
     fireEvent.click(within(alert).getByRole("button", { name: "Retry" }));
     expect(await screen.findByRole("region", { name: "AI readiness" })).toBeInTheDocument();
     expect(getReadiness).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the loaded checklist on screen when a later refetch fails", async () => {
+    refreshReadiness.mockResolvedValue(okResult({ metadata: true, abilities: true }));
+    const queryClient = renderTab();
+    const c = await card();
+    expect(c.getByText("WordPress 7.1.")).toBeInTheDocument();
+
+    // "Check again" refetches the card as soon as the site has been asked, and
+    // that read fails.
+    getReadiness.mockResolvedValue(failResult(500, "internal_error", "internal server error"));
+    fireEvent.click(c.getByRole("button", { name: "Check again" }));
+
+    // Wait until the query is in error with its checklist still in hand, so the
+    // assertions below look at that state and not at the moment before it.
+    await waitFor(() =>
+      expect(queryClient.getQueryState(aiReadinessKeys.site(SITE_ID))?.status).toBe("error"),
+    );
+    expect(queryClient.getQueryData(aiReadinessKeys.site(SITE_ID))).toBeDefined();
+
+    expect(screen.queryByText("Could not load AI readiness.")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(c.getByTestId("ai-readiness-status")).toHaveTextContent("Ready.");
+    expect(c.getByText("WordPress 7.1.")).toBeInTheDocument();
+    expect(c.getAllByRole("img", { name: "Passed" })).toHaveLength(4);
   });
 
   it("explains a missing site in plain words instead of echoing 'site not found'", async () => {
@@ -377,6 +404,72 @@ describe("a site whose checks have not run", () => {
     expect(c.queryAllByRole("img", { name: "Needs fixing" })).toHaveLength(0);
     expect(c.getAllByRole("img", { name: "Not checked" })).toHaveLength(3);
     expect(c.getByText("Another check")).toBeInTheDocument();
+  });
+});
+
+describe("a reason the card cannot read", () => {
+  it("renders a reason it does not know on a check it does know as grey, never red", async () => {
+    // A fail with a reason from a newer control plane, on a check this page knows.
+    const newer = readiness({
+      status: "needs_attention",
+      fix_count: 1,
+      groups: [
+        baseGroup(),
+        builderGroup("elementor", {
+          installed: true,
+          version: "9.0",
+          checks: [
+            { id: "elementor_version", state: "fail", reason: "too_new", observed: "9.0" },
+            chk("elementor_mcp_switch", "not_applicable", "needs_elementor"),
+            chk("elementor_atomic", "not_applicable", "needs_elementor"),
+          ] as unknown as AiReadinessCheck[],
+        }),
+        builderGroup("bricks", { installed: false }),
+      ],
+    });
+    getReadiness.mockResolvedValue(okResult(newer));
+    renderTab();
+    const c = await card();
+    const row = within(c.getByText("Elementor 4.3 or later").closest("li") as HTMLElement);
+    expect(row.getByRole("img", { name: "Not checked" })).toBeInTheDocument();
+    expect(row.getByText("Not checked yet.")).toBeInTheDocument();
+    expect(row.queryByRole("img", { name: "Needs fixing" })).not.toBeInTheDocument();
+    expect(c.queryAllByRole("img", { name: "Needs fixing" })).toHaveLength(0);
+  });
+
+  it("shows a pre-release WordPress build as a fix, in its own words", async () => {
+    const prerelease = {
+      id: "wp_version",
+      state: "fail",
+      reason: "prerelease_build",
+      observed: "7.1-beta2",
+    } as unknown as AiReadinessCheck;
+    getReadiness.mockResolvedValue(
+      okResult(
+        readiness({
+          status: "needs_attention",
+          fix_count: 1,
+          groups: [
+            baseGroup(baseChecks({ wp_version: prerelease })),
+            builderGroup("elementor", { installed: false }),
+            builderGroup("bricks", { installed: false }),
+          ],
+        }),
+      ),
+    );
+    renderTab();
+    const c = await card();
+    const row = within(c.getByText("WordPress 7.1 or later").closest("li") as HTMLElement);
+    expect(row.getByRole("img", { name: "Needs fixing" })).toBeInTheDocument();
+    expect(
+      row.getByText(
+        "This is a development or pre-release build of WordPress. WPMgr's AI tools need a released version, 7.1 or later.",
+      ),
+    ).toBeInTheDocument();
+    expect(c.getAllByRole("img", { name: "Needs fixing" })).toHaveLength(1);
+    expect(c.getByTestId("ai-readiness-status")).toHaveTextContent(
+      "1 thing to fix before the AI can work here.",
+    );
   });
 });
 
@@ -930,6 +1023,130 @@ describe("Check again keeps the Sites list column current", () => {
     getReadiness.mockResolvedValue(okResult(allClear(AFTER_DETAILS, AFTER_TOOLS)));
     getFleetReadiness.mockResolvedValue(FLEET_READY);
     await settle(POLL_INTERVAL_MS);
+    expect(screen.getByTestId("fleet-reader")).toHaveTextContent("Ready");
+  });
+});
+
+describe("turning AI editing on", () => {
+  // The readiness body and the fleet rollup are computed from the switch the AI
+  // editing section turns on: checkContentEditing in
+  // apps/api/internal/aireadiness/evaluate.go reads content_editing_enabled_at
+  // (apps/api/db/query/ai_readiness.sql), which MarkSiteContentEditingEnabled
+  // (apps/api/db/query/sites.sql) sets and the enable route answers as
+  // ContentEditingState.enabled (apps/api/internal/abilityrequest/content_editing.go).
+  // No site report is involved, so the stub keeps both report times fixed while
+  // the switch flips: nothing but the switch itself moves.
+  const DETAILS = "2026-10-09T10:00:00.000Z";
+  const TOOLS = "2026-10-09T10:01:00.000Z";
+
+  function siteReadiness(on: boolean): SiteAiReadiness {
+    return readiness({
+      status: on ? "ready" : "needs_attention",
+      fix_count: on ? 0 : 1,
+      metadata_as_of: DETAILS,
+      abilities_as_of: TOOLS,
+      groups: [
+        baseGroup(baseChecks({ content_editing: chk("content_editing", on ? "pass" : "fail") })),
+        builderGroup("elementor", { installed: false }),
+        builderGroup("bricks", { installed: false }),
+      ],
+    });
+  }
+
+  /** One switch, read by the three GETs and set by the POST, as on the server. */
+  function serveSwitch(initiallyOn: boolean) {
+    let on = initiallyOn;
+    getEditing.mockImplementation(() => Promise.resolve(okResult({ site_id: SITE_ID, enabled: on })));
+    getReadiness.mockImplementation(() => Promise.resolve(okResult(siteReadiness(on))));
+    getFleetReadiness.mockImplementation(() =>
+      Promise.resolve(
+        okResult({
+          sites: [
+            on
+              ? fleetSite({ site_id: SITE_ID })
+              : fleetSite({
+                  site_id: SITE_ID,
+                  status: "needs_attention",
+                  fix_count: 1,
+                  failing: ["content_editing"],
+                }),
+          ],
+        }),
+      ),
+    );
+    enableEditing.mockImplementation(() => {
+      on = true;
+      return Promise.resolve(okResult({ site_id: SITE_ID, enabled: true }));
+    });
+  }
+
+  async function settle(ms: number) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+      // TanStack Query hands a result to React on a zero-delay timer that the
+      // advance above has only just scheduled: run it.
+      await vi.advanceTimersByTimeAsync(10);
+    });
+  }
+
+  it("re-reads the card and the Sites list column once it is on", async () => {
+    serveSwitch(false);
+    renderTab("operator", { fleetReader: true });
+    const c = await card();
+    expect(c.getByText("Off. Turn it on in AI editing, below.")).toBeInTheDocument();
+    expect(c.getByTestId("ai-readiness-status")).toHaveTextContent("1 thing to fix");
+    expect(await screen.findByTestId("fleet-reader")).toHaveTextContent("1 to fix");
+    expect(getReadiness).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Turn on" }));
+    await waitFor(() =>
+      expect(enableEditing).toHaveBeenCalledWith({ path: { siteId: SITE_ID }, body: {} }),
+    );
+
+    await waitFor(() =>
+      expect(c.getByTestId("ai-readiness-status")).toHaveTextContent(
+        "Ready. Everything the AI needs on this site is in place.",
+      ),
+    );
+    expect(getReadiness.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(c.queryByText("Off. Turn it on in AI editing, below.")).not.toBeInTheDocument();
+    expect(c.getByText("On.")).toBeInTheDocument();
+    expect(c.queryAllByRole("img", { name: "Needs fixing" })).toHaveLength(0);
+    await waitFor(() => expect(screen.getByTestId("fleet-reader")).toHaveTextContent("Ready"));
+  });
+
+  it("keeps both current when it is turned on part-way through a Check again window", async () => {
+    serveSwitch(false);
+    refreshReadiness.mockResolvedValue(okResult({ metadata: true, abilities: true }));
+    renderTab("operator", { fleetReader: true });
+    const c = await card();
+    expect(await screen.findByTestId("fleet-reader")).toHaveTextContent("1 to fix");
+    const turnOn = await screen.findByRole("button", { name: "Turn on" });
+
+    vi.useFakeTimers();
+    fireEvent.click(c.getByRole("button", { name: "Check again" }));
+    await settle(0);
+    expect(refreshReadiness).toHaveBeenCalledTimes(1);
+
+    // The window is open and its first poll has found nothing new.
+    const beforePoll = getReadiness.mock.calls.length;
+    await settle(POLL_INTERVAL_MS);
+    expect(getReadiness.mock.calls.length).toBeGreaterThan(beforePoll);
+    expect(c.getByTestId("ai-readiness-status")).toHaveTextContent("1 thing to fix");
+
+    // Turned on inside the window. Nothing waits for the next poll.
+    fireEvent.click(turnOn);
+    await settle(0);
+    expect(c.getByTestId("ai-readiness-status")).toHaveTextContent("Ready.");
+    expect(c.getByText("On.")).toBeInTheDocument();
+    expect(screen.getByTestId("fleet-reader")).toHaveTextContent("Ready");
+
+    // The rest of the window finds the same site reports and the answer holds.
+    const afterEnable = getReadiness.mock.calls.length;
+    await settle(POLL_INTERVAL_MS * 3);
+    expect(getReadiness.mock.calls.length).toBeGreaterThan(afterEnable);
+    expect(c.getByTestId("ai-readiness-status")).toHaveTextContent("Ready.");
+    expect(c.getByText("On.")).toBeInTheDocument();
     expect(screen.getByTestId("fleet-reader")).toHaveTextContent("Ready");
   });
 });
