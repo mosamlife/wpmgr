@@ -73,8 +73,8 @@
 #     it proves is the property the defect turns on: whatever is PID 1 reaps a
 #     process that was orphaned in the container.
 #   * It runs against the image with a sleeper child, so it says nothing about
-#     media-encoder's own startup. Its signal handling is covered by the
-#     forwarding check (c), not by booting it.
+#     media-encoder's own startup or whether the binary drains on SIGTERM; (c)
+#     proves only that the signal reaches the child.
 #   * It does not drive a real screenshot capture.
 #
 # SELF-TEST: scripts/check-media-encoder-reaps_test.sh. ci.yml runs it; the
@@ -90,9 +90,10 @@ EXPECT_INIT="tini"
 MODE=""
 TARGET=""
 
-# Seconds a zombie may be seen across before it counts, and how many looks.
-# The orphan has already exited when the first look is taken, so a reaping
-# PID 1 shows zero at once; the extra looks only absorb a reap in progress.
+# How many times the scan is repeated before a zombie counts, and the pause
+# between looks. The orphan has already exited when the first look is taken, so
+# a reaping PID 1 shows zero at once; the extra looks only absorb a reap that
+# is still in progress.
 POLLS="${WPMGR_REAPS_POLLS:-5}"
 POLL_SLEEP="${WPMGR_REAPS_POLL_SLEEP:-1}"
 STOP_GRACE="${WPMGR_REAPS_STOP_GRACE:-10}"
