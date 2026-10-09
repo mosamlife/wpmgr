@@ -135,8 +135,9 @@ final class BuilderDocumentFingerprint
                 throw new \RuntimeException('database read failed');
             }
             foreach ($found as $row) {
-                $key   = is_array($row) ? ($row['meta_key'] ?? null) : null;
-                $value = is_array($row) ? ($row['meta_value'] ?? null) : null;
+                $row   = (array) $row;
+                $key   = $row['meta_key'] ?? null;
+                $value = $row['meta_value'] ?? null;
                 if (!is_string($key) || !is_string($value)) {
                     throw new \RuntimeException('a postmeta row is not stored bytes');
                 }
