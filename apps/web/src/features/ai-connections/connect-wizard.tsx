@@ -11,7 +11,8 @@ import { Label } from "@/components/ui/label";
 import { CopyableMono } from "@/components/shared/copyable-mono";
 import { cn } from "@/lib/utils";
 import { CONFERRABLE_READS } from "./capabilities";
-import { defaultCapabilities } from "./capability-presets";
+import { defaultCapabilities, withAbilityTicks } from "./capability-presets";
+import { mintCapabilitiesRequest, type MintCapabilitiesRequest } from "./mint-capabilities";
 import { AbilityCapabilityBox } from "./ability-capability-box";
 import { CachePurgeCapabilityBox } from "./cache-purge-capability-box";
 import { ReadCapabilityPicker } from "./read-capability-picker";
@@ -563,23 +564,13 @@ export function ConnectWizard({
   // THE CAPABILITY PAYLOAD, OR THE REASON THERE IS NONE -- built once, here,
   // the same pattern as `scopeRequest` two blocks up and for the same reason:
   // the gate and the mint call must read one value, never two derivations of
-  // the same selection that could disagree.
+  // the same selection that could disagree. The picker derives which preset the
+  // operator is on, or Custom, from this same `capabilities` array too, so the
+  // label, the ticks and the wire payload are three readings of one value.
   const capabilitiesRequest = useMemo(
     () => mintCapabilitiesRequest(capabilities),
     [capabilities],
   );
-
-  // The picker derives which preset the operator is on, or Custom, from this
-  // same `capabilities` array, so the label, the ticks and the wire payload are
-  // three readings of one value.
-  const toggleCapability = (cap: string, next: boolean) =>
-    setCapabilities((current) =>
-      next
-        ? current.includes(cap)
-          ? current
-          : [...current, cap]
-        : current.filter((c) => c !== cap),
-    );
 
   // THE RAIL'S CAPABILITY STATE, mirroring siteScopeState immediately above:
   // one function, read by both the rail and `mintBlockedReason` below, so
@@ -905,7 +896,7 @@ export function ConnectWizard({
       {currentLocal === CAPABILITY_LOCAL_STEP && client !== null ? (
         <Section
           specN={4}
-          hint="Reads below never change anything. The one row under “Changes it can ask for” only ever asks: nothing runs without your separate approval for that request."
+          hint="Reads below never change anything. A connection can also ask to clear the site cache and ask to make changes through the site's tools. Each only ever asks: nothing runs until a person approves that request."
         >
           <div className="space-y-3">
             {/* STEP 3 IS BEHIND THE OPERATOR, so "already given" is a true
@@ -948,8 +939,7 @@ export function ConnectWizard({
               readChecked={capabilities.includes("mcp.ability.read")}
               requestChecked={capabilities.includes("mcp.ability.request")}
               disabled={mintInFlight}
-              onReadChange={(next) => toggleCapability("mcp.ability.read", next)}
-              onRequestChange={(next) => toggleCapability("mcp.ability.request", next)}
+              onChange={(next) => setCapabilities((current) => withAbilityTicks(current, next))}
             />
 
             {/* THIS IS THE #694 FIX'S OTHER HALF (see SPEC_STEPS' n:4 entry,
@@ -960,14 +950,15 @@ export function ConnectWizard({
                 exist, and it does now (see consent-screen.tsx). What stays
                 true, and is worth restating here rather than leaving silent,
                 is that THIS WIZARD'S OWN STEP 4 ANSWER never reaches that
-                screen: the client opens it directly, and it asks the reads
-                and the cache-clear row again from scratch. */}
+                screen: the client opens it directly, and it asks the reads,
+                the cache-clear row and the site-tools rows again from scratch. */}
             <p className="text-xs text-[var(--color-muted-foreground)]">
               This selection is sent with the connection token when you choose that sign-in
               method at step 5, and is exactly what the connection holds. Browser sign-in does
               not use this wizard's step 4 at all: your client opens a separate approval screen,
-              which asks for the reads and the cache-clear row again, and this page's answer here
-              plays no part in that connection's permissions.
+              which asks for the reads and, if the app asks for them, the cache-clear row and
+              the site-tools rows again, and this page's answer here plays no part in that
+              connection's permissions.
             </p>
             {/* NO PRIVATE REFUSAL PANEL HERE. `capabilitiesRequest.refusal` is
                 the exact string `stepGate`'s CAPABILITY_LOCAL_STEP branch
@@ -1084,9 +1075,9 @@ export function ConnectWizard({
                   steps 3 and 4 are not carried there, so it asks again and you answer it there.
                 </li>
                 <li>
-                  It has its own permissions section, with the same reads and the one
-                  cache-clear row you saw at step 4. Nothing you chose there carries over:
-                  choose again on that screen.
+                  It has its own permissions section, with the same reads and, if the app asks
+                  for them, the cache-clear row and the site-tools rows you saw at step 4.
+                  Nothing you chose there carries over: choose again on that screen.
                 </li>
                 <li>
                   Declining creates nothing. No credential exists and no grant is written, and you
@@ -2046,38 +2037,6 @@ function siteScopeReadiness(
   if (scope.kind === "unresolved") return scope.because;
   if (!scopeRequest.ok) return "unselected";
   return "resolved";
-}
-
-/** The capability payload a mint would send, or the reason there is none. */
-type MintCapabilitiesRequest =
-  | { readonly ok: true; readonly capabilities: readonly string[] }
-  | { readonly ok: false; readonly refusal: string };
-
-/**
- * The capability payload for the CURRENT selection, or the reason there is
- * none -- the same shape and the same reason `mintScopeRequest` above returns
- * one, so the gate (`mintBlockedReason`) and the wire payload
- * (`TokenMintPanel`'s mint call) read one value rather than two derivations
- * of the same checkbox state.
- *
- * THE ONLY REFUSAL: NOTHING IS CHECKED. dto.go's mintConnectionRequestDTO
- * treats an OMITTED `capabilities` field as the default preset
- * `["mcp.sites.read"]`, but an explicitly empty array is a different wire
- * value entirely -- it mints a connection that authenticates and can reach no
- * tool at all, because Authenticate refuses by name on every request. A
- * request naming no capabilities and a request naming none-on-purpose are not
- * the same thing, so this is refused client-side rather than silently
- * becoming the default or being sent as `[]`.
- */
-function mintCapabilitiesRequest(selected: readonly string[]): MintCapabilitiesRequest {
-  if (selected.length === 0) {
-    return {
-      ok: false,
-      refusal:
-        "No capability is selected, so this token would authenticate and be able to reach nothing. Pick at least one capability above, or leave Sites checked. An empty selection is refused rather than becoming the default.",
-    };
-  }
-  return { ok: true, capabilities: selected };
 }
 
 /**
