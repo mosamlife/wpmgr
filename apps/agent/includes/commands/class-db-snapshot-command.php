@@ -3,8 +3,9 @@
  * DbSnapshotCommand: local database snapshot tool (#189).
  *
  * A db_snapshot is a FAST LOCAL safety-net for the WP server filesystem, distinct
- * from the durable backups produced by BackupCommand. The dump SQL lives under
- * wp-content/wpmgr-snapshots/db/ on the site's own disk, unencrypted and never
+ * from the durable backups produced by BackupCommand. The dump SQL lives in
+ * wpmgr-snapshots/db/ under the uploads directory (under wp-content/ on hosts
+ * where uploads is read-only), on the site's own disk, unencrypted and never
  * uploaded to object storage. It is designed for "capture before a risky change,
  * revert in one click".
  *

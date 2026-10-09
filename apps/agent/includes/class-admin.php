@@ -465,10 +465,10 @@ final class Admin
      *   - last heartbeat + last metadata timestamps (cosmetic, so the status
      *     panel doesn't show stale data after re-enrollment)
      *
-     * Intentionally does NOT clear the age identity. It also encrypts the
-     * two-factor secrets stored for this site's users, so removing it would leave
-     * those secrets unreadable; advanced operators can wipe it manually by
-     * deleting the wpmgr_agent_age_identity option.
+     * Intentionally does NOT clear the age identity. It encrypts the two-factor
+     * secrets stored for this site's users, so removing it would leave those
+     * secrets unreadable; advanced operators can wipe it manually by deleting the
+     * wpmgr_agent_age_identity option.
      *
      * Sends a best-effort SIGNED last-will to the control plane FIRST (so the
      * dashboard flips the site to disconnected immediately instead of waiting for
