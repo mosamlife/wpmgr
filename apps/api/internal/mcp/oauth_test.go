@@ -695,10 +695,13 @@ func (f *fakeStore) CloseAssistantRequestsForGrantTx(_ context.Context, _ pgx.Tx
 // the handler that mounts it guards nothing.
 // ---------------------------------------------------------------------------
 
-func newAuthorizeRouter(t *testing.T, store Store) *gin.Engine {
+// before is mounted ahead of everything else, the way server.New mounts root
+// middleware ahead of its groups.
+func newAuthorizeRouter(t *testing.T, store Store, before ...gin.HandlerFunc) *gin.Engine {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
+	r.Use(before...)
 	r.Use(func(c *gin.Context) {
 		ctx := domain.WithPrincipal(c.Request.Context(), domain.Principal{
 			Type:     domain.PrincipalUser,
@@ -831,6 +834,47 @@ func TestAuthorizeHandler_ValidRequestReturnsUnverifiedConsentContext(t *testing
 	}
 	if len(body.Scopes) != 1 || body.Scopes[0] != "mcp:read" {
 		t.Errorf("scopes = %v", body.Scopes)
+	}
+}
+
+// The consent screen fetches this route from the browser, so its request
+// carries Fetch Metadata. With AuthorizeNavigationRedirect mounted in front,
+// as server.New mounts it, that fetch must still reach the handler and get
+// the consent context, never the redirect meant for a navigation.
+func TestAuthorizeHandler_BrowserFetchHeadersStillGetJSON(t *testing.T) {
+	const redirect = "https://claude.ai/api/mcp/auth_callback"
+	store := &fakeStore{client: liveClient(redirect), clientOK: true}
+	r := newAuthorizeRouter(t, store, AuthorizeNavigationRedirect())
+
+	q := url.Values{}
+	q.Set("response_type", "code")
+	q.Set("client_id", "client-abc")
+	q.Set("redirect_uri", redirect)
+	q.Set("scope", "mcp:read")
+	q.Set("code_challenge", "abc123challenge")
+	q.Set("code_challenge_method", "S256")
+
+	req := httptest.NewRequest(http.MethodGet, AuthorizePath+"?"+q.Encode(), nil)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Sec-Fetch-Mode", "cors")
+	req.Header.Set("Sec-Fetch-Dest", "empty")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d (Location %q), want 200; body %s",
+			w.Code, w.Header().Get("Location"), w.Body.String())
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Fatalf("Content-Type = %q, want application/json", ct)
+	}
+	var body consentResponseDTO
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v (%s)", err, w.Body.String())
+	}
+	if body.ConsentTicket == "" {
+		t.Fatalf("the consent context carries no consent_ticket: %s", w.Body.String())
 	}
 }
 
