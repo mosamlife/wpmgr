@@ -55,7 +55,7 @@ func TestOutcomeFromStored_BuilderCodes(t *testing.T) {
 	for _, code := range []string{"builder_not_enabled", "builder_not_available", "node_not_supported_by_builder",
 		"image_alt_from_library", "builder_save_refused", "builder_crashed"} {
 		raw := json.RawMessage(`{"ok":false,"outcome":"refused","code":"` + code + `","detail":"outline[0]"}`)
-		oc, ok := outcomeFromStored(raw, time.Now())
+		oc, ok := outcomeFromStored("", raw, time.Now())
 		if !ok || oc.outcome != OutcomeRefused || oc.code == nil || *oc.code != code {
 			t.Errorf("%s: outcome %+v (ok %v)", code, oc, ok)
 		}

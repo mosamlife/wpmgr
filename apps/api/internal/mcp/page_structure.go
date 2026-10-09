@@ -154,6 +154,13 @@ func eligibleDraftIDs(ctx context.Context, q eligibleDraftQueries, tenantID, sit
 	return []int64{postID}, nil
 }
 
+// EligibleDraftIDsTx is eligibleDraftIDs in the caller's transaction: the
+// dispatch worker's p.allowed_draft_ids for a page-edit write, read at
+// dispatch.
+func EligibleDraftIDsTx(ctx context.Context, q *sqlc.Queries, tenantID, siteID uuid.UUID, postID int64) ([]int64, error) {
+	return eligibleDraftIDs(ctx, q, tenantID, siteID, postID)
+}
+
 // EligibleDraftIDs implements DraftEligibilityStore: eligibleDraftIDs, in
 // the connection's site-scoped transaction.
 func (r *Repo) EligibleDraftIDs(ctx context.Context, principal domain.Principal, siteID uuid.UUID, postID int64) ([]int64, error) {

@@ -325,10 +325,13 @@ type AbilityRunResponse struct {
 	// write, revert and ledger
 	PostID        int64  `json:"post_id"`
 	CreatedPostID *int64 `json:"created_post_id"`
-	Phase         string `json:"phase"`
-	UndoState     string `json:"undo_state"`
-	Trashed       bool   `json:"trashed"`
-	AfterFP       string `json:"after_fp"`
+	// SnapshotSHA256 is an applied wpmgr/page-edit's hash of the copy the
+	// agent kept before the change, which the person's undo sends back.
+	SnapshotSHA256 string `json:"snapshot_sha256,omitempty"`
+	Phase          string `json:"phase"`
+	UndoState      string `json:"undo_state"`
+	Trashed        bool   `json:"trashed"`
+	AfterFP        string `json:"after_fp"`
 
 	// refusal
 	Code       string          `json:"code,omitempty"`
@@ -516,6 +519,11 @@ var AbilityRunRefusalCodes = map[string]struct{}{
 	"page_too_large":              {},
 	"target_not_eligible":         {},
 	"page_has_admin_only_content": {},
+	// wpmgr/page-edit's write and its undo (MinAgentVersionForBuilderEdit).
+	"snapshot_too_large": {},
+	"restore_mismatch":   {},
+	"data_unreadable":    {},
+	"snapshot_tampered":  {},
 }
 
 var abilityRunCodeRe = regexp.MustCompile(`^[a-z0-9_]{1,40}$`)

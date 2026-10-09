@@ -91,7 +91,7 @@ func TestUndoRetryable_PermanentErrors(t *testing.T) {
 func TestRefusedOutcome_SnapshotFailedKeepsTheDraft(t *testing.T) {
 	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
 
-	oc := classifyWrite(agentcmd.AbilityRunResponse{},
+	oc := classifyWrite("", agentcmd.AbilityRunResponse{},
 		&agentcmd.AbilityRunRefusal{Code: "snapshot_failed", PostID: 42, Trashed: false}, now)
 	if oc.outcome != OutcomeRefused || oc.code == nil || *oc.code != "snapshot_failed" {
 		t.Fatalf("outcome = %q code = %v", oc.outcome, oc.code)
@@ -123,7 +123,7 @@ func TestRefusedOutcome_SnapshotFailedKeepsTheDraft(t *testing.T) {
 	}
 
 	// The same answer stored in the ledger (resolved later) is read the same way.
-	stored, ok := outcomeFromStored([]byte(`{"ok":false,"code":"snapshot_failed","post_id":44,"trashed":false}`), now)
+	stored, ok := outcomeFromStored("", []byte(`{"ok":false,"code":"snapshot_failed","post_id":44,"trashed":false}`), now)
 	if !ok || stored.createdPostID == nil || *stored.createdPostID != 44 {
 		t.Fatalf("stored snapshot_failed: ok=%v post=%v", ok, stored.createdPostID)
 	}

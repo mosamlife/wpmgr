@@ -105,7 +105,7 @@ func TestWorkerLayoutRequestOldAgentNotSent(t *testing.T) {
 func TestOutcomeFromStored_PageLayoutCodes(t *testing.T) {
 	for _, code := range []string{"image_not_available", "image_url_unusable", "layout_needs_block_editor", "layout_invalid", "link_invalid"} {
 		raw := json.RawMessage(`{"ok":false,"outcome":"refused","code":"` + code + `","detail":"attachment_id 42"}`)
-		oc, ok := outcomeFromStored(raw, time.Now())
+		oc, ok := outcomeFromStored("", raw, time.Now())
 		if !ok || oc.outcome != OutcomeRefused || oc.code == nil || *oc.code != code {
 			t.Errorf("%s: outcome %+v (ok %v)", code, oc, ok)
 		}

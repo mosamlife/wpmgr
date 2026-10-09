@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"time"
 
 	"github.com/google/uuid"
@@ -406,6 +407,9 @@ type dispatchPlan struct {
 	sum      string
 	route    []byte
 	routeSum string
+	// allowedDrafts is p.allowed_draft_ids for a wpmgr/page-edit write, read
+	// at dispatch in the site transaction (nil for every other ability).
+	allowedDrafts []int64
 }
 
 // agentFloorFor is the first agent release that runs a request: its
@@ -537,11 +541,11 @@ func (s *Service) dispatch(ctx context.Context, a DispatchArgs) error {
 		Mode: agentcmd.AbilityRunModeWrite, RequestID: a.RequestID,
 		Entry: plan.entry, EntrySHA256: plan.sum, Input: []byte(plan.row.InputJson),
 		Route: plan.route, RouteSHA256: plan.routeSum,
-		Expected: writeExpected(plan),
+		Expected: writeExpected(plan), AllowedDraftIDs: plan.allowedDrafts,
 	})
 	cancel()
 	// (5) The outcome.
-	return s.recordOutcome(ctx, p, a, classifyWrite(resp, sendErr, s.now()))
+	return s.recordOutcome(ctx, p, a, classifyWrite(plan.row.AbilityName, resp, sendErr, s.now()))
 }
 
 // writeExpected is write's expected{}: the preview digest for page-create,
@@ -629,6 +633,20 @@ func (s *Service) checkSite(ctx context.Context, run siteTxRunner, p domain.Prin
 			if why != "" {
 				done = true
 				return s.closeNotSent(ctx, tx, q, a.TenantID, a.RequestID, why)
+			}
+		}
+		if plan.row.AbilityName == mcp.AbilityPageEdit {
+			// The draft this control plane names for the edit's post, read
+			// now, never the list the precheck was sent with: a draft whose
+			// creation was undone since the approval is no longer named, and
+			// the agent refuses the write.
+			var postID int64
+			if plan.row.TargetPostID != nil {
+				postID = *plan.row.TargetPostID
+			}
+			plan.allowedDrafts, err = mcp.EligibleDraftIDsTx(ctx, q, a.TenantID, a.SiteID, postID)
+			if err != nil {
+				return fmt.Errorf("read the eligible draft: %w", err)
 			}
 		}
 		plan.siteURL = site.Url
@@ -747,6 +765,11 @@ type writeOutcome struct {
 	// the columns, from the closed post column set, go to the audit row.
 	restored            *bool
 	columnsStillChanged []string
+	// snapshotSHA256 is an applied page edit's snapshot hash, recorded for
+	// its undo; snapshotHashMissing marks an applied page edit whose answer
+	// carried no well-formed hash, recorded with no undo.
+	snapshotSHA256      *string
+	snapshotHashMissing bool
 }
 
 // withRestoreReport adds a failed write's own-undo report to a refusal
@@ -781,6 +804,32 @@ func appliedOutcome(now time.Time) writeOutcome {
 		outcome:   OutcomeApplied,
 		undoUntil: pgtype.Timestamptz{Time: now.Add(undoRetention), Valid: true},
 	}
+}
+
+// appliedEditOutcome is a wpmgr/page-edit that changed its draft. The undo
+// opens only with the snapshot hash the site reported: an answer with no
+// well-formed hash is recorded applied with no undo, never with a hash made
+// up here.
+func appliedEditOutcome(snapshotSHA256 string, now time.Time) writeOutcome {
+	if !snapshotHashPattern.MatchString(snapshotSHA256) {
+		return writeOutcome{outcome: OutcomeApplied, snapshotHashMissing: true}
+	}
+	oc := appliedOutcome(now)
+	oc.snapshotSHA256 = &snapshotSHA256
+	return oc
+}
+
+// snapshotHashPattern is a snapshot hash: 64 lowercase hex characters.
+var snapshotHashPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// outcomeForAbility keeps a wpmgr/page-edit outcome to what an edit can
+// report: its post is the request's target, never a post the write created,
+// so no created post and nothing trashed is recorded for it.
+func outcomeForAbility(ability string, oc writeOutcome) writeOutcome {
+	if ability == mcp.AbilityPageEdit {
+		oc.createdPostID, oc.trashed = nil, nil
+	}
+	return oc
 }
 
 func refusedOutcome(code, detail string, postID int64, trashed bool) writeOutcome {
@@ -820,12 +869,23 @@ type ledgerResult struct {
 	Restored            *bool           `json:"restored"`
 	Changed             *bool           `json:"changed"`
 	ColumnsStillChanged json.RawMessage `json:"columns_still_changed"`
+	// An applied page edit's snapshot hash.
+	SnapshotSHA256 string `json:"snapshot_sha256"`
 }
 
-func outcomeFromStored(raw json.RawMessage, now time.Time) (writeOutcome, bool) {
+// outcomeFromStored reads the stored result of a request for ability.
+func outcomeFromStored(ability string, raw json.RawMessage, now time.Time) (writeOutcome, bool) {
+	oc, ok := outcomeFromStoredResult(ability, raw, now)
+	return outcomeForAbility(ability, oc), ok
+}
+
+func outcomeFromStoredResult(ability string, raw json.RawMessage, now time.Time) (writeOutcome, bool) {
 	var r ledgerResult
 	if len(raw) == 0 || string(raw) == "null" || json.Unmarshal(raw, &r) != nil {
 		return writeOutcome{}, false
+	}
+	if r.OK && r.Outcome == "applied" && ability == mcp.AbilityPageEdit {
+		return appliedEditOutcome(r.SnapshotSHA256, now), true
 	}
 	if r.OK && r.Outcome == "created" {
 		return createdOutcome(r.PostID, now), true
@@ -844,17 +904,25 @@ func outcomeFromStored(raw json.RawMessage, now time.Time) (writeOutcome, bool) 
 	return writeOutcome{}, false
 }
 
-// classifyWrite maps the send's result. Never a resend: anything that is
-// not a definite answer is outcome unknown.
-func classifyWrite(resp agentcmd.AbilityRunResponse, err error, now time.Time) writeOutcome {
+// classifyWrite maps the send's result for a request of ability. Never a
+// resend: anything that is not a definite answer is outcome unknown.
+func classifyWrite(ability string, resp agentcmd.AbilityRunResponse, err error, now time.Time) writeOutcome {
+	return outcomeForAbility(ability, classifyWriteAnswer(ability, resp, err, now))
+}
+
+func classifyWriteAnswer(ability string, resp agentcmd.AbilityRunResponse, err error, now time.Time) writeOutcome {
 	if err == nil {
 		switch resp.Outcome {
 		case "created":
 			return createdOutcome(resp.PostID, now)
 		case "updated":
 			return appliedOutcome(now)
+		case "applied":
+			if ability == mcp.AbilityPageEdit {
+				return appliedEditOutcome(resp.SnapshotSHA256, now)
+			}
 		case "already_applied":
-			if oc, ok := outcomeFromStored(resp.Result, now); ok {
+			if oc, ok := outcomeFromStored(ability, resp.Result, now); ok {
 				return oc
 			}
 		}
@@ -897,7 +965,7 @@ func (s *Service) writeOutcomeTx(ctx context.Context, tx pgx.Tx, q *sqlc.Queries
 	n, err := q.RecordAbilityRequestOutcome(ctx, sqlc.RecordAbilityRequestOutcomeParams{
 		Outcome: oc.outcome, OutcomeCode: oc.code, NotSentReason: oc.notSentReason,
 		CreatedPostID: oc.createdPostID, Restored: oc.restored, Trashed: oc.trashed, SiteReportedText: oc.siteText,
-		UndoAvailableUntil: oc.undoUntil, TenantID: tenantID, ID: requestID,
+		UndoAvailableUntil: oc.undoUntil, SnapshotSha256: oc.snapshotSHA256, TenantID: tenantID, ID: requestID,
 	})
 	if err != nil {
 		return fmt.Errorf("record ability outcome: %w", err)
@@ -922,6 +990,13 @@ func (s *Service) writeOutcomeTx(ctx context.Context, tx pgx.Tx, q *sqlc.Queries
 	}
 	if len(oc.columnsStillChanged) > 0 {
 		md["columns_still_changed"] = oc.columnsStillChanged
+	}
+	if oc.snapshotSHA256 != nil {
+		md["snapshot_sha256"] = *oc.snapshotSHA256
+	}
+	if oc.snapshotHashMissing {
+		// No undo is offered: the site reported no snapshot hash to send back.
+		md["snapshot_hash_missing"] = true
 	}
 	action := audit.ActionAbilityRequestFailed
 	switch oc.outcome {
@@ -1009,7 +1084,12 @@ func (s *Service) reconcileStale(ctx context.Context) error {
 
 // ledgerVerdict decides a resolving row from one ledger answer. done=false
 // means still running or not yet decidable: record the check and wait.
-func ledgerVerdict(resp agentcmd.AbilityRunResponse, unknownFor time.Duration, now time.Time) (writeOutcome, bool) {
+func ledgerVerdict(ability string, resp agentcmd.AbilityRunResponse, unknownFor time.Duration, now time.Time) (writeOutcome, bool) {
+	oc, done := ledgerVerdictFor(ability, resp, unknownFor, now)
+	return outcomeForAbility(ability, oc), done
+}
+
+func ledgerVerdictFor(ability string, resp agentcmd.AbilityRunResponse, unknownFor time.Duration, now time.Time) (writeOutcome, bool) {
 	if resp.Inflight {
 		return writeOutcome{}, false
 	}
@@ -1021,7 +1101,7 @@ func ledgerVerdict(resp agentcmd.AbilityRunResponse, unknownFor time.Duration, n
 		}
 		return writeOutcome{}, false
 	}
-	if oc, ok := outcomeFromStored(resp.Result, now); ok {
+	if oc, ok := outcomeFromStored(ability, resp.Result, now); ok {
 		return oc, true
 	}
 	// A ledger row with no result and no inflight claim: interrupted mid-way.
@@ -1061,9 +1141,17 @@ func (s *Service) resolveOne(ctx context.Context, r sqlc.ScanResolvingAbilityReq
 	}
 	var site sqlc.GetSiteRow
 	var found bool
+	var ability string
 	if err := s.pool.InTenantTx(ctx, r.TenantID, func(tx pgx.Tx) error {
-		var err error
-		site, err = sqlc.New(tx).GetSite(ctx, sqlc.GetSiteParams{TenantID: r.TenantID, ID: r.SiteID})
+		q := sqlc.New(tx)
+		req, err := q.GetAbilityRequestForSite(ctx, sqlc.GetAbilityRequestForSiteParams{
+			TenantID: r.TenantID, ID: r.ID, SiteID: r.SiteID,
+		})
+		if err != nil {
+			return fmt.Errorf("read the request: %w", err)
+		}
+		ability = req.AbilityName
+		site, err = q.GetSite(ctx, sqlc.GetSiteParams{TenantID: r.TenantID, ID: r.SiteID})
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
@@ -1081,7 +1169,7 @@ func (s *Service) resolveOne(ctx context.Context, r sqlc.ScanResolvingAbilityReq
 		})
 		cancel()
 		if err == nil {
-			verdict, decided = ledgerVerdict(resp, unknownFor, now)
+			verdict, decided = ledgerVerdict(ability, resp, unknownFor, now)
 		}
 	}
 	return s.pool.InTenantTx(ctx, r.TenantID, func(tx pgx.Tx) error {
