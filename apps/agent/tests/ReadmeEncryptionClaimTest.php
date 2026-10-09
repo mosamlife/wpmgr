@@ -9,6 +9,12 @@
  * it on. A listing that says archives are "encrypted before leaving the server"
  * is therefore a false statement about where the owner's data is exposed.
  *
+ * The claim reaches the owner a second way: the text on the plugin's own admin
+ * screen. The Re-enroll and Disconnect descriptions once ended "Prior backups
+ * remain decryptable.", which says there is something to decrypt. Every literal
+ * passed to a WordPress gettext function anywhere under includes/ is scanned with
+ * the same detector, and "decrypt" counts as encryption wording.
+ *
  * What this guard does:
  *
  *   - Reads the listing, drops the Changelog and Upgrade Notice sections (they
@@ -25,11 +31,14 @@
  * What it does not do: it is a tripwire for this claim and its close paraphrases,
  * not a proof that no sentence anywhere over-promises. It says nothing about
  * transport security; the agent uploads to whatever address the control plane
- * supplies, so the listing must not promise a scheme either way.
+ * supplies, so the listing must not promise a scheme either way. It reads gettext
+ * literals only: a notice assembled at runtime, or built from plain strings that
+ * never pass through a gettext function, is not scanned.
  *
  * It must fail, not pass, when it has nothing to read. A missing, empty or
  * section-less readme.txt is a loud failure, and the real-file test also demands
- * that the text it scanned mentions backups at all.
+ * that the text it scanned mentions backups at all. The admin scan demands that it
+ * found the admin screen's own strings.
  *
  * When backup encryption becomes a runtime setting (#725), the constant this
  * test reads is replaced and the test errors on purpose. Rewrite it then to
@@ -49,8 +58,14 @@ use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
 final class ReadmeEncryptionClaimTest extends TestCase
 {
-    /** A sentence has to be about encryption to be a claim about it. */
-    private const ENCRYPTION = '/encrypt|ciphertext/i';
+    /** A sentence has to be about encryption to be a claim about it. "Decryptable" says there is something to decrypt. */
+    private const ENCRYPTION = '/encrypt|decrypt|ciphertext/i';
+
+    /** The WordPress functions whose first argument is text a person reads. */
+    private const GETTEXT_FUNCTIONS = [
+        '__', '_e', 'esc_html__', 'esc_html_e', 'esc_attr__', 'esc_attr_e',
+        '_x', '_ex', 'esc_html_x', 'esc_attr_x', '_n', '_nx',
+    ];
 
     /** ...and about backups. */
     private const BACKUP_NOUNS = '/\b(?:backups?|archives?|chunks?|snapshots?|dumps?)\b/i';
@@ -122,6 +137,88 @@ final class ReadmeEncryptionClaimTest extends TestCase
         $value = (new \ReflectionClassConstant(EncryptAndUpload::class, 'ENCRYPT_CHUNKS'))->getValue();
 
         return $value === true;
+    }
+
+    private static function includesPath(): string
+    {
+        return dirname(__DIR__) . '/includes';
+    }
+
+    /**
+     * @return list<string> Every .php file under $dir, sorted. Fails when there are none.
+     */
+    private static function phpFilesUnder(string $dir): array
+    {
+        self::assertDirectoryExists($dir, 'The directory this guard scans must exist.');
+
+        $files    = [];
+        $iterator = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($dir, \FilesystemIterator::SKIP_DOTS));
+        foreach ($iterator as $file) {
+            if ($file instanceof \SplFileInfo && $file->isFile() && $file->getExtension() === 'php') {
+                $files[] = $file->getPathname();
+            }
+        }
+        sort($files);
+        self::assertNotSame([], $files, 'No PHP files were found under ' . $dir . ', so this guard would prove nothing.');
+
+        return $files;
+    }
+
+    /**
+     * The literal text passed to WordPress gettext functions in a PHP source: the
+     * strings a person can read on a screen. A method call, a declaration, a
+     * comment and an argument that is not a plain literal are skipped.
+     *
+     * @return list<string>
+     */
+    private static function gettextStrings(string $source): array
+    {
+        $tokens = [];
+        foreach (token_get_all($source) as $token) {
+            if (is_array($token) && in_array($token[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {
+                continue;
+            }
+            $tokens[] = $token;
+        }
+
+        $strings = [];
+        $count   = count($tokens);
+        for ($i = 0; $i + 3 < $count; $i++) {
+            $token = $tokens[$i];
+            if (!is_array($token) || !in_array($token[0], [T_STRING, T_NAME_FULLY_QUALIFIED], true)) {
+                continue;
+            }
+            $name = ltrim($token[1], '\\');
+            if (!in_array($name, self::GETTEXT_FUNCTIONS, true) || $tokens[$i + 1] !== '(') {
+                continue;
+            }
+            $before = $i > 0 ? $tokens[$i - 1] : null;
+            if (is_array($before)
+                && in_array($before[0], [T_OBJECT_OPERATOR, T_NULLSAFE_OBJECT_OPERATOR, T_DOUBLE_COLON, T_FUNCTION, T_NEW], true)
+            ) {
+                continue;
+            }
+            // The text is the first argument; _n() and _nx() carry a plural as the second.
+            $positions = in_array($name, ['_n', '_nx'], true) ? [$i + 2, $i + 4] : [$i + 2];
+            foreach ($positions as $position) {
+                $literal = $tokens[$position] ?? null;
+                if (is_array($literal) && $literal[0] === T_CONSTANT_ENCAPSED_STRING) {
+                    $strings[] = self::unquote($literal[1]);
+                }
+            }
+        }
+
+        return $strings;
+    }
+
+    private static function unquote(string $literal): string
+    {
+        $body = substr($literal, 1, -1);
+        if ($literal[0] === "'") {
+            return str_replace(['\\\\', "\\'"], ['\\', "'"], $body);
+        }
+
+        return stripcslashes($body);
     }
 
     /**
@@ -208,6 +305,76 @@ final class ReadmeEncryptionClaimTest extends TestCase
     }
 
     // ---------------------------------------------------------------------
+    // The guard, against the text the plugin shows on its own screens.
+    // ---------------------------------------------------------------------
+
+    public function testNoStringTheAgentShowsClaimsBackupsAreEncrypted(): void
+    {
+        if (self::chunkEncryptionIsOn()) {
+            $this->markTestSkipped('Chunk encryption is on, so the screens may describe it.');
+        }
+
+        $claims    = [];
+        $adminText = [];
+        foreach (self::phpFilesUnder(self::includesPath()) as $file) {
+            $source = file_get_contents($file);
+            self::assertIsString($source, 'A source file could not be read: ' . $file);
+
+            foreach (self::gettextStrings($source) as $string) {
+                if (basename($file) === 'class-admin.php') {
+                    $adminText[] = $string;
+                }
+                foreach (self::encryptionClaims($string) as $claim) {
+                    $claims[] = basename($file) . ': ' . $claim;
+                }
+            }
+        }
+
+        // The scan has to have read the admin screen, or a green result means nothing.
+        $this->assertStringContainsStringIgnoringCase(
+            'pairing',
+            implode("\n", $adminText),
+            'No gettext string was read from class-admin.php, so this scan read the wrong text.'
+        );
+
+        $this->assertSame(
+            [],
+            $claims,
+            "A string the plugin shows says backups are encrypted or decryptable, but the agent does not encrypt them\n"
+            . "(EncryptAndUpload::ENCRYPT_CHUNKS is false). Strings that claim it:\n  - "
+            . implode("\n  - ", $claims)
+            . "\nSay what is true instead. A sentence may mention encryption next to backups only to deny it."
+        );
+    }
+
+    public function testGettextStringsAreReadFromTheTranslationFunctionsAndNothingElse(): void
+    {
+        $source = "<?php\n"
+            . "echo esc_html__('Plain text.', 'wpmgr-agent');\n"
+            . "echo __('It\\'s escaped.', 'wpmgr-agent');\n"
+            . "_e(\"Double quoted.\", 'wpmgr-agent');\n"
+            . "echo _n('One backup.', 'Many backups.', \$n, 'wpmgr-agent');\n"
+            . "echo sprintf(__('Wrapped %s.', 'wpmgr-agent'), \$x);\n"
+            . "echo \$this->__('A method, not gettext.');\n"
+            . "echo Other::__('A static call, not gettext.');\n"
+            . "echo __(\$variable);\n"
+            . "echo strtoupper('Not gettext.');\n"
+            . "// __('A comment.', 'wpmgr-agent')\n";
+
+        $this->assertSame(
+            ['Plain text.', 'It\'s escaped.', 'Double quoted.', 'One backup.', 'Many backups.', 'Wrapped %s.'],
+            self::gettextStrings($source)
+        );
+    }
+
+    public function testAnEmptyIncludesDirectoryFailsInsteadOfPassing(): void
+    {
+        $this->expectException(AssertionFailedError::class);
+
+        self::phpFilesUnder(__DIR__ . '/fixtures/no-such-directory');
+    }
+
+    // ---------------------------------------------------------------------
     // The guard goes red, not green, when it has nothing to read.
     // ---------------------------------------------------------------------
 
@@ -279,6 +446,12 @@ final class ReadmeEncryptionClaimTest extends TestCase
             'chunks' => ['Chunks are age-encrypted.'],
             'a not that does not deny it' => ['Archives are encrypted, not just compressed.'],
             'a but between the not and the verb' => ['Backups are not compressed but encrypted.'],
+            // The admin screen's Re-enroll and Disconnect text, which spoke of decryption.
+            'decryptable, as shipped' => ['Prior backups remain decryptable.'],
+            'decryptable, rephrased' => ['Your archives stay decryptable after a reconnect.'],
+            'undecryptable' => ['Without this key your snapshots become undecryptable.'],
+            'decrypted' => ['Backups can only be decrypted with the key kept on this site.'],
+            'ciphertext' => ['Old backup ciphertext is kept.'],
         ];
     }
 
@@ -319,6 +492,12 @@ final class ReadmeEncryptionClaimTest extends TestCase
             'encryption of something that is not a backup' => ['Passwords for email connections are stored encrypted.'],
             'the destination encryption, with no backup noun' => ['Protection at rest comes from the storage destination, including any server-side encryption it offers.'],
             'backups with no mention of encryption' => ['Full and incremental backups of the database and files, scheduled per site or run on demand.'],
+            // The admin screen's Re-enroll and Disconnect text, as it now reads.
+            'the key is kept, and what it protects' => [
+                'The site\'s age encryption key is kept. It protects the authenticator-app secrets stored for this site\'s users; backups are not encrypted by this plugin.',
+            ],
+            'decryption of something that is not a backup' => ['The authenticator-app secrets stay readable because the key that decrypts them is kept.'],
+            'nothing to decrypt' => ['Backups are not encrypted by this plugin, so there is nothing to decrypt.'],
         ];
     }
 
