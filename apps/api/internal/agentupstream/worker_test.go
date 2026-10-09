@@ -2,14 +2,17 @@ package agentupstream
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/rivertype"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentmirror"
 )
@@ -373,5 +376,325 @@ func TestWorkerEmptyTrigger_DefaultsToPeriodic(t *testing.T) {
 	}
 	if last.Trigger != agentmirror.TriggerPeriodic {
 		t.Fatalf("Trigger = %q, want %q (empty must default to periodic)", last.Trigger, agentmirror.TriggerPeriodic)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GH #428: a check shortly after start, without spending the GitHub budget.
+// ---------------------------------------------------------------------------
+
+// fakeInserter captures what EnqueueBootCheck asks River to insert.
+type fakeInserter struct {
+	mu   sync.Mutex
+	args []river.JobArgs
+	opts []*river.InsertOpts
+	dup  bool
+	err  error
+}
+
+func (f *fakeInserter) Insert(_ context.Context, args river.JobArgs, opts *river.InsertOpts) (*rivertype.JobInsertResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return nil, f.err
+	}
+	f.args = append(f.args, args)
+	f.opts = append(f.opts, opts)
+	return &rivertype.JobInsertResult{Job: &rivertype.JobRow{}, UniqueSkippedAsDuplicate: f.dup}, nil
+}
+
+// only returns the single insert, failing the test unless exactly one was made.
+func (f *fakeInserter) only(t *testing.T) (MirrorArgs, *river.InsertOpts) {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.args) != 1 {
+		t.Fatalf("inserted %d mirror jobs at start, want exactly 1; with none, the first check is the periodic tick, %v after start",
+			len(f.args), MirrorInterval)
+	}
+	args, ok := f.args[0].(MirrorArgs)
+	if !ok {
+		t.Fatalf("inserted %T, want MirrorArgs", f.args[0])
+	}
+	return args, f.opts[0]
+}
+
+func requireBootDelay(t *testing.T, from, at time.Time) {
+	t.Helper()
+	if d := at.Sub(from); d < BootCheckMinDelay || d >= BootCheckMaxDelay {
+		t.Fatalf("boot check scheduled %v after %v, want within [%v, %v)", d, from, BootCheckMinDelay, BootCheckMaxDelay)
+	}
+}
+
+// TestEnqueueBootCheck_FirstCheckFollowsStartWithinMinutes is the GH #428
+// regression lock. River runs the periodic job's first tick a full
+// MirrorInterval after its scheduler starts, so before this fix every restart
+// left the install six hours or more from its next upstream check. The check
+// queued at start must run within ten minutes of it.
+func TestEnqueueBootCheck_FirstCheckFollowsStartWithinMinutes(t *testing.T) {
+	ins := &fakeInserter{}
+	start := time.Now()
+
+	bc, err := EnqueueBootCheck(context.Background(), ins, &fakeRecorder{}, start)
+	if err != nil {
+		t.Fatalf("EnqueueBootCheck: %v", err)
+	}
+	args, opts := ins.only(t)
+
+	if got := opts.ScheduledAt.Sub(start); got > 10*time.Minute {
+		t.Fatalf("first mirror check runs %v after start, want within 10m", got)
+	}
+	requireBootDelay(t, start, opts.ScheduledAt)
+	if args.Trigger != TriggerPeriodic || !args.Boot {
+		t.Fatalf("args = %+v, want Trigger %q with Boot set", args, TriggerPeriodic)
+	}
+	if opts.Queue != MirrorQueue || opts.MaxAttempts != mirrorMaxAttempts {
+		t.Fatalf("queue/attempts = %q/%d, want %q/%d", opts.Queue, opts.MaxAttempts, MirrorQueue, mirrorMaxAttempts)
+	}
+	if !bc.Queued || bc.Deferred || !bc.ScheduledAt.Equal(opts.ScheduledAt) {
+		t.Fatalf("BootCheck = %+v, want queued, not deferred, at %v", bc, opts.ScheduledAt)
+	}
+}
+
+// TestPeriodicScheduleIsAFullIntervalAfterStart pins why the boot check is
+// needed: the periodic job alone first runs MirrorInterval after River's
+// scheduler starts, and does not run on start.
+func TestPeriodicScheduleIsAFullIntervalAfterStart(t *testing.T) {
+	start := time.Now()
+	if got := mirrorSchedule().Next(start).Sub(start); got != MirrorInterval {
+		t.Fatalf("periodic first run %v after start, want %v", got, MirrorInterval)
+	}
+	if periodicJobOpts().RunOnStart {
+		t.Fatal("RunOnStart = true; River re-runs it on every change of leader, the boot check covers start")
+	}
+	if NewMirrorPeriodicJob() == nil {
+		t.Fatal("NewMirrorPeriodicJob returned nil")
+	}
+	args, opts := periodicTick()
+	ma, ok := args.(MirrorArgs)
+	if !ok || ma.Trigger != TriggerPeriodic || ma.Boot {
+		t.Fatalf("tick args = %#v, want a periodic tick that is not the boot check", args)
+	}
+	if opts.Queue != MirrorQueue || opts.UniqueOpts.ByPeriod != mirrorUniqueWindow {
+		t.Fatalf("tick opts queue/window = %q/%v, want %q/%v", opts.Queue, opts.UniqueOpts.ByPeriod, MirrorQueue, mirrorUniqueWindow)
+	}
+}
+
+// TestEnqueueBootCheck_WaitsOutTheRequestSpacing: a request recorded five
+// minutes ago (by the previous process) defers the boot check to the end of
+// the spacing window. It is deferred, never dropped: a release published
+// between that request and this restart still gets checked.
+func TestEnqueueBootCheck_WaitsOutTheRequestSpacing(t *testing.T) {
+	ins := &fakeInserter{}
+	start := time.Now()
+	last := start.Add(-5 * time.Minute)
+
+	bc, err := EnqueueBootCheck(context.Background(), ins, &fakeRecorder{state: agentmirror.State{LastRequestAt: &last}}, start)
+	if err != nil {
+		t.Fatalf("EnqueueBootCheck: %v", err)
+	}
+	_, opts := ins.only(t)
+	requireBootDelay(t, last.Add(minRequestSpacing), opts.ScheduledAt)
+	if !bc.Queued || !bc.Deferred {
+		t.Fatalf("BootCheck = %+v, want queued and deferred", bc)
+	}
+}
+
+// TestEnqueueBootCheck_OldRequestDoesNotDefer is the over-fire case: a request
+// older than the spacing window must not delay the check at all.
+func TestEnqueueBootCheck_OldRequestDoesNotDefer(t *testing.T) {
+	ins := &fakeInserter{}
+	start := time.Now()
+	last := start.Add(-minRequestSpacing - time.Minute)
+
+	bc, err := EnqueueBootCheck(context.Background(), ins, &fakeRecorder{state: agentmirror.State{LastRequestAt: &last}}, start)
+	if err != nil {
+		t.Fatalf("EnqueueBootCheck: %v", err)
+	}
+	_, opts := ins.only(t)
+	requireBootDelay(t, start, opts.ScheduledAt)
+	if bc.Deferred {
+		t.Fatalf("BootCheck = %+v, want not deferred", bc)
+	}
+}
+
+// TestEnqueueBootCheck_FutureRequestTimeDelaysOneWindowAtMost: a request time
+// in the future can only be a skewed clock. It must not hold the check back by
+// however far ahead that clock was.
+func TestEnqueueBootCheck_FutureRequestTimeDelaysOneWindowAtMost(t *testing.T) {
+	ins := &fakeInserter{}
+	start := time.Now()
+	future := start.Add(3 * time.Hour)
+
+	if _, err := EnqueueBootCheck(context.Background(), ins, &fakeRecorder{state: agentmirror.State{LastRequestAt: &future}}, start); err != nil {
+		t.Fatalf("EnqueueBootCheck: %v", err)
+	}
+	_, opts := ins.only(t)
+	requireBootDelay(t, start.Add(minRequestSpacing), opts.ScheduledAt)
+}
+
+// TestEnqueueBootCheck_UnreadableStateStillQueues: failing to read the
+// persisted state is no reason to skip the check; the run-time guard still
+// applies when it runs.
+func TestEnqueueBootCheck_UnreadableStateStillQueues(t *testing.T) {
+	ins := &fakeInserter{}
+	start := time.Now()
+
+	bc, err := EnqueueBootCheck(context.Background(), ins, &fakeRecorder{loadErr: errors.New("connection refused")}, start)
+	if err != nil {
+		t.Fatalf("EnqueueBootCheck: %v", err)
+	}
+	_, opts := ins.only(t)
+	requireBootDelay(t, start, opts.ScheduledAt)
+	if !bc.Queued {
+		t.Fatalf("BootCheck = %+v, want queued", bc)
+	}
+}
+
+// TestEnqueueBootCheck_OutstandingCheckIsNotQueuedAgain: when River reports
+// the insert as a duplicate (an earlier boot check is still outstanding), that
+// is reported as not queued, and is not an error.
+func TestEnqueueBootCheck_OutstandingCheckIsNotQueuedAgain(t *testing.T) {
+	bc, err := EnqueueBootCheck(context.Background(), &fakeInserter{dup: true}, nil, time.Now())
+	if err != nil {
+		t.Fatalf("EnqueueBootCheck: %v", err)
+	}
+	if bc.Queued {
+		t.Fatalf("BootCheck = %+v, want not queued for a duplicate", bc)
+	}
+}
+
+// TestEnqueueBootCheck_InsertFailureIsReturned: the caller logs it; it must
+// not be swallowed into a reported success.
+func TestEnqueueBootCheck_InsertFailureIsReturned(t *testing.T) {
+	if _, err := EnqueueBootCheck(context.Background(), &fakeInserter{err: errors.New("db down")}, nil, time.Now()); err == nil {
+		t.Fatal("EnqueueBootCheck returned nil error for a failed insert")
+	}
+	if _, err := EnqueueBootCheck(context.Background(), nil, nil, time.Now()); err == nil {
+		t.Fatal("EnqueueBootCheck returned nil error with no inserter")
+	}
+}
+
+// TestBootInsertOpts_OwnUniqueKeyAndNoTerminalStates pins the two choices
+// BootInsertOpts documents. The River-level behaviour they produce (no
+// deduplication against a completed tick, at most one outstanding boot check)
+// is proven against Postgres in tests/agent_mirror_boot_check_integration_test.go.
+func TestBootInsertOpts_OwnUniqueKeyAndNoTerminalStates(t *testing.T) {
+	at := time.Now().Add(3 * time.Minute)
+	opts := BootInsertOpts(at)
+	if opts.Queue != MirrorQueue || opts.MaxAttempts != 1 || !opts.ScheduledAt.Equal(at) {
+		t.Fatalf("opts = %+v, want queue %q, 1 attempt, scheduled at %v", opts, MirrorQueue, at)
+	}
+	if !opts.UniqueOpts.ByArgs || opts.UniqueOpts.ByPeriod != 0 {
+		t.Fatalf("unique = %+v, want ByArgs and no ByPeriod", opts.UniqueOpts)
+	}
+	for _, s := range []rivertype.JobState{rivertype.JobStateCompleted, rivertype.JobStateDiscarded, rivertype.JobStateCancelled} {
+		if slices.Contains(opts.UniqueOpts.ByState, s) {
+			t.Fatalf("ByState contains %q; a finished boot check would block the next start's", s)
+		}
+	}
+	for _, s := range []rivertype.JobState{rivertype.JobStateAvailable, rivertype.JobStatePending, rivertype.JobStateRunning, rivertype.JobStateScheduled} {
+		if !slices.Contains(opts.UniqueOpts.ByState, s) {
+			t.Fatalf("ByState lacks %q, which River requires", s)
+		}
+	}
+
+	tick, err := json.Marshal(MirrorArgs{Trigger: TriggerPeriodic})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(tick) != `{"trigger":"periodic"}` {
+		t.Fatalf("periodic tick encodes as %s; its unique key must not move", tick)
+	}
+	boot, err := json.Marshal(MirrorArgs{Trigger: TriggerPeriodic, Boot: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(boot) == string(tick) {
+		t.Fatalf("boot check encodes the same as the tick (%s); they would share a unique key", boot)
+	}
+}
+
+// TestWorkerBootRun_PersistedRequestClockBlocksTheRequest: a fresh Mirror
+// (zero in-memory clock, as after a restart) must still honour a request the
+// previous process made five minutes ago. Without the persisted clock, a
+// control plane restarting in a loop spends one upstream request per boot.
+func TestWorkerBootRun_PersistedRequestClockBlocksTheRequest(t *testing.T) {
+	doer := wire(newFixture(t))
+	last := time.Now().Add(-5 * time.Minute)
+	rec := &fakeRecorder{state: agentmirror.State{LastRequestAt: &last}}
+	w := NewMirrorWorker(true, newTestMirror(newFakeStore(), doer), rec, nil)
+
+	job := &river.Job[MirrorArgs]{Args: MirrorArgs{Trigger: TriggerPeriodic, Boot: true}}
+	if err := w.Work(context.Background(), job); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+	if got := doer.urls(); len(got) != 0 {
+		t.Fatalf("spent %d upstream request(s) %v five minutes after the last one; want 0", len(got), got)
+	}
+	got, ok := rec.last()
+	if !ok {
+		t.Fatal("no attempt recorded")
+	}
+	if got.Outcome != agentmirror.OutcomeRateLimited || got.Trigger != agentmirror.TriggerPeriodic {
+		t.Fatalf("recorded %q/%q, want %q/%q", got.Outcome, got.Trigger, agentmirror.OutcomeRateLimited, agentmirror.TriggerPeriodic)
+	}
+}
+
+// TestWorker_PersistedRequestClockPastTheWindowStillMirrors is the over-fire
+// case: a persisted request older than the spacing window must not block.
+func TestWorker_PersistedRequestClockPastTheWindowStillMirrors(t *testing.T) {
+	doer := wire(newFixture(t))
+	last := time.Now().Add(-minRequestSpacing - time.Minute)
+	rec := &fakeRecorder{state: agentmirror.State{LastRequestAt: &last}}
+	w := NewMirrorWorker(true, newTestMirror(newFakeStore(), doer), rec, nil)
+
+	if err := w.Work(context.Background(), &river.Job[MirrorArgs]{Args: MirrorArgs{Trigger: TriggerPeriodic, Boot: true}}); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+	if len(doer.urls()) == 0 {
+		t.Fatal("made no upstream request although the last one was outside the spacing window")
+	}
+	if got, _ := rec.last(); got.Outcome != agentmirror.OutcomeMirrored {
+		t.Fatalf("Outcome = %q, want %q", got.Outcome, agentmirror.OutcomeMirrored)
+	}
+}
+
+// TestWorker_UnreadablePersistedClockDoesNotStopTheMirror: persistence must
+// never stop the mirror; on a read failure the run uses its own clock.
+func TestWorker_UnreadablePersistedClockDoesNotStopTheMirror(t *testing.T) {
+	doer := wire(newFixture(t))
+	rec := &fakeRecorder{loadErr: errors.New("connection refused")}
+	w := NewMirrorWorker(true, newTestMirror(newFakeStore(), doer), rec, nil)
+
+	if err := w.Work(context.Background(), &river.Job[MirrorArgs]{}); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+	if got, _ := rec.last(); got.Outcome != agentmirror.OutcomeMirrored {
+		t.Fatalf("Outcome = %q, want %q", got.Outcome, agentmirror.OutcomeMirrored)
+	}
+}
+
+// TestMirrorSeedLastRequestAt_ForwardOnlyAndClamped: a seed never winds the
+// clock back, and a future time is clamped to now.
+func TestMirrorSeedLastRequestAt_ForwardOnlyAndClamped(t *testing.T) {
+	m := newTestMirror(newFakeStore(), newFakeDoer())
+
+	t1 := time.Now().Add(-10 * time.Minute)
+	m.SeedLastRequestAt(t1)
+	if got := m.LastRequestAt(); !got.Equal(t1) {
+		t.Fatalf("after seed: %v, want %v", got, t1)
+	}
+	m.SeedLastRequestAt(t1.Add(-time.Hour))
+	m.SeedLastRequestAt(time.Time{})
+	if got := m.LastRequestAt(); !got.Equal(t1) {
+		t.Fatalf("an older or zero seed moved the clock to %v, want %v", got, t1)
+	}
+
+	before := time.Now()
+	m.SeedLastRequestAt(before.Add(24 * time.Hour))
+	after := time.Now()
+	if got := m.LastRequestAt(); got.Before(before) || got.After(after) {
+		t.Fatalf("future seed left the clock at %v, want clamped to now (%v..%v)", got, before, after)
 	}
 }
