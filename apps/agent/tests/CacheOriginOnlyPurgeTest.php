@@ -516,6 +516,128 @@ final class CacheOriginOnlyPurgeTest extends TestCase
         $this->assertContains('fixture_unclassified:purgeAll', self::fixtureCalls());
     }
 
+    // -------------------------------------------------------- nested purges
+
+    /**
+     * Start a nested origin_only URL purge from inside the outer purge's hook,
+     * after the production integrations have run and before the fixtures do.
+     *
+     * @param array<string,mixed> $inner Receives the inner purge result.
+     */
+    private function nestOnce(array &$inner): void
+    {
+        $done = false;
+        $this->hooks['wpmgr_purge_everything:before'][] = [
+            function () use (&$inner, &$done): void {
+                if ($done) {
+                    return;
+                }
+                $done  = true;
+                $inner = (new CacheManager())->purge('https://shop.test/x/', ['origin_only' => true]);
+            },
+            0,
+        ];
+    }
+
+    public function test_a_nested_origin_only_purge_keeps_each_report_separate(): void
+    {
+        $this->presentKinstaAndVarnish();
+        $mgr = new CacheManager();
+        $mgr->purge('https://shop.test/warm/'); // boot the production integrations first
+        $inner = [];
+        $this->nestOnce($inner);
+        $this->registerFixtures();
+
+        $outer   = $mgr->purge('all', ['origin_only' => true]);
+        $outerBy = self::bySlug($outer['integrations']);
+        $innerBy = self::bySlug($inner['integrations']);
+
+        // Outer: ran before, at and after the nesting point.
+        $this->assertSame(Integration::ACTION_SKIPPED_REACH_UNCONFIRMED, $outerBy['varnish'] ?? null);
+        $this->assertSame(Integration::ACTION_PURGED_ALL, $outerBy['fixture_install_noted'] ?? null);
+        $this->assertSame(Integration::ACTION_SKIPPED_REACH_UNCONFIRMED, $outerBy['fixture_exact_noted'] ?? null);
+        // Inner: the URL purge, where the exact-noted integration acts.
+        $this->assertSame(Integration::ACTION_PURGED_URLS_EXACT, $innerBy['fixture_exact_noted'] ?? null);
+        // Each purge lists each integration once: no cross-contamination.
+        $this->assertCount(count($outer['integrations']), $outerBy);
+        $this->assertCount(count($inner['integrations']), $innerBy);
+    }
+
+    public function test_an_exception_mid_purge_leaves_no_open_report_frame(): void
+    {
+        $this->registerFixtures();
+        $this->hooks['wpmgr_purge_everything:before'][] = [
+            static function (): void {
+                throw new \RuntimeException('hook failed');
+            },
+            0,
+        ];
+
+        try {
+            (new CacheManager())->purge('all', ['origin_only' => true]);
+            $this->fail('the purge must propagate the hook exception');
+        } catch (\RuntimeException $e) {
+            $this->assertSame('hook failed', $e->getMessage());
+        }
+
+        $frames = new \ReflectionProperty(Integration::class, 'reportFrames');
+        $this->assertSame([], $frames->getValue(null), 'no frame may be left open');
+    }
+
+    public function test_an_exception_in_a_nested_purge_closes_both_frames(): void
+    {
+        // Contract: a purge closes its own report frame however it ends, so an
+        // exception from a nested purge leaves neither the nested frame nor the
+        // outer one open.
+        $frames = new \ReflectionProperty(Integration::class, 'reportFrames');
+        $this->assertSame([], $frames->getValue(null), 'the test starts with no frame open');
+
+        $this->presentKinstaAndVarnish();
+        $mgr = new CacheManager();
+        $mgr->purge('https://shop.test/warm/'); // boot the production integrations first
+        $inner = [];
+        $this->nestOnce($inner);
+        $this->registerFixtures();
+
+        // The nested purge throws after every integration has acted for it. The
+        // frames are read at that moment: both purges are open and each holds
+        // its own entries.
+        $open = null;
+        $this->hooks['wpmgr_purge_urls:before'][] = [
+            static function () use ($frames, &$open): void {
+                $open = $frames->getValue(null);
+                throw new \RuntimeException('nested purge failed');
+            },
+            0,
+        ];
+
+        $thrown = null;
+        try {
+            $mgr->purge('all', ['origin_only' => true]);
+        } catch (\RuntimeException $e) {
+            $thrown = $e;
+        }
+
+        $this->assertNotNull($thrown, 'the nested exception must propagate out of the outer purge');
+        $this->assertSame('nested purge failed', $thrown->getMessage());
+
+        $this->assertIsArray($open, 'the nested purge must have started');
+        $this->assertCount(2, $open, 'the outer and the nested purge were both open when it threw');
+        $this->assertSame(
+            [
+                ['slug' => 'varnish', 'action' => Integration::ACTION_SKIPPED_REACH_UNCONFIRMED],
+                ['slug' => 'kinsta', 'action' => Integration::ACTION_SKIPPED_REACH_UNCONFIRMED],
+            ],
+            $open[0],
+            'the outer frame holds what the outer purge recorded before the nested one started, and nothing of the nested purge'
+        );
+        $innerBy = self::bySlug($open[1]);
+        $this->assertSame(Integration::ACTION_PURGED_URLS_EXACT, $innerBy['fixture_exact_noted'] ?? null);
+        $this->assertCount(count($open[1]), $innerBy, 'the nested frame lists each integration once');
+
+        $this->assertSame([], $frames->getValue(null), 'neither the outer nor the nested frame may be left open');
+    }
+
     /**
      * @dataProvider nonBooleanOriginOnly
      */

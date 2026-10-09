@@ -978,6 +978,50 @@ PHP;
     }
 
     /**
+     * The push carries the builder facts block, built from the parent theme
+     * (not the child stylesheet theme the inventory's `active` flag follows).
+     * Elementor is not loaded in this process, so there is no elementor key.
+     */
+    public function test_collect_carries_the_builder_facts_block(): void
+    {
+        $options = [];
+        $this->stubInventory($options);
+        Functions\when('get_stylesheet')->justReturn('bricks-child');
+        Functions\when('get_template')->justReturn('bricks');
+
+        $data = (new MetadataCommand())->collect();
+
+        $this->assertSame(['v' => 1, 'theme_template' => 'bricks'], $data['builder_facts'] ?? null);
+        // The same push still carries the existing fields.
+        $this->assertSame('bricks-child', $data['active_theme']);
+        $this->assertSame('6.5.2', $data['wp_version']);
+    }
+
+    /**
+     * A builder-facts collector that fails must never fail the push: the key
+     * is left out and every other field is still reported. The collector is
+     * built not to throw, so the failure is forced here.
+     */
+    public function test_collect_survives_a_builder_facts_collector_that_throws(): void
+    {
+        $options = [];
+        $this->stubInventory($options);
+        \Patchwork\redefine(
+            \WPMgr\Agent\Support\BuilderFacts::class . '::collect',
+            static function (): array {
+                throw new \RuntimeException('builder facts failed');
+            }
+        );
+
+        $data = (new MetadataCommand())->collect();
+
+        $this->assertArrayNotHasKey('builder_facts', $data);
+        $this->assertSame('6.5.2', $data['wp_version']);
+        $this->assertArrayHasKey('plugins', $data);
+        $this->assertArrayHasKey('roles', $data);
+    }
+
+    /**
      * Durable, environment-independent regression guard: no matter what a
      * future edit does to hostFlags() (or adds beside it), an absolute
      * out-of-webroot filesystem probe like `/var/lib/runcloud` must never be

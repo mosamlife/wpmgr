@@ -16,6 +16,7 @@ namespace WPMgr\Agent\Commands;
 use WPMgr\Agent\Keystore;
 use WPMgr\Agent\Security\SiteRoles;
 use WPMgr\Agent\Support\AgeIdentity;
+use WPMgr\Agent\Support\BuilderFacts;
 use WPMgr\Agent\Support\KeystoreHealth;
 
 /**
@@ -97,6 +98,7 @@ final class MetadataCommand implements CommandInterface
      *     themes:array<int,array{slug:string,name:string,version:string,active:bool,available_update:?array{new_version:string,package:?string,tested:?string,requires_php:?string}}>,
      *     core_update:?array{new_version:string,current_version:string},
      *     roles:list<array{slug:string,name:string}>,
+     *     builder_facts?:array{v:int,theme_template?:string,elementor?:array{atomic_editor:?bool}},
      *     keystore?:array{state:string,key_source:string,items:array<string,string>,unreadable:list<string>},
      *     age_recipient?:string
      * }
@@ -132,6 +134,18 @@ final class MetadataCommand implements CommandInterface
             // Always present (an empty list when the registry is unreadable).
             'roles'        => SiteRoles::collect(),
         ];
+
+        // Page-builder readiness facts (schema version 1). OPTIONAL and
+        // additive on the wire: a control plane that does not know the key
+        // ignores it, and a collection failure leaves the key out rather than
+        // failing the push. BuilderFacts is read-only and bounded; its class
+        // docblock holds the shape and the keys reserved for later versions.
+        try {
+            $payload['builder_facts'] = BuilderFacts::collect();
+        } catch (\Throwable $e) {
+            // Swallow — telemetry must not fail the sync.
+        }
+
         if ($this->ageIdentity !== null) {
             // Keystore status: whether each stored key still opens under this
             // site's encryption key (absent / ok / unreadable per item), the
