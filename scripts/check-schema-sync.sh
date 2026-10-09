@@ -572,16 +572,17 @@ KINDS="schema table rls column index constraint policy function trigger sequence
 # from a query that matched nothing, not from a schema that has none.
 REQUIRED_KINDS="table rls column index constraint policy"
 
-# extract_catalog DB OUT -- sorted rows, or exit 2.
+# extract_catalog DB OUT WHAT -- sorted rows, or exit 2. WHAT names the input
+# the database was built from, for the message when it built nothing.
 extract_catalog() {
-  local db="$1" out="$2" rc
+  local db="$1" out="$2" what="$3" rc
   dpsql -At -d "$db" -f - < "$TMP/catalog.sql" > "$out.raw" 2> "$out.err"
   rc=$?
   if [ "$rc" -ne 0 ]; then
     broken "could not read the catalog of $db (psql exit $rc): $(head -5 "$out.err")"
   fi
   LC_ALL=C sort "$out.raw" > "$out" || broken "could not sort the catalog of $db."
-  [ -s "$out" ] || broken "the catalog of $db came back with no rows."
+  [ -s "$out" ] || broken "$what created nothing: the database it was loaded into has no catalog rows. Refusing to compare against nothing."
   awk -F'\t' -v kinds="$KINDS" '
     BEGIN { n = split(kinds, k, " "); for (i = 1; i <= n; i++) known[k[i]] = 1 }
     NF != 3 || !($1 in known) { bad++; if (bad <= 3) print "      " NR ": " substr($0, 1, 120) }
@@ -593,8 +594,8 @@ $(cat "$out.bad")"
 count_kind() { awk -F'\t' -v k="$2" '$1 == k { n++ } END { print n + 0 }' "$1"; }
 
 if [ "$REPLAY_OK" = "1" ] && [ "$DECL_OK" = "1" ]; then
-  extract_catalog "$DB_MIG" "$TMP/mig.catalog"
-  extract_catalog "$DB_DECL" "$TMP/decl.catalog"
+  extract_catalog "$DB_MIG" "$TMP/mig.catalog" "Replaying the migrations"
+  extract_catalog "$DB_DECL" "$TMP/decl.catalog" "apps/api/db/schema.sql"
 
   for k in $REQUIRED_KINDS; do
     [ "$(count_kind "$TMP/mig.catalog" "$k")" -gt 0 ] \

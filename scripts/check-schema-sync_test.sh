@@ -403,15 +403,22 @@ setup_error() {
 # replace_lit FILE OLD NEW -- replace the first occurrence of the LITERAL text
 # OLD. The suite stops if OLD is absent: a plant that does not plant would
 # leave a "must stay green" case passing without having tested anything.
+#
+# awk does the replacement, with both strings passed through the environment:
+# `-v` would process backslash escapes, and bash's own ${var/pat/rep} keeps or
+# drops nested quote characters depending on the bash version, which turned
+# every mutation into a syntax error on one of them. The whole file is one
+# record (RS is a byte that is not in any fixture), so multi-line text matches.
 replace_lit() {
-  local f="$1" old="$2" new="$3" content
-  content="$(cat "$f"; printf x)"
-  content="${content%x}"
-  case "$content" in
-    *"$old"*) : ;;
-    *) setup_error "the text to replace is not in $f: $old" ;;
-  esac
-  printf '%s' "${content/"$old"/"$new"}" > "$f"
+  local f="$1"
+  if ! OLD="$2" NEW="$3" awk -v RS='\001' '
+    BEGIN { old = ENVIRON["OLD"]; new = ENVIRON["NEW"] }
+    { i = index($0, old); if (i == 0) exit 3; printf "%s%s%s", substr($0, 1, i - 1), new, substr($0, i + length(old)) }
+  ' "$f" > "$f.replaced"; then
+    rm -f "${f:?}.replaced"
+    setup_error "the text to replace is not in $f: $2"
+  fi
+  mv "$f.replaced" "$f" || setup_error "could not rewrite $f"
 }
 delete_lit() { replace_lit "$1" "$2" ""; }
 append_text() { printf '%s\n' "$2" >> "$1"; }
@@ -696,37 +703,42 @@ case_run "fires: an atlas.sum header the guard does not understand is refused, n
 t="$(tree no-migrations-empty-dir)"
 rm -f "$t/$M"/*
 case_run "broken: an empty migrations directory" broken "$t" \
-  "+GUARD BROKEN" "+no *.sql files" "-OK:"
+  "+GUARD BROKEN" "+no *.sql files" "-are in step"
 
 t="$(tree no-migrations-only-sum)"
 rm -f "$t/$M"/*.sql
 case_run "broken: a migrations directory holding only atlas.sum" broken "$t" \
-  "+GUARD BROKEN" "+no *.sql files" "-OK:"
+  "+GUARD BROKEN" "+no *.sql files" "-are in step"
 
 t="$(tree no-migrations-dir)"
 rm -rf "${t:?}/$M"
 case_run "broken: no migrations directory at all" broken "$t" \
-  "+GUARD BROKEN" "+no migrations directory" "-OK:"
+  "+GUARD BROKEN" "+no migrations directory" "-are in step"
 
 t="$(tree no-schema)"
 rm -f "$t/$S"
 case_run "broken: a missing schema.sql" broken "$t" \
-  "+GUARD BROKEN" "+no schema file" "-OK:"
+  "+GUARD BROKEN" "+no schema file" "-are in step"
 
 t="$(tree empty-schema)"
 : > "$t/$S"
 case_run "broken: a zero-byte schema.sql" broken "$t" \
-  "+GUARD BROKEN" "+is empty" "-OK:"
+  "+GUARD BROKEN" "+is empty" "-are in step"
 
 t="$(tree comment-schema)"
 printf '%s\n' '-- nothing here but a comment' '/* and another */' > "$t/$S"
-case_run "broken: a schema.sql that is only comments creates no tables" broken "$t" \
-  "+GUARD BROKEN" "+created no tables" "-OK:"
+case_run "broken: a schema.sql that is only comments creates nothing" broken "$t" \
+  "+GUARD BROKEN" "+schema.sql created nothing" "-are in step"
+
+t="$(tree extension-only-schema)"
+printf '%s\n' 'CREATE EXTENSION IF NOT EXISTS citext;' > "$t/$S"
+case_run "broken: a schema.sql that creates an extension but no tables" broken "$t" \
+  "+GUARD BROKEN" "+created no tables" "-are in step"
 
 t="$(tree no-sum)"
 rm -f "$t/$M/atlas.sum"
 case_run "broken: a missing atlas.sum" broken "$t" \
-  "+GUARD BROKEN" "+no atlas.sum" "-OK:"
+  "+GUARD BROKEN" "+no atlas.sum" "-are in step"
 
 t="$(tree no-policies)"
 delete_lit "$t/$M/$MIG1" "$BLK_POL_ISO$NL$BLK_POL_LIVE$NL"
@@ -735,11 +747,11 @@ case_run "broken: a replay that yields no policy rows is a broken extraction, no
 
 t="$(tree dead-container)"
 case_run "broken: a postgres container that does not exist" broken "$t" \
-  "env:WPMGR_SCHEMA_SYNC_CONTAINER=wpmgr-schema-sync-no-such-container" "+GUARD BROKEN" "-OK:"
+  "env:WPMGR_SCHEMA_SYNC_CONTAINER=wpmgr-schema-sync-no-such-container" "+GUARD BROKEN" "-are in step"
 
 t="$(tree dead-docker)"
 case_run "broken: a docker daemon that is not reachable" broken "$t" \
-  "env:DOCKER_HOST=unix:///nonexistent/docker.sock" "+GUARD BROKEN" "+docker daemon is not reachable" "-OK:"
+  "env:DOCKER_HOST=unix:///nonexistent/docker.sock" "+GUARD BROKEN" "+docker daemon is not reachable" "-are in step"
 
 # ===========================================================================
 # Findings that are not drift: the two inputs do not load.
@@ -912,7 +924,7 @@ if [ "$REAL" = "1" ]; then
   t="$(rtree real-empty-migrations)"
   rm -f "$t/$MIG_REL"/*
   case_run "real tree, plant 4: an empty migrations directory" broken "$t" \
-    "+GUARD BROKEN" "+no *.sql files" "-OK:"
+    "+GUARD BROKEN" "+no *.sql files" "-are in step"
 fi
 
 # ---------------------------------------------------------------------------
