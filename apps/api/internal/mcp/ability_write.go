@@ -551,8 +551,9 @@ func (s *Service) runSiteAbilityWrite(ctx context.Context, auth AuthorizedReques
 			meta: map[string]any{"code": "precheck_unverifiable"},
 		}
 	}
-	// Step 8: the creation transaction.
-	res, err := s.createAbilityRequest(ctx, eng.writes, auth, site.row, self.host, e, entrySum, input, facts, checked)
+	// Step 8: the creation transaction, which stores the request under the
+	// id its precheck was sent with.
+	res, err := s.createAbilityRequest(ctx, eng.writes, auth, site.row, self.host, e, entrySum, input, facts, checked, precheckID)
 	if err != nil {
 		return "", err
 	}
@@ -727,8 +728,14 @@ func pageCreateDigest(auth AuthorizedRequest, row sqlc.Site, e *sqlc.AbilityCata
 	return sha256Hex(b)
 }
 
-// createAbilityRequest is step 8, in one connection-scoped transaction.
-func (s *Service) createAbilityRequest(ctx context.Context, store AbilityRequestStore, auth AuthorizedRequest, row sqlc.Site, host string, e *sqlc.AbilityCatalogue, entrySum string, input []byte, facts pageCreateFacts, pc checkedPrecheck) (abilityCreatedResult, error) {
+// createAbilityRequest is step 8, in one connection-scoped transaction. A
+// new request is stored under requestID, the id its precheck was sent with:
+// the dispatch worker sends the write under the stored id, so the write the
+// site receives names the request the site prechecked, and a page builder's
+// node ids, which derive from that id, are the ones the card showed. A
+// repeat of a request already waiting answers the waiting row, under its own
+// id.
+func (s *Service) createAbilityRequest(ctx context.Context, store AbilityRequestStore, auth AuthorizedRequest, row sqlc.Site, host string, e *sqlc.AbilityCatalogue, entrySum string, input []byte, facts pageCreateFacts, pc checkedPrecheck, requestID uuid.UUID) (abilityCreatedResult, error) {
 	var out abilityCreatedResult
 	inputSum := sha256Hex(input)
 	targetKey := "new:" + inputSum
@@ -776,6 +783,7 @@ func (s *Service) createAbilityRequest(ctx context.Context, store AbilityRequest
 		done := false
 		for attempt := 0; attempt < 2 && !done; attempt++ {
 			ins, err := q.InsertAbilityRequest(ctx, sqlc.InsertAbilityRequestParams{
+				ID:       uuidToPG(requestID),
 				TenantID: auth.TenantID, SiteID: row.ID, ProposedByGrantID: auth.GrantID,
 				EntryID: e.EntryID, EntrySha256: entrySum, AbilityName: e.Name,
 				OperatorPermission: *e.OperatorPermission,
