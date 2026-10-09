@@ -12,7 +12,7 @@ import (
 )
 
 const adminUpsertRestRoute = `-- name: AdminUpsertRestRoute :one
-SELECT route_id, method, namespace, template, core_pattern, path_params, query_keys, pinned_query, body_keys, class, output_fields, snapshot, target, arg_render, operator_permission, effect_copy, enabled, min_wp_version, title, description, route_sha256, created_at, updated_at, updated_by_user_id FROM admin_upsert_rest_route(
+SELECT route_id, method, namespace, template, core_pattern, path_params, query_keys, pinned_query, body_keys, class, output_fields, snapshot, target, arg_render, operator_permission, effect_copy, enabled, min_wp_version, title, description, route_sha256, created_at, updated_at, updated_by_user_id, change_class FROM admin_upsert_rest_route(
     $1::uuid,
     $2::boolean,
     $3::text,
@@ -122,12 +122,13 @@ func (q *Queries) AdminUpsertRestRoute(ctx context.Context, arg AdminUpsertRestR
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.UpdatedByUserID,
+		&i.ChangeClass,
 	)
 	return i, err
 }
 
 const getRestRoute = `-- name: GetRestRoute :one
-SELECT route_id, method, namespace, template, core_pattern, path_params, query_keys, pinned_query, body_keys, class, output_fields, snapshot, target, arg_render, operator_permission, effect_copy, enabled, min_wp_version, title, description, route_sha256, created_at, updated_at, updated_by_user_id FROM rest_route_catalogue
+SELECT route_id, method, namespace, template, core_pattern, path_params, query_keys, pinned_query, body_keys, class, output_fields, snapshot, target, arg_render, operator_permission, effect_copy, enabled, min_wp_version, title, description, route_sha256, created_at, updated_at, updated_by_user_id, change_class FROM rest_route_catalogue
 WHERE route_id = $1::text
 `
 
@@ -160,13 +161,14 @@ func (q *Queries) GetRestRoute(ctx context.Context, routeID string) (RestRouteCa
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.UpdatedByUserID,
+		&i.ChangeClass,
 	)
 	return i, err
 }
 
 const listEnabledRestRoutes = `-- name: ListEnabledRestRoutes :many
 
-SELECT route_id, method, namespace, template, core_pattern, path_params, query_keys, pinned_query, body_keys, class, output_fields, snapshot, target, arg_render, operator_permission, effect_copy, enabled, min_wp_version, title, description, route_sha256, created_at, updated_at, updated_by_user_id FROM rest_route_catalogue
+SELECT route_id, method, namespace, template, core_pattern, path_params, query_keys, pinned_query, body_keys, class, output_fields, snapshot, target, arg_render, operator_permission, effect_copy, enabled, min_wp_version, title, description, route_sha256, created_at, updated_at, updated_by_user_id, change_class FROM rest_route_catalogue
 WHERE enabled
 ORDER BY route_id
 `
@@ -211,6 +213,7 @@ func (q *Queries) ListEnabledRestRoutes(ctx context.Context) ([]RestRouteCatalog
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.UpdatedByUserID,
+			&i.ChangeClass,
 		); err != nil {
 			return nil, err
 		}
@@ -223,7 +226,7 @@ func (q *Queries) ListEnabledRestRoutes(ctx context.Context) ([]RestRouteCatalog
 }
 
 const listRestRouteAudit = `-- name: ListRestRouteAudit :many
-SELECT id, route_id, action, actor_user_id, before_row_sha256, after_row_sha256, before_route_sha256, after_route_sha256, before_enabled, after_enabled, at FROM rest_route_catalogue_audit
+SELECT id, route_id, action, actor_user_id, before_row_sha256, after_row_sha256, before_route_sha256, after_route_sha256, before_enabled, after_enabled, at, before_change_class, after_change_class FROM rest_route_catalogue_audit
 WHERE route_id = $1::text
 ORDER BY id DESC
 LIMIT $2::int
@@ -256,6 +259,8 @@ func (q *Queries) ListRestRouteAudit(ctx context.Context, arg ListRestRouteAudit
 			&i.BeforeEnabled,
 			&i.AfterEnabled,
 			&i.At,
+			&i.BeforeChangeClass,
+			&i.AfterChangeClass,
 		); err != nil {
 			return nil, err
 		}
@@ -268,7 +273,7 @@ func (q *Queries) ListRestRouteAudit(ctx context.Context, arg ListRestRouteAudit
 }
 
 const listRestRoutes = `-- name: ListRestRoutes :many
-SELECT route_id, method, namespace, template, core_pattern, path_params, query_keys, pinned_query, body_keys, class, output_fields, snapshot, target, arg_render, operator_permission, effect_copy, enabled, min_wp_version, title, description, route_sha256, created_at, updated_at, updated_by_user_id FROM rest_route_catalogue
+SELECT route_id, method, namespace, template, core_pattern, path_params, query_keys, pinned_query, body_keys, class, output_fields, snapshot, target, arg_render, operator_permission, effect_copy, enabled, min_wp_version, title, description, route_sha256, created_at, updated_at, updated_by_user_id, change_class FROM rest_route_catalogue
 ORDER BY route_id
 `
 
@@ -307,6 +312,7 @@ func (q *Queries) ListRestRoutes(ctx context.Context) ([]RestRouteCatalogue, err
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.UpdatedByUserID,
+			&i.ChangeClass,
 		); err != nil {
 			return nil, err
 		}
@@ -319,7 +325,7 @@ func (q *Queries) ListRestRoutes(ctx context.Context) ([]RestRouteCatalogue, err
 }
 
 const stampWpmgrRestRouteHash = `-- name: StampWpmgrRestRouteHash :one
-SELECT route_id, method, namespace, template, core_pattern, path_params, query_keys, pinned_query, body_keys, class, output_fields, snapshot, target, arg_render, operator_permission, effect_copy, enabled, min_wp_version, title, description, route_sha256, created_at, updated_at, updated_by_user_id FROM stamp_wpmgr_rest_route_hash(
+SELECT route_id, method, namespace, template, core_pattern, path_params, query_keys, pinned_query, body_keys, class, output_fields, snapshot, target, arg_render, operator_permission, effect_copy, enabled, min_wp_version, title, description, route_sha256, created_at, updated_at, updated_by_user_id, change_class FROM stamp_wpmgr_rest_route_hash(
     $1::text,
     $2::text
 )
@@ -362,6 +368,7 @@ func (q *Queries) StampWpmgrRestRouteHash(ctx context.Context, arg StampWpmgrRes
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.UpdatedByUserID,
+		&i.ChangeClass,
 	)
 	return i, err
 }

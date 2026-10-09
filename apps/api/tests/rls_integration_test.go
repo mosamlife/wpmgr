@@ -288,7 +288,7 @@ func startPostgres(t testing.TB) *db.Pool {
 		// production, so every immutability and undeletability proof would
 		// pass against privileges no real install has.
 		"REVOKE UPDATE ON assistant_cache_purge_requests FROM wpmgr_app",
-		"GRANT UPDATE (state, decided_at, decided_by_user_id, withdrawn_at, claimed_at, cache_purge_audit_id, dispatch_attempts, last_attempt_at, last_attempt_code, outcome, not_sent_reason, outcome_at, hosting_caches_cleared, hosting_caches_skipped, origin_only_confirmed, wpmgr_cdn, site_reported_text) ON assistant_cache_purge_requests TO wpmgr_app",
+		"GRANT UPDATE (state, decided_at, decided_by_user_id, withdrawn_at, claimed_at, cache_purge_audit_id, dispatch_attempts, last_attempt_at, last_attempt_code, outcome, not_sent_reason, outcome_at, hosting_caches_cleared, hosting_caches_skipped, origin_only_confirmed, wpmgr_cdn, site_reported_text, approval_source, approval_site_mode, approval_mode_version, approval_setter_user_id, approval_setter_set_at, approval_session_id, base_change_class, change_class, ask_reason, policy_checked_at) ON assistant_cache_purge_requests TO wpmgr_app",
 		"REVOKE DELETE, TRUNCATE ON assistant_cache_purge_requests FROM wpmgr_app",
 		// m147's install_owner is insert-once: the record of who set up the
 		// install must never be re-pointed or removed. Same re-revoke, same
@@ -333,7 +333,7 @@ func startPostgres(t testing.TB) *db.Pool {
 		// statements, revoke-then-grant, so its immutability and
 		// undeletability proofs run against a real install's privileges.
 		"REVOKE UPDATE ON assistant_ability_requests FROM wpmgr_app",
-		"GRANT UPDATE (state, decided_at, decided_by_user_id, withdrawn_at, dispatch_deadline_at, claimed_at, dispatch_attempts, last_attempt_at, last_attempt_code, unknown_since, ledger_checked_at, outcome, outcome_at, outcome_code, not_sent_reason, created_post_id, restored, trashed, site_reported_text, undo_state, undo_available_until, undo_by_user_id, undo_started_at, undo_finished_at) ON assistant_ability_requests TO wpmgr_app",
+		"GRANT UPDATE (state, decided_at, decided_by_user_id, withdrawn_at, dispatch_deadline_at, claimed_at, dispatch_attempts, last_attempt_at, last_attempt_code, unknown_since, ledger_checked_at, outcome, outcome_at, outcome_code, not_sent_reason, created_post_id, restored, trashed, site_reported_text, undo_state, undo_available_until, undo_by_user_id, undo_started_at, undo_finished_at, approval_source, approval_site_mode, approval_mode_version, approval_setter_user_id, approval_setter_set_at, approval_session_id, base_change_class, change_class, ask_reason, policy_checked_at) ON assistant_ability_requests TO wpmgr_app",
 		"REVOKE DELETE, TRUNCATE ON assistant_ability_requests FROM wpmgr_app",
 	} {
 		if _, err := ownerPool.Exec(ctx, stmt); err != nil {

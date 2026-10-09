@@ -48,6 +48,7 @@ type AbilityCatalogue struct {
 	UpdatedAt          time.Time   `json:"updated_at"`
 	UpdatedByUserID    pgtype.UUID `json:"updated_by_user_id"`
 	OutputFields       []byte      `json:"output_fields"`
+	ChangeClass        string      `json:"change_class"`
 }
 
 type AbilityCatalogueAudit struct {
@@ -63,6 +64,8 @@ type AbilityCatalogueAudit struct {
 	BeforeEnabled     *bool       `json:"before_enabled"`
 	AfterEnabled      bool        `json:"after_enabled"`
 	At                time.Time   `json:"at"`
+	BeforeChangeClass *string     `json:"before_change_class"`
+	AfterChangeClass  *string     `json:"after_change_class"`
 }
 
 type AbilityReadSideEffectReport struct {
@@ -213,63 +216,74 @@ type AppAlertRollout struct {
 }
 
 type AssistantAbilityRequest struct {
-	ID                 uuid.UUID          `json:"id"`
-	TenantID           uuid.UUID          `json:"tenant_id"`
-	SiteID             uuid.UUID          `json:"site_id"`
-	ProposedByGrantID  uuid.UUID          `json:"proposed_by_grant_id"`
-	EntryID            uuid.UUID          `json:"entry_id"`
-	EntrySha256        string             `json:"entry_sha256"`
-	AbilityName        string             `json:"ability_name"`
-	OperatorPermission string             `json:"operator_permission"`
-	InputJson          string             `json:"input_json"`
-	InputSha256        string             `json:"input_sha256"`
-	TargetPostID       *int64             `json:"target_post_id"`
-	TargetKey          *string            `json:"target_key"`
-	PrecheckDigest     string             `json:"precheck_digest"`
-	PreviewDigest      *string            `json:"preview_digest"`
-	BaseFingerprint    string             `json:"base_fingerprint"`
-	SiteLabel          string             `json:"site_label"`
-	SiteHost           string             `json:"site_host"`
-	GrantLabel         string             `json:"grant_label"`
-	GrantVia           string             `json:"grant_via"`
-	SetupClient        *string            `json:"setup_client"`
-	TitleExcerpt       *string            `json:"title_excerpt"`
-	Editor             *string            `json:"editor"`
-	PostType           *string            `json:"post_type"`
-	EffectCopy         string             `json:"effect_copy"`
-	Snapshot           string             `json:"snapshot"`
-	CardCopyVersion    int32              `json:"card_copy_version"`
-	DigestNonce        string             `json:"digest_nonce"`
-	PresentedDigest    string             `json:"presented_digest"`
-	State              string             `json:"state"`
-	CreatedAt          time.Time          `json:"created_at"`
-	ExpiresAt          time.Time          `json:"expires_at"`
-	DecidedAt          pgtype.Timestamptz `json:"decided_at"`
-	DecidedByUserID    pgtype.UUID        `json:"decided_by_user_id"`
-	WithdrawnAt        pgtype.Timestamptz `json:"withdrawn_at"`
-	DispatchDeadlineAt pgtype.Timestamptz `json:"dispatch_deadline_at"`
-	ClaimedAt          pgtype.Timestamptz `json:"claimed_at"`
-	DispatchAttempts   int32              `json:"dispatch_attempts"`
-	LastAttemptAt      pgtype.Timestamptz `json:"last_attempt_at"`
-	LastAttemptCode    *string            `json:"last_attempt_code"`
-	UnknownSince       pgtype.Timestamptz `json:"unknown_since"`
-	LedgerCheckedAt    pgtype.Timestamptz `json:"ledger_checked_at"`
-	Outcome            *string            `json:"outcome"`
-	OutcomeAt          pgtype.Timestamptz `json:"outcome_at"`
-	OutcomeCode        *string            `json:"outcome_code"`
-	NotSentReason      *string            `json:"not_sent_reason"`
-	CreatedPostID      *int64             `json:"created_post_id"`
-	Restored           *bool              `json:"restored"`
-	Trashed            *bool              `json:"trashed"`
-	SiteReportedText   *string            `json:"site_reported_text"`
-	UndoState          *string            `json:"undo_state"`
-	UndoAvailableUntil pgtype.Timestamptz `json:"undo_available_until"`
-	UndoByUserID       pgtype.UUID        `json:"undo_by_user_id"`
-	UndoStartedAt      pgtype.Timestamptz `json:"undo_started_at"`
-	UndoFinishedAt     pgtype.Timestamptz `json:"undo_finished_at"`
-	RouteID            *string            `json:"route_id"`
-	RouteSha256        *string            `json:"route_sha256"`
-	CardFacts          []byte             `json:"card_facts"`
+	ID                   uuid.UUID          `json:"id"`
+	TenantID             uuid.UUID          `json:"tenant_id"`
+	SiteID               uuid.UUID          `json:"site_id"`
+	ProposedByGrantID    uuid.UUID          `json:"proposed_by_grant_id"`
+	EntryID              uuid.UUID          `json:"entry_id"`
+	EntrySha256          string             `json:"entry_sha256"`
+	AbilityName          string             `json:"ability_name"`
+	OperatorPermission   string             `json:"operator_permission"`
+	InputJson            string             `json:"input_json"`
+	InputSha256          string             `json:"input_sha256"`
+	TargetPostID         *int64             `json:"target_post_id"`
+	TargetKey            *string            `json:"target_key"`
+	PrecheckDigest       string             `json:"precheck_digest"`
+	PreviewDigest        *string            `json:"preview_digest"`
+	BaseFingerprint      string             `json:"base_fingerprint"`
+	SiteLabel            string             `json:"site_label"`
+	SiteHost             string             `json:"site_host"`
+	GrantLabel           string             `json:"grant_label"`
+	GrantVia             string             `json:"grant_via"`
+	SetupClient          *string            `json:"setup_client"`
+	TitleExcerpt         *string            `json:"title_excerpt"`
+	Editor               *string            `json:"editor"`
+	PostType             *string            `json:"post_type"`
+	EffectCopy           string             `json:"effect_copy"`
+	Snapshot             string             `json:"snapshot"`
+	CardCopyVersion      int32              `json:"card_copy_version"`
+	DigestNonce          string             `json:"digest_nonce"`
+	PresentedDigest      string             `json:"presented_digest"`
+	State                string             `json:"state"`
+	CreatedAt            time.Time          `json:"created_at"`
+	ExpiresAt            time.Time          `json:"expires_at"`
+	DecidedAt            pgtype.Timestamptz `json:"decided_at"`
+	DecidedByUserID      pgtype.UUID        `json:"decided_by_user_id"`
+	WithdrawnAt          pgtype.Timestamptz `json:"withdrawn_at"`
+	DispatchDeadlineAt   pgtype.Timestamptz `json:"dispatch_deadline_at"`
+	ClaimedAt            pgtype.Timestamptz `json:"claimed_at"`
+	DispatchAttempts     int32              `json:"dispatch_attempts"`
+	LastAttemptAt        pgtype.Timestamptz `json:"last_attempt_at"`
+	LastAttemptCode      *string            `json:"last_attempt_code"`
+	UnknownSince         pgtype.Timestamptz `json:"unknown_since"`
+	LedgerCheckedAt      pgtype.Timestamptz `json:"ledger_checked_at"`
+	Outcome              *string            `json:"outcome"`
+	OutcomeAt            pgtype.Timestamptz `json:"outcome_at"`
+	OutcomeCode          *string            `json:"outcome_code"`
+	NotSentReason        *string            `json:"not_sent_reason"`
+	CreatedPostID        *int64             `json:"created_post_id"`
+	Restored             *bool              `json:"restored"`
+	Trashed              *bool              `json:"trashed"`
+	SiteReportedText     *string            `json:"site_reported_text"`
+	UndoState            *string            `json:"undo_state"`
+	UndoAvailableUntil   pgtype.Timestamptz `json:"undo_available_until"`
+	UndoByUserID         pgtype.UUID        `json:"undo_by_user_id"`
+	UndoStartedAt        pgtype.Timestamptz `json:"undo_started_at"`
+	UndoFinishedAt       pgtype.Timestamptz `json:"undo_finished_at"`
+	RouteID              *string            `json:"route_id"`
+	RouteSha256          *string            `json:"route_sha256"`
+	CardFacts            []byte             `json:"card_facts"`
+	ApprovalSource       string             `json:"approval_source"`
+	ApprovalSiteMode     *string            `json:"approval_site_mode"`
+	ApprovalModeVersion  *int64             `json:"approval_mode_version"`
+	ApprovalSetterUserID pgtype.UUID        `json:"approval_setter_user_id"`
+	ApprovalSetterSetAt  pgtype.Timestamptz `json:"approval_setter_set_at"`
+	ApprovalSessionID    pgtype.UUID        `json:"approval_session_id"`
+	BaseChangeClass      *string            `json:"base_change_class"`
+	ChangeClass          *string            `json:"change_class"`
+	AskReason            *string            `json:"ask_reason"`
+	PolicyCheckedAt      pgtype.Timestamptz `json:"policy_checked_at"`
+	CheckedTargetStatus  *string            `json:"checked_target_status"`
 }
 
 type AssistantCachePurgeRequest struct {
@@ -305,6 +319,16 @@ type AssistantCachePurgeRequest struct {
 	OriginOnlyConfirmed  *bool              `json:"origin_only_confirmed"`
 	WpmgrCdn             *string            `json:"wpmgr_cdn"`
 	SiteReportedText     *string            `json:"site_reported_text"`
+	ApprovalSource       string             `json:"approval_source"`
+	ApprovalSiteMode     *string            `json:"approval_site_mode"`
+	ApprovalModeVersion  *int64             `json:"approval_mode_version"`
+	ApprovalSetterUserID pgtype.UUID        `json:"approval_setter_user_id"`
+	ApprovalSetterSetAt  pgtype.Timestamptz `json:"approval_setter_set_at"`
+	ApprovalSessionID    pgtype.UUID        `json:"approval_session_id"`
+	BaseChangeClass      *string            `json:"base_change_class"`
+	ChangeClass          *string            `json:"change_class"`
+	AskReason            *string            `json:"ask_reason"`
+	PolicyCheckedAt      pgtype.Timestamptz `json:"policy_checked_at"`
 }
 
 type AssistantUpdateProposal struct {
@@ -798,6 +822,9 @@ type McpGrant struct {
 	RevokedAt           pgtype.Timestamptz `json:"revoked_at"`
 	ExpiresAt           time.Time          `json:"expires_at"`
 	IdleExpireAfterDays *int32             `json:"idle_expire_after_days"`
+	AiAuto              string             `json:"ai_auto"`
+	AiAutoSetBy         pgtype.UUID        `json:"ai_auto_set_by"`
+	AiAutoSetAt         pgtype.Timestamptz `json:"ai_auto_set_at"`
 }
 
 type McpOauthClient struct {
@@ -954,6 +981,7 @@ type RestRouteCatalogue struct {
 	CreatedAt          time.Time   `json:"created_at"`
 	UpdatedAt          time.Time   `json:"updated_at"`
 	UpdatedByUserID    pgtype.UUID `json:"updated_by_user_id"`
+	ChangeClass        string      `json:"change_class"`
 }
 
 type RestRouteCatalogueAudit struct {
@@ -968,6 +996,8 @@ type RestRouteCatalogueAudit struct {
 	BeforeEnabled     *bool       `json:"before_enabled"`
 	AfterEnabled      bool        `json:"after_enabled"`
 	At                time.Time   `json:"at"`
+	BeforeChangeClass *string     `json:"before_change_class"`
+	AfterChangeClass  *string     `json:"after_change_class"`
 }
 
 type RestoreRun struct {
@@ -1162,6 +1192,13 @@ type Site struct {
 	ContentEditingEnabledAt       pgtype.Timestamptz `json:"content_editing_enabled_at"`
 	ContentEditingPrincipalUserID *int64             `json:"content_editing_principal_user_id"`
 	ContentEditingEnabledBy       pgtype.UUID        `json:"content_editing_enabled_by"`
+	AiMode                        string             `json:"ai_mode"`
+	AiModeSource                  string             `json:"ai_mode_source"`
+	AiModeSetBy                   pgtype.UUID        `json:"ai_mode_set_by"`
+	AiModeSetAt                   pgtype.Timestamptz `json:"ai_mode_set_at"`
+	AiModeVersion                 int64              `json:"ai_mode_version"`
+	AiModeStepUp                  *string            `json:"ai_mode_step_up"`
+	AiModeLaunchEmailedAt         pgtype.Timestamptz `json:"ai_mode_launch_emailed_at"`
 	CreatedAt                     time.Time          `json:"created_at"`
 	UpdatedAt                     time.Time          `json:"updated_at"`
 }

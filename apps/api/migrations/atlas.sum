@@ -1,4 +1,4 @@
-h1:C1sk938e+DT0X1oQeBMtGA7rwfOSwBe8p1IK4oaGkzM=
+h1:rPYEjTIjUvxdCRApgNcSRw95KfTmKlxW3vs2Vk7+j10=
 20260527115454_initial.sql h1:WfgbwGaDre3ilGSUpQWqeGW9gLACxOAIXvyRENhSX6w=
 20260527130000_auth_multitenancy.sql h1:dbQRjlWWYbkuHrqKHqZTPt1Z8Txoo58fe/Mr9HW/Plk=
 20260527172114_m2_site_registry.sql h1:RxL0mxr9jcC85gh8pcYnG0ge3IXy4+sGpLHS8YHMDDw=
@@ -167,3 +167,4 @@ h1:C1sk938e+DT0X1oQeBMtGA7rwfOSwBe8p1IK4oaGkzM=
 20261002010000_m160_ability_read_side_effect_disable.sql h1:T0syUguSe5XUvWZvqcFScpgPBp1MK9RfCVZ8YDDISmc=
 20261002020000_m161_rest_route_catalogue.sql h1:kkcruIQqa3/5DXS8vUj1piNQpLxy5Mwh2H9g6M0DJ+M=
 20261009000000_m162_page_create_layout_copy.sql h1:m7Ikm3wE0M76JUhGroAN7fsbs7IMuzLFLWw0stT3798=
+20261009070000_m174_approval_tiers.sql h1:Yc+0sHtOwaDN7FhsB48RplS+tkL/8Bo117pNy9XozO8=

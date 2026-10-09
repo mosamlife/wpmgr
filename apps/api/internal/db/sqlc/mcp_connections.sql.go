@@ -207,7 +207,7 @@ INSERT INTO mcp_grants (
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
 )
-RETURNING id, tenant_id, name, status, site_scope_mode, scope_tag_ids, scope_site_ids, capabilities, oauth_scopes, client_id, client_name, client_version, protocol_version, client_identity_recorded_at, setup_client, created_by_user_id, created_at, last_used_at, revoked_at, expires_at, idle_expire_after_days
+RETURNING id, tenant_id, name, status, site_scope_mode, scope_tag_ids, scope_site_ids, capabilities, oauth_scopes, client_id, client_name, client_version, protocol_version, client_identity_recorded_at, setup_client, created_by_user_id, created_at, last_used_at, revoked_at, expires_at, idle_expire_after_days, ai_auto, ai_auto_set_by, ai_auto_set_at
 `
 
 type CreateMCPGrantParams struct {
@@ -347,6 +347,9 @@ func (q *Queries) CreateMCPGrant(ctx context.Context, arg CreateMCPGrantParams) 
 		&i.RevokedAt,
 		&i.ExpiresAt,
 		&i.IdleExpireAfterDays,
+		&i.AiAuto,
+		&i.AiAutoSetBy,
+		&i.AiAutoSetAt,
 	)
 	return i, err
 }
@@ -500,7 +503,7 @@ func (q *Queries) GetMCPConnectionTokenByHashForLookup(ctx context.Context, toke
 }
 
 const getMCPGrant = `-- name: GetMCPGrant :one
-SELECT id, tenant_id, name, status, site_scope_mode, scope_tag_ids, scope_site_ids, capabilities, oauth_scopes, client_id, client_name, client_version, protocol_version, client_identity_recorded_at, setup_client, created_by_user_id, created_at, last_used_at, revoked_at, expires_at, idle_expire_after_days FROM mcp_grants
+SELECT id, tenant_id, name, status, site_scope_mode, scope_tag_ids, scope_site_ids, capabilities, oauth_scopes, client_id, client_name, client_version, protocol_version, client_identity_recorded_at, setup_client, created_by_user_id, created_at, last_used_at, revoked_at, expires_at, idle_expire_after_days, ai_auto, ai_auto_set_by, ai_auto_set_at FROM mcp_grants
 WHERE tenant_id = $1 AND id = $2
 `
 
@@ -542,6 +545,9 @@ func (q *Queries) GetMCPGrant(ctx context.Context, arg GetMCPGrantParams) (McpGr
 		&i.RevokedAt,
 		&i.ExpiresAt,
 		&i.IdleExpireAfterDays,
+		&i.AiAuto,
+		&i.AiAutoSetBy,
+		&i.AiAutoSetAt,
 	)
 	return i, err
 }
@@ -629,7 +635,7 @@ func (q *Queries) ListMCPConnectionTokensForGrant(ctx context.Context, arg ListM
 }
 
 const listMCPGrantsForOrg = `-- name: ListMCPGrantsForOrg :many
-SELECT id, tenant_id, name, status, site_scope_mode, scope_tag_ids, scope_site_ids, capabilities, oauth_scopes, client_id, client_name, client_version, protocol_version, client_identity_recorded_at, setup_client, created_by_user_id, created_at, last_used_at, revoked_at, expires_at, idle_expire_after_days FROM mcp_grants
+SELECT id, tenant_id, name, status, site_scope_mode, scope_tag_ids, scope_site_ids, capabilities, oauth_scopes, client_id, client_name, client_version, protocol_version, client_identity_recorded_at, setup_client, created_by_user_id, created_at, last_used_at, revoked_at, expires_at, idle_expire_after_days, ai_auto, ai_auto_set_by, ai_auto_set_at FROM mcp_grants
 WHERE tenant_id = $1
 ORDER BY created_at DESC, id DESC
 `
@@ -678,6 +684,9 @@ func (q *Queries) ListMCPGrantsForOrg(ctx context.Context, tenantID uuid.UUID) (
 			&i.RevokedAt,
 			&i.ExpiresAt,
 			&i.IdleExpireAfterDays,
+			&i.AiAuto,
+			&i.AiAutoSetBy,
+			&i.AiAutoSetAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1000,7 +1009,7 @@ SET client_name                 = $3,
     protocol_version            = $5,
     client_identity_recorded_at = now()
 WHERE tenant_id = $1 AND id = $2
-RETURNING id, tenant_id, name, status, site_scope_mode, scope_tag_ids, scope_site_ids, capabilities, oauth_scopes, client_id, client_name, client_version, protocol_version, client_identity_recorded_at, setup_client, created_by_user_id, created_at, last_used_at, revoked_at, expires_at, idle_expire_after_days
+RETURNING id, tenant_id, name, status, site_scope_mode, scope_tag_ids, scope_site_ids, capabilities, oauth_scopes, client_id, client_name, client_version, protocol_version, client_identity_recorded_at, setup_client, created_by_user_id, created_at, last_used_at, revoked_at, expires_at, idle_expire_after_days, ai_auto, ai_auto_set_by, ai_auto_set_at
 `
 
 type RecordMCPGrantClientIdentityInTenantTxParams struct {
@@ -1052,6 +1061,9 @@ func (q *Queries) RecordMCPGrantClientIdentityInTenantTx(ctx context.Context, ar
 		&i.RevokedAt,
 		&i.ExpiresAt,
 		&i.IdleExpireAfterDays,
+		&i.AiAuto,
+		&i.AiAutoSetBy,
+		&i.AiAutoSetAt,
 	)
 	return i, err
 }
