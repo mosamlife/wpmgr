@@ -195,11 +195,13 @@ func (w *e2World) approve(t *testing.T, id uuid.UUID) {
 	}
 }
 
-// TestPageLayoutM162CopyStampedAndDescribedAsAppRole: on a fresh install the
-// migrations and the boot stamp leave page-create with m162's copy and a hash
-// of its new bytes, and describe hands the AI that copy and every limit.
+// TestPageLayoutM162CopyStampedAndDescribedAsAppRole: on an install that has
+// not run m166, m162 and the boot stamp leave page-create with m162's copy
+// and a hash of its new bytes, and describe hands the AI that copy and every
+// limit.
 func TestPageLayoutM162CopyStampedAndDescribedAsAppRole(t *testing.T) {
 	w := newE2World(t, true)
+	m162Landed(t, w)
 	r := m162Row(t, w)
 	m162AssertCopy(t, r, true)
 	m162AssertStamped(t, r)
@@ -295,6 +297,7 @@ func TestPageLayoutM162MutationKeepsHashBlocksEverySend(t *testing.T) {
 // runs.
 func TestPageLayoutM162RerunIsNoOpAsAppRole(t *testing.T) {
 	w := newE2World(t, true)
+	m162Landed(t, w)
 	before := m162Row(t, w)
 	m162AssertCopy(t, before, true)
 	sum := m162AssertStamped(t, before)
@@ -325,7 +328,7 @@ func TestPageLayoutM162RerunIsNoOpAsAppRole(t *testing.T) {
 // boot.
 func TestPageLayoutM162MutationNoOpBranchStopsBoot(t *testing.T) {
 	w := newE2World(t, true)
-	sum := m162AssertStamped(t, m162Row(t, w))
+	sum := m162Landed(t, w)
 
 	mutated := stripOnce(t, m162Body(t), m162NeedleNoOp)
 	if code := m162Apply(t, w, mutated); code != "55000" {

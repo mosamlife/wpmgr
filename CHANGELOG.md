@@ -6,6 +6,11 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ## [Unreleased]
 
+### Added
+
+- An AI connected through WPMgr can now create a draft page or post in Elementor from an outline, with your approval for each request in WPMgr. The outline can use headings, paragraphs, lists, quotes, tables, separators, buttons, spacing, sections and columns, and images that are already in the site's media library. The draft is built from Elementor's own classic widgets, in containers or in sections and columns, whichever the site's Elementor is set up for. Nothing is published, and undo moves the draft to the trash while nobody has edited it (#844). Agent 0.61.161.
+- A page built in Elementor this way needs Elementor 3.20 to 4.3. A request for Elementor's Atomic editor is refused, and so are a button in the outline style and an image whose alt text differs from the one saved in the media library. After Elementor saves the page, WPMgr checks that it holds exactly the approved layout and that nothing outside the page changed, and moves the draft to the trash if not. The approval card shows the Elementor version and layout, and links to open the finished draft in Elementor or preview it (#844). Agent 0.61.161.
+
 ## [0.61.183] - 2026-10-09
 
 ### Added

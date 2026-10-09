@@ -93,7 +93,7 @@ final class Connector
      * @param string $jwt       Compact token: base64url(header).base64url(payload).base64url(sig).
      * @param int|null $now     Override "current time" (testing); defaults to time().
      * @return array<string,mixed> The validated claim set on success.
-     * @throws \RuntimeException With a generic message on ANY failure.
+     * @throws TokenRejected On ANY failure; failure() names the check that refused the token.
      */
     public function verify(string $jwt, ?int $now = null): array
     {
@@ -101,7 +101,7 @@ final class Connector
 
         $parts = explode('.', $jwt);
         if (count($parts) !== 3) {
-            throw new \RuntimeException('WPMgr Agent: malformed token.');
+            throw new TokenRejected(TokenFailure::MalformedJwt, 'WPMgr Agent: malformed token.'); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- an enum case and a fixed message; every caller logs or discards it, none prints it
         }
 
         [$encodedHeader, $encodedPayload, $encodedSig] = $parts;
@@ -110,44 +110,51 @@ final class Connector
         $signature    = self::base64UrlDecode($encodedSig);
 
         // ---- 1. Verify signature FIRST, before trusting anything else. ----
-        $publicKey = $this->keystore->getControlPlanePublicKey();
+        try {
+            $publicKey = $this->keystore->getControlPlanePublicKey();
+        } catch (\RuntimeException $e) {
+            // A key is stored but cannot be decrypted: the envelope is damaged,
+            // or the master key it was stored under is gone or has changed.
+            // The keystore's reason travels as the previous exception.
+            throw new TokenRejected(TokenFailure::KeyUnreadable, 'WPMgr Agent: control-plane key unreadable.', $e); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- an enum case and a fixed message; every caller logs or discards it, none prints it
+        }
         if ($publicKey === null || strlen($publicKey) !== SODIUM_CRYPTO_SIGN_PUBLICKEYBYTES) {
-            throw new \RuntimeException('WPMgr Agent: control-plane key not provisioned.');
+            throw new TokenRejected(TokenFailure::KeyNotProvisioned, 'WPMgr Agent: control-plane key not provisioned.'); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- an enum case and a fixed message; every caller logs or discards it, none prints it
         }
 
         if ($signature === '' || strlen($signature) !== SODIUM_CRYPTO_SIGN_BYTES) {
-            throw new \RuntimeException('WPMgr Agent: invalid signature.');
+            throw new TokenRejected(TokenFailure::SigFailed, 'WPMgr Agent: invalid signature.'); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- an enum case and a fixed message; every caller logs or discards it, none prints it
         }
 
         $valid = sodium_crypto_sign_verify_detached($signature, $signingInput, $publicKey);
         if ($valid !== true) {
-            throw new \RuntimeException('WPMgr Agent: signature verification failed.');
+            throw new TokenRejected(TokenFailure::SigFailed, 'WPMgr Agent: signature verification failed.'); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- an enum case and a fixed message; every caller logs or discards it, none prints it
         }
 
         // ---- 2. Now it is safe to parse the header and payload. ----
         $header = self::decodeJson(self::base64UrlDecode($encodedHeader));
         if (!isset($header['alg']) || !is_string($header['alg']) || !hash_equals('EdDSA', $header['alg'])) {
-            throw new \RuntimeException('WPMgr Agent: unexpected algorithm.');
+            throw new TokenRejected(TokenFailure::MalformedJwt, 'WPMgr Agent: unexpected algorithm.'); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- an enum case and a fixed message; every caller logs or discards it, none prints it
         }
 
         $claims = self::decodeJson(self::base64UrlDecode($encodedPayload));
 
         // ---- 3. Temporal validation. ----
         if (!isset($claims['exp']) || !is_numeric($claims['exp'])) {
-            throw new \RuntimeException('WPMgr Agent: missing exp.');
+            throw new TokenRejected(TokenFailure::MissingExp, 'WPMgr Agent: missing exp.'); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- an enum case and a fixed message; every caller logs or discards it, none prints it
         }
         $exp = (int) $claims['exp'];
 
         if ($exp <= $now) {
-            throw new \RuntimeException('WPMgr Agent: token expired.');
+            throw new TokenRejected(TokenFailure::TokenExpired, 'WPMgr Agent: token expired.'); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- an enum case and a fixed message; every caller logs or discards it, none prints it
         }
         if ($exp > $now + self::MAX_FUTURE_EXP) {
-            throw new \RuntimeException('WPMgr Agent: exp too far in the future.');
+            throw new TokenRejected(TokenFailure::TokenSkew, 'WPMgr Agent: exp too far in the future.'); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- an enum case and a fixed message; every caller logs or discards it, none prints it
         }
 
         // ---- 4. Anti-replay via unique jti. ----
         if (!isset($claims['jti']) || !is_string($claims['jti']) || $claims['jti'] === '') {
-            throw new \RuntimeException('WPMgr Agent: missing jti.');
+            throw new TokenRejected(TokenFailure::MissingJti, 'WPMgr Agent: missing jti.'); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- an enum case and a fixed message; every caller logs or discards it, none prints it
         }
         $jti = $claims['jti'];
 
@@ -164,7 +171,7 @@ final class Connector
         }
 
         if ($this->isJtiSeen($jti, $now)) {
-            throw new \RuntimeException('WPMgr Agent: token replay detected.');
+            throw new TokenRejected(TokenFailure::TokenReplay, 'WPMgr Agent: token replay detected.'); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- an enum case and a fixed message; every caller logs or discards it, none prints it
         }
 
         $this->recordJti($jti, $exp, $now);
@@ -294,7 +301,7 @@ final class Connector
      * @param string   $expectedCmd Command name from the route (e.g. "update").
      * @param int|null $now         Override "current time" (testing).
      * @return array<string,mixed> The validated claim set on success.
-     * @throws \RuntimeException With a generic message on ANY failure.
+     * @throws TokenRejected On ANY failure; failure() names the check that refused the token.
      */
     public function verifyCommand(string $jwt, string $expectedCmd, ?int $now = null): array
     {
@@ -303,24 +310,24 @@ final class Connector
         // ---- 5. Tenant binding: aud must equal this site's enrolled UUID. ----
         $siteId = $this->settings->siteId();
         if ($siteId === '') {
-            throw new \RuntimeException('WPMgr Agent: site not enrolled.');
+            throw new TokenRejected(TokenFailure::SiteNotEnrolled, 'WPMgr Agent: site not enrolled.'); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- an enum case and a fixed message; every caller logs or discards it, none prints it
         }
         if (!isset($claims['aud']) || !is_string($claims['aud']) || $claims['aud'] === '') {
-            throw new \RuntimeException('WPMgr Agent: missing aud.');
+            throw new TokenRejected(TokenFailure::MissingAud, 'WPMgr Agent: missing aud.'); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- an enum case and a fixed message; every caller logs or discards it, none prints it
         }
         if (!hash_equals($siteId, $claims['aud'])) {
-            throw new \RuntimeException('WPMgr Agent: aud mismatch.');
+            throw new TokenRejected(TokenFailure::AudMismatch, 'WPMgr Agent: aud mismatch.'); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- an enum case and a fixed message; every caller logs or discards it, none prints it
         }
 
         // ---- 6. Command binding: cmd must equal the invoked command. ----
         if ($expectedCmd === '') {
-            throw new \RuntimeException('WPMgr Agent: missing expected command.');
+            throw new TokenRejected(TokenFailure::MissingCommand, 'WPMgr Agent: missing expected command.'); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- an enum case and a fixed message; every caller logs or discards it, none prints it
         }
         if (!isset($claims['cmd']) || !is_string($claims['cmd']) || $claims['cmd'] === '') {
-            throw new \RuntimeException('WPMgr Agent: missing cmd.');
+            throw new TokenRejected(TokenFailure::MissingCmd, 'WPMgr Agent: missing cmd.'); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- an enum case and a fixed message; every caller logs or discards it, none prints it
         }
         if (!hash_equals($expectedCmd, $claims['cmd'])) {
-            throw new \RuntimeException('WPMgr Agent: cmd mismatch.');
+            throw new TokenRejected(TokenFailure::CmdMismatch, 'WPMgr Agent: cmd mismatch.'); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- an enum case and a fixed message; every caller logs or discards it, none prints it
         }
 
         return $claims;
@@ -472,13 +479,13 @@ final class Connector
      *
      * @param string $json JSON bytes.
      * @return array<string,mixed>
-     * @throws \RuntimeException On invalid JSON or non-object payload.
+     * @throws TokenRejected On invalid JSON or non-object payload.
      */
     private static function decodeJson(string $json): array
     {
         $data = json_decode($json, true);
         if (!is_array($data)) {
-            throw new \RuntimeException('WPMgr Agent: invalid token segment.');
+            throw new TokenRejected(TokenFailure::MalformedJwt, 'WPMgr Agent: invalid token segment.'); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- an enum case and a fixed message; every caller logs or discards it, none prints it
         }
 
         /** @var array<string,mixed> $data */

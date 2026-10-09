@@ -20566,6 +20566,35 @@ components:
             the outline has no image, and for every other ability. A card whose
             outline names an image with no entry here cannot be shown in full
             and must not be approvable.
+        page_builder:
+          allOf:
+            - $ref: "#/components/schemas/AbilityRequestPageBuilder"
+          nullable: true
+          description: |
+            The page builder that builds a wpmgr/page-create request's page, as
+            the site's precheck named it. Null for a page in a WordPress
+            editor, and for every other ability. A card for a request whose
+            editor is a page builder cannot be shown in full without it and
+            must not be approvable.
+    AbilityRequestPageBuilder:
+      type: object
+      description: |
+        The page builder of a wpmgr/page-create request. `version` came from
+        the site: render it as plain text.
+      required: [builder, format, version, layout]
+      properties:
+        builder:
+          type: string
+          description: The page builder, such as `elementor`.
+        format:
+          type: string
+          description: What the builder builds the page from, such as `classic` (Elementor's classic widgets).
+        version:
+          type: string
+          description: The builder's version on the site.
+        layout:
+          type: string
+          description: How the page is laid out, such as `containers` or `sections` (Elementor's two classic layouts).
     AbilityRequestPageMedia:
       type: object
       description: |
