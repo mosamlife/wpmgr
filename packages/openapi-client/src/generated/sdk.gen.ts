@@ -6965,8 +6965,10 @@ export const enableSiteContentEditing = <ThrowOnError extends boolean = false>(
  * installed builder group fails (`fix_count` counts them), otherwise
  * `incomplete` when any row is unknown, otherwise `ready`. The one
  * exception is `bricks_abilities`: it is inferred from the site's tool
- * list and has not been confirmed on a licensed Bricks install, so it
- * is listed with its state and never counted, whatever that state is.
+ * list and has not been confirmed on a licensed Bricks install, so when
+ * it is `pass` or `fail` it is listed with its state and never counted.
+ * When it is `unknown` (the tool list was never read, or was cut short)
+ * it is an ordinary unknown and makes the site `incomplete`.
  * A builder that is not installed contributes nothing, and neither
  * does one that is installed but not active: that is a choice, not a
  * fix, so its version row is `not_applicable` with reason `inactive`.

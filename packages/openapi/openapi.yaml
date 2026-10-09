@@ -9748,8 +9748,10 @@ paths:
         installed builder group fails (`fix_count` counts them), otherwise
         `incomplete` when any row is unknown, otherwise `ready`. The one
         exception is `bricks_abilities`: it is inferred from the site's tool
-        list and has not been confirmed on a licensed Bricks install, so it
-        is listed with its state and never counted, whatever that state is.
+        list and has not been confirmed on a licensed Bricks install, so when
+        it is `pass` or `fail` it is listed with its state and never counted.
+        When it is `unknown` (the tool list was never read, or was cut short)
+        it is an ordinary unknown and makes the site `incomplete`.
         A builder that is not installed contributes nothing, and neither
         does one that is installed but not active: that is a choice, not a
         fix, so its version row is `not_applicable` with reason `inactive`.
@@ -20612,7 +20614,9 @@ components:
           minimum: 0
           description: |
             Number of rows with state `fail` in `base` and in installed
-            builder groups, not counting `bricks_abilities`.
+            builder groups. A `bricks_abilities` row is never one of them: as
+            a `fail` it is unconfirmed, and as an `unknown` it is not a
+            failure (see `status`).
         metadata_as_of:
           type: [string, "null"]
           format: date-time
@@ -20730,8 +20734,11 @@ components:
           `needs_elementor`.
 
         `bricks_abilities` is inferred from the site's tool list and has not
-        been confirmed on a licensed Bricks install. It is listed with its
-        state, but it is not counted in `status`, `fix_count` or `failing`.
+        been confirmed on a licensed Bricks install. When it is `pass` or
+        `fail` it is listed with its state, but it is not counted in
+        `status`, `fix_count` or `failing`. When it is `unknown` it is an
+        ordinary unknown: it makes `status` `incomplete`, and it is still not
+        a fix, so it is not in `failing` either.
 
         A client must render a state or reason it does not recognise as a
         neutral "not checked", never as a failure.
@@ -20782,7 +20789,9 @@ components:
           type: array
           description: |
             Ids of the rows that count toward `fix_count`: those whose state
-            is `fail`, not counting `bricks_abilities`.
+            is `fail`. `bricks_abilities` is never listed, whatever its state;
+            when it is `unknown` it makes the site `incomplete`, and it is
+            still not a fix.
           items:
             $ref: "#/components/schemas/AIReadinessCheckID"
         warnings:

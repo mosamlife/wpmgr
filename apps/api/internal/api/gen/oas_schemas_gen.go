@@ -41,8 +41,9 @@ import (
 //     not_applicable `needs_elementor`.
 //
 // `bricks_abilities` is inferred from the site's tool list and has not been confirmed on a licensed
-// Bricks install. It is listed with its state, but it is not counted in `status`, `fix_count` or
-// `failing`.
+// Bricks install. When it is `pass` or `fail` it is listed with its state, but it is not counted in
+// `status`, `fix_count` or `failing`. When it is `unknown` it is an ordinary unknown: it makes
+// `status` `incomplete`, and it is still not a fix, so it is not in `failing` either.
 //
 // A client must render a state or reason it does not recognise as a neutral "not checked", never as a
 // failure.
@@ -24962,8 +24963,9 @@ type FleetAIReadinessSite struct {
 	SiteID   uuid.UUID         `json:"site_id"`
 	Status   AIReadinessStatus `json:"status"`
 	FixCount int32             `json:"fix_count"`
-	// Ids of the rows that count toward `fix_count`: those whose state is `fail`, not counting
-	// `bricks_abilities`.
+	// Ids of the rows that count toward `fix_count`: those whose state is `fail`. `bricks_abilities` is
+	// never listed, whatever its state; when it is `unknown` it makes the site `incomplete`, and it is
+	// still not a fix.
 	Failing  []AIReadinessCheckID     `json:"failing"`
 	Warnings []AIReadinessWarningCode `json:"warnings"`
 }
@@ -54637,8 +54639,9 @@ func (*Site) setSiteTagsRes()   {}
 type SiteAIReadiness struct {
 	SiteID uuid.UUID         `json:"site_id"`
 	Status AIReadinessStatus `json:"status"`
-	// Number of rows with state `fail` in `base` and in installed builder groups, not counting
-	// `bricks_abilities`.
+	// Number of rows with state `fail` in `base` and in installed builder groups. A `bricks_abilities` row
+	// is never one of them: as a `fail` it is unconfirmed, and as an `unknown` it is not a failure (see
+	// `status`).
 	FixCount int32 `json:"fix_count"`
 	// When the site last reported its plugin and theme details. Null when it never has.
 	MetadataAsOf NilDateTime `json:"metadata_as_of"`
