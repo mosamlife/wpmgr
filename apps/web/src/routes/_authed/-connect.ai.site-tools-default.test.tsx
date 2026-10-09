@@ -93,19 +93,28 @@ const SEARCH =
   "&redirect_uri=https%3A%2F%2Fx.example%2Fcb" +
   "&scope=mcp%3Aread%20mcp%3Asite&state=s1&code_challenge=cc&code_challenge_method=S256";
 
+/** The address a fetch call was made to, whichever form it was handed in. */
+function urlOf(input: RequestInfo | URL): string {
+  if (typeof input === "string") return input;
+  if (input instanceof URL) return input.href;
+  return input.url;
+}
+
 let authorizeAnswers: (() => Promise<Response>)[];
-const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-  const url = typeof input === "string" ? input : input.toString();
-  if (url.startsWith(CONSENT_AUTHORIZE_PATH)) {
-    const next = authorizeAnswers.shift();
-    // Loud, never a silent default: an authorize request this test did not plan
-    // for is a test bug, not a response to invent.
-    if (next === undefined) throw new Error(`unplanned authorize request: ${url}`);
-    return next();
-  }
-  if (url === CONSENT_APPROVE_PATH) return jsonResponse(APPROVED);
-  throw new Error(`unplanned request: ${url}`);
-});
+const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
+  (input) => {
+    const url = urlOf(input);
+    if (url.startsWith(CONSENT_AUTHORIZE_PATH)) {
+      const next = authorizeAnswers.shift();
+      // Loud, never a silent default: an authorize request this test did not plan
+      // for is a test bug, not a response to invent.
+      if (next === undefined) return Promise.reject(new Error(`unplanned authorize request: ${url}`));
+      return next();
+    }
+    if (url === CONSENT_APPROVE_PATH) return Promise.resolve(jsonResponse(APPROVED));
+    return Promise.reject(new Error(`unplanned request: ${url}`));
+  },
+);
 
 /** An authorize answer that arrives only when `release` is called. */
 function lateAnswer(body: unknown) {
@@ -145,17 +154,18 @@ const requestBox = () => screen.getByTestId<HTMLInputElement>("ability-box-mcp.a
 
 function authorizeRequests(): string[] {
   return fetchMock.mock.calls
-    .map(([input]) => (typeof input === "string" ? input : input.toString()))
+    .map(([input]) => urlOf(input))
     .filter((url) => url.startsWith(CONSENT_AUTHORIZE_PATH));
 }
 
 /** The JSON body of the one approval POST, read from the request itself. */
 async function approvalBody(): Promise<{ capabilities?: string[]; consent_ticket?: string }> {
   await waitFor(() => expect(navigateTo).toHaveBeenCalledTimes(1));
-  const posts = fetchMock.mock.calls.filter(([input]) => String(input) === CONSENT_APPROVE_PATH);
+  const posts = fetchMock.mock.calls.filter(([input]) => urlOf(input) === CONSENT_APPROVE_PATH);
   expect(posts).toHaveLength(1);
-  const init = (posts[0] as unknown as [unknown, RequestInit])[1];
-  return JSON.parse(String(init.body)) as { capabilities?: string[]; consent_ticket?: string };
+  const raw = posts[0]![1]?.body;
+  if (typeof raw !== "string") throw new Error("the approval body was not a JSON string");
+  return JSON.parse(raw) as { capabilities?: string[]; consent_ticket?: string };
 }
 
 function submitApproval() {
@@ -191,9 +201,7 @@ describe("/connect/ai, site tools asked for", () => {
     expect(authorizeRequests()).toHaveLength(1);
 
     // It arrives, and the boxes are ticked.
-    await act(async () => {
-      late.release();
-    });
+    late.release();
     await screen.findByTestId("consent-site-capability");
     expect(readBox().checked).toBe(true);
     expect(requestBox().checked).toBe(true);
@@ -213,9 +221,7 @@ describe("/connect/ai, site tools asked for", () => {
     authorizeAnswers = [late.answer];
     mount();
     await screen.findByRole("status", { name: "Loading the connection request" });
-    await act(async () => {
-      late.release();
-    });
+    late.release();
     await screen.findByTestId("consent-site-capability");
     expect(readBox().checked).toBe(true);
     expect(requestBox().checked).toBe(true);
@@ -242,14 +248,12 @@ describe("/connect/ai, site tools asked for", () => {
     const late = lateAnswer(wire("ticket-1"));
     authorizeAnswers = [
       late.answer,
-      async () => jsonResponse(wire("ticket-2", { grant_lifetime_days: 30 })),
+      () => Promise.resolve(jsonResponse(wire("ticket-2", { grant_lifetime_days: 30 }))),
     ];
     const { queryClient } = mount();
 
     await screen.findByRole("status", { name: "Loading the connection request" });
-    await act(async () => {
-      late.release();
-    });
+    late.release();
     await screen.findByTestId("consent-site-capability");
     expect(screen.getByTestId("consent-duration-expiry")).toHaveTextContent("90 days");
     expect(readBox().checked).toBe(true);
@@ -291,9 +295,7 @@ describe("/connect/ai, site tools not asked for", () => {
     authorizeAnswers = [late.answer];
     mount();
     await screen.findByRole("status", { name: "Loading the connection request" });
-    await act(async () => {
-      late.release();
-    });
+    late.release();
     await screen.findByTestId("consent-approve");
     expect(screen.queryByTestId("consent-site-capability")).toBeNull();
     expect(screen.queryByTestId("ability-capability-box")).toBeNull();

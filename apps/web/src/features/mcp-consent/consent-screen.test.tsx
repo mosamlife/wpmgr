@@ -814,9 +814,9 @@ describe("ConsentScreen, the mcp:site site-tools section", () => {
     renderWithProviders(<ConsentScreen {...props({ consent, onApprove })} />, {
       withRouter: true,
     });
-    const cache = within(await screen.findByTestId("consent-cache-capability")).getByRole(
-      "checkbox",
-    ) as HTMLInputElement;
+    const cache = within(await screen.findByTestId("consent-cache-capability")).getByRole<
+      HTMLInputElement
+    >("checkbox");
     expect(cache.checked).toBe(false);
     expect(readBox().checked).toBe(true);
     expect(requestBox().checked).toBe(true);
