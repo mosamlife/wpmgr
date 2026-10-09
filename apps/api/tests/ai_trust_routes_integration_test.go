@@ -18,6 +18,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -163,6 +164,66 @@ type aitrAuto struct {
 	AutoSetterValid bool       `json:"auto_setter_valid"`
 }
 
+// modeChanges names every field of the site's mode that differs between two
+// reads: the mode, its source, its version, its setter and whether that
+// setter still holds the authority. An empty result means nothing changed.
+//
+// Each read decodes its own SetByUserID pointer, so the setter is compared by
+// the id it points to. Comparing the structs with == compares the two
+// addresses and reports a change whenever a setter is recorded.
+func modeChanges(before, after aitrMode) []string {
+	var d []string
+	if before.Mode != after.Mode {
+		d = append(d, fmt.Sprintf("mode %q -> %q", before.Mode, after.Mode))
+	}
+	if before.Source != after.Source {
+		d = append(d, fmt.Sprintf("source %q -> %q", before.Source, after.Source))
+	}
+	if before.Version != after.Version {
+		d = append(d, fmt.Sprintf("version %d -> %d", before.Version, after.Version))
+	}
+	if !sameUserID(before.SetByUserID, after.SetByUserID) {
+		d = append(d, fmt.Sprintf("set_by_user_id %s -> %s", userIDText(before.SetByUserID), userIDText(after.SetByUserID)))
+	}
+	if before.SetterValid != after.SetterValid {
+		d = append(d, fmt.Sprintf("setter_valid %t -> %t", before.SetterValid, after.SetterValid))
+	}
+	return d
+}
+
+// autoChanges is modeChanges for a connection's switch: the switch, its
+// setter (compared by id) and whether that setter still holds the authority.
+func autoChanges(before, after aitrAuto) []string {
+	var d []string
+	if before.AIAuto != after.AIAuto {
+		d = append(d, fmt.Sprintf("ai_auto %q -> %q", before.AIAuto, after.AIAuto))
+	}
+	if !sameUserID(before.AutoSetByUserID, after.AutoSetByUserID) {
+		d = append(d, fmt.Sprintf("auto_set_by_user_id %s -> %s",
+			userIDText(before.AutoSetByUserID), userIDText(after.AutoSetByUserID)))
+	}
+	if before.AutoSetterValid != after.AutoSetterValid {
+		d = append(d, fmt.Sprintf("auto_setter_valid %t -> %t", before.AutoSetterValid, after.AutoSetterValid))
+	}
+	return d
+}
+
+// sameUserID compares two decoded ids by value: both absent, or both present
+// and equal.
+func sameUserID(a, b *uuid.UUID) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
+}
+
+func userIDText(id *uuid.UUID) string {
+	if id == nil {
+		return "null"
+	}
+	return id.String()
+}
+
 func (s *aitrStack) readMode(t *testing.T, w aitrWorld) aitrMode {
 	t.Helper()
 	r := s.do(w.person, "", http.MethodGet, "/api/v1/sites/"+w.siteID.String()+"/ai/mode", "")
@@ -228,8 +289,9 @@ func TestLoosenRoutesRefuseApiKey(t *testing.T) {
 		if r.status != http.StatusForbidden || r.code != aitrust.CodeSessionRequired {
 			t.Fatalf("raising by key: got %d %q %s", r.status, r.code, r.body)
 		}
-		if after := s.readMode(t, w); after != before {
-			t.Fatalf("a refused raise changed the setting: %+v -> %+v", before, after)
+		if after := s.readMode(t, w); len(modeChanges(before, after)) > 0 {
+			t.Fatalf("a refused raise changed the setting: %s (before %+v, after %+v)",
+				strings.Join(modeChanges(before, after), ", "), before, after)
 		}
 	})
 	t.Run("a person raises the site and is recorded as its setter", func(t *testing.T) {
@@ -284,7 +346,8 @@ func TestLoosenRoutesRefuseApiKey(t *testing.T) {
 
 // TestLoosenRoutesRefuseMcpToken: an MCP bearer token is not a credential
 // for the settings routes. Every loosening route answers 401 and nothing
-// changes.
+// changes. A wrong answer does not stop the test, so a route that accepts the
+// token also reports what it changed.
 //
 // Mutation: none in this package can make it pass by accident; the token is
 // a live connection's token, so a router that accepted MCP tokens on /api/v1
@@ -301,14 +364,16 @@ func TestLoosenRoutesRefuseMcpToken(t *testing.T) {
 	} {
 		r := s.do(ctx, w.mcpToken, http.MethodPut, c.path, c.body)
 		if r.status != http.StatusUnauthorized {
-			t.Fatalf("an MCP token on a loosening route: got %d %q %s", r.status, r.code, r.body)
+			t.Errorf("an MCP token on a loosening route %s: got %d %q %s", c.path, r.status, r.code, r.body)
 		}
 	}
-	if after := s.readMode(t, w); after != before {
-		t.Fatalf("the mode changed: %+v -> %+v", before, after)
+	if after := s.readMode(t, w); len(modeChanges(before, after)) > 0 {
+		t.Errorf("the mode changed: %s (before %+v, after %+v)",
+			strings.Join(modeChanges(before, after), ", "), before, after)
 	}
-	if after := s.readAuto(t, w); after != beforeAuto {
-		t.Fatalf("the switch changed: %+v -> %+v", beforeAuto, after)
+	if after := s.readAuto(t, w); len(autoChanges(beforeAuto, after)) > 0 {
+		t.Errorf("the switch changed: %s (before %+v, after %+v)",
+			strings.Join(autoChanges(beforeAuto, after), ", "), beforeAuto, after)
 	}
 }
 
@@ -325,16 +390,18 @@ func TestGeneralModeRouteRefusesFull(t *testing.T) {
 	if r.status != http.StatusUnprocessableEntity || r.code != aitrust.CodeUseFullAutoRoute {
 		t.Fatalf("full on the general route: got %d %q %s", r.status, r.code, r.body)
 	}
-	if after := s.readMode(t, w); after != before {
-		t.Fatalf("the mode changed: %+v -> %+v", before, after)
+	if after := s.readMode(t, w); len(modeChanges(before, after)) > 0 {
+		t.Fatalf("the mode changed: %s (before %+v, after %+v)",
+			strings.Join(modeChanges(before, after), ", "), before, after)
 	}
 	// The compare-and-set: a write against a version that moved is refused.
 	r = s.do(w.person, "", http.MethodPut, "/api/v1/sites/"+w.siteID.String()+"/ai/mode", modeBody("ask", before.Version+7))
 	if r.status != http.StatusConflict || r.code != aitrust.CodeStaleVersion {
 		t.Fatalf("a stale version: got %d %q %s", r.status, r.code, r.body)
 	}
-	if after := s.readMode(t, w); after != before {
-		t.Fatalf("a stale write changed the mode: %+v -> %+v", before, after)
+	if after := s.readMode(t, w); len(modeChanges(before, after)) > 0 {
+		t.Fatalf("a stale write changed the mode: %s (before %+v, after %+v)",
+			strings.Join(modeChanges(before, after), ", "), before, after)
 	}
 }
 
@@ -393,9 +460,10 @@ func TestModeLowerSerialisesWithReserve(t *testing.T) {
 				t.Fatalf("the lowering committed while the lock was held: %d %s", r.status, r.body)
 			case <-time.After(1500 * time.Millisecond):
 			}
-			if m := s.readMode(t, w); m != before {
+			if m := s.readMode(t, w); len(modeChanges(before, m)) > 0 {
 				close(release)
-				t.Fatalf("the mode moved while the lock was held: %+v -> %+v", before, m)
+				t.Fatalf("the mode moved while the lock was held: %s (before %+v, after %+v)",
+					strings.Join(modeChanges(before, m), ", "), before, m)
 			}
 			close(release)
 			if err := <-holderDone; err != nil {
