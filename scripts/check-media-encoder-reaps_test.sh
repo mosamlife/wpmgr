@@ -137,7 +137,7 @@ case "$1" in
     if [ -r "$D/entrypoint" ]; then cat "$D/entrypoint"; else echo "fake: no entrypoint fixture" >&2; exit 1; fi
     ;;
   run)
-    echo "run $*" >> "$D/calls"
+    echo "$*" >> "$D/calls"
     if [ -e "$D/run_fail" ]; then echo "fake: run failed" >&2; exit 125; fi
     name=""
     prev=""
@@ -148,11 +148,11 @@ case "$1" in
     echo "$name"
     ;;
   stop)
-    echo "stop $*" >> "$D/calls"
+    echo "$*" >> "$D/calls"
     if [ -e "$D/stop_fail" ]; then echo "fake: stop failed" >&2; exit 1; fi
     ;;
   rm)
-    echo "rm $*" >> "$D/calls"
+    echo "$*" >> "$D/calls"
     ;;
   *)
     echo "fake: unexpected command $*" >&2
