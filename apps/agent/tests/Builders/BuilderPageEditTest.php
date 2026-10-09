@@ -441,6 +441,40 @@ final class BuilderPageEditTest extends TestCase
         $this->assertSame('failed', AbilityLedger::get(self::EDIT)['phase'] ?? null);
     }
 
+    public function test_page_saved_after_the_snapshot_is_conflict(): void
+    {
+        $input = $this->input(self::ops());
+        $plan  = $this->plan($input);
+        $this->assertArrayNotHasKey('refusal', $plan, (string) json_encode($plan['refusal'] ?? null));
+        $this->api->storingDocument(self::TARGET, $this->rows);
+
+        // Another client's Elementor save lands just after the copy is taken.
+        $theirs = self::page();
+        $theirs[0]['elements'][0]['elements'][0]['settings']['title'] = 'Saved by a person';
+        $landed = false;
+        Functions\when('update_option')->alias(function ($name, $value) use ($theirs, &$landed) {
+            $this->options[$name] = $value;
+            if (!$landed && $name === 'wpmgr_ability_ledger_' . self::EDIT && is_array($value) && ($value['phase'] ?? null) === 'snapshot_taken') {
+                $landed = true;
+                $this->rows->delete($this->rows->postmeta, ['post_id' => self::TARGET, 'meta_key' => ElementorDocument::KEY_DATA]);
+                $this->rows->insert($this->rows->postmeta, ['post_id' => self::TARGET, 'meta_key' => ElementorDocument::KEY_DATA, 'meta_value' => (string) json_encode($theirs)]);
+            }
+
+            return true;
+        });
+        $r = $this->write($input, $this->digest($input)($plan['base_fingerprint'], $plan['preview_digest']), $plan['preview_digest']);
+
+        $this->assertTrue($landed, 'the other save landed after the snapshot');
+        $this->assertSame(['conflict', 'changed_since_read', false], [$r['code'] ?? null, $r['detail'] ?? null, $r['ok'] ?? null], (string) json_encode($r));
+        $this->assertSame([], $this->api->documents[self::TARGET]->saves, 'Elementor was never asked to save');
+        $this->assertSame([(string) json_encode($theirs)], $this->rowsOf(ElementorDocument::KEY_DATA), 'the other client\'s save stands');
+        $row = AbilityLedger::get(self::EDIT);
+        $this->assertSame('failed', $row['phase'] ?? null);
+        $this->assertArrayNotHasKey('restored', $row, 'nothing was put back over the other save');
+        $this->assertSame($r, $row['result']);
+        $this->assertSame([], $this->wpdb->claims, 'the target claim is released');
+    }
+
     public function test_tables_without_transactions_refuse_before_any_write(): void
     {
         $input = $this->input(self::ops());
