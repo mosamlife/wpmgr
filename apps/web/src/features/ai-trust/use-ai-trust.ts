@@ -190,6 +190,14 @@ export function usePutAiConnectionAuto(
       if (!data) throw new AiTrustError("empty_response", "Empty response", status);
       return data;
     },
+    // The answer carries the whole switch (who allowed it and whether that
+    // still holds), so it is merged into the cached usage at once: the radios
+    // and the setter line follow the server without waiting for the re-read.
+    onSuccess: (saved) => {
+      qc.setQueryData<AiConnectionUsage>(aiTrustKeys.usage(grantId), (old) =>
+        old ? { ...old, ...saved } : old,
+      );
+    },
     onSettled: () => {
       void qc.invalidateQueries({ queryKey: aiTrustKeys.usage(grantId) });
     },

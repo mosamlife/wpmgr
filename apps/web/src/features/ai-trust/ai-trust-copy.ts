@@ -1,5 +1,6 @@
 import type {
   AbilityRequestApproval,
+  AiAuto,
   AiMode,
   AiModeOption,
   AiModeSource,
@@ -252,3 +253,35 @@ export const ACTIVITY_FILTERED_EMPTY = "Nothing matches these filters.";
 
 /** The Requests page's subline: only what waits for a person is decided there. */
 export const REQUESTS_SUBLINE = "Each request that waits for you is decided on its own. There is no approve-all.";
+
+// --- A connection's automatic changes (design §8.7) -------------------------
+
+export const AUTO_QUESTION = "May this connection run changes automatically?";
+export const AUTO_CHOICE_NAME: Readonly<Record<AiAuto, string>> = {
+  site_setting: "Where each site allows it",
+  never: "Never (always ask)",
+};
+export const AUTO_LIMITS_LINE =
+  "Above a limit, changes wait for you instead of running. WPMgr sets these limits.";
+export const AUTO_KEY_MINTED_LINE = "Created with an API key. A person must allow automatic changes.";
+export const AUTO_SETTER_INVALID_LINE =
+  "The person who allowed this can no longer manage AI connections, so every change from this connection waits for you. Save to allow it again.";
+export const AUTO_SAVE_FAILED_LINE = "WPMgr could not save this. The connection is unchanged.";
+export const AUTO_REVOKED_LINE = "This connection is revoked.";
+
+function plural(n: number, one: string, many: string): string {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
+/** "This hour: 14 draft changes (limit 600) on 2 sites (limit 30)." All four numbers from the server. */
+export function draftUsageLine(u: {
+  readonly window_minutes: number;
+  readonly draft_changes: { readonly used: number; readonly limit: number };
+  readonly draft_sites: { readonly used: number; readonly limit: number };
+}): string {
+  const when = u.window_minutes === 60 ? "This hour" : `In the last ${u.window_minutes} minutes`;
+  return (
+    `${when}: ${plural(u.draft_changes.used, "draft change", "draft changes")} (limit ${u.draft_changes.limit}) ` +
+    `on ${plural(u.draft_sites.used, "site", "sites")} (limit ${u.draft_sites.limit}).`
+  );
+}
