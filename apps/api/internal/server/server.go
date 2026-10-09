@@ -396,11 +396,14 @@ func New(deps Deps) *Server {
 	// IT MUST STAY HERE: on the root engine, after the logging and recovery
 	// block so the redirect is logged and traced, and BEFORE sessionAuthGroup
 	// is created. Gin copies a parent's handlers into a group when the group
-	// is created, so this line moved below sessionAuthGroup (or onto v1) is
-	// silently disabled for a signed-out browser, which RequireAuth refuses
-	// first. It also runs before the session is loaded, so the redirect costs
-	// no session read and sets no cookie.
-	// TestNew_AuthorizeNavigationOpensTheConsentScreen fails if it moves.
+	// is created, so this line moved below sessionAuthGroup is silently
+	// disabled for a signed-out browser, which RequireAuth refuses first. It
+	// also runs before the session is loaded, so the redirect costs no session
+	// read and sets no cookie. A mount on v1 is disabled the same way only when
+	// it comes after the v1.Use(authz.RequireAuth(), ...) line below; ahead of
+	// that line it still redirects.
+	// TestNew_AuthorizeNavigationOpensTheConsentScreen fails if a move
+	// disables it.
 	//
 	// Mounted from the same Deps field as the authorize route it serves.
 	if deps.MCPOAuthH != nil {
