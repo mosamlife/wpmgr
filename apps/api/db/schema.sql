@@ -14,12 +14,20 @@
 -- role present, as the first migration provisions it), so a statement goes
 -- below everything it references.
 --
--- NOTHING CHECKS THIS AUTOMATICALLY YET. A migration that forgets to update
--- this file still builds, still generates and still passes CI. So when a
--- security question turns on the answer, such as "is this table site-scoped"
--- or "does this table force RLS", the migrations are the authority, not this
--- file. The most direct answer is a live catalog on a database with every
--- migration applied:
+-- WHAT CHECKS IT. CI's schema-sync job (scripts/check-schema-sync.sh; run it
+-- locally with `make check-schema-sync`) replays every migration into one
+-- throwaway database, loads this file into a second, compares the two
+-- catalogs, and checks the migrations' atlas.sum against the files on disk.
+-- It does not compare privileges, seed rows or comments; the script's header
+-- lists everything it leaves out. So a table, column, index, constraint,
+-- function, trigger or policy this file fails to mirror turns that job red,
+-- and a GRANT, a seed row or a comment it fails to mirror does not.
+--
+-- The migrations are still the authority: they are what runs, and when the
+-- two disagree this file is the one that is wrong. So when a security
+-- question turns on the answer, such as "is this table site-scoped" or "does
+-- this table force RLS", ask the migrations, not this file. The most direct
+-- answer is a live catalog on a database with every migration applied:
 --
 --   SELECT tablename, policyname, permissive, cmd
 --     FROM pg_policies
