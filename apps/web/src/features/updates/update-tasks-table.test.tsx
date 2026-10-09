@@ -399,30 +399,6 @@ describe("UpdateTasksTable: WordPress core outcomes (GH #415)", () => {
     },
   );
 
-  // GH #367: a skip that says why reads as that sentence, in full, under the
-  // plain Skipped chip. Nothing in it is a site-down or redirect condition.
-  it.each([
-    ["Composer manages core", "core", SKIP_CORE_MANAGED_DETAIL],
-    ["file changes are disallowed", "core", SKIP_FILE_MODS_DISALLOWED_DETAIL],
-    ["the plugin is not installed", "plugin", SKIP_NOT_INSTALLED_DETAIL],
-    ["the plugin is the agent itself", "plugin", SKIP_SELF_TARGET_DETAIL],
-  ] as const)(
-    "shows the whole sentence for a skip because %s",
-    (_label, target, detail) => {
-      const task =
-        target === "core"
-          ? coreTask({ status: "skipped", detail })
-          : buildTask({ status: "skipped", detail });
-      renderWithProviders(<UpdateTasksTable tasks={[task]} />);
-      const row = screen.getByTestId("update-task-row");
-
-      expect(within(row).getByText("Skipped")).toBeInTheDocument();
-      expect(within(row).queryByRole("alert")).not.toBeInTheDocument();
-      expect(within(row).queryByText(/already up to date/i)).not.toBeInTheDocument();
-      expectUnclipped(within(row).getByText(detail));
-    },
-  );
-
   it("does not call a core task that was rolled back a site that is down", () => {
     renderWithProviders(
       <UpdateTasksTable
@@ -472,6 +448,35 @@ describe("UpdateTasksTable: WordPress core outcomes (GH #415)", () => {
 // only where the SERVER said the task may be retried, a row that has none
 // still says why, and adding the column does not misalign the log row.
 // ---------------------------------------------------------------------------
+
+// GH #367: a skip that says why reads as the control plane's sentence, in
+// full, under the plain Skipped chip. None of these is a site-down or a
+// redirect condition, so none of them gets an alert.
+describe("UpdateTasksTable: a skip that says why (GH #367)", () => {
+  it.each([
+    ["Composer manages core", "core", SKIP_CORE_MANAGED_DETAIL],
+    ["file changes are disallowed", "core", SKIP_FILE_MODS_DISALLOWED_DETAIL],
+    ["the plugin is not installed", "plugin", SKIP_NOT_INSTALLED_DETAIL],
+    ["the plugin is the agent itself", "plugin", SKIP_SELF_TARGET_DETAIL],
+  ] as const)(
+    "shows the whole sentence for a skip because %s",
+    (_label, target, detail) => {
+      const task =
+        target === "core"
+          ? coreTask({ status: "skipped", detail })
+          : buildTask({ status: "skipped", detail });
+      renderWithProviders(<UpdateTasksTable tasks={[task]} />);
+      const row = screen.getByTestId("update-task-row");
+
+      expect(within(row).getByText("Skipped")).toBeInTheDocument();
+      expect(within(row).queryByRole("alert")).not.toBeInTheDocument();
+      expect(
+        within(row).queryByText(/already up to date/i),
+      ).not.toBeInTheDocument();
+      expectUnclipped(within(row).getByText(detail));
+    },
+  );
+});
 
 function makeSelection(
   overrides: Partial<TaskTableSelection> = {},
