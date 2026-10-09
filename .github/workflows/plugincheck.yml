@@ -36,6 +36,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # The zip build pulls composer:2 and the check stands up a WordPress,
+      # database and wp-cli stack with docker compose: all anonymous Docker Hub
+      # pulls, metered per source address, which hosted runners share. This
+      # points the daemon at Google's public mirror of Docker Hub; see
+      # scripts/ci-docker-mirror.sh.
+      - name: Pull images through the Docker Hub mirror
+        run: scripts/ci-docker-mirror.sh
+
       - name: Set up PHP
         uses: shivammathur/setup-php@v2
         with:
@@ -81,3 +89,7 @@ jobs:
             release/fleet-agent-site-manager.zip
             plugincheck-report.txt
           if-no-files-found: warn
+
+      - name: Docker mirror report
+        if: always()
+        run: scripts/ci-docker-mirror.sh --report

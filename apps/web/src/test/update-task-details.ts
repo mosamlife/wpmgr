@@ -60,3 +60,20 @@ export const HEALTH_CHECK_FAILED_REASON =
 export const PLUGIN_SITE_DOWN_DETAIL =
   "site not responding: site-wide PHP fatal after update; rollback command undeliverable. " +
   "The agent update watchdog will attempt automatic filesystem recovery; if it cannot, manual filesystem recovery is required.";
+
+// worker.go, skippedDetail(): a task the agent skipped and said why (GH #367).
+// A skip with no reason still reads "already up to date".
+export const SKIP_CORE_MANAGED_DETAIL =
+  "WordPress core is managed by Composer on this site, so WPMgr did not update it. " +
+  "Update core in composer.json and redeploy.";
+
+export const SKIP_FILE_MODS_DISALLOWED_DETAIL =
+  "This site does not allow file changes (DISALLOW_FILE_MODS or the file_mod_allowed filter), " +
+  "so WPMgr did not update it.";
+
+export const SKIP_NOT_INSTALLED_DETAIL =
+  "Not installed on this site, so there was nothing to update.";
+
+export const SKIP_SELF_TARGET_DETAIL =
+  "This is the WPMgr agent itself, which updates over its own channel, " +
+  "so WPMgr did not update it as a plugin.";

@@ -13,6 +13,10 @@ import {
   FIREWALL_403_DETAIL,
   FIREWALL_403_RAW_ERROR,
   PLUGIN_SITE_DOWN_DETAIL,
+  SKIP_CORE_MANAGED_DETAIL,
+  SKIP_FILE_MODS_DISALLOWED_DETAIL,
+  SKIP_NOT_INSTALLED_DETAIL,
+  SKIP_SELF_TARGET_DETAIL,
 } from "./update-task-details";
 
 // The display tests for update outcomes quote the control plane's own
@@ -86,6 +90,21 @@ describe("update task detail fixtures", () => {
     );
     expect(CORE_NO_CHANGE_UNHEALTHY_DETAIL).toBe(
       goStringAfter(worker, "const coreNoChangeUnhealthyDetail = "),
+    );
+  });
+
+  it("the sentences for a skip that says why are the ones worker.go writes (GH #367)", () => {
+    expect(SKIP_CORE_MANAGED_DETAIL).toBe(
+      goStringAfter(worker, "const skipCoreManagedDetail = "),
+    );
+    expect(SKIP_FILE_MODS_DISALLOWED_DETAIL).toBe(
+      goStringAfter(worker, "const skipFileModsDisallowedDetail = "),
+    );
+    expect(SKIP_NOT_INSTALLED_DETAIL).toBe(
+      goStringAfter(worker, "const skipNotInstalledDetail = "),
+    );
+    expect(SKIP_SELF_TARGET_DETAIL).toBe(
+      goStringAfter(worker, "const skipSelfTargetDetail = "),
     );
   });
 

@@ -724,8 +724,44 @@ func (w *Worker) runDry(ctx context.Context, task Task, siteURL string, item age
 		detail = fmt.Sprintf("would update %s -> %s", res.FromVersion, res.ToVersion)
 	} else if res.Status == agentcmd.ItemUpToDate {
 		detail = "already up to date"
+	} else if res.Status == agentcmd.ItemSkipped {
+		// GH #367: the agent skips managed core on a dry run too.
+		detail = skippedDetail(res.SkipReason, detail)
 	}
 	return w.finish(ctx, task, status, res.FromVersion, res.ToVersion, detail, "")
+}
+
+// Task details for an item the agent skipped and said why (GH #367). A skip
+// with no reason, or with one outside agentcmd's closed set, keeps the
+// caller's generic detail, so the agent's own text never reaches the task.
+// One declaration each: apps/web/src/test/update-task-details.test.ts reads
+// them from this file by name.
+const skipCoreManagedDetail = "WordPress core is managed by Composer on this site, so WPMgr did not update it. " +
+	"Update core in composer.json and redeploy."
+
+const skipFileModsDisallowedDetail = "This site does not allow file changes (DISALLOW_FILE_MODS or the file_mod_allowed filter), " +
+	"so WPMgr did not update it."
+
+const skipNotInstalledDetail = "Not installed on this site, so there was nothing to update."
+
+const skipSelfTargetDetail = "This is the WPMgr agent itself, which updates over its own channel, " +
+	"so WPMgr did not update it as a plugin."
+
+// skippedDetail is the task detail for an item the agent answered "skipped":
+// the fixed sentence for its reason, or noReason when it gave none.
+func skippedDetail(reason agentcmd.SkipReason, noReason string) string {
+	switch reason {
+	case agentcmd.SkipCoreManaged:
+		return skipCoreManagedDetail
+	case agentcmd.SkipFileModsDisallowed:
+		return skipFileModsDisallowedDetail
+	case agentcmd.SkipNotInstalled:
+		return skipNotInstalledDetail
+	case agentcmd.SkipSelfTarget:
+		return skipSelfTargetDetail
+	default:
+		return noReason
+	}
 }
 
 // runApply executes the real update: snapshot + apply, then health-probe and
@@ -774,7 +810,10 @@ func (w *Worker) runApply(ctx context.Context, task Task, siteURL string, item a
 		return w.finish(ctx, task, TaskFailed, fromOr(res.FromVersion, task.FromVersion), res.ToVersion, "agent reported update failure", res.Log)
 	}
 	if res.Status == agentcmd.ItemSkipped {
-		return w.finish(ctx, task, TaskSkipped, fromOr(res.FromVersion, task.FromVersion), res.ToVersion, "already up to date", "")
+		// GH #367: "already up to date" only when the agent gave no reason. A
+		// Composer-managed core skip is out of date on purpose, not current.
+		return w.finish(ctx, task, TaskSkipped, fromOr(res.FromVersion, task.FromVersion), res.ToVersion,
+			skippedDetail(res.SkipReason, "already up to date"), "")
 	}
 	if res.Status == agentcmd.ItemUpToDate {
 		// GH #415: for WordPress core, up_to_date on an apply is not taken as
