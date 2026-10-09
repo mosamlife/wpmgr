@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -368,32 +369,49 @@ func TestUncheckedOldRowNotAutoApproved(t *testing.T) {
 }
 
 // D4 (integration): an approval by a setting in a transaction that carries
-// a user id is refused by the backstop. The same statement with no user is
-// what Decide runs (TestPageCreateAutoOnAIDraftsSite).
+// a user id is refused by the backstop for that reason alone. Both halves run
+// the statement Decide runs (ApproveAbilityRequestByPolicy) with every value
+// the site's setting holds: with the setter's user id in the transaction it
+// is refused 42501 as an approval that must run with no user; the same
+// statement with the same values and no user approves the request.
+//
+// Mutation: drop the backstop's "runs with no user in the transaction"
+// clause (the approval with a user id is accepted).
 func TestAutomaticApprovalWithUserSetRefused(t *testing.T) {
 	st := newASTStack(t)
 	st.setSiteMode(t, st.site, st.operator.ID, "ai_drafts")
 	st.allowConnection(t, st.admin.ID)
 	req := st.newRequest(t, st.site, "with-user", nil)
 	ctx := context.Background()
+	arg := st.policyApproval(t, st.site, req.ID)
 	err := st.pool.InTenantTxAsUser(ctx, st.tenant, st.operator.ID, func(tx pgx.Tx) error {
 		mcpAssertAndReportRole(t, tx, "InTenantTxAsUser (policy approval with a user)")
-		_, err := tx.Exec(ctx, `UPDATE assistant_ability_requests r
-			SET state = 'approved', approval_source = 'policy', approval_site_mode = s.ai_mode,
-			    approval_mode_version = s.ai_mode_version, approval_setter_user_id = s.ai_mode_set_by,
-			    approval_setter_set_at = s.ai_mode_set_at, base_change_class = 'ai_draft', change_class = 'ai_draft',
-			    decided_at = now(), dispatch_deadline_at = now() + interval '15 minutes', policy_checked_at = now()
-			FROM sites s
-			WHERE s.tenant_id = r.tenant_id AND s.id = r.site_id AND r.tenant_id = $1 AND r.id = $2`, st.tenant, req.ID)
+		_, err := sqlc.New(tx).ApproveAbilityRequestByPolicy(ctx, arg)
 		return err
 	})
 	var pgErr *pgconn.PgError
-	if !errors.As(err, &pgErr) || pgErr.Code != "42501" {
-		t.Fatalf("policy approval with app.user_id set: got %v, want 42501", err)
+	if !errors.As(err, &pgErr) || pgErr.Code != "42501" ||
+		!strings.Contains(pgErr.Message, "runs with no user in the transaction") {
+		t.Fatalf("policy approval with app.user_id set: got %v, want 42501 (an approval by a setting runs with no user)", err)
 	}
 	t.Logf("refused: %s %s", pgErr.Code, pgErr.Message)
 	if r := st.row(t, req.ID); r.state != "pending" {
 		t.Fatalf("row state %s after the refused approval", r.state)
+	}
+
+	var got sqlc.AssistantAbilityRequest
+	if err := st.pool.InTenantTx(ctx, st.tenant, func(tx pgx.Tx) error {
+		mcpAssertAndReportRole(t, tx, "InTenantTx (the same policy approval with no user)")
+		var err error
+		got, err = sqlc.New(tx).ApproveAbilityRequestByPolicy(ctx, arg)
+		return err
+	}); err != nil {
+		t.Fatalf("the same approval with no user in the transaction: %v, want it approved", err)
+	}
+	if got.State != "approved" || got.ApprovalSource != "policy" || got.ApprovalModeSource == nil ||
+		*got.ApprovalModeSource != "person" || got.DecidedByUserID.Valid {
+		t.Fatalf("approved row %s/%s source %v decider %v; want approved/policy, source person, no decider",
+			got.State, got.ApprovalSource, got.ApprovalModeSource, got.DecidedByUserID)
 	}
 }
 
@@ -421,39 +439,60 @@ func TestDecideCannotWritePersonApproval(t *testing.T) {
 	t.Logf("refused: %s %s", pgErr.Code, pgErr.Message)
 }
 
+// policyApproval is the compare-and-set Decide runs for request id on site,
+// with every value the site's setting holds now, read as wpmgr_app.
+func (st *astStack) policyApproval(t *testing.T, site, id uuid.UUID) sqlc.ApproveAbilityRequestByPolicyParams {
+	t.Helper()
+	ctx := context.Background()
+	arg := sqlc.ApproveAbilityRequestByPolicyParams{
+		BaseChangeClass: string(aipolicy.ClassAIDraft), ChangeClass: string(aipolicy.ClassAIDraft),
+		DispatchWindowSeconds: 900, TenantID: st.tenant, ID: id, SiteID: site,
+	}
+	if err := st.pool.InTenantTx(ctx, st.tenant, func(tx pgx.Tx) error {
+		mcpAssertAndReportRole(t, tx, "InTenantTx (read the site's setting)")
+		return tx.QueryRow(ctx, `SELECT ai_mode, ai_mode_source, ai_mode_version, ai_mode_set_by, ai_mode_set_at
+			FROM sites WHERE tenant_id = $1 AND id = $2`, st.tenant, site).
+			Scan(&arg.SiteMode, &arg.ModeSource, &arg.ModeVersion, &arg.SetterUserID, &arg.SetterSetAt)
+	}); err != nil {
+		t.Fatalf("read the setting of %s: %v", site, err)
+	}
+	return arg
+}
+
 // approveByPolicyDirect seeds approvals by a setting for the budget proofs:
-// pending rows on site, approved in one statement in a transaction with no
-// user, which the backstop checks row by row against the site's setting.
+// n pending rows on site, each approved by the statement Decide runs
+// (ApproveAbilityRequestByPolicy) under the setting the site holds, in a
+// transaction with no user, which the backstop checks row by row.
 func (st *astStack) approveByPolicyDirect(t *testing.T, site uuid.UUID, n int, seed string) {
 	t.Helper()
 	ctx := context.Background()
+	ids := make([]uuid.UUID, 0, n)
 	if err := st.pool.RunTenantTx(ctx, acprSitePrincipal(st.tenant, site), func(tx pgx.Tx) error {
 		q := sqlc.New(tx)
 		for i := 0; i < n; i++ {
 			arg := aarParams(st.tenant, site, st.grant, fmt.Sprintf("%s-%d", seed, i))
 			arg.EntryID = st.entry
-			if _, err := q.InsertAbilityRequest(ctx, arg); err != nil {
+			row, err := q.InsertAbilityRequest(ctx, arg)
+			if err != nil {
 				return err
 			}
+			ids = append(ids, row.ID)
 		}
 		return nil
 	}); err != nil {
 		t.Fatalf("seed %d requests on %s: %v", n, site, err)
 	}
+	arg := st.policyApproval(t, site, uuid.Nil)
 	if err := st.pool.InTenantTx(ctx, st.tenant, func(tx pgx.Tx) error {
 		mcpAssertAndReportRole(t, tx, "InTenantTx (seed policy approvals)")
-		tag, err := tx.Exec(ctx, `UPDATE assistant_ability_requests r
-			SET state = 'approved', approval_source = 'policy', approval_site_mode = s.ai_mode,
-			    approval_mode_version = s.ai_mode_version, approval_setter_user_id = s.ai_mode_set_by,
-			    approval_setter_set_at = s.ai_mode_set_at, base_change_class = 'ai_draft', change_class = 'ai_draft',
-			    decided_at = now(), dispatch_deadline_at = now() + interval '15 minutes', policy_checked_at = now()
-			FROM sites s
-			WHERE s.tenant_id = r.tenant_id AND s.id = r.site_id
-			  AND r.tenant_id = $1 AND r.site_id = $2 AND r.state = 'pending'`, st.tenant, site)
-		if err == nil && tag.RowsAffected() != int64(n) {
-			err = fmt.Errorf("approved %d of %d", tag.RowsAffected(), n)
+		q := sqlc.New(tx)
+		for _, id := range ids {
+			arg.ID = id
+			if _, err := q.ApproveAbilityRequestByPolicy(ctx, arg); err != nil {
+				return fmt.Errorf("approve %s: %w", id, err)
+			}
 		}
-		return err
+		return nil
 	}); err != nil {
 		t.Fatalf("approve %d requests by policy on %s: %v", n, site, err)
 	}
