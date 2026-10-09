@@ -717,6 +717,31 @@ run_case "broken-go-doc-fails" 2 "failed (exit 1)" "containment: OK" -- \
 PATH="$WORK/fakego-empty:$PATH_SAVE"
 run_case "broken-go-doc-finds-no-request-store" 2 "does not contain 'type requestStore interface'" "containment: OK" -- \
   --api-root "$TREE/apps/api" --allowlist "$ALLOW"
+
+# The same extraction path with BOTH interfaces answered. The --store-doc cases
+# above hand the guard a document that already holds the requestStore block, so
+# they hold whether or not the guard asks go doc for that interface at all.
+# Here the fake go answers one block per interface name, as the real one is
+# called, and the bypass is planted in the requestStore answer only: it must be
+# reported, and the same answer without the planted method must pass.
+REQUEST_STORE_EXTRA='Foo(ctx context.Context, siteID uuid.UUID) error' make_store_doc "$WORK/planted.doc"
+sed '/^type requestStore interface/,$d' "$WORK/planted.doc" >"$WORK/planted.store.doc"
+sed -n '/^type requestStore interface/,$p' "$WORK/planted.doc" >"$WORK/planted.request.doc"
+make_store_doc "$WORK/clean.doc"
+sed '/^type requestStore interface/,$d' "$WORK/clean.doc" >"$WORK/clean.store.doc"
+sed -n '/^type requestStore interface/,$p' "$WORK/clean.doc" >"$WORK/clean.request.doc"
+mkdir -p "$WORK/fakego-planted" "$WORK/fakego-clean"
+printf '#!/bin/sh\nfor a; do last="$a"; done\ncase "$last" in\n  Store) cat "%s" ;;\n  requestStore) cat "%s" ;;\nesac\nexit 0\n' \
+  "$WORK/planted.store.doc" "$WORK/planted.request.doc" >"$WORK/fakego-planted/go"
+printf '#!/bin/sh\nfor a; do last="$a"; done\ncase "$last" in\n  Store) cat "%s" ;;\n  requestStore) cat "%s" ;;\nesac\nexit 0\n' \
+  "$WORK/clean.store.doc" "$WORK/clean.request.doc" >"$WORK/fakego-clean/go"
+chmod +x "$WORK/fakego-planted/go" "$WORK/fakego-clean/go"
+PATH="$WORK/fakego-planted:$PATH_SAVE"
+run_case "bypass-request-store-through-go-doc-extraction" 1 "PARAM Foo.siteID" - -- \
+  --api-root "$TREE/apps/api" --allowlist "$ALLOW"
+PATH="$WORK/fakego-clean:$PATH_SAVE"
+run_case "ok-request-store-through-go-doc-extraction" 0 "check-mcp-site-containment: OK" "VIOLATION" -- \
+  --api-root "$TREE/apps/api" --allowlist "$ALLOW"
 PATH="$PATH_SAVE"
 
 # The chokepoint gone from the interface is not "no site-scope surface".
