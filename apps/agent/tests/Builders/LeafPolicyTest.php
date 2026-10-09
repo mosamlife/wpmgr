@@ -154,6 +154,10 @@ final class LeafPolicyTest extends TestCase
 
     public function test_l2_refuses_planted_onerror_image(): void
     {
+        // A tag the sanitiser drops and no sequence names: only the fixed point sees it.
+        $form = '<p>Hi</p><form action="https://example.com/x"><button>Send</button></form>';
+        $this->assertSame('changed by the HTML sanitiser', LeafPolicy::storedProblem($form, self::RULES));
+
         $planted = '<p>Hello</p><img src="https://example.com/a.png" onerror="alert(1)">';
         $this->assertSame('changed by the HTML sanitiser', LeafPolicy::storedProblem($planted, self::RULES));
 
@@ -162,10 +166,6 @@ final class LeafPolicyTest extends TestCase
             ['code' => 'leaf_unsafe', 'detail' => 'elements[0].settings.editor: changed by the HTML sanitiser'],
             LeafPolicy::checkTree($tree, self::KEYS, self::RULES)
         );
-
-        // A tag the sanitiser drops and no sequence names: only the fixed point sees it.
-        $form = '<p>Hi</p><form action="https://example.com/x"><button>Send</button></form>';
-        $this->assertSame('changed by the HTML sanitiser', LeafPolicy::storedProblem($form, self::RULES));
 
         $this->assertNull(LeafPolicy::storedProblem('<p>Hello</p><img src="https://example.com/a.png">', self::RULES));
     }
