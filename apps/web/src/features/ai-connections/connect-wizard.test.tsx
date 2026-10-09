@@ -1743,6 +1743,20 @@ describe("choosing what a token may do (step 4, token path only)", () => {
     expect(
       screen.getByText(/your client opens a separate approval screen/i),
     ).toBeInTheDocument();
+    // That screen asks for the cache-clear row AND the site-tools rows, so the
+    // sentence names both, not only the cache clear.
+    expect(
+      screen.getByText(
+        /which asks for the reads, the cache-clear row and the site-tools rows again/i,
+      ),
+    ).toBeInTheDocument();
+    // The step's hint describes both asks the same way, and says that a person
+    // approves each request.
+    expect(
+      screen.getByText(
+        "Reads below never change anything. A connection can also ask to clear the site cache and ask to make changes through the site's tools. Each only ever asks: nothing runs until a person approves that request.",
+      ),
+    ).toBeInTheDocument();
     // And the retired claims are gone rather than merely unasserted, so they
     // cannot come back under a passing suite the way one just did.
     expect(screen.queryByText(/no channel for it yet/i)).toBeNull();
@@ -3803,5 +3817,29 @@ describe("the closing sentence says what is true of the path that reached it", (
     const terminus = screen.getByTestId("wizard-terminus");
     expect(terminus).toHaveTextContent(/the connection exists and can be revoked/i);
     expect(terminus).not.toHaveTextContent(/no connection exists yet/i);
+  });
+});
+
+// BOTH ASKS ARE DESCRIBED THE SAME WAY wherever the wizard says what the approval
+// screen will show. The hand-off for a browser sign-in names the cache-clear row
+// and the site-tools rows, and only "if the app asks for them", because the
+// approval screen shows a box only for a scope the app asked for.
+describe("the browser sign-in hand-off names both asks", () => {
+  it("says the approval screen has the same reads and, if the app asks for them, the cache-clear and site-tools rows", async () => {
+    loadedFleet(3);
+    renderWizard();
+    await leaveContractStep();
+    await reachSetupStep("Cursor", "oauth");
+    goNext();
+
+    expect(await screen.findByText("What to expect on that page")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        /It has its own permissions section, with the same reads and, if the app asks for them, the cache-clear row and the site-tools rows you saw at step 4\./,
+      ),
+    ).toBeInTheDocument();
+    // The old line promised "the one cache-clear row", which left the site
+    // tools out and said there was only one.
+    expect(screen.queryByText(/the one cache-clear row/i)).toBeNull();
   });
 });

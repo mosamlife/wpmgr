@@ -55,11 +55,12 @@ export const CONTRACT_CAN: readonly string[] = [
   // "Ask", not "propose" -- CONTRACT_FORBIDDEN below still refuses "propose"
   // outright, and these two lines are why it can stay green: asking is bounded
   // by a person approving the specific request, which is the whole difference.
-  // The two asks (the cache clear, and changes through a site's tools) are
-  // described the same way: what it may ask for, if you allow it, and that
-  // nothing runs until a person approves each request.
-  "Ask you to clear a site's cache, if you allow it. Nothing runs until a person approves each request.",
-  "Ask you to make changes through a site's tools, if you allow it. Nothing runs until a person approves each request.",
+  // The two asks (the cache clear, and changes through a site's tools) are one
+  // line, so they are described the same way by construction: what it may ask
+  // for, if you allow it, and that nothing runs until a person approves each
+  // request. Two parallel lines would repeat that closing sentence on one frame,
+  // which the wizard's duplicate-sentence guard refuses.
+  "Ask you to clear a site's cache, or to make changes through a site's tools, if you allow it. Nothing runs until a person approves each request.",
 ];
 
 export const CONTRACT_CANNOT: readonly string[] = [
