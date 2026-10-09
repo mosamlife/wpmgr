@@ -47,10 +47,19 @@ final class RollbackCommandCoreFlagTest extends TestCase
     /** @var array<int,string> Every delete_site_transient() key, in order. */
     private array $deletedTransients = [];
 
+    /**
+     * @var array<int,array{0:callable,1:array<int,mixed>}> Every callback the
+     *      request registered with register_shutdown_function(), in order,
+     *      once captureShutdownCallbacks() is on.
+     */
+    private array $shutdownCallbacks = [];
+
     protected function set_up(): void
     {
         parent::set_up();
         Monkey\setUp();
+
+        $this->shutdownCallbacks = [];
 
         $abspath = rtrim((string) constant('ABSPATH'), '/\\');
         $this->assertNotSame('', $abspath, 'the test ABSPATH must be defined and non-empty');
@@ -108,6 +117,78 @@ final class RollbackCommandCoreFlagTest extends TestCase
         if ($this->versionFile !== '' && file_exists($this->versionFile)) {
             unlink($this->versionFile); // phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink -- test fixture cleanup
         }
+    }
+
+    /**
+     * Hold every shutdown callback the request registers, instead of handing
+     * it to PHP, which would run it only when the whole suite exits.
+     */
+    private function captureShutdownCallbacks(): void
+    {
+        Functions\when('register_shutdown_function')->alias(
+            function (callable $callback, ...$args): void {
+                $this->shutdownCallbacks[] = [$callback, $args];
+            }
+        );
+    }
+
+    /**
+     * End the request the way PHP does: run every registered shutdown
+     * callback in registration order, including any registered while the
+     * shutdown phase is running.
+     *
+     * @return int How many callbacks ran.
+     */
+    private function runShutdownCallbacks(): int
+    {
+        $ran = 0;
+        while ($this->shutdownCallbacks !== []) {
+            [$callback, $args] = array_shift($this->shutdownCallbacks);
+            $callback(...$args);
+            ++$ran;
+        }
+
+        return $ran;
+    }
+
+    /**
+     * Send one refused request while a fresh flag is in place, end the
+     * request, and check the flag is exactly as it was.
+     *
+     * @param array<string,mixed> $params Rollback request body.
+     */
+    private function assertRefusalLeavesAFreshFlagAloneAfterTheRequestEnds(array $params): void
+    {
+        $flag = '<?php $upgrading = ' . time() . '; ?>';
+        file_put_contents($this->maintenanceFile, $flag); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- test fixture
+
+        $this->captureShutdownCallbacks();
+
+        // Stands in for the shutdown work the rest of the request registers.
+        // Seeing it run proves the shutdown phase below ran what this request
+        // registered, so the assertions after it cannot pass by default.
+        $sentinelRan = false;
+        register_shutdown_function(static function () use (&$sentinelRan): void {
+            $sentinelRan = true;
+        });
+
+        $runner = self::runnerRecordingForceCore($this->versionFile);
+        $cmd    = new RollbackCommand(self::spySnapshots('7.0'), $runner);
+
+        $out = $cmd->execute([], $params);
+
+        $this->assertFalse($out['ok']);
+        $this->assertSame([], $runner->forced);
+        $this->assertFileExists($this->maintenanceFile, 'the refusal itself must leave a fresh flag in place');
+
+        $this->runShutdownCallbacks();
+
+        $this->assertTrue($sentinelRan, 'the shutdown phase did not run what this request registered');
+        $this->assertFileExists(
+            $this->maintenanceFile,
+            'a refused request changes nothing, after it ends too; a fresh flag may belong to an update still in flight'
+        );
+        $this->assertSame($flag, (string) file_get_contents($this->maintenanceFile));
     }
 
     /**
@@ -178,6 +259,50 @@ final class RollbackCommandCoreFlagTest extends TestCase
     }
 
     /**
+     * The real UpdateRunner with forceCore() replaced by a downgrade the
+     * request does not survive. It puts the site into maintenance mode the
+     * way core's upgrader does, then reaches the point where a fatal error or
+     * a timeout would end the request: nothing after it runs, no finally
+     * unwinds, and PHP runs the request's shutdown callbacks. $endRequest
+     * stands in for that shutdown phase, and the fake records what the phase
+     * left behind.
+     *
+     * @param string   $maintenanceFile Path of the `.maintenance` marker.
+     * @param \Closure $endRequest      Runs the shutdown phase and returns how many callbacks ran.
+     */
+    private static function runnerDyingMidDowngrade(string $maintenanceFile, \Closure $endRequest): UpdateRunner
+    {
+        return new class ($maintenanceFile, $endRequest) extends UpdateRunner {
+            /** @var array<int,string> */
+            public array $forced = [];
+
+            public bool $maintenanceWasSet = false;
+
+            public int $shutdownCallbacksRun = 0;
+
+            public ?bool $maintenanceSurvivedShutdown = null;
+
+            public function __construct(private string $maintenanceFile, private \Closure $endRequest)
+            {
+            }
+
+            public function forceCore(string $version): array
+            {
+                $this->forced[] = $version;
+
+                file_put_contents($this->maintenanceFile, '<?php $upgrading = ' . time() . '; ?>'); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- test double standing in for core entering maintenance mode
+                $this->maintenanceWasSet = file_exists($this->maintenanceFile);
+
+                $this->shutdownCallbacksRun        = ($this->endRequest)();
+                $this->maintenanceSurvivedShutdown = file_exists($this->maintenanceFile);
+
+                // Nothing after the fatal runs; unwind without reporting success.
+                throw new \RuntimeException('the request ended here');
+            }
+        };
+    }
+
+    /**
      * @return array<string,array{0:array<string,mixed>}>
      */
     public static function coreRollbackRequestsWithoutPermission(): array
@@ -227,20 +352,59 @@ final class RollbackCommandCoreFlagTest extends TestCase
         $this->assertStringContainsString("'" . self::IN_MEMORY . "'", (string) file_get_contents($this->versionFile));
     }
 
-    public function test_a_refused_core_rollback_leaves_a_fresh_maintenance_flag_alone(): void
+    /**
+     * A refused core rollback leaves a fresh flag exactly as it was, both
+     * when execute() returns and once the request's shutdown callbacks have
+     * run.
+     *
+     * @dataProvider coreRollbackRequestsWithoutPermission
+     *
+     * @param array<string,mixed> $params Rollback request body.
+     */
+    public function test_a_refused_core_rollback_leaves_a_fresh_maintenance_flag_alone_after_the_request_ends(array $params): void
     {
-        file_put_contents($this->maintenanceFile, '<?php $upgrading = ' . time() . '; ?>'); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- test fixture
+        $this->assertRefusalLeavesAFreshFlagAloneAfterTheRequestEnds($params);
+    }
 
-        $runner = self::runnerRecordingForceCore($this->versionFile);
-        $cmd    = new RollbackCommand(self::spySnapshots(), $runner);
+    /**
+     * The other refusal above the same point: an invalid type also leaves a
+     * fresh flag exactly as it was once the request has ended.
+     */
+    public function test_an_invalid_type_leaves_a_fresh_maintenance_flag_alone_after_the_request_ends(): void
+    {
+        $this->assertRefusalLeavesAFreshFlagAloneAfterTheRequestEnds(
+            ['type' => 'bogus', 'slug' => 'x', 'snapshot_id' => 'snap_a']
+        );
+    }
 
-        $out = $cmd->execute([], ['type' => 'core', 'to_version' => '7.0']);
+    /**
+     * A permitted core rollback arms the shutdown backstop before the
+     * downgrade starts. A fatal error or a timeout part-way through ends the
+     * request without unwinding any finally, and the site must still be out
+     * of maintenance mode once the request's shutdown callbacks have run.
+     */
+    public function test_a_permitted_core_rollback_still_clears_its_own_maintenance_at_shutdown(): void
+    {
+        $this->captureShutdownCallbacks();
 
-        $this->assertFalse($out['ok']);
-        $this->assertSame([], $runner->forced);
-        $this->assertFileExists(
+        $runner = self::runnerDyingMidDowngrade(
             $this->maintenanceFile,
-            'a refused request changes nothing; a fresh flag may belong to an update still in flight'
+            fn (): int => $this->runShutdownCallbacks()
+        );
+        $cmd = new RollbackCommand(self::spySnapshots(), $runner);
+
+        $cmd->execute([], ['type' => 'core', 'to_version' => '7.0', 'allow_core_downgrade' => true]);
+
+        $this->assertSame(['7.0'], $runner->forced, 'the permitted downgrade must start');
+        $this->assertTrue($runner->maintenanceWasSet, 'the downgrade must have put the site into maintenance mode');
+        $this->assertGreaterThanOrEqual(
+            1,
+            $runner->shutdownCallbacksRun,
+            'the request ended with nothing registered to run at shutdown'
+        );
+        $this->assertFalse(
+            $runner->maintenanceSurvivedShutdown,
+            'a rollback that dies mid-downgrade must not leave the site in maintenance mode'
         );
     }
 

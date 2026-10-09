@@ -131,20 +131,20 @@ final class RollbackCommand implements CommandInterface
 
         try {
             // Heal a `.maintenance` flag left behind by a prior interrupted
-            // update/rollback before starting new work, and arm the shutdown
-            // backstop so a fatal error or a timeout mid-rollback still clears
-            // whatever flag THIS run may leave set.
+            // update/rollback before starting new work. Only a stale flag is
+            // removed; a fresh one is left to whoever owns it. The shutdown
+            // backstop for THIS run's own flag is armed later, in run(), once
+            // the request has passed the type and core-permission checks.
             //
-            // These sit INSIDE the try, not above it, so that a throw from
-            // either one still reaches the finally and releases the site lock.
-            // Above the try, a throw here would strand the lock for its whole
-            // 900s TTL and wedge every update and rollback on this site for
-            // fifteen minutes. Both are effectively non-throwing today, so this
-            // is latent rather than live, but the lock's release must not
-            // depend on that staying true. UpdateCommand::execute() already
-            // orders it this way; this removes the asymmetry.
+            // This sits INSIDE the try, not above it, so that a throw from it
+            // still reaches the finally and releases the site lock. Above the
+            // try, a throw here would strand the lock for its whole 900s TTL
+            // and wedge every update and rollback on this site for fifteen
+            // minutes. It is effectively non-throwing today, so this is latent
+            // rather than live, but the lock's release must not depend on that
+            // staying true. UpdateCommand::execute() already orders it this
+            // way; this removes the asymmetry.
             Maintenance::healStaleIfPresent();
-            Maintenance::armShutdownGuard();
 
             return $this->run($params);
         } finally {
@@ -173,9 +173,10 @@ final class RollbackCommand implements CommandInterface
         // needs an explicit request (GitHub issue #415). Only the JSON boolean
         // `true` counts: a string such as "false" is truthy in PHP, and an
         // irreversible operation must not turn on through a loose cast.
-        // Refused here, above the try/finally below, for the same reason an
-        // invalid type is: a refused request does no rollback work, and that
-        // includes leaving a fresh maintenance flag exactly as it was.
+        // Refused here, above the shutdown backstop and the try/finally below,
+        // for the same reason an invalid type is: a refused request does no
+        // rollback work, and that includes leaving a fresh maintenance flag
+        // exactly as it was, during the request and after it ends.
         $allowCoreDowngrade = ($params['allow_core_downgrade'] ?? null) === true;
         if ($type === 'core' && !$allowCoreDowngrade) {
             return $this->fail(
@@ -184,6 +185,17 @@ final class RollbackCommand implements CommandInterface
                 . 'its current version.'
             );
         }
+
+        // Arm the shutdown backstop only now, once the request has passed the
+        // type and core-permission checks, so a fatal error or a timeout
+        // mid-rollback still clears whatever flag THIS run leaves set. The
+        // backstop clears any `.maintenance` file it finds when the request
+        // ends, so a refused request must not arm it: the flag it would remove
+        // may belong to another update still in flight. It sits above the
+        // try/finally below on purpose: run() is called inside execute()'s
+        // try, so a throw from here still releases the site lock, and no
+        // rollback work has begun that would need maintenance cleared.
+        Maintenance::armShutdownGuard();
 
         // GUARANTEE: this is precisely the reported incident — a rollback
         // that itself fails (the new version is already active, the restore
