@@ -8511,6 +8511,13 @@ CREATE TABLE IF NOT EXISTS assistant_cache_purge_requests (
     approval_site_mode text NULL
         CONSTRAINT assistant_cache_purge_requests_approval_site_mode_check
         CHECK (approval_site_mode IS NULL OR approval_site_mode IN ('ai_drafts', 'full')),
+    -- How the mode a 'policy' approval relied on was chosen. Only a 'policy'
+    -- approval records it.
+    approval_mode_source text NULL,
+    CONSTRAINT assistant_cache_purge_requests_approval_mode_source_check
+        CHECK (approval_mode_source IS NULL
+               OR (approval_source = 'policy'
+                   AND approval_mode_source IN ('launch_default', 'enable_default', 'person'))),
     approval_mode_version bigint NULL
         CONSTRAINT assistant_cache_purge_requests_approval_mode_version_check
         CHECK (approval_mode_version IS NULL OR approval_mode_version > 0),
@@ -8543,6 +8550,7 @@ CREATE TABLE IF NOT EXISTS assistant_cache_purge_requests (
                OR approval_source <> 'policy'
                OR (decided_by_user_id IS NULL
                    AND approval_site_mode IS NOT NULL
+                   AND approval_mode_source IS NOT NULL
                    AND approval_mode_version IS NOT NULL
                    AND approval_setter_user_id IS NOT NULL
                    AND approval_setter_set_at IS NOT NULL
@@ -8558,6 +8566,7 @@ CREATE TABLE IF NOT EXISTS assistant_cache_purge_requests (
                    AND approval_session_id IS NOT NULL
                    AND approval_setter_user_id IS NOT NULL
                    AND approval_site_mode IS NULL
+                   AND approval_mode_source IS NULL
                    AND approval_mode_version IS NULL
                    AND base_change_class IS NOT NULL
                    AND change_class IS NOT NULL
@@ -8625,8 +8634,8 @@ GRANT UPDATE (state, decided_at, decided_by_user_id, withdrawn_at,
               origin_only_confirmed, wpmgr_cdn, site_reported_text)
     ON assistant_cache_purge_requests TO wpmgr_app;
 -- m174: the approval and decision columns.
-GRANT UPDATE (approval_source, approval_site_mode, approval_mode_version,
-              approval_setter_user_id, approval_setter_set_at, approval_session_id,
+GRANT UPDATE (approval_source, approval_site_mode, approval_mode_source,
+              approval_mode_version, approval_setter_user_id, approval_setter_set_at, approval_session_id,
               base_change_class, change_class, ask_reason, policy_checked_at)
     ON assistant_cache_purge_requests TO wpmgr_app;
 
@@ -10683,6 +10692,13 @@ CREATE TABLE IF NOT EXISTS assistant_ability_requests (
     approval_site_mode text NULL
         CONSTRAINT assistant_ability_requests_approval_site_mode_check
         CHECK (approval_site_mode IS NULL OR approval_site_mode IN ('ai_drafts', 'full')),
+    -- How the mode a 'policy' approval relied on was chosen. Only a 'policy'
+    -- approval records it.
+    approval_mode_source text NULL,
+    CONSTRAINT assistant_ability_requests_approval_mode_source_check
+        CHECK (approval_mode_source IS NULL
+               OR (approval_source = 'policy'
+                   AND approval_mode_source IN ('launch_default', 'enable_default', 'person'))),
     approval_mode_version bigint NULL
         CONSTRAINT assistant_ability_requests_approval_mode_version_check
         CHECK (approval_mode_version IS NULL OR approval_mode_version > 0),
@@ -10719,6 +10735,7 @@ CREATE TABLE IF NOT EXISTS assistant_ability_requests (
                OR approval_source <> 'policy'
                OR (decided_by_user_id IS NULL
                    AND approval_site_mode IS NOT NULL
+                   AND approval_mode_source IS NOT NULL
                    AND approval_mode_version IS NOT NULL
                    AND approval_setter_user_id IS NOT NULL
                    AND approval_setter_set_at IS NOT NULL
@@ -10735,6 +10752,7 @@ CREATE TABLE IF NOT EXISTS assistant_ability_requests (
                    AND approval_session_id IS NOT NULL
                    AND approval_setter_user_id IS NOT NULL
                    AND approval_site_mode IS NULL
+                   AND approval_mode_source IS NULL
                    AND approval_mode_version IS NULL
                    AND base_change_class IS NOT NULL
                    AND change_class IS NOT NULL
@@ -10832,7 +10850,7 @@ GRANT UPDATE (
 -- m174: the approval and decision columns. checked_target_status is not
 -- granted: it is written at insert only.
 GRANT UPDATE (
-    approval_source, approval_site_mode, approval_mode_version,
+    approval_source, approval_site_mode, approval_mode_source, approval_mode_version,
     approval_setter_user_id, approval_setter_set_at, approval_session_id,
     base_change_class, change_class, ask_reason, policy_checked_at
 ) ON assistant_ability_requests TO wpmgr_app;
@@ -11848,9 +11866,9 @@ CREATE INDEX IF NOT EXISTS assistant_ability_requests_unchecked_idx
 CREATE INDEX IF NOT EXISTS assistant_ability_requests_session_idx
     ON assistant_ability_requests (approval_session_id)
     WHERE approval_session_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS assistant_ability_requests_activity_idx
-    ON assistant_ability_requests (tenant_id, decided_at DESC, id DESC)
-    WHERE decided_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS assistant_ability_requests_activity_created_idx
+    ON assistant_ability_requests (tenant_id, created_at DESC, id DESC)
+    WHERE state IN ('approved', 'dispatched', 'done', 'failed', 'not_sent', 'outcome_unknown');
 
 CREATE INDEX IF NOT EXISTS assistant_cache_purge_requests_policy_grant_idx
     ON assistant_cache_purge_requests (proposed_by_grant_id, decided_at)
@@ -11864,9 +11882,9 @@ CREATE INDEX IF NOT EXISTS assistant_cache_purge_requests_unchecked_idx
 CREATE INDEX IF NOT EXISTS assistant_cache_purge_requests_session_idx
     ON assistant_cache_purge_requests (approval_session_id)
     WHERE approval_session_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS assistant_cache_purge_requests_activity_idx
-    ON assistant_cache_purge_requests (tenant_id, decided_at DESC, id DESC)
-    WHERE decided_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS assistant_cache_purge_requests_activity_created_idx
+    ON assistant_cache_purge_requests (tenant_id, created_at DESC, id DESC)
+    WHERE state IN ('approved_undispatched', 'dispatched');
 
 -- ai_approval_backstop, on both request tables, for every role: a request is
 -- inserted pending, undecided and unchecked; checked_target_status never
@@ -11912,6 +11930,7 @@ BEGIN
         END IF;
         IF NEW.approval_source IS DISTINCT FROM 'person'
            OR NEW.approval_site_mode IS NOT NULL
+           OR NEW.approval_mode_source IS NOT NULL
            OR NEW.approval_mode_version IS NOT NULL
            OR NEW.approval_setter_user_id IS NOT NULL
            OR NEW.approval_setter_set_at IS NOT NULL
@@ -11952,6 +11971,7 @@ BEGIN
     IF NOT (OLD.state = 'pending' AND NEW.state = v_entry) THEN
         IF NEW.approval_source IS DISTINCT FROM OLD.approval_source
            OR NEW.approval_site_mode IS DISTINCT FROM OLD.approval_site_mode
+           OR NEW.approval_mode_source IS DISTINCT FROM OLD.approval_mode_source
            OR NEW.approval_mode_version IS DISTINCT FROM OLD.approval_mode_version
            OR NEW.approval_setter_user_id IS DISTINCT FROM OLD.approval_setter_user_id
            OR NEW.approval_setter_set_at IS DISTINCT FROM OLD.approval_setter_set_at
@@ -11984,6 +12004,7 @@ BEGIN
                        WHERE s.tenant_id = NEW.tenant_id
                          AND s.id = NEW.site_id
                          AND s.ai_mode = NEW.approval_site_mode
+                         AND s.ai_mode_source = NEW.approval_mode_source
                          AND s.ai_mode_version = NEW.approval_mode_version
                          AND s.ai_mode_set_by = NEW.approval_setter_user_id
                          AND s.ai_mode_set_at IS NOT DISTINCT FROM NEW.approval_setter_set_at

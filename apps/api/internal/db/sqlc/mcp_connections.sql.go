@@ -203,9 +203,15 @@ const createMCPGrant = `-- name: CreateMCPGrant :one
 INSERT INTO mcp_grants (
     tenant_id, name, status, site_scope_mode, scope_tag_ids, scope_site_ids,
     client_id, created_by_user_id, capabilities, expires_at,
-    idle_expire_after_days, setup_client, oauth_scopes
+    idle_expire_after_days, setup_client, oauth_scopes,
+    ai_auto, ai_auto_set_by, ai_auto_set_at
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+    $1, $2, $3, $4, $5, $6,
+    $7, $8, $9, $10,
+    $11, $12, $13,
+    CASE WHEN $14::boolean THEN 'site_setting' ELSE 'never' END,
+    CASE WHEN $14::boolean THEN $8::uuid END,
+    CASE WHEN $14::boolean THEN now() END
 )
 RETURNING id, tenant_id, name, status, site_scope_mode, scope_tag_ids, scope_site_ids, capabilities, oauth_scopes, client_id, client_name, client_version, protocol_version, client_identity_recorded_at, setup_client, created_by_user_id, created_at, last_used_at, revoked_at, expires_at, idle_expire_after_days, ai_auto, ai_auto_set_by, ai_auto_set_at
 `
@@ -224,6 +230,7 @@ type CreateMCPGrantParams struct {
 	IdleExpireAfterDays *int32      `json:"idle_expire_after_days"`
 	SetupClient         *string     `json:"setup_client"`
 	OauthScopes         []string    `json:"oauth_scopes"`
+	AiAutoByCreator     bool        `json:"ai_auto_by_creator"`
 }
 
 // ===========================================================================
@@ -308,6 +315,19 @@ type CreateMCPGrantParams struct {
 // consented to, the token path passes DefaultGrantScopes() because no client
 // asked for anything -- and both are validated against recognisedScopes in Go
 // before they arrive, on top of the vocabulary CHECK here.
+//
+// m174: ai_auto_by_creator says whether the connection may run changes by
+// each site's setting from the start. A connection a signed-in person creates
+// (dashboard mint or consent) passes true and records its creator as the
+// person who allowed it (ai_auto_set_by = created_by_user_id); a connection
+// minted with an API key passes false and starts on 'never'. false is the
+// zero value, so a caller that omits the field creates a connection on
+// 'never', the setting that loosens nothing. mcp_grants_ai_auto_guard refuses
+// 'site_setting' unless app.user_id in the transaction is the recorded
+// setter, and mcp_grants_ai_auto_names_setter_check refuses it with no
+// creator, so true is honoured only for the signed-in creator. The cast on
+// the second use of created_by_user_id keeps the server's inferred type for
+// that parameter uuid in both places.
 func (q *Queries) CreateMCPGrant(ctx context.Context, arg CreateMCPGrantParams) (McpGrant, error) {
 	row := q.db.QueryRow(ctx, createMCPGrant,
 		arg.TenantID,
@@ -323,6 +343,7 @@ func (q *Queries) CreateMCPGrant(ctx context.Context, arg CreateMCPGrantParams) 
 		arg.IdleExpireAfterDays,
 		arg.SetupClient,
 		arg.OauthScopes,
+		arg.AiAutoByCreator,
 	)
 	var i McpGrant
 	err := row.Scan(

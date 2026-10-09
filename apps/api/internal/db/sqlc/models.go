@@ -275,6 +275,7 @@ type AssistantAbilityRequest struct {
 	CardFacts            []byte             `json:"card_facts"`
 	ApprovalSource       string             `json:"approval_source"`
 	ApprovalSiteMode     *string            `json:"approval_site_mode"`
+	ApprovalModeSource   *string            `json:"approval_mode_source"`
 	ApprovalModeVersion  *int64             `json:"approval_mode_version"`
 	ApprovalSetterUserID pgtype.UUID        `json:"approval_setter_user_id"`
 	ApprovalSetterSetAt  pgtype.Timestamptz `json:"approval_setter_set_at"`
@@ -321,6 +322,7 @@ type AssistantCachePurgeRequest struct {
 	SiteReportedText     *string            `json:"site_reported_text"`
 	ApprovalSource       string             `json:"approval_source"`
 	ApprovalSiteMode     *string            `json:"approval_site_mode"`
+	ApprovalModeSource   *string            `json:"approval_mode_source"`
 	ApprovalModeVersion  *int64             `json:"approval_mode_version"`
 	ApprovalSetterUserID pgtype.UUID        `json:"approval_setter_user_id"`
 	ApprovalSetterSetAt  pgtype.Timestamptz `json:"approval_setter_set_at"`

@@ -147,6 +147,9 @@
 --
 --   approval_source          'person' (default), 'policy' or 'session'
 --   approval_site_mode       the site mode a 'policy' approval relied on
+--   approval_mode_source     how that mode was chosen: 'launch_default',
+--                            'enable_default' or 'person' (a 'policy'
+--                            approval only)
 --   approval_mode_version    that mode's version
 --   approval_setter_user_id  the site's setter (or a session's approver)
 --   approval_setter_set_at   when that setter chose the mode
@@ -167,7 +170,12 @@
 -- approval_names_a_human_check keeps its m151 and m156 name and now reads "a
 -- person's approval names a human". Two new CHECKs give the shape of a
 -- 'policy' approval and of a 'session' approval. An automatic approval never
--- names a decider: the setter did not decide that request.
+-- names a decider: the setter did not decide that request. Only a 'policy'
+-- approval records a mode source, and an approved 'policy' row always does.
+--
+-- The activity feed lists approved requests newest first, keyset on
+-- (created_at, id); each table has a partial index on its approved states
+-- for it.
 --
 -- The UPDATE grants gain every new column except checked_target_status.
 --
@@ -191,8 +199,9 @@
 --   6. 'person': a named decider must be the signed-in person in the same
 --      transaction (app.user_id). A missing decider is refused by
 --      approval_names_a_human_check.
---   7. 'policy': no user in the transaction; the site's current mode,
---      version, setter and set time are the ones recorded on the request,
+--   7. 'policy': no user in the transaction; the site's current mode, mode
+--      source, version, setter and set time are the ones recorded on the
+--      request,
 --      ai_mode_allows(mode, change_class) holds, and the connection is active
 --      and runs by the site's setting.
 --   8. 'session': refused until the migration that adds sessions replaces
@@ -618,6 +627,7 @@ GRANT EXECUTE ON FUNCTION "public"."mcp_grant_runs_by_setting"(uuid, uuid) TO "w
 ALTER TABLE "public"."assistant_ability_requests"
     ADD COLUMN IF NOT EXISTS "approval_source"         text        NOT NULL DEFAULT 'person',
     ADD COLUMN IF NOT EXISTS "approval_site_mode"      text        NULL,
+    ADD COLUMN IF NOT EXISTS "approval_mode_source"    text        NULL,
     ADD COLUMN IF NOT EXISTS "approval_mode_version"   bigint      NULL,
     ADD COLUMN IF NOT EXISTS "approval_setter_user_id" uuid        NULL,
     ADD COLUMN IF NOT EXISTS "approval_setter_set_at"  timestamptz NULL,
@@ -631,6 +641,7 @@ ALTER TABLE "public"."assistant_ability_requests"
 ALTER TABLE "public"."assistant_cache_purge_requests"
     ADD COLUMN IF NOT EXISTS "approval_source"         text        NOT NULL DEFAULT 'person',
     ADD COLUMN IF NOT EXISTS "approval_site_mode"      text        NULL,
+    ADD COLUMN IF NOT EXISTS "approval_mode_source"    text        NULL,
     ADD COLUMN IF NOT EXISTS "approval_mode_version"   bigint      NULL,
     ADD COLUMN IF NOT EXISTS "approval_setter_user_id" uuid        NULL,
     ADD COLUMN IF NOT EXISTS "approval_setter_set_at"  timestamptz NULL,
@@ -645,6 +656,7 @@ ALTER TABLE "public"."assistant_ability_requests"
     DROP CONSTRAINT IF EXISTS "assistant_ability_requests_not_sent_reason_check",
     DROP CONSTRAINT IF EXISTS "assistant_ability_requests_approval_source_check",
     DROP CONSTRAINT IF EXISTS "assistant_ability_requests_approval_site_mode_check",
+    DROP CONSTRAINT IF EXISTS "assistant_ability_requests_approval_mode_source_check",
     DROP CONSTRAINT IF EXISTS "assistant_ability_requests_approval_mode_version_check",
     DROP CONSTRAINT IF EXISTS "assistant_ability_requests_approval_setter_not_nil_check",
     DROP CONSTRAINT IF EXISTS "assistant_ability_requests_base_change_class_check",
@@ -687,6 +699,12 @@ ALTER TABLE "public"."assistant_ability_requests"
         CHECK ("approval_source" IN ('person', 'policy', 'session')),
     ADD CONSTRAINT "assistant_ability_requests_approval_site_mode_check"
         CHECK ("approval_site_mode" IS NULL OR "approval_site_mode" IN ('ai_drafts', 'full')),
+    -- How the mode a 'policy' approval relied on was chosen. Only a
+    -- 'policy' approval records it.
+    ADD CONSTRAINT "assistant_ability_requests_approval_mode_source_check"
+        CHECK ("approval_mode_source" IS NULL
+               OR ("approval_source" = 'policy'
+                   AND "approval_mode_source" IN ('launch_default', 'enable_default', 'person'))),
     ADD CONSTRAINT "assistant_ability_requests_approval_mode_version_check"
         CHECK ("approval_mode_version" IS NULL OR "approval_mode_version" > 0),
     ADD CONSTRAINT "assistant_ability_requests_approval_setter_not_nil_check"
@@ -722,6 +740,7 @@ ALTER TABLE "public"."assistant_ability_requests"
                OR "approval_source" <> 'policy'
                OR ("decided_by_user_id" IS NULL
                    AND "approval_site_mode" IS NOT NULL
+                   AND "approval_mode_source" IS NOT NULL
                    AND "approval_mode_version" IS NOT NULL
                    AND "approval_setter_user_id" IS NOT NULL
                    AND "approval_setter_set_at" IS NOT NULL
@@ -738,6 +757,7 @@ ALTER TABLE "public"."assistant_ability_requests"
                    AND "approval_session_id" IS NOT NULL
                    AND "approval_setter_user_id" IS NOT NULL
                    AND "approval_site_mode" IS NULL
+                   AND "approval_mode_source" IS NULL
                    AND "approval_mode_version" IS NULL
                    AND "base_change_class" IS NOT NULL
                    AND "change_class" IS NOT NULL
@@ -749,6 +769,7 @@ ALTER TABLE "public"."assistant_cache_purge_requests"
     DROP CONSTRAINT IF EXISTS "assistant_cache_purge_requests_not_sent_reason_check",
     DROP CONSTRAINT IF EXISTS "assistant_cache_purge_requests_approval_source_check",
     DROP CONSTRAINT IF EXISTS "assistant_cache_purge_requests_approval_site_mode_check",
+    DROP CONSTRAINT IF EXISTS "assistant_cache_purge_requests_approval_mode_source_check",
     DROP CONSTRAINT IF EXISTS "assistant_cache_purge_requests_approval_mode_version_check",
     DROP CONSTRAINT IF EXISTS "assistant_cache_purge_requests_approval_setter_not_nil_check",
     DROP CONSTRAINT IF EXISTS "assistant_cache_purge_requests_base_change_class_check",
@@ -782,6 +803,12 @@ ALTER TABLE "public"."assistant_cache_purge_requests"
         CHECK ("approval_source" IN ('person', 'policy', 'session')),
     ADD CONSTRAINT "assistant_cache_purge_requests_approval_site_mode_check"
         CHECK ("approval_site_mode" IS NULL OR "approval_site_mode" IN ('ai_drafts', 'full')),
+    -- How the mode a 'policy' approval relied on was chosen. Only a
+    -- 'policy' approval records it.
+    ADD CONSTRAINT "assistant_cache_purge_requests_approval_mode_source_check"
+        CHECK ("approval_mode_source" IS NULL
+               OR ("approval_source" = 'policy'
+                   AND "approval_mode_source" IN ('launch_default', 'enable_default', 'person'))),
     ADD CONSTRAINT "assistant_cache_purge_requests_approval_mode_version_check"
         CHECK ("approval_mode_version" IS NULL OR "approval_mode_version" > 0),
     ADD CONSTRAINT "assistant_cache_purge_requests_approval_setter_not_nil_check"
@@ -814,6 +841,7 @@ ALTER TABLE "public"."assistant_cache_purge_requests"
                OR "approval_source" <> 'policy'
                OR ("decided_by_user_id" IS NULL
                    AND "approval_site_mode" IS NOT NULL
+                   AND "approval_mode_source" IS NOT NULL
                    AND "approval_mode_version" IS NOT NULL
                    AND "approval_setter_user_id" IS NOT NULL
                    AND "approval_setter_set_at" IS NOT NULL
@@ -829,6 +857,7 @@ ALTER TABLE "public"."assistant_cache_purge_requests"
                    AND "approval_session_id" IS NOT NULL
                    AND "approval_setter_user_id" IS NOT NULL
                    AND "approval_site_mode" IS NULL
+                   AND "approval_mode_source" IS NULL
                    AND "approval_mode_version" IS NULL
                    AND "base_change_class" IS NOT NULL
                    AND "change_class" IS NOT NULL
@@ -850,9 +879,10 @@ CREATE INDEX IF NOT EXISTS "assistant_ability_requests_unchecked_idx"
 CREATE INDEX IF NOT EXISTS "assistant_ability_requests_session_idx"
     ON "public"."assistant_ability_requests" ("approval_session_id")
     WHERE "approval_session_id" IS NOT NULL;
-CREATE INDEX IF NOT EXISTS "assistant_ability_requests_activity_idx"
-    ON "public"."assistant_ability_requests" ("tenant_id", "decided_at" DESC, "id" DESC)
-    WHERE "decided_at" IS NOT NULL;
+DROP INDEX IF EXISTS "public"."assistant_ability_requests_activity_idx";
+CREATE INDEX IF NOT EXISTS "assistant_ability_requests_activity_created_idx"
+    ON "public"."assistant_ability_requests" ("tenant_id", "created_at" DESC, "id" DESC)
+    WHERE "state" IN ('approved', 'dispatched', 'done', 'failed', 'not_sent', 'outcome_unknown');
 
 CREATE INDEX IF NOT EXISTS "assistant_cache_purge_requests_policy_grant_idx"
     ON "public"."assistant_cache_purge_requests" ("proposed_by_grant_id", "decided_at")
@@ -866,20 +896,21 @@ CREATE INDEX IF NOT EXISTS "assistant_cache_purge_requests_unchecked_idx"
 CREATE INDEX IF NOT EXISTS "assistant_cache_purge_requests_session_idx"
     ON "public"."assistant_cache_purge_requests" ("approval_session_id")
     WHERE "approval_session_id" IS NOT NULL;
-CREATE INDEX IF NOT EXISTS "assistant_cache_purge_requests_activity_idx"
-    ON "public"."assistant_cache_purge_requests" ("tenant_id", "decided_at" DESC, "id" DESC)
-    WHERE "decided_at" IS NOT NULL;
+DROP INDEX IF EXISTS "public"."assistant_cache_purge_requests_activity_idx";
+CREATE INDEX IF NOT EXISTS "assistant_cache_purge_requests_activity_created_idx"
+    ON "public"."assistant_cache_purge_requests" ("tenant_id", "created_at" DESC, "id" DESC)
+    WHERE "state" IN ('approved_undispatched', 'dispatched');
 
 -- The workflow columns the application may write. checked_target_status is
 -- not among them: it is written at insert only.
 GRANT UPDATE (
-    "approval_source", "approval_site_mode", "approval_mode_version",
+    "approval_source", "approval_site_mode", "approval_mode_source", "approval_mode_version",
     "approval_setter_user_id", "approval_setter_set_at", "approval_session_id",
     "base_change_class", "change_class", "ask_reason", "policy_checked_at"
 ) ON "public"."assistant_ability_requests" TO "wpmgr_app";
 
 GRANT UPDATE (
-    "approval_source", "approval_site_mode", "approval_mode_version",
+    "approval_source", "approval_site_mode", "approval_mode_source", "approval_mode_version",
     "approval_setter_user_id", "approval_setter_set_at", "approval_session_id",
     "base_change_class", "change_class", "ask_reason", "policy_checked_at"
 ) ON "public"."assistant_cache_purge_requests" TO "wpmgr_app";
@@ -923,6 +954,7 @@ BEGIN
         END IF;
         IF NEW.approval_source IS DISTINCT FROM 'person'
            OR NEW.approval_site_mode IS NOT NULL
+           OR NEW.approval_mode_source IS NOT NULL
            OR NEW.approval_mode_version IS NOT NULL
            OR NEW.approval_setter_user_id IS NOT NULL
            OR NEW.approval_setter_set_at IS NOT NULL
@@ -966,6 +998,7 @@ BEGIN
     IF NOT (OLD.state = 'pending' AND NEW.state = v_entry) THEN
         IF NEW.approval_source IS DISTINCT FROM OLD.approval_source
            OR NEW.approval_site_mode IS DISTINCT FROM OLD.approval_site_mode
+           OR NEW.approval_mode_source IS DISTINCT FROM OLD.approval_mode_source
            OR NEW.approval_mode_version IS DISTINCT FROM OLD.approval_mode_version
            OR NEW.approval_setter_user_id IS DISTINCT FROM OLD.approval_setter_user_id
            OR NEW.approval_setter_set_at IS DISTINCT FROM OLD.approval_setter_set_at
@@ -1003,6 +1036,7 @@ BEGIN
                        WHERE s.tenant_id = NEW.tenant_id
                          AND s.id = NEW.site_id
                          AND s.ai_mode = NEW.approval_site_mode
+                         AND s.ai_mode_source = NEW.approval_mode_source
                          AND s.ai_mode_version = NEW.approval_mode_version
                          AND s.ai_mode_set_by = NEW.approval_setter_user_id
                          AND s.ai_mode_set_at IS NOT DISTINCT FROM NEW.approval_setter_set_at

@@ -23,7 +23,7 @@ WHERE tenant_id = $2
   AND presented_digest = $5
   AND state = 'pending'
   AND expires_at > now()
-RETURNING id, tenant_id, site_id, proposed_by_grant_id, scope, url, site_label, site_host, grant_label, grant_via, setup_client, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, claimed_at, cache_purge_audit_id, dispatch_attempts, last_attempt_at, last_attempt_code, outcome, not_sent_reason, outcome_at, hosting_caches_cleared, hosting_caches_skipped, origin_only_confirmed, wpmgr_cdn, site_reported_text, approval_source, approval_site_mode, approval_mode_version, approval_setter_user_id, approval_setter_set_at, approval_session_id, base_change_class, change_class, ask_reason, policy_checked_at
+RETURNING id, tenant_id, site_id, proposed_by_grant_id, scope, url, site_label, site_host, grant_label, grant_via, setup_client, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, claimed_at, cache_purge_audit_id, dispatch_attempts, last_attempt_at, last_attempt_code, outcome, not_sent_reason, outcome_at, hosting_caches_cleared, hosting_caches_skipped, origin_only_confirmed, wpmgr_cdn, site_reported_text, approval_source, approval_site_mode, approval_mode_source, approval_mode_version, approval_setter_user_id, approval_setter_set_at, approval_session_id, base_change_class, change_class, ask_reason, policy_checked_at
 `
 
 type ApproveAssistantCachePurgeRequestParams struct {
@@ -81,6 +81,7 @@ func (q *Queries) ApproveAssistantCachePurgeRequest(ctx context.Context, arg App
 		&i.SiteReportedText,
 		&i.ApprovalSource,
 		&i.ApprovalSiteMode,
+		&i.ApprovalModeSource,
 		&i.ApprovalModeVersion,
 		&i.ApprovalSetterUserID,
 		&i.ApprovalSetterSetAt,
@@ -354,7 +355,7 @@ WHERE tenant_id = $2
   AND site_id = $4
   AND state = 'pending'
   AND expires_at > now()
-RETURNING id, tenant_id, site_id, proposed_by_grant_id, scope, url, site_label, site_host, grant_label, grant_via, setup_client, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, claimed_at, cache_purge_audit_id, dispatch_attempts, last_attempt_at, last_attempt_code, outcome, not_sent_reason, outcome_at, hosting_caches_cleared, hosting_caches_skipped, origin_only_confirmed, wpmgr_cdn, site_reported_text, approval_source, approval_site_mode, approval_mode_version, approval_setter_user_id, approval_setter_set_at, approval_session_id, base_change_class, change_class, ask_reason, policy_checked_at
+RETURNING id, tenant_id, site_id, proposed_by_grant_id, scope, url, site_label, site_host, grant_label, grant_via, setup_client, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, claimed_at, cache_purge_audit_id, dispatch_attempts, last_attempt_at, last_attempt_code, outcome, not_sent_reason, outcome_at, hosting_caches_cleared, hosting_caches_skipped, origin_only_confirmed, wpmgr_cdn, site_reported_text, approval_source, approval_site_mode, approval_mode_source, approval_mode_version, approval_setter_user_id, approval_setter_set_at, approval_session_id, base_change_class, change_class, ask_reason, policy_checked_at
 `
 
 type DeclineAssistantCachePurgeRequestParams struct {
@@ -409,6 +410,7 @@ func (q *Queries) DeclineAssistantCachePurgeRequest(ctx context.Context, arg Dec
 		&i.SiteReportedText,
 		&i.ApprovalSource,
 		&i.ApprovalSiteMode,
+		&i.ApprovalModeSource,
 		&i.ApprovalModeVersion,
 		&i.ApprovalSetterUserID,
 		&i.ApprovalSetterSetAt,
@@ -488,7 +490,7 @@ func (q *Queries) ExpireLapsedPendingAssistantCachePurgeRequest(ctx context.Cont
 }
 
 const getApprovedAssistantCachePurgeRequestForDispatch = `-- name: GetApprovedAssistantCachePurgeRequestForDispatch :one
-SELECT assistant_cache_purge_requests.id, assistant_cache_purge_requests.tenant_id, assistant_cache_purge_requests.site_id, assistant_cache_purge_requests.proposed_by_grant_id, assistant_cache_purge_requests.scope, assistant_cache_purge_requests.url, assistant_cache_purge_requests.site_label, assistant_cache_purge_requests.site_host, assistant_cache_purge_requests.grant_label, assistant_cache_purge_requests.grant_via, assistant_cache_purge_requests.setup_client, assistant_cache_purge_requests.digest_nonce, assistant_cache_purge_requests.presented_digest, assistant_cache_purge_requests.state, assistant_cache_purge_requests.created_at, assistant_cache_purge_requests.expires_at, assistant_cache_purge_requests.decided_at, assistant_cache_purge_requests.decided_by_user_id, assistant_cache_purge_requests.withdrawn_at, assistant_cache_purge_requests.claimed_at, assistant_cache_purge_requests.cache_purge_audit_id, assistant_cache_purge_requests.dispatch_attempts, assistant_cache_purge_requests.last_attempt_at, assistant_cache_purge_requests.last_attempt_code, assistant_cache_purge_requests.outcome, assistant_cache_purge_requests.not_sent_reason, assistant_cache_purge_requests.outcome_at, assistant_cache_purge_requests.hosting_caches_cleared, assistant_cache_purge_requests.hosting_caches_skipped, assistant_cache_purge_requests.origin_only_confirmed, assistant_cache_purge_requests.wpmgr_cdn, assistant_cache_purge_requests.site_reported_text, assistant_cache_purge_requests.approval_source, assistant_cache_purge_requests.approval_site_mode, assistant_cache_purge_requests.approval_mode_version, assistant_cache_purge_requests.approval_setter_user_id, assistant_cache_purge_requests.approval_setter_set_at, assistant_cache_purge_requests.approval_session_id, assistant_cache_purge_requests.base_change_class, assistant_cache_purge_requests.change_class, assistant_cache_purge_requests.ask_reason, assistant_cache_purge_requests.policy_checked_at,
+SELECT assistant_cache_purge_requests.id, assistant_cache_purge_requests.tenant_id, assistant_cache_purge_requests.site_id, assistant_cache_purge_requests.proposed_by_grant_id, assistant_cache_purge_requests.scope, assistant_cache_purge_requests.url, assistant_cache_purge_requests.site_label, assistant_cache_purge_requests.site_host, assistant_cache_purge_requests.grant_label, assistant_cache_purge_requests.grant_via, assistant_cache_purge_requests.setup_client, assistant_cache_purge_requests.digest_nonce, assistant_cache_purge_requests.presented_digest, assistant_cache_purge_requests.state, assistant_cache_purge_requests.created_at, assistant_cache_purge_requests.expires_at, assistant_cache_purge_requests.decided_at, assistant_cache_purge_requests.decided_by_user_id, assistant_cache_purge_requests.withdrawn_at, assistant_cache_purge_requests.claimed_at, assistant_cache_purge_requests.cache_purge_audit_id, assistant_cache_purge_requests.dispatch_attempts, assistant_cache_purge_requests.last_attempt_at, assistant_cache_purge_requests.last_attempt_code, assistant_cache_purge_requests.outcome, assistant_cache_purge_requests.not_sent_reason, assistant_cache_purge_requests.outcome_at, assistant_cache_purge_requests.hosting_caches_cleared, assistant_cache_purge_requests.hosting_caches_skipped, assistant_cache_purge_requests.origin_only_confirmed, assistant_cache_purge_requests.wpmgr_cdn, assistant_cache_purge_requests.site_reported_text, assistant_cache_purge_requests.approval_source, assistant_cache_purge_requests.approval_site_mode, assistant_cache_purge_requests.approval_mode_source, assistant_cache_purge_requests.approval_mode_version, assistant_cache_purge_requests.approval_setter_user_id, assistant_cache_purge_requests.approval_setter_set_at, assistant_cache_purge_requests.approval_session_id, assistant_cache_purge_requests.base_change_class, assistant_cache_purge_requests.change_class, assistant_cache_purge_requests.ask_reason, assistant_cache_purge_requests.policy_checked_at,
        (decided_at <= now() - ($1::int * interval '1 second'))::boolean AS past_deadline
 FROM assistant_cache_purge_requests
 WHERE tenant_id = $2
@@ -548,6 +550,7 @@ func (q *Queries) GetApprovedAssistantCachePurgeRequestForDispatch(ctx context.C
 		&i.AssistantCachePurgeRequest.SiteReportedText,
 		&i.AssistantCachePurgeRequest.ApprovalSource,
 		&i.AssistantCachePurgeRequest.ApprovalSiteMode,
+		&i.AssistantCachePurgeRequest.ApprovalModeSource,
 		&i.AssistantCachePurgeRequest.ApprovalModeVersion,
 		&i.AssistantCachePurgeRequest.ApprovalSetterUserID,
 		&i.AssistantCachePurgeRequest.ApprovalSetterSetAt,
@@ -670,7 +673,7 @@ func (q *Queries) GetLatestWholeSitePurgeOnSiteSince(ctx context.Context, arg Ge
 }
 
 const getPendingAssistantCachePurgeRequestForGrantSite = `-- name: GetPendingAssistantCachePurgeRequestForGrantSite :one
-SELECT id, tenant_id, site_id, proposed_by_grant_id, scope, url, site_label, site_host, grant_label, grant_via, setup_client, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, claimed_at, cache_purge_audit_id, dispatch_attempts, last_attempt_at, last_attempt_code, outcome, not_sent_reason, outcome_at, hosting_caches_cleared, hosting_caches_skipped, origin_only_confirmed, wpmgr_cdn, site_reported_text, approval_source, approval_site_mode, approval_mode_version, approval_setter_user_id, approval_setter_set_at, approval_session_id, base_change_class, change_class, ask_reason, policy_checked_at
+SELECT id, tenant_id, site_id, proposed_by_grant_id, scope, url, site_label, site_host, grant_label, grant_via, setup_client, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, claimed_at, cache_purge_audit_id, dispatch_attempts, last_attempt_at, last_attempt_code, outcome, not_sent_reason, outcome_at, hosting_caches_cleared, hosting_caches_skipped, origin_only_confirmed, wpmgr_cdn, site_reported_text, approval_source, approval_site_mode, approval_mode_source, approval_mode_version, approval_setter_user_id, approval_setter_set_at, approval_session_id, base_change_class, change_class, ask_reason, policy_checked_at
 FROM assistant_cache_purge_requests
 WHERE tenant_id = $1
   AND site_id = $2
@@ -724,6 +727,7 @@ func (q *Queries) GetPendingAssistantCachePurgeRequestForGrantSite(ctx context.C
 		&i.SiteReportedText,
 		&i.ApprovalSource,
 		&i.ApprovalSiteMode,
+		&i.ApprovalModeSource,
 		&i.ApprovalModeVersion,
 		&i.ApprovalSetterUserID,
 		&i.ApprovalSetterSetAt,
@@ -738,7 +742,7 @@ func (q *Queries) GetPendingAssistantCachePurgeRequestForGrantSite(ctx context.C
 
 const getPendingAssistantCachePurgeRequestForSite = `-- name: GetPendingAssistantCachePurgeRequestForSite :one
 
-SELECT id, tenant_id, site_id, proposed_by_grant_id, scope, url, site_label, site_host, grant_label, grant_via, setup_client, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, claimed_at, cache_purge_audit_id, dispatch_attempts, last_attempt_at, last_attempt_code, outcome, not_sent_reason, outcome_at, hosting_caches_cleared, hosting_caches_skipped, origin_only_confirmed, wpmgr_cdn, site_reported_text, approval_source, approval_site_mode, approval_mode_version, approval_setter_user_id, approval_setter_set_at, approval_session_id, base_change_class, change_class, ask_reason, policy_checked_at
+SELECT id, tenant_id, site_id, proposed_by_grant_id, scope, url, site_label, site_host, grant_label, grant_via, setup_client, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, claimed_at, cache_purge_audit_id, dispatch_attempts, last_attempt_at, last_attempt_code, outcome, not_sent_reason, outcome_at, hosting_caches_cleared, hosting_caches_skipped, origin_only_confirmed, wpmgr_cdn, site_reported_text, approval_source, approval_site_mode, approval_mode_source, approval_mode_version, approval_setter_user_id, approval_setter_set_at, approval_session_id, base_change_class, change_class, ask_reason, policy_checked_at
 FROM assistant_cache_purge_requests
 WHERE tenant_id = $1
   AND id = $2
@@ -793,6 +797,7 @@ func (q *Queries) GetPendingAssistantCachePurgeRequestForSite(ctx context.Contex
 		&i.SiteReportedText,
 		&i.ApprovalSource,
 		&i.ApprovalSiteMode,
+		&i.ApprovalModeSource,
 		&i.ApprovalModeVersion,
 		&i.ApprovalSetterUserID,
 		&i.ApprovalSetterSetAt,
@@ -897,7 +902,7 @@ INSERT INTO assistant_cache_purge_requests (
 )
 ON CONFLICT (tenant_id, site_id, proposed_by_grant_id) WHERE state = 'pending'
 DO NOTHING
-RETURNING id, tenant_id, site_id, proposed_by_grant_id, scope, url, site_label, site_host, grant_label, grant_via, setup_client, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, claimed_at, cache_purge_audit_id, dispatch_attempts, last_attempt_at, last_attempt_code, outcome, not_sent_reason, outcome_at, hosting_caches_cleared, hosting_caches_skipped, origin_only_confirmed, wpmgr_cdn, site_reported_text, approval_source, approval_site_mode, approval_mode_version, approval_setter_user_id, approval_setter_set_at, approval_session_id, base_change_class, change_class, ask_reason, policy_checked_at
+RETURNING id, tenant_id, site_id, proposed_by_grant_id, scope, url, site_label, site_host, grant_label, grant_via, setup_client, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, claimed_at, cache_purge_audit_id, dispatch_attempts, last_attempt_at, last_attempt_code, outcome, not_sent_reason, outcome_at, hosting_caches_cleared, hosting_caches_skipped, origin_only_confirmed, wpmgr_cdn, site_reported_text, approval_source, approval_site_mode, approval_mode_source, approval_mode_version, approval_setter_user_id, approval_setter_set_at, approval_session_id, base_change_class, change_class, ask_reason, policy_checked_at
 `
 
 type InsertAssistantCachePurgeRequestParams struct {
@@ -972,6 +977,7 @@ func (q *Queries) InsertAssistantCachePurgeRequest(ctx context.Context, arg Inse
 		&i.SiteReportedText,
 		&i.ApprovalSource,
 		&i.ApprovalSiteMode,
+		&i.ApprovalModeSource,
 		&i.ApprovalModeVersion,
 		&i.ApprovalSetterUserID,
 		&i.ApprovalSetterSetAt,
@@ -986,7 +992,7 @@ func (q *Queries) InsertAssistantCachePurgeRequest(ctx context.Context, arg Inse
 
 const listAssistantCachePurgeRequests = `-- name: ListAssistantCachePurgeRequests :many
 
-SELECT id, tenant_id, site_id, proposed_by_grant_id, scope, url, site_label, site_host, grant_label, grant_via, setup_client, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, claimed_at, cache_purge_audit_id, dispatch_attempts, last_attempt_at, last_attempt_code, outcome, not_sent_reason, outcome_at, hosting_caches_cleared, hosting_caches_skipped, origin_only_confirmed, wpmgr_cdn, site_reported_text, approval_source, approval_site_mode, approval_mode_version, approval_setter_user_id, approval_setter_set_at, approval_session_id, base_change_class, change_class, ask_reason, policy_checked_at
+SELECT id, tenant_id, site_id, proposed_by_grant_id, scope, url, site_label, site_host, grant_label, grant_via, setup_client, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, claimed_at, cache_purge_audit_id, dispatch_attempts, last_attempt_at, last_attempt_code, outcome, not_sent_reason, outcome_at, hosting_caches_cleared, hosting_caches_skipped, origin_only_confirmed, wpmgr_cdn, site_reported_text, approval_source, approval_site_mode, approval_mode_source, approval_mode_version, approval_setter_user_id, approval_setter_set_at, approval_session_id, base_change_class, change_class, ask_reason, policy_checked_at
 FROM assistant_cache_purge_requests
 WHERE tenant_id = $1
 ORDER BY created_at DESC, id DESC
@@ -1048,6 +1054,7 @@ func (q *Queries) ListAssistantCachePurgeRequests(ctx context.Context, arg ListA
 			&i.SiteReportedText,
 			&i.ApprovalSource,
 			&i.ApprovalSiteMode,
+			&i.ApprovalModeSource,
 			&i.ApprovalModeVersion,
 			&i.ApprovalSetterUserID,
 			&i.ApprovalSetterSetAt,
@@ -1068,7 +1075,7 @@ func (q *Queries) ListAssistantCachePurgeRequests(ctx context.Context, arg ListA
 }
 
 const listAssistantCachePurgeRequestsForSite = `-- name: ListAssistantCachePurgeRequestsForSite :many
-SELECT id, tenant_id, site_id, proposed_by_grant_id, scope, url, site_label, site_host, grant_label, grant_via, setup_client, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, claimed_at, cache_purge_audit_id, dispatch_attempts, last_attempt_at, last_attempt_code, outcome, not_sent_reason, outcome_at, hosting_caches_cleared, hosting_caches_skipped, origin_only_confirmed, wpmgr_cdn, site_reported_text, approval_source, approval_site_mode, approval_mode_version, approval_setter_user_id, approval_setter_set_at, approval_session_id, base_change_class, change_class, ask_reason, policy_checked_at
+SELECT id, tenant_id, site_id, proposed_by_grant_id, scope, url, site_label, site_host, grant_label, grant_via, setup_client, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, claimed_at, cache_purge_audit_id, dispatch_attempts, last_attempt_at, last_attempt_code, outcome, not_sent_reason, outcome_at, hosting_caches_cleared, hosting_caches_skipped, origin_only_confirmed, wpmgr_cdn, site_reported_text, approval_source, approval_site_mode, approval_mode_source, approval_mode_version, approval_setter_user_id, approval_setter_set_at, approval_session_id, base_change_class, change_class, ask_reason, policy_checked_at
 FROM assistant_cache_purge_requests
 WHERE tenant_id = $1
   AND site_id = $2
@@ -1132,6 +1139,7 @@ func (q *Queries) ListAssistantCachePurgeRequestsForSite(ctx context.Context, ar
 			&i.SiteReportedText,
 			&i.ApprovalSource,
 			&i.ApprovalSiteMode,
+			&i.ApprovalModeSource,
 			&i.ApprovalModeVersion,
 			&i.ApprovalSetterUserID,
 			&i.ApprovalSetterSetAt,
