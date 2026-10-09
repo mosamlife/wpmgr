@@ -47,7 +47,7 @@ const (
 		"classic widgets, or atomic for its Atomic editor, which works only where that editor is switched on and " +
 		"WPMgr supports the site's Elementor version. In Elementor, buttons cannot use the outline style, a " +
 		"paragraph cannot be only a web address, and an image's alt text must be exactly the alt text it has in the " +
-		"media library. Elementor pages need the WPMgr plugin 0.61.162 or later and Elementor 3.20 or later on the " +
+		"media library. Elementor pages need the WPMgr plugin 0.61.161 or later and Elementor 3.20 or later on the " +
 		"site."
 
 	m166Limits = `{"max_top_level_nodes":200,"max_nodes":400,"max_columns":4,"max_children":50,"max_images":20,` +
