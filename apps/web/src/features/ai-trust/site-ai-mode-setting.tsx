@@ -5,17 +5,19 @@ import type { AiMode, SiteAiMode } from "@wpmgr/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { PageError } from "@/components/feedback/page-error";
 import { cn } from "@/lib/utils";
 
 import {
   ALWAYS_WAITS_LINE,
+  EDITING_ON_LINE,
   FULL_AUTO_LATER,
   KEEP_ASKING,
   KEEP_AUTO,
   MIGRATED_NOTICE,
   MODE_DESCRIPTION,
   MODE_HEADING,
+  MODE_LOAD_FAILED,
+  MODE_LOAD_FAILED_WHY,
   MODE_NAME,
   MODE_SUBHEADING,
   NOT_OPERATOR_LINE,
@@ -43,6 +45,11 @@ import {
 // What each mode covers is a table rendered from the server's `kinds`, never
 // from literals, and who may choose is the server's `options[].choosable`
 // on top of the operator gate the enable button uses.
+//
+// This component renders only once AI editing is known to be on. When the mode
+// itself cannot be read, the card still says AI editing is on and says the
+// setting could not be loaded, with its own Retry. It never guesses a mode, so
+// it never says what the AI may do without asking.
 
 type ChoosableMode = "ask" | "ai_drafts";
 const CHOOSABLE: readonly ChoosableMode[] = ["ask", "ai_drafts"];
@@ -61,14 +68,7 @@ export function SiteAiModeSetting({ siteId, canOperate, currentUserId }: SiteAiM
     return <Skeleton aria-label="Loading AI editing" className="h-40 w-full" />;
   }
   if (query.isError) {
-    return (
-      <PageError
-        what="Could not load the AI editing setting."
-        why={query.error.message}
-        onRetry={() => void query.refetch()}
-        isRetrying={query.isFetching}
-      />
-    );
+    return <ModeUnavailableCard onRetry={() => void query.refetch()} isRetrying={query.isFetching} />;
   }
   return (
     <ModeCard
@@ -77,6 +77,33 @@ export function SiteAiModeSetting({ siteId, canOperate, currentUserId }: SiteAiM
       canOperate={canOperate}
       currentUserId={currentUserId}
     />
+  );
+}
+
+/**
+ * AI editing is on but its mode could not be read. The card keeps its heading
+ * and the one line that holds in every mode, then says what failed. The alert
+ * sits inside the card, as the section's other inline failures do, so the page
+ * keeps one card for AI editing instead of an error standing in for it.
+ */
+function ModeUnavailableCard({ onRetry, isRetrying }: { onRetry: () => void; isRetrying: boolean }) {
+  return (
+    <div className="space-y-3 rounded-lg border border-border bg-card p-4" data-testid="ai-mode-unavailable">
+      <div className="space-y-0.5">
+        <h2 className="text-sm font-semibold text-foreground">AI editing</h2>
+        <p data-testid="ai-editing-state" className="text-sm text-muted-foreground">
+          {EDITING_ON_LINE}
+        </p>
+      </div>
+      <div role="alert" className="flex flex-wrap items-center gap-2 text-sm text-destructive">
+        <span className="min-w-0">
+          {MODE_LOAD_FAILED} {MODE_LOAD_FAILED_WHY}
+        </span>
+        <Button type="button" variant="outline" size="sm" disabled={isRetrying} onClick={onRetry}>
+          {isRetrying ? "Retrying…" : "Retry"}
+        </Button>
+      </div>
+    </div>
   );
 }
 

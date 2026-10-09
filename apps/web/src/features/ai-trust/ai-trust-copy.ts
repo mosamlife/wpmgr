@@ -62,6 +62,19 @@ export const PAUSED_LINE =
 
 export const SAVE_FAILED_LINE = "WPMgr could not save this. The setting is unchanged. Try again.";
 
+/**
+ * The line under "AI editing" when the site's mode could not be read. AI
+ * editing being on is known from its own switch, so the line says only that:
+ * what the AI may do without asking depends on the mode, and the mode is the
+ * thing that is missing.
+ */
+export const EDITING_ON_LINE = "AI editing is on.";
+
+/** When the mode could not be read: what failed, and what is therefore not shown. */
+export const MODE_LOAD_FAILED = "Could not load the AI editing setting.";
+export const MODE_LOAD_FAILED_WHY =
+  "WPMgr could not read how much the AI may do on this site, so the setting is not shown here.";
+
 export function staleVersionLine(mode: AiMode | null): string {
   const now = mode ? ` It now reads ${MODE_NAME[mode]}.` : "";
   return `This setting was changed a moment ago.${now} Choose again if you still want to change it.`;
@@ -225,6 +238,13 @@ export function settingNotSentLine(reason: string | null | undefined): string | 
 export const RAN_AUTOMATICALLY = "Ran automatically";
 
 export const UNDO_WINDOW_OVER_LINE = "Undo is no longer available. Its period has ended.";
+
+/**
+ * Said of a change a setting approved when WPMgr cannot vouch for its result
+ * (design §8.9). No person approved it, so the line never leans on "what you
+ * approved", and it names the one place the answer can be read.
+ */
+export const OUTCOME_UNKNOWN_LINE = "WPMgr could not confirm the result. Check the page in WordPress.";
 
 export const ACTIVITY_EMPTY =
   "Nothing has happened yet. When an AI connection changes a site, it will be listed here.";
