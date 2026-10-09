@@ -866,6 +866,25 @@ if should_run "$NAME"; then
     pass "$NAME"
 fi
 
+NAME='image: a negative control that only ever shows a different zombie exits 2, never 0'
+if should_run "$NAME"; then
+  image_case /usr/bin/tini -- /usr/local/bin/media-encoder
+  # A PID 1 that never reaps leaves its zombie in place. Here every look shows
+  # another one instead, so nothing stayed: this environment has not shown the
+  # defect, however many zombies the last look happened to hold.
+  fx_base "$CASEDIR/neg1" sleep
+  add_proc "$CASEDIR/neg1" 60 sleep Z
+  fx_base "$CASEDIR/neg2" sleep
+  add_proc "$CASEDIR/neg2" 61 sleep Z
+  set_proc neg "$CASEDIR/neg1" "$CASEDIR/neg2"
+  run_check --image img:test
+  want_rc "$NAME" 2 &&
+    want_says "$NAME" 'cannot show the defect' &&
+    want_silent_about "$NAME" 'OK: negative control' &&
+    want_calls "$NAME" '^rm -f ' 1 &&
+    pass "$NAME"
+fi
+
 NAME='image: docker run failing exits 2'
 if should_run "$NAME"; then
   image_case /usr/bin/tini -- /usr/local/bin/media-encoder
