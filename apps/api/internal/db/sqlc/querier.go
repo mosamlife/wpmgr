@@ -1564,6 +1564,18 @@ type Querier interface {
 	// site is due for cleanup (next_db_clean_at IS NULL means first-run-ever and
 	// is treated as immediately due). Runs under app.agent (cross-tenant sweep).
 	GetDueDBCleanSites(ctx context.Context, rowLimit int32) ([]GetDueDBCleanSitesRow, error)
+	// ---------------------------------------------------------------------------
+	// Page edit (m169). Reads over one post on one site, in any principal's
+	// tenant transaction; the table's tenant and site-scope policies apply on
+	// top of the predicates here.
+	// ---------------------------------------------------------------------------
+	// The draft on this site that WPMgr created with wpmgr/page-create as post
+	// post_id, while it is still WPMgr's to change: a done creation of that post
+	// whose undo has not trashed it and is not trashing it now. The newest such
+	// creation, at most one row; pgx.ErrNoRows means the control plane names no
+	// draft for this post. The agent checks the post itself before it reads or
+	// changes it.
+	GetEligibleCreatedDraft(ctx context.Context, arg GetEligibleCreatedDraftParams) (GetEligibleCreatedDraftRow, error)
 	// m61: resolve a config row by its webhook_route_token_hash for the public
 	// webhook dispatcher.  Runs under InAgentTx (webhook path, no tenant GUC).
 	// Returns the full row so the handler can load and decrypt the per-row signing
@@ -2831,6 +2843,11 @@ type Querier interface {
 	// not distinguish them by guessing; it distinguishes them by the Phase 0 test
 	// that proves this statement returns rows under InAgentTx.
 	ListDueUpdateRuns(ctx context.Context, rowLimit int32) ([]UpdateRun, error)
+	// Every wpmgr/page-edit request for post post_id on this site, oldest first
+	// (created_at, then id), with what each one did and where its undo stands.
+	// At most 200 rows: a caller that needs every edit of the post treats 200
+	// rows as possibly incomplete.
+	ListEditRequestsForPost(ctx context.Context, arg ListEditRequestsForPostParams) ([]ListEditRequestsForPostRow, error)
 	// ---------------------------------------------------------------------------
 	// site_email_connection  (m62 — multi-connection + failover)
 	// ---------------------------------------------------------------------------
@@ -3736,6 +3753,12 @@ type Querier interface {
 	// move; :execrows so the caller only writes an audit entry when a row actually
 	// moved.
 	MigrateIdentityIssuer(ctx context.Context, arg MigrateIdentityIssuerParams) (int64, error)
+	// The newest applied wpmgr/page-edit of post post_id on this site that has
+	// not been undone, whatever its own undo state: undo goes newest first, so
+	// only this edit may be offered an undo, and only while its own undo is
+	// available and inside its window. pgx.ErrNoRows: no applied edit of the post
+	// is still in effect.
+	NewestUndoableEditForPost(ctx context.Context, arg NewestUndoableEditForPostParams) (NewestUndoableEditForPostRow, error)
 	// ---------------------------------------------------------------------------
 	// site_incidents (M94 — GH #148: persisted incident history, written
 	// alongside site_alert_state inside TransitionAlertState).
@@ -3855,6 +3878,11 @@ type Querier interface {
 	// opens the person's undo (undo_state 'available') on a done row. A row with
 	// any undo_state already set is never matched (GH #826): this statement
 	// rewrites the undo columns, and must not reset an undo that is running.
+	// m169: snapshot_sha256 is the hash of the copy the agent kept before an
+	// applied page edit, NULL for every other outcome. It is written once: a row
+	// that already carries one is never matched. An applied page edit with no
+	// hash must be recorded with undo_available_until NULL (no undo); the
+	// table's page_edit_undo_hash_check refuses anything else.
 	RecordAbilityRequestOutcome(ctx context.Context, arg RecordAbilityRequestOutcomeParams) (int64, error)
 	// A transient reason; the row stays approved. Single-site.
 	RecordAssistantCachePurgeDispatchAttempt(ctx context.Context, arg RecordAssistantCachePurgeDispatchAttemptParams) (int64, error)
