@@ -1407,6 +1407,356 @@
             "new_count": 1
         },
         {
+            "name": "change-then-remove-containers",
+            "note": "Changes a paragraph, moves a heading beside another and inserts into a column and before a paragraph, then removes the first block and replaces the row, so none of those changes is on the page after the call.",
+            "layout": "containers",
+            "request_id": "22222222-3333-4444-8555-888888888888",
+            "before_tree": [
+                {
+                    "id": "93e6ad3",
+                    "elType": "container",
+                    "settings": {
+                        "content_width": "boxed",
+                        "flex_direction": "column"
+                    },
+                    "elements": [
+                        {
+                            "id": "605cdc2",
+                            "elType": "widget",
+                            "settings": {
+                                "title": "Spring sale",
+                                "header_size": "h2",
+                                "title_color": "#c0392b"
+                            },
+                            "elements": [],
+                            "widgetType": "heading"
+                        },
+                        {
+                            "id": "3ee0f20",
+                            "elType": "widget",
+                            "settings": {
+                                "editor": "<p>Open every day.</p>"
+                            },
+                            "elements": [],
+                            "widgetType": "text-editor"
+                        }
+                    ],
+                    "isInner": false
+                },
+                {
+                    "id": "0d3499d",
+                    "elType": "container",
+                    "settings": {
+                        "content_width": "boxed",
+                        "flex_direction": "row",
+                        "flex_direction_mobile": "column",
+                        "flex_gap": {
+                            "unit": "px",
+                            "size": "24",
+                            "column": "24",
+                            "row": "24"
+                        }
+                    },
+                    "elements": [
+                        {
+                            "id": "5e0fd0c",
+                            "elType": "container",
+                            "settings": {
+                                "content_width": "full",
+                                "flex_direction": "column",
+                                "width": {
+                                    "unit": "%",
+                                    "size": "50",
+                                    "sizes": []
+                                }
+                            },
+                            "elements": [
+                                {
+                                    "id": "470f2bd",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "editor": "<p>One</p>"
+                                    },
+                                    "elements": [],
+                                    "widgetType": "text-editor"
+                                }
+                            ],
+                            "isInner": true
+                        },
+                        {
+                            "id": "8b9726c",
+                            "elType": "container",
+                            "settings": {
+                                "content_width": "full",
+                                "flex_direction": "column",
+                                "width": {
+                                    "unit": "%",
+                                    "size": "50",
+                                    "sizes": []
+                                }
+                            },
+                            "elements": [
+                                {
+                                    "id": "79e8950",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "text": "Call us",
+                                        "link": {
+                                            "url": "/contact",
+                                            "is_external": "",
+                                            "nofollow": ""
+                                        },
+                                        "align": "left"
+                                    },
+                                    "elements": [],
+                                    "widgetType": "button"
+                                }
+                            ],
+                            "isInner": true
+                        }
+                    ],
+                    "isInner": false
+                },
+                {
+                    "id": "e359fab",
+                    "elType": "container",
+                    "settings": {
+                        "content_width": "boxed",
+                        "flex_direction": "column"
+                    },
+                    "elements": [
+                        {
+                            "id": "eecf8d1",
+                            "elType": "widget",
+                            "settings": {
+                                "title": "Our team",
+                                "header_size": "h3"
+                            },
+                            "elements": [],
+                            "widgetType": "heading"
+                        },
+                        {
+                            "id": "30e4457",
+                            "elType": "widget",
+                            "settings": {
+                                "image": {
+                                    "url": "https://example.com/wp-content/uploads/2026/10/team-1024x683.jpg",
+                                    "id": "7",
+                                    "source": "library"
+                                },
+                                "image_size": "large",
+                                "caption_source": "custom",
+                                "caption": "Team photo"
+                            },
+                            "elements": [],
+                            "widgetType": "image"
+                        },
+                        {
+                            "id": "f0f0f0f",
+                            "settings": {
+                                "testimonial_content": "Great service",
+                                "testimonial_name": "Ann",
+                                "name_text_color": "#333333"
+                            },
+                            "elements": [],
+                            "isInner": false,
+                            "widgetType": "testimonial",
+                            "elType": "widget"
+                        }
+                    ],
+                    "isInner": false
+                }
+            ],
+            "ops": [
+                {
+                    "op": "set_text",
+                    "ref": "3ee0f20",
+                    "field": "text",
+                    "text": "Open every day [1]."
+                },
+                {
+                    "op": "move",
+                    "ref": "eecf8d1",
+                    "after": "605cdc2"
+                },
+                {
+                    "op": "insert",
+                    "into": "8b9726c",
+                    "outline": [
+                        {
+                            "type": "buttons",
+                            "buttons": [
+                                {
+                                    "text": "Email",
+                                    "url": "https://example.com/mail"
+                                }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "op": "insert",
+                    "before": "470f2bd",
+                    "outline": [
+                        {
+                            "type": "paragraph",
+                            "text": "Before one"
+                        }
+                    ]
+                },
+                {
+                    "op": "remove",
+                    "ref": "93e6ad3"
+                },
+                {
+                    "op": "replace",
+                    "ref": "0d3499d",
+                    "outline": [
+                        {
+                            "type": "heading",
+                            "level": 2,
+                            "text": "Find us"
+                        }
+                    ]
+                }
+            ],
+            "after_tree": [
+                {
+                    "id": "f61064f",
+                    "elType": "container",
+                    "settings": {
+                        "content_width": "boxed",
+                        "flex_direction": "column"
+                    },
+                    "elements": [
+                        {
+                            "id": "7558931",
+                            "elType": "widget",
+                            "settings": {
+                                "title": "Find us",
+                                "header_size": "h2"
+                            },
+                            "elements": [],
+                            "widgetType": "heading"
+                        }
+                    ],
+                    "isInner": false
+                },
+                {
+                    "id": "e359fab",
+                    "elType": "container",
+                    "settings": {
+                        "content_width": "boxed",
+                        "flex_direction": "column"
+                    },
+                    "elements": [
+                        {
+                            "id": "30e4457",
+                            "elType": "widget",
+                            "settings": {
+                                "image": {
+                                    "url": "https://example.com/wp-content/uploads/2026/10/team-1024x683.jpg",
+                                    "id": "7",
+                                    "source": "library"
+                                },
+                                "image_size": "large",
+                                "caption_source": "custom",
+                                "caption": "Team photo"
+                            },
+                            "elements": [],
+                            "widgetType": "image"
+                        },
+                        {
+                            "id": "f0f0f0f",
+                            "settings": {
+                                "testimonial_content": "Great service",
+                                "testimonial_name": "Ann",
+                                "name_text_color": "#333333"
+                            },
+                            "elements": [],
+                            "isInner": false,
+                            "widgetType": "testimonial",
+                            "elType": "widget"
+                        }
+                    ],
+                    "isInner": false
+                }
+            ],
+            "changes": [
+                {
+                    "op": "set_text",
+                    "ref": "3ee0f20",
+                    "kind": "paragraph",
+                    "before": {
+                        "text": "Open every day."
+                    },
+                    "after": {
+                        "text": "Open every day [1]."
+                    }
+                },
+                {
+                    "op": "move",
+                    "ref": "eecf8d1",
+                    "kind": "heading",
+                    "level": 3,
+                    "before": {
+                        "text": "Our team"
+                    },
+                    "anchor": {
+                        "ref": "605cdc2",
+                        "how": "after",
+                        "kind": "heading",
+                        "level": 2
+                    }
+                },
+                {
+                    "op": "insert",
+                    "new_refs": [
+                        "4f194c8"
+                    ],
+                    "anchor": {
+                        "ref": "8b9726c",
+                        "how": "into",
+                        "position": "last",
+                        "kind": "column"
+                    }
+                },
+                {
+                    "op": "insert",
+                    "new_refs": [
+                        "84c25dc"
+                    ],
+                    "anchor": {
+                        "ref": "470f2bd",
+                        "how": "before",
+                        "kind": "paragraph"
+                    }
+                },
+                {
+                    "op": "remove",
+                    "ref": "93e6ad3",
+                    "kind": "group"
+                },
+                {
+                    "op": "replace",
+                    "ref": "0d3499d",
+                    "kind": "columns",
+                    "new_refs": [
+                        "f61064f",
+                        "7558931"
+                    ]
+                }
+            ],
+            "touched": [
+                "3ee0f20",
+                "4f194c8",
+                "84c25dc",
+                "f61064f",
+                "7558931"
+            ],
+            "new_count": 4
+        },
+        {
             "name": "set-text-every-field-sections",
             "note": "Changes heading and paragraph text, a button link and an image caption; the heading keeps the colour a person set.",
             "layout": "sections",
@@ -2779,6 +3129,374 @@
                 "c9623be"
             ],
             "new_count": 1
+        },
+        {
+            "name": "change-then-remove-sections",
+            "note": "Changes a paragraph, moves a heading beside another and inserts into a column and before a paragraph, then removes the first block and replaces the row, so none of those changes is on the page after the call.",
+            "layout": "sections",
+            "request_id": "22222222-3333-4444-8555-888888888888",
+            "before_tree": [
+                {
+                    "id": "93e6ad3",
+                    "elType": "section",
+                    "settings": {
+                        "structure": "10"
+                    },
+                    "elements": [
+                        {
+                            "id": "ef21f00",
+                            "elType": "column",
+                            "settings": {
+                                "_column_size": "100"
+                            },
+                            "elements": [
+                                {
+                                    "id": "605cdc2",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "title": "Spring sale",
+                                        "header_size": "h2",
+                                        "title_color": "#c0392b"
+                                    },
+                                    "elements": [],
+                                    "widgetType": "heading"
+                                },
+                                {
+                                    "id": "3ee0f20",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "editor": "<p>Open every day.</p>"
+                                    },
+                                    "elements": [],
+                                    "widgetType": "text-editor"
+                                }
+                            ],
+                            "isInner": false
+                        }
+                    ],
+                    "isInner": false
+                },
+                {
+                    "id": "0d3499d",
+                    "elType": "section",
+                    "settings": {
+                        "structure": "20"
+                    },
+                    "elements": [
+                        {
+                            "id": "5e0fd0c",
+                            "elType": "column",
+                            "settings": {
+                                "_column_size": "50"
+                            },
+                            "elements": [
+                                {
+                                    "id": "470f2bd",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "editor": "<p>One</p>"
+                                    },
+                                    "elements": [],
+                                    "widgetType": "text-editor"
+                                }
+                            ],
+                            "isInner": false
+                        },
+                        {
+                            "id": "8b9726c",
+                            "elType": "column",
+                            "settings": {
+                                "_column_size": "50"
+                            },
+                            "elements": [
+                                {
+                                    "id": "79e8950",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "text": "Call us",
+                                        "link": {
+                                            "url": "/contact",
+                                            "is_external": "",
+                                            "nofollow": ""
+                                        },
+                                        "align": "left"
+                                    },
+                                    "elements": [],
+                                    "widgetType": "button"
+                                }
+                            ],
+                            "isInner": false
+                        }
+                    ],
+                    "isInner": false
+                },
+                {
+                    "id": "e359fab",
+                    "elType": "section",
+                    "settings": {
+                        "structure": "10"
+                    },
+                    "elements": [
+                        {
+                            "id": "c1d96a0",
+                            "elType": "column",
+                            "settings": {
+                                "_column_size": "100"
+                            },
+                            "elements": [
+                                {
+                                    "id": "eecf8d1",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "title": "Our team",
+                                        "header_size": "h3"
+                                    },
+                                    "elements": [],
+                                    "widgetType": "heading"
+                                },
+                                {
+                                    "id": "30e4457",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "image": {
+                                            "url": "https://example.com/wp-content/uploads/2026/10/team-1024x683.jpg",
+                                            "id": "7",
+                                            "source": "library"
+                                        },
+                                        "image_size": "large",
+                                        "caption_source": "custom",
+                                        "caption": "Team photo"
+                                    },
+                                    "elements": [],
+                                    "widgetType": "image"
+                                },
+                                {
+                                    "id": "f0f0f0f",
+                                    "settings": {
+                                        "testimonial_content": "Great service",
+                                        "testimonial_name": "Ann",
+                                        "name_text_color": "#333333"
+                                    },
+                                    "elements": [],
+                                    "isInner": false,
+                                    "widgetType": "testimonial",
+                                    "elType": "widget"
+                                }
+                            ],
+                            "isInner": false
+                        }
+                    ],
+                    "isInner": false
+                }
+            ],
+            "ops": [
+                {
+                    "op": "set_text",
+                    "ref": "3ee0f20",
+                    "field": "text",
+                    "text": "Open every day [1]."
+                },
+                {
+                    "op": "move",
+                    "ref": "eecf8d1",
+                    "after": "605cdc2"
+                },
+                {
+                    "op": "insert",
+                    "into": "8b9726c",
+                    "outline": [
+                        {
+                            "type": "buttons",
+                            "buttons": [
+                                {
+                                    "text": "Email",
+                                    "url": "https://example.com/mail"
+                                }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "op": "insert",
+                    "before": "470f2bd",
+                    "outline": [
+                        {
+                            "type": "paragraph",
+                            "text": "Before one"
+                        }
+                    ]
+                },
+                {
+                    "op": "remove",
+                    "ref": "93e6ad3"
+                },
+                {
+                    "op": "replace",
+                    "ref": "0d3499d",
+                    "outline": [
+                        {
+                            "type": "heading",
+                            "level": 2,
+                            "text": "Find us"
+                        }
+                    ]
+                }
+            ],
+            "after_tree": [
+                {
+                    "id": "f61064f",
+                    "elType": "section",
+                    "settings": {
+                        "structure": "10"
+                    },
+                    "elements": [
+                        {
+                            "id": "cc94672",
+                            "elType": "column",
+                            "settings": {
+                                "_column_size": "100"
+                            },
+                            "elements": [
+                                {
+                                    "id": "7558931",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "title": "Find us",
+                                        "header_size": "h2"
+                                    },
+                                    "elements": [],
+                                    "widgetType": "heading"
+                                }
+                            ],
+                            "isInner": false
+                        }
+                    ],
+                    "isInner": false
+                },
+                {
+                    "id": "e359fab",
+                    "elType": "section",
+                    "settings": {
+                        "structure": "10"
+                    },
+                    "elements": [
+                        {
+                            "id": "c1d96a0",
+                            "elType": "column",
+                            "settings": {
+                                "_column_size": "100"
+                            },
+                            "elements": [
+                                {
+                                    "id": "30e4457",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "image": {
+                                            "url": "https://example.com/wp-content/uploads/2026/10/team-1024x683.jpg",
+                                            "id": "7",
+                                            "source": "library"
+                                        },
+                                        "image_size": "large",
+                                        "caption_source": "custom",
+                                        "caption": "Team photo"
+                                    },
+                                    "elements": [],
+                                    "widgetType": "image"
+                                },
+                                {
+                                    "id": "f0f0f0f",
+                                    "settings": {
+                                        "testimonial_content": "Great service",
+                                        "testimonial_name": "Ann",
+                                        "name_text_color": "#333333"
+                                    },
+                                    "elements": [],
+                                    "isInner": false,
+                                    "widgetType": "testimonial",
+                                    "elType": "widget"
+                                }
+                            ],
+                            "isInner": false
+                        }
+                    ],
+                    "isInner": false
+                }
+            ],
+            "changes": [
+                {
+                    "op": "set_text",
+                    "ref": "3ee0f20",
+                    "kind": "paragraph",
+                    "before": {
+                        "text": "Open every day."
+                    },
+                    "after": {
+                        "text": "Open every day [1]."
+                    }
+                },
+                {
+                    "op": "move",
+                    "ref": "eecf8d1",
+                    "kind": "heading",
+                    "level": 3,
+                    "before": {
+                        "text": "Our team"
+                    },
+                    "anchor": {
+                        "ref": "605cdc2",
+                        "how": "after",
+                        "kind": "heading",
+                        "level": 2
+                    }
+                },
+                {
+                    "op": "insert",
+                    "new_refs": [
+                        "4f194c8"
+                    ],
+                    "anchor": {
+                        "ref": "8b9726c",
+                        "how": "into",
+                        "position": "last",
+                        "kind": "column"
+                    }
+                },
+                {
+                    "op": "insert",
+                    "new_refs": [
+                        "84c25dc"
+                    ],
+                    "anchor": {
+                        "ref": "470f2bd",
+                        "how": "before",
+                        "kind": "paragraph"
+                    }
+                },
+                {
+                    "op": "remove",
+                    "ref": "93e6ad3",
+                    "kind": "section"
+                },
+                {
+                    "op": "replace",
+                    "ref": "0d3499d",
+                    "kind": "section",
+                    "new_refs": [
+                        "f61064f",
+                        "cc94672",
+                        "7558931"
+                    ]
+                }
+            ],
+            "touched": [
+                "3ee0f20",
+                "4f194c8",
+                "84c25dc",
+                "f61064f",
+                "cc94672",
+                "7558931"
+            ],
+            "new_count": 5
         }
     ]
 }

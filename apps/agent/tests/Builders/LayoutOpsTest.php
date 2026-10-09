@@ -509,7 +509,7 @@ final class LayoutOpsTest extends TestCase
         $doc   = json_decode($got, true, 512, JSON_THROW_ON_ERROR);
         $names = array_column($doc['cases'], 'name');
         $this->assertSame(['containers', 'sections'], array_values(array_unique(array_column($doc['cases'], 'layout'))));
-        $this->assertCount(6, $names);
+        $this->assertCount(8, $names);
         foreach ($doc['cases'] as $case) {
             $ops = self::parsed($case['ops']);
             $this->assertNull(PageEditValidator::againstPage(['operations' => $ops], ElementorClassicMapper::project($case['before_tree'])->nodes(), ['operations' => BuilderContract::OPS]), $case['name']);
@@ -550,6 +550,14 @@ final class LayoutOpsTest extends TestCase
                     ['op' => 'remove', 'ref' => $ref['img']],
                     ['op' => 'move', 'ref' => $ref['top2'], 'before' => $ref['top0']],
                     ['op' => 'move', 'ref' => $ref['btn'], 'after' => $ref['h2']],
+                ]],
+                'change-then-remove'   => ['Changes a paragraph, moves a heading beside another and inserts into a column and before a paragraph, then removes the first block and replaces the row, so none of those changes is on the page after the call.', [
+                    self::setText($ref['p1'], 'text', 'Open every day [1].'),
+                    ['op' => 'move', 'ref' => $ref['h3'], 'after' => $ref['h2']],
+                    self::insert(['into' => $ref['col2']], [['type' => 'buttons', 'buttons' => [['text' => 'Email', 'url' => 'https://example.com/mail']]]]),
+                    self::insert(['before' => $ref['one']], [self::para('Before one')]),
+                    ['op' => 'remove', 'ref' => $ref['top0']],
+                    ['op' => 'replace', 'ref' => $ref['row'], 'outline' => [['type' => 'heading', 'level' => 2, 'text' => 'Find us']]],
                 ]],
             ];
             foreach ($sets as $name => [$note, $operations]) {
