@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -8,18 +9,25 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/admingate"
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 	"github.com/mosamlife/wpmgr/apps/api/internal/server/httpx"
 )
 
+// auditRecorder is the part of *audit.Recorder the handler calls.
+type auditRecorder interface {
+	Record(ctx context.Context, e audit.Event) (audit.Entry, error)
+}
+
 // Handler serves the superadmin area under /api/v1/admin.
 type Handler struct {
 	svc          *Service
 	pool         *db.Pool
 	gate         adminGateStore // reads the two facts the route gates need; see gate.go
-	auditRec     *audit.Recorder
+	auditRec     auditRecorder
+	sysAudit     systemAuditWriter        // the instance trail; see recordVulnFeedEvent
 	vulnFeedH    *vulnFeedAdminHandler    // wired via SetVulnFeed; nil until wired
 	agentMirrorH *agentMirrorAdminHandler // wired via SetAgentMirror; nil until wired
 	contentMount func(*gin.RouterGroup)   // wired via SetContentRoutes; nil until wired
@@ -38,18 +46,26 @@ func (h *Handler) SetContentRoutes(mount func(*gin.RouterGroup)) { h.contentMoun
 
 // NewHandler builds an admin Handler.
 func NewHandler(svc *Service, pool *db.Pool) *Handler {
-	return &Handler{svc: svc, pool: pool, gate: newPoolGateStore(pool)}
+	return &Handler{svc: svc, pool: pool, gate: newPoolGateStore(pool), sysAudit: poolSystemAudit{pool: pool}}
 }
 
-// SetAuditRecorder wires the audit recorder into the handler. Called once at boot.
-func (h *Handler) SetAuditRecorder(rec *audit.Recorder) { h.auditRec = rec }
+// SetAuditRecorder wires the audit recorder into the handler. Called once at
+// boot. Assigned only when non-nil, so a nil pointer never becomes a non-nil
+// interface value that the handlers' nil checks would call through.
+func (h *Handler) SetAuditRecorder(rec *audit.Recorder) {
+	if rec != nil {
+		h.auditRec = rec
+	}
+}
 
 // Register mounts the admin routes on the auth-gated (not tenant-gated)
 // v1Auth group. The requireSuperadmin middleware gates the entire sub-group.
 //
-// One route, POST /admin/agent-mirror/check, carries a WIDER gate and is
-// therefore mounted on its own group at the bottom of this function rather
-// than on g. Everything mounted on g below is superadmin-only, unchanged.
+// Two route families carry a WIDER gate and are therefore mounted on groups of
+// their own at the bottom of this function rather than on g: the
+// vulnerability-feed key routes (/admin/vuln-feed/*) and POST
+// /admin/agent-mirror/check. Everything mounted on g below is superadmin-only,
+// unchanged.
 func (h *Handler) Register(r *gin.RouterGroup) {
 	g := r.Group("/admin", requireSuperadmin(h.gate))
 	g.GET("/stats", h.stats)
@@ -84,9 +100,20 @@ func (h *Handler) Register(r *gin.RouterGroup) {
 	if h.abilityMount != nil {
 		h.abilityMount(g)
 	}
-	// vuln-feed key management (optional; wired via RegisterVulnFeed after boot).
+	// Vulnerability-feed key management (optional; wired via SetVulnFeed at
+	// boot).
+	//
+	// These four routes are gated by the instance-email decision, not by
+	// requireSuperadmin. Owner ruling, 2026-10-09: whoever may manage the
+	// instance email settings may manage the feed key, so the decision is
+	// admingate.InstanceEmailAuthority, applied by the same middleware the SMTP
+	// settings routes use, and the Me response's can_manage_instance_email
+	// reads it too. Like the agent-mirror check below, the routes cannot be
+	// mounted on g and widened per route, because Gin composes middleware with
+	// AND; they get their own group carrying only that gate, and nothing else
+	// is ever mounted on it. A refusal is this family's single refusal body.
 	if h.vulnFeedH != nil {
-		vfg := g.Group("/vuln-feed")
+		vfg := r.Group("/admin/vuln-feed", admingate.RequireInstanceEmailAuthority(h.vulnFeedH.gate, denyAdminGate))
 		vfg.GET("/status", h.vulnFeedStatus)
 		vfg.PUT("/key", h.vulnFeedSetKey)
 		vfg.DELETE("/key", h.vulnFeedClearKey)

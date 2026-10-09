@@ -349,6 +349,12 @@ type BackupConfig struct {
 	// the agent's worst-case total silent gap on a very large site. Defaults
 	// to 30m.
 	StallHardTimeout time.Duration `koanf:"stall_hard_timeout"`
+	// RestoreStallTimeout is how long a queued or running restore run may go
+	// without an update before the progress watchdog marks it failed, which
+	// stops it blocking snapshot and organisation deletion. Defaults to 2h. A
+	// value below PresignTTL plus one hour is raised to that, so no download
+	// URL the restore was given is still valid when the run is failed.
+	RestoreStallTimeout time.Duration `koanf:"restore_stall_timeout"`
 }
 
 // UpdateConfig holds the M3 bulk-update orchestration tuning.
@@ -879,6 +885,7 @@ func defaults() map[string]any {
 		"backup.http_timeout":                "10m",
 		"backup.stall_soft_timeout":          "3m",
 		"backup.stall_hard_timeout":          "30m",
+		"backup.restore_stall_timeout":       "2h",
 		"clickhouse.addr":                    "",
 		"clickhouse.db":                      "wpmgr_metrics",
 		"clickhouse.username":                "default",

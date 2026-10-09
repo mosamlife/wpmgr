@@ -273,7 +273,8 @@ func buildEngine() (engine *gin.Engine, omittedDepsFields []string, err error) {
 	// --- admin (m33 + vuln-feed) -----------------------------------------------
 	adminH := admin.NewHandler(admin.NewService(admin.NewRepo(pool), nil), pool)
 	adminH.SetAuditRecorder(auditRec)
-	adminH.SetVulnFeed(nil, admin.NewVulnFeedKeyService(admin.NewInstanceSettingsRepo(pool), nil, "", nil, logger))
+	adminH.SetVulnFeed(nil, admin.NewVulnFeedKeyService(admin.NewInstanceSettingsRepo(pool), nil, "", nil, logger),
+		admingate.NewInstanceEmailPoolStore(pool, true))
 	adminH.SetAgentMirror(admin.NewAgentMirrorCheckService(false, false, nil, nil))
 
 	// --- RUM (public) ------------------------------------------------------

@@ -69,7 +69,8 @@ func NewHandler(svc *Service, rec *audit.Recorder, gate admingate.InstanceEmailS
 // Register mounts the SMTP settings routes on r, which must already require
 // authentication. It need not require an active organisation.
 func (h *Handler) Register(r *gin.RouterGroup) {
-	g := r.Group("/settings/smtp", authz.RequireOrgScope(), requireInstanceAuthority(h.gate))
+	g := r.Group("/settings/smtp", authz.RequireOrgScope(),
+		admingate.RequireInstanceEmailAuthority(h.gate, refuseInstanceAuthority))
 	g.GET("", h.get)
 	g.PUT("", h.put)
 	g.POST("/test", h.test)
@@ -80,44 +81,14 @@ func (h *Handler) Register(r *gin.RouterGroup) {
 // so a refusal does not reveal which fact was missing.
 const InstanceAuthorityRequiredCode = "instance_authority_required"
 
-// instanceAuthorityKey is the gin context key under which the gate leaves the
-// admitting decision for the handlers behind it.
-const instanceAuthorityKey = "settings.instance_authority"
-
+// refuseInstanceAuthority writes this family's one refusal. The gate in front
+// of every route here is admingate.RequireInstanceEmailAuthority, the same
+// middleware the vulnerability-feed key routes use; the decision, including
+// its fail-closed handling of store errors, is admingate's.
 func refuseInstanceAuthority(c *gin.Context) {
 	httpx.Error(c, domain.Forbidden(InstanceAuthorityRequiredCode,
 		"instance-level access is required to manage the SMTP relay"))
 	c.Abort()
-}
-
-// requireInstanceAuthority refuses the request unless admingate grants
-// instance-level authority. The decision, including its fail-closed handling
-// of store errors, is admingate's; this only maps a refusal to one 403 and
-// hands the admitting decision to the handler, which routes the audit record
-// by it. The Me response's can_manage_instance_email reads the same decision,
-// so the dashboard is offered this page exactly when these routes would admit.
-func requireInstanceAuthority(store admingate.InstanceEmailStore) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		a := admingate.InstanceEmailAuthority(c.Request.Context(), store)
-		if !a.Admitted() {
-			refuseInstanceAuthority(c)
-			return
-		}
-		c.Set(instanceAuthorityKey, a)
-		c.Next()
-	}
-}
-
-// admittingAuthority returns the decision requireInstanceAuthority left on c.
-// ok is false when there is none, which means the handler was reached without
-// the gate in front of it.
-func admittingAuthority(c *gin.Context) (admingate.Authority, bool) {
-	v, ok := c.Get(instanceAuthorityKey)
-	if !ok {
-		return admingate.Authority{}, false
-	}
-	a, ok := v.(admingate.Authority)
-	return a, ok && a.Admitted()
 }
 
 func (h *Handler) get(c *gin.Context) {
@@ -132,7 +103,7 @@ func (h *Handler) get(c *gin.Context) {
 func (h *Handler) put(c *gin.Context) {
 	// The audit destination is decided by how the caller was admitted, so a
 	// write with no admitting decision is refused rather than left unrecorded.
-	authority, ok := admittingAuthority(c)
+	authority, ok := admingate.AdmittingAuthority(c)
 	if !ok {
 		refuseInstanceAuthority(c)
 		return

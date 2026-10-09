@@ -264,6 +264,13 @@ func TestAgentMirrorGate_SuperadminReadErrorRefuses(t *testing.T) {
 // organisation, not a superadmin) must still be refused by every other admin
 // route. Asserting 403 rather than "not 200" also proves the routes are still
 // mounted: an unmounted route would answer 404 and fail here.
+//
+// Deliberately widened, and therefore not listed here: POST
+// /admin/agent-mirror/check (this file), and the four vulnerability-feed key
+// routes, GET /admin/vuln-feed/status, PUT and DELETE /admin/vuln-feed/key and
+// POST /admin/vuln-feed/sync, which carry the instance-email decision (GH
+// #361). TestVulnFeedGate_OtherAdminRoutesStaySuperadminOnly is the same
+// containment check with those routes wired.
 func TestOtherAdminRoutes_DidNotGainTheWidenedPath(t *testing.T) {
 	others := []struct {
 		method string
