@@ -80,6 +80,7 @@ pin_name=()
 pin_ver=()
 pin_sha=()
 pin_url=()
+pin_form=()
 version_re='^[0-9]+\.[0-9]+(\.[0-9]+)?$'
 sha_re='^[0-9a-f]{64}$'
 url_re='^https://[A-Za-z0-9._~:/?#@!$&()*+,;=%-]+$'
@@ -88,10 +89,16 @@ while IFS= read -r line || [ -n "$line" ]; do
   trimmed="${line#"${line%%[![:space:]]*}"}"
   case "$trimmed" in '' | '#'*) continue ;; esac
   read -r -a f <<<"$trimmed"
-  if [ "${#f[@]}" -ne 4 ]; then
-    die "pins line needs <name> <version> <sha256> <url>: '$trimmed'"
-  fi
   case "${f[0]}" in wordpress | elementor) ;; *) die "pins: unknown name '${f[0]}'" ;; esac
+  if [ "${f[0]}" = wordpress ] && [ "${#f[@]}" -ne 4 ]; then
+    die "pins: a wordpress line is <name> <version> <sha256> <url>: '$trimmed'"
+  fi
+  if [ "${f[0]}" = elementor ] && [ "${#f[@]}" -ne 5 ]; then
+    die "pins: an elementor line is <name> <version> <sha256> <url> <stored form>: '$trimmed'"
+  fi
+  if [ "${f[0]}" = elementor ]; then
+    case "${f[4]}" in as_given | strings) ;; *) die "pins: elementor ${f[1]} has stored form '${f[4]}', want as_given or strings" ;; esac
+  fi
   [[ ${f[1]} =~ $version_re ]] || die "pins: bad version '${f[1]}'"
   [[ ${f[2]} =~ $sha_re ]] || die "pins: ${f[0]} ${f[1]} has a sha256 that is not 64 lowercase hex characters"
   if ! [[ ${f[3]} =~ $url_re ]]; then
@@ -114,6 +121,7 @@ while IFS= read -r line || [ -n "$line" ]; do
   pin_ver+=("${f[1]}")
   pin_sha+=("${f[2]}")
   pin_url+=("${f[3]}")
+  pin_form+=("${f[4]:-}")
 done <"$pins_file"
 
 wp_ver=""
@@ -152,12 +160,16 @@ else
   selected=("${all_versions[@]}")
 fi
 
-# pin_of <name> <version> <field: sha|url>
+# pin_of <name> <version> <field: sha|url|form>
 pin_of() {
   local k=0
   while [ "$k" -lt "${#pin_name[@]}" ]; do
     if [ "${pin_name[$k]}" = "$1" ] && [ "${pin_ver[$k]}" = "$2" ]; then
-      if [ "$3" = sha ]; then echo "${pin_sha[$k]}"; else echo "${pin_url[$k]}"; fi
+      case "$3" in
+        sha) echo "${pin_sha[$k]}" ;;
+        url) echo "${pin_url[$k]}" ;;
+        form) echo "${pin_form[$k]}" ;;
+      esac
       return 0
     fi
     k=$((k + 1))
@@ -274,6 +286,7 @@ ran=0
 total_start="$(date +%s)"
 for v in "${selected[@]}"; do
   sha="$(pin_of elementor "$v" sha)"
+  form="$(pin_of elementor "$v" form)"
   boot="$run_dir/boot-$v"
   mkdir -p "$boot/zips" "$boot/tmp"
   cp "$cache/zips/$sha.zip" "$boot/zips/elementor.zip" || die "cannot stage the Elementor $v zip"
@@ -291,7 +304,7 @@ for v in "${selected[@]}"; do
     --mount="$fixtures_dir:/rt/fixtures" \
     --mount="$here:/rt/harness" \
     --verbosity=quiet \
-    -- /rt/harness/harness.php "elementor=$v" "wp=$wp_ver" "php=$php_ver" "zip_sha256=$sha" ${plants[@]+"${plants[@]}"} \
+    -- /rt/harness/harness.php "elementor=$v" "wp=$wp_ver" "php=$php_ver" "zip_sha256=$sha" "stored=$form" ${plants[@]+"${plants[@]}"} \
     >"$log" 2>&1 &
   child=$!
   set -e

@@ -18,7 +18,7 @@
       "input": [
         { "type": "heading", "level": 3, "text": "Café ☕ naïve 日本語 😀" },
         { "type": "paragraph", "text": "Zażółć gęślą jaźń — Ελληνικά — العربية — Привет" },
-        { "type": "buttons", "buttons": [{ "text": "Réserver ☕", "url": "https://example.com/réserver" }] }
+        { "type": "buttons", "buttons": [{ "text": "Réserver ☕", "url": "https://example.com/reserve" }] }
       ]
     },
     {

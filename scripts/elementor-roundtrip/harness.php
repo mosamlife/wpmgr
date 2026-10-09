@@ -21,6 +21,8 @@
  *   wp=<x.y>            the WordPress version this boot must run
  *   php=<x.y>           the PHP version this boot must run
  *   zip_sha256=<hex>    the sha256 the mounted Elementor zip must have
+ *   stored=<form>       how this Elementor version stores scalars (pins.txt):
+ *                       as_given, or strings (true "1", false and null "")
  *   plant=<kind>@<case> a deliberate defect on one case, used only by the
  *                       self-test (scripts/elementor-roundtrip_test.sh) to
  *                       prove each check can fail; kinds: PLANTS below
@@ -89,13 +91,13 @@ function rt_diff($want, $got, string $path): ?string
         $wk = array_keys($want);
         $gk = array_keys($got);
         foreach (array_diff($wk, $gk) as $k) {
-            return $path . '.' . $k . ': missing from the stored tree';
+            return $path . '.' . $k . ': missing';
         }
         foreach (array_diff($gk, $wk) as $k) {
-            return $path . '.' . $k . ': added to the stored tree';
+            return $path . '.' . $k . ': unexpected';
         }
         if (array_is_list($want) && count($want) !== count($got)) {
-            return $path . ': ' . count($want) . ' item(s) saved, ' . count($got) . ' stored';
+            return $path . ': want ' . count($want) . ' item(s), got ' . count($got);
         }
         foreach ($wk as $k) {
             $d = rt_diff($want[$k], $got[$k], $path . '.' . $k);
@@ -104,7 +106,7 @@ function rt_diff($want, $got, string $path): ?string
             }
         }
         if ($wk !== $gk) {
-            return $path . ': same keys in a different order';
+            return $path . ': same keys, different order';
         }
 
         return null;
@@ -113,7 +115,7 @@ function rt_diff($want, $got, string $path): ?string
         return null;
     }
 
-    return $path . ': saved ' . rt_brief($want) . ' but stored ' . rt_brief($got);
+    return $path . ': want ' . rt_brief($want) . ', got ' . rt_brief($got);
 }
 
 /** Comparable form of visible text: one space for any run of whitespace, typographic marks as plain ones. */
@@ -131,6 +133,32 @@ function rt_norm(string $s): string
     ]);
 
     return trim((string) preg_replace('/\s+/u', ' ', $s));
+}
+
+/**
+ * A tree with every scalar as the string a version of Elementor that sanitises
+ * every scalar stores: true as "1", false and null as "", numbers as digits.
+ *
+ * @param array<mixed> $data
+ * @return array<mixed>
+ */
+function rt_scalars_as_strings(array $data): array
+{
+    $out = [];
+    foreach ($data as $key => $value) {
+        if (is_array($value)) {
+            $value = rt_scalars_as_strings($value);
+        } elseif (is_bool($value)) {
+            $value = $value ? '1' : '';
+        } elseif ($value === null) {
+            $value = '';
+        } elseif (is_int($value) || is_float($value)) {
+            $value = (string) $value;
+        }
+        $out[$key] = $value;
+    }
+
+    return $out;
 }
 
 /**
@@ -306,10 +334,13 @@ foreach (array_slice($argv, 1) as $tok) {
     }
     $rtArgs[$k] = $v;
 }
-foreach (['elementor', 'wp', 'php', 'zip_sha256'] as $need) {
+foreach (['elementor', 'wp', 'php', 'zip_sha256', 'stored'] as $need) {
     if (!isset($rtArgs[$need]) || $rtArgs[$need] === '') {
         rt_broken('missing argument ' . $need . '=');
     }
+}
+if (!in_array($rtArgs['stored'], ['as_given', 'strings'], true)) {
+    rt_broken('stored= must be as_given or strings: ' . rt_brief($rtArgs['stored']));
 }
 
 // ---------------------------------------------------------------------------
@@ -387,10 +418,11 @@ if ($drift !== null || current_user_can('unfiltered_html')) {
 }
 
 rt_out(sprintf(
-    'site php=%s wp=%s elementor=%s principal=%d unfiltered_html=no containers_experiment=%s',
+    'site php=%s wp=%s elementor=%s stored=%s principal=%d unfiltered_html=no containers_experiment=%s',
     PHP_VERSION,
     get_bloginfo('version'),
     ELEMENTOR_VERSION,
+    $rtArgs['stored'],
     $principal,
     Plugin::$instance->experiments->is_feature_active('container') ? 'active' : 'inactive'
 ));
@@ -550,8 +582,9 @@ foreach ($rtSources as $src) {
                     $rows = $wpdb->get_col($wpdb->prepare("SELECT meta_value FROM {$wpdb->postmeta} WHERE post_id = %d AND meta_key = %s ORDER BY meta_id", $pid, '_elementor_data'));
                     if ($ck('stored', is_array($rows) && count($rows) === 1, 'expected one _elementor_data row, found ' . (is_array($rows) ? count($rows) : 0))) {
                         $decoded = json_decode((string) $rows[0], true, RT_NODE_LIMIT_DEPTH);
-                        $d       = is_array($decoded) ? rt_diff($tree, $decoded, 'tree') : 'the stored value is not a JSON list';
-                        $ck('stored', $d === null && $decoded === $tree, (string) $d);
+                        $expect  = $rtArgs['stored'] === 'strings' ? rt_scalars_as_strings($tree) : $tree;
+                        $d       = is_array($decoded) ? rt_diff($expect, $decoded, 'tree') : 'the stored value is not a JSON list';
+                        $ck('stored', $d === null && $decoded === $expect, (string) $d);
                     }
                     $post = get_post($pid);
                     $ck('draft', $post instanceof WP_Post && $post->post_status === 'draft' && (int) $post->post_author === $principal, 'the page is not a draft owned by the principal');
