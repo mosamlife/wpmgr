@@ -237,8 +237,8 @@ func TestCheckDeliverable_MeasuresRestrictionItemsAsRendered(t *testing.T) {
 		return len(ResolvedContext{Restrictions: snap(item).Restrictions}.InstructionText())
 	}
 
-	// The fixed cost of a block holding one empty item: preamble, label, the
-	// pair of quotes, newline, epilogue. Measured, so the boundary below
+	// The constant cost of a block holding one empty item: preamble, label,
+	// the pair of quotes, newline, epilogue. Measured, so the boundary below
 	// stays a boundary when any of that wording changes.
 	overhead := rendered("")
 	if overhead != len(goldenPreamble)+len("FORBIDDEN TOPICS (never discuss or act on): ")+len(`""`)+len("\n")+len(goldenEpilogue) {
