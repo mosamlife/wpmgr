@@ -104,7 +104,7 @@ final class LayoutOps
      * @param IdSeed                      $ids        Node ids for this request.
      * @param array<mixed>                $mediaById  Media facts by attachment id, for new images.
      * @param bool                        $containers Whether the site has Elementor containers on.
-     * @return array{tree?: list<array<string, mixed>>, changes?: list<array<string, mixed>>, touched?: list<string>, new_count?: int, code?: string, detail?: string, op_index?: int|null}
+     * @return array{tree?: array<mixed>, changes?: list<array<string, mixed>>, touched?: list<string>, new_count?: int, code?: string, detail?: string, op_index?: int|null}
      */
     public static function apply(array $tree, array $ops, IdSeed $ids, array $mediaById, bool $containers): array
     {
@@ -158,7 +158,7 @@ final class LayoutOps
     /**
      * One operation on the current tree.
      *
-     * @param list<array<string, mixed>>         $tree       Current tree.
+     * @param array<mixed>                        $tree       Current tree.
      * @param array<mixed>                       $op         Normalised operation.
      * @param int                                $i          Its index.
      * @param array<string, array<string, mixed>> $facts      Projection nodes of the page before the call, by ref.
@@ -212,10 +212,10 @@ final class LayoutOps
                 return self::done(self::splice($tree, $parentPath, $index, 1, [$set['node']]), $change, [$ref], []);
             case 'replace':
                 $place = self::place($tree, $parentPath, $facts, $containers, $at, $i);
-                if (!isset($place['context'])) {
+                if (!isset($place['context'], $place['containers'])) {
                     return $place;
                 }
-                $mapped = self::mapped($op, $ids, $media, $place, $at, $i);
+                $mapped = self::mapped($op, $ids, $media, $place['context'], $place['containers'], $at, $i);
                 if (!isset($mapped['tree'])) {
                     return $mapped;
                 }
@@ -240,7 +240,7 @@ final class LayoutOps
     /**
      * An insert after, before or into its anchor.
      *
-     * @param list<array<string, mixed>>         $tree       Current tree.
+     * @param array<mixed>                        $tree       Current tree.
      * @param array<mixed>                       $op         Normalised operation.
      * @param int                                $i          Its index.
      * @param array<string, array<string, mixed>> $facts      Projection nodes by ref.
@@ -283,10 +283,10 @@ final class LayoutOps
             $index      = $anchorPath[count($anchorPath) - 1] + ($how === 'after' ? 1 : 0);
         }
         $place = self::place($tree, $parentPath, $facts, $containers, $at, $i);
-        if (!isset($place['context'])) {
+        if (!isset($place['context'], $place['containers'])) {
             return $place;
         }
-        $mapped = self::mapped($op, $ids, $media, $place, $at, $i);
+        $mapped = self::mapped($op, $ids, $media, $place['context'], $place['containers'], $at, $i);
         if (!isset($mapped['tree'])) {
             return $mapped;
         }
@@ -299,7 +299,7 @@ final class LayoutOps
     /**
      * A move of a node, unchanged, beside its anchor.
      *
-     * @param list<array<string, mixed>>         $tree       Current tree.
+     * @param array<mixed>                        $tree       Current tree.
      * @param array<mixed>                       $op         Normalised operation.
      * @param int                                $i          Its index.
      * @param array<string, array<string, mixed>> $facts      Projection nodes by ref.
@@ -352,15 +352,16 @@ final class LayoutOps
      * @param array<mixed>                                 $op    Normalised operation.
      * @param IdSeed                                       $ids   Node ids.
      * @param array<mixed>                                 $media Media facts.
-     * @param array{context: string, containers: bool}     $place Where they go.
+     * @param string                                       $context    One of ElementorClassicMapper's CONTEXT_ values.
+     * @param bool                                         $containers Whether the new nodes are containers.
      * @param string                                       $at    The operation's position.
      * @param int                                          $i     Its index.
      * @return array<string, mixed>
      */
-    private static function mapped(array $op, IdSeed $ids, array $media, array $place, string $at, int $i): array
+    private static function mapped(array $op, IdSeed $ids, array $media, string $context, bool $containers, string $at, int $i): array
     {
         $outline = is_array($op['outline'] ?? null) ? $op['outline'] : [];
-        $mapped  = ElementorClassicMapper::mapFragment($outline, $ids, $media, $place['containers'], $place['context'], $at . '.');
+        $mapped  = ElementorClassicMapper::mapFragment($outline, $ids, $media, $containers, $context, $at . '.');
         if (!isset($mapped['tree'])) {
             return self::refuse($mapped['code'] ?? 'bad_input', $mapped['detail'] ?? $at . '.outline', $i);
         }
@@ -372,13 +373,13 @@ final class LayoutOps
      * Where new nodes may go as children of the element at $parentPath: the
      * mapping context and the layout they take.
      *
-     * @param list<array<string, mixed>>         $tree       Current tree.
+     * @param array<mixed>                        $tree       Current tree.
      * @param list<int>                          $parentPath The parent element, or [] for the top of the page.
      * @param array<string, array<string, mixed>> $facts      Projection nodes by ref.
      * @param bool                               $containers The site's layout for top-level nodes.
      * @param string                             $at         The operation's position.
      * @param int                                $i          Its index.
-     * @return array<string, mixed> context and containers; or a refusal.
+     * @return array{context?: string, containers?: bool, code?: string, detail?: string, op_index?: int|null} Where, or a refusal.
      */
     private static function place(array $tree, array $parentPath, array $facts, bool $containers, string $at, int $i): array
     {
@@ -408,7 +409,7 @@ final class LayoutOps
     /**
      * Where the children of the element at $parentPath stand.
      *
-     * @param list<array<string, mixed>>         $tree       Current tree.
+     * @param array<mixed>                        $tree       Current tree.
      * @param list<int>                          $parentPath The parent element, or [] for the top of the page.
      * @param array<string, array<string, mixed>> $facts      Projection nodes by ref.
      * @return string One of the SLOT_ values.
@@ -429,7 +430,7 @@ final class LayoutOps
      * that holds content; an inner row only where a new one may go, in the
      * same layout.
      *
-     * @param list<array<string, mixed>>         $tree       Current tree.
+     * @param array<mixed>                        $tree       Current tree.
      * @param list<int>                          $to         The new parent, or [] for the top of the page.
      * @param array<mixed>                       $moved      The moved node.
      * @param array<string, array<string, mixed>> $facts      Projection nodes by ref.
@@ -459,11 +460,11 @@ final class LayoutOps
     /**
      * Where the node with $ref is now, or the refusal.
      *
-     * @param list<array<string, mixed>>         $tree  Current tree.
+     * @param array<mixed>                        $tree  Current tree.
      * @param string                             $ref   Ref.
      * @param array<string, array<string, mixed>> $facts Projection nodes by ref.
      * @param int                                $i     The operation's index.
-     * @return array<string, mixed> path; or a refusal.
+     * @return array{path?: list<int>, code?: string, detail?: string, op_index?: int|null} The path, or a refusal.
      */
     private static function locate(array $tree, string $ref, array $facts, int $i): array
     {
@@ -536,7 +537,7 @@ final class LayoutOps
      * @param int          $index      Position in the parent's list.
      * @param int          $length     Elements taken out.
      * @param array<mixed> $nodes      Elements put in.
-     * @return list<array<string, mixed>>
+     * @return array<mixed>
      */
     private static function splice(array $list, array $parentPath, int $index, int $length, array $nodes): array
     {
@@ -701,7 +702,7 @@ final class LayoutOps
     }
 
     /**
-     * @param list<array<string, mixed>> $tree    The tree after the operation.
+     * @param array<mixed>                        $tree    The tree after the operation.
      * @param array<string, mixed>       $change  The change.
      * @param list<string>               $touched Refs whose text changed or that were made.
      * @param list<string>               $made    Refs made.
