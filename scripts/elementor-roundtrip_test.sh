@@ -20,8 +20,9 @@
 # its undo guard skipped), each on the check meant to see it. It also
 # proves what it must NOT block: an honest run, a cached download, a run of one
 # version or one layout out of several, a blueprint that sets some other site
-# option, and, in the planted run, every case that carries no plant. Run it
-# BEFORE the real check so a guard that fails open cannot pass.
+# option, and, in the planted run, every case that carries no plant and the
+# whole agent path. Run it BEFORE the real check so a guard that fails open
+# cannot pass.
 #
 # The first group runs run.sh against a stand-in for npx and file:// pins, and
 # needs no network and no Playground. The second group boots a real WordPress
@@ -410,6 +411,8 @@ sections text golden"
   fail_lines="$(printf '%s\n' "$LAST_OUT" | grep -c '^rt: FAIL ' || true)"
   matched_lines="$(printf '%s\n' "$LAST_OUT" | grep -c -E '^rt: FAIL \[[0-9.]+ (containers|sections) [a-z0-9-]+\] [a-z-]+:' || true)"
   if [ "$fail_lines" = "$matched_lines" ]; then ok "  and no failure is anything but a named check on a named case"; else bad "  $fail_lines failure line(s), $matched_lines of them name a check on a case"; fi
+  # All five plants are in the round trip. The agent path runs on the same site and has no plant of its own here.
+  not_said "  and no agent-path check is red in a run that planted nothing in the agent path" "rt: FAIL [4.3.4 agent-"
   # Only the round trip's own cases: the agent path prints "ok" lines of its own (tagged agent-<layout>),
   # and the verdict's cases= counts the round trip's cases alone.
   ok_n="$(printf '%s\n' "$LAST_OUT" | grep -c -E '^rt: ok +\[[0-9.]+ (containers|sections) ' || true)"

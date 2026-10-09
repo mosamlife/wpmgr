@@ -87,9 +87,6 @@ const RT_PLANTS = [
     'agent_no_cases',
 ];
 
-/** The lowest number of agent create-and-undo round trips and of refusals a run may report. */
-const RT_AGENT_MIN = 1;
-
 const RT_NODE_LIMIT_DEPTH = 64;
 
 function rt_out(string $line): void
