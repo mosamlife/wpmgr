@@ -53,11 +53,12 @@ expect() {
 }
 
 # said <name> <pattern>   LAST_OUT must contain the pattern: a red must be red
-# for the right reason, not because something else broke.
+# for the right reason, not because something else broke. When it is not, what the
+# run actually printed follows (a run's last line is the one that names its cause).
 said() {
   case "$LAST_OUT" in
     *"$2"*) ok "$1" ;;
-    *) bad "$1 (expected output to contain: $2)"; echo "$LAST_OUT" | sed 's/^/     | /' | head -8 ;;
+    *) bad "$1 (expected output to contain: $2)"; echo "$LAST_OUT" | sed 's/^/     | /' | head -20 ;;
   esac
 }
 
@@ -667,20 +668,53 @@ if [ "$rc_w" -eq 0 ]; then ok "  and it goes on once the lock is freed (exit $rc
 if [ "$(marker_of "$C/$sha_mini")" = "$sha_mini" ] && only_the_core "$C" "$sha_mini"; then ok "  and the core is replaced and no lock is left"; else bad "  and the core is replaced and no lock is left ($(ls -A "$C"))"; fi
 
 # Without ps a lock cannot be judged, and a lock that cannot be judged is not guessed at.
-nops="$tmp/nops"
-mkdir -p "$nops"
-for t in bash env dirname mktemp mkdir rm cat cp grep tar sleep awk shasum sha256sum; do
-  p="$(command -v "$t" 2>/dev/null || true)"
-  if [ -x "$p" ]; then ln -s "$p" "$nops/$t"; fi
+#
+# The run gets a PATH that is one private directory: a symlink to each tool the check and its
+# stand-ins run by name (found on this host), the stand-ins for curl and mv, and not ps.
+# Dropping the directory ps lives in would drop whatever else lives there, and that differs
+# between systems. The list has to name what those tools start as well: GNU tar runs gzip by
+# name to read a .tar.gz, where the tar macOS ships reads it itself.
+# The same directory with ps added is run too, and has to pass. When it does not, the list is
+# short of a tool, ps is not the only one missing, and the missing-ps case is red for that.
+private_path() { # private_path <dir> <tool...>   <dir> is a PATH of its own: a symlink to each tool found on this host
+  local d="$1" t p
+  shift
+  mkdir -p "$d"
+  for t in "$@"; do
+    p="$(command -v "$t" 2>/dev/null || true)"
+    case "$p" in
+      /*) ln -s "$p" "$d/$t" ;;
+      *) bad "setup: $t is not on this host's PATH (command -v said: '$p'), so it cannot be put in $d" ;;
+    esac
+  done
+}
+nops_tools=(bash env dirname mktemp mkdir rm cat cp grep tar gzip sleep awk php)
+for t in sha256sum shasum; do
+  if command -v "$t" >/dev/null 2>&1; then nops_tools+=("$t"); fi
 done
-cp "$shim/mv" "$nops/mv"
-cp "$shim/curl" "$nops/curl"
+case " ${nops_tools[*]} " in
+  *" sha256sum "* | *" shasum "*) ;;
+  *) bad "setup: the host has neither sha256sum nor shasum" ;;
+esac
+nops="$tmp/nops"
+withps="$tmp/withps"
+private_path "$nops" "${nops_tools[@]}"
+private_path "$withps" "${nops_tools[@]}" ps
+for d in "$nops" "$withps"; do
+  cp "$shim/mv" "$d/mv"
+  cp "$shim/curl" "$d/curl"
+done
 newcache no-ps
 corrupt_mini "$C"
 expect "a missing ps is red when a core has to be replaced" nonzero "${hermetic[@]}" PATH="$nops" PAGE_KSES_CACHE="$C" SHIM_CACHE="$C" SHIM_DIR="$S"
 said "  and it says ps is the problem" "ps not found"
 if [ "$(marker_of "$C/$sha_mini")" = "$wrong" ]; then ok "  and the corrupt core was left as it was"; else bad "  and the corrupt core was left as it was"; fi
 expect "the same run with ps on PATH replaces the core and passes" 0 "${hermetic[@]}" PAGE_KSES_CACHE="$C" SHIM_CACHE="$C" SHIM_DIR="$S"
+# The control: the same private PATH with ps added, on a corrupt core of its own.
+newcache with-ps
+corrupt_mini "$C"
+expect "the same private PATH with ps added replaces the core and passes" 0 "${hermetic[@]}" PATH="$withps" PAGE_KSES_CACHE="$C" SHIM_CACHE="$C" SHIM_DIR="$S"
+if [ "$(marker_of "$C/$sha_mini")" = "$sha_mini" ]; then ok "  and the core was replaced, so ps was the only thing the other run lacked"; else bad "  and the core was replaced, so ps was the only thing the other run lacked"; fi
 
 expect "a lock wait of 0 is red" nonzero PAGE_KSES_LOCK_WAIT=0 PAGE_KSES_MARKUP="$tmp/layout_ok.json"
 said "  and it says what the setting must be" "PAGE_KSES_LOCK_WAIT must be a whole number"
