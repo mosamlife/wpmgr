@@ -342,11 +342,15 @@ CREATE TABLE sites (
     -- populated, i.e. undated inventory data.
     components_updated_at timestamptz,
     tags        text[]      NOT NULL DEFAULT '{}',
-    -- M4 backups: the age PUBLIC recipient (X25519, "age1...") backups for this
-    -- site are encrypted to. Client-side encryption is on the AGENT; the control
-    -- plane stores ONLY this public recipient and never the matching identity
-    -- (private key). Empty until a recipient is set. The CP cannot decrypt
-    -- backups: it never holds the identity (ADR — trust model).
+    -- M4 backups: the site's age PUBLIC recipient (X25519, "age1..."), as the
+    -- agent reports it. The control plane stores ONLY this public recipient
+    -- and never the matching identity (private key), which stays with the
+    -- agent. Empty until the agent first reports one, and a backup does not
+    -- start while it is empty. Backup chunks are NOT encrypted to it today:
+    -- the agent ships with EncryptAndUpload::ENCRYPT_CHUNKS = false, so chunks
+    -- are stored unencrypted at the site's backup destination, and anyone who
+    -- can read that destination can read them. Client-side encryption is
+    -- tracked in GH #725.
     age_recipient text      NOT NULL DEFAULT '',
     -- M17 backup-schedule: timezone fields captured from diagnostics identity
     -- category (timezone_string / gmt_offset). Used by the backup scheduler to
@@ -1462,12 +1466,14 @@ CREATE POLICY update_tasks_site_scope ON update_tasks
 -- ---------------------------------------------------------------------------
 -- backup_chunks  (M4 — incremental, content-addressed dedup + GC)
 -- ---------------------------------------------------------------------------
--- One row per UNIQUE (tenant, blake3) ciphertext chunk stored in object
--- storage. Chunks are content-addressed by the BLAKE3 hash of their CIPHERTEXT
--- (the agent encrypts client-side with age, then hashes; the CP and S3 only
--- ever see ciphertext). Tenant-scoped + RLS: a tenant can never see or target
--- another tenant's chunks, and the s3_key is namespaced by tenant so a presign
--- for one tenant cannot address another's chunk prefix.
+-- One row per UNIQUE (tenant, blake3) chunk stored in object storage. A chunk
+-- is content-addressed by the BLAKE3 hash of the bytes the agent uploads,
+-- which are the bytes stored. The agent's age encryption step, which would run
+-- before that hash, is off (EncryptAndUpload::ENCRYPT_CHUNKS is false), so
+-- chunks are stored unencrypted and anyone who can read the storage holding a
+-- chunk can read its contents. Tenant-scoped + RLS: a tenant can never see or
+-- target another tenant's chunks, and the s3_key is namespaced by tenant so a
+-- presign for one tenant cannot address another's chunk prefix.
 --
 -- refcount IS OBSERVABILITY ONLY. It counts ORIGIN references (how many
 -- manifest entries introduced the chunk), not live ones, and ADR-050 retracted
@@ -1800,9 +1806,9 @@ CREATE POLICY tenant_object_reclaim_agent ON tenant_object_reclaim
 -- ---------------------------------------------------------------------------
 -- One backup of a site: files, db, or full. The manifest (ordered per-path
 -- chunk lists) lives in backup_manifest_entries. Status advances pending ->
--- running -> completed | failed. age_recipient records the public recipient the
--- agent encrypted to (provenance; the CP never holds the identity). Tenant-
--- scoped + RLS.
+-- running -> completed | failed. age_recipient is a copy of the site's backup
+-- recipient taken when the snapshot is created, kept for provenance; it does
+-- not mean the chunks are encrypted (see the column). Tenant-scoped + RLS.
 CREATE TABLE backup_snapshots (
     id            uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id     uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
@@ -1812,8 +1818,13 @@ CREATE TABLE backup_snapshots (
     kind          text        NOT NULL,
     -- status: pending | running | completed | failed.
     status        text        NOT NULL DEFAULT 'pending',
-    -- age_recipient is the public X25519 recipient the chunks were encrypted to
-    -- (echoed from the site at backup time for provenance/restore targeting).
+    -- age_recipient is the site's public X25519 recipient, copied from
+    -- sites.age_recipient when the snapshot is created and sent to the agent
+    -- with the backup command (provenance). A non-empty value does NOT mean
+    -- the chunks are encrypted: the agent does not encrypt them today
+    -- (EncryptAndUpload::ENCRYPT_CHUNKS is false), and no column records
+    -- whether a snapshot's chunks are encrypted, so this one cannot be used to
+    -- tell. Restore does not read it.
     age_recipient text        NOT NULL DEFAULT '',
     total_size    bigint      NOT NULL DEFAULT 0,
     chunk_count   bigint      NOT NULL DEFAULT 0,
@@ -2000,9 +2011,11 @@ CREATE POLICY backup_file_index_agent ON backup_file_index
 -- list of BLAKE3 chunk hashes that reassemble it (a text[] preserving order),
 -- the total size, the file mode, and an optional kind tag ('file' | 'db'). To
 -- restore a path the CP looks up each hash's s3_key in backup_chunks and issues
--- a presigned GET; the agent downloads, decrypts (age), verifies BLAKE3, and
--- concatenates in order. Tenant-scoped + RLS (redundant tenant_id avoids a join
--- in the policy and worker queries).
+-- a presigned GET; the agent downloads each chunk, checks its BLAKE3 against
+-- the downloaded bytes, and concatenates in order. Chunks are stored
+-- unencrypted today, so restore writes the downloaded bytes as they are (see
+-- backup_chunks). Tenant-scoped + RLS (redundant tenant_id avoids a join in
+-- the policy and worker queries).
 CREATE TABLE backup_manifest_entries (
     id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
     snapshot_id uuid        NOT NULL REFERENCES backup_snapshots (id) ON DELETE CASCADE,
