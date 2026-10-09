@@ -145,6 +145,25 @@ export const consentWireSchema = z.object({
   conferrable_capabilities: z
     .array(z.object({ name: z.string().min(1), effect: z.string().min(1) }))
     .optional(),
+
+  // Mirrors consentResponseDTO.UnregisteredScopes (dto.go:112-119): the scopes
+  // the client asked for that its own registration does not hold, in the order
+  // it asked. The server leaves them out of `scopes`, out of the ticket and off
+  // the screen's ticks; this list exists only so the screen can say why an app
+  // that asked for site tools is being offered none.
+  //
+  // OPTIONAL ON THE WAY IN, for the same deploy-ordering reason as
+  // conferrable_capabilities above: a server that predates the field sends no
+  // key, and an absent key means nothing was withheld. When the key IS present
+  // it is held to the server's own promise (an array of non-empty strings, `[]`
+  // when nothing was withheld, never null), so a value of any other type is a
+  // failed load rather than a guess.
+  //
+  // COPY ONLY, NEVER AUTHORITY. Nothing here reaches the approval POST, the
+  // capability list or an Approve gate. The scopes that can be approved are
+  // `scopes`, sealed in the ticket; this list can neither add to them nor
+  // remove from them.
+  unregistered_scopes: z.array(z.string().min(1)).optional(),
 });
 
 export type ConsentWire = z.infer<typeof consentWireSchema>;
@@ -247,6 +266,19 @@ export interface ConsentContext {
    *  server did not send this key yet" -- there is no sentence on this screen
    *  that needs to tell those two apart. */
   readonly conferrableCapabilities: readonly ConferrableCapability[];
+
+  /**
+   * What the client asked for and its own registration does not hold, in the
+   * order it asked. `[]` for both "nothing was withheld" and "the server did
+   * not send this key yet"; no sentence on this screen needs to tell those two
+   * apart.
+   *
+   * Never on `scopes`, never behind a tick, never in the approval. A scope
+   * named here cannot be granted from this screen: the client can ask for it
+   * only by registering again. The screen reads this to explain that, and for
+   * nothing else.
+   */
+  readonly unregisteredScopes: readonly string[];
 }
 
 export interface ConferrableCapability {
@@ -308,6 +340,7 @@ export function parseConsentContext(raw: unknown): ConsentContext {
     // the whole requirement.
     consentTicket: orNull(wire.consent_ticket),
     conferrableCapabilities: wire.conferrable_capabilities ?? [],
+    unregisteredScopes: wire.unregistered_scopes ?? [],
   };
 }
 
@@ -324,6 +357,7 @@ export function parseConsentContext(raw: unknown): ConsentContext {
 // (ADR-061 option B, "no automation may ever approve").
 export const SCOPE_READ = "mcp:read";
 export const SCOPE_CACHE = "mcp:cache";
+export const SCOPE_SITE = "mcp:site";
 
 export interface ScopeCopy {
   readonly token: string;
@@ -370,7 +404,7 @@ export function describeScope(token: string): ScopeCopy {
  *  whether by describeScope's own bullet (SCOPE_READ) or by its own dedicated
  *  section (SCOPE_CACHE). */
 export function allScopesRecognised(scopes: readonly string[]): boolean {
-  return scopes.every((s) => s === SCOPE_READ || s === SCOPE_CACHE);
+  return scopes.every((s) => s === SCOPE_READ || s === SCOPE_CACHE || s === SCOPE_SITE);
 }
 
 /**
@@ -383,6 +417,8 @@ export function allScopesRecognised(scopes: readonly string[]): boolean {
 export function buildApprovalCapabilities(
   conferrable: readonly ConferrableCapability[],
   purgeTicked: boolean,
+  abilityReadTicked = false,
+  abilityRequestTicked = false,
 ): string[] {
   const known: ReadonlySet<string> = new Set(CONFERRABLE_READS);
   const out = conferrable
@@ -392,5 +428,13 @@ export function buildApprovalCapabilities(
     (c) => c.name === "mcp.cache.purge" && c.effect === CAPABILITY_EFFECT_REQUEST,
   );
   if (purgeTicked && offersPurge) out.push("mcp.cache.purge");
+  const offers = (name: string, effect: string) =>
+    conferrable.some((c) => c.name === name && c.effect === effect);
+  if (abilityReadTicked && offers("mcp.ability.read", CAPABILITY_EFFECT_READ)) {
+    out.push("mcp.ability.read");
+  }
+  if (abilityRequestTicked && offers("mcp.ability.request", CAPABILITY_EFFECT_REQUEST)) {
+    out.push("mcp.ability.request");
+  }
   return out;
 }

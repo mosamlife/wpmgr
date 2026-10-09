@@ -60,6 +60,8 @@ const REASON_LABELS: Record<string, string> = {
   organisation_deleted: "The organisation is being deleted",
   write_tools_disabled: "AI cache clears were switched off on this server",
   dispatch_deadline_passed: "The approved clear did not start within an hour of approval",
+  entry_changed: "The AI tool changed after it was approved",
+  entry_disabled: "The AI tool was switched off after it was approved",
   could_not_reach_site: "WPMgr could not reach this site",
   // assistant.request.failed's outcome.
   outcome_unknown: "WPMgr could not confirm whether the clear ran",
@@ -76,6 +78,7 @@ export function humanizeReason(reason: string): string {
 /** Readable label for a non-site target_type ("update_task" -> "Update task"). */
 export function humanizeTargetType(targetType: string): string {
   if (targetType === "user") return "Account";
+  if (targetType === "assistant_ability_request") return "AI change request";
   return humanizeKey(targetType.replace(/_/g, " "));
 }
 

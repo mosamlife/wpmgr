@@ -12,6 +12,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/abilities"
+	"github.com/mosamlife/wpmgr/apps/api/internal/abilityrequest"
 	"github.com/mosamlife/wpmgr/apps/api/internal/activity"
 	"github.com/mosamlife/wpmgr/apps/api/internal/admin"
 	"github.com/mosamlife/wpmgr/apps/api/internal/admingate"
@@ -26,6 +28,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/billing"
 	clientpkg "github.com/mosamlife/wpmgr/apps/api/internal/client"
 	"github.com/mosamlife/wpmgr/apps/api/internal/config"
+	"github.com/mosamlife/wpmgr/apps/api/internal/content"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/diagnostics"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
@@ -299,10 +302,18 @@ func buildEngine() (engine *gin.Engine, omittedDepsFields []string, err error) {
 	// The AI request queue and the site-nested approve and decline routes,
 	// built as cmd/wpmgr/main.go builds them. The switch is left off: this
 	// engine only lists routes.
+	abilityReqH := abilityrequest.NewHandler(abilityrequest.NewService(pool, mcpRepo, mcpSvc, auditRec, logger))
 	assistantReqH := assistantrequest.NewHandler(
 		assistantrequest.NewService(assistantrequest.NewRepo(pool), mcpRepo, mcpSvc, auditRec, logger))
 
+	// Track B S1 page-ownership inventory and its superadmin routes.
+	contentH := content.NewHandler(content.NewService(content.NewRepo(pool), nil, logger))
+	adminH.SetContentRoutes(contentH.RegisterAdmin)
+	// Ability engine: the superadmin catalogue routes.
+	adminH.SetAbilityRoutes(abilities.NewAdminHandler(abilities.NewAdminRepo(pool)).RegisterAdmin)
+
 	deps := server.Deps{
+		ContentH:               contentH,
 		Config:                 config.Config{},
 		Logger:                 logger,
 		Pool:                   pool,
@@ -371,6 +382,8 @@ func buildEngine() (engine *gin.Engine, omittedDepsFields []string, err error) {
 		MCPOAuthH:              mcpOAuthH,
 		MCPDiscoveryH:          mcpDiscoveryH,
 		AssistantRequestH:      assistantReqH,
+		AbilityRequestH:        abilityReqH,
+		AbilityTenantH:         abilities.NewTenantHandler(abilities.NewTenantRepo(pool, auditRec), admingate.NewPoolStore(pool)),
 		BillingSuspensionGate:  billingSvc.SuspensionGate(),
 		ServiceName:            "wpmgr-dump-routes",
 		Version:                "dump-routes",

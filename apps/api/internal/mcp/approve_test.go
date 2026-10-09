@@ -90,14 +90,24 @@ func TestApprove_RefusesARedirectTheClientNeverRegistered(t *testing.T) {
 	for _, bad := range attacker {
 		t.Run(bad, func(t *testing.T) {
 			store := approvalStore()
-			req := validApproval()
+			svc := auditedService(store)
+			// A consent from a real authorize call, ticket included, so every
+			// check ahead of the redirect re-match passes and the refusal below
+			// can only come from it. The ticket does not seal the redirect, so
+			// the body's copy is the caller's to change.
+			req := approvalFor(authorizeForTest(t, svc, string(ScopeRead)))
 			req.Consent.RedirectURI = bad
 
-			got, err := NewService(store).Approve(context.Background(), req)
+			got, err := svc.Approve(context.Background(), req)
 			if err == nil {
 				t.Fatalf("Approve minted code %q for unregistered redirect_uri %q; "+
 					"the code would then be honoured by Exchange, because Exchange "+
 					"compares against the value STORED ON THE CODE ROW", got.Code, bad)
+			}
+			if de, ok := domain.AsDomain(err); !ok || de.Code != ErrCodeInvalidRedirectURI {
+				t.Fatalf("Approve refused redirect_uri %q with %v, want %s; any other "+
+					"refusal means the redirect re-match was never reached", bad, err,
+					ErrCodeInvalidRedirectURI)
 			}
 			if got.Code != "" {
 				t.Fatal("a refused approval still returned a code")
@@ -109,6 +119,15 @@ func TestApprove_RefusesARedirectTheClientNeverRegistered(t *testing.T) {
 				}
 			}
 		})
+	}
+
+	// Control: the same fixture with the registered redirect mints, so the
+	// refusals above are the redirect's and not the fixture's.
+	store := approvalStore()
+	svc := auditedService(store)
+	if _, err := svc.Approve(context.Background(),
+		approvalFor(authorizeForTest(t, svc, string(ScopeRead)))); err != nil {
+		t.Fatalf("the unmodified fixture was refused (%v), so the cases above prove nothing", err)
 	}
 }
 
@@ -209,12 +228,21 @@ func TestApprove_ReChecksThePKCEChallenge(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			store := approvalStore()
-			req := validApproval()
+			svc := auditedService(store)
+			// A consent from a real authorize call, so the ticket binding passes
+			// and the PKCE re-check is what answers. The ticket does not seal
+			// the challenge, so the body's copy is the caller's to change.
+			req := approvalFor(authorizeForTest(t, svc, string(ScopeRead)))
 			req.Consent.CodeChallenge = tc.challenge
 			req.Consent.CodeChallengeMethod = tc.method
 
-			if _, err := NewService(store).Approve(context.Background(), req); err == nil {
+			_, err := svc.Approve(context.Background(), req)
+			if err == nil {
 				t.Fatal("Approve minted a code with no valid S256 PKCE challenge")
+			}
+			if de, ok := domain.AsDomain(err); !ok || de.Code != ErrCodeInvalidRequest {
+				t.Fatalf("Approve refused with %v, want %s from the PKCE re-check; any "+
+					"other refusal means the re-check was never reached", err, ErrCodeInvalidRequest)
 			}
 			for _, c := range store.calls {
 				if c == "CreateGrantWithCode" {
@@ -222,6 +250,14 @@ func TestApprove_ReChecksThePKCEChallenge(t *testing.T) {
 				}
 			}
 		})
+	}
+
+	// Control: the same fixture with its S256 challenge intact mints.
+	store := approvalStore()
+	svc := auditedService(store)
+	if _, err := svc.Approve(context.Background(),
+		approvalFor(authorizeForTest(t, svc, string(ScopeRead)))); err != nil {
+		t.Fatalf("the unmodified fixture was refused (%v), so the cases above prove nothing", err)
 	}
 }
 
@@ -528,6 +564,7 @@ func TestExchange_ConfidentialClientMustPresentItsSecret(t *testing.T) {
 		return &fakeStore{
 			codeOK: true, code: redeemableCode(t, verifier, registeredRedirect, registeredClientID),
 			clientOK: true, client: confidentialClient(secret),
+			grantOauthScopes: []string{string(ScopeRead)},
 		}
 	}
 	// ClientAuthVia is set to the REGISTERED transport throughout, so each
@@ -578,6 +615,7 @@ func TestExchange_PublicClientNeedsNoSecret(t *testing.T) {
 	store := &fakeStore{
 		codeOK: true, code: redeemableCode(t, verifier, registeredRedirect, registeredClientID),
 		clientOK: true, client: liveClient(registeredRedirect), // method "none"
+		grantOauthScopes: []string{string(ScopeRead)},
 	}
 	got, err := NewService(store).Exchange(context.Background(), TokenRequest{
 		GrantType: "authorization_code", Code: "c", RedirectURI: registeredRedirect,

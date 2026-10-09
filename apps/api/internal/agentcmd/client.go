@@ -884,7 +884,13 @@ func (c *Client) postRaw(ctx context.Context, siteID uuid.UUID, siteURL, command
 	if err != nil {
 		return nil, markNotSent(fmt.Errorf("mint command jwt: %w", err))
 	}
+	return c.sendSigned(ctx, endpoint, command, payload, token)
+}
 
+// sendSigned POSTs exact payload bytes with an already-minted token. It is
+// postRaw's transport half, shared with params-bound commands (ability_run)
+// whose token claims depend on the payload bytes.
+func (c *Client) sendSigned(ctx context.Context, endpoint, command string, payload []byte, token string) ([]byte, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
 		return nil, markNotSent(fmt.Errorf("build %s request: %w", command, err))

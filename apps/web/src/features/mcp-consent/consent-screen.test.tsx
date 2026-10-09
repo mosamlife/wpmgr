@@ -4,7 +4,7 @@ import { screen, fireEvent, within } from "@testing-library/react";
 import { renderWithProviders } from "@/test/render";
 
 import { ConsentScreen, type ConsentScreenProps } from "./consent-screen";
-import { parseConsentContext, SCOPE_CACHE, SCOPE_READ } from "./consent-context";
+import { parseConsentContext, SCOPE_CACHE, SCOPE_READ, SCOPE_SITE } from "./consent-context";
 import { bannedWordHits } from "./site-enforcement";
 import type { ScopedSite } from "./site-scope";
 
@@ -588,7 +588,7 @@ describe("ConsentScreen — the mcp:cache write section (design v7 S2.2)", () =>
     await screen.findByTestId("consent-cache-capability");
     expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(true);
     expect(screen.getByTestId("consent-nothing-to-confer")).toHaveTextContent(
-      /asked only to request cache clears/i,
+      /asked only for things that need a tick/i,
     );
     // Ticking the box makes the approval possible again.
     fireEvent.click(within(screen.getByTestId("consent-cache-capability")).getByRole("checkbox"));
@@ -610,5 +610,301 @@ describe("ConsentScreen — the mcp:cache write section (design v7 S2.2)", () =>
     renderWithProviders(<ConsentScreen {...props({ consent: noCaps })} />);
     expect(screen.queryByTestId("consent-unknown-capability-effect")).toBeNull();
     expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The mcp:site site-tools section
+// ---------------------------------------------------------------------------
+describe("ConsentScreen, the mcp:site site-tools section", () => {
+  const READ = { name: "mcp.sites.read", effect: "read" };
+  const ABILITY_READ = { name: "mcp.ability.read", effect: "read" };
+  const ABILITY_REQUEST = { name: "mcp.ability.request", effect: "request" };
+
+  function siteConsent(
+    scopes: readonly string[] = [SCOPE_READ, SCOPE_SITE],
+    conferrable: readonly { name: string; effect: string }[] = [
+      READ,
+      ABILITY_READ,
+      ABILITY_REQUEST,
+    ],
+  ) {
+    return parseConsentContext({
+      client_id: "c_site",
+      client_name_unverified: "Test Client",
+      identity_verified: false,
+      redirect_uri: "https://x.example/cb",
+      redirect_host: "x.example",
+      scopes,
+      grant_lifetime_days: 90,
+      conferrable_capabilities: conferrable,
+    });
+  }
+
+  const readBox = () => screen.getByTestId<HTMLInputElement>("ability-box-mcp.ability.read");
+  const requestBox = () =>
+    screen.getByTestId<HTMLInputElement>("ability-box-mcp.ability.request");
+
+  function approveCall(onApprove: ReturnType<typeof vi.fn>) {
+    fireEvent.submit(screen.getByTestId("consent-approve").closest("form")!);
+    expect(onApprove).toHaveBeenCalledTimes(1);
+    return onApprove.mock.calls[0]![0] as { capabilities?: string[] };
+  }
+
+  it("recognises mcp:site, renders both boxes unticked, and leaves Approve enabled", async () => {
+    renderWithProviders(<ConsentScreen {...props({ consent: siteConsent() })} />, {
+      withRouter: true,
+    });
+    await screen.findByTestId("consent-site-capability");
+    expect(screen.queryByTestId("consent-unrecognised-scope")).toBeNull();
+    expect(readBox().checked).toBe(false);
+    expect(requestBox().checked).toBe(false);
+    expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(false);
+  });
+
+  it("sends the fleet reads only when neither box is ticked", async () => {
+    const onApprove = vi.fn();
+    renderWithProviders(<ConsentScreen {...props({ consent: siteConsent(), onApprove })} />, {
+      withRouter: true,
+    });
+    await screen.findByTestId("consent-site-capability");
+    expect(approveCall(onApprove).capabilities).toEqual(["mcp.sites.read"]);
+  });
+
+  it("sends exactly what is ticked: the read alone, then the request alone, then both", async () => {
+    const cases: { read: boolean; request: boolean; want: string[] }[] = [
+      { read: true, request: false, want: ["mcp.sites.read", "mcp.ability.read"] },
+      { read: false, request: true, want: ["mcp.sites.read", "mcp.ability.request"] },
+      {
+        read: true,
+        request: true,
+        want: ["mcp.sites.read", "mcp.ability.read", "mcp.ability.request"],
+      },
+    ];
+    for (const c of cases) {
+      const onApprove = vi.fn();
+      const { unmount } = renderWithProviders(
+        <ConsentScreen {...props({ consent: siteConsent(), onApprove })} />,
+        { withRouter: true },
+      );
+      await screen.findByTestId("consent-site-capability");
+      if (c.read) fireEvent.click(readBox());
+      if (c.request) fireEvent.click(requestBox());
+      expect(approveCall(onApprove).capabilities).toEqual(c.want);
+      unmount();
+    }
+  });
+
+  it("does not send a capability the server did not offer, even if ticked", async () => {
+    const onApprove = vi.fn();
+    const consent = siteConsent([SCOPE_READ, SCOPE_SITE], [READ, ABILITY_READ]);
+    renderWithProviders(<ConsentScreen {...props({ consent, onApprove })} />, {
+      withRouter: true,
+    });
+    await screen.findByTestId("consent-site-capability");
+    fireEvent.click(readBox());
+    fireEvent.click(requestBox());
+    expect(approveCall(onApprove).capabilities).toEqual(["mcp.sites.read", "mcp.ability.read"]);
+  });
+
+  it("renders a capability the server did not offer disabled, with a note, and never sends it", async () => {
+    const onApprove = vi.fn();
+    const consent = siteConsent([SCOPE_READ, SCOPE_SITE], [READ, ABILITY_READ]);
+    renderWithProviders(<ConsentScreen {...props({ consent, onApprove })} />, {
+      withRouter: true,
+    });
+    await screen.findByTestId("consent-site-capability");
+    expect(requestBox().disabled).toBe(true);
+    expect(screen.getByTestId("ability-not-offered-mcp.ability.request")).toHaveTextContent(
+      /not requested by this app/i,
+    );
+    expect(readBox().disabled).toBe(false);
+    expect(screen.queryByTestId("ability-not-offered-mcp.ability.read")).toBeNull();
+    fireEvent.click(requestBox());
+    expect(requestBox().checked).toBe(false);
+    expect(approveCall(onApprove).capabilities).toEqual(["mcp.sites.read"]);
+  });
+
+  it("blocks Approve for a site-only request until a box is ticked", async () => {
+    const consent = siteConsent(
+      [SCOPE_SITE],
+      [ABILITY_READ, ABILITY_REQUEST],
+    );
+    renderWithProviders(<ConsentScreen {...props({ consent })} />, { withRouter: true });
+    await screen.findByTestId("consent-site-capability");
+    expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(true);
+    expect(screen.getByTestId("consent-nothing-to-confer")).toBeTruthy();
+    fireEvent.click(readBox());
+    expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(false);
+  });
+
+  it("does not show the site-tools box when the client did not ask for mcp:site", () => {
+    renderWithProviders(<ConsentScreen {...props()} />);
+    expect(screen.queryByTestId("consent-site-capability")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// An app whose registration predates site tools
+// ---------------------------------------------------------------------------
+//
+// The authorize endpoint narrows a request to the registration instead of
+// refusing it (apps/api/internal/mcp/service.go, Authorize) and names what it
+// left out in `unregistered_scopes`. Without this note an app connected before
+// site tools existed signs in with read access only and no explanation. The
+// expected sentences are written out in full here, never imported from the
+// screen, so editing the copy there reddens this file.
+//
+// Rendered through the real router (withRouter: true) like the sections above,
+// from the wire shape through parseConsentContext, so the field has to survive
+// the schema to get here.
+describe("ConsentScreen, an app whose registration predates site tools", () => {
+  // Two sentences, picked by whether mcp:site itself is in the withheld list.
+  const SITE_NOTICE =
+    "This AI app was connected before WPMgr offered site tools. To give it site tools, remove WPMgr from the app and add it again.";
+  const OTHER_NOTICE =
+    "This AI app was connected before WPMgr offered some of the permissions it is asking for. To give it those, remove WPMgr from the app and add it again.";
+
+  // What Authorize leaves in `scopes` for a registration that asked for the
+  // advertised list: mcp:read alone by default, or `held` for one that holds
+  // more. A registration holding mcp:site is offered the two ability
+  // capabilities (scopeCapabilities in apps/api/internal/mcp/policy.go).
+  function withheld(unregistered?: readonly string[], held: readonly string[] = [SCOPE_READ]) {
+    return parseConsentContext({
+      client_id: "c_old",
+      client_name_unverified: "Test Client",
+      identity_verified: false,
+      redirect_uri: "https://x.example/cb",
+      redirect_host: "x.example",
+      scopes: held,
+      grant_lifetime_days: 90,
+      conferrable_capabilities: [
+        { name: "mcp.sites.read", effect: "read" },
+        ...(held.includes(SCOPE_SITE)
+          ? [
+              { name: "mcp.ability.read", effect: "read" },
+              { name: "mcp.ability.request", effect: "request" },
+            ]
+          : []),
+      ],
+      ...(unregistered === undefined ? {} : { unregistered_scopes: unregistered }),
+    });
+  }
+
+  it("says how to get site tools, in exactly these words, when mcp:site was withheld", async () => {
+    renderWithProviders(
+      <ConsentScreen {...props({ consent: withheld([SCOPE_SITE, SCOPE_CACHE]) })} />,
+      { withRouter: true },
+    );
+    const note = await screen.findByTestId("consent-unregistered-scopes");
+    expect(note.textContent).toBe(SITE_NOTICE);
+  });
+
+  it("does not promise site tools to an app that already holds them, when only mcp:cache was withheld", async () => {
+    // A registration holding mcp:read and mcp:site and lacking mcp:cache. The
+    // screen offers the site-tools box, so a sentence about getting site tools
+    // by reinstalling would send the user to discard access they already have.
+    renderWithProviders(
+      <ConsentScreen {...props({ consent: withheld([SCOPE_CACHE], [SCOPE_READ, SCOPE_SITE]) })} />,
+      { withRouter: true },
+    );
+    const note = await screen.findByTestId("consent-unregistered-scopes");
+    expect(note.textContent).toBe(OTHER_NOTICE);
+    // The positive control for why the site sentence would have been wrong.
+    expect(screen.getByTestId("consent-site-capability")).toBeTruthy();
+    expect(screen.queryByTestId("consent-cache-capability")).toBeNull();
+  });
+
+  it("puts the note in the permissions block, as a note", async () => {
+    renderWithProviders(
+      <ConsentScreen {...props({ consent: withheld([SCOPE_SITE, SCOPE_CACHE]) })} />,
+      { withRouter: true },
+    );
+    const note = await screen.findByRole("note");
+    expect(note).toBe(screen.getByTestId("consent-unregistered-scopes"));
+    expect(note.closest("section")).toHaveAttribute(
+      "aria-labelledby",
+      "consent-permissions-heading",
+    );
+  });
+
+  it("picks the sentence by membership alone, never by order or by how many were withheld", async () => {
+    const cases: { unregistered: readonly string[]; want: string }[] = [
+      { unregistered: [SCOPE_SITE], want: SITE_NOTICE },
+      { unregistered: [SCOPE_SITE, SCOPE_CACHE], want: SITE_NOTICE },
+      { unregistered: [SCOPE_CACHE, SCOPE_SITE], want: SITE_NOTICE },
+      { unregistered: [SCOPE_CACHE], want: OTHER_NOTICE },
+      { unregistered: ["mcp:future-scope"], want: OTHER_NOTICE },
+      { unregistered: [SCOPE_CACHE, "mcp:future-scope"], want: OTHER_NOTICE },
+    ];
+    for (const c of cases) {
+      const { unmount } = renderWithProviders(
+        <ConsentScreen {...props({ consent: withheld(c.unregistered) })} />,
+        { withRouter: true },
+      );
+      await screen.findByTestId("consent-unregistered-scopes");
+      expect(screen.getAllByTestId("consent-unregistered-scopes")).toHaveLength(1);
+      expect(screen.getByTestId("consent-unregistered-scopes").textContent).toBe(c.want);
+      // The scope strings are never rendered: a fixed sentence is picked and
+      // that is all the list is read for.
+      expect(document.body.textContent).not.toContain("mcp:future-scope");
+      unmount();
+    }
+  });
+
+  it("shows no note when nothing was withheld", async () => {
+    // The over-fire case. A note on every screen is a note nobody reads. The
+    // pattern covers both sentences.
+    renderWithProviders(<ConsentScreen {...props({ consent: withheld([]) })} />, {
+      withRouter: true,
+    });
+    await screen.findByTestId("consent-approve");
+    expect(screen.queryByTestId("consent-unregistered-scopes")).toBeNull();
+    expect(screen.queryByText(/connected before WPMgr offered/i)).toBeNull();
+    expect(screen.queryByRole("note")).toBeNull();
+  });
+
+  it("shows no note against a server that predates the field", async () => {
+    renderWithProviders(<ConsentScreen {...props({ consent: withheld() })} />, {
+      withRouter: true,
+    });
+    await screen.findByTestId("consent-approve");
+    expect(screen.queryByTestId("consent-unregistered-scopes")).toBeNull();
+  });
+
+  it("offers no tick for a scope the registration withheld", async () => {
+    // The boxes are driven by `scopes`, the approvable set. A withheld scope is
+    // named for the note and nothing else, so it cannot grow a tick.
+    renderWithProviders(
+      <ConsentScreen {...props({ consent: withheld([SCOPE_SITE, SCOPE_CACHE]) })} />,
+      { withRouter: true },
+    );
+    await screen.findByTestId("consent-unregistered-scopes");
+    expect(screen.queryByTestId("consent-site-capability")).toBeNull();
+    expect(screen.queryByTestId("ability-capability-box")).toBeNull();
+    expect(screen.queryByTestId("consent-cache-capability")).toBeNull();
+    expect(screen.queryByTestId("cache-purge-capability-box")).toBeNull();
+  });
+
+  it("neither blocks Approve nor changes what it sends, and still says read-only", async () => {
+    const onApprove = vi.fn();
+    renderWithProviders(
+      <ConsentScreen {...props({ consent: withheld([SCOPE_SITE, SCOPE_CACHE]), onApprove })} />,
+      { withRouter: true },
+    );
+    await screen.findByTestId("consent-unregistered-scopes");
+    expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(false);
+    expect(screen.getByText(/It cannot change anything\./i).closest("li")).toHaveTextContent(
+      /This connection is read-only/i,
+    );
+    fireEvent.submit(screen.getByTestId("consent-approve").closest("form")!);
+    expect(onApprove).toHaveBeenCalledTimes(1);
+    expect(onApprove).toHaveBeenCalledWith({
+      name: "Test Client",
+      siteScopeMode: "list",
+      scopeTagIds: [],
+      scopeSiteIds: [],
+      capabilities: ["mcp.sites.read"],
+    });
   });
 });

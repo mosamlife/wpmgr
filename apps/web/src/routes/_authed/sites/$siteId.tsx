@@ -113,6 +113,8 @@ const TABS = [
   // ADR-064 S5 — governed org/site context tab. Route file:
   // apps/web/src/routes/_authed/sites/$siteId.context.tsx
   { to: "/sites/$siteId/context", label: "Context" },
+  // Track B S1 — page inventory. Route file: $siteId.content.tsx
+  { to: "/sites/$siteId/content", label: "Content" },
   { to: "/sites/$siteId/settings", label: "Settings" },
 ] as const;
 

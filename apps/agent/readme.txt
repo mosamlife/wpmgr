@@ -4,7 +4,7 @@ Tags: backup, security, performance, updates, site management
 Requires at least: 6.2
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 0.61.153
+Stable tag: 0.61.158
 License: MIT
 License URI: https://opensource.org/licenses/MIT
 
@@ -286,6 +286,22 @@ This plugin ships two minified JavaScript files. Their human-readable source and
 
 The entries below summarize the notable changes since 0.31.1. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
 
+= 0.61.158 =
+* Added: An AI connected through WPMgr can read the site's published pages, posts, media, categories and tags through WordPress's own REST API, as the dedicated WPMgr content user. With per-request approval in WPMgr it can change a page or post title or excerpt, with undo, and it refuses pages whose other content the WPMgr user may not save.
+* Added: It can use reviewed read tools that other plugins register with the WordPress Abilities API (WordPress 7.1 or later). A read that tries to change settings or contact other servers is refused, and admin-rights changes are put back.
+
+= 0.61.157 =
+* Improved: AI page creation. Page titles and text can contain "&" and bracketed numbers such as [1] and are stored as literal text. A draft left behind by an interrupted AI request can be moved to the trash from WPMgr as long as nobody has edited it.
+
+= 0.61.156 =
+* Added: AI page creation, off by default. When you turn it on for a site from its Content tab, an AI connected through WPMgr can request a new draft page (headings, paragraphs and lists, in the block editor or the classic editor), and a person approves each request in WPMgr. The page is always created as a draft by a dedicated WPMgr content user that cannot log in, and it can be moved to the trash while nobody has touched it.
+
+= 0.61.155 =
+* Added: a signed command the control plane uses to list the tools (abilities) a site registers, and to run WPMgr's own read-only abilities: list the site's abilities, report site facts, and read the text of a published page. It changes nothing on the site. It sends the names, labels and descriptions of registered abilities, with each one's owner type, site facts (WordPress and PHP versions, theme and active plugin names), and, for a published page without a password that the control plane asks for, that page's title and text.
+
+= 0.61.154 =
+* Added: a read-only check the control plane can run to see which editor owns each page (the classic editor, the block editor, or a page builder) and whether it is a special page such as the blog index. It changes nothing on the site. It does not send page body text or stored builder data; it sends published page titles, and for a single page, the display name of the last editor and of anyone currently editing it.
+
 = 0.61.153 =
 * Added: the plugin can now carry out a cache purge limited to this site's own page cache, skipping hosting and CDN cache integrations, and report which detected integrations ran and which were skipped, when the control plane requests it.
 * Fixed: clearing the cache for a page address that uses a non-default port now targets the same cache entry that page was stored under.
@@ -471,6 +487,21 @@ The entries below summarize the notable changes since 0.31.1. This project ships
 * New: WOFF2 font transcoding. TTF, OTF and WOFF are converted on the control plane; the flag defaults to off.
 
 == Upgrade Notice ==
+
+= 0.61.158 =
+Lets a connected AI read published content and, with your approval in WPMgr, change page and post titles and excerpts, with undo. Also runs reviewed read-only tools from other plugins.
+
+= 0.61.157 =
+Improves AI page creation: titles and text with "&" or bracketed numbers are stored as literal text, and an interrupted request's untouched draft can be moved to the trash.
+
+= 0.61.156 =
+Adds AI page creation, off by default and turned on per site from the Content tab. A person approves each request in WPMgr. Pages are always created as drafts by a dedicated content user that cannot log in, and can be moved to the trash while untouched.
+
+= 0.61.155 =
+Adds a signed command the control plane uses to list the tools (abilities) a site registers and to run WPMgr's own read-only abilities. It changes nothing on the site. It sends the names, labels and descriptions of registered abilities, with each one's owner type, site facts (WordPress and PHP versions, theme and active plugin names), and, for a published page without a password that the control plane asks for, that page's title and text.
+
+= 0.61.154 =
+Adds a read-only check the control plane can run to see which editor owns each page and whether it is a special page. It changes nothing on the site and does not send page body text or stored builder data; it sends published page titles and, for a single page, editor display names.
 
 = 0.61.153 =
 The plugin can now carry out a cache purge limited to this site's own page cache, skipping hosting and CDN cache integrations, and report which integrations ran, when the control plane requests it.

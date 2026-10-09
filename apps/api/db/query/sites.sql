@@ -428,3 +428,23 @@ SELECT id, tenant_id, url FROM sites
 WHERE connection_state = 'connected'
   AND enrolled_at IS NOT NULL
 ORDER BY created_at DESC, id DESC;
+
+-- name: MarkSiteContentEditingEnabled :one
+-- m157. The enable action's one write: records the WordPress principal the
+-- agent returned and the WPMgr user who enabled it. Run in the site's tenant
+-- transaction; sites_tenant_isolation and sites_site_scope apply. No row
+-- (pgx.ErrNoRows) when the site is not visible to the caller. enabled_by must
+-- come from the authenticated actor, never request input.
+UPDATE sites SET
+    content_editing_enabled_at = now(),
+    content_editing_principal_user_id = sqlc.arg(principal_user_id)::bigint,
+    content_editing_enabled_by = sqlc.arg(enabled_by)::uuid,
+    updated_at = now()
+WHERE id = sqlc.arg(site_id)::uuid AND tenant_id = sqlc.arg(tenant_id)::uuid
+RETURNING id, content_editing_enabled_at, content_editing_principal_user_id, content_editing_enabled_by;
+
+-- name: GetSiteContentEditing :one
+-- m157. The site's content-editing state. enabled_at NULL means not enabled.
+SELECT id, content_editing_enabled_at, content_editing_principal_user_id, content_editing_enabled_by
+FROM sites
+WHERE id = sqlc.arg(site_id)::uuid AND tenant_id = sqlc.arg(tenant_id)::uuid;

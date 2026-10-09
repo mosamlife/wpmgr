@@ -22,7 +22,19 @@ type Handler struct {
 	auditRec     *audit.Recorder
 	vulnFeedH    *vulnFeedAdminHandler    // wired via SetVulnFeed; nil until wired
 	agentMirrorH *agentMirrorAdminHandler // wired via SetAgentMirror; nil until wired
+	contentMount func(*gin.RouterGroup)   // wired via SetContentRoutes; nil until wired
+	abilityMount func(*gin.RouterGroup)   // wired via SetAbilityRoutes; nil until wired
 }
+
+// SetAbilityRoutes wires the ability catalogue routes into the superadmin
+// group, which is already behind requireSuperadmin.
+func (h *Handler) SetAbilityRoutes(mount func(*gin.RouterGroup)) { h.abilityMount = mount }
+
+// SetContentRoutes wires the page-ownership routes (fleet report and the
+// builder allowlist) into the superadmin group. The function receives the group
+// that is already behind requireSuperadmin, so those routes are superadmin-only
+// by construction.
+func (h *Handler) SetContentRoutes(mount func(*gin.RouterGroup)) { h.contentMount = mount }
 
 // NewHandler builds an admin Handler.
 func NewHandler(svc *Service, pool *db.Pool) *Handler {
@@ -64,6 +76,14 @@ func (h *Handler) Register(r *gin.RouterGroup) {
 	g.POST("/accounts/:id/restore", h.restoreAccount)
 	g.POST("/accounts/:id/state", h.forceState)
 	g.GET("/revenue", h.revenue)
+	// Track B S1: fleet page-ownership report and the builder allowlist writer.
+	if h.contentMount != nil {
+		h.contentMount(g)
+	}
+	// Ability engine: the reviewed-ability catalogue writer.
+	if h.abilityMount != nil {
+		h.abilityMount(g)
+	}
 	// vuln-feed key management (optional; wired via RegisterVulnFeed after boot).
 	if h.vulnFeedH != nil {
 		vfg := g.Group("/vuln-feed")

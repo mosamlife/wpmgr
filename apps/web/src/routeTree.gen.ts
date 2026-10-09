@@ -61,6 +61,7 @@ import { Route as AuthedAiRequestsRouteImport } from './routes/_authed/ai/reques
 import { Route as AuthedAiConnectRouteImport } from './routes/_authed/ai/connect'
 import { Route as AuthedAdminVulnFeedRouteImport } from './routes/_authed/admin/vuln-feed'
 import { Route as AuthedAdminRevenueRouteImport } from './routes/_authed/admin/revenue'
+import { Route as AuthedAdminContentReportRouteImport } from './routes/_authed/admin/content-report'
 import { Route as AuthedAdminAgentMirrorRouteImport } from './routes/_authed/admin/agent-mirror'
 import { Route as AuthedSitesSiteIdIndexRouteImport } from './routes/_authed/sites/$siteId.index'
 import { Route as AuthedClientsClientIdIndexRouteImport } from './routes/_authed/clients/$clientId.index'
@@ -77,6 +78,7 @@ import { Route as AuthedSitesSiteIdFilesRouteImport } from './routes/_authed/sit
 import { Route as AuthedSitesSiteIdErrorsRouteImport } from './routes/_authed/sites/$siteId.errors'
 import { Route as AuthedSitesSiteIdEmailRouteImport } from './routes/_authed/sites/$siteId.email'
 import { Route as AuthedSitesSiteIdContextRouteImport } from './routes/_authed/sites/$siteId.context'
+import { Route as AuthedSitesSiteIdContentRouteImport } from './routes/_authed/sites/$siteId.content'
 import { Route as AuthedSitesSiteIdCacheRouteImport } from './routes/_authed/sites/$siteId.cache'
 import { Route as AuthedSitesSiteIdBackupsRouteImport } from './routes/_authed/sites/$siteId.backups'
 import { Route as AuthedSitesSiteIdActivityRouteImport } from './routes/_authed/sites/$siteId.activity'
@@ -347,6 +349,12 @@ const AuthedAdminRevenueRoute = AuthedAdminRevenueRouteImport.update({
   path: '/revenue',
   getParentRoute: () => AuthedAdminRouteRoute,
 } as any)
+const AuthedAdminContentReportRoute =
+  AuthedAdminContentReportRouteImport.update({
+    id: '/content-report',
+    path: '/content-report',
+    getParentRoute: () => AuthedAdminRouteRoute,
+  } as any)
 const AuthedAdminAgentMirrorRoute = AuthedAdminAgentMirrorRouteImport.update({
   id: '/agent-mirror',
   path: '/agent-mirror',
@@ -435,6 +443,12 @@ const AuthedSitesSiteIdContextRoute =
     path: '/context',
     getParentRoute: () => AuthedSitesSiteIdRoute,
   } as any)
+const AuthedSitesSiteIdContentRoute =
+  AuthedSitesSiteIdContentRouteImport.update({
+    id: '/content',
+    path: '/content',
+    getParentRoute: () => AuthedSitesSiteIdRoute,
+  } as any)
 const AuthedSitesSiteIdCacheRoute = AuthedSitesSiteIdCacheRouteImport.update({
   id: '/cache',
   path: '/cache',
@@ -514,6 +528,7 @@ export interface FileRoutesByFullPath {
   '/portal/reports': typeof PortalReportsRoute
   '/portal/': typeof PortalIndexRoute
   '/admin/agent-mirror': typeof AuthedAdminAgentMirrorRoute
+  '/admin/content-report': typeof AuthedAdminContentReportRoute
   '/admin/revenue': typeof AuthedAdminRevenueRoute
   '/admin/vuln-feed': typeof AuthedAdminVulnFeedRoute
   '/ai/connect': typeof AuthedAiConnectRoute
@@ -549,6 +564,7 @@ export interface FileRoutesByFullPath {
   '/sites/$siteId/activity': typeof AuthedSitesSiteIdActivityRoute
   '/sites/$siteId/backups': typeof AuthedSitesSiteIdBackupsRouteWithChildren
   '/sites/$siteId/cache': typeof AuthedSitesSiteIdCacheRoute
+  '/sites/$siteId/content': typeof AuthedSitesSiteIdContentRoute
   '/sites/$siteId/context': typeof AuthedSitesSiteIdContextRoute
   '/sites/$siteId/email': typeof AuthedSitesSiteIdEmailRoute
   '/sites/$siteId/errors': typeof AuthedSitesSiteIdErrorsRoute
@@ -589,6 +605,7 @@ export interface FileRoutesByTo {
   '/portal/reports': typeof PortalReportsRoute
   '/portal': typeof PortalIndexRoute
   '/admin/agent-mirror': typeof AuthedAdminAgentMirrorRoute
+  '/admin/content-report': typeof AuthedAdminContentReportRoute
   '/admin/revenue': typeof AuthedAdminRevenueRoute
   '/admin/vuln-feed': typeof AuthedAdminVulnFeedRoute
   '/ai/connect': typeof AuthedAiConnectRoute
@@ -621,6 +638,7 @@ export interface FileRoutesByTo {
   '/clients/$clientId/sites': typeof AuthedClientsClientIdSitesRoute
   '/sites/$siteId/activity': typeof AuthedSitesSiteIdActivityRoute
   '/sites/$siteId/cache': typeof AuthedSitesSiteIdCacheRoute
+  '/sites/$siteId/content': typeof AuthedSitesSiteIdContentRoute
   '/sites/$siteId/context': typeof AuthedSitesSiteIdContextRoute
   '/sites/$siteId/email': typeof AuthedSitesSiteIdEmailRoute
   '/sites/$siteId/errors': typeof AuthedSitesSiteIdErrorsRoute
@@ -666,6 +684,7 @@ export interface FileRoutesById {
   '/portal/reports': typeof PortalReportsRoute
   '/portal/': typeof PortalIndexRoute
   '/_authed/admin/agent-mirror': typeof AuthedAdminAgentMirrorRoute
+  '/_authed/admin/content-report': typeof AuthedAdminContentReportRoute
   '/_authed/admin/revenue': typeof AuthedAdminRevenueRoute
   '/_authed/admin/vuln-feed': typeof AuthedAdminVulnFeedRoute
   '/_authed/ai/connect': typeof AuthedAiConnectRoute
@@ -701,6 +720,7 @@ export interface FileRoutesById {
   '/_authed/sites/$siteId/activity': typeof AuthedSitesSiteIdActivityRoute
   '/_authed/sites/$siteId/backups': typeof AuthedSitesSiteIdBackupsRouteWithChildren
   '/_authed/sites/$siteId/cache': typeof AuthedSitesSiteIdCacheRoute
+  '/_authed/sites/$siteId/content': typeof AuthedSitesSiteIdContentRoute
   '/_authed/sites/$siteId/context': typeof AuthedSitesSiteIdContextRoute
   '/_authed/sites/$siteId/email': typeof AuthedSitesSiteIdEmailRoute
   '/_authed/sites/$siteId/errors': typeof AuthedSitesSiteIdErrorsRoute
@@ -746,6 +766,7 @@ export interface FileRouteTypes {
     | '/portal/reports'
     | '/portal/'
     | '/admin/agent-mirror'
+    | '/admin/content-report'
     | '/admin/revenue'
     | '/admin/vuln-feed'
     | '/ai/connect'
@@ -781,6 +802,7 @@ export interface FileRouteTypes {
     | '/sites/$siteId/activity'
     | '/sites/$siteId/backups'
     | '/sites/$siteId/cache'
+    | '/sites/$siteId/content'
     | '/sites/$siteId/context'
     | '/sites/$siteId/email'
     | '/sites/$siteId/errors'
@@ -821,6 +843,7 @@ export interface FileRouteTypes {
     | '/portal/reports'
     | '/portal'
     | '/admin/agent-mirror'
+    | '/admin/content-report'
     | '/admin/revenue'
     | '/admin/vuln-feed'
     | '/ai/connect'
@@ -853,6 +876,7 @@ export interface FileRouteTypes {
     | '/clients/$clientId/sites'
     | '/sites/$siteId/activity'
     | '/sites/$siteId/cache'
+    | '/sites/$siteId/content'
     | '/sites/$siteId/context'
     | '/sites/$siteId/email'
     | '/sites/$siteId/errors'
@@ -897,6 +921,7 @@ export interface FileRouteTypes {
     | '/portal/reports'
     | '/portal/'
     | '/_authed/admin/agent-mirror'
+    | '/_authed/admin/content-report'
     | '/_authed/admin/revenue'
     | '/_authed/admin/vuln-feed'
     | '/_authed/ai/connect'
@@ -932,6 +957,7 @@ export interface FileRouteTypes {
     | '/_authed/sites/$siteId/activity'
     | '/_authed/sites/$siteId/backups'
     | '/_authed/sites/$siteId/cache'
+    | '/_authed/sites/$siteId/content'
     | '/_authed/sites/$siteId/context'
     | '/_authed/sites/$siteId/email'
     | '/_authed/sites/$siteId/errors'
@@ -1332,6 +1358,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedAdminRevenueRouteImport
       parentRoute: typeof AuthedAdminRouteRoute
     }
+    '/_authed/admin/content-report': {
+      id: '/_authed/admin/content-report'
+      path: '/content-report'
+      fullPath: '/admin/content-report'
+      preLoaderRoute: typeof AuthedAdminContentReportRouteImport
+      parentRoute: typeof AuthedAdminRouteRoute
+    }
     '/_authed/admin/agent-mirror': {
       id: '/_authed/admin/agent-mirror'
       path: '/agent-mirror'
@@ -1444,6 +1477,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedSitesSiteIdContextRouteImport
       parentRoute: typeof AuthedSitesSiteIdRoute
     }
+    '/_authed/sites/$siteId/content': {
+      id: '/_authed/sites/$siteId/content'
+      path: '/content'
+      fullPath: '/sites/$siteId/content'
+      preLoaderRoute: typeof AuthedSitesSiteIdContentRouteImport
+      parentRoute: typeof AuthedSitesSiteIdRoute
+    }
     '/_authed/sites/$siteId/cache': {
       id: '/_authed/sites/$siteId/cache'
       path: '/cache'
@@ -1528,6 +1568,7 @@ const PortalRouteRouteWithChildren = PortalRouteRoute._addFileChildren(
 
 interface AuthedAdminRouteRouteChildren {
   AuthedAdminAgentMirrorRoute: typeof AuthedAdminAgentMirrorRoute
+  AuthedAdminContentReportRoute: typeof AuthedAdminContentReportRoute
   AuthedAdminRevenueRoute: typeof AuthedAdminRevenueRoute
   AuthedAdminVulnFeedRoute: typeof AuthedAdminVulnFeedRoute
   AuthedAdminIndexRoute: typeof AuthedAdminIndexRoute
@@ -1537,6 +1578,7 @@ interface AuthedAdminRouteRouteChildren {
 
 const AuthedAdminRouteRouteChildren: AuthedAdminRouteRouteChildren = {
   AuthedAdminAgentMirrorRoute: AuthedAdminAgentMirrorRoute,
+  AuthedAdminContentReportRoute: AuthedAdminContentReportRoute,
   AuthedAdminRevenueRoute: AuthedAdminRevenueRoute,
   AuthedAdminVulnFeedRoute: AuthedAdminVulnFeedRoute,
   AuthedAdminIndexRoute: AuthedAdminIndexRoute,
@@ -1614,6 +1656,7 @@ interface AuthedSitesSiteIdRouteChildren {
   AuthedSitesSiteIdActivityRoute: typeof AuthedSitesSiteIdActivityRoute
   AuthedSitesSiteIdBackupsRoute: typeof AuthedSitesSiteIdBackupsRouteWithChildren
   AuthedSitesSiteIdCacheRoute: typeof AuthedSitesSiteIdCacheRoute
+  AuthedSitesSiteIdContentRoute: typeof AuthedSitesSiteIdContentRoute
   AuthedSitesSiteIdContextRoute: typeof AuthedSitesSiteIdContextRoute
   AuthedSitesSiteIdEmailRoute: typeof AuthedSitesSiteIdEmailRoute
   AuthedSitesSiteIdErrorsRoute: typeof AuthedSitesSiteIdErrorsRoute
@@ -1633,6 +1676,7 @@ const AuthedSitesSiteIdRouteChildren: AuthedSitesSiteIdRouteChildren = {
   AuthedSitesSiteIdActivityRoute: AuthedSitesSiteIdActivityRoute,
   AuthedSitesSiteIdBackupsRoute: AuthedSitesSiteIdBackupsRouteWithChildren,
   AuthedSitesSiteIdCacheRoute: AuthedSitesSiteIdCacheRoute,
+  AuthedSitesSiteIdContentRoute: AuthedSitesSiteIdContentRoute,
   AuthedSitesSiteIdContextRoute: AuthedSitesSiteIdContextRoute,
   AuthedSitesSiteIdEmailRoute: AuthedSitesSiteIdEmailRoute,
   AuthedSitesSiteIdErrorsRoute: AuthedSitesSiteIdErrorsRoute,

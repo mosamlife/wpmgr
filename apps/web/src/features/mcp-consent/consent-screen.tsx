@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { AlertTriangle, ShieldAlert } from "lucide-react";
+import { AlertTriangle, Info, ShieldAlert } from "lucide-react";
 import { z } from "zod";
 
 import { Button } from "@/components/ui/button";
@@ -14,8 +14,11 @@ import {
   allCapabilityEffectsKnown,
   allScopesRecognised,
   buildApprovalCapabilities,
+  CAPABILITY_EFFECT_READ,
+  CAPABILITY_EFFECT_REQUEST,
   describeScope,
   SCOPE_CACHE,
+  SCOPE_SITE,
   type ConsentContext,
   type SelfAsserted,
 } from "./consent-context";
@@ -30,6 +33,7 @@ import {
   type SiteScopeMode,
 } from "./site-scope";
 import { SiteEnforcementBox } from "./site-enforcement-box";
+import { AbilityCapabilityBox } from "@/features/ai-connections/ability-capability-box";
 import { CachePurgeCapabilityBox } from "@/features/ai-connections/cache-purge-capability-box";
 
 // The consent screen (design Step 7).
@@ -47,6 +51,44 @@ import { CachePurgeCapabilityBox } from "@/features/ai-connections/cache-purge-c
 // propose behaviour for this screen to describe.
 
 export const REVOKE_LOCATION = "Settings, under AI connections";
+
+/**
+ * The sentences shown when the server withheld scopes the app asked for
+ * (`unregistered_scopes` on the consent payload).
+ *
+ * An AI app keeps the registration it made the first time it was connected, and
+ * that registration lists what it may ever ask for. A scope it did not register
+ * for cannot be given from this screen: the only way to ask again is to register
+ * again, which for a standard MCP client means removing WPMgr from the app and
+ * adding it back. So the sentence says that, and offers no tick, because there
+ * is nothing here to tick.
+ *
+ * TWO SENTENCES, CHOSEN BY MEMBERSHIP. A registration can hold mcp:site and lack
+ * mcp:cache. For that app this screen already offers site tools, so a sentence
+ * promising site tools after a reinstall would send the user to remove an app
+ * that has the access they came for. The site sentence is therefore shown only
+ * when mcp:site itself was withheld. Any other withheld scope gets the general
+ * sentence, which names no scope and no tool.
+ */
+export const UNREGISTERED_SITE_TOOLS_NOTICE =
+  "This AI app was connected before WPMgr offered site tools. To give it site tools, remove WPMgr from the app and add it again.";
+
+export const UNREGISTERED_OTHER_SCOPES_NOTICE =
+  "This AI app was connected before WPMgr offered some of the permissions it is asking for. To give it those, remove WPMgr from the app and add it again.";
+
+/**
+ * Which sentence, if any, explains the withheld scopes. Membership decides:
+ * mcp:site anywhere in the list selects the site sentence, any other non-empty
+ * list selects the general one, and an empty list selects none. Order and length
+ * change nothing. The scope strings are never rendered, so a value the server
+ * sends that this dashboard has never heard of cannot reach the page.
+ */
+function unregisteredScopesNotice(unregistered: readonly string[]): string | null {
+  if (unregistered.length === 0) return null;
+  return unregistered.includes(SCOPE_SITE)
+    ? UNREGISTERED_SITE_TOOLS_NOTICE
+    : UNREGISTERED_OTHER_SCOPES_NOTICE;
+}
 
 // ---------------------------------------------------------------------------
 // Checklist item 1: which client is asking
@@ -176,17 +218,26 @@ function PermissionsBlock({
   consent,
   purgeTicked,
   onPurgeChange,
+  abilityReadTicked,
+  abilityRequestTicked,
+  onAbilityReadChange,
+  onAbilityRequestChange,
 }: {
   consent: ConsentContext;
   purgeTicked: boolean;
   onPurgeChange: (checked: boolean) => void;
+  abilityReadTicked: boolean;
+  abilityRequestTicked: boolean;
+  onAbilityReadChange: (checked: boolean) => void;
+  onAbilityRequestChange: (checked: boolean) => void;
 }) {
   const recognised = allScopesRecognised(consent.scopes);
   // The generic bullets below describe only the read scope. mcp:cache gets
   // its own section (CachePurgeCapabilityBox), never a bullet from
   // describeScope, so the one write permission in this vocabulary is never
   // described in two places that could drift apart. See describeScope's note.
-  const readScopes = consent.scopes.filter((s) => s !== SCOPE_CACHE);
+  const readScopes = consent.scopes.filter((s) => s !== SCOPE_CACHE && s !== SCOPE_SITE);
+  const askedForSiteTools = consent.scopes.includes(SCOPE_SITE);
   const askedToClearCache = consent.scopes.includes(SCOPE_CACHE);
   const capabilitiesOk = allCapabilityEffectsKnown(consent.conferrableCapabilities);
   return (
@@ -217,6 +268,30 @@ function PermissionsBlock({
           <CachePurgeCapabilityBox checked={purgeTicked} onChange={onPurgeChange} />
         </div>
       )}
+
+      {/* mcp:site: two explicit ticks, both clear by default. */}
+      {askedForSiteTools && (
+        <div className="mt-4" data-testid="consent-site-capability">
+          <AbilityCapabilityBox
+            readChecked={abilityReadTicked}
+            requestChecked={abilityRequestTicked}
+            onReadChange={onAbilityReadChange}
+            onRequestChange={onAbilityRequestChange}
+            readOffered={consent.conferrableCapabilities.some(
+              (c) => c.name === "mcp.ability.read" && c.effect === CAPABILITY_EFFECT_READ,
+            )}
+            requestOffered={consent.conferrableCapabilities.some(
+              (c) => c.name === "mcp.ability.request" && c.effect === CAPABILITY_EFFECT_REQUEST,
+            )}
+          />
+        </div>
+      )}
+
+      {/* Why the app is being offered less than it asked for. Read from
+          `unregisteredScopes` to choose a sentence and for nothing else: the
+          boxes above are driven by `scopes`, so a withheld scope can never grow
+          a tick. */}
+      <UnregisteredScopesNotice unregistered={consent.unregisteredScopes} />
 
       {!capabilitiesOk && (
         <p
@@ -288,6 +363,27 @@ function PermissionsBlock({
         </p>
       )}
     </section>
+  );
+}
+
+/**
+ * Why an app that asked for more is being offered less. A plain informational
+ * note, not a warning: nothing is wrong with the request and nothing here is
+ * blocked, the app is simply limited to what it registered for. Renders nothing
+ * when nothing was withheld.
+ */
+function UnregisteredScopesNotice({ unregistered }: { unregistered: readonly string[] }) {
+  const sentence = unregisteredScopesNotice(unregistered);
+  if (sentence === null) return null;
+  return (
+    <div
+      role="note"
+      data-testid="consent-unregistered-scopes"
+      className="mt-4 flex items-start gap-2 rounded-md border border-[var(--color-info)]/30 bg-[var(--color-info-subtle)] p-3 text-sm text-[var(--color-info-subtle-fg)]"
+    >
+      <Info aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
+      <p>{sentence}</p>
+    </div>
   );
 }
 
@@ -633,6 +729,8 @@ export function ConsentScreen({
   const [nameError, setNameError] = useState<string | null>(null);
   // Never ticked by default: the write capability is an opt-in.
   const [purgeTicked, setPurgeTicked] = useState(false);
+  const [abilityReadTicked, setAbilityReadTicked] = useState(false);
+  const [abilityRequestTicked, setAbilityRequestTicked] = useState(false);
 
   const scope = useMemo(
     () =>
@@ -676,7 +774,12 @@ export function ConsentScreen({
     return resolveTagIds(selectedTagNames, tags);
   }, [mode, tags, selectedTagNames]);
 
-  const capabilities = buildApprovalCapabilities(consent.conferrableCapabilities, purgeTicked);
+  const capabilities = buildApprovalCapabilities(
+    consent.conferrableCapabilities,
+    purgeTicked,
+    abilityReadTicked,
+    abilityRequestTicked,
+  );
   // The server offered capabilities but none is ticked (a cache-only request
   // with the box left clear): an empty list is refused, so Approve is blocked.
   // A server that offers none at all (older deploy) is not this case.
@@ -726,6 +829,10 @@ export function ConsentScreen({
         consent={consent}
         purgeTicked={purgeTicked}
         onPurgeChange={setPurgeTicked}
+        abilityReadTicked={abilityReadTicked}
+        abilityRequestTicked={abilityRequestTicked}
+        onAbilityReadChange={setAbilityReadTicked}
+        onAbilityRequestChange={setAbilityRequestTicked}
       />
       <SiteScopeBlock
         mode={mode}
@@ -795,8 +902,8 @@ export function ConsentScreen({
             data-testid="consent-nothing-to-confer"
             className="text-sm text-[var(--color-muted-foreground)]"
           >
-            This app asked only to request cache clears. Tick the box to allow that, or deny the
-            request.
+            This app asked only for things that need a tick. Tick a box above to allow it, or deny
+            the request.
           </p>
         )}
         <Button type="button" variant="outline" onClick={onDeny} data-testid="consent-deny">
