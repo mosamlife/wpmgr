@@ -40,6 +40,11 @@ import (
 // stale-but-unmarked ... as a stand-in". Refusing while the operator is still
 // typing is the only option that leaves them able to act on it. See
 // ErrCodeContextTooLarge for the third write refusal this adds.
+//
+// Every write is held to this number in the current rendering. At read time
+// a context written before restriction items were quoted values is also
+// measured in the form it was written against, so it stays deliverable; see
+// ModelInstructions.
 const MaxDeliverableInstructionBytes = 2048
 
 // ErrCodeContextTooLarge is the reason code for both halves of the ceiling:
