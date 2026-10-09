@@ -405,6 +405,31 @@ func TestSiteDTOOfAnInactiveBuilder(t *testing.T) {
 	}
 }
 
+// A development or pre-release WordPress build is a fix on the wire: the row
+// fails with its own reason and the version it saw, the site needs attention,
+// and the fleet row lists it.
+func TestDTOsOfAPrereleaseWordPressBuild(t *testing.T) {
+	f := readyFacts()
+	f.WPVersion = "7.1.1-src"
+	r := Evaluate(f)
+
+	site := jsonObject(t, toSiteDTO(r))
+	if site["status"] != "needs_attention" || site["fix_count"] != float64(1) {
+		t.Fatalf("status %v fix_count %v, want needs_attention 1", site["status"], site["fix_count"])
+	}
+	base := asMap(t, asList(t, site["groups"], "groups")[0], "base group")
+	wp := asMap(t, asList(t, base["checks"], "base checks")[0], "wp_version")
+	if wp["id"] != "wp_version" || wp["state"] != "fail" || wp["reason"] != "prerelease_build" || wp["observed"] != "7.1.1-src" {
+		t.Errorf("wp_version = %v, want fail / prerelease_build / 7.1.1-src", wp)
+	}
+
+	fleet := jsonObject(t, toFleetDTO([]Result{r}))
+	entry := asMap(t, asList(t, fleet["sites"], "sites")[0], "site")
+	if fl := asList(t, entry["failing"], "failing"); len(fl) != 1 || fl[0] != "wp_version" {
+		t.Errorf("failing = %v, want [wp_version]", fl)
+	}
+}
+
 func TestFleetDTOWireShape(t *testing.T) {
 	broken := readyFacts()
 	broken.ContentEditingEnabled = false
@@ -536,6 +561,16 @@ func TestDTOsConformToTheGeneratedContract(t *testing.T) {
 		"unusable versions": func() Facts {
 			f := withBricks(withElementor(readyFacts()))
 			f.WPVersion, f.AgentVersion, f.ElementorVersion, f.BricksVersion = "latest", "", "banana", "<b>"
+			return f
+		}(),
+		"development build": func() Facts {
+			f := readyFacts()
+			f.WPVersion = "7.1.1-src"
+			return f
+		}(),
+		"release candidate": func() Facts {
+			f := readyFacts()
+			f.WPVersion = "7.2-RC1"
 			return f
 		}(),
 	}

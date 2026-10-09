@@ -4944,7 +4944,12 @@ export type AiReadinessGroup = {
  * `reason` is null for `pass`, and for a `fail` with a single way to
  * fail. Otherwise, per row:
  *
- * - `wp_version`, `agent_version`: unknown `not_reported`.
+ * - `wp_version`: unknown `not_reported`; fail `prerelease_build` (a
+ * development or pre-release build, such as `7.1-RC1` or
+ * `7.1.1-src`, whose release number reaches `floors.wp`: WPMgr's AI
+ * tools run on a released WordPress only). A released version below
+ * `floors.wp` is a `fail` with a null reason.
+ * - `agent_version`: unknown `not_reported`.
  * - `abilities_api`: unknown `inventory_never_run`, `agent_too_old`
  * (the agent cannot read the tool list) or `not_reported`.
  * - `content_editing`: only `pass` or `fail`.
@@ -4988,6 +4993,7 @@ export type AiReadinessCheck = {
     | "needs_bricks"
     | "inactive"
     | "too_old"
+    | "prerelease_build"
     | null;
   /**
    * A version string that passed a strict shape check, or null.

@@ -108,6 +108,8 @@ func (s AIReadinessCheckReason) Validate() error {
 		return nil
 	case "too_old":
 		return nil
+	case "prerelease_build":
+		return nil
 	default:
 		return errors.Errorf("invalid value: %v", s)
 	}

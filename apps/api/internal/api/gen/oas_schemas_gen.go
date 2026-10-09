@@ -25,7 +25,11 @@ import (
 //
 // `reason` is null for `pass`, and for a `fail` with a single way to fail. Otherwise, per row:
 //
-//   - `wp_version`, `agent_version`: unknown `not_reported`.
+//   - `wp_version`: unknown `not_reported`; fail `prerelease_build` (a development or pre-release
+//     build, such as `7.1-RC1` or `7.1.1-src`, whose release number reaches `floors.wp`: WPMgr's AI
+//     tools run on a released WordPress only). A released version below `floors.wp` is a `fail` with a
+//     null reason.
+//   - `agent_version`: unknown `not_reported`.
 //   - `abilities_api`: unknown `inventory_never_run`, `agent_too_old` (the agent cannot read the tool
 //     list) or `not_reported`.
 //   - `content_editing`: only `pass` or `fail`.
@@ -200,6 +204,7 @@ const (
 	AIReadinessCheckReasonNeedsBricks        AIReadinessCheckReason = "needs_bricks"
 	AIReadinessCheckReasonInactive           AIReadinessCheckReason = "inactive"
 	AIReadinessCheckReasonTooOld             AIReadinessCheckReason = "too_old"
+	AIReadinessCheckReasonPrereleaseBuild    AIReadinessCheckReason = "prerelease_build"
 )
 
 // AllValues returns all AIReadinessCheckReason values.
@@ -215,6 +220,7 @@ func (AIReadinessCheckReason) AllValues() []AIReadinessCheckReason {
 		AIReadinessCheckReasonNeedsBricks,
 		AIReadinessCheckReasonInactive,
 		AIReadinessCheckReasonTooOld,
+		AIReadinessCheckReasonPrereleaseBuild,
 	}
 }
 
@@ -240,6 +246,8 @@ func (s AIReadinessCheckReason) MarshalText() ([]byte, error) {
 	case AIReadinessCheckReasonInactive:
 		return []byte(s), nil
 	case AIReadinessCheckReasonTooOld:
+		return []byte(s), nil
+	case AIReadinessCheckReasonPrereleaseBuild:
 		return []byte(s), nil
 	default:
 		return nil, errors.Errorf("invalid value: %q", s)
@@ -278,6 +286,9 @@ func (s *AIReadinessCheckReason) UnmarshalText(data []byte) error {
 		return nil
 	case AIReadinessCheckReasonTooOld:
 		*s = AIReadinessCheckReasonTooOld
+		return nil
+	case AIReadinessCheckReasonPrereleaseBuild:
+		*s = AIReadinessCheckReasonPrereleaseBuild
 		return nil
 	default:
 		return errors.Errorf("invalid value: %q", data)

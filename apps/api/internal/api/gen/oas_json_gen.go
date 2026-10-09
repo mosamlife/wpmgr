@@ -244,6 +244,8 @@ func (s *AIReadinessCheckReason) Decode(d *jx.Decoder) error {
 		*s = AIReadinessCheckReasonInactive
 	case AIReadinessCheckReasonTooOld:
 		*s = AIReadinessCheckReasonTooOld
+	case AIReadinessCheckReasonPrereleaseBuild:
+		*s = AIReadinessCheckReasonPrereleaseBuild
 	default:
 		*s = AIReadinessCheckReason(v)
 	}
