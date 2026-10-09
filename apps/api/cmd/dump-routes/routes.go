@@ -19,6 +19,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/admingate"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agent"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentrelease"
+	"github.com/mosamlife/wpmgr/apps/api/internal/aireadiness"
 	"github.com/mosamlife/wpmgr/apps/api/internal/apikey"
 	"github.com/mosamlife/wpmgr/apps/api/internal/assistantrequest"
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
@@ -384,6 +385,7 @@ func buildEngine() (engine *gin.Engine, omittedDepsFields []string, err error) {
 		AssistantRequestH:      assistantReqH,
 		AbilityRequestH:        abilityReqH,
 		AbilityTenantH:         abilities.NewTenantHandler(abilities.NewTenantRepo(pool, auditRec), admingate.NewPoolStore(pool)),
+		AIReadinessH:           aireadiness.NewHandler(aireadiness.NewService(aireadiness.NewRepo(pool), auditRec, logger)),
 		BillingSuspensionGate:  billingSvc.SuspensionGate(),
 		ServiceName:            "wpmgr-dump-routes",
 		Version:                "dump-routes",

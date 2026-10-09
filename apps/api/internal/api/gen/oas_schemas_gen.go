@@ -19,6 +19,692 @@ import (
 	"github.com/ogen-go/ogen/sse"
 )
 
+// One row. `state` is `pass`, `fail`, `unknown` (WPMgr could not tell; never a failure) or
+// `not_applicable` (a row this one depends on failed, or the builder is installed but not active).
+// `observed` is the version that was compared, or null.
+//
+// `reason` is null for `pass`, and for a `fail` with a single way to fail. Otherwise, per row:
+//
+//   - `wp_version`: unknown `not_reported`; fail `prerelease_build` (a development or pre-release
+//     build, such as `7.1-RC1` or `7.1.1-src`, whose release number reaches `floors.wp`: WPMgr's AI
+//     tools run on a released WordPress only). A released version below `floors.wp` is a `fail` with a
+//     null reason.
+//   - `agent_version`: unknown `not_reported`.
+//   - `abilities_api`: unknown `inventory_never_run`, `agent_too_old` (the agent cannot read the tool
+//     list) or `not_reported`.
+//   - `content_editing`: only `pass` or `fail`.
+//   - `elementor_version`, `bricks_version`: fail `too_old`; not_applicable `inactive` (installed but
+//     not active, so not a fix; `observed` still carries the installed version); unknown
+//     `not_reported`, and for `bricks_version` also `agent_too_old_for_fact` (a child theme may be in
+//     use and the agent is too old to report its parent).
+//   - `elementor_mcp_switch`, `bricks_abilities`: unknown `inventory_never_run` (no tool list yet, or
+//     the last one was read while the site lacked the Abilities API), `inventory_truncated` or
+//     `needs_elementor` / `needs_bricks`; not_applicable `needs_abilities` or `needs_elementor` /
+//     `needs_bricks`.
+//   - `elementor_atomic`: unknown `agent_too_old_for_fact`, `not_reported` or `needs_elementor`;
+//     not_applicable `needs_elementor`.
+//
+// `bricks_abilities` is inferred from the site's tool list and has not been confirmed on a licensed
+// Bricks install. When it is `pass` or `fail` it is listed with its state, but it is not counted in
+// `status`, `fix_count` or `failing`. When it is `unknown` it is an ordinary unknown: it makes
+// `status` `incomplete`, and it is still not a fix, so it is not in `failing` either.
+//
+// A client must render a state or reason it does not recognise as a neutral "not checked", never as a
+// failure.
+// Ref: #/components/schemas/AIReadinessCheck
+type AIReadinessCheck struct {
+	ID     AIReadinessCheckID        `json:"id"`
+	State  AIReadinessCheckState     `json:"state"`
+	Reason NilAIReadinessCheckReason `json:"reason"`
+	// A version string that passed a strict shape check, or null.
+	Observed NilString `json:"observed"`
+}
+
+// GetID returns the value of ID.
+func (s *AIReadinessCheck) GetID() AIReadinessCheckID {
+	return s.ID
+}
+
+// GetState returns the value of State.
+func (s *AIReadinessCheck) GetState() AIReadinessCheckState {
+	return s.State
+}
+
+// GetReason returns the value of Reason.
+func (s *AIReadinessCheck) GetReason() NilAIReadinessCheckReason {
+	return s.Reason
+}
+
+// GetObserved returns the value of Observed.
+func (s *AIReadinessCheck) GetObserved() NilString {
+	return s.Observed
+}
+
+// SetID sets the value of ID.
+func (s *AIReadinessCheck) SetID(val AIReadinessCheckID) {
+	s.ID = val
+}
+
+// SetState sets the value of State.
+func (s *AIReadinessCheck) SetState(val AIReadinessCheckState) {
+	s.State = val
+}
+
+// SetReason sets the value of Reason.
+func (s *AIReadinessCheck) SetReason(val NilAIReadinessCheckReason) {
+	s.Reason = val
+}
+
+// SetObserved sets the value of Observed.
+func (s *AIReadinessCheck) SetObserved(val NilString) {
+	s.Observed = val
+}
+
+// Ref: #/components/schemas/AIReadinessCheckID
+type AIReadinessCheckID string
+
+const (
+	AIReadinessCheckIDWpVersion          AIReadinessCheckID = "wp_version"
+	AIReadinessCheckIDAbilitiesAPI       AIReadinessCheckID = "abilities_api"
+	AIReadinessCheckIDAgentVersion       AIReadinessCheckID = "agent_version"
+	AIReadinessCheckIDContentEditing     AIReadinessCheckID = "content_editing"
+	AIReadinessCheckIDElementorVersion   AIReadinessCheckID = "elementor_version"
+	AIReadinessCheckIDElementorMcpSwitch AIReadinessCheckID = "elementor_mcp_switch"
+	AIReadinessCheckIDElementorAtomic    AIReadinessCheckID = "elementor_atomic"
+	AIReadinessCheckIDBricksVersion      AIReadinessCheckID = "bricks_version"
+	AIReadinessCheckIDBricksAbilities    AIReadinessCheckID = "bricks_abilities"
+)
+
+// AllValues returns all AIReadinessCheckID values.
+func (AIReadinessCheckID) AllValues() []AIReadinessCheckID {
+	return []AIReadinessCheckID{
+		AIReadinessCheckIDWpVersion,
+		AIReadinessCheckIDAbilitiesAPI,
+		AIReadinessCheckIDAgentVersion,
+		AIReadinessCheckIDContentEditing,
+		AIReadinessCheckIDElementorVersion,
+		AIReadinessCheckIDElementorMcpSwitch,
+		AIReadinessCheckIDElementorAtomic,
+		AIReadinessCheckIDBricksVersion,
+		AIReadinessCheckIDBricksAbilities,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AIReadinessCheckID) MarshalText() ([]byte, error) {
+	switch s {
+	case AIReadinessCheckIDWpVersion:
+		return []byte(s), nil
+	case AIReadinessCheckIDAbilitiesAPI:
+		return []byte(s), nil
+	case AIReadinessCheckIDAgentVersion:
+		return []byte(s), nil
+	case AIReadinessCheckIDContentEditing:
+		return []byte(s), nil
+	case AIReadinessCheckIDElementorVersion:
+		return []byte(s), nil
+	case AIReadinessCheckIDElementorMcpSwitch:
+		return []byte(s), nil
+	case AIReadinessCheckIDElementorAtomic:
+		return []byte(s), nil
+	case AIReadinessCheckIDBricksVersion:
+		return []byte(s), nil
+	case AIReadinessCheckIDBricksAbilities:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AIReadinessCheckID) UnmarshalText(data []byte) error {
+	switch AIReadinessCheckID(data) {
+	case AIReadinessCheckIDWpVersion:
+		*s = AIReadinessCheckIDWpVersion
+		return nil
+	case AIReadinessCheckIDAbilitiesAPI:
+		*s = AIReadinessCheckIDAbilitiesAPI
+		return nil
+	case AIReadinessCheckIDAgentVersion:
+		*s = AIReadinessCheckIDAgentVersion
+		return nil
+	case AIReadinessCheckIDContentEditing:
+		*s = AIReadinessCheckIDContentEditing
+		return nil
+	case AIReadinessCheckIDElementorVersion:
+		*s = AIReadinessCheckIDElementorVersion
+		return nil
+	case AIReadinessCheckIDElementorMcpSwitch:
+		*s = AIReadinessCheckIDElementorMcpSwitch
+		return nil
+	case AIReadinessCheckIDElementorAtomic:
+		*s = AIReadinessCheckIDElementorAtomic
+		return nil
+	case AIReadinessCheckIDBricksVersion:
+		*s = AIReadinessCheckIDBricksVersion
+		return nil
+	case AIReadinessCheckIDBricksAbilities:
+		*s = AIReadinessCheckIDBricksAbilities
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type AIReadinessCheckReason string
+
+const (
+	AIReadinessCheckReasonNotReported        AIReadinessCheckReason = "not_reported"
+	AIReadinessCheckReasonInventoryNeverRun  AIReadinessCheckReason = "inventory_never_run"
+	AIReadinessCheckReasonInventoryTruncated AIReadinessCheckReason = "inventory_truncated"
+	AIReadinessCheckReasonAgentTooOld        AIReadinessCheckReason = "agent_too_old"
+	AIReadinessCheckReasonAgentTooOldForFact AIReadinessCheckReason = "agent_too_old_for_fact"
+	AIReadinessCheckReasonNeedsAbilities     AIReadinessCheckReason = "needs_abilities"
+	AIReadinessCheckReasonNeedsElementor     AIReadinessCheckReason = "needs_elementor"
+	AIReadinessCheckReasonNeedsBricks        AIReadinessCheckReason = "needs_bricks"
+	AIReadinessCheckReasonInactive           AIReadinessCheckReason = "inactive"
+	AIReadinessCheckReasonTooOld             AIReadinessCheckReason = "too_old"
+	AIReadinessCheckReasonPrereleaseBuild    AIReadinessCheckReason = "prerelease_build"
+)
+
+// AllValues returns all AIReadinessCheckReason values.
+func (AIReadinessCheckReason) AllValues() []AIReadinessCheckReason {
+	return []AIReadinessCheckReason{
+		AIReadinessCheckReasonNotReported,
+		AIReadinessCheckReasonInventoryNeverRun,
+		AIReadinessCheckReasonInventoryTruncated,
+		AIReadinessCheckReasonAgentTooOld,
+		AIReadinessCheckReasonAgentTooOldForFact,
+		AIReadinessCheckReasonNeedsAbilities,
+		AIReadinessCheckReasonNeedsElementor,
+		AIReadinessCheckReasonNeedsBricks,
+		AIReadinessCheckReasonInactive,
+		AIReadinessCheckReasonTooOld,
+		AIReadinessCheckReasonPrereleaseBuild,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AIReadinessCheckReason) MarshalText() ([]byte, error) {
+	switch s {
+	case AIReadinessCheckReasonNotReported:
+		return []byte(s), nil
+	case AIReadinessCheckReasonInventoryNeverRun:
+		return []byte(s), nil
+	case AIReadinessCheckReasonInventoryTruncated:
+		return []byte(s), nil
+	case AIReadinessCheckReasonAgentTooOld:
+		return []byte(s), nil
+	case AIReadinessCheckReasonAgentTooOldForFact:
+		return []byte(s), nil
+	case AIReadinessCheckReasonNeedsAbilities:
+		return []byte(s), nil
+	case AIReadinessCheckReasonNeedsElementor:
+		return []byte(s), nil
+	case AIReadinessCheckReasonNeedsBricks:
+		return []byte(s), nil
+	case AIReadinessCheckReasonInactive:
+		return []byte(s), nil
+	case AIReadinessCheckReasonTooOld:
+		return []byte(s), nil
+	case AIReadinessCheckReasonPrereleaseBuild:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AIReadinessCheckReason) UnmarshalText(data []byte) error {
+	switch AIReadinessCheckReason(data) {
+	case AIReadinessCheckReasonNotReported:
+		*s = AIReadinessCheckReasonNotReported
+		return nil
+	case AIReadinessCheckReasonInventoryNeverRun:
+		*s = AIReadinessCheckReasonInventoryNeverRun
+		return nil
+	case AIReadinessCheckReasonInventoryTruncated:
+		*s = AIReadinessCheckReasonInventoryTruncated
+		return nil
+	case AIReadinessCheckReasonAgentTooOld:
+		*s = AIReadinessCheckReasonAgentTooOld
+		return nil
+	case AIReadinessCheckReasonAgentTooOldForFact:
+		*s = AIReadinessCheckReasonAgentTooOldForFact
+		return nil
+	case AIReadinessCheckReasonNeedsAbilities:
+		*s = AIReadinessCheckReasonNeedsAbilities
+		return nil
+	case AIReadinessCheckReasonNeedsElementor:
+		*s = AIReadinessCheckReasonNeedsElementor
+		return nil
+	case AIReadinessCheckReasonNeedsBricks:
+		*s = AIReadinessCheckReasonNeedsBricks
+		return nil
+	case AIReadinessCheckReasonInactive:
+		*s = AIReadinessCheckReasonInactive
+		return nil
+	case AIReadinessCheckReasonTooOld:
+		*s = AIReadinessCheckReasonTooOld
+		return nil
+	case AIReadinessCheckReasonPrereleaseBuild:
+		*s = AIReadinessCheckReasonPrereleaseBuild
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type AIReadinessCheckState string
+
+const (
+	AIReadinessCheckStatePass          AIReadinessCheckState = "pass"
+	AIReadinessCheckStateFail          AIReadinessCheckState = "fail"
+	AIReadinessCheckStateUnknown       AIReadinessCheckState = "unknown"
+	AIReadinessCheckStateNotApplicable AIReadinessCheckState = "not_applicable"
+)
+
+// AllValues returns all AIReadinessCheckState values.
+func (AIReadinessCheckState) AllValues() []AIReadinessCheckState {
+	return []AIReadinessCheckState{
+		AIReadinessCheckStatePass,
+		AIReadinessCheckStateFail,
+		AIReadinessCheckStateUnknown,
+		AIReadinessCheckStateNotApplicable,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AIReadinessCheckState) MarshalText() ([]byte, error) {
+	switch s {
+	case AIReadinessCheckStatePass:
+		return []byte(s), nil
+	case AIReadinessCheckStateFail:
+		return []byte(s), nil
+	case AIReadinessCheckStateUnknown:
+		return []byte(s), nil
+	case AIReadinessCheckStateNotApplicable:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AIReadinessCheckState) UnmarshalText(data []byte) error {
+	switch AIReadinessCheckState(data) {
+	case AIReadinessCheckStatePass:
+		*s = AIReadinessCheckStatePass
+		return nil
+	case AIReadinessCheckStateFail:
+		*s = AIReadinessCheckStateFail
+		return nil
+	case AIReadinessCheckStateUnknown:
+		*s = AIReadinessCheckStateUnknown
+		return nil
+	case AIReadinessCheckStateNotApplicable:
+		*s = AIReadinessCheckStateNotApplicable
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// The versions the checks compare against, so a client can write "needs 7.1 or later" without
+// hard-coding the number.
+// Ref: #/components/schemas/AIReadinessFloors
+type AIReadinessFloors struct {
+	Wp    string `json:"wp"`
+	Agent string `json:"agent"`
+	// The first WPMgr agent release that reports the Atomic editor and the parent theme.
+	FactsAgent string `json:"facts_agent"`
+	Elementor  string `json:"elementor"`
+	Bricks     string `json:"bricks"`
+}
+
+// GetWp returns the value of Wp.
+func (s *AIReadinessFloors) GetWp() string {
+	return s.Wp
+}
+
+// GetAgent returns the value of Agent.
+func (s *AIReadinessFloors) GetAgent() string {
+	return s.Agent
+}
+
+// GetFactsAgent returns the value of FactsAgent.
+func (s *AIReadinessFloors) GetFactsAgent() string {
+	return s.FactsAgent
+}
+
+// GetElementor returns the value of Elementor.
+func (s *AIReadinessFloors) GetElementor() string {
+	return s.Elementor
+}
+
+// GetBricks returns the value of Bricks.
+func (s *AIReadinessFloors) GetBricks() string {
+	return s.Bricks
+}
+
+// SetWp sets the value of Wp.
+func (s *AIReadinessFloors) SetWp(val string) {
+	s.Wp = val
+}
+
+// SetAgent sets the value of Agent.
+func (s *AIReadinessFloors) SetAgent(val string) {
+	s.Agent = val
+}
+
+// SetFactsAgent sets the value of FactsAgent.
+func (s *AIReadinessFloors) SetFactsAgent(val string) {
+	s.FactsAgent = val
+}
+
+// SetElementor sets the value of Elementor.
+func (s *AIReadinessFloors) SetElementor(val string) {
+	s.Elementor = val
+}
+
+// SetBricks sets the value of Bricks.
+func (s *AIReadinessFloors) SetBricks(val string) {
+	s.Bricks = val
+}
+
+// Ref: #/components/schemas/AIReadinessGroup
+type AIReadinessGroup struct {
+	ID AIReadinessGroupID `json:"id"`
+	// Builder groups only. False means the builder is not installed on the site and `checks` is empty; the
+	// group counts toward nothing.
+	Installed OptBool `json:"installed"`
+	// Builder groups only. The installed version, or null when it is not installed or the site did not
+	// report a usable version.
+	Version OptNilString `json:"version"`
+	// Builder groups only. `coming` while WPMgr cannot yet build pages with this builder; the checks then
+	// show whether the site will be ready.
+	WpmgrSupport OptAIReadinessGroupWpmgrSupport `json:"wpmgr_support"`
+	Checks       []AIReadinessCheck              `json:"checks"`
+}
+
+// GetID returns the value of ID.
+func (s *AIReadinessGroup) GetID() AIReadinessGroupID {
+	return s.ID
+}
+
+// GetInstalled returns the value of Installed.
+func (s *AIReadinessGroup) GetInstalled() OptBool {
+	return s.Installed
+}
+
+// GetVersion returns the value of Version.
+func (s *AIReadinessGroup) GetVersion() OptNilString {
+	return s.Version
+}
+
+// GetWpmgrSupport returns the value of WpmgrSupport.
+func (s *AIReadinessGroup) GetWpmgrSupport() OptAIReadinessGroupWpmgrSupport {
+	return s.WpmgrSupport
+}
+
+// GetChecks returns the value of Checks.
+func (s *AIReadinessGroup) GetChecks() []AIReadinessCheck {
+	return s.Checks
+}
+
+// SetID sets the value of ID.
+func (s *AIReadinessGroup) SetID(val AIReadinessGroupID) {
+	s.ID = val
+}
+
+// SetInstalled sets the value of Installed.
+func (s *AIReadinessGroup) SetInstalled(val OptBool) {
+	s.Installed = val
+}
+
+// SetVersion sets the value of Version.
+func (s *AIReadinessGroup) SetVersion(val OptNilString) {
+	s.Version = val
+}
+
+// SetWpmgrSupport sets the value of WpmgrSupport.
+func (s *AIReadinessGroup) SetWpmgrSupport(val OptAIReadinessGroupWpmgrSupport) {
+	s.WpmgrSupport = val
+}
+
+// SetChecks sets the value of Checks.
+func (s *AIReadinessGroup) SetChecks(val []AIReadinessCheck) {
+	s.Checks = val
+}
+
+type AIReadinessGroupID string
+
+const (
+	AIReadinessGroupIDBase      AIReadinessGroupID = "base"
+	AIReadinessGroupIDElementor AIReadinessGroupID = "elementor"
+	AIReadinessGroupIDBricks    AIReadinessGroupID = "bricks"
+)
+
+// AllValues returns all AIReadinessGroupID values.
+func (AIReadinessGroupID) AllValues() []AIReadinessGroupID {
+	return []AIReadinessGroupID{
+		AIReadinessGroupIDBase,
+		AIReadinessGroupIDElementor,
+		AIReadinessGroupIDBricks,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AIReadinessGroupID) MarshalText() ([]byte, error) {
+	switch s {
+	case AIReadinessGroupIDBase:
+		return []byte(s), nil
+	case AIReadinessGroupIDElementor:
+		return []byte(s), nil
+	case AIReadinessGroupIDBricks:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AIReadinessGroupID) UnmarshalText(data []byte) error {
+	switch AIReadinessGroupID(data) {
+	case AIReadinessGroupIDBase:
+		*s = AIReadinessGroupIDBase
+		return nil
+	case AIReadinessGroupIDElementor:
+		*s = AIReadinessGroupIDElementor
+		return nil
+	case AIReadinessGroupIDBricks:
+		*s = AIReadinessGroupIDBricks
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Builder groups only. `coming` while WPMgr cannot yet build pages with this builder; the checks then
+// show whether the site will be ready.
+type AIReadinessGroupWpmgrSupport string
+
+const (
+	AIReadinessGroupWpmgrSupportComing    AIReadinessGroupWpmgrSupport = "coming"
+	AIReadinessGroupWpmgrSupportAvailable AIReadinessGroupWpmgrSupport = "available"
+)
+
+// AllValues returns all AIReadinessGroupWpmgrSupport values.
+func (AIReadinessGroupWpmgrSupport) AllValues() []AIReadinessGroupWpmgrSupport {
+	return []AIReadinessGroupWpmgrSupport{
+		AIReadinessGroupWpmgrSupportComing,
+		AIReadinessGroupWpmgrSupportAvailable,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AIReadinessGroupWpmgrSupport) MarshalText() ([]byte, error) {
+	switch s {
+	case AIReadinessGroupWpmgrSupportComing:
+		return []byte(s), nil
+	case AIReadinessGroupWpmgrSupportAvailable:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AIReadinessGroupWpmgrSupport) UnmarshalText(data []byte) error {
+	switch AIReadinessGroupWpmgrSupport(data) {
+	case AIReadinessGroupWpmgrSupportComing:
+		*s = AIReadinessGroupWpmgrSupportComing
+		return nil
+	case AIReadinessGroupWpmgrSupportAvailable:
+		*s = AIReadinessGroupWpmgrSupportAvailable
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Ref: #/components/schemas/AIReadinessRefreshResult
+type AIReadinessRefreshResult struct {
+	// A fresh metadata report was requested from the site.
+	Metadata bool `json:"metadata"`
+	// A tool-list read was queued by this call or already queued within the last two minutes. False when
+	// the site's agent is too old to run one.
+	Abilities bool `json:"abilities"`
+}
+
+// GetMetadata returns the value of Metadata.
+func (s *AIReadinessRefreshResult) GetMetadata() bool {
+	return s.Metadata
+}
+
+// GetAbilities returns the value of Abilities.
+func (s *AIReadinessRefreshResult) GetAbilities() bool {
+	return s.Abilities
+}
+
+// SetMetadata sets the value of Metadata.
+func (s *AIReadinessRefreshResult) SetMetadata(val bool) {
+	s.Metadata = val
+}
+
+// SetAbilities sets the value of Abilities.
+func (s *AIReadinessRefreshResult) SetAbilities(val bool) {
+	s.Abilities = val
+}
+
+func (*AIReadinessRefreshResult) refreshSiteAIReadinessRes() {}
+
+// Ref: #/components/schemas/AIReadinessStatus
+type AIReadinessStatus string
+
+const (
+	AIReadinessStatusReady          AIReadinessStatus = "ready"
+	AIReadinessStatusNeedsAttention AIReadinessStatus = "needs_attention"
+	AIReadinessStatusIncomplete     AIReadinessStatus = "incomplete"
+)
+
+// AllValues returns all AIReadinessStatus values.
+func (AIReadinessStatus) AllValues() []AIReadinessStatus {
+	return []AIReadinessStatus{
+		AIReadinessStatusReady,
+		AIReadinessStatusNeedsAttention,
+		AIReadinessStatusIncomplete,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AIReadinessStatus) MarshalText() ([]byte, error) {
+	switch s {
+	case AIReadinessStatusReady:
+		return []byte(s), nil
+	case AIReadinessStatusNeedsAttention:
+		return []byte(s), nil
+	case AIReadinessStatusIncomplete:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AIReadinessStatus) UnmarshalText(data []byte) error {
+	switch AIReadinessStatus(data) {
+	case AIReadinessStatusReady:
+		*s = AIReadinessStatusReady
+		return nil
+	case AIReadinessStatusNeedsAttention:
+		*s = AIReadinessStatusNeedsAttention
+		return nil
+	case AIReadinessStatusIncomplete:
+		*s = AIReadinessStatusIncomplete
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Ref: #/components/schemas/AIReadinessWarning
+type AIReadinessWarning struct {
+	Code AIReadinessWarningCode `json:"code"`
+}
+
+// GetCode returns the value of Code.
+func (s *AIReadinessWarning) GetCode() AIReadinessWarningCode {
+	return s.Code
+}
+
+// SetCode sets the value of Code.
+func (s *AIReadinessWarning) SetCode(val AIReadinessWarningCode) {
+	s.Code = val
+}
+
+// Ref: #/components/schemas/AIReadinessWarningCode
+type AIReadinessWarningCode string
+
+const (
+	AIReadinessWarningCodeMcpAdapterPluginActive   AIReadinessWarningCode = "mcp_adapter_plugin_active"
+	AIReadinessWarningCodeElementorMcpEndpointOpen AIReadinessWarningCode = "elementor_mcp_endpoint_open"
+)
+
+// AllValues returns all AIReadinessWarningCode values.
+func (AIReadinessWarningCode) AllValues() []AIReadinessWarningCode {
+	return []AIReadinessWarningCode{
+		AIReadinessWarningCodeMcpAdapterPluginActive,
+		AIReadinessWarningCodeElementorMcpEndpointOpen,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AIReadinessWarningCode) MarshalText() ([]byte, error) {
+	switch s {
+	case AIReadinessWarningCodeMcpAdapterPluginActive:
+		return []byte(s), nil
+	case AIReadinessWarningCodeElementorMcpEndpointOpen:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AIReadinessWarningCode) UnmarshalText(data []byte) error {
+	switch AIReadinessWarningCode(data) {
+	case AIReadinessWarningCodeMcpAdapterPluginActive:
+		*s = AIReadinessWarningCodeMcpAdapterPluginActive
+		return nil
+	case AIReadinessWarningCodeElementorMcpEndpointOpen:
+		*s = AIReadinessWarningCodeElementorMcpEndpointOpen
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
 // One reviewed ability in the global catalogue. `entry_sha256` is the sha256 of the exact entry bytes
 // sent to a site's agent.
 // Ref: #/components/schemas/AbilityCatalogueEntry
@@ -8748,6 +9434,12 @@ type AgentMetadata struct {
 	// storing them — this schema does not itself enforce that vocabulary, since the handler doesn't
 	// either.
 	Keystore OptNilAgentMetadataKeystore `json:"keystore"`
+	// Facts about the site's page builders that the plugin and theme lists do not carry, collected
+	// read-only on every metadata report. Optional and additive: an agent that predates it omits the whole
+	// object, which the control plane stores as "not reported" and never reads as "off". Every field is
+	// tolerantly decoded: a value of an unexpected type is dropped on its own and never rejects the
+	// report. Only the fields below are kept; any other key is ignored.
+	BuilderFacts OptNilAgentMetadataBuilderFacts `json:"builder_facts"`
 }
 
 // GetWpVersion returns the value of WpVersion.
@@ -8840,6 +9532,11 @@ func (s *AgentMetadata) GetKeystore() OptNilAgentMetadataKeystore {
 	return s.Keystore
 }
 
+// GetBuilderFacts returns the value of BuilderFacts.
+func (s *AgentMetadata) GetBuilderFacts() OptNilAgentMetadataBuilderFacts {
+	return s.BuilderFacts
+}
+
 // SetWpVersion sets the value of WpVersion.
 func (s *AgentMetadata) SetWpVersion(val OptString) {
 	s.WpVersion = val
@@ -8928,6 +9625,11 @@ func (s *AgentMetadata) SetThemes(val []SiteComponent) {
 // SetKeystore sets the value of Keystore.
 func (s *AgentMetadata) SetKeystore(val OptNilAgentMetadataKeystore) {
 	s.Keystore = val
+}
+
+// SetBuilderFacts sets the value of BuilderFacts.
+func (s *AgentMetadata) SetBuilderFacts(val OptNilAgentMetadataBuilderFacts) {
+	s.BuilderFacts = val
 }
 
 // The outcome of the agent's last self-update apply, replayed on the next metadata push. This is the
@@ -9021,6 +9723,69 @@ func (s *AgentMetadataAgentSelfUpdate) SetApplyID(val OptString) {
 // SetRung sets the value of Rung.
 func (s *AgentMetadataAgentSelfUpdate) SetRung(val OptString) {
 	s.Rung = val
+}
+
+// Facts about the site's page builders that the plugin and theme lists do not carry, collected
+// read-only on every metadata report. Optional and additive: an agent that predates it omits the whole
+// object, which the control plane stores as "not reported" and never reads as "off". Every field is
+// tolerantly decoded: a value of an unexpected type is dropped on its own and never rejects the
+// report. Only the fields below are kept; any other key is ignored.
+type AgentMetadataBuilderFacts struct {
+	// Schema version of this object. 1 today.
+	V OptInt `json:"v"`
+	// Directory name of the active theme's parent (the theme itself when it has no parent). Kept only when
+	// it is 1 to 100 characters of letters, digits, dot, underscore or hyphen; omitted by the agent when
+	// it cannot be read.
+	ThemeTemplate OptString `json:"theme_template"`
+	// Present only when Elementor is loaded on the site. Absent means "not installed", never "off".
+	Elementor OptNilAgentMetadataBuilderFactsElementor `json:"elementor"`
+}
+
+// GetV returns the value of V.
+func (s *AgentMetadataBuilderFacts) GetV() OptInt {
+	return s.V
+}
+
+// GetThemeTemplate returns the value of ThemeTemplate.
+func (s *AgentMetadataBuilderFacts) GetThemeTemplate() OptString {
+	return s.ThemeTemplate
+}
+
+// GetElementor returns the value of Elementor.
+func (s *AgentMetadataBuilderFacts) GetElementor() OptNilAgentMetadataBuilderFactsElementor {
+	return s.Elementor
+}
+
+// SetV sets the value of V.
+func (s *AgentMetadataBuilderFacts) SetV(val OptInt) {
+	s.V = val
+}
+
+// SetThemeTemplate sets the value of ThemeTemplate.
+func (s *AgentMetadataBuilderFacts) SetThemeTemplate(val OptString) {
+	s.ThemeTemplate = val
+}
+
+// SetElementor sets the value of Elementor.
+func (s *AgentMetadataBuilderFacts) SetElementor(val OptNilAgentMetadataBuilderFactsElementor) {
+	s.Elementor = val
+}
+
+// Present only when Elementor is loaded on the site. Absent means "not installed", never "off".
+type AgentMetadataBuilderFactsElementor struct {
+	// Whether Elementor's Atomic editor is on, asked of Elementor itself. Null means Elementor is loaded
+	// but gave no definite answer; unknown is never sent as false.
+	AtomicEditor OptNilBool `json:"atomic_editor"`
+}
+
+// GetAtomicEditor returns the value of AtomicEditor.
+func (s *AgentMetadataBuilderFactsElementor) GetAtomicEditor() OptNilBool {
+	return s.AtomicEditor
+}
+
+// SetAtomicEditor sets the value of AtomicEditor.
+func (s *AgentMetadataBuilderFactsElementor) SetAtomicEditor(val OptNilBool) {
+	s.AtomicEditor = val
 }
 
 // Present only when WordPress core has an update available.
@@ -24327,6 +25092,85 @@ type FinishWebAuthnEnrollmentUnprocessableEntity Error
 
 func (*FinishWebAuthnEnrollmentUnprocessableEntity) finishWebAuthnEnrollmentRes() {}
 
+// Ref: #/components/schemas/FleetAIReadiness
+type FleetAIReadiness struct {
+	Sites []FleetAIReadinessSite `json:"sites"`
+}
+
+// GetSites returns the value of Sites.
+func (s *FleetAIReadiness) GetSites() []FleetAIReadinessSite {
+	return s.Sites
+}
+
+// SetSites sets the value of Sites.
+func (s *FleetAIReadiness) SetSites(val []FleetAIReadinessSite) {
+	s.Sites = val
+}
+
+func (*FleetAIReadiness) getFleetAIReadinessRes() {}
+
+// Ref: #/components/schemas/FleetAIReadinessSite
+type FleetAIReadinessSite struct {
+	SiteID   uuid.UUID         `json:"site_id"`
+	Status   AIReadinessStatus `json:"status"`
+	FixCount int32             `json:"fix_count"`
+	// Ids of the rows that count toward `fix_count`: those whose state is `fail`. `bricks_abilities` is
+	// never listed, whatever its state; when it is `unknown` it makes the site `incomplete`, and it is
+	// still not a fix.
+	Failing  []AIReadinessCheckID     `json:"failing"`
+	Warnings []AIReadinessWarningCode `json:"warnings"`
+}
+
+// GetSiteID returns the value of SiteID.
+func (s *FleetAIReadinessSite) GetSiteID() uuid.UUID {
+	return s.SiteID
+}
+
+// GetStatus returns the value of Status.
+func (s *FleetAIReadinessSite) GetStatus() AIReadinessStatus {
+	return s.Status
+}
+
+// GetFixCount returns the value of FixCount.
+func (s *FleetAIReadinessSite) GetFixCount() int32 {
+	return s.FixCount
+}
+
+// GetFailing returns the value of Failing.
+func (s *FleetAIReadinessSite) GetFailing() []AIReadinessCheckID {
+	return s.Failing
+}
+
+// GetWarnings returns the value of Warnings.
+func (s *FleetAIReadinessSite) GetWarnings() []AIReadinessWarningCode {
+	return s.Warnings
+}
+
+// SetSiteID sets the value of SiteID.
+func (s *FleetAIReadinessSite) SetSiteID(val uuid.UUID) {
+	s.SiteID = val
+}
+
+// SetStatus sets the value of Status.
+func (s *FleetAIReadinessSite) SetStatus(val AIReadinessStatus) {
+	s.Status = val
+}
+
+// SetFixCount sets the value of FixCount.
+func (s *FleetAIReadinessSite) SetFixCount(val int32) {
+	s.FixCount = val
+}
+
+// SetFailing sets the value of Failing.
+func (s *FleetAIReadinessSite) SetFailing(val []AIReadinessCheckID) {
+	s.Failing = val
+}
+
+// SetWarnings sets the value of Warnings.
+func (s *FleetAIReadinessSite) SetWarnings(val []AIReadinessWarningCode) {
+	s.Warnings = val
+}
+
 // Ref: #/components/schemas/FleetAgentCounts
 type FleetAgentCounts struct {
 	Current    int `json:"current"`
@@ -26790,6 +27634,14 @@ type GetEmailNotifySettingsUnauthorized Error
 
 func (*GetEmailNotifySettingsUnauthorized) getEmailNotifySettingsRes() {}
 
+type GetFleetAIReadinessForbidden Error
+
+func (*GetFleetAIReadinessForbidden) getFleetAIReadinessRes() {}
+
+type GetFleetAIReadinessUnauthorized Error
+
+func (*GetFleetAIReadinessUnauthorized) getFleetAIReadinessRes() {}
+
 type GetFleetAgentVersionsForbidden Error
 
 func (*GetFleetAgentVersionsForbidden) getFleetAgentVersionsRes() {}
@@ -27283,6 +28135,18 @@ func (*GetScheduleRunForbidden) getScheduleRunRes() {}
 type GetScheduleRunNotFound Error
 
 func (*GetScheduleRunNotFound) getScheduleRunRes() {}
+
+type GetSiteAIReadinessForbidden Error
+
+func (*GetSiteAIReadinessForbidden) getSiteAIReadinessRes() {}
+
+type GetSiteAIReadinessNotFound Error
+
+func (*GetSiteAIReadinessNotFound) getSiteAIReadinessRes() {}
+
+type GetSiteAIReadinessUnauthorized Error
+
+func (*GetSiteAIReadinessUnauthorized) getSiteAIReadinessRes() {}
 
 type GetSiteAutologinPolicyForbidden Error
 
@@ -32545,6 +33409,51 @@ func (s *MonitoringResultDetail) UnmarshalText(data []byte) error {
 	}
 }
 
+// NewNilAIReadinessCheckReason returns new NilAIReadinessCheckReason with value set to v.
+func NewNilAIReadinessCheckReason(v AIReadinessCheckReason) NilAIReadinessCheckReason {
+	return NilAIReadinessCheckReason{
+		Value: v,
+	}
+}
+
+// NilAIReadinessCheckReason is nullable AIReadinessCheckReason.
+type NilAIReadinessCheckReason struct {
+	Value AIReadinessCheckReason
+	Null  bool
+}
+
+// SetTo sets value to v.
+func (o *NilAIReadinessCheckReason) SetTo(v AIReadinessCheckReason) {
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o NilAIReadinessCheckReason) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *NilAIReadinessCheckReason) SetToNull() {
+	o.Null = true
+	var v AIReadinessCheckReason
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o NilAIReadinessCheckReason) Get() (v AIReadinessCheckReason, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o NilAIReadinessCheckReason) Or(d AIReadinessCheckReason) AIReadinessCheckReason {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewNilAgentMirrorStatusLastAttemptOutcome returns new NilAgentMirrorStatusLastAttemptOutcome with value set to v.
 func NewNilAgentMirrorStatusLastAttemptOutcome(v AgentMirrorStatusLastAttemptOutcome) NilAgentMirrorStatusLastAttemptOutcome {
 	return NilAgentMirrorStatusLastAttemptOutcome{
@@ -34555,6 +35464,52 @@ func (*OidcCallbackUnauthorized) oidcCallbackRes() {}
 type OidcLoginFound struct{}
 
 func (*OidcLoginFound) oidcLoginRes() {}
+
+// NewOptAIReadinessGroupWpmgrSupport returns new OptAIReadinessGroupWpmgrSupport with value set to v.
+func NewOptAIReadinessGroupWpmgrSupport(v AIReadinessGroupWpmgrSupport) OptAIReadinessGroupWpmgrSupport {
+	return OptAIReadinessGroupWpmgrSupport{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAIReadinessGroupWpmgrSupport is optional AIReadinessGroupWpmgrSupport.
+type OptAIReadinessGroupWpmgrSupport struct {
+	Value AIReadinessGroupWpmgrSupport
+	Set   bool
+}
+
+// IsSet returns true if OptAIReadinessGroupWpmgrSupport was set.
+func (o OptAIReadinessGroupWpmgrSupport) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAIReadinessGroupWpmgrSupport) Reset() {
+	var v AIReadinessGroupWpmgrSupport
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAIReadinessGroupWpmgrSupport) SetTo(v AIReadinessGroupWpmgrSupport) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAIReadinessGroupWpmgrSupport) Get() (v AIReadinessGroupWpmgrSupport, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAIReadinessGroupWpmgrSupport) Or(d AIReadinessGroupWpmgrSupport) AIReadinessGroupWpmgrSupport {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
 
 // NewOptAbilityCatalogueInputAdmission returns new OptAbilityCatalogueInputAdmission with value set to v.
 func NewOptAbilityCatalogueInputAdmission(v AbilityCatalogueInputAdmission) OptAbilityCatalogueInputAdmission {
@@ -38940,6 +39895,142 @@ func (o OptNilAgentMetadataAgentSelfUpdate) Get() (v AgentMetadataAgentSelfUpdat
 
 // Or returns value if set, or given parameter if does not.
 func (o OptNilAgentMetadataAgentSelfUpdate) Or(d AgentMetadataAgentSelfUpdate) AgentMetadataAgentSelfUpdate {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptNilAgentMetadataBuilderFacts returns new OptNilAgentMetadataBuilderFacts with value set to v.
+func NewOptNilAgentMetadataBuilderFacts(v AgentMetadataBuilderFacts) OptNilAgentMetadataBuilderFacts {
+	return OptNilAgentMetadataBuilderFacts{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilAgentMetadataBuilderFacts is optional nullable AgentMetadataBuilderFacts.
+type OptNilAgentMetadataBuilderFacts struct {
+	Value AgentMetadataBuilderFacts
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilAgentMetadataBuilderFacts was set.
+func (o OptNilAgentMetadataBuilderFacts) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilAgentMetadataBuilderFacts) Reset() {
+	var v AgentMetadataBuilderFacts
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilAgentMetadataBuilderFacts) SetTo(v AgentMetadataBuilderFacts) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilAgentMetadataBuilderFacts) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilAgentMetadataBuilderFacts) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v AgentMetadataBuilderFacts
+	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilAgentMetadataBuilderFacts) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilAgentMetadataBuilderFacts) Get() (v AgentMetadataBuilderFacts, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilAgentMetadataBuilderFacts) Or(d AgentMetadataBuilderFacts) AgentMetadataBuilderFacts {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptNilAgentMetadataBuilderFactsElementor returns new OptNilAgentMetadataBuilderFactsElementor with value set to v.
+func NewOptNilAgentMetadataBuilderFactsElementor(v AgentMetadataBuilderFactsElementor) OptNilAgentMetadataBuilderFactsElementor {
+	return OptNilAgentMetadataBuilderFactsElementor{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilAgentMetadataBuilderFactsElementor is optional nullable AgentMetadataBuilderFactsElementor.
+type OptNilAgentMetadataBuilderFactsElementor struct {
+	Value AgentMetadataBuilderFactsElementor
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilAgentMetadataBuilderFactsElementor was set.
+func (o OptNilAgentMetadataBuilderFactsElementor) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilAgentMetadataBuilderFactsElementor) Reset() {
+	var v AgentMetadataBuilderFactsElementor
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilAgentMetadataBuilderFactsElementor) SetTo(v AgentMetadataBuilderFactsElementor) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilAgentMetadataBuilderFactsElementor) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilAgentMetadataBuilderFactsElementor) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v AgentMetadataBuilderFactsElementor
+	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilAgentMetadataBuilderFactsElementor) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilAgentMetadataBuilderFactsElementor) Get() (v AgentMetadataBuilderFactsElementor, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilAgentMetadataBuilderFactsElementor) Or(d AgentMetadataBuilderFactsElementor) AgentMetadataBuilderFactsElementor {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -48183,6 +49274,32 @@ type ReenableAbilityForTenantUnsupportedMediaType Error
 
 func (*ReenableAbilityForTenantUnsupportedMediaType) reenableAbilityForTenantRes() {}
 
+type RefreshSiteAIReadinessConflict Error
+
+func (*RefreshSiteAIReadinessConflict) refreshSiteAIReadinessRes() {}
+
+type RefreshSiteAIReadinessForbidden Error
+
+func (*RefreshSiteAIReadinessForbidden) refreshSiteAIReadinessRes() {}
+
+type RefreshSiteAIReadinessNotFound Error
+
+func (*RefreshSiteAIReadinessNotFound) refreshSiteAIReadinessRes() {}
+
+type RefreshSiteAIReadinessReq struct{}
+
+type RefreshSiteAIReadinessServiceUnavailable Error
+
+func (*RefreshSiteAIReadinessServiceUnavailable) refreshSiteAIReadinessRes() {}
+
+type RefreshSiteAIReadinessUnauthorized Error
+
+func (*RefreshSiteAIReadinessUnauthorized) refreshSiteAIReadinessRes() {}
+
+type RefreshSiteAIReadinessUnsupportedMediaType Error
+
+func (*RefreshSiteAIReadinessUnsupportedMediaType) refreshSiteAIReadinessRes() {}
+
 type RefreshSiteContentInventoryAccepted struct {
 	Status RefreshSiteContentInventoryAcceptedStatus `json:"status"`
 }
@@ -53733,6 +54850,110 @@ func (*Site) getSiteRes()       {}
 func (*Site) restoreSiteRes()   {}
 func (*Site) revokeSiteRes()    {}
 func (*Site) setSiteTagsRes()   {}
+
+// Whether an AI assistant connected to WPMgr can work on one site. All values come from WPMgr's own
+// checks; nothing the site wrote reaches this object except version strings that passed a strict shape
+// check.
+// Ref: #/components/schemas/SiteAIReadiness
+type SiteAIReadiness struct {
+	SiteID uuid.UUID         `json:"site_id"`
+	Status AIReadinessStatus `json:"status"`
+	// Number of rows with state `fail` in `base` and in installed builder groups. A `bricks_abilities` row
+	// is never one of them: as a `fail` it is unconfirmed, and as an `unknown` it is not a failure (see
+	// `status`).
+	FixCount int32 `json:"fix_count"`
+	// When the site last reported its plugin and theme details. Null when it never has.
+	MetadataAsOf NilDateTime `json:"metadata_as_of"`
+	// When the site's tool list was last read. Null when it never has.
+	AbilitiesAsOf NilDateTime `json:"abilities_as_of"`
+	// Advisory notices. They never change `status` or `fix_count`.
+	Warnings []AIReadinessWarning `json:"warnings"`
+	Floors   AIReadinessFloors    `json:"floors"`
+	// Always `base`, `elementor`, `bricks`, in that order.
+	Groups []AIReadinessGroup `json:"groups"`
+}
+
+// GetSiteID returns the value of SiteID.
+func (s *SiteAIReadiness) GetSiteID() uuid.UUID {
+	return s.SiteID
+}
+
+// GetStatus returns the value of Status.
+func (s *SiteAIReadiness) GetStatus() AIReadinessStatus {
+	return s.Status
+}
+
+// GetFixCount returns the value of FixCount.
+func (s *SiteAIReadiness) GetFixCount() int32 {
+	return s.FixCount
+}
+
+// GetMetadataAsOf returns the value of MetadataAsOf.
+func (s *SiteAIReadiness) GetMetadataAsOf() NilDateTime {
+	return s.MetadataAsOf
+}
+
+// GetAbilitiesAsOf returns the value of AbilitiesAsOf.
+func (s *SiteAIReadiness) GetAbilitiesAsOf() NilDateTime {
+	return s.AbilitiesAsOf
+}
+
+// GetWarnings returns the value of Warnings.
+func (s *SiteAIReadiness) GetWarnings() []AIReadinessWarning {
+	return s.Warnings
+}
+
+// GetFloors returns the value of Floors.
+func (s *SiteAIReadiness) GetFloors() AIReadinessFloors {
+	return s.Floors
+}
+
+// GetGroups returns the value of Groups.
+func (s *SiteAIReadiness) GetGroups() []AIReadinessGroup {
+	return s.Groups
+}
+
+// SetSiteID sets the value of SiteID.
+func (s *SiteAIReadiness) SetSiteID(val uuid.UUID) {
+	s.SiteID = val
+}
+
+// SetStatus sets the value of Status.
+func (s *SiteAIReadiness) SetStatus(val AIReadinessStatus) {
+	s.Status = val
+}
+
+// SetFixCount sets the value of FixCount.
+func (s *SiteAIReadiness) SetFixCount(val int32) {
+	s.FixCount = val
+}
+
+// SetMetadataAsOf sets the value of MetadataAsOf.
+func (s *SiteAIReadiness) SetMetadataAsOf(val NilDateTime) {
+	s.MetadataAsOf = val
+}
+
+// SetAbilitiesAsOf sets the value of AbilitiesAsOf.
+func (s *SiteAIReadiness) SetAbilitiesAsOf(val NilDateTime) {
+	s.AbilitiesAsOf = val
+}
+
+// SetWarnings sets the value of Warnings.
+func (s *SiteAIReadiness) SetWarnings(val []AIReadinessWarning) {
+	s.Warnings = val
+}
+
+// SetFloors sets the value of Floors.
+func (s *SiteAIReadiness) SetFloors(val AIReadinessFloors) {
+	s.Floors = val
+}
+
+// SetGroups sets the value of Groups.
+func (s *SiteAIReadiness) SetGroups(val []AIReadinessGroup) {
+	s.Groups = val
+}
+
+func (*SiteAIReadiness) getSiteAIReadinessRes() {}
 
 // Ref: #/components/schemas/SiteActivityEvent
 type SiteActivityEvent struct {

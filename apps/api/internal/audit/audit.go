@@ -472,6 +472,10 @@ const (
 	// ActionSiteContentEditingEnabled is an operator enabling content
 	// editing (the agent's service principal) on a site.
 	ActionSiteContentEditingEnabled = "site.content_editing.enabled"
+	// ActionAIReadinessRefreshRequested is a person pressing "Check again" on
+	// a site's AI readiness checklist. Metadata: site_id, abilities (whether a
+	// tool-list read was queued as well as the metadata report).
+	ActionAIReadinessRefreshRequested = "ai_readiness.refresh_requested"
 	// ActionMCPToolCalled is recorded per successful tool invocation on the
 	// transport path (internal/mcp.Service.RecordToolCall), BEST-EFFORT like
 	// most of this log (Record, not RecordInTx): there is no companion write

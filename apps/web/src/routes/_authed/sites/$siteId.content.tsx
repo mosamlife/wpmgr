@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 
 import { AiEditingSection } from "@/features/ability-requests/ai-editing-section";
+import { AiReadinessCard } from "@/features/ai-readiness/ai-readiness-card";
 import { ContentTab } from "@/features/content/ContentTab";
 import { useSite } from "@/features/sites/use-sites";
 import { useMe, canWriteSiteContext } from "@/features/auth/use-auth";
@@ -18,6 +19,7 @@ function ContentTabRoute() {
   const { data: me } = useMe();
   return (
     <section aria-label="Content" className="space-y-6 px-4 pb-8 pt-6 sm:px-6">
+      <AiReadinessCard siteId={siteId} canOperate={canWriteSiteContext(me)} />
       <AiEditingSection
         siteId={siteId}
         siteUrl={site?.url ?? null}

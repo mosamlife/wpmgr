@@ -1610,6 +1610,15 @@ type Invoker interface {
 	//
 	// GET /api/v1/email/notify-settings
 	GetEmailNotifySettings(ctx context.Context) (GetEmailNotifySettingsRes, error)
+	// GetFleetAIReadiness invokes getFleetAIReadiness operation.
+	//
+	// One compact row per enrolled, non-archived site: the same `status` and `fix_count` the per-site
+	// route returns, the ids of the failing rows, and the warning codes. Computed by the same function as
+	// the per-site route, so the two cannot disagree. A site collaborator sees only the sites shared with
+	// them. Requires `site:read`.
+	//
+	// GET /api/v1/fleet/ai-readiness
+	GetFleetAIReadiness(ctx context.Context) (GetFleetAIReadinessRes, error)
 	// GetFleetAgentVersions invokes getFleetAgentVersions operation.
 	//
 	// Per-site {site_id, site_name, agent_version, status} plus fleet-wide counts, classified against a
@@ -1903,6 +1912,30 @@ type Invoker interface {
 	//
 	// GET /api/v1/sites/{siteId}
 	GetSite(ctx context.Context, params GetSiteParams) (GetSiteRes, error)
+	// GetSiteAIReadiness invokes getSiteAIReadiness operation.
+	//
+	// A checklist computed by the control plane from what the site last reported: WordPress and WPMgr
+	// agent versions, whether AI page creation is on, and, for Elementor and Bricks, the version, the AI
+	// tools switch and (Elementor) the Atomic editor. Every row is `pass`, `fail`, `unknown` or
+	// `not_applicable`; an unknown is never a failure. The response carries no text the site chose:
+	// `observed` is a version string that passed a strict shape check, or null.
+	//
+	// `status` is `needs_attention` when any row in `base` or in an installed builder group fails
+	// (`fix_count` counts them), otherwise `incomplete` when any row is unknown, otherwise `ready`. The
+	// one exception is `bricks_abilities`: it is inferred from the site's tool list and has not been
+	// confirmed on a licensed Bricks install, so when it is `pass` or `fail` it is listed with its state
+	// and never counted. When it is `unknown` (the tool list was never read, or was cut short) it is an
+	// ordinary unknown and makes the site `incomplete`. A builder that is not installed contributes
+	// nothing, and neither does one that is installed but not active: that is a choice, not a fix, so its
+	// version row is `not_applicable` with reason `inactive`. `warnings` never change `status`.
+	//
+	// Advisory only: no tool call, approval or dispatch reads this result.
+	//
+	// Requires `site:read` and access to the site. Returns 404 for a site that is not the caller's, is
+	// archived, or has never been enrolled.
+	//
+	// GET /api/v1/sites/{siteId}/ai/readiness
+	GetSiteAIReadiness(ctx context.Context, params GetSiteAIReadinessParams) (GetSiteAIReadinessRes, error)
 	// GetSiteAppHealthSettings invokes getSiteAppHealthSettings operation.
 	//
 	// Returns the per-site application-health settings (GH #291 Phase 3): the B3 override path for the
@@ -3131,6 +3164,19 @@ type Invoker interface {
 	//
 	// POST /api/v1/ai/abilities/{entryId}/reenable
 	ReenableAbilityForTenant(ctx context.Context, request *ReenableAbilityForTenantReq, params ReenableAbilityForTenantParams) (ReenableAbilityForTenantRes, error)
+	// RefreshSiteAIReadiness invokes refreshSiteAIReadiness operation.
+	//
+	// Queues a fresh metadata report from the site and, when the site's WPMgr agent can read its tool
+	// list, a fresh tool-list read. Returns 202 at once; the results appear on the next GET within a
+	// couple of minutes. `abilities` is true when a tool-list read was queued by this call or was already
+	// queued within the last two minutes, and false when the agent is too old to run one. Requires
+	// `site.content.refresh` (operator and above, the same tier as the content inventory refresh) and
+	// access to the site: a viewer can read the result but cannot ask for a new one. The body must be JSON
+	// (an empty object is fine). Returns 409 `site_unreachable` when the site is not enrolled or its agent
+	// has not been heard from recently.
+	//
+	// POST /api/v1/sites/{siteId}/ai/readiness/refresh
+	RefreshSiteAIReadiness(ctx context.Context, request *RefreshSiteAIReadinessReq, params RefreshSiteAIReadinessParams) (RefreshSiteAIReadinessRes, error)
 	// RefreshSiteContentInventory invokes refreshSiteContentInventory operation.
 	//
 	// Queues a check; the result appears in the inventory once it runs. Rate limited per site: a second
@@ -20629,6 +20675,89 @@ func (c *Client) sendGetEmailNotifySettings(ctx context.Context) (res GetEmailNo
 	return result, nil
 }
 
+// GetFleetAIReadiness invokes getFleetAIReadiness operation.
+//
+// One compact row per enrolled, non-archived site: the same `status` and `fix_count` the per-site
+// route returns, the ids of the failing rows, and the warning codes. Computed by the same function as
+// the per-site route, so the two cannot disagree. A site collaborator sees only the sites shared with
+// them. Requires `site:read`.
+//
+// GET /api/v1/fleet/ai-readiness
+func (c *Client) GetFleetAIReadiness(ctx context.Context) (GetFleetAIReadinessRes, error) {
+	res, err := c.sendGetFleetAIReadiness(ctx)
+	return res, err
+}
+
+func (c *Client) sendGetFleetAIReadiness(ctx context.Context) (res GetFleetAIReadinessRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("getFleetAIReadiness"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/fleet/ai-readiness"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, GetFleetAIReadinessOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/api/v1/fleet/ai-readiness"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeGetFleetAIReadinessResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // GetFleetAgentVersions invokes getFleetAgentVersions operation.
 //
 // Per-site {site_id, site_name, agent_version, status} plus fleet-wide counts, classified against a
@@ -24073,6 +24202,123 @@ func (c *Client) sendGetSite(ctx context.Context, params GetSiteParams) (res Get
 
 	stage = "DecodeResponse"
 	result, err := decodeGetSiteResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// GetSiteAIReadiness invokes getSiteAIReadiness operation.
+//
+// A checklist computed by the control plane from what the site last reported: WordPress and WPMgr
+// agent versions, whether AI page creation is on, and, for Elementor and Bricks, the version, the AI
+// tools switch and (Elementor) the Atomic editor. Every row is `pass`, `fail`, `unknown` or
+// `not_applicable`; an unknown is never a failure. The response carries no text the site chose:
+// `observed` is a version string that passed a strict shape check, or null.
+//
+// `status` is `needs_attention` when any row in `base` or in an installed builder group fails
+// (`fix_count` counts them), otherwise `incomplete` when any row is unknown, otherwise `ready`. The
+// one exception is `bricks_abilities`: it is inferred from the site's tool list and has not been
+// confirmed on a licensed Bricks install, so when it is `pass` or `fail` it is listed with its state
+// and never counted. When it is `unknown` (the tool list was never read, or was cut short) it is an
+// ordinary unknown and makes the site `incomplete`. A builder that is not installed contributes
+// nothing, and neither does one that is installed but not active: that is a choice, not a fix, so its
+// version row is `not_applicable` with reason `inactive`. `warnings` never change `status`.
+//
+// Advisory only: no tool call, approval or dispatch reads this result.
+//
+// Requires `site:read` and access to the site. Returns 404 for a site that is not the caller's, is
+// archived, or has never been enrolled.
+//
+// GET /api/v1/sites/{siteId}/ai/readiness
+func (c *Client) GetSiteAIReadiness(ctx context.Context, params GetSiteAIReadinessParams) (GetSiteAIReadinessRes, error) {
+	res, err := c.sendGetSiteAIReadiness(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendGetSiteAIReadiness(ctx context.Context, params GetSiteAIReadinessParams) (res GetSiteAIReadinessRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("getSiteAIReadiness"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/sites/{siteId}/ai/readiness"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, GetSiteAIReadinessOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/sites/"
+	{
+		// Encode "siteId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "siteId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.SiteId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/ai/readiness"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeGetSiteAIReadinessResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}
@@ -39633,6 +39879,115 @@ func (c *Client) sendReenableAbilityForTenant(ctx context.Context, request *Reen
 
 	stage = "DecodeResponse"
 	result, err := decodeReenableAbilityForTenantResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// RefreshSiteAIReadiness invokes refreshSiteAIReadiness operation.
+//
+// Queues a fresh metadata report from the site and, when the site's WPMgr agent can read its tool
+// list, a fresh tool-list read. Returns 202 at once; the results appear on the next GET within a
+// couple of minutes. `abilities` is true when a tool-list read was queued by this call or was already
+// queued within the last two minutes, and false when the agent is too old to run one. Requires
+// `site.content.refresh` (operator and above, the same tier as the content inventory refresh) and
+// access to the site: a viewer can read the result but cannot ask for a new one. The body must be JSON
+// (an empty object is fine). Returns 409 `site_unreachable` when the site is not enrolled or its agent
+// has not been heard from recently.
+//
+// POST /api/v1/sites/{siteId}/ai/readiness/refresh
+func (c *Client) RefreshSiteAIReadiness(ctx context.Context, request *RefreshSiteAIReadinessReq, params RefreshSiteAIReadinessParams) (RefreshSiteAIReadinessRes, error) {
+	res, err := c.sendRefreshSiteAIReadiness(ctx, request, params)
+	return res, err
+}
+
+func (c *Client) sendRefreshSiteAIReadiness(ctx context.Context, request *RefreshSiteAIReadinessReq, params RefreshSiteAIReadinessParams) (res RefreshSiteAIReadinessRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("refreshSiteAIReadiness"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/api/v1/sites/{siteId}/ai/readiness/refresh"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, RefreshSiteAIReadinessOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/sites/"
+	{
+		// Encode "siteId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "siteId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.SiteId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/ai/readiness/refresh"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeRefreshSiteAIReadinessRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeRefreshSiteAIReadinessResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}

@@ -178,9 +178,10 @@ jobs:
       # look at the diff that needs looking at.
       #
       # It lives in this job for the same reason the url-map guard above does:
-      # it reads the mcp.Store interface through `go doc`, i.e. Go's own parser,
-      # rather than by grepping repo.go — so a wrapped signature or a method
-      # moved to another file in the package cannot make it quietly match less.
+      # it reads the mcp.Store and requestStore interfaces through `go doc`,
+      # i.e. Go's own parser, rather than by grepping repo.go — so a wrapped
+      # signature or a method moved to another file in the package cannot make
+      # it quietly match less.
       # That needs the Go toolchain, and this is the job that already has it set
       # up and cached. It needs no database and no cloud credentials, so it runs
       # on fork PRs too. `go doc` parses rather than type-checks (measured: with

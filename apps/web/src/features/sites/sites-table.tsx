@@ -65,6 +65,12 @@ import { SiteRowActions } from "@/features/sites/site-row-actions";
 import { PausedBadge } from "@/features/sites/site-badges";
 import { uptimeBadgeFor, type UptimeBadgeTone } from "@/features/sites/monitoring-pause";
 import { AgentColumnFleetNote } from "@/features/sites/agent-column-header";
+import { AiReadinessCell } from "@/features/ai-readiness/ai-readiness-cell";
+import {
+  cellFor,
+  type AiCell,
+  type AiReadinessRollup,
+} from "@/features/ai-readiness/readiness-cell-model";
 import {
   computeSitesColumnWidths,
   SITES_COLUMN_TRACKS,
@@ -147,6 +153,12 @@ export interface SitesTableProps {
    * single object rather than being resolved separately.
    */
   agentReferenceCheck?: AgentMirrorStatus;
+  /**
+   * The fleet-wide AI readiness rollup (GET /api/v1/fleet/ai-readiness), read
+   * once by the route. Omitted, a failed rollup and a refused one all render
+   * the AI column as a dash; the table never errors for it.
+   */
+  aiReadiness?: AiReadinessRollup;
   /** Optional click handler for the inline "Log in" (Zap) action. */
   onOpenAutoLogin?: (site: Site) => void;
   /** Optional click handler for the three-dot "More" item entries. */
@@ -189,6 +201,8 @@ interface SiteRow {
    * renders the raw version text instead of a chip.
    */
   readonly agentStatus?: AgentStatus;
+  /** AI readiness for the AI column: loading, unavailable (a dash) or a result. */
+  readonly aiCell: AiCell;
 }
 
 // ---------------------------------------------------------------------------
@@ -208,6 +222,7 @@ function hostnameFromUrl(url: string): string {
 function rowOf(
   site: Site,
   agentStatusById?: ReadonlyMap<string, AgentStatus>,
+  aiReadiness?: AiReadinessRollup,
 ): SiteRow {
   return {
     site,
@@ -230,6 +245,7 @@ function rowOf(
     // caller never wired one) leaves this undefined so the cell falls back
     // to plain version text.
     agentStatus: agentStatusById?.get(site.id) ?? (agentStatusById ? "unknown" : undefined),
+    aiCell: cellFor(aiReadiness, site.id),
   };
 }
 
@@ -322,6 +338,7 @@ const COL_TAGS_PX = trackWidth("tags");
 const COL_WP_PX = trackWidth("wp_version");
 const COL_PHP_PX = trackWidth("php_version");
 const COL_AGENT_PX = trackWidth("agent_version");
+const COL_AI_PX = trackWidth("ai_readiness");
 const COL_UPDATES_PX = trackWidth("updates_count");
 const COL_BACKUP_PX = trackWidth("backup_status");
 const COL_UPTIME_PX = trackWidth("uptime_sparkline");
@@ -577,6 +594,15 @@ function buildColumns(
       },
     },
     {
+      id: "ai_readiness",
+      header: "AI",
+      enableSorting: false,
+      size: COL_AI_PX,
+      cell: ({ row }) => (
+        <AiReadinessCell siteId={row.original.site.id} cell={row.original.aiCell} />
+      ),
+    },
+    {
       id: "updates_count",
       accessorFn: (row) => row.updatesCount,
       header: "Updates",
@@ -791,6 +817,7 @@ export function SitesTable({
   agentStatusById,
   agentReferenceSource,
   agentReferenceCheck,
+  aiReadiness,
   onOpenAutoLogin,
   onOpenDetail,
   onDisconnect,
@@ -806,8 +833,8 @@ export function SitesTable({
   const [density, setDensity] = externalDensityState ?? internalDensityState;
 
   const rows = useMemo<SiteRow[]>(
-    () => sites.map((s) => rowOf(s, agentStatusById)),
-    [sites, agentStatusById],
+    () => sites.map((s) => rowOf(s, agentStatusById, aiReadiness)),
+    [sites, agentStatusById, aiReadiness],
   );
   const visibleIds = useMemo(() => sites.map((s) => s.id), [sites]);
 
