@@ -105,6 +105,12 @@ type rebaselineRequest struct {
 // tampering that happened concurrently with this call).
 func (h *Handler) rebaseline(c *gin.Context) {
 	p, _ := domain.PrincipalFromContext(c.Request.Context())
+	// Loosening an AI control needs a signed-in person. Refused before the
+	// body is read and before anything is written.
+	if err := authz.AuthorizeLoosening(p); err != nil {
+		httpx.Error(c, err)
+		return
+	}
 
 	var body rebaselineRequest
 	// Body is optional; tolerate an empty/absent body (no broken_at to record).

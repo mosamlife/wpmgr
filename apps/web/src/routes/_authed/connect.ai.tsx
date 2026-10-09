@@ -8,10 +8,12 @@ import { useTags } from "@/features/tags/use-tags";
 import {
   ConsentScreen,
   ConsentScreenSkeleton,
+  type ConsentScreenProps,
 } from "@/features/mcp-consent/consent-screen";
 import {
   buildDenialTarget,
   buildRedirectTarget,
+  consentKeys,
   navigateTo,
   useApproveConsent,
   useConsentContext,
@@ -105,7 +107,6 @@ function ConnectAiPage() {
   const consentQuery = useConsentContext(params);
   const sitesQuery = useSites({ view: "active" });
   const tagsQuery = useTags();
-  const approve = useApproveConsent();
 
   // NULL, NOT [], WHEN WE CANNOT SEE THE FLEET. resolveSiteScope treats the two
   // differently on purpose: an empty snapshot is a fleet with no sites, and
@@ -176,17 +177,59 @@ function ConnectAiPage() {
   }
 
   return (
-    <ConsentScreen
+    <ApprovableConsent
+      // A DIFFERENT AUTHORIZE REQUEST IS A DIFFERENT SCREEN. The screen keeps
+      // what the person ticks, types and picks, and it works out its opening
+      // ticks once, when it mounts. The browser's back and forward buttons can
+      // hand this component a context that is already cached for another
+      // request, which would otherwise reach the mounted screen as a new prop
+      // and leave it holding the first request's ticks, name and site choices
+      // under the second request's boxes and sentences. Keying on the request
+      // (the same parts the query is keyed on) mounts a fresh screen instead.
+      //
+      // THE APPROVAL BELONGS TO ITS REQUEST TOO. The approval mutation lives in
+      // the keyed child, so an error or an in-flight approval from one request
+      // cannot be shown on another.
+      //
+      // NOT THE CONSENT TICKET. A refetch of the same request brings a new
+      // ticket, and the screen must keep the person's ticks across that.
+      key={JSON.stringify(consentKeys.authorize(params))}
       consent={consentQuery.data}
       tags={tags}
       fleet={fleet}
       tagsBySiteId={tagsBySiteId}
       sitesLoading={sitesQuery.isPending}
+    />
+  );
+}
+
+/**
+ * The consent screen together with the approval mutation that belongs to it.
+ * The mutation is owned here, and not by the page, so that the page's key on the
+ * authorize request gives each request its own error and its own in-flight
+ * state.
+ */
+function ApprovableConsent({
+  consent,
+  tags,
+  fleet,
+  tagsBySiteId,
+  sitesLoading,
+}: Pick<ConsentScreenProps, "consent" | "tags" | "fleet" | "tagsBySiteId" | "sitesLoading">) {
+  const approve = useApproveConsent();
+
+  return (
+    <ConsentScreen
+      consent={consent}
+      tags={tags}
+      fleet={fleet}
+      tagsBySiteId={tagsBySiteId}
+      sitesLoading={sitesLoading}
       isApproving={approve.isPending}
       approveError={approve.error}
       onApprove={(input) => {
         approve.mutate(
-          { consent: consentQuery.data, ...input },
+          { consent, ...input },
           {
             onSuccess: (result) => {
               // Hand control back to the destination the SERVER returned, never
@@ -202,7 +245,7 @@ function ConnectAiPage() {
         // nothing at all when this page was opened in a fresh tab -- which is
         // how an OAuth client normally opens it. RFC 6749 section 4.1.2.1 has
         // a way to say no; use it.
-        navigateTo(buildDenialTarget(consentQuery.data));
+        navigateTo(buildDenialTarget(consent));
       }}
     />
   );
