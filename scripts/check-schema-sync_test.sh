@@ -529,6 +529,52 @@ case_run() {
   fi
 }
 
+# case_enabled NAME -- the FILTER rule case_run applies, for the custom blocks.
+case_enabled() {
+  [ -z "$FILTER" ] && return 0
+  case "$1" in *"$FILTER"*) return 0 ;; esac
+  return 1
+}
+
+# record NAME PROBLEMS OUTPUT -- count and print a custom block's result.
+record() {
+  if [ -n "$2" ]; then
+    FAILED=$((FAILED + 1))
+    FAILED_NAMES="$FAILED_NAMES  $1
+"
+    printf 'FAIL %s%s\n' "$1" "$2"
+    printf '%s\n' "$3" | sed 's/^/      | /'
+  else
+    PASSED=$((PASSED + 1))
+    printf 'ok   %s\n' "$1"
+  fi
+}
+
+# A test double for docker at the process boundary. Everything is delegated to
+# the real docker, except that the SECOND CREATE DATABASE of the guard's setup
+# script is pointed at a template that does not exist, so it fails after the
+# first has already succeeded. The only way to reach that path without a hook
+# in the guard itself.
+make_docker_double() {
+  local dir="${WORK:?}/docker-double" real
+  real="$(command -v docker)" || setup_error "docker is not on PATH"
+  mkdir -p "$dir" || setup_error "could not create $dir"
+  # A plain heredoc into a file, not one inside $( ): older bash counts the
+  # ")" that ends a case pattern as the end of the command substitution.
+  cat > "$dir/docker.template" <<'EOF'
+#!/usr/bin/env bash
+case " $* " in
+  *" -v decl="*)
+    exec __REAL__ "$@" < <(sed 's/CREATE DATABASE :"decl" TEMPLATE template0;/CREATE DATABASE :"decl" TEMPLATE no_such_template;/')
+    ;;
+esac
+exec __REAL__ "$@"
+EOF
+  sed "s|__REAL__|$real|g" "$dir/docker.template" > "$dir/docker" || setup_error "could not write the docker double"
+  chmod +x "$dir/docker"
+  printf '%s' "$dir"
+}
+
 build_base
 
 S="$SCHEMA_REL"
@@ -904,6 +950,28 @@ write_mig_scratch > "$t/$M/$MIG4B"
 printf '%s\n' "$SUM_SCRATCH" > "$t/$M/atlas.sum"
 case_run "honest: a migration that adds and drops a column leaves no trace for schema.sql to mirror" pass "$t" \
   "+atlas.sum lists exactly the 4 migration files" "+compared:" "-scratch" "-FAIL"
+
+# ===========================================================================
+# Cleanup on a failed setup (bot review of #868, gap 4). The first CREATE
+# DATABASE succeeds, the second fails; the database that was created must
+# still be dropped from a container the caller owns.
+# ===========================================================================
+name="fires: [cleanup] a failed second CREATE DATABASE leaves no scratch database behind"
+if case_enabled "$name"; then
+  t="$(tree cleanup-failed-setup)"
+  dbl="$(make_docker_double)"
+  out="$(env WPMGR_SCHEMA_SYNC_CONTAINER="$SHARED" PATH="$dbl:$PATH" "$GUARD" "$t" 2>&1)"
+  code=$?
+  left="$(docker exec "$SHARED" psql -U postgres -X -At -d postgres -c "SELECT count(*) FROM pg_database WHERE datname LIKE 'ss\_%'" 2>&1)"
+  problems=""
+  if [ "$code" != "2" ]; then problems="$problems
+    expected exit 2, got $code"; fi
+  if ! grep -qF "could not create the two databases" <<< "$out"; then problems="$problems
+    expected the output to say the two databases could not be created"; fi
+  if [ "$left" != "0" ]; then problems="$problems
+    expected no scratch database left in the shared container, found $left"; fi
+  record "$name" "$problems" "$out"
+fi
 
 # ===========================================================================
 # Hygiene: the guard cleans up after itself.

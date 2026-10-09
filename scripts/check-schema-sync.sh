@@ -404,7 +404,9 @@ CREATE DATABASE :"mig" TEMPLATE template0;
 CREATE DATABASE :"decl" TEMPLATE template0;
 SQL
 if ! setup_err="$(dpsql -q -d postgres -v "mig=$DB_MIG" -v "decl=$DB_DECL" -f - < "$TMP/setup.sql" 2>&1 >/dev/null)"; then
-  DB_MIG=""
+  # Both names stay set on purpose. If the first CREATE DATABASE succeeded and
+  # the second failed, cleanup must still drop the one that exists; the DROP
+  # is IF EXISTS, so the one that was never created costs nothing.
   broken "could not create the two databases: $setup_err"
 fi
 
