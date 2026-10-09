@@ -55,7 +55,9 @@ if (!defined('ABSPATH')) {
  *               plane names as WPMgr's, for wpmgr/page-structure and
  *               wpmgr/page-edit (optional)
  *   revert      object, the undo's signed parameters: exactly
- *               {snapshot_sha256} for wpmgr/page-edit (revert)
+ *               {snapshot_sha256} for wpmgr/page-edit (revert); absent,
+ *               {} or {chain} for wpmgr/page-create, chain the page-edit
+ *               requests made on the created draft, in order (revert)
  *
  * WPMgr's own wpmgr/* abilities run through their own handlers. Any other
  * ability (a vendor's or core's) runs only in read mode, only on WordPress
@@ -66,7 +68,9 @@ if (!defined('ABSPATH')) {
  * by the content service principal, never publishes, verifies the stored
  * bytes, and records a ledger row keyed by request_id. Its revert trashes
  * that draft, taking the post id only from the ledger row of the
- * token-bound request_id, and only while the draft is unchanged.
+ * token-bound request_id, and only while the draft is unchanged, or, for a
+ * page-builder draft, changed only by the wpmgr/page-edit changes the
+ * revert names and this site's ledger records.
  *
  * A page-builder editor ("builder:<id>") resolves through BuilderRegistry
  * against the entry's limits.builders_enabled before anything is built; the
@@ -1427,8 +1431,12 @@ final class AbilityRunCommand implements CommandInterface
             if (get_object_vars($input) !== []) {
                 return $this->fail('bad_input', 'revert takes no input; the object comes from the ledger');
             }
+            $chain = BuilderPageCreate::revertChain($req->revert ?? null);
+            if ($chain === null) {
+                return $this->fail('bad_params', 'revert must be absent, {} or {"chain": [<page-edit request ids>]}');
+            }
 
-            return $this->pageCreateRevert($requestId);
+            return $this->pageCreateRevert($requestId, $chain);
         }
         if ($mode === 'read') {
             return $this->fail('mode_class_mismatch', 'read mode needs a read ability');
@@ -1931,12 +1939,14 @@ final class AbilityRunCommand implements CommandInterface
     /**
      * Person undo for page-create: trash the created draft, only if it is
      * unchanged since creation and still a draft. The post id comes only from
-     * the ledger row of this token-bound request_id (W3).
+     * the ledger row of this token-bound request_id (W3). A builder draft may
+     * also carry the page-edit changes $chain names (BuilderPageCreate).
      *
-     * @param string $requestId Request id.
+     * @param string       $requestId Request id.
+     * @param list<string> $chain     The page-edit requests p.revert names.
      * @return array<string,mixed>
      */
-    private function pageCreateRevert(string $requestId): array
+    private function pageCreateRevert(string $requestId, array $chain = []): array
     {
         $row = AbilityLedger::get($requestId);
         if ($row === null) {
@@ -1980,7 +1990,7 @@ final class AbilityRunCommand implements CommandInterface
         // revisions of the draft, and its fingerprint covers the builder rows.
         $builderRow = array_key_exists('builder', $row) ? $row : null;
         try {
-            return $this->pageCreateRevertClaimed($requestId, $postId, $completed ? $afterFp : null, $builderRow);
+            return $this->pageCreateRevertClaimed($requestId, $postId, $completed ? $afterFp : null, $builderRow, $chain);
         } finally {
             if ($recovered) {
                 AbilityLedger::releaseRequest($requestId);
@@ -1994,21 +2004,24 @@ final class AbilityRunCommand implements CommandInterface
      * never modified since insert.
      *
      * A builder draft ($builderRow set) is instead checked by
-     * BuilderPageCreate::revertProblem() against its ledger row.
+     * BuilderPageCreate::revertProblem() against its ledger row and the
+     * page-edit changes $chain names, read under the claim. Only a builder
+     * draft has page-edit changes: any other draft with a chain is refused.
      *
      * @param string                   $requestId  Request id.
      * @param int                      $postId     Post id, from the ledger row.
      * @param string|null              $afterFp    Recorded after-fingerprint, or null.
      * @param array<string,mixed>|null $builderRow The ledger row of a builder draft, or null.
+     * @param list<string>             $chain      The page-edit requests p.revert names.
      * @return array<string,mixed>
      */
-    private function pageCreateRevertClaimed(string $requestId, int $postId, ?string $afterFp, ?array $builderRow = null): array
+    private function pageCreateRevertClaimed(string $requestId, int $postId, ?string $afterFp, ?array $builderRow = null, array $chain = []): array
     {
         if (!AbilityLedger::claimTarget($postId)) {
             return $this->fail('target_in_flight', 'another engine call holds this post');
         }
         try {
-            return $this->asPrincipal(function (int $principal) use ($requestId, $postId, $afterFp, $builderRow): array {
+            return $this->asPrincipal(function (int $principal) use ($requestId, $postId, $afterFp, $builderRow, $chain): array {
                 clean_post_cache($postId);
                 $post = get_post($postId);
                 if (!is_object($post)) {
@@ -2025,10 +2038,12 @@ final class AbilityRunCommand implements CommandInterface
                     return $this->fail('conflict', 'the post is not the one this request created');
                 }
                 if ($builderRow !== null) {
-                    $problem = BuilderPageCreate::revertProblem($postId, $builderRow);
+                    $problem = BuilderPageCreate::revertProblem($postId, $builderRow, $chain);
                     if ($problem !== null) {
                         return $this->fail('created_post_touched', $problem);
                     }
+                } elseif ($chain !== []) {
+                    return $this->fail('created_post_touched', BuilderPageCreate::CHAIN_BROKEN);
                 } else {
                     if ($afterFp !== null && !hash_equals($afterFp, PageCreateBuilder::documentFingerprint($post))) {
                         return $this->fail('conflict', 'someone edited this draft after it was created');
