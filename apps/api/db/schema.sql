@@ -9642,8 +9642,8 @@ SELECT 'wpmgr/page-create', 'wpmgr', 'write', 'admitted', true, 'per_call',
        'Create a draft page',
        'Creates a new draft page or post from an outline: headings, paragraphs, lists, quotes, tables, separators, ' ||
        'images already in the site''s media library, and, in the block editor or Elementor, buttons, spacing, ' ||
-       'sections and columns. With editor builder:elementor the draft is built in Elementor, from its own ' ||
-       'containers and widgets. Nothing is published. Undo moves the draft to the trash.',
+       'sections and columns. With editor builder:elementor the draft is built in Elementor, from Elementor''s own ' ||
+       'layout elements and widgets. Nothing is published. Undo moves the draft to the trash.',
        'Build the page as an outline. A top-level item can be any block, a group (a section) or columns. A group ' ||
        'holds blocks or columns; a column holds blocks only. Use 2 to 4 columns; widths are optional whole ' ||
        'percentages that add up to 100. Images must already be in the media library: find an attachment id with ' ||

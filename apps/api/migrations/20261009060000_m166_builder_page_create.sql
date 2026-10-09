@@ -121,8 +121,8 @@ DECLARE
     v_description constant text :=
         'Creates a new draft page or post from an outline: headings, paragraphs, lists, quotes, tables, separators, ' ||
         'images already in the site''s media library, and, in the block editor or Elementor, buttons, spacing, ' ||
-        'sections and columns. With editor builder:elementor the draft is built in Elementor, from its own ' ||
-        'containers and widgets. Nothing is published. Undo moves the draft to the trash.';
+        'sections and columns. With editor builder:elementor the draft is built in Elementor, from Elementor''s own ' ||
+        'layout elements and widgets. Nothing is published. Undo moves the draft to the trash.';
 
     v_usage constant text :=
         'Build the page as an outline. A top-level item can be any block, a group (a section) or columns. A group ' ||

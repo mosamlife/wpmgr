@@ -38,8 +38,8 @@ const m166MigrationVersion = "20261009060000_m166_builder_page_create"
 const (
 	m166Description = "Creates a new draft page or post from an outline: headings, paragraphs, lists, quotes, tables, separators, " +
 		"images already in the site's media library, and, in the block editor or Elementor, buttons, spacing, " +
-		"sections and columns. With editor builder:elementor the draft is built in Elementor, from its own " +
-		"containers and widgets. Nothing is published. Undo moves the draft to the trash."
+		"sections and columns. With editor builder:elementor the draft is built in Elementor, from Elementor's own " +
+		"layout elements and widgets. Nothing is published. Undo moves the draft to the trash."
 
 	m166Usage = m162Usage + " On a site with Elementor, send editor builder:elementor to build the " +
 		"draft in Elementor from the same outline. You may add elementor_format: site_default (the default, which " +
