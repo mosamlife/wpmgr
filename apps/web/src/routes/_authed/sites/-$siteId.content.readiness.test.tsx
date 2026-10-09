@@ -9,6 +9,8 @@ import {
 import type { Me, SiteAiReadiness } from "@wpmgr/api";
 
 import { createTestQueryClient, renderWithProviders } from "@/test/render";
+import { cellFor } from "@/features/ai-readiness/readiness-cell-model";
+import { useAiReadinessRollup } from "@/features/ai-readiness/use-ai-readiness";
 import {
   ADAPTER_WARNING,
   ELEMENTOR_WARNING,
@@ -21,6 +23,7 @@ import {
   chk,
   elementorAllPassing,
   failResult,
+  fleetSite,
   okResult,
   readiness,
 } from "@/features/ai-readiness/readiness-fixtures";
@@ -44,6 +47,7 @@ const POLL_INTERVAL_MS = 15_000;
 const POLL_LIMIT = 8;
 
 const getReadiness = vi.fn();
+const getFleetReadiness = vi.fn();
 const refreshReadiness = vi.fn();
 const getEditing = vi.fn();
 const listReqs = vi.fn();
@@ -54,6 +58,7 @@ vi.mock("@wpmgr/api", async (importOriginal) => {
   return {
     ...actual,
     getSiteAiReadiness: (...a: unknown[]): unknown => getReadiness(...a),
+    getFleetAiReadiness: (...a: unknown[]): unknown => getFleetReadiness(...a),
     refreshSiteAiReadiness: (...a: unknown[]): unknown => refreshReadiness(...a),
     getSiteContentEditing: (...a: unknown[]): unknown => getEditing(...a),
     listSiteAbilityRequests: (...a: unknown[]): unknown => listReqs(...a),
@@ -83,7 +88,19 @@ function meWithRole(role: "operator" | "viewer"): Me {
   } as unknown as Me;
 }
 
-function renderTab(role: "operator" | "viewer" = "operator") {
+/**
+ * Stands in for the Sites list while the check runs: it reads the fleet rollup
+ * through the real hook and the real cell model, as the AI column does. The
+ * list is a different route and is never mounted together with the Content
+ * tab, so a test that wants to see the rollup move has to put a reader of it
+ * next to the card.
+ */
+function FleetReader() {
+  const cell = cellFor(useAiReadinessRollup(), SITE_ID);
+  return <p data-testid="fleet-reader">{cell.kind === "result" ? cell.label : cell.kind}</p>;
+}
+
+function renderTab(role: "operator" | "viewer" = "operator", opts: { fleetReader?: boolean } = {}) {
   const queryClient = createTestQueryClient();
   queryClient.setQueryData(ME_KEY, meWithRole(role));
   const rootRoute = createRootRoute({});
@@ -97,13 +114,22 @@ function renderTab(role: "operator" | "viewer" = "operator") {
     routeTree: rootRoute.addChildren([contentRoute]),
     history: createMemoryHistory({ initialEntries: [`/sites/${SITE_ID}/content`] }),
   });
-  renderWithProviders(<RouterProvider router={router} />, { queryClient });
+  renderWithProviders(
+    <>
+      <RouterProvider router={router} />
+      {opts.fleetReader ? <FleetReader /> : null}
+    </>,
+    { queryClient },
+  );
   return queryClient;
 }
 
 beforeEach(() => {
-  for (const m of [getReadiness, refreshReadiness, getEditing, listReqs, getInv]) m.mockReset();
+  for (const m of [getReadiness, getFleetReadiness, refreshReadiness, getEditing, listReqs, getInv]) {
+    m.mockReset();
+  }
   getReadiness.mockResolvedValue(okResult(readiness()));
+  getFleetReadiness.mockResolvedValue(okResult({ sites: [fleetSite({ site_id: SITE_ID })] }));
   getEditing.mockResolvedValue(okResult({ site_id: SITE_ID, enabled: true }));
   listReqs.mockResolvedValue(okResult({ requests: [], limit: 50, offset: 0 }));
   getInv.mockResolvedValue(
@@ -575,6 +601,107 @@ describe("Check again", () => {
     });
     expect(getReadiness).toHaveBeenCalledTimes(before);
     expect(c.getByRole("alert")).toBeInTheDocument();
+  });
+});
+
+describe("Check again keeps the Sites list column current", () => {
+  // "Check again" marks the fleet rollup stale once, when the request is
+  // accepted. The site has not reported yet at that point, so a rollup read
+  // right after it still carries the old answer. A reader of the rollup sits
+  // beside the card (see FleetReader) and must see the new answer once the
+  // card's poll has seen the results.
+  const BEFORE_DETAILS = "2026-10-09T10:00:00.000Z";
+  const BEFORE_TOOLS = "2026-10-09T10:01:00.000Z";
+  const AFTER_DETAILS = "2026-10-09T10:05:00.000Z";
+  const AFTER_TOOLS = "2026-10-09T10:05:30.000Z";
+
+  function oneFix(details: string, tools: string): SiteAiReadiness {
+    return readiness({
+      status: "needs_attention",
+      fix_count: 1,
+      metadata_as_of: details,
+      abilities_as_of: tools,
+      groups: [
+        baseGroup(baseChecks({ content_editing: chk("content_editing", "fail") })),
+        builderGroup("elementor", { installed: false }),
+        builderGroup("bricks", { installed: false }),
+      ],
+    });
+  }
+  const allClear = (details: string, tools: string) =>
+    readiness({ metadata_as_of: details, abilities_as_of: tools });
+
+  const FLEET_ONE_FIX = okResult({
+    sites: [fleetSite({ site_id: SITE_ID, status: "needs_attention", fix_count: 1, failing: ["content_editing"] })],
+  });
+  const FLEET_READY = okResult({ sites: [fleetSite({ site_id: SITE_ID })] });
+
+  async function settle(ms: number) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+      // TanStack Query hands a result to React on a zero-delay timer that the
+      // advance above has only just scheduled: run it.
+      await vi.advanceTimersByTimeAsync(10);
+    });
+  }
+
+  /** The card and a rollup reader showing one fix; the check is asked for and accepted. */
+  async function askForACheck() {
+    getReadiness.mockResolvedValue(okResult(oneFix(BEFORE_DETAILS, BEFORE_TOOLS)));
+    getFleetReadiness.mockResolvedValue(FLEET_ONE_FIX);
+    refreshReadiness.mockResolvedValue(okResult({ metadata: true, abilities: true }));
+    renderTab("operator", { fleetReader: true });
+    const c = await card();
+    expect(await screen.findByTestId("fleet-reader")).toHaveTextContent("1 to fix");
+
+    vi.useFakeTimers();
+    fireEvent.click(c.getByRole("button", { name: "Check again" }));
+    await settle(0);
+    expect(refreshReadiness).toHaveBeenCalledTimes(1);
+    return c;
+  }
+
+  it("shows the new answer in the rollup once a poll finds the new results", async () => {
+    const c = await askForACheck();
+    // Accepting the request refetched the rollup: still the old answer.
+    expect(screen.getByTestId("fleet-reader")).toHaveTextContent("1 to fix");
+
+    // The site reports. Both the card and the rollup now have a new answer.
+    getReadiness.mockResolvedValue(okResult(allClear(AFTER_DETAILS, AFTER_TOOLS)));
+    getFleetReadiness.mockResolvedValue(FLEET_READY);
+    await settle(POLL_INTERVAL_MS);
+
+    expect(c.getByTestId("ai-readiness-status")).toHaveTextContent("Ready.");
+    expect(screen.getByTestId("fleet-reader")).toHaveTextContent("Ready");
+  });
+
+  it("leaves the rollup alone while the polls find nothing new", async () => {
+    await askForACheck();
+    const rollupReads = getFleetReadiness.mock.calls.length;
+    const cardReads = getReadiness.mock.calls.length;
+
+    await settle(POLL_INTERVAL_MS * 3);
+
+    expect(getReadiness.mock.calls.length).toBeGreaterThan(cardReads);
+    expect(getFleetReadiness).toHaveBeenCalledTimes(rollupReads);
+    expect(screen.getByTestId("fleet-reader")).toHaveTextContent("1 to fix");
+  });
+
+  it("refreshes the rollup again when the tool list lands after the site details", async () => {
+    await askForACheck();
+
+    // The site details land first and change nothing the rollup shows.
+    getReadiness.mockResolvedValue(okResult(oneFix(AFTER_DETAILS, BEFORE_TOOLS)));
+    const rollupReads = getFleetReadiness.mock.calls.length;
+    await settle(POLL_INTERVAL_MS);
+    expect(getFleetReadiness.mock.calls.length).toBeGreaterThan(rollupReads);
+    expect(screen.getByTestId("fleet-reader")).toHaveTextContent("1 to fix");
+
+    // The tool list lands later and changes the answer.
+    getReadiness.mockResolvedValue(okResult(allClear(AFTER_DETAILS, AFTER_TOOLS)));
+    getFleetReadiness.mockResolvedValue(FLEET_READY);
+    await settle(POLL_INTERVAL_MS);
+    expect(screen.getByTestId("fleet-reader")).toHaveTextContent("Ready");
   });
 });
 
