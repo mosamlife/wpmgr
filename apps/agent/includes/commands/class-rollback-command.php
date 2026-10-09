@@ -5,13 +5,21 @@
  *
  * Contract (CP -> agent):
  *   POST /wp-json/wpmgr/v1/command/rollback
- *   body: { "type", "slug", "snapshot_id", "to_version" }
+ *   body: { "type", "slug", "snapshot_id", "to_version", "allow_core_downgrade": bool }
  *   response: { "ok": bool, "restored_version": "...", "log": "..." }
  *
  * For plugin/theme the snapshot directory is restored over the live directory.
  * For core a downgrade-by-version is performed (WP-CLI `core update
  * --version=<to_version> --force`, or the Core_Upgrader equivalent). On success
  * the snapshot directory is removed.
+ *
+ * A core rollback is a forced downgrade of WordPress itself, so it runs only
+ * when the request carries `allow_core_downgrade` as the JSON boolean `true`.
+ * Any other value, including a missing key, the string "true" or the number 1,
+ * is a refusal: ok=false, a plain log line, and nothing on the site changes.
+ * The snapshot is kept, the update transient is left alone, and the
+ * maintenance flag is not touched. `allow_core_downgrade` is ignored for
+ * plugin and theme rollbacks (GitHub issue #415).
  *
  * All input is untrusted: the type is whitelisted, the slug is sanitized to
  * reject path traversal, and the snapshot id is validated by the manager. A
@@ -64,8 +72,10 @@ final class RollbackCommand implements CommandInterface
     }
 
     /**
-     * Effect: reinstates a pre-update snapshot over the currently installed plugin, theme or core. The
-     * currently installed version is not retained.
+     * Effect: reinstates a pre-update snapshot over the currently installed plugin or theme, or
+     * downgrades WordPress core to the requested version when the request sets allow_core_downgrade
+     * to true. A core rollback without that flag is refused and changes nothing. Whatever version is
+     * replaced is not retained.
      *
      * @return CommandEffect
      */
@@ -155,6 +165,22 @@ final class RollbackCommand implements CommandInterface
 
         if (!in_array($type, self::TYPES, true)) {
             return $this->fail('Invalid type.');
+        }
+
+        // A core rollback is a forced downgrade of WordPress itself, so it
+        // needs an explicit request (GitHub issue #415). Only the JSON boolean
+        // `true` counts: a string such as "false" is truthy in PHP, and an
+        // irreversible operation must not turn on through a loose cast.
+        // Refused here, above the try/finally below, for the same reason an
+        // invalid type is: a refused request changes nothing, and that
+        // includes leaving any maintenance flag exactly as it was.
+        $allowCoreDowngrade = ($params['allow_core_downgrade'] ?? null) === true;
+        if ($type === 'core' && !$allowCoreDowngrade) {
+            return $this->fail(
+                'Refused: rolling back WordPress core is a forced downgrade, and this request did not allow one '
+                . '(allow_core_downgrade was not set to true). Nothing was attempted and nothing on this site was '
+                . 'changed. WordPress core stays at its current version.'
+            );
         }
 
         // GUARANTEE: this is precisely the reported incident — a rollback
@@ -254,7 +280,8 @@ final class RollbackCommand implements CommandInterface
     }
 
     /**
-     * Roll core back to a prior version via a forced downgrade.
+     * Roll core back to a prior version via a forced downgrade. Reached only
+     * when the request set allow_core_downgrade to true (see run()).
      *
      * @param string $snapshotId Optional snapshot id holding the prior version.
      * @param string $toVersion  Target version (overrides snapshot when set).
