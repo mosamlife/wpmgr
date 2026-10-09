@@ -1,0 +1,270 @@
+<?php
+
+declare(strict_types=1);
+
+namespace WPMgr\Agent\Abilities\Builders;
+
+use WPMgr\Agent\Support\ArrayShape;
+
+// Direct-file-access guard: keep above the docblock.
+if (!defined('ABSPATH')) {
+    exit;
+}
+
+/**
+ * builder_document_v1: the fingerprint of one builder page as it is stored.
+ *
+ *   sha256(json_encode([
+ *     "wpmgr.builder_document.v1",
+ *     post_type, post_status, sha256(post_title), sha256(post_content),
+ *     post_excerpt, post_name, post_password, post_modified_gmt,
+ *     post_parent, menu_order,
+ *     [[key, row_count, [sha256(row), ...]], ...]
+ *   ]))
+ *
+ * The posts fields are the ones PageCreateBuilder::documentFingerprint()
+ * hashes for a block-editor draft, in the same order, with the title and the
+ * content hashed on their own; the descriptor rows follow. post_excerpt,
+ * post_name and post_password are the stored strings as they are, so
+ * json_encode escapes them (a slash, a quote, every non-ASCII character).
+ * post_parent and menu_order are where the page sits, its parent and its
+ * order among its siblings: the stored integers, encoded as JSON numbers
+ * (menu_order may be negative). A page whose summary, slug, password or
+ * place changed is a different fingerprint even when nothing else about it
+ * changed.
+ *
+ * The keys are the adapter's descriptor keys in byte order (strcmp). Each
+ * key's rows are its postmeta rows in meta_id order, each hashed on its own
+ * over the stored bytes; a key with no row is [key, 0, []], which is not the
+ * same as a key with one empty row. json_encode uses its default flags and
+ * every sha256 is lowercase hex.
+ *
+ * read() takes the posts row and the postmeta rows from SQL, never from
+ * get_post_meta() or the object cache, so the fingerprint covers the bytes
+ * in the database. A row counts for a key only when its meta_key is that key
+ * byte for byte. The control plane replays the formula from the fixture
+ * tests/fixtures/ability-run/builder-document-fp.json.
+ */
+final class BuilderDocumentFingerprint
+{
+    public const DOMAIN = 'wpmgr.builder_document.v1';
+
+    /** The posts columns the fingerprint covers as text. */
+    public const POST_FIELDS = ['post_type', 'post_status', 'post_title', 'post_content', 'post_excerpt', 'post_name', 'post_password', 'post_modified_gmt'];
+
+    /** The posts columns it covers as integers, in formula order: where the page sits. */
+    public const PLACEMENT_FIELDS = ['post_parent', 'menu_order'];
+
+    /**
+     * The fingerprint of a post and its rows under the given descriptor keys.
+     *
+     * @param array<string,mixed> $post      The POST_FIELDS, each a string, and the PLACEMENT_FIELDS, each an int.
+     * @param array<mixed>        $rowsByKey Descriptor key => stored rows in meta_id order.
+     * @param array<mixed>        $keys      The descriptor keys, in any order.
+     * @return string Lowercase hex.
+     * @throws \InvalidArgumentException When a post field, key or row is not a string, a placement is not an int, or rows name a key outside $keys.
+     * @throws \JsonException            Never for valid UTF-8 strings.
+     */
+    public static function compute(array $post, array $rowsByKey, array $keys): string
+    {
+        $keys   = self::sortedKeys($keys);
+        $fields = [];
+        foreach (self::POST_FIELDS as $field) {
+            if (!isset($post[$field]) || !is_string($post[$field])) {
+                throw new \InvalidArgumentException('every post field must be a string');
+            }
+            $fields[$field] = $post[$field];
+        }
+        $placement = [];
+        foreach (self::PLACEMENT_FIELDS as $field) {
+            if (!isset($post[$field]) || !is_int($post[$field])) {
+                throw new \InvalidArgumentException('post_parent and menu_order must be integers');
+            }
+            $placement[$field] = $post[$field];
+        }
+        foreach ($rowsByKey as $key => $rows) {
+            if (!in_array((string) $key, $keys, true)) {
+                throw new \InvalidArgumentException('rows are given for a key outside the descriptor');
+            }
+            if (!is_array($rows) || !ArrayShape::isList($rows)) {
+                throw new \InvalidArgumentException('the rows of a key must be a list');
+            }
+        }
+
+        $meta = [];
+        foreach ($keys as $key) {
+            $hashes = [];
+            foreach ($rowsByKey[$key] ?? [] as $row) {
+                if (!is_string($row)) {
+                    throw new \InvalidArgumentException('a row must be the stored string');
+                }
+                $hashes[] = hash('sha256', $row);
+            }
+            $meta[] = [$key, count($hashes), $hashes];
+        }
+
+        return hash('sha256', json_encode([
+            self::DOMAIN,
+            $fields['post_type'],
+            $fields['post_status'],
+            hash('sha256', $fields['post_title']),
+            hash('sha256', $fields['post_content']),
+            $fields['post_excerpt'],
+            $fields['post_name'],
+            $fields['post_password'],
+            $fields['post_modified_gmt'],
+            $placement['post_parent'],
+            $placement['menu_order'],
+            $meta,
+        ], JSON_THROW_ON_ERROR));
+    }
+
+    /**
+     * The stored post fields and descriptor rows of one post, read with SQL.
+     *
+     * @param int          $postId Post ID.
+     * @param array<mixed> $keys   The descriptor keys.
+     * @return array{post:array<string,string|int>,rows:array<string,list<string>>}|null Null when there is no such post. The post holds the POST_FIELDS as text and the PLACEMENT_FIELDS as ints, whatever types the driver answers.
+     * @throws \InvalidArgumentException When the post ID or a key is not valid.
+     * @throws \RuntimeException         When the database cannot answer, or answers with something that is not stored bytes.
+     */
+    public static function read(int $postId, array $keys): ?array
+    {
+        if ($postId < 1) {
+            throw new \InvalidArgumentException('the post ID must be at least 1');
+        }
+        $keys = self::sortedKeys($keys);
+
+        global $wpdb;
+        if (!is_object($wpdb)) {
+            throw new \RuntimeException('database handle unavailable');
+        }
+        /** @var \wpdb $wpdb */
+        $post = $wpdb->get_row($wpdb->prepare('SELECT post_type, post_status, post_title, post_content, post_excerpt, post_name, post_password, post_modified_gmt, post_parent, menu_order FROM %i WHERE ID = %d', $wpdb->posts, $postId), ARRAY_A); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- the fingerprint covers the stored row, so it is read uncached; table from core via the %i identifier placeholder (WP 6.2+)
+        self::assertQueryOk($wpdb);
+        if ($post === null) {
+            return null;
+        }
+        if (!is_array($post)) {
+            throw new \RuntimeException('database read failed');
+        }
+        $fields = [];
+        foreach (self::POST_FIELDS as $field) {
+            if (!isset($post[$field]) || !is_string($post[$field])) {
+                throw new \RuntimeException('database read failed');
+            }
+            $fields[$field] = $post[$field];
+        }
+        foreach (self::PLACEMENT_FIELDS as $field) {
+            $int = self::storedInt($post[$field] ?? null);
+            if ($int === null) {
+                throw new \RuntimeException('database read failed');
+            }
+            $fields[$field] = $int;
+        }
+
+        $rows = [];
+        if ($keys !== []) {
+            $in    = implode(', ', array_fill(0, count($keys), '%s'));
+            $found = $wpdb->get_results($wpdb->prepare('SELECT meta_key, meta_value FROM %i WHERE post_id = %d AND meta_key IN (' . $in . ') ORDER BY meta_id ASC', array_merge([$wpdb->postmeta, $postId], $keys)), ARRAY_A); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber -- the stored bytes of each row, never the meta cache; table via %i, $in is one %s placeholder per key and every value goes through prepare() in the one replacements array
+            self::assertQueryOk($wpdb);
+            if (!is_array($found)) {
+                throw new \RuntimeException('database read failed');
+            }
+            foreach ($found as $row) {
+                $row   = (array) $row;
+                $key   = $row['meta_key'] ?? null;
+                $value = $row['meta_value'] ?? null;
+                if (!is_string($key) || !is_string($value)) {
+                    throw new \RuntimeException('a postmeta row is not stored bytes');
+                }
+                // The collation may match a key that differs in case or in
+                // trailing spaces; only the exact key is the document's.
+                if (!in_array($key, $keys, true)) {
+                    continue;
+                }
+                $rows[$key][] = $value;
+            }
+        }
+
+        return ['post' => $fields, 'rows' => $rows];
+    }
+
+    /**
+     * The fingerprint of one stored post, or null when there is no such post.
+     *
+     * @param int          $postId Post ID.
+     * @param array<mixed> $keys   The descriptor keys.
+     * @return string|null
+     * @throws \InvalidArgumentException See read().
+     * @throws \RuntimeException         See read().
+     */
+    public static function ofPost(int $postId, array $keys): ?string
+    {
+        $stored = self::read($postId, $keys);
+        if ($stored === null) {
+            return null;
+        }
+
+        return self::compute($stored['post'], $stored['rows'], $keys);
+    }
+
+    /**
+     * An integer column as the database answered it: its decimal text, as
+     * mysqli answers every column, or an int from a driver that returns native
+     * types. Anything that is not a plain stored integer is null, so it is
+     * never read as one.
+     *
+     * @param mixed $value The column.
+     * @return int|null
+     */
+    private static function storedInt(mixed $value): ?int
+    {
+        if (is_int($value)) {
+            return $value;
+        }
+        if (!is_string($value)) {
+            return null;
+        }
+        $int = (int) $value;
+
+        // Only an integer's own decimal text survives the round trip: no sign
+        // but a minus, no space, no leading zero, no fraction or exponent, and
+        // nothing outside the platform's integers.
+        return (string) $int === $value ? $int : null;
+    }
+
+    /**
+     * The keys in byte order.
+     *
+     * @param array<mixed> $keys Descriptor keys.
+     * @return list<string>
+     * @throws \InvalidArgumentException When a key is empty, not a string, or repeated.
+     */
+    private static function sortedKeys(array $keys): array
+    {
+        $out = [];
+        foreach ($keys as $key) {
+            if (!is_string($key) || $key === '' || in_array($key, $out, true)) {
+                throw new \InvalidArgumentException('descriptor keys must be distinct non-empty strings');
+            }
+            $out[] = $key;
+        }
+        usort($out, 'strcmp');
+
+        return $out;
+    }
+
+    /**
+     * A query that recorded an error fails the read; it is never read as "no rows".
+     *
+     * @param object $wpdb The database handle.
+     * @throws \RuntimeException When the last query failed.
+     */
+    private static function assertQueryOk(object $wpdb): void
+    {
+        if (isset($wpdb->last_error) && (string) $wpdb->last_error !== '') {
+            throw new \RuntimeException('database read failed');
+        }
+    }
+}

@@ -4815,6 +4815,39 @@ export type AbilityRequest = {
    *
    */
   ask_reason?: AiAskReason | null;
+  /**
+   * The page builder that builds a wpmgr/page-create request's page, as
+   * the site's precheck named it. Null for a page in a WordPress
+   * editor, and for every other ability. A card for a request whose
+   * editor is a page builder cannot be shown in full without it and
+   * must not be approvable.
+   *
+   */
+  page_builder?: AbilityRequestPageBuilder;
+};
+
+/**
+ * The page builder of a wpmgr/page-create request. `version` came from
+ * the site: render it as plain text.
+ *
+ */
+export type AbilityRequestPageBuilder = {
+  /**
+   * The page builder, such as `elementor`.
+   */
+  builder: string;
+  /**
+   * What the builder builds the page from, such as `classic` (Elementor's classic widgets).
+   */
+  format: string;
+  /**
+   * The builder's version on the site.
+   */
+  version: string;
+  /**
+   * How the page is laid out, such as `containers` or `sections` (Elementor's two classic layouts).
+   */
+  layout: string;
 };
 
 /**
@@ -11092,7 +11125,13 @@ export type RevokeAllTrustedDevicesResponse =
 export type OidcLoginData = {
   body?: never;
   path?: never;
-  query?: never;
+  query?: {
+    /**
+     * Where to land after a successful sign-in, including one that first answers a second factor, so a shared deep link survives the identity provider round trip. Must be a path on this origin; anything else (absolute, protocol-relative, or an encoded form of either) is discarded and the sign-in lands on the default page. The value is kept with the handshake in the session and is never handed to the identity provider or read back off the callback URL.
+     *
+     */
+    redirect?: string;
+  };
   url: "/auth/oidc/login";
 };
 
@@ -11127,16 +11166,6 @@ export type OidcCallbackErrors = {
 };
 
 export type OidcCallbackError = OidcCallbackErrors[keyof OidcCallbackErrors];
-
-export type OidcCallbackResponses = {
-  /**
-   * Authenticated via OIDC; session cookie set
-   */
-  200: Me;
-};
-
-export type OidcCallbackResponse =
-  OidcCallbackResponses[keyof OidcCallbackResponses];
 
 export type ListSocialProvidersData = {
   body?: never;

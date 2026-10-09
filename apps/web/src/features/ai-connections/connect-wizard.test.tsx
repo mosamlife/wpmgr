@@ -1743,6 +1743,20 @@ describe("choosing what a token may do (step 4, token path only)", () => {
     expect(
       screen.getByText(/your client opens a separate approval screen/i),
     ).toBeInTheDocument();
+    // That screen asks for the cache-clear row AND the site-tools rows, so the
+    // sentence names both, not only the cache clear.
+    expect(
+      screen.getByText(
+        /which asks for the reads and, if the app asks for them, the cache-clear row and the site-tools rows again/i,
+      ),
+    ).toBeInTheDocument();
+    // The step's hint describes both asks the same way, and says that a person
+    // approves each request.
+    expect(
+      screen.getByText(
+        "Reads below never change anything. A connection can also ask to clear the site cache and ask to make changes through the site's tools. Each only ever asks: nothing runs until a person approves that request.",
+      ),
+    ).toBeInTheDocument();
     // And the retired claims are gone rather than merely unasserted, so they
     // cannot come back under a passing suite the way one just did.
     expect(screen.queryByText(/no channel for it yet/i)).toBeNull();
@@ -1781,10 +1795,14 @@ describe("choosing what a token may do (step 4, token path only)", () => {
     ).toBeInTheDocument();
   });
 
-  it("states the negative space once: nothing here can change WordPress content or configuration", async () => {
+  it("states the negative space once: none of the read rows can change WordPress content or configuration", async () => {
+    // Said of the rows above the line only. The wizard's ask boxes sit below
+    // them and can ask for a change, so the sentence must not claim more.
     await reachCapabilityStep();
     expect(
-      screen.getByText(/no capability on this screen can change wordpress content or configuration/i),
+      screen.getByText(
+        "Every row above this line is read-only. None of them can change WordPress content or configuration, whichever ones you pick.",
+      ),
     ).toBeInTheDocument();
   });
 
@@ -2342,16 +2360,84 @@ describe("a preset is a shortcut, not a mode", () => {
     expect(sent).not.toContain("mcp.cache.purge");
   });
 
-  it("never ticks the write row from a preset, even when a preset is pressed after it was ticked by hand", async () => {
-    // A preset button only ever SETS the checkbox list; it must not be able to
-    // leave a previously-hand-ticked write row sitting on afterwards.
-    await reachCapabilityStep();
+  // OWNER RULING 2026-10-09: A PRESET CHANGES ONLY THE READ ROWS. A press never
+  // ticks the cache-clear row or either site-tools row, and never clears one the
+  // operator ticked: those boxes are exactly as they were.
+  it("leaves the write row exactly as it was when a preset is pressed after it was ticked by hand, and the mint carries it", async () => {
+    loadedFleet(3);
+    let capturedBody: unknown = null;
+    stubMintFetch((init) => {
+      capturedBody = typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : null;
+      return jsonResponse(MINTED, 201);
+    });
+
+    renderWizard();
+    await advanceToCapabilityStep(chooseAllSites);
     const writeBox = screen.getByTestId("cache-purge-capability-box");
     fireEvent.click(within(writeBox).getByRole("checkbox"));
     expect(within(writeBox).getByRole("checkbox")).toBeChecked();
 
     fireEvent.click(screen.getByTestId("preset-read-everything"));
-    expect(within(writeBox).getByRole("checkbox")).not.toBeChecked();
+    expect(within(writeBox).getByRole("checkbox")).toBeChecked();
+    expect(claimed()).toBe("read-everything");
+
+    fireEvent.click(await forwardToMintButtonFromCapabilities());
+    await screen.findByText(/this is the only time this token is shown/i);
+    const sent = (capturedBody as Record<string, unknown>).capabilities as string[];
+    expect([...sent].sort()).toEqual([...CONFERRABLE_READS, "mcp.cache.purge"].sort());
+  });
+
+  it("leaves both site-tools boxes exactly as they were when a preset is pressed, and the mint carries them", async () => {
+    loadedFleet(3);
+    let capturedBody: unknown = null;
+    stubMintFetch((init) => {
+      capturedBody = typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : null;
+      return jsonResponse(MINTED, 201);
+    });
+
+    renderWizard();
+    await advanceToCapabilityStep(chooseAllSites);
+    const read = () => screen.getByTestId<HTMLInputElement>("ability-box-mcp.ability.read");
+    const request = () => screen.getByTestId<HTMLInputElement>("ability-box-mcp.ability.request");
+    // Ticking "ask for changes" ticks "see what the site can do" with it.
+    fireEvent.click(request());
+    expect(read().checked).toBe(true);
+    expect(request().checked).toBe(true);
+    // The read rows are still Sites alone, so the chip is still on the basics:
+    // it is judged from the read rows, and these boxes are not read rows.
+    expect(claimed()).toBe("basics");
+
+    fireEvent.click(screen.getByTestId("preset-read-everything"));
+    expect(claimed()).toBe("read-everything");
+    expect(read().checked).toBe(true);
+    expect(request().checked).toBe(true);
+
+    fireEvent.click(screen.getByTestId("preset-basics"));
+    expect(claimed()).toBe("basics");
+    expect(read().checked).toBe(true);
+    expect(request().checked).toBe(true);
+
+    fireEvent.click(screen.getByTestId("preset-read-everything"));
+    fireEvent.click(await forwardToMintButtonFromCapabilities());
+    await screen.findByText(/this is the only time this token is shown/i);
+    const sent = (capturedBody as Record<string, unknown>).capabilities as string[];
+    expect([...sent].sort()).toEqual(
+      [...CONFERRABLE_READS, "mcp.ability.read", "mcp.ability.request"].sort(),
+    );
+  });
+
+  it("does not tick a site-tools box or the write row from a preset when they were clear", async () => {
+    await reachCapabilityStep();
+    fireEvent.click(screen.getByTestId("preset-read-everything"));
+    fireEvent.click(screen.getByTestId("preset-basics"));
+    fireEvent.click(screen.getByTestId("preset-read-everything"));
+    expect(screen.getByTestId<HTMLInputElement>("ability-box-mcp.ability.read").checked).toBe(false);
+    expect(
+      screen.getByTestId<HTMLInputElement>("ability-box-mcp.ability.request").checked,
+    ).toBe(false);
+    expect(
+      within(screen.getByTestId("cache-purge-capability-box")).getByRole("checkbox"),
+    ).not.toBeChecked();
   });
 });
 
@@ -2387,6 +2473,63 @@ describe("the site-tools boxes in the capability step", () => {
 
     const sent = (capturedBody as Record<string, unknown>).capabilities as string[];
     expect([...sent].sort()).toEqual(["mcp.ability.read", "mcp.sites.read"]);
+  });
+
+  it("ticking ask for changes alone also ticks see what the site can do, and the mint sends both", async () => {
+    // "Ask for changes" needs "see what the site can do": a connection holding
+    // the request alone cannot call the tool that carries one.
+    loadedFleet(3);
+    let capturedBody: unknown = null;
+    stubMintFetch((init) => {
+      capturedBody = typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : null;
+      return jsonResponse(MINTED, 201);
+    });
+
+    renderWizard();
+    await advanceToCapabilityStep(chooseAllSites);
+    const read = () => screen.getByTestId<HTMLInputElement>("ability-box-mcp.ability.read");
+    const request = () => screen.getByTestId<HTMLInputElement>("ability-box-mcp.ability.request");
+    expect(read().checked).toBe(false);
+    expect(request().checked).toBe(false);
+
+    fireEvent.click(request());
+    expect(request().checked).toBe(true);
+    expect(read().checked).toBe(true);
+
+    fireEvent.click(await forwardToMintButtonFromCapabilities());
+    await screen.findByText(/this is the only time this token is shown/i);
+    const sent = (capturedBody as Record<string, unknown>).capabilities as string[];
+    expect([...sent].sort()).toEqual([
+      "mcp.ability.read",
+      "mcp.ability.request",
+      "mcp.sites.read",
+    ]);
+  });
+
+  it("clearing see what the site can do clears ask for changes too, and the mint sends neither", async () => {
+    loadedFleet(3);
+    let capturedBody: unknown = null;
+    stubMintFetch((init) => {
+      capturedBody = typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : null;
+      return jsonResponse(MINTED, 201);
+    });
+
+    renderWizard();
+    await advanceToCapabilityStep(chooseAllSites);
+    const read = () => screen.getByTestId<HTMLInputElement>("ability-box-mcp.ability.read");
+    const request = () => screen.getByTestId<HTMLInputElement>("ability-box-mcp.ability.request");
+
+    fireEvent.click(request());
+    expect(read().checked).toBe(true);
+    expect(request().checked).toBe(true);
+    fireEvent.click(read());
+    expect(read().checked).toBe(false);
+    expect(request().checked).toBe(false);
+
+    fireEvent.click(await forwardToMintButtonFromCapabilities());
+    await screen.findByText(/this is the only time this token is shown/i);
+    const sent = (capturedBody as Record<string, unknown>).capabilities as string[];
+    expect([...sent].sort()).toEqual(["mcp.sites.read"]);
   });
 });
 
@@ -3674,5 +3817,29 @@ describe("the closing sentence says what is true of the path that reached it", (
     const terminus = screen.getByTestId("wizard-terminus");
     expect(terminus).toHaveTextContent(/the connection exists and can be revoked/i);
     expect(terminus).not.toHaveTextContent(/no connection exists yet/i);
+  });
+});
+
+// BOTH ASKS ARE DESCRIBED THE SAME WAY wherever the wizard says what the approval
+// screen will show. The hand-off for a browser sign-in names the cache-clear row
+// and the site-tools rows, and only "if the app asks for them", because the
+// approval screen shows a box only for a scope the app asked for.
+describe("the browser sign-in hand-off names both asks", () => {
+  it("says the approval screen has the same reads and, if the app asks for them, the cache-clear and site-tools rows", async () => {
+    loadedFleet(3);
+    renderWizard();
+    await leaveContractStep();
+    await reachSetupStep("Cursor", "oauth");
+    goNext();
+
+    expect(await screen.findByText("What to expect on that page")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        /It has its own permissions section, with the same reads and, if the app asks for them, the cache-clear row and the site-tools rows you saw at step 4\./,
+      ),
+    ).toBeInTheDocument();
+    // The old line promised "the one cache-clear row", which left the site
+    // tools out and said there was only one.
+    expect(screen.queryByText(/the one cache-clear row/i)).toBeNull();
   });
 });

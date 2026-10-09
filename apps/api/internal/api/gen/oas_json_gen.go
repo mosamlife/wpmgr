@@ -5527,9 +5527,15 @@ func (s *AbilityRequest) encodeFields(e *jx.Encoder) {
 			s.AskReason.Encode(e)
 		}
 	}
+	{
+		if s.PageBuilder.Set {
+			e.FieldStart("page_builder")
+			s.PageBuilder.Encode(e)
+		}
+	}
 }
 
-var jsonFieldsNameOfAbilityRequest = [38]string{
+var jsonFieldsNameOfAbilityRequest = [39]string{
 	0:  "id",
 	1:  "site_id",
 	2:  "ability_name",
@@ -5568,6 +5574,7 @@ var jsonFieldsNameOfAbilityRequest = [38]string{
 	35: "change_class",
 	36: "change_kind_name",
 	37: "ask_reason",
+	38: "page_builder",
 }
 
 // Decode decodes AbilityRequest from json.
@@ -5986,6 +5993,16 @@ func (s *AbilityRequest) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"ask_reason\"")
+			}
+		case "page_builder":
+			if err := func() error {
+				s.PageBuilder.Reset()
+				if err := s.PageBuilder.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"page_builder\"")
 			}
 		default:
 			return d.Skip()
@@ -7424,6 +7441,153 @@ func (s *AbilityRequestOrgList) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *AbilityRequestOrgList) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *AbilityRequestPageBuilder) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *AbilityRequestPageBuilder) encodeFields(e *jx.Encoder) {
+	{
+		e.FieldStart("builder")
+		e.Str(s.Builder)
+	}
+	{
+		e.FieldStart("format")
+		e.Str(s.Format)
+	}
+	{
+		e.FieldStart("version")
+		e.Str(s.Version)
+	}
+	{
+		e.FieldStart("layout")
+		e.Str(s.Layout)
+	}
+}
+
+var jsonFieldsNameOfAbilityRequestPageBuilder = [4]string{
+	0: "builder",
+	1: "format",
+	2: "version",
+	3: "layout",
+}
+
+// Decode decodes AbilityRequestPageBuilder from json.
+func (s *AbilityRequestPageBuilder) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AbilityRequestPageBuilder to nil")
+	}
+	var requiredBitSet [1]uint8
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "builder":
+			requiredBitSet[0] |= 1 << 0
+			if err := func() error {
+				v, err := d.Str()
+				s.Builder = string(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"builder\"")
+			}
+		case "format":
+			requiredBitSet[0] |= 1 << 1
+			if err := func() error {
+				v, err := d.Str()
+				s.Format = string(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"format\"")
+			}
+		case "version":
+			requiredBitSet[0] |= 1 << 2
+			if err := func() error {
+				v, err := d.Str()
+				s.Version = string(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"version\"")
+			}
+		case "layout":
+			requiredBitSet[0] |= 1 << 3
+			if err := func() error {
+				v, err := d.Str()
+				s.Layout = string(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"layout\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode AbilityRequestPageBuilder")
+	}
+	// Validate required fields.
+	var failures []validate.FieldError
+	for i, mask := range [1]uint8{
+		0b00001111,
+	} {
+		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
+			// Mask only required fields and check equality to mask using XOR.
+			//
+			// If XOR result is not zero, result is not equal to expected, so some fields are missed.
+			// Bits of fields which would be set are actually bits of missed fields.
+			missed := bits.OnesCount8(result)
+			for bitN := 0; bitN < missed; bitN++ {
+				bitIdx := bits.TrailingZeros8(result)
+				fieldIdx := i*8 + bitIdx
+				var name string
+				if fieldIdx < len(jsonFieldsNameOfAbilityRequestPageBuilder) {
+					name = jsonFieldsNameOfAbilityRequestPageBuilder[fieldIdx]
+				} else {
+					name = strconv.Itoa(fieldIdx)
+				}
+				failures = append(failures, validate.FieldError{
+					Name:  name,
+					Error: validate.ErrFieldRequired,
+				})
+				// Reset bit.
+				result &^= 1 << bitIdx
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *AbilityRequestPageBuilder) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AbilityRequestPageBuilder) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -97648,6 +97812,55 @@ func (s OptNilAbilityRequestCardFacts) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *OptNilAbilityRequestCardFacts) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AbilityRequestPageBuilder as json.
+func (o OptNilAbilityRequestPageBuilder) Encode(e *jx.Encoder) {
+	if !o.Set {
+		return
+	}
+	if o.Null {
+		e.Null()
+		return
+	}
+	o.Value.Encode(e)
+}
+
+// Decode decodes AbilityRequestPageBuilder from json.
+func (o *OptNilAbilityRequestPageBuilder) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode OptNilAbilityRequestPageBuilder to nil")
+	}
+	if d.Next() == jx.Null {
+		if err := d.Null(); err != nil {
+			return err
+		}
+
+		var v AbilityRequestPageBuilder
+		o.Value = v
+		o.Set = true
+		o.Null = true
+		return nil
+	}
+	o.Set = true
+	o.Null = false
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s OptNilAbilityRequestPageBuilder) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *OptNilAbilityRequestPageBuilder) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }

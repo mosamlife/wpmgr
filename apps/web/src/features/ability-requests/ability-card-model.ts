@@ -6,6 +6,8 @@ import {
   settingNotSentLine,
 } from "@/features/ai-trust/ai-trust-copy";
 
+import { ELEMENTOR_EDITOR, type PageBuilderFacts } from "./outline-model";
+
 // Pure logic for the AI page-creation approval card (engine slice E2). Every
 // string the AI or the site supplied (title, outline text, site and connection
 // names) is carried to the caller as plain data and rendered as a text node;
@@ -16,15 +18,63 @@ export function isPostRequest(r: AbilityRequest): boolean {
   return r.post_type === "post";
 }
 
-/** "Create a draft page · Shop". Site name is the site's own label, rendered as text. */
+/** A page Elementor builds: the editor the request recorded is builder:elementor. */
+export function isElementorRequest(r: AbilityRequest): boolean {
+  return r.editor === ELEMENTOR_EDITOR;
+}
+
+/**
+ * "Create a draft page · Shop", or "Create a draft page in Elementor · Shop".
+ * Site name is the site's own label, rendered as text.
+ */
 export function abilityCardTitle(r: AbilityRequest): string {
-  return `Create a draft ${isPostRequest(r) ? "post" : "page"} · ${r.site_label}`;
+  const noun = isPostRequest(r) ? "post" : "page";
+  return `Create a draft ${noun}${isElementorRequest(r) ? " in Elementor" : ""} · ${r.site_label}`;
 }
 
 export function editorName(editor: string | null | undefined): string {
   if (editor === "wordpress_blocks") return "WordPress block editor";
   if (editor === "wordpress_classic") return "Classic editor";
+  if (editor === ELEMENTOR_EDITOR) return "Elementor";
   return "Editor not recorded";
+}
+
+/** "Elementor 3.35.9 · classic widgets, containers", or "Elementor 4.3.4 · Atomic editor". The version is the site's. */
+export function elementorEditorLine(b: PageBuilderFacts): string {
+  const how = b.format === "atomic" ? "Atomic editor" : `classic widgets, ${b.layout}`;
+  return `Elementor ${b.version} · ${how}`;
+}
+
+export interface CardRow {
+  readonly label: string;
+  readonly lines: readonly string[];
+}
+
+/**
+ * The rows under the outline of a page Elementor builds. The first names what
+ * Elementor builds the page from, so a page laid out in sections says so.
+ */
+export function elementorCardRows(b: PageBuilderFacts): readonly CardRow[] {
+  const parts =
+    b.format === "classic" && b.layout === "sections" ? "sections, columns and widgets" : "containers and widgets";
+  return [
+    {
+      label: "Elementor",
+      lines: [
+        `Built from Elementor's own ${parts}, styled by this site's Elementor settings.`,
+        "WPMgr does not change Elementor's site-wide styles, templates, header or footer.",
+      ],
+    },
+    {
+      label: "Checks",
+      lines: [
+        "WPMgr checks afterwards that Elementor saved exactly this layout and that nothing outside the page changed. If not, it moves the draft to the trash.",
+      ],
+    },
+    { label: "Also happens", lines: ["Elementor rebuilds this page's style file the first time it is viewed."] },
+    { label: "Effect", lines: ["Draft only. Nobody sees it until a person publishes it."] },
+    { label: "Undo", lines: ["Undo moves the draft to the trash."] },
+  ];
 }
 
 export const NOTHING_PUBLISHED = "Nothing is published. Undo moves the draft to the trash.";
@@ -255,7 +305,12 @@ function baseAbilityStatus(r: AbilityRequest): AbilityStatus {
       return { kind: "unknown_outcome", text: "WPMgr is checking whether the draft was created." };
     }
     case "done": {
-      return undoStatus(r, true) ?? { kind: "done", text: "Draft created." };
+      return (
+        undoStatus(r, true) ?? {
+          kind: "done",
+          text: isElementorRequest(r) ? "Draft created in Elementor." : "Draft created.",
+        }
+      );
     }
     case "failed": {
       const undone = undoStatus(r, false);
@@ -321,6 +376,37 @@ function baseAbilityStatus(r: AbilityRequest): AbilityStatus {
   }
 }
 
+// Links to a post on the site are built from the site's own address and an
+// integer id only, never from the AI's or the site's words.
+
+/** The site's address as a base for its links, or null unless it is a plain http(s) URL. */
+function siteBase(siteUrl: string | null | undefined): URL | null {
+  if (!siteUrl) return null;
+  try {
+    const base = new URL(siteUrl.endsWith("/") ? siteUrl : `${siteUrl}/`);
+    return base.protocol === "https:" || base.protocol === "http:" ? base : null;
+  } catch {
+    return null;
+  }
+}
+
+function isPostId(postId: number | null | undefined): postId is number {
+  return postId != null && Number.isInteger(postId) && postId >= 1;
+}
+
+function adminPostHref(
+  siteUrl: string | null | undefined,
+  postId: number | null | undefined,
+  action: "edit" | "elementor",
+): string | null {
+  const base = siteBase(siteUrl);
+  if (base === null || !isPostId(postId)) return null;
+  const u = new URL("wp-admin/post.php", base);
+  u.searchParams.set("post", String(postId));
+  u.searchParams.set("action", action);
+  return u.toString();
+}
+
 /**
  * Link to edit the created draft in WordPress. Null unless the site URL is a
  * plain http(s) URL and the id is a positive integer.
@@ -329,17 +415,53 @@ export function editDraftHref(
   siteUrl: string | null | undefined,
   postId: number | null | undefined,
 ): string | null {
-  if (!siteUrl || postId == null || !Number.isInteger(postId) || postId < 1) return null;
-  try {
-    const base = new URL(siteUrl.endsWith("/") ? siteUrl : `${siteUrl}/`);
-    if (base.protocol !== "https:" && base.protocol !== "http:") return null;
-    const u = new URL("wp-admin/post.php", base);
-    u.searchParams.set("post", String(postId));
-    u.searchParams.set("action", "edit");
-    return u.toString();
-  } catch {
-    return null;
-  }
+  return adminPostHref(siteUrl, postId, "edit");
+}
+
+/** "Open in Elementor": {site}/wp-admin/post.php?post={id}&action=elementor, or null as editDraftHref. */
+export function elementorEditHref(
+  siteUrl: string | null | undefined,
+  postId: number | null | undefined,
+): string | null {
+  return adminPostHref(siteUrl, postId, "elementor");
+}
+
+/** "Preview": {site}/?page_id={id}&preview=true, or ?p={id} for a post; null as editDraftHref. */
+export function draftPreviewHref(
+  siteUrl: string | null | undefined,
+  postId: number | null | undefined,
+  isPost: boolean,
+): string | null {
+  const base = siteBase(siteUrl);
+  if (base === null || !isPostId(postId)) return null;
+  const u = new URL("./", base);
+  u.searchParams.set(isPost ? "p" : "page_id", String(postId));
+  u.searchParams.set("preview", "true");
+  return u.toString();
+}
+
+export interface DraftLink {
+  readonly label: string;
+  readonly href: string;
+}
+
+/**
+ * The links under a request's status: "Open in Elementor" and "Preview" once
+ * a page Elementor builds is created, otherwise "Edit the draft in WordPress"
+ * while a draft may exist. Empty without the site's address or a post id.
+ */
+export function draftLinks(r: AbilityRequest, status: AbilityStatus, siteUrl: string | null | undefined): DraftLink[] {
+  const id = r.created_post_id;
+  const links: Array<{ label: string; href: string | null }> =
+    status.kind === "done" && isElementorRequest(r)
+      ? [
+          { label: "Open in Elementor", href: elementorEditHref(siteUrl, id) },
+          { label: "Preview", href: draftPreviewHref(siteUrl, id, isPostRequest(r)) },
+        ]
+      : status.kind === "done" || status.draftMayExist === true
+        ? [{ label: "Edit the draft in WordPress", href: editDraftHref(siteUrl, id) }]
+        : [];
+  return links.flatMap((l) => (l.href === null ? [] : [{ label: l.label, href: l.href }]));
 }
 
 export function isPending(r: AbilityRequest): boolean {

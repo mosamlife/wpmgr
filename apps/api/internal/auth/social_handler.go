@@ -196,27 +196,27 @@ func (h *Handler) socialCallback(c *gin.Context) {
 	h.socialComplete(c, res, returnTo)
 }
 
-// socialComplete is the ending every successful social sign-in shares: the 2FA
-// gate, then the landing page.
+// socialComplete is the ending every successful provider sign-in shares, the
+// consumer providers' and the generic OIDC issuer's alike: the 2FA gate, then
+// the landing page.
 //
 // Split out of socialCallback so the landing page can be driven by a test.
 // Everything above it needs a live provider and a database behind
 // SignInWithSocial, so the one line that a deep link changes was the one line
 // no test could reach; see social_redirect_test.go.
 //
-// The 2FA invariant is the OIDC callback's: an enrolled second factor must not
-// be skipped just because the first factor came from a provider.
-// issueProviderSessionOrChallenge writes the challenge redirect itself when
-// needed, and the shared helper underneath it owns the challenge URL, so a
-// second factor still lands on /sites after the challenge rather than on the
-// deep link.
+// An enrolled second factor must not be skipped just because the first factor
+// came from a provider. issueProviderSessionOrChallenge writes the challenge
+// redirect itself when needed, and it carries returnTo to the challenge page,
+// so a person with a second factor lands on the same deep link as a person
+// without one, just after answering it.
 //
 // It has to be the PROVIDER variant, not the bare issueSessionOrChallenge: that
 // wrapper is the only place an approved-but-unwritten identity link is parked
 // across the second factor and then written. Calling the plain helper here
 // would keep the redirect behaviour and silently stop linking altogether.
 func (h *Handler) socialComplete(c *gin.Context, res LoginResult, returnTo string) {
-	if !h.issueProviderSessionOrChallenge(c, res) {
+	if !h.issueProviderSessionOrChallenge(c, res, returnTo) {
 		return
 	}
 	c.Redirect(http.StatusFound, strings.TrimRight(h.svc.baseURL, "/")+socialLandingPath(returnTo))
@@ -260,6 +260,11 @@ func constantTimeEqual(a, b string) bool {
 //     another origin, which is exactly what they do not look like.
 //   - url.Parse then has to agree there is no scheme and no host, which also
 //     rejects control characters and other malformed input.
+//   - The decoded path is held to the same rule as the raw one, so "/%2F" and
+//     "/%5C" are refused like "//" and "/\". The value is handed to the SPA as
+//     a query parameter (the challenge page, the sign-in page), and one decode
+//     too many anywhere downstream must not turn it into another origin. No
+//     page in the app has a path that starts with either.
 func safeReturnPath(raw string) string {
 	const maxReturnPath = 512
 	if raw == "" || len(raw) > maxReturnPath {
@@ -273,6 +278,9 @@ func safeReturnPath(raw string) string {
 	}
 	u, err := url.Parse(raw)
 	if err != nil || u.Scheme != "" || u.Host != "" {
+		return ""
+	}
+	if strings.HasPrefix(u.Path, "//") || strings.HasPrefix(u.Path, `/\`) {
 		return ""
 	}
 	// u.String() re-encodes, so whatever reaches the Location header is a
@@ -292,9 +300,14 @@ func safeReturnPath(raw string) string {
 // both reach the same policy, and a callback that forgot to write the link
 // would silently never link that provider at all.
 //
+// returnTo is the path the sign-in started from. It goes to the challenge page
+// when a second factor is owed, so it outlives the challenge; it is re-validated
+// there (twoFactorChallengeURL), as it is on every other way out of a provider
+// callback.
+//
 // Returns false when the caller must write nothing further, exactly like
 // issueSessionOrChallenge.
-func (h *Handler) issueProviderSessionOrChallenge(c *gin.Context, res LoginResult) bool {
+func (h *Handler) issueProviderSessionOrChallenge(c *gin.Context, res LoginResult, returnTo string) bool {
 	// Parked from inside the challenge hook, which is the only moment that works
 	// for both halves of the binding: the challenge id does not exist any earlier,
 	// and the session save rides the response write, so any later is too late.
@@ -309,7 +322,7 @@ func (h *Handler) issueProviderSessionOrChallenge(c *gin.Context, res LoginResul
 		}
 		h.sessions.putPendingSocialLink(c.Request.Context(), res.User.ID, challengeID, *res.PendingSocialLink)
 	}
-	if !h.issueSessionOrChallengeThen(c, res, h.svc.baseURL, park) {
+	if !h.issueSessionOrChallengeThen(c, res, h.svc.baseURL, returnTo, park) {
 		return false
 	}
 	// A session exists, so the login is complete and the link can be written.

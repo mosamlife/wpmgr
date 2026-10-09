@@ -1288,6 +1288,16 @@ type OidcCallbackParams struct {
 	State OptString `json:",omitempty,omitzero"`
 }
 
+// OidcLoginParams is parameters of oidcLogin operation.
+type OidcLoginParams struct {
+	// Where to land after a successful sign-in, including one that first answers a second factor, so a
+	// shared deep link survives the identity provider round trip. Must be a path on this origin; anything
+	// else (absolute, protocol-relative, or an encoded form of either) is discarded and the sign-in lands
+	// on the default page. The value is kept with the handshake in the session and is never handed to the
+	// identity provider or read back off the callback URL.
+	Redirect OptString `json:",omitempty,omitzero"`
+}
+
 // OptimizeMediaParams is parameters of optimizeMedia operation.
 type OptimizeMediaParams struct {
 	SiteId uuid.UUID

@@ -573,6 +573,7 @@ export type {
   // AI site-change requests. AbilityRequest and AbilityRequestList are
   // exported below with the nullable-field patch.
   AbilityRequestApproveBody,
+  AbilityRequestPageBuilder,
   AbilityRequestPageMedia,
   ContentEditingState,
   ListSiteAbilityRequestsData,
@@ -1132,6 +1133,9 @@ type PatchedAbilityRequestFields = {
   // page_media is a nil slice without omitempty in RequestDTO, so the wire
   // carries null for every row that places no image.
   page_media?: GeneratedAbilityRequest["page_media"] | null;
+  // page_builder is a nil pointer without omitempty in RequestDTO, so the wire
+  // carries null for a page in a WordPress editor and every other ability.
+  page_builder?: GeneratedAbilityRequest["page_builder"] | null;
 };
 
 export type AbilityRequest = Omit<GeneratedAbilityRequest, keyof PatchedAbilityRequestFields> &

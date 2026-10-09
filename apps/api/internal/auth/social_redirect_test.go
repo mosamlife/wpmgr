@@ -19,6 +19,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -26,8 +27,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+
+	"github.com/mosamlife/wpmgr/apps/api/internal/config"
 )
 
 // fakeSocialAdapter stands in for Google/GitHub so socialStart can be driven
@@ -123,6 +127,17 @@ func TestSafeReturnPathAcceptsOnlySameOriginPaths(t *testing.T) {
 		{"scheme only", "javascript:alert(1)", ""},
 		{"control character", "/sites\n/evil", ""},
 		{"absurdly long", "/" + string(make([]byte, 600)), ""},
+		// Encoded forms of the two protocol-relative prefixes. Each decodes to
+		// "//host" or "/\host", which is what a downstream decode would hand a
+		// browser.
+		{"encoded protocol relative", "/%2F%2Fevil.example/steal", ""},
+		{"encoded slash after the leading slash", "/%2Fevil.example/steal", ""},
+		{"lowercase encoded slash", "/%2fevil.example/steal", ""},
+		{"encoded backslash", "/%5Cevil.example/steal", ""},
+		{"encoded scheme", "https%3A%2F%2Fevil.example/steal", ""},
+		// And what the check must NOT catch: an encoded slash further along a
+		// real path is an ordinary path segment on this origin.
+		{"encoded slash deeper in a real path", "/sites/a%2Fb", "/sites/a%2Fb"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -336,6 +351,244 @@ func TestSocialCompleteLandsOnTheDeepLink(t *testing.T) {
 			// session behind it would bounce straight back to /login.
 			if _, _, ok := sm.Current(c.Request.Context()); !ok {
 				t.Fatal("no session was established before the redirect")
+			}
+		})
+	}
+}
+
+// aiConsentDeepLink is the address a browser is sent to by an AI client's
+// sign-in: the page that has to be reached for the client to get its answer.
+const aiConsentDeepLink = "/connect/ai?response_type=code&client_id=c1&code_challenge=abc&state=a~b"
+
+// offSiteReturnPaths are return paths that must never come out of a sign-in as
+// a place to go: absolute, protocol-relative with either slash, and the encoded
+// forms of each.
+var offSiteReturnPaths = []string{
+	"https://evil.example/steal",
+	"//evil.example/steal",
+	`/\evil.example/steal`,
+	"/%2F%2Fevil.example/steal",
+	"/%2Fevil.example/steal",
+	"/%2fevil.example/steal",
+	"/%5Cevil.example/steal",
+	"%2F%2Fevil.example/steal",
+	"https%3A%2F%2Fevil.example/steal",
+	"javascript:alert(1)",
+}
+
+// newSessionContext builds a gin context for GET target with a primed SCS
+// session, matching what LoadAndSave provides in production.
+func newSessionContext(t *testing.T, sm *SessionManager, target string) (*gin.Context, *httptest.ResponseRecorder) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, target, nil)
+	ctx, err := sm.SCS().Load(req.Context(), "")
+	if err != nil {
+		t.Fatalf("load session context: %v", err)
+	}
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req.WithContext(ctx)
+	return c, w
+}
+
+// fixedChallenge stands in for the challenge row the 2FA gate creates, which
+// is the gate's only database write. Everything around it, the choice between
+// a session and a challenge, the parked link and the redirect, is the real code.
+func fixedChallenge(id uuid.UUID) func(context.Context, uuid.UUID, *netip.Addr) (TwoFactorChallengeResult, error) {
+	return func(context.Context, uuid.UUID, *netip.Addr) (TwoFactorChallengeResult, error) {
+		return TwoFactorChallengeResult{
+			ChallengeID: id,
+			Factors:     AvailableFactors{TOTP: true, WebAuthnCount: 1},
+		}, nil
+	}
+}
+
+// challengeRedirect parses the Location a 2FA-enrolled provider sign-in wrote
+// and checks it is the challenge page on this origin, with the challenge.
+func challengeRedirect(t *testing.T, w *httptest.ResponseRecorder, challengeID uuid.UUID) url.Values {
+	t.Helper()
+	if w.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302 to the challenge page (body %q)", w.Code, w.Body.String())
+	}
+	loc, err := url.Parse(w.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("parse Location: %v", err)
+	}
+	if loc.Scheme != "https" || loc.Host != "manage.example" || loc.Path != "/2fa-challenge" {
+		t.Fatalf("Location = %q, want https://manage.example/2fa-challenge", loc)
+	}
+	q := loc.Query()
+	for k, want := range map[string]string{
+		"challenge":       challengeID.String(),
+		"totp":            "true",
+		"webauthn":        "true",
+		"recovery_factor": "true",
+	} {
+		if got := q.Get(k); got != want {
+			t.Fatalf("%s = %q, want %q (Location %q)", k, got, want, loc)
+		}
+	}
+	return q
+}
+
+// TestSocialCompleteWithSecondFactorCarriesDeepLink is the regression test for
+// #851. A provider sign-in by someone with a second factor goes to the challenge
+// page, and the challenge page must be told where the sign-in was heading, or
+// answering the factor lands on the default page and an AI client that sent the
+// person to its consent screen never gets its answer.
+func TestSocialCompleteWithSecondFactorCarriesDeepLink(t *testing.T) {
+	sm := newTestSessionManager(t)
+	challengeID := uuid.New()
+	h := &Handler{
+		svc:             &Service{baseURL: "https://manage.example"},
+		sessions:        sm,
+		challengeIssuer: fixedChallenge(challengeID),
+	}
+
+	for _, returnTo := range []string{aiConsentDeepLink, "/sites/abc/backups"} {
+		t.Run(returnTo, func(t *testing.T) {
+			c, w := newSessionContext(t, sm, "/auth/social/google/callback")
+			h.socialComplete(c, LoginResult{
+				User: User{ID: uuid.New(), Status: "active", TwoFactorEnabled: true},
+			}, returnTo)
+
+			q := challengeRedirect(t, w, challengeID)
+			if got := q.Get("redirect"); got != returnTo {
+				t.Fatalf("redirect = %q, want the deep link %q", got, returnTo)
+			}
+			// B2: a challenge, not a session. Carrying the deep link must not
+			// change what the gate decides.
+			if _, _, ok := sm.Current(c.Request.Context()); ok {
+				t.Fatal("a session was issued before the second factor was proven")
+			}
+		})
+	}
+}
+
+// With no deep link the challenge page is given no redirect at all, and falls
+// back to its own default.
+func TestSocialCompleteWithSecondFactorAndNoDeepLink(t *testing.T) {
+	sm := newTestSessionManager(t)
+	challengeID := uuid.New()
+	h := &Handler{
+		svc:             &Service{baseURL: "https://manage.example"},
+		sessions:        sm,
+		challengeIssuer: fixedChallenge(challengeID),
+	}
+	c, w := newSessionContext(t, sm, "/auth/social/google/callback")
+	h.socialComplete(c, LoginResult{User: User{ID: uuid.New(), TwoFactorEnabled: true}}, "")
+
+	if q := challengeRedirect(t, w, challengeID); q.Has("redirect") {
+		t.Fatalf("redirect = %q, want none", q.Get("redirect"))
+	}
+}
+
+// The challenge address is a new way out of a sign-in, so it gets the same
+// rule as every other: nothing that is not a path on this origin, in any
+// encoding, may ride along as the place to go next.
+func TestSocialCompleteWithSecondFactorDropsOffSiteDeepLink(t *testing.T) {
+	sm := newTestSessionManager(t)
+	challengeID := uuid.New()
+	h := &Handler{
+		svc:             &Service{baseURL: "https://manage.example"},
+		sessions:        sm,
+		challengeIssuer: fixedChallenge(challengeID),
+	}
+
+	for _, returnTo := range offSiteReturnPaths {
+		t.Run(returnTo, func(t *testing.T) {
+			c, w := newSessionContext(t, sm, "/auth/social/google/callback")
+			h.socialComplete(c, LoginResult{User: User{ID: uuid.New(), TwoFactorEnabled: true}}, returnTo)
+
+			if q := challengeRedirect(t, w, challengeID); q.Has("redirect") {
+				t.Fatalf("redirect = %q, want an off-site return path dropped", q.Get("redirect"))
+			}
+		})
+	}
+}
+
+// The base URL is the operator's, and a trailing slash on it must not put a
+// second slash in front of the challenge path: "//2fa-challenge" is a path no
+// route matches.
+func TestTwoFactorChallengeURLJoinsTheBaseCleanly(t *testing.T) {
+	id := uuid.New()
+	for _, base := range []string{"https://manage.example", "https://manage.example/"} {
+		got := twoFactorChallengeURL(base, TwoFactorChallengeResult{ChallengeID: id}, "")
+		if !strings.HasPrefix(got, "https://manage.example/2fa-challenge?") {
+			t.Fatalf("twoFactorChallengeURL(%q) = %q", base, got)
+		}
+	}
+}
+
+// newTestOIDCHandler is a handler with a working generic OIDC issuer, served
+// from a local discovery document so oidcLogin can be driven without a network.
+func newTestOIDCHandler(t *testing.T, sm *SessionManager) *Handler {
+	t.Helper()
+	provider := newDiscoveredProvider(t)
+	disc, _, _ := newTestDiscovery(func(context.Context) (*oidc.Provider, error) { return provider, nil })
+	return &Handler{
+		svc:      &Service{baseURL: "https://manage.example"},
+		sessions: sm,
+		oidc: &OIDCProvider{
+			cfg: config.OIDCConfig{
+				Issuer: "https://issuer.test", ClientID: "wpmgr", ClientSecret: "secret",
+				RedirectURL: "https://manage.example/auth/oidc/callback",
+			},
+			disc: disc,
+		},
+	}
+}
+
+// TestOIDCLoginCarriesDeepLinkThroughTheSession is the SSO half of #851. The SSO
+// login used to read no ?redirect= at all, so an SSO sign-in lost the deep link
+// with or without a second factor. It is kept with the handshake, where the
+// callback reads it back, and is not handed to the identity provider.
+func TestOIDCLoginCarriesDeepLinkThroughTheSession(t *testing.T) {
+	sm := newTestSessionManager(t)
+	h := newTestOIDCHandler(t, sm)
+
+	c, w := newSessionContext(t, sm, "/auth/oidc/login?redirect="+url.QueryEscape(aiConsentDeepLink))
+	h.oidcLogin(c)
+
+	if w.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302 to the identity provider (body %q)", w.Code, w.Body.String())
+	}
+	loc, err := url.Parse(w.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("parse Location: %v", err)
+	}
+	if loc.Path != "/authorize" {
+		t.Fatalf("Location = %q, want the provider's authorization endpoint", loc)
+	}
+	if strings.Contains(loc.String(), "connect") {
+		t.Fatalf("the deep link reached the authorization URL: %q", loc)
+	}
+
+	state, _, _, returnTo := sm.takeOAuth(c.Request.Context())
+	if state == "" || state != loc.Query().Get("state") {
+		t.Fatalf("session state = %q, want the state sent to the provider (%q)", state, loc.Query().Get("state"))
+	}
+	if returnTo != aiConsentDeepLink {
+		t.Fatalf("session return path = %q, want the deep link %q", returnTo, aiConsentDeepLink)
+	}
+}
+
+// An off-site ?redirect= is discarded at the start of the SSO handshake, so it
+// never reaches anything the callback writes.
+func TestOIDCLoginDropsOffSiteDeepLink(t *testing.T) {
+	sm := newTestSessionManager(t)
+	h := newTestOIDCHandler(t, sm)
+
+	for _, raw := range offSiteReturnPaths {
+		t.Run(raw, func(t *testing.T) {
+			c, w := newSessionContext(t, sm, "/auth/oidc/login?redirect="+url.QueryEscape(raw))
+			h.oidcLogin(c)
+			if w.Code != http.StatusFound {
+				t.Fatalf("status = %d, want 302", w.Code)
+			}
+			if _, _, _, returnTo := sm.takeOAuth(c.Request.Context()); returnTo != "" {
+				t.Fatalf("session return path = %q, want an off-site value discarded", returnTo)
 			}
 		})
 	}

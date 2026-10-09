@@ -391,6 +391,19 @@ if (!function_exists('get_site_option')) {
     }
 }
 
+if (!function_exists('wp_using_ext_object_cache')) {
+    /**
+     * Whether a persistent object cache is in use — default stub: it is not.
+     *
+     * @param bool|null $using Unused.
+     * @return bool
+     */
+    function wp_using_ext_object_cache($using = null): bool
+    {
+        return false;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // WP conditional functions (conservative defaults)
 // ---------------------------------------------------------------------------

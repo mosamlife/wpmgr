@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from "react";
+import { Fragment, useEffect, useId, useState } from "react";
 import type { AbilityRequest } from "@wpmgr/api";
 
 import { Button } from "@/components/ui/button";
@@ -9,7 +9,7 @@ import { UNDO_WINDOW_OVER_LINE, ranAutomatically } from "@/features/ai-trust/ai-
 
 import { AutoApprovalRows, RanAutomaticallyChip, WaitingBecauseRow } from "./auto-approval";
 import { LayoutPreview } from "./layout-preview";
-import { layoutSummary, parsePagePreview } from "./outline-model";
+import { layoutSummary, parsePageBuilder, parsePagePreview } from "./outline-model";
 import { isRestWrite } from "./rest-card-model";
 import { StructuredAbilityCard } from "./structured-card";
 import {
@@ -18,17 +18,21 @@ import {
   abilityCardTitle,
   abilityStatus,
   clockTime,
-  editDraftHref,
+  draftLinks,
   editorName,
+  elementorCardRows,
+  elementorEditorLine,
+  isElementorRequest,
   isPending,
   undoWindowOver,
 } from "./ability-card-model";
 
 // The approval card for "AI creates a draft page" (engine slice E2, widened to
-// page layouts). The AI's words (title, outline) sit in a "Chosen by the AI"
-// slot and the site's words (site name, address, image file names) in "From the
-// site". All of it is rendered as React text nodes: no innerHTML, no markup
-// from a model string, no href built from one.
+// page layouts and to pages Elementor builds). The AI's words (title, outline)
+// sit in a "Chosen by the AI" slot and the site's words (site name, address,
+// image file names, the Elementor version) in "From the site". All of it is
+// rendered as React text nodes: no innerHTML, no markup from a model string, no
+// href built from one.
 
 export interface AbilityRequestCardProps {
   request: AbilityRequest;
@@ -79,14 +83,18 @@ function PageCreateCard({
   const { articleRef, declineRef } = useDeepLinkFocus(deepLinked, pending);
   const status = abilityStatus(request);
   const auto = ranAutomatically(request.approval);
-  // Null unless every node and every image fact can be shown in full; a null
+  const elementor = isElementorRequest(request);
+  // Null unless every node, every image fact and the page's builder can be
+  // shown in full, and the builder is the editor the request recorded; a null
   // preview also keeps Approve off.
-  const preview = parsePagePreview(request.input_json, request.page_media);
+  const parsed = parsePagePreview(request.input_json, request.page_media, request.page_builder);
+  const preview = parsed !== null && (parsed.builder !== null) === elementor ? parsed : null;
+  const builder = elementor ? parsePageBuilder(request.page_builder) : null;
   const layout = preview ? layoutSummary(preview.outline) : null;
   const outlineLabelId = useId();
   const setUpFor = setUpForLine(request);
   const busy = approvePending || declinePending;
-  const editHref = status.kind === "done" || status.draftMayExist === true ? editDraftHref(siteUrl, request.created_post_id) : null;
+  const links = draftLinks(request, status, siteUrl);
   const title = abilityCardTitle(request);
 
   return (
@@ -113,7 +121,19 @@ function PageCreateCard({
 
       <dl className="grid grid-cols-[minmax(7rem,auto)_1fr] gap-x-4 gap-y-1 text-sm">
         <dt className="text-muted-foreground">Editor</dt>
-        <dd className="min-w-0 break-words text-foreground">{editorName(request.editor)}</dd>
+        {builder ? (
+          <dd
+            data-testid="editor-line"
+            className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-3 text-foreground"
+          >
+            <span className="break-words">{elementorEditorLine(builder)}</span>
+            <span className="text-xs font-medium text-muted-foreground">From the site</span>
+          </dd>
+        ) : (
+          <dd data-testid="editor-line" className="min-w-0 break-words text-foreground">
+            {editorName(request.editor)}
+          </dd>
+        )}
         {layout ? (
           <>
             <dt className="text-muted-foreground">Layout</dt>
@@ -149,13 +169,32 @@ function PageCreateCard({
             siteHost={request.site_host}
             siteUrl={siteUrl}
             labelledBy={outlineLabelId}
+            altFromLibrary={preview.builder !== null}
           />
         ) : (
           <p className="text-sm text-muted-foreground">{NOT_SHOWABLE_COPY}</p>
         )}
       </div>
 
-      <p className="text-sm text-muted-foreground">{NOTHING_PUBLISHED}</p>
+      {preview?.builder ? (
+        <dl
+          data-testid="builder-rows"
+          className="grid grid-cols-[minmax(7rem,auto)_1fr] gap-x-4 gap-y-1 text-sm"
+        >
+          {elementorCardRows(preview.builder).map((row) => (
+            <Fragment key={row.label}>
+              <dt className="text-muted-foreground">{row.label}</dt>
+              <dd className="min-w-0 space-y-0.5 break-words text-foreground">
+                {row.lines.map((line) => (
+                  <p key={line}>{line}</p>
+                ))}
+              </dd>
+            </Fragment>
+          ))}
+        </dl>
+      ) : (
+        <p className="text-sm text-muted-foreground">{NOTHING_PUBLISHED}</p>
+      )}
 
       {pending ? null : (
         <div className="space-y-1">
@@ -163,15 +202,20 @@ function PageCreateCard({
           {undoWindowOver(request, status.kind, canUndo) ? (
             <p className="text-sm text-muted-foreground">{UNDO_WINDOW_OVER_LINE}</p>
           ) : null}
-          {editHref ? (
-            <a
-              href={editHref}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-sm font-medium text-primary underline underline-offset-2 hover:opacity-80"
-            >
-              Edit the draft in WordPress
-            </a>
+          {links.length > 0 ? (
+            <div className="flex flex-wrap gap-x-4 gap-y-1">
+              {links.map((link) => (
+                <a
+                  key={link.label}
+                  href={link.href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-sm font-medium text-primary underline underline-offset-2 hover:opacity-80"
+                >
+                  {link.label}
+                </a>
+              ))}
+            </div>
           ) : null}
         </div>
       )}

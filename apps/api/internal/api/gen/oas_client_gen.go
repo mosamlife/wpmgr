@@ -2790,7 +2790,8 @@ type Invoker interface {
 	Logout(ctx context.Context) (LogoutRes, error)
 	// OidcCallback invokes oidcCallback operation.
 	//
-	// OIDC redirect callback.
+	// The identity provider's return leg, reached by a browser navigation, so a completed sign-in answers
+	// with a redirect into the app rather than a response body.
 	//
 	// GET /auth/oidc/callback
 	OidcCallback(ctx context.Context, params OidcCallbackParams) (OidcCallbackRes, error)
@@ -2799,7 +2800,7 @@ type Invoker interface {
 	// Redirects (302) to the OIDC provider. Returns 501 if OIDC is disabled.
 	//
 	// GET /auth/oidc/login
-	OidcLogin(ctx context.Context) (OidcLoginRes, error)
+	OidcLogin(ctx context.Context, params OidcLoginParams) (OidcLoginRes, error)
 	// OptimizeMedia invokes optimizeMedia operation.
 	//
 	// Start an optimize batch (fans out one job per attachment).
@@ -36462,7 +36463,8 @@ func (c *Client) sendLogout(ctx context.Context) (res LogoutRes, err error) {
 
 // OidcCallback invokes oidcCallback operation.
 //
-// OIDC redirect callback.
+// The identity provider's return leg, reached by a browser navigation, so a completed sign-in answers
+// with a redirect into the app rather than a response body.
 //
 // GET /auth/oidc/callback
 func (c *Client) OidcCallback(ctx context.Context, params OidcCallbackParams) (OidcCallbackRes, error) {
@@ -36583,12 +36585,12 @@ func (c *Client) sendOidcCallback(ctx context.Context, params OidcCallbackParams
 // Redirects (302) to the OIDC provider. Returns 501 if OIDC is disabled.
 //
 // GET /auth/oidc/login
-func (c *Client) OidcLogin(ctx context.Context) (OidcLoginRes, error) {
-	res, err := c.sendOidcLogin(ctx)
+func (c *Client) OidcLogin(ctx context.Context, params OidcLoginParams) (OidcLoginRes, error) {
+	res, err := c.sendOidcLogin(ctx, params)
 	return res, err
 }
 
-func (c *Client) sendOidcLogin(ctx context.Context) (res OidcLoginRes, err error) {
+func (c *Client) sendOidcLogin(ctx context.Context, params OidcLoginParams) (res OidcLoginRes, err error) {
 	otelAttrs := []attribute.KeyValue{
 		otelogen.OperationID("oidcLogin"),
 		semconv.HTTPRequestMethodKey.String("GET"),
@@ -36628,6 +36630,27 @@ func (c *Client) sendOidcLogin(ctx context.Context) (res OidcLoginRes, err error
 	var pathParts [1]string
 	pathParts[0] = "/auth/oidc/login"
 	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeQueryParams"
+	q := uri.NewQueryEncoder()
+	{
+		// Encode "redirect" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "redirect",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Redirect.Get(); ok {
+				return e.EncodeValue(conv.StringToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	u.RawQuery = q.Values().Encode()
 
 	stage = "EncodeRequest"
 	r, err := ht.NewRequest(ctx, "GET", u)

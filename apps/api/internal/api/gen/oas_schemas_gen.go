@@ -3392,6 +3392,10 @@ type AbilityRequest struct {
 	// Why this request was left for a person instead of being approved by a setting. Stays set after a
 	// person approves it. Null when WPMgr did not record a reason.
 	AskReason OptNilAIAskReason `json:"ask_reason"`
+	// The page builder that builds a wpmgr/page-create request's page, as the site's precheck named it.
+	// Null for a page in a WordPress editor, and for every other ability. A card for a request whose
+	// editor is a page builder cannot be shown in full without it and must not be approvable.
+	PageBuilder OptNilAbilityRequestPageBuilder `json:"page_builder"`
 }
 
 // GetID returns the value of ID.
@@ -3584,6 +3588,11 @@ func (s *AbilityRequest) GetAskReason() OptNilAIAskReason {
 	return s.AskReason
 }
 
+// GetPageBuilder returns the value of PageBuilder.
+func (s *AbilityRequest) GetPageBuilder() OptNilAbilityRequestPageBuilder {
+	return s.PageBuilder
+}
+
 // SetID sets the value of ID.
 func (s *AbilityRequest) SetID(val uuid.UUID) {
 	s.ID = val
@@ -3772,6 +3781,11 @@ func (s *AbilityRequest) SetChangeKindName(val OptNilString) {
 // SetAskReason sets the value of AskReason.
 func (s *AbilityRequest) SetAskReason(val OptNilAIAskReason) {
 	s.AskReason = val
+}
+
+// SetPageBuilder sets the value of PageBuilder.
+func (s *AbilityRequest) SetPageBuilder(val OptNilAbilityRequestPageBuilder) {
+	s.PageBuilder = val
 }
 
 func (*AbilityRequest) approveAbilityRequestRes() {}
@@ -4305,6 +4319,60 @@ func (s *AbilityRequestOrgList) SetOffset(val int32) {
 }
 
 func (*AbilityRequestOrgList) listAbilityRequestsRes() {}
+
+// The page builder of a wpmgr/page-create request. `version` came from the site: render it as plain
+// text.
+// Ref: #/components/schemas/AbilityRequestPageBuilder
+type AbilityRequestPageBuilder struct {
+	// The page builder, such as `elementor`.
+	Builder string `json:"builder"`
+	// What the builder builds the page from, such as `classic` (Elementor's classic widgets).
+	Format string `json:"format"`
+	// The builder's version on the site.
+	Version string `json:"version"`
+	// How the page is laid out, such as `containers` or `sections` (Elementor's two classic layouts).
+	Layout string `json:"layout"`
+}
+
+// GetBuilder returns the value of Builder.
+func (s *AbilityRequestPageBuilder) GetBuilder() string {
+	return s.Builder
+}
+
+// GetFormat returns the value of Format.
+func (s *AbilityRequestPageBuilder) GetFormat() string {
+	return s.Format
+}
+
+// GetVersion returns the value of Version.
+func (s *AbilityRequestPageBuilder) GetVersion() string {
+	return s.Version
+}
+
+// GetLayout returns the value of Layout.
+func (s *AbilityRequestPageBuilder) GetLayout() string {
+	return s.Layout
+}
+
+// SetBuilder sets the value of Builder.
+func (s *AbilityRequestPageBuilder) SetBuilder(val string) {
+	s.Builder = val
+}
+
+// SetFormat sets the value of Format.
+func (s *AbilityRequestPageBuilder) SetFormat(val string) {
+	s.Format = val
+}
+
+// SetVersion sets the value of Version.
+func (s *AbilityRequestPageBuilder) SetVersion(val string) {
+	s.Version = val
+}
+
+// SetLayout sets the value of Layout.
+func (s *AbilityRequestPageBuilder) SetLayout(val string) {
+	s.Layout = val
+}
 
 // One image a wpmgr/page-create request places. `filename` came from the site: render it as plain
 // text.
@@ -32522,7 +32590,6 @@ func (s *Me) SetDesiredPlan(val OptMeDesiredPlan) {
 func (*Me) finishWebAuthnChallengeRes() {}
 func (*Me) getMeRes()                   {}
 func (*Me) loginRes()                   {}
-func (*Me) oidcCallbackRes()            {}
 func (*Me) registerRes()                {}
 func (*Me) updateMeRes()                {}
 func (*Me) verifyEmailRes()             {}
@@ -37015,6 +37082,11 @@ func (s *ObjectCacheTestResult) SetRoundTripOk(val bool) {
 func (s *ObjectCacheTestResult) SetConfigHash(val OptNilString) {
 	s.ConfigHash = val
 }
+
+// OidcCallbackFound is response for OidcCallback operation.
+type OidcCallbackFound struct{}
+
+func (*OidcCallbackFound) oidcCallbackRes() {}
 
 type OidcCallbackNotImplemented Error
 
@@ -41641,6 +41713,74 @@ func (o OptNilAbilityRequestCardFacts) Get() (v AbilityRequestCardFacts, ok bool
 
 // Or returns value if set, or given parameter if does not.
 func (o OptNilAbilityRequestCardFacts) Or(d AbilityRequestCardFacts) AbilityRequestCardFacts {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptNilAbilityRequestPageBuilder returns new OptNilAbilityRequestPageBuilder with value set to v.
+func NewOptNilAbilityRequestPageBuilder(v AbilityRequestPageBuilder) OptNilAbilityRequestPageBuilder {
+	return OptNilAbilityRequestPageBuilder{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilAbilityRequestPageBuilder is optional nullable AbilityRequestPageBuilder.
+type OptNilAbilityRequestPageBuilder struct {
+	Value AbilityRequestPageBuilder
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilAbilityRequestPageBuilder was set.
+func (o OptNilAbilityRequestPageBuilder) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilAbilityRequestPageBuilder) Reset() {
+	var v AbilityRequestPageBuilder
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilAbilityRequestPageBuilder) SetTo(v AbilityRequestPageBuilder) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilAbilityRequestPageBuilder) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilAbilityRequestPageBuilder) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v AbilityRequestPageBuilder
+	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilAbilityRequestPageBuilder) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilAbilityRequestPageBuilder) Get() (v AbilityRequestPageBuilder, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilAbilityRequestPageBuilder) Or(d AbilityRequestPageBuilder) AbilityRequestPageBuilder {
 	if v, ok := o.Get(); ok {
 		return v
 	}
