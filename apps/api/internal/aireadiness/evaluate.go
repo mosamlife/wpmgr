@@ -22,26 +22,31 @@ const (
 )
 
 // preReleaseWord is the whole vocabulary a version suffix may use: alpha, beta,
-// rc, RC, dev or build. Only a number may follow one, so a site can put a
-// number after its version but never a word of its own.
-const preReleaseWord = `(?:alpha|beta|rc|dev|build|RC)`
+// rc, dev or build, in any letter case. The set is closed: no other word
+// matches, and only a number may follow one, so a site can put a number after
+// its version but never a word of its own.
+const preReleaseWord = `(?i:alpha|beta|rc|dev|build)`
 
 // The shapes a site-reported value must have before Evaluate will compare it
 // or return it. Go's $ without the m flag is the end of the text, so a
 // trailing newline does not match.
 var (
-	// wpVersionRe admits a release (7.1, 7.1.2) or a pre-release: a hyphen, a
-	// preReleaseWord and optional digits, then optionally a hyphen and a build
-	// number (7.1-RC1, 7.1-beta2-59000, 7.1-alpha-59000).
-	wpVersionRe = regexp.MustCompile(`^[0-9]+(\.[0-9]+){1,3}(-` + preReleaseWord + `[0-9]*(-[0-9]+)?)?$`)
+	// wpVersionRe admits a release of two to four numbers separated by dots
+	// (7.1, 7.1.2) or a pre-release: a hyphen, a preReleaseWord and optional
+	// digits, then optionally a hyphen and a build number (7.1-RC1,
+	// 7.1-beta2-59000, 7.1-alpha-59000). A release or a pre-release may end in
+	// -src, the tail WordPress gives a development checkout (7.1-alpha-59000-src,
+	// 7.0.1-src). Only this pattern admits that tail.
+	wpVersionRe = regexp.MustCompile(`^[0-9]+(\.[0-9]+){1,3}(-` + preReleaseWord + `[0-9]*(-[0-9]+)?)?(-src)?$`)
 	// agentVersionRe admits a dotted numeric release only, the shape every
 	// agent floor compare in this codebase requires.
 	agentVersionRe = regexp.MustCompile(`^[0-9]+(\.[0-9]+){1,3}$`)
-	// componentVersionRe admits a plugin or theme version: a dotted numeric
-	// release (4.3, 4.3.4, 1.2.3.4), optionally followed by one suffix: a
-	// hyphen, plus, tilde or underscore, a preReleaseWord, an optional dot and
-	// optional digits (4.3.0-beta1, 2.4.1+build.5). Nothing else is admitted,
-	// so a version never carries a word of the site's own.
+	// componentVersionRe admits a plugin or theme version: a release of one to
+	// four numbers separated by dots (4, 4.3, 4.3.4, 1.2.3.4), optionally
+	// followed by one suffix: a hyphen, plus, tilde or underscore, a
+	// preReleaseWord, an optional dot and optional digits (4.3.0-beta1,
+	// 2.4.1+build.5, 2.0-Beta). Nothing else is admitted, so a version never
+	// carries a word of the site's own.
 	componentVersionRe = regexp.MustCompile(`^[0-9]+(\.[0-9]+){0,3}([-+~_]` + preReleaseWord + `\.?[0-9]*)?$`)
 )
 
