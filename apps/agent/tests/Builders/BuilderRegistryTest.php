@@ -285,6 +285,11 @@ final class BuilderRegistryTest extends TestCase
                 return new Projection([Projection::FALLBACK_LABEL => 'Element']);
             }
 
+            public function planEdit(int $postId, array $ops, IdSeed $ids, array $mediaById): array
+            {
+                return ['code' => 'op_not_supported_by_builder', 'detail' => 'set_text', 'op_index' => 0];
+            }
+
             public function write(int $postId, NativeDocument $doc): array
             {
                 return ['ok' => false, 'code' => 'builder_save_refused'];

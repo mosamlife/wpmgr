@@ -54,6 +54,10 @@ if (!defined('ABSPATH')) {
  * LeafPolicy::checkTree() with ALLOWED_KEYS and LEAF_RULES, or the call is
  * refused with that check's answer.
  *
+ * A page edit builds its new nodes with mapFragment(), under the same rules,
+ * and changes one text with setText(), which writes the same bytes create
+ * writes for that text.
+ *
  * Pure: no WordPress write. The only WordPress function reached is the HTML
  * sanitiser, through LeafPolicy.
  */
@@ -131,6 +135,15 @@ final class ElementorClassicMapper
 
     /** Label key of a WordPress widget placed in Elementor. */
     public const LABEL_WP_WIDGET = 'wpmgr:wp-widget';
+
+    /** New nodes at the top of the page: leaves are wrapped, groups and columns map as on a new page. */
+    public const CONTEXT_TOP = 'top';
+
+    /** New nodes inside a top-level element that holds widgets: leaves, and columns as an inner row. */
+    public const CONTEXT_GROUP = 'group';
+
+    /** New nodes inside an inner element, such as a column of a row: leaves only. */
+    public const CONTEXT_INNER = 'inner';
 
     /**
      * WPMgr's words for a node it does not edit, by Elementor type or by one
@@ -214,6 +227,17 @@ final class ElementorClassicMapper
     /** Settings keys that make a stored element dynamic content or code, without regard to case. */
     private const DYNAMIC_KEYS = ['__dynamic__', 'custom_css', '_attributes', 'custom_attributes'];
 
+    /**
+     * Where set_text writes, by projection kind and field: the widget type
+     * and the settings path of the field's own value.
+     */
+    private const TEXT_TARGETS = [
+        'heading'   => ['text' => ['heading', ['title']]],
+        'paragraph' => ['text' => ['text-editor', ['editor']]],
+        'buttons'   => ['text' => ['button', ['text']], 'url' => ['button', ['link', 'url']]],
+        'image'     => ['caption' => ['image', ['caption']]],
+    ];
+
     private IdSeed $ids;
 
     /** @var array<mixed> */
@@ -291,21 +315,172 @@ final class ElementorClassicMapper
         return $projection;
     }
 
+    /**
+     * Map a validated outline to the new nodes of one page-edit insert or
+     * replace, for the place they go:
+     *
+     *   CONTEXT_TOP    the top of the page: as map() does for a new page;
+     *                  a run of leaves is wrapped, a group and a columns node
+     *                  are top-level elements
+     *   CONTEXT_GROUP  inside a top-level element that holds widgets (a
+     *                  group container, or a column of a top-level section):
+     *                  each leaf is its widgets with no wrapper, a columns
+     *                  node is an inner row, and a group is refused
+     *                  (layout_invalid)
+     *   CONTEXT_INNER  inside an inner element, such as a column of a row:
+     *                  leaves only (layout_invalid for a group or columns)
+     *
+     * So an edit nests no deeper than a created page: group, then columns,
+     * then column, then leaf. $containers is the layout of the new nodes:
+     * containers, or sections and columns. Each node path, which keys the
+     * node's id and names it in a refusal, is $pathPrefix followed by
+     * "outline[i]…", so the operations of one request never share a path.
+     * Every rule of map() holds, and the new nodes pass
+     * LeafPolicy::checkTree() with ALLOWED_KEYS and LEAF_RULES.
+     *
+     * @param array<mixed> $outline    Validated outline nodes, in page-create's normalised form.
+     * @param IdSeed       $ids        Node ids for this request.
+     * @param array<mixed> $mediaById  Media facts by attachment id.
+     * @param bool         $containers Whether the new nodes are containers.
+     * @param string       $context    One of the CONTEXT_ values.
+     * @param string       $pathPrefix Prefix of every node path, e.g. "operations[2].".
+     * @return array{tree?: list<array<string, mixed>>, code?: string, detail?: string}
+     */
+    public static function mapFragment(array $outline, IdSeed $ids, array $mediaById, bool $containers, string $context, string $pathPrefix): array
+    {
+        $listPath = $pathPrefix . 'outline';
+        if ($outline === [] || !ArrayShape::isList($outline)) {
+            return ['code' => 'bad_input', 'detail' => $listPath . ': not a list of nodes'];
+        }
+        $mapper = new self($ids, $mediaById, $containers);
+        switch ($context) {
+            case self::CONTEXT_TOP:
+                $tree = $mapper->outline($outline, $listPath);
+                break;
+            case self::CONTEXT_GROUP:
+                $tree = $mapper->groupChildren($outline, $listPath);
+                break;
+            case self::CONTEXT_INNER:
+                $run = [];
+                foreach ($outline as $i => $node) {
+                    $run[] = [$listPath . '[' . $i . ']', $node];
+                }
+                $tree = $mapper->leafList($run);
+                break;
+            default:
+                return ['code' => 'bad_input', 'detail' => $listPath . ': not a place new nodes can go'];
+        }
+        if ($tree === null) {
+            return $mapper->refusal ?? ['code' => 'bad_input', 'detail' => $listPath . ': could not be mapped'];
+        }
+        $check = LeafPolicy::checkTree($tree, self::ALLOWED_KEYS, self::LEAF_RULES);
+        if ($check !== null) {
+            return $check;
+        }
+
+        return ['tree' => $tree];
+    }
+
+    /**
+     * A stored node with one field's text changed, for a page-edit set_text.
+     *
+     * Only the field's own settings path is written, with the bytes create
+     * writes for that text; every other key of the node keeps its value and
+     * its place, so styling a person set stays:
+     *
+     *   heading    text     settings.title      LeafPolicy::htmlText(text)
+     *   paragraph  text     settings.editor     "<p>" . htmlText(text) . "</p>"
+     *   buttons    text     settings.text       htmlText(text)
+     *   buttons    url      settings.link.url   the link as given; the other link members stay
+     *   image      caption  settings.caption    htmlText(text)
+     *
+     * Before the write: a text passes the page-create text rule (L1), a link
+     * the page-create link rule (bad_input), and create's Elementor rules
+     * hold: a paragraph that is only a web address (create_content_invalid)
+     * and a link holding "&" (link_invalid) are refused. The value written
+     * passes its own pin and the stored-string rules (L4 and L2) on its
+     * settings path alone. The rest of the node is not held to ALLOWED_KEYS,
+     * because it carries what a person set.
+     *
+     * @param array<mixed> $node  The stored node.
+     * @param string       $kind  Its projection kind.
+     * @param string       $field The field, one the node offers.
+     * @param string       $text  The new text, or the new link for "url".
+     * @param string       $at    The operation's position, for refusal details.
+     * @return array{node?: array<mixed>, code?: string, detail?: string}
+     */
+    public static function setText(array $node, string $kind, string $field, string $text, string $at): array
+    {
+        $target   = self::TEXT_TARGETS[$kind][$field] ?? null;
+        $type     = ($node['elType'] ?? null) === 'widget' ? ($node['widgetType'] ?? null) : null;
+        $settings = $node['settings'] ?? null;
+        if ($target === null || $type !== $target[0] || !is_array($settings)) {
+            return ['code' => 'node_not_editable', 'detail' => $at . ': this node does not offer ' . $field];
+        }
+        [$key, $member] = [$target[1][0], $target[1][1] ?? null];
+        $holder         = $member === null ? $settings : ($settings[$key] ?? null);
+        if (!is_array($holder) || !is_string($holder[$member ?? $key] ?? null)) {
+            return ['code' => 'node_not_editable', 'detail' => $at . ': this node does not offer ' . $field];
+        }
+
+        if ($field === 'url') {
+            $why = PageCreateBuilder::linkProblem($text);
+            if ($why !== null) {
+                return ['code' => 'bad_input', 'detail' => $at . '.text: ' . $why];
+            }
+            if (strpos($text, '&') !== false) {
+                return ['code' => 'link_invalid', 'detail' => $at . '.text: a link on an Elementor page cannot hold "&"; use a link without one'];
+            }
+            $value = $text;
+        } else {
+            $why = LeafPolicy::textProblem($text, 'text');
+            if ($why !== null) {
+                return ['code' => 'bad_input', 'detail' => $at . '.text: ' . $why];
+            }
+            if ($kind === 'paragraph' && preg_match(self::OWN_PARAGRAPH_ADDRESS, $text) === 1) {
+                return ['code' => 'create_content_invalid', 'detail' => $at . '.text: a paragraph that is only a web address becomes an embedded player on an Elementor page; add words around the address or use a button'];
+            }
+            $value = $kind === 'paragraph' ? '<p>' . LeafPolicy::htmlText($text) . '</p>' : LeafPolicy::htmlText($text);
+        }
+
+        // L4 and L2 on the value at its own path: a node holding only that value.
+        $only  = $member === null ? [$key => $value] : [$key => [$member => $value]];
+        $check = LeafPolicy::checkTree([['id' => 'set', 'elType' => 'widget', 'settings' => $only, 'elements' => [], 'widgetType' => $type]], self::ALLOWED_KEYS, self::LEAF_RULES);
+        if ($check !== null) {
+            $reason = strpos($check['detail'], ': ');
+
+            return ['code' => $check['code'], 'detail' => $at . '.text: ' . ($reason === false ? $check['detail'] : substr($check['detail'], $reason + 2))];
+        }
+
+        if ($member === null) {
+            $settings[$key] = $value;
+        } else {
+            $holder[$member] = $value;
+            $settings[$key]  = $holder;
+        }
+        $node['settings'] = $settings;
+
+        return ['node' => $node];
+    }
+
     // ---------------------------------------------------------------------
     // Mapping
     // ---------------------------------------------------------------------
 
     /**
-     * @param list<mixed> $outline Outline nodes.
+     * Top-level nodes, as on a new page.
+     *
+     * @param list<mixed> $outline  Outline nodes.
+     * @param string      $listPath Path of the outline; a node's path is this plus "[i]".
      * @return list<array<string, mixed>>|null
      */
-    private function outline(array $outline): ?array
+    private function outline(array $outline, string $listPath = 'outline'): ?array
     {
         $tree  = [];
         $run   = [];
         $start = '';
         foreach ($outline as $i => $node) {
-            $path = 'outline[' . $i . ']';
+            $path = $listPath . '[' . $i . ']';
             if (!is_array($node)) {
                 return $this->fail('bad_input', $path . ': not a node');
             }
@@ -385,9 +560,32 @@ final class ElementorClassicMapper
         }
         $id       = $this->ids->next($path);
         $columnId = $this->containers ? null : $this->ids->next($path . '#column');
+        $elements = $this->groupChildren($children, $path . '.children');
+        if ($elements === null) {
+            return null;
+        }
+        if ($columnId === null) {
+            return self::layout($id, 'container', ['content_width' => 'boxed', 'flex_direction' => 'column'], $elements, false);
+        }
+
+        return self::layout($id, 'section', ['structure' => self::STRUCTURES[1]], [
+            self::layout($columnId, 'column', ['_column_size' => self::COLUMN_SIZES[1]], $elements, false),
+        ], false);
+    }
+
+    /**
+     * What a group holds: each leaf as its widgets, and a columns node as an
+     * inner row. A group inside it is refused.
+     *
+     * @param list<mixed> $children Child nodes.
+     * @param string      $listPath Path of the list; a child's path is this plus "[j]".
+     * @return list<array<string, mixed>>|null
+     */
+    private function groupChildren(array $children, string $listPath): ?array
+    {
         $elements = [];
         foreach ($children as $j => $child) {
-            $at = $path . '.children[' . $j . ']';
+            $at = $listPath . '[' . $j . ']';
             if (!is_array($child)) {
                 return $this->fail('bad_input', $at . ': not a node');
             }
@@ -409,13 +607,8 @@ final class ElementorClassicMapper
             }
             array_push($elements, ...$widgets);
         }
-        if ($columnId === null) {
-            return self::layout($id, 'container', ['content_width' => 'boxed', 'flex_direction' => 'column'], $elements, false);
-        }
 
-        return self::layout($id, 'section', ['structure' => self::STRUCTURES[1]], [
-            self::layout($columnId, 'column', ['_column_size' => self::COLUMN_SIZES[1]], $elements, false),
-        ], false);
+        return $elements;
     }
 
     /**

@@ -144,6 +144,17 @@ final class Projection
     }
 
     /**
+     * Every node, in page order, with no cap: for the agent's own checks on
+     * a whole page. An answer for the AI goes through toArray().
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function nodes(): array
+    {
+        return $this->nodes;
+    }
+
+    /**
      * The answer: the total node count, whether nodes were left out, and the
      * nodes kept in page order.
      *

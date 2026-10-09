@@ -106,6 +106,23 @@ interface BuilderAdapter
     public function project(array $tree): Projection;
 
     /**
+     * Plan a wpmgr/page-edit call: read the post's stored document and apply
+     * the operations to it in order, building the new document. No
+     * WordPress write. New node ids come from $ids only, so a precheck and
+     * its write on the same stored page build the same bytes. Each change
+     * describes one operation; touched names the nodes whose text changed and
+     * the nodes made. A refusal carries the operation's index, or null for a
+     * rule over the whole call.
+     *
+     * @param int                              $postId    Post id.
+     * @param list<array<string, mixed>>       $ops       Operations as PageEditValidator::parse() normalised them.
+     * @param IdSeed                           $ids       Deterministic node ids for this request.
+     * @param array<int, array<string, mixed>> $mediaById Media facts by attachment id, for new images.
+     * @return array{doc?: NativeDocument, changes?: list<array<string, mixed>>, touched?: list<string>, new_count?: int, code?: string, detail?: string, op_index?: int|null}
+     */
+    public function planEdit(int $postId, array $ops, IdSeed $ids, array $mediaById): array;
+
+    /**
      * Store the document on the post through the builder's own save path.
      *
      * @param int            $postId Post id.

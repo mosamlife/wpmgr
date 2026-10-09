@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace WPMgr\Agent\Abilities\Builders;
 
 use WPMgr\Agent\Abilities\ServicePrincipal;
+use WPMgr\Agent\Support\ArrayShape;
 
 // Direct-file-access guard: keep above the docblock.
 if (!defined('ABSPATH')) {
@@ -16,7 +17,8 @@ if (!defined('ABSPATH')) {
  * containers or in sections and columns as the site has them.
  *
  * Facts are read once per adapter, on first use. A page is built by
- * ElementorClassicMapper and saved and read back by ElementorDocument.
+ * ElementorClassicMapper, an edit is planned by LayoutOps, and both are
+ * saved and read back by ElementorDocument.
  * Every page-edit operation and node kind is declared for the edit path; the
  * allowlist and the leaf rules are the mapper's: braces are plain text in
  * Elementor, and its dynamic-tag marker is refused in every stored string.
@@ -183,6 +185,49 @@ final class ElementorAdapter implements BuilderAdapter
     public function project(array $tree): Projection
     {
         return ElementorClassicMapper::project($tree);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * The stored document is the post's one _elementor_data row, read with
+     * SQL and decoded at ElementorDocument::MAX_DEPTH into a list of
+     * elements; anything else is data_unreadable. LayoutOps applies the
+     * operations: new top-level nodes take the site's container setting,
+     * new nodes inside an element take that element's layout. The new
+     * document carries no meta: an edit stores only the tree, through
+     * Elementor's own save.
+     */
+    public function planEdit(int $postId, array $ops, IdSeed $ids, array $mediaById): array
+    {
+        if ($postId < 1) {
+            return ['code' => LayoutOps::CODE_UNREADABLE, 'detail' => 'not a post', 'op_index' => null];
+        }
+        try {
+            $stored = BuilderDocumentFingerprint::read($postId, [ElementorDocument::KEY_DATA]);
+        } catch (\Throwable $e) {
+            return ['code' => LayoutOps::CODE_UNREADABLE, 'detail' => 'the page could not be read', 'op_index' => null];
+        }
+        $rows = $stored === null ? [] : ($stored['rows'][ElementorDocument::KEY_DATA] ?? []);
+        if (count($rows) !== 1) {
+            return ['code' => LayoutOps::CODE_UNREADABLE, 'detail' => 'the page does not have exactly one Elementor document', 'op_index' => null];
+        }
+        $tree = json_decode($rows[0], true, ElementorDocument::MAX_DEPTH);
+        if (!is_array($tree) || !ArrayShape::isList($tree)) {
+            return ['code' => LayoutOps::CODE_UNREADABLE, 'detail' => 'the Elementor document is not a list of elements', 'op_index' => null];
+        }
+
+        $planned = LayoutOps::apply($tree, $ops, $ids, $mediaById, ($this->facts()['containers'] ?? null) === true);
+        if (!isset($planned['tree'], $planned['changes'], $planned['touched'], $planned['new_count'])) {
+            return ['code' => $planned['code'] ?? 'bad_input', 'detail' => $planned['detail'] ?? 'the operations could not be applied', 'op_index' => $planned['op_index'] ?? null];
+        }
+        try {
+            $doc = new NativeDocument($planned['tree']);
+        } catch (\Throwable $e) {
+            return ['code' => LayoutOps::CODE_UNREADABLE, 'detail' => 'the edited page could not be encoded', 'op_index' => null];
+        }
+
+        return ['doc' => $doc, 'changes' => $planned['changes'], 'touched' => $planned['touched'], 'new_count' => $planned['new_count']];
     }
 
     /**
