@@ -571,6 +571,35 @@ type MetadataExtras struct {
 	// #753), stored under the `keystore_status` key. nil when the agent did
 	// not report it; readers must treat nil as "not reported", never as "ok".
 	KeystoreStatus *KeystoreStatus `json:"keystore_status,omitempty"`
+	// BuilderFacts is the agent's builder_facts object, stored under the
+	// `builder_facts` key. nil when the agent did not report it; readers must
+	// treat nil as "not reported", never as "off".
+	BuilderFacts *BuilderFacts `json:"builder_facts,omitempty"`
+}
+
+// BuilderFacts is the validated form of the agent's builder_facts object,
+// round-tripped through the JSONB inventory column under the `builder_facts`
+// key. Every field has passed fromAgentBuilderFacts, so the stored document
+// holds only an integer, a directory-name-shaped string and booleans.
+type BuilderFacts struct {
+	// V is the agent's schema version for this object; omitted when the agent
+	// sent none that was usable.
+	V int `json:"v,omitempty"`
+	// ThemeTemplate is the parent theme's directory name (get_template()),
+	// kept only when it is 1 to 100 characters of letters, digits, dot,
+	// underscore or hyphen. It names the theme a child theme builds on, which
+	// the theme list does not.
+	ThemeTemplate string `json:"theme_template,omitempty"`
+	// Elementor is present only when Elementor was loaded on the site.
+	Elementor *BuilderFactsElementor `json:"elementor,omitempty"`
+}
+
+// BuilderFactsElementor is the elementor member of BuilderFacts.
+type BuilderFactsElementor struct {
+	// AtomicEditor is null when Elementor is loaded but gave no definite
+	// answer. The key is always written so the stored document keeps the
+	// agent's distinction between "no answer" and an absent member.
+	AtomicEditor *bool `json:"atomic_editor"`
 }
 
 // KeystoreStatus mirrors the agent's Keystore::probe() trial-decrypt result

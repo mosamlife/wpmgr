@@ -116,6 +116,8 @@ tags:
     description: Per-site Performance Suite (page cache, CSS/JS optimization, RUCSS, CDN, database cleanup) plus portfolio-wide bulk cache actions.
   - name: ai-requests
     description: Requests an AI connection made to clear a site's cache. Each one waits for a person to approve or decline it; nothing is sent to a site without that approval.
+  - name: ai-readiness
+    description: A per-site checklist of what an AI assistant needs on the site, and a fleet rollup of it. Advisory only; nothing is allowed or refused because of it.
   - name: object-cache
     description: Per-site object (Redis/Memcached) cache management — config, test, enable/disable, flush, and stats history.
   - name: settings
@@ -9729,6 +9731,150 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /api/v1/sites/{siteId}/ai/readiness:
+    get:
+      operationId: getSiteAIReadiness
+      summary: Whether an AI assistant can work on this site
+      description: |
+        A checklist computed by the control plane from what the site last
+        reported: WordPress and WPMgr agent versions, whether AI page creation
+        is on, and, for Elementor and Bricks, the version, the AI tools switch
+        and (Elementor) the Atomic editor. Every row is `pass`, `fail`,
+        `unknown` or `not_applicable`; an unknown is never a failure. The
+        response carries no text the site chose: `observed` is a version
+        string that passed a strict shape check, or null.
+
+        `status` is `needs_attention` when any row in `base` or in an
+        installed builder group fails (`fix_count` counts them), otherwise
+        `incomplete` when any row is unknown, otherwise `ready`. The one
+        exception is `bricks_abilities`: it is inferred from the site's tool
+        list and has not been confirmed on a licensed Bricks install, so when
+        it is `pass` or `fail` it is listed with its state and never counted.
+        When it is `unknown` (the tool list was never read, or was cut short)
+        it is an ordinary unknown and makes the site `incomplete`.
+        A builder that is not installed contributes nothing, and neither
+        does one that is installed but not active: that is a choice, not a
+        fix, so its version row is `not_applicable` with reason `inactive`.
+        `warnings` never change `status`.
+
+        Advisory only: no tool call, approval or dispatch reads this result.
+
+        Requires `site:read` and access to the site. Returns 404 for a site
+        that is not the caller's, is archived, or has never been enrolled.
+      tags: [ai-readiness]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      responses:
+        "200":
+          description: The site's AI readiness
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SiteAIReadiness"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Missing site:read
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: The site is not the caller's, is archived, or has never been enrolled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/fleet/ai-readiness:
+    get:
+      operationId: getFleetAIReadiness
+      summary: AI readiness of every site the caller can see
+      description: |
+        One compact row per enrolled, non-archived site: the same `status`
+        and `fix_count` the per-site route returns, the ids of the failing
+        rows, and the warning codes. Computed by the same function as the
+        per-site route, so the two cannot disagree. A site collaborator sees
+        only the sites shared with them. Requires `site:read`.
+      tags: [ai-readiness]
+      responses:
+        "200":
+          description: One row per site
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FleetAIReadiness"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Missing site:read
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/sites/{siteId}/ai/readiness/refresh:
+    post:
+      operationId: refreshSiteAIReadiness
+      summary: Ask the site to report again
+      description: |
+        Queues a fresh metadata report from the site and, when the site's
+        WPMgr agent can read its tool list, a fresh tool-list read. Returns
+        202 at once; the results appear on the next GET within a couple of
+        minutes. `abilities` is true when a tool-list read was queued by this
+        call or was already queued within the last two minutes, and false
+        when the agent is too old to run one. Requires `site.content.refresh`
+        (operator and above, the same tier as the content inventory refresh)
+        and access to the site: a viewer can read the result but cannot ask
+        for a new one. The body must be JSON (an empty object is fine).
+        Returns 409 `site_unreachable` when the site is not enrolled or its
+        agent has not been heard from recently.
+      tags: [ai-readiness]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "202":
+          description: Refresh queued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AIReadinessRefreshResult"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Missing site.content.refresh
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: The site is not the caller's, or it is archived
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: The site is not enrolled or its agent has not been heard from recently (`site_unreachable`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "415":
+          description: The body was not application/json
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Refresh is not available on this install
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /api/v1/sites/{siteId}/perf/cache/purge:
     post:
       operationId: purgeCache
@@ -16179,6 +16325,39 @@ components:
                 unset.
               items:
                 type: string
+        builder_facts:
+          type: [object, "null"]
+          description: |
+            Facts about the site's page builders that the plugin and theme
+            lists do not carry, collected read-only on every metadata report.
+            Optional and additive: an agent that predates it omits the whole
+            object, which the control plane stores as "not reported" and never
+            reads as "off". Every field is tolerantly decoded: a value of an
+            unexpected type is dropped on its own and never rejects the
+            report. Only the fields below are kept; any other key is ignored.
+          properties:
+            v:
+              type: integer
+              description: Schema version of this object. 1 today.
+            theme_template:
+              type: string
+              description: |
+                Directory name of the active theme's parent (the theme itself
+                when it has no parent). Kept only when it is 1 to 100
+                characters of letters, digits, dot, underscore or hyphen;
+                omitted by the agent when it cannot be read.
+            elementor:
+              type: [object, "null"]
+              description: |
+                Present only when Elementor is loaded on the site. Absent
+                means "not installed", never "off".
+              properties:
+                atomic_editor:
+                  type: [boolean, "null"]
+                  description: |
+                    Whether Elementor's Atomic editor is on, asked of
+                    Elementor itself. Null means Elementor is loaded but gave
+                    no definite answer; unknown is never sent as false.
     SiteCreate:
       type: object
       required: [url, name]
@@ -20418,6 +20597,226 @@ components:
           nullable: true
           description: The WordPress user id of the site's content service user.
         enabled_by: { type: string, format: uuid, nullable: true }
+    SiteAIReadiness:
+      type: object
+      description: |
+        Whether an AI assistant connected to WPMgr can work on one site. All
+        values come from WPMgr's own checks; nothing the site wrote reaches
+        this object except version strings that passed a strict shape check.
+      required: [site_id, status, fix_count, metadata_as_of, abilities_as_of, warnings, floors, groups]
+      properties:
+        site_id: { type: string, format: uuid }
+        status:
+          $ref: "#/components/schemas/AIReadinessStatus"
+        fix_count:
+          type: integer
+          format: int32
+          minimum: 0
+          description: |
+            Number of rows with state `fail` in `base` and in installed
+            builder groups. A `bricks_abilities` row is never one of them: as
+            a `fail` it is unconfirmed, and as an `unknown` it is not a
+            failure (see `status`).
+        metadata_as_of:
+          type: [string, "null"]
+          format: date-time
+          description: When the site last reported its plugin and theme details. Null when it never has.
+        abilities_as_of:
+          type: [string, "null"]
+          format: date-time
+          description: When the site's tool list was last read. Null when it never has.
+        warnings:
+          type: array
+          description: Advisory notices. They never change `status` or `fix_count`.
+          items:
+            $ref: "#/components/schemas/AIReadinessWarning"
+        floors:
+          $ref: "#/components/schemas/AIReadinessFloors"
+        groups:
+          type: array
+          description: Always `base`, `elementor`, `bricks`, in that order.
+          items:
+            $ref: "#/components/schemas/AIReadinessGroup"
+    AIReadinessStatus:
+      type: string
+      enum: [ready, needs_attention, incomplete]
+    AIReadinessWarningCode:
+      type: string
+      enum: [mcp_adapter_plugin_active, elementor_mcp_endpoint_open]
+    AIReadinessWarning:
+      type: object
+      required: [code]
+      properties:
+        code:
+          $ref: "#/components/schemas/AIReadinessWarningCode"
+    AIReadinessFloors:
+      type: object
+      description: |
+        The versions the checks compare against, so a client can write "needs
+        7.1 or later" without hard-coding the number.
+      required: [wp, agent, facts_agent, elementor, bricks]
+      properties:
+        wp: { type: string }
+        agent: { type: string }
+        facts_agent:
+          type: string
+          description: The first WPMgr agent release that reports the Atomic editor and the parent theme.
+        elementor: { type: string }
+        bricks: { type: string }
+    AIReadinessCheckID:
+      type: string
+      enum:
+        - wp_version
+        - abilities_api
+        - agent_version
+        - content_editing
+        - elementor_version
+        - elementor_mcp_switch
+        - elementor_atomic
+        - bricks_version
+        - bricks_abilities
+    AIReadinessGroup:
+      type: object
+      required: [id, checks]
+      properties:
+        id:
+          type: string
+          enum: [base, elementor, bricks]
+        installed:
+          type: boolean
+          description: |
+            Builder groups only. False means the builder is not installed on
+            the site and `checks` is empty; the group counts toward nothing.
+        version:
+          type: [string, "null"]
+          description: |
+            Builder groups only. The installed version, or null when it is not
+            installed or the site did not report a usable version.
+        wpmgr_support:
+          type: string
+          enum: [coming, available]
+          description: |
+            Builder groups only. `coming` while WPMgr cannot yet build pages
+            with this builder; the checks then show whether the site will be
+            ready.
+        checks:
+          type: array
+          items:
+            $ref: "#/components/schemas/AIReadinessCheck"
+    AIReadinessCheck:
+      type: object
+      description: |
+        One row. `state` is `pass`, `fail`, `unknown` (WPMgr could not tell;
+        never a failure) or `not_applicable` (a row this one depends on
+        failed, or the builder is installed but not active). `observed` is
+        the version that was compared, or null.
+
+        `reason` is null for `pass`, and for a `fail` with a single way to
+        fail. Otherwise, per row:
+
+        - `wp_version`: unknown `not_reported`; fail `prerelease_build` (a
+          development or pre-release build, such as `7.1-RC1` or
+          `7.1.1-src`, whose release number reaches `floors.wp`: WPMgr's AI
+          tools run on a released WordPress only). A released version below
+          `floors.wp` is a `fail` with a null reason.
+        - `agent_version`: unknown `not_reported`.
+        - `abilities_api`: unknown `inventory_never_run`, `agent_too_old`
+          (the agent cannot read the tool list) or `not_reported`.
+        - `content_editing`: only `pass` or `fail`.
+        - `elementor_version`, `bricks_version`: fail `too_old`;
+          not_applicable `inactive` (installed but not active, so not a fix;
+          `observed` still carries the installed version); unknown
+          `not_reported`, and for `bricks_version` also
+          `agent_too_old_for_fact` (a child theme may be in use and the agent
+          is too old to report its parent).
+        - `elementor_mcp_switch`, `bricks_abilities`: unknown
+          `inventory_never_run` (no tool list yet, or the last one was read
+          while the site lacked the Abilities API), `inventory_truncated` or
+          `needs_elementor` / `needs_bricks`; not_applicable `needs_abilities`
+          or `needs_elementor` / `needs_bricks`.
+        - `elementor_atomic`: unknown `agent_too_old_for_fact`,
+          `not_reported` or `needs_elementor`; not_applicable
+          `needs_elementor`.
+
+        `bricks_abilities` is inferred from the site's tool list and has not
+        been confirmed on a licensed Bricks install. When it is `pass` or
+        `fail` it is listed with its state, but it is not counted in
+        `status`, `fix_count` or `failing`. When it is `unknown` it is an
+        ordinary unknown: it makes `status` `incomplete`, and it is still not
+        a fix, so it is not in `failing` either.
+
+        A client must render a state or reason it does not recognise as a
+        neutral "not checked", never as a failure.
+      required: [id, state, reason, observed]
+      properties:
+        id:
+          $ref: "#/components/schemas/AIReadinessCheckID"
+        state:
+          type: string
+          enum: [pass, fail, unknown, not_applicable]
+        reason:
+          type: [string, "null"]
+          enum:
+            - not_reported
+            - inventory_never_run
+            - inventory_truncated
+            - agent_too_old
+            - agent_too_old_for_fact
+            - needs_abilities
+            - needs_elementor
+            - needs_bricks
+            - inactive
+            - too_old
+            - prerelease_build
+            - null
+        observed:
+          type: [string, "null"]
+          description: A version string that passed a strict shape check, or null.
+    FleetAIReadiness:
+      type: object
+      required: [sites]
+      properties:
+        sites:
+          type: array
+          items:
+            $ref: "#/components/schemas/FleetAIReadinessSite"
+    FleetAIReadinessSite:
+      type: object
+      required: [site_id, status, fix_count, failing, warnings]
+      properties:
+        site_id: { type: string, format: uuid }
+        status:
+          $ref: "#/components/schemas/AIReadinessStatus"
+        fix_count:
+          type: integer
+          format: int32
+          minimum: 0
+        failing:
+          type: array
+          description: |
+            Ids of the rows that count toward `fix_count`: those whose state
+            is `fail`. `bricks_abilities` is never listed, whatever its state;
+            when it is `unknown` it makes the site `incomplete`, and it is
+            still not a fix.
+          items:
+            $ref: "#/components/schemas/AIReadinessCheckID"
+        warnings:
+          type: array
+          items:
+            $ref: "#/components/schemas/AIReadinessWarningCode"
+    AIReadinessRefreshResult:
+      type: object
+      required: [metadata, abilities]
+      properties:
+        metadata:
+          type: boolean
+          description: A fresh metadata report was requested from the site.
+        abilities:
+          type: boolean
+          description: |
+            A tool-list read was queued by this call or already queued within
+            the last two minutes. False when the site's agent is too old to
+            run one.
     AssistantRequestApproveBody:
       type: object
       required: [presented_digest]

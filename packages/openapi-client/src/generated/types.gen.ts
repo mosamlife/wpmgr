@@ -1357,6 +1357,44 @@ export type AgentMetadata = {
      */
     unreadable?: Array<string>;
   } | null;
+  /**
+   * Facts about the site's page builders that the plugin and theme
+   * lists do not carry, collected read-only on every metadata report.
+   * Optional and additive: an agent that predates it omits the whole
+   * object, which the control plane stores as "not reported" and never
+   * reads as "off". Every field is tolerantly decoded: a value of an
+   * unexpected type is dropped on its own and never rejects the
+   * report. Only the fields below are kept; any other key is ignored.
+   *
+   */
+  builder_facts?: {
+    /**
+     * Schema version of this object. 1 today.
+     */
+    v?: number;
+    /**
+     * Directory name of the active theme's parent (the theme itself
+     * when it has no parent). Kept only when it is 1 to 100
+     * characters of letters, digits, dot, underscore or hyphen;
+     * omitted by the agent when it cannot be read.
+     *
+     */
+    theme_template?: string;
+    /**
+     * Present only when Elementor is loaded on the site. Absent
+     * means "not installed", never "off".
+     *
+     */
+    elementor?: {
+      /**
+       * Whether Elementor's Atomic editor is on, asked of
+       * Elementor itself. Null means Elementor is loaded but gave
+       * no definite answer; unknown is never sent as false.
+       *
+       */
+      atomic_editor?: boolean | null;
+    } | null;
+  } | null;
 };
 
 export type SiteCreate = {
@@ -4783,6 +4821,217 @@ export type ContentEditingState = {
    */
   principal_user_id?: number;
   enabled_by?: string;
+};
+
+/**
+ * Whether an AI assistant connected to WPMgr can work on one site. All
+ * values come from WPMgr's own checks; nothing the site wrote reaches
+ * this object except version strings that passed a strict shape check.
+ *
+ */
+export type SiteAiReadiness = {
+  site_id: string;
+  status: AiReadinessStatus;
+  /**
+   * Number of rows with state `fail` in `base` and in installed
+   * builder groups. A `bricks_abilities` row is never one of them: as
+   * a `fail` it is unconfirmed, and as an `unknown` it is not a
+   * failure (see `status`).
+   *
+   */
+  fix_count: number;
+  /**
+   * When the site last reported its plugin and theme details. Null when it never has.
+   */
+  metadata_as_of: string | null;
+  /**
+   * When the site's tool list was last read. Null when it never has.
+   */
+  abilities_as_of: string | null;
+  /**
+   * Advisory notices. They never change `status` or `fix_count`.
+   */
+  warnings: Array<AiReadinessWarning>;
+  floors: AiReadinessFloors;
+  /**
+   * Always `base`, `elementor`, `bricks`, in that order.
+   */
+  groups: Array<AiReadinessGroup>;
+};
+
+export const AiReadinessStatus = {
+  READY: "ready",
+  NEEDS_ATTENTION: "needs_attention",
+  INCOMPLETE: "incomplete",
+} as const;
+
+export type AiReadinessStatus =
+  (typeof AiReadinessStatus)[keyof typeof AiReadinessStatus];
+
+export const AiReadinessWarningCode = {
+  MCP_ADAPTER_PLUGIN_ACTIVE: "mcp_adapter_plugin_active",
+  ELEMENTOR_MCP_ENDPOINT_OPEN: "elementor_mcp_endpoint_open",
+} as const;
+
+export type AiReadinessWarningCode =
+  (typeof AiReadinessWarningCode)[keyof typeof AiReadinessWarningCode];
+
+export type AiReadinessWarning = {
+  code: AiReadinessWarningCode;
+};
+
+/**
+ * The versions the checks compare against, so a client can write "needs
+ * 7.1 or later" without hard-coding the number.
+ *
+ */
+export type AiReadinessFloors = {
+  wp: string;
+  agent: string;
+  /**
+   * The first WPMgr agent release that reports the Atomic editor and the parent theme.
+   */
+  facts_agent: string;
+  elementor: string;
+  bricks: string;
+};
+
+export const AiReadinessCheckId = {
+  WP_VERSION: "wp_version",
+  ABILITIES_API: "abilities_api",
+  AGENT_VERSION: "agent_version",
+  CONTENT_EDITING: "content_editing",
+  ELEMENTOR_VERSION: "elementor_version",
+  ELEMENTOR_MCP_SWITCH: "elementor_mcp_switch",
+  ELEMENTOR_ATOMIC: "elementor_atomic",
+  BRICKS_VERSION: "bricks_version",
+  BRICKS_ABILITIES: "bricks_abilities",
+} as const;
+
+export type AiReadinessCheckId =
+  (typeof AiReadinessCheckId)[keyof typeof AiReadinessCheckId];
+
+export type AiReadinessGroup = {
+  id: "base" | "elementor" | "bricks";
+  /**
+   * Builder groups only. False means the builder is not installed on
+   * the site and `checks` is empty; the group counts toward nothing.
+   *
+   */
+  installed?: boolean;
+  /**
+   * Builder groups only. The installed version, or null when it is not
+   * installed or the site did not report a usable version.
+   *
+   */
+  version?: string | null;
+  /**
+   * Builder groups only. `coming` while WPMgr cannot yet build pages
+   * with this builder; the checks then show whether the site will be
+   * ready.
+   *
+   */
+  wpmgr_support?: "coming" | "available";
+  checks: Array<AiReadinessCheck>;
+};
+
+/**
+ * One row. `state` is `pass`, `fail`, `unknown` (WPMgr could not tell;
+ * never a failure) or `not_applicable` (a row this one depends on
+ * failed, or the builder is installed but not active). `observed` is
+ * the version that was compared, or null.
+ *
+ * `reason` is null for `pass`, and for a `fail` with a single way to
+ * fail. Otherwise, per row:
+ *
+ * - `wp_version`: unknown `not_reported`; fail `prerelease_build` (a
+ * development or pre-release build, such as `7.1-RC1` or
+ * `7.1.1-src`, whose release number reaches `floors.wp`: WPMgr's AI
+ * tools run on a released WordPress only). A released version below
+ * `floors.wp` is a `fail` with a null reason.
+ * - `agent_version`: unknown `not_reported`.
+ * - `abilities_api`: unknown `inventory_never_run`, `agent_too_old`
+ * (the agent cannot read the tool list) or `not_reported`.
+ * - `content_editing`: only `pass` or `fail`.
+ * - `elementor_version`, `bricks_version`: fail `too_old`;
+ * not_applicable `inactive` (installed but not active, so not a fix;
+ * `observed` still carries the installed version); unknown
+ * `not_reported`, and for `bricks_version` also
+ * `agent_too_old_for_fact` (a child theme may be in use and the agent
+ * is too old to report its parent).
+ * - `elementor_mcp_switch`, `bricks_abilities`: unknown
+ * `inventory_never_run` (no tool list yet, or the last one was read
+ * while the site lacked the Abilities API), `inventory_truncated` or
+ * `needs_elementor` / `needs_bricks`; not_applicable `needs_abilities`
+ * or `needs_elementor` / `needs_bricks`.
+ * - `elementor_atomic`: unknown `agent_too_old_for_fact`,
+ * `not_reported` or `needs_elementor`; not_applicable
+ * `needs_elementor`.
+ *
+ * `bricks_abilities` is inferred from the site's tool list and has not
+ * been confirmed on a licensed Bricks install. When it is `pass` or
+ * `fail` it is listed with its state, but it is not counted in
+ * `status`, `fix_count` or `failing`. When it is `unknown` it is an
+ * ordinary unknown: it makes `status` `incomplete`, and it is still not
+ * a fix, so it is not in `failing` either.
+ *
+ * A client must render a state or reason it does not recognise as a
+ * neutral "not checked", never as a failure.
+ *
+ */
+export type AiReadinessCheck = {
+  id: AiReadinessCheckId;
+  state: "pass" | "fail" | "unknown" | "not_applicable";
+  reason:
+    | "not_reported"
+    | "inventory_never_run"
+    | "inventory_truncated"
+    | "agent_too_old"
+    | "agent_too_old_for_fact"
+    | "needs_abilities"
+    | "needs_elementor"
+    | "needs_bricks"
+    | "inactive"
+    | "too_old"
+    | "prerelease_build"
+    | null;
+  /**
+   * A version string that passed a strict shape check, or null.
+   */
+  observed: string | null;
+};
+
+export type FleetAiReadiness = {
+  sites: Array<FleetAiReadinessSite>;
+};
+
+export type FleetAiReadinessSite = {
+  site_id: string;
+  status: AiReadinessStatus;
+  fix_count: number;
+  /**
+   * Ids of the rows that count toward `fix_count`: those whose state
+   * is `fail`. `bricks_abilities` is never listed, whatever its state;
+   * when it is `unknown` it makes the site `incomplete`, and it is
+   * still not a fix.
+   *
+   */
+  failing: Array<AiReadinessCheckId>;
+  warnings: Array<AiReadinessWarningCode>;
+};
+
+export type AiReadinessRefreshResult = {
+  /**
+   * A fresh metadata report was requested from the site.
+   */
+  metadata: boolean;
+  /**
+   * A tool-list read was queued by this call or already queued within
+   * the last two minutes. False when the site's agent is too old to
+   * run one.
+   *
+   */
+  abilities: boolean;
 };
 
 export type AssistantRequestApproveBody = {
@@ -18542,6 +18791,125 @@ export type EnableSiteContentEditingResponses = {
 
 export type EnableSiteContentEditingResponse =
   EnableSiteContentEditingResponses[keyof EnableSiteContentEditingResponses];
+
+export type GetSiteAiReadinessData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/ai/readiness";
+};
+
+export type GetSiteAiReadinessErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Missing site:read
+   */
+  403: Error;
+  /**
+   * The site is not the caller's, is archived, or has never been enrolled
+   */
+  404: Error;
+};
+
+export type GetSiteAiReadinessError =
+  GetSiteAiReadinessErrors[keyof GetSiteAiReadinessErrors];
+
+export type GetSiteAiReadinessResponses = {
+  /**
+   * The site's AI readiness
+   */
+  200: SiteAiReadiness;
+};
+
+export type GetSiteAiReadinessResponse =
+  GetSiteAiReadinessResponses[keyof GetSiteAiReadinessResponses];
+
+export type GetFleetAiReadinessData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/api/v1/fleet/ai-readiness";
+};
+
+export type GetFleetAiReadinessErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Missing site:read
+   */
+  403: Error;
+};
+
+export type GetFleetAiReadinessError =
+  GetFleetAiReadinessErrors[keyof GetFleetAiReadinessErrors];
+
+export type GetFleetAiReadinessResponses = {
+  /**
+   * One row per site
+   */
+  200: FleetAiReadiness;
+};
+
+export type GetFleetAiReadinessResponse =
+  GetFleetAiReadinessResponses[keyof GetFleetAiReadinessResponses];
+
+export type RefreshSiteAiReadinessData = {
+  body: {
+    [key: string]: unknown;
+  };
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/ai/readiness/refresh";
+};
+
+export type RefreshSiteAiReadinessErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Missing site.content.refresh
+   */
+  403: Error;
+  /**
+   * The site is not the caller's, or it is archived
+   */
+  404: Error;
+  /**
+   * The site is not enrolled or its agent has not been heard from recently (`site_unreachable`)
+   */
+  409: Error;
+  /**
+   * The body was not application/json
+   */
+  415: Error;
+  /**
+   * Refresh is not available on this install
+   */
+  503: Error;
+};
+
+export type RefreshSiteAiReadinessError =
+  RefreshSiteAiReadinessErrors[keyof RefreshSiteAiReadinessErrors];
+
+export type RefreshSiteAiReadinessResponses = {
+  /**
+   * Refresh queued
+   */
+  202: AiReadinessRefreshResult;
+};
+
+export type RefreshSiteAiReadinessResponse =
+  RefreshSiteAiReadinessResponses[keyof RefreshSiteAiReadinessResponses];
 
 export type PurgeCacheData = {
   body: PurgeRequest;

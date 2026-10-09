@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+
+	"github.com/mosamlife/wpmgr/apps/api/internal/wpversion"
 )
 
 // MinAgentVersionForVendorReads is the first agent release that runs a
@@ -13,6 +15,35 @@ import (
 // interception guards, the side-effect recorder and the pinned output shape.
 // An older agent refuses such an entry; the run tool refuses before asking.
 const MinAgentVersionForVendorReads = "0.61.158"
+
+// MinWPVersionForVendorReads is the WordPress floor for vendor and core
+// reads: the interception guards need the 7.1 filters, so a vendor or core
+// read is not available below it. It lives here, beside the agent floor, so
+// that the MCP tools and the AI readiness checklist compare against one
+// number; internal/mcp re-exports it under the same name.
+const MinWPVersionForVendorReads = "7.1"
+
+// wpReleaseShape is the only WordPress version text a vendor or core read
+// accepts: two to four dotted numbers, the whole string. Go's $ without the m
+// flag is the end of the text, so a trailing newline does not match.
+var wpReleaseShape = regexp.MustCompile(`^[0-9]+(\.[0-9]+){1,3}$`)
+
+// WPVersionMeetsFloor reports whether v, a site's WordPress version exactly
+// as stored, is a plain release at or above floor. A pre-release or
+// development build (7.1-RC1, 7.1.1-src), a version with text around it and an
+// empty or malformed one are not, whatever number they start with. Callers
+// pass the stored text unchanged and trim nothing.
+func WPVersionMeetsFloor(v, floor string) bool {
+	return wpReleaseShape.MatchString(v) && wpversion.Compare(v, floor) >= 0
+}
+
+// WPMeetsVendorFloor reports whether a site's WordPress version is one a
+// vendor or core read may run on: WPVersionMeetsFloor at
+// MinWPVersionForVendorReads. The MCP tools and the AI readiness checklist
+// both decide with it, so the checklist cannot pass a version the tools refuse.
+func WPMeetsVendorFloor(v string) bool {
+	return WPVersionMeetsFloor(v, MinWPVersionForVendorReads)
+}
 
 // Vendor read reply limits. The agent caps each list at 50 names; a reply
 // over these bounds breaks the contract.
