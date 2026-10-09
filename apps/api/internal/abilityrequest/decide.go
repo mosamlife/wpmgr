@@ -174,9 +174,9 @@ var errSettingMoved = errors.New("the setting changed while the request was bein
 var errAlreadyDecided = errors.New("the request was already decided")
 
 // Decide decides one request that was just created pending. It never
-// returns an approval it did not commit. An error leaves the request
-// pending and unchecked; the scan decides it again, or, once it is too old
-// for that, leaves it waiting for a person with not_checked.
+// returns an approval it did not commit. A decision that errors records
+// nothing: the request stays pending and waits for a person, and nothing
+// approves it automatically later.
 func (s *Service) Decide(ctx context.Context, tenantID, requestID uuid.UUID) (DecideResult, error) {
 	if s.policy == nil || s.setters == nil || !s.enabled {
 		return DecideResult{}, nil
