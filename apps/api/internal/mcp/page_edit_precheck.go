@@ -96,13 +96,13 @@ func (m *phpTextMap) UnmarshalJSON(b []byte) error {
 
 // pageEditChange is one member of the preview's changes.
 type pageEditChange struct {
-	Op      string          `json:"op"`
-	Ref     string          `json:"ref,omitempty"`
-	Kind    string          `json:"kind,omitempty"`
-	Level   *int64          `json:"level,omitempty"`
-	Before  *phpTextMap     `json:"before,omitempty"`
-	After   *phpTextMap     `json:"after,omitempty"`
-	NewRefs []string        `json:"new_refs,omitempty"`
+	Op      string                `json:"op"`
+	Ref     string                `json:"ref,omitempty"`
+	Kind    string                `json:"kind,omitempty"`
+	Level   *int64                `json:"level,omitempty"`
+	Before  *phpTextMap           `json:"before,omitempty"`
+	After   *phpTextMap           `json:"after,omitempty"`
+	NewRefs []string              `json:"new_refs,omitempty"`
 	Anchor  *pageEditChangeAnchor `json:"anchor,omitempty"`
 }
 
@@ -247,6 +247,9 @@ func verifyPageEditPrecheck(resp agentcmd.AbilityRunResponse, entrySum string, i
 				return checkedPageEdit{}, false
 			}
 		}
+		if op.Op == "set_text" && !pageEditTextLanded(op, proj) {
+			return checkedPageEdit{}, false
+		}
 	}
 	return checkedPageEdit{
 		precheckDigest: resp.PrecheckDigest, previewDigest: resp.PreviewDigest,
@@ -312,6 +315,22 @@ func pageEditChangeMatches(c pageEditChange, op pageEditOp, elements map[string]
 	case "move":
 		return c.Ref == op.Ref && projectionKinds[c.Kind] && c.After == nil && c.NewRefs == nil &&
 			elements[c.Ref] != nil && anchorOK()
+	}
+	return false
+}
+
+// pageEditTextLanded: after a set_text, its node in the edited tree offers
+// the field and holds exactly the input's text. A node a later operation of
+// the call took off the page with its parent is not on it to check.
+func pageEditTextLanded(op pageEditOp, proj *projection) bool {
+	at, onPage := proj.refs[op.Ref]
+	if !onPage {
+		return true
+	}
+	for _, f := range proj.nodes[at].text {
+		if f.field == op.Field {
+			return f.text == op.Text
+		}
 	}
 	return false
 }
