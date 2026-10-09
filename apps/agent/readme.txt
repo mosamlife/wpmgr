@@ -284,7 +284,7 @@ This plugin ships two minified JavaScript files. Their human-readable source and
 
 == Changelog ==
 
-The entries below summarize the notable changes since 0.31.1. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
+The entries below summarize the notable changes since 0.33.0. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
 
 = 0.61.160 =
 * Added: An AI connected through WPMgr can now create a draft page or post from an outline with real layout, with your approval for each request in WPMgr. The outline can use headings, paragraphs, lists, quotes, tables and separators, and images that are already in the site's media library. In the block editor it can also use buttons, spacing, sections and columns. Nothing is published, and undo moves the draft to the trash.
@@ -485,13 +485,6 @@ The entries below summarize the notable changes since 0.31.1. This project ships
 
 = 0.33.0 =
 * New: Real User Monitoring (RUM), per-site and off by default. When enabled, the agent injects a tiny first-party measurement script into cached pages; the visitor's browser sends anonymous Core Web Vitals (LCP, INP, CLS, FCP, TTFB) and page-load timing directly to your control plane. No cookies, no cross-site identifiers, the page path is stored with the query string stripped, and the visitor IP is never stored. See the Privacy section.
-
-= 0.32.0 =
-* New: self-hosted font subsetting (experimental, default off). Discovers fonts loaded via external stylesheets in addition to inline font-face rules, and reports per-font conversion progress to the dashboard. Subsetting and transcoding run on the control-plane service, not inside the plugin.
-
-= 0.31.1 =
-* New: incremental backup engine with a content-addressed chunk store, and incremental chain restore.
-* New: WOFF2 font transcoding. TTF, OTF and WOFF are converted on the control plane; the flag defaults to off.
 
 == Upgrade Notice ==
 
