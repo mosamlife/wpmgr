@@ -125,7 +125,7 @@ export function ReadCapabilityPicker({
         </div>
         <p className="text-xs text-[var(--color-muted-foreground)]">
           {activePreset === null
-            ? "You have changed the rows below, so this is your own set rather than either shortcut."
+            ? "The ticks below are not either shortcut, so this is your own set."
             : (presets.find((p) => p.id === activePreset)?.description ?? "")}
         </p>
       </div>

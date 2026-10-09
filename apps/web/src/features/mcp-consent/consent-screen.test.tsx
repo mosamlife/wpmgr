@@ -616,6 +616,13 @@ describe("ConsentScreen — the mcp:cache write section (design v7 S2.2)", () =>
 // ---------------------------------------------------------------------------
 // The mcp:site site-tools section
 // ---------------------------------------------------------------------------
+//
+// THE DEFAULT. An app that asks for site tools (mcp:site) gets the two choices
+// opened TICKED (owner ruling 2026-10-09), each only if the server offers it,
+// and the person can clear either one before approving. An app that did not ask
+// gets no box and no tick. The cache-clear choice is not part of this and still
+// opens clear. Every "sent" assertion below is read from what onApprove was
+// handed, which is what the request is built from.
 describe("ConsentScreen, the mcp:site site-tools section", () => {
   const READ = { name: "mcp.sites.read", effect: "read" };
   const ABILITY_READ = { name: "mcp.ability.read", effect: "read" };
@@ -628,6 +635,7 @@ describe("ConsentScreen, the mcp:site site-tools section", () => {
       ABILITY_READ,
       ABILITY_REQUEST,
     ],
+    extra: Record<string, unknown> = {},
   ) {
     return parseConsentContext({
       client_id: "c_site",
@@ -638,6 +646,7 @@ describe("ConsentScreen, the mcp:site site-tools section", () => {
       scopes,
       grant_lifetime_days: 90,
       conferrable_capabilities: conferrable,
+      ...extra,
     });
   }
 
@@ -645,41 +654,66 @@ describe("ConsentScreen, the mcp:site site-tools section", () => {
   const requestBox = () =>
     screen.getByTestId<HTMLInputElement>("ability-box-mcp.ability.request");
 
+  /** Put a box in the wanted state the way a person would, and prove it got there. */
+  function setTicked(box: () => HTMLInputElement, want: boolean) {
+    if (box().checked !== want) fireEvent.click(box());
+    expect(box().checked).toBe(want);
+  }
+
   function approveCall(onApprove: ReturnType<typeof vi.fn>) {
     fireEvent.submit(screen.getByTestId("consent-approve").closest("form")!);
     expect(onApprove).toHaveBeenCalledTimes(1);
     return onApprove.mock.calls[0]![0] as { capabilities?: string[] };
   }
 
-  it("recognises mcp:site, renders both boxes unticked, and leaves Approve enabled", async () => {
+  it("recognises mcp:site, opens both boxes ticked, and leaves Approve enabled", async () => {
     renderWithProviders(<ConsentScreen {...props({ consent: siteConsent() })} />, {
       withRouter: true,
     });
     await screen.findByTestId("consent-site-capability");
     expect(screen.queryByTestId("consent-unrecognised-scope")).toBeNull();
-    expect(readBox().checked).toBe(false);
-    expect(requestBox().checked).toBe(false);
+    expect(readBox().checked).toBe(true);
+    expect(requestBox().checked).toBe(true);
+    // Ticked is not the same as locked: both are live controls.
+    expect(readBox().disabled).toBe(false);
+    expect(requestBox().disabled).toBe(false);
     expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(false);
   });
 
-  it("sends the fleet reads only when neither box is ticked", async () => {
+  it("sends the fleet reads and both site tools when the person changes nothing", async () => {
     const onApprove = vi.fn();
     renderWithProviders(<ConsentScreen {...props({ consent: siteConsent(), onApprove })} />, {
       withRouter: true,
     });
     await screen.findByTestId("consent-site-capability");
+    expect(approveCall(onApprove).capabilities).toEqual([
+      "mcp.sites.read",
+      "mcp.ability.read",
+      "mcp.ability.request",
+    ]);
+  });
+
+  it("sends the fleet reads only when the person clears both boxes", async () => {
+    const onApprove = vi.fn();
+    renderWithProviders(<ConsentScreen {...props({ consent: siteConsent(), onApprove })} />, {
+      withRouter: true,
+    });
+    await screen.findByTestId("consent-site-capability");
+    setTicked(readBox, false);
+    setTicked(requestBox, false);
     expect(approveCall(onApprove).capabilities).toEqual(["mcp.sites.read"]);
   });
 
-  it("sends exactly what is ticked: the read alone, then the request alone, then both", async () => {
+  it("sends exactly what is ticked, for every combination of the two boxes", async () => {
     const cases: { read: boolean; request: boolean; want: string[] }[] = [
-      { read: true, request: false, want: ["mcp.sites.read", "mcp.ability.read"] },
-      { read: false, request: true, want: ["mcp.sites.read", "mcp.ability.request"] },
       {
         read: true,
         request: true,
         want: ["mcp.sites.read", "mcp.ability.read", "mcp.ability.request"],
       },
+      { read: true, request: false, want: ["mcp.sites.read", "mcp.ability.read"] },
+      { read: false, request: true, want: ["mcp.sites.read", "mcp.ability.request"] },
+      { read: false, request: false, want: ["mcp.sites.read"] },
     ];
     for (const c of cases) {
       const onApprove = vi.fn();
@@ -688,59 +722,136 @@ describe("ConsentScreen, the mcp:site site-tools section", () => {
         { withRouter: true },
       );
       await screen.findByTestId("consent-site-capability");
-      if (c.read) fireEvent.click(readBox());
-      if (c.request) fireEvent.click(requestBox());
+      setTicked(readBox, c.read);
+      setTicked(requestBox, c.request);
       expect(approveCall(onApprove).capabilities).toEqual(c.want);
       unmount();
     }
   });
 
-  it("does not send a capability the server did not offer, even if ticked", async () => {
+  it("opens the offered site tool ticked and the one the server did not offer clear, and sends only the first", async () => {
+    // The app asked for site tools, the server offers the read but not the
+    // request. The read is the positive control: it opens ticked and is sent.
+    // The request is never ticked, cannot be forced on, and is never sent.
     const onApprove = vi.fn();
     const consent = siteConsent([SCOPE_READ, SCOPE_SITE], [READ, ABILITY_READ]);
     renderWithProviders(<ConsentScreen {...props({ consent, onApprove })} />, {
       withRouter: true,
     });
     await screen.findByTestId("consent-site-capability");
-    fireEvent.click(readBox());
-    fireEvent.click(requestBox());
-    expect(approveCall(onApprove).capabilities).toEqual(["mcp.sites.read", "mcp.ability.read"]);
-  });
-
-  it("renders a capability the server did not offer disabled, with a note, and never sends it", async () => {
-    const onApprove = vi.fn();
-    const consent = siteConsent([SCOPE_READ, SCOPE_SITE], [READ, ABILITY_READ]);
-    renderWithProviders(<ConsentScreen {...props({ consent, onApprove })} />, {
-      withRouter: true,
-    });
-    await screen.findByTestId("consent-site-capability");
+    expect(readBox().checked).toBe(true);
+    expect(readBox().disabled).toBe(false);
+    expect(requestBox().checked).toBe(false);
     expect(requestBox().disabled).toBe(true);
     expect(screen.getByTestId("ability-not-offered-mcp.ability.request")).toHaveTextContent(
       /not requested by this app/i,
     );
-    expect(readBox().disabled).toBe(false);
     expect(screen.queryByTestId("ability-not-offered-mcp.ability.read")).toBeNull();
     fireEvent.click(requestBox());
     expect(requestBox().checked).toBe(false);
-    expect(approveCall(onApprove).capabilities).toEqual(["mcp.sites.read"]);
+    expect(approveCall(onApprove).capabilities).toEqual(["mcp.sites.read", "mcp.ability.read"]);
   });
 
-  it("blocks Approve for a site-only request until a box is ticked", async () => {
-    const consent = siteConsent(
-      [SCOPE_SITE],
-      [ABILITY_READ, ABILITY_REQUEST],
-    );
+  it("does the same the other way round: the request ticked, the read not offered and not sent", async () => {
+    const onApprove = vi.fn();
+    const consent = siteConsent([SCOPE_READ, SCOPE_SITE], [READ, ABILITY_REQUEST]);
+    renderWithProviders(<ConsentScreen {...props({ consent, onApprove })} />, {
+      withRouter: true,
+    });
+    await screen.findByTestId("consent-site-capability");
+    expect(requestBox().checked).toBe(true);
+    expect(readBox().checked).toBe(false);
+    expect(readBox().disabled).toBe(true);
+    expect(screen.getByTestId("ability-not-offered-mcp.ability.read")).toBeTruthy();
+    expect(approveCall(onApprove).capabilities).toEqual(["mcp.sites.read", "mcp.ability.request"]);
+  });
+
+  it("lets a site-only request through as it opens, and blocks Approve only once both boxes are cleared", async () => {
+    const consent = siteConsent([SCOPE_SITE], [ABILITY_READ, ABILITY_REQUEST]);
     renderWithProviders(<ConsentScreen {...props({ consent })} />, { withRouter: true });
     await screen.findByTestId("consent-site-capability");
+    // Both ticked at open, so there is something to approve.
+    expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(false);
+    expect(screen.queryByTestId("consent-nothing-to-confer")).toBeNull();
+
+    setTicked(readBox, false);
+    setTicked(requestBox, false);
     expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(true);
     expect(screen.getByTestId("consent-nothing-to-confer")).toBeTruthy();
-    fireEvent.click(readBox());
+
+    setTicked(readBox, true);
     expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(false);
+    expect(screen.queryByTestId("consent-nothing-to-confer")).toBeNull();
   });
 
   it("does not show the site-tools box when the client did not ask for mcp:site", () => {
     renderWithProviders(<ConsentScreen {...props()} />);
     expect(screen.queryByTestId("consent-site-capability")).toBeNull();
+  });
+
+  it("ticks and sends no site tool for an app that did not ask for mcp:site, even if the server lists them", async () => {
+    // The scope decides, not the offer. The server lists both site-tools
+    // capabilities here, so a screen that ticked whatever was on offer would
+    // send them; this one has no box and sends the fleet read alone.
+    const onApprove = vi.fn();
+    const consent = siteConsent([SCOPE_READ], [READ, ABILITY_READ, ABILITY_REQUEST]);
+    renderWithProviders(<ConsentScreen {...props({ consent, onApprove })} />, {
+      withRouter: true,
+    });
+    await screen.findByTestId("consent-approve");
+    expect(screen.queryByTestId("consent-site-capability")).toBeNull();
+    expect(screen.queryByTestId("ability-capability-box")).toBeNull();
+    expect(approveCall(onApprove).capabilities).toEqual(["mcp.sites.read"]);
+  });
+
+  it("opens the cache-clear box clear while the site tools open ticked, and does not send it", async () => {
+    // The default covers the two site-tools choices and nothing else.
+    const onApprove = vi.fn();
+    const consent = siteConsent(
+      [SCOPE_READ, SCOPE_CACHE, SCOPE_SITE],
+      [READ, { name: "mcp.cache.purge", effect: "request" }, ABILITY_READ, ABILITY_REQUEST],
+    );
+    renderWithProviders(<ConsentScreen {...props({ consent, onApprove })} />, {
+      withRouter: true,
+    });
+    const cache = within(await screen.findByTestId("consent-cache-capability")).getByRole(
+      "checkbox",
+    ) as HTMLInputElement;
+    expect(cache.checked).toBe(false);
+    expect(readBox().checked).toBe(true);
+    expect(requestBox().checked).toBe(true);
+    const sent = approveCall(onApprove).capabilities;
+    expect(sent).toEqual(["mcp.sites.read", "mcp.ability.read", "mcp.ability.request"]);
+    expect(sent).not.toContain("mcp.cache.purge");
+  });
+
+  it("keeps a box the person cleared cleared when the same screen is shown again with a refreshed context", () => {
+    // A re-render that brings a NEW context object must not put back a tick the
+    // person took off. Rendered without a router so the same screen instance can
+    // be given new props with rerender. The refreshed context differs in the
+    // lifetime it states, which is on screen, so the test can see that the new
+    // context really did reach the screen.
+    const first = siteConsent([SCOPE_READ, SCOPE_SITE], undefined, { consent_ticket: "t-1" });
+    const refreshed = siteConsent([SCOPE_READ, SCOPE_SITE], undefined, {
+      consent_ticket: "t-2",
+      grant_lifetime_days: 30,
+    });
+    expect(refreshed).not.toBe(first);
+
+    const { rerender } = renderWithProviders(<ConsentScreen {...props({ consent: first })} />);
+    expect(screen.getByTestId("consent-duration-expiry")).toHaveTextContent("90 days");
+    expect(readBox().checked).toBe(true);
+    expect(requestBox().checked).toBe(true);
+    fireEvent.click(requestBox());
+    expect(requestBox().checked).toBe(false);
+
+    rerender(<ConsentScreen {...props({ consent: refreshed })} />);
+    // The screen now holds the refreshed context...
+    expect(screen.getByTestId("consent-duration-expiry")).toHaveTextContent("30 days");
+    // ...the box that was left ticked still is, and the one taken off has not
+    // come back.
+    expect(readBox().checked).toBe(true);
+    expect(requestBox().checked).toBe(false);
   });
 });
 

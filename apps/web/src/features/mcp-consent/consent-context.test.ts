@@ -2,13 +2,17 @@ import { describe, it, expect } from "vitest";
 
 import {
   allScopesRecognised,
+  asksForSiteTools,
   asSelfAsserted,
   buildApprovalCapabilities,
   consentWireSchema,
   describeScope,
+  initialSelection,
   offeredReads,
   parseConsentContext,
+  SCOPE_CACHE,
   SCOPE_READ,
+  SCOPE_SITE,
 } from "./consent-context";
 
 // m124 obligation 7: the consent screen must present registration-supplied
@@ -385,5 +389,87 @@ describe("buildApprovalCapabilities, exactly the ticks limited to what was offer
     const ticks = Object.freeze(["mcp.sites.read", "mcp.cache.purge"]);
     expect(() => buildApprovalCapabilities(EVERYTHING, ticks)).not.toThrow();
     expect(ticks).toEqual(["mcp.sites.read", "mcp.cache.purge"]);
+  });
+});
+
+describe("asksForSiteTools", () => {
+  it("is true exactly when mcp:site is among the scopes", () => {
+    expect(asksForSiteTools([SCOPE_READ, SCOPE_SITE])).toBe(true);
+    expect(asksForSiteTools([SCOPE_SITE])).toBe(true);
+    expect(asksForSiteTools([SCOPE_READ])).toBe(false);
+    expect(asksForSiteTools([])).toBe(false);
+  });
+
+  it("does not take a near miss for the scope", () => {
+    expect(asksForSiteTools(["mcp:sites", "mcp:site2", "MCP:SITE"])).toBe(false);
+  });
+});
+
+describe("initialSelection, what the consent screen opens ticked", () => {
+  const SITE_TOOLS = ["mcp.ability.read", "mcp.ability.request"];
+  const ctx = (
+    scopes: readonly string[],
+    conferrableCapabilities: readonly { name: string; effect: string }[],
+  ) => ({ scopes, conferrableCapabilities });
+
+  it("opens on Sites alone when the app did not ask for site tools, even if the server lists them", () => {
+    // The scope decides, not the offer: a list that happens to hold the
+    // site-tools names must not tick them for a request that never asked.
+    expect(initialSelection(ctx([SCOPE_READ], EVERYTHING))).toEqual(["mcp.sites.read"]);
+  });
+
+  it("adds both site tools after the reads when mcp:site was asked for and both are offered", () => {
+    expect(initialSelection(ctx([SCOPE_READ, SCOPE_SITE], EVERYTHING))).toEqual([
+      "mcp.sites.read",
+      ...SITE_TOOLS,
+    ]);
+  });
+
+  it("adds only the site tool the server offers", () => {
+    const readOnly = [...asReads(["mcp.sites.read"]), ABILITY_READ];
+    const requestOnly = [...asReads(["mcp.sites.read"]), ABILITY_REQUEST];
+    expect(initialSelection(ctx([SCOPE_READ, SCOPE_SITE], readOnly))).toEqual([
+      "mcp.sites.read",
+      "mcp.ability.read",
+    ]);
+    expect(initialSelection(ctx([SCOPE_READ, SCOPE_SITE], requestOnly))).toEqual([
+      "mcp.sites.read",
+      "mcp.ability.request",
+    ]);
+  });
+
+  it("adds neither when the server offers neither", () => {
+    expect(initialSelection(ctx([SCOPE_READ, SCOPE_SITE], asReads(["mcp.sites.read"])))).toEqual([
+      "mcp.sites.read",
+    ]);
+  });
+
+  it("does not tick a site tool the server offered with a different effect", () => {
+    const wrongEffects = [
+      ...asReads(["mcp.sites.read"]),
+      { name: "mcp.ability.read", effect: "request" },
+      { name: "mcp.ability.request", effect: "read" },
+    ];
+    expect(initialSelection(ctx([SCOPE_READ, SCOPE_SITE], wrongEffects))).toEqual([
+      "mcp.sites.read",
+    ]);
+  });
+
+  it("never ticks the cache-clear, whatever was asked for", () => {
+    const asked = initialSelection(ctx([SCOPE_READ, SCOPE_CACHE, SCOPE_SITE], EVERYTHING));
+    expect(asked).not.toContain("mcp.cache.purge");
+    expect(asked).toEqual(["mcp.sites.read", ...SITE_TOOLS]);
+    expect(initialSelection(ctx([SCOPE_CACHE], [CACHE]))).toEqual([]);
+  });
+
+  it("opens on the site tools alone when no read is on offer", () => {
+    expect(initialSelection(ctx([SCOPE_SITE], [ABILITY_READ, ABILITY_REQUEST]))).toEqual(
+      SITE_TOOLS,
+    );
+  });
+
+  it("opens with nothing ticked for a server that listed nothing", () => {
+    expect(initialSelection(ctx([SCOPE_READ, SCOPE_SITE], []))).toEqual([]);
+    expect(initialSelection(ctx([SCOPE_READ], []))).toEqual([]);
   });
 });
