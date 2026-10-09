@@ -7,7 +7,13 @@
 // markup goes to the first path; markup for the classic editor goes to the
 // second, because the block validator reads classic markup as freeform. Exits
 // non-zero on any refusal, any empty render, a render the builder's own
-// retokenise pass would refuse, or zero cases. The builder is standalone.
+// retokenise pass would refuse, or zero cases.
+//
+// The builder and everything it uses are loaded the way the plugin's main file
+// loads them: through the agent's own class resolver (includes/class-autoloader.php).
+// No agent class file is named here, so a class the builder starts to use needs
+// no change to this script. A class the resolver cannot find is a non-zero exit
+// that names the class, never a skipped case.
 //
 // outlines.json is a list of cases:
 //   name      unique, kebab-case
@@ -31,12 +37,12 @@
 // WordPress would give it. An id the map does not have is an error.
 //
 // Test seams (used by check-page-blocks_test.sh and check-page-kses_test.sh):
-//   PAGE_BLOCKS_OUTLINES  use this outlines file
-//   PAGE_BLOCKS_MEDIA     use this media map
+//   PAGE_BLOCKS_OUTLINES   use this outlines file
+//   PAGE_BLOCKS_MEDIA      use this media map
+//   PAGE_BLOCKS_AGENT_DIR  load the agent from this directory (default apps/agent)
 declare(strict_types=1);
 
 define('ABSPATH', '/');
-require dirname(__DIR__, 2) . '/apps/agent/includes/abilities/class-page-create-builder.php';
 
 use WPMgr\Agent\Abilities\PageCreateBuilder;
 
@@ -44,6 +50,26 @@ function fail(string $m): never
 {
     fwrite(STDERR, "generate.php: $m\n");
     exit(1);
+}
+
+// The agent, loaded as the plugin's main file loads it: WPMGR_AGENT_DIR, the
+// resolver file, then a registered closure that requires what the resolver finds.
+$agentDir = getenv('PAGE_BLOCKS_AGENT_DIR');
+$agentDir = rtrim(is_string($agentDir) && $agentDir !== '' ? $agentDir : dirname(__DIR__, 2) . '/apps/agent', '/');
+define('WPMGR_AGENT_DIR', $agentDir . '/');
+$resolverFile = WPMGR_AGENT_DIR . 'includes/class-autoloader.php';
+if (!is_file($resolverFile)) {
+    fail("the agent's class resolver is not at $resolverFile");
+}
+require_once $resolverFile;
+spl_autoload_register(static function (string $class): void {
+    $file = \WPMgr\Agent\Autoloader::resolve($class);
+    if ($file !== null) {
+        require_once $file;
+    }
+});
+if (!class_exists(PageCreateBuilder::class)) {
+    fail('the agent class resolver cannot load ' . PageCreateBuilder::class . ' from ' . WPMGR_AGENT_DIR);
 }
 
 /** n characters of text with &, non-Latin script and an emoji in it. */
