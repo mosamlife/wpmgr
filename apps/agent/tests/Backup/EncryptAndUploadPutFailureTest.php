@@ -344,9 +344,63 @@ final class EncryptAndUploadPutFailureTest extends TestCase
         self::assertStringNotContainsString('X-Amz-Signature', $message);
     }
 
+    /**
+     * TaskRunner keeps 240 bytes of a failure message, and the report is
+     * JSON, which refuses invalid UTF-8. With a long storage host and a long
+     * multi-byte (translated) transport error, the message still fits in 240
+     * bytes, is valid UTF-8, encodes as JSON, and keeps the host and the
+     * start of the cause.
+     */
+    public function test_long_multibyte_failure_message_fits_the_report_and_stays_valid_utf8(): void
+    {
+        $longHost = str_repeat('backups', 12) . '.s3.example';
+        $error    = str_repeat('Сбой соединения с хранилищем; ', 12);
+        $this->respondWith(static fn (): \WP_Error => new \WP_Error('http_request_failed', $error));
+        $transport       = $this->transport();
+        $transport->host = $longHost;
+        $enc             = $this->encrypt($transport, 3);
+        $first           = $this->hashOfUrl($transport->urlsInFirstPresign()[0]);
+
+        $message = $this->uploadExpectingFailure($transport, $enc);
+
+        self::assertLessThanOrEqual(240, strlen($message));
+        self::assertSame(1, preg_match('//u', $message), 'the failure message must be valid UTF-8');
+        self::assertNotFalse(json_encode(['message' => $message]), 'the failure report must JSON-encode');
+        self::assertStringContainsString($longHost, $message);
+        self::assertStringContainsString('Сбой соединения', $message);
+        self::assertStringContainsString(substr($first, 0, 16), $message);
+    }
+
     // ------------------------------------------------------------------
     // BackupTransport::putChunkWithStatus() on its own.
     // ------------------------------------------------------------------
+
+    /**
+     * capUtf8() keeps failure text valid UTF-8: a cut inside a multi-byte
+     * character drops that character, and text that is not UTF-8 keeps only
+     * its ASCII.
+     */
+    public function test_cap_utf8_never_returns_invalid_utf8(): void
+    {
+        $text = str_repeat('é', 100); // 200 bytes, 2 per character.
+        for ($max = 0; $max <= 12; $max++) {
+            $cut = BackupTransport::capUtf8($text, $max);
+            self::assertSame(1, preg_match('//u', $cut), "cut at {$max} bytes");
+            self::assertSame(str_repeat('é', intdiv($max, 2)), $cut);
+        }
+        $fourByte = str_repeat("\u{1F600}", 5);
+        for ($max = 0; $max <= 9; $max++) {
+            self::assertSame(str_repeat("\u{1F600}", intdiv($max, 4)), BackupTransport::capUtf8($fourByte, $max));
+        }
+        self::assertSame('caf timeout', BackupTransport::capUtf8("caf\xE9 timeout", 100), 'Latin-1 input keeps its ASCII');
+        self::assertSame('short', BackupTransport::capUtf8('short', 100));
+
+        $transport = $this->bareTransport();
+        $this->respondWith(static fn (): \WP_Error => new \WP_Error('http_request_failed', str_repeat('Ошибка ', 40)));
+        $error = $transport->putChunkWithStatus(self::PUT_PREFIX . 'abc', 'bytes')['error'];
+        self::assertLessThanOrEqual(160, strlen($error));
+        self::assertSame(1, preg_match('//u', $error));
+    }
 
     /**
      * Retry classification matches getChunkWithStatus(): transport errors,
@@ -505,6 +559,9 @@ final class EncryptAndUploadPutFailureTest extends TestCase
             /** @var list<string> hashes the CP reports as already stored on a re-presign */
             public array $storedOnRepresign = [];
 
+            /** Storage host the presigned URLs point at. */
+            public string $host = 's3.example';
+
             /** @var list<string> URLs returned by the first presign, in order */
             private array $firstUrls = [];
 
@@ -521,7 +578,7 @@ final class EncryptAndUploadPutFailureTest extends TestCase
                     if ($round > 1 && in_array($hash, $this->storedOnRepresign, true)) {
                         continue;
                     }
-                    $uploads[$hash] = 'https://s3.example/put/' . $hash . '?X-Amz-Signature=sig-round-' . $round;
+                    $uploads[$hash] = 'https://' . $this->host . '/put/' . $hash . '?X-Amz-Signature=sig-round-' . $round;
                 }
                 if ($round === 1) {
                     $this->firstUrls = array_values($uploads);

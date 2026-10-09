@@ -296,7 +296,36 @@ class BackupTransport
         );
         $message = (string) preg_replace('/[\x00-\x1F\x7F]+/', ' ', $message);
 
-        return substr(trim($message), 0, self::PUT_ERROR_MAX);
+        return self::capUtf8(trim($message), self::PUT_ERROR_MAX);
+    }
+
+    /**
+     * Cap text bound for a failure report at a byte budget and keep it valid
+     * UTF-8. The report travels as JSON (ProgressClient, saveTaskState), and
+     * json_encode() refuses invalid UTF-8, which would drop the whole report.
+     * Text that is not valid UTF-8 to begin with keeps only its ASCII; a cut
+     * that lands inside a multi-byte character drops that partial character.
+     * Needs neither mbstring nor iconv.
+     *
+     * @param string $text     Text to cap.
+     * @param int    $maxBytes Byte budget.
+     * @return string
+     */
+    public static function capUtf8(string $text, int $maxBytes): string
+    {
+        if (preg_match('//u', $text) !== 1) {
+            $text = (string) preg_replace('/[\x80-\xFF]+/', '', $text);
+        }
+        if (strlen($text) <= $maxBytes) {
+            return $text;
+        }
+        $cut = substr($text, 0, max(0, $maxBytes));
+        // Valid input cut at a byte boundary leaves at most one partial
+        // sequence (up to 3 bytes) at the end.
+        for ($i = 0; $i < 3 && $cut !== '' && preg_match('//u', $cut) !== 1; $i++) {
+            $cut = substr($cut, 0, -1);
+        }
+        return $cut;
     }
 
     /**

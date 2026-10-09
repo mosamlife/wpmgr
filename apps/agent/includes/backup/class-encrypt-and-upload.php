@@ -158,6 +158,13 @@ final class EncryptAndUpload
      */
     private const PUT_BACKOFF_BASE_MS = 2000;
 
+    /**
+     * GH #369: TaskRunner keeps this many bytes of a failure message
+     * (`substr($e->getMessage(), 0, 240)` for last_error and the failed
+     * progress report). describePutFailure() builds its message to fit.
+     */
+    private const FAILURE_MESSAGE_MAX_BYTES = 240;
+
     private AgeCrypto $age;
     private BackupTransport $transport;
     private string $snapshotId;
@@ -1471,9 +1478,13 @@ final class EncryptAndUpload
      * report. It reaches the dashboard and the backup-failure email through
      * the CP, so it carries only the storage host, the HTTP status and S3
      * error code or the transport error (all sanitized by BackupTransport),
-     * the attempt count and the hex chunk hash; never the URL. The cause
-     * comes before the hash because TaskRunner keeps only the first 240
-     * characters of a failure message.
+     * the attempt count and the hex chunk hash; never the URL.
+     *
+     * TaskRunner keeps only the first FAILURE_MESSAGE_MAX_BYTES bytes of a
+     * failure message, and a byte cut inside a multi-byte character would
+     * make the JSON report fail to encode. So the message is built to fit:
+     * cause before hash, and when it is still too long the hash is shortened,
+     * then the cause is capped on a character boundary.
      *
      * @param string                                                                          $hash   Chunk hash.
      * @param array{status:int,error:string,s3_code:string,host:string,attempts:int} $result Final putChunkWithRetry() result.
@@ -1489,14 +1500,18 @@ final class EncryptAndUpload
             $cause = 'no response from storage';
         }
 
-        return sprintf(
-            'EncryptAndUpload: upload to %s failed: %s (%d %s, chunk %s)',
-            $result['host'] !== '' ? $result['host'] : 'storage',
-            $cause,
-            $result['attempts'],
-            $result['attempts'] === 1 ? 'attempt' : 'attempts',
-            (string) preg_replace('/[^0-9a-fA-F]/', '', $hash)
-        );
+        $head  = sprintf('EncryptAndUpload: upload to %s failed: ', $result['host'] !== '' ? $result['host'] : 'storage');
+        $word  = $result['attempts'] === 1 ? 'attempt' : 'attempts';
+        $hex   = (string) preg_replace('/[^0-9a-fA-F]/', '', $hash);
+        $whole = $head . $cause . sprintf(' (%d %s, chunk %s)', $result['attempts'], $word, $hex);
+        if (strlen($whole) <= self::FAILURE_MESSAGE_MAX_BYTES) {
+            return $whole;
+        }
+
+        $tail = sprintf(' (%d %s, chunk %s)', $result['attempts'], $word, substr($hex, 0, 16));
+        return $head
+            . BackupTransport::capUtf8($cause, self::FAILURE_MESSAGE_MAX_BYTES - strlen($head) - strlen($tail))
+            . $tail;
     }
 
     /**
