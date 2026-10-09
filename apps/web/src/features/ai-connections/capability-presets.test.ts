@@ -7,7 +7,9 @@ import {
   conferrableReadsIn,
   defaultCapabilities,
   presetFor,
+  withAbilityTicks,
   withCapability,
+  withPreset,
 } from "./capability-presets";
 
 // What the server confers for mcp:read: scopeCapabilities[ScopeRead] in
@@ -117,11 +119,23 @@ describe("presetFor", () => {
     expect(presetFor([], presets)).toBeNull();
   });
 
-  it("derives the claim over the whole tick list, so a ticked write makes it Custom", () => {
-    // The preset's description says "and nothing else". Over a set that holds
-    // the cache-clear request that sentence would be untrue.
-    expect(presetFor(["mcp.sites.read", "mcp.cache.purge"], presets)).toBeNull();
-    expect(presetFor([...SERVER_READS, "mcp.ability.read"], presets)).toBeNull();
+  it("judges the read rows only: a site-tools or cache-clear tick never moves it", () => {
+    // Owner ruling 2026-10-09: a preset sets the reads and nothing else, so the
+    // claim is about the reads. The ticks further down are in no preset and
+    // leave the claim exactly where the read rows put it.
+    expect(presetFor(["mcp.sites.read", "mcp.cache.purge"], presets)).toBe("basics");
+    expect(presetFor(["mcp.sites.read", "mcp.ability.read", "mcp.ability.request"], presets)).toBe(
+      "basics",
+    );
+    expect(presetFor([...SERVER_READS, "mcp.ability.read", "mcp.cache.purge"], presets)).toBe(
+      "read-everything",
+    );
+  });
+
+  it("still calls the set Custom when the read rows are neither shortcut, whatever else is ticked", () => {
+    expect(presetFor(["mcp.sites.read", "mcp.uptime.read", "mcp.ability.read"], presets)).toBeNull();
+    // No read row at all matches no shortcut, even with other boxes ticked.
+    expect(presetFor(["mcp.ability.read", "mcp.cache.purge"], presets)).toBeNull();
   });
 
   it("claims nothing when the surface offers no preset", () => {
@@ -183,6 +197,122 @@ describe("withCapability", () => {
     const before = Object.freeze(["mcp.sites.read"]);
     withCapability(before, "mcp.uptime.read", true);
     withCapability(before, "mcp.sites.read", false);
+    expect(before).toEqual(["mcp.sites.read"]);
+  });
+});
+
+// Owner ruling 2026-10-09: a preset changes the read rows and nothing else. A
+// press leaves the site-tools ticks and the cache-clear tick exactly as they were.
+describe("withPreset", () => {
+  const presets = capabilityPresets(SERVER_READS);
+  const basics = presets.find((p) => p.id === "basics")!;
+  const everything = presets.find((p) => p.id === "read-everything")!;
+
+  it("sets the read rows to the preset's reads and leaves a ticked site tool and cache clear exactly as they were", () => {
+    const start = ["mcp.sites.read", "mcp.cache.purge", "mcp.ability.read", "mcp.ability.request"];
+    const afterEverything = withPreset(start, everything);
+    expect([...afterEverything].sort()).toEqual(
+      [...SERVER_READS, "mcp.cache.purge", "mcp.ability.read", "mcp.ability.request"].sort(),
+    );
+    // And back: the reads shrink, the other three ticks are still there.
+    const afterBasics = withPreset(afterEverything, basics);
+    expect([...afterBasics].sort()).toEqual(
+      ["mcp.sites.read", "mcp.cache.purge", "mcp.ability.read", "mcp.ability.request"].sort(),
+    );
+  });
+
+  it("does not tick a box that was clear: a press never adds a site tool or the cache clear", () => {
+    const afterEverything = withPreset(["mcp.sites.read"], everything);
+    expect([...afterEverything].sort()).toEqual([...SERVER_READS].sort());
+    for (const name of NOT_CONFERRABLE_READS) expect(afterEverything).not.toContain(name);
+    expect(withPreset([], basics)).toEqual(["mcp.sites.read"]);
+  });
+
+  it("keeps a site tool the person cleared cleared, and the other one ticked", () => {
+    // "See what the site can do" ticked and "ask for changes" cleared.
+    const start = ["mcp.sites.read", "mcp.ability.read"];
+    expect([...withPreset(start, everything)].sort()).toEqual(
+      [...SERVER_READS, "mcp.ability.read"].sort(),
+    );
+  });
+
+  it("replaces read rows it was holding rather than adding to them, and never lists a name twice", () => {
+    const afterBasics = withPreset(["mcp.uptime.read", "mcp.backups.read", "mcp.sites.read"], basics);
+    expect(afterBasics).toEqual(["mcp.sites.read"]);
+    const afterEverything = withPreset([...SERVER_READS, "mcp.ability.read"], everything);
+    expect(afterEverything.filter((c) => c === "mcp.sites.read")).toHaveLength(1);
+    expect(new Set(afterEverything).size).toBe(afterEverything.length);
+  });
+
+  it("leaves the claim consistent: after a press, presetFor names that preset whatever else is ticked", () => {
+    const others = ["mcp.cache.purge", "mcp.ability.read", "mcp.ability.request"];
+    for (const preset of presets) {
+      expect(presetFor(withPreset(others, preset), presets)).toBe(preset.id);
+      expect(presetFor(withPreset([...SERVER_READS, ...others], preset), presets)).toBe(preset.id);
+    }
+  });
+
+  it("does not change the list it was given", () => {
+    const before = Object.freeze(["mcp.sites.read", "mcp.ability.read"]);
+    expect(() => withPreset(before, everything)).not.toThrow();
+    expect(before).toEqual(["mcp.sites.read", "mcp.ability.read"]);
+  });
+});
+
+// The line under the chip says what the active shortcut is. A shortcut sets the
+// read rows, and the site-tools box (which holds a read that returns page text)
+// can be ticked alongside it, so each description is about THIS LIST and claims
+// nothing about the connection as a whole.
+describe("the preset descriptions", () => {
+  const presets = capabilityPresets(SERVER_READS);
+  const description = (id: string) => presets.find((p) => p.id === id)?.description;
+
+  it("is written about the rows in its own list, in plain words", () => {
+    expect(description("basics")).toBe("See which sites are in scope. Nothing else from this list.");
+    expect(description("read-everything")).toBe(
+      "Every read in this list. None of them can change anything.",
+    );
+  });
+
+  it("says 'this list' and makes no claim about the connection as a whole", () => {
+    // A ticked request, or the site-tools read, would make any such claim false.
+    for (const preset of presets) {
+      expect(preset.description).toMatch(/\bthis list\b/);
+      expect(preset.description).not.toMatch(/\bonly\b/i);
+      expect(preset.description).not.toMatch(/no other read/i);
+      expect(preset.description).not.toMatch(/this connection/i);
+      expect(preset.description).not.toMatch(/\bit (still )?(can|cannot)\b/i);
+      expect(preset.description).not.toMatch(new RegExp(`[${String.fromCharCode(0x2013, 0x2014)}]`));
+    }
+  });
+});
+
+describe("withAbilityTicks", () => {
+  it("sets both site-tools rows in one step and leaves every other tick alone", () => {
+    const start = ["mcp.sites.read", "mcp.cache.purge"];
+    expect(withAbilityTicks(start, { read: true, request: true })).toEqual([
+      "mcp.sites.read",
+      "mcp.cache.purge",
+      "mcp.ability.read",
+      "mcp.ability.request",
+    ]);
+    expect(
+      withAbilityTicks(
+        ["mcp.sites.read", "mcp.ability.read", "mcp.ability.request"],
+        { read: false, request: false },
+      ),
+    ).toEqual(["mcp.sites.read"]);
+  });
+
+  it("sets one row without touching the other, and never adds a name twice", () => {
+    const both = ["mcp.ability.read", "mcp.ability.request"];
+    expect(withAbilityTicks(both, { read: true, request: false })).toEqual(["mcp.ability.read"]);
+    expect(withAbilityTicks(both, { read: true, request: true })).toEqual(both);
+  });
+
+  it("leaves the list it was given alone", () => {
+    const before = Object.freeze(["mcp.sites.read"]);
+    withAbilityTicks(before, { read: true, request: true });
     expect(before).toEqual(["mcp.sites.read"]);
   });
 });

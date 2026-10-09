@@ -13,11 +13,16 @@ import { cn } from "@/lib/utils";
 import {
   allCapabilityEffectsKnown,
   allScopesRecognised,
+  asksBeyondReading,
+  asksForSiteTools,
   buildApprovalCapabilities,
   CAPABILITY_EFFECT_READ,
   CAPABILITY_EFFECT_REQUEST,
+  describeChangeLimit,
   describeScope,
+  initialSelection,
   offeredReads,
+  requestCapabilitiesIn,
   SCOPE_CACHE,
   SCOPE_READ,
   SCOPE_SITE,
@@ -38,7 +43,7 @@ import { SiteEnforcementBox } from "./site-enforcement-box";
 import { AbilityCapabilityBox } from "@/features/ai-connections/ability-capability-box";
 import { CachePurgeCapabilityBox } from "@/features/ai-connections/cache-purge-capability-box";
 import {
-  defaultCapabilities,
+  withAbilityTicks,
   withCapability,
 } from "@/features/ai-connections/capability-presets";
 import { ReadCapabilityPicker } from "@/features/ai-connections/read-capability-picker";
@@ -52,10 +57,12 @@ import { ReadCapabilityPicker } from "@/features/ai-connections/read-capability-
 // beats euphemistic here".
 //
 // Each checklist item is marked below with the section that discharges it. The
-// "propose" item is deliberately left undischarged: no capability in the
-// shipped vocabulary does anything but read (the capability CHECK constraint
-// admits only members ending `.read`; see migration m131), so there is no
-// propose behaviour for this screen to describe.
+// "propose" item is discharged by the ask rows: mcp.cache.purge and
+// mcp.ability.request are the vocabulary's request capabilities, and each only
+// ever creates a request that a person approves in WPMgr. What the screen says
+// the connection can change is worded from the capabilities the approval will
+// carry (the list the request is built from), never from what the app asked
+// for, so it says "read-only" only while no request capability is ticked.
 
 export const REVOKE_LOCATION = "Settings, under AI connections";
 
@@ -228,12 +235,15 @@ function SelfAssertedSite({ value }: { value: SelfAsserted }) {
 function PermissionsBlock({
   consent,
   selected,
+  sending,
   onSelectedChange,
   disabled,
 }: {
   consent: ConsentContext;
   /** Every capability ticked on this screen: the reads and the two write boxes. */
   selected: readonly string[];
+  /** The capabilities the approval will carry: `selected`, limited to what is offered and asked for. */
+  sending: readonly string[];
   onSelectedChange: (next: readonly string[]) => void;
   /** True while the approval is in flight. */
   disabled: boolean;
@@ -254,8 +264,11 @@ function PermissionsBlock({
   const bulletScopes = consent.scopes.filter(
     (s) => s !== SCOPE_CACHE && s !== SCOPE_SITE && !(showReadPicker && s === SCOPE_READ),
   );
-  const askedForSiteTools = consent.scopes.includes(SCOPE_SITE);
+  const askedForSiteTools = asksForSiteTools(consent.scopes);
   const askedToClearCache = consent.scopes.includes(SCOPE_CACHE);
+  // The request capabilities the approval will carry. They decide what the
+  // "cannot change anything" paragraph says, so it follows the boxes.
+  const asks = requestCapabilitiesIn(consent.conferrableCapabilities, sending);
   const capabilitiesOk = allCapabilityEffectsKnown(consent.conferrableCapabilities);
   const tick = (cap: string) => (next: boolean) => {
     onSelectedChange(withCapability(selected, cap, next));
@@ -310,25 +323,33 @@ function PermissionsBlock({
       )}
 
       {/* design v7 S2.2: the same write box and label as 2.1. A live opt-in,
-          unticked by default; the approval sends `capabilities` built from it. */}
+          unticked by default; the approval sends `capabilities` built from it.
+          When the server did not offer the cache clear to this app the row is
+          disabled and shown clear, so the box never shows a tick the approval
+          would leave out. */}
       {askedToClearCache && (
         <div className="mt-4" data-testid="consent-cache-capability">
           <CachePurgeCapabilityBox
             checked={selected.includes("mcp.cache.purge")}
             onChange={tick("mcp.cache.purge")}
             disabled={disabled}
+            offered={consent.conferrableCapabilities.some(
+              (c) => c.name === "mcp.cache.purge" && c.effect === CAPABILITY_EFFECT_REQUEST,
+            )}
           />
         </div>
       )}
 
-      {/* mcp:site: two explicit ticks, both clear by default. */}
+      {/* mcp:site: two explicit ticks. They open ticked, because the app asked
+          for site tools, and either can be cleared before approving. "Ask for
+          changes" needs "see what the site can do", so the box moves the two
+          together where it must and reports both rows in one change. */}
       {askedForSiteTools && (
         <div className="mt-4" data-testid="consent-site-capability">
           <AbilityCapabilityBox
             readChecked={selected.includes("mcp.ability.read")}
             requestChecked={selected.includes("mcp.ability.request")}
-            onReadChange={tick("mcp.ability.read")}
-            onRequestChange={tick("mcp.ability.request")}
+            onChange={(next) => onSelectedChange(withAbilityTicks(selected, next))}
             disabled={disabled}
             readOffered={consent.conferrableCapabilities.some(
               (c) => c.name === "mcp.ability.read" && c.effect === CAPABILITY_EFFECT_READ,
@@ -365,20 +386,18 @@ function PermissionsBlock({
       <div className="mt-4 border-t border-[var(--color-border)] pt-4">
         <h3 className="text-sm font-medium">What it cannot do</h3>
         <ul className="mt-2 space-y-2 text-sm text-[var(--color-muted-foreground)]">
-          <li>
+          <li data-testid="consent-cannot-change">
             <span className="font-medium text-[var(--color-foreground)]">
               It cannot change anything.
             </span>{" "}
             No updates, no installs, no activations, no deletions, no edits to any site, and no
             changes to this dashboard or your organisation.{" "}
-            {askedToClearCache
-              ? // "Read-only" would be false the moment mcp:cache is granted: the
-                // connection can ask to clear a cache. What stays true, and what
-                // this sentence says instead, is that asking is the only thing it
-                // can do beyond reading, and asking changes nothing by itself.
-                "The one exception is the cache-clear box above: even that only " +
-                "creates a request, and nothing runs until you approve it."
-              : "This connection is read-only."}
+            {/* "Read-only" is false while a request capability is ticked: the
+                connection can then ask for a change, though asking changes
+                nothing by itself. So the closing sentence follows the ticks,
+                naming each request that will be carried, and says read-only
+                only when there is none. */}
+            {describeChangeLimit(asks)}
           </li>
           <li>
             <span className="font-medium text-[var(--color-foreground)]">
@@ -781,16 +800,24 @@ export function ConsentScreen({
   );
   const [nameError, setNameError] = useState<string | null>(null);
   // EVERYTHING THE OPERATOR HAS TICKED, in one list, as the wizard keeps it:
-  // the read rows, the cache-clear box and the two site-tools boxes. One list
-  // is what lets the preset claim be derived over all of it, and it is what the
-  // approval is built from, so the screen and the request read one value.
+  // the read rows, the cache-clear box and the two site-tools boxes. One list is
+  // what the approval is built from, so the screen and the request read one
+  // value. The preset claim is derived from the read rows in it only, because a
+  // preset sets the reads and nothing else (owner ruling 2026-10-09): the boxes
+  // further down never move the chip, and a press never touches them.
   //
   // IT OPENS ON THE WIZARD'S DEFAULT PRESET, from the same function the wizard
-  // opens on, limited to the reads the server offered: Sites alone, and none of
-  // the write boxes. Never every read, and never a read that is not on offer.
-  const [selected, setSelected] = useState<readonly string[]>(() =>
-    defaultCapabilities(offeredReads(consent.conferrableCapabilities)),
-  );
+  // opens on, limited to the reads the server offered: Sites alone. Never every
+  // read, and never a read that is not on offer. When the app asked for site
+  // tools (mcp:site) the two site-tools choices open ticked as well, each only
+  // if the server offers it. The cache-clear box never opens ticked.
+  //
+  // WORKED OUT ONCE, WHEN THIS SCREEN MOUNTS. The route builds this screen only
+  // after the authorize response has arrived, so these ticks come from the
+  // request the person is looking at. A lazy initial state is deliberate: a
+  // later render, even one that brings a refreshed context object, must not put
+  // back a tick the person has cleared.
+  const [selected, setSelected] = useState<readonly string[]>(() => initialSelection(consent));
 
   const scope = useMemo(
     () =>
@@ -834,9 +861,9 @@ export function ConsentScreen({
     return resolveTagIds(selectedTagNames, tags);
   }, [mode, tags, selectedTagNames]);
 
-  // Exactly the ticks, limited to what the server offered. Never a name that is
-  // not ticked.
-  const capabilities = buildApprovalCapabilities(consent.conferrableCapabilities, selected);
+  // Exactly the ticks, limited to what the server offered and the app asked for.
+  // Never a name that is not ticked, and never one whose box is not on the screen.
+  const capabilities = buildApprovalCapabilities(consent, selected);
   // The server offered capabilities but none is ticked (every read cleared, or
   // a cache-only request with the box left clear): an empty list is refused, so
   // Approve is blocked. A server that offers none at all (older deploy) is not
@@ -877,8 +904,9 @@ export function ConsentScreen({
       <header>
         <h1 className="text-xl font-semibold">Approve an AI connection</h1>
         <p className="mt-1 text-sm text-[var(--color-muted-foreground)]">
-          Something is asking to read your fleet through this dashboard. Read this before you
-          approve it.
+          {asksBeyondReading(consent.scopes)
+            ? "Something is asking to read your fleet, and to ask for changes to it, through this dashboard. Read this before you approve it."
+            : "Something is asking to read your fleet through this dashboard. Read this before you approve it."}
         </p>
       </header>
 
@@ -886,6 +914,7 @@ export function ConsentScreen({
       <PermissionsBlock
         consent={consent}
         selected={selected}
+        sending={capabilities}
         onSelectedChange={setSelected}
         disabled={isApproving}
       />
