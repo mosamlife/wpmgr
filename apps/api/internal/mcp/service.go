@@ -1771,7 +1771,7 @@ func (s *Service) Authenticate(ctx context.Context, bearer string) (AuthorizedRe
 			"this connection has been revoked or has expired")
 	}
 
-	auth, err := s.authorizeGrant(ctx, tok.TenantID, grantVerdictFromRequestRow(chk))
+	auth, err := s.authorizeGrant(ctx, grantVerdictFromRequestRow(tok.TenantID, chk).stored)
 	if err != nil {
 		return AuthorizedRequest{}, err
 	}
@@ -1780,9 +1780,11 @@ func (s *Service) Authenticate(ctx context.Context, bearer string) (AuthorizedRe
 }
 
 // authorizeGrant is the derivation shared by Authenticate and AuthorizeGrant:
-// from a verdict to the scope and capabilities it confers. The caller has
+// from a stored grant to the scope and capabilities it confers, in the tenant
+// the grant was read in. It takes the storedGrant and not the GrantVerdict, so
+// nothing it derives can come from a verdict's exported fields. The caller has
 // already refused an unauthorized verdict.
-func (s *Service) authorizeGrant(ctx context.Context, tenantID uuid.UUID, v GrantVerdict) (AuthorizedRequest, error) {
+func (s *Service) authorizeGrant(ctx context.Context, g storedGrant) (AuthorizedRequest, error) {
 	// Resolve the site scope at the one audited chokepoint, inside a tenant
 	// transaction so `sites` RLS drops any foreign UUID.
 	//
@@ -1790,8 +1792,8 @@ func (s *Service) authorizeGrant(ctx context.Context, tenantID uuid.UUID, v Gran
 	// IS THE ONE EXCEPTION TO ADR-061 A11 ITEM 2. Read bootstrapTenantPrincipal
 	// before changing it. In one line: this call is what PRODUCES the allowlist,
 	// so there is no allowlist to scope it by.
-	ids, err := s.store.ResolveScopeSites(ctx, bootstrapTenantPrincipal(tenantID),
-		v.SiteScopeMode, v.ScopeTagIDs, v.ScopeSiteIDs)
+	ids, err := s.store.ResolveScopeSites(ctx, bootstrapTenantPrincipal(g.tenantID),
+		g.siteScopeMode, g.scopeTagIDs, g.scopeSiteIDs)
 	if err != nil {
 		return AuthorizedRequest{}, fmt.Errorf("resolve grant scope: %w", err)
 	}
@@ -1803,8 +1805,9 @@ func (s *Service) authorizeGrant(ctx context.Context, tenantID uuid.UUID, v Gran
 	// THE STORED COLUMN IS THE AUTHORITY, AND THAT IS WHAT m127 CHANGED.
 	// mcp_grants.capabilities now exists -- NOT NULL, no default, CHECKed
 	// against the same closed vocabulary this package holds -- and it is read
-	// off chk.GrantCapabilities, THE SAME ROW AND THE SAME TRANSACTION as the
-	// `authorized` verdict this request was admitted under.
+	// off the stored copy of the verdict row (g.capabilities), THE SAME ROW AND
+	// THE SAME TRANSACTION as the `authorized` verdict this request was
+	// admitted under.
 	//
 	// Recomputing the set from the scope registry instead, as this line did
 	// before m127, is a GUESS: it agrees with the row today only because the
@@ -1842,7 +1845,7 @@ func (s *Service) authorizeGrant(ctx context.Context, tenantID uuid.UUID, v Gran
 	// IT IS 403, NOT 401, for the reason spelled out on the empty-capabilities
 	// refusal below: an MCP client that receives 401 re-runs the OAuth handshake,
 	// which cannot repair a stored column.
-	scopes := grantScopes(v.OauthScopes)
+	scopes := grantScopes(g.oauthScopes)
 	if len(scopes) == 0 {
 		return AuthorizedRequest{}, domain.Forbidden(ErrCodeCapabilityUnmapped,
 			"this connection holds no scope, so it confers no capability")
@@ -1877,7 +1880,7 @@ func (s *Service) authorizeGrant(ctx context.Context, tenantID uuid.UUID, v Gran
 	// permitted. That is what 403 says, and it is what every other producer of
 	// ErrCodeCapabilityUnmapped already returns (all three in
 	// OrgDefaultCapabilities).
-	stored := capabilitiesFromColumn(v.Capabilities)
+	stored := capabilitiesFromColumn(g.capabilities)
 	if len(stored) == 0 {
 		return AuthorizedRequest{}, domain.Forbidden(ErrCodeCapabilityUnmapped,
 			"this connection holds no capability, so it can reach no tool")
@@ -1894,16 +1897,17 @@ func (s *Service) authorizeGrant(ctx context.Context, tenantID uuid.UUID, v Gran
 	// An empty resolved set means NO SITES. NewSiteSet's zero value allows
 	// nothing, so there is no widening path here even if ids is nil.
 	return AuthorizedRequest{
-		TenantID:     tenantID,
-		GrantID:      v.GrantID,
-		GrantName:    v.GrantName,
+		TenantID:     g.tenantID,
+		GrantID:      g.grantID,
+		GrantName:    g.grantName,
 		Sites:        NewSiteSet(ids),
 		Capabilities: caps,
 		// Carried from the same verdict row, for the stored facts of an AI
 		// request: the operator's client choice, and whether the grant came
-		// from the OAuth sign-in path.
-		SetupClient: v.SetupClient,
-		ViaOAuth:    v.ClientID != nil,
+		// from the OAuth sign-in path. SetupClient is a fresh copy, so an edit
+		// through the returned pointer cannot reach the verdict's stored copy.
+		SetupClient: cloneString(g.setupClient),
+		ViaOAuth:    g.viaOAuth,
 		// The ceiling resolved above, carried rather than recomputed. caps is
 		// ceiling.NarrowTo(stored), so this is always a superset of
 		// Capabilities and the registry can tell "your grant lacks it" from
