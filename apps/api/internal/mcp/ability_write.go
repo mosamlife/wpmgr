@@ -472,7 +472,7 @@ func (s *Service) runSiteAbilityWrite(ctx context.Context, auth AuthorizedReques
 		return s.runRestWrite(ctx, auth, eng, site, e, self.host, input)
 	}
 	if e.Name == AbilityPageEdit {
-		return s.runPageEdit(ctx, auth, eng, site, e, input)
+		return s.runPageEdit(ctx, auth, eng, site, e, self.host, input)
 	}
 	// Step 5: our grammar, including a layout the classic editor cannot
 	// hold. Then the per-input floor: a layout outline needs a newer agent

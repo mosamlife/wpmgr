@@ -8,6 +8,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -110,8 +111,9 @@ func pageEditPreInputRefusal(input []byte) (pageEditFacts, *toolRefusal) {
 
 // runPageEdit checks a page-edit input and prechecks it on the site, with
 // the draft this control plane names for its post read in this call.
-func (s *Service) runPageEdit(ctx context.Context, auth AuthorizedRequest, eng *abilityEngine, site abilitySite, e *sqlc.AbilityCatalogue, input []byte) (string, error) {
-	if _, r := pageEditPreInputRefusal(input); r != nil {
+func (s *Service) runPageEdit(ctx context.Context, auth AuthorizedRequest, eng *abilityEngine, site abilitySite, e *sqlc.AbilityCatalogue, host string, input []byte) (string, error) {
+	facts, r := pageEditPreInputRefusal(input)
+	if r != nil {
 		return "", r
 	}
 	// An entry that enables no page builder WPMgr edits leaves no page
@@ -140,7 +142,7 @@ func (s *Service) runPageEdit(ctx context.Context, auth AuthorizedRequest, eng *
 	}
 	precheckID := uuid.New()
 	callCtx, cancel := context.WithTimeout(ctx, abilityRunTimeout)
-	_, err = eng.agent.AbilityRun(callCtx, site.row.ID, site.row.Url, agentcmd.AbilityRunCall{
+	resp, err := eng.agent.AbilityRun(callCtx, site.row.ID, site.row.Url, agentcmd.AbilityRunCall{
 		Mode: agentcmd.AbilityRunModePrecheck, RequestID: precheckID,
 		Entry: entryBytes, EntrySHA256: entrySum, Input: input, AllowedDraftIDs: allowed,
 	})
@@ -172,12 +174,39 @@ func (s *Service) runPageEdit(ctx context.Context, auth AuthorizedRequest, eng *
 		return "", refuse(reasonSiteUnreachable, domain.Unavailable(ErrCodeSiteUnreachable,
 			msgSiteUnreachable).WithDetails(map[string]any{"retryable": true}))
 	}
-	// A precheck answer is accepted only once its edit preview is bound to
-	// this input (R2); until then no answer is, and no request is created.
-	return "", &toolRefusal{
+	// The answer is accepted only once its edit preview is bound to this
+	// input (R2); any difference refuses the request and stores nothing.
+	checked, ok := verifyPageEditPrecheck(resp, entrySum, input, facts)
+	if !ok {
+		return "", precheckMismatchRefusal()
+	}
+	card, err := buildPageEditCardFacts(checked, s.now())
+	if errors.Is(err, errPageEditCardTooLarge) {
+		return "", precheckMismatchRefusal()
+	}
+	if err != nil {
+		return "", err
+	}
+	// Stored under the id its precheck was sent with: the write's new node
+	// ids derive from it, so they are the ones the card showed.
+	res, err := s.createPageEditRequest(ctx, eng.writes, auth, site.row, host, e, entrySum, input, card, checked, precheckID)
+	if err != nil {
+		return "", err
+	}
+	b, err := json.Marshal(res)
+	if err != nil {
+		return "", fmt.Errorf("encode ability request result: %w", err)
+	}
+	return string(b), nil
+}
+
+// precheckMismatchRefusal is the refusal for a page-edit precheck answer
+// that does not bind to the input: nothing was asked.
+func precheckMismatchRefusal() *toolRefusal {
+	return &toolRefusal{
 		reason: reasonAbilityPrecheckRefused,
 		err: domain.Unavailable(ErrCodeSiteUnreachable, msgAbilitySiteAnswer).
-			WithDetails(map[string]any{"retryable": false}),
-		meta: map[string]any{"code": "precheck_unverifiable"},
+			WithDetails(map[string]any{"code": pageEditCodePrecheckMismatch, "retryable": false}),
+		meta: map[string]any{"code": pageEditCodePrecheckMismatch},
 	}
 }
