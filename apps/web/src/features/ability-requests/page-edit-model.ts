@@ -586,6 +586,9 @@ export const EDIT_UNDO_CONFLICT_COPY =
 export const EDIT_UNDO_PUBLISHED_COPY = "This page is published now. Change it in Elementor.";
 export const EDIT_UNDO_FAILED_COPY =
   "WPMgr could not undo this change. Open the page in Elementor and check it; its revisions are in WordPress.";
+/** An undo the site refused because the copy it kept of the page was not the one WPMgr recorded (undo_code snapshot_tampered). */
+export const EDIT_UNDO_TAMPERED_COPY =
+  "WPMgr's saved copy of this page was changed on the site, so WPMgr won't use it. Nothing changed.";
 export const EDIT_STALE_COPY =
   "The page changed after the AI looked at it. Nothing changed. Ask the AI to read the page again and retry.";
 /** A conflict refusal from an API that does not say which conflict it was. */
@@ -598,10 +601,6 @@ export const EDIT_PUT_BACK_COPY =
 export const EDIT_NOT_SAVED_COPY = "Elementor did not save the change, so nothing changed.";
 export const EDIT_UNVERIFIED_COPY =
   "Elementor did not save the change exactly as approved. Open the page in Elementor and check it.";
-export const EDIT_OUTSIDE_COPY =
-  "Something outside this page changed while Elementor saved it. WPMgr put the page back. WPMgr cannot undo changes another plugin made.";
-export const EDIT_OUTSIDE_UNRESTORED_COPY =
-  "Something outside this page changed while Elementor saved it. Open the page in Elementor and check it. WPMgr cannot undo changes another plugin made.";
 export const EDIT_NOT_PUT_BACK_COPY =
   "WPMgr could not put the page back exactly. Open it in Elementor and check it; its revisions are in WordPress.";
 export const EDIT_NO_SNAPSHOT_COPY = "WPMgr could not save a copy of the page first, so it changed nothing.";
@@ -653,17 +652,40 @@ function has(map: Record<string, string>, key: string): boolean {
 }
 
 /**
+ * What Elementor's save changed outside the page (the API's outside_change, a
+ * closed set and never the site's words), in the contract's own terms. Null,
+ * or a value this page has no label for, says nothing of the kind.
+ */
+const OUTSIDE_CHANGE_LABEL: Record<string, string> = {
+  active_kit: "the site's active Elementor kit",
+  other_posts: "another post or page, or its data",
+  terms: "categories or tags",
+  site_settings: "a site setting",
+  users: "a user account, a role or the site's administrators",
+};
+
+/** The sentence for an edit that changed something outside the page, with the kind in brackets when the API names one. */
+function outsideChangeCopy(putBack: boolean, kind: string | null | undefined): string {
+  const label = kind != null && has(OUTSIDE_CHANGE_LABEL, kind) ? ` (${OUTSIDE_CHANGE_LABEL[kind]})` : "";
+  const next = putBack ? "WPMgr put the page back." : "Open the page in Elementor and check it.";
+  return `Something outside this page changed while Elementor saved it${label}. ${next} WPMgr cannot undo changes another plugin made.`;
+}
+
+/**
  * The person's wording for a failed edit. restored is the site's put-back
  * report: it decides first, because a page that was not put back exactly is
  * the one thing the person must act on whatever the code was. detail names
  * the conflict behind a `conflict` refusal; without it (a row from an API
- * that does not say) the wording covers every conflict.
+ * that does not say) the wording covers every conflict. outside names what a
+ * `side_effect_detected` refusal found changed outside the page; without it
+ * the sentence says only that something did.
  */
 export function failedEditStatus(
   code: string | null | undefined,
   restored: boolean | null | undefined,
   outcome?: string | null,
   detail?: string | null,
+  outside?: string | null,
 ): PageEditStatus {
   const base = { kind: "failed" as AbilityStatusKind, links: true };
   if (code === "restore_mismatch" || restored === false) {
@@ -674,9 +696,7 @@ export function failedEditStatus(
     return { ...base, text, tone: "neutral", links: false };
   }
   if (code === "side_effect_detected") {
-    return restored === true
-      ? { ...base, text: EDIT_OUTSIDE_COPY, tone: "red" }
-      : { ...base, text: EDIT_OUTSIDE_UNRESTORED_COPY, tone: "red" };
+    return { ...base, text: outsideChangeCopy(restored === true, outside), tone: "red" };
   }
   if (code != null && PUT_BACK_CODES.has(code)) {
     if (restored === true) return { ...base, text: EDIT_PUT_BACK_COPY, tone: "amber" };
@@ -733,12 +753,20 @@ export function pageEditStatus(r: AbilityRequest): PageEditStatus {
         case "refused_published":
           return plain("undo_refused", EDIT_UNDO_PUBLISHED_COPY, true);
         case "failed":
-          return { kind: "undo_failed", text: EDIT_UNDO_FAILED_COPY, tone: "red", links: true };
+          // The API's undo_code says why the undo failed. A copy the site
+          // kept that was not the one WPMgr recorded is refused before
+          // anything is written; any other failed undo asks for a check.
+          return {
+            kind: "undo_failed",
+            text: r.undo_code === "snapshot_tampered" ? EDIT_UNDO_TAMPERED_COPY : EDIT_UNDO_FAILED_COPY,
+            tone: "red",
+            links: true,
+          };
         default:
           return plain("done", EDIT_DONE_COPY, true);
       }
     case "failed":
-      return failedEditStatus(r.outcome_code, r.restored, r.outcome, r.outcome_detail);
+      return failedEditStatus(r.outcome_code, r.restored, r.outcome, r.outcome_detail, r.outside_change);
     case "not_sent":
       return plain("not_sent", `Nothing was sent: ${notSentText(r.not_sent_reason)}. Nothing was changed.`);
     case "declined":

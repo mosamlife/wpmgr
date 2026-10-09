@@ -137,6 +137,24 @@ export function assertDbShape(r: AbilityRequest): void {
       fail("outcome_detail value");
     }
   }
+  // outside_change (abilityrequest/outcome_detail.go outsideChangeFor): only a
+  // page edit refused with side_effect_detected carries one, and only from the
+  // closed set of five.
+  if (r.outside_change != null) {
+    if (r.ability_name !== "wpmgr/page-edit" || r.outcome_code !== "side_effect_detected") {
+      fail("outside_change belongs to a wpmgr/page-edit refused with side_effect_detected");
+    }
+    if (!["active_kit", "other_posts", "terms", "site_settings", "users"].includes(r.outside_change)) {
+      fail("outside_change value");
+    }
+  }
+  // undo_code (m169 assistant_ability_requests_undo_code_check and
+  // ..._undo_code_only_when_failed_check; abilityrequest/undo.go undoCodeOf):
+  // only an undo that failed carries one, and only from the closed set of two.
+  if (r.undo_code != null) {
+    if (r.undo_state !== "failed") fail("undo_code belongs to an undo that failed");
+    if (!["snapshot_tampered", "restore_mismatch"].includes(r.undo_code)) fail("undo_code value");
+  }
   if ((r.outcome === "not_sent") !== (r.not_sent_reason != null)) fail("not_sent_reason belongs to not_sent rows only");
   if (r.not_sent_reason != null && !NOT_SENT_REASONS.has(r.not_sent_reason)) fail("not_sent_reason value");
 
