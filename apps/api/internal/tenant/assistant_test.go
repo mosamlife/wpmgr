@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
+	"github.com/mosamlife/wpmgr/apps/api/internal/authz"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
 
@@ -146,7 +148,7 @@ func newSvc(t *testing.T) (*Service, *fakeRepo, *capturingRecorder) {
 
 // apiKeyOwnerOf is a TENANT API KEY holding tenant:manage — a machine, not a
 // person. That principal type can reach authz.PermTenantManage, so it can
-// engage and release the kill switch.
+// engage the kill switch.
 func apiKeyOwnerOf(tenantID uuid.UUID) domain.Principal {
 	return domain.Principal{
 		Type:     domain.PrincipalAPIKey,
@@ -477,7 +479,7 @@ func TestAssistantResponseSendsExplicitNullsNotMissingKeys(t *testing.T) {
 
 // --- 5. THE AUDIT ROW MUST NOT SAY A PERSON WHEN A MACHINE ACTED -------------
 //
-// A tenant API key holding tenant:manage can pause and resume.
+// A tenant API key holding tenant:manage can pause.
 // domain.Principal.ActorID returns APIKeyID for that principal type, so pairing
 // it with a hard-coded audit.ActorUser writes a row whose actor resolves to
 // NEITHER a user NOR an api key. The incident trail then answers "who stopped
@@ -509,26 +511,49 @@ func TestPauseAttributesAnAPIKeyToTheAPIKeyActorType(t *testing.T) {
 	}
 }
 
-func TestResumeAttributesAnAPIKeyToTheAPIKeyActorType(t *testing.T) {
-	svc, repo, rec := newSvc(t)
+// Loosening an AI control needs a signed-in person. Each refused case must
+// reach neither the repo nor the audit recorder; the last case is a person
+// and must succeed, so the refusal cannot be "refuse everyone".
+func TestLooseningAnAIControlNeedsASignedInPerson(t *testing.T) {
 	org := uuid.New()
-	pausedAt := time.Now().UTC()
-	reason := "incident"
-	repo.state[org] = &AssistantState{PausedAt: &pausedAt, PausedReason: &reason}
-	p := apiKeyOwnerOf(org)
+	noUser := ownerOf(org)
+	noUser.UserID = uuid.Nil
+	noTenant := ownerOf(org)
+	noTenant.TenantID = uuid.Nil
 
-	if _, err := svc.ResumeAssistant(context.Background(), p, org, rec); err != nil {
-		t.Fatalf("resume: %v", err)
+	cases := []struct {
+		p    domain.Principal
+		want bool
+	}{
+		{apiKeyOwnerOf(org), false},
+		{noUser, false},
+		{noTenant, false},
+		{domain.Principal{}, false},
+		{ownerOf(org), true},
 	}
+	for i, tc := range cases {
+		t.Run(fmt.Sprintf("case_%d", i+1), func(t *testing.T) {
+			svc, repo, rec := newSvc(t)
+			pausedAt := time.Now().UTC()
+			reason := "incident"
+			repo.state[org] = &AssistantState{PausedAt: &pausedAt, PausedReason: &reason}
 
-	ev := rec.only(t, "tenant.assistant.resumed")
-	if ev.ActorType != audit.ActorAPIKey {
-		t.Fatalf("THE AUDIT ROW SAYS A PERSON ACTED: actor_type=%q for an API-key principal, want %q. "+
-			"Releasing an incident stop is as much a which-credential question as engaging one.",
-			ev.ActorType, audit.ActorAPIKey)
-	}
-	if ev.ActorID != p.APIKeyID.String() {
-		t.Fatalf("actor_id=%q, want the api key id %q", ev.ActorID, p.APIKeyID)
+			_, err := svc.ResumeAssistant(context.Background(), tc.p, org, rec)
+			if tc.want {
+				if err != nil {
+					t.Fatalf("a signed-in person was refused: %v", err)
+				}
+				rec.only(t, "tenant.assistant.resumed")
+				return
+			}
+			de, ok := domain.AsDomain(err)
+			if !ok || de.Kind != domain.KindForbidden || de.Code != authz.CodeSessionRequired {
+				t.Fatalf("a credential that is not a person loosened a control: err=%v", err)
+			}
+			if len(repo.resumeCalls) != 0 || len(rec.events) != 0 || repo.state[org].PausedAt == nil {
+				t.Fatalf("a refused request changed state: calls=%v events=%v", repo.resumeCalls, rec.actions())
+			}
+		})
 	}
 }
 
