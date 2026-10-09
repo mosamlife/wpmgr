@@ -300,6 +300,17 @@ describe("/connect/ai, site tools asked for", () => {
     await screen.findByTestId("consent-site-capability");
     expect(screen.getByTestId("preset-custom")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Just the basics", pressed: true })).toBeNull();
+    // The opening sentence on a screen nobody has touched says what is true of
+    // it: the read rows match a shortcut, and the site-tools ticks are the part
+    // that is not. It does not say anyone chose this set.
+    expect(
+      screen.getByText(
+        "The read rows match Just the basics. The ticks further down for site tools are not part of either shortcut, and pressing a shortcut clears them.",
+      ),
+    ).toBeTruthy();
+    expect(screen.getByTestId("consent-read-capability").textContent ?? "").not.toMatch(
+      /your own set|you have changed/i,
+    );
 
     fireEvent.click(readBox());
     expect(screen.getByRole("button", { name: "Just the basics", pressed: true })).toBeTruthy();

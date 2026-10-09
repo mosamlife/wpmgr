@@ -224,16 +224,18 @@ describe("ConsentScreen, the presets", () => {
     const picker = readPicker();
     fireEvent.click(rowBox(picker, "mcp.backups.read"));
     expect(within(picker).getByTestId("preset-custom")).toBeTruthy();
-    expect(
-      within(picker).getByText("The ticks below are not either shortcut, so this is your own set."),
-    ).toBeTruthy();
+    // The read rows are not a shortcut, so the line is plain: it does not say
+    // "your own set" and it does not say what the person did.
+    expect(within(picker).getByText("The ticks below are not either shortcut.")).toBeTruthy();
+    expect(picker.textContent ?? "").not.toMatch(/your own set/i);
   });
 
-  it("opens on Custom, without claiming the person changed anything, when site tools open ticked", async () => {
+  it("opens on Custom with a sentence that says what is true of an untouched screen, when site tools open ticked", async () => {
     // The app asked for site tools, so Sites plus the two site-tools ticks is
-    // not either shortcut ("Just the basics" says "and nothing else"). That is
-    // true of a screen nobody has touched, so the sentence under Custom must not
-    // say the person changed the rows.
+    // not either shortcut ("Just the basics" says "and nothing else"). Nobody
+    // chose that set, so the sentence under Custom must not say they did: it says
+    // the read rows match Just the basics, that the site-tools ticks are not part
+    // of either shortcut, and that pressing a shortcut clears them.
     await renderScreen(
       consentFor([...reads(SERVER_READS), ABILITY_READ, ABILITY_REQUEST], [SCOPE_READ, SCOPE_SITE]),
     );
@@ -241,9 +243,11 @@ describe("ConsentScreen, the presets", () => {
     expect(within(picker).getByTestId("preset-custom")).toBeTruthy();
     expect(within(picker).queryAllByRole("button", { pressed: true })).toHaveLength(0);
     expect(
-      within(picker).getByText("The ticks below are not either shortcut, so this is your own set."),
+      within(picker).getByText(
+        "The read rows match Just the basics. The ticks further down for site tools are not part of either shortcut, and pressing a shortcut clears them.",
+      ),
     ).toBeTruthy();
-    expect(picker.textContent ?? "").not.toMatch(/you have changed/i);
+    expect(picker.textContent ?? "").not.toMatch(/you have changed|your own set/i);
     expect(tickedReads(picker)).toEqual(["mcp.sites.read"]);
   });
 
@@ -273,8 +277,14 @@ describe("ConsentScreen, the presets", () => {
 
     fireEvent.click(cacheBox());
     // Sites plus a write is not "Just the basics": its description says
-    // "and nothing else".
+    // "and nothing else". The line says that the read rows still match it and
+    // that the cache tick is the part that is not.
     expect(within(picker).getByTestId("preset-custom")).toBeTruthy();
+    expect(
+      within(picker).getByText(
+        "The read rows match Just the basics. The ticks further down for cache clear are not part of either shortcut, and pressing a shortcut clears them.",
+      ),
+    ).toBeTruthy();
 
     fireEvent.click(within(picker).getByRole("button", { name: "Read everything" }));
     expect(cacheBox()).not.toBeChecked();

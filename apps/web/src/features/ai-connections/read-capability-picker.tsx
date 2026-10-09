@@ -10,7 +10,7 @@ import {
   capabilityLabel,
   isAbilityCapability,
 } from "./capabilities";
-import { capabilityPresets, presetFor, withCapability } from "./capability-presets";
+import { capabilityPresets, customNote, presetFor, withCapability } from "./capability-presets";
 
 // The read picker: the presets and the read rows, shared by the connection
 // wizard's step 4 and the consent screen.
@@ -125,7 +125,7 @@ export function ReadCapabilityPicker({
         </div>
         <p className="text-xs text-[var(--color-muted-foreground)]">
           {activePreset === null
-            ? "The ticks below are not either shortcut, so this is your own set."
+            ? customNote(selected, presets)
             : (presets.find((p) => p.id === activePreset)?.description ?? "")}
         </p>
       </div>

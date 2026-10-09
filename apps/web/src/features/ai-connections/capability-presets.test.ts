@@ -5,6 +5,7 @@ import {
   DEFAULT_PRESET_ID,
   capabilityPresets,
   conferrableReadsIn,
+  customNote,
   defaultCapabilities,
   presetFor,
   withAbilityTicks,
@@ -185,6 +186,61 @@ describe("withCapability", () => {
     withCapability(before, "mcp.uptime.read", true);
     withCapability(before, "mcp.sites.read", false);
     expect(before).toEqual(["mcp.sites.read"]);
+  });
+});
+
+// The line under the Custom chip. The sentences are written out in full, never
+// built from the function's own pieces, so editing the wording reddens this file.
+describe("customNote", () => {
+  const presets = capabilityPresets(SERVER_READS);
+  const PLAIN = "The ticks below are not either shortcut.";
+
+  it("says the read rows match a shortcut, and that the site-tools ticks are not part of it, when only those make it Custom", () => {
+    expect(customNote(["mcp.sites.read", "mcp.ability.read", "mcp.ability.request"], presets)).toBe(
+      "The read rows match Just the basics. The ticks further down for site tools are not part of either shortcut, and pressing a shortcut clears them.",
+    );
+  });
+
+  it("names the cache clear, or both, exactly as they are ticked", () => {
+    expect(customNote(["mcp.sites.read", "mcp.cache.purge"], presets)).toBe(
+      "The read rows match Just the basics. The ticks further down for cache clear are not part of either shortcut, and pressing a shortcut clears them.",
+    );
+    expect(
+      customNote(
+        [...SERVER_READS, "mcp.cache.purge", "mcp.ability.read"],
+        presets,
+      ),
+    ).toBe(
+      "The read rows match Read everything. The ticks further down for site tools and cache clear are not part of either shortcut, and pressing a shortcut clears them.",
+    );
+  });
+
+  it("is a plain statement when the read rows themselves are not a shortcut", () => {
+    expect(customNote(["mcp.sites.read", "mcp.uptime.read"], presets)).toBe(PLAIN);
+    // Even with a site-tools tick as well: the read rows are the reason.
+    expect(customNote(["mcp.sites.read", "mcp.uptime.read", "mcp.ability.read"], presets)).toBe(
+      PLAIN,
+    );
+    // No read row ticked at all matches no shortcut.
+    expect(customNote(["mcp.ability.read"], presets)).toBe(PLAIN);
+    expect(customNote([], presets)).toBe(PLAIN);
+  });
+
+  it("is a plain statement when the only extra ticks are names this screen has no box for", () => {
+    expect(customNote(["mcp.sites.read", "mcp.content.read"], presets)).toBe(PLAIN);
+  });
+
+  it("never suggests anyone built the set on purpose, and uses no dash", () => {
+    const cases = [
+      ["mcp.sites.read", "mcp.ability.read"],
+      ["mcp.sites.read", "mcp.uptime.read"],
+      [],
+    ];
+    for (const selected of cases) {
+      const note = customNote(selected, presets);
+      expect(note).not.toMatch(/your own set/i);
+      expect(note).not.toMatch(new RegExp(`[${String.fromCharCode(0x2013, 0x2014)}]`));
+    }
   });
 });
 

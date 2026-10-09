@@ -1,4 +1,9 @@
-import { CONFERRABLE_READS, type AbilityTicks, type Capability } from "./capabilities";
+import {
+  CONFERRABLE_READS,
+  isAbilityCapability,
+  type AbilityTicks,
+  type Capability,
+} from "./capabilities";
 
 // The read picker's presets, shared by the connection wizard's step 4 and the
 // consent screen so the two surfaces cannot offer different shortcuts or open
@@ -133,6 +138,32 @@ export function presetFor(
   const chosen = setKey(selected);
   const match = presets.find((preset) => setKey(preset.capabilities) === chosen);
   return match?.id ?? null;
+}
+
+/**
+ * The sentence under the Custom chip.
+ *
+ * Custom is derived over the WHOLE tick list (ruling 33: a preset sets every
+ * box), so it can show for a reason that has nothing to do with the read rows:
+ * a site-tools or cache tick further down is in no preset. When the read rows on
+ * their own match a shortcut, the sentence says so, names the ticks that are not
+ * part of either shortcut, and says that pressing a shortcut clears them. In
+ * every other case it is a plain statement, with no suggestion that anyone built
+ * the set on purpose, because on an untouched screen nobody did.
+ */
+export function customNote(
+  selected: readonly string[],
+  presets: readonly CapabilityPreset[],
+): string {
+  const matchedId = presetFor(conferrableReadsIn(selected), presets);
+  const matched = presets.find((preset) => preset.id === matchedId);
+  const extras: string[] = [];
+  if (selected.some(isAbilityCapability)) extras.push("site tools");
+  if (selected.includes("mcp.cache.purge")) extras.push("cache clear");
+  if (matched !== undefined && extras.length > 0) {
+    return `The read rows match ${matched.label}. The ticks further down for ${extras.join(" and ")} are not part of either shortcut, and pressing a shortcut clears them.`;
+  }
+  return "The ticks below are not either shortcut.";
 }
 
 /**
