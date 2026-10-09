@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -52,6 +54,9 @@ const (
 	// measured with the default ten-second grace each container took longer than
 	// that to stop, on every test.
 	s3TestStopTimeout = time.Second
+	// s3TestLogTimeout bounds reading a container's log for a failure message,
+	// opening the stream and reading it together.
+	s3TestLogTimeout = 5 * time.Second
 	// s3TestProbeKey is written and removed to prove the store takes writes. It
 	// sits at the bucket root so deleting it leaves no empty folder behind.
 	s3TestProbeKey = "readiness-probe"
@@ -108,15 +113,34 @@ func s3TestLogTail(ctx context.Context, c *testcontainers.DockerContainer) strin
 	if c == nil {
 		return "(no container)"
 	}
-	rc, err := c.Logs(ctx)
+	return s3LogTail(ctx, c.Logs, s3TestLogTimeout)
+}
+
+// s3LogTail reads at most 1 MiB from the stream that logs opens and returns the
+// last 4 KiB of it.
+//
+// It owns a deadline of its own, covering opening the stream and reading it. It
+// runs while a test is already failing, and a daemon that has stopped answering
+// must not hold up the failure report. When the deadline passes the stream is
+// closed, which is what unblocks a read parked on it, and what was read so far is
+// returned with a note saying it stopped early.
+func s3LogTail(ctx context.Context, logs func(context.Context) (io.ReadCloser, error), timeout time.Duration) string {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	rc, err := logs(ctx)
 	if err != nil {
 		return fmt.Sprintf("(container log unavailable: %v)", err)
 	}
 	defer func() { _ = rc.Close() }()
+	stop := context.AfterFunc(ctx, func() { _ = rc.Close() })
+	defer stop()
 	b, _ := io.ReadAll(io.LimitReader(rc, 1<<20))
 	const keep = 4096
 	if len(b) > keep {
 		b = b[len(b)-keep:]
+	}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return string(b) + fmt.Sprintf("\n(log read stopped after %s)", timeout)
 	}
 	return string(b)
 }
@@ -333,5 +357,88 @@ func TestBlobstorePresignRoundTrip(t *testing.T) {
 	got, _ := io.ReadAll(gresp.Body)
 	if !bytes.Equal(got, payload) {
 		t.Fatalf("presigned GET body = %q, want %q", got, payload)
+	}
+}
+
+// stalledLog is a log stream that never produces a byte: Read parks until the
+// stream is closed, as a read does on a daemon that has stopped answering. Close
+// may be called any number of times.
+type stalledLog struct {
+	closed chan struct{}
+	once   sync.Once
+}
+
+func newStalledLog() *stalledLog { return &stalledLog{closed: make(chan struct{})} }
+
+func (s *stalledLog) Read([]byte) (int, error) {
+	<-s.closed
+	return 0, io.ErrClosedPipe
+}
+
+func (s *stalledLog) Close() error {
+	s.once.Do(func() { close(s.closed) })
+	return nil
+}
+
+// awaitTail runs s3LogTail on its own goroutine so that a regression shows up as
+// a failure after a few seconds rather than as a test binary that never returns.
+func awaitTail(t *testing.T, logs func(context.Context) (io.ReadCloser, error), timeout time.Duration) string {
+	t.Helper()
+	done := make(chan string, 1)
+	go func() { done <- s3LogTail(context.Background(), logs, timeout) }()
+	select {
+	case got := <-done:
+		return got
+	case <-time.After(5 * time.Second):
+		t.Fatalf("s3LogTail did not return within 5s of a %s deadline; a stalled log stream would hold up the failure report", timeout)
+		return ""
+	}
+}
+
+// TestS3LogTailGivesUpOnAStalledStream: the stream opens and then never yields a
+// byte. The helper must return at its own deadline, say it stopped early, and
+// leave no read parked on the stream.
+func TestS3LogTailGivesUpOnAStalledStream(t *testing.T) {
+	stream := newStalledLog()
+	t.Cleanup(func() { _ = stream.Close() })
+	got := awaitTail(t, func(context.Context) (io.ReadCloser, error) { return stream, nil }, 200*time.Millisecond)
+	if !strings.Contains(got, "log read stopped") {
+		t.Fatalf("tail of a stalled stream = %q, want the stopped-early note", got)
+	}
+	select {
+	case <-stream.closed:
+	default:
+		t.Fatal("the stalled stream was never closed, so its read is still parked")
+	}
+}
+
+// TestS3LogTailGivesUpWhenOpeningTheStreamStalls: the daemon does not answer the
+// request for the stream at all. The deadline has to reach that call too.
+func TestS3LogTailGivesUpWhenOpeningTheStreamStalls(t *testing.T) {
+	logs := func(ctx context.Context) (io.ReadCloser, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	got := awaitTail(t, logs, 200*time.Millisecond)
+	if !strings.Contains(got, "container log unavailable") {
+		t.Fatalf("tail when opening stalls = %q, want the unavailable note", got)
+	}
+}
+
+// TestS3LogTailKeepsTheEndOfALongLog: the byte cap still holds, and the part kept
+// is the end, which is where a failed start says why.
+func TestS3LogTailKeepsTheEndOfALongLog(t *testing.T) {
+	long := strings.Repeat("early line\n", 2000) + "the last line\n"
+	got := awaitTail(t, func(context.Context) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader(long)), nil
+	}, 5*time.Second)
+	if len(got) > 4096 {
+		t.Fatalf("tail is %d bytes, want at most 4096", len(got))
+	}
+	if !strings.HasSuffix(got, "the last line\n") {
+		t.Fatalf("tail does not end with the last line: %q", got[max(0, len(got)-40):])
+	}
+	if strings.Contains(got, "stopped") {
+		t.Fatalf("a log that read to the end carries the stopped-early note: %q", got[max(0, len(got)-60):])
 	}
 }
