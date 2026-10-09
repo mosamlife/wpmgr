@@ -20,5 +20,7 @@
 6.2 blocks.json numeric-reference-text
 6.2 blocks.json numeric-reference-classic-nodes
 6.2 blocks.json numeric-reference-block-nodes
+6.2 blocks.json image-alt-entity-numeric
 6.2 classic.json numeric-reference-text
 6.2 classic.json numeric-reference-classic-nodes
+6.2 classic.json image-alt-entity-numeric

@@ -162,7 +162,9 @@ expect "a case with an empty title is red" nonzero PAGE_KSES_MARKUP="$tmp/empty_
 expect "an empty markup file is red" nonzero PAGE_KSES_MARKUP="$tmp/empty_file.json"
 expect "unparseable markup is red" nonzero PAGE_KSES_MARKUP="$tmp/not_json.json"
 expect "a missing markup file is red" nonzero PAGE_KSES_MARKUP="$tmp/no-such-file.json"
-expect "an empty markup setting is red" nonzero PAGE_KSES_MARKUP=""
+# On the one core the generator's output is clean on its own, so a wrongly green
+# result here cannot be mistaken for the red the real markup earns on 6.2.
+expect "an empty markup setting is red" nonzero PAGE_KSES_VERSIONS="7.1.3" PAGE_KSES_MARKUP=""
 expect "one good file and one empty file is red" nonzero PAGE_KSES_MARKUP="$tmp/layout_ok.json $tmp/empty_file.json"
 
 # --- must go red: the tools and the version list -----------------------------------------
@@ -210,6 +212,21 @@ expect "a working fallback url is used when the first fails" 0 PAGE_KSES_CACHE="
 printf '6.2 %s %s\n' "$sha69" "$url69" >"$tmp/cores_mislabel.txt"
 expect "a pin whose tarball is a different release is red" nonzero PAGE_KSES_CORES_FILE="$tmp/cores_mislabel.txt" PAGE_KSES_MARKUP="$tmp/layout_ok.json"
 said "  and it says which version it found" "core reports version"
+
+# --- must go red: a core that does not carry the save chain it is supposed to test -----------------
+# A copy of the verified 7.1.3 subset whose default filters file is empty: the
+# comparison would still run, over nothing, so the guard must refuse to.
+cache_dir="${PAGE_KSES_CACHE:-${XDG_CACHE_HOME:-${HOME:-}/.cache}/wpmgr-page-kses}"
+sha73="$(line 7.1.3 | awk '{print $2}')"
+if [ -f "$cache_dir/$sha73/wordpress/wp-includes/default-filters.php" ]; then
+  mkdir -p "$tmp/cache-nochain"
+  cp -R "$cache_dir/$sha73" "$tmp/cache-nochain/$sha73"
+  : >"$tmp/cache-nochain/$sha73/wordpress/wp-includes/default-filters.php"
+  expect "a core without its default save filters is red" nonzero PAGE_KSES_CACHE="$tmp/cache-nochain" PAGE_KSES_VERSIONS="7.1.3" PAGE_KSES_MARKUP="$tmp/layout_ok.json"
+  said "  and it says the save chain is incomplete" "save chain of WP 7.1.3 has no"
+else
+  bad "setup: the 7.1.3 core is not in the cache after the runs above"
+fi
 
 # --- the generator in the loop: the real builder, both editors -----------------------------------
 printf '[{"name":"plain","classic":true,"outline":[{"type":"heading","level":2,"text":"Hi & bye"},{"type":"paragraph","text":"Body [1]."}]}]' >"$tmp/outlines_ok.json"

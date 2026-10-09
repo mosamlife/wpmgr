@@ -202,7 +202,8 @@ foreach ($files as $file) {
         if (array_key_exists($key, $known)) {
             $known[$key] = true;
             $knownSeen++;
-            echo "KSES-KNOWN $label:$name\n$report";
+            // The first difference is evidence enough; the full diff is for a real change.
+            echo "KSES-KNOWN $label:$name\n" . implode("\n", array_slice(explode("\n", $report), 0, 3)) . "\n";
         } else {
             $changed++;
             echo "KSES-CHANGED $label:$name\n$report";

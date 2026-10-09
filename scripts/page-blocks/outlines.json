@@ -57,8 +57,11 @@
     {"type":"image","attachment_id":42,"alt":""}]},
   {"name":"image-alt-specials","classic":true,"outline":[
     {"type":"image","attachment_id":42,"alt":"Bob's \"dog\" & cat: café 東京 🚀 100%"},
-    {"type":"image","attachment_id":43,"alt":"Fish & chips, R&D, AT&T; a=b&c=d"},
+    {"type":"image","attachment_id":43,"alt":"Fish & chips, R&D, AT&T; a=b&c=d"}]},
+  {"name":"image-alt-entity-named","classic":true,"outline":[
     {"type":"image","attachment_id":44,"alt":"Already &amp; encoded, &quot; named and &apos; named"}]},
+  {"name":"image-alt-entity-numeric","classic":true,"outline":[
+    {"type":"image","attachment_id":44,"alt":"Alt &#39; text"}]},
   {"name":"image-url-shapes","classic":true,"outline":[
     {"type":"image","attachment_id":43,"alt":"Address with a query string"},
     {"type":"image","attachment_id":44,"alt":"Address with percent encoding and punctuation"},
@@ -223,7 +226,6 @@
 
   {"name":"numeric-reference-classic-nodes","classic":true,"outline":[
     {"type":"quote","paragraphs":["Quote &#60; text"],"citation":"Cite &#60;"},
-    {"type":"image","attachment_id":42,"alt":"Alt &#39; text"},
     {"type":"table","header":["&#60;"],"rows":[["Cell &#x3C;"]]}]},
   {"name":"numeric-reference-block-nodes","outline":[
     {"type":"image","attachment_id":42,"alt":"","caption":"Caption &#60; text"},
