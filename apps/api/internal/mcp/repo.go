@@ -312,13 +312,13 @@ func (r *Repo) LookupAuthorizationCode(ctx context.Context, codeHash string) (sq
 // ReCheckMCPRequestAuthorizationInTenantTx for the token just inserted: the
 // query Authenticate runs on every request this token will make. The token
 // response therefore names the scopes from the same column, read the same way,
-// as every authorization decision taken under the token. A set the response
-// cannot name (tokenResponseScope) is refused here, inside the transaction, so
-// the consume and the insert roll back with it.
+// as every authorization decision taken under the token. The set is returned
+// as stored; Exchange decides whether it can be named.
 //
 // pgx.ErrNoRows from the read-back is NOT passed through. The caller reads
 // ErrNoRows as a lost compare-and-set and answers invalid_grant, while a token
-// this transaction inserted and cannot read is a server fault.
+// this transaction inserted and cannot read is a server fault. Any read-back
+// error rolls the consume and the insert back with it.
 func (r *Repo) RedeemAuthorizationCode(
 	ctx context.Context,
 	tenantID, codeID uuid.UUID,
@@ -345,11 +345,7 @@ func (r *Repo) RedeemAuthorizationCode(
 			}
 			return fmt.Errorf("read back the grant of issued token %s: %w", row.ID, err)
 		}
-		scopes := grantScopes(chk.GrantOauthScopes)
-		if _, err := tokenResponseScope(scopes); err != nil {
-			return fmt.Errorf("grant %s: %w", chk.GrantID, err)
-		}
-		out = RedeemedCode{Token: row, GrantScopes: scopes}
+		out = RedeemedCode{Token: row, GrantScopes: grantScopes(chk.GrantOauthScopes)}
 		return nil
 	})
 	return out, err

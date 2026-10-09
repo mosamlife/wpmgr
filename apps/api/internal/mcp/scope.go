@@ -213,9 +213,7 @@ func AdvertisedScopes() []string {
 //     "mcp:read mcp:site" would reach the client as two scopes.
 //
 // The refusal is a plain error, not a domain one. Both cases are rows the
-// schema's CHECKs make unstorable, so the token endpoint answers server_error,
-// and RedeemAuthorizationCode applies the same function inside its
-// transaction so the code stays redeemable and no token row is left behind.
+// schema's CHECKs make unstorable, so the token endpoint answers server_error.
 func tokenResponseScope(held []Scope) (string, error) {
 	if len(held) == 0 {
 		return "", fmt.Errorf("the grant holds no scope; a token response cannot name one")

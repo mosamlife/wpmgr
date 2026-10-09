@@ -1641,9 +1641,11 @@ func (s *Service) Exchange(ctx context.Context, req TokenRequest) (IssuedToken, 
 	// parameter: a grant that holds mcp:site and mcp:cache says so, and a
 	// read-only grant says exactly "mcp:read".
 	//
-	// The store already refused, and rolled back, a set the response cannot
-	// name. This second call is what holds the same rule for any Store, and it
-	// fails closed: no access token leaves this function without its scope.
+	// A SET THE RESPONSE CANNOT NAME FAILS CLOSED, with server_error and no
+	// access token. The refusal comes after the commit, so the code is spent and
+	// the token row exists, but its plaintext never leaves this function and
+	// nothing can present it. Both refusals are rows the schema's CHECKs make
+	// unstorable, so no retry of this code could have succeeded either.
 	scope, err := tokenResponseScope(redeemed.GrantScopes)
 	if err != nil {
 		return IssuedToken{}, fmt.Errorf("render the issued token's scope: %w", err)

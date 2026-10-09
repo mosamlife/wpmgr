@@ -2,8 +2,10 @@
 // sign-in, driven the way the client drives it. The scope is READ OFF THE 401
 // CHALLENGE and the protected resource document, never written here, then used
 // for registration and /authorize, and the consent is approved with the site
-// and cache boxes left clear and then ticked. Every write and read goes through
-// the mounted routes and the service's own tx helpers, as wpmgr_app.
+// and cache boxes left clear and then ticked. At every step the token
+// response's scope member must name exactly the scope set the stored grant
+// holds. Every write and read goes through the mounted routes and the
+// service's own tx helpers, as wpmgr_app.
 package tests
 
 import (
@@ -107,8 +109,9 @@ func TestMCPOAuthAdvertisedScopesReachTheConsentAndOnlyTicksAreGranted(t *testin
 	t.Logf("STEP 2 ok: client %s registered for %v", clientID, registered)
 
 	// flow runs authorize -> consent -> token for one client and scope, with
-	// the given capability ticks, and returns the stored grant.
-	flow := func(step, client, scope string, ticked func([]map[string]string) []string) mcp.Connection {
+	// the given capability ticks, and returns the stored grant and the token
+	// response's scope member.
+	flow := func(step, client, scope string, ticked func([]map[string]string) []string) (mcp.Connection, string) {
 		t.Helper()
 		verifier := "adv-" + uuid.NewString() + uuid.NewString()
 		sum := sha256.Sum256([]byte(verifier))
@@ -153,6 +156,7 @@ func TestMCPOAuthAdvertisedScopesReachTheConsentAndOnlyTicksAreGranted(t *testin
 		}
 		var tok struct {
 			AccessToken string `json:"access_token"`
+			Scope       string `json:"scope"`
 		}
 		if err := json.Unmarshal(w.Body.Bytes(), &tok); err != nil || tok.AccessToken == "" {
 			t.Fatalf("%s token response unusable: %v %s", step, err, w.Body.String())
@@ -168,12 +172,32 @@ func TestMCPOAuthAdvertisedScopesReachTheConsentAndOnlyTicksAreGranted(t *testin
 		}
 		for _, c := range conns {
 			if c.ID.String() == approval.GrantID {
-				return c
+				return c, tok.Scope
 			}
 		}
 		t.Fatalf("%s grant %s not found through ListConnections", step, approval.GrantID)
-		return mcp.Connection{}
+		return mcp.Connection{}, ""
 	}
+
+	// tokenScopeIs asserts the token response named exactly the scope set the
+	// grant stores, read back through ListConnections, AND the literal the step
+	// expects: the first catches a response that drifts from the row, the
+	// second a row and a response that agree on the wrong set.
+	tokenScopeIs := func(step string, c mcp.Connection, got, want string) {
+		t.Helper()
+		stored := make([]string, 0, len(c.Scopes))
+		for _, s := range c.Scopes {
+			stored = append(stored, string(s))
+		}
+		slices.Sort(stored)
+		if got != strings.Join(stored, " ") {
+			t.Fatalf("%s token response scope = %q, but the grant stores %v", step, got, stored)
+		}
+		if got != want {
+			t.Fatalf("%s token response scope = %q, want %q", step, got, want)
+		}
+	}
+	allThree := strings.Join(slices.Sorted(slices.Values(want)), " ")
 
 	// The dashboard's payload with both boxes clear: the conferred reads,
 	// never the site-tools read, which is its own box.
@@ -196,30 +220,36 @@ func TestMCPOAuthAdvertisedScopesReachTheConsentAndOnlyTicksAreGranted(t *testin
 	}
 
 	// STEP 3: boxes left clear. The grant holds the reads and nothing else.
-	cleared := flow("STEP 3", clientID, advertised, readsOnly)
+	// Its scope set is still the three the client asked for and the operator
+	// was shown; the boxes narrow capabilities, not scopes, so the token names
+	// the three.
+	cleared, clearedScope := flow("STEP 3", clientID, advertised, readsOnly)
+	tokenScopeIs("STEP 3", cleared, clearedScope, allThree)
 	for _, held := range cleared.Capabilities {
 		switch held {
 		case mcp.CapAbilityRead, mcp.CapAbilityRequest, mcp.CapCachePurge:
 			t.Fatalf("STEP 3 grant holds %q with every box left clear", held)
 		}
 	}
-	t.Logf("STEP 3 ok: boxes clear, grant holds %v", capNames(cleared))
+	t.Logf("STEP 3 ok: boxes clear, grant holds %v, token scope %q", capNames(cleared), clearedScope)
 
 	// STEP 4: every box ticked. The grant holds exactly the reads plus the three.
 	all := func(conf []map[string]string) []string {
 		return append(readsOnly(conf), string(mcp.CapAbilityRead), string(mcp.CapAbilityRequest), string(mcp.CapCachePurge))
 	}
-	ticked := flow("STEP 4", clientID, advertised, all)
+	ticked, tickedScope := flow("STEP 4", clientID, advertised, all)
+	tokenScopeIs("STEP 4", ticked, tickedScope, allThree)
 	if got := capNames(ticked); !slices.Contains(got, string(mcp.CapAbilityRead)) ||
 		!slices.Contains(got, string(mcp.CapAbilityRequest)) || !slices.Contains(got, string(mcp.CapCachePurge)) ||
 		len(got) != len(capNames(cleared))+3 {
 		t.Fatalf("STEP 4 grant holds %v, want the reads %v plus the three ticked", got, capNames(cleared))
 	}
-	t.Logf("STEP 4 ok: boxes ticked, grant holds %v", capNames(ticked))
+	t.Logf("STEP 4 ok: boxes ticked, grant holds %v, token scope %q", capNames(ticked), tickedScope)
 
 	// STEP 5: a client asking for mcp:read alone, unchanged.
 	readOnlyClient := strings.SplitN(register(""), "|", 2)
-	plain := flow("STEP 5", readOnlyClient[0], string(mcp.ScopeRead), readsOnly)
+	plain, plainScope := flow("STEP 5", readOnlyClient[0], string(mcp.ScopeRead), readsOnly)
+	tokenScopeIs("STEP 5", plain, plainScope, string(mcp.ScopeRead))
 	if len(plain.Scopes) != 1 || plain.Scopes[0] != mcp.ScopeRead {
 		t.Fatalf("STEP 5 read-only grant scopes = %v, want [mcp:read]", plain.Scopes)
 	}
@@ -258,7 +288,8 @@ func TestMCPOAuthAdvertisedScopesReachTheConsentAndOnlyTicksAreGranted(t *testin
 	}, nil, &refused); code != http.StatusBadRequest || refused.Error != "invalid_scope" {
 		t.Fatalf("STEP 6 approval restoring the withheld scopes = %d %q, want 400 invalid_scope", code, refused.Error)
 	}
-	renewed := flow("STEP 6", readOnlyClient[0], advertised, readsOnly)
+	renewed, renewedScope := flow("STEP 6", readOnlyClient[0], advertised, readsOnly)
+	tokenScopeIs("STEP 6", renewed, renewedScope, string(mcp.ScopeRead))
 	if len(renewed.Scopes) != 1 || renewed.Scopes[0] != mcp.ScopeRead {
 		t.Fatalf("STEP 6 narrowed grant scopes = %v, want [mcp:read]", renewed.Scopes)
 	}

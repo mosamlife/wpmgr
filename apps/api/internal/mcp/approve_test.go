@@ -564,6 +564,7 @@ func TestExchange_ConfidentialClientMustPresentItsSecret(t *testing.T) {
 		return &fakeStore{
 			codeOK: true, code: redeemableCode(t, verifier, registeredRedirect, registeredClientID),
 			clientOK: true, client: confidentialClient(secret),
+			grantOauthScopes: []string{string(ScopeRead)},
 		}
 	}
 	// ClientAuthVia is set to the REGISTERED transport throughout, so each
@@ -614,6 +615,7 @@ func TestExchange_PublicClientNeedsNoSecret(t *testing.T) {
 	store := &fakeStore{
 		codeOK: true, code: redeemableCode(t, verifier, registeredRedirect, registeredClientID),
 		clientOK: true, client: liveClient(registeredRedirect), // method "none"
+		grantOauthScopes: []string{string(ScopeRead)},
 	}
 	got, err := NewService(store).Exchange(context.Background(), TokenRequest{
 		GrantType: "authorization_code", Code: "c", RedirectURI: registeredRedirect,

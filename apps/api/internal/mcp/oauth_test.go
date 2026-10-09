@@ -318,18 +318,14 @@ func (f *fakeStore) RedeemAuthorizationCode(_ context.Context, _, _ uuid.UUID, t
 	if f.tokenPersistErr != nil {
 		return RedeemedCode{}, f.tokenPersistErr
 	}
-	// Then the read-back of the grant's stored scope set, refused on the same
-	// rule and with the same rollback as the real transaction.
-	scopes := grantScopes(f.grantOauthScopes)
-	if _, err := tokenResponseScope(scopes); err != nil {
-		return RedeemedCode{}, err
-	}
-
+	// Then the read-back of the grant's stored scope set, returned AS STORED,
+	// exactly as the real transaction returns it: deciding whether a token
+	// response can name it is Exchange's job, not the store's.
 	f.consumed = true
 	f.tokensMinted++
 	return RedeemedCode{
 		Token:       sqlc.McpConnectionToken{ID: uuid.New(), TenantID: tok.TenantID, GrantID: tok.GrantID},
-		GrantScopes: scopes,
+		GrantScopes: grantScopes(f.grantOauthScopes),
 	}, nil
 }
 
@@ -915,6 +911,7 @@ func TestExchange_ConsumedCodeCannotBeReplayed(t *testing.T) {
 	store := &fakeStore{
 		codeOK: true, code: redeemableCode(t, verifier, redirect, clientID),
 		clientOK: true, client: liveClient(redirect),
+		grantOauthScopes: []string{string(ScopeRead)},
 	}
 	svc := NewService(store)
 
