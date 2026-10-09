@@ -4755,6 +4755,16 @@ export type AbilityRequest = {
    */
   restored?: boolean;
   undo_state?: string;
+  /**
+   * Why a failed undo (`undo_state` failed) failed: the copy the
+   * site kept of the page for this change was changed on the site,
+   * so WPMgr did not use it and nothing changed (snapshot_tampered),
+   * or the site's put-back did not read back as that copy
+   * (restore_mismatch). Null for every other request. A closed
+   * value, never the site's own words.
+   *
+   */
+  undo_code?: "snapshot_tampered" | "restore_mismatch" | null;
   undo_available_until?: string;
   /**
    * Whether `POST .../undo` would start an undo now: a done request

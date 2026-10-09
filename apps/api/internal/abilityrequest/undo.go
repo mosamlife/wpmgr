@@ -27,6 +27,23 @@ const (
 	UndoFailed           = "failed"
 )
 
+// Undo codes (m169 undo_code): why a failed undo failed, for the two answers
+// the person is told about in their own words. The table admits only these,
+// and only on a failed undo.
+const (
+	// UndoCodeSnapshotTampered: the copy the site kept for the change, its
+	// record and the hash the undo sent are not one; nothing was changed.
+	UndoCodeSnapshotTampered = "snapshot_tampered"
+	// UndoCodeRestoreMismatch: the site's put-back did not read back as the
+	// copy.
+	UndoCodeRestoreMismatch = "restore_mismatch"
+)
+
+var undoCodes = map[string]struct{}{
+	UndoCodeSnapshotTampered: {},
+	UndoCodeRestoreMismatch:  {},
+}
+
 // Undo budgets. Once Begin has committed in_progress, the agent call and the
 // finish transaction run on a context detached from the request, so a client
 // that disconnects cannot leave the row in_progress.
@@ -94,6 +111,34 @@ func undoResultFor(resp agentcmd.AbilityRunResponse, err error) string {
 		}
 	}
 	return UndoFailed
+}
+
+// undoCodeFor is the undo_code recorded with result: the site's refusal
+// code when the undo failed with one of the closed undo codes, else nil. A
+// code is never recorded with any other result.
+func undoCodeFor(result string, err error) *string {
+	var refusal *agentcmd.AbilityRunRefusal
+	if result != UndoFailed || !errors.As(err, &refusal) {
+		return nil
+	}
+	if _, ok := undoCodes[refusal.Code]; !ok {
+		return nil
+	}
+	code := refusal.Code
+	return &code
+}
+
+// undoCodeOf is undo_code on the wire: the stored code when it is one of the
+// closed undo codes on a failed undo, else nil.
+func undoCodeOf(r sqlc.AssistantAbilityRequest) *string {
+	if r.UndoCode == nil || r.UndoState == nil || *r.UndoState != UndoFailed {
+		return nil
+	}
+	if _, ok := undoCodes[*r.UndoCode]; !ok {
+		return nil
+	}
+	code := *r.UndoCode
+	return &code
 }
 
 // undoRevertFor is the revert's signed parameters for row, read in the
@@ -543,7 +588,8 @@ func (s *Service) recordUndoFinish(ctx context.Context, run undoTxRunner, p doma
 	var after sqlc.AssistantAbilityRequest
 	err := run(fctx, p, func(q *sqlc.Queries, tx pgx.Tx) error {
 		if _, err := q.FinishAbilityRequestUndo(fctx, sqlc.FinishAbilityRequestUndoParams{
-			UndoResult: result, Restored: reportRestored(report), TenantID: p.TenantID, ID: requestID,
+			UndoResult: result, Restored: reportRestored(report), UndoCode: undoCodeFor(result, sendErr),
+			TenantID: p.TenantID, ID: requestID,
 		}); err != nil {
 			return err
 		}

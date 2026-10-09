@@ -8209,6 +8209,12 @@ export const AbilityRequestSchema = {
       type: "string",
       nullable: true,
     },
+    undo_code: {
+      type: ["string", "null"],
+      enum: ["snapshot_tampered", "restore_mismatch", null],
+      description:
+        "Why a failed undo (`undo_state` failed) failed: the copy the\nsite kept of the page for this change was changed on the site,\nso WPMgr did not use it and nothing changed (snapshot_tampered),\nor the site's put-back did not read back as that copy\n(restore_mismatch). Null for every other request. A closed\nvalue, never the site's own words.\n",
+    },
     undo_available_until: {
       type: "string",
       format: "date-time",

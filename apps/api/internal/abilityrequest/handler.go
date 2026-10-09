@@ -114,8 +114,13 @@ type RequestDTO struct {
 	// put back but other changes the site made remain (or the put-back
 	// itself failed), null when nothing needed restoring or for any other
 	// ability.
-	Restored           *bool      `json:"restored"`
-	UndoState          *string    `json:"undo_state"`
+	Restored  *bool   `json:"restored"`
+	UndoState *string `json:"undo_state"`
+	// UndoCode says why a failed undo failed: snapshot_tampered (the copy
+	// the site kept for the change was changed on the site, so it was not
+	// used and nothing changed) or restore_mismatch (the site's put-back did
+	// not read back as the copy). Null for every other row (undoCodeOf).
+	UndoCode           *string    `json:"undo_code"`
 	UndoAvailableUntil *time.Time `json:"undo_available_until"`
 	// UndoOffered is whether POST .../undo would start an undo now: a done
 	// row's undo inside its window (for a page edit, only the newest applied
@@ -270,6 +275,7 @@ func toDTO(r sqlc.AssistantAbilityRequest, withDigest bool, agentVersion string,
 		CreatedAt: r.CreatedAt, ExpiresAt: r.ExpiresAt, DecidedAt: ts(r.DecidedAt),
 		Outcome: r.Outcome, OutcomeCode: r.OutcomeCode, OutcomeDetail: outcomeDetailFor(r), NotSentReason: r.NotSentReason,
 		CreatedPostID: r.CreatedPostID, Trashed: r.Trashed, Restored: r.Restored, UndoState: r.UndoState,
+		UndoCode:           undoCodeOf(r),
 		UndoAvailableUntil: ts(r.UndoAvailableUntil),
 		UndoOffered:        UndoOffered(r, agentVersion, newestEdit, time.Now()),
 		ResolveGaveUp:      resolveGaveUp(r),

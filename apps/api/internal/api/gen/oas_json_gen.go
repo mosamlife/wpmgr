@@ -3274,6 +3274,12 @@ func (s *AbilityRequest) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
+		if s.UndoCode.Set {
+			e.FieldStart("undo_code")
+			s.UndoCode.Encode(e)
+		}
+	}
+	{
 		if s.UndoAvailableUntil.Set {
 			e.FieldStart("undo_available_until")
 			s.UndoAvailableUntil.Encode(e, json.EncodeDateTime)
@@ -3325,7 +3331,7 @@ func (s *AbilityRequest) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfAbilityRequest = [37]string{
+var jsonFieldsNameOfAbilityRequest = [38]string{
 	0:  "id",
 	1:  "site_id",
 	2:  "ability_name",
@@ -3354,15 +3360,16 @@ var jsonFieldsNameOfAbilityRequest = [37]string{
 	25: "trashed",
 	26: "restored",
 	27: "undo_state",
-	28: "undo_available_until",
-	29: "undo_offered",
-	30: "resolve_gave_up",
-	31: "route_id",
-	32: "route_sha256",
-	33: "card_facts",
-	34: "page_media",
-	35: "page_builder",
-	36: "page_edit",
+	28: "undo_code",
+	29: "undo_available_until",
+	30: "undo_offered",
+	31: "resolve_gave_up",
+	32: "route_id",
+	33: "route_sha256",
+	34: "card_facts",
+	35: "page_media",
+	36: "page_builder",
+	37: "page_edit",
 }
 
 // Decode decodes AbilityRequest from json.
@@ -3678,6 +3685,16 @@ func (s *AbilityRequest) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"undo_state\"")
 			}
+		case "undo_code":
+			if err := func() error {
+				s.UndoCode.Reset()
+				if err := s.UndoCode.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"undo_code\"")
+			}
 		case "undo_available_until":
 			if err := func() error {
 				s.UndoAvailableUntil.Reset()
@@ -3689,7 +3706,7 @@ func (s *AbilityRequest) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"undo_available_until\"")
 			}
 		case "undo_offered":
-			requiredBitSet[3] |= 1 << 5
+			requiredBitSet[3] |= 1 << 6
 			if err := func() error {
 				v, err := d.Bool()
 				s.UndoOffered = bool(v)
@@ -3701,7 +3718,7 @@ func (s *AbilityRequest) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"undo_offered\"")
 			}
 		case "resolve_gave_up":
-			requiredBitSet[3] |= 1 << 6
+			requiredBitSet[3] |= 1 << 7
 			if err := func() error {
 				v, err := d.Bool()
 				s.ResolveGaveUp = bool(v)
@@ -3785,7 +3802,7 @@ func (s *AbilityRequest) Decode(d *jx.Decoder) error {
 		0b10001111,
 		0b01011111,
 		0b00000111,
-		0b01100000,
+		0b11000000,
 		0b00000000,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
@@ -7240,6 +7257,46 @@ func (s AbilityRequestState) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *AbilityRequestState) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AbilityRequestUndoCode as json.
+func (s AbilityRequestUndoCode) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes AbilityRequestUndoCode from json.
+func (s *AbilityRequestUndoCode) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AbilityRequestUndoCode to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch AbilityRequestUndoCode(v) {
+	case AbilityRequestUndoCodeSnapshotTampered:
+		*s = AbilityRequestUndoCodeSnapshotTampered
+	case AbilityRequestUndoCodeRestoreMismatch:
+		*s = AbilityRequestUndoCodeRestoreMismatch
+	default:
+		*s = AbilityRequestUndoCode(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s AbilityRequestUndoCode) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AbilityRequestUndoCode) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -97025,6 +97082,55 @@ func (s OptNilAbilityRequestPageMediaArray) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *OptNilAbilityRequestPageMediaArray) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AbilityRequestUndoCode as json.
+func (o OptNilAbilityRequestUndoCode) Encode(e *jx.Encoder) {
+	if !o.Set {
+		return
+	}
+	if o.Null {
+		e.Null()
+		return
+	}
+	e.Str(string(o.Value))
+}
+
+// Decode decodes AbilityRequestUndoCode from json.
+func (o *OptNilAbilityRequestUndoCode) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode OptNilAbilityRequestUndoCode to nil")
+	}
+	if d.Next() == jx.Null {
+		if err := d.Null(); err != nil {
+			return err
+		}
+
+		var v AbilityRequestUndoCode
+		o.Value = v
+		o.Set = true
+		o.Null = true
+		return nil
+	}
+	o.Set = true
+	o.Null = false
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s OptNilAbilityRequestUndoCode) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *OptNilAbilityRequestUndoCode) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }

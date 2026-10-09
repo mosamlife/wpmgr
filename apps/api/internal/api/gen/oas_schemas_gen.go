@@ -2071,9 +2071,14 @@ type AbilityRequest struct {
 	// A failed wpmgr/rest-write's report on putting the post back. True: the whole post is as it was.
 	// False: WPMgr put back what it could, but the post is not fully as it was; show the request as
 	// needing attention. Null when nothing needed putting back, and for every other ability.
-	Restored           OptNilBool     `json:"restored"`
-	UndoState          OptNilString   `json:"undo_state"`
-	UndoAvailableUntil OptNilDateTime `json:"undo_available_until"`
+	Restored  OptNilBool   `json:"restored"`
+	UndoState OptNilString `json:"undo_state"`
+	// Why a failed undo (`undo_state` failed) failed: the copy the site kept of the page for this change
+	// was changed on the site, so WPMgr did not use it and nothing changed (snapshot_tampered), or the
+	// site's put-back did not read back as that copy (restore_mismatch). Null for every other request. A
+	// closed value, never the site's own words.
+	UndoCode           OptNilAbilityRequestUndoCode `json:"undo_code"`
+	UndoAvailableUntil OptNilDateTime               `json:"undo_available_until"`
 	// Whether `POST .../undo` would start an undo now: a done request inside its undo window (for a page
 	// edit, only the newest applied edit of its page not yet undone), or the draft a failed or given-up
 	// page creation left on the site. Show the undo action exactly when this is true.
@@ -2239,6 +2244,11 @@ func (s *AbilityRequest) GetRestored() OptNilBool {
 // GetUndoState returns the value of UndoState.
 func (s *AbilityRequest) GetUndoState() OptNilString {
 	return s.UndoState
+}
+
+// GetUndoCode returns the value of UndoCode.
+func (s *AbilityRequest) GetUndoCode() OptNilAbilityRequestUndoCode {
+	return s.UndoCode
 }
 
 // GetUndoAvailableUntil returns the value of UndoAvailableUntil.
@@ -2424,6 +2434,11 @@ func (s *AbilityRequest) SetRestored(val OptNilBool) {
 // SetUndoState sets the value of UndoState.
 func (s *AbilityRequest) SetUndoState(val OptNilString) {
 	s.UndoState = val
+}
+
+// SetUndoCode sets the value of UndoCode.
+func (s *AbilityRequest) SetUndoCode(val OptNilAbilityRequestUndoCode) {
+	s.UndoCode = val
 }
 
 // SetUndoAvailableUntil sets the value of UndoAvailableUntil.
@@ -4002,6 +4017,51 @@ func (s *AbilityRequestState) UnmarshalText(data []byte) error {
 		return nil
 	case AbilityRequestStateNotSent:
 		*s = AbilityRequestStateNotSent
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Why a failed undo (`undo_state` failed) failed: the copy the site kept of the page for this change
+// was changed on the site, so WPMgr did not use it and nothing changed (snapshot_tampered), or the
+// site's put-back did not read back as that copy (restore_mismatch). Null for every other request. A
+// closed value, never the site's own words.
+type AbilityRequestUndoCode string
+
+const (
+	AbilityRequestUndoCodeSnapshotTampered AbilityRequestUndoCode = "snapshot_tampered"
+	AbilityRequestUndoCodeRestoreMismatch  AbilityRequestUndoCode = "restore_mismatch"
+)
+
+// AllValues returns all AbilityRequestUndoCode values.
+func (AbilityRequestUndoCode) AllValues() []AbilityRequestUndoCode {
+	return []AbilityRequestUndoCode{
+		AbilityRequestUndoCodeSnapshotTampered,
+		AbilityRequestUndoCodeRestoreMismatch,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityRequestUndoCode) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityRequestUndoCodeSnapshotTampered:
+		return []byte(s), nil
+	case AbilityRequestUndoCodeRestoreMismatch:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityRequestUndoCode) UnmarshalText(data []byte) error {
+	switch AbilityRequestUndoCode(data) {
+	case AbilityRequestUndoCodeSnapshotTampered:
+		*s = AbilityRequestUndoCodeSnapshotTampered
+		return nil
+	case AbilityRequestUndoCodeRestoreMismatch:
+		*s = AbilityRequestUndoCodeRestoreMismatch
 		return nil
 	default:
 		return errors.Errorf("invalid value: %q", data)
@@ -41211,6 +41271,74 @@ func (o OptNilAbilityRequestPageMediaArray) Get() (v []AbilityRequestPageMedia, 
 
 // Or returns value if set, or given parameter if does not.
 func (o OptNilAbilityRequestPageMediaArray) Or(d []AbilityRequestPageMedia) []AbilityRequestPageMedia {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptNilAbilityRequestUndoCode returns new OptNilAbilityRequestUndoCode with value set to v.
+func NewOptNilAbilityRequestUndoCode(v AbilityRequestUndoCode) OptNilAbilityRequestUndoCode {
+	return OptNilAbilityRequestUndoCode{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilAbilityRequestUndoCode is optional nullable AbilityRequestUndoCode.
+type OptNilAbilityRequestUndoCode struct {
+	Value AbilityRequestUndoCode
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilAbilityRequestUndoCode was set.
+func (o OptNilAbilityRequestUndoCode) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilAbilityRequestUndoCode) Reset() {
+	var v AbilityRequestUndoCode
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilAbilityRequestUndoCode) SetTo(v AbilityRequestUndoCode) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilAbilityRequestUndoCode) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilAbilityRequestUndoCode) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v AbilityRequestUndoCode
+	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilAbilityRequestUndoCode) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilAbilityRequestUndoCode) Get() (v AbilityRequestUndoCode, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilAbilityRequestUndoCode) Or(d AbilityRequestUndoCode) AbilityRequestUndoCode {
 	if v, ok := o.Get(); ok {
 		return v
 	}

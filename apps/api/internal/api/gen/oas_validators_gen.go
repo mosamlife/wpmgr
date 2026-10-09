@@ -1260,6 +1260,24 @@ func (s *AbilityRequest) Validate() error {
 		})
 	}
 	if err := func() error {
+		if value, ok := s.UndoCode.Get(); ok {
+			if err := func() error {
+				if err := value.Validate(); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "undo_code",
+			Error: err,
+		})
+	}
+	if err := func() error {
 		if value, ok := s.CardFacts.Get(); ok {
 			if err := func() error {
 				if err := value.Validate(); err != nil {
@@ -1807,6 +1825,17 @@ func (s AbilityRequestState) Validate() error {
 	case "failed":
 		return nil
 	case "not_sent":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
+}
+
+func (s AbilityRequestUndoCode) Validate() error {
+	switch s {
+	case "snapshot_tampered":
+		return nil
+	case "restore_mismatch":
 		return nil
 	default:
 		return errors.Errorf("invalid value: %v", s)
