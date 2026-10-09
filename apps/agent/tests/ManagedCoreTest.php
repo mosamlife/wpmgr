@@ -299,7 +299,20 @@ final class ManagedCoreTest extends TestCase
 
         $this->assertSame('', (new ManagedCore('', $allowed))->detect()['reason']);
         $this->assertSame('', (new ManagedCore('/', $allowed))->detect()['reason']);
-        $this->assertSame('', (new ManagedCore('relative/wp/', $allowed))->detect()['reason']);
+
+        // A relative directory would resolve against the working directory,
+        // which has nothing to do with this site. Plant a Bedrock-style
+        // wp-config.php exactly where a relative search would find it.
+        $this->put('relative/wp-config.php', "<?php\nrequire_once dirname(__DIR__) . '/config/application.php';\n");
+        mkdir($this->root . '/relative/wp', 0777, true);
+
+        $previous = (string) getcwd();
+        chdir($this->root);
+        try {
+            $this->assertSame('', (new ManagedCore('relative/wp/', $allowed))->detect()['reason']);
+        } finally {
+            chdir($previous);
+        }
     }
 
     /** A filter that throws is no answer: fall back to the constant, which is unset here. */
