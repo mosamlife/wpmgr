@@ -454,6 +454,130 @@ final class ElementorFactsTest extends TestCase
         $this->assertSame(['sanitised' => ['a' => '<b>x</b>']], $runtime->ksesPostDeep(['a' => '<b>x</b>']));
     }
 
+    public function test_sanitiser_is_elementors_own_where_the_running_elementor_has_one(): void
+    {
+        // Elementor 4.x: its utility class has kses_post_deep().
+        ElementorPluginStandIn::$instance = new ElementorPluginStandIn();
+        ElementorUtilsStandIn::$sanitise  = static fn ($data) => ['own' => $data];
+        $applied                          = [];
+        Functions\when('wp_kses_post')->alias(
+            static function ($s) use (&$applied) {
+                $applied[] = $s;
+
+                return $s;
+            }
+        );
+
+        $this->assertSame(['own' => ['a' => '<b>x</b>']], $this->standInRuntime()->ksesPostDeep(['a' => '<b>x</b>']));
+        $this->assertSame([], $applied, 'WordPress\'s sanitiser is not applied on top of Elementor\'s own');
+    }
+
+    public function test_sanitiser_applies_wp_kses_post_to_every_string_where_elementor_has_none(): void
+    {
+        // Elementor 3.x: its utility class has no kses_post_deep().
+        $this->assertFalse(is_callable([ElementorLegacyUtilsStandIn::class, 'kses_post_deep']), 'precondition: no deep sanitiser');
+        ElementorPluginStandIn::$instance = new ElementorPluginStandIn();
+        $seen                             = [];
+        Functions\when('wp_kses_post')->alias(
+            static function ($s) use (&$seen) {
+                $seen[] = $s;
+
+                return (string) preg_replace('#<script\b.*?</script>#is', '', (string) $s);
+            }
+        );
+        $runtime = $this->legacyRuntime();
+
+        $tree = [
+            [
+                'id'       => 'a1b2c3d',
+                'elType'   => 'container',
+                'isInner'  => false,
+                'settings' => ['gap' => 5, 'ratio' => 1.5, 'on' => true, 'off' => null, 'title' => 'Hi<script>x()</script>'],
+                'elements' => [
+                    [
+                        'id'         => 'e4f5a6b',
+                        'elType'     => 'widget',
+                        'widgetType' => 'heading',
+                        'settings'   => ['title' => '<b>ok</b>', 'list' => ['one<script>y()</script>', 7], 7 => 'seven'],
+                        'elements'   => [],
+                    ],
+                ],
+            ],
+        ];
+        $expected = $tree;
+
+        $expected[0]['settings']['title']                  = 'Hi';
+        $expected[0]['elements'][0]['settings']['list'][0] = 'one';
+        $this->assertSame($expected, $runtime->ksesPostDeep($tree), 'strings sanitised at every depth; keys, order and other values as given');
+        $this->assertSame(
+            ['a1b2c3d', 'container', 'Hi<script>x()</script>', 'e4f5a6b', 'widget', 'heading', '<b>ok</b>', 'one<script>y()</script>', 'seven'],
+            $seen,
+            'exactly the strings reached WordPress\'s sanitiser, in tree order'
+        );
+
+        // A tree the sanitiser leaves alone comes back equal to itself.
+        $this->assertSame($expected, $runtime->ksesPostDeep($expected));
+        $this->assertSame([], $runtime->ksesPostDeep([]));
+    }
+
+    public function test_sanitiser_is_bounded_by_the_document_depth(): void
+    {
+        ElementorPluginStandIn::$instance = new ElementorPluginStandIn();
+        Functions\when('wp_kses_post')->alias(static fn ($s) => (string) preg_replace('#<script\b.*?</script>#is', '', (string) $s));
+        $runtime = $this->legacyRuntime();
+        $limit   = \WPMgr\Agent\Abilities\Builders\ElementorDocument::MAX_DEPTH;
+
+        $atLimit = self::nested($limit, 'leaf<script>z()</script>');
+        $clean   = $runtime->ksesPostDeep($atLimit);
+        $this->assertIsArray($clean, 'a tree nested to the limit is sanitised');
+        $this->assertSame(self::nested($limit, 'leaf'), $clean);
+
+        $this->assertNull($runtime->ksesPostDeep(self::nested($limit + 1, 'leaf')), 'one level deeper cannot be answered');
+    }
+
+    public function test_sanitiser_answers_null_when_elementor_is_not_loaded(): void
+    {
+        Functions\when('wp_kses_post')->alias(static fn ($s) => $s);
+        ElementorUtilsStandIn::$sanitise = static fn ($data) => $data;
+
+        // The plugin class has no instance: neither form of Elementor answers.
+        ElementorPluginStandIn::$instance = null;
+        $this->assertNull($this->standInRuntime()->ksesPostDeep(['a' => 'x']), 'its own sanitiser is present');
+        $this->assertNull($this->legacyRuntime()->ksesPostDeep(['a' => 'x']), 'it has none');
+
+        // The plugin class is not in memory at all.
+        $this->assertNull((new ElementorRuntime('Wpmgr_Test_No_Such_Elementor', ElementorLegacyUtilsStandIn::class))->ksesPostDeep(['a' => 'x']));
+    }
+
+    public function test_a_failing_own_sanitiser_is_not_replaced_by_the_fallback(): void
+    {
+        ElementorPluginStandIn::$instance = new ElementorPluginStandIn();
+        $applied                          = 0;
+        Functions\when('wp_kses_post')->alias(
+            static function ($s) use (&$applied) {
+                ++$applied;
+
+                return $s;
+            }
+        );
+
+        $answers = [
+            'throws an exception' => static fn () => throw new \RuntimeException('sanitiser failed'),
+            'throws an error'     => static fn () => throw new \TypeError('sanitiser failed'),
+            'answers a string'    => static fn () => 'not an array',
+            'answers null'        => static fn () => null,
+        ];
+        foreach ($answers as $label => $answer) {
+            ElementorUtilsStandIn::$sanitise = $answer;
+            $this->assertNull($this->standInRuntime()->ksesPostDeep(['a' => '<b>x</b>']), $label);
+        }
+        $this->assertSame(0, $applied, 'the fallback never runs where Elementor has its own sanitiser');
+
+        // WordPress's sanitiser failing in the fallback is null as well.
+        Functions\when('wp_kses_post')->alias(static fn () => throw new \RuntimeException('kses failed'));
+        $this->assertNull($this->legacyRuntime()->ksesPostDeep(['a' => '<b>x</b>']));
+    }
+
     public function test_builder_facts_block_emits_only_reserved_keys(): void
     {
         $this->assertFalse(defined('ELEMENTOR_PRO_VERSION'), 'precondition: no Elementor Pro in this process');
@@ -511,6 +635,38 @@ final class ElementorFactsTest extends TestCase
         }
 
         return new ElementorRuntime(ElementorPluginStandIn::class, ElementorUtilsStandIn::class, self::VERSION_STANDIN);
+    }
+
+    /**
+     * A runtime over an Elementor whose utility class has no deep sanitiser,
+     * as in Elementor 3.x.
+     *
+     * @return ElementorRuntime
+     */
+    private function legacyRuntime(): ElementorRuntime
+    {
+        if (!defined(self::VERSION_STANDIN)) {
+            define(self::VERSION_STANDIN, '3.35.9');
+        }
+
+        return new ElementorRuntime(ElementorPluginStandIn::class, ElementorLegacyUtilsStandIn::class, self::VERSION_STANDIN);
+    }
+
+    /**
+     * A list nested $levels arrays deep around one string.
+     *
+     * @param int    $levels Nesting depth of the innermost array; at least 1.
+     * @param string $leaf   The string held by the innermost array.
+     * @return array<mixed>
+     */
+    private static function nested(int $levels, string $leaf): array
+    {
+        $value = [$leaf];
+        for ($i = 1; $i < $levels; $i++) {
+            $value = [$value];
+        }
+
+        return $value;
     }
 
     /**
@@ -681,5 +837,21 @@ final class ElementorUtilsStandIn
     public static function kses_post_deep($data)
     {
         return self::$sanitise === null ? $data : (self::$sanitise)($data);
+    }
+}
+
+/**
+ * Stands in for the utility class of an Elementor that has no deep
+ * sanitiser of its own (Elementor 3.x): it has other helpers and no
+ * kses_post_deep().
+ */
+final class ElementorLegacyUtilsStandIn
+{
+    /**
+     * @return string
+     */
+    public static function get_site_domain(): string
+    {
+        return 'example.test';
     }
 }

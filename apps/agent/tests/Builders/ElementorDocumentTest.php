@@ -204,13 +204,19 @@ final class ElementorDocumentTest extends TestCase
             $doc->precheckTree(self::tree())
         );
 
-        // Where Elementor offers no sanitiser of its own, WordPress's is asked.
+        // A sanitiser that cannot be asked refuses: the document asks the API
+        // and nothing else, even where WordPress's sanitiser would leave the
+        // tree as it is.
         $this->api->kses = static fn (array $data): ?array => null;
-        Functions\when('wp_kses_post')->alias(static fn ($s) => str_replace('<p>', '', (string) $s));
-        $this->assertSame('sanitiser_changed_new_content', $doc->precheckTree(self::tree())['code'] ?? null);
-
         Functions\when('wp_kses_post')->alias(static fn ($s) => $s);
-        $this->assertNull($doc->precheckTree(self::tree()), 'unchanged by WordPress\'s sanitiser');
+        $this->assertSame(
+            ['code' => 'sanitiser_changed_new_content', 'detail' => 'Elementor\'s sanitiser could not be asked'],
+            $doc->precheckTree(self::tree())
+        );
+
+        // The API's answer, unchanged, passes.
+        $this->api->kses = null;
+        $this->assertNull($doc->precheckTree(self::tree()), 'unchanged by the sanitiser');
 
         // Without Elementor nothing can be asked.
         $this->api->loaded = false;

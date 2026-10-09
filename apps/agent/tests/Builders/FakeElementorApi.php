@@ -68,7 +68,9 @@ final class FakeElementorApi implements ElementorApi
     public ?\Closure $elementFactory = null;
 
     /**
-     * Stands in for Elementor's sanitiser. Null returns the data unchanged.
+     * Stands in for ElementorApi::ksesPostDeep(), the sanitiser answer that
+     * is the same on every Elementor version. Null returns the data
+     * unchanged; a closure may return null for "cannot be had".
      *
      * @var (\Closure(array<mixed>): ?array<mixed>)|null
      */
