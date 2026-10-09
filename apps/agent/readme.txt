@@ -285,7 +285,7 @@ This plugin ships two minified JavaScript files. Their human-readable source and
 
 == Changelog ==
 
-The entries below summarize the notable changes since 0.34.0. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
+The entries below summarize the notable changes since 0.48.2. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
 
 = 0.61.162 =
 * Changed: The agent now needs an explicit instruction from WPMgr before it downgrades WordPress core. A core rollback without it is refused and changes nothing. Plugin and theme rollbacks are unchanged.
@@ -468,29 +468,6 @@ The entries below summarize the notable changes since 0.34.0. This project ships
 
 = 0.48.2 =
 * Fixed: one-click "Log in to wp-admin" no longer triggers a second two-factor challenge on sites running another two-factor plugin; it now lands directly in wp-admin. Sites running a security plugin that replaces the login flow entirely now get a clear "sign in normally" message instead of a loop.
-
-= 0.46.0 =
-* Changed: local backups are stored under the uploads directory (with a deny-all .htaccess and an index.php guard) instead of wp-content directly, with a best-effort migration of any existing local backups.
-* Changed: the object-cache drop-in installer's transient cleanup and the media URL rewriter's postmeta lookup now bind their values through prepared-statement placeholders.
-
-= 0.45.0 =
-* New: the page-cache drop-in nudges WP-Cron on a cache hit when the cron marker is more than 60 seconds stale, so scheduled tasks keep running on a fully page-cached, low-traffic site where WordPress itself rarely boots.
-
-= 0.44.0 =
-* New: a signed, cheap liveness ("ping") command the control plane can use to verify a quiet site is actually reachable (and wake WP-Cron) before ever marking it disconnected, instead of relying solely on traffic-driven heartbeats.
-
-= 0.41.0 =
-* New: an optional, off-by-default persistent Redis object cache for the dynamic, uncacheable side of WordPress (logged-in users, admin screens, carts and checkout, REST responses, and database round-trips the page cache cannot serve). Configured and tested per site from the control plane before it can be enabled; degrades safely to an in-memory array cache on any connection failure so the site never goes down because of it.
-
-= 0.36.0 =
-* New: multiple named email connections with per-connection encrypted credentials, per-sender routing, and automatic fallback retry. The agent routes outgoing mail by matching the FROM address to a connection key, falls back to the default connection, and retries once via a configured fallback connection when the primary send fails. The email log records the connection key actually used, plus attachment names and sizes.
-
-= 0.35.0 =
-* New: per-site email delivery and logging. Route this site's outgoing email through Amazon SES, SendGrid, Mailgun, Postmark, or any SMTP server, configured from the WPMgr dashboard. Every send is logged (with optional bounce and complaint suppression), and known-bad addresses are skipped automatically. Email sending is unchanged until you configure a provider.
-
-= 0.34.0 =
-* Changed: one-click wp-admin login is more reliable and now lands past common two-factor prompts. The login token still expires, is single-use, and is bound to the site and your role.
-* Changed: site connection status is steadier. The connection indicator no longer briefly flips to "degraded" on healthy low-traffic sites, and a "Re-check connection" action forces an immediate refresh from the dashboard.
 
 == Upgrade Notice ==
 
