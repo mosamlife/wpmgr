@@ -114,8 +114,9 @@ type RequestDTO struct {
 	UndoState          *string    `json:"undo_state"`
 	UndoAvailableUntil *time.Time `json:"undo_available_until"`
 	// UndoOffered is whether POST .../undo would start an undo now: a done
-	// row's undo inside its window, or the recovery undo of a draft a failed
-	// or given-up write left on the site (GH #826).
+	// row's undo inside its window (for a page edit, only the newest applied
+	// edit of its page not yet undone), or the recovery undo of a draft a
+	// failed or given-up write left on the site (GH #826).
 	UndoOffered bool `json:"undo_offered"`
 	// ResolveGaveUp is true once WPMgr stopped checking the site for the
 	// outcome of a write whose reply was lost (GH #825): the result is final
@@ -252,7 +253,10 @@ func ts(t pgtype.Timestamptz) *time.Time {
 	return &v
 }
 
-func toDTO(r sqlc.AssistantAbilityRequest, withDigest bool, agentVersion string) RequestDTO {
+// toDTO is one row on the wire. agentVersion is its site's recorded agent
+// version (Service.AgentVersions) and newestEdit whether it is the newest
+// page edit of its page still in effect (Service.NewestEdits).
+func toDTO(r sqlc.AssistantAbilityRequest, withDigest bool, agentVersion string, newestEdit bool) RequestDTO {
 	out := RequestDTO{
 		ID: r.ID, SiteID: r.SiteID, AbilityName: r.AbilityName, InputJSON: r.InputJson,
 		TitleExcerpt: r.TitleExcerpt, Editor: r.Editor, PostType: r.PostType,
@@ -263,7 +267,7 @@ func toDTO(r sqlc.AssistantAbilityRequest, withDigest bool, agentVersion string)
 		Outcome: r.Outcome, OutcomeCode: r.OutcomeCode, NotSentReason: r.NotSentReason,
 		CreatedPostID: r.CreatedPostID, Trashed: r.Trashed, Restored: r.Restored, UndoState: r.UndoState,
 		UndoAvailableUntil: ts(r.UndoAvailableUntil),
-		UndoOffered:        UndoOffered(r, agentVersion, time.Now()),
+		UndoOffered:        UndoOffered(r, agentVersion, newestEdit, time.Now()),
 		ResolveGaveUp:      resolveGaveUp(r),
 		RouteID:            r.RouteID,
 		RouteSHA256:        r.RouteSha256,
@@ -283,7 +287,8 @@ func toDTO(r sqlc.AssistantAbilityRequest, withDigest bool, agentVersion string)
 // version when the row could offer a recovery undo.
 func (h *Handler) rowDTO(c *gin.Context, p domain.Principal, row sqlc.AssistantAbilityRequest) RequestDTO {
 	rows := []sqlc.AssistantAbilityRequest{row}
-	return toDTO(row, true, h.svc.AgentVersions(c.Request.Context(), p, rows)[row.SiteID])
+	ctx := c.Request.Context()
+	return toDTO(row, true, h.svc.AgentVersions(ctx, p, rows)[row.SiteID], h.svc.NewestEdits(ctx, p, rows)[row.ID])
 }
 
 func principal(c *gin.Context) (domain.Principal, bool) {
@@ -327,8 +332,9 @@ func (h *Handler) listForSite(c *gin.Context) {
 	out := ListResponse{Requests: make([]RequestDTO, 0, len(rows)), Limit: limit, Offset: offset}
 	withDigest := p.Type == domain.PrincipalUser
 	versions := h.svc.AgentVersions(c.Request.Context(), p, rows)
+	newest := h.svc.NewestEdits(c.Request.Context(), p, rows)
 	for _, r := range rows {
-		out.Requests = append(out.Requests, toDTO(r, withDigest, versions[r.SiteID]))
+		out.Requests = append(out.Requests, toDTO(r, withDigest, versions[r.SiteID], newest[r.ID]))
 	}
 	c.JSON(http.StatusOK, out)
 }
@@ -368,8 +374,9 @@ func (h *Handler) listForOrg(c *gin.Context) {
 	out := OrgListResponse{Requests: make([]RequestDTO, 0, len(q.Requests)), PendingCount: q.PendingCount, Limit: limit, Offset: offset}
 	withDigest := p.Type == domain.PrincipalUser
 	versions := h.svc.AgentVersions(c.Request.Context(), p, q.Requests)
+	newest := h.svc.NewestEdits(c.Request.Context(), p, q.Requests)
 	for _, r := range q.Requests {
-		out.Requests = append(out.Requests, toDTO(r, withDigest, versions[r.SiteID]))
+		out.Requests = append(out.Requests, toDTO(r, withDigest, versions[r.SiteID], newest[r.ID]))
 	}
 	c.JSON(http.StatusOK, out)
 }

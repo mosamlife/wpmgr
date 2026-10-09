@@ -73,7 +73,7 @@ func TestAbilityRequestRecoveryUndoAgentGate(t *testing.T) {
 		versions := w.svc.AgentVersions(ctx, w.person, rows)
 		for _, r := range rows {
 			if r.ID == id {
-				return abilityrequest.UndoOffered(r, versions[r.SiteID], time.Now())
+				return abilityrequest.UndoOffered(r, versions[r.SiteID], false, time.Now())
 			}
 		}
 		t.Fatalf("request %s not listed", id)

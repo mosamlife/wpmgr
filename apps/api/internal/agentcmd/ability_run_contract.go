@@ -22,6 +22,11 @@ import (
 //	{"mode":"read|precheck|ledger","request_id":"<uuid>","entry":"<entry JSON text>",
 //	 "entry_sha256":"<hex sha256 of the entry text bytes>","input":"<input JSON text>"}
 //
+// A revert carries no input. It may carry "revert", the undo's signed
+// parameters (AbilityRunRevert): {"snapshot_sha256":"<hex>"} for a
+// wpmgr/page-edit undo, {"chain":["<request id>",...]} for the undo of a
+// page-builder draft WPMgr has since edited, and nothing otherwise.
+//
 // The token carries `pd`, the lowercase hex sha256 of the exact bytes of the p
 // string. The agent hashes the string it received FIRST and refuses a mismatch
 // (token_params_mismatch), then decodes that same string. No canonicaliser
@@ -86,6 +91,12 @@ const MinAgentVersionForBuilderEdit = "0.61.162"
 // AbilityRunMaxPBytes however many drafts WPMgr created on the site.
 const AbilityRunMaxAllowedDraftIDs = 1
 
+// AbilityRunMaxRevertChain bounds p.revert.chain, mirrored from the agent
+// (BuilderPageCreate::MAX_CHAIN): an undo names at most this many page
+// edits. The control plane refuses an undo it cannot name in full before
+// sending anything.
+const AbilityRunMaxRevertChain = 100
+
 // ErrAbilityRunMalformed marks a 2xx ability_run reply the control plane
 // could not use: a body that did not decode, or an answer for another mode or
 // entry. Resending the same call gets the same answer.
@@ -143,6 +154,63 @@ type AbilityRunCall struct {
 	// precheck and write. The agent reads or edits a draft only when its id
 	// is in this list and its own records agree.
 	AllowedDraftIDs []int64
+	// Revert is the undo's signed parameters, sent as p.revert, and only with
+	// revert: nil sends nothing, which is every undo but the two below.
+	Revert *AbilityRunRevert
+}
+
+// AbilityRunRevert is p.revert. Exactly one member is set.
+//
+// SnapshotSHA256 is a wpmgr/page-edit undo's: the hash of the copy the
+// agent kept before the change, as the applied outcome recorded it. The
+// agent undoes the change only when this hash, the one on its own ledger
+// row and the hash of the stored copy are one hash.
+//
+// Chain is a wpmgr/page-create undo's of a page-builder draft WPMgr has
+// since edited: every applied wpmgr/page-edit request of the draft, in the
+// order they were applied, at most AbilityRunMaxRevertChain. The list only
+// names which of its own ledger rows the agent reads; the draft is trashed
+// only when those rows account for every change to it. An undo with no
+// such edit sends no Revert at all.
+type AbilityRunRevert struct {
+	SnapshotSHA256 string
+	Chain          []uuid.UUID
+}
+
+// abilityRunRevertP is p.revert on the wire: one member, never both.
+type abilityRunRevertP struct {
+	SnapshotSHA256 string   `json:"snapshot_sha256,omitempty"`
+	Chain          []string `json:"chain,omitempty"`
+}
+
+// revertParams checks r and returns its wire form.
+func revertParams(r AbilityRunRevert) (*abilityRunRevertP, error) {
+	hasHash, hasChain := r.SnapshotSHA256 != "", len(r.Chain) != 0
+	if hasHash == hasChain {
+		return nil, fmt.Errorf("ability_run: revert carries exactly one of snapshot_sha256 and chain")
+	}
+	if hasHash {
+		if !hex64.MatchString(r.SnapshotSHA256) {
+			return nil, fmt.Errorf("ability_run: revert snapshot_sha256 must be 64 lowercase hex characters")
+		}
+		return &abilityRunRevertP{SnapshotSHA256: r.SnapshotSHA256}, nil
+	}
+	if len(r.Chain) > AbilityRunMaxRevertChain {
+		return nil, fmt.Errorf("ability_run: revert chain holds at most %d request ids", AbilityRunMaxRevertChain)
+	}
+	ids := make([]string, 0, len(r.Chain))
+	seen := make(map[uuid.UUID]struct{}, len(r.Chain))
+	for _, id := range r.Chain {
+		if id == uuid.Nil {
+			return nil, fmt.Errorf("ability_run: revert chain holds only request ids")
+		}
+		if _, dup := seen[id]; dup {
+			return nil, fmt.Errorf("ability_run: revert chain names a request twice")
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id.String())
+	}
+	return &abilityRunRevertP{Chain: ids}, nil
 }
 
 // AbilityRunExpected is write's expected{} member.
@@ -170,6 +238,8 @@ type abilityRunP struct {
 	// AllowedDraftIDs is a pointer so an empty list is sent as [] and an
 	// absent one is not sent at all.
 	AllowedDraftIDs *[]int64 `json:"allowed_draft_ids,omitempty"`
+	// Revert is sent only with revert, and only when set.
+	Revert *abilityRunRevertP `json:"revert,omitempty"`
 }
 
 // abilityRunBody is the outer body, exactly {"p": "..."}.
@@ -270,6 +340,15 @@ func BuildAbilityRunParams(call AbilityRunCall) (p []byte, pd string, err error)
 			ids = append(ids, id)
 		}
 		pv.AllowedDraftIDs = &ids
+	}
+	if call.Revert != nil {
+		if call.Mode != AbilityRunModeRevert {
+			return nil, "", fmt.Errorf("ability_run: revert parameters are only sent with revert")
+		}
+		pv.Revert, err = revertParams(*call.Revert)
+		if err != nil {
+			return nil, "", err
+		}
 	}
 	p, err = json.Marshal(pv)
 	if err != nil {
@@ -524,6 +603,12 @@ var AbilityRunRefusalCodes = map[string]struct{}{
 	"restore_mismatch":   {},
 	"data_unreadable":    {},
 	"snapshot_tampered":  {},
+	// wpmgr/page-edit's undo (MinAgentVersionForBuilderEdit): the page is
+	// published, scheduled or private now; it is no longer a draft, or is
+	// gone; the kept copy could not be read.
+	"refused_published":   {},
+	"target_not_draft":    {},
+	"snapshot_unreadable": {},
 }
 
 var abilityRunCodeRe = regexp.MustCompile(`^[a-z0-9_]{1,40}$`)
