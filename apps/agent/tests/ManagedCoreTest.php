@@ -83,15 +83,19 @@ final class ManagedCoreTest extends TestCase
     /**
      * A composer.json body requiring the given packages.
      *
-     * @param array<string,string> $require    `require` section.
-     * @param array<string,string> $requireDev `require-dev` section.
+     * @param array<string,string>             $require    `require` section.
+     * @param array<string,string>             $requireDev `require-dev` section.
+     * @param string|array<string,string>|null $installDir `extra.wordpress-install-dir`, or null to leave it unset.
      * @return string
      */
-    private function manifest(array $require, array $requireDev = []): string
+    private function manifest(array $require, array $requireDev = [], $installDir = null): string
     {
         $body = ['name' => 'example/site', 'type' => 'project', 'require' => $require];
         if ($requireDev !== []) {
             $body['require-dev'] = $requireDev;
+        }
+        if ($installDir !== null) {
+            $body['extra'] = ['wordpress-install-dir' => $installDir];
         }
 
         return (string) json_encode($body, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
@@ -123,7 +127,7 @@ final class ManagedCoreTest extends TestCase
     /** The reported layout: a Bedrock project, core at web/wp, composer.json two levels up. */
     public function test_a_bedrock_project_manifest_marks_core_as_composer_managed(): void
     {
-        $this->put('composer.json', $this->manifest(['php' => '>=8.1', 'roots/wordpress' => '^7.0']));
+        $this->put('composer.json', $this->manifest(['php' => '>=8.1', 'roots/wordpress' => '^7.0'], [], 'web/wp'));
 
         $verdict = $this->detector('web/wp')->detect();
 
@@ -189,6 +193,19 @@ final class ManagedCoreTest extends TestCase
         $this->assertStringContainsString('framework-managed config', $verdict['evidence']);
     }
 
+    /**
+     * The core installers also take a map from core package to directory, an
+     * absolute directory, and the "./" and trailing-slash spellings.
+     */
+    public function test_every_install_directory_spelling_ties_the_manifest_to_core(): void
+    {
+        $this->put('composer.json', $this->manifest(['roots/wordpress' => '^7.0'], [], ['roots/wordpress-no-content' => './public/wp/']));
+        $this->assertSame(ManagedCore::REASON_COMPOSER, $this->detector('public/wp')->detect()['reason'], 'per-package map');
+
+        $this->put('composer.json', $this->manifest(['roots/wordpress' => '^7.0'], [], $this->root . '/srv/wp'));
+        $this->assertSame(ManagedCore::REASON_COMPOSER, $this->detector('srv/wp')->detect()['reason'], 'absolute directory');
+    }
+
     /** File changes disallowed, on a site with no Composer signal at all. */
     public function test_disallowed_file_changes_mark_core_as_not_updatable(): void
     {
@@ -203,7 +220,7 @@ final class ManagedCoreTest extends TestCase
      */
     public function test_composer_wins_when_both_signals_fire(): void
     {
-        $this->put('composer.json', $this->manifest(['roots/wordpress' => '^7.0']));
+        $this->put('composer.json', $this->manifest(['roots/wordpress' => '^7.0'], [], 'web/wp'));
 
         $verdict = $this->detector('web/wp', false)->detect();
 
@@ -262,15 +279,59 @@ final class ManagedCoreTest extends TestCase
         $this->assertSame(['reason' => '', 'evidence' => ''], $verdict);
     }
 
-    /** A manifest beyond the search bound belongs to something else. */
+    /** A manifest beyond the search bound is never read, even one naming this directory. */
     public function test_a_manifest_above_the_search_bound_is_ignored(): void
     {
-        $this->put('composer.json', $this->manifest(['roots/wordpress' => '^7.0']));
-
         // Four levels below the manifest: one more than PARENT_LEVELS.
+        $this->put('composer.json', $this->manifest(['roots/wordpress' => '^7.0'], [], 'a/b/c/wp'));
         $this->assertSame('', $this->detector('a/b/c/wp')->detect()['reason']);
+
         // Three levels below it: inside the bound, so the same manifest counts.
+        $this->put('composer.json', $this->manifest(['roots/wordpress' => '^7.0'], [], 'a/b/wp'));
         $this->assertSame(ManagedCore::REASON_COMPOSER, $this->detector('a/b/wp')->detect()['reason']);
+    }
+
+    /**
+     * Requiring core is not owning every WordPress below the manifest. A
+     * Bedrock project installs core into web/wp; a separately installed blog
+     * under the same project is still updated by WordPress.
+     */
+    public function test_an_ancestor_manifest_that_installs_core_elsewhere_is_not_managed(): void
+    {
+        $this->put('composer.json', $this->manifest(['roots/wordpress' => '^7.0'], [], 'web/wp'));
+
+        $this->assertSame('', $this->detector('web/blog')->detect()['reason'], 'the blog is not the core this manifest installs');
+        $this->assertSame(ManagedCore::REASON_COMPOSER, $this->detector('web/wp')->detect()['reason'], 'the core it installs still counts');
+
+        // Without the setting the core installers use "wordpress", and only that.
+        $this->put('composer.json', $this->manifest(['johnpbloch/wordpress' => '*']));
+        $this->assertSame('', $this->detector('public')->detect()['reason']);
+
+        // A map that names no core package also leaves the default.
+        $this->put('composer.json', $this->manifest(['roots/wordpress' => '^7.0'], [], ['example/other' => 'public']));
+        $this->assertSame('', $this->detector('public')->detect()['reason']);
+    }
+
+    /**
+     * Comments are not configuration. A commented-out framework bootstrap left
+     * in an ordinary site's wp-config.php must not stop its core updates; the
+     * same file with the line live still counts.
+     */
+    public function test_a_commented_out_framework_bootstrap_is_not_managed(): void
+    {
+        $comments = "<?php\n"
+            . "// require_once '../config/application.php';\n"
+            . "# require_once dirname(__DIR__) . '/config/application.php';\n"
+            . "/*\n * Moved off Roots\\WPConfig\\Config last year:\n"
+            . " * require_once dirname(__DIR__) . '/config/application.php';\n */\n"
+            . "/** The old layout used roots/wp-config. */\n"
+            . "define('DB_NAME', 'wp');\n";
+
+        $this->put('htdocs/wp-config.php', $comments . "require_once ABSPATH . 'wp-settings.php';\n");
+        $this->assertSame(['reason' => '', 'evidence' => ''], $this->detector('htdocs')->detect());
+
+        $this->put('live/wp-config.php', $comments . "require_once dirname(__DIR__) . '/config/application.php';\n");
+        $this->assertSame(ManagedCore::REASON_COMPOSER, $this->detector('live')->detect()['reason']);
     }
 
     /** A broken or oversized manifest is no evidence, never an error. */

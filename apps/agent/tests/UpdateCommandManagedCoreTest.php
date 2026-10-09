@@ -97,7 +97,8 @@ final class UpdateCommandManagedCoreTest extends TestCase
 
     /**
      * A detector over a project tree under the scratch root: WordPress at
-     * web/wp, and a composer.json at the project root requiring $require.
+     * web/wp, and a composer.json at the project root requiring $require and
+     * installing core into web/wp, as a Bedrock project's does.
      *
      * @param array<string,string>|null $require         composer.json `require`, or null for no manifest.
      * @param bool                      $fileModsAllowed Answer to the file-changes question.
@@ -109,7 +110,10 @@ final class UpdateCommandManagedCoreTest extends TestCase
         if ($require !== null) {
             file_put_contents(
                 $this->root . '/composer.json',
-                (string) json_encode(['name' => 'example/site', 'type' => 'project', 'require' => $require], JSON_UNESCAPED_SLASHES)
+                (string) json_encode(
+                    ['name' => 'example/site', 'type' => 'project', 'require' => $require, 'extra' => ['wordpress-install-dir' => 'web/wp']],
+                    JSON_UNESCAPED_SLASHES
+                )
             );
         }
 

@@ -41,10 +41,11 @@ if (!defined('ABSPATH')) {
  *   - whether the Roots\WPConfig\Config class is already loaded (no I/O);
  *   - the wp-config.php WordPress itself loaded, located by wp-load.php's own
  *     rule, matched as a string through WpConfigEditor::isManagedConfigContent()
- *     and never included, evaluated or parsed as PHP;
+ *     with its comments left out, and never included or evaluated;
  *   - a file named composer.json in the WordPress directory and in at most
  *     PARENT_LEVELS directories above it, decoded as JSON and inspected only
- *     for the core packages below.
+ *     for the core packages below and the directory it installs core into,
+ *     which must be this WordPress directory.
  * Every read is bounded in size, every probe is @-suppressed and skipped when
  * it would fall outside open_basedir, and every failure reads as "no
  * evidence". A missing or unreadable signal therefore leaves the core update
@@ -242,10 +243,15 @@ class ManagedCore
             }
 
             // The first existing candidate is the file WordPress loaded; stop
-            // there whatever it says, exactly as wp-load.php does.
+            // there whatever it says, exactly as wp-load.php does. A comment
+            // is not configuration, so it is left out. The plain string test
+            // runs first, so only a file that already looks managed is lexed.
             $content = $this->boundedRead($path);
+            $managed = $content !== ''
+                && WpConfigEditor::isManagedConfigContent($content)
+                && WpConfigEditor::isManagedConfigContent(self::withoutComments($content));
 
-            return ($content !== '' && WpConfigEditor::isManagedConfigContent($content))
+            return $managed
                 ? $path . ' loads a framework-managed config (Roots\\WPConfig\\Config or config/application.php)'
                 : '';
         }
@@ -255,7 +261,8 @@ class ManagedCore
 
     /**
      * The composer.json signal: the WordPress directory and up to PARENT_LEVELS
-     * directories above it.
+     * directories above it. Depth alone is not ownership: a manifest counts
+     * only when it installs core into this WordPress directory.
      *
      * @return string Evidence, or ''.
      */
@@ -328,11 +335,102 @@ class ManagedCore
         foreach (array_keys($require) as $package) {
             $package = strtolower(trim((string) $package));
             if (in_array($package, self::CORE_PACKAGES, true)) {
-                return $file . ' requires ' . $package;
+                return $this->installsCoreHere($manifest, $dir) ? $file . ' requires ' . $package : '';
             }
         }
 
         return '';
+    }
+
+    /**
+     * Whether a manifest installs core into this WordPress directory. The core
+     * installers read `extra.wordpress-install-dir`: one directory, or a map
+     * from core package to directory, relative to the manifest unless
+     * absolute, and "wordpress" when it names none.
+     *
+     * @param array<mixed,mixed> $manifest    Decoded composer.json.
+     * @param string             $manifestDir Directory holding it.
+     * @return bool
+     */
+    private function installsCoreHere(array $manifest, string $manifestDir): bool
+    {
+        $extra   = $manifest['extra'] ?? null;
+        $setting = is_array($extra) ? ($extra['wordpress-install-dir'] ?? null) : null;
+
+        $named = is_string($setting) ? [$setting] : [];
+        if (is_array($setting)) {
+            foreach ($setting as $package => $dir) {
+                if (in_array(strtolower(trim((string) $package)), self::CORE_PACKAGES, true)) {
+                    $named[] = $dir;
+                }
+            }
+        }
+
+        $dirs = [];
+        foreach ($named as $dir) {
+            if (is_string($dir) && trim($dir) !== '') {
+                $dirs[] = str_replace('\\', '/', trim($dir));
+            }
+        }
+
+        $here = self::normalize($this->wordPressDir());
+        foreach ($dirs !== [] ? $dirs : ['wordpress'] as $dir) {
+            $absolute = $dir[0] === '/' || preg_match('#^[A-Za-z]:/#', $dir) === 1;
+            if (self::normalize($absolute ? $dir : $manifestDir . '/' . $dir) === $here) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * A path with its "." and ".." segments and repeated separators resolved
+     * as text, without touching the filesystem.
+     *
+     * @param string $path Absolute path with forward slashes.
+     * @return string
+     */
+    private static function normalize(string $path): string
+    {
+        $drive = preg_match('#^[A-Za-z]:#', $path) === 1 ? substr($path, 0, 2) : '';
+        $parts = [];
+        foreach (explode('/', substr($path, strlen($drive))) as $part) {
+            if ($part === '..') {
+                array_pop($parts);
+            } elseif ($part !== '' && $part !== '.') {
+                $parts[] = $part;
+            }
+        }
+
+        return $drive . '/' . implode('/', $parts);
+    }
+
+    /**
+     * PHP source with its comments replaced by a space, so a commented-out
+     * line never reads as configuration. token_get_all() only splits the text
+     * into tokens and never runs it. '' without the tokenizer extension, which
+     * makes the signal no evidence, like any other signal that cannot be read.
+     *
+     * @param string $source PHP source.
+     * @return string
+     */
+    private static function withoutComments(string $source): string
+    {
+        if (!function_exists('token_get_all')) {
+            return '';
+        }
+
+        $code = '';
+        foreach (token_get_all($source) as $token) {
+            if (!is_array($token)) {
+                $code .= $token;
+            } else {
+                $code .= ($token[0] === T_COMMENT || $token[0] === T_DOC_COMMENT) ? ' ' : $token[1];
+            }
+        }
+
+        return $code;
     }
 
     /**
