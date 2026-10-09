@@ -76,6 +76,32 @@ describe("WordPress and WPMgr group", () => {
     );
   });
 
+  it("wp_version on a development or pre-release build is a fix, in its own words", () => {
+    const words =
+      "This is a development or pre-release build of WordPress. WPMgr's AI tools need a released version, 7.1 or later.";
+    const row = describeCheck(c("wp_version", "fail", "prerelease_build", "7.1-beta2"), OPERATOR);
+    expect(row.tone).toBe("fail");
+    expect(row.iconLabel).toBe("Needs fixing");
+    expect(row.label).toBe("WordPress 7.1 or later");
+    expect(row.detail).toBe(words);
+    // With no version to show, and for a viewer, the words are the same.
+    expect(detail(c("wp_version", "fail", "prerelease_build"))).toBe(words);
+    expect(detail(c("wp_version", "fail", "prerelease_build", "7.1-beta2"), VIEWER)).toBe(words);
+  });
+
+  it("wp_version on a pre-release build states the floor the server sent", () => {
+    const ctx: CopyContext = { floors: { ...FLOORS, wp: "7.2" }, canOperate: true };
+    expect(detail(c("wp_version", "fail", "prerelease_build", "7.2-RC1"), ctx)).toBe(
+      "This is a development or pre-release build of WordPress. WPMgr's AI tools need a released version, 7.2 or later.",
+    );
+  });
+
+  it("pre-release is the WordPress row's reason only", () => {
+    const row = describeCheck(c("agent_version", "fail", "prerelease_build", "0.61.100"), OPERATOR);
+    expect(row.tone).toBe("neutral");
+    expect(row.detail).toBe("Not checked yet.");
+  });
+
   it("abilities_api", () => {
     expect(detail(c("abilities_api", "pass"))).toBe("Available.");
     expect(detail(c("abilities_api", "fail"))).toBe("Not available. WordPress 6.9 or later includes it.");
@@ -227,9 +253,12 @@ describe("a builder that is installed but not active", () => {
   });
 
   it("does not read the reason `inactive` as a builder row on any other check", () => {
+    // `inactive` belongs to the two builder version rows. On any other check it
+    // is a reason this page cannot read, so the row is grey and not checked.
     const row = describeCheck(c("wp_version", "fail", "inactive", "7.0"), OPERATOR);
-    expect(row.tone).toBe("fail");
-    expect(row.detail).not.toBe("Installed, not active.");
+    expect(row.tone).toBe("neutral");
+    expect(row.iconLabel).toBe("Not checked");
+    expect(row.detail).toBe("Not checked yet.");
   });
 
   it("makes the rows that wait on it say it has to be active, not a newer version", () => {
@@ -324,14 +353,38 @@ describe("icons: only a state the server named `fail` is red", () => {
     expect(row.label).toBe(OTHER_CHECK_LABEL);
   });
 
-  it("keeps the state's icon for an unrecognised reason on a known check and falls back to neutral copy", () => {
+  it("renders a reason it has never heard of on a known check as grey 'not checked', whatever the state", () => {
+    for (const state of ["fail", "pass", "unknown", "not_applicable"]) {
+      const row = describeCheck(c("elementor_version", state, "too_new", "9.0"), OPERATOR);
+      expect(row.tone).toBe("neutral");
+      expect(row.iconLabel).toBe("Not checked");
+      expect(row.detail).toBe("Not checked yet.");
+      // The row still says what it is about.
+      expect(row.label).toBe("Elementor 4.3 or later");
+    }
+
     const unknownRow = describeCheck(c("elementor_atomic", "unknown", "some_new_reason"), OPERATOR);
     expect(unknownRow.tone).toBe("neutral");
     expect(unknownRow.detail).toBe("Not checked yet.");
+  });
 
-    const failRow = describeCheck(c("elementor_version", "fail", "too_new", "9.0"), OPERATOR);
-    expect(failRow.tone).toBe("fail");
-    expect(failRow.detail).toBe("Needs fixing.");
+  it("reads a reason against its own check: a reason that belongs to another check is unknown here", () => {
+    // `too_old` is a builder version row's reason; `needs_bricks` is the Bricks AI row's.
+    expect(describeCheck(c("agent_version", "fail", "too_old", "0.61.100"), OPERATOR).tone).toBe("neutral");
+    expect(describeCheck(c("elementor_atomic", "not_applicable", "needs_bricks"), OPERATOR).iconLabel).toBe(
+      "Not checked",
+    );
+    expect(describeCheck(c("bricks_version", "fail", "needs_elementor", "2.3"), OPERATOR).tone).toBe("neutral");
+  });
+
+  it("does not take a null reason for an unknown one: a fail that has none is still red", () => {
+    for (const id of ["wp_version", "agent_version", "abilities_api", "content_editing", "elementor_mcp_switch"]) {
+      const row = describeCheck(c(id, "fail", null), OPERATOR);
+      expect(row.tone).toBe("fail");
+      expect(row.iconLabel).toBe("Needs fixing");
+    }
+    // An empty reason is no reason either.
+    expect(describeCheck(c("wp_version", "fail", "", "7.0.9"), OPERATOR).tone).toBe("fail");
   });
 
   it("covers every check id in the contract with a real label", () => {

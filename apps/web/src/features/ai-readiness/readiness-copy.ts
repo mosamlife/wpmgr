@@ -72,7 +72,10 @@ export interface RowView {
   iconLabel: IconLabel;
 }
 
-/** The icon is a function of the state alone, and only `fail` is red. */
+/**
+ * The icon of a state, for a row whose reason this page can read (see
+ * KNOWN_REASONS). Only `fail` is red.
+ */
 export function iconFor(state: string): { tone: RowTone; label: IconLabel } {
   switch (state) {
     case "pass":
@@ -164,6 +167,43 @@ function isCheckId(id: string): id is AiReadinessCheckId {
 }
 
 // ---------------------------------------------------------------------------
+// Reasons
+// ---------------------------------------------------------------------------
+
+/**
+ * The reasons the control plane sends on each check (packages/openapi/
+ * openapi.yaml, AIReadinessCheck). A row whose reason is not in its check's set
+ * was decided by a rule this page cannot read, so it reads "not checked" in
+ * grey whatever state it carries, never red. A null reason is not an unknown
+ * one: it is how a pass, and a fail with a single way to fail, arrive.
+ */
+const KNOWN_REASONS: Record<AiReadinessCheckId, ReadonlySet<string>> = {
+  wp_version: new Set(["not_reported", "prerelease_build"]),
+  abilities_api: new Set(["inventory_never_run", "agent_too_old", "not_reported"]),
+  agent_version: new Set(["not_reported"]),
+  content_editing: new Set(),
+  elementor_version: new Set(["too_old", "inactive", "not_reported"]),
+  elementor_mcp_switch: new Set([
+    "inventory_never_run",
+    "inventory_truncated",
+    "needs_abilities",
+    "needs_elementor",
+  ]),
+  elementor_atomic: new Set(["agent_too_old_for_fact", "not_reported", "needs_elementor"]),
+  bricks_version: new Set(["too_old", "inactive", "not_reported", "agent_too_old_for_fact"]),
+  bricks_abilities: new Set([
+    "inventory_never_run",
+    "inventory_truncated",
+    "needs_abilities",
+    "needs_bricks",
+  ]),
+};
+
+function hasUnknownReason(id: AiReadinessCheckId, reason: string | null): boolean {
+  return reason !== null && reason !== "" && !KNOWN_REASONS[id].has(reason);
+}
+
+// ---------------------------------------------------------------------------
 // Row details
 // ---------------------------------------------------------------------------
 
@@ -230,6 +270,9 @@ const DETAIL: Record<AiReadinessCheckId, DetailFn> = {
     const v = observed(c);
     if (c.state === "pass") return v ? `WordPress ${v}.` : undefined;
     if (c.state === "fail") {
+      if (c.reason === "prerelease_build") {
+        return `This is a development or pre-release build of WordPress. WPMgr's AI tools need a released version, ${x.floors.wp} or later.`;
+      }
       const need = `Builder tools need ${x.floors.wp} or later. Update WordPress on this site.`;
       return v ? `WordPress ${v}. ${need}` : need;
     }
@@ -352,6 +395,11 @@ export function describeCheck(c: CheckInput, x: CopyContext): RowView {
     };
   }
   const label = LABEL[c.id](x.floors);
+  if (hasUnknownReason(c.id, c.reason)) {
+    // The reason comes before the icon and the detail: a row this page cannot
+    // read is not a verdict, whatever state it carries.
+    return { id: c.id, label, detail: NOT_CHECKED_YET, tone: "neutral", iconLabel: "Not checked" };
+  }
   if (isInactiveRow(c)) {
     return { id: c.id, label, detail: INSTALLED_NOT_ACTIVE, tone: "neutral", iconLabel: "Not active" };
   }
