@@ -54,21 +54,35 @@ const LAUNCH =
   "&scope=mcp%3Aread%20mcp%3Asite%20mcp%3Acache&state=opaque-csrf-token" +
   "&code_challenge=cc&code_challenge_method=S256";
 
-const NOTICE =
+// The two sentences, written out in full and never imported from the screen,
+// so editing the copy there reddens this file. Which one shows is decided by
+// whether mcp:site itself is in the withheld list: an app that holds mcp:site
+// and lacks only mcp:cache is already offered site tools, and must not be told
+// to reinstall to get them.
+const SITE_NOTICE =
   "This AI app was connected before WPMgr offered site tools. To give it site tools, remove WPMgr from the app and add it again.";
+const OTHER_NOTICE =
+  "This AI app was connected before WPMgr offered some of the permissions it is asking for. To give it those, remove WPMgr from the app and add it again.";
 
 // Deliberately not a tidy token, as in the sibling: the approval must hand it
 // back byte for byte.
 const TICKET = " v1.eyJzY29wZXMiOlsibWNwOnJlYWQiXX0.c1gN4tUr3-_~+/=AbC ";
 
 // consentResponseDTO (apps/api/internal/mcp/dto.go), key for key, as the
-// authorize endpoint answers for a registration that holds mcp:read alone and
-// was asked for the advertised list. The two Go assertions that pin these
-// values are in apps/api/internal/mcp/advertised_scopes_test.go
+// authorize endpoint answers for a registration asked for the advertised list.
+// The default is a registration that holds mcp:read alone: the two Go
+// assertions that pin those values are in
+// apps/api/internal/mcp/advertised_scopes_test.go
 // (TestAuthorizeHandler_NamesTheWithheldScopes): scopes is ["mcp:read"] and
 // unregistered_scopes is ["mcp:site","mcp:cache"], and [] when nothing was
 // withheld.
-function wire(unregistered: readonly string[]) {
+//
+// `held` is what the registration holds and so what `scopes` carries. A
+// registration holding mcp:site also confers the two ability capabilities
+// (scopeCapabilities in apps/api/internal/mcp/policy.go: mcp.ability.read is a
+// read, mcp.ability.request is a request), and the screen offers its site-tools
+// box from them.
+function wire(unregistered: readonly string[], held: readonly string[] = ["mcp:read"]) {
   return {
     client_id: "c_old",
     client_name_unverified: "Claude Code",
@@ -76,7 +90,7 @@ function wire(unregistered: readonly string[]) {
     identity_verified: false,
     redirect_uri: "https://client.example/cb",
     redirect_host: "client.example",
-    scopes: ["mcp:read"],
+    scopes: held,
     state: "opaque-csrf-token",
     code_challenge: "cc",
     code_challenge_method: "S256",
@@ -86,6 +100,12 @@ function wire(unregistered: readonly string[]) {
       { name: "mcp.sites.read", effect: "read" },
       { name: "mcp.uptime.read", effect: "read" },
       { name: "mcp.backups.read", effect: "read" },
+      ...(held.includes("mcp:site")
+        ? [
+            { name: "mcp.ability.read", effect: "read" },
+            { name: "mcp.ability.request", effect: "request" },
+          ]
+        : []),
     ],
     unregistered_scopes: unregistered,
   };
@@ -137,14 +157,14 @@ afterEach(() => {
 });
 
 describe("/connect/ai, an app whose registration predates site tools", () => {
-  it("shows the note when the server's payload names withheld scopes", async () => {
+  it("shows the site sentence when the server's payload names mcp:site as withheld", async () => {
     const fetchMock = oauthFetch(wire(["mcp:site", "mcp:cache"]));
     vi.stubGlobal("fetch", fetchMock);
 
     renderWithProviders(<ConnectAiPage />, { withRouter: true, initialPath: LAUNCH });
 
     const note = await screen.findByTestId("consent-unregistered-scopes");
-    expect(note.textContent).toBe(NOTICE);
+    expect(note.textContent).toBe(SITE_NOTICE);
 
     // The real hook ran: it asked the authorize endpoint for the three scopes
     // the client asked for, not for the narrowed set.
@@ -153,17 +173,64 @@ describe("/connect/ai, an app whose registration predates site tools", () => {
     expect(asked.searchParams.get("scope")).toBe("mcp:read mcp:site mcp:cache");
   });
 
+  it.each([
+    { label: "mcp:site alone", unregistered: ["mcp:site"] },
+    { label: "mcp:cache listed before mcp:site", unregistered: ["mcp:cache", "mcp:site"] },
+  ])(
+    "shows the site sentence wherever mcp:site sits in the withheld list: $label",
+    async ({ unregistered }) => {
+      vi.stubGlobal("fetch", oauthFetch(wire(unregistered)));
+
+      renderWithProviders(<ConnectAiPage />, { withRouter: true, initialPath: LAUNCH });
+
+      const note = await screen.findByTestId("consent-unregistered-scopes");
+      expect(note.textContent).toBe(SITE_NOTICE);
+      expect(screen.getAllByTestId("consent-unregistered-scopes")).toHaveLength(1);
+    },
+  );
+
+  it("does not promise site tools to an app that already holds them, when only mcp:cache was withheld", async () => {
+    // A registration holding mcp:read and mcp:site and lacking mcp:cache: the
+    // authorize endpoint keeps mcp:site in `scopes`, so the screen below offers
+    // the site-tools box, and names only mcp:cache as withheld. Telling this
+    // user to remove the app to get site tools would send them to discard
+    // access they already have.
+    vi.stubGlobal("fetch", oauthFetch(wire(["mcp:cache"], ["mcp:read", "mcp:site"])));
+
+    renderWithProviders(<ConnectAiPage />, { withRouter: true, initialPath: LAUNCH });
+
+    const note = await screen.findByTestId("consent-unregistered-scopes");
+    expect(note.textContent).toBe(OTHER_NOTICE);
+
+    // The positive control for why the site sentence would have been wrong:
+    // the same screen is offering site tools, and no cache box.
+    expect(screen.getByTestId("consent-site-capability")).toBeTruthy();
+    expect(screen.queryByTestId("consent-cache-capability")).toBeNull();
+  });
+
+  it("shows the general sentence and none of the scope strings for a scope it has never heard of", async () => {
+    // Membership picks a fixed sentence. Nothing the server sends in the list
+    // is ever rendered, so an unfamiliar value cannot reach the page.
+    vi.stubGlobal("fetch", oauthFetch(wire(["mcp:future-scope"])));
+
+    renderWithProviders(<ConnectAiPage />, { withRouter: true, initialPath: LAUNCH });
+
+    const note = await screen.findByTestId("consent-unregistered-scopes");
+    expect(note.textContent).toBe(OTHER_NOTICE);
+    expect(document.body.textContent).not.toContain("mcp:future-scope");
+  });
+
   it("shows no note, on a screen that did load, when nothing was withheld", async () => {
     // The over-fire case, with its positive control: the approve button is
     // what proves the screen rendered, so the absent note is an absence and
-    // not a screen that failed to mount.
+    // not a screen that failed to mount. The pattern covers both sentences.
     vi.stubGlobal("fetch", oauthFetch(wire([])));
 
     renderWithProviders(<ConnectAiPage />, { withRouter: true, initialPath: LAUNCH });
 
     expect(await screen.findByTestId("consent-approve")).toBeTruthy();
     expect(screen.queryByTestId("consent-unregistered-scopes")).toBeNull();
-    expect(screen.queryByText(/connected before WPMgr offered site tools/i)).toBeNull();
+    expect(screen.queryByText(/connected before WPMgr offered/i)).toBeNull();
   });
 
   it("approves only the scopes the server sealed, never a withheld one", async () => {

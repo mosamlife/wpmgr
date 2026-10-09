@@ -752,39 +752,67 @@ describe("ConsentScreen, the mcp:site site-tools section", () => {
 // refusing it (apps/api/internal/mcp/service.go, Authorize) and names what it
 // left out in `unregistered_scopes`. Without this note an app connected before
 // site tools existed signs in with read access only and no explanation. The
-// expected sentence is written out in full here, never imported from the
+// expected sentences are written out in full here, never imported from the
 // screen, so editing the copy there reddens this file.
 //
 // Rendered through the real router (withRouter: true) like the sections above,
 // from the wire shape through parseConsentContext, so the field has to survive
 // the schema to get here.
 describe("ConsentScreen, an app whose registration predates site tools", () => {
-  const NOTICE =
+  // Two sentences, picked by whether mcp:site itself is in the withheld list.
+  const SITE_NOTICE =
     "This AI app was connected before WPMgr offered site tools. To give it site tools, remove WPMgr from the app and add it again.";
+  const OTHER_NOTICE =
+    "This AI app was connected before WPMgr offered some of the permissions it is asking for. To give it those, remove WPMgr from the app and add it again.";
 
-  // What Authorize leaves in `scopes` for a registration holding mcp:read alone
-  // that asked for the advertised list.
-  function withheld(unregistered?: readonly string[]) {
+  // What Authorize leaves in `scopes` for a registration that asked for the
+  // advertised list: mcp:read alone by default, or `held` for one that holds
+  // more. A registration holding mcp:site is offered the two ability
+  // capabilities (scopeCapabilities in apps/api/internal/mcp/policy.go).
+  function withheld(unregistered?: readonly string[], held: readonly string[] = [SCOPE_READ]) {
     return parseConsentContext({
       client_id: "c_old",
       client_name_unverified: "Test Client",
       identity_verified: false,
       redirect_uri: "https://x.example/cb",
       redirect_host: "x.example",
-      scopes: [SCOPE_READ],
+      scopes: held,
       grant_lifetime_days: 90,
-      conferrable_capabilities: [{ name: "mcp.sites.read", effect: "read" }],
+      conferrable_capabilities: [
+        { name: "mcp.sites.read", effect: "read" },
+        ...(held.includes(SCOPE_SITE)
+          ? [
+              { name: "mcp.ability.read", effect: "read" },
+              { name: "mcp.ability.request", effect: "request" },
+            ]
+          : []),
+      ],
       ...(unregistered === undefined ? {} : { unregistered_scopes: unregistered }),
     });
   }
 
-  it("says how to get site tools, in exactly these words", async () => {
+  it("says how to get site tools, in exactly these words, when mcp:site was withheld", async () => {
     renderWithProviders(
       <ConsentScreen {...props({ consent: withheld([SCOPE_SITE, SCOPE_CACHE]) })} />,
       { withRouter: true },
     );
     const note = await screen.findByTestId("consent-unregistered-scopes");
-    expect(note.textContent).toBe(NOTICE);
+    expect(note.textContent).toBe(SITE_NOTICE);
+  });
+
+  it("does not promise site tools to an app that already holds them, when only mcp:cache was withheld", async () => {
+    // A registration holding mcp:read and mcp:site and lacking mcp:cache. The
+    // screen offers the site-tools box, so a sentence about getting site tools
+    // by reinstalling would send the user to discard access they already have.
+    renderWithProviders(
+      <ConsentScreen {...props({ consent: withheld([SCOPE_CACHE], [SCOPE_READ, SCOPE_SITE]) })} />,
+      { withRouter: true },
+    );
+    const note = await screen.findByTestId("consent-unregistered-scopes");
+    expect(note.textContent).toBe(OTHER_NOTICE);
+    // The positive control for why the site sentence would have been wrong.
+    expect(screen.getByTestId("consent-site-capability")).toBeTruthy();
+    expect(screen.queryByTestId("consent-cache-capability")).toBeNull();
   });
 
   it("puts the note in the permissions block, as a note", async () => {
@@ -800,27 +828,39 @@ describe("ConsentScreen, an app whose registration predates site tools", () => {
     );
   });
 
-  it("shows the same single note whether one scope was withheld or several", async () => {
-    for (const unregistered of [[SCOPE_SITE], [SCOPE_SITE, SCOPE_CACHE]]) {
+  it("picks the sentence by membership alone, never by order or by how many were withheld", async () => {
+    const cases: { unregistered: readonly string[]; want: string }[] = [
+      { unregistered: [SCOPE_SITE], want: SITE_NOTICE },
+      { unregistered: [SCOPE_SITE, SCOPE_CACHE], want: SITE_NOTICE },
+      { unregistered: [SCOPE_CACHE, SCOPE_SITE], want: SITE_NOTICE },
+      { unregistered: [SCOPE_CACHE], want: OTHER_NOTICE },
+      { unregistered: ["mcp:future-scope"], want: OTHER_NOTICE },
+      { unregistered: [SCOPE_CACHE, "mcp:future-scope"], want: OTHER_NOTICE },
+    ];
+    for (const c of cases) {
       const { unmount } = renderWithProviders(
-        <ConsentScreen {...props({ consent: withheld(unregistered) })} />,
+        <ConsentScreen {...props({ consent: withheld(c.unregistered) })} />,
         { withRouter: true },
       );
       await screen.findByTestId("consent-unregistered-scopes");
       expect(screen.getAllByTestId("consent-unregistered-scopes")).toHaveLength(1);
-      expect(screen.getByTestId("consent-unregistered-scopes").textContent).toBe(NOTICE);
+      expect(screen.getByTestId("consent-unregistered-scopes").textContent).toBe(c.want);
+      // The scope strings are never rendered: a fixed sentence is picked and
+      // that is all the list is read for.
+      expect(document.body.textContent).not.toContain("mcp:future-scope");
       unmount();
     }
   });
 
   it("shows no note when nothing was withheld", async () => {
-    // The over-fire case. A note on every screen is a note nobody reads.
+    // The over-fire case. A note on every screen is a note nobody reads. The
+    // pattern covers both sentences.
     renderWithProviders(<ConsentScreen {...props({ consent: withheld([]) })} />, {
       withRouter: true,
     });
     await screen.findByTestId("consent-approve");
     expect(screen.queryByTestId("consent-unregistered-scopes")).toBeNull();
-    expect(screen.queryByText(/connected before WPMgr offered site tools/i)).toBeNull();
+    expect(screen.queryByText(/connected before WPMgr offered/i)).toBeNull();
     expect(screen.queryByRole("note")).toBeNull();
   });
 
