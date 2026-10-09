@@ -289,7 +289,7 @@ unlock_core() {
 # finished tree in $work_dir, one run at a time. The tree already there goes into
 # $work_dir by rename (never deleted in place) and is removed with it.
 replace_core() {
-  local sha="$1" dest="$cache/$1"
+  local sha="$1" dest="$cache/$1" err
   lock_core "$sha"
   if core_verified "$dest" "$sha"; then
     : # the run that held the lock before this one replaced it; keep that copy
@@ -297,7 +297,12 @@ replace_core() {
     if [ -e "$dest" ] || [ -L "$dest" ]; then
       mv "$dest" "$work_dir/replaced" || die "cannot move the unverified core $dest out of the way"
     fi
-    mv "$work_dir/$sha" "$cache/" || die "cannot publish the verified core to $dest"
+    # The name is free now, and a run that is not waiting on this lock (its first
+    # rename needs none) can take it before this one does. A verified core in
+    # that place is the outcome wanted, so it is kept; anything else is an error.
+    if ! err="$(mv "$work_dir/$sha" "$cache/" 2>&1)"; then
+      core_verified "$dest" "$sha" || die "cannot publish the verified core to $dest: $err"
+    fi
   fi
   unlock_core
 }

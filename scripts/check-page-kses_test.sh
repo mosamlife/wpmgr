@@ -578,6 +578,23 @@ if [ "$(marker_of "$C/$sha_mini")" = "$sha_mini" ] && grep -q 'miniature kses' "
 if [ ! -e "$C/$sha_mini/core" ] && [ ! -e "$C/$sha_mini/$sha_mini" ]; then ok "  and one core was not put inside the other"; else bad "  and one core was not put inside the other ($(ls -A "$C/$sha_mini"))"; fi
 if only_the_core "$C" "$sha_mini"; then ok "  and no work dir, lock or old copy is left"; else bad "  and no work dir, lock or old copy is left ($(ls -A "$C"))"; fi
 
+# A run that holds the lock has moved the corrupt core aside and is about to put its own in
+# its place. A run that never needed the lock (its first rename takes none) gets there first.
+# That core is verified, so keeping it is the right outcome for both runs, not an error.
+newcache replace-vs-publish
+rm -f "$S/go"
+corrupt_mini "$C"
+spawn "$tmp/replace_vs_publish.out" "${hermetic[@]}" PAGE_KSES_CACHE="$C" SHIM_CACHE="$C" SHIM_DIR="$S" SHIM_HOLD_FROM=2
+pr=$SPAWNED
+if await "$S/arrived.$pr.2"; then ok "a run holds the lock with the corrupt core already moved aside"; else bad "a run holds the lock with the corrupt core already moved aside"; fi
+if [ ! -e "$C/$sha_mini" ] && [ -d "$C/.lock.$sha_mini" ]; then ok "  and the name is free"; else bad "  and the name is free"; fi
+expect "a run that publishes into that gap passes" 0 "${hermetic[@]}" PAGE_KSES_CACHE="$C" SHIM_CACHE="$C" SHIM_DIR="$S" SHIM_HOLD_FROM=99
+: >"$S/go"
+wait "$pr"
+rc_r=$?
+if [ "$rc_r" -eq 0 ]; then ok "  and the run holding the lock keeps that core and passes (exit $rc_r)"; else bad "  and the run holding the lock keeps that core and passes (exit $rc_r)"; sed 's/^/     | /' "$tmp/replace_vs_publish.out" | head -8; fi
+if [ "$(marker_of "$C/$sha_mini")" = "$sha_mini" ] && only_the_core "$C" "$sha_mini"; then ok "  and one verified core is left, with no lock or work dir"; else bad "  and one verified core is left, with no lock or work dir ($(ls -A "$C"))"; fi
+
 # A run that is stopped while it holds the lock gives it back.
 newcache lock-term
 rm -f "$S/go"
