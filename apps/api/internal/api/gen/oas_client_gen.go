@@ -1922,7 +1922,9 @@ type Invoker interface {
 	//
 	// `status` is `needs_attention` when any row in `base` or in an installed builder group fails
 	// (`fix_count` counts them), otherwise `incomplete` when any row is unknown, otherwise `ready`. A
-	// builder that is not installed contributes nothing. `warnings` never change `status`.
+	// builder that is not installed contributes nothing, and neither does one that is installed but not
+	// active: that is a choice, not a fix, so its version row is `not_applicable` with reason `inactive`.
+	// `warnings` never change `status`.
 	//
 	// Advisory only: no tool call, approval or dispatch reads this result.
 	//
@@ -24213,7 +24215,9 @@ func (c *Client) sendGetSite(ctx context.Context, params GetSiteParams) (res Get
 //
 // `status` is `needs_attention` when any row in `base` or in an installed builder group fails
 // (`fix_count` counts them), otherwise `incomplete` when any row is unknown, otherwise `ready`. A
-// builder that is not installed contributes nothing. `warnings` never change `status`.
+// builder that is not installed contributes nothing, and neither does one that is installed but not
+// active: that is a choice, not a fix, so its version row is `not_applicable` with reason `inactive`.
+// `warnings` never change `status`.
 //
 // Advisory only: no tool call, approval or dispatch reads this result.
 //

@@ -4934,7 +4934,8 @@ export type AiReadinessGroup = {
 /**
  * One row. `state` is `pass`, `fail`, `unknown` (WPMgr could not tell;
  * never a failure) or `not_applicable` (a row this one depends on
- * failed). `observed` is the version that was compared, or null.
+ * failed, or the builder is installed but not active). `observed` is
+ * the version that was compared, or null.
  *
  * `reason` is null for `pass`, and for a `fail` with a single way to
  * fail. Otherwise, per row:
@@ -4943,14 +4944,17 @@ export type AiReadinessGroup = {
  * - `abilities_api`: unknown `inventory_never_run`, `agent_too_old`
  * (the agent cannot read the tool list) or `not_reported`.
  * - `content_editing`: only `pass` or `fail`.
- * - `elementor_version`, `bricks_version`: fail `inactive` or
- * `too_old`; unknown `not_reported`, and for `bricks_version` also
+ * - `elementor_version`, `bricks_version`: fail `too_old`;
+ * not_applicable `inactive` (installed but not active, so not a fix;
+ * `observed` still carries the installed version); unknown
+ * `not_reported`, and for `bricks_version` also
  * `agent_too_old_for_fact` (a child theme may be in use and the agent
  * is too old to report its parent).
  * - `elementor_mcp_switch`, `bricks_abilities`: unknown
- * `inventory_never_run`, `inventory_truncated` or `needs_elementor` /
- * `needs_bricks`; not_applicable `needs_abilities` or
- * `needs_elementor` / `needs_bricks`.
+ * `inventory_never_run` (no tool list yet, or the last one was read
+ * while the site lacked the Abilities API), `inventory_truncated` or
+ * `needs_elementor` / `needs_bricks`; not_applicable `needs_abilities`
+ * or `needs_elementor` / `needs_bricks`.
  * - `elementor_atomic`: unknown `agent_too_old_for_fact`,
  * `not_reported` or `needs_elementor`; not_applicable
  * `needs_elementor`.
