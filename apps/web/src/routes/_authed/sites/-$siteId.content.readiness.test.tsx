@@ -24,7 +24,6 @@ import {
   okResult,
   readiness,
 } from "@/features/ai-readiness/readiness-fixtures";
-import { MAX_POLLS, POLL_MS } from "@/features/ai-readiness/use-ai-readiness";
 
 import { Route as ContentRoute } from "./$siteId.content";
 
@@ -37,6 +36,12 @@ import { Route as ContentRoute } from "./$siteId.content";
 //     site_not_found: apps/api/internal/aireadiness/service.go;
 //   - 403 insufficient_permission: apps/api/internal/authz/middleware.go;
 //   - the error envelope {code, message}: apps/api/internal/server/httpx/respond.go.
+
+// The refetch window after "Check again" is part of the owner's contract: every
+// 15 seconds, at most 8 times. Written out here, not imported, so the test pins
+// the contract instead of following whatever the implementation says.
+const POLL_INTERVAL_MS = 15_000;
+const POLL_LIMIT = 8;
 
 const getReadiness = vi.fn();
 const refreshReadiness = vi.fn();
@@ -494,13 +499,13 @@ describe("Check again", () => {
     expect(refreshReadiness).toHaveBeenCalledTimes(1);
     const baseline = getReadiness.mock.calls.length;
 
-    for (let i = 1; i <= MAX_POLLS; i += 1) {
-      await settle(POLL_MS);
+    for (let i = 1; i <= POLL_LIMIT; i += 1) {
+      await settle(POLL_INTERVAL_MS);
       expect(getReadiness).toHaveBeenCalledTimes(baseline + i);
     }
     // The window is spent: minutes later, still no further request.
-    await settle(POLL_MS * 6);
-    expect(getReadiness).toHaveBeenCalledTimes(baseline + MAX_POLLS);
+    await settle(POLL_INTERVAL_MS * 6);
+    expect(getReadiness).toHaveBeenCalledTimes(baseline + POLL_LIMIT);
   });
 
   it("says the site could not be reached on a 409 site_unreachable, not the server's wording", async () => {
@@ -560,7 +565,7 @@ describe("Check again", () => {
     });
     const before = getReadiness.mock.calls.length;
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(POLL_MS * 3);
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 3);
     });
     expect(getReadiness).toHaveBeenCalledTimes(before);
     expect(c.getByRole("alert")).toBeInTheDocument();

@@ -8,12 +8,16 @@ import { createTestQueryClient } from "@/test/render";
 import { failResult, fleetSite, okResult } from "./readiness-fixtures";
 import {
   AiReadinessRefreshError,
-  MAX_POLLS,
-  POLL_MS,
   toRefreshError,
   useAiReadinessRollup,
   useBoundedPolling,
 } from "./use-ai-readiness";
+
+// The owner's contract for the refetch window after "Check again": every 15
+// seconds, at most 8 times. Written out, not imported, so a change to the
+// implementation's constants is a change a test has to be told about.
+const POLL_MS = 15_000;
+const MAX_POLLS = 8;
 
 const getFleet = vi.fn();
 
