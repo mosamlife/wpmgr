@@ -18,9 +18,13 @@ import { AiEditingSection } from "./ai-editing-section";
 // restored are the agent's refusal as the worker records it
 // (apps/api/internal/abilityrequest/worker.go refusedOutcome, withRestoreReport);
 // outcome_detail is the closed conflict word from abilityrequest/
-// outcome_detail.go (changed_since_read, editor_open, autosave_pending); an
-// undo that did not go through is undo_state on the done row
-// (refused_conflict, refused_published, failed), set by undo.go.
+// outcome_detail.go (changed_since_read, editor_open, autosave_pending);
+// outside_change is the closed kind of what a side_effect_detected refusal
+// found changed outside the page, from the same file (active_kit, other_posts,
+// terms, site_settings, users); an undo that did not go through is undo_state
+// on the done row (refused_conflict, refused_published, failed), set by
+// undo.go, and a failed one says why in undo_code (snapshot_tampered,
+// restore_mismatch), also undo.go.
 
 const { editingMock, listSiteMock } = vi.hoisted(() => ({
   editingMock: vi.fn(),
@@ -61,8 +65,8 @@ function failed(code: string | undefined, over: Partial<AbilityRequest> = {}): A
   return pageEditRow({ state: "failed", outcome: "refused", outcome_code: code, decided_at: DECIDED, ...over });
 }
 
-/** An applied page edit whose undo has this result. */
-function undoResult(undoState: string): AbilityRequest {
+/** An applied page edit whose undo has this result, and the code that says why when it failed. */
+function undoResult(undoState: string, over: Partial<AbilityRequest> = {}): AbilityRequest {
   return pageEditRow({
     state: "done",
     outcome: "applied",
@@ -70,6 +74,7 @@ function undoResult(undoState: string): AbilityRequest {
     undo_state: undoState,
     undo_available_until: new Date(Date.now() + 10 * 86_400_000).toISOString(),
     undo_offered: false,
+    ...over,
   });
 }
 
@@ -200,16 +205,63 @@ describe("a page edit that Elementor did not save as approved", () => {
 });
 
 describe("a page edit that changed something outside the page", () => {
-  it("says WPMgr put the page back, in red, as an alert", async () => {
-    const { card, line } = await statusOf(failed("side_effect_detected", { restored: true }));
-    // The design asks for a short label of what changed in this sentence; the
-    // API does not carry one yet, so the sentence stands without it.
-    expect(flat(line)).toBe(
-      "Something outside this page changed while Elementor saved it. WPMgr put the page back. WPMgr cannot undo changes another plugin made.",
-    );
+  const BARE_PUT_BACK =
+    "Something outside this page changed while Elementor saved it. WPMgr put the page back. WPMgr cannot undo changes another plugin made.";
+
+  it.each<[string, AbilityRequest["outside_change"], string]>([
+    [
+      "the site's active Elementor kit",
+      "active_kit",
+      "Something outside this page changed while Elementor saved it (the site's active Elementor kit). WPMgr put the page back. WPMgr cannot undo changes another plugin made.",
+    ],
+    [
+      "another post or page",
+      "other_posts",
+      "Something outside this page changed while Elementor saved it (another post or page, or its data). WPMgr put the page back. WPMgr cannot undo changes another plugin made.",
+    ],
+    [
+      "categories or tags",
+      "terms",
+      "Something outside this page changed while Elementor saved it (categories or tags). WPMgr put the page back. WPMgr cannot undo changes another plugin made.",
+    ],
+    [
+      "a site setting",
+      "site_settings",
+      "Something outside this page changed while Elementor saved it (a site setting). WPMgr put the page back. WPMgr cannot undo changes another plugin made.",
+    ],
+    [
+      "a user account, a role or the administrators",
+      "users",
+      "Something outside this page changed while Elementor saved it (a user account, a role or the site's administrators). WPMgr put the page back. WPMgr cannot undo changes another plugin made.",
+    ],
+  ])("says WPMgr put the page back, in red, as an alert, and names what changed when it was %s", async (_name, kind, text) => {
+    const { card, line } = await statusOf(failed("side_effect_detected", { restored: true, outside_change: kind }));
+    expect(flat(line)).toBe(text);
     expect(line).toHaveAttribute("data-tone", "red");
     expect(line).toHaveAttribute("role", "alert");
     expect(within(card).getByRole("link", { name: "Open in Elementor" })).toBeInTheDocument();
+  });
+
+  it.each<[string, Partial<AbilityRequest>]>([
+    ["the API names no kind, as when the site named changes of more than one kind", { outside_change: null }],
+    ["the API does not carry the kind at all", {}],
+  ])("says only that something outside the page changed when %s", async (_name, over) => {
+    const { card, line } = await statusOf(failed("side_effect_detected", { restored: true, ...over }));
+    expect(flat(line)).toBe(BARE_PUT_BACK);
+    expect(line).toHaveAttribute("data-tone", "red");
+    expect(line).toHaveAttribute("role", "alert");
+    expect(within(card).getByRole("link", { name: "Open in Elementor" })).toBeInTheDocument();
+  });
+
+  it("adds no label for a kind it has no words for, and never shows the API's own word", async () => {
+    // Built past the fixture's shape check on purpose: a kind a later API adds.
+    const row: AbilityRequest = {
+      ...failed("side_effect_detected", { restored: true }),
+      outside_change: "cache_files" as unknown as AbilityRequest["outside_change"],
+    };
+    const { line } = await statusOf(row);
+    expect(flat(line)).toBe(BARE_PUT_BACK);
+    expect(flat(line)).not.toContain("cache_files");
   });
 
   it("asks the person to check the page when it was not put back", async () => {
@@ -218,6 +270,15 @@ describe("a page edit that changed something outside the page", () => {
       "Something outside this page changed while Elementor saved it. Open the page in Elementor and check it. WPMgr cannot undo changes another plugin made.",
     );
     expect(line).toHaveAttribute("data-tone", "red");
+  });
+
+  it("names what changed, and still asks the person to check the page, when the site did not say it put the page back", async () => {
+    const { line } = await statusOf(failed("side_effect_detected", { outside_change: "terms" }));
+    expect(flat(line)).toBe(
+      "Something outside this page changed while Elementor saved it (categories or tags). Open the page in Elementor and check it. WPMgr cannot undo changes another plugin made.",
+    );
+    expect(line).toHaveAttribute("data-tone", "red");
+    expect(line).toHaveAttribute("role", "alert");
   });
 });
 
@@ -231,6 +292,10 @@ describe("a page edit WPMgr could not put back exactly", () => {
     ["the page read back differently and the put-back failed", failed("verify_mismatch", { outcome: "verify_mismatch", restored: false })],
     ["Elementor crashed and the put-back failed", failed("builder_crashed", { restored: false })],
     ["a change outside the page was found and the put-back failed", failed("side_effect_detected", { restored: false })],
+    [
+      "a named change outside the page was found and the put-back failed",
+      failed("side_effect_detected", { restored: false, outside_change: "users" }),
+    ],
   ])("needs attention, in red, as an alert, when %s", async (_name, row) => {
     const { card, line } = await statusOf(row);
     expect(flat(line)).toBe(NOT_PUT_BACK);
@@ -259,14 +324,36 @@ describe("an undo of an applied page edit that did not go through", () => {
     expect(within(card).queryByRole("button", { name: /Undo/ })).toBeNull();
   });
 
-  it("needs attention, in red, as an alert, when the undo failed", async () => {
-    const { card, line } = await statusOf(undoResult("failed"));
-    expect(flat(line)).toBe(
-      "WPMgr could not undo this change. Open the page in Elementor and check it; its revisions are in WordPress.",
-    );
+  const UNDO_FAILED =
+    "WPMgr could not undo this change. Open the page in Elementor and check it; its revisions are in WordPress.";
+
+  it.each<[string, Partial<AbilityRequest>]>([
+    ["the API carries no code", {}],
+    ["the API's code is null", { undo_code: null }],
+    ["the put-back did not read back as the saved copy", { undo_code: "restore_mismatch" }],
+  ])("needs attention, in red, as an alert, when the undo failed and %s", async (_name, over) => {
+    const { card, line } = await statusOf(undoResult("failed", over));
+    expect(flat(line)).toBe(UNDO_FAILED);
     expect(line).toHaveAttribute("data-tone", "red");
     expect(line).toHaveAttribute("role", "alert");
     expect(within(card).queryByRole("button", { name: /Undo/ })).toBeNull();
+  });
+
+  it("says the saved copy was changed on the site and nothing changed, in red, as an alert, when the undo was refused for that", async () => {
+    const { card, line } = await statusOf(undoResult("failed", { undo_code: "snapshot_tampered" }));
+    expect(flat(line)).toBe(
+      "WPMgr's saved copy of this page was changed on the site, so WPMgr won't use it. Nothing changed.",
+    );
+    expect(line).toHaveAttribute("data-tone", "red");
+    expect(line).toHaveAttribute("role", "alert");
+    // Nothing was written, so the page is where the change left it.
+    expect(within(card).getByRole("link", { name: "Open in Elementor" })).toBeInTheDocument();
+  });
+
+  it("does not offer the undo again for a refused saved copy, whatever else the row says", async () => {
+    const { card } = await statusOf(undoResult("failed", { undo_code: "snapshot_tampered", undo_offered: true }));
+    expect(within(card).queryByRole("button", { name: /Undo/ })).toBeNull();
+    expect(within(card).queryByTestId("undo-later-first")).toBeNull();
   });
 
   it("says WPMgr is putting the page back while the undo runs", async () => {
