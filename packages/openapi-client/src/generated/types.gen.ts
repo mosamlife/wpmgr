@@ -18856,7 +18856,7 @@ export type RefreshSiteAiReadinessErrors = {
    */
   401: Error;
   /**
-   * Missing site:read
+   * Missing site.content.refresh
    */
   403: Error;
   /**

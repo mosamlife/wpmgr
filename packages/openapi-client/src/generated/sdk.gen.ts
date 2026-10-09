@@ -7011,10 +7011,12 @@ export const getFleetAiReadiness = <ThrowOnError extends boolean = false>(
  * 202 at once; the results appear on the next GET within a couple of
  * minutes. `abilities` is true when a tool-list read was queued by this
  * call or was already queued within the last two minutes, and false
- * when the agent is too old to run one. Requires `site:read` (the same
- * gate as updates/refresh). The body must be JSON (an empty object is
- * fine). Returns 409 `site_unreachable` when the site is not enrolled or
- * its agent has not been heard from recently.
+ * when the agent is too old to run one. Requires `site.content.refresh`
+ * (operator and above, the same tier as the content inventory refresh)
+ * and access to the site: a viewer can read the result but cannot ask
+ * for a new one. The body must be JSON (an empty object is fine).
+ * Returns 409 `site_unreachable` when the site is not enrolled or its
+ * agent has not been heard from recently.
  *
  */
 export const refreshSiteAiReadiness = <ThrowOnError extends boolean = false>(

@@ -23,8 +23,10 @@ func NewHandler(svc *Service) *Handler { return &Handler{svc: svc} }
 //	GET  /sites/:siteId/ai/readiness
 //	POST /sites/:siteId/ai/readiness/refresh
 //
-// All three need site:read: the facts are versions and plugin states a viewer
-// already sees in the plugin list, and the refresh mirrors updates/refresh.
+// The two reads need site:read: the facts are versions and plugin states a
+// viewer already sees in the plugin list. The refresh queues work on the
+// site's agent, so it needs site.content.refresh, the operator tier of the
+// content inventory refresh; a viewer reads the result but cannot ask for it.
 // The per-site routes carry RequireSiteAccess. The fleet route has no site id
 // to bind, so it is narrowed by the row policies and by the per-site check in
 // the service. The refresh takes JSON only (the CSRF guard for a
@@ -34,7 +36,7 @@ func (h *Handler) Register(r *gin.RouterGroup) {
 	g := r.Group("/sites/:siteId", authz.RequireSiteAccess("siteId"))
 	g.GET("/ai/readiness", authz.RequirePermission(authz.PermSiteRead), h.get)
 	g.POST("/ai/readiness/refresh",
-		authz.RequirePermission(authz.PermSiteRead), httpx.RequireJSONBody(), h.refresh)
+		authz.RequirePermission(authz.PermSiteContentRefresh), httpx.RequireJSONBody(), h.refresh)
 }
 
 func principal(c *gin.Context) (domain.Principal, bool) {
