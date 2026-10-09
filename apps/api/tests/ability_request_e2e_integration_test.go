@@ -284,10 +284,15 @@ func (w *e2World) row(t *testing.T, id uuid.UUID) (state string, outcome, notSen
 
 // TestE2PageCreateApproveDispatchCreatedAsAppRole: ask, approve, the worker
 // sends write with expected{} bound to the precheck, outcome created with
-// the undo window open.
+// the undo window open. The request is stored under the request id its
+// precheck was sent with, and the write is sent under that same id (BF-C F1).
 func TestE2PageCreateApproveDispatchCreatedAsAppRole(t *testing.T) {
 	w := newE2World(t, true)
 	id := w.ask(t)
+	if w.agent.sent(agentcmd.AbilityRunModePrecheck) != 1 || w.agent.last.Mode != agentcmd.AbilityRunModePrecheck ||
+		w.agent.last.RequestID != id {
+		t.Fatalf("stored as request %s; the precheck was sent as %s (%s), want the same id", id, w.agent.last.RequestID, w.agent.last.Mode)
+	}
 	if _, err := w.svc.Approve(context.Background(), w.person, w.site, id, w.digest(t, id)); err != nil {
 		t.Fatalf("approve: %v", err)
 	}

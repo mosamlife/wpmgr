@@ -2204,12 +2204,18 @@ type Querier interface {
 	// status after initial delivery). Body is only stored when body_stored=true.
 	// m62: connection_key + attachments added (additive; old agents send '' / '[]').
 	IngestEmailLogEntry(ctx context.Context, arg IngestEmailLogEntryParams) (SiteEmailLog, error)
+	// id is the request id the site receives with the write. A caller that
+	// prechecked the request under an id it generated passes that id, so the
+	// write names the request its precheck was made under; NULL takes the
+	// column default, gen_random_uuid().
 	// ON CONFLICT names the one-pending index's columns and predicate. A conflict
-	// inserts nothing and returns NO ROW (pgx.ErrNoRows): the caller reads the
-	// waiting row with GetPendingAbilityRequestForTarget. state is always
-	// 'pending'; target_key is generated and never written. m161: route_id,
-	// route_sha256 and card_facts are set together for wpmgr/rest-write and are
-	// NULL for every other ability (the table's CHECKs refuse anything else).
+	// inserts nothing and returns NO ROW (pgx.ErrNoRows), whatever id was passed:
+	// the caller reads the waiting row, which keeps its own id, with
+	// GetPendingAbilityRequestForTarget. An id that already names a row is not
+	// that conflict: it fails with 23505. state is always 'pending'; target_key
+	// is generated and never written. m161: route_id, route_sha256 and
+	// card_facts are set together for wpmgr/rest-write and are NULL for every
+	// other ability (the table's CHECKs refuse anything else).
 	InsertAbilityRequest(ctx context.Context, arg InsertAbilityRequestParams) (AssistantAbilityRequest, error)
 	// Agent-auth path (app.agent GUC). The unique (site_id, nonce) index makes a
 	// replayed nonce a no-op via ON CONFLICT, returning 0 rows affected.

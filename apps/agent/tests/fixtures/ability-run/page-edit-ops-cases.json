@@ -1,0 +1,235 @@
+{
+    "note": "Hand-authored: the shared accept/refuse table for wpmgr/page-edit operations, read by the agent and the control plane. \"page\" is the projection every case runs against (node refs, kinds, the fields each node offers, one locked node), built with page.builder unless a case names another \"builder\". \"input\" is the exact JSON text. A case with \"generate\" appends generate.append to that text until it is generate.to_bytes bytes long; JSON allows the trailing whitespace, so only the input size limit (65536 bytes) decides those cases. \"agent\" is what the agent answers: \"ok\" or the refusal code. \"go\" is what the control plane validation must answer before precheck: \"accept\" or \"refuse\". A rule that depends on the page (a ref not on it, a field the node does not offer, a locked node, an operation the builder does not declare) is the agent's alone, so its case carries go \"accept\". \"rule\" names the contract rule the case exercises.",
+    "page": {
+        "post_id": 418,
+        "builder": "elementor",
+        "base_fingerprint": "7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7",
+        "nodes": [
+            {
+                "ref": "1a2b3c4",
+                "parent": "root",
+                "kind": "section",
+                "editable": []
+            },
+            {
+                "ref": "2b3c4d5",
+                "parent": "1a2b3c4",
+                "kind": "column",
+                "editable": []
+            },
+            {
+                "ref": "3c4d5e6",
+                "parent": "2b3c4d5",
+                "kind": "heading",
+                "level": 2,
+                "editable": [
+                    "text"
+                ]
+            },
+            {
+                "ref": "4d5e6f7",
+                "parent": "2b3c4d5",
+                "kind": "paragraph",
+                "editable": [
+                    "text"
+                ]
+            },
+            {
+                "ref": "5e6f7a8",
+                "parent": "2b3c4d5",
+                "kind": "image",
+                "editable": [
+                    "alt",
+                    "caption"
+                ]
+            },
+            {
+                "ref": "6f7a8b9",
+                "parent": "2b3c4d5",
+                "kind": "paragraph",
+                "editable": [
+                    "text"
+                ]
+            },
+            {
+                "ref": "7a8b9c0",
+                "parent": "root",
+                "kind": "section",
+                "editable": []
+            },
+            {
+                "ref": "8b9c0d1",
+                "parent": "7a8b9c0",
+                "kind": "column",
+                "editable": []
+            },
+            {
+                "ref": "9c0d1e2",
+                "parent": "8b9c0d1",
+                "kind": "paragraph",
+                "editable": [
+                    "text"
+                ]
+            },
+            {
+                "ref": "a0d1e2f",
+                "parent": "8b9c0d1",
+                "kind": "heading",
+                "level": 3,
+                "editable": [
+                    "text"
+                ]
+            },
+            {
+                "ref": "b1e2f3a",
+                "parent": "8b9c0d1",
+                "kind": "locked",
+                "label": "Form"
+            }
+        ]
+    },
+    "cases": [
+        {
+            "name": "no-operations",
+            "rule": "operations_at_least_one",
+            "input": "{\"post_id\":418,\"base_fingerprint\":\"7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7\",\"operations\":[]}",
+            "agent": "bad_input",
+            "go": "refuse"
+        },
+        {
+            "name": "26-operations",
+            "rule": "operations_at_most_25",
+            "input": "{\"post_id\":418,\"base_fingerprint\":\"7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7\",\"operations\":[{\"op\":\"remove\",\"ref\":\"n01\"},{\"op\":\"remove\",\"ref\":\"n02\"},{\"op\":\"remove\",\"ref\":\"n03\"},{\"op\":\"remove\",\"ref\":\"n04\"},{\"op\":\"remove\",\"ref\":\"n05\"},{\"op\":\"remove\",\"ref\":\"n06\"},{\"op\":\"remove\",\"ref\":\"n07\"},{\"op\":\"remove\",\"ref\":\"n08\"},{\"op\":\"remove\",\"ref\":\"n09\"},{\"op\":\"remove\",\"ref\":\"n10\"},{\"op\":\"remove\",\"ref\":\"n11\"},{\"op\":\"remove\",\"ref\":\"n12\"},{\"op\":\"remove\",\"ref\":\"n13\"},{\"op\":\"remove\",\"ref\":\"n14\"},{\"op\":\"remove\",\"ref\":\"n15\"},{\"op\":\"remove\",\"ref\":\"n16\"},{\"op\":\"remove\",\"ref\":\"n17\"},{\"op\":\"remove\",\"ref\":\"n18\"},{\"op\":\"remove\",\"ref\":\"n19\"},{\"op\":\"remove\",\"ref\":\"n20\"},{\"op\":\"remove\",\"ref\":\"n21\"},{\"op\":\"remove\",\"ref\":\"n22\"},{\"op\":\"remove\",\"ref\":\"n23\"},{\"op\":\"remove\",\"ref\":\"n24\"},{\"op\":\"remove\",\"ref\":\"n25\"},{\"op\":\"remove\",\"ref\":\"n26\"}]}",
+            "agent": "bad_input",
+            "go": "refuse"
+        },
+        {
+            "name": "unknown-op",
+            "rule": "op_known",
+            "input": "{\"post_id\":418,\"base_fingerprint\":\"7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7\",\"operations\":[{\"op\":\"duplicate\",\"ref\":\"3c4d5e6\"}]}",
+            "agent": "bad_input",
+            "go": "refuse"
+        },
+        {
+            "name": "ref-bad-characters",
+            "rule": "ref_charset",
+            "input": "{\"post_id\":418,\"base_fingerprint\":\"7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7\",\"operations\":[{\"op\":\"remove\",\"ref\":\"6f7a8b9!\"}]}",
+            "agent": "bad_input",
+            "go": "refuse"
+        },
+        {
+            "name": "ref-33-characters",
+            "rule": "ref_at_most_32",
+            "input": "{\"post_id\":418,\"base_fingerprint\":\"7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7\",\"operations\":[{\"op\":\"remove\",\"ref\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}]}",
+            "agent": "bad_input",
+            "go": "refuse"
+        },
+        {
+            "name": "same-ref-twice",
+            "rule": "ref_at_most_once",
+            "input": "{\"post_id\":418,\"base_fingerprint\":\"7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7\",\"operations\":[{\"op\":\"set_text\",\"ref\":\"3c4d5e6\",\"field\":\"text\",\"text\":\"Autumn sale\"},{\"op\":\"remove\",\"ref\":\"3c4d5e6\"}]}",
+            "agent": "ops_invalid",
+            "go": "refuse"
+        },
+        {
+            "name": "insert-two-anchors",
+            "rule": "insert_one_anchor",
+            "input": "{\"post_id\":418,\"base_fingerprint\":\"7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7\",\"operations\":[{\"op\":\"insert\",\"after\":\"4d5e6f7\",\"before\":\"6f7a8b9\",\"outline\":[{\"type\":\"paragraph\",\"text\":\"Hello\"}]}]}",
+            "agent": "bad_input",
+            "go": "refuse"
+        },
+        {
+            "name": "position-without-into",
+            "rule": "position_only_with_into",
+            "input": "{\"post_id\":418,\"base_fingerprint\":\"7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7\",\"operations\":[{\"op\":\"insert\",\"after\":\"4d5e6f7\",\"position\":\"first\",\"outline\":[{\"type\":\"paragraph\",\"text\":\"Hello\"}]}]}",
+            "agent": "bad_input",
+            "go": "refuse"
+        },
+        {
+            "name": "outline-51-nodes",
+            "rule": "outline_at_most_50",
+            "input": "{\"post_id\":418,\"base_fingerprint\":\"7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7\",\"operations\":[{\"op\":\"insert\",\"after\":\"4d5e6f7\",\"outline\":[{\"type\":\"paragraph\",\"text\":\"Line 1\"},{\"type\":\"paragraph\",\"text\":\"Line 2\"},{\"type\":\"paragraph\",\"text\":\"Line 3\"},{\"type\":\"paragraph\",\"text\":\"Line 4\"},{\"type\":\"paragraph\",\"text\":\"Line 5\"},{\"type\":\"paragraph\",\"text\":\"Line 6\"},{\"type\":\"paragraph\",\"text\":\"Line 7\"},{\"type\":\"paragraph\",\"text\":\"Line 8\"},{\"type\":\"paragraph\",\"text\":\"Line 9\"},{\"type\":\"paragraph\",\"text\":\"Line 10\"},{\"type\":\"paragraph\",\"text\":\"Line 11\"},{\"type\":\"paragraph\",\"text\":\"Line 12\"},{\"type\":\"paragraph\",\"text\":\"Line 13\"},{\"type\":\"paragraph\",\"text\":\"Line 14\"},{\"type\":\"paragraph\",\"text\":\"Line 15\"},{\"type\":\"paragraph\",\"text\":\"Line 16\"},{\"type\":\"paragraph\",\"text\":\"Line 17\"},{\"type\":\"paragraph\",\"text\":\"Line 18\"},{\"type\":\"paragraph\",\"text\":\"Line 19\"},{\"type\":\"paragraph\",\"text\":\"Line 20\"},{\"type\":\"paragraph\",\"text\":\"Line 21\"},{\"type\":\"paragraph\",\"text\":\"Line 22\"},{\"type\":\"paragraph\",\"text\":\"Line 23\"},{\"type\":\"paragraph\",\"text\":\"Line 24\"},{\"type\":\"paragraph\",\"text\":\"Line 25\"},{\"type\":\"paragraph\",\"text\":\"Line 26\"},{\"type\":\"paragraph\",\"text\":\"Line 27\"},{\"type\":\"paragraph\",\"text\":\"Line 28\"},{\"type\":\"paragraph\",\"text\":\"Line 29\"},{\"type\":\"paragraph\",\"text\":\"Line 30\"},{\"type\":\"paragraph\",\"text\":\"Line 31\"},{\"type\":\"paragraph\",\"text\":\"Line 32\"},{\"type\":\"paragraph\",\"text\":\"Line 33\"},{\"type\":\"paragraph\",\"text\":\"Line 34\"},{\"type\":\"paragraph\",\"text\":\"Line 35\"},{\"type\":\"paragraph\",\"text\":\"Line 36\"},{\"type\":\"paragraph\",\"text\":\"Line 37\"},{\"type\":\"paragraph\",\"text\":\"Line 38\"},{\"type\":\"paragraph\",\"text\":\"Line 39\"},{\"type\":\"paragraph\",\"text\":\"Line 40\"},{\"type\":\"paragraph\",\"text\":\"Line 41\"},{\"type\":\"paragraph\",\"text\":\"Line 42\"},{\"type\":\"paragraph\",\"text\":\"Line 43\"},{\"type\":\"paragraph\",\"text\":\"Line 44\"},{\"type\":\"paragraph\",\"text\":\"Line 45\"},{\"type\":\"paragraph\",\"text\":\"Line 46\"},{\"type\":\"paragraph\",\"text\":\"Line 47\"},{\"type\":\"paragraph\",\"text\":\"Line 48\"},{\"type\":\"paragraph\",\"text\":\"Line 49\"},{\"type\":\"paragraph\",\"text\":\"Line 50\"},{\"type\":\"paragraph\",\"text\":\"Line 51\"}]}]}",
+            "agent": "bad_input",
+            "go": "refuse"
+        },
+        {
+            "name": "set-text-field-not-editable",
+            "rule": "field_in_editable",
+            "input": "{\"post_id\":418,\"base_fingerprint\":\"7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7\",\"operations\":[{\"op\":\"set_text\",\"ref\":\"3c4d5e6\",\"field\":\"url\",\"text\":\"https://example.com/\"}]}",
+            "agent": "node_not_editable",
+            "go": "accept"
+        },
+        {
+            "name": "ref-not-on-page",
+            "rule": "ref_on_page",
+            "input": "{\"post_id\":418,\"base_fingerprint\":\"7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7\",\"operations\":[{\"op\":\"set_text\",\"ref\":\"0f0f0f0\",\"field\":\"text\",\"text\":\"Hello\"}]}",
+            "agent": "node_not_found",
+            "go": "accept"
+        },
+        {
+            "name": "set-text-on-locked",
+            "rule": "locked_not_set_text",
+            "input": "{\"post_id\":418,\"base_fingerprint\":\"7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7\",\"operations\":[{\"op\":\"set_text\",\"ref\":\"b1e2f3a\",\"field\":\"text\",\"text\":\"Hello\"}]}",
+            "agent": "node_not_editable",
+            "go": "accept"
+        },
+        {
+            "name": "replace-locked",
+            "rule": "locked_not_replaced",
+            "input": "{\"post_id\":418,\"base_fingerprint\":\"7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7\",\"operations\":[{\"op\":\"replace\",\"ref\":\"b1e2f3a\",\"outline\":[{\"type\":\"paragraph\",\"text\":\"Hello\"}]}]}",
+            "agent": "node_not_editable",
+            "go": "accept"
+        },
+        {
+            "name": "remove-locked",
+            "rule": "locked_not_removed",
+            "input": "{\"post_id\":418,\"base_fingerprint\":\"7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7\",\"operations\":[{\"op\":\"remove\",\"ref\":\"b1e2f3a\"}]}",
+            "agent": "node_not_editable",
+            "go": "accept"
+        },
+        {
+            "name": "move-locked",
+            "rule": "locked_not_moved",
+            "input": "{\"post_id\":418,\"base_fingerprint\":\"7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7\",\"operations\":[{\"op\":\"move\",\"ref\":\"b1e2f3a\",\"after\":\"9c0d1e2\"}]}",
+            "agent": "node_not_editable",
+            "go": "accept"
+        },
+        {
+            "name": "move-on-beaver",
+            "rule": "op_declared_by_builder",
+            "builder": "beaver",
+            "input": "{\"post_id\":418,\"base_fingerprint\":\"7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7\",\"operations\":[{\"op\":\"move\",\"ref\":\"9c0d1e2\",\"after\":\"a0d1e2f\"}]}",
+            "agent": "op_not_supported_by_builder",
+            "go": "accept"
+        },
+        {
+            "name": "input-64-kib",
+            "rule": "input_at_most_64_kib",
+            "input": "{\"post_id\":418,\"base_fingerprint\":\"7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7\",\"operations\":[{\"op\":\"set_text\",\"ref\":\"3c4d5e6\",\"field\":\"text\",\"text\":\"Autumn sale\"},{\"op\":\"insert\",\"into\":\"2b3c4d5\",\"position\":\"first\",\"outline\":[{\"type\":\"paragraph\",\"text\":\"Open every day.\"}]},{\"op\":\"replace\",\"ref\":\"5e6f7a8\",\"outline\":[{\"type\":\"heading\",\"level\":3,\"text\":\"Our team\"}]},{\"op\":\"remove\",\"ref\":\"6f7a8b9\"},{\"op\":\"move\",\"ref\":\"9c0d1e2\",\"after\":\"a0d1e2f\"}]}",
+            "generate": {
+                "append": " ",
+                "to_bytes": 65536
+            },
+            "agent": "ok",
+            "go": "accept"
+        },
+        {
+            "name": "input-over-64-kib",
+            "rule": "input_at_most_64_kib",
+            "input": "{\"post_id\":418,\"base_fingerprint\":\"7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7\",\"operations\":[{\"op\":\"set_text\",\"ref\":\"3c4d5e6\",\"field\":\"text\",\"text\":\"Autumn sale\"},{\"op\":\"insert\",\"into\":\"2b3c4d5\",\"position\":\"first\",\"outline\":[{\"type\":\"paragraph\",\"text\":\"Open every day.\"}]},{\"op\":\"replace\",\"ref\":\"5e6f7a8\",\"outline\":[{\"type\":\"heading\",\"level\":3,\"text\":\"Our team\"}]},{\"op\":\"remove\",\"ref\":\"6f7a8b9\"},{\"op\":\"move\",\"ref\":\"9c0d1e2\",\"after\":\"a0d1e2f\"}]}",
+            "generate": {
+                "append": " ",
+                "to_bytes": 65537
+            },
+            "agent": "bad_input",
+            "go": "refuse"
+        },
+        {
+            "name": "all-five-ops",
+            "rule": "valid_batch",
+            "input": "{\"post_id\":418,\"base_fingerprint\":\"7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7\",\"operations\":[{\"op\":\"set_text\",\"ref\":\"3c4d5e6\",\"field\":\"text\",\"text\":\"Autumn sale\"},{\"op\":\"insert\",\"into\":\"2b3c4d5\",\"position\":\"first\",\"outline\":[{\"type\":\"paragraph\",\"text\":\"Open every day.\"}]},{\"op\":\"replace\",\"ref\":\"5e6f7a8\",\"outline\":[{\"type\":\"heading\",\"level\":3,\"text\":\"Our team\"}]},{\"op\":\"remove\",\"ref\":\"6f7a8b9\"},{\"op\":\"move\",\"ref\":\"9c0d1e2\",\"after\":\"a0d1e2f\"}]}",
+            "agent": "ok",
+            "go": "accept"
+        }
+    ]
+}
