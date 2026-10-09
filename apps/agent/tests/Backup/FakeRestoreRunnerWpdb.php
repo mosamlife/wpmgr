@@ -11,6 +11,9 @@
  *   - RestoreRunner::estimateLiveDbBytes() — prepare()+get_var() against
  *     information_schema (returns null/unknown; harmless).
  *   - RestoreRunner::cleanupOnCompleted() — delete().
+ *   - RestoreWatchdog::run(): the same get_row() and update() surface. An
+ *     update whose other WHERE columns no longer match the row changes
+ *     nothing and returns 0, as in SQL.
  *
  * prepare() carries the query + bound args through as a JSON envelope
  * (mirrors the existing tests/FakeWpdb.php trick) so get_row()/get_var() can
@@ -51,6 +54,14 @@ final class FakeRestoreRunnerWpdb
     public array $deletes = [];
 
     /**
+     * Optional hook run after get_row() has read a row: stands in for a
+     * concurrent writer between a caller's read and its write.
+     *
+     * @var (callable(self):void)|null
+     */
+    public $afterGetRow = null;
+
+    /**
      * @param string $query SQL with %s/%d placeholders.
      * @param mixed  ...$args Bound arguments.
      */
@@ -82,7 +93,11 @@ final class FakeRestoreRunnerWpdb
         }
         $args = $decoded['args'];
         $key  = ($args[0] ?? '') . '|' . ($args[1] ?? '');
-        return $this->rows[$key] ?? null;
+        $row  = $this->rows[$key] ?? null;
+        if ($this->afterGetRow !== null) {
+            ($this->afterGetRow)($this);
+        }
+        return $row;
     }
 
     /**
@@ -129,6 +144,15 @@ final class FakeRestoreRunnerWpdb
         $key = ($where['snapshot_id'] ?? '') . '|' . ($where['restore_id'] ?? '');
         if (!isset($this->rows[$key])) {
             return 0;
+        }
+        // Every other WHERE column must match the stored row, as in SQL.
+        foreach ($where as $column => $value) {
+            if ($column === 'snapshot_id' || $column === 'restore_id') {
+                continue;
+            }
+            if (!array_key_exists($column, $this->rows[$key]) || (string) $this->rows[$key][$column] !== (string) $value) {
+                return 0;
+            }
         }
         $this->rows[$key] = array_merge($this->rows[$key], $data);
         return 1;

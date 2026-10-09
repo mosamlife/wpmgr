@@ -483,13 +483,12 @@ final class RestoreRunner
                 // GH #538: the failure is added to the sub_state this run
                 // last persisted, so the FAILED row keeps every rollback
                 // pointer (ROLLBACK_POINTER_KEYS) the shutdown rollback
-                // reads from it.
-                // The run's params (DB credentials, destination config) are
-                // left off: nothing resumes from a FAILED row.
+                // reads from it. saveTaskState() leaves the run's params
+                // off, as it does on every row whose run has ended.
                 $failState               = $this->persistedSubState;
                 $failState['last_error'] = substr($e->getMessage(), 0, 240);
                 $failState['failed_in']  = $currentPhase;
-                unset($failState['params'], $failState['rolled_back']);
+                unset($failState['rolled_back']);
                 if ($rolledBack !== null) {
                     $failState['rolled_back'] = $rolledBack;
                 }
@@ -2712,6 +2711,25 @@ final class RestoreRunner
     }
 
     /**
+     * The sub_state a task row keeps once its run has ended (completed or
+     * failed): everything except the run params.
+     *
+     * The params (database credentials, destination config, chunk download
+     * URLs, the progress endpoint) are seeded so a stalled run can be
+     * resumed, and a run that has ended is never resumed. Everything else
+     * stays: the rollback pointers (ROLLBACK_POINTER_KEYS) the shutdown
+     * rollback reads, the health-check results, and the failure detail.
+     *
+     * @param array<string,mixed> $subState
+     * @return array<string,mixed>
+     */
+    public static function endedSubState(array $subState): array
+    {
+        unset($subState['params']);
+        return $subState;
+    }
+
+    /**
      * @param array<string,mixed> $subState
      */
     private function saveTaskState(string $phase, array $subState): void
@@ -2724,6 +2742,10 @@ final class RestoreRunner
         $table = $this->tableName();
         if ($table === '') {
             return;
+        }
+
+        if ($phase === self::PHASE_COMPLETED || $phase === self::PHASE_FAILED) {
+            $subState = self::endedSubState($subState);
         }
 
         $now     = time();
