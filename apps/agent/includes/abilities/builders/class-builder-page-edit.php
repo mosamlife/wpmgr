@@ -71,7 +71,10 @@ if (!defined('ABSPATH')) {
  * write() re-plans under a claim on the target post, requires both digests
  * to be the approved ones, records the ledger row, snapshots the page
  * (BuilderDocumentSnapshot), checks the snapshot is the page the approval
- * saw, saves the edited tree through the adapter, and reads the whole page
+ * saw, reads the live page's fingerprint again immediately before the save
+ * (conflict, changed_since_read, when another save landed after the
+ * snapshot; nothing is written or put back), saves the edited tree through
+ * the adapter, and reads the whole page
  * back (verifyEdited()). Any failure after the snapshot puts the page back
  * from it (BuilderDocumentRestore::full()) and answers whether it did
  * ("restored"); a page that could not be put back is restore_mismatch. A
@@ -537,6 +540,18 @@ final class BuilderPageEdit
             return self::failed($ledgerUpdate, self::fail('snapshot_failed', 'the copy of the page could not be read back; nothing was changed'));
         }
         if (self::snapshotFingerprint($before, $a->descriptor()->exactKeys) !== $baseFp) {
+            return self::failed($ledgerUpdate, self::fail(self::CODE_CONFLICT, self::CHANGED_SINCE_READ));
+        }
+
+        // Immediately before the save, the live page must still be the page
+        // the approval saw: a save by anyone else since the copy was taken is
+        // refused, never overwritten.
+        try {
+            $liveFp = BuilderDocumentFingerprint::ofPost($postId, $a->descriptor()->exactKeys);
+        } catch (\Throwable $e) {
+            return self::failed($ledgerUpdate, self::fail(LayoutOps::CODE_UNREADABLE, 'the page could not be read; nothing was changed'));
+        }
+        if ($liveFp === null || !hash_equals($baseFp, $liveFp)) {
             return self::failed($ledgerUpdate, self::fail(self::CODE_CONFLICT, self::CHANGED_SINCE_READ));
         }
 
