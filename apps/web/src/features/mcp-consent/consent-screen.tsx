@@ -39,7 +39,10 @@ import {
 import { SiteEnforcementBox } from "./site-enforcement-box";
 import { AbilityCapabilityBox } from "@/features/ai-connections/ability-capability-box";
 import { CachePurgeCapabilityBox } from "@/features/ai-connections/cache-purge-capability-box";
-import { withCapability } from "@/features/ai-connections/capability-presets";
+import {
+  withAbilityTicks,
+  withCapability,
+} from "@/features/ai-connections/capability-presets";
 import { ReadCapabilityPicker } from "@/features/ai-connections/read-capability-picker";
 
 // The consent screen (design Step 7).
@@ -321,14 +324,15 @@ function PermissionsBlock({
       )}
 
       {/* mcp:site: two explicit ticks. They open ticked, because the app asked
-          for site tools, and either can be cleared before approving. */}
+          for site tools, and either can be cleared before approving. "Ask for
+          changes" needs "see what the site can do", so the box moves the two
+          together where it must and reports both rows in one change. */}
       {askedForSiteTools && (
         <div className="mt-4" data-testid="consent-site-capability">
           <AbilityCapabilityBox
             readChecked={selected.includes("mcp.ability.read")}
             requestChecked={selected.includes("mcp.ability.request")}
-            onReadChange={tick("mcp.ability.read")}
-            onRequestChange={tick("mcp.ability.request")}
+            onChange={(next) => onSelectedChange(withAbilityTicks(selected, next))}
             disabled={disabled}
             readOffered={consent.conferrableCapabilities.some(
               (c) => c.name === "mcp.ability.read" && c.effect === CAPABILITY_EFFECT_READ,

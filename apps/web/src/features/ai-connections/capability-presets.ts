@@ -1,4 +1,4 @@
-import { CONFERRABLE_READS, type Capability } from "./capabilities";
+import { CONFERRABLE_READS, type AbilityTicks, type Capability } from "./capabilities";
 
 // The read picker's presets, shared by the connection wizard's step 4 and the
 // consent screen so the two surfaces cannot offer different shortcuts or open
@@ -154,4 +154,21 @@ export function withCapability(
 ): readonly string[] {
   if (ticked) return selected.includes(cap) ? selected : [...selected, cap];
   return selected.filter((c) => c !== cap);
+}
+
+/**
+ * `selected` with both site-tools rows set to `ticks`, in one step. The site-tools
+ * box works out the next state of both rows (see nextAbilityTicks) and its host
+ * applies it here, so a change that moves both rows is a single update rather
+ * than two that could overwrite each other.
+ */
+export function withAbilityTicks(
+  selected: readonly string[],
+  ticks: AbilityTicks,
+): readonly string[] {
+  return withCapability(
+    withCapability(selected, "mcp.ability.read", ticks.read),
+    "mcp.ability.request",
+    ticks.request,
+  );
 }

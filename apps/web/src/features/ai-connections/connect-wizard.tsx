@@ -11,7 +11,7 @@ import { Label } from "@/components/ui/label";
 import { CopyableMono } from "@/components/shared/copyable-mono";
 import { cn } from "@/lib/utils";
 import { CONFERRABLE_READS } from "./capabilities";
-import { defaultCapabilities } from "./capability-presets";
+import { defaultCapabilities, withAbilityTicks } from "./capability-presets";
 import { AbilityCapabilityBox } from "./ability-capability-box";
 import { CachePurgeCapabilityBox } from "./cache-purge-capability-box";
 import { ReadCapabilityPicker } from "./read-capability-picker";
@@ -563,23 +563,13 @@ export function ConnectWizard({
   // THE CAPABILITY PAYLOAD, OR THE REASON THERE IS NONE -- built once, here,
   // the same pattern as `scopeRequest` two blocks up and for the same reason:
   // the gate and the mint call must read one value, never two derivations of
-  // the same selection that could disagree.
+  // the same selection that could disagree. The picker derives which preset the
+  // operator is on, or Custom, from this same `capabilities` array too, so the
+  // label, the ticks and the wire payload are three readings of one value.
   const capabilitiesRequest = useMemo(
     () => mintCapabilitiesRequest(capabilities),
     [capabilities],
   );
-
-  // The picker derives which preset the operator is on, or Custom, from this
-  // same `capabilities` array, so the label, the ticks and the wire payload are
-  // three readings of one value.
-  const toggleCapability = (cap: string, next: boolean) =>
-    setCapabilities((current) =>
-      next
-        ? current.includes(cap)
-          ? current
-          : [...current, cap]
-        : current.filter((c) => c !== cap),
-    );
 
   // THE RAIL'S CAPABILITY STATE, mirroring siteScopeState immediately above:
   // one function, read by both the rail and `mintBlockedReason` below, so
@@ -948,8 +938,7 @@ export function ConnectWizard({
               readChecked={capabilities.includes("mcp.ability.read")}
               requestChecked={capabilities.includes("mcp.ability.request")}
               disabled={mintInFlight}
-              onReadChange={(next) => toggleCapability("mcp.ability.read", next)}
-              onRequestChange={(next) => toggleCapability("mcp.ability.request", next)}
+              onChange={(next) => setCapabilities((current) => withAbilityTicks(current, next))}
             />
 
             {/* THIS IS THE #694 FIX'S OTHER HALF (see SPEC_STEPS' n:4 entry,

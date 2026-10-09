@@ -448,8 +448,10 @@ const SITE_TOOLS: readonly (readonly [name: string, effect: string])[] = [
  *   - the reads of the wizard's default preset, limited to the reads the server
  *     offered (Sites alone), exactly as before;
  *   - when the app asked for site tools (mcp:site), the two site-tools choices
- *     as well, each only if the server offers it. Asking for the scope is asking
- *     for both, and the person can clear either one before approving.
+ *     as well, each only if the server offers it, and "ask for changes" only
+ *     beside "see what the site can do" because it needs it. Asking for the
+ *     scope is asking for both, and the person can clear either one before
+ *     approving.
  *
  * The cache-clear choice is never in this list, whatever was asked.
  *
@@ -462,9 +464,12 @@ export function initialSelection(
 ): readonly string[] {
   const reads = defaultCapabilities(offeredReads(consent.conferrableCapabilities));
   if (!asksForSiteTools(consent.scopes)) return reads;
-  const siteTools = SITE_TOOLS.filter(([name, effect]) =>
+  const offered = SITE_TOOLS.filter(([name, effect]) =>
     consent.conferrableCapabilities.some((c) => c.name === name && c.effect === effect),
   ).map(([name]) => name);
+  // The request is never ticked without the read it needs (nextAbilityTicks), so
+  // an offer of the request alone opens nothing ticked.
+  const siteTools = offered.includes("mcp.ability.read") ? offered : [];
   return [...reads, ...siteTools];
 }
 
@@ -475,7 +480,12 @@ export function initialSelection(
  *   - a read is sent when it is ticked and in offeredReads;
  *   - mcp.cache.purge is sent when it is ticked and offered as a request;
  *   - mcp.ability.read and mcp.ability.request are sent when they are ticked and
- *     offered with their own effect.
+ *     offered with their own effect;
+ *   - mcp.ability.request is sent only together with mcp.ability.read. A
+ *     connection holding the request alone cannot call the tool that carries
+ *     one, so a request ticked without a read that is itself sent is dropped.
+ *     The site-tools box already keeps the two together; this is the same rule
+ *     held again where the request is built.
  *
  * `selected` is the whole tick list of the screen. A name in it that the server
  * did not offer, or offered with a different effect, is dropped here rather
@@ -495,9 +505,12 @@ export function buildApprovalCapabilities(
     ["mcp.ability.request", CAPABILITY_EFFECT_REQUEST],
   ];
   for (const [name, effect] of askable) {
-    if (ticked.has(name) && conferrable.some((c) => c.name === name && c.effect === effect)) {
-      out.push(name);
-    }
+    if (!ticked.has(name)) continue;
+    if (!conferrable.some((c) => c.name === name && c.effect === effect)) continue;
+    // askable lists the read before the request, so `out` already holds the read
+    // here exactly when the read is itself being sent.
+    if (name === "mcp.ability.request" && !out.includes("mcp.ability.read")) continue;
+    out.push(name);
   }
   return out;
 }

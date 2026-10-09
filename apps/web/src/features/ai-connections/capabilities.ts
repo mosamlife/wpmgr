@@ -101,11 +101,48 @@ export const CAPABILITY_KIND: Readonly<Record<Capability, "read" | "write">> = {
  * the read can return page text. The connection wizard opens both rows clear.
  * The consent screen opens both ticked when the requesting app asked for
  * mcp:site and the server offers them, and the person can clear either one.
+ * The request needs the read, on both surfaces: see nextAbilityTicks.
  */
 export const ABILITY_CAPABILITIES = ["mcp.ability.read", "mcp.ability.request"] as const;
 
 export function isAbilityCapability(capability: string): boolean {
   return (ABILITY_CAPABILITIES as readonly string[]).includes(capability);
+}
+
+/** One of the two site-tools rows: "see what the site can do", or "ask for changes". */
+export type AbilityRow = "read" | "request";
+
+/** Whether each of the two site-tools rows is ticked. */
+export interface AbilityTicks {
+  readonly read: boolean;
+  readonly request: boolean;
+}
+
+/**
+ * The two site-tools rows after the person sets one of them.
+ *
+ * "ASK FOR CHANGES" NEEDS "SEE WHAT THE SITE CAN DO". The tool that carries a
+ * request is declared with the read capability, so a connection holding the
+ * request alone cannot call it. The two rows therefore move together in two
+ * directions and stay independent in the others:
+ *
+ *   - ticking the request ticks the read;
+ *   - clearing the read clears the request;
+ *   - clearing the request leaves the read as it was;
+ *   - ticking the read leaves the request as it was.
+ *
+ * The result never has the request ticked without the read, whatever `current`
+ * held.
+ */
+export function nextAbilityTicks(
+  current: AbilityTicks,
+  row: AbilityRow,
+  ticked: boolean,
+): AbilityTicks {
+  if (row === "request") {
+    return ticked ? { read: true, request: true } : { read: current.read, request: false };
+  }
+  return ticked ? { read: true, request: current.request } : { read: false, request: false };
 }
 
 /**
