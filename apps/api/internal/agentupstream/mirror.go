@@ -173,10 +173,13 @@ const maxManifestBytes = 64 << 10
 const MaxPackageBytes = 32 << 20
 
 // minRequestSpacing is the minimum wall-clock gap between two ACTUAL GitHub API
-// requests from this process, whatever the job cadence. The unauthenticated API
-// allows 60 requests/hour per IP; the schedule (every 6 hours) is nowhere near
-// that, so this guard exists only to stop a duplicate or manually re-triggered
-// run from spending budget for no new information.
+// requests, whatever the job cadence, measured from the last request recorded
+// by any process on this install (see Mirror.SeedLastRequestAt). The
+// unauthenticated API allows 60 requests/hour per IP; the schedule (every 6
+// hours, plus one check shortly after each start) is nowhere near that, so this
+// guard exists only to stop a duplicate run, a manually re-triggered run, or a
+// control plane restarting in a loop from spending budget for no new
+// information.
 const minRequestSpacing = 30 * time.Minute
 
 // MinRequestSpacing exports minRequestSpacing for callers outside this
@@ -402,10 +405,11 @@ type Mirror struct {
 	// answers "upstream has not changed" and the publish decision also depends
 	// on local state that moves independently of upstream (see Run step 2).
 	etagPointer pointerFingerprint
-	// lastRequestAt is when an actual API request was last issued from this
-	// process (see minRequestSpacing). In-memory and per-replica by design: the
-	// periodic job is inserted by the River leader and worked once, so this only
-	// ever guards against duplicate or manual triggers on the same process.
+	// lastRequestAt is when an actual API request was last issued (see
+	// minRequestSpacing). It advances in memory when this process spends a
+	// request, and MirrorWorker carries the PERSISTED value into it before every
+	// run (SeedLastRequestAt), so the spacing holds across a restart and across
+	// replicas instead of starting from zero each time the process boots.
 	lastRequestAt time.Time
 }
 
@@ -903,6 +907,33 @@ func (m *Mirror) LastRequestAt() time.Time {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.lastRequestAt
+}
+
+// SeedLastRequestAt carries a request time recorded elsewhere (the persisted
+// agent_mirror_state.last_request_at, written by an earlier process or another
+// replica) into this Mirror's request-spacing clock, so minRequestSpacing is
+// measured from the last request ANY process made, not the last one this
+// process made since it booted (GH #428). Without it, every restart forgot the
+// clock, and a control plane restarting in a loop could spend one upstream
+// request per boot.
+//
+// It only ever moves the clock forward: a value older than the one already
+// held changes nothing, so a stale read can never reopen a window this process
+// has just closed. A time in the future (a skewed clock on whichever host
+// recorded it) is clamped to now, which bounds the wait it can impose to one
+// spacing window instead of however far ahead that clock was.
+func (m *Mirror) SeedLastRequestAt(t time.Time) {
+	if t.IsZero() {
+		return
+	}
+	if now := time.Now(); t.After(now) {
+		t = now
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if t.After(m.lastRequestAt) {
+		m.lastRequestAt = t
+	}
 }
 
 // commitETag records the release-document ETag, together with the pointer state

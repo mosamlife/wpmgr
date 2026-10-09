@@ -14,12 +14,15 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentmirror"
 )
 
-// fakeRecorder is an AttemptRecorder test double capturing every recorded
+// fakeRecorder is an AttemptStore test double capturing every recorded
 // attempt, so tests can assert on Trigger/Outcome/Detail without a real
-// Postgres connection.
+// Postgres connection. Load returns state (and loadErr), standing in for the
+// persisted agent_mirror_state row.
 type fakeRecorder struct {
-	mu    sync.Mutex
-	calls []agentmirror.AttemptInput
+	mu      sync.Mutex
+	calls   []agentmirror.AttemptInput
+	state   agentmirror.State
+	loadErr error
 }
 
 func (f *fakeRecorder) RecordAttempt(_ context.Context, in agentmirror.AttemptInput) error {
@@ -27,6 +30,12 @@ func (f *fakeRecorder) RecordAttempt(_ context.Context, in agentmirror.AttemptIn
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, in)
 	return nil
+}
+
+func (f *fakeRecorder) Load(context.Context) (agentmirror.State, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.state, f.loadErr
 }
 
 func (f *fakeRecorder) last() (agentmirror.AttemptInput, bool) {

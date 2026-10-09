@@ -17,11 +17,28 @@ import (
 // with MaxWorkers=1: one install, one upstream, one mirror at a time.
 const MirrorQueue = "agent_release_mirror"
 
-// MirrorInterval is how often the mirror job is scheduled. Six hours is far
-// inside the unauthenticated GitHub API's 60-requests-per-hour-per-IP limit, and
-// an install that is up to six hours behind a release it did not know about ten
-// minutes ago has lost nothing.
+// MirrorInterval is how often the mirror job is scheduled while the process
+// stays up. Six hours is far inside the unauthenticated GitHub API's
+// 60-requests-per-hour-per-IP limit, and an install that is up to six hours
+// behind a release it did not know about ten minutes ago has lost nothing.
+//
+// River counts this interval from the moment its periodic scheduler starts,
+// which is every process start and every change of River leader, so a restart
+// pushes the next scheduled run a full interval out. The boot check
+// (EnqueueBootCheck) is what covers the restart: one run a few minutes after
+// start, which matters most when the restart is the upgrade to a release that
+// carries a new agent.
 const MirrorInterval = 6 * time.Hour
+
+// BootCheckMinDelay and BootCheckMaxDelay bound the random delay before the
+// boot check (EnqueueBootCheck) runs. A delay rather than an immediate run lets
+// the process finish starting before it reaches out to the public internet, and
+// the randomness spreads out installs that restart together, which is exactly
+// what happens when a release lands and self-hosters upgrade to it.
+const (
+	BootCheckMinDelay = 1 * time.Minute
+	BootCheckMaxDelay = 5 * time.Minute
+)
 
 // MirrorJitter is the maximum random delay added to each scheduled run. Every
 // self-hosted install in the world would otherwise fetch on the same wall-clock
@@ -97,6 +114,20 @@ type MirrorArgs struct {
 	// enqueued before this field existed was, definitionally, a periodic
 	// tick, so that is the correct default for a mid-deploy in-flight job.
 	Trigger string `json:"trigger"`
+
+	// Boot marks the one check queued shortly after the process starts
+	// (EnqueueBootCheck, GH #428). It is recorded as TriggerPeriodic, since it
+	// is scheduled work and not an operator's request, so the persisted
+	// vocabulary is unchanged.
+	//
+	// The field exists for its effect on River's unique key, which ByArgs
+	// builds from every encoded field. With it, the boot check and the
+	// periodic tick never share a key, so neither can be deduplicated against
+	// the other: a periodic tick that completed an hour before an upgrade
+	// cannot swallow the check that upgrade needs, and an outstanding boot
+	// check cannot swallow the next tick. omitempty keeps the tick's encoding
+	// exactly {"trigger":"periodic"}, so its key is the same as before.
+	Boot bool `json:"boot,omitempty"`
 }
 
 // Kind implements river.JobArgs. Must stay stable — changing it orphans
@@ -163,7 +194,7 @@ func ManualInsertOpts() *river.InsertOpts {
 
 // PeriodicInsertOpts returns the per-tick insert options, with a fresh random
 // delay of up to MirrorJitter applied to each insert (see MirrorJitter). Called
-// once per periodic tick by cmd/wpmgr/main.go.
+// once per periodic tick by the job NewMirrorPeriodicJob builds.
 //
 // The jitter is applied as ScheduledAt rather than as a sleep inside Work so the
 // delay does not hold a worker slot.
@@ -178,6 +209,74 @@ func jitterDelay() time.Duration {
 	return time.Duration(rand.Int64N(int64(MirrorJitter)))
 }
 
+// NewMirrorPeriodicJob builds the mirror's periodic River job: every
+// MirrorInterval, with a fresh jitter per tick (PeriodicInsertOpts), and
+// RunOnStart false. cmd/wpmgr registers exactly this value, so the schedule
+// lives here, next to the job, where a test can reach it.
+//
+// RunOnStart stays false because River runs it on every start of its periodic
+// scheduler, and that scheduler restarts whenever River leadership changes, not
+// only when the process boots. The run that follows a boot comes from
+// EnqueueBootCheck instead, which is called once per process start.
+func NewMirrorPeriodicJob() *river.PeriodicJob {
+	return river.NewPeriodicJob(mirrorSchedule(), periodicTick, periodicJobOpts())
+}
+
+// mirrorSchedule is the periodic job's schedule. River asks it for the first
+// run when its scheduler starts, so Next(start) is start plus a full
+// MirrorInterval.
+func mirrorSchedule() river.PeriodicSchedule {
+	return river.PeriodicInterval(MirrorInterval)
+}
+
+// periodicTick builds one scheduled tick. Fresh jitter per tick (see
+// MirrorJitter): installs that boot together would otherwise fetch in lockstep
+// on a boundary derived from their shared boot time.
+func periodicTick() (river.JobArgs, *river.InsertOpts) {
+	return MirrorArgs{Trigger: TriggerPeriodic}, PeriodicInsertOpts()
+}
+
+// periodicJobOpts is split out only so a test can pin RunOnStart, which
+// river.PeriodicJob does not expose.
+func periodicJobOpts() *river.PeriodicJobOpts {
+	return &river.PeriodicJobOpts{RunOnStart: false}
+}
+
+// BootInsertOpts returns the insert options for the boot check (GH #428),
+// scheduled at scheduledAt. Two choices here are load-bearing:
+//
+//  1. No ByPeriod. The boot check's args already give it a key of its own
+//     (MirrorArgs.Boot), so the key needs no time window: there is at most ONE
+//     outstanding boot check, whenever it was queued. A control plane that
+//     restarts in a loop therefore queues one check, not one per boot.
+//  2. ByState excludes the terminal states, as ManualInsertOpts does and for
+//     the same reason. River's default includes Completed, which would let the
+//     boot check that ran after the previous start deduplicate the one this
+//     start needs, so that only the first restart after a deploy was ever
+//     checked. Once a boot check has finished, the next boot queues a new one.
+func BootInsertOpts(scheduledAt time.Time) *river.InsertOpts {
+	return &river.InsertOpts{
+		Queue:       MirrorQueue,
+		MaxAttempts: mirrorMaxAttempts,
+		ScheduledAt: scheduledAt,
+		UniqueOpts: river.UniqueOpts{
+			ByArgs: true,
+			ByState: []rivertype.JobState{
+				rivertype.JobStateAvailable,
+				rivertype.JobStatePending,
+				rivertype.JobStateRunning,
+				rivertype.JobStateScheduled,
+				rivertype.JobStateRetryable,
+			},
+		},
+	}
+}
+
+// bootDelay returns a random delay in [BootCheckMinDelay, BootCheckMaxDelay).
+func bootDelay() time.Duration {
+	return BootCheckMinDelay + time.Duration(rand.Int64N(int64(BootCheckMaxDelay-BootCheckMinDelay)))
+}
+
 // MirrorWorker runs the agent-release mirror on a schedule.
 //
 // It is OFF BY DEFAULT: enabled comes from the boot config snapshot
@@ -188,35 +287,43 @@ func jitterDelay() time.Duration {
 // checked at DISPATCH time, immediately before any work happens.
 type MirrorWorker struct {
 	river.WorkerDefaults[MirrorArgs]
-	enabled  bool
-	mirror   *Mirror
-	recorder AttemptRecorder
-	logger   *slog.Logger
+	enabled bool
+	mirror  *Mirror
+	store   AttemptStore
+	logger  *slog.Logger
 }
 
-// AttemptRecorder persists the outcome of one mirror attempt (GH #322).
-// Satisfied by *agentmirror.Repo. Declared as an interface (not the concrete
-// type) purely so worker_test.go can inject a fake recorder without a real
-// Postgres connection.
+// StateLoader reads back the persisted mirror state (internal/agentmirror).
+// Satisfied by *agentmirror.Repo.
+type StateLoader interface {
+	Load(ctx context.Context) (agentmirror.State, error)
+}
+
+// AttemptStore is the persistence the worker uses: it records the outcome of
+// every attempt (GH #322), and it reads back the persisted request clock before
+// each run so the request spacing survives a restart (GH #428). Satisfied by
+// *agentmirror.Repo. Declared as an interface (not the concrete type) purely so
+// worker_test.go can inject a fake without a real Postgres connection.
 //
-// nil is safe: Work simply does not persist anything, matching this
-// package's existing "must never block on persistence, must never turn into
-// an error" posture, see the package doc and mirrorMaxAttempts's doc.
-type AttemptRecorder interface {
+// nil is safe: Work then neither persists anything nor reads the persisted
+// clock, matching this package's "must never block on persistence, must never
+// turn into an error" posture, see the package doc and mirrorMaxAttempts's doc.
+type AttemptStore interface {
+	StateLoader
 	RecordAttempt(ctx context.Context, in agentmirror.AttemptInput) error
 }
 
-var _ AttemptRecorder = (*agentmirror.Repo)(nil)
+var _ AttemptStore = (*agentmirror.Repo)(nil)
 
 // NewMirrorWorker builds the worker. mirror may be nil (object storage not
 // configured); Work then no-ops except to record OutcomeNotConfigured.
-// recorder may be nil (persistence not wired); Work then simply does not
-// persist anything. A nil logger is replaced with the default.
-func NewMirrorWorker(enabled bool, mirror *Mirror, recorder AttemptRecorder, logger *slog.Logger) *MirrorWorker {
+// store may be nil (persistence not wired); Work then simply does not persist
+// anything. A nil logger is replaced with the default.
+func NewMirrorWorker(enabled bool, mirror *Mirror, store AttemptStore, logger *slog.Logger) *MirrorWorker {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &MirrorWorker{enabled: enabled, mirror: mirror, recorder: recorder, logger: logger}
+	return &MirrorWorker{enabled: enabled, mirror: mirror, store: store, logger: logger}
 }
 
 // Timeout bounds the whole job. The work is one small API request, one tiny
@@ -271,6 +378,7 @@ func (w *MirrorWorker) Work(ctx context.Context, job *river.Job[MirrorArgs]) err
 		return nil
 	}
 
+	w.seedRequestClock(ctx)
 	res, err := w.mirror.Run(ctx)
 	// Read the request-spacing clock AFTER Run, whatever the outcome: it only
 	// ever advances when an actual HTTP request completed (see
@@ -378,14 +486,40 @@ func (w *MirrorWorker) Work(ctx context.Context, job *river.Job[MirrorArgs]) err
 	return nil
 }
 
-// record persists one attempt via w.recorder, when wired. A persistence
+// seedRequestClock carries the persisted last_request_at into the Mirror's
+// request-spacing clock immediately before Run decides whether it may spend a
+// request (GH #428). The in-memory clock alone starts from zero on every boot,
+// so without this a control plane restarting in a loop could spend one
+// upstream request per start.
+//
+// It is read here, at the moment of the decision, rather than once when the
+// Mirror is built, so the result does not depend on startup order (River can
+// pick up an already-queued job the moment it starts) and so a request another
+// replica made counts too. A read failure is logged and the run continues on
+// the in-memory clock alone: persistence must never stop the mirror.
+func (w *MirrorWorker) seedRequestClock(ctx context.Context) {
+	if w.store == nil {
+		return
+	}
+	st, err := w.store.Load(ctx)
+	if err != nil {
+		w.logger.Warn("agent release mirror: could not read the persisted request time; request spacing falls back to this process's own clock",
+			slog.String("error", err.Error()))
+		return
+	}
+	if st.LastRequestAt != nil {
+		w.mirror.SeedLastRequestAt(*st.LastRequestAt)
+	}
+}
+
+// record persists one attempt via w.store, when wired. A persistence
 // failure is logged and otherwise swallowed; it must never make Work return
 // an error (see Work's doc and mirrorMaxAttempts's doc).
 func (w *MirrorWorker) record(ctx context.Context, trigger string, outcome agentmirror.Outcome, detail, version string, lastRequestAt time.Time) {
-	if w.recorder == nil {
+	if w.store == nil {
 		return
 	}
-	if err := w.recorder.RecordAttempt(ctx, agentmirror.AttemptInput{
+	if err := w.store.RecordAttempt(ctx, agentmirror.AttemptInput{
 		Trigger:       agentmirror.Trigger(trigger),
 		Outcome:       outcome,
 		Detail:        detail,
