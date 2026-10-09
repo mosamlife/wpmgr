@@ -536,7 +536,8 @@ export function isSuperadminAllowedPath(
     pathname.startsWith("/admin") ||
     pathname === "/settings/account" ||
     pathname === "/settings/security" ||
-    pathname === "/settings/smtp"
+    pathname === "/settings/smtp" ||
+    pathname === "/settings/vuln-feed"
   );
 }
 
