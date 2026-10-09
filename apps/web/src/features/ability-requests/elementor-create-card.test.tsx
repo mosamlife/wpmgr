@@ -305,9 +305,10 @@ describe("an Elementor request the card cannot show in full", () => {
   });
 
   // Built straight, bypassing the fixture builder on purpose: it holds the
-  // editor column to the input's editor (assertDbShape), as the control plane
-  // records it. These are the two ways a stored row could disagree with its
-  // own input, and neither is shown in part.
+  // editor column to the input's editor (assertDbShape). The card's title,
+  // editor line and links follow the column, and its outline and Elementor rows
+  // follow the input, so a column and an input that disagree about Elementor
+  // are never shown in part, in either direction.
   it.each<[string, AbilityRequest]>([
     [
       "the column names a WordPress editor and the input names Elementor",
@@ -455,10 +456,10 @@ describe("a draft Elementor created", () => {
     expect(card).not.toHaveTextContent("Preview");
   });
 
-  // A person's Undo is recorded as undo_state, and `trashed` is left as it was
-  // (ability-card-model.ts, undoStatus), so a draft in the trash reaches the
-  // card as either signal. The site address and the post id are both good, so
-  // the trash is the only reason there is nothing to open.
+  // The card reads a draft in the trash from either signal on a done row:
+  // `trashed`, or an undo_state of undone (ability-card-model.ts, undoStatus).
+  // The site address and the post id are both good, so the trash is the only
+  // reason there is nothing to open.
   it.each<[string, Partial<AbilityRequest>]>([
     ["trashed", { trashed: true }],
     ["undone", { undo_state: "undone", undo_available_until: "2026-10-23T09:58:00Z" }],
