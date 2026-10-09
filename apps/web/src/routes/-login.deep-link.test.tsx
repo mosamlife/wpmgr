@@ -297,9 +297,14 @@ describe("a sign-in redirect never leaves the origin", () => {
       it(`${site.name}: ${hostile} lands on the sites list`, async () => {
         await site.start(hostile);
 
-        await screen.findByText("Sites stub");
-        // The router hands an absolute URL to window.location. Nothing did.
-        expect(window.location.href).toBe("");
+        // Both in one retry loop, so a failure names the hazard rather than the
+        // symptom: the router hands an absolute URL to window.location as a
+        // document navigation, and a page that never reaches the sites list
+        // because it was sent off-site would otherwise only say "not found".
+        await waitFor(() => {
+          expect(window.location.href).toBe("");
+          expect(screen.queryByText("Sites stub")).not.toBeNull();
+        });
       });
     }
   }
