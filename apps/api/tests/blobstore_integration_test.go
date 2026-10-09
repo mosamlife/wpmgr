@@ -47,6 +47,11 @@ const (
 	s3TestStartTimeout = 2 * time.Minute
 	// s3TestWritableTimeout bounds the wait for the first object to be accepted.
 	s3TestWritableTimeout = 60 * time.Second
+	// s3TestStopTimeout is how long the container gets to exit after SIGTERM
+	// before it is killed. It holds nothing worth an orderly shutdown, and
+	// measured with the default ten-second grace each container took longer than
+	// that to stop, on every test.
+	s3TestStopTimeout = time.Second
 	// s3TestProbeKey is written and removed to prove the store takes writes. It
 	// sits at the bucket root so deleting it leaves no empty folder behind.
 	s3TestProbeKey = "readiness-probe"
@@ -188,7 +193,7 @@ func startBlobstore(t *testing.T) *blobstore.Store {
 	// cleanup before the error check so a failure path cannot leak it (see
 	// rls_integration_test.go's startPostgres).
 	if container != nil {
-		t.Cleanup(func() { _ = container.Terminate(ctx) })
+		t.Cleanup(func() { _ = container.Terminate(ctx, testcontainers.StopTimeout(s3TestStopTimeout)) })
 	}
 	if err != nil {
 		setupFatalfOrSkipIfDaemonDied(t, ctx,
