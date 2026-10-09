@@ -27,6 +27,7 @@ import (
 	"github.com/riverqueue/river/rivertype"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentcmd"
+	"github.com/mosamlife/wpmgr/apps/api/internal/aipolicy"
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
@@ -60,7 +61,7 @@ const (
 	scanRowLimit        = 200
 	maxSiteReportedText = 512
 
-	siteDispatchLockKey = "assistant_ability_site_dispatch"
+	siteDispatchLockKey = aipolicy.AbilitySiteDispatchLockKey
 	// lifecycleLockKey must equal org.LifecycleLockKey; a test pins it.
 	lifecycleLockKey = "org_lifecycle"
 )

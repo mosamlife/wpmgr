@@ -38,6 +38,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentrelease"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentupstream"
 	"github.com/mosamlife/wpmgr/apps/api/internal/aireadiness"
+	"github.com/mosamlife/wpmgr/apps/api/internal/aitrust"
 	"github.com/mosamlife/wpmgr/apps/api/internal/apikey"
 	"github.com/mosamlife/wpmgr/apps/api/internal/assistantrequest"
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
@@ -1867,6 +1868,13 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	abilityReqReconcileWorker := abilityrequest.NewReconcileWorker(abilityReqSvc)
 	abilityReqUndoReconcileWorker := abilityrequest.NewUndoReconcileWorker(abilityReqSvc)
 	abilityReqH := abilityrequest.NewHandler(abilityReqSvc)
+	// AI trust settings (ADR-065): a site's mode, a connection's switch and
+	// usage, and the activity feed. Setter validity uses the session
+	// authenticator's own builder, as the decision engine does; the feed
+	// renders each request with its own queue's renderer.
+	aiTrustSvc := aitrust.NewService(aitrust.NewRepo(pool, auditRec), authn, logger)
+	aiTrustSvc.SetRenderers(abilityReqH, assistantReqH)
+	aiTrustH := aitrust.NewHandler(aiTrustSvc)
 	abilityTenantH := abilities.NewTenantHandler(abilities.NewTenantRepo(pool, auditRec), admingate.NewPoolStore(pool))
 	// AI readiness: the advisory per-site checklist and its fleet rollup. The
 	// refresh enqueuers are set once River has started, below.
@@ -3094,6 +3102,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		AbilityRequestH:   abilityReqH,
 		AbilityTenantH:    abilityTenantH,
 		AIReadinessH:      aiReadinessH,
+		AITrustH:          aiTrustH,
 		MCPDiscoveryH:     mcpDiscoveryH,
 		FilesH:            filesH,
 		UpdateH:           updateH,
