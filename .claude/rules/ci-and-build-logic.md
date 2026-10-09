@@ -38,10 +38,23 @@ declaration.
 Seven workflows: `ci.yml`, `api-integration.yml`, `e2e-agent.yml`,
 `plugincheck.yml`, `release.yml`, `security.yml`, `wporg-deploy.yml`.
 
-`ci.yml` is the gate and has eight jobs: `go`, `js`, `codegen-drift`,
-`commit-hygiene`, `marketing`, `security`, `nginx-routing`, `php`. Green before
-and after every merge. Run the same command CI runs, locally, not an
-approximation.
+`ci.yml` is the gate. Its jobs are `go`, `js`, `codegen-drift`,
+`commit-hygiene`, `marketing`, `security`, `rls-cross-tenant`, `nginx-routing`,
+`page-blocks`, `page-kses` and `php`. The current list is
+`awk '/^jobs:/{j=1;next} j && /^  [a-z0-9-]+:$/{print $1}' .github/workflows/ci.yml`.
+Green before and after every merge. Run the same command CI runs, locally, not
+an approximation.
+
+`page-blocks` and `page-kses` guard the page builder's generated markup. Both
+render `scripts/page-blocks/outlines.json` through the real `PageCreateBuilder`
+(`scripts/page-blocks/generate.php`): `page-blocks` validates the block markup
+with the real `@wordpress/blocks` for WordPress 6.2 and current;
+`page-kses` runs block and classic markup through the save filters of the
+WordPress cores pinned by sha256 in `scripts/page-blocks/kses-cores.txt`, as a
+user without `unfiltered_html`. Each runs its `_test.sh` first. A core that
+legitimately rewrites an input is listed in
+`scripts/page-blocks/kses-known-changes.txt`; a listed case that stops changing
+is red.
 
 `codegen-drift` regenerates both OpenAPI-derived trees
 (`apps/api/internal/api/gen`, `packages/openapi-client/src/generated`) and
