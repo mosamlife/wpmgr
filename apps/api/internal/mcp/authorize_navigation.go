@@ -72,22 +72,25 @@ func AuthorizeNavigationRedirect() gin.HandlerFunc {
 
 // isBrowserNavigation decides on positive evidence only; anything it cannot
 // place is the JSON fetch, which is what the route answered before this
-// middleware existed.
+// middleware existed. It reads three headers in this order, and the first one
+// the request carries decides alone; no header after it is read:
 //
-//   - Sec-Fetch-Mode, when present, decides alone: a navigation iff it is
-//     "navigate". So a cors, no-cors or same-origin request is never
-//     redirected, whatever its Accept says.
-//   - Without it, Sec-Fetch-Dest "document" is a navigation.
-//   - With no Fetch Metadata at all (an older browser, or a plain-http origin
-//     the browser does not send it to), Accept decides: a navigation iff it
-//     lists text/html with a quality above zero. An absent Accept, "*/*" and
+//  1. Sec-Fetch-Mode: a navigation iff it is "navigate". So a cors, no-cors
+//     or same-origin request is never redirected, whatever its Sec-Fetch-Dest
+//     or Accept says.
+//  2. Sec-Fetch-Dest, when there is no Sec-Fetch-Mode: a navigation iff it is
+//     "document". So "empty" (a fetch), "iframe" or any other destination is
+//     never redirected, whatever its Accept says.
+//  3. Accept, when there is neither (an older browser, or a plain-http origin
+//     the browser does not send Fetch Metadata to): a navigation iff it lists
+//     text/html with a quality above zero. An absent Accept, "*/*" and
 //     "application/json" are all the fetch.
 func isBrowserNavigation(h http.Header) bool {
 	if modes := h.Values("Sec-Fetch-Mode"); len(modes) > 0 {
 		return modes[0] == "navigate"
 	}
-	if h.Get("Sec-Fetch-Dest") == "document" {
-		return true
+	if dests := h.Values("Sec-Fetch-Dest"); len(dests) > 0 {
+		return dests[0] == "document"
 	}
 	for _, v := range h.Values("Accept") {
 		for _, mediaRange := range strings.Split(v, ",") {
