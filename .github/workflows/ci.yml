@@ -26,6 +26,17 @@ jobs:
         with:
           persist-credentials: false
 
+      # Docker Hub meters anonymous pulls per source address and hosted runners
+      # share addresses, so the testcontainers pulls in the Test step below can
+      # be refused with "toomanyrequests" for reasons that have nothing to do
+      # with the code. This sends the daemon's pulls through Google's public
+      # mirror of Docker Hub; see scripts/ci-docker-mirror.sh. It exits 2 when
+      # the mirror cannot be made active, so a runner that cannot use it fails
+      # here, by name, and not later as a test failure.
+      - name: Pull images through the Docker Hub mirror
+        working-directory: ${{ github.workspace }}
+        run: scripts/ci-docker-mirror.sh
+
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.9"
@@ -209,6 +220,14 @@ jobs:
           GOWORK: "off"
           CGO_ENABLED: "0"
         run: scripts/check-mcp-site-containment.sh
+
+      # Which registry each of this job's image pulls was resolved against,
+      # read back from the daemon's own log. Informational: it never fails the
+      # job, and it runs even when an earlier step did.
+      - name: Docker mirror report
+        if: always()
+        working-directory: ${{ github.workspace }}
+        run: scripts/ci-docker-mirror.sh --report
 
   # ---- JS / web ----
   js:
@@ -547,6 +566,18 @@ jobs:
       - name: S3 test image guard (digest-pinned, named once, pre-pull derives it)
         run: scripts/test-s3-image.sh --check
 
+      # ---- The Docker Hub mirror step the Docker-using jobs run ---------------
+      # scripts/ci-docker-mirror.sh points a runner's daemon at Google's public
+      # Docker Hub mirror so anonymous pulls stop failing on Docker Hub's rate
+      # limit. The jobs that pull (go, rls-cross-tenant, schema-sync,
+      # nginx-routing) run the script itself; this runs its suite, which uses a
+      # fake docker, systemctl, sudo and journalctl and so needs no daemon and
+      # no network. Self-test in this job for the same reason as the guards
+      # above: a script that fails open would otherwise only be noticed when a
+      # pull limit hit a job.
+      - name: Docker mirror script self-test
+        run: scripts/ci-docker-mirror_test.sh
+
 
       # ---- License surfaces --------------------------------------------------
       # GH #547: the agent declared MIT in its plugin header and GPLv2 or later
@@ -691,6 +722,11 @@ jobs:
         with:
           persist-credentials: false
 
+      # The guard below starts a postgres with `docker run`, an anonymous Docker
+      # Hub pull. See scripts/ci-docker-mirror.sh.
+      - name: Pull images through the Docker Hub mirror
+        run: scripts/ci-docker-mirror.sh
+
       - name: "RLS cross-tenant guard self-test (GH #470)"
         run: scripts/check-rls-cross-tenant_test.sh
 
@@ -702,6 +738,10 @@ jobs:
       # not skip and does not pass.
       - name: "RLS cross-tenant guard (live, GH #470)"
         run: scripts/check-rls-cross-tenant.sh
+
+      - name: Docker mirror report
+        if: always()
+        run: scripts/ci-docker-mirror.sh --report
 
   # ---- db/schema.sql and atlas.sum against the migrations (GH #759) ----
   # schema.sql is sqlc's input and Atlas's desired state, but the server never
@@ -726,11 +766,20 @@ jobs:
         with:
           persist-credentials: false
 
+      # Both the self-test and the guard start a postgres with `docker run`,
+      # an anonymous Docker Hub pull. See scripts/ci-docker-mirror.sh.
+      - name: Pull images through the Docker Hub mirror
+        run: scripts/ci-docker-mirror.sh
+
       - name: "schema sync guard self-test (GH #759)"
         run: scripts/check-schema-sync_test.sh
 
       - name: "schema.sql and atlas.sum match the migrations (GH #759)"
         run: scripts/check-schema-sync.sh
+
+      - name: Docker mirror report
+        if: always()
+        run: scripts/ci-docker-mirror.sh --report
 
   # ---- nginx routing (infra/nginx/nginx.conf) ----
   # `nginx -t` only checks syntax; it does not catch a public Go route with no
@@ -749,6 +798,14 @@ jobs:
         with:
           persist-credentials: false
 
+      # Both steps below pull from Docker Hub: nginx:1.27-alpine directly, and
+      # node:22-alpine plus nginx:1.27-alpine again as the FROM lines of the
+      # image the smoke test builds. A daemon-level mirror covers the build as
+      # well as the run, which renaming the nginx reference would not. See
+      # scripts/ci-docker-mirror.sh.
+      - name: Pull images through the Docker Hub mirror
+        run: scripts/ci-docker-mirror.sh
+
       - name: nginx -t (syntax)
         run: |
           docker run --rm \
@@ -757,6 +814,10 @@ jobs:
 
       - name: Routing smoke test (real infra/Dockerfile.web image vs stub upstream)
         run: infra/nginx/routing_smoke_test.sh
+
+      - name: Docker mirror report
+        if: always()
+        run: scripts/ci-docker-mirror.sh --report
 
   # ---- Page builder block markup ----
   # The agent's generated block markup must parse and validate under the real
