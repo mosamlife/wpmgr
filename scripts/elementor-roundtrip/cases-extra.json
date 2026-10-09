@@ -1,0 +1,39 @@
+{
+  "note": "Outlines the round trip adds to the agent's golden fixtures. Each is a page-create outline in the form the AI sends it. They have no golden tree: the harness builds the tree with the agent's mapper and holds Elementor's stored copy and the rendered page to it. Media ids 5 and 7 are the ones the golden fixtures declare.",
+  "cases": [
+    {
+      "name": "entity-shaped-text",
+      "input": [
+        { "type": "heading", "level": 2, "text": "Tom & Jerry [12] \"café\" &amp; &lt;b&gt; 'q'" },
+        { "type": "paragraph", "text": "Tom & Jerry [12] \"café\" &amp; &lt;b&gt; 'q'" },
+        { "type": "list", "ordered": true, "items": ["Tom & Jerry [12] \"café\" &amp; &lt;b&gt; 'q'"] },
+        { "type": "quote", "paragraphs": ["Tom & Jerry [12] \"café\" &amp; &lt;b&gt; 'q'"], "citation": "Tom & Jerry [12] \"café\" &amp; &lt;b&gt; 'q'" },
+        { "type": "table", "header": ["Tom & Jerry [12] \"café\" &amp; &lt;b&gt; 'q'"], "rows": [["Tom & Jerry [12] \"café\" &amp; &lt;b&gt; 'q'"]] },
+        { "type": "buttons", "buttons": [{ "text": "Tom & Jerry [12] \"café\" &amp; &lt;b&gt; 'q'", "url": "/a" }] },
+        { "type": "image", "attachment_id": 5, "alt": "Library alt text", "caption": "Tom & Jerry [12] \"café\" &amp; &lt;b&gt; 'q'" }
+      ]
+    },
+    {
+      "name": "multibyte-text",
+      "input": [
+        { "type": "heading", "level": 3, "text": "Café ☕ naïve 日本語 😀" },
+        { "type": "paragraph", "text": "Zażółć gęślą jaźń — Ελληνικά — العربية — Привет" },
+        { "type": "buttons", "buttons": [{ "text": "Réserver ☕", "url": "https://example.com/réserver" }] }
+      ]
+    },
+    {
+      "name": "four-columns",
+      "input": [
+        {
+          "type": "columns",
+          "columns": [
+            { "children": [{ "type": "heading", "level": 4, "text": "One" }, { "type": "paragraph", "text": "First" }] },
+            { "children": [{ "type": "heading", "level": 4, "text": "Two" }, { "type": "paragraph", "text": "Second" }] },
+            { "children": [{ "type": "heading", "level": 4, "text": "Three" }, { "type": "paragraph", "text": "Third" }] },
+            { "children": [{ "type": "heading", "level": 4, "text": "Four" }, { "type": "spacer", "size": "small" }, { "type": "separator" }] }
+          ]
+        }
+      ]
+    }
+  ]
+}
