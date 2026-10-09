@@ -18,6 +18,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/admin"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agent"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentrelease"
+	"github.com/mosamlife/wpmgr/apps/api/internal/aireadiness"
 	"github.com/mosamlife/wpmgr/apps/api/internal/api/gen"
 	"github.com/mosamlife/wpmgr/apps/api/internal/apikey"
 	"github.com/mosamlife/wpmgr/apps/api/internal/assistantrequest"
@@ -286,6 +287,11 @@ type Deps struct {
 	// admin or owner, or a superadmin, switches back on a vendor read that
 	// was switched off for this tenant (m160). Nil leaves it unmounted.
 	AbilityTenantH *abilities.TenantHandler
+	// AIReadinessH serves the per-site AI readiness checklist, its fleet
+	// rollup and the "check again" request (/sites/{siteId}/ai/readiness...,
+	// /fleet/ai-readiness). Advisory only: nothing reads its result to allow
+	// or refuse anything. Nil leaves the routes unmounted.
+	AIReadinessH *aireadiness.Handler
 	// MCPDiscoveryH serves the two unauthenticated OAuth discovery documents:
 	// GET /.well-known/oauth-authorization-server (RFC 8414) and GET
 	// /.well-known/oauth-protected-resource (RFC 9728), the second also at its
@@ -642,6 +648,9 @@ func New(deps Deps) *Server {
 	}
 	if deps.AbilityTenantH != nil {
 		deps.AbilityTenantH.Register(v1)
+	}
+	if deps.AIReadinessH != nil {
+		deps.AIReadinessH.Register(v1)
 	}
 	deps.TenantH.Register(v1)
 	deps.SiteH.Register(v1)
