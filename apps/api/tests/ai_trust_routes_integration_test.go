@@ -64,7 +64,7 @@ func newAITrustStack(t *testing.T) *aitrStack {
 	authn := middleware.NewAuthenticator(sessions, authSvc, keys, pool)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	mcpRepo := mcp.NewRepo(pool)
-	mcpSvc := mcp.NewService(mcpRepo)
+	mcpSvc := mcp.NewService(mcpRepo).WithAudit(rec)
 	abilityReqH := abilityrequest.NewHandler(abilityrequest.NewService(pool, mcpRepo, mcpSvc, rec, logger))
 	assistantReqH := assistantrequest.NewHandler(assistantrequest.NewService(
 		assistantrequest.NewRepo(pool), mcpRepo, mcpSvc, rec, logger))
