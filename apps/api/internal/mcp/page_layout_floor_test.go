@@ -12,7 +12,7 @@ import (
 // not build outline grammar v2. When another release lands in this tree
 // before the one that ships the layout builder, raise this to that
 // release's number in the same commit that brings it in.
-const lastAgentReleaseWithoutPageLayout = "0.61.158"
+const lastAgentReleaseWithoutPageLayout = "0.61.159"
 
 // pageLayoutBuilderMarkers is code the in-tree agent carries when it builds
 // outline grammar v2. Each pattern matches code, not a comment.
