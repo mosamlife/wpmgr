@@ -896,7 +896,7 @@ export function ConnectWizard({
       {currentLocal === CAPABILITY_LOCAL_STEP && client !== null ? (
         <Section
           specN={4}
-          hint="Reads below never change anything. The one row under “Changes it can ask for” only ever asks: nothing runs without your separate approval for that request."
+          hint="Reads below never change anything. A connection can also ask to clear the site cache and ask to make changes through the site's tools. Each only ever asks: nothing runs until a person approves that request."
         >
           <div className="space-y-3">
             {/* STEP 3 IS BEHIND THE OPERATOR, so "already given" is a true
@@ -950,14 +950,14 @@ export function ConnectWizard({
                 exist, and it does now (see consent-screen.tsx). What stays
                 true, and is worth restating here rather than leaving silent,
                 is that THIS WIZARD'S OWN STEP 4 ANSWER never reaches that
-                screen: the client opens it directly, and it asks the reads
-                and the cache-clear row again from scratch. */}
+                screen: the client opens it directly, and it asks the reads,
+                the cache-clear row and the site-tools rows again from scratch. */}
             <p className="text-xs text-[var(--color-muted-foreground)]">
               This selection is sent with the connection token when you choose that sign-in
               method at step 5, and is exactly what the connection holds. Browser sign-in does
               not use this wizard's step 4 at all: your client opens a separate approval screen,
-              which asks for the reads and the cache-clear row again, and this page's answer here
-              plays no part in that connection's permissions.
+              which asks for the reads, the cache-clear row and the site-tools rows again, and
+              this page's answer here plays no part in that connection's permissions.
             </p>
             {/* NO PRIVATE REFUSAL PANEL HERE. `capabilitiesRequest.refusal` is
                 the exact string `stepGate`'s CAPABILITY_LOCAL_STEP branch
@@ -1074,9 +1074,9 @@ export function ConnectWizard({
                   steps 3 and 4 are not carried there, so it asks again and you answer it there.
                 </li>
                 <li>
-                  It has its own permissions section, with the same reads and the one
-                  cache-clear row you saw at step 4. Nothing you chose there carries over:
-                  choose again on that screen.
+                  It has its own permissions section, with the same reads and, if the app asks
+                  for them, the cache-clear row and the site-tools rows you saw at step 4.
+                  Nothing you chose there carries over: choose again on that screen.
                 </li>
                 <li>
                   Declining creates nothing. No credential exists and no grant is written, and you

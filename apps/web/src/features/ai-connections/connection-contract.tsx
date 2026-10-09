@@ -13,10 +13,10 @@ import { cn } from "@/lib/utils";
 // EVERY LINE HERE IS TRUE OF THE SHIPPED SYSTEM. That is the only rule this
 // file has, and it is the one that is easy to break on a later fidelity pass.
 //
-// THE VOCABULARY HAS BEEN NINE NAMES SINCE M135, AND ONE OF THEM IS NOT A
-// READ (tracka-cache-purge design v7, ADR-061 option B). `mcp.cache.purge`
-// lets a connection ASK to clear a site's cache; it never clears anything by
-// itself. The design deck also draws a "propose changes" capability and a
+// THE VOCABULARY HAS NAMES THAT ARE NOT READS (tracka-cache-purge design v7,
+// ADR-061 option B). `mcp.cache.purge` lets a connection ASK to clear a site's
+// cache, and `mcp.ability.request` lets it ASK to make a change through a
+// site's tools; neither does anything by itself. The design deck also draws a "propose changes" capability and a
 // "Produce a change set for you to review" line, and neither of those exists:
 // this screen says "ask", never "propose", because asking is bounded by a
 // human approving each specific request and a change set is not. Copying
@@ -46,16 +46,20 @@ export const CONTRACT_CANNOT_HEADING = "What it can never do";
  */
 export const CONTRACT_LEAD =
   "A connection lets one AI client read your fleet, limited to the sites you name. " +
-  "If you allow it, it can also ask you to clear their cache. " +
+  "If you allow it, it can also ask you to clear their cache and to make changes through their tools. " +
   "Nothing about it is implicit.";
 
 export const CONTRACT_CAN: readonly string[] = [
   "Read the sites you put in its scope",
   "Report what it found, with its sources",
   // "Ask", not "propose" -- CONTRACT_FORBIDDEN below still refuses "propose"
-  // outright, and this line is why it can stay green: asking is bounded by a
-  // person approving the specific request, which is the whole difference.
-  "Ask you to clear a site's cache, if you allow it. Nothing runs until you approve it.",
+  // outright, and these two lines are why it can stay green: asking is bounded
+  // by a person approving the specific request, which is the whole difference.
+  // The two asks (the cache clear, and changes through a site's tools) are
+  // described the same way: what it may ask for, if you allow it, and that
+  // nothing runs until a person approves each request.
+  "Ask you to clear a site's cache, if you allow it. Nothing runs until a person approves each request.",
+  "Ask you to make changes through a site's tools, if you allow it. Nothing runs until a person approves each request.",
 ];
 
 export const CONTRACT_CANNOT: readonly string[] = [
