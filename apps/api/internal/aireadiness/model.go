@@ -54,8 +54,10 @@ const (
 	CheckBricksAbilities  CheckID = "bricks_abilities"
 )
 
-// Reason says why a check is unknown, not applicable or (for the two version
-// checks) failing. The set is closed. The empty Reason means none.
+// Reason says why a check is unknown or not applicable, or (for the two
+// version checks) why one failed. The set is closed. The empty Reason means
+// none. ReasonInactive is carried by a not-applicable version row: a builder
+// that is installed but not in use is not a fix.
 type Reason string
 
 // Reasons.

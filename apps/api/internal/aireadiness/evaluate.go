@@ -31,11 +31,17 @@ var (
 	// agentVersionRe admits a dotted numeric release only, the shape every
 	// agent floor compare in this codebase requires.
 	agentVersionRe = regexp.MustCompile(`^[0-9]+(\.[0-9]+){1,3}$`)
-	// componentVersionRe admits a plugin or theme version.
-	componentVersionRe = regexp.MustCompile(`^[0-9A-Za-z._+~-]{1,64}$`)
+	// componentVersionRe admits a plugin or theme version: a dotted numeric
+	// release (4.3, 4.3.4, 1.2.3.4) with an optional pre-release or build
+	// suffix after a hyphen, plus, tilde or underscore (4.3.0-beta1,
+	// 2.4.1+build.5). It starts with a digit, so a word is never a version.
+	componentVersionRe = regexp.MustCompile(`^[0-9]+(\.[0-9]+){0,3}([-+~_][0-9A-Za-z][0-9A-Za-z._+~-]{0,31})?$`)
 )
 
-const maxWPVersionLen = 32
+const (
+	maxWPVersionLen        = 32
+	maxComponentVersionLen = 64
+)
 
 func cleanWPVersion(s string) (string, bool) {
 	s = strings.TrimSpace(s)
@@ -55,7 +61,7 @@ func cleanAgentVersion(s string) (string, bool) {
 
 func cleanComponentVersion(s string) (string, bool) {
 	s = strings.TrimSpace(s)
-	if !componentVersionRe.MatchString(s) {
+	if len(s) > maxComponentVersionLen || !componentVersionRe.MatchString(s) {
 		return "", false
 	}
 	return s, true
@@ -99,6 +105,9 @@ func Evaluate(f Facts) Result { return EvaluateWith(f, DefaultFloors()) }
 //     registered by that builder itself. A same-named ability from anything
 //     else never counts (the SQL attributes by owner; Facts carries the count).
 //   - A builder that is not installed contributes nothing to Status.
+//   - A builder that is installed but not active is not a fix either: its
+//     version row is not applicable (reason inactive), and so are the rows
+//     that depend on it.
 //   - Warnings are advisory and never change Status or FixCount.
 func EvaluateWith(f Facts, fl Floors) Result {
 	e := &evaluator{f: f, fl: fl}
@@ -197,6 +206,19 @@ func notApplicable(id CheckID, reason Reason) Check {
 	return Check{ID: id, State: StateNotApplicable, Reason: reason}
 }
 
+// inactive is a builder's version row when the builder is installed but not in
+// use. Choosing not to run a builder is not something to fix, so the row is
+// not applicable and counts toward neither a fix nor an unknown.
+func inactive(id CheckID, observed string) Check {
+	return Check{ID: id, State: StateNotApplicable, Reason: ReasonInactive, Observed: observed}
+}
+
+// blocksDependents reports whether a builder's version row stops the rows
+// that depend on it from being checked.
+func (c Check) blocksDependents() bool {
+	return c.State == StateFail || c.State == StateNotApplicable
+}
+
 // agentAtLeast compares two well-formed agent versions.
 func agentAtLeast(v, floor string) bool { return wpversion.Compare(v, floor) >= 0 }
 
@@ -279,7 +301,7 @@ func (e *evaluator) switchCheck(id CheckID, needs Reason, version, api Check, at
 	switch {
 	case api.State == StateFail:
 		return notApplicable(id, ReasonNeedsAbilities)
-	case version.State == StateFail:
+	case version.blocksDependents():
 		return notApplicable(id, needs)
 	case version.State != StatePass:
 		return unknown(id, needs, "")
@@ -307,7 +329,7 @@ func (e *evaluator) elementorGroup(api Check) Group {
 	var version Check
 	switch {
 	case !f.ElementorActive:
-		version = fail(CheckElementorVersion, ReasonInactive, ver)
+		version = inactive(CheckElementorVersion, ver)
 	case !verOK:
 		version = unknown(CheckElementorVersion, ReasonNotReported, "")
 	case wpversion.Compare(ver, e.fl.Elementor) < 0:
@@ -320,7 +342,7 @@ func (e *evaluator) elementorGroup(api Check) Group {
 
 	var atomic Check
 	switch {
-	case version.State == StateFail:
+	case version.blocksDependents():
 		atomic = notApplicable(CheckElementorAtomic, ReasonNeedsElementor)
 	case version.State != StatePass:
 		atomic = unknown(CheckElementorAtomic, ReasonNeedsElementor, "")
@@ -343,16 +365,18 @@ func (e *evaluator) elementorGroup(api Check) Group {
 // theme list marks only the stylesheet theme active, so a Bricks child theme
 // reads as "Bricks installed, inactive" until the agent reports the parent.
 //
-// Active when the reported parent theme is Bricks, the Bricks theme row is
-// itself active, or the last tool-list read found an ability registered by
-// Bricks. Not active when the parent theme is known and is something else.
+// The reported parent theme decides alone whenever it is known: it is read at
+// the same push as the theme list, whereas an ability registered by Bricks may
+// come from a tool list read before the theme was switched. Without it, Bricks
+// is active when its theme row is active or the last tool-list read found an
+// ability registered by Bricks.
 func (e *evaluator) bricksActive() (active, activeKnown bool) {
 	f := e.f
-	if f.BuilderFacts.ThemeTemplate == bricksThemeDir || f.BricksActive || f.BricksAbilities > 0 {
-		return true, true
+	if t := f.BuilderFacts.ThemeTemplate; t != "" {
+		return t == bricksThemeDir, true
 	}
-	if f.BuilderFacts.ThemeTemplate != "" {
-		return false, true
+	if f.BricksActive || f.BricksAbilities > 0 {
+		return true, true
 	}
 	return false, false
 }
@@ -379,7 +403,7 @@ func (e *evaluator) bricksGroup(api Check) Group {
 		}
 		version = unknown(CheckBricksVersion, reason, ver)
 	case !active:
-		version = fail(CheckBricksVersion, ReasonInactive, ver)
+		version = inactive(CheckBricksVersion, ver)
 	case !verOK:
 		version = unknown(CheckBricksVersion, ReasonNotReported, "")
 	case wpversion.Compare(ver, e.fl.Bricks) < 0:
