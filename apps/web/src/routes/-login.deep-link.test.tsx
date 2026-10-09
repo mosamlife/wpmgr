@@ -18,14 +18,25 @@ import { Route as LoginRoute } from "./login";
 import { Route as TwoFaRoute } from "./2fa-challenge";
 import { Route as ConnectAiRoute } from "./_authed/connect.ai";
 
-// WHERE A SIGN-IN LANDS WHEN SOMEONE ARRIVED WITH A DEEP LINK THAT CARRIES A
-// QUERY STRING.
+// WHERE THE SIGN-IN SCREENS SEND SOMEONE WHO ARRIVED WITH A ?redirect= ADDRESS.
 //
-// An AI app's browser sign-in opens /connect/ai?response_type=code&client_id=...
-// for a person who is not signed in. The _authed guard sends them to
-// /login?redirect=<that whole address>, and after they sign in they have to be
-// returned to exactly that address, query and all, or the request the app made
-// is lost and the app waits for a callback that never comes.
+// Two kinds of test live here, and the titles say which.
+//
+//   "pin: ..." holds behaviour in place. Every pin also passes against the
+//   two-factor screen as it was before the narrowing that the regression tests
+//   below are about (main's 2fa-challenge.tsx), so a pin does not reproduce a
+//   defect. It goes red if a later change breaks what already works.
+//
+//   "the two-factor screen returns only to same-origin paths" holds the
+//   regression tests. Each of those FAILS without the narrowing, ending on the
+//   router's Not Found screen, and passes with it.
+//
+// The pins around a deep link exist for one case: an AI app's browser sign-in
+// opens /connect/ai?response_type=code&client_id=... for a person who is not
+// signed in. The _authed guard sends them to /login?redirect=<that whole
+// address>, and after they sign in they have to be returned to exactly that
+// address, query and all, or the request the app made is lost and the app waits
+// for a callback that never comes.
 //
 // These tests mount the REAL /login and /2fa-challenge routes (their own
 // component, validateSearch and beforeLoad, re-attached to a throwaway root) and
@@ -33,6 +44,8 @@ import { Route as ConnectAiRoute } from "./_authed/connect.ai";
 // schema, so a hand-back that mangles the query is judged by the parser the
 // consent screen actually reads it with. Only the SDK's network functions are
 // replaced; useLogin, the 2FA hooks, the QueryClient and the router are real.
+// The router runs on an in-memory history, so these tests show where the app
+// routes a value, not what a browser's address bar does with it.
 
 vi.mock("@wpmgr/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@wpmgr/api")>();
@@ -157,6 +170,53 @@ async function landedSearch(): Promise<unknown> {
   return JSON.parse(node.textContent ?? "null") as unknown;
 }
 
+// The four places a ?redirect= value is read: the sign-in page and the
+// two-factor page, each for a visitor who already has a session (the route's
+// beforeLoad) and for one who has just finished signing in.
+type Site = {
+  name: string;
+  /** The address the visitor opens, for the ?redirect= value under test. */
+  open: (target: string) => string;
+  /** Whether they hold a session when they open it. */
+  session: Me | null;
+  /** What they do on the page before the app navigates, if anything. */
+  act?: () => Promise<void>;
+};
+
+const LOGIN_SIGNED_IN: Site = { name: "login, already signed in", open: encode, session: ME };
+const LOGIN_PASSWORD: Site = {
+  name: "login, password sign-in",
+  open: encode,
+  session: null,
+  act: signInWithPassword,
+};
+const TWO_FA_SIGNED_IN: Site = {
+  name: "2FA, already signed in",
+  open: encode2fa,
+  session: ME,
+};
+const TWO_FA_CODE: Site = {
+  name: "2FA, after the code is accepted",
+  open: encode2fa,
+  session: null,
+  act: answerTotp,
+};
+
+async function visit(site: Site, target: string) {
+  mount(site.open(target), site.session);
+  await site.act?.();
+}
+
+async function expectSitesList() {
+  // Both in one retry loop: nothing may have navigated the document (the tests
+  // below replace window.location, and a write to its href shows up here), and
+  // the sites list must be what is on screen.
+  await waitFor(() => {
+    expect(window.location.href).toBe("");
+    expect(screen.queryByText("Sites stub")).not.toBeNull();
+  });
+}
+
 const originalLocation = window.location;
 
 beforeEach(() => {
@@ -165,24 +225,24 @@ beforeEach(() => {
     data: { providers: [], sso: false },
     error: undefined,
     response: new Response(),
-  } as unknown as Awaited<ReturnType<typeof listSocialProviders>>);
+  });
   mockedLogin.mockResolvedValue({
     data: ME,
     error: undefined,
     response: new Response(null, { status: 200 }),
-  } as unknown as Awaited<ReturnType<typeof login>>);
+  });
   mockedGetMe.mockResolvedValue({
     data: ME,
     error: undefined,
     response: new Response(null, { status: 200 }),
-  } as unknown as Awaited<ReturnType<typeof getMe>>);
+  });
   mockedClientPost.mockResolvedValue({
     data: { me: ME },
     error: undefined,
     response: new Response(null, { status: 200 }),
-  } as unknown as Awaited<ReturnType<typeof client.post>>);
-  // A document navigation (an off-site href the router would hand to the
-  // browser) writes `href` here, so a test can see that none happened.
+  });
+  // A write to window.location.href (a document navigation) lands here, so a
+  // test can see that none happened.
   Object.defineProperty(window, "location", {
     configurable: true,
     writable: true,
@@ -199,7 +259,13 @@ afterEach(() => {
 });
 
 describe("sign-in returns to a deep link that carries a query string", () => {
-  it("returns to a query-bearing deep link after a password sign-in", async () => {
+  // PINS. Each of these passes on main as well as on this branch (checked by
+  // running this file against main's 2fa-challenge.tsx): a deep link with a
+  // query string reaches /connect/ai with every parameter intact. They hold
+  // that in place, and they are the over-fire arm of the regression tests
+  // further down, because a narrowing that sent every address to the sites list
+  // would fail them.
+  it("pin: returns to a query-bearing deep link after a password sign-in", async () => {
     const router = mount(encode(DEEP_LINK), null);
 
     await signInWithPassword();
@@ -211,14 +277,14 @@ describe("sign-in returns to a deep link that carries a query string", () => {
     expect(await landedSearch()).toEqual(EXPECTED_SEARCH);
   });
 
-  it("sends an already-signed-in visitor straight to a query-bearing deep link", async () => {
+  it("pin: sends an already-signed-in visitor straight to a query-bearing deep link", async () => {
     const router = mount(encode(DEEP_LINK), ME);
 
     await waitFor(() => expect(router.state.location.pathname).toBe("/connect/ai"));
     expect(await landedSearch()).toEqual(EXPECTED_SEARCH);
   });
 
-  it("returns to a query-bearing deep link through the 2FA challenge", async () => {
+  it("pin: returns to a query-bearing deep link through the 2FA challenge", async () => {
     const router = mount(encode2fa(DEEP_LINK), null);
 
     await answerTotp();
@@ -227,84 +293,67 @@ describe("sign-in returns to a deep link that carries a query string", () => {
     expect(await landedSearch()).toEqual(EXPECTED_SEARCH);
   });
 
-  it("sends an already-signed-in visitor on the 2FA page to a query-bearing deep link", async () => {
+  it("pin: sends an already-signed-in visitor on the 2FA page to a query-bearing deep link", async () => {
     const router = mount(encode2fa(DEEP_LINK), ME);
 
     await waitFor(() => expect(router.state.location.pathname).toBe("/connect/ai"));
     expect(await landedSearch()).toEqual(EXPECTED_SEARCH);
   });
 
-  it("still serves a plain deep link, and the sites list when there is none", async () => {
-    // The over-fire arm: the helper must not turn every redirect into
-    // something exotic. A path with no query lands on that path; no
-    // ?redirect= at all lands on the sites list.
+  it("pin: sends an already-signed-in visitor to a plain deep link", async () => {
+    // A path with no query lands on that path.
     const plain = mount(encode("/settings"), ME);
     await screen.findByText("Settings stub");
     expect(plain.state.location.pathname).toBe("/settings");
   });
 
-  it("falls back to the sites list after a password sign-in with no deep link", async () => {
+  it("pin: falls back to the sites list after a password sign-in with no deep link", async () => {
     mount("/login", null);
     await signInWithPassword();
     await screen.findByText("Sites stub");
   });
 });
 
-describe("a sign-in redirect never leaves the origin", () => {
-  // Each of these is attacker-chosen: ?redirect= is the one search parameter on
-  // the sign-in pages that a link can set. Each must end on the sites list, and
-  // none may reach the browser as a document navigation.
-  const HOSTILE = [
-    "//evil.example/x",
-    "/\\evil.example",
-    "https://evil.example/steal",
-    "javascript:alert(1)",
-  ] as const;
+// ?redirect= is the one search parameter on the sign-in screens that a link
+// gets to choose. A screen follows it only when it is a path on this origin
+// (sameOriginPath) and otherwise goes to the sites list.
+//
+// The first group starts with a slash and then names a host; the second group
+// does not start with a slash at all.
+const HOST_AFTER_SLASH = ["//evil.example/x", "/\\evil.example"] as const;
+const NOT_A_PATH = ["https://evil.example/steal", "javascript:alert(1)"] as const;
 
-  type Site = {
-    name: string;
-    start: (target: string) => Promise<unknown>;
-  };
-  const SITES: readonly Site[] = [
-    {
-      name: "login, already signed in",
-      start: async (target) => mount(encode(target), ME),
-    },
-    {
-      name: "login, password sign-in",
-      start: async (target) => {
-        const router = mount(encode(target), null);
-        await signInWithPassword();
-        return router;
-      },
-    },
-    {
-      name: "2FA, already signed in",
-      start: async (target) => mount(encode2fa(target), ME),
-    },
-    {
-      name: "2FA, after the code is accepted",
-      start: async (target) => {
-        const router = mount(encode2fa(target), null);
-        await answerTotp();
-        return router;
-      },
-    },
+describe("the two-factor screen returns only to same-origin paths", () => {
+  // REGRESSION TESTS. Without the narrowing, each of these ends on the router's
+  // Not Found screen instead of the sites list, at both places the two-factor
+  // screen reads the value. The over-fire arm is the first group of pins above.
+  for (const site of [TWO_FA_SIGNED_IN, TWO_FA_CODE]) {
+    for (const value of HOST_AFTER_SLASH) {
+      it(`${site.name}: ${value} lands on the sites list`, async () => {
+        await visit(site, value);
+        await expectSitesList();
+      });
+    }
+  }
+});
+
+describe("a ?redirect= that is not a path on this origin lands on the sites list", () => {
+  // PINS. These end on the sites list on main as well as on this branch: the
+  // sign-in page already narrowed the value, and on the two-factor screen the
+  // values in the second group already ended there. They hold that in place,
+  // and they are what would catch either screen loosening later.
+  const CASES: readonly { site: Site; values: readonly string[] }[] = [
+    { site: LOGIN_SIGNED_IN, values: [...HOST_AFTER_SLASH, ...NOT_A_PATH] },
+    { site: LOGIN_PASSWORD, values: [...HOST_AFTER_SLASH, ...NOT_A_PATH] },
+    { site: TWO_FA_SIGNED_IN, values: NOT_A_PATH },
+    { site: TWO_FA_CODE, values: NOT_A_PATH },
   ];
 
-  for (const site of SITES) {
-    for (const hostile of HOSTILE) {
-      it(`${site.name}: ${hostile} lands on the sites list`, async () => {
-        await site.start(hostile);
-
-        // Both in one retry loop, so a failure names the hazard rather than the
-        // symptom: the router hands an absolute URL to window.location as a
-        // document navigation, and a page that never reaches the sites list
-        // because it was sent off-site would otherwise only say "not found".
-        await waitFor(() => {
-          expect(window.location.href).toBe("");
-          expect(screen.queryByText("Sites stub")).not.toBeNull();
-        });
+  for (const { site, values } of CASES) {
+    for (const value of values) {
+      it(`pin: ${site.name}: ${value} lands on the sites list`, async () => {
+        await visit(site, value);
+        await expectSitesList();
       });
     }
   }

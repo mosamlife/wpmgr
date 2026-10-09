@@ -27,6 +27,10 @@ import { Route as ConnectAiRoute } from "./connect.ai";
 // /login?redirect=<where they were headed>. Its counterpart, bringing them back
 // to it after they sign in, is -login.deep-link.test.tsx in the parent folder.
 //
+// BOTH TESTS ARE PINS. They pass on main as well as on this branch, because the
+// guard is not changed here: they hold its behaviour in place and do not
+// reproduce a defect.
+//
 // The REAL _authed beforeLoad runs (only its layout component is swapped for a
 // bare Outlet so the app shell and its queries stay out of it), in front of a
 // /connect/ai stub that uses the real consent route's own search parser.
@@ -80,7 +84,7 @@ function mount(initialPath: string, session: Me | null) {
 }
 
 describe("/connect/ai for a signed-out visitor", () => {
-  it("is sent to /login with redirect equal to the full href", async () => {
+  it("pin: is sent to /login with redirect equal to the full href", async () => {
     const router = mount(`/connect/ai?${QUERY}`, null);
 
     await waitFor(() => expect(router.state.location.pathname).toBe("/login"));
@@ -100,7 +104,7 @@ describe("/connect/ai for a signed-out visitor", () => {
     );
   });
 
-  it("leaves a signed-in visitor on the consent screen", async () => {
+  it("pin: leaves a signed-in visitor on the consent screen", async () => {
     // The over-fire arm: the same address, with a session, is not redirected.
     // Without it the first test would also pass against a guard that sent
     // everyone to /login.
