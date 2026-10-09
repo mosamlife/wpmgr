@@ -2710,6 +2710,25 @@ final class RestoreRunner
     }
 
     /**
+     * The sub_state a task row keeps once its run has ended (completed or
+     * failed): everything except the run params.
+     *
+     * The params (database credentials, destination config, chunk download
+     * URLs, the progress endpoint) are seeded so a stalled run can be
+     * resumed, and a run that has ended is never resumed. Everything else
+     * stays: the rollback pointers (ROLLBACK_POINTER_KEYS) the shutdown
+     * rollback reads, the health-check results, and the failure detail.
+     *
+     * @param array<string,mixed> $subState
+     * @return array<string,mixed>
+     */
+    public static function endedSubState(array $subState): array
+    {
+        unset($subState['params']);
+        return $subState;
+    }
+
+    /**
      * @param array<string,mixed> $subState
      */
     private function saveTaskState(string $phase, array $subState): void
@@ -2722,6 +2741,10 @@ final class RestoreRunner
         $table = $this->tableName();
         if ($table === '') {
             return;
+        }
+
+        if ($phase === self::PHASE_COMPLETED || $phase === self::PHASE_FAILED) {
+            $subState = self::endedSubState($subState);
         }
 
         $now     = time();
