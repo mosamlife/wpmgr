@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -34,7 +35,10 @@ type Store interface {
 	// transaction. There is deliberately no way to do only half of it: a
 	// separate consume would let a failure between the two commits burn a code
 	// that never produced a token, stranding a client that did nothing wrong.
-	RedeemAuthorizationCode(ctx context.Context, tenantID, codeID uuid.UUID, tok sqlc.CreateMCPConnectionTokenParams) (sqlc.McpConnectionToken, error)
+	//
+	// It also returns the scope set the token's grant holds, read in that same
+	// transaction; see RedeemedCode.
+	RedeemAuthorizationCode(ctx context.Context, tenantID, codeID uuid.UUID, tok sqlc.CreateMCPConnectionTokenParams) (RedeemedCode, error)
 
 	// CreateGrantWithCode takes the authorizing principal as its own argument
 	// and not merely a tenant id, because the principal is what selects the
@@ -303,12 +307,24 @@ func (r *Repo) LookupAuthorizationCode(ctx context.Context, codeHash string) (sq
 // Ordering inside the transaction is unchanged and still matters: the
 // compare-and-set runs FIRST, so two concurrent exchanges still produce exactly
 // one winner. The loser's INSERT never runs because its UPDATE matched nothing.
+//
+// THE GRANT'S SCOPE SET IS READ BACK LAST, IN THE SAME TRANSACTION, through
+// ReCheckMCPRequestAuthorizationInTenantTx for the token just inserted: the
+// query Authenticate runs on every request this token will make. The token
+// response therefore names the scopes from the same column, read the same way,
+// as every authorization decision taken under the token. A set the response
+// cannot name (tokenResponseScope) is refused here, inside the transaction, so
+// the consume and the insert roll back with it.
+//
+// pgx.ErrNoRows from the read-back is NOT passed through. The caller reads
+// ErrNoRows as a lost compare-and-set and answers invalid_grant, while a token
+// this transaction inserted and cannot read is a server fault.
 func (r *Repo) RedeemAuthorizationCode(
 	ctx context.Context,
 	tenantID, codeID uuid.UUID,
 	tok sqlc.CreateMCPConnectionTokenParams,
-) (sqlc.McpConnectionToken, error) {
-	var out sqlc.McpConnectionToken
+) (RedeemedCode, error) {
+	var out RedeemedCode
 	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
 		q := sqlc.New(tx)
 		if _, err := q.ConsumeMCPAuthorizationCodeInTenantTx(ctx,
@@ -321,10 +337,33 @@ func (r *Repo) RedeemAuthorizationCode(
 			// is the whole point of the single transaction.
 			return fmt.Errorf("create mcp connection token: %w", err)
 		}
-		out = row
+		chk, err := q.ReCheckMCPRequestAuthorizationInTenantTx(ctx,
+			sqlc.ReCheckMCPRequestAuthorizationInTenantTxParams{TenantID: tenantID, ID: row.ID})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("read back the grant of issued token %s: no row", row.ID)
+			}
+			return fmt.Errorf("read back the grant of issued token %s: %w", row.ID, err)
+		}
+		scopes := grantScopes(chk.GrantOauthScopes)
+		if _, err := tokenResponseScope(scopes); err != nil {
+			return fmt.Errorf("grant %s: %w", chk.GrantID, err)
+		}
+		out = RedeemedCode{Token: row, GrantScopes: scopes}
 		return nil
 	})
 	return out, err
+}
+
+// RedeemedCode is what one redeem transaction produced: the connection token
+// row it inserted, and the scope set of the grant that token belongs to, as
+// stored in mcp_grants.oauth_scopes and read back in the same transaction.
+//
+// GrantScopes is the only input to the token response's `scope` member.
+// Exchange renders it with tokenResponseScope and adds nothing to it.
+type RedeemedCode struct {
+	Token       sqlc.McpConnectionToken
+	GrantScopes []Scope
 }
 
 // CreateGrantWithCode mints the grant and its first authorization code in ONE

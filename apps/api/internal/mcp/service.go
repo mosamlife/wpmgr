@@ -1616,7 +1616,7 @@ func (s *Service) Exchange(ctx context.Context, req TokenRequest) (IssuedToken, 
 	// won, it expired since the lookup, or RLS refused the write. All three mean
 	// refuse. Treating "no row" as "already fine" is exactly how single-use
 	// becomes multi-use, so there is no such branch.
-	if _, err := s.store.RedeemAuthorizationCode(ctx, row.TenantID, row.ID,
+	redeemed, err := s.store.RedeemAuthorizationCode(ctx, row.TenantID, row.ID,
 		sqlc.CreateMCPConnectionTokenParams{
 			TenantID:    row.TenantID,
 			GrantID:     row.GrantID,
@@ -1624,7 +1624,8 @@ func (s *Service) Exchange(ctx context.Context, req TokenRequest) (IssuedToken, 
 			TokenHash:   hashCredential(secret),
 			Status:      string(GrantStatusActive),
 			ExpiresAt:   pgtype.Timestamptz{Time: expiresAt, Valid: true},
-		}); err != nil {
+		})
+	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return IssuedToken{}, domain.Unauthorized(ErrCodeInvalidGrant,
 				"the authorization code could not be redeemed; it was already used or has expired")
@@ -1634,11 +1635,25 @@ func (s *Service) Exchange(ctx context.Context, req TokenRequest) (IssuedToken, 
 		return IssuedToken{}, fmt.Errorf("redeem authorization code: %w", err)
 	}
 
+	// 6. THE SCOPE IS THE GRANT'S STORED SET, read back inside the redeem
+	// transaction from mcp_grants.oauth_scopes, the column Authenticate reads on
+	// every request. It is never a constant and never the request's scope
+	// parameter: a grant that holds mcp:site and mcp:cache says so, and a
+	// read-only grant says exactly "mcp:read".
+	//
+	// The store already refused, and rolled back, a set the response cannot
+	// name. This second call is what holds the same rule for any Store, and it
+	// fails closed: no access token leaves this function without its scope.
+	scope, err := tokenResponseScope(redeemed.GrantScopes)
+	if err != nil {
+		return IssuedToken{}, fmt.Errorf("render the issued token's scope: %w", err)
+	}
+
 	return IssuedToken{
 		AccessToken: secret, // once, here, never again
 		TokenType:   "Bearer",
 		ExpiresIn:   int(connectionTokenTTL.Seconds()),
-		Scope:       string(ScopeRead),
+		Scope:       scope,
 	}, nil
 }
 

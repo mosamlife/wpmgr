@@ -194,6 +194,64 @@ func AdvertisedScopes() []string {
 	return []string{string(ScopeRead), string(ScopeSite), string(ScopeCache)}
 }
 
+// tokenResponseScope renders the RFC 6749 section 5.1 `scope` member of a
+// token response from the scope set the grant HOLDS: mcp_grants.oauth_scopes
+// as stored, the column Authenticate derives the capability ceiling from on
+// every request.
+//
+// THE OUTPUT NAMES THE STORED SET AND NOTHING ELSE. Every name in it is a name
+// the grant holds; nothing is added, defaulted or widened, so a read-only grant
+// renders exactly "mcp:read". A repeated name is rendered once, and the names
+// are sorted, the order SupportedScopes and the registration response use, so
+// one grant renders one string whatever order its array was stored in.
+//
+// IT REFUSES rather than render what the grant does not hold:
+//   - an empty set, which mcp_grants_oauth_scopes_not_empty_check makes
+//     unstorable and Authenticate refuses on every request;
+//   - a name that is not an RFC 6749 appendix A.4 scope-token, because a
+//     space-delimited list cannot carry it faithfully: a stored
+//     "mcp:read mcp:site" would reach the client as two scopes.
+//
+// The refusal is a plain error, not a domain one. Both cases are rows the
+// schema's CHECKs make unstorable, so the token endpoint answers server_error,
+// and RedeemAuthorizationCode applies the same function inside its
+// transaction so the code stays redeemable and no token row is left behind.
+func tokenResponseScope(held []Scope) (string, error) {
+	if len(held) == 0 {
+		return "", fmt.Errorf("the grant holds no scope; a token response cannot name one")
+	}
+	seen := make(map[Scope]struct{}, len(held))
+	names := make([]string, 0, len(held))
+	for _, s := range held {
+		if !isScopeToken(string(s)) {
+			return "", fmt.Errorf("the grant holds %q, which is not a well-formed scope-token", string(s))
+		}
+		if _, dup := seen[s]; dup {
+			continue
+		}
+		seen[s] = struct{}{}
+		names = append(names, string(s))
+	}
+	sort.Strings(names)
+	return strings.Join(names, " "), nil
+}
+
+// isScopeToken reports whether s is an RFC 6749 appendix A.4 scope-token:
+// 1*( %x21 / %x23-5B / %x5D-7E ). Printable ASCII other than space, the double
+// quote and the backslash, at least one byte long.
+func isScopeToken(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c < 0x21 || c > 0x7e || c == '"' || c == '\\' {
+			return false
+		}
+	}
+	return true
+}
+
 // ParseRegistrationScopes reads the RFC 7591 `scope` member of a registration
 // request LENIENTLY, and returns what the client is registered for plus the
 // tokens that were dropped.
