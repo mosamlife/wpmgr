@@ -425,6 +425,7 @@ export {
   type AbilityRequestCardFacts,
   type AbilityRequestList,
   type AbilityRequestOrgList,
+  type AbilityRequestPageBuilder,
   type AbilityRequestPageMedia,
   type AbilityTenantReenableResult,
   type AcceptInvitationData,

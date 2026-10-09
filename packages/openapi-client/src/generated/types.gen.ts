@@ -4778,6 +4778,39 @@ export type AbilityRequest = {
    *
    */
   page_media?: Array<AbilityRequestPageMedia>;
+  /**
+   * The page builder that builds a wpmgr/page-create request's page, as
+   * the site's precheck named it. Null for a page in a WordPress
+   * editor, and for every other ability. A card for a request whose
+   * editor is a page builder cannot be shown in full without it and
+   * must not be approvable.
+   *
+   */
+  page_builder?: AbilityRequestPageBuilder;
+};
+
+/**
+ * The page builder of a wpmgr/page-create request. `version` came from
+ * the site: render it as plain text.
+ *
+ */
+export type AbilityRequestPageBuilder = {
+  /**
+   * The page builder, such as `elementor`.
+   */
+  builder: string;
+  /**
+   * What the builder builds the page from, such as `classic` (Elementor's classic widgets).
+   */
+  format: string;
+  /**
+   * The builder's version on the site.
+   */
+  version: string;
+  /**
+   * How the page is laid out, such as `containers` or `sections` (Elementor's two classic layouts).
+   */
+  layout: string;
 };
 
 /**
