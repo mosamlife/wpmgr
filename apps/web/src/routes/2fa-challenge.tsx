@@ -19,6 +19,7 @@ import {
 import { getMe } from "@wpmgr/api";
 
 import { ensureMe, authKeys } from "@/features/auth/use-auth";
+import { signInTarget } from "@/features/auth/sign-in-target";
 import {
   useTotpChallenge,
   useRecoveryChallenge,
@@ -44,7 +45,9 @@ export const Route = createFileRoute("/2fa-challenge")({
   beforeLoad: async ({ context, search }) => {
     const me = await ensureMe(context.queryClient);
     if (me) {
-      throw redirect({ to: search.redirect ?? "/sites" });
+      // Narrowed to this origin like the sign-in page's own redirect, by the
+      // same helper: ?redirect= arrives here from a link and is not trusted.
+      throw redirect(signInTarget(search.redirect));
     }
   },
   component: TwoFaChallengePage,
@@ -129,7 +132,7 @@ function TwoFaChallengePage() {
         if (freshMe?.role === "client") {
           void navigate({ to: "/portal" });
         } else {
-          void navigate({ to: search.redirect ?? "/sites" });
+          void navigate(signInTarget(search.redirect));
         }
       });
   }

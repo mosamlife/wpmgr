@@ -10,6 +10,7 @@ import { getMe } from "@wpmgr/api";
 import { AuthLayout } from "@/components/layout/auth-layout";
 import { SocialButtons, ensureSignInMethods } from "@/features/auth/social-buttons";
 import { socialRefusal, sameOriginPath } from "@/features/auth/social-errors";
+import { signInTarget } from "@/features/auth/sign-in-target";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -54,14 +55,11 @@ export const Route = createFileRoute("/login")({
       ensureSignInMethods(context.queryClient),
     ]);
     if (me) {
-      throw redirect({
-        // Same narrowing as the handshake link, for the same reason: this is a
-        // navigation target taken from the query string, and ?redirect= is the
-        // one search param on this page an attacker gets to choose. Every use
-        // of it goes through sameOriginPath, or the one that does not is the
-        // hole.
-        to: me.role === "client" ? "/portal" : (sameOriginPath(search.redirect) ?? "/sites"),
-      });
+      // The deep link keeps its query string and is narrowed to this origin
+      // first (signInTarget): ?redirect= is the one search param on this page
+      // that a link gets to choose, and every use of it goes through the same
+      // narrowing or the one that does not is the hole.
+      throw redirect(me.role === "client" ? { to: "/portal" } : signInTarget(search.redirect));
     }
   },
   component: LoginPage,
@@ -194,7 +192,7 @@ function LoginPage() {
             if (freshMe?.role === "client") {
               void navigate({ to: "/portal" });
             } else {
-              void navigate({ to: deepLink ?? "/sites" });
+              void navigate(signInTarget(search.redirect));
             }
           });
       },
