@@ -54,10 +54,13 @@ import {
 // undone rather than half-built, and the capability step says plainly what the
 // operator's answer does and does not affect on this path.
 //
-// The endpoint half IS ready: POST /api/v1/oauth/mcp/consent now takes an
-// optional `capabilities` (approvalRequestDTO.Capabilities). This screen does
-// not send one, so an omitted field reaches the server and resolves to
-// DefaultGrantCapabilities() -- sites-read alone.
+// WHAT THIS SCREEN SENDS. POST /api/v1/oauth/mcp/consent takes an optional
+// `capabilities` (approvalRequestDTO.Capabilities), and this screen sends the
+// operator's ticks: the reads picked in the same picker the wizard uses, plus
+// the cache-clear and site-tools boxes when they were ticked. The list is the
+// ticks limited to what the server offered, and it is never sent empty. It is
+// omitted only against a server that offers no capability list at all, and the
+// server then applies its own default, which is sites-read alone.
 
 // Only `response_type`, `client_id`, `redirect_uri` and `scope` are required to
 // even ask the question. They are optional in the schema so that a malformed
