@@ -708,6 +708,13 @@ func pageCreateRunRouter(t *testing.T, agentVersion, precheckCode string) (*gin.
 
 func pageCreateRunRouterWith(t *testing.T, agentVersion string, agent AbilityAgent) (*gin.Engine, uuid.UUID) {
 	t.Helper()
+	return pageCreateRunRouterLimits(t, agentVersion, agent, []byte(`{}`))
+}
+
+// pageCreateRunRouterLimits is pageCreateRunRouterWith with the catalogue
+// entry's limits given.
+func pageCreateRunRouterLimits(t *testing.T, agentVersion string, agent AbilityAgent, limits []byte) (*gin.Engine, uuid.UUID) {
+	t.Helper()
 	f := newAbilityFixture(t)
 	f.store.recheck.GrantCapabilities = []string{string(CapSitesRead), string(CapAbilityRead), string(CapAbilityRequest)}
 	f.store.recheck.GrantOauthScopes = []string{string(ScopeRead), string(ScopeSite)}
@@ -717,6 +724,7 @@ func pageCreateRunRouterWith(t *testing.T, agentVersion string, agent AbilityAge
 	entry := catalogueRow(AbilityPageCreate, "wpmgr", "write")
 	entry.ApprovalMode, entry.Snapshot, entry.EffectCopy = "per_call", "created_post_trash", "draft"
 	entry.OperatorPermission, entry.MinAgentVersion = &perm, &minAgent
+	entry.Limits = limits
 	_, sum, _ := testEntryEncoder(entry)
 	entry.EntrySha256 = &sum
 	f.ab.cat = append(f.ab.cat, entry)
