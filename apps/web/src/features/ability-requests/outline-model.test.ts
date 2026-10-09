@@ -334,6 +334,21 @@ describe("button links", () => {
     "https://example.com/%zz",
     "https://example.com/%4",
     `https://example.com/${"a".repeat(OUTLINE_LIMITS.urlChars)}`,
+    // An "&" that starts a character reference, in either kind of link.
+    "https://example.com/?a=1&amp;b=2",
+    "/shop?x=1&copy;=2",
+    "https://example.com/?a=1&b;c",
+    "https://example.com/a&#x2F;b",
+    "https://example.com/a&#X2f;b",
+    "/&#47;evil.example/login",
+    // A path on the site holds no colon and no "&#", wherever they sit.
+    "/shop/sale:summer",
+    "/shop?time=10:30",
+    "/shop/?time=10:30",
+    "/shop#a:b",
+    "/a&#58b",
+    "/a&#x3ag",
+    "/a?x=1&#top",
   ])("refuses %j", (url) => {
     expect(parseLink(url)).toBeNull();
     expect(classifyLink(url, SITE)).toBeNull();
@@ -343,6 +358,18 @@ describe("button links", () => {
     const url = `/${"a".repeat(OUTLINE_LIMITS.urlChars - 1)}`;
     expect(url.length).toBe(OUTLINE_LIMITS.urlChars);
     expect(parseLink(url)).toEqual({ kind: "path" });
+  });
+
+  // The near misses of the two rules above stay accepted: a guard that refuses
+  // honest links gets switched off.
+  it.each([
+    ["/shop?x=1&copy=2#top", { kind: "path" }],
+    ["/shop/sale%3Asummer", { kind: "path" }],
+    ["https://example.com/?a=1&copy=2&b=3&;c&#;d&#x;e&#xg;", { kind: "absolute", host: "example.com" }],
+    ["https://example.com/shop/sale:summer?t=10:30", { kind: "absolute", host: "example.com" }],
+    ["https://shop.example.com:8443/a?x=1&y=2#top", { kind: "absolute", host: "shop.example.com:8443" }],
+  ])("keeps %j", (url, parsed) => {
+    expect(parseLink(url)).toEqual(parsed);
   });
 });
 
