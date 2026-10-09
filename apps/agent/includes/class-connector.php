@@ -113,8 +113,9 @@ final class Connector
         try {
             $publicKey = $this->keystore->getControlPlanePublicKey();
         } catch (\RuntimeException $e) {
-            // The stored key exists but this install's master key cannot open
-            // it. The keystore's reason travels as the previous exception.
+            // A key is stored but cannot be decrypted: the envelope is damaged,
+            // or the master key it was stored under is gone or has changed.
+            // The keystore's reason travels as the previous exception.
             throw new TokenRejected(TokenFailure::KeyUnreadable, 'WPMgr Agent: control-plane key unreadable.', $e); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- an enum case and a fixed message; every caller logs or discards it, none prints it
         }
         if ($publicKey === null || strlen($publicKey) !== SODIUM_CRYPTO_SIGN_PUBLICKEYBYTES) {

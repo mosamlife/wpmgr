@@ -338,11 +338,12 @@ final class Router
             // Why sanitise rather than classify: authorizeCommand() can
             // classify because Connector::verifyCommand throws a typed
             // TokenRejected that names the failed check. Commands do not —
-            // they throw from 200+ sites and roughly 40% of those interpolate a runtime
-            // value, very often an absolute path (backup scratch base, restore
-            // staging dir). A needle table over an open set would be guesswork
-            // that silently goes stale, so the reason is sanitised and the
-            // stable machine-readable part is the exception class.
+            // they throw from 200+ sites and roughly 40% of those interpolate
+            // a runtime value, very often an absolute path (backup scratch
+            // base, restore staging dir). A needle table over an open set
+            // would be guesswork that silently goes stale, so the reason is
+            // sanitised and the stable machine-readable part is the exception
+            // class.
             [$message, $data] = self::fitFailureBody(
                 $class,
                 self::redactReason($e->getMessage()),

@@ -31,7 +31,11 @@ enum TokenFailure: string
     /** This site holds no usable control-plane public key. */
     case KeyNotProvisioned = 'key_not_provisioned';
 
-    /** This site's stored control-plane public key cannot be decrypted. */
+    /**
+     * A control-plane public key is stored but cannot be decrypted: the
+     * envelope is damaged, or the master key it was stored under is gone or
+     * has changed.
+     */
     case KeyUnreadable = 'key_unreadable';
 
     /** The signature is the wrong size or does not verify against the stored key. */
