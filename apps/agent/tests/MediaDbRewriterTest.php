@@ -26,6 +26,11 @@ use Yoast\PHPUnitPolyfills\TestCases\TestCase;
  */
 final class MediaDbRewriterTest extends TestCase
 {
+    private bool $hadWpdb = false;
+
+    /** @var mixed */
+    private $savedWpdb = null;
+
     protected function set_up(): void
     {
         parent::set_up();
@@ -41,11 +46,22 @@ final class MediaDbRewriterTest extends TestCase
             }
             return (bool) preg_match('/^(a|O|s|i|d|b):[0-9]/', $value);
         });
-        Functions\when('wp_json_encode')->alias(static fn ($d) => json_encode($d));
+        // Honour the flags, as WordPress does, so a test sees what an encode
+        // with or without them really produces.
+        Functions\when('wp_json_encode')->alias(
+            static fn ($d, $flags = 0, $depth = 512) => json_encode($d, (int) $flags, (int) $depth)
+        );
+        $this->hadWpdb   = array_key_exists('wpdb', $GLOBALS);
+        $this->savedWpdb = $GLOBALS['wpdb'] ?? null;
     }
 
     protected function tear_down(): void
     {
+        if ($this->hadWpdb) {
+            $GLOBALS['wpdb'] = $this->savedWpdb;
+        } else {
+            unset($GLOBALS['wpdb']);
+        }
         Monkey\tearDown();
         parent::tear_down();
     }
@@ -167,5 +183,108 @@ final class MediaDbRewriterTest extends TestCase
         );
         $this->assertStringContainsString('banner.avif', $out);
         $this->assertStringNotContainsString('banner.jpg', $out);
+    }
+
+    // -----------------------------------------------------------------------
+    // Byte preservation: a rewrite changes the URL bytes and nothing else.
+    // -----------------------------------------------------------------------
+
+    public function test_json_without_a_mapped_url_keeps_its_bytes(): void
+    {
+        // Unescaped slashes and raw UTF-8, as a builder that encodes with
+        // JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE stores them.
+        $json = '{"title":"Café","link":"https://site.test/about/","settings":{}}';
+
+        $out = (new DbRewriter())->rewriteValue($json, $this->map());
+
+        $this->assertSame($json, $out, 'a JSON value with no mapped URL is returned byte for byte');
+    }
+
+    public function test_json_rewrite_changes_only_the_url_bytes(): void
+    {
+        $json = '{"src":"https://ex.test/a.jpg","t":"é"}';
+
+        $out = (new DbRewriter())->rewriteValue($json, ['https://ex.test/a.jpg' => 'https://ex.test/a.avif']);
+
+        $this->assertSame('{"src":"https://ex.test/a.avif","t":"é"}', $out);
+    }
+
+    public function test_json_rewrite_keeps_escaped_slashes_and_unicode_escapes(): void
+    {
+        // A document stored with default flags: escaped slashes, \u escapes.
+        $json = '{"src":"https:\/\/ex.test\/a.jpg","t":"é","n":1.50}';
+
+        $out = (new DbRewriter())->rewriteValue($json, ['https://ex.test/a.jpg' => 'https://ex.test/a.avif']);
+
+        $this->assertSame('{"src":"https:\/\/ex.test\/a.avif","t":"é","n":1.50}', $out);
+    }
+
+    public function test_json_rewrite_of_both_url_forms_in_one_document(): void
+    {
+        $json = '{"a":"https://ex.test/a.jpg","b":"https:\/\/ex.test\/a.jpg","c":"https://ex.test/a.jpg2"}';
+
+        $out = (new DbRewriter())->rewriteValue($json, ['https://ex.test/a.jpg' => 'https://ex.test/a.avif']);
+
+        $this->assertSame(
+            '{"a":"https://ex.test/a.avif","b":"https:\/\/ex.test\/a.avif","c":"https://ex.test/a.jpg2"}',
+            $out
+        );
+    }
+
+    public function test_json_rewrite_that_cannot_be_made_in_place_keeps_the_documents_style(): void
+    {
+        // The URL is followed by an escaped "A": decoded, the URL runs straight
+        // into a letter, so the boundary guard leaves that occurrence alone, but
+        // in the stored text it is followed by a backslash. An in-place edit
+        // would rewrite it, so the rewriter re-encodes instead, in the style of
+        // the original: unescaped slashes, raw UTF-8.
+        $json = '{"a":"https://ex.test/a.jpg","b":"https://ex.test/a.jpgA","t":"é"}';
+
+        $out = (new DbRewriter())->rewriteValue($json, ['https://ex.test/a.jpg' => 'https://ex.test/a.avif']);
+
+        $this->assertSame(
+            ['a' => 'https://ex.test/a.avif', 'b' => 'https://ex.test/a.jpgA', 't' => 'é'],
+            json_decode($out, true)
+        );
+        $this->assertStringNotContainsString('\/', $out, 'unescaped slashes stay unescaped');
+        $this->assertStringContainsString('"t":"é"', $out, 'raw UTF-8 stays raw');
+    }
+
+    public function test_serialized_value_without_a_mapped_url_keeps_its_bytes(): void
+    {
+        // A float stored at 17 significant digits: unserialize() then
+        // serialize() would write it back as d:0.1, a different byte string.
+        $url  = 'https://site.test/wp-content/uploads/2026/05/other.jpg';
+        $blob = 'a:2:{s:5:"ratio";d:0.10000000000000001;s:3:"img";s:' . strlen($url) . ':"' . $url . '";}';
+        $this->assertIsArray(unserialize($blob, ['allowed_classes' => false]), 'fixture is valid serialized data');
+
+        $out = (new DbRewriter())->rewriteValue($blob, $this->map());
+
+        $this->assertSame($blob, $out, 'a serialized value with no mapped URL is returned byte for byte');
+    }
+
+    public function test_postmeta_row_the_prefilter_selected_but_no_url_matches_is_not_written(): void
+    {
+        $wpdb = new FakeDbRewriterWpdb();
+        // MySQL selects this row because its LIKE and REGEXP ignore case; the
+        // mapped URL is .../banner.jpg, so nothing in it is rewritten.
+        $caseOnly = '{"url":"https://site.test/wp-content/uploads/2026/05/BANNER.jpg","title":"Café"}';
+        // Positive control: a row that does hold the mapped URL is written.
+        $matching = '{"url":"https://site.test/wp-content/uploads/2026/05/banner.jpg","title":"Café"}';
+        $wpdb->metaRows = [
+            ['meta_id' => '11', 'meta_value' => $caseOnly],
+            ['meta_id' => '12', 'meta_value' => $matching],
+        ];
+        $GLOBALS['wpdb'] = $wpdb;
+
+        $result = (new DbRewriter())->replaceImages($this->map());
+
+        $this->assertSame(1, $result['postmeta_rows']);
+        $this->assertCount(1, $wpdb->updates, 'only the row that holds the mapped URL is written');
+        $this->assertSame(['meta_id' => '12'], $wpdb->updates[0]['where']);
+        $this->assertSame(
+            ['meta_value' => '{"url":"https://site.test/wp-content/uploads/2026/05/banner.avif","title":"Café"}'],
+            $wpdb->updates[0]['data']
+        );
     }
 }
