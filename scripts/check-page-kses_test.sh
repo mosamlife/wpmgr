@@ -135,18 +135,76 @@ expect "a numeric apostrophe in an attribute is red on core 7" nonzero PAGE_KSES
 expect "a title kses would change is red" nonzero PAGE_KSES_MARKUP="$tmp/plant_title.json"
 said "  and the title is what changed" "title_save_pre"
 
-# --- known changes: allowed only when they really happen ------------------------------
-printf '7.1.3 plant_apos_raw.json apos-raw\n' >"$tmp/known_ok.txt"
+# --- known changes: allowed only when they happen exactly as pinned ----------------------
+# The pin of a rewrite is the line the check itself prints for it, the one a person
+# pastes into the known-changes list. So the honest case below is made the honest way.
+expect "an unlisted rewrite is red and prints the line that would excuse it" nonzero PAGE_KSES_VERSIONS="7.1.3" PAGE_KSES_MARKUP="$tmp/plant_apos_raw.json"
+said "  and that line names the version, the file, the case and a pin" "  pin: 7.1.3 plant_apos_raw.json apos-raw "
+apos_line="$(printf '%s\n' "$LAST_OUT" | sed -n 's/^  pin: //p' | head -n 1)"
+# (The pattern is kept in a variable: the form of [[ =~ ]] that behaves the same on
+# the bash 3.2 macOS ships and on the bash 5 CI runs.)
+pin_line_re='^7\.1\.3 plant_apos_raw\.json apos-raw [0-9a-f]{64}$'
+if [[ $apos_line =~ $pin_line_re ]]; then
+  ok "  and the pin is 64 lowercase hex characters"
+else
+  bad "  and the pin is 64 lowercase hex characters (got: '$apos_line')"
+fi
+printf '%s\n' "$apos_line" >"$tmp/known_ok.txt"
 expect "a listed known change is green" 0 PAGE_KSES_VERSIONS="7.1.3" PAGE_KSES_KNOWN_FILE="$tmp/known_ok.txt" PAGE_KSES_MARKUP="$tmp/plant_apos_raw.json"
 said "  and it is still reported" "KSES-KNOWN plant_apos_raw.json:apos-raw"
-printf '6.2 plant_apos_raw.json apos-raw\n' >"$tmp/known_other_version.txt"
+said "  and it is counted as known, not as drifted" " 1 known, 0 drifted, 0 stale"
+
+# A second rewrite on the listed case. Same file name and case name as the listed
+# one, so the list still names it; only what the case holds differs.
+mkdir -p "$tmp/second"
+second_json() { # second_json <file name> <json-escaped content>
+  printf '{"cases":[{"name":"apos-raw","content":"%s"}]}' "$2" >"$tmp/second/$1"
+}
+second_json plant_apos_raw.json '<img src=\"https://example.test/a.jpg\" alt=\"Bob'"'"'s dog\" class=\"wp-image-7\" onclick=\"x()\" />'
+expect "the listed rewrite plus a second one the core also makes is red" nonzero PAGE_KSES_VERSIONS="7.1.3" PAGE_KSES_KNOWN_FILE="$tmp/known_ok.txt" PAGE_KSES_MARKUP="$tmp/second/plant_apos_raw.json"
+said "  and it is called drift" "KSES-DRIFT plant_apos_raw.json:apos-raw"
+said "  and it prints the pin it was held to" "  pinned : ${apos_line##* }"
+said "  and it is counted as drifted" " 0 known, 1 drifted, 0 stale"
+drift_out="$LAST_OUT"
+# The same input, listed on the honest case, has this output. Compare the outputs
+# the core returns for the honest case and for the second-rewrite case: when they are
+# the same bytes, only the input can tell the two apart.
+expect "the honest case, for its output" nonzero PAGE_KSES_VERSIONS="7.1.3" PAGE_KSES_MARKUP="$tmp/plant_apos_raw.json"
+honest_out_line="$(printf '%s\n' "$LAST_OUT" | sed -n 's/^    out: //p' | head -n 1)"
+second_out_line="$(printf '%s\n' "$drift_out" | sed -n 's/^    out: //p' | head -n 1)"
+if [ -n "$honest_out_line" ] && [ "$honest_out_line" = "$second_out_line" ]; then
+  ok "  and the core returns the same bytes for both, so the pin must bind the input"
+else
+  bad "  and the core returns the same bytes for both (honest: $honest_out_line | second: $second_out_line)"
+fi
+# What a builder that starts to emit an attribute the core strips looks like.
+second_json plant_apos_raw.json '<img src=\"https://example.test/a.jpg\" alt=\"Bob'"'"'s dog\" class=\"wp-image-7\" data-x=\"1\" />'
+expect "an extra attribute the core strips from the listed case is red" nonzero PAGE_KSES_VERSIONS="7.1.3" PAGE_KSES_KNOWN_FILE="$tmp/known_ok.txt" PAGE_KSES_MARKUP="$tmp/second/plant_apos_raw.json"
+said "  and it is called drift" "KSES-DRIFT plant_apos_raw.json:apos-raw"
+second_json plant_apos_raw.json '<img src=\"https://example.test/a.jpg\" alt=\"Bob'"'"'s dog\" class=\"wp-image-7\" /><script>alert(1)</script>'
+expect "a script tag added to the listed case is red" nonzero PAGE_KSES_VERSIONS="7.1.3" PAGE_KSES_KNOWN_FILE="$tmp/known_ok.txt" PAGE_KSES_MARKUP="$tmp/second/plant_apos_raw.json"
+said "  and it is called drift" "KSES-DRIFT plant_apos_raw.json:apos-raw"
+zero_pin="0000000000000000000000000000000000000000000000000000000000000000"
+printf '7.1.3 plant_apos_raw.json apos-raw %s\n' "$zero_pin" >"$tmp/known_wrong_pin.txt"
+expect "a listed case held to a pin that is not its rewrite is red" nonzero PAGE_KSES_VERSIONS="7.1.3" PAGE_KSES_KNOWN_FILE="$tmp/known_wrong_pin.txt" PAGE_KSES_MARKUP="$tmp/plant_apos_raw.json"
+said "  and it is called drift" "KSES-DRIFT plant_apos_raw.json:apos-raw"
+printf '7.1.3 plant_apos_raw.json apos-raw\n' >"$tmp/known_no_pin.txt"
+expect "a listed case without a pin is red" nonzero PAGE_KSES_VERSIONS="7.1.3" PAGE_KSES_KNOWN_FILE="$tmp/known_no_pin.txt" PAGE_KSES_MARKUP="$tmp/plant_apos_raw.json"
+printf '7.1.3 plant_apos_raw.json apos-raw %s\n' "${apos_line##* }x" >"$tmp/known_long_pin.txt"
+expect "a pin of the wrong length is red" nonzero PAGE_KSES_VERSIONS="7.1.3" PAGE_KSES_KNOWN_FILE="$tmp/known_long_pin.txt" PAGE_KSES_MARKUP="$tmp/plant_apos_raw.json"
+printf '7.1.3 plant_apos_raw.json apos-raw %s\n' "$(printf '%s' "${apos_line##* }" | tr 'a-f' 'A-F')" >"$tmp/known_upper_pin.txt"
+expect "a pin in capitals is red" nonzero PAGE_KSES_VERSIONS="7.1.3" PAGE_KSES_KNOWN_FILE="$tmp/known_upper_pin.txt" PAGE_KSES_MARKUP="$tmp/plant_apos_raw.json"
+printf '%s\n%s\n' "$apos_line" "7.1.3 plant_apos_raw.json apos-raw $zero_pin" >"$tmp/known_twice.txt"
+expect "a case listed twice is red, even with the right pin first" nonzero PAGE_KSES_VERSIONS="7.1.3" PAGE_KSES_KNOWN_FILE="$tmp/known_twice.txt" PAGE_KSES_MARKUP="$tmp/plant_apos_raw.json"
+said "  and it says so" "a second time"
+printf '6.2 plant_apos_raw.json apos-raw %s\n' "${apos_line##* }" >"$tmp/known_other_version.txt"
 expect "a change listed for another version is red" nonzero PAGE_KSES_VERSIONS="7.1.3" PAGE_KSES_KNOWN_FILE="$tmp/known_other_version.txt" PAGE_KSES_MARKUP="$tmp/plant_apos_raw.json"
-printf '7.1.3 plant_slash_all.json slash-all\n' >"$tmp/known_wrong_case.txt"
+printf '7.1.3 plant_slash_all.json slash-all %s\n' "${apos_line##* }" >"$tmp/known_wrong_case.txt"
 expect "a change that is not the listed case is red" nonzero PAGE_KSES_VERSIONS="7.1.3" PAGE_KSES_KNOWN_FILE="$tmp/known_wrong_case.txt" PAGE_KSES_MARKUP="$tmp/plant_apos_raw.json"
-printf '7.1.3 layout_ok.json layout-ok\n' >"$tmp/known_stale.txt"
+printf '7.1.3 layout_ok.json layout-ok %s\n' "$zero_pin" >"$tmp/known_stale.txt"
 expect "a listed case that did not change is red (stale)" nonzero PAGE_KSES_VERSIONS="7.1.3" PAGE_KSES_KNOWN_FILE="$tmp/known_stale.txt" PAGE_KSES_MARKUP="$tmp/layout_ok.json"
 said "  and it says the entry is stale" "KSES-STALE layout_ok.json:layout-ok"
-printf '7.1.3 no_such_file.json no-such-case\n' >"$tmp/known_missing_case.txt"
+printf '7.1.3 no_such_file.json no-such-case %s\n' "$zero_pin" >"$tmp/known_missing_case.txt"
 expect "a listed case that is not in the markup is red (stale)" nonzero PAGE_KSES_VERSIONS="7.1.3" PAGE_KSES_KNOWN_FILE="$tmp/known_missing_case.txt" PAGE_KSES_MARKUP="$tmp/layout_ok.json"
 printf '7.1.3 only-two-fields\n' >"$tmp/known_malformed.txt"
 expect "a malformed known-changes line is red" nonzero PAGE_KSES_VERSIONS="7.1.3" PAGE_KSES_KNOWN_FILE="$tmp/known_malformed.txt" PAGE_KSES_MARKUP="$tmp/layout_ok.json"
