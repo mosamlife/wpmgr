@@ -1,10 +1,12 @@
 package contract
 
 // The usage WPMgr stores for wpmgr/page-create tells the AI which Elementor
-// versions a draft can be built on and which outline values Elementor takes.
-// The agent decides both, in its own code. These gates read the agent's
-// constants from its source and the stored usage from the migrations and
-// db/schema.sql, and fail when the usage says anything the agent does not do.
+// versions a draft can be built on, which outline values Elementor takes, and
+// which WPMgr plugin release it needs. The agent decides the first two in its
+// own code, and the control plane's builder floor the third. These gates read
+// the agent's constants from its source, the floor from agentcmd, and the
+// stored usage from the migrations and db/schema.sql, and fail when the usage
+// says anything the agent or the floor does not.
 //
 // The usage checked is the one the newest page-create copy migration writes,
 // found by its declaration, and db/schema.sql's seed must carry the same text.
@@ -22,6 +24,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/agentcmd"
 	"github.com/mosamlife/wpmgr/apps/api/migrations"
 )
 
@@ -135,9 +138,15 @@ func englishOr(vals []string) string {
 	return strings.Join(vals[:len(vals)-1], ", ") + " or " + vals[len(vals)-1]
 }
 
-// pageCreateUsageProblems lists every way usage disagrees with the agent.
-func pageCreateUsageProblems(usage string, f elementorAgentFacts) []string {
+// pageCreateUsageProblems lists every way usage disagrees with the agent, or
+// with builderFloor, the first agent release the control plane sends a
+// builder page to (agentcmd.MinAgentVersionForBuilderAdapters).
+func pageCreateUsageProblems(usage string, f elementorAgentFacts, builderFloor string) []string {
 	var problems []string
+	if want := "Elementor pages need the WPMgr plugin " + builderFloor + " or later"; !strings.Contains(usage, want) {
+		problems = append(problems, fmt.Sprintf("does not name the WPMgr plugin floor for a builder page "+
+			"(MinAgentVersionForBuilderAdapters %s): want %q", builderFloor, want))
+	}
 	wantRange := "Elementor " + versionLabel(f.classicMin, false) + " to " + versionLabel(f.classicMax, true) + " on the site"
 	if !strings.Contains(usage, wantRange) {
 		problems = append(problems, fmt.Sprintf("does not name the agent's Elementor range (CLASSIC_MIN %s, CLASSIC_MAX %s): want %q",
@@ -331,26 +340,38 @@ func TestPageCreateUsageMatchesAgentElementorRules(t *testing.T) {
 			pageCreateSchemaFile, newest, schema, usage)
 	}
 
-	if problems := pageCreateUsageProblems(usage, f); len(problems) > 0 {
+	if problems := pageCreateUsageProblems(usage, f, agentcmd.MinAgentVersionForBuilderAdapters); len(problems) > 0 {
 		t.Fatalf("the page-create usage %s writes disagrees with the agent (%s, %s):\n  - %s\nusage: %q",
 			newest, agentElementorFactsFile, agentElementorMapperFile, strings.Join(problems, "\n  - "), usage)
 	}
 }
 
 // TestPageCreateUsageCheckRefusesDrift: the check above is not vacuous. The
-// usage #890 corrected fails it, and so does today's usage once the agent's
-// range or alignments move.
+// usage #890 corrected fails it, and today's usage fails it, for the planted
+// reason, once the agent's range or alignments or the builder floor move, or
+// once the agent drops a rule the usage describes.
 func TestPageCreateUsageCheckRefusesDrift(t *testing.T) {
 	factsSrc, mapperSrc, f := readElementorAgentFacts(t)
+	floor := agentcmd.MinAgentVersionForBuilderAdapters
 	names := pageCreateUsageMigrations(t)
 	if len(names) == 0 {
 		t.Fatal("no page-create copy migration found")
 	}
 	usage := migrationPageCreateUsage(t, names[len(names)-1])
+	if p := pageCreateUsageProblems(usage, f, floor); len(p) > 0 {
+		t.Fatalf("SETUP: today's usage must pass before drift is planted: %v", p)
+	}
 
 	t.Run("m166's usage", func(t *testing.T) {
-		if p := pageCreateUsageProblems(migrationPageCreateUsage(t, pageCreateUsageAnchor), f); len(p) == 0 {
+		if p := pageCreateUsageProblems(migrationPageCreateUsage(t, pageCreateUsageAnchor), f, floor); len(p) == 0 {
 			t.Fatal("m166's usage, which claimed Elementor 3.20 or later and left out the alignment and link rules, passes the check")
+		}
+	})
+
+	t.Run("a raised builder floor", func(t *testing.T) {
+		p := pageCreateUsageProblems(usage, f, floor+".1")
+		if len(p) != 1 || !strings.Contains(p[0], "WPMgr plugin floor") {
+			t.Fatalf("today's usage against a moved builder floor gave %q, want the floor problem alone", p)
 		}
 	})
 
@@ -370,11 +391,13 @@ func TestPageCreateUsageCheckRefusesDrift(t *testing.T) {
 		what      string
 		factsSrc  string
 		mapperSrc string
+		want      string // the problem the plant must produce
 	}{
-		{"a raised CLASSIC_MAX", bump(t, reClassicMax, factsSrc), mapperSrc},
-		{"a raised CLASSIC_MIN", bump(t, reClassicMin, factsSrc), mapperSrc},
+		{"a raised CLASSIC_MAX", bump(t, reClassicMax, factsSrc), mapperSrc, "Elementor range"},
+		{"a raised CLASSIC_MIN", bump(t, reClassicMin, factsSrc), mapperSrc, "Elementor range"},
 		{"an added image alignment", factsSrc, strings.Replace(mapperSrc,
-			"private const IMAGE_ALIGN = ['none', 'center'];", "private const IMAGE_ALIGN = ['none', 'center', 'left'];", 1)},
+			"private const IMAGE_ALIGN = ['none', 'center'];", "private const IMAGE_ALIGN = ['none', 'center', 'left'];", 1),
+			"image alignments"},
 	} {
 		t.Run(tc.what, func(t *testing.T) {
 			moved, err := parseElementorAgentFacts(tc.factsSrc, tc.mapperSrc)
@@ -384,17 +407,30 @@ func TestPageCreateUsageCheckRefusesDrift(t *testing.T) {
 			if reflectEqualFacts(moved, f) {
 				t.Fatalf("SETUP: the planted change did not move the facts: %+v", moved)
 			}
-			if p := pageCreateUsageProblems(usage, moved); len(p) == 0 {
-				t.Fatalf("today's usage still passes against facts %+v", moved)
+			p := pageCreateUsageProblems(usage, moved, floor)
+			if len(p) != 1 || !strings.Contains(p[0], tc.want) {
+				t.Fatalf("today's usage against facts %+v gave %q, want the %s problem alone", moved, p, tc.want)
 			}
 		})
 	}
 
-	t.Run("a rule the agent dropped", func(t *testing.T) {
-		if _, err := parseElementorAgentFacts(factsSrc, strings.Replace(mapperSrc, "strpos($url, '&')", "strpos($url, '#')", 1)); err == nil {
-			t.Fatal("a mapper without the button link rule parses; the usage would keep claiming a rule the agent dropped")
-		}
-	})
+	for _, tc := range []struct {
+		what      string
+		factsSrc  string
+		mapperSrc string
+	}{
+		{"a dropped button link rule", factsSrc, strings.Replace(mapperSrc, "strpos($url, '&')", "strpos($url, '#')", 1)},
+		{"a dropped Atomic refusal", strings.Replace(factsSrc, "'detail' => 'atomic_unavailable'", "'detail' => 'atomic_later'", 1), mapperSrc},
+	} {
+		t.Run(tc.what, func(t *testing.T) {
+			if tc.factsSrc == factsSrc && tc.mapperSrc == mapperSrc {
+				t.Fatal("SETUP: the plant changed neither source")
+			}
+			if _, err := parseElementorAgentFacts(tc.factsSrc, tc.mapperSrc); err == nil {
+				t.Fatal("the agent's rules parse without it; the usage would keep claiming a rule the agent dropped")
+			}
+		})
+	}
 }
 
 func reflectEqualFacts(a, b elementorAgentFacts) bool {
