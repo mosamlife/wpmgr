@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
+	"github.com/mosamlife/wpmgr/apps/api/internal/authz"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
 
@@ -30,9 +31,30 @@ const (
 // append in the SAME transaction as the version insert (Decision 7). No other
 // path in this codebase writes to either context table.
 type Service struct {
-	repo     *Repo
+	repo     versionStore
 	audit    *audit.Recorder
 	resolver *Resolver
+}
+
+// versionStore is every storage call Service makes. *Repo is its one
+// production implementation, and NewService accepts nothing else; the
+// interface lets this package's unit tests drive the Service's own methods,
+// every check in them included, over in-memory versions.
+type versionStore interface {
+	LatestOrgVersion(ctx context.Context, tenantID uuid.UUID) (Version, error)
+	LatestOrgSnapshot(ctx context.Context, tenantID uuid.UUID) (Snapshot, bool, error)
+	GetOrgVersionByID(ctx context.Context, tenantID, id uuid.UUID) (Version, error)
+	GetOrgVersionByVersion(ctx context.Context, tenantID uuid.UUID, version int64) (Version, error)
+	ListOrgVersions(ctx context.Context, tenantID uuid.UUID, cursor int64, limit int32) ([]Version, error)
+	CreateOrgVersion(ctx context.Context, tenantID uuid.UUID, expectVersion int64, in CreateOrgVersionInput,
+		record func(tx pgx.Tx, versionID uuid.UUID) error) (Version, error)
+
+	LatestSiteVersion(ctx context.Context, tenantID, siteID uuid.UUID) (Version, error)
+	GetSiteVersionByID(ctx context.Context, tenantID, siteID, id uuid.UUID) (Version, error)
+	GetSiteVersionByVersion(ctx context.Context, tenantID, siteID uuid.UUID, version int64) (Version, error)
+	ListSiteVersions(ctx context.Context, tenantID, siteID uuid.UUID, cursor int64, limit int32) ([]Version, error)
+	CreateSiteVersion(ctx context.Context, tenantID, siteID uuid.UUID, expectVersion int64, in CreateSiteVersionInput,
+		record func(tx pgx.Tx, versionID uuid.UUID) error) (Version, error)
 }
 
 // NewService wires a Service. resolver may share repo as its ContextStore
@@ -121,6 +143,10 @@ func (s *Service) PatchOrgContext(ctx context.Context, tenantID uuid.UUID, in Pa
 
 	next := applyPatch(base, in.Restrictions, in.Guidance)
 
+	if lerr := authorizeLoosening(ctx, base.Restrictions, next.Restrictions); lerr != nil {
+		return Version{}, lerr
+	}
+
 	// Only run the widen-check when THIS REQUEST actually proposes new
 	// restrictions. A guidance-only patch (in.Restrictions == nil) carries the
 	// organisation's own PREVIOUSLY-STORED restrictions forward unchanged
@@ -196,10 +222,16 @@ func (s *Service) RestoreOrgContext(ctx context.Context, tenantID, versionID uui
 
 	current, err := s.repo.LatestOrgVersion(ctx, tenantID)
 	currentVersion := int64(0)
+	var currentRestrictions RestrictionSet
 	if err == nil {
 		currentVersion = current.Version
+		currentRestrictions = current.Snapshot.Restrictions
 	} else if !errors.Is(err, ErrNotFound) {
 		return Version{}, err
+	}
+
+	if lerr := authorizeLoosening(ctx, currentRestrictions, target.Snapshot.Restrictions); lerr != nil {
+		return Version{}, lerr
 	}
 
 	if verr := checkNoWiden(target.Snapshot.Restrictions, []namedLayer{
@@ -319,6 +351,10 @@ func (s *Service) PatchSiteContext(ctx context.Context, tenantID, siteID uuid.UU
 
 	next := applyPatch(base, in.Restrictions, in.Guidance)
 
+	if lerr := authorizeLoosening(ctx, base.Restrictions, next.Restrictions); lerr != nil {
+		return Version{}, lerr
+	}
+
 	// Only run the widen-check when THIS REQUEST actually proposes new
 	// restrictions (in.Restrictions != nil). A guidance-only patch carries the
 	// site's own PREVIOUSLY-STORED restrictions forward unchanged (applyPatch)
@@ -419,10 +455,16 @@ func (s *Service) RestoreSiteContext(ctx context.Context, tenantID, siteID, vers
 
 	current, err := s.repo.LatestSiteVersion(ctx, tenantID, siteID)
 	currentVersion := int64(0)
+	var currentRestrictions RestrictionSet
 	if err == nil {
 		currentVersion = current.Version
+		currentRestrictions = current.Snapshot.Restrictions
 	} else if !errors.Is(err, ErrNotFound) {
 		return Version{}, err
+	}
+
+	if lerr := authorizeLoosening(ctx, currentRestrictions, target.Snapshot.Restrictions); lerr != nil {
+		return Version{}, lerr
 	}
 
 	orgSnap, _, oerr := s.repo.LatestOrgSnapshot(ctx, tenantID)
@@ -509,6 +551,31 @@ func (s *Service) GetEffectiveContext(ctx context.Context, tenantID, siteID uuid
 }
 
 // --- shared helpers ----------------------------------------------------------
+
+// authorizeLoosening: loosening an AI control needs a signed-in person. A
+// proposal that lacks any item the layer carries now needs one; every other
+// proposal stays open to every caller the route admits.
+//
+// The caller is the principal the request authenticated as, read from ctx; a
+// ctx without one does not count as a person.
+//
+// current is the version the new one will be based on, so a concurrent write
+// is caught by the version check rather than racing this one.
+func authorizeLoosening(ctx context.Context, current, proposed RestrictionSet) error {
+	if !dropsAny(current, proposed) {
+		return nil
+	}
+	p, _ := domain.PrincipalFromContext(ctx)
+	return authz.AuthorizeLoosening(p)
+}
+
+// dropsAny reports whether proposed lacks any item current carries, in any of
+// RestrictionSet's fields. Comparison is exact, as in checkNoWiden.
+func dropsAny(current, proposed RestrictionSet) bool {
+	return len(missingItems(current.ForbiddenTools, proposed.ForbiddenTools)) > 0 ||
+		len(missingItems(current.ForbiddenDomains, proposed.ForbiddenDomains)) > 0 ||
+		len(missingItems(current.ForbiddenTopics, proposed.ForbiddenTopics)) > 0
+}
 
 // applyPatch builds the new full snapshot ADR-064 Decision 13 requires PATCH
 // to produce: "the server applies them onto the latest version's full

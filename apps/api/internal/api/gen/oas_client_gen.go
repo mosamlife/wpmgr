@@ -2516,9 +2516,9 @@ type Invoker interface {
 	ListSharedWithMe(ctx context.Context) (ListSharedWithMeRes, error)
 	// ListSiteAbilityRequests invokes listSiteAbilityRequests operation.
 	//
-	// Requests an AI connection made through `site_ability_run` for a reviewed write ability (today
-	// `wpmgr/page-create`), newest first. Requires `site.content.edit` and access to the site.
-	// `presented_digest` is returned only to a signed-in person.
+	// Requests an AI connection made through `site_ability_run` to change this site, each through a
+	// reviewed write ability and in any state, newest first. Requires `site.content.edit` and access to
+	// the site. `presented_digest` is returned only to a signed-in person.
 	//
 	// GET /api/v1/sites/{siteId}/ai/ability-requests
 	ListSiteAbilityRequests(ctx context.Context, params ListSiteAbilityRequestsParams) (ListSiteAbilityRequestsRes, error)
@@ -32655,9 +32655,9 @@ func (c *Client) sendListSharedWithMe(ctx context.Context) (res ListSharedWithMe
 
 // ListSiteAbilityRequests invokes listSiteAbilityRequests operation.
 //
-// Requests an AI connection made through `site_ability_run` for a reviewed write ability (today
-// `wpmgr/page-create`), newest first. Requires `site.content.edit` and access to the site.
-// `presented_digest` is returned only to a signed-in person.
+// Requests an AI connection made through `site_ability_run` to change this site, each through a
+// reviewed write ability and in any state, newest first. Requires `site.content.edit` and access to
+// the site. `presented_digest` is returned only to a signed-in person.
 //
 // GET /api/v1/sites/{siteId}/ai/ability-requests
 func (c *Client) ListSiteAbilityRequests(ctx context.Context, params ListSiteAbilityRequestsParams) (ListSiteAbilityRequestsRes, error) {
