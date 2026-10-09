@@ -294,8 +294,8 @@ final class BuilderDocumentRestore
      * posts row with locking reads, asks $plan what to write, writes it and
      * commits. Rolls back on a refusal from $plan and on any failure.
      *
-     * @param int      $postId Post ID.
-     * @param \Closure $plan   (rows, post) => {delete: list<int>, insert: list<array{0:string,1:string|null}>, post: array<string,string>} or {refuse: {code, detail}}.
+     * @param int                                                                                                        $postId Post ID.
+     * @param \Closure(list<array{id:int,key:string,value:string|null}>, array<string,string>): array<string,mixed> $plan   (rows, post) => {delete: list<int>, insert: list<array{0:string,1:string|null}>, post: array<string,string>} or {refuse: {code, detail}}.
      * @return array{code:string,detail:string}|null Null when committed.
      */
     private static function apply(int $postId, \Closure $plan): ?array
@@ -305,20 +305,20 @@ final class BuilderDocumentRestore
             return self::refusal(self::CODE_MISMATCH, self::DETAIL_WRITE_FAILED);
         }
         /** @var \wpdb $wpdb */
-        if ($wpdb->query('START TRANSACTION') === false || self::lastError($wpdb)) { // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- the restore's writes commit or roll back together
+        if ($wpdb->query('START TRANSACTION') === false || self::lastError($wpdb)) { // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- the restore's writes commit or roll back together
             return self::refusal(self::CODE_MISMATCH, self::DETAIL_WRITE_FAILED);
         }
 
         try {
             $current = self::read($postId, true);
             if ($current === null) {
-                $wpdb->query('ROLLBACK'); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- ends the restore's transaction; nothing was written
+                $wpdb->query('ROLLBACK'); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- ends the restore's transaction; nothing was written
 
                 return self::refusal(self::CODE_MISMATCH, self::DETAIL_POST_MISSING);
             }
             $writes = $plan($current['rows'], $current['post']);
             if (isset($writes['refuse'])) {
-                $wpdb->query('ROLLBACK'); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- ends the restore's transaction; nothing was written
+                $wpdb->query('ROLLBACK'); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- ends the restore's transaction; nothing was written
 
                 return $writes['refuse'];
             }
@@ -329,7 +329,7 @@ final class BuilderDocumentRestore
                 self::assertWritten($wpdb, $deleted !== false);
             }
             foreach ($writes['insert'] as [$key, $value]) {
-                $inserted = $wpdb->insert($wpdb->postmeta, ['post_id' => $postId, 'meta_key' => $key, 'meta_value' => $value], ['%d', '%s', '%s']); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.SlowDBQuery.slow_query_meta_key,WordPress.DB.SlowDBQuery.slow_query_meta_value -- the stored bytes, never unslashed or serialized by the meta API; a null value is stored as NULL
+                $inserted = $wpdb->insert($wpdb->postmeta, ['post_id' => $postId, 'meta_key' => $key, 'meta_value' => $value], ['%d', '%s', '%s']); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.SlowDBQuery.slow_db_query_meta_key,WordPress.DB.SlowDBQuery.slow_db_query_meta_value -- the stored bytes, never unslashed or serialized by the meta API; a null value is stored as NULL
                 self::assertWritten($wpdb, $inserted === 1);
             }
             if ($writes['post'] !== []) {
@@ -344,10 +344,10 @@ final class BuilderDocumentRestore
                 self::assertWritten($wpdb, $updated !== false);
             }
 
-            $committed = $wpdb->query('COMMIT'); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- the restore's writes land together
+            $committed = $wpdb->query('COMMIT'); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- the restore's writes land together
             self::assertWritten($wpdb, $committed !== false);
         } catch (\Throwable $e) {
-            $wpdb->query('ROLLBACK'); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- a failed restore leaves the rows it found
+            $wpdb->query('ROLLBACK'); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- a failed restore leaves the rows it found
 
             return self::refusal(self::CODE_MISMATCH, self::DETAIL_WRITE_FAILED);
         }

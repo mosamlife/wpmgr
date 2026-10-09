@@ -28,7 +28,7 @@ final class ElementorAdapter implements BuilderAdapter
     /** The adapter id. */
     public const ID = 'elementor';
 
-    /** Elementor's action that clears generated styles under a path. */
+    /** Elementor's action that clears generated styles under a path; afterRestore() fires it by this literal name. */
     public const HOOK_STYLES_CLEAR = 'elementor/atomic-widgets/styles/clear';
 
     /** The first segment of that path for a post's own (local) styles. */
@@ -278,7 +278,7 @@ final class ElementorAdapter implements BuilderAdapter
         }
         $this->api->deletePostCss($postId);
         try {
-            do_action(self::HOOK_STYLES_CLEAR, [self::STYLES_KEY_LOCAL, $postId]); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- firing Elementor's documented per-post style invalidation; not a custom hook
+            do_action('elementor/atomic-widgets/styles/clear', [self::STYLES_KEY_LOCAL, $postId]); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- firing Elementor's documented per-post style invalidation; not a custom hook
         } catch (\Throwable $e) {
             // Elementor rebuilds the styles on the post's next save.
             unset($e);
