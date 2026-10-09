@@ -1751,7 +1751,8 @@ class UpdateRunner
      * FROM until the next request. Reading the file is the only way to report
      * the version an update in this request has just installed (GitHub issue
      * #415). WordPress copies this file only after every other core file has
-     * copied, so it moves to the new version only once the update is complete.
+     * copied, so it names the new version only once the new core files are in
+     * place.
      *
      * The file is read as text with file_get_contents(), never include or
      * require. An opcode cache therefore cannot return the pre-update bytes,

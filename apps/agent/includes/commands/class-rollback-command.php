@@ -16,10 +16,12 @@
  * A core rollback is a forced downgrade of WordPress itself, so it runs only
  * when the request carries `allow_core_downgrade` as the JSON boolean `true`.
  * Any other value, including a missing key, the string "true" or the number 1,
- * is a refusal: ok=false, a plain log line, and nothing on the site changes.
- * The snapshot is kept, the update transient is left alone, and the
- * maintenance flag is not touched. `allow_core_downgrade` is ignored for
- * plugin and theme rollbacks (GitHub issue #415).
+ * is a refusal: ok=false, a plain log line, and no rollback work. Core is not
+ * downgraded, the snapshot is kept, the update transient is left alone, and a
+ * fresh maintenance flag stays in place. Like every rollback request, a
+ * refused one still clears a stale maintenance flag left behind by an
+ * interrupted run, on the way in. `allow_core_downgrade` is ignored for plugin
+ * and theme rollbacks (GitHub issue #415).
  *
  * All input is untrusted: the type is whitelisted, the slug is sanitized to
  * reject path traversal, and the snapshot id is validated by the manager. A
@@ -172,14 +174,14 @@ final class RollbackCommand implements CommandInterface
         // `true` counts: a string such as "false" is truthy in PHP, and an
         // irreversible operation must not turn on through a loose cast.
         // Refused here, above the try/finally below, for the same reason an
-        // invalid type is: a refused request changes nothing, and that
-        // includes leaving any maintenance flag exactly as it was.
+        // invalid type is: a refused request does no rollback work, and that
+        // includes leaving a fresh maintenance flag exactly as it was.
         $allowCoreDowngrade = ($params['allow_core_downgrade'] ?? null) === true;
         if ($type === 'core' && !$allowCoreDowngrade) {
             return $this->fail(
                 'Refused: rolling back WordPress core is a forced downgrade, and this request did not allow one '
-                . '(allow_core_downgrade was not set to true). Nothing was attempted and nothing on this site was '
-                . 'changed. WordPress core stays at its current version.'
+                . '(allow_core_downgrade was not set to true). Nothing was attempted, and WordPress core stays at '
+                . 'its current version.'
             );
         }
 

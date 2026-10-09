@@ -244,6 +244,25 @@ final class RollbackCommandCoreFlagTest extends TestCase
         );
     }
 
+    /**
+     * The one thing a refused request still does is what every rollback
+     * request does on the way in: clear a stale flag an interrupted run left.
+     */
+    public function test_a_refused_core_rollback_still_heals_a_stale_maintenance_flag(): void
+    {
+        file_put_contents($this->maintenanceFile, '<?php $upgrading = ' . time() . '; ?>'); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- test fixture
+        touch($this->maintenanceFile, time() - 3600);
+
+        $runner = self::runnerRecordingForceCore($this->versionFile);
+        $cmd    = new RollbackCommand(self::spySnapshots(), $runner);
+
+        $out = $cmd->execute([], ['type' => 'core', 'to_version' => '7.0']);
+
+        $this->assertFalse($out['ok']);
+        $this->assertSame([], $runner->forced);
+        $this->assertFileDoesNotExist($this->maintenanceFile);
+    }
+
     public function test_a_core_rollback_with_explicit_permission_forces_core_to_the_requested_version(): void
     {
         file_put_contents( // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- test fixture
