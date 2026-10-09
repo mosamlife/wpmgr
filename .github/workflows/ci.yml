@@ -516,6 +516,19 @@ jobs:
       - name: Version surface guard (openapi, changelog page, badge, agent, install pins)
         run: scripts/check-version-surfaces.sh
 
+      # ---- media-encoder reaper check (GH #290) ------------------------------
+      # The media-encoder image runs tini as PID 1 so the processes Chromium
+      # orphans get reaped instead of piling up as zombies. The check that asks
+      # a running container whether that is true is
+      # scripts/check-media-encoder-reaps.sh, and release.yml runs it for real
+      # against the built image before the image is pushed. What runs HERE is
+      # its self-test: fixture /proc trees served through a fake docker, no
+      # Docker needed. It covers the zombie, the wrong PID 1, the honest cases
+      # that must stay green, and every way the check can learn nothing, which
+      # must exit 2 and never 0.
+      - name: Media-encoder reaper check self-test (GH #290)
+        run: scripts/check-media-encoder-reaps_test.sh
+
 
       # ---- License surfaces --------------------------------------------------
       # GH #547: the agent declared MIT in its plugin header and GPLv2 or later

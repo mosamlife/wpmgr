@@ -89,6 +89,30 @@ jobs:
             type=raw,value=${{ steps.vars.outputs.version }}
             type=raw,value=latest
 
+      # GH #290. The media-encoder image runs tini as PID 1 so the processes
+      # Chromium orphans are reaped. Build it once into the local image store and
+      # check it BEFORE anything is pushed: a failed check has to stop the
+      # publish, not report on an image that is already :latest. The push step
+      # below builds the same inputs on the same builder, so it reuses these
+      # layers. scripts/check-media-encoder-reaps.sh holds the logic and
+      # scripts/check-media-encoder-reaps_test.sh (run by ci.yml) its tests.
+      - name: Build media-encoder image for the reaper check
+        if: matrix.name == 'media-encoder'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.file }}
+          platforms: ${{ matrix.platforms }}
+          load: true
+          push: false
+          tags: wpmgr-media-encoder:reaper-check
+          build-args: ${{ matrix.build_arg }}=${{ steps.vars.outputs.version }}
+          provenance: false
+
+      - name: Check media-encoder reaps orphaned processes (GH #290)
+        if: matrix.name == 'media-encoder'
+        run: scripts/check-media-encoder-reaps.sh --image wpmgr-media-encoder:reaper-check
+
       - name: Build + push ${{ matrix.name }}
         uses: docker/build-push-action@v6
         with:
