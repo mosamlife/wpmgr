@@ -33,9 +33,11 @@
 # RUN IT:
 #   scripts/check-schema-sync_test.sh                every case
 #   scripts/check-schema-sync_test.sh column         only cases matching "column"
-#   scripts/check-schema-sync_test.sh --real         the four mandated plants
-#                                                    against a scratch copy of
-#                                                    this repository's own tree
+#   scripts/check-schema-sync_test.sh --real         four plants against a scratch
+#                                                    copy of this repository's own
+#                                                    tree, then the tree untouched
+#   WPMGR_SCHEMA_SYNC_TEST_VERBOSE=1 ...             also print what the guard said
+#                                                    for every case that passed
 #
 # Point it at a different implementation to prove the suite is not vacuous
 # (reintroduce a hole in a copy, watch the suite go red):
@@ -318,6 +320,10 @@ if [ "${1:-}" = "--emit-fixture" ]; then
   exit 0
 fi
 
+# Set to anything to print what the guard said for every case, not only the
+# failing ones: how a reviewer reads the red output of each plant.
+VERBOSE="${WPMGR_SCHEMA_SYNC_TEST_VERBOSE:-}"
+
 REAL=0
 FILTER=""
 case "${1:-}" in
@@ -492,6 +498,9 @@ case_run() {
   else
     PASSED=$((PASSED + 1))
     printf 'ok   %s\n' "$name"
+    if [ -n "$VERBOSE" ]; then
+      printf '%s\n' "$out" | sed 's/^/      | /'
+    fi
   fi
 }
 
