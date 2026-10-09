@@ -91,7 +91,7 @@ const readPicker = () => screen.getByRole("group", { name: "It will be able to r
 
 const rowBox = (picker: HTMLElement, cap: string) =>
   within(picker).getByRole<HTMLInputElement>("checkbox", {
-    name: new RegExp(`^${capabilityLabel(cap)}\\b`),
+    name: new RegExp(`^${capabilityLabel(cap)}`),
   });
 
 /** The read rows currently ticked, as wire names, in the order SERVER_READS lists them. */

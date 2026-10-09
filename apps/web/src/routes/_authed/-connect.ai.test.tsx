@@ -410,7 +410,7 @@ const picker = () => screen.getByRole("group", { name: "It will be able to read"
 
 const row = (cap: string) =>
   within(picker()).getByRole<HTMLInputElement>("checkbox", {
-    name: new RegExp(`^${capabilityLabel(cap)}\\b`),
+    name: new RegExp(`^${capabilityLabel(cap)}`),
   });
 
 describe("/connect/ai, the approval posts exactly what is ticked", () => {
