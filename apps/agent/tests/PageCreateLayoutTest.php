@@ -345,6 +345,12 @@ final class PageCreateLayoutTest extends TestCase
             self::c('link-site-root', 'ok', [$btn('/')]),
             self::c('link-punycode-host', 'ok', [$btn('https://xn--bcher-kva.example/')]),
             self::c('link-other-website', 'ok', [$btn('https://calendly.example/acme/30min')]),
+            // An ampersand that does not start a character reference, and a colon WordPress keeps.
+            self::c('link-ampersand-not-a-reference', 'ok', [$btn('https://example.com/?a=1&copy=2&b=3&;c&#;d&#x;e&#xg;')]),
+            self::c('link-path-ampersand-not-a-reference', 'ok', [$btn('/shop?x=1&copy=2#top')]),
+            self::c('link-path-colon-percent-encoded', 'ok', [$btn('/shop/sale%3Asummer')]),
+            self::c('link-https-colon-in-path', 'ok', [$btn('https://example.com/shop/sale:summer?t=10:30')]),
+            self::c('image-alt-ampersand-not-a-reference', 'ok', [['type' => 'image', 'attachment_id' => 1, 'alt' => 'Logo &copy 2026, a & b, AT&T, &; &#; &#x; &#xg; & amp;']]),
             self::c('quote-with-citation', 'ok', [['type' => 'quote', 'paragraphs' => ['One.', 'Two [3].'], 'citation' => 'Jane & John']]),
             self::c('separator', 'ok', [['type' => 'separator']]),
             self::c('spacers', 'ok', [['type' => 'spacer', 'size' => 'small'], ['type' => 'spacer', 'size' => 'medium'], ['type' => 'spacer', 'size' => 'large']]),
@@ -453,6 +459,21 @@ final class PageCreateLayoutTest extends TestCase
             self::c('link-empty', 'link_invalid', [$btn('')]),
             self::c('link-too-long', 'link_invalid', [$btn('https://example.com/' . str_repeat('a', 2029))]),
             self::c('link-relative-without-slash', 'link_invalid', [$btn('contact')]),
+            // A character reference: the block editor writes its ampersand bare.
+            self::c('link-reference-amp', 'link_invalid', [$btn('https://example.com/?a=1&amp;b=2')]),
+            self::c('link-reference-named', 'link_invalid', [$btn('/shop?x=1&copy;=2')]),
+            self::c('link-reference-unknown-name', 'link_invalid', [$btn('https://example.com/?a=1&b;c')]),
+            self::c('link-reference-decimal', 'link_invalid', [$btn('/&#47;evil.example/login')]),
+            self::c('link-reference-hex', 'link_invalid', [$btn('https://example.com/a&#x2F;b')]),
+            self::c('link-reference-hex-upper', 'link_invalid', [$btn('https://example.com/a&#X2f;b')]),
+            // A colon in a site path, in any spelling: WordPress drops the text before it.
+            self::c('link-path-colon', 'link_invalid', [$btn('/shop/sale:summer')]),
+            self::c('link-path-colon-in-query', 'link_invalid', [$btn('/shop?time=10:30')]),
+            self::c('link-path-colon-in-fragment', 'link_invalid', [$btn('/shop#a:b')]),
+            self::c('link-path-colon-after-slash-query', 'link_invalid', [$btn('/shop/?time=10:30')]),
+            self::c('link-path-numeric-colon-no-semicolon', 'link_invalid', [$btn('/a&#58b')]),
+            self::c('link-path-hex-colon-no-semicolon', 'link_invalid', [$btn('/a&#x3ag')]),
+            self::c('link-path-ampersand-hash', 'link_invalid', [$btn('/a?x=1&#top')]),
 
             // The classic editor holds no layout.
             self::c('classic-columns', 'layout_needs_block_editor', [$cols([$col($p()), $col($p())])], 'wordpress_classic'),
@@ -466,6 +487,13 @@ final class PageCreateLayoutTest extends TestCase
             self::text('alt-markup', [['type' => 'image', 'attachment_id' => 1, 'alt' => '<b>x</b>']]),
             self::text('alt-whitespace-only', [['type' => 'image', 'attachment_id' => 1, 'alt' => ' ']]),
             self::text('alt-301-chars', [['type' => 'image', 'attachment_id' => 1, 'alt' => str_repeat('a', 301)]]),
+            self::text('alt-reference-amp', [['type' => 'image', 'attachment_id' => 1, 'alt' => 'Already &amp; encoded']]),
+            self::text('alt-reference-named', [['type' => 'image', 'attachment_id' => 1, 'alt' => 'Logo &copy; 2026']]),
+            self::text('alt-reference-nbsp', [['type' => 'image', 'attachment_id' => 1, 'alt' => 'a&nbsp;b']]),
+            self::text('alt-reference-unknown-name', [['type' => 'image', 'attachment_id' => 1, 'alt' => 'AT&T; and more']]),
+            self::text('alt-reference-decimal', [['type' => 'image', 'attachment_id' => 1, 'alt' => 'Alt &#39; text']]),
+            self::text('alt-reference-hex', [['type' => 'image', 'attachment_id' => 1, 'alt' => 'Alt &#x27; text']]),
+            self::text('alt-reference-hex-upper', [['type' => 'image', 'attachment_id' => 1, 'alt' => 'Alt &#X27; text']]),
             self::text('caption-empty', [$img(1, ['caption' => ''])]),
             self::text('caption-501-chars', [$img(1, ['caption' => str_repeat('a', 501)])]),
             self::text('button-text-empty', [['type' => 'buttons', 'buttons' => [['text' => '', 'url' => '/a']]]]),
@@ -514,10 +542,10 @@ final class PageCreateLayoutTest extends TestCase
 
     public function test_alt_text_is_escaped_to_the_forms_every_core_keeps(): void
     {
-        $r    = self::validate([['type' => 'image', 'attachment_id' => 5, 'alt' => 'Bob\'s "dog" & cat &amp;']]);
+        $r    = self::validate([['type' => 'image', 'attachment_id' => 5, 'alt' => 'Bob\'s "dog" & cat &amp']]);
         $html = PageCreateBuilder::render($r['spec'], [5 => ['url' => 'https://example.com/a.jpg?x=1&y=2']]);
 
-        $this->assertStringContainsString('alt="Bob&apos;s &quot;dog&quot; &amp; cat &amp;amp;"', $html);
+        $this->assertStringContainsString('alt="Bob&apos;s &quot;dog&quot; &amp; cat &amp;amp"', $html);
         $this->assertStringContainsString('src="https://example.com/a.jpg?x=1&amp;y=2"', $html);
         $this->assertStringContainsString('class="wp-image-5" />', $html, 'void elements end in a space and a slash');
         $this->assertStringNotContainsString('"/>', $html);

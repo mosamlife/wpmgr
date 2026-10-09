@@ -1243,6 +1243,9 @@ final class PageCreateWriteTest extends TestCase
             'javascript address'        => ['javascript src', ['src' => ['javascript:alert(1)', 1, 1, false]], 'image_url_unusable'],
             'quote in the address'      => ['quote src', ['src' => ['https://example.com/a".jpg', 1, 1, false]], 'image_url_unusable'],
             'user name in the address'  => ['userinfo src', ['src' => ['https://u@example.com/a.jpg', 1, 1, false]], 'image_url_unusable'],
+            'a named reference'         => ['named reference src', ['src' => ['https://example.com/a.jpg?x=1&amp;y=2', 1, 1, false]], 'image_url_unusable'],
+            'a numeric reference'       => ['numeric reference src', ['src' => ['https://example.com/&#47;a.jpg', 1, 1, false]], 'image_url_unusable'],
+            'a hex reference'           => ['hex reference src', ['src' => ['https://example.com/a&#x2F;b.jpg', 1, 1, false]], 'image_url_unusable'],
             'no address'                => ['no src', ['src' => false], 'image_url_unusable'],
             'unreadable file name'      => ['bad file name', ['file' => "/var/www/up/\xff.jpg"], 'image_not_available'],
         ];

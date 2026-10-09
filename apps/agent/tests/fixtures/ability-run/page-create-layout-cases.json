@@ -80,6 +80,36 @@
             "go": "accept"
         },
         {
+            "name": "link-ampersand-not-a-reference",
+            "input": "{\"post_type\":\"page\",\"editor\":\"wordpress_blocks\",\"title\":\"T\",\"outline\":[{\"type\":\"buttons\",\"buttons\":[{\"text\":\"Go\",\"url\":\"https://example.com/?a=1&copy=2&b=3&;c&#;d&#x;e&#xg;\"}]}]}",
+            "agent": "ok",
+            "go": "accept"
+        },
+        {
+            "name": "link-path-ampersand-not-a-reference",
+            "input": "{\"post_type\":\"page\",\"editor\":\"wordpress_blocks\",\"title\":\"T\",\"outline\":[{\"type\":\"buttons\",\"buttons\":[{\"text\":\"Go\",\"url\":\"/shop?x=1&copy=2#top\"}]}]}",
+            "agent": "ok",
+            "go": "accept"
+        },
+        {
+            "name": "link-path-colon-percent-encoded",
+            "input": "{\"post_type\":\"page\",\"editor\":\"wordpress_blocks\",\"title\":\"T\",\"outline\":[{\"type\":\"buttons\",\"buttons\":[{\"text\":\"Go\",\"url\":\"/shop/sale%3Asummer\"}]}]}",
+            "agent": "ok",
+            "go": "accept"
+        },
+        {
+            "name": "link-https-colon-in-path",
+            "input": "{\"post_type\":\"page\",\"editor\":\"wordpress_blocks\",\"title\":\"T\",\"outline\":[{\"type\":\"buttons\",\"buttons\":[{\"text\":\"Go\",\"url\":\"https://example.com/shop/sale:summer?t=10:30\"}]}]}",
+            "agent": "ok",
+            "go": "accept"
+        },
+        {
+            "name": "image-alt-ampersand-not-a-reference",
+            "input": "{\"post_type\":\"page\",\"editor\":\"wordpress_blocks\",\"title\":\"T\",\"outline\":[{\"type\":\"image\",\"attachment_id\":1,\"alt\":\"Logo &copy 2026, a & b, AT&T, &; &#; &#x; &#xg; & amp;\"}]}",
+            "agent": "ok",
+            "go": "accept"
+        },
+        {
             "name": "quote-with-citation",
             "input": "{\"post_type\":\"page\",\"editor\":\"wordpress_blocks\",\"title\":\"T\",\"outline\":[{\"type\":\"quote\",\"paragraphs\":[\"One.\",\"Two [3].\"],\"citation\":\"Jane & John\"}]}",
             "agent": "ok",
@@ -650,6 +680,84 @@
             "go": "refuse"
         },
         {
+            "name": "link-reference-amp",
+            "input": "{\"post_type\":\"page\",\"editor\":\"wordpress_blocks\",\"title\":\"T\",\"outline\":[{\"type\":\"buttons\",\"buttons\":[{\"text\":\"Go\",\"url\":\"https://example.com/?a=1&amp;b=2\"}]}]}",
+            "agent": "link_invalid",
+            "go": "refuse"
+        },
+        {
+            "name": "link-reference-named",
+            "input": "{\"post_type\":\"page\",\"editor\":\"wordpress_blocks\",\"title\":\"T\",\"outline\":[{\"type\":\"buttons\",\"buttons\":[{\"text\":\"Go\",\"url\":\"/shop?x=1&copy;=2\"}]}]}",
+            "agent": "link_invalid",
+            "go": "refuse"
+        },
+        {
+            "name": "link-reference-unknown-name",
+            "input": "{\"post_type\":\"page\",\"editor\":\"wordpress_blocks\",\"title\":\"T\",\"outline\":[{\"type\":\"buttons\",\"buttons\":[{\"text\":\"Go\",\"url\":\"https://example.com/?a=1&b;c\"}]}]}",
+            "agent": "link_invalid",
+            "go": "refuse"
+        },
+        {
+            "name": "link-reference-decimal",
+            "input": "{\"post_type\":\"page\",\"editor\":\"wordpress_blocks\",\"title\":\"T\",\"outline\":[{\"type\":\"buttons\",\"buttons\":[{\"text\":\"Go\",\"url\":\"/&#47;evil.example/login\"}]}]}",
+            "agent": "link_invalid",
+            "go": "refuse"
+        },
+        {
+            "name": "link-reference-hex",
+            "input": "{\"post_type\":\"page\",\"editor\":\"wordpress_blocks\",\"title\":\"T\",\"outline\":[{\"type\":\"buttons\",\"buttons\":[{\"text\":\"Go\",\"url\":\"https://example.com/a&#x2F;b\"}]}]}",
+            "agent": "link_invalid",
+            "go": "refuse"
+        },
+        {
+            "name": "link-reference-hex-upper",
+            "input": "{\"post_type\":\"page\",\"editor\":\"wordpress_blocks\",\"title\":\"T\",\"outline\":[{\"type\":\"buttons\",\"buttons\":[{\"text\":\"Go\",\"url\":\"https://example.com/a&#X2f;b\"}]}]}",
+            "agent": "link_invalid",
+            "go": "refuse"
+        },
+        {
+            "name": "link-path-colon",
+            "input": "{\"post_type\":\"page\",\"editor\":\"wordpress_blocks\",\"title\":\"T\",\"outline\":[{\"type\":\"buttons\",\"buttons\":[{\"text\":\"Go\",\"url\":\"/shop/sale:summer\"}]}]}",
+            "agent": "link_invalid",
+            "go": "refuse"
+        },
+        {
+            "name": "link-path-colon-in-query",
+            "input": "{\"post_type\":\"page\",\"editor\":\"wordpress_blocks\",\"title\":\"T\",\"outline\":[{\"type\":\"buttons\",\"buttons\":[{\"text\":\"Go\",\"url\":\"/shop?time=10:30\"}]}]}",
+            "agent": "link_invalid",
+            "go": "refuse"
+        },
+        {
+            "name": "link-path-colon-in-fragment",
+            "input": "{\"post_type\":\"page\",\"editor\":\"wordpress_blocks\",\"title\":\"T\",\"outline\":[{\"type\":\"buttons\",\"buttons\":[{\"text\":\"Go\",\"url\":\"/shop#a:b\"}]}]}",
+            "agent": "link_invalid",
+            "go": "refuse"
+        },
+        {
+            "name": "link-path-colon-after-slash-query",
+            "input": "{\"post_type\":\"page\",\"editor\":\"wordpress_blocks\",\"title\":\"T\",\"outline\":[{\"type\":\"buttons\",\"buttons\":[{\"text\":\"Go\",\"url\":\"/shop/?time=10:30\"}]}]}",
+            "agent": "link_invalid",
+            "go": "refuse"
+        },
+        {
+            "name": "link-path-numeric-colon-no-semicolon",
+            "input": "{\"post_type\":\"page\",\"editor\":\"wordpress_blocks\",\"title\":\"T\",\"outline\":[{\"type\":\"buttons\",\"buttons\":[{\"text\":\"Go\",\"url\":\"/a&#58b\"}]}]}",
+            "agent": "link_invalid",
+            "go": "refuse"
+        },
+        {
+            "name": "link-path-hex-colon-no-semicolon",
+            "input": "{\"post_type\":\"page\",\"editor\":\"wordpress_blocks\",\"title\":\"T\",\"outline\":[{\"type\":\"buttons\",\"buttons\":[{\"text\":\"Go\",\"url\":\"/a&#x3ag\"}]}]}",
+            "agent": "link_invalid",
+            "go": "refuse"
+        },
+        {
+            "name": "link-path-ampersand-hash",
+            "input": "{\"post_type\":\"page\",\"editor\":\"wordpress_blocks\",\"title\":\"T\",\"outline\":[{\"type\":\"buttons\",\"buttons\":[{\"text\":\"Go\",\"url\":\"/a?x=1&#top\"}]}]}",
+            "agent": "link_invalid",
+            "go": "refuse"
+        },
+        {
             "name": "classic-columns",
             "input": "{\"post_type\":\"page\",\"editor\":\"wordpress_classic\",\"title\":\"T\",\"outline\":[{\"type\":\"columns\",\"columns\":[{\"children\":[{\"type\":\"paragraph\",\"text\":\"x\"}]},{\"children\":[{\"type\":\"paragraph\",\"text\":\"x\"}]}]}]}",
             "agent": "layout_needs_block_editor",
@@ -700,6 +808,48 @@
         {
             "name": "alt-301-chars",
             "input": "{\"post_type\":\"page\",\"editor\":\"wordpress_blocks\",\"title\":\"T\",\"outline\":[{\"type\":\"image\",\"attachment_id\":1,\"alt\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}]}",
+            "agent": "create_content_invalid",
+            "go": "accept"
+        },
+        {
+            "name": "alt-reference-amp",
+            "input": "{\"post_type\":\"page\",\"editor\":\"wordpress_blocks\",\"title\":\"T\",\"outline\":[{\"type\":\"image\",\"attachment_id\":1,\"alt\":\"Already &amp; encoded\"}]}",
+            "agent": "create_content_invalid",
+            "go": "accept"
+        },
+        {
+            "name": "alt-reference-named",
+            "input": "{\"post_type\":\"page\",\"editor\":\"wordpress_blocks\",\"title\":\"T\",\"outline\":[{\"type\":\"image\",\"attachment_id\":1,\"alt\":\"Logo &copy; 2026\"}]}",
+            "agent": "create_content_invalid",
+            "go": "accept"
+        },
+        {
+            "name": "alt-reference-nbsp",
+            "input": "{\"post_type\":\"page\",\"editor\":\"wordpress_blocks\",\"title\":\"T\",\"outline\":[{\"type\":\"image\",\"attachment_id\":1,\"alt\":\"a&nbsp;b\"}]}",
+            "agent": "create_content_invalid",
+            "go": "accept"
+        },
+        {
+            "name": "alt-reference-unknown-name",
+            "input": "{\"post_type\":\"page\",\"editor\":\"wordpress_blocks\",\"title\":\"T\",\"outline\":[{\"type\":\"image\",\"attachment_id\":1,\"alt\":\"AT&T; and more\"}]}",
+            "agent": "create_content_invalid",
+            "go": "accept"
+        },
+        {
+            "name": "alt-reference-decimal",
+            "input": "{\"post_type\":\"page\",\"editor\":\"wordpress_blocks\",\"title\":\"T\",\"outline\":[{\"type\":\"image\",\"attachment_id\":1,\"alt\":\"Alt &#39; text\"}]}",
+            "agent": "create_content_invalid",
+            "go": "accept"
+        },
+        {
+            "name": "alt-reference-hex",
+            "input": "{\"post_type\":\"page\",\"editor\":\"wordpress_blocks\",\"title\":\"T\",\"outline\":[{\"type\":\"image\",\"attachment_id\":1,\"alt\":\"Alt &#x27; text\"}]}",
+            "agent": "create_content_invalid",
+            "go": "accept"
+        },
+        {
+            "name": "alt-reference-hex-upper",
+            "input": "{\"post_type\":\"page\",\"editor\":\"wordpress_blocks\",\"title\":\"T\",\"outline\":[{\"type\":\"image\",\"attachment_id\":1,\"alt\":\"Alt &#X27; text\"}]}",
             "agent": "create_content_invalid",
             "go": "accept"
         },
