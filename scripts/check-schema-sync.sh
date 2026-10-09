@@ -240,6 +240,11 @@ if [ -z "$CONTAINER" ]; then
     broken "could not start the throwaway postgres ($IMAGE): $run_err"
   fi
   CONTAINER="$OWN_CONTAINER"
+elif [ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null)" != "true" ]; then
+  # A container the caller named has to exist and be running now; waiting on
+  # one that never will be would only turn a clear error into a long one.
+  CONTAINER=""
+  broken "WPMGR_SCHEMA_SYNC_CONTAINER names a container that is not running."
 fi
 
 # ---------------------------------------------------------------------------
