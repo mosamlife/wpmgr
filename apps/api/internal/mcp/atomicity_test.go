@@ -39,6 +39,7 @@ func TestExchange_TokenPersistenceFailureLeavesTheCodeRedeemable(t *testing.T) {
 		return &fakeStore{
 			codeOK: true, code: redeemableCode(t, verifier, redirect, clientID),
 			clientOK: true, client: liveClient(redirect),
+			grantOauthScopes: []string{string(ScopeRead)},
 		}
 	}
 	req := TokenRequest{
@@ -153,6 +154,7 @@ func TestExchange_CredentialTransportMustMatchTheRegisteredMethod(t *testing.T) 
 			store := &fakeStore{
 				codeOK: true, code: redeemableCode(t, verifier, registeredRedirect, registeredClientID),
 				clientOK: true, client: client,
+				grantOauthScopes: []string{string(ScopeRead)},
 			}
 			_, err := NewService(store).Exchange(context.Background(), TokenRequest{
 				GrantType: "authorization_code", Code: "c", RedirectURI: registeredRedirect,
