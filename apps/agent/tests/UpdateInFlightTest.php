@@ -299,18 +299,66 @@ final class UpdateInFlightTest extends TestCase
         );
     }
 
-    public function test_marker_exactly_at_the_staleness_boundary_is_left_alone(): void
+    /*
+     * The two boundary tests below pin the "< STALE_AFTER_SECONDS" comparison
+     * from both sides: an age of 1199 s is fresh, an age of exactly 1200 s is
+     * stale. Each one passes a fixed clock to healStaleIfPresent(), so the
+     * verdict depends only on the marker's age against that clock and never
+     * on the wall clock ticking between the test's arithmetic and the read.
+     *
+     * The fixed clock is set 100000 s away from the real one, in the
+     * direction where the real clock would give the opposite verdict. A
+     * method that ignored the injected clock therefore fails these tests on
+     * every run, instead of passing by coincidence when both reads land in
+     * the same second.
+     *
+     * The liveness lock is released and the live directory reported
+     * incomplete in both, so the only gate left between a stale verdict and
+     * a restore is the age comparison itself.
+     */
+
+    public function test_marker_one_second_short_of_the_staleness_threshold_is_left_alone(): void
     {
-        // Boundary: strictly LESS than the threshold counts as fresh — this
-        // pins the "< STALE_AFTER_SECONDS" comparison direction.
-        UpdateInFlight::mark('plugin', 'foo/foo.php', 'snap_boundary');
-        $this->ageTheOnlyMarker(time() - 1199);
+        $now  = time() - 100000;
+        $lock = UpdateInFlight::mark('plugin', 'foo/foo.php', 'snap_fresh_side');
+        UpdateInFlight::release($lock);
+        $this->ageTheOnlyMarker($now - 1199);
 
         $snapshots = $this->spySnapshots();
-        UpdateInFlight::healStaleIfPresent($snapshots);
+        UpdateInFlight::healStaleIfPresent($snapshots, $this->healthOverrideRunner(false), $now);
 
-        $this->assertSame([], $snapshots->restored);
-        $this->assertCount(1, glob($this->storeDir . '/*.json') ?: []);
+        $this->assertSame(
+            [],
+            $snapshots->restored,
+            'a marker 1199 s old is still inside the freshness window and must not be restored'
+        );
+        $this->assertCount(
+            1,
+            glob($this->storeDir . '/*.json') ?: [],
+            'a marker 1199 s old must be left on disk'
+        );
+    }
+
+    public function test_marker_exactly_at_the_staleness_threshold_is_reconciled(): void
+    {
+        $now  = time() + 100000;
+        $lock = UpdateInFlight::mark('plugin', 'foo/foo.php', 'snap_stale_side');
+        UpdateInFlight::release($lock);
+        $this->ageTheOnlyMarker($now - 1200);
+
+        $snapshots = $this->spySnapshots();
+        UpdateInFlight::healStaleIfPresent($snapshots, $this->healthOverrideRunner(false), $now);
+
+        $this->assertSame(
+            [['plugin', 'foo/foo.php', 'snap_stale_side']],
+            $snapshots->restored,
+            'a marker exactly 1200 s old is stale and must be restored'
+        );
+        $this->assertCount(
+            0,
+            glob($this->storeDir . '/*.json') ?: [],
+            'a reconciled marker must be removed'
+        );
     }
 
     public function test_corrupt_marker_is_removed_without_attempting_a_restore(): void
