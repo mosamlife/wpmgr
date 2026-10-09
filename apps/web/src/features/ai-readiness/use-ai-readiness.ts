@@ -58,8 +58,11 @@ export class AiReadinessLoadError extends Error {
 }
 
 /**
- * What a site's readiness was computed from. These two timestamps move when new
- * results land (a metadata report, a tool-list read) and not otherwise.
+ * What a site's readiness was computed from, as far as the site's own reports
+ * go. These two timestamps move when new results land (a metadata report, a
+ * tool-list read) and not otherwise. They do not move when the AI page creation
+ * switch flips: turning it on refreshes the card and the rollup itself
+ * (useEnableContentEditing).
  */
 function resultsStamp(r: Pick<SiteAiReadiness, "metadata_as_of" | "abilities_as_of">): string {
   return `${r.metadata_as_of ?? ""}|${r.abilities_as_of ?? ""}`;

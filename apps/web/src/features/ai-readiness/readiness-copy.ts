@@ -171,11 +171,13 @@ function isCheckId(id: string): id is AiReadinessCheckId {
 // ---------------------------------------------------------------------------
 
 /**
- * The reasons the control plane sends on each check (packages/openapi/
- * openapi.yaml, AIReadinessCheck). A row whose reason is not in its check's set
- * was decided by a rule this page cannot read, so it reads "not checked" in
- * grey whatever state it carries, never red. A null reason is not an unknown
- * one: it is how a pass, and a fail with a single way to fail, arrive.
+ * The reasons this page reads on each check. The sets follow AIReadinessCheck
+ * in packages/openapi/openapi.yaml, with `prerelease_build` on the WordPress
+ * row for a development or pre-release build. A row whose reason is not in its
+ * check's set was decided by a rule this page cannot read, so it reads "not
+ * checked" in grey whatever state it carries, never red. A null reason is not
+ * an unknown one: it is how a pass, and a fail with a single way to fail,
+ * arrive.
  */
 const KNOWN_REASONS: Record<AiReadinessCheckId, ReadonlySet<string>> = {
   wp_version: new Set(["not_reported", "prerelease_build"]),
