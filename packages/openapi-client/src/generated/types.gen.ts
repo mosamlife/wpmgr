@@ -18881,7 +18881,7 @@ export type RefreshSiteAiReadinessErrors = {
    */
   403: Error;
   /**
-   * The site is not the caller's
+   * The site is not the caller's, or it is archived
    */
   404: Error;
   /**
