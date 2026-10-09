@@ -317,6 +317,7 @@ func TestElementorPrecheckProjection(t *testing.T) {
 				a.digestTree = json.RawMessage(strings.Replace(string(a.tree), "Prices include VAT.", "Prices exclude VAT.", 1))
 			}},
 	}
+	shownTrees := 0
 	for _, rc := range cases {
 		input, f, a := setup(rc.golden, rc.c, rc.mod)
 		if rc.wantFormat != "" && f.elementorFormat != rc.wantFormat {
@@ -336,6 +337,30 @@ func TestElementorPrecheckProjection(t *testing.T) {
 		if _, ok := verifyBuilderPageCreatePrecheck(a.response(t, entrySum, input), entrySum, input, f, rc.golden.RequestID); ok {
 			t.Errorf("%s: accepted", rc.name)
 		}
+		// A tree other than the control plane's is refused when the answer's
+		// digests are its own (above) and also when they are the digests of
+		// the control plane's tree: the digest does not describe the tree
+		// shown, and only the comparison of the trees can say so.
+		if a.layout != elementorLayoutBoxes && a.layout != elementorLayoutRows {
+			continue
+		}
+		built, ok := elementorClassicTree(input, rc.golden.RequestID, a.layout == elementorLayoutBoxes, a.media)
+		if !ok {
+			continue
+		}
+		want, _ := phpEncodeBytes(built)
+		if shown, ok := phpCanonicalJSON(a.tree, elementorTreeMaxDepth); !ok || bytes.Equal(shown, want) {
+			continue
+		}
+		twin := a
+		twin.digestTree = want
+		shownTrees++
+		if _, ok := verifyBuilderPageCreatePrecheck(twin.response(t, entrySum, input), entrySum, input, f, rc.golden.RequestID); ok {
+			t.Errorf("%s, with the digest of the control plane's tree: accepted", rc.name)
+		}
+	}
+	if shownTrees == 0 {
+		t.Fatal("no refusal case shows a tree other than the control plane's")
 	}
 
 	// The same answer checked against another request id is refused: the
