@@ -151,7 +151,10 @@ expect "a listed case that is not in the markup is red (stale)" nonzero PAGE_KSE
 printf '7.1.3 only-two-fields\n' >"$tmp/known_malformed.txt"
 expect "a malformed known-changes line is red" nonzero PAGE_KSES_VERSIONS="7.1.3" PAGE_KSES_KNOWN_FILE="$tmp/known_malformed.txt" PAGE_KSES_MARKUP="$tmp/layout_ok.json"
 expect "a missing known-changes file is red" nonzero PAGE_KSES_KNOWN_FILE="$tmp/no-such-known.txt" PAGE_KSES_MARKUP="$tmp/layout_ok.json"
-expect "an empty known-changes setting is red" nonzero PAGE_KSES_KNOWN_FILE="" PAGE_KSES_MARKUP="$tmp/layout_ok.json"
+# Real generator output on the one core it is clean on: the committed list has
+# nothing to say there, so a setting that wrongly fell back to it would be green.
+expect "an empty known-changes setting is red" nonzero PAGE_KSES_VERSIONS="7.1.3" PAGE_KSES_KNOWN_FILE=""
+said "  and it says the file is missing" "known-changes file missing"
 expect "known changes can be switched off explicitly" 0 PAGE_KSES_KNOWN_FILE="-" PAGE_KSES_MARKUP="$tmp/layout_ok.json"
 
 # --- must go red: empty and missing input -----------------------------------------------
@@ -234,6 +237,7 @@ expect "generated block and classic markup is checked" 0 PAGE_BLOCKS_OUTLINES="$
 said "  and both files were checked" "2 file(s)"
 printf '[{"name":"blocks-only","outline":[{"type":"paragraph","text":"x"}]}]' >"$tmp/outlines_noclassic.json"
 expect "no classic case at all is red (classic would go unchecked)" nonzero PAGE_BLOCKS_OUTLINES="$tmp/outlines_noclassic.json"
+said "  and the generator refuses to write an empty classic file" "no cases to write"
 printf '[{"name":"nope","outline":[{"type":"nonsense"}]}]' >"$tmp/outlines_refused.json"
 expect "an outline the builder refuses is red" nonzero PAGE_BLOCKS_OUTLINES="$tmp/outlines_refused.json"
 said "  and the generator is what failed" "the generator failed"
