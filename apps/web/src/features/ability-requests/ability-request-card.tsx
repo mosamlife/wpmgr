@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useId, useState } from "react";
+import { Fragment, useId } from "react";
 import type { AbilityRequest } from "@wpmgr/api";
 
 import { Button } from "@/components/ui/button";
@@ -7,8 +7,11 @@ import { setUpForLine } from "@/features/ai-requests/request-card-model";
 
 import { LayoutPreview } from "./layout-preview";
 import { layoutSummary, parsePageBuilder, parsePagePreview } from "./outline-model";
+import { PageEditCard } from "./page-edit-card";
+import { alsoCoversLine, isPageEdit } from "./page-edit-model";
 import { isRestWrite } from "./rest-card-model";
 import { StructuredAbilityCard } from "./structured-card";
+import { useWindowOpen } from "./use-window-open";
 import {
   NOT_SHOWABLE_COPY,
   NOTHING_PUBLISHED,
@@ -40,6 +43,11 @@ export interface AbilityRequestCardProps {
   approvePending?: boolean;
   declinePending?: boolean;
   undoPending?: boolean;
+  /**
+   * A page creation's applied page edits made since: how many AI changes its
+   * undo also covers. Zero or absent for every other request.
+   */
+  laterEdits?: number;
   /** A refusal from the last action on this card, shown as an alert. */
   notice?: string | null;
   autoFocusDecline?: boolean;
@@ -49,6 +57,7 @@ export interface AbilityRequestCardProps {
 export function AbilityRequestCard(props: AbilityRequestCardProps) {
   const canUndo = useUndoWindowOpen(props.request.undo_offered, props.request.undo_available_until);
   if (isRestWrite(props.request)) return <StructuredAbilityCard {...props} canUndo={canUndo} />;
+  if (isPageEdit(props.request)) return <PageEditCard {...props} />;
   return <PageCreateCard {...props} canUndo={canUndo} />;
 }
 
@@ -61,13 +70,14 @@ function PageCreateCard({
   approvePending = false,
   declinePending = false,
   undoPending = false,
+  laterEdits = 0,
   notice,
   autoFocusDecline = false,
   className,
   canUndo,
 }: AbilityRequestCardProps & { canUndo: boolean }) {
   const pending = isPending(request);
-  const status = abilityStatus(request);
+  const status = abilityStatus(request, laterEdits);
   const elementor = isElementorRequest(request);
   // Null unless every node, every image fact and the page's builder can be
   // shown in full, and the builder is the editor the request recorded; a null
@@ -219,10 +229,17 @@ function PageCreateCard({
           </Button>
         </div>
       ) : canUndo ? (
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          <Button type="button" variant="outline" disabled={undoPending} onClick={() => onUndo(request)}>
-            {undoPending ? "Undoing…" : "Undo"}
-          </Button>
+        <div className="space-y-1">
+          {laterEdits > 0 ? (
+            <p data-testid="also-covers" className="text-right text-xs text-muted-foreground">
+              {alsoCoversLine(laterEdits)}
+            </p>
+          ) : null}
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <Button type="button" variant="outline" disabled={undoPending} onClick={() => onUndo(request)}>
+              {undoPending ? "Undoing…" : laterEdits > 0 ? "Move draft to trash" : "Undo"}
+            </Button>
+          </div>
         </div>
       ) : null}
     </article>
@@ -231,20 +248,10 @@ function PageCreateCard({
 
 /**
  * True while the server offered Undo and the window end is still ahead of the
- * client clock. One timer to the expiry flips it off; no polling clock.
+ * client clock. No window end means a recovery undo, which has no expiry of
+ * its own.
  */
 function useUndoWindowOpen(offered: boolean, until: string | null | undefined): boolean {
-  // No window end means a recovery undo, which has no expiry of its own.
-  const end = until ? Date.parse(until) : null;
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!offered || end === null || !Number.isFinite(end) || end <= now) return;
-    // One timer to the expiry. setTimeout caps at a signed 32-bit delay, so a
-    // longer wait re-arms itself because `now` is a dependency.
-    const t = setTimeout(() => setNow(Date.now()), Math.min(Math.max(end - Date.now(), 0), 2_147_483_647));
-    return () => clearTimeout(t);
-  }, [offered, end, now]);
-  if (!offered) return false;
-  if (end === null) return true;
-  return Number.isFinite(end) && end > now;
+  const open = useWindowOpen(until, offered);
+  return offered && open;
 }

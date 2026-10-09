@@ -237,6 +237,25 @@ export type GroupNode = z.infer<typeof groupNode>;
 export type OutlineNode = z.infer<typeof outlineNode>;
 export type ImageNode = z.infer<typeof imageNode>;
 
+/** Limits of one page-edit operation's outline (BuilderContract::MAX_OUTLINE_PER_OP). */
+export const FRAGMENT_MAX_NODES = 50;
+
+/**
+ * The outline of one page-edit insert or replace, as data. It is the page
+ * outline grammar (every object strict) with 1 to 50 top-level nodes; null
+ * for anything the card cannot show in full, or that Elementor does not build
+ * as asked, so the request is not shown as approvable.
+ */
+export function parseOutlineFragment(raw: unknown): readonly OutlineNode[] | null {
+  const parsed = z.array(outlineNode).min(1).max(FRAGMENT_MAX_NODES).safeParse(raw);
+  if (!parsed.success) return null;
+  let refused = false;
+  visitNodes(parsed.data, (n) => {
+    if (elementorRefuses(n)) refused = true;
+  });
+  return refused ? null : parsed.data;
+}
+
 /** Calls `fn` for every node, containers first, in document order. */
 export function visitNodes(nodes: readonly OutlineNode[], fn: (node: OutlineNode) => void): void {
   for (const node of nodes) {
@@ -317,7 +336,7 @@ export function indexPageMedia(raw: unknown): ReadonlyMap<number, PageMediaFact>
 
 // The Elementor version a precheck may name (ability_builder_tree.go,
 // elementorVersionPattern). It is the site's text and is shown as text.
-const ELEMENTOR_VERSION = /^[0-9]{1,4}\.[0-9]{1,4}(\.[0-9]{1,4})?([.-][0-9A-Za-z]{1,16}){0,2}$/;
+export const ELEMENTOR_VERSION = /^[0-9]{1,4}\.[0-9]{1,4}(\.[0-9]{1,4})?([.-][0-9A-Za-z]{1,16}){0,2}$/;
 
 const pageBuilderSchema = z.strictObject({
   builder: z.literal("elementor"),
@@ -396,7 +415,7 @@ function hasFractionalNumber(json: string): boolean {
  * in full. A "__proto__" key anywhere is refused because the schema parser
  * skips that key by design, which would drop it from the screen.
  */
-function readInput(inputJson: string): unknown {
+export function readInput(inputJson: string): unknown {
   let hidden = false;
   let value: unknown;
   try {

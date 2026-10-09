@@ -5,6 +5,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { PageError } from "@/components/feedback/page-error";
 
 import { AbilityRequestCard } from "./ability-request-card";
+import { laterEditCount } from "./page-edit-model";
 import { useAbilityCardActions } from "./use-ability-card-actions";
 import { AbilityRequestError, useOrgAbilityRequestPages } from "./use-ability-requests";
 
@@ -57,6 +58,7 @@ export function OrgAbilityRequests() {
             <div key={r.id} className="space-y-1">
               <AbilityRequestCard
                 request={r}
+                laterEdits={laterEditCount(r, requests)}
                 notice={actions.notices[r.id] ?? null}
                 onApprove={actions.handleApprove}
                 onDecline={actions.handleDecline}
