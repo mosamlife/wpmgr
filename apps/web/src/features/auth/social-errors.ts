@@ -134,18 +134,55 @@ export function socialRefusal(code: string): SocialRefusal {
   }
 }
 
+// Same cap as the server's (auth.safeReturnPath), counted in UTF-16 units here.
+const MAX_REDIRECT_LENGTH = 512;
+
+// Unicode category Cc: C0 (U+0000 to U+001F), DEL and C1 (U+0080 to U+009F).
+const CONTROL_CHARACTER = /\p{Cc}/u;
+
 /**
- * Narrows a `?redirect=` target to a path on this origin, or undefined.
+ * Narrows a `?redirect=` target to a path on THIS origin, or returns undefined.
  *
- * The server validates it again (auth.safeReturnPath) and is the authority;
- * this exists so the app never asks the server to honour something it should
- * not, and never puts an off-site URL in an outbound link. "//host" and
- * "/\host" are protocol-relative and read as another origin, which is exactly
- * what they do not look like.
+ * What a returned value guarantees, and all it guarantees:
+ *
+ *   1. It is the input, unchanged. Nothing is re-encoded, normalised or
+ *      reordered, so a query string comes back byte for byte (an OAuth consent
+ *      link keeps its `%20` and its parameter order).
+ *   2. It is a rooted path: it starts with one "/" that is not followed by a
+ *      second "/". A scheme, a host, a protocol-relative reference and a bare
+ *      relative path are all refused, and so is an absolute URL that names
+ *      this very origin.
+ *   3. It holds no backslash and no control character (C0, DEL or C1). The URL
+ *      parser deletes tab, CR and LF from its input and reads "\" as "/", so a
+ *      value containing either is a different address from the one it shows.
+ *   4. The URL parser, given this value and this page's own origin, resolves
+ *      to this page's origin. When the page's origin is not known (an opaque
+ *      origin) nothing qualifies.
+ *
+ * Rules 2 and 3 are the lexical checks. Rule 4 is the parser's own verdict on
+ * top of them, so the promise in this function's name does not rest on those
+ * checks having foreseen every input.
+ *
+ * It does not say the path is a route that exists or that the person may open
+ * it; the router and the server decide that. The server validates the same
+ * value again (auth.safeReturnPath) and is the authority for the provider
+ * handshake. This exists so the app never asks the server to honour something
+ * it should not, and never navigates to, or puts in an outbound link, an
+ * address on another origin.
+ *
+ * Callers use the result as is: `sameOriginPath(raw) ?? "/sites"`.
  */
 export function sameOriginPath(raw: string | undefined): string | undefined {
-  if (!raw || raw.length > 512) return undefined;
-  if (!raw.startsWith("/")) return undefined;
-  if (raw.startsWith("//") || raw.startsWith("/\\")) return undefined;
-  return raw;
+  if (!raw || raw.length > MAX_REDIRECT_LENGTH) return undefined;
+
+  if (raw[0] !== "/" || raw[1] === "/") return undefined;
+  if (raw.includes("\\") || CONTROL_CHARACTER.test(raw)) return undefined;
+
+  try {
+    const origin = window.location.origin;
+    return new URL(raw, origin).origin === origin ? raw : undefined;
+  } catch {
+    // An origin the URL parser cannot take as a base, or no page at all.
+    return undefined;
+  }
 }
