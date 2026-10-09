@@ -5,13 +5,23 @@
  *
  * Contract (CP -> agent):
  *   POST /wp-json/wpmgr/v1/command/rollback
- *   body: { "type", "slug", "snapshot_id", "to_version" }
+ *   body: { "type", "slug", "snapshot_id", "to_version", "allow_core_downgrade": bool }
  *   response: { "ok": bool, "restored_version": "...", "log": "..." }
  *
  * For plugin/theme the snapshot directory is restored over the live directory.
  * For core a downgrade-by-version is performed (WP-CLI `core update
  * --version=<to_version> --force`, or the Core_Upgrader equivalent). On success
  * the snapshot directory is removed.
+ *
+ * A core rollback is a forced downgrade of WordPress itself, so it runs only
+ * when the request carries `allow_core_downgrade` as the JSON boolean `true`.
+ * Any other value, including a missing key, the string "true" or the number 1,
+ * is a refusal: ok=false, a plain log line, and no rollback work. Core is not
+ * downgraded, the snapshot is kept, the update transient is left alone, and a
+ * fresh maintenance flag stays in place. Like every rollback request, a
+ * refused one still clears a stale maintenance flag left behind by an
+ * interrupted run, on the way in. `allow_core_downgrade` is ignored for plugin
+ * and theme rollbacks (GitHub issue #415).
  *
  * All input is untrusted: the type is whitelisted, the slug is sanitized to
  * reject path traversal, and the snapshot id is validated by the manager. A
@@ -64,8 +74,10 @@ final class RollbackCommand implements CommandInterface
     }
 
     /**
-     * Effect: reinstates a pre-update snapshot over the currently installed plugin, theme or core. The
-     * currently installed version is not retained.
+     * Effect: reinstates a pre-update snapshot over the currently installed plugin or theme, or
+     * downgrades WordPress core to the requested version when the request sets allow_core_downgrade
+     * to true. A core rollback without that flag is refused and changes nothing. Whatever version is
+     * replaced is not retained.
      *
      * @return CommandEffect
      */
@@ -119,20 +131,20 @@ final class RollbackCommand implements CommandInterface
 
         try {
             // Heal a `.maintenance` flag left behind by a prior interrupted
-            // update/rollback before starting new work, and arm the shutdown
-            // backstop so a fatal error or a timeout mid-rollback still clears
-            // whatever flag THIS run may leave set.
+            // update/rollback before starting new work. Only a stale flag is
+            // removed; a fresh one is left to whoever owns it. The shutdown
+            // backstop for THIS run's own flag is armed later, in run(), once
+            // the request has passed the type and core-permission checks.
             //
-            // These sit INSIDE the try, not above it, so that a throw from
-            // either one still reaches the finally and releases the site lock.
-            // Above the try, a throw here would strand the lock for its whole
-            // 900s TTL and wedge every update and rollback on this site for
-            // fifteen minutes. Both are effectively non-throwing today, so this
-            // is latent rather than live, but the lock's release must not
-            // depend on that staying true. UpdateCommand::execute() already
-            // orders it this way; this removes the asymmetry.
+            // This sits INSIDE the try, not above it, so that a throw from it
+            // still reaches the finally and releases the site lock. Above the
+            // try, a throw here would strand the lock for its whole 900s TTL
+            // and wedge every update and rollback on this site for fifteen
+            // minutes. It is effectively non-throwing today, so this is latent
+            // rather than live, but the lock's release must not depend on that
+            // staying true. UpdateCommand::execute() already orders it this
+            // way; this removes the asymmetry.
             Maintenance::healStaleIfPresent();
-            Maintenance::armShutdownGuard();
 
             return $this->run($params);
         } finally {
@@ -157,17 +169,35 @@ final class RollbackCommand implements CommandInterface
             return $this->fail('Invalid type.');
         }
 
-        // GUARANTEE: this is precisely the reported incident — a rollback
-        // that itself fails (the new version is already active, the restore
-        // errors, etc.) must still clear maintenance mode. Everything from
-        // here on is wrapped so success, failure, or a thrown exception all
-        // reach the `finally`.
-        try {
-            if ($type === 'core') {
-                return $this->rollbackCore($snapshotId, $toVersion);
-            }
+        // A core rollback is a forced downgrade of WordPress itself, so it
+        // needs an explicit request (GitHub issue #415). Only the JSON boolean
+        // `true` counts: a string such as "false" is truthy in PHP, and an
+        // irreversible operation must not turn on through a loose cast.
+        // Refused here, above the shutdown backstop and the try/finally below,
+        // for the same reason an invalid type is: a refused request does no
+        // rollback work, and that includes leaving a fresh maintenance flag
+        // exactly as it was, during the request and after it ends.
+        $allowCoreDowngrade = ($params['allow_core_downgrade'] ?? null) === true;
+        if ($type === 'core' && !$allowCoreDowngrade) {
+            return $this->fail(
+                'Refused: rolling back WordPress core is a forced downgrade, and this request did not allow one '
+                . '(allow_core_downgrade was not set to true). Nothing was attempted, and WordPress core stays at '
+                . 'its current version.'
+            );
+        }
 
-            // plugin / theme
+        // Every remaining refusal is made here too, before the shutdown
+        // backstop is armed and before the try/finally below that clears
+        // maintenance mode, so a refused request leaves a `.maintenance` flag
+        // exactly as it found it, during the request and after it ends.
+        $slug       = 'core';
+        $coreTarget = '';
+        if ($type === 'core') {
+            $coreTarget = $this->coreTarget($snapshotId, $toVersion);
+            if ($coreTarget === '') {
+                return $this->fail('No valid target core version.');
+            }
+        } else {
             $slug = UpdateCommand::sanitizeSlug($rawSlug);
             if ($slug === '' || $slug !== $rawSlug) {
                 return $this->fail('Invalid or unsafe slug.');
@@ -189,6 +219,28 @@ final class RollbackCommand implements CommandInterface
                 return $this->fail(
                     'Refused: this target is the management agent itself. The agent updates through its own update channel, not through a plugin update or rollback task.'
                 );
+            }
+        }
+
+        // Arm the shutdown backstop only now, once the request has passed
+        // every check, so a fatal error or a timeout mid-rollback still clears
+        // whatever flag THIS run leaves set. The backstop clears any
+        // `.maintenance` file it finds when the request ends, so a refused
+        // request must not arm it: the flag it would remove may belong to
+        // another update still in flight. It sits above the try/finally below
+        // on purpose: run() is called inside execute()'s try, so a throw from
+        // here still releases the site lock, and no rollback work has begun
+        // that would need maintenance cleared.
+        Maintenance::armShutdownGuard();
+
+        // GUARANTEE: this is precisely the reported incident — a rollback
+        // that itself fails (the new version is already active, the restore
+        // errors, etc.) must still clear maintenance mode. Everything from
+        // here on is wrapped so success, failure, or a thrown exception all
+        // reach the `finally`.
+        try {
+            if ($type === 'core') {
+                return $this->rollbackCore($snapshotId, $coreTarget);
             }
 
             try {
@@ -254,22 +306,37 @@ final class RollbackCommand implements CommandInterface
     }
 
     /**
-     * Roll core back to a prior version via a forced downgrade.
+     * The core version a core rollback targets: to_version when set, else the
+     * version the snapshot recorded.
      *
      * @param string $snapshotId Optional snapshot id holding the prior version.
      * @param string $toVersion  Target version (overrides snapshot when set).
-     * @return array{ok:bool,restored_version:string,log:string}
+     * @return string The target, or '' when there is no valid one.
      */
-    private function rollbackCore(string $snapshotId, string $toVersion): array
+    private function coreTarget(string $snapshotId, string $toVersion): string
     {
         $target = $toVersion !== ''
             ? $toVersion
             : ($snapshotId !== '' ? $this->snapshots->recordedVersion($snapshotId) : '');
 
         if ($target === '' || preg_match('#^[0-9][0-9A-Za-z.\-]*$#', $target) !== 1) {
-            return $this->fail('No valid target core version.');
+            return '';
         }
 
+        return $target;
+    }
+
+    /**
+     * Roll core back to a prior version via a forced downgrade. Reached only
+     * when the request set allow_core_downgrade to true and named a valid
+     * target (see run()).
+     *
+     * @param string $snapshotId Optional snapshot id holding the prior version.
+     * @param string $target     Validated target version, from coreTarget().
+     * @return array{ok:bool,restored_version:string,log:string}
+     */
+    private function rollbackCore(string $snapshotId, string $target): array
+    {
         try {
             $result = $this->runner->forceCore($target);
         } catch (\Throwable $e) {
