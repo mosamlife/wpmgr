@@ -42,8 +42,9 @@
  * To stay deterministic (the keystore must decrypt what it earlier encrypted),
  * the chosen source is pinned in a wp-option marker the first time a key is
  * established, so later requests never silently switch sources. With no
- * source pinned and keys already stored, the key that opens them is kept and
- * pinned: no new key is created while an existing key opens what is stored.
+ * source pinned and keys already stored, the existing key probe() checks is
+ * kept and pinned whenever it opens any of them, so no new key takes its
+ * place.
  *
  * @package WPMgr\Agent
  */
@@ -695,11 +696,11 @@ final class Keystore implements EmailKeystoreInterface
      * Establish the master key for this install, pinning the source on first
      * use and honouring an already-pinned source thereafter.
      *
-     * With no source pinned and keys already stored, the key that opens them
-     * (found as probe() finds it) is kept and pinned before any step that can
-     * create a key, so no new key is created while an existing key opens what
-     * is stored. Only when nothing is stored, or no existing key opens any of
-     * it, does discovery run in the order below.
+     * With no source pinned and keys already stored, the existing key probe()
+     * checks is kept and pinned whenever it opens any of them, before any step
+     * that can create a key, so no new key takes its place. Otherwise (nothing
+     * is stored, no key exists, or that key opens nothing stored) discovery
+     * runs in the order below.
      *
      * @return string 32 raw bytes.
      * @throws \RuntimeException If the key cannot be established, or if a
@@ -720,16 +721,16 @@ final class Keystore implements EmailKeystoreInterface
             return $this->keyForPinnedSource($pinned, true);
         }
 
-        // No source is pinned but keys are already stored: keep the key they
-        // open under and pin it.
+        // No source is pinned but keys are already stored: keep the existing
+        // key probe() checks when it opens any of them, and pin it.
         $inUse = $this->keyInUse();
         if ($inUse !== null) {
             $this->pinSource($inUse['marker']);
             return $inUse['key'];
         }
 
-        // First run, or no existing key opens anything stored: discover a
-        // source in order.
+        // First run, or that key opens nothing stored: discover a source in
+        // order.
 
         // 1. Explicit constant.
         $key = $this->keyFromConstant();

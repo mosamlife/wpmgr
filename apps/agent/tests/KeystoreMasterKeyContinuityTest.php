@@ -2,11 +2,12 @@
 /**
  * The master key a site already uses stays its master key.
  *
- * Contract: once anything is stored in the keystore, creating a missing
- * backup key never creates a new master key and never records a different
- * one, and every key already stored still opens on the next request. A
- * request that reads a stored key keeps the key in use the same way. A key
- * that opens nothing stored is never taken for the site's key.
+ * Contract: when keys are stored and the key the keystore's readiness check
+ * (probe()) finds opens them, that key stays the site's master key. Creating
+ * a missing backup key then creates no new master key and records no other
+ * one, and every stored key still opens on the next request. A request that
+ * reads a stored key keeps that key as well. The key the readiness check
+ * finds is kept only when it opens something stored.
  *
  * Each test runs in its own process: the key sources (the wp-config.php
  * salts, WPMGR_AGENT_KEY_FILE, WP_CONTENT_DIR) are process-wide constants that
@@ -167,11 +168,10 @@ final class KeystoreMasterKeyContinuityTest extends TestCase
     }
 
     /**
-     * Stored keys that no key on this site opens, next to an unrelated
-     * database-stored key: that key is not recorded as the site's key, and it
-     * is left as it was.
+     * Stored keys that the database-stored key does not open: that key is not
+     * recorded as the site's key, and it is left as it was.
      */
-    public function test_an_existing_key_that_opens_nothing_stored_is_not_adopted(): void
+    public function test_the_key_the_readiness_check_finds_is_kept_only_when_it_opens_something_stored(): void
     {
         $this->assertNoSaltsAndNoKeyFileConstant();
         $this->options[Keystore::OPTION_DB_MASTER_KEY] = base64_encode(random_bytes(32));
