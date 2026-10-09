@@ -122,6 +122,13 @@ func m169Body(t *testing.T) string {
 // success).
 func m169Apply(t *testing.T, app *db.Pool, body string) string {
 	t.Helper()
+	code, _ := m169ApplyMessage(t, app, body)
+	return code
+}
+
+// m169ApplyMessage is m169Apply that also returns the error message.
+func m169ApplyMessage(t *testing.T, app *db.Pool, body string) (code, message string) {
+	t.Helper()
 	ctx := context.Background()
 	owner := connectOwner(t, app)
 	defer owner.Close()
@@ -130,13 +137,13 @@ func m169Apply(t *testing.T, app *db.Pool, body string) string {
 		return err
 	})
 	if err == nil {
-		return ""
+		return "", ""
 	}
 	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) {
 		t.Fatalf("applying m169 returned a non-database error: %v", err)
 	}
-	return pgErr.Code
+	return pgErr.Code, pgErr.Message
 }
 
 // m169Refusal returns the SQLSTATE and constraint name of a database error.
@@ -756,5 +763,34 @@ func TestM169EditChainAsAppRole(t *testing.T) {
 	m169FinishUndo(t, pool, e1, "undone")
 	if r, ok := newest(); ok {
 		t.Fatalf("every applied edit is undone, yet %s is named the newest in effect", r.ID)
+	}
+}
+
+// TestM169CountsSeeRowsUnderForceRLS: the migrator's count of a FORCE ROW
+// LEVEL SECURITY table sees the rows. With the target CHECK dropped and one
+// page edit without a post stored (as wpmgr_app), re-running m169 as
+// wpmgr_owner stops on the count, naming one row, and not only on the
+// VALIDATE that follows it.
+func TestM169CountsSeeRowsUnderForceRLS(t *testing.T) {
+	ctx := context.Background()
+	pool := startPostgres(t)
+	tenant := seedTenant(t, pool, "m169-count-"+uuid.NewString()[:8])
+	site := seedSite(t, pool, tenant, "")
+
+	owner := connectOwner(t, pool)
+	_, err := owner.Exec(ctx, `ALTER TABLE assistant_ability_requests DROP CONSTRAINT assistant_ability_requests_page_edit_target_check`)
+	owner.Close()
+	if err != nil {
+		t.Fatalf("drop the target check: %v", err)
+	}
+	p := m169EditParams(tenant, site, uuid.New(), 42, "count")
+	p.TargetPostID = nil
+	if err := m169TryInsert(t, pool, p); err != nil {
+		t.Fatalf("store a page edit without a post once the check is gone: %v", err)
+	}
+
+	code, msg := m169ApplyMessage(t, pool, m169Body(t))
+	if code != "23514" || !strings.HasPrefix(msg, "m169: 1 wpmgr/page-edit request(s) name no target post") {
+		t.Fatalf("COUNT SAW NO ROW: re-running m169 over one page edit without a post gave %q %q; want 23514 from the count naming 1 row", code, msg)
 	}
 }

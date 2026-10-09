@@ -26,6 +26,13 @@
 -- new sets are the old sets plus 'builder_document', so every stored row
 -- already satisfies them.
 --
+-- assistant_ability_requests is FORCE ROW LEVEL SECURITY and the migrator
+-- sets no tenant, so a plain count of it as the migrator sees no row and
+-- would always read 0. Each block that counts it turns app.agent on, which
+-- the table's agent policy reads to admit every row to a SELECT, and puts the
+-- setting back before the block ends. A VALIDATE would refuse a bad row
+-- regardless; the count is what names how many.
+--
 -- ===========================================================================
 -- 2. Seed: wpmgr/page-structure
 -- ===========================================================================
@@ -99,9 +106,16 @@
 
 DO $$
 DECLARE
-    v_def text;
-    v_bad bigint;
+    v_def   text;
+    v_bad   bigint;
+    v_agent text := current_setting('app.agent', true);
 BEGIN
+    -- assistant_ability_requests is FORCE ROW LEVEL SECURITY and the migrator
+    -- sets no tenant, so a plain count of it sees no row. The table's agent
+    -- policy admits every row to a SELECT; it is on for this block's counts
+    -- and put back before the block ends. ability_catalogue is not FORCE.
+    PERFORM set_config('app.agent', 'on', true);
+
     SELECT pg_get_constraintdef(c.oid) INTO v_def
       FROM pg_constraint c
      WHERE c.conrelid = 'public.ability_catalogue'::regclass
@@ -173,6 +187,8 @@ BEGIN
         RAISE EXCEPTION 'm169: the snapshot constraints do not both admit builder_document after the swap'
             USING ERRCODE = '23514';
     END IF;
+
+    PERFORM set_config('app.agent', coalesce(v_agent, ''), true);
 END;
 $$;
 
@@ -248,8 +264,13 @@ ALTER TABLE "public"."assistant_ability_requests"
 
 DO $$
 DECLARE
-    v_bad bigint;
+    v_bad   bigint;
+    v_agent text := current_setting('app.agent', true);
 BEGIN
+    -- As in part 1: the counts below read a FORCE ROW LEVEL SECURITY table
+    -- through its agent policy, on for this block only.
+    PERFORM set_config('app.agent', 'on', true);
+
     IF NOT EXISTS (
         SELECT 1 FROM pg_constraint
         WHERE conrelid = 'public.assistant_ability_requests'::regclass
@@ -333,6 +354,8 @@ BEGIN
         ALTER TABLE "public"."assistant_ability_requests"
             VALIDATE CONSTRAINT "assistant_ability_requests_page_edit_undo_hash_check";
     END IF;
+
+    PERFORM set_config('app.agent', coalesce(v_agent, ''), true);
 END;
 $$;
 
