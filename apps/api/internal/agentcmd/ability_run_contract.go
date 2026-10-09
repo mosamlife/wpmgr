@@ -439,6 +439,12 @@ var AbilityRunRefusalCodes = map[string]struct{}{
 	"post_touched":                 {},
 	"post_content_would_change":    {},
 	"post_scheduled":               {},
+	// wpmgr/page-create outline grammar v2 (MinAgentVersionForPageLayout).
+	"layout_invalid":            {},
+	"link_invalid":              {},
+	"layout_needs_block_editor": {},
+	"image_not_available":       {},
+	"image_url_unusable":        {},
 }
 
 var abilityRunCodeRe = regexp.MustCompile(`^[a-z0-9_]{1,40}$`)

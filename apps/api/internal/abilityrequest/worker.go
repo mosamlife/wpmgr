@@ -423,6 +423,30 @@ func agentMeetsFloor(v, floor string) bool {
 	return v != "" && wpversion.Compare(v, floor) >= 0
 }
 
+// notSentBeforeReserve is the reason an approved request closes not_sent
+// before it is reserved, or "" when it may go on: the site left scope, the
+// deadline passed, the entry or route changed after approval (W1), or the
+// site's plugin is below the floor for this request's stored input.
+func notSentBeforeReserve(row sqlc.GetApprovedAbilityRequestForDispatchRow, site sqlc.Site, found bool) string {
+	switch {
+	case !found:
+		return ReasonSiteAbsent
+	case row.PastDeadline:
+		return ReasonDispatchDeadlinePassed
+	case !row.EntryEnabled: // W1
+		return ReasonEntryDisabled
+	case !row.EntryHashCurrent: // W1
+		return ReasonEntryChanged
+	case !row.RouteEnabled: // W1, m161
+		return ReasonRouteDisabled
+	case !row.RouteHashCurrent: // W1, m161
+		return ReasonRouteChanged
+	case !agentMeetsFloor(site.AgentVersion, agentFloorFor(row.AssistantAbilityRequest)):
+		return ReasonAgentOutdated
+	}
+	return ""
+}
+
 // routeSendable is W1 for a route (m161). It returns the bytes to send for a
 // request approved against approvedSum, or reason route_changed: the bytes
 // sent are the current row's, and only when they hash to the APPROVED hash
@@ -555,24 +579,7 @@ func (s *Service) checkSite(ctx context.Context, p domain.Principal, a DispatchA
 		if err != nil {
 			return err
 		}
-		reason := ""
-		switch {
-		case !found:
-			reason = ReasonSiteAbsent
-		case row.PastDeadline:
-			reason = ReasonDispatchDeadlinePassed
-		case !row.EntryEnabled: // W1
-			reason = ReasonEntryDisabled
-		case !row.EntryHashCurrent: // W1
-			reason = ReasonEntryChanged
-		case !row.RouteEnabled: // W1, m161
-			reason = ReasonRouteDisabled
-		case !row.RouteHashCurrent: // W1, m161
-			reason = ReasonRouteChanged
-		case !agentMeetsFloor(site.AgentVersion, agentFloorFor(plan.row)):
-			reason = ReasonAgentOutdated
-		}
-		if reason != "" {
+		if reason := notSentBeforeReserve(row, site, found); reason != "" {
 			done = true
 			return s.closeNotSent(ctx, tx, q, a.TenantID, a.RequestID, reason)
 		}
