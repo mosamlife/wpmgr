@@ -28,6 +28,12 @@ final class ElementorAdapter implements BuilderAdapter
     /** The adapter id. */
     public const ID = 'elementor';
 
+    /** Elementor's action that clears generated styles under a path. */
+    public const HOOK_STYLES_CLEAR = 'elementor/atomic-widgets/styles/clear';
+
+    /** The first segment of that path for a post's own (local) styles. */
+    public const STYLES_KEY_LOCAL = 'local';
+
     /** Post type by Elementor document type, for the types page-create makes. */
     private const POST_TYPES = [
         ElementorDocument::TEMPLATE_PAGE => 'page',
@@ -254,5 +260,28 @@ final class ElementorAdapter implements BuilderAdapter
         }
 
         return $this->document->verifyCreated($postId, $doc->tree, $principal, $requestId, $postType);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * Elementor's own per-post invalidation: the post's generated CSS file
+     * and its CSS meta through Elementor's post CSS object, then the post's
+     * local styles in every context through Elementor's style-clear action,
+     * on the path Elementor clears when a post is published or deleted. The
+     * derived meta rows are already gone. Never Elementor's site-wide clear.
+     */
+    public function afterRestore(int $postId): void
+    {
+        if ($postId < 1) {
+            return;
+        }
+        $this->api->deletePostCss($postId);
+        try {
+            do_action(self::HOOK_STYLES_CLEAR, [self::STYLES_KEY_LOCAL, $postId]); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- firing Elementor's documented per-post style invalidation; not a custom hook
+        } catch (\Throwable $e) {
+            // Elementor rebuilds the styles on the post's next save.
+            unset($e);
+        }
     }
 }

@@ -142,4 +142,15 @@ interface BuilderAdapter
      *                     else a short token naming the first mismatch.
      */
     public function verifyCreated(int $postId, NativeDocument $doc, int $principal, string $requestId): ?string;
+
+    /**
+     * Drop what the builder keeps about one post outside the post's rows,
+     * after BuilderDocumentRestore has put the rows back and deleted the
+     * descriptor's derived keys: generated files, style caches and the like.
+     * Only this post's, never a site-wide clear. Never throws.
+     *
+     * @param int $postId Post id.
+     * @return void
+     */
+    public function afterRestore(int $postId): void;
 }

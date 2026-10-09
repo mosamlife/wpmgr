@@ -104,4 +104,17 @@ interface ElementorApi
      * @return array<mixed>|null
      */
     public function ksesPostDeep(array $data): ?array;
+
+    /**
+     * Delete a post's generated CSS file and its CSS meta through Elementor's
+     * own post CSS object, as Elementor's document save does.
+     *
+     * False when that cannot be asked: the post id is not positive, Elementor
+     * is not loaded, its files manager or the object cannot be had, or
+     * Elementor throws.
+     *
+     * @param int $postId Post id.
+     * @return bool
+     */
+    public function deletePostCss(int $postId): bool;
 }

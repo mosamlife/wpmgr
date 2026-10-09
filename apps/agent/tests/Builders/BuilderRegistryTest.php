@@ -299,6 +299,10 @@ final class BuilderRegistryTest extends TestCase
             {
                 return 'not_built';
             }
+
+            public function afterRestore(int $postId): void
+            {
+            }
         };
     }
 }

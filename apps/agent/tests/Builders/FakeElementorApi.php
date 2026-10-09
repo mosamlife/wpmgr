@@ -209,6 +209,37 @@ final class FakeElementorApi implements ElementorApi
     }
 
     /**
+     * {@inheritDoc}
+     *
+     * Answers true when loaded and the post id is positive; the call is
+     * recorded either way.
+     */
+    public function deletePostCss(int $postId): bool
+    {
+        $this->calls[] = ['deletePostCss', [$postId]];
+
+        return $this->loaded && $postId > 0;
+    }
+
+    /**
+     * The arguments of every call to $method, in order.
+     *
+     * @param string $method Method name.
+     * @return list<list<mixed>>
+     */
+    public function callsTo(string $method): array
+    {
+        $args = [];
+        foreach ($this->calls as [$name, $given]) {
+            if ($name === $method) {
+                $args[] = $given;
+            }
+        }
+
+        return $args;
+    }
+
+    /**
      * Register a stand-in Elementor document for $postId and return it.
      *
      * Its save() records the data it is given, sets the numeric locale to
