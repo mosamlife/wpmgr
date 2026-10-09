@@ -47,11 +47,14 @@
 # Column order is not compared: a column a migration appended with ALTER TABLE
 # is written in place in schema.sql ("write the end state, not the steps").
 #
-# FUNCTION BODIES are procedural text the catalog stores verbatim, so they are
-# compared with SQL comments removed and whitespace collapsed. A comment is
-# the commonest harmless difference between a migration and its mirror, and
-# reddening on it would get the guard switched off. The cost: text after a
-# `--` that sits inside a string literal on the same line is not compared.
+# FUNCTION BODIES are procedural text the catalog stores as written, so they
+# are compared with SQL comments removed and whitespace folded, but only
+# OUTSIDE quoted text. A comment is the commonest harmless difference between
+# a migration and its mirror, and reddening on it would get the guard switched
+# off; a string is the opposite, so 'a  b', '/* x */', and a "--" inside a
+# string, an E'' string or a $tag$ block are compared exactly. Only functions
+# written in plpgsql or sql are normalised; another language's source is
+# compared as written.
 #
 # ---------------------------------------------------------------------------
 # WHAT IT DELIBERATELY DOES NOT COMPARE
@@ -461,9 +464,146 @@ if [ "$rc" -ne 0 ]; then
   finding
 fi
 
-# The catalog: one "kind<TAB>key<TAB>definition" row per object, every field
-# free of tabs and newlines, NULL rendered as empty, so a row is a line.
+# The catalog: one "kind<TAB>key<TAB>definition" row per object. A tab, newline
+# or carriage return inside a field is written as \t, \n or \r (and a backslash
+# as \\), which keeps a row to one line without ever making two different
+# texts equal. NULL is rendered as empty.
 cat > "$TMP/catalog.sql" <<'SQL'
+-- Two helpers, in this session's temporary schema so they appear in no catalog.
+--
+-- wpmgr_norm folds the formatting of SQL text that the catalog stores as
+-- written (a function's source): comments are removed and runs of whitespace
+-- become one space, but ONLY outside quoted text. Quoted text is kept exactly:
+-- 'strings' (and E'' strings, where a backslash escapes the next character),
+-- "identifiers", and $tag$dollar-quoted blocks$tag$. A "--" or "/*" inside a
+-- string is text, not a comment, and two spaces inside a string are two spaces.
+CREATE FUNCTION pg_temp.wpmgr_norm(src text) RETURNS text LANGUAGE plpgsql AS $f$
+DECLARE
+  n int;
+  i int := 1;
+  j int;
+  depth int;
+  pos int;
+  c text;
+  c2 text;
+  dq text;
+  prev text;
+  prev2 text;
+  esc boolean;
+  buf text := '';
+  sp boolean := true;  -- the output is empty, or ends in a space this function added
+BEGIN
+  IF src IS NULL THEN RETURN NULL; END IF;
+  n := length(src);
+  WHILE i <= n LOOP
+    c := substr(src, i, 1);
+    c2 := substr(src, i, 2);
+    IF c2 = '--' THEN
+      -- A line comment, gone as whitespace; its newline is whitespace next turn.
+      j := strpos(substr(src, i), E'\n');
+      IF j = 0 THEN i := n + 1; ELSE i := i + j - 1; END IF;
+      IF NOT sp THEN buf := buf || ' '; sp := true; END IF;
+    ELSIF c2 = '/*' THEN
+      -- A block comment. They nest.
+      depth := 1;
+      i := i + 2;
+      WHILE i <= n AND depth > 0 LOOP
+        c2 := substr(src, i, 2);
+        IF c2 = '/*' THEN depth := depth + 1; i := i + 2;
+        ELSIF c2 = '*/' THEN depth := depth - 1; i := i + 2;
+        ELSE i := i + 1;
+        END IF;
+      END LOOP;
+      IF NOT sp THEN buf := buf || ' '; sp := true; END IF;
+    ELSIF c = '''' THEN
+      -- A string literal, kept exactly. After an E prefix a backslash escapes
+      -- the next character; otherwise only a doubled quote does.
+      prev := CASE WHEN i > 1 THEN substr(src, i - 1, 1) ELSE '' END;
+      prev2 := CASE WHEN i > 2 THEN substr(src, i - 2, 1) ELSE '' END;
+      esc := prev IN ('E', 'e') AND (prev2 = '' OR prev2 !~ '[A-Za-z0-9_$]');
+      j := i + 1;
+      WHILE j <= n LOOP
+        c2 := substr(src, j, 1);
+        IF esc AND c2 = E'\\' THEN
+          j := j + 2;
+        ELSIF c2 = '''' THEN
+          IF substr(src, j + 1, 1) = '''' THEN j := j + 2; ELSE EXIT; END IF;
+        ELSE
+          j := j + 1;
+        END IF;
+      END LOOP;
+      buf := buf || substr(src, i, least(j, n) - i + 1);
+      i := least(j, n) + 1;
+      sp := false;
+    ELSIF c = '"' THEN
+      -- A quoted identifier, kept exactly.
+      j := i + 1;
+      WHILE j <= n LOOP
+        c2 := substr(src, j, 1);
+        IF c2 = '"' THEN
+          IF substr(src, j + 1, 1) = '"' THEN j := j + 2; ELSE EXIT; END IF;
+        ELSE
+          j := j + 1;
+        END IF;
+      END LOOP;
+      buf := buf || substr(src, i, least(j, n) - i + 1);
+      i := least(j, n) + 1;
+      sp := false;
+    ELSIF c = '$' AND NOT (i > 1 AND substr(src, i - 1, 1) ~ '[A-Za-z0-9_]') THEN
+      -- A dollar-quoted block, kept exactly, if this $ opens one ($1 does not).
+      dq := (regexp_match(substr(src, i, 70), '^\$(?:[A-Za-z_][A-Za-z_0-9]*)?\$'))[1];
+      IF dq IS NULL THEN
+        buf := buf || c;
+        i := i + 1;
+      ELSE
+        pos := strpos(substr(src, i + length(dq)), dq);
+        IF pos = 0 THEN
+          buf := buf || substr(src, i);
+          i := n + 1;
+        ELSE
+          j := i + 2 * length(dq) + pos - 2;
+          buf := buf || substr(src, i, j - i + 1);
+          i := j + 1;
+        END IF;
+      END IF;
+      sp := false;
+    ELSIF ascii(c) IN (9, 10, 11, 12, 13, 32) THEN
+      IF NOT sp THEN buf := buf || ' '; sp := true; END IF;
+      i := i + 1;
+    ELSE
+      buf := buf || c;
+      i := i + 1;
+      sp := false;
+    END IF;
+  END LOOP;
+  IF sp AND length(buf) > 0 THEN buf := left(buf, length(buf) - 1); END IF;
+  RETURN buf;
+END
+$f$;
+
+-- wpmgr_fn_norm normalises pg_get_functiondef's text. The definition wraps the
+-- body in $tag$...$tag$, which wpmgr_norm would (rightly) keep as a quoted
+-- block, so the wrapper is split off first: the header and the body are
+-- normalised as SQL, the body only for languages whose source is SQL text.
+-- If the body cannot be located exactly, the whole definition is normalised
+-- and the body stays quoted, so any difference in it is still seen.
+CREATE FUNCTION pg_temp.wpmgr_fn_norm(def text, body text, lang text) RETURNS text LANGUAGE plpgsql AS $f$
+DECLARE
+  dq text;
+  p int;
+BEGIN
+  dq := (regexp_match(def, '(\$[A-Za-z_0-9]*\$)\n$'))[1];
+  IF dq IS NOT NULL AND body <> '' THEN
+    p := length(def) - length(dq) - length(body);
+    IF p > 1 AND substr(def, p, length(body)) = body THEN
+      RETURN pg_temp.wpmgr_norm(left(def, p - 1))
+             || '{' || CASE WHEN lang IN ('plpgsql', 'sql') THEN pg_temp.wpmgr_norm(body) ELSE body END || '}';
+    END IF;
+  END IF;
+  RETURN pg_temp.wpmgr_norm(def);
+END
+$f$;
+
 WITH
 sch AS (
   SELECT n.oid, n.nspname
@@ -536,13 +676,10 @@ rec AS (
   UNION ALL
   SELECT 'function',
          format('%I.%I(%s)', s.nspname, pr.proname, pg_get_function_identity_arguments(pr.oid)),
-         regexp_replace(
-           regexp_replace(
-             regexp_replace(pg_get_functiondef(pr.oid), '/\*.*?\*/', ' ', 'g'),
-             '--[^\n]*', ' ', 'g'),
-           '\s+', ' ', 'g')
+         pg_temp.wpmgr_fn_norm(pg_get_functiondef(pr.oid), pr.prosrc, l.lanname::text)
     FROM pg_proc pr
     JOIN sch s ON s.oid = pr.pronamespace
+    JOIN pg_language l ON l.oid = pr.prolang
    WHERE pr.prokind IN ('f', 'p')
      AND NOT EXISTS (SELECT 1 FROM pg_depend d
                       WHERE d.classid = 'pg_proc'::regclass AND d.objid = pr.oid AND d.deptype = 'e')
@@ -644,8 +781,8 @@ rec AS (
    WHERE e.extname <> 'plpgsql'
 )
 SELECT format(E'%s\t%s\t%s', kind,
-              translate(key, E'\t\r\n', '   '),
-              translate(def, E'\t\r\n', '   '))
+              replace(replace(replace(replace(key, E'\\', E'\\\\'), E'\n', E'\\n'), E'\r', E'\\r'), E'\t', E'\\t'),
+              replace(replace(replace(replace(def, E'\\', E'\\\\'), E'\n', E'\\n'), E'\r', E'\\r'), E'\t', E'\\t'))
   FROM rec
 SQL
 
@@ -658,7 +795,7 @@ REQUIRED_KINDS="table rls column index constraint policy"
 # the database was built from, for the message when it built nothing.
 extract_catalog() {
   local db="$1" out="$2" what="$3" rc
-  dpsql -At -d "$db" -f - < "$TMP/catalog.sql" > "$out.raw" 2> "$out.err"
+  dpsql -q -At -d "$db" -f - < "$TMP/catalog.sql" > "$out.raw" 2> "$out.err"
   rc=$?
   if [ "$rc" -ne 0 ]; then
     broken "could not read the catalog of $db (psql exit $rc): $(head -5 "$out.err")"

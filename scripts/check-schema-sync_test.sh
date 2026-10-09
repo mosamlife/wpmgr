@@ -1082,6 +1082,44 @@ case_run "broken: [settings] a materialized view is refused, not skipped" broken
   "+GUARD BROKEN" "+does not model" "+note_cache" "-are in step"
 
 # ===========================================================================
+# Quoted text (bot review of #868, gap 1). Comments and whitespace are folded
+# away only OUTSIDE quotes; inside a string, an E'' string or a dollar-quoted
+# block, 'a  b' is not 'a b' and '/* first */' is not '/* second */'.
+# ===========================================================================
+t="$(tree2 quoted-spaces)"
+replace_lit "$t/$S" "PERFORM 'two  spaces';" "PERFORM 'two spaces';"
+case_run "fires: [quoted] two spaces versus one inside a string literal" fail "$t" \
+  "+DIFFERENT (1)" "+public.describe_note(p_id uuid)"
+
+t="$(tree2 quoted-comment-marker)"
+replace_lit "$t/$S" "PERFORM '/* first */';" "PERFORM '/* second */';"
+case_run "fires: [quoted] the text between comment markers inside a string literal" fail "$t" \
+  "+DIFFERENT (1)" "+public.describe_note(p_id uuid)"
+
+t="$(tree2 quoted-dash-code-after)"
+replace_lit "$t/$S" "-- a string'; PERFORM 1;" "-- a string'; PERFORM 2;"
+case_run "fires: [quoted] code after a -- inside an E'' string on the same line" fail "$t" \
+  "+DIFFERENT (1)" "+public.describe_note(p_id uuid)"
+
+t="$(tree2 quoted-dollar)"
+replace_lit "$t/$S" 'dollar  body' 'dollar body'
+case_run "fires: [quoted] two spaces versus one inside a dollar-quoted block" fail "$t" \
+  "+DIFFERENT (1)" "+public.describe_note(p_id uuid)"
+
+t="$(tree2 quoted-policy-tab)"
+replace_lit "$t/$S" "= 'site editor'" "= E'site\\teditor'"
+case_run "fires: [quoted] a tab versus a space inside a policy's string literal" fail "$t" \
+  "+DIFFERENT (1)" "+public.audit_log.audit_role"
+
+t="$(tree2 quoted-honest-outside)"
+replace_lit "$t/$S" '  -- first comment' $'  /* a block comment with an apostrophe, it\'s fine */ -- and "quotes", too'
+replace_lit "$t/$S" "PERFORM 'two  spaces';" "PERFORM     'two  spaces';"
+replace_lit "$t/$S" "PERFORM E'it\\'s -- a string'; PERFORM 1;" "PERFORM E'it\\'s -- a string';
+  PERFORM 1; -- a trailing comment that is not part of the string"
+case_run "honest: [quoted] comments and whitespace outside the quoted text still differ freely" pass "$t" \
+  "+compared:" "+2 function" "-FAIL"
+
+# ===========================================================================
 # Cleanup on a failed setup (bot review of #868, gap 4). The first CREATE
 # DATABASE succeeds, the second fails; the database that was created must
 # still be dropped from a container the caller owns.
