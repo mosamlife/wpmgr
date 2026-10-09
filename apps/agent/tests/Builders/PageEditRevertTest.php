@@ -65,6 +65,9 @@ final class PageEditRevertTest extends TestCase
 
     private const EDIT2 = '55555555-2222-4333-8444-666666666666';
 
+    /** Element data a forged copy of the page would put back. */
+    private const FORGED_DATA = '[{"id":"0000001","elType":"widget","widgetType":"html","settings":{"html":"<script>1<\/script>"},"elements":[]}]';
+
     /** Ids in the golden two-column page. */
     private const HEADING = '52982f9';
 
@@ -279,38 +282,18 @@ final class PageEditRevertTest extends TestCase
         $row     = $this->options[$ledger];
         $this->assertSame([$hash, $hash], [$row['snapshot_sha256'], hash('sha256', $bytes)], 'the write answered the hash of the stored bytes');
 
-        // A valid snapshot of the same post that would put other text on the
-        // page, and a ledger row rewritten to name it and its rows.
-        $forged    = $this->forgedSnapshot($bytes, '[{"id":"0000001","elType":"widget","widgetType":"html","settings":{"html":"<script>1<\/script>"},"elements":[]}]');
-        $forgedRow = $row;
-        $forgedRow['snapshot_sha256'] = hash('sha256', $forged);
-        foreach ($forgedRow['changed_keys'] as $i => $k) {
-            if ($k['key'] === ElementorDocument::KEY_DATA) {
-                $forgedRow['changed_keys'][$i]['before_sha256'] = BuilderDocumentRestore::rowsSha256(['[{"id":"0000001","elType":"widget","widgetType":"html","settings":{"html":"<script>1<\/script>"},"elements":[]}]']);
-            }
-        }
-
         $cases = [
-            'another signed hash'                       => [fn () => null, str_repeat('a', 64)],
-            'the stored bytes changed'                  => [fn () => $this->rows->setOptionValue($option, $forged), $hash],
-            'the ledger hash changed'                   => [function () use ($ledger): void {
+            'another signed hash'      => [fn () => null, str_repeat('a', 64)],
+            'the stored bytes changed' => [fn () => $this->rows->setOptionValue($option, $this->forgedSnapshot($bytes)), $hash],
+            'the ledger hash changed'  => [function () use ($ledger): void {
                 $this->options[$ledger]['snapshot_sha256'] = hash('sha256', 'another copy');
             }, $hash],
-            'the bytes and the ledger changed together' => [function () use ($option, $forged, $ledger, $forgedRow): void {
-                $this->rows->setOptionValue($option, $forged);
-                $this->options[$ledger] = $forgedRow;
-            }, $hash],
-            'the snapshot is gone'                      => [fn () => $this->rows->deleteOptionLikeCore($option), $hash],
+            'the snapshot is gone'     => [fn () => $this->rows->deleteOptionLikeCore($option), $hash],
         ];
         $after = $this->state(self::DRAFT);
         foreach ($cases as $why => [$arrange, $signed]) {
             $arrange();
-            $state = $this->state(self::DRAFT);
-            $r     = $this->undo(self::EDIT, $signed);
-            $this->assertSame(['snapshot_tampered', false], [$r['code'] ?? null, $r['ok'] ?? null], $why . ': ' . json_encode($r));
-            $this->assertSame($state, $this->state(self::DRAFT), $why . ': nothing written');
-            $this->assertSame([], $this->wpdb->claims, $why . ': the claims are released');
-            $this->assertSame([], $this->api->callsTo('deletePostCss'), $why . ': no cache of the page dropped');
+            $this->assertTamperedAndNothingWritten($why, $signed);
 
             // Back to the copy and the record the write left.
             if ($this->optionValue($option) === null) {
@@ -324,6 +307,32 @@ final class PageEditRevertTest extends TestCase
         // All three agree: the undo runs.
         $r = $this->undo(self::EDIT, $hash);
         $this->assertSame(['reverted', true], [$r['outcome'] ?? null, $r['restored'] ?? null], (string) json_encode($r));
+    }
+
+    public function test_copy_and_record_rewritten_together_refused(): void
+    {
+        $this->enable();
+        $applied = $this->edit(self::EDIT, self::ops());
+        $option  = BuilderDocumentSnapshot::OPTION_PREFIX . self::EDIT;
+        $ledger  = 'wpmgr_ability_ledger_' . self::EDIT;
+
+        // Both site-side records rewritten together: a well-formed copy that
+        // would put other content on the page, a ledger row naming its hash,
+        // and the edited key's before-hash naming its rows. Only the hash the
+        // control plane signed still names the copy the write kept.
+        $forged = $this->forgedSnapshot($this->snapshotBytes(self::EDIT));
+        $this->rows->setOptionValue($option, $forged);
+        $this->options[$ledger]['snapshot_sha256'] = hash('sha256', $forged);
+        foreach ($this->options[$ledger]['changed_keys'] as $i => $k) {
+            if ($k['key'] === ElementorDocument::KEY_DATA) {
+                $this->options[$ledger]['changed_keys'][$i]['before_sha256'] = BuilderDocumentRestore::rowsSha256([self::FORGED_DATA]);
+            }
+        }
+        $this->assertNotNull(BuilderDocumentSnapshot::decode($forged, self::EDIT, self::DRAFT), 'the forged copy is a well-formed snapshot of this request and post');
+        $this->assertSame(hash('sha256', $forged), $this->options[$ledger]['snapshot_sha256'], 'the ledger row and the stored copy agree with each other');
+
+        $this->assertTamperedAndNothingWritten('the copy and its record rewritten together', $applied['snapshot_sha256']);
+        $this->assertNotContains(self::FORGED_DATA, $this->byKey(self::DRAFT)[ElementorDocument::KEY_DATA]);
     }
 
     public function test_undo_keeps_later_featured_image(): void
@@ -734,19 +743,33 @@ final class PageEditRevertTest extends TestCase
     }
 
     /**
-     * The stored snapshot text with DRAFT's _elementor_data replaced: still a
-     * well-formed snapshot of this request and post.
+     * The stored snapshot text with DRAFT's _elementor_data replaced by
+     * FORGED_DATA: still a well-formed snapshot of this request and post.
      */
-    private function forgedSnapshot(string $bytes, string $data): string
+    private function forgedSnapshot(string $bytes): string
     {
         $doc = json_decode($bytes, true, 512, JSON_THROW_ON_ERROR);
         foreach ($doc['meta'] as $i => [$key]) {
             if ($key === ElementorDocument::KEY_DATA) {
-                $doc['meta'][$i][1] = base64_encode($data);
+                $doc['meta'][$i][1] = base64_encode(self::FORGED_DATA);
             }
         }
 
         return (string) json_encode($doc);
+    }
+
+    /**
+     * An undo of EDIT with $signed is snapshot_tampered, and writes nothing:
+     * no row, no ledger change, no cache dropped, no claim left.
+     */
+    private function assertTamperedAndNothingWritten(string $why, string $signed): void
+    {
+        $state = $this->state(self::DRAFT);
+        $r     = $this->undo(self::EDIT, $signed);
+        $this->assertSame(['snapshot_tampered', false], [$r['code'] ?? null, $r['ok'] ?? null], $why . ': ' . json_encode($r));
+        $this->assertSame($state, $this->state(self::DRAFT), $why . ': nothing written');
+        $this->assertSame([], $this->wpdb->claims, $why . ': the claims are released');
+        $this->assertSame([], $this->api->callsTo('deletePostCss'), $why . ': no cache of the page dropped');
     }
 
     /**
