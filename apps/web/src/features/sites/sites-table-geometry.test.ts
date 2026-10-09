@@ -29,6 +29,7 @@ describe("sites table column tracks", () => {
       "wp_version",
       "php_version",
       "agent_version",
+      "ai_readiness",
       "updates_count",
       "backup_status",
       "uptime_sparkline",

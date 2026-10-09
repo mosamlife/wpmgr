@@ -56,6 +56,8 @@ import {
   asConnectedSite,
 } from "@/features/sites/connection-state";
 import { SiteRowActions } from "@/features/sites/site-row-actions";
+import { AiReadinessCell } from "@/features/ai-readiness/ai-readiness-cell";
+import type { AiCell } from "@/features/ai-readiness/readiness-cell-model";
 import { PausedBadge, UptimeBadge } from "@/features/sites/site-badges";
 import { SiteCardThumbnail } from "@/features/sites/site-card-thumbnail";
 import { isMonitoringPaused } from "@/features/sites/monitoring-pause";
@@ -123,6 +125,8 @@ function buildCapabilityItems(site: Site): CapabilityItem[] {
 export interface SiteCardProps {
   site: Site;
   cardSize: CardSize;
+  /** AI readiness chip state; omitted, the card shows no AI chip. */
+  aiCell?: AiCell;
   selectionCount: number;
   onOpenAutoLogin?: (site: Site) => void;
   /** Opens the site's detail page — wired to the "Open site" menu action. */
@@ -140,6 +144,7 @@ export interface SiteCardProps {
 export function SiteCard({
   site,
   cardSize,
+  aiCell,
   selectionCount,
   onOpenAutoLogin,
   onOpenDetail,
@@ -401,6 +406,11 @@ export function SiteCard({
           {/* SSL: only when tls_expires_at is present */}
           {site.tls_expires_at ? (
             <SslChip expiresAt={site.tls_expires_at} />
+          ) : null}
+
+          {/* AI readiness: the same states as the table's AI column. */}
+          {aiCell ? (
+            <AiReadinessCell siteId={site.id} cell={aiCell} variant="chip" />
           ) : null}
         </div>
 
