@@ -289,8 +289,10 @@ class BackupTransport
             },
             $message
         );
+        // A percent-encoded URL carries its signature encoded too.
+        $message = (string) preg_replace('#\bhttps?%3A%2F%2F[^\s"\'<>]*#i', '[url]', $message);
         $message = (string) preg_replace(
-            '#\b(X-Amz-[A-Za-z0-9-]+|X-Goog-[A-Za-z0-9-]+|Signature|AWSAccessKeyId|GoogleAccessId|Expires)=[^\s&"\'<>]*#i',
+            '#\b(X-Amz-[A-Za-z0-9-]+|X-Goog-[A-Za-z0-9-]+|Signature|AWSAccessKeyId|GoogleAccessId|Expires)(?:=|%3D)[^\s&"\'<>]*#i',
             '$1=[redacted]',
             $message
         );

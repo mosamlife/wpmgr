@@ -497,6 +497,17 @@ final class EncryptAndUploadPutFailureTest extends TestCase
             self::assertStringNotContainsString($secret, $error);
         }
 
+        // Percent-encoded forms of the URL and of a bare signature parameter.
+        $this->respondWith(static fn (): \WP_Error => new \WP_Error(
+            'http_request_failed',
+            'proxy refused ' . rawurlencode($url) . ' and X-Amz-Signature%3Ddeadbeef'
+        ));
+        $error = $transport->putChunkWithStatus($url, 'bytes')['error'];
+        self::assertStringContainsString('proxy refused', $error);
+        foreach (['deadbeef', 'AKIAEXAMPLE', '%2Fput%2F', 's3.example%2F'] as $secret) {
+            self::assertStringNotContainsString($secret, $error);
+        }
+
         $this->respondWith(static fn (): \WP_Error => new \WP_Error('http_request_failed', str_repeat('e', 500)));
         self::assertLessThanOrEqual(160, strlen($transport->putChunkWithStatus($url, 'bytes')['error']));
     }
