@@ -531,17 +531,15 @@ func (s *Service) GetEffectiveContext(ctx context.Context, tenantID, siteID uuid
 
 // --- shared helpers ----------------------------------------------------------
 
-// authorizeLoosening compares a proposed restriction set against the CURRENT
-// set of the same layer. If any item present now is missing from the
-// proposal, on any deny-list, the caller must be a signed-in person: loosening
-// an AI control needs a signed-in person. Adding items, reordering them and
-// every other edit stay open to every caller the route admits.
+// authorizeLoosening: loosening an AI control needs a signed-in person. A
+// proposal that lacks any item the layer carries now needs one; every other
+// proposal stays open to every caller the route admits.
 //
-// The caller is the principal the request authenticated as, read from ctx. A
-// ctx without one is refused when the write would drop an item.
+// The caller is the principal the request authenticated as, read from ctx; a
+// ctx without one does not count as a person.
 //
-// Callers compare against the version the new one will be based on, so a
-// concurrent write is caught by the version check rather than racing this one.
+// current is the version the new one will be based on, so a concurrent write
+// is caught by the version check rather than racing this one.
 func authorizeLoosening(ctx context.Context, current, proposed RestrictionSet) error {
 	if !dropsAny(current, proposed) {
 		return nil
@@ -550,8 +548,8 @@ func authorizeLoosening(ctx context.Context, current, proposed RestrictionSet) e
 	return authz.AuthorizeLoosening(p)
 }
 
-// dropsAny reports whether proposed lacks an item that current carries, on any
-// of RestrictionSet's deny-lists. Comparison is exact, as in checkNoWiden.
+// dropsAny reports whether proposed lacks any item current carries, in any of
+// RestrictionSet's fields. Comparison is exact, as in checkNoWiden.
 func dropsAny(current, proposed RestrictionSet) bool {
 	return len(missingItems(current.ForbiddenTools, proposed.ForbiddenTools)) > 0 ||
 		len(missingItems(current.ForbiddenDomains, proposed.ForbiddenDomains)) > 0 ||

@@ -1,7 +1,7 @@
 package tests
 
 // loosening_ai_control_integration_test.go: loosening an AI control needs a
-// signed-in person. Tightening one stays open to an API key.
+// signed-in person.
 //
 // Every request goes through the real router (server.New) over the pool
 // startPostgres returns (wpmgr_app: NOSUPERUSER, NOBYPASSRLS), authenticated

@@ -10,10 +10,8 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
 
-// Loosening an AI control needs a signed-in person: a proposal that drops an
-// item the layer carries now, on any deny-list, is refused to every other
-// caller. Every other proposal stays open, which the admitted cases pin so the
-// check cannot pass by refusing everything.
+// Loosening an AI control needs a signed-in person. The admitted cases are
+// here so the check cannot pass by refusing everything.
 func TestLooseningAnAIControlNeedsASignedInPerson(t *testing.T) {
 	tenant := uuid.New()
 	person := domain.WithPrincipal(context.Background(), domain.Principal{

@@ -196,8 +196,8 @@ func (s *Service) PauseAssistant(ctx context.Context, p domain.Principal, id uui
 // the incident is still off after it. Releasing the switch never enables a
 // surface nobody chose to enable.
 //
-// Loosening an AI control needs a signed-in person, so this refuses every
-// other caller before anything is written. Pausing stays open to them.
+// Loosening an AI control needs a signed-in person; every other caller is
+// refused before anything is written.
 func (s *Service) ResumeAssistant(ctx context.Context, p domain.Principal, id uuid.UUID, rec AuditRecorder) (AssistantState, error) {
 	if err := authz.AuthorizeLoosening(p); err != nil {
 		return AssistantState{}, err
