@@ -459,8 +459,10 @@ func TestAssistantCachePurgeRequestChecksAsAppRole(t *testing.T) {
 
 	// Approval after the window, through the shipped statement AND raw. A
 	// lapsed row is planted with a backdated created_at (INSERT may set it).
+	// The transaction carries the decider's own user id, as a person's
+	// approval does, so the window CHECK is what refuses it.
 	var lapsed uuid.UUID
-	if err := pool.RunTenantTx(ctx, p, func(tx pgx.Tx) error {
+	if err := pool.RunTenantTx(ctx, acprDeciderPrincipal(tenant, decider), func(tx pgx.Tx) error {
 		if err := tx.QueryRow(ctx, `INSERT INTO assistant_cache_purge_requests
 			(tenant_id, site_id, proposed_by_grant_id, scope, site_label, site_host, grant_label,
 			 grant_via, digest_nonce, presented_digest, state, created_at, expires_at)
