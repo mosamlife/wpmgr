@@ -89,6 +89,20 @@ function meWithRole(role: "operator" | "viewer"): Me {
 }
 
 /**
+ * A collaborator who reaches the site through a share: no organisation
+ * membership, scope "site", and the share's role (Me in the generated client).
+ */
+function siteScopedMe(role: "operator" | "viewer"): Me {
+  return {
+    user: { id: "u", email: "a@b.test", name: "A" },
+    active_tenant_id: TENANT,
+    memberships: [],
+    scope: "site",
+    role,
+  } as unknown as Me;
+}
+
+/**
  * Stands in for the Sites list while the check runs: it reads the fleet rollup
  * through the real hook and the real cell model, as the AI column does. The
  * list is a different route and is never mounted together with the Content
@@ -100,9 +114,9 @@ function FleetReader() {
   return <p data-testid="fleet-reader">{cell.kind === "result" ? cell.label : cell.kind}</p>;
 }
 
-function renderTab(role: "operator" | "viewer" = "operator", opts: { fleetReader?: boolean } = {}) {
+function renderTab(who: "operator" | "viewer" | Me = "operator", opts: { fleetReader?: boolean } = {}) {
   const queryClient = createTestQueryClient();
-  queryClient.setQueryData(ME_KEY, meWithRole(role));
+  queryClient.setQueryData(ME_KEY, typeof who === "string" ? meWithRole(who) : who);
   const rootRoute = createRootRoute({});
   type UpdateOptions = Parameters<typeof ContentRoute.update>[0];
   const contentRoute = ContentRoute.update({
@@ -151,6 +165,13 @@ afterEach(() => {
 
 async function card() {
   return within(await screen.findByRole("region", { name: "AI readiness" }));
+}
+
+/** The icon beside the card's status line. Its colour is the colour of the header. */
+function headerIcon(c: Awaited<ReturnType<typeof card>>): Element {
+  const icon = c.getByTestId("ai-readiness-status").parentElement?.querySelector("svg");
+  if (!icon) throw new Error("the status line has no icon");
+  return icon;
 }
 
 describe("loading and load failure", () => {
@@ -253,6 +274,10 @@ describe("a site with things to fix", () => {
     expect(
       c.getByText("WordPress 7.0.9. Builder tools need 7.1 or later. Update WordPress on this site."),
     ).toBeInTheDocument();
+    // The header is red when the control plane says there is something to fix:
+    // the control for the "header is not red" checks on the Bricks AI row below.
+    expect(headerIcon(c)).toHaveClass("text-[var(--color-destructive)]");
+    expect(headerIcon(c)).not.toHaveClass("text-[var(--color-success)]");
   });
 
   it("uses the singular for one", async () => {
@@ -536,8 +561,15 @@ describe("the Bricks AI row is derived and unconfirmed", () => {
   // bricks_abilities is a pass when a tool list read found a Bricks tool and a
   // fail when it found none (evaluate.go switchCheck). Neither is confirmed
   // against a licensed Bricks install, so neither reads as On or Off.
+  //
+  // This is the payload for a site where that row is the only one that is not
+  // a pass: status ready and fix_count 0, written out here rather than left to
+  // the fixture's defaults. The header reads those two fields, so a grey row
+  // never sits under a header that counts a thing to fix.
   function bricksWith(abilities: ReturnType<typeof chk>): SiteAiReadiness {
     return readiness({
+      status: "ready",
+      fix_count: 0,
       groups: [
         baseGroup(),
         builderGroup("elementor", { installed: false }),
@@ -579,6 +611,22 @@ describe("the Bricks AI row is derived and unconfirmed", () => {
     // No row anywhere on the card is red because of it.
     expect(c.queryAllByRole("img", { name: "Needs fixing" })).toHaveLength(0);
   });
+
+  it.each(["pass", "fail"] as const)(
+    "leaves the header green when the row is a derived %s: ready, nothing to fix",
+    async (state) => {
+      getReadiness.mockResolvedValue(okResult(bricksWith(chk("bricks_abilities", state))));
+      renderTab();
+      const c = await card();
+      const status = c.getByTestId("ai-readiness-status");
+      expect(status).toHaveTextContent("Ready. Everything the AI needs on this site is in place.");
+      expect(status).not.toHaveTextContent(/to fix/);
+      expect(headerIcon(c)).toHaveClass("text-[var(--color-success)]");
+      expect(headerIcon(c)).not.toHaveClass("text-[var(--color-destructive)]");
+      // And no row under it is red either.
+      expect(c.queryAllByRole("img", { name: "Needs fixing" })).toHaveLength(0);
+    },
+  );
 
   it("does not turn the Elementor switch grey: only the Bricks row is a derivation", async () => {
     getReadiness.mockResolvedValue(
@@ -635,13 +683,27 @@ describe("Check again", () => {
     return { c, button };
   }
 
-  it("is there for an operator", async () => {
-    const { button } = await pressCheckAgain("operator");
-    expect(button).toBeEnabled();
+  // The refresh route needs site.content.refresh (operator and above, or a
+  // site-scoped operator share): apps/api/internal/aireadiness/handler.go
+  // Register and PermSiteContentRefresh in apps/api/internal/authz/role.go. The
+  // Content route hands the card the same gate through canWriteSiteContext, so
+  // these go through the real route with the principals that gate admits and
+  // refuses. The first table is the positive control for the second: the same
+  // render shows the button when it is allowed.
+  it.each([
+    ["an organisation operator", meWithRole("operator")],
+    ["a site-scoped operator", siteScopedMe("operator")],
+  ])("is there for %s", async (_who, me) => {
+    renderTab(me);
+    const c = await card();
+    expect(await c.findByRole("button", { name: "Check again" })).toBeEnabled();
   });
 
-  it("is not there for a viewer, who may read the card but not ask for a refresh", async () => {
-    renderTab("viewer");
+  it.each([
+    ["an organisation viewer", meWithRole("viewer")],
+    ["a site-scoped viewer", siteScopedMe("viewer")],
+  ])("is not there for %s, who may read the card but not ask for a refresh", async (_who, me) => {
+    renderTab(me);
     const c = await card();
     // The card has loaded: its status line is on screen, so the button is
     // absent and not merely late.
