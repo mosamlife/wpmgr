@@ -78,9 +78,9 @@ func requireNavigationVary(t *testing.T, w *httptest.ResponseRecorder) {
 
 // TestAuthorizeNavigationRedirect_Decision pins which requests on the authorize
 // path are browser navigations. Sec-Fetch-Mode decides whenever it is present;
-// without it a document destination does; with no Fetch Metadata at all only an
-// Accept that lists text/html does. Everything else is the JSON the consent
-// screen fetches.
+// without it Sec-Fetch-Dest decides whenever it is present, and only a document
+// destination is a navigation; with neither, only an Accept that lists
+// text/html is. Everything else is the JSON the consent screen fetches.
 func TestAuthorizeNavigationRedirect_Decision(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -105,6 +105,10 @@ func TestAuthorizeNavigationRedirect_Decision(t *testing.T) {
 		{"cors mode decides over a document destination", map[string]string{
 			"Sec-Fetch-Mode": "cors", "Sec-Fetch-Dest": "document"}, false},
 		{"document destination without a mode", map[string]string{"Sec-Fetch-Dest": "document"}, true},
+		{"empty destination without a mode decides over an html accept", map[string]string{
+			"Accept": "text/html", "Sec-Fetch-Dest": "empty"}, false},
+		{"iframe destination without a mode decides over an html accept", map[string]string{
+			"Accept": "text/html", "Sec-Fetch-Dest": "iframe"}, false},
 		{"html accept without fetch metadata", map[string]string{"Accept": browserNavigationAccept}, true},
 		{"bare text/html accept", map[string]string{"Accept": "text/html"}, true},
 		{"text/html in upper case", map[string]string{"Accept": "TEXT/HTML"}, true},
