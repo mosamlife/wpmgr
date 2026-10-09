@@ -141,6 +141,7 @@ work_dir="" # the private dir a core is built in, while one is
 lock_held="" # the lock dir this run holds, while it holds one
 # Every way out of the script, a die and a signal included, ends here: the lock
 # is given back (only if it is still this run's) and nothing private is left.
+# shellcheck disable=SC2329 # run by the EXIT trap below
 cleanup() {
   if [ -n "$lock_held" ] && [ "$(cat "$lock_held/pid" 2>/dev/null || true)" = "$$" ]; then
     rm -rf "$lock_held"
@@ -317,6 +318,8 @@ fetch_core() {
   [ -n "$tar_bin" ] || die "tar not found (needed to unpack WordPress $version)"
 
   # Built here, in a dir only this run knows, whatever any other run is doing.
+  # It is inside the cache dir so that the rename which publishes it never has
+  # to copy across filesystems.
   work_dir="$(mktemp -d "$cache/.tmp.XXXXXX")" || die "cannot create a work dir under $cache"
   case "$work_dir" in "$cache"/.tmp.*) ;; *) work_dir="" && die "unexpected work dir" ;; esac
 

@@ -320,7 +320,18 @@ await() { # await <file>   true once the file exists, false after 20 seconds
   [ -e "$1" ]
 }
 arrivals() { # arrivals <state dir>   how many runs are parked at the rename
-  ls "$1" 2>/dev/null | grep -c '^arrived\.' || true
+  local n=0 f
+  for f in "$1"/arrived.*; do
+    if [ -e "$f" ]; then n=$((n + 1)); fi
+  done
+  echo "$n"
+}
+leftover_work_dirs() { # leftover_work_dirs <cache>   how many private work dirs a run left in it
+  local n=0 f
+  for f in "$1"/.tmp.*; do
+    if [ -e "$f" ]; then n=$((n + 1)); fi
+  done
+  echo "$n"
 }
 spawn() { # spawn <out file> <env...>   the check in the background; its pid is left in SPAWNED
   local out="$1"
@@ -581,7 +592,7 @@ wait "$pt"
 rc_t=$?
 if [ "$rc_t" -eq 143 ]; then ok "  and the run stops on TERM (exit $rc_t)"; else bad "  and the run stops on TERM (exit $rc_t)"; fi
 if [ ! -e "$C/.lock.$sha_mini" ]; then ok "  and the lock is gone"; else bad "  and the lock is gone"; fi
-if [ -z "$(ls -A "$C" | grep '^\.tmp\.' || true)" ]; then ok "  and no work dir is left"; else bad "  and no work dir is left"; fi
+if [ "$(leftover_work_dirs "$C")" -eq 0 ]; then ok "  and no work dir is left"; else bad "  and no work dir is left"; fi
 
 # Locks that nobody is going to release. A corrupt core is what makes a run take the lock.
 dead_pid="$(sh -c 'echo $$')"
@@ -621,6 +632,38 @@ printf '%s\n' "$dead_pid" >"$C/.lock.$sha_mini/pid"
 expect "a dead owner whose reclaim lock is stuck is reported" nonzero "${hermetic[@]}" PAGE_KSES_CACHE="$C" SHIM_CACHE="$C" SHIM_DIR="$S" PAGE_KSES_LOCK_WAIT=2
 said "  and it says the owner is gone" "left by pid $dead_pid, which is gone"
 said "  and it names the reclaim lock to clear" "$C/.lock.$sha_mini.reclaim"
+
+# The honest case: a lock that is in use and then freed is waited for, not failed on.
+newcache lock-freed
+corrupt_mini "$C"
+mkdir "$C/.lock.$sha_mini"
+printf '%s\n' "$$" >"$C/.lock.$sha_mini/pid"
+spawn "$tmp/lock_freed.out" "${hermetic[@]}" PAGE_KSES_CACHE="$C" SHIM_CACHE="$C" SHIM_DIR="$S" PAGE_KSES_LOCK_WAIT=30
+pw=$SPAWNED
+if await "$S/count.$pw"; then ok "a run that finds the core corrupt goes for the lock"; else bad "a run that finds the core corrupt goes for the lock"; fi
+sleep 2
+if kill -0 "$pw" 2>/dev/null; then ok "  and it is still waiting after two seconds"; else bad "  and it is still waiting after two seconds"; fi
+rm -rf "$C/.lock.$sha_mini"
+wait "$pw"
+rc_w=$?
+if [ "$rc_w" -eq 0 ]; then ok "  and it goes on once the lock is freed (exit $rc_w)"; else bad "  and it goes on once the lock is freed (exit $rc_w)"; sed 's/^/     | /' "$tmp/lock_freed.out" | head -8; fi
+if [ "$(marker_of "$C/$sha_mini")" = "$sha_mini" ] && only_the_core "$C" "$sha_mini"; then ok "  and the core is replaced and no lock is left"; else bad "  and the core is replaced and no lock is left ($(ls -A "$C"))"; fi
+
+# Without ps a lock cannot be judged, and a lock that cannot be judged is not guessed at.
+nops="$tmp/nops"
+mkdir -p "$nops"
+for t in bash env dirname mktemp mkdir rm cat cp grep tar sleep awk shasum sha256sum; do
+  p="$(command -v "$t" 2>/dev/null || true)"
+  if [ -x "$p" ]; then ln -s "$p" "$nops/$t"; fi
+done
+cp "$shim/mv" "$nops/mv"
+cp "$shim/curl" "$nops/curl"
+newcache no-ps
+corrupt_mini "$C"
+expect "a missing ps is red when a core has to be replaced" nonzero "${hermetic[@]}" PATH="$nops" PAGE_KSES_CACHE="$C" SHIM_CACHE="$C" SHIM_DIR="$S"
+said "  and it says ps is the problem" "ps not found"
+if [ "$(marker_of "$C/$sha_mini")" = "$wrong" ]; then ok "  and the corrupt core was left as it was"; else bad "  and the corrupt core was left as it was"; fi
+expect "the same run with ps on PATH replaces the core and passes" 0 "${hermetic[@]}" PAGE_KSES_CACHE="$C" SHIM_CACHE="$C" SHIM_DIR="$S"
 
 expect "a lock wait of 0 is red" nonzero PAGE_KSES_LOCK_WAIT=0 PAGE_KSES_MARKUP="$tmp/layout_ok.json"
 said "  and it says what the setting must be" "PAGE_KSES_LOCK_WAIT must be a whole number"
