@@ -74,6 +74,24 @@ function wire(ticket: string, over: Record<string, unknown> = {}) {
   };
 }
 
+// The seven reads the server lists for mcp:read (scopeCapabilities in
+// apps/api/internal/mcp/policy.go), written out here rather than taken from the
+// dashboard's vocabulary, and the full offer for a request that holds mcp:site.
+const ALL_READS = [
+  "mcp.activity.read",
+  "mcp.backups.read",
+  "mcp.diagnostics.read",
+  "mcp.performance.read",
+  "mcp.security.read",
+  "mcp.sites.read",
+  "mcp.uptime.read",
+];
+const FULL_OFFER = [
+  ...ALL_READS.map((name) => ({ name, effect: "read" })),
+  { name: "mcp.ability.read", effect: "read" },
+  { name: "mcp.ability.request", effect: "request" },
+];
+
 const APPROVED = {
   grant_id: "g1",
   code: "code-1",
@@ -287,34 +305,89 @@ describe("/connect/ai, site tools asked for", () => {
     expect(cannotChange()).not.toHaveTextContent(/Beyond reading/);
   });
 
-  it("leaves no request behind when see what the site can do is cleared: the screen is back on Just the basics", async () => {
-    // The preset claim is derived from the raw tick list. Both site tools ticked
-    // is not either shortcut; once the read is cleared, and the request with it,
-    // what is left is Sites alone. A request still held in the list would keep
-    // the screen on Custom while the box showed it clear.
-    const late = lateAnswer(wire("ticket-1"));
+  // OWNER RULING 2026-10-09: A PRESET CHANGES ONLY THE READ ROWS. These go
+  // through the real route with all seven reads on offer, so Read everything
+  // really widens the reads, and read what the approval sends from the POST body.
+  it("opens on Just the basics, not Custom, with both site tools ticked", async () => {
+    const late = lateAnswer(wire("ticket-1", { conferrable_capabilities: FULL_OFFER }));
     authorizeAnswers = [late.answer];
     mount();
     await screen.findByRole("status", { name: "Loading the connection request" });
     late.release();
     await screen.findByTestId("consent-site-capability");
-    expect(screen.getByTestId("preset-custom")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Just the basics", pressed: true })).toBeNull();
-    // The opening sentence on a screen nobody has touched says what is true of
-    // it: the read rows match a shortcut, and the site-tools ticks are the part
-    // that is not. It does not say anyone chose this set.
-    expect(
-      screen.getByText(
-        "The read rows match Just the basics. The ticks further down for site tools are not part of either shortcut, and pressing a shortcut clears them.",
-      ),
-    ).toBeTruthy();
-    expect(screen.getByTestId("consent-read-capability").textContent ?? "").not.toMatch(
-      /your own set|you have changed/i,
-    );
 
-    fireEvent.click(readBox());
+    expect(readBox().checked).toBe(true);
+    expect(requestBox().checked).toBe(true);
     expect(screen.getByRole("button", { name: "Just the basics", pressed: true })).toBeTruthy();
     expect(screen.queryByTestId("preset-custom")).toBeNull();
+    expect(screen.getByText("See which sites are in scope, and no other read.")).toBeTruthy();
+    expect(screen.getByTestId("consent-read-capability").textContent ?? "").not.toMatch(
+      /your own set|you have changed|clears them/i,
+    );
+  });
+
+  it("keeps both site tools ticked when Read everything is pressed, and the approval carries them", async () => {
+    const late = lateAnswer(wire("ticket-1", { conferrable_capabilities: FULL_OFFER }));
+    authorizeAnswers = [late.answer];
+    mount();
+    await screen.findByRole("status", { name: "Loading the connection request" });
+    late.release();
+    await screen.findByTestId("consent-site-capability");
+
+    fireEvent.click(screen.getByRole("button", { name: "Read everything" }));
+    expect(screen.getByRole("button", { name: "Read everything", pressed: true })).toBeTruthy();
+    expect(readBox().checked).toBe(true);
+    expect(requestBox().checked).toBe(true);
+
+    submitApproval();
+    const body = await approvalBody();
+    expect([...(body.capabilities ?? [])].sort()).toEqual(
+      [...ALL_READS, "mcp.ability.read", "mcp.ability.request"].sort(),
+    );
+  });
+
+  it("keeps both site tools ticked when Just the basics is pressed after Read everything", async () => {
+    const late = lateAnswer(wire("ticket-1", { conferrable_capabilities: FULL_OFFER }));
+    authorizeAnswers = [late.answer];
+    mount();
+    await screen.findByRole("status", { name: "Loading the connection request" });
+    late.release();
+    await screen.findByTestId("consent-site-capability");
+
+    fireEvent.click(screen.getByRole("button", { name: "Read everything" }));
+    fireEvent.click(screen.getByRole("button", { name: "Just the basics" }));
+    expect(screen.getByRole("button", { name: "Just the basics", pressed: true })).toBeTruthy();
+    expect(readBox().checked).toBe(true);
+    expect(requestBox().checked).toBe(true);
+
+    submitApproval();
+    const body = await approvalBody();
+    expect([...(body.capabilities ?? [])].sort()).toEqual([
+      "mcp.ability.read",
+      "mcp.ability.request",
+      "mcp.sites.read",
+    ]);
+  });
+
+  it("does not put back a site tool the person cleared when a shortcut is pressed", async () => {
+    const late = lateAnswer(wire("ticket-1", { conferrable_capabilities: FULL_OFFER }));
+    authorizeAnswers = [late.answer];
+    mount();
+    await screen.findByRole("status", { name: "Loading the connection request" });
+    late.release();
+    await screen.findByTestId("consent-site-capability");
+
+    fireEvent.click(requestBox());
+    expect(requestBox().checked).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Read everything" }));
+    expect(requestBox().checked).toBe(false);
+    expect(readBox().checked).toBe(true);
+
+    submitApproval();
+    const body = await approvalBody();
+    expect([...(body.capabilities ?? [])].sort()).toEqual(
+      [...ALL_READS, "mcp.ability.read"].sort(),
+    );
   });
 
   it("does not send the request after the read is cleared and ticked again", async () => {

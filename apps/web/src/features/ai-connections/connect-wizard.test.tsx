@@ -2346,16 +2346,84 @@ describe("a preset is a shortcut, not a mode", () => {
     expect(sent).not.toContain("mcp.cache.purge");
   });
 
-  it("never ticks the write row from a preset, even when a preset is pressed after it was ticked by hand", async () => {
-    // A preset button only ever SETS the checkbox list; it must not be able to
-    // leave a previously-hand-ticked write row sitting on afterwards.
-    await reachCapabilityStep();
+  // OWNER RULING 2026-10-09: A PRESET CHANGES ONLY THE READ ROWS. A press never
+  // ticks the cache-clear row or either site-tools row, and never clears one the
+  // operator ticked: those boxes are exactly as they were.
+  it("leaves the write row exactly as it was when a preset is pressed after it was ticked by hand, and the mint carries it", async () => {
+    loadedFleet(3);
+    let capturedBody: unknown = null;
+    stubMintFetch((init) => {
+      capturedBody = typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : null;
+      return jsonResponse(MINTED, 201);
+    });
+
+    renderWizard();
+    await advanceToCapabilityStep(chooseAllSites);
     const writeBox = screen.getByTestId("cache-purge-capability-box");
     fireEvent.click(within(writeBox).getByRole("checkbox"));
     expect(within(writeBox).getByRole("checkbox")).toBeChecked();
 
     fireEvent.click(screen.getByTestId("preset-read-everything"));
-    expect(within(writeBox).getByRole("checkbox")).not.toBeChecked();
+    expect(within(writeBox).getByRole("checkbox")).toBeChecked();
+    expect(claimed()).toBe("read-everything");
+
+    fireEvent.click(await forwardToMintButtonFromCapabilities());
+    await screen.findByText(/this is the only time this token is shown/i);
+    const sent = (capturedBody as Record<string, unknown>).capabilities as string[];
+    expect([...sent].sort()).toEqual([...CONFERRABLE_READS, "mcp.cache.purge"].sort());
+  });
+
+  it("leaves both site-tools boxes exactly as they were when a preset is pressed, and the mint carries them", async () => {
+    loadedFleet(3);
+    let capturedBody: unknown = null;
+    stubMintFetch((init) => {
+      capturedBody = typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : null;
+      return jsonResponse(MINTED, 201);
+    });
+
+    renderWizard();
+    await advanceToCapabilityStep(chooseAllSites);
+    const read = () => screen.getByTestId<HTMLInputElement>("ability-box-mcp.ability.read");
+    const request = () => screen.getByTestId<HTMLInputElement>("ability-box-mcp.ability.request");
+    // Ticking "ask for changes" ticks "see what the site can do" with it.
+    fireEvent.click(request());
+    expect(read().checked).toBe(true);
+    expect(request().checked).toBe(true);
+    // The read rows are still Sites alone, so the chip is still on the basics:
+    // it is judged from the read rows, and these boxes are not read rows.
+    expect(claimed()).toBe("basics");
+
+    fireEvent.click(screen.getByTestId("preset-read-everything"));
+    expect(claimed()).toBe("read-everything");
+    expect(read().checked).toBe(true);
+    expect(request().checked).toBe(true);
+
+    fireEvent.click(screen.getByTestId("preset-basics"));
+    expect(claimed()).toBe("basics");
+    expect(read().checked).toBe(true);
+    expect(request().checked).toBe(true);
+
+    fireEvent.click(screen.getByTestId("preset-read-everything"));
+    fireEvent.click(await forwardToMintButtonFromCapabilities());
+    await screen.findByText(/this is the only time this token is shown/i);
+    const sent = (capturedBody as Record<string, unknown>).capabilities as string[];
+    expect([...sent].sort()).toEqual(
+      [...CONFERRABLE_READS, "mcp.ability.read", "mcp.ability.request"].sort(),
+    );
+  });
+
+  it("does not tick a site-tools box or the write row from a preset when they were clear", async () => {
+    await reachCapabilityStep();
+    fireEvent.click(screen.getByTestId("preset-read-everything"));
+    fireEvent.click(screen.getByTestId("preset-basics"));
+    fireEvent.click(screen.getByTestId("preset-read-everything"));
+    expect(screen.getByTestId<HTMLInputElement>("ability-box-mcp.ability.read").checked).toBe(false);
+    expect(
+      screen.getByTestId<HTMLInputElement>("ability-box-mcp.ability.request").checked,
+    ).toBe(false);
+    expect(
+      within(screen.getByTestId("cache-purge-capability-box")).getByRole("checkbox"),
+    ).not.toBeChecked();
   });
 });
 

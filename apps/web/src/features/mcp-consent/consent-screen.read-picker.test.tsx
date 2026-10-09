@@ -130,7 +130,7 @@ describe("ConsentScreen, the read picker opens on the wizard's defaults", () => 
   it("describes what the preset does, in the wizard's words", async () => {
     await renderScreen(consentFor(reads(SERVER_READS)));
     expect(
-      within(readPicker()).getByText("See which sites are in scope, and nothing else."),
+      within(readPicker()).getByText("See which sites are in scope, and no other read."),
     ).toBeTruthy();
   });
 
@@ -219,75 +219,147 @@ describe("ConsentScreen, the presets", () => {
     expect(within(picker).getByRole("button", { name: "Read everything", pressed: true })).toBeTruthy();
   });
 
-  it("calls a set that is neither preset Custom, and says so", async () => {
+  it("calls read rows that are neither shortcut Custom, and says so plainly", async () => {
     await renderScreen(consentFor(reads(SERVER_READS)));
     const picker = readPicker();
     fireEvent.click(rowBox(picker, "mcp.backups.read"));
     expect(within(picker).getByTestId("preset-custom")).toBeTruthy();
-    // The read rows are not a shortcut, so the line is plain: it does not say
-    // "your own set" and it does not say what the person did.
-    expect(within(picker).getByText("The ticks below are not either shortcut.")).toBeTruthy();
+    // The line is about the read rows, and it does not say "your own set" or
+    // what the person did.
+    expect(within(picker).getByText("The read rows are not either shortcut.")).toBeTruthy();
     expect(picker.textContent ?? "").not.toMatch(/your own set/i);
   });
+});
 
-  it("opens on Custom with a sentence that says what is true of an untouched screen, when site tools open ticked", async () => {
-    // The app asked for site tools, so Sites plus the two site-tools ticks is
-    // not either shortcut ("Just the basics" says "and nothing else"). Nobody
-    // chose that set, so the sentence under Custom must not say they did: it says
-    // the read rows match Just the basics, that the site-tools ticks are not part
-    // of either shortcut, and that pressing a shortcut clears them.
-    await renderScreen(
-      consentFor([...reads(SERVER_READS), ABILITY_READ, ABILITY_REQUEST], [SCOPE_READ, SCOPE_SITE]),
-    );
+// OWNER RULING 2026-10-09: A PRESET CHANGES ONLY THE READ ROWS. The chip is
+// judged from the read rows alone, and pressing a shortcut leaves the site-tools
+// ticks and the cache-clear tick exactly as they were. What the approval sends is
+// read from what onApprove was handed.
+describe("ConsentScreen, a preset changes only the read rows", () => {
+  const SITE_TOOLS_ASKED = [SCOPE_READ, SCOPE_SITE];
+  const offeredWithSiteTools = () => [...reads(SERVER_READS), ABILITY_READ, ABILITY_REQUEST];
+  const abilityRead = () => screen.getByTestId<HTMLInputElement>("ability-box-mcp.ability.read");
+  const abilityRequest = () =>
+    screen.getByTestId<HTMLInputElement>("ability-box-mcp.ability.request");
+  const press = (name: string) =>
+    fireEvent.click(within(readPicker()).getByRole("button", { name }));
+
+  it("opens on Just the basics, not Custom, when site tools open ticked, and says what the shortcut is", async () => {
+    // The read rows are Sites alone, which is the first shortcut. The site-tools
+    // ticks are in no shortcut and do not move the chip, so nobody is told they
+    // made a custom set when they made no choice at all.
+    await renderScreen(consentFor(offeredWithSiteTools(), SITE_TOOLS_ASKED));
     const picker = readPicker();
-    expect(within(picker).getByTestId("preset-custom")).toBeTruthy();
-    expect(within(picker).queryAllByRole("button", { pressed: true })).toHaveLength(0);
-    expect(
-      within(picker).getByText(
-        "The read rows match Just the basics. The ticks further down for site tools are not part of either shortcut, and pressing a shortcut clears them.",
-      ),
-    ).toBeTruthy();
-    expect(picker.textContent ?? "").not.toMatch(/you have changed|your own set/i);
-    expect(tickedReads(picker)).toEqual(["mcp.sites.read"]);
-  });
-
-  it("goes back to Just the basics, and a preset clears the site-tools ticks, as it clears the cache-clear tick", async () => {
-    // A preset sets the checkboxes (ruling 33): pressing one replaces the whole
-    // tick list, the site-tools boxes included. Mirrors the cache-clear case above.
-    await renderScreen(
-      consentFor([...reads(SERVER_READS), ABILITY_READ, ABILITY_REQUEST], [SCOPE_READ, SCOPE_SITE]),
-    );
-    const picker = readPicker();
-    expect(screen.getByTestId("ability-box-mcp.ability.read")).toBeChecked();
-    expect(screen.getByTestId("ability-box-mcp.ability.request")).toBeChecked();
-
-    fireEvent.click(within(picker).getByRole("button", { name: "Just the basics" }));
-    expect(screen.getByTestId("ability-box-mcp.ability.read")).not.toBeChecked();
-    expect(screen.getByTestId("ability-box-mcp.ability.request")).not.toBeChecked();
+    expect(abilityRead().checked).toBe(true);
+    expect(abilityRequest().checked).toBe(true);
     expect(within(picker).getByRole("button", { name: "Just the basics", pressed: true })).toBeTruthy();
     expect(within(picker).queryByTestId("preset-custom")).toBeNull();
+    expect(
+      within(picker).getByText("See which sites are in scope, and no other read."),
+    ).toBeTruthy();
+    expect(picker.textContent ?? "").not.toMatch(/your own set|you have changed|clears them/i);
   });
 
-  it("derives the claim over the cache-clear tick too, and a preset clears it as it does in the wizard", async () => {
-    await renderScreen(
+  it("keeps both site tools ticked when Read everything is pressed, and the approval carries them with every read", async () => {
+    const onApprove = await renderScreen(consentFor(offeredWithSiteTools(), SITE_TOOLS_ASKED));
+    press("Read everything");
+
+    expect(within(readPicker()).getByRole("button", { name: "Read everything", pressed: true })).toBeTruthy();
+    expect(tickedReads(readPicker())).toEqual([...SERVER_READS]);
+    expect(abilityRead().checked).toBe(true);
+    expect(abilityRequest().checked).toBe(true);
+    submit();
+    expect(sentCapabilities(onApprove)).toEqual(
+      [...SERVER_READS, "mcp.ability.read", "mcp.ability.request"].sort(),
+    );
+  });
+
+  it("keeps both site tools ticked when Just the basics is pressed after Read everything", async () => {
+    const onApprove = await renderScreen(consentFor(offeredWithSiteTools(), SITE_TOOLS_ASKED));
+    press("Read everything");
+    press("Just the basics");
+
+    expect(within(readPicker()).getByRole("button", { name: "Just the basics", pressed: true })).toBeTruthy();
+    expect(tickedReads(readPicker())).toEqual(["mcp.sites.read"]);
+    expect(abilityRead().checked).toBe(true);
+    expect(abilityRequest().checked).toBe(true);
+    submit();
+    expect(sentCapabilities(onApprove)).toEqual([
+      "mcp.ability.read",
+      "mcp.ability.request",
+      "mcp.sites.read",
+    ]);
+  });
+
+  it("leaves a site tool the person cleared cleared when a shortcut is pressed", async () => {
+    // "Ask for changes" cleared, "see what the site can do" left ticked. A press
+    // must not put the request back, and must not clear the read.
+    const onApprove = await renderScreen(consentFor(offeredWithSiteTools(), SITE_TOOLS_ASKED));
+    fireEvent.click(abilityRequest());
+    expect(abilityRequest().checked).toBe(false);
+    press("Read everything");
+
+    expect(abilityRequest().checked).toBe(false);
+    expect(abilityRead().checked).toBe(true);
+    submit();
+    expect(sentCapabilities(onApprove)).toEqual([...SERVER_READS, "mcp.ability.read"].sort());
+  });
+
+  it("does not tick a site tool the person never ticked: a press adds none", async () => {
+    // Both cleared by the person; the presets must not bring either back.
+    const onApprove = await renderScreen(consentFor(offeredWithSiteTools(), SITE_TOOLS_ASKED));
+    fireEvent.click(abilityRead());
+    expect(abilityRead().checked).toBe(false);
+    expect(abilityRequest().checked).toBe(false);
+    press("Read everything");
+    press("Just the basics");
+
+    expect(abilityRead().checked).toBe(false);
+    expect(abilityRequest().checked).toBe(false);
+    submit();
+    expect(sentCapabilities(onApprove)).toEqual(["mcp.sites.read"]);
+  });
+
+  it("judges the read rows only: ticking the cache clear does not move the chip, and a press leaves it ticked", async () => {
+    const onApprove = await renderScreen(
       consentFor([...reads(SERVER_READS), CACHE_PURGE], [SCOPE_READ, SCOPE_CACHE]),
     );
     const picker = readPicker();
     expect(within(picker).getByRole("button", { name: "Just the basics", pressed: true })).toBeTruthy();
 
     fireEvent.click(cacheBox());
-    // Sites plus a write is not "Just the basics": its description says
-    // "and nothing else". The line says that the read rows still match it and
-    // that the cache tick is the part that is not.
-    expect(within(picker).getByTestId("preset-custom")).toBeTruthy();
-    expect(
-      within(picker).getByText(
-        "The read rows match Just the basics. The ticks further down for cache clear are not part of either shortcut, and pressing a shortcut clears them.",
-      ),
-    ).toBeTruthy();
+    expect(cacheBox().checked).toBe(true);
+    // Still Just the basics, because the read rows still are.
+    expect(within(picker).getByRole("button", { name: "Just the basics", pressed: true })).toBeTruthy();
+    expect(within(picker).queryByTestId("preset-custom")).toBeNull();
 
-    fireEvent.click(within(picker).getByRole("button", { name: "Read everything" }));
-    expect(cacheBox()).not.toBeChecked();
+    press("Read everything");
+    expect(cacheBox().checked).toBe(true);
+    expect(within(picker).getByRole("button", { name: "Read everything", pressed: true })).toBeTruthy();
+    submit();
+    expect(sentCapabilities(onApprove)).toEqual([...SERVER_READS, "mcp.cache.purge"].sort());
+  });
+
+  it("does not tick the cache clear from a press", async () => {
+    const onApprove = await renderScreen(
+      consentFor([...reads(SERVER_READS), CACHE_PURGE], [SCOPE_READ, SCOPE_CACHE]),
+    );
+    press("Read everything");
+    expect(cacheBox().checked).toBe(false);
+    submit();
+    expect(sentCapabilities(onApprove)).toEqual([...SERVER_READS].sort());
+  });
+
+  it("moves the chip to Custom when a read row diverges, whatever else is ticked, and back when it matches again", async () => {
+    await renderScreen(consentFor(offeredWithSiteTools(), SITE_TOOLS_ASKED));
+    const picker = readPicker();
+    fireEvent.click(rowBox(picker, "mcp.uptime.read"));
+    expect(within(picker).getByTestId("preset-custom")).toBeTruthy();
+    expect(within(picker).getByText("The read rows are not either shortcut.")).toBeTruthy();
+
+    fireEvent.click(rowBox(picker, "mcp.uptime.read"));
+    expect(within(picker).queryByTestId("preset-custom")).toBeNull();
+    expect(within(picker).getByRole("button", { name: "Just the basics", pressed: true })).toBeTruthy();
   });
 });
 
@@ -346,24 +418,6 @@ describe("ConsentScreen, the approval sends exactly the ticked reads", () => {
     expect(screen.getByTestId("ability-box-mcp.ability.read")).toBeChecked();
     submit();
     expect(sentCapabilities(onApprove)).toEqual(["mcp.ability.read", "mcp.sites.read"]);
-  });
-
-  it("leaves no request behind when see what the site can do is cleared: the screen is back on Just the basics", async () => {
-    // The preset claim is derived from the raw tick list, so a request left in
-    // the list after its read was cleared would show as Custom even though the
-    // box shows it clear. With both site tools ticked the set is not either
-    // shortcut; with the read cleared (and the request with it) it is Sites
-    // alone again.
-    await renderScreen(
-      consentFor([...reads(SERVER_READS), ABILITY_READ, ABILITY_REQUEST], [SCOPE_READ, SCOPE_SITE]),
-    );
-    const picker = readPicker();
-    expect(within(picker).getByTestId("preset-custom")).toBeTruthy();
-    expect(within(picker).queryByRole("button", { name: "Just the basics", pressed: true })).toBeNull();
-
-    fireEvent.click(screen.getByTestId("ability-box-mcp.ability.read"));
-    expect(within(picker).getByRole("button", { name: "Just the basics", pressed: true })).toBeTruthy();
-    expect(within(picker).queryByTestId("preset-custom")).toBeNull();
   });
 
   it("takes both site-tools names out of the request when see what the site can do is cleared", async () => {
