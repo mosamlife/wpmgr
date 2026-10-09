@@ -419,6 +419,19 @@ if should_run "$NAME"; then
     pass "$NAME"
 fi
 
+NAME='finding: a zombie named with backslash escapes is reported, not interpreted'
+if should_run "$NAME"; then
+  new_case
+  fx_base "$CASEDIR/p1" tini
+  # An echo-based scan would turn the \n into a newline and forge a summary line.
+  add_proc "$CASEDIR/p1" 71 'a\nscanned=1 z' Z
+  set_proc good "$CASEDIR/p1"
+  run_check fakectr
+  want_rc "$NAME" 1 &&
+    want_says "$NAME" 'zombie pid=71 comm=a\nscanned=1 z' &&
+    pass "$NAME"
+fi
+
 NAME='finding: PID 1 that is not the init exits 1 even with no zombie'
 if should_run "$NAME"; then
   new_case

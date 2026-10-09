@@ -115,7 +115,7 @@ root=$1
 [ -r "$root/1/comm" ] || { echo "cannot read $root/1/comm" >&2; exit 3; }
 init=
 { read -r init; } 2>/dev/null < "$root/1/comm"
-echo "init=$init"
+printf "init=%s\n" "$init"
 scanned=0
 zombies=0
 saw1=0
@@ -137,11 +137,11 @@ for d in "$root"/[0-9]*; do
     zombies=$((zombies + 1))
     comm=${line#*"("}
     comm=${comm%")"*}
-    echo "zombie pid=$pid comm=$comm"
+    printf "zombie pid=%s comm=%s\n" "$pid" "$comm"
   fi
 done
 [ "$saw1" = 1 ] || { echo "pid 1 was not scanned under $root" >&2; exit 3; }
-echo "scanned=$scanned zombies=$zombies"
+printf "scanned=%s zombies=%s\n" "$scanned" "$zombies"
 '
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/wpmgr-reaps.XXXXXX")" || { echo "$ME: cannot create a temp dir" >&2; exit 2; }
