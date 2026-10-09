@@ -14,6 +14,10 @@ import {
   FIREWALL_403_DETAIL,
   FIREWALL_403_RAW_ERROR,
   PLUGIN_SITE_DOWN_DETAIL,
+  SKIP_CORE_MANAGED_DETAIL,
+  SKIP_FILE_MODS_DISALLOWED_DETAIL,
+  SKIP_NOT_INSTALLED_DETAIL,
+  SKIP_SELF_TARGET_DETAIL,
 } from "@/test/update-task-details";
 import {
   parseWireTask,
@@ -391,6 +395,30 @@ describe("UpdateTasksTable: WordPress core outcomes (GH #415)", () => {
       expect(
         screen.queryByText(/^Site down,/),
       ).not.toBeInTheDocument();
+      expectUnclipped(within(row).getByText(detail));
+    },
+  );
+
+  // GH #367: a skip that says why reads as that sentence, in full, under the
+  // plain Skipped chip. Nothing in it is a site-down or redirect condition.
+  it.each([
+    ["Composer manages core", "core", SKIP_CORE_MANAGED_DETAIL],
+    ["file changes are disallowed", "core", SKIP_FILE_MODS_DISALLOWED_DETAIL],
+    ["the plugin is not installed", "plugin", SKIP_NOT_INSTALLED_DETAIL],
+    ["the plugin is the agent itself", "plugin", SKIP_SELF_TARGET_DETAIL],
+  ] as const)(
+    "shows the whole sentence for a skip because %s",
+    (_label, target, detail) => {
+      const task =
+        target === "core"
+          ? coreTask({ status: "skipped", detail })
+          : buildTask({ status: "skipped", detail });
+      renderWithProviders(<UpdateTasksTable tasks={[task]} />);
+      const row = screen.getByTestId("update-task-row");
+
+      expect(within(row).getByText("Skipped")).toBeInTheDocument();
+      expect(within(row).queryByRole("alert")).not.toBeInTheDocument();
+      expect(within(row).queryByText(/already up to date/i)).not.toBeInTheDocument();
       expectUnclipped(within(row).getByText(detail));
     },
   );

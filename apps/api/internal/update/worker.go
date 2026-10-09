@@ -734,15 +734,18 @@ func (w *Worker) runDry(ctx context.Context, task Task, siteURL string, item age
 // Task details for an item the agent skipped and said why (GH #367). A skip
 // with no reason, or with one outside agentcmd's closed set, keeps the
 // caller's generic detail, so the agent's own text never reaches the task.
-const (
-	skipCoreManagedDetail = "WordPress core is managed by Composer on this site, so WPMgr did not update it. " +
-		"Update core in composer.json and redeploy."
-	skipFileModsDisallowedDetail = "This site does not allow file changes (DISALLOW_FILE_MODS or the file_mod_allowed filter), " +
-		"so WPMgr did not update it."
-	skipNotInstalledDetail = "Not installed on this site, so there was nothing to update."
-	skipSelfTargetDetail   = "This is the WPMgr agent itself, which updates over its own channel, " +
-		"so WPMgr did not update it as a plugin."
-)
+// One declaration each: apps/web/src/test/update-task-details.test.ts reads
+// them from this file by name.
+const skipCoreManagedDetail = "WordPress core is managed by Composer on this site, so WPMgr did not update it. " +
+	"Update core in composer.json and redeploy."
+
+const skipFileModsDisallowedDetail = "This site does not allow file changes (DISALLOW_FILE_MODS or the file_mod_allowed filter), " +
+	"so WPMgr did not update it."
+
+const skipNotInstalledDetail = "Not installed on this site, so there was nothing to update."
+
+const skipSelfTargetDetail = "This is the WPMgr agent itself, which updates over its own channel, " +
+	"so WPMgr did not update it as a plugin."
 
 // skippedDetail is the task detail for an item the agent answered "skipped":
 // the fixed sentence for its reason, or noReason when it gave none.
