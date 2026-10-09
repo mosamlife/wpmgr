@@ -1410,7 +1410,7 @@ final class AbilityRunCommand implements CommandInterface
      * Resolve the outline's images and build the page with a page builder,
      * as the principal. Writes nothing.
      *
-     * @param array<string,mixed> $spec      Spec with a builder editor.
+     * @param array{post_type:string,editor:string,title:string,outline:list<array<string,mixed>>,elementor_format?:string} $spec Spec with a builder editor.
      * @param BuilderAdapter      $adapter   The resolved adapter.
      * @param string              $requestId Request id; node ids derive from it.
      * @return array<string,mixed> BuilderPageCreate::precheck()'s answer, or {refusal}.
@@ -1432,7 +1432,7 @@ final class AbilityRunCommand implements CommandInterface
      * every page-create, then BuilderPageCreate's write.
      *
      * @param int                 $principal Service user id.
-     * @param array<string,mixed> $spec      Spec with a builder editor.
+     * @param array{post_type:string,editor:string,title:string,outline:list<array<string,mixed>>,elementor_format?:string} $spec Spec with a builder editor.
      * @param BuilderAdapter      $adapter   The resolved adapter.
      * @param string              $requestId Request id.
      * @param string              $entrySha  Entry hash.
