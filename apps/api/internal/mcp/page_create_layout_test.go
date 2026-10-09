@@ -715,6 +715,13 @@ func pageCreateRunRouterWith(t *testing.T, agentVersion string, agent AbilityAge
 // entry's limits given.
 func pageCreateRunRouterLimits(t *testing.T, agentVersion string, agent AbilityAgent, limits []byte) (*gin.Engine, uuid.UUID) {
 	t.Helper()
+	return pageCreateRunRouterStore(t, agentVersion, agent, limits, untouchedRequestStore{t: t})
+}
+
+// pageCreateRunRouterStore is pageCreateRunRouterLimits with the request
+// store given.
+func pageCreateRunRouterStore(t *testing.T, agentVersion string, agent AbilityAgent, limits []byte, store AbilityRequestStore) (*gin.Engine, uuid.UUID) {
+	t.Helper()
 	f := newAbilityFixture(t)
 	f.store.recheck.GrantCapabilities = []string{string(CapSitesRead), string(CapAbilityRead), string(CapAbilityRequest)}
 	f.store.recheck.GrantOauthScopes = []string{string(ScopeRead), string(ScopeSite)}
@@ -736,7 +743,7 @@ func pageCreateRunRouterLimits(t *testing.T, agentVersion string, agent AbilityA
 	if err := svc.EnableAbilityTools(f.ab, agent, testEntryEncoder, "test-secret"); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.EnableAbilityWrites(untouchedRequestStore{t: t}); err != nil {
+	if err := svc.EnableAbilityWrites(store); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.SetWriteToolsEnabled(true); err != nil {
