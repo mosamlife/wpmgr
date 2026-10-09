@@ -12,6 +12,7 @@ import {
 import {
   buildDenialTarget,
   buildRedirectTarget,
+  consentKeys,
   navigateTo,
   useApproveConsent,
   useConsentContext,
@@ -177,6 +178,18 @@ function ConnectAiPage() {
 
   return (
     <ConsentScreen
+      // A DIFFERENT AUTHORIZE REQUEST IS A DIFFERENT SCREEN. The screen keeps
+      // what the person ticks, types and picks, and it works out its opening
+      // ticks once, when it mounts. The browser's back and forward buttons can
+      // hand this component a context that is already cached for another
+      // request, which would otherwise reach the mounted screen as a new prop
+      // and leave it holding the first request's ticks, name and site choices
+      // under the second request's boxes and sentences. Keying on the request
+      // (the same parts the query is keyed on) mounts a fresh screen instead.
+      //
+      // NOT THE CONSENT TICKET. A refetch of the same request brings a new
+      // ticket, and the screen must keep the person's ticks across that.
+      key={JSON.stringify(consentKeys.authorize(params))}
       consent={consentQuery.data}
       tags={tags}
       fleet={fleet}
