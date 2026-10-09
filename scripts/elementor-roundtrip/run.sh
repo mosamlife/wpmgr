@@ -2,13 +2,22 @@
 # scripts/elementor-roundtrip/run.sh
 #
 # Proves the Elementor trees the agent builds survive Elementor's own save and
-# render. For each pinned Elementor version it boots a fresh WordPress (WordPress
-# Playground CLI: PHP and SQLite compiled to WebAssembly, no Docker, no database
-# server), installs that Elementor, and runs scripts/elementor-roundtrip/harness.php
-# inside it: the agent's real classic mapper builds every golden-fixture and extra
-# outline, Elementor's Document::save stores it as the agent's service user (no
-# unfiltered_html), and the stored tree and the rendered page are held to the
-# built tree and to the text the outline carried.
+# render, and that the agent's own create path works on a real Elementor. For each
+# pinned Elementor version, and for each layout (containers and sections), it boots
+# a fresh WordPress (WordPress Playground CLI: PHP and SQLite compiled to
+# WebAssembly, no Docker, no database server), installs that Elementor with its
+# container experiment set to the layout, and runs
+# scripts/elementor-roundtrip/harness.php inside it. The agent's real classic mapper
+# builds every golden-fixture and extra outline, Elementor's Document::save stores
+# it as the agent's service user (no unfiltered_html), and the stored tree and the
+# rendered page are held to the built tree and to the text the outline carried.
+# Then the agent's ability_run command creates the same outlines (precheck, write
+# under the precheck's digests, undo) and must refuse what it should refuse; the
+# harness's header says what is held to what.
+#
+# The container experiment is set in the blueprint, before the site boots, because
+# Elementor reads it once when it starts: it cannot be flipped inside a running
+# request, and a flip there would not be what a site does.
 #
 # Everything downloaded is pinned by sha256 in scripts/elementor-roundtrip/pins.txt
 # and is checked before it is used: the WordPress core, each Elementor zip. The CLI
@@ -16,9 +25,10 @@
 #
 # Fails, never skips, when: node, npx, curl or a sha256 tool cannot be found; the
 # pins file is missing, empty or malformed; blueprint.json disagrees with the pins;
-# a requested version is not pinned; a download fails or does not match its sha256;
-# the Playground CLI downloaded a WordPress of its own; a boot exceeds
-# RT_TIMEOUT seconds; a run prints no verdict, a verdict without cases, or a
+# a requested version or layout is not one the check knows; a download fails or does
+# not match its sha256; the Playground CLI downloaded a WordPress of its own; a boot
+# exceeds RT_TIMEOUT seconds; a run prints no verdict, a verdict without cases, a
+# verdict for another layout, a verdict that ran no agent case or no refusal, or a
 # verdict that is not OK; or no version ran.
 #
 # Exit status: 0 every version passed; 1 a version found a defect; 2 the check
@@ -31,6 +41,8 @@
 #   RT_BLUEPRINT        the Playground blueprint (default: blueprint.json beside this script)
 #   RT_VERSIONS         space separated Elementor versions to run (default: every
 #                       elementor line in the pins). Set to nothing, it is red.
+#   RT_LAYOUTS          space separated layouts to boot each version with
+#                       (default: containers sections). Set to nothing, it is red.
 #   RT_CACHE            where verified downloads are kept between runs (default
 #                       ${XDG_CACHE_HOME:-~/.cache}/wpmgr-elementor-roundtrip)
 #   RT_FIXTURES_DIR     the golden fixtures (default apps/agent/tests/fixtures/ability-run)
@@ -163,6 +175,18 @@ else
   selected=("${all_versions[@]}")
 fi
 
+# --- which layouts to run ------------------------------------------------------------
+layouts=()
+if [ -n "${RT_LAYOUTS+x}" ]; then
+  read -r -a layouts <<<"$RT_LAYOUTS" || true
+  [ "${#layouts[@]}" -gt 0 ] || die "RT_LAYOUTS is set but names no layouts"
+  for l in "${layouts[@]}"; do
+    case "$l" in containers | sections) ;; *) die "RT_LAYOUTS: '$l' is not containers or sections" ;; esac
+  done
+else
+  layouts=(containers sections)
+fi
+
 # pin_of <name> <version> <field: sha|url|form>
 pin_of() {
   local k=0
@@ -190,13 +214,29 @@ bp_facts="$("$NODE" -e '
   const inst = steps.filter(s => s.step === "installPlugin");
   const ok = inst.length === 1 && inst[0].pluginData && inst[0].pluginData.resource === "vfs"
     && inst[0].pluginData.path === "/rt/zips/elementor.zip" && inst[0].options && inst[0].options.activate === true;
-  if (!ok || typeof pv.php !== "string" || typeof pv.wp !== "string") { process.exit(3); }
+  // The container experiment is the one site option this script sets, per layout.
+  const sets = steps.some(s => s.step === "setSiteOptions" && s.options
+    && Object.prototype.hasOwnProperty.call(s.options, "elementor_experiment-container"));
+  if (!ok || sets || typeof pv.php !== "string" || typeof pv.wp !== "string") { process.exit(3); }
   console.log(pv.php + " " + pv.wp);
-' "$blueprint")" || die "blueprint.json must pin preferredVersions.php and .wp and install /rt/zips/elementor.zip, activated"
+' "$blueprint")" || die "blueprint.json must pin preferredVersions.php and .wp, install /rt/zips/elementor.zip, activated, and leave elementor_experiment-container to this script"
 php_ver="${bp_facts%% *}"
 bp_wp_url="${bp_facts#* }"
 [ "$bp_wp_url" = "$wp_url" ] || die "blueprint.json boots $bp_wp_url but the pins name $wp_url"
 [[ $php_ver =~ ^[0-9]+\.[0-9]+$ ]] || die "blueprint.json php version is not x.y: '$php_ver'"
+
+# derive_blueprint <layout> <dest>   the blueprint plus the step that sets Elementor's
+# container experiment for the layout, written to <dest>. A site is set up this way
+# before it boots; nothing in the running request changes it.
+derive_blueprint() {
+  "$NODE" -e '
+    const fs = require("fs");
+    const bp = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+    const state = process.argv[2] === "containers" ? "active" : "inactive";
+    bp.steps = (bp.steps || []).concat([{ step: "setSiteOptions", options: { "elementor_experiment-container": state } }]);
+    fs.writeFileSync(process.argv[3], JSON.stringify(bp, null, 2) + "\n");
+  ' "$blueprint" "$1" "$2"
+}
 
 # --- inputs on disk ------------------------------------------------------------------
 fixtures_dir="${RT_FIXTURES_DIR:-$repo/apps/agent/tests/fixtures/ability-run}"
@@ -286,91 +326,101 @@ if [ -n "${RT_HARNESS_ARGS-}" ]; then
   read -r -a extra_args <<<"$RT_HARNESS_ARGS" || true
 fi
 
-# --- one boot per version ----------------------------------------------------------------
-bad=0     # a version found a defect
-broken=0  # a version could not give a verdict
+# --- one boot per version and layout ------------------------------------------------------
+bad=0     # a boot found a defect
+broken=0  # a boot could not give a verdict
 ran=0
 total_start="$(date +%s)"
 for v in "${selected[@]}"; do
   sha="$(pin_of elementor "$v" sha)"
   form="$(pin_of elementor "$v" form)"
-  boot="$run_dir/boot-$v"
-  mkdir -p "$boot/zips" "$boot/tmp"
-  cp "$cache/zips/$sha.zip" "$boot/zips/elementor.zip" || die "cannot stage the Elementor $v zip"
-  log="$boot/out.log"
-  export TMPDIR="$boot/tmp"
-  echo "== Elementor $v on WordPress $wp_ver, PHP $php_ver"
-  start="$(date +%s)"
-  set +e
-  "$NPX" --yes "@wp-playground/cli@$CLI_VERSION" php \
-    --php="$php_ver" \
-    --wp="$wp_url" \
-    --blueprint="$blueprint" \
-    --mount="$boot/zips:/rt/zips" \
-    --mount="$agent_includes:/rt/agent/includes" \
-    --mount="$fixtures_dir:/rt/fixtures" \
-    --mount="$here:/rt/harness" \
-    --verbosity=quiet \
-    -- /rt/harness/harness.php "elementor=$v" "wp=$wp_ver" "php=$php_ver" "zip_sha256=$sha" "stored=$form" ${plants[@]+"${plants[@]}"} ${extra_args[@]+"${extra_args[@]}"} \
-    >"$log" 2>&1 &
-  child=$!
-  set -e
-  waited=0
-  while kill -0 "$child" 2>/dev/null; do
-    if [ "$waited" -ge "$timeout_s" ]; then
-      pkill -P "$child" 2>/dev/null || true
-      kill "$child" 2>/dev/null || true
-      break
+  for layout in "${layouts[@]}"; do
+    boot="$run_dir/boot-$v-$layout"
+    mkdir -p "$boot/zips" "$boot/tmp"
+    cp "$cache/zips/$sha.zip" "$boot/zips/elementor.zip" || die "cannot stage the Elementor $v zip"
+    derive_blueprint "$layout" "$boot/blueprint.json" || die "cannot write the $layout blueprint"
+    log="$boot/out.log"
+    export TMPDIR="$boot/tmp"
+    echo "== Elementor $v, $layout layout, on WordPress $wp_ver, PHP $php_ver"
+    start="$(date +%s)"
+    set +e
+    "$NPX" --yes "@wp-playground/cli@$CLI_VERSION" php \
+      --php="$php_ver" \
+      --wp="$wp_url" \
+      --blueprint="$boot/blueprint.json" \
+      --mount="$boot/zips:/rt/zips" \
+      --mount="$agent_includes:/rt/agent/includes" \
+      --mount="$fixtures_dir:/rt/fixtures" \
+      --mount="$here:/rt/harness" \
+      --verbosity=quiet \
+      -- /rt/harness/harness.php "elementor=$v" "wp=$wp_ver" "php=$php_ver" "zip_sha256=$sha" "stored=$form" "layout=$layout" ${plants[@]+"${plants[@]}"} ${extra_args[@]+"${extra_args[@]}"} \
+      >"$log" 2>&1 &
+    child=$!
+    set -e
+    waited=0
+    while kill -0 "$child" 2>/dev/null; do
+      if [ "$waited" -ge "$timeout_s" ]; then
+        pkill -P "$child" 2>/dev/null || true
+        kill "$child" 2>/dev/null || true
+        break
+      fi
+      sleep 1
+      waited=$((waited + 1))
+    done
+    set +e
+    if kill -0 "$child" 2>/dev/null; then
+      rc=124
+      wait "$child" 2>/dev/null
+    else
+      wait "$child"
+      rc=$?
     fi
-    sleep 1
-    waited=$((waited + 1))
+    set -e
+    child=""
+    wall=$(($(date +%s) - start))
+    ran=$((ran + 1))
+    cat "$log"
+
+    # The CLI must not have fetched a WordPress of its own.
+    if [ -n "$(find "$pg_cache" -maxdepth 1 -name 'custom-*.zip' ! -type l 2>/dev/null)" ]; then
+      echo "elementor-roundtrip: Elementor $v ($layout): the Playground CLI downloaded a WordPress of its own" >&2
+      broken=1
+      continue
+    fi
+    if [ "$rc" -eq 124 ]; then
+      echo "elementor-roundtrip: Elementor $v ($layout): no result after ${timeout_s}s" >&2
+      broken=1
+      continue
+    fi
+
+    # The verdict is the harness's own lines, and an exit status that agrees with them.
+    # An OK needs the layout it was asked for, cases, an agent case and a refusal: a run
+    # that looked at nothing on the agent's path is not a pass.
+    ok_lines="$(grep -c '^rt: RESULT OK$' "$log" || true)"
+    fail_lines="$(grep -c '^rt: RESULT FAIL$' "$log" || true)"
+    summary="$(grep '^rt: SUMMARY ' "$log" | tail -n 1 || true)"
+    cases="$(printf '%s\n' "$summary" | sed -n 's/.* cases=\([0-9][0-9]*\) .*/\1/p')"
+    agent="$(printf '%s\n' "$summary" | sed -n 's/.* agent=\([0-9][0-9]*\) .*/\1/p')"
+    refused="$(printf '%s\n' "$summary" | sed -n 's/.* refused=\([0-9][0-9]*\) .*/\1/p')"
+    layout_ok=0
+    case "$summary" in *" layout=$layout "*) layout_ok=1 ;; esac
+    if [ "$rc" -eq 0 ] && [ "$ok_lines" -eq 1 ] && [ "$fail_lines" -eq 0 ] && [ "$layout_ok" -eq 1 ] \
+      && [ -n "$cases" ] && [ "$cases" -gt 0 ] && [ -n "$agent" ] && [ "$agent" -gt 0 ] && [ -n "$refused" ] && [ "$refused" -gt 0 ]; then
+      echo "elementor-roundtrip: Elementor $v ($layout) OK in ${wall}s ($summary)"
+    elif [ "$rc" -eq 1 ] && [ "$fail_lines" -eq 1 ] && [ "$ok_lines" -eq 0 ]; then
+      echo "elementor-roundtrip: Elementor $v ($layout) FAILED in ${wall}s" >&2
+      bad=1
+    else
+      echo "elementor-roundtrip: Elementor $v ($layout) gave no usable verdict (exit $rc, ${ok_lines} OK line(s), ${fail_lines} FAIL line(s), layout ok=${layout_ok}, cases='${cases}', agent='${agent}', refused='${refused}')" >&2
+      broken=1
+    fi
   done
-  set +e
-  if kill -0 "$child" 2>/dev/null; then
-    rc=124
-    wait "$child" 2>/dev/null
-  else
-    wait "$child"
-    rc=$?
-  fi
-  set -e
-  child=""
-  wall=$(($(date +%s) - start))
-  ran=$((ran + 1))
-  cat "$log"
-
-  # The CLI must not have fetched a WordPress of its own.
-  if [ -n "$(find "$pg_cache" -maxdepth 1 -name 'custom-*.zip' ! -type l 2>/dev/null)" ]; then
-    echo "elementor-roundtrip: Elementor $v: the Playground CLI downloaded a WordPress of its own" >&2
-    broken=1
-    continue
-  fi
-  if [ "$rc" -eq 124 ]; then
-    echo "elementor-roundtrip: Elementor $v: no result after ${timeout_s}s" >&2
-    broken=1
-    continue
-  fi
-
-  # The verdict is the harness's own lines, and an exit status that agrees with them.
-  ok_lines="$(grep -c '^rt: RESULT OK$' "$log" || true)"
-  fail_lines="$(grep -c '^rt: RESULT FAIL$' "$log" || true)"
-  summary="$(grep '^rt: SUMMARY ' "$log" | tail -n 1 || true)"
-  cases="$(printf '%s\n' "$summary" | sed -n 's/.* cases=\([0-9][0-9]*\) .*/\1/p')"
-  if [ "$rc" -eq 0 ] && [ "$ok_lines" -eq 1 ] && [ "$fail_lines" -eq 0 ] && [ -n "$cases" ] && [ "$cases" -gt 0 ]; then
-    echo "elementor-roundtrip: Elementor $v OK in ${wall}s ($summary)"
-  elif [ "$rc" -eq 1 ] && [ "$fail_lines" -eq 1 ] && [ "$ok_lines" -eq 0 ]; then
-    echo "elementor-roundtrip: Elementor $v FAILED in ${wall}s" >&2
-    bad=1
-  else
-    echo "elementor-roundtrip: Elementor $v gave no usable verdict (exit $rc, ${ok_lines} OK line(s), ${fail_lines} FAIL line(s), cases='${cases}')" >&2
-    broken=1
-  fi
 done
 
 if [ "$ran" -eq 0 ]; then
   die "no version ran"
 fi
-echo "elementor-roundtrip: $ran version(s) in $(($(date +%s) - total_start))s"
+echo "elementor-roundtrip: $ran boot(s), ${#selected[@]} version(s) x ${#layouts[@]} layout(s), in $(($(date +%s) - total_start))s"
 if [ "$broken" -ne 0 ]; then
   exit 2
 fi

@@ -16,6 +16,28 @@
  *      image with its library alt text, and to hold no script element and no
  *      on* attribute.
  *
+ * Then the agent's own create path, on the same site, for every outline of the
+ * fixture that names the layout this boot runs and of cases-extra.json. The
+ * agent's ability_run command is called as the router calls it once a request
+ * is verified (AbilityRunCommand::execute with the digest claim), so the site
+ * facts, the sanitiser check, the write scope, the verify and the undo all run
+ * on the real Elementor:
+ *
+ *   5. precheck: the agent builds the page and answers its digests, and the
+ *      layout it chose from the site's facts must be the layout this boot runs;
+ *   6. write, with the digests the precheck gave: the answer must be "created"
+ *      with verify tree_equal, and the database, read here with SQL and not
+ *      taken from the answer, must hold one draft of the principal whose
+ *      _elementor_data is the previewed tree;
+ *   7. revert: the answer must be "reverted", the post must be in the trash,
+ *      and a second revert must answer "already_reverted".
+ *
+ * And the refusals the path must make: a site that rewrites the saved tree
+ * (verify must refuse and the draft must be trashed), a write under digests
+ * that are not the precheck's (nothing may be created), and a draft a person
+ * has edited (undo must refuse and leave it). At the end no post the agent
+ * created may be outside the trash.
+ *
  * Arguments are key=value tokens (the CLI drops numeric-looking tokens):
  *   elementor=<x.y.z>   the Elementor version this boot must run
  *   wp=<x.y>            the WordPress version this boot must run
@@ -23,6 +45,12 @@
  *   zip_sha256=<hex>    the sha256 the mounted Elementor zip must have
  *   stored=<form>       how this Elementor version stores scalars (pins.txt):
  *                       as_given, or strings (true "1", false and null "")
+ *   layout=<layout>     containers or sections: the layout this site runs.
+ *                       run.sh sets Elementor's container experiment to match
+ *                       before the boot; the harness refuses a site that
+ *                       disagrees. A containers site runs every golden source,
+ *                       a sections site only the sections ones, because a
+ *                       container element is not registered there.
  *   plant=<kind>@<case> a deliberate defect on one case, used only by the
  *                       self-test (scripts/elementor-roundtrip_test.sh) to
  *                       prove each check can fail; kinds: PLANTS below
@@ -36,10 +64,12 @@
 declare(strict_types=1);
 
 use Elementor\Plugin;
+use WPMgr\Agent\Abilities\Builders\ElementorAdapter;
 use WPMgr\Agent\Abilities\Builders\ElementorClassicMapper;
 use WPMgr\Agent\Abilities\Builders\IdSeed;
 use WPMgr\Agent\Abilities\PageCreateBuilder;
 use WPMgr\Agent\Abilities\ServicePrincipal;
+use WPMgr\Agent\Commands\AbilityRunCommand;
 
 /** Deliberate defects the self-test can request, by kind. */
 const RT_PLANTS = [
@@ -53,7 +83,12 @@ const RT_PLANTS = [
     'render_onclick',
     // Every ampersand in the rendered page is escaped twice.
     'render_text',
+    // The agent path is handed no outline at all (use the case name "all").
+    'agent_no_cases',
 ];
+
+/** The lowest number of agent create-and-undo round trips and of refusals a run may report. */
+const RT_AGENT_MIN = 1;
 
 const RT_NODE_LIMIT_DEPTH = 64;
 
@@ -314,6 +349,310 @@ function rt_plant_widget(array &$nodes): bool
 }
 
 // ---------------------------------------------------------------------------
+// The agent's own create path
+// ---------------------------------------------------------------------------
+
+/** The refusal scenarios the agent phase must have run, by name. A run that ran fewer is red. */
+const RT_AGENT_SCENARIOS = ['tamper', 'digest', 'person-edit'];
+
+/** The post meta the agent marks a post it created with; its value is the request id. */
+const RT_MARKER = '_wpmgr_created_by_request';
+
+/** The checks of one scenario: what failed, and how many were made. */
+final class RtChecks
+{
+    /** @var list<string> */
+    public array $fails = [];
+
+    public int $count = 0;
+
+    public function ck(string $check, bool $ok, string $why = ''): bool
+    {
+        ++$this->count;
+        if (!$ok) {
+            $this->fails[] = $check . ': ' . $why;
+        }
+
+        return $ok;
+    }
+}
+
+/**
+ * The agent's ability_run command, called as the router calls it once a request
+ * has been verified: the claims carry the digest of the exact text of p.
+ *
+ * @param array<string,mixed> $p The members of p.
+ * @return array<string,mixed>
+ */
+function rt_ability(AbilityRunCommand $cmd, array $p): array
+{
+    try {
+        $text = json_encode($p, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+    } catch (JsonException $e) {
+        rt_broken('a request to the agent cannot be encoded: ' . $e->getMessage());
+    }
+    $answer = $cmd->execute(['pd' => hash('sha256', $text)], ['p' => $text]);
+    wp_set_current_user(0);
+
+    return $answer;
+}
+
+/**
+ * The posts a request created, read with SQL by the marker the agent puts on them.
+ *
+ * @return list<int>
+ */
+function rt_posts_of(string $requestId): array
+{
+    global $wpdb;
+    $ids = $wpdb->get_col($wpdb->prepare("SELECT post_id FROM {$wpdb->postmeta} WHERE meta_key = %s AND meta_value = %s ORDER BY post_id", RT_MARKER, $requestId));
+
+    return array_map('intval', is_array($ids) ? $ids : []);
+}
+
+/** A post's status read with SQL; "(gone)" when there is no such post. */
+function rt_status_of(int $postId): string
+{
+    global $wpdb;
+    $status = $wpdb->get_var($wpdb->prepare("SELECT post_status FROM {$wpdb->posts} WHERE ID = %d", $postId));
+
+    return is_string($status) ? $status : '(gone)';
+}
+
+/**
+ * The _elementor_data a post holds, read with SQL: how many rows there are, and
+ * the decoded tree when there is exactly one and it is a list.
+ *
+ * @return array{0:int,1:?array<mixed>}
+ */
+function rt_stored_tree(int $postId): array
+{
+    global $wpdb;
+    $rows = $wpdb->get_col($wpdb->prepare("SELECT meta_value FROM {$wpdb->postmeta} WHERE post_id = %d AND meta_key = %s ORDER BY meta_id", $postId, '_elementor_data'));
+    $rows = is_array($rows) ? $rows : [];
+    $tree = count($rows) === 1 ? json_decode((string) $rows[0], true, RT_NODE_LIMIT_DEPTH) : null;
+
+    return [count($rows), is_array($tree) ? $tree : null];
+}
+
+/**
+ * Run the agent's create path on this site for every outline in the case files,
+ * then the refusals it must make. See the steps 5 to 7 in the file header.
+ *
+ * @param list<string> $files   Case files; each holds outlines in "cases".
+ * @param bool         $noCases Plant: hand the agent no outline at all.
+ * @return array{cases:int,scenarios:list<string>,checks:int,failed:int}
+ */
+function rt_agent_phase(string $layout, string $stored, int $principal, array $files, bool $noCases): array
+{
+    global $wpdb;
+    $out      = ['cases' => 0, 'scenarios' => [], 'checks' => 0, 'failed' => 0];
+    $tagBase  = ELEMENTOR_VERSION . ' agent-' . $layout;
+    $created  = 0;
+    $hex      = static fn ($v): bool => is_string($v) && preg_match('/^[0-9a-f]{64}$/D', $v) === 1;
+    $report   = static function (string $what, RtChecks $c) use (&$out, $tagBase): void {
+        $out['checks'] += $c->count;
+        if ($c->fails === []) {
+            rt_out(sprintf('ok   [%s %s] checks=%d', $tagBase, $what, $c->count));
+
+            return;
+        }
+        ++$out['failed'];
+        foreach ($c->fails as $f) {
+            rt_out(sprintf('FAIL [%s %s] %s', $tagBase, $what, $f));
+        }
+    };
+
+    // The catalogue entry the control plane sends for wpmgr/page-create.
+    $entryText = (string) json_encode([
+        'name'          => 'wpmgr/page-create',
+        'source'        => 'wpmgr',
+        'class'         => 'write',
+        'status'        => 'admitted',
+        'enabled'       => true,
+        'approval_mode' => 'per_call',
+        'snapshot'      => 'created_post_trash',
+        'limits'        => ['builders_enabled' => ['elementor']],
+    ], JSON_UNESCAPED_SLASHES);
+    $entrySha = hash('sha256', $entryText);
+    $cmd      = new AbilityRunCommand();
+    wp_set_current_user(0);
+    $call = static fn (string $mode, string $rid, array $more = []): array => rt_ability($cmd, ['mode' => $mode, 'request_id' => $rid, 'entry' => $entryText, 'entry_sha256' => $entrySha] + $more);
+    $inputOf = static function (string $name, $outline): string {
+        try {
+            return json_encode(['post_type' => 'page', 'editor' => 'builder:elementor', 'title' => 'Agent path ' . $name, 'outline' => $outline], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+        } catch (JsonException $e) {
+            rt_broken('an outline cannot be encoded: ' . $name);
+        }
+
+        return '';
+    };
+    $digestsOf = static fn (array $pre): array => ['precheck_digest' => (string) ($pre['precheck_digest'] ?? ''), 'preview_digest' => (string) ($pre['preview_digest'] ?? '')];
+
+    // What the agent reads of this site.
+    $c       = new RtChecks();
+    $facts   = (new ElementorAdapter())->facts();
+    $kitId   = Plugin::$instance->kits_manager->get_active_id();
+    $c->ck('active', ($facts['active'] ?? null) === true && ($facts['version'] ?? null) === ELEMENTOR_VERSION, 'the agent reads ' . rt_brief($facts));
+    $c->ck('in-range', ($facts['classic_in_range'] ?? null) === true, 'the agent finds this version outside the tested range');
+    $c->ck('layout', ($facts['containers'] ?? null) === ($layout === 'containers'), 'the agent reads the container layout as ' . rt_brief($facts['containers'] ?? null) . ' on a ' . $layout . ' site');
+    $c->ck('principal', ($facts['role_excluded'] ?? null) === false, 'the agent finds its service user excluded from Elementor');
+    $c->ck('kit', is_int($facts['active_kit_id'] ?? null) && $facts['active_kit_id'] > 0 && $facts['active_kit_id'] === (int) $kitId, 'the agent reads kit ' . rt_brief($facts['active_kit_id'] ?? null) . ', Elementor says ' . rt_brief($kitId));
+    $c->ck('page-type', in_array('page', is_array($facts['post_types'] ?? null) ? $facts['post_types'] : [], true), 'the agent does not find pages enabled in Elementor');
+    $report('facts', $c);
+
+    // Every outline: precheck, write under the precheck's digests, read the database, undo.
+    $probe = null; // the first outline, kept for the refusals below
+    foreach ($noCases ? [] : $files as $file) {
+        $loaded = rt_load($file);
+        foreach ($loaded['objects']->cases as $i => $caseObj) {
+            $name = (string) ($loaded['arrays']['cases'][$i]['name'] ?? '');
+            if ($name === '' || !isset($caseObj->input)) {
+                rt_broken('a case in ' . $file . ' has no name or no input');
+            }
+            $probe ??= [$name, $caseObj->input];
+            $rid    = wp_generate_uuid4();
+            $input  = $inputOf($name, $caseObj->input);
+            $c      = new RtChecks();
+            $pre    = $call('precheck', $rid, ['input' => $input]);
+            if ($c->ck('precheck', ($pre['ok'] ?? false) === true && ($pre['outcome'] ?? null) === 'prechecked', rt_brief($pre))) {
+                $preview = is_array($pre['preview'] ?? null) ? $pre['preview'] : [];
+                $tree    = $preview['tree'] ?? null;
+                $c->ck('layout', ($preview['layout'] ?? null) === $layout, 'the agent built the ' . rt_brief($preview['layout'] ?? '(none)') . ' layout on a ' . $layout . ' site');
+                $c->ck('digests', $hex($pre['preview_digest'] ?? null) && $hex($pre['precheck_digest'] ?? null), 'the precheck gave no digests');
+                $c->ck('preview-tree', is_array($tree) && $tree !== [], 'the precheck previewed no tree');
+                $w = $call('write', $rid, ['input' => $input, 'expected' => $digestsOf($pre)]);
+                if ($c->ck('write', ($w['ok'] ?? false) === true && ($w['outcome'] ?? null) === 'created', rt_brief($w))) {
+                    ++$created;
+                    $pid = (int) ($w['post_id'] ?? 0);
+                    $c->ck('write-digest', ($w['preview_digest'] ?? null) === ($pre['preview_digest'] ?? ''), 'the write answers a preview digest that is not the precheck\'s');
+                    $c->ck('verify', ($w['verify'] ?? null) === ['tree_equal' => true, 'status' => 'draft'], 'the write answers verify ' . rt_brief($w['verify'] ?? null));
+
+                    // What the database holds, read here and not taken from the answer.
+                    $posts = rt_posts_of($rid);
+                    $c->ck('one-post', $pid > 0 && $posts === [$pid], 'the posts marked with this request are [' . implode(',', $posts) . '], the answer names ' . $pid);
+                    $row = $wpdb->get_row($wpdb->prepare("SELECT post_status, post_author, post_type, post_parent FROM {$wpdb->posts} WHERE ID = %d", $pid), ARRAY_A);
+                    $c->ck('draft', is_array($row) && $row['post_status'] === 'draft' && (int) $row['post_author'] === $principal && $row['post_type'] === 'page', 'the post is not a draft page of the principal: ' . rt_brief($row));
+                    $mode = $wpdb->get_col($wpdb->prepare("SELECT meta_value FROM {$wpdb->postmeta} WHERE post_id = %d AND meta_key = %s", $pid, '_elementor_edit_mode'));
+                    $c->ck('edit-mode', $mode === ['builder'], 'the edit mode rows are ' . rt_brief($mode));
+                    [$rows, $decoded] = rt_stored_tree($pid);
+                    $expect = $stored === 'strings' && is_array($tree) ? rt_scalars_as_strings($tree) : $tree;
+                    $d      = $decoded !== null && is_array($expect) ? rt_diff($expect, $decoded, 'tree') : 'expected one _elementor_data row holding a tree, found ' . $rows;
+                    $c->ck('stored-tree', $d === null, (string) $d);
+
+                    // Undo.
+                    $r = $call('revert', $rid, ['input' => '{}']);
+                    $c->ck('revert', ($r['ok'] ?? false) === true && ($r['outcome'] ?? null) === 'reverted' && (int) ($r['post_id'] ?? 0) === $pid && ($r['trashed'] ?? null) === true, rt_brief($r));
+                    $c->ck('trashed', rt_status_of($pid) === 'trash', 'after the revert the post is ' . rt_status_of($pid));
+                    $again = $call('revert', $rid, ['input' => '{}']);
+                    $c->ck('revert-twice', ($again['ok'] ?? false) === true && ($again['outcome'] ?? null) === 'already_reverted', rt_brief($again));
+                }
+            }
+            ++$out['cases'];
+            $report($name, $c);
+        }
+    }
+
+    // The refusals. Each needs an outline to work on: the first one.
+    if ($probe !== null) {
+        [$name, $outline] = $probe;
+        $input = $inputOf($name, $outline);
+
+        // 1. A site that rewrites what is stored: the verify must refuse and the draft must be trashed.
+        $c   = new RtChecks();
+        $rid = wp_generate_uuid4();
+        $pre = $call('precheck', $rid, ['input' => $input]);
+        if ($c->ck('precheck', ($pre['ok'] ?? false) === true, rt_brief($pre))) {
+            $fired  = 0;
+            $rewrite = static function ($value) use (&$fired) {
+                if (!is_string($value)) {
+                    return $value;
+                }
+                $changed = preg_replace('/"id":"/', '"id":"z', $value, 1, $n);
+                if (!is_string($changed) || $n !== 1) {
+                    return $value;
+                }
+                ++$fired;
+
+                return $changed;
+            };
+            add_filter('sanitize_post_meta__elementor_data', $rewrite, 10, 1);
+            try {
+                $w = $call('write', $rid, ['input' => $input, 'expected' => $digestsOf($pre)]);
+            } finally {
+                remove_filter('sanitize_post_meta__elementor_data', $rewrite, 10);
+            }
+            $c->ck('armed', $fired >= 1, 'the rewrite never ran, so this scenario proved nothing');
+            $c->ck('refused', ($w['ok'] ?? true) === false && ($w['code'] ?? null) === 'verify_mismatch', 'a write whose stored tree differs from the built one was answered ' . rt_brief($w));
+            $posts = rt_posts_of($rid);
+            $created += count($posts);
+            $c->ck('trashed', count($posts) === 1 && rt_status_of($posts[0]) === 'trash', 'the draft of the refused write is not in the trash: ' . implode(',', array_map(static fn (int $p): string => $p . '=' . rt_status_of($p), $posts)));
+            $led = $call('ledger', $rid);
+            $c->ck('ledger', ($led['found'] ?? false) === true && ($led['phase'] ?? null) === 'failed', 'the ledger says ' . rt_brief($led));
+        }
+        $out['scenarios'][] = 'tamper';
+        $report('tamper', $c);
+
+        // 2. Digests that are not the precheck's: nothing may be created.
+        $c    = new RtChecks();
+        $rid  = wp_generate_uuid4();
+        $pre  = $call('precheck', $rid, ['input' => $input]);
+        if ($c->ck('precheck', ($pre['ok'] ?? false) === true, rt_brief($pre))) {
+            $wrong = str_repeat('0', 64);
+            foreach (['preview_digest', 'precheck_digest'] as $which) {
+                $w = $call('write', $rid, ['input' => $input, 'expected' => [$which => $wrong] + $digestsOf($pre)]);
+                $c->ck('refused-' . $which, ($w['ok'] ?? true) === false && ($w['code'] ?? null) === 'preview_changed', 'a write under a wrong ' . $which . ' was answered ' . rt_brief($w));
+            }
+            $made = rt_posts_of($rid);
+            $created += count($made);
+            $c->ck('nothing-created', $made === [], 'a write under wrong digests created post(s) [' . implode(',', $made) . ']');
+            $led = $call('ledger', $rid);
+            $c->ck('no-ledger', ($led['found'] ?? true) === false, 'the ledger holds a row for a write that was refused: ' . rt_brief($led));
+        }
+        $out['scenarios'][] = 'digest';
+        $report('digest', $c);
+
+        // 3. A draft a person has edited: the undo must refuse and leave it.
+        $c    = new RtChecks();
+        $rid  = wp_generate_uuid4();
+        $pre  = $call('precheck', $rid, ['input' => $input]);
+        $w    = ($pre['ok'] ?? false) === true ? $call('write', $rid, ['input' => $input, 'expected' => $digestsOf($pre)]) : [];
+        if ($c->ck('write', ($w['ok'] ?? false) === true && ($w['outcome'] ?? null) === 'created', rt_brief($w !== [] ? $w : $pre))) {
+            ++$created;
+            $pid    = (int) ($w['post_id'] ?? 0);
+            $edited = is_array($pre['preview']['tree'] ?? null) ? $pre['preview']['tree'] : [];
+            if ($edited !== []) {
+                $edited[0]['id'] = 'e' . substr((string) ($edited[0]['id'] ?? 'xxxxxxx'), 1);
+            }
+            wp_set_current_user(1);
+            $doc   = Plugin::$instance->documents->get($pid, false);
+            $saved = is_object($doc) && $edited !== [] ? $doc->save(['elements' => $edited]) : false;
+            setlocale(LC_NUMERIC, 'C');
+            wp_set_current_user(0);
+            $c->ck('edit-saved', $saved === true, 'Elementor did not save the person\'s edit, so this scenario proved nothing');
+            $r = $call('revert', $rid, ['input' => '{}']);
+            $c->ck('refused', ($r['ok'] ?? true) === false && ($r['code'] ?? null) === 'created_post_touched', 'an undo of a draft a person edited was answered ' . rt_brief($r));
+            $c->ck('kept', rt_status_of($pid) === 'draft', 'after the refused undo the post is ' . rt_status_of($pid));
+            wp_set_current_user(1);
+            wp_trash_post($pid);
+            wp_set_current_user(0);
+        }
+        $out['scenarios'][] = 'person-edit';
+        $report('person-edit', $c);
+    }
+
+    // Nothing the agent made may be left outside the trash, and the agent made exactly what this run asked for.
+    $c    = new RtChecks();
+    $left = $wpdb->get_col($wpdb->prepare("SELECT p.ID FROM {$wpdb->posts} p INNER JOIN {$wpdb->postmeta} m ON m.post_id = p.ID AND m.meta_key = %s WHERE p.post_status <> 'trash' ORDER BY p.ID", RT_MARKER));
+    $all  = (int) $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$wpdb->postmeta} WHERE meta_key = %s", RT_MARKER));
+    $c->ck('left-behind', is_array($left) && $left === [], 'post(s) the agent created are not in the trash: [' . implode(',', is_array($left) ? $left : []) . ']');
+    $c->ck('created', $all === $created, 'the database holds ' . $all . ' post(s) the agent created, the run created ' . $created);
+    $report('leftover', $c);
+
+    return $out;
+}
+
+// ---------------------------------------------------------------------------
 // Arguments
 // ---------------------------------------------------------------------------
 
@@ -334,13 +673,16 @@ foreach (array_slice($argv, 1) as $tok) {
     }
     $rtArgs[$k] = $v;
 }
-foreach (['elementor', 'wp', 'php', 'zip_sha256', 'stored'] as $need) {
+foreach (['elementor', 'wp', 'php', 'zip_sha256', 'stored', 'layout'] as $need) {
     if (!isset($rtArgs[$need]) || $rtArgs[$need] === '') {
         rt_broken('missing argument ' . $need . '=');
     }
 }
 if (!in_array($rtArgs['stored'], ['as_given', 'strings'], true)) {
     rt_broken('stored= must be as_given or strings: ' . rt_brief($rtArgs['stored']));
+}
+if (!in_array($rtArgs['layout'], ['containers', 'sections'], true)) {
+    rt_broken('layout= must be containers or sections: ' . rt_brief($rtArgs['layout']));
 }
 
 // ---------------------------------------------------------------------------
@@ -399,7 +741,7 @@ spl_autoload_register(static function (string $class): void {
         require_once $file;
     }
 });
-foreach ([ElementorClassicMapper::class, IdSeed::class, PageCreateBuilder::class, ServicePrincipal::class] as $cls) {
+foreach ([ElementorClassicMapper::class, ElementorAdapter::class, IdSeed::class, PageCreateBuilder::class, ServicePrincipal::class, AbilityRunCommand::class] as $cls) {
     if (!class_exists($cls)) {
         rt_broken('the agent class ' . $cls . ' cannot be loaded by the agent autoloader');
     }
@@ -417,14 +759,22 @@ if ($drift !== null || current_user_can('unfiltered_html')) {
     rt_broken('the service principal is not the restricted user: ' . ($drift ?? 'it has unfiltered_html'));
 }
 
+// The boot was set up for one layout (run.sh sets the experiment before it starts).
+// A site that runs the other one would give every agent answer below the wrong meaning.
+$rtContainersOn = Plugin::$instance->experiments->is_feature_active('container');
+if ($rtContainersOn !== ($rtArgs['layout'] === 'containers')) {
+    rt_broken('the site runs the container experiment ' . ($rtContainersOn ? 'on' : 'off') . ' but this run is for the ' . $rtArgs['layout'] . ' layout');
+}
+
 rt_out(sprintf(
-    'site php=%s wp=%s elementor=%s stored=%s principal=%d unfiltered_html=no containers_experiment=%s',
+    'site php=%s wp=%s elementor=%s stored=%s layout=%s principal=%d unfiltered_html=no containers_experiment=%s',
     PHP_VERSION,
     get_bloginfo('version'),
     ELEMENTOR_VERSION,
     $rtArgs['stored'],
+    $rtArgs['layout'],
     $principal,
-    Plugin::$instance->experiments->is_feature_active('container') ? 'active' : 'inactive'
+    $rtContainersOn ? 'active' : 'inactive'
 ));
 
 // ---------------------------------------------------------------------------
@@ -498,6 +848,11 @@ $rtTextsSeen = 0;
 $rtAltsSeen  = 0;
 
 foreach ($rtSources as $src) {
+    // A container element is not registered on a site that runs the sections layout,
+    // so Elementor would drop it on save. Sections are stored on every site.
+    if ($src['containers'] && $rtArgs['layout'] !== 'containers') {
+        continue;
+    }
     $loaded = rt_load($src['file']);
     $label  = $src['label'];
     $listed = 0;
@@ -673,6 +1028,17 @@ foreach ($rtSources as $src) {
     $rtPerFile[$src['file'] . ' (' . $label . ')'] = $listed;
 }
 
+// The agent's own create path, on the same site.
+$rtAgent = rt_agent_phase(
+    $rtArgs['layout'],
+    $rtArgs['stored'],
+    $principal,
+    [$rtArgs['layout'] === 'containers' ? '/rt/fixtures/elementor-classic-containers.json' : '/rt/fixtures/elementor-classic-sections.json', '/rt/harness/cases-extra.json'],
+    in_array('agent_no_cases', $rtPlants['all'] ?? [], true)
+);
+$rtChecks += $rtAgent['checks'];
+$rtFailed += $rtAgent['failed'];
+
 foreach ($rtNotices as $n) {
     rt_out('note ' . rt_brief($n));
 }
@@ -692,6 +1058,26 @@ if ($rtTextsSeen < 1 || $rtAltsSeen < 1) {
     ++$rtFailed;
     rt_out(sprintf('FAIL the render checks looked at %d text(s) and %d image alt(s)', $rtTextsSeen, $rtAltsSeen));
 }
-rt_out(sprintf('SUMMARY elementor=%s cases=%d checks=%d texts=%d alts=%d failed=%d', ELEMENTOR_VERSION, $rtCases, $rtChecks, $rtTextsSeen, $rtAltsSeen, $rtFailed));
+// So must the agent path: an outline through it, and every refusal scenario.
+if ($rtAgent['cases'] < 1) {
+    ++$rtFailed;
+    rt_out('FAIL the agent path ran no case');
+}
+foreach (array_diff(RT_AGENT_SCENARIOS, $rtAgent['scenarios']) as $missing) {
+    ++$rtFailed;
+    rt_out('FAIL the agent path did not run the refusal scenario ' . $missing);
+}
+rt_out(sprintf(
+    'SUMMARY elementor=%s layout=%s cases=%d checks=%d texts=%d alts=%d agent=%d refused=%d failed=%d',
+    ELEMENTOR_VERSION,
+    $rtArgs['layout'],
+    $rtCases,
+    $rtChecks,
+    $rtTextsSeen,
+    $rtAltsSeen,
+    $rtAgent['cases'],
+    count($rtAgent['scenarios']),
+    $rtFailed
+));
 rt_out($rtFailed === 0 ? 'RESULT OK' : 'RESULT FAIL');
 exit($rtFailed === 0 ? 0 : 1);
