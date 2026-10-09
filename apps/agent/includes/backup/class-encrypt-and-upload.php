@@ -1387,11 +1387,14 @@ final class EncryptAndUpload
             'retryable' => false,
             'represign' => false,
         ];
+        // CP and s3_compat both resolve to a CpDestination; any other kind
+        // falls back to the raw transport, with no re-presign available.
+        $cp       = $this->destination instanceof CpDestination ? $this->destination : null;
         $attempts = 0;
         for ($attempt = 1; $attempt <= self::PUT_MAX_ATTEMPTS; $attempt++) {
             $attempts = $attempt;
-            $result   = ($this->destination instanceof CpDestination)
-                ? $this->destination->putPresignedWithStatus($url, $cipher)
+            $result   = $cp !== null
+                ? $cp->putPresignedWithStatus($url, $cipher)
                 : $this->transport->putChunkWithStatus($url, $cipher);
             if ($result['ok'] || !$result['retryable'] || $attempt >= self::PUT_MAX_ATTEMPTS) {
                 break;
@@ -1402,10 +1405,10 @@ final class EncryptAndUpload
         }
 
         $alreadyStored = false;
-        if (!$result['ok'] && $result['represign'] && $this->destination instanceof CpDestination) {
+        if (!$result['ok'] && $result['represign'] && $cp !== null) {
             $this->notePutRetry($progress, $heartbeatDetail, $hash, $attempts, $result, 'represign');
             try {
-                $fresh = $this->destination->putChunkWithStatus($hash, $cipher);
+                $fresh = $cp->putChunkWithStatus($hash, $cipher);
             } catch (\RuntimeException $e) {
                 // The presign callback itself failed. The storage's 403 is
                 // still the cause worth reporting, so keep that result.
