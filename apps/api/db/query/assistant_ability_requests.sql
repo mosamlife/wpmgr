@@ -71,13 +71,20 @@ WHERE tenant_id = @tenant_id
   AND created_at > now() - (sqlc.arg(window_seconds)::int * interval '1 second');
 
 -- name: InsertAbilityRequest :one
+-- id is the request id the site receives with the write. A caller that
+-- prechecked the request under an id it generated passes that id, so the
+-- write names the request its precheck was made under; NULL takes the
+-- column default, gen_random_uuid().
 -- ON CONFLICT names the one-pending index's columns and predicate. A conflict
--- inserts nothing and returns NO ROW (pgx.ErrNoRows): the caller reads the
--- waiting row with GetPendingAbilityRequestForTarget. state is always
--- 'pending'; target_key is generated and never written. m161: route_id,
--- route_sha256 and card_facts are set together for wpmgr/rest-write and are
--- NULL for every other ability (the table's CHECKs refuse anything else).
+-- inserts nothing and returns NO ROW (pgx.ErrNoRows), whatever id was passed:
+-- the caller reads the waiting row, which keeps its own id, with
+-- GetPendingAbilityRequestForTarget. An id that already names a row is not
+-- that conflict: it fails with 23505. state is always 'pending'; target_key
+-- is generated and never written. m161: route_id, route_sha256 and
+-- card_facts are set together for wpmgr/rest-write and are NULL for every
+-- other ability (the table's CHECKs refuse anything else).
 INSERT INTO assistant_ability_requests (
+    id,
     tenant_id, site_id, proposed_by_grant_id,
     entry_id, entry_sha256, ability_name, operator_permission,
     input_json, input_sha256, target_post_id,
@@ -87,6 +94,7 @@ INSERT INTO assistant_ability_requests (
     digest_nonce, presented_digest, state, expires_at,
     route_id, route_sha256, card_facts
 ) VALUES (
+    COALESCE(sqlc.narg(id)::uuid, gen_random_uuid()),
     @tenant_id, @site_id, @proposed_by_grant_id,
     @entry_id, @entry_sha256, @ability_name, @operator_permission,
     @input_json, @input_sha256, sqlc.narg(target_post_id),

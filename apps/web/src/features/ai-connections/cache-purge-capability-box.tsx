@@ -37,6 +37,12 @@ export interface CachePurgeCapabilityBoxProps {
   readonly checked: boolean;
   readonly onChange: (checked: boolean) => void;
   readonly disabled?: boolean;
+  /**
+   * False when the server did not offer the cache clear to this app as a
+   * request. The row is then disabled and shown clear, so what the box shows
+   * ticked is what the approval sends. Default true.
+   */
+  readonly offered?: boolean;
 }
 
 /**
@@ -49,8 +55,10 @@ export function CachePurgeCapabilityBox({
   checked,
   onChange,
   disabled,
+  offered = true,
 }: CachePurgeCapabilityBoxProps) {
   const [showDisclosure, setShowDisclosure] = useState(false);
+  const locked = disabled === true || !offered;
 
   return (
     <div
@@ -63,13 +71,13 @@ export function CachePurgeCapabilityBox({
       <label
         className={cn(
           "flex items-start gap-2 rounded-md border border-[var(--color-border)] p-2 text-sm",
-          disabled === true && "cursor-not-allowed opacity-70",
+          locked && "cursor-not-allowed opacity-70",
         )}
       >
         <Checkbox
           className="mt-0.5"
-          checked={checked}
-          disabled={disabled}
+          checked={checked && offered}
+          disabled={locked}
           onChange={(e) => onChange(e.target.checked)}
         />
         <span>
@@ -79,6 +87,14 @@ export function CachePurgeCapabilityBox({
           <span className="block text-xs text-[var(--color-muted-foreground)]">
             {CAPABILITY_DESCRIPTIONS[CACHE_CAPABILITY]}
           </span>
+          {!offered ? (
+            <span
+              data-testid="cache-purge-not-offered"
+              className="mt-1 block text-xs font-medium text-[var(--color-muted-foreground)]"
+            >
+              WPMgr did not offer cache clearing for this connection.
+            </span>
+          ) : null}
           <button
             type="button"
             data-testid="cache-purge-disclosure-toggle"

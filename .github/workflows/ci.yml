@@ -71,7 +71,7 @@ jobs:
           GOWORK: "off"
           CGO_ENABLED: "0"
         # Also exclude apps/api/tests here: those are container-based integration
-        # tests (testcontainers: postgres, redis, minio, clickhouse) that belong
+        # tests (testcontainers: postgres, redis, seaweedfs, clickhouse) that belong
         # in a separate lane, not the fast unit CI. Nearly all of that package's
         # test functions run under CGO_ENABLED=0 (one is excluded by a
         # //go:build cgo tag), and most stand up their own ephemeral Postgres,
@@ -516,6 +516,24 @@ jobs:
       - name: Version surface guard (openapi, changelog page, badge, agent, install pins)
         run: scripts/check-version-surfaces.sh
 
+      # ---- The integration tests' S3 store image -----------------------------
+      # GH #819: that image was pinned twice, as a Go literal and as a literal in
+      # api-integration.yml's pre-pull, and its registry stopped serving it. The
+      # Go const s3TestImage is now the only literal and the pre-pull asks
+      # scripts/test-s3-image.sh for it. `--check` fails when the const is
+      # missing or is not pinned by digest, when any other file names an S3
+      # server image, and when the pre-pull stops calling the script. The
+      # integration lane is manual-dispatch, so without this a bad pin would be
+      # found by whoever next ran it.
+      #
+      # Self-test FIRST, same reasoning as the version surface guard: a broken
+      # guard must fail here, not pass by failing open.
+      - name: S3 test image guard self-test (GH #819)
+        run: scripts/test-s3-image_test.sh
+
+      - name: S3 test image guard (digest-pinned, named once, pre-pull derives it)
+        run: scripts/test-s3-image.sh --check
+
 
       # ---- License surfaces --------------------------------------------------
       # GH #547: the agent declared MIT in its plugin header and GPLv2 or later
@@ -672,6 +690,35 @@ jobs:
       - name: "RLS cross-tenant guard (live, GH #470)"
         run: scripts/check-rls-cross-tenant.sh
 
+  # ---- db/schema.sql and atlas.sum against the migrations (GH #759) ----
+  # schema.sql is sqlc's input and Atlas's desired state, but the server never
+  # runs it, so a migration that forgot to update it passed every other check
+  # until atlas could not read the file. This replays every migration into one
+  # throwaway postgres, loads schema.sql into a second, and compares the
+  # catalogs (tables, columns, indexes, constraints, RLS flags and policies,
+  # functions); it also checks atlas.sum names exactly the files on disk with
+  # the hashes Atlas writes. The postgres is started by the script itself
+  # (docker run, no network, tmpfs), the same way the RLS guard above does it.
+  #
+  # Self-test first, as its own step, so a broken guard fails before it ever
+  # touches the real tree rather than passing by failing open. Both print
+  # their own elapsed seconds; read those for what the job costs. No path
+  # filter, for the reason given on the RLS job above.
+  schema-sync:
+    name: schema.sql matches the migrations
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: "schema sync guard self-test (GH #759)"
+        run: scripts/check-schema-sync_test.sh
+
+      - name: "schema.sql and atlas.sum match the migrations (GH #759)"
+        run: scripts/check-schema-sync.sh
+
   # ---- nginx routing (infra/nginx/nginx.conf) ----
   # `nginx -t` only checks syntax; it does not catch a public Go route with no
   # matching nginx location (GH #175 — self-hosted RUM ingest 405'd on every
@@ -755,6 +802,41 @@ jobs:
 
       - name: Page markup survives core kses
         run: scripts/check-page-kses.sh
+
+  # ---- Elementor trees under Elementor's own save and render ----
+  # The agent builds Elementor element trees with its own classic mapper. This
+  # boots a real WordPress under the Playground CLI (PHP and SQLite compiled to
+  # WebAssembly, no Docker) with each Elementor version pinned by sha256 in
+  # scripts/elementor-roundtrip/pins.txt, once per layout (containers and
+  # sections, set through Elementor's container experiment before the site
+  # starts), saves every golden-fixture and extra outline with Elementor's
+  # Document::save as the agent's service user (no unfiltered_html), and requires
+  # the stored tree to equal the built one and the rendered page to show the
+  # outline's text with no script element and no on* attribute. It then drives
+  # the agent's own create path on the same site (precheck, write under the
+  # precheck's digests, undo) and requires the refusals the path must make. It
+  # fails on zero cases, zero agent cases, a missing tool and a hash mismatch.
+  # The guard's self-test runs first so a guard that fails open cannot pass; it
+  # also plants defects in a copy of the agent's own source and requires each to
+  # turn the check red, and it fills the cache of downloads the real run reuses.
+  elementor-roundtrip:
+    name: Elementor round trip (pinned versions)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Elementor round trip self-test
+        run: scripts/elementor-roundtrip_test.sh
+
+      - name: Elementor trees survive save and render
+        run: scripts/elementor-roundtrip/run.sh
 
   # ---- PHP agent ----
   php:

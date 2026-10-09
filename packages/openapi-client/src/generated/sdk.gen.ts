@@ -835,7 +835,6 @@ import type {
   LogoutResponses,
   OidcCallbackData,
   OidcCallbackErrors,
-  OidcCallbackResponses,
   OidcLoginData,
   OidcLoginErrors,
   OptimizeMediaData,
@@ -1830,15 +1829,17 @@ export const oidcLogin = <ThrowOnError extends boolean = false>(
 
 /**
  * OIDC redirect callback
+ *
+ * The identity provider's return leg, reached by a browser navigation, so a completed sign-in answers with a redirect into the app rather than a response body.
+ *
  */
 export const oidcCallback = <ThrowOnError extends boolean = false>(
   options?: Options<OidcCallbackData, ThrowOnError>,
 ) =>
-  (options?.client ?? client).get<
-    OidcCallbackResponses,
-    OidcCallbackErrors,
-    ThrowOnError
-  >({ url: "/auth/oidc/callback", ...options });
+  (options?.client ?? client).get<unknown, OidcCallbackErrors, ThrowOnError>({
+    url: "/auth/oidc/callback",
+    ...options,
+  });
 
 /**
  * List the social sign-in providers this install offers
