@@ -59,8 +59,10 @@ type PolicySnapshot struct {
 	// AIDraft is true when the site holds a done, not-undone page creation
 	// whose created post is the request's target.
 	AIDraft bool
-	// SiteMode, SiteModeVersion, SiteSetter and SiteSetAt are sites.ai_mode*.
+	// SiteMode, SiteModeSource, SiteModeVersion, SiteSetter and SiteSetAt
+	// are sites.ai_mode*.
 	SiteMode        aipolicy.Mode
+	SiteModeSource  string
 	SiteModeVersion int64
 	SiteSetter      uuid.UUID
 	SiteSetAt       time.Time
@@ -77,6 +79,7 @@ type PolicySnapshot struct {
 // unchanged.
 func (a PolicySnapshot) sameSetting(b PolicySnapshot) bool {
 	return a.SiteMode == b.SiteMode &&
+		a.SiteModeSource == b.SiteModeSource &&
 		a.SiteModeVersion == b.SiteModeVersion &&
 		a.SiteSetter == b.SiteSetter &&
 		a.SiteSetAt.Equal(b.SiteSetAt) &&
@@ -92,11 +95,14 @@ func (a PolicySnapshot) undecided() bool {
 
 // PolicyApproval is the compare-and-set that approves a request under the
 // site's setting. The statement must also require the request to be
-// pending, unchecked and unexpired, and the site's mode and version to be
-// these and to allow the class.
+// pending, unchecked and unexpired, the site's mode, its source, version,
+// setter and set time to be these, the mode to allow the class, and the
+// connection to run by the site's setting. The approval records each of
+// them, as the request's backstop requires.
 type PolicyApproval struct {
 	TenantID, RequestID, SiteID uuid.UUID
 	SiteMode                    aipolicy.Mode
+	ModeSource                  string
 	ModeVersion                 int64
 	SetterUserID                uuid.UUID
 	SetterSetAt                 time.Time
@@ -283,7 +289,7 @@ func (s *Service) decideLocked(ctx context.Context, tenantID, requestID uuid.UUI
 		if d.Outcome == aipolicy.OutcomeAutoBySetting {
 			row, err := tx.ApproveByPolicy(ctx, PolicyApproval{
 				TenantID: tenantID, RequestID: requestID, SiteID: cur.Request.SiteID,
-				SiteMode: cur.SiteMode, ModeVersion: cur.SiteModeVersion,
+				SiteMode: cur.SiteMode, ModeSource: cur.SiteModeSource, ModeVersion: cur.SiteModeVersion,
 				SetterUserID: cur.SiteSetter, SetterSetAt: cur.SiteSetAt,
 				BaseClass: cur.StoredClass, Class: d.Class, DispatchWindowSeconds: dispatchWindowSeconds,
 			})

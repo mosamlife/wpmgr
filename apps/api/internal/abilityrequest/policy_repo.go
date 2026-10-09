@@ -35,8 +35,9 @@ var _ PolicyStore = (*PolicyRepo)(nil)
 
 // policySnapshotSQL reads the request, the class its catalogue entry or
 // route stores now, whether its target is one of this site's AI drafts,
-// the site's mode and the connection's switch, in one statement. A grant
-// that is not active reads as never.
+// the site's mode with its source, version, setter and set time, and the
+// connection's switch, in one statement. A grant that is not active reads
+// as never.
 const policySnapshotSQL = `
 SELECT r.id, r.tenant_id, r.site_id, r.proposed_by_grant_id, r.entry_id, r.entry_sha256,
        r.ability_name, r.operator_permission, r.input_sha256, r.grant_label, r.site_label,
@@ -55,7 +56,7 @@ SELECT r.id, r.tenant_id, r.site_id, r.proposed_by_grant_id, r.entry_id, r.entry
               AND p.created_post_id = r.target_post_id
               AND coalesce(p.undo_state, 'available') NOT IN ('undone', 'in_progress')
        ))::boolean AS ai_draft,
-       s.ai_mode, s.ai_mode_version, s.ai_mode_set_by, s.ai_mode_set_at,
+       s.ai_mode, s.ai_mode_source, s.ai_mode_version, s.ai_mode_set_by, s.ai_mode_set_at,
        CASE WHEN g.status = 'active' THEN g.ai_auto ELSE 'never' END AS ai_auto,
        g.ai_auto_set_by,
        (r.created_at < now() - make_interval(secs => $3))::boolean AS too_old
@@ -78,40 +79,6 @@ WHERE tenant_id = $1
   AND approval_source = 'policy'
   AND change_class = ANY($4::text[])
   AND decided_at > now() - make_interval(secs => $5)`
-
-// approveByPolicySQL is the compare-and-set. It approves only a request
-// that still waits for its first decision, inside its window, while the
-// site's mode, version and setter are the ones the decision relied on and
-// the mode allows the class. The backstop trigger re-checks all of it.
-const approveByPolicySQL = `
-UPDATE assistant_ability_requests r
-SET state = 'approved',
-    approval_source = 'policy',
-    approval_site_mode = $4,
-    approval_mode_version = $5,
-    approval_setter_user_id = $6,
-    approval_setter_set_at = $7,
-    base_change_class = $8,
-    change_class = $9,
-    decided_at = now(),
-    dispatch_deadline_at = now() + ($10::int * interval '1 second'),
-    policy_checked_at = now()
-WHERE r.tenant_id = $1
-  AND r.id = $2
-  AND r.site_id = $3
-  AND r.state = 'pending'
-  AND r.policy_checked_at IS NULL
-  AND r.expires_at > now()
-  AND EXISTS (
-      SELECT 1 FROM sites s
-      WHERE s.tenant_id = r.tenant_id
-        AND s.id = r.site_id
-        AND s.ai_mode = $4
-        AND s.ai_mode_version = $5
-        AND s.ai_mode_set_by = $6
-        AND ai_mode_allows(s.ai_mode, $9)
-  )
-RETURNING r.id, r.tenant_id, r.site_id, r.proposed_by_grant_id, r.state, r.approval_source`
 
 // recordAskSQL records why a request waits. The request stays pending.
 const recordAskSQL = `
@@ -163,7 +130,7 @@ func readPolicySnapshot(ctx context.Context, tx pgx.Tx, tenantID, requestID uuid
 		&req.SiteHost, &req.CardCopyVersion, &req.State, &req.PolicyCheckedAt, &req.RouteID,
 		&req.CardFacts, &req.CheckedTargetStatus, &req.TargetPostID, &req.CreatedAt, &req.ExpiresAt,
 		&stored, &snap.AIDraft,
-		&mode, &snap.SiteModeVersion, &modeSetBy, &modeSetAt,
+		&mode, &snap.SiteModeSource, &snap.SiteModeVersion, &modeSetBy, &modeSetAt,
 		&auto, &autoSetBy, &snap.TooOld,
 	)
 	if err != nil {
@@ -221,18 +188,25 @@ func (p *policyTx) DraftUsage(ctx context.Context, tenantID, grantID, siteID uui
 	return u, nil
 }
 
+// ApproveByPolicy runs the shipped compare-and-set
+// (ApproveAbilityRequestByPolicy): it approves only while the site's mode,
+// source, version, setter and set time are the ones the decision read, the
+// mode allows the class and the connection runs by the site's setting, and
+// it records all of them on the request. No row is pgx.ErrNoRows.
 func (p *policyTx) ApproveByPolicy(ctx context.Context, a PolicyApproval) (sqlc.AssistantAbilityRequest, error) {
-	setAt := pgtype.Timestamptz{}
-	if !a.SetterSetAt.IsZero() {
-		setAt = pgtype.Timestamptz{Time: a.SetterSetAt, Valid: true}
-	}
-	var out sqlc.AssistantAbilityRequest
-	err := p.tx.QueryRow(ctx, approveByPolicySQL,
-		a.TenantID, a.RequestID, a.SiteID,
-		string(a.SiteMode), a.ModeVersion, a.SetterUserID, setAt,
-		string(a.BaseClass), string(a.Class), a.DispatchWindowSeconds,
-	).Scan(&out.ID, &out.TenantID, &out.SiteID, &out.ProposedByGrantID, &out.State, &out.ApprovalSource)
-	return out, err
+	return sqlc.New(p.tx).ApproveAbilityRequestByPolicy(ctx, sqlc.ApproveAbilityRequestByPolicyParams{
+		SiteMode:              string(a.SiteMode),
+		ModeSource:            a.ModeSource,
+		ModeVersion:           a.ModeVersion,
+		SetterUserID:          a.SetterUserID,
+		SetterSetAt:           a.SetterSetAt,
+		BaseChangeClass:       string(a.BaseClass),
+		ChangeClass:           string(a.Class),
+		DispatchWindowSeconds: a.DispatchWindowSeconds,
+		TenantID:              a.TenantID,
+		ID:                    a.RequestID,
+		SiteID:                a.SiteID,
+	})
 }
 
 func (p *policyTx) RecordAsk(ctx context.Context, a PolicyAsk) error {

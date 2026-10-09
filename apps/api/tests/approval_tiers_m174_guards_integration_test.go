@@ -944,8 +944,9 @@ func TestM174BackstopRefusesAPolicyApprovalTheSettingDoesNotHold(t *testing.T) {
 // approval Decide makes is one the backstop and the policy shape CHECK
 // accept.
 //
-// Mutation: drop approval_mode_source from the repository's approving
-// statement (the backstop refuses it, 42501).
+// Mutations: drop approval_mode_source from the repository's approving
+// statement, ApproveAbilityRequestByPolicy (the backstop refuses it, 42501);
+// leave ModeSource out of the approval (the compare-and-set touches no row).
 func TestM174DecideApprovalSatisfiesTheBackstop(t *testing.T) {
 	ctx := context.Background()
 	w := m174gNewWorld(t)
@@ -957,7 +958,7 @@ func TestM174DecideApprovalSatisfiesTheBackstop(t *testing.T) {
 		var err error
 		got, err = tx.ApproveByPolicy(ctx, abilityrequest.PolicyApproval{
 			TenantID: w.tenant, RequestID: r.ID, SiteID: w.site,
-			SiteMode: aipolicy.ModeAIDrafts, ModeVersion: w.mode.AiModeVersion,
+			SiteMode: aipolicy.ModeAIDrafts, ModeSource: w.mode.AiModeSource, ModeVersion: w.mode.AiModeVersion,
 			SetterUserID: w.alice, SetterSetAt: w.mode.AiModeSetAt.Time,
 			BaseClass: aipolicy.ClassAIDraft, Class: aipolicy.ClassAIDraft, DispatchWindowSeconds: 600,
 		})

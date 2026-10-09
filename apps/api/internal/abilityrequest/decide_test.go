@@ -136,6 +136,7 @@ func pageCreate() PolicySnapshot {
 		},
 		StoredClass:      aipolicy.ClassAIDraft,
 		SiteMode:         aipolicy.ModeAIDrafts,
+		SiteModeSource:   "person",
 		SiteModeVersion:  1,
 		SiteSetter:       dOwner,
 		SiteSetAt:        dSetAt,
@@ -180,7 +181,7 @@ func TestDecideApprovesAnAIDraftBySetting(t *testing.T) {
 		t.Fatalf("approves %d asks %d commits %d", len(store.approves), len(store.asks), store.committed)
 	}
 	a := store.approves[0]
-	if a.SiteMode != aipolicy.ModeAIDrafts || a.ModeVersion != 1 || a.SetterUserID != dOwner || !a.SetterSetAt.Equal(dSetAt) ||
+	if a.SiteMode != aipolicy.ModeAIDrafts || a.ModeSource != "person" || a.ModeVersion != 1 || a.SetterUserID != dOwner || !a.SetterSetAt.Equal(dSetAt) ||
 		a.BaseClass != aipolicy.ClassAIDraft || a.Class != aipolicy.ClassAIDraft || a.DispatchWindowSeconds != dispatchWindowSeconds {
 		t.Fatalf("approval relied on the wrong setting: %+v", a)
 	}
@@ -363,6 +364,29 @@ func TestDecideSetterChangedBetweenCheckAndLock(t *testing.T) {
 	}
 	if res.Ask != aipolicy.AskConnectionSetterInvalid || store.reads != 4 || store.committed != 1 {
 		t.Fatalf("got %+v after %d reads and %d commits", res, store.reads, store.committed)
+	}
+}
+
+// The site's mode source changes after the check and before the lock, and
+// nothing else does: Decide starts again, and the approval carries the
+// source read under the lock, which the compare-and-set and the backstop
+// both compare with the site's.
+func TestDecideModeSourceChangedBetweenCheckAndLock(t *testing.T) {
+	before := pageCreate()
+	before.SiteModeSource = "enable_default"
+	after := pageCreate()
+	// read, re-read (moved), read, re-read (same)
+	s, store, _ := newDecider(before, after, after, after)
+	res, err := s.Decide(context.Background(), dTenant, dRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != aipolicy.OutcomeAutoBySetting || store.reads != 4 || store.committed != 1 || len(store.approves) != 1 {
+		t.Fatalf("got %+v after %d reads, %d commits and %d approvals; want an approval after a restart",
+			res, store.reads, store.committed, len(store.approves))
+	}
+	if got := store.approves[0].ModeSource; got != "person" {
+		t.Fatalf("approval carries mode source %q, want the source read under the lock (person)", got)
 	}
 }
 
