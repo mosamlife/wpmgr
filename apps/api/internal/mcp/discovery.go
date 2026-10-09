@@ -19,12 +19,15 @@ import (
 //
 // THE POINT OF THESE CONSTANTS IS THAT THE DISCOVERY DOCUMENT CANNOT DRIFT
 // FROM THE ROUTER. A discovery document is a promise a client acts on without
-// ever seeing this repository: it opens a browser at authorization_endpoint
-// and posts to token_endpoint. A hand-written list here that fell one rename
-// behind the router would send every GUI client to a 404 at handshake time,
-// which is a failure the server never observes and the user cannot diagnose.
-// Both halves now read the same constants, and TestAdvertisedEndpointsAreMounted
-// walks the real gin route table to prove it.
+// ever seeing this repository: it opens a browser at authorization_endpoint,
+// which AuthorizeNavigationRedirect sends on to the consent screen (the screen
+// then fetches the same path as JSON), and it posts to token_endpoint. A
+// hand-written list here that fell one rename behind the router would send
+// every GUI client to a 404 at handshake time, which is a failure the server
+// never observes and the user cannot diagnose. Both halves now read the same
+// constants: TestAdvertisedEndpointsAreMounted walks the real gin route table
+// to prove it, and TestAdvertisedAuthorizationEndpointOpensInABrowser proves
+// that a browser opening the advertised address reaches the consent screen.
 const APIV1Prefix = "/api/v1"
 
 // oauthGroupPath is the group Handler.RegisterPublic and Handler.Register open

@@ -422,11 +422,13 @@ func houseMethodNotAllowedExcept(g *gin.RouterGroup, path string, supported ...s
 // valid and re-presenting it cannot help, so inviting a retry is inviting a
 // pointless one.
 //
-// No OAuth CLIENT ever reads this body. authorization_endpoint is opened in the
-// user's browser and /consent is posted by our own screen; a client learns of a
-// refusal from the redirect the screen builds (buildDenialTarget), carrying
-// error=access_denied and the original state. The envelope matters for the
-// screen, not for the protocol.
+// No OAuth CLIENT ever reads this body. A client opens authorization_endpoint
+// in the user's browser, and that navigation is sent on to the consent screen
+// (AuthorizeNavigationRedirect, which server.New mounts ahead of these routes);
+// the screen then fetches /authorize as JSON and posts /consent itself. A
+// client learns of a refusal from the redirect the screen builds
+// (buildDenialTarget), carrying error=access_denied and the original state.
+// The envelope matters for the screen, not for the protocol.
 func (h *Handler) requireOrgScope() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		p, ok := domain.PrincipalFromContext(c.Request.Context())
