@@ -28,7 +28,7 @@
 # Read from the system catalogs of the two databases, so ordering, quoting,
 # schema-qualification, whitespace and comments in the SQL text cannot matter:
 #
-#   table        existence, kind (ordinary or partitioned), persistence
+#   table        existence, kind (ordinary or partitioned), persistence, options
 #   rls          the ENABLE and FORCE ROW LEVEL SECURITY flags of every table
 #   column       type, nullability, default, generation, identity, collation
 #   index        the full definition, by name
@@ -38,7 +38,11 @@
 #                USING and WITH CHECK
 #   function     signature, attributes and body (SECURITY DEFINER, search_path
 #                and the rest); see "function bodies" below
-#   trigger, sequence, view, type, extension, and any non-public schema
+#   trigger      the definition, and whether it is enabled
+#   view         the definition and its options (security_invoker and the rest)
+#   type         enum labels; a domain's base type, NOT NULL, default,
+#                collation and checks; a composite type's attributes
+#   sequence, extension, and any non-public schema
 #
 # Column order is not compared: a column a migration appended with ALTER TABLE
 # is written in place in schema.sql ("write the end state, not the steps").
@@ -58,8 +62,12 @@
 #     so their ACLs differ by design and comparing them would be red on a
 #     correct tree. They want their own guard.
 #   Row data (the seed INSERTs), object comments (COMMENT ON), ownership.
-#   Object classes outside the list above (rules, publications, event
-#     triggers, extended statistics, operators, casts, aggregates).
+#   Object classes this guard does not model are not skipped: range and base
+#     types, aggregates and window functions, foreign tables, materialized
+#     views, rules, event triggers, publications and extended statistics make
+#     the run exit 2 and name the object, because a skipped class is a
+#     difference nobody can see. Operators, casts, collations, conversions and
+#     text-search objects are neither modelled nor detected.
 #
 # ---------------------------------------------------------------------------
 # THE atlas.sum CHECK (needs no database)
@@ -465,7 +473,7 @@ sch AS (
      AND n.nspname NOT LIKE 'pg\_temp%'
 ),
 tbl AS (
-  SELECT c.oid, c.relname, c.relkind, c.relpersistence,
+  SELECT c.oid, c.relname, c.relkind, c.relpersistence, c.reloptions,
          c.relrowsecurity, c.relforcerowsecurity,
          format('%I.%I', s.nspname, c.relname) AS qname
     FROM pg_class c
@@ -480,6 +488,9 @@ rec AS (
   UNION ALL
   SELECT 'table', qname,
          'relkind=' || relkind::text || ' persistence=' || relpersistence::text
+         || CASE WHEN reloptions IS NOT NULL
+                 THEN ' options=' || array_to_string(ARRAY(SELECT o FROM unnest(reloptions) AS o ORDER BY o), ',')
+                 ELSE '' END
     FROM tbl
   UNION ALL
   SELECT 'rls', qname,
@@ -537,15 +548,19 @@ rec AS (
                       WHERE d.classid = 'pg_proc'::regclass AND d.objid = pr.oid AND d.deptype = 'e')
   UNION ALL
   SELECT 'trigger', t.qname || '.' || quote_ident(tg.tgname),
-         pg_get_triggerdef(tg.oid)
+         pg_get_triggerdef(tg.oid) || ' enabled=' || tg.tgenabled::text
     FROM tbl t
     JOIN pg_trigger tg ON tg.tgrelid = t.oid AND NOT tg.tgisinternal
   UNION ALL
   SELECT 'view', format('%I.%I', s.nspname, c.relname),
-         'relkind=' || c.relkind::text || ' ' || pg_get_viewdef(c.oid)
+         'relkind=' || c.relkind::text
+         || CASE WHEN c.reloptions IS NOT NULL
+                 THEN ' options=' || array_to_string(ARRAY(SELECT o FROM unnest(c.reloptions) AS o ORDER BY o), ',')
+                 ELSE '' END
+         || ' ' || pg_get_viewdef(c.oid)
     FROM pg_class c
     JOIN sch s ON s.oid = c.relnamespace
-   WHERE c.relkind IN ('v', 'm')
+   WHERE c.relkind = 'v'
   UNION ALL
   SELECT 'sequence', format('%I.%I', s.nspname, c.relname),
          format('type=%s start=%s increment=%s min=%s max=%s cycle=%s',
@@ -557,16 +572,72 @@ rec AS (
   UNION ALL
   SELECT 'type', format('%I.%I', s.nspname, ty.typname),
          'typtype=' || ty.typtype::text
-         || CASE WHEN ty.typtype = 'e'
-                 THEN ' labels=' || (SELECT string_agg(e.enumlabel, ',' ORDER BY e.enumsortorder)
-                                       FROM pg_enum e WHERE e.enumtypid = ty.oid)
-                 ELSE '' END
+         || CASE ty.typtype::text
+              WHEN 'e' THEN ' labels=' || (SELECT string_agg(e.enumlabel, ',' ORDER BY e.enumsortorder)
+                                             FROM pg_enum e WHERE e.enumtypid = ty.oid)
+              WHEN 'd' THEN ' base=' || format_type(ty.typbasetype, ty.typtypmod)
+                            || CASE WHEN ty.typnotnull THEN ' NOT NULL' ELSE '' END
+                            || coalesce(' DEFAULT ' || pg_get_expr(ty.typdefaultbin, 0), '')
+                            || CASE WHEN ty.typcollation <> 0
+                                      AND ty.typcollation IS DISTINCT FROM
+                                          (SELECT bt.typcollation FROM pg_type bt WHERE bt.oid = ty.typbasetype)
+                                    THEN ' COLLATE ' || (SELECT collname FROM pg_collation WHERE oid = ty.typcollation)
+                                    ELSE '' END
+                            || coalesce((SELECT ' constraints=' || string_agg(
+                                                  quote_ident(k.conname) || ' ' || pg_get_constraintdef(k.oid)
+                                                  || CASE WHEN k.convalidated THEN '' ELSE ' (NOT VALIDATED)' END,
+                                                  '; ' ORDER BY k.conname)
+                                           FROM pg_constraint k WHERE k.contypid = ty.oid), '')
+              WHEN 'c' THEN ' attrs=' || coalesce((SELECT string_agg(
+                                                      quote_ident(a.attname) || ' ' || format_type(a.atttypid, a.atttypmod),
+                                                      ', ' ORDER BY a.attnum)
+                                               FROM pg_attribute a
+                                              WHERE a.attrelid = ty.typrelid AND a.attnum > 0 AND NOT a.attisdropped), '')
+              ELSE '' END
     FROM pg_type ty
     JOIN sch s ON s.oid = ty.typnamespace
    WHERE ty.typtype IN ('e', 'd', 'c')
-     AND NOT EXISTS (SELECT 1 FROM pg_class rc WHERE rc.reltype = ty.oid)
+     AND NOT EXISTS (SELECT 1 FROM pg_class rc WHERE rc.reltype = ty.oid AND rc.relkind <> 'c')
      AND NOT EXISTS (SELECT 1 FROM pg_depend d
                       WHERE d.classid = 'pg_type'::regclass AND d.objid = ty.oid AND d.deptype = 'e')
+  UNION ALL
+  -- Object classes this guard does not model. They are REPORTED, and the run is
+  -- refused (exit 2), rather than skipped: a skipped class is a difference
+  -- nobody can see. Extension members are not counted.
+  SELECT 'unsupported', format('type %I.%I (typtype %s)', s.nspname, ty.typname, ty.typtype::text), ''
+    FROM pg_type ty
+    JOIN sch s ON s.oid = ty.typnamespace
+   WHERE (ty.typtype::text IN ('r', 'm') OR (ty.typtype::text = 'b' AND ty.typcategory::text <> 'A'))
+     AND NOT EXISTS (SELECT 1 FROM pg_depend d
+                      WHERE d.classid = 'pg_type'::regclass AND d.objid = ty.oid AND d.deptype = 'e')
+  UNION ALL
+  SELECT 'unsupported', format('function %I.%I (prokind %s)', s.nspname, pr.proname, pr.prokind::text), ''
+    FROM pg_proc pr
+    JOIN sch s ON s.oid = pr.pronamespace
+   WHERE pr.prokind::text IN ('a', 'w')
+     AND NOT EXISTS (SELECT 1 FROM pg_depend d
+                      WHERE d.classid = 'pg_proc'::regclass AND d.objid = pr.oid AND d.deptype = 'e')
+  UNION ALL
+  SELECT 'unsupported', format('relation %I.%I (relkind %s)', s.nspname, c.relname, c.relkind::text), ''
+    FROM pg_class c
+    JOIN sch s ON s.oid = c.relnamespace
+   WHERE c.relkind::text IN ('f', 'm')
+  UNION ALL
+  SELECT 'unsupported', format('rule %s on %I.%I', rw.rulename, s.nspname, c.relname), ''
+    FROM pg_rewrite rw
+    JOIN pg_class c ON c.oid = rw.ev_class
+    JOIN sch s ON s.oid = c.relnamespace
+   WHERE rw.rulename <> '_RETURN'
+  UNION ALL
+  SELECT 'unsupported', format('event trigger %s', evtname), ''
+    FROM pg_event_trigger
+  UNION ALL
+  SELECT 'unsupported', format('publication %s', pubname), ''
+    FROM pg_publication
+  UNION ALL
+  SELECT 'unsupported', format('extended statistics %I.%I', s.nspname, st.stxname), ''
+    FROM pg_statistic_ext st
+    JOIN sch s ON s.oid = st.stxnamespace
   UNION ALL
   SELECT 'extension', e.extname::text, ''
     FROM pg_extension e
@@ -578,7 +649,7 @@ SELECT format(E'%s\t%s\t%s', kind,
   FROM rec
 SQL
 
-KINDS="schema table rls column index constraint policy function trigger sequence view type extension"
+KINDS="schema table rls column index constraint policy function trigger sequence view type extension unsupported"
 # Every real schema has these. A catalog without a row of one of them came
 # from a query that matched nothing, not from a schema that has none.
 REQUIRED_KINDS="table rls column index constraint policy"
@@ -607,6 +678,16 @@ count_kind() { awk -F'\t' -v k="$2" '$1 == k { n++ } END { print n + 0 }' "$1"; 
 if [ "$REPLAY_OK" = "1" ] && [ "$DECL_OK" = "1" ]; then
   extract_catalog "$DB_MIG" "$TMP/mig.catalog" "Replaying the migrations"
   extract_catalog "$DB_DECL" "$TMP/decl.catalog" "apps/api/db/schema.sql"
+
+  # Something this guard does not model, on either side, is a refusal and never
+  # a quiet skip: it would be a difference nobody can see.
+  for side in "the migrations:$TMP/mig.catalog" "apps/api/db/schema.sql:$TMP/decl.catalog"; do
+    if [ "$(count_kind "${side#*:}" unsupported)" -gt 0 ]; then
+      broken "what ${side%%:*} builds uses something this guard does not model, so it cannot be compared and must not be waved through:
+$(awk -F'\t' '$1 == "unsupported" { print "        " $2 }' "${side#*:}" | head -10)
+Model it in scripts/check-schema-sync.sh before relying on a green run."
+    fi
+  done
 
   for k in $REQUIRED_KINDS; do
     [ "$(count_kind "$TMP/mig.catalog" "$k")" -gt 0 ] \

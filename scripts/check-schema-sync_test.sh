@@ -175,6 +175,42 @@ ALTER TABLE "public"."notes" DROP COLUMN "scratch";
 EOF
 }
 
+# The extended fixture: what a bare name would miss. A domain with a base type,
+# NOT NULL, a default and a check; a plain view; a second policy whose literal
+# contains a space; and a function whose body carries quoted text that a
+# normaliser must leave alone (two spaces, comment markers, a string with an
+# escaped quote, a dollar-quoted block). The same statements are the migration
+# and the addition to schema.sql.
+write_extra_body() {
+  cat <<'EOF'
+CREATE DOMAIN "public"."note_rank" AS integer NOT NULL DEFAULT 0 CHECK (VALUE >= 0);
+
+CREATE VIEW "public"."note_titles" AS
+  SELECT "id", "title" FROM "public"."notes";
+
+ALTER TABLE "public"."audit_log" ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "audit_role" ON "public"."audit_log"
+  USING (current_setting('app.role', true) = 'site editor');
+
+CREATE OR REPLACE FUNCTION public.describe_note(p_id uuid) RETURNS text
+LANGUAGE plpgsql
+AS $fn$
+BEGIN
+  -- first comment
+  PERFORM 'two  spaces';
+  PERFORM '/* first */';
+  PERFORM E'it\'s -- a string'; PERFORM 1;
+  PERFORM $q$ dollar  body -- not a comment $q$;
+  RETURN 'ok';
+END;
+$fn$;
+EOF
+}
+write_mig_extra() {
+  printf '%s\n\n' '-- Fixture migration 5: a domain, a view, a policy and a function with quoted text.'
+  write_extra_body
+}
+
 # A migration that holds only a comment: not empty, and valid.
 write_mig_comment() {
   cat <<'EOF'
@@ -189,6 +225,7 @@ MIG4=20260101000300_label.sql
 MIG4B=20260101000300_scratch_column.sql
 MIG_EMPTY=20260101000300_empty.sql
 MIG_COMMENT=20260101000300_comment_only.sql
+MIG_EXTRA=20260101000400_extra.sql
 
 # Written by the real `atlas migrate hash`; see the header.
 SUM_TRIO='h1:DHup/DUU8P+6NReRhHFanI34fPZPXP3poJ1wSWr+22I=
@@ -216,6 +253,13 @@ SUM_EMPTY='h1:PjJx4p1wpLPT62d+To6nSDcRc1CxVxkyA+tmHaXJ/Ds=
 20260101000100_functions.sql h1:BYez+/u9lqgobQ+GQao2ImbFXn+8ZdW5MWEG0JUzUyY=
 20260101000200_view_and_sequence.sql h1:RpCy6fuCdlrwGDm9KdFmD0LeDUPPBZ9/n+CWEBGjglo=
 20260101000300_empty.sql h1:NQxJo1pGExjbDYNprLTFox6FZr7OJasjtBccv1p7tkg='
+
+# The trio plus the extended fixture's migration.
+SUM_EXTRA='h1:xAFEOgNpKnNtP83UDWkiINi6424e+XVSlozH8sO5re0=
+20260101000000_init.sql h1:Scgj7c+J5cPVf9BCMo5Jho0clqJpuhowTCOvjt8JdXs=
+20260101000100_functions.sql h1:BYez+/u9lqgobQ+GQao2ImbFXn+8ZdW5MWEG0JUzUyY=
+20260101000200_view_and_sequence.sql h1:RpCy6fuCdlrwGDm9KdFmD0LeDUPPBZ9/n+CWEBGjglo=
+20260101000400_extra.sql h1:omcMiv5MBjdxCBVkRcqjoOIpRMZNMiofyaoFXY+uOxk='
 
 # The trio plus a migration holding only a comment.
 SUM_COMMENT='h1:eA+bF2jnWUGlFeixMvek0ciX1LLAXsYd8WhhJ6G2Rb0=
@@ -327,7 +371,7 @@ NL=$'\n'
 # --emit-fixture DIR trio|label|scratch -- write the migrations a sum is for,
 # so the real atlas can hash them. Nothing else uses this mode.
 if [ "${1:-}" = "--emit-fixture" ]; then
-  dir="${2:?usage: --emit-fixture DIR trio|label|scratch|empty|comment}"
+  dir="${2:?usage: --emit-fixture DIR trio|label|scratch|empty|comment|extra}"
   which="${3:-trio}"
   mkdir -p "$dir" || exit 2
   write_mig_1 > "$dir/$MIG1"
@@ -339,6 +383,7 @@ if [ "${1:-}" = "--emit-fixture" ]; then
     scratch) write_mig_scratch > "$dir/$MIG4B" ;;
     empty) : > "$dir/$MIG_EMPTY" ;;
     comment) write_mig_comment > "$dir/$MIG_COMMENT" ;;
+    extra) write_mig_extra > "$dir/$MIG_EXTRA" ;;
     *) echo "unknown fixture set: $which" >&2; exit 2 ;;
   esac
   echo "wrote the '$which' fixture migrations to $dir"
@@ -529,6 +574,24 @@ case_run() {
   fi
 }
 
+# The extended base: the base tree plus the extended fixture (its migration, its
+# atlas.sum, and the same statements appended to schema.sql).
+build_base2() {
+  local d="${WORK:?}/base2"
+  rm -rf "${d:?}"
+  cp -R "$WORK/base" "$d" || exit 2
+  write_mig_extra > "$d/$MIG_REL/$MIG_EXTRA"
+  printf '%s\n' "$SUM_EXTRA" > "$d/$MIG_REL/atlas.sum"
+  { printf '\n'; write_extra_body; } >> "$d/$SCHEMA_REL"
+}
+
+tree2() { # tree2 NAME -- a fresh copy of the extended base; prints its path
+  local d="${WORK:?}/${1:?}"
+  rm -rf "${d:?}"
+  cp -R "$WORK/base2" "$d" || exit 2
+  printf '%s' "$d"
+}
+
 # case_enabled NAME -- the FILTER rule case_run applies, for the custom blocks.
 case_enabled() {
   [ -z "$FILTER" ] && return 0
@@ -576,6 +639,7 @@ EOF
 }
 
 build_base
+build_base2
 
 S="$SCHEMA_REL"
 M="$MIG_REL"
@@ -950,6 +1014,72 @@ write_mig_scratch > "$t/$M/$MIG4B"
 printf '%s\n' "$SUM_SCRATCH" > "$t/$M/atlas.sum"
 case_run "honest: a migration that adds and drops a column leaves no trace for schema.sql to mirror" pass "$t" \
   "+atlas.sum lists exactly the 4 migration files" "+compared:" "-scratch" "-FAIL"
+
+# ===========================================================================
+# Settings the catalog rows must carry (bot review of #868, gap 2): whether a
+# trigger is enabled, a view's options, a domain's properties. And the object
+# classes the guard does not model are refused (exit 2), never skipped.
+# ===========================================================================
+t="$(tree2 settings-green)"
+case_run "honest: [settings] the extended fixture is in step" pass "$t" \
+  "+atlas.sum lists exactly the 4 migration files" "+compared:" "+2 view" "+2 function" "+3 policy" "+2 type" \
+  "-FAIL" "-GUARD BROKEN"
+
+t="$(tree settings-trigger-disabled)"
+append_text "$t/$S" 'ALTER TABLE "public"."notes" DISABLE TRIGGER notes_touch;'
+case_run "fires: [settings] a trigger disabled in schema.sql only" fail "$t" \
+  "+DIFFERENT (1)" "+public.notes.notes_touch" "+enabled=O" "+enabled=D"
+
+t="$(tree settings-trigger-enabled)"
+append_text "$t/$S" 'ALTER TABLE "public"."notes" ENABLE TRIGGER notes_touch;'
+case_run "honest: [settings] a trigger enabled explicitly is the default and stays green" pass "$t" \
+  "+compared:" "-FAIL"
+
+t="$(tree2 settings-view-option)"
+replace_lit "$t/$S" 'CREATE VIEW "public"."note_titles" AS' 'CREATE VIEW "public"."note_titles" WITH (security_invoker = true) AS'
+case_run "fires: [settings] a view with security_invoker in schema.sql only" fail "$t" \
+  "+DIFFERENT (1)" "+public.note_titles" "+options=security_invoker=true"
+
+t="$(tree2 settings-table-option)"
+append_text "$t/$S" 'ALTER TABLE "public"."audit_log" SET (fillfactor = 70);'
+case_run "fires: [settings] a table storage option set in schema.sql only" fail "$t" \
+  "+DIFFERENT (1)" "+public.audit_log" "+options=fillfactor=70"
+
+t="$(tree2 settings-domain-base)"
+replace_lit "$t/$S" '"public"."note_rank" AS integer' '"public"."note_rank" AS bigint'
+case_run "fires: [settings] a domain over a different base type" fail "$t" \
+  "+DIFFERENT (1)" "+public.note_rank" "+base=integer" "+base=bigint"
+
+t="$(tree2 settings-domain-check)"
+replace_lit "$t/$S" 'CHECK (VALUE >= 0)' 'CHECK (VALUE >= 1)'
+case_run "fires: [settings] a domain whose CHECK differs" fail "$t" \
+  "+DIFFERENT (1)" "+public.note_rank" "+VALUE >= 1"
+
+t="$(tree2 settings-domain-notnull)"
+replace_lit "$t/$S" 'AS integer NOT NULL DEFAULT 0' 'AS integer DEFAULT 0'
+case_run "fires: [settings] a domain that lost NOT NULL" fail "$t" \
+  "+DIFFERENT (1)" "+public.note_rank" "+base=integer NOT NULL"
+
+t="$(tree2 settings-domain-default)"
+replace_lit "$t/$S" 'NOT NULL DEFAULT 0 CHECK' 'NOT NULL DEFAULT 1 CHECK'
+case_run "fires: [settings] a domain whose default differs" fail "$t" \
+  "+DIFFERENT (1)" "+public.note_rank" "+DEFAULT 0" "+DEFAULT 1"
+
+t="$(tree2 settings-domain-honest)"
+replace_lit "$t/$S" 'CREATE DOMAIN "public"."note_rank" AS integer NOT NULL DEFAULT 0 CHECK (VALUE >= 0);' \
+  'create domain note_rank as int4 default 0 not null constraint note_rank_check check (value >= 0);'
+case_run "honest: [settings] the same domain written another way stays green" pass "$t" \
+  "+compared:" "+2 type" "-FAIL"
+
+t="$(tree2 settings-unsupported-range)"
+append_text "$t/$S" 'CREATE TYPE "public"."note_span" AS RANGE (subtype = integer);'
+case_run "broken: [settings] a range type is refused, not skipped" broken "$t" \
+  "+GUARD BROKEN" "+does not model" "+note_span" "-are in step"
+
+t="$(tree2 settings-unsupported-matview)"
+append_text "$t/$S" 'CREATE MATERIALIZED VIEW "public"."note_cache" AS SELECT 1 AS "one";'
+case_run "broken: [settings] a materialized view is refused, not skipped" broken "$t" \
+  "+GUARD BROKEN" "+does not model" "+note_cache" "-are in step"
 
 # ===========================================================================
 # Cleanup on a failed setup (bot review of #868, gap 4). The first CREATE
