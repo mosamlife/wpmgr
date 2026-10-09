@@ -188,8 +188,11 @@ report() {
 
   host="${MIRROR#*://}"
   re_host="$(printf '%s' "$host" | sed 's/\./\\./g')"
-  pat_mirror="msg=resolving host=${re_host}( |\$)|Trying to pull .* from https?://${re_host}([/: ]|\$)"
-  pat_hub='msg=resolving host=registry-1\.docker\.io( |$)|Trying to pull .* from https?://registry-1\.docker\.io([/: ]|$)'
+  # The classic-store message ends at the closing quote of msg="...", so the
+  # boundary after the host has to allow a quote as well as a slash, colon or
+  # space; without it a Docker Hub line (which has no trailing slash) is missed.
+  pat_mirror="msg=resolving host=${re_host}( |\$)|Trying to pull .* from https?://${re_host}([/: \"]|\$)"
+  pat_hub='msg=resolving host=registry-1\.docker\.io( |$)|Trying to pull .* from https?://registry-1\.docker\.io([/: "]|$)'
   mirror_n="$(printf '%s\n' "$log" | grep -Ec "$pat_mirror" || true)"
   hub_n="$(printf '%s\n' "$log" | grep -Ec "$pat_hub" || true)"
 
@@ -200,6 +203,12 @@ report() {
     | sed -E -e 's/^time="[^"]*" //' -e 's/^level=[a-z]+ //' \
              -e 's/^msg=resolving (host=[^ ]+).* url="([^"]*)".*$/resolving \1 \2/' \
     | sort | uniq -c | head -60 || true
+
+  # Why an endpoint was given up on, in the daemon's own words: the lines above
+  # debug level that talk about pulls, mirrors or endpoints.
+  echo "  daemon lines above debug level about pulls, mirrors or endpoints:"
+  printf '%s\n' "$log" | grep -E 'level=(info|warning|error)' | grep -Ei 'pull|mirror|endpoint|registry' \
+    | sed -E -e 's/^time="[^"]*" //' | sort | uniq -c | head -30 || true
 }
 
 case "$MODE" in

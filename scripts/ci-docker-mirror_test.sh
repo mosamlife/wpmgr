@@ -441,31 +441,54 @@ EOF
 }
 run_case "report: containerd-store lines are counted per registry and listed" c_report_containerd
 
+# The classic-store shape, as a hosted runner's daemon writes it: the mirror URL
+# ends in a slash, the Docker Hub URL does not, and the message ends at its
+# closing quote.
 c_report_classic() {
   new_runner reportclassic
   cat >"$E/state/journal" <<'EOF'
-time="2026-10-09T21:35:33Z" level=debug msg="Trying to pull postgres from https://mirror.gcr.io/ v2"
-time="2026-10-09T21:35:34Z" level=debug msg="Trying to pull node from https://mirror.gcr.io/ v2"
-time="2026-10-09T21:35:35Z" level=debug msg="Trying to pull node from https://registry-1.docker.io/ v2"
+time="2026-10-09T21:35:33Z" level=debug msg="Trying to pull postgres from https://mirror.gcr.io/"
+time="2026-10-09T21:35:34Z" level=debug msg="Trying to pull node from https://mirror.gcr.io/"
+time="2026-10-09T21:35:35Z" level=debug msg="Trying to pull node from https://registry-1.docker.io"
 EOF
   run_script --report
   expect_rc 0
   expect_out "resolved against mirror.gcr.io:  2"
   expect_out "resolved against Docker Hub (registry-1.docker.io):  1"
-  expect_out 'msg="Trying to pull postgres from https://mirror.gcr.io/ v2"'
+  expect_out 'msg="Trying to pull postgres from https://mirror.gcr.io/"'
+  expect_out 'msg="Trying to pull node from https://registry-1.docker.io"'
 }
 run_case "report: classic-store lines are counted per registry and listed" c_report_classic
+
+c_report_why() {
+  new_runner reportwhy
+  cat >"$E/state/journal" <<'EOF'
+time="2026-10-09T21:35:33Z" level=debug msg="Trying to pull nginx from https://mirror.gcr.io/"
+time="2026-10-09T21:35:34Z" level=info msg="Attempting next endpoint for pull after error" error="unauthorized: authentication required"
+time="2026-10-09T21:35:35Z" level=debug msg="Trying to pull nginx from https://registry-1.docker.io"
+time="2026-10-09T21:35:36Z" level=debug msg="a debug line that mentions pull but is not above debug level"
+time="2026-10-09T21:35:37Z" level=info msg="an unrelated info line"
+EOF
+  run_script --report
+  expect_rc 0
+  expect_out 'msg="Attempting next endpoint for pull after error" error="unauthorized: authentication required"'
+  expect_no_out "an unrelated info line"
+  expect_no_out "not above debug level"
+}
+run_case "report: it shows why an endpoint was given up on, and only that" c_report_why
 
 c_report_no_lookalikes() {
   new_runner reportlookalike
   cat >"$E/state/journal" <<'EOF'
 time="2026-10-09T21:35:33Z" level=debug msg=resolving host=mirror.gcr.io.evil.example method=HEAD url="https://mirror.gcr.io.evil.example/v2/x/manifests/1"
 time="2026-10-09T21:35:34Z" level=debug msg=resolving host=notmirror.gcr.io method=HEAD url="https://notmirror.gcr.io/v2/x/manifests/1"
-time="2026-10-09T21:35:35Z" level=debug msg="Trying to pull x from https://mirror.gcr.io.evil.example/ v2"
+time="2026-10-09T21:35:35Z" level=debug msg="Trying to pull x from https://mirror.gcr.io.evil.example/"
+time="2026-10-09T21:35:36Z" level=debug msg="Trying to pull x from https://registry-1.docker.io.evil.example"
 EOF
   run_script --report
   expect_rc 0
   expect_out "resolved against mirror.gcr.io:  0"
+  expect_out "resolved against Docker Hub (registry-1.docker.io):  0"
 }
 run_case "report: a host that merely starts or ends like the mirror is not counted" c_report_no_lookalikes
 

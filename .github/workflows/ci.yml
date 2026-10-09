@@ -815,6 +815,19 @@ jobs:
       - name: Routing smoke test (real infra/Dockerfile.web image vs stub upstream)
         run: infra/nginx/routing_smoke_test.sh
 
+      - name: TEMP diag (remove before merge)
+        if: always()
+        run: |
+          set +e
+          echo "--- docker config, secrets removed"
+          jq '{keys: keys, auths: ((.auths // {}) | keys), credsStore: .credsStore, credHelpers: ((.credHelpers // {}) | keys)}' ~/.docker/config.json
+          echo "--- docker info"
+          docker info --format '{{.IndexServerAddress}} mirrors={{json .RegistryConfig.Mirrors}} driver={{.Driver}} ver={{.ServerVersion}}'
+          echo "--- daemon lines above debug level"
+          sudo journalctl -u docker --no-pager -o cat | grep -E 'level=(info|warning|error)' | grep -Ei 'pull|mirror|endpoint|registry' | cut -c1-600 | tail -30
+          echo "--- mirror probe from the runner"
+          curl -sS -o /dev/null -w 'status=%{http_code} ip=%{remote_ip}\n' -I --max-time 20 -H 'Accept: application/vnd.oci.image.index.v1+json' https://mirror.gcr.io/v2/library/nginx/manifests/1.27-alpine
+
       - name: Docker mirror report
         if: always()
         run: scripts/ci-docker-mirror.sh --report
