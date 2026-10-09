@@ -168,12 +168,12 @@ final class BuilderPageEdit
         $keys = $a->descriptor()->exactKeys;
         try {
             $stored = BuilderDocumentFingerprint::read($postId, $keys);
-            $baseFp = $stored === null ? null : BuilderDocumentFingerprint::compute($stored['post'], $stored['rows'], $keys);
+            if ($stored === null) {
+                return self::refused(self::CODE_NOT_ELIGIBLE, 'missing');
+            }
+            $baseFp = BuilderDocumentFingerprint::compute($stored['post'], $stored['rows'], $keys);
         } catch (\Throwable $e) {
             return self::refused(LayoutOps::CODE_UNREADABLE, 'the page could not be read');
-        }
-        if ($stored === null || $baseFp === null) {
-            return self::refused(self::CODE_NOT_ELIGIBLE, 'missing');
         }
         if (!hash_equals($input['base_fingerprint'], $baseFp)) {
             return self::refused(self::CODE_CONFLICT, self::CHANGED_SINCE_READ);
@@ -336,9 +336,12 @@ final class BuilderPageEdit
      */
     private static function apply(int $postId, string $requestId, array $plan, callable $ledgerUpdate): array
     {
-        $a      = $plan['adapter'];
-        $doc    = $plan['doc'];
-        $baseFp = $plan['base_fingerprint'];
+        $a      = $plan['adapter'] ?? null;
+        $doc    = $plan['doc'] ?? null;
+        $baseFp = $plan['base_fingerprint'] ?? null;
+        if (!$a instanceof BuilderAdapter || !$doc instanceof NativeDocument || !is_string($baseFp)) {
+            return self::failed($ledgerUpdate, self::fail('bad_input', 'the edit was not planned for this write; nothing was changed'));
+        }
 
         try {
             $taken = BuilderDocumentSnapshot::take($postId, $requestId);

@@ -347,7 +347,7 @@ final class AbilityRunCommand implements CommandInterface
             return $this->fail('bad_params', 'allowed_draft_ids must be a list of at most one post id');
         }
         $seam     = $this->builderSeam === null ? null : ($this->builderSeam)();
-        $media    = fn (array $ids): array => $this->pageCreateMedia($ids);
+        $media    = fn (array $ids): array => $this->pageCreateMedia(array_map('intval', array_values($ids)));
         $inputSha = hash('sha256', $inputText);
 
         if ($mode === 'precheck') {
