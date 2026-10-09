@@ -248,5 +248,28 @@
     {"type":"quote","paragraphs":["A quote"],"citation":"Someone"},
     {"type":"separator"},
     {"type":"table","header":["a","b"],"rows":[["1","2"]]},
-    {"type":"list","ordered":true,"items":["one","two"]}]}
+    {"type":"list","ordered":true,"items":["one","two"]}]},
+
+  {"name":"refused-alt-reference-named","classic":true,"refused":"create_content_invalid","outline":[
+    {"type":"image","attachment_id":44,"alt":"Logo &copy; 2026"}]},
+  {"name":"refused-alt-reference-amp","classic":true,"refused":"create_content_invalid","outline":[
+    {"type":"image","attachment_id":44,"alt":"Already &amp; encoded"}]},
+  {"name":"refused-alt-reference-decimal","classic":true,"refused":"create_content_invalid","outline":[
+    {"type":"image","attachment_id":44,"alt":"Alt &#39; text"}]},
+  {"name":"refused-alt-reference-hex","classic":true,"refused":"create_content_invalid","outline":[
+    {"type":"image","attachment_id":44,"alt":"a&#xA0;b"}]},
+  {"name":"refused-link-reference-amp","refused":"link_invalid","outline":[
+    {"type":"buttons","buttons":[{"text":"Go","url":"https://example.test/?a=1&amp;b=2"}]}]},
+  {"name":"refused-link-reference-named","refused":"link_invalid","outline":[
+    {"type":"buttons","buttons":[{"text":"Go","url":"/shop?x=1&copy;=2"}]}]},
+  {"name":"refused-link-reference-decimal","refused":"link_invalid","outline":[
+    {"type":"buttons","buttons":[{"text":"Go","url":"/&#47;evil.example/login"}]}]},
+  {"name":"refused-link-path-colon","refused":"link_invalid","outline":[
+    {"type":"buttons","buttons":[{"text":"Go","url":"/shop/sale:summer"}]}]},
+  {"name":"refused-link-path-colon-in-query","refused":"link_invalid","outline":[
+    {"type":"buttons","buttons":[{"text":"Go","url":"/shop?time=10:30"}]}]},
+  {"name":"refused-link-path-colon-in-fragment","refused":"link_invalid","outline":[
+    {"type":"buttons","buttons":[{"text":"Go","url":"/shop#a:b"}]}]},
+  {"name":"refused-link-path-numeric-colon","refused":"link_invalid","outline":[
+    {"type":"buttons","buttons":[{"text":"Go","url":"/a&#58b"}]}]}
 ]

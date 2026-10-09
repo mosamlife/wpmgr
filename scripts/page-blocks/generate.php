@@ -14,6 +14,12 @@
 //   outline   the page-create outline, exactly as the AI would send it
 //   classic   true: also render this case for the classic editor
 //   title     the page title (default: "T <name>")
+//   refused   a refusal code: the builder must refuse this outline with
+//             exactly that code (under every editor the case runs for), and
+//             nothing is rendered for it. An outline it accepts, or refuses
+//             with another code, is an error. These cases pin inputs the
+//             grammar refuses because the block editor or core's save would
+//             change their markup, so dropping such a rule is red here.
 // Four conveniences exist only here, never in the builder's input grammar:
 //   "LONGTEXT"      any string, replaced by 4900 characters of Unicode text
 //   "LONGTEXT:<n>"  replaced by exactly n characters
@@ -145,8 +151,9 @@ if (!is_array($fixture)) {
     fail("$mediaFile is not a JSON object");
 }
 
-$cases = [PageCreateBuilder::EDITOR_BLOCKS => [], PageCreateBuilder::EDITOR_CLASSIC => []];
-$names = [];
+$cases    = [PageCreateBuilder::EDITOR_BLOCKS => [], PageCreateBuilder::EDITOR_CLASSIC => []];
+$names    = [];
+$refusals = 0;
 foreach ($defs as $d) {
     $name = is_object($d) ? ($d->name ?? null) : null;
     if (!is_string($name) || preg_match('/^[a-z0-9][a-z0-9-]*$/', $name) !== 1) {
@@ -163,6 +170,10 @@ foreach ($defs as $d) {
     if (($d->classic ?? false) === true) {
         $editors[] = PageCreateBuilder::EDITOR_CLASSIC;
     }
+    $refused = $d->refused ?? null;
+    if ($refused !== null && (!is_string($refused) || preg_match('/^[a-z][a-z_]*$/', $refused) !== 1)) {
+        fail("$name: refused must be a refusal code");
+    }
     $needsMedia = hasType($d->outline, 'image');
     $frozen     = json_encode($d, JSON_THROW_ON_ERROR);
 
@@ -175,6 +186,14 @@ foreach ($defs as $d) {
         $input   = (object) ['post_type' => 'page', 'editor' => $editor, 'title' => $title, 'outline' => $outline];
 
         $r = PageCreateBuilder::validate($input);
+        if ($refused !== null) {
+            $got = isset($r['spec']) ? 'ok' : (string) ($r['code'] ?? '?');
+            if ($got !== $refused) {
+                fail($label . ' must be refused ' . $refused . ', the builder answered ' . $got);
+            }
+            $refusals++;
+            continue;
+        }
         if (!isset($r['spec'])) {
             fail($label . ' refused: ' . ($r['code'] ?? '?') . ' ' . ($r['detail'] ?? ''));
         }
@@ -221,5 +240,5 @@ fwrite(
     STDERR,
     'generate.php: wrote ' . count($cases[PageCreateBuilder::EDITOR_BLOCKS]) . ' block cases'
     . ($outClassic !== '' ? ' and ' . count($cases[PageCreateBuilder::EDITOR_CLASSIC]) . ' classic cases' : '')
-    . "\n"
+    . '; ' . $refusals . " expected refusals held\n"
 );
