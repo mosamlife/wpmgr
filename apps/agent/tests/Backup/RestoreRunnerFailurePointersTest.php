@@ -90,6 +90,8 @@ final class RestoreRunnerFailurePointersTest extends TestCase
         file_put_contents($this->liveDir . '/old-good.txt', 'pre-restore');
         file_put_contents($this->stagingDir . '/new-bad.txt', 'from the snapshot');
         $this->seed(RestoreRunner::PHASE_SWAP_FILES, [
+            // What RestoreCommand seeds for a watchdog to rehydrate from.
+            'params'     => ['db' => ['password' => 'db-secret']],
             'tmp_prefix' => 'tmpaaaaaaaa_',
             'stage'      => [
                 'staging_dir'          => $this->stagingDir,
@@ -112,6 +114,7 @@ final class RestoreRunnerFailurePointersTest extends TestCase
         $this->assertNotSame('', $oldDir);
         $this->assertDirectoryExists($oldDir);
         $this->assertSame('tmpaaaaaaaa_', $sub['tmp_prefix'] ?? null, 'the FAILED row must keep the rest of the sub_state too');
+        $this->assertArrayNotHasKey('params', $sub, 'a FAILED row is never resumed, so it does not keep the run params and their DB credentials');
 
         $this->assertSame(1, $this->fireShutdown());
 
