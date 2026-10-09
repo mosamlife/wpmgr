@@ -936,11 +936,12 @@ const (
 	agentHealthHealthy
 	// agentHealthUnhealthy means the signed command route itself returned a
 	// server error on EVERY attempt across verifyAgentHealthWithRetry's retry
-	// window, not merely once, and the last answer was a gateway, unavailable
-	// or CDN error status (502, 503, 504, 52x) rather than HTTP 500. The check
-	// failed, so the update is treated as failed, but it is not a confirmed
-	// crash: like a timeout, it leaves WordPress core where the update put it
-	// (see confirmedFatal). A single unhealthy sample is deliberately NOT
+	// window, not merely once, and the last answer was a server error status
+	// other than HTTP 500, such as a gateway, unavailable or CDN error (502,
+	// 503, 504, 52x). The check failed, so the update is treated as failed,
+	// but it is not a confirmed crash: like a timeout, it leaves WordPress
+	// core where the update put it (see confirmedFatal). A single unhealthy
+	// sample is deliberately NOT
 	// enough to reach this verdict (see verifyAgentHealthWithRetry): the
 	// agent's ping route is served by the same PHP and WordPress stack as the
 	// homepage, so it is exposed to the same transient
@@ -1000,7 +1001,7 @@ func (w *Worker) verifyAgentHealth(ctx context.Context, siteID uuid.UUID, siteUR
 		return agentHealthCrashed, "signed agent route returned a server error (HTTP 500, PHP fatal)"
 	}
 	if reason == agentcmd.ReasonHTTP5xx {
-		return agentHealthUnhealthy, "signed agent route returned a server error (a gateway, unavailable or CDN error status)"
+		return agentHealthUnhealthy, "signed agent route returned a server error other than HTTP 500"
 	}
 	return agentHealthInconclusive, fmt.Sprintf("agent reachability ambiguous (%s)", reason)
 }
@@ -1137,9 +1138,9 @@ func (w *Worker) probeHealthWithRetry(ctx context.Context, siteURL string) (prob
 // crash, and nothing else does: an HTTP 500 from the signed agent check
 // (agentConfirmedFatal), an HTTP 500 from the homepage, or WordPress's own
 // error screen on the homepage (probe.Fatal). Any other server error status
-// (502, 503, 504, a CDN 52x) counts as a timeout does: the check failed, but
-// no crash is confirmed. Neither counts a cached response, which says nothing
-// about the backend as it is now.
+// (502, 503, 504, a CDN 52x) is treated like a timeout: the check failed, but
+// no crash is confirmed. A cached response never counts either: it says
+// nothing about the backend as it is now.
 func confirmedFatal(probe agentcmd.ProbeResult, agentConfirmedFatal bool) bool {
 	if agentConfirmedFatal {
 		return true

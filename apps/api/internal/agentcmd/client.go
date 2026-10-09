@@ -354,9 +354,9 @@ const (
 	// be able to name.
 	ReasonHTTP500 ReachabilityReason = "http_500"
 	// ReasonHTTP5xx: the agent route answered with any other server error
-	// status (a gateway, unavailable or CDN origin error such as 502, 503,
-	// 504 or 52x). Something in front of WordPress, or WordPress's own
-	// maintenance mode, declined to serve the request.
+	// status, such as a gateway, unavailable or CDN origin error (502, 503,
+	// 504, 52x): the request was not served, by something in front of
+	// WordPress or by WordPress's own maintenance mode.
 	ReasonHTTP5xx ReachabilityReason = "http_5xx"
 	// ReasonTimeout: the dial or read exceeded the caller's deadline.
 	ReasonTimeout ReachabilityReason = "timeout"
@@ -1076,12 +1076,12 @@ type ProbeResult struct {
 	StatusCode int
 	// Fatal is true when a response sent with a success (2xx) status carries
 	// WordPress's own error screen, recognised by the structure WordPress
-	// renders (wpfatal.Scan), wherever it sits in the body. That is how a
-	// crash reads once the page had already started: the status the page sent
-	// stays, and WordPress's error document follows the partial output. A
-	// server error status is reported in StatusCode and decided there, and a
-	// refusal a site sends with its own 4xx status is never read as a crash.
-	// A healthy page is never Fatal.
+	// renders (wpfatal.Scan), wherever it sits in the body: when WordPress
+	// renders that screen after the page has started sending, the status
+	// already sent stays and the screen follows the partial output. A server
+	// error status is reported in StatusCode and decided there, and a refusal
+	// a site sends with its own 4xx status is never read as a crash. A
+	// healthy page is never Fatal.
 	Fatal bool
 	// CacheHit is true when the response carries a header (or Age value) that
 	// identifies it as served from a page/edge cache rather than freshly
@@ -1248,9 +1248,9 @@ func (p *Probe) Get(ctx context.Context, targetURL string) (ProbeResult, error) 
 		res.Detail = fmt.Sprintf("server returned status %d", resp.StatusCode)
 		return res, nil
 	}
-	// Only a success status can hide a crash: WordPress's error screen then
-	// follows whatever the page had already sent, so the whole bounded body is
-	// scanned, not a prefix of it.
+	// Only a success status is read for WordPress's error screen (see
+	// ProbeResult.Fatal). The screen follows whatever the page had already
+	// sent, so the whole bounded body is scanned, not a prefix of it.
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxRespBody))
 		if found, reason := wpfatal.Scan(body, resp.Header.Get("Content-Type")); found && reason == wpfatal.ReasonFatalError {
