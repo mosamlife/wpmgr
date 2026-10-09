@@ -8,10 +8,10 @@
 # It says nothing about the tests that never ran. A PHP fatal error raised from
 # inside a test ends the whole process mid-suite, and the job's red then reads
 # as that one error instead of as "this many tests never ran". An exit() with
-# status 0 reached from code under test ends the process green. PHPUnit writes
-# its JUnit report only when a run finishes, so in both cases the report is
-# missing, and that absence is the signal this script turns into a red with a
-# count.
+# status 0 reached from code under test ends the process green. PHPUnit creates
+# its JUnit report file when a run starts and writes the report into it only
+# when the run finishes, so in both cases the file is left empty, and that is
+# the signal this script turns into a red with a count.
 #
 # WHAT IS COMPARED. The number of tests in the list PHPUnit writes with
 # --list-tests-xml (one <testCaseMethod> per test method and per data set, one
@@ -34,8 +34,8 @@
 # EXIT CODES. Distinct on purpose, so the CI log and the regression suite can
 # tell the outcomes apart without matching on prose:
 #   0  Every listed test ran.
-#   1  The run is not the complete listed suite: there is no report (the run
-#      did not finish), or the report holds a different number of tests than
+#   1  The run is not the complete listed suite: the report is empty or absent
+#      (the run did not finish), or it holds a different number of tests than
 #      the list. The message says how many never ran.
 #   2  Nothing could be checked: a bad invocation, a missing, unreadable or
 #      malformed list, a list naming no tests, or a report that is not a whole
@@ -124,17 +124,21 @@ esac
 
 # --- the report: what the run executed -----------------------------------------
 
-if [ ! -e "$JUNIT" ]; then
-  printf '%s: INCOMPLETE: no JUnit report at %s\n' "$PROG" "$JUNIT" >&2
+# PHPUnit creates the report file when the run starts and writes the document
+# into it when the run finishes. A run that was ended early leaves the file
+# empty; a run that never started leaves no file at all.
+did_not_finish() {
+  printf '%s: INCOMPLETE: %s\n' "$PROG" "$1" >&2
   printf 'The PHPUnit run did not finish, so none of the %s listed tests can be shown to have run.\n' "$listed" >&2
   printf 'PHPUnit writes this report when a run finishes. A PHP fatal error, an exit() or die()\n' >&2
-  printf 'reached from a test, or a killed process ends the run without one; the cause is at the\n' >&2
-  printf 'end of the test step output.\n' >&2
+  printf 'reached from a test, or a killed process ends the run before it does; the cause is at\n' >&2
+  printf 'the end of the test step output.\n' >&2
   exit 1
-fi
+}
+[ -e "$JUNIT" ] || did_not_finish "no JUnit report at $JUNIT"
 [ -f "$JUNIT" ] || fail_setup "the JUnit report is not a regular file: $JUNIT"
 [ -r "$JUNIT" ] || fail_setup "the JUnit report is not readable: $JUNIT"
-[ -s "$JUNIT" ] || fail_setup "the JUnit report is empty: $JUNIT"
+[ -s "$JUNIT" ] || did_not_finish "the JUnit report at $JUNIT is empty"
 
 res="$(count_elements "$JUNIT" testsuites testcase)" || fail_setup "could not read the JUnit report: $JUNIT"
 junit_complete="${res%% *}"

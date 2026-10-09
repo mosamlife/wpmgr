@@ -149,15 +149,22 @@ run_case() {
 # A. It fires.
 # ===========================================================================
 
-# The recorded run: a fatal error ended the suite at test 1769 of 3475. Should
-# PHPUnit ever write the report for such a run, it holds 1769 test cases.
-run_case "run-that-stopped-partway-is-incomplete" 1 "ran 1769 of 3475 listed tests; 1706 never ran" "$GUARD_OK" -- \
-  --list "$WORK/list-3475.xml" --junit "$WORK/junit-1769.xml"
+# What PHPUnit 10.5 leaves after a PHP fatal error or an exit() reached from a
+# test: it creates the report file when the run starts and writes the report
+# into it only when the run finishes, so the file is there and empty.
+: > "$WORK/junit-zero-bytes.xml"
+run_case "empty-report-means-the-run-did-not-finish" 1 "did not finish" "$GUARD_OK" -- \
+  --list "$WORK/list-3475.xml" --junit "$WORK/junit-zero-bytes.xml"
 
-# What PHPUnit 10.5 actually does on a fatal error or an exit() from a test:
-# the process ends before the report is written, so there is no report at all.
+# No report file at all: the run never started.
 run_case "missing-report-means-the-run-did-not-finish" 1 "did not finish" "$GUARD_OK" -- \
   --list "$WORK/list-3475.xml" --junit "$WORK/no-such-junit.xml"
+
+# The recorded run: a fatal error ended the suite at test 1769 of 3475. A run
+# that stops early but still writes its report, a stop-on-failure setting for
+# instance, holds that many test cases.
+run_case "run-that-stopped-partway-is-incomplete" 1 "ran 1769 of 3475 listed tests; 1706 never ran" "$GUARD_OK" -- \
+  --list "$WORK/list-3475.xml" --junit "$WORK/junit-1769.xml"
 
 # The boundary: one test short is as red as half the suite.
 run_case "one-test-short-is-incomplete" 1 "ran 3474 of 3475 listed tests; 1 never ran" "$GUARD_OK" -- \
@@ -188,10 +195,15 @@ run_case "report-cut-off-inside-a-tag-is-fatal" 2 "not a whole JUnit document" "
 run_case "report-with-trailing-output-is-fatal" 2 "not a whole JUnit document" "$GUARD_OK" -- \
   --list "$WORK/list-3475.xml" --junit "$WORK/junit-trailing.xml"
 
-# An empty report file.
-: > "$WORK/junit-zero-bytes.xml"
-run_case "empty-report-file-is-fatal" 2 "the JUnit report is empty" "$GUARD_OK" -- \
-  --list "$WORK/list-3475.xml" --junit "$WORK/junit-zero-bytes.xml"
+# A report that holds only a line break is not something PHPUnit writes.
+printf '\n' > "$WORK/junit-blank.xml"
+run_case "blank-report-is-fatal" 2 "not a whole JUnit document" "$GUARD_OK" -- \
+  --list "$WORK/list-3475.xml" --junit "$WORK/junit-blank.xml"
+
+# A directory where the report should be.
+mkdir "$WORK/junit-dir.xml"
+run_case "report-that-is-a-directory-is-fatal" 2 "not a regular file" "$GUARD_OK" -- \
+  --list "$WORK/list-3475.xml" --junit "$WORK/junit-dir.xml"
 
 # The two arguments swapped: the list read as a report, and the reverse.
 run_case "list-given-as-the-report-is-fatal" 2 "not a whole JUnit document" "$GUARD_OK" -- \

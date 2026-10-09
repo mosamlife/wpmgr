@@ -855,6 +855,7 @@ jobs:
       # the version guards as one set was wrong about where they run. It is now
       # one of the checks in scripts/check-version-surfaces.sh, with the other
       # four, in the Security audit job, and it has a regression test.
+      #
       # redis is declared so every run loads the real ext-redis \Redis class.
       # The object-cache tests build their fake on top of whichever \Redis is
       # loaded, and without the extension they fall back to a constants-only
