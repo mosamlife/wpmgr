@@ -4,6 +4,7 @@ import {
   CreditCard,
   KeyRound,
   Mail,
+  ShieldAlert,
   ShieldCheck,
   Tag,
   User,
@@ -40,7 +41,9 @@ interface SettingsNavItem {
   /**
    * When true, only a principal the server reports as having
    * instance-level SMTP authority (`me.can_manage_instance_email`) sees this
-   * item — a superadmin, or the owner of the install's only organisation.
+   * item — a superadmin, or the owner of the install's only organisation. The
+   * vulnerability feed key follows the same decision, so its entry carries
+   * this flag too.
    * Not `orgOnly`: a superadmin with no organisation must still see it.
    */
   instanceEmailOnly?: boolean;
@@ -60,6 +63,7 @@ export const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
   { label: "API keys",      to: "/settings/api-keys",     icon: KeyRound,     orgOnly: true },
   { label: "Tags",          to: "/settings/tags",         icon: Tag,          orgOnly: true },
   { label: "Email / SMTP",  to: "/settings/smtp",         icon: Mail,         instanceEmailOnly: true },
+  { label: "Vulnerability feed", to: "/settings/vuln-feed", icon: ShieldAlert, instanceEmailOnly: true },
   { label: "Members",       to: "/settings/members",      icon: Users,        orgOnly: true },
 ];
 

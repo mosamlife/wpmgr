@@ -18,7 +18,8 @@ import { VersionArrow } from "@/components/shared/version-arrow";
 import { PageError } from "@/components/feedback/page-error";
 import { UpdateChip } from "@/components/status/update-chip";
 import { useCreateUpdateRun } from "@/features/updates/use-updates";
-import { createBackup } from "@wpmgr/api";
+import { createBackup, type UpdateTask } from "@wpmgr/api";
+import { cn } from "@/lib/utils";
 import { toError } from "@/features/auth/use-auth";
 import {
   useAvailableUpdates,
@@ -44,9 +45,10 @@ import {
   type SiteAgentUpdate,
 } from "@/features/updates/use-site-agent-update";
 import {
-  isSiteDownRecovery,
-  SITE_DOWN_RECOVERY_FALLBACK_DETAIL,
+  siteDownFallbackDetail,
+  siteDownKind,
 } from "@/features/updates/summarize";
+import { TaskLogDisclosure } from "@/features/updates/task-log-panel";
 import { toast } from "@/components/toast";
 import { wpOrgSlug } from "@/features/updates/wp-org-slug";
 
@@ -462,6 +464,7 @@ function CoreRow({
       rightLabel={
         <RowStateLine
           state={row.state}
+          targetType="core"
           progress={row.progress}
           error={row.error}
         />
@@ -526,6 +529,7 @@ function ComponentRow({
       rightLabel={
         <RowStateLine
           state={row.state}
+          targetType={item.type}
           progress={row.progress}
           error={row.error}
         />
@@ -564,10 +568,12 @@ function ViewLogsLink({ runId }: { runId: string }) {
 
 function RowStateLine({
   state,
+  targetType,
   progress,
   error,
 }: {
   state: RowUpdateState;
+  targetType: UpdateTask["target_type"];
   progress?: string;
   error?: string;
 }) {
@@ -605,40 +611,51 @@ function RowStateLine({
       );
     case "failed":
     case "rolled_back": {
-      // GH #210 — the worst-case rollback failure (site-wide fatal, the
-      // rollback command undeliverable, an agent watchdog attempting
-      // automatic filesystem recovery) reads as its own severe, actionable
-      // condition here too, not a generic "failed"/"rolled back" line.
-      if (isSiteDownRecovery(state, progress, error)) {
+      // GH #679: `progress` is the task's detail, the sentence the control
+      // plane wrote for the operator (what happened, and what to do next).
+      // `error` is the raw reply or log behind it. The sentence leads; the raw
+      // text is one click away, and leads only when there is no sentence.
+      const lead = nonEmpty(progress);
+      const raw = nonEmpty(error);
+      const log = lead && raw && raw.trim() !== lead.trim() ? raw : undefined;
+      // GH #210 and GH #415: the worst-case rollback failure (a site-wide
+      // fatal the rollback command could not be delivered through) reads as
+      // its own severe, actionable condition, not a generic "failed" line. For
+      // a plugin or theme the agent's watchdog attempts recovery; for core
+      // nothing does, and the fallback copy says so.
+      const siteDown = siteDownKind({
+        status: state,
+        target_type: targetType,
+        detail: progress,
+        error,
+      });
+      if (siteDown) {
         return (
-          <span
-            role="alert"
-            className="inline-flex items-start gap-1.5 text-destructive-subtle-fg"
-          >
-            <AlertTriangle aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
-            {error ?? progress ?? SITE_DOWN_RECOVERY_FALLBACK_DETAIL}
-          </span>
+          <OutcomeLine
+            className="text-destructive-subtle-fg"
+            icon={AlertTriangle}
+            text={lead ?? raw ?? siteDownFallbackDetail(siteDown)}
+            log={log}
+          />
         );
       }
       if (state === "failed") {
         return (
-          <span
-            role="alert"
-            className="inline-flex items-center gap-1 text-[var(--color-destructive)]"
-          >
-            <X aria-hidden="true" className="size-3.5" />
-            {error ?? "Update failed"}
-          </span>
+          <OutcomeLine
+            className="text-[var(--color-destructive)]"
+            icon={X}
+            text={lead ?? raw ?? "Update failed"}
+            log={log}
+          />
         );
       }
       return (
-        <span
-          role="alert"
-          className="inline-flex items-center gap-1 text-warning-subtle-fg"
-        >
-          <RotateCcw aria-hidden="true" className="size-3.5" />
-          Rolled back{error ? `: ${error}` : ""}
-        </span>
+        <OutcomeLine
+          className="text-warning-subtle-fg"
+          icon={RotateCcw}
+          text={lead ?? `Rolled back${raw ? `: ${raw}` : ""}`}
+          log={log}
+        />
       );
     }
     case "skipped":
@@ -671,6 +688,35 @@ function RowStateLine({
         </span>
       );
   }
+}
+
+/** The text when it says something, otherwise undefined. */
+function nonEmpty(text: string | undefined): string | undefined {
+  return text !== undefined && text.trim().length > 0 ? text : undefined;
+}
+
+// One failed or rolled back row: the sentence in full, wrapping, with the raw
+// log behind a toggle when there is one to show.
+function OutcomeLine({
+  className,
+  icon: Icon,
+  text,
+  log,
+}: {
+  className: string;
+  icon: typeof AlertTriangle;
+  text: string;
+  log?: string;
+}) {
+  return (
+    <div className="flex flex-col items-start gap-1">
+      <span role="alert" className={cn("inline-flex items-start gap-1.5", className)}>
+        <Icon aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
+        <span className="min-w-0 whitespace-normal break-words">{text}</span>
+      </span>
+      {log ? <TaskLogDisclosure log={log} /> : null}
+    </div>
+  );
 }
 
 function RowActionButton({ row, label }: { row: RowUpdate; label: string }) {

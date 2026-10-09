@@ -1,8 +1,10 @@
 import { describe, it, expect, vi } from "vitest";
-import { screen, fireEvent } from "@testing-library/react";
+import { screen, fireEvent, within } from "@testing-library/react";
+import type { Me } from "@wpmgr/api";
 
-import { renderWithProviders } from "@/test/render";
+import { createTestQueryClient, renderWithProviders } from "@/test/render";
 import { mockQueryResult } from "@/test/query-mocks";
+import { authKeys } from "@/features/auth/use-auth";
 
 import { Route } from "./vulnerabilities";
 import { useFleetVulnerabilities } from "@/features/security/use-vuln";
@@ -43,6 +45,33 @@ const ATTRIBUTION = {
   mitre_notice:
     "CVE is a registered trademark of The MITRE Corporation, used with permission.",
 };
+
+const TENANT_ID = "00000000-0000-0000-0000-0000000000aa";
+const USER_ID = "00000000-0000-0000-0000-000000000002";
+
+// An organisation owner. Whether the server also admits them to the instance
+// settings is the one field the feed-not-configured tests vary.
+const OWNER_ME: Me = {
+  user: {
+    id: USER_ID,
+    email: "owner@wpmgr.test",
+    name: "Owner",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  },
+  memberships: [{ user_id: USER_ID, tenant_id: TENANT_ID, role: "owner" }],
+  active_tenant_id: TENANT_ID,
+};
+
+/**
+ * A fresh query client whose session is already loaded, so the page's real
+ * `useMe` reads `me` from the cache and sends no request.
+ */
+function queryClientSignedInAs(me: Me) {
+  const queryClient = createTestQueryClient();
+  queryClient.setQueryData(authKeys.me, me);
+  return queryClient;
+}
 
 function buildFleetFinding(
   overrides: Partial<FleetVulnFinding["finding"]> & { siteId?: string },
@@ -242,7 +271,10 @@ describe("Fleet Vulnerabilities page: degraded-enrichment banner (GH #245)", () 
       mockQueryResult<FleetVulnsResponse>({ data: response }),
     );
 
-    renderWithProviders(<VulnerabilitiesPage />, { withRouter: true });
+    renderWithProviders(<VulnerabilitiesPage />, {
+      queryClient: queryClientSignedInAs(OWNER_ME),
+      withRouter: true,
+    });
 
     expect(
       await screen.findByText("Vulnerability feed not configured yet"),
@@ -250,5 +282,80 @@ describe("Fleet Vulnerabilities page: degraded-enrichment banner (GH #245)", () 
     expect(
       screen.queryByText(/Severity data unavailable/i),
     ).not.toBeInTheDocument();
+  });
+});
+
+// The state tells the reader where the feed is connected. The feed is
+// instance-wide, so it is connected under Settings > Vulnerability feed by
+// whoever the server admits to the instance settings
+// (`me.can_manage_instance_email`), which includes the owner of a
+// single-organisation install. The Admin area opens for superadmins only, so
+// naming it sent that owner to a page they cannot open.
+describe("Fleet Vulnerabilities page: feed-not-configured state says where the feed is connected", () => {
+  const FEED_NOT_CONFIGURED: FleetVulnsResponse = {
+    total_open: 0,
+    critical: 0,
+    high: 0,
+    medium: 0,
+    low: 0,
+    unknown: 0,
+    items: [],
+    attribution: { defiant_notice: "", defiant_license: "", mitre_notice: "" },
+    feed_ok: false,
+    feed_synced: null,
+    enrichment_available: false,
+  };
+
+  // The state is the heading's parent block; the heading is the first thing to
+  // appear once the router has painted (src/test/render.tsx), hence the findBy.
+  async function renderNotConfigured(me: Me) {
+    mockedUseFleetVulnerabilities.mockReturnValue(
+      mockQueryResult<FleetVulnsResponse>({ data: FEED_NOT_CONFIGURED }),
+    );
+    renderWithProviders(<VulnerabilitiesPage />, {
+      queryClient: queryClientSignedInAs(me),
+      withRouter: true,
+    });
+    const heading = await screen.findByText("Vulnerability feed not configured yet");
+    const state = heading.parentElement;
+    if (!state) throw new Error("the not-configured heading has no parent block");
+    return state;
+  }
+
+  it("links to Settings > Vulnerability feed for whoever the server admits to the instance settings", async () => {
+    const state = await renderNotConfigured({
+      ...OWNER_ME,
+      can_manage_instance_email: true,
+    });
+
+    expect(
+      within(state).getByRole("link", { name: "Vulnerability feed settings" }),
+    ).toHaveAttribute("href", "/settings/vuln-feed");
+    expect(state).toHaveTextContent(
+      "Connect the Wordfence Intelligence feed in Vulnerability feed settings. Vulnerability scanning begins automatically once the feed is connected.",
+    );
+    expect(state).not.toHaveTextContent(/Admin area/i);
+  });
+
+  it("tells anyone else that the instance administrator connects it, and names no page", async () => {
+    const state = await renderNotConfigured({
+      ...OWNER_ME,
+      can_manage_instance_email: false,
+    });
+
+    expect(state).toHaveTextContent(
+      "The instance administrator needs to connect the Wordfence Intelligence feed. Vulnerability scanning begins automatically once the feed is connected.",
+    );
+    expect(within(state).queryByRole("link")).not.toBeInTheDocument();
+    expect(state).not.toHaveTextContent(/Admin area|Settings/i);
+  });
+
+  it("treats a session that does not say (an older API) as not admitted", async () => {
+    const state = await renderNotConfigured(OWNER_ME);
+
+    expect(state).toHaveTextContent(
+      "The instance administrator needs to connect the Wordfence Intelligence feed.",
+    );
+    expect(within(state).queryByRole("link")).not.toBeInTheDocument();
   });
 });

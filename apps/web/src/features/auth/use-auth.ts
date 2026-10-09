@@ -524,8 +524,10 @@ export function hasOrg(me: Me | null | undefined): boolean {
  * create-organisation screen), so they are kept in the Admin area. Their OWN
  * personal account settings (profile and 2FA/security) are per-user, not
  * tenant-scoped, so those stay reachable too; otherwise such a superadmin
- * could never enable their own 2FA. Everything else outside /admin stays
- * redirected to /admin.
+ * could never enable their own 2FA. So are the instance-wide settings pages
+ * (Email / SMTP and the Vulnerability feed), which answer to the instance and
+ * not to an organisation. Everything else outside /admin stays redirected to
+ * /admin.
  */
 export function isSuperadminAllowedPath(
   me: Me | null | undefined,
@@ -536,7 +538,8 @@ export function isSuperadminAllowedPath(
     pathname.startsWith("/admin") ||
     pathname === "/settings/account" ||
     pathname === "/settings/security" ||
-    pathname === "/settings/smtp"
+    pathname === "/settings/smtp" ||
+    pathname === "/settings/vuln-feed"
   );
 }
 

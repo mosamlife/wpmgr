@@ -292,9 +292,10 @@ export function Sidebar() {
         <div className="flex flex-1 flex-col overflow-y-auto px-2 py-3">
           {showAdminNav ? (
             // The Admin area. For a superadmin with no organisation this is
-            // the whole app: the instance-wide SMTP relay is the one page
-            // outside /admin they can open, linked in from here when the
-            // server admits them to it (see EMAIL_SMTP_ADMIN_NAV_ITEM above).
+            // the whole app. isSuperadminAllowedPath names the few pages
+            // outside /admin they can also open; the nav links the
+            // instance-wide SMTP relay among them, when the server admits
+            // them to it (see EMAIL_SMTP_ADMIN_NAV_ITEM above).
             <>
               <ul className="flex flex-col gap-0.5">
                 {adminNavGroups.map((group) => (

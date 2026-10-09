@@ -94,6 +94,16 @@ describe("isSuperadminAllowedPath, for a superadmin with no organisation", () =>
     expect(isSuperadminAllowedPath(NO_ORG, "/settings/smtp/anything")).toBe(false);
   });
 
+  // GH #361: the vulnerability feed key follows the same authority as the
+  // instance email settings, and the settings nav offers it beside Email / SMTP.
+  // A superadmin with no organisation sees that entry in the settings layout, so
+  // the path it links to must open for them. Exact string, like /settings/smtp.
+  it("allows /settings/vuln-feed (the instance vulnerability feed key), and only that exact path", () => {
+    expect(isSuperadminAllowedPath(NO_ORG, "/settings/vuln-feed")).toBe(true);
+    expect(isSuperadminAllowedPath(NO_ORG, "/settings/vuln-feed-other")).toBe(false);
+    expect(isSuperadminAllowedPath(NO_ORG, "/settings/vuln-feed/anything")).toBe(false);
+  });
+
   it("still keeps the superadmin OUT of the tenant-scoped shell", () => {
     expect(isSuperadminAllowedPath(NO_ORG, "/")).toBe(false);
     expect(isSuperadminAllowedPath(NO_ORG, "/sites")).toBe(false);

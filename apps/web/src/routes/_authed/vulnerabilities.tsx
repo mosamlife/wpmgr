@@ -13,6 +13,7 @@ import { PageError } from "@/components/feedback";
 import { VulnSeverityChip } from "@/components/status/vuln-severity-chip";
 import { VulnAttributionFooter } from "@/features/security/vuln-panel";
 import { VulnEnrichmentBanner } from "@/features/security/vuln-enrichment-banner";
+import { FeedConnectHint } from "@/features/security/feed-connect-hint";
 import {
   Table,
   TableBody,
@@ -313,9 +314,7 @@ function FeedNotConfiguredState() {
           Vulnerability feed not configured yet
         </p>
         <p className="text-sm text-[var(--color-muted-foreground)]">
-          An administrator needs to connect the Wordfence Intelligence feed from
-          the Admin area, under Vulnerability feed. Vulnerability scanning begins
-          automatically once the feed is connected.
+          <FeedConnectHint />
         </p>
       </div>
     </div>

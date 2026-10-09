@@ -4,7 +4,7 @@ import { screen } from "@testing-library/react";
 import { renderWithProviders } from "@/test/render";
 import { mockMutationResult } from "@/test/query-mocks";
 
-import { FeedStatusCard } from "./vuln-feed";
+import { FeedStatusCard } from "@/features/admin/vuln-feed-panel";
 import { useVulnFeedSync } from "@/features/admin/use-admin-vuln-feed";
 import type { VulnFeedStatus, VulnFeedSyncResult } from "@/features/admin/use-admin-vuln-feed";
 

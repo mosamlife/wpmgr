@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { AlertTriangle, Check, ChevronDown, ChevronRight, Copy } from "lucide-react";
+import { AlertTriangle, ChevronDown, ChevronRight } from "lucide-react";
 
 import {
   Table,
@@ -14,10 +14,11 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { VersionArrow } from "@/components/shared/version-arrow";
 import { TaskStatusBadge } from "@/features/updates/update-status";
 import {
-  isSiteDownRecovery,
   isRedirectFailure,
-  SITE_DOWN_RECOVERY_FALLBACK_DETAIL,
+  siteDownFallbackDetail,
+  siteDownKind,
 } from "@/features/updates/summarize";
+import { TaskLogPanel } from "@/features/updates/task-log-panel";
 import {
   isRetrySelectable,
   notRetryableReason,
@@ -117,12 +118,11 @@ export function UpdateTasksTable({
   );
 }
 
-// One task row plus, when the agent reported a non-empty error/log, a
-// disclosure toggle that reveals a second full-width row with the full text.
-// `task.error` carries the agent's complete diagnostic (e.g. why a rollback
-// was triggered), while `task.detail` stays the short generic status string.
-// Both are surfaced, but the full log is one click away instead of only ever
-// being available truncated in the Detail cell.
+// One task row plus, when the task has a non-empty error/log, a disclosure
+// toggle that reveals a second full-width row with the full text.
+// `task.detail` is the sentence the control plane wrote for the operator and is
+// always shown in full; `task.error` carries the raw diagnostic behind it (the
+// agent's log, or the reply the site sent), which is one click away.
 function UpdateTaskRow({
   task,
   siteNames,
@@ -140,11 +140,11 @@ function UpdateTaskRow({
   const checked = selection?.isSelected(task.id) ?? false;
   // GH #210 display treatment only. This reads the agent's own prose and is
   // NEVER a safety or selection authority: whether a task may be retried is
-  // the server's `retryable` field and nothing else.
-  const siteDown = isSiteDownRecovery(task.status, task.detail, task.error);
+  // the server's `retryable` field and nothing else. The target type is part
+  // of the question: WordPress core has no automatic recovery (GH #415).
+  const siteDown = siteDownKind(task);
   // GH #755 slice 1: a redirect failure's task.detail is the full operator
-  // message (names the target + remedy), not the short generic status string
-  // this cell otherwise truncates to one line — never clip it.
+  // message (names the target + remedy). It keeps its own warning treatment.
   const redirectFailure =
     !siteDown && isRedirectFailure(task.status, task.detail, task.error);
   // GH #255 Phase 2: an armed agent task has no detail text until beat 3
@@ -209,7 +209,7 @@ function UpdateTaskRow({
         <TableCell>
           <TaskStatusBadge task={task} />
         </TableCell>
-        <TableCell className="max-w-[220px] text-xs text-muted-foreground">
+        <TableCell className="max-w-sm text-xs text-muted-foreground">
           <div className="flex flex-col items-start gap-1">
             {siteDown ? (
               // GH #210: never truncate this. It is the worst-case rollback
@@ -224,7 +224,7 @@ function UpdateTaskRow({
                   aria-hidden="true"
                   className="mt-0.5 size-3.5 shrink-0"
                 />
-                <span>{task.detail ?? SITE_DOWN_RECOVERY_FALLBACK_DETAIL}</span>
+                <span>{task.detail ?? siteDownFallbackDetail(siteDown)}</span>
               </span>
             ) : redirectFailure ? (
               // GH #755 slice 1: an actionable config mismatch, not a
@@ -234,10 +234,10 @@ function UpdateTaskRow({
                 {task.detail}
               </span>
             ) : (
-              <span
-                className="max-w-full min-w-0 truncate font-mono"
-                title={task.detail}
-              >
+              // GH #679: the detail is the sentence the control plane wrote
+              // for the operator (the raw reply is in `error`, behind the log
+              // toggle below), so it wraps and is never cut to one line.
+              <span className="max-w-full min-w-0 whitespace-normal break-words">
                 {task.detail ??
                   (awaitingConfirmation
                     ? "Waiting for the upgraded agent to report back"
@@ -276,51 +276,5 @@ function UpdateTaskRow({
         </TableRow>
       ) : null}
     </>
-  );
-}
-
-// The full agent log for one task: monospace, newline-preserving, scrollable
-// past a reasonable height, and copyable in one click.
-function TaskLogPanel({ id, error }: { id: string; error: string }) {
-  const [copied, setCopied] = useState(false);
-
-  const onCopy = () => {
-    if (typeof navigator === "undefined" || !navigator.clipboard) return;
-    void navigator.clipboard.writeText(error).then(() => {
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1500);
-    });
-  };
-
-  return (
-    <div id={id} className="space-y-2 border-t border-border p-3">
-      <div className="flex items-center justify-between gap-2">
-        <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          Agent log
-        </h3>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          onClick={onCopy}
-          aria-label="Copy agent log"
-        >
-          {copied ? (
-            <>
-              <Check aria-hidden="true" className="size-3.5" />
-              Copied
-            </>
-          ) : (
-            <>
-              <Copy aria-hidden="true" className="size-3.5" />
-              Copy
-            </>
-          )}
-        </Button>
-      </div>
-      <pre className="max-h-64 overflow-auto rounded-md border border-border bg-muted/50 p-3 font-mono text-xs whitespace-pre-wrap break-words text-foreground">
-        {error}
-      </pre>
-    </div>
   );
 }

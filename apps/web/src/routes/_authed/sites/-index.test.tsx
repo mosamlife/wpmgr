@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { screen, fireEvent } from "@testing-library/react";
+import {
+  act,
+  screen,
+  fireEvent,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import {
   createMemoryHistory,
   createRootRoute,
@@ -283,5 +289,603 @@ describe("Sites page: pause/resume control gated behind operate permission (GH #
     expect(
       await screen.findByRole("menuitem", { name: /pause monitoring/i }),
     ).toBeInTheDocument();
+  });
+});
+
+// GH #338. "Show archived" with nothing archived swapped the whole page for the
+// first-run screen ("Connect your first WordPress site.") and removed the chip
+// that gets back, because an empty archived list was read as "this tenant has no
+// sites at all". The operator in the report had 24 sites and saw a page that
+// said they had none, with no control on it that led anywhere.
+//
+// Server state is mocked at the hook boundary like every test above: the
+// archived bucket is the second `useSites` call, told apart by `options.view`
+// (use-sites.ts maps view "archived" to `?state=archived`; packages/openapi/
+// openapi.yaml, operationId listSites).
+//
+// The grid view keeps the cards mountable under jsdom. Cards are found by their
+// name link, which every role sees.
+function activeSites(count: number): Site[] {
+  return Array.from({ length: count }, (_, i) =>
+    buildSite({
+      id: `00000000-0000-0000-0000-${String(i + 1).padStart(12, "0")}`,
+      name: `Site ${i + 1}`,
+      url: `https://site-${i + 1}.example.com`,
+    }),
+  );
+}
+
+function mockBuckets(active: Site[], archived: Site[]): void {
+  mockedUseSites.mockImplementation((options?: UseSitesOptions) =>
+    mockQueryResult<Site[]>({
+      data: options?.view === "archived" ? archived : active,
+    }),
+  );
+}
+
+/** The page heading renders in every branch, so it is the neutral thing to wait
+ *  on: whatever branch the page chose, the assertions after it are synchronous
+ *  and fail with a message about that branch rather than with a timeout. */
+async function pageReady(): Promise<void> {
+  await screen.findByRole(
+    "heading",
+    { name: "Sites" },
+    { timeout: FIND_TIMEOUT },
+  );
+}
+
+describe("Sites page: an empty archived view is not the first-run screen (GH #338)", () => {
+  beforeEach(() => {
+    // Onboarding already dismissed on this browser, so the first-run screen is
+    // the one the reporter saw, "Connect your first WordPress site.", and not
+    // the onboarding wizard.
+    window.localStorage.setItem("wpmgr.onboarding.completed", "true");
+  });
+
+  it("says there are no archived sites and keeps the way back when nothing is archived", async () => {
+    mockBuckets(activeSites(24), []);
+
+    renderSitesPage("/sites?view=grid&archived=true");
+    await pageReady();
+
+    expect(
+      screen.queryByRole("heading", {
+        name: "Connect your first WordPress site.",
+      }),
+    ).not.toBeInTheDocument();
+    const empty = screen.getByRole("status", { name: "No archived sites" });
+    expect(empty).toBeInTheDocument();
+    // The explanation names the real way a site gets here. Disconnect revokes
+    // a site and leaves it in the default list; only the explicit Archive
+    // action moves it into this one, so the copy must not say "disconnect".
+    expect(
+      within(empty).getByText(
+        "Sites you archive are listed here, with their history kept.",
+      ),
+    ).toBeInTheDocument();
+    expect(within(empty).queryByText(/disconnect/i)).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Showing archived" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    expect(
+      screen.getByRole("button", { name: "Back to active sites" }),
+    ).toBeInTheDocument();
+  });
+
+  it("the archived toggle on that page goes back to the active sites", async () => {
+    mockBuckets(activeSites(24), []);
+
+    const router = renderSitesPage("/sites?view=grid&archived=true");
+    await pageReady();
+    fireEvent.click(screen.getByRole("button", { name: "Showing archived" }));
+
+    expect(
+      await screen.findByRole("link", { name: "Site 1" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("status", { name: "No archived sites" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Show archived" }),
+    ).toHaveAttribute("aria-pressed", "false");
+    expect(router.state.location.search).not.toHaveProperty("archived");
+  });
+
+  it("'Back to active sites' in the empty state does the same", async () => {
+    mockBuckets(activeSites(24), []);
+
+    const router = renderSitesPage("/sites?view=grid&archived=true");
+    await pageReady();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Back to active sites" }),
+    );
+
+    expect(
+      await screen.findByRole("link", { name: "Site 1" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("status", { name: "No archived sites" }),
+    ).not.toBeInTheDocument();
+    expect(router.state.location.search).not.toHaveProperty("archived");
+  });
+
+  it("switching to archived adds a history entry, so the browser Back button returns to the active list", async () => {
+    mockBuckets(activeSites(3), []);
+
+    const router = renderSitesPage("/sites?view=grid");
+    await pageReady();
+    fireEvent.click(screen.getByRole("button", { name: "Show archived" }));
+    await screen.findByRole("status", { name: "No archived sites" });
+
+    act(() => router.history.back());
+
+    expect(
+      await screen.findByRole("link", { name: "Site 1" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Show archived" }),
+    ).toHaveAttribute("aria-pressed", "false");
+    expect(router.state.location.search).not.toHaveProperty("archived");
+  });
+
+  it("gives a viewer the way back as well, though a viewer has no archived toggle", async () => {
+    mockBuckets(activeSites(2), []);
+
+    renderSitesPage("/sites?view=grid&archived=true", VIEWER_ME);
+    await pageReady();
+
+    expect(
+      screen.getByRole("status", { name: "No archived sites" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /archived$/i }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Back to active sites" }),
+    );
+    expect(
+      await screen.findByRole("link", { name: "Site 1" }),
+    ).toBeInTheDocument();
+  });
+
+  // The honest cases the new state must not swallow.
+
+  it("still lists archived sites when there are some", async () => {
+    mockBuckets(activeSites(2), [
+      buildSite({
+        id: "00000000-0000-0000-0000-0000000000a1",
+        name: "Retired",
+        url: "https://retired.example.com",
+      }),
+    ]);
+
+    renderSitesPage("/sites?view=grid&archived=true");
+
+    expect(
+      await screen.findByRole(
+        "link",
+        { name: "Retired" },
+        { timeout: FIND_TIMEOUT },
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("status", { name: "No archived sites" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Showing archived" }),
+    ).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("keeps the filter message when a filter, not the archive, emptied the list", async () => {
+    mockBuckets(activeSites(2), []);
+
+    renderSitesPage("/sites?view=grid&archived=true&q=zzz");
+    await pageReady();
+
+    expect(
+      screen.getByRole("status", { name: "No sites match the current filters" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("status", { name: "No archived sites" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Showing archived" }),
+    ).toBeInTheDocument();
+  });
+
+  it("still shows the first-run screen for a tenant with no sites at all", async () => {
+    // The positive control for the absence asserted above: the heading that must
+    // be gone from the archived view is the same one this state renders.
+    mockBuckets([], []);
+
+    renderSitesPage("/sites?view=grid");
+
+    expect(
+      await screen.findByRole(
+        "heading",
+        { name: "Connect your first WordPress site." },
+        { timeout: FIND_TIMEOUT },
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("status", { name: "No archived sites" }),
+    ).not.toBeInTheDocument();
+  });
+});
+
+// GH #568. The Status filter could not select Paused or Archived. Its options
+// were the connection states of the rows already loaded: a pause is a separate
+// field on the row (monitoring_paused_at), not a connection state, and archived
+// sites are a separate server list that the active view never loads.
+//
+// Paused is now a Monitoring filter (Active / Paused) beside Status, and
+// operators are always offered Archived in Status. Archived is the same switch
+// as the "Show archived" chip: both write the one `archived` search param.
+
+/** A connected site, so the Status menu has a real state to offer. */
+function connectedSite(overrides: Partial<Site> = {}): Site {
+  return buildSite({ enrolled: true, health_status: "healthy", ...overrides });
+}
+
+/** What the server sends for the archived list: connection_state "archived". */
+function archivedSite(overrides: Partial<Site> = {}): Site {
+  return {
+    ...buildSite(overrides),
+    connection_state: "archived",
+  } as unknown as Site;
+}
+
+const LIVE = connectedSite({
+  id: "00000000-0000-0000-0000-0000000000b1",
+  name: "Live",
+  url: "https://live.example.com",
+});
+const FROZEN = connectedSite({
+  id: "00000000-0000-0000-0000-0000000000b2",
+  name: "Frozen",
+  url: "https://frozen.example.com",
+  monitoring_paused_at: "2026-10-01T09:00:00Z",
+});
+const RETIRED = archivedSite({
+  id: "00000000-0000-0000-0000-0000000000b3",
+  name: "Retired",
+  url: "https://retired.example.com",
+});
+
+/** An array-valued search param as TanStack Router writes it into a URL. */
+function arrayParam(...values: string[]): string {
+  return encodeURIComponent(JSON.stringify(values));
+}
+
+function openMenu(trigger: HTMLElement): void {
+  fireEvent.pointerDown(
+    trigger,
+    new PointerEvent("pointerdown", { bubbles: true, button: 0 }),
+  );
+}
+
+/** The filter menus stay open across a toggle by design, and while one is open
+ *  the rest of the page is hidden from assistive technology. Close it the way a
+ *  person would, so what the test reads next is the page as they see it. */
+async function closeMenu(): Promise<void> {
+  fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+  await waitFor(
+    () => {
+      expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    },
+    { timeout: FIND_TIMEOUT },
+  );
+}
+
+async function chooseFromMenu(
+  triggerName: string,
+  optionName: string,
+): Promise<void> {
+  const trigger = await screen.findByRole(
+    "button",
+    { name: triggerName },
+    { timeout: FIND_TIMEOUT },
+  );
+  openMenu(trigger);
+  fireEvent.click(
+    await screen.findByRole(
+      "menuitemcheckbox",
+      { name: optionName },
+      { timeout: FIND_TIMEOUT },
+    ),
+  );
+  await closeMenu();
+}
+
+describe("Sites page: the Monitoring filter (GH #568)", () => {
+  it("choosing Monitoring: Paused lists only the paused site", async () => {
+    mockBuckets([LIVE, FROZEN], []);
+
+    const router = renderSitesPage("/sites?view=grid");
+    // Positive control: before the filter both sites are listed.
+    expect(
+      await screen.findByText(
+        "2 sites enrolled, 1 paused",
+        {},
+        { timeout: FIND_TIMEOUT },
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Live" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Frozen" })).toBeInTheDocument();
+
+    await chooseFromMenu("Filter by monitoring", "Paused");
+
+    expect(
+      await screen.findByText("1 matching site", {}, { timeout: FIND_TIMEOUT }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Frozen" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: "Live" }),
+    ).not.toBeInTheDocument();
+    expect(router.state.location.search).toMatchObject({
+      monitoring: ["Paused"],
+    });
+  });
+
+  it("choosing Monitoring: Active hides only the paused site", async () => {
+    mockBuckets([LIVE, FROZEN], []);
+
+    renderSitesPage("/sites?view=grid");
+    await screen.findByRole(
+      "link",
+      { name: "Frozen" },
+      { timeout: FIND_TIMEOUT },
+    );
+
+    await chooseFromMenu("Filter by monitoring", "Active");
+
+    expect(
+      await screen.findByText("1 matching site", {}, { timeout: FIND_TIMEOUT }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Live" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: "Frozen" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("reads the Monitoring filter back out of the URL", async () => {
+    mockBuckets([LIVE, FROZEN], []);
+
+    renderSitesPage(`/sites?view=grid&monitoring=${arrayParam("Paused")}`);
+
+    expect(
+      await screen.findByRole(
+        "link",
+        { name: "Frozen" },
+        { timeout: FIND_TIMEOUT },
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: "Live" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Clear 1 active filter" }),
+    ).toBeInTheDocument();
+  });
+
+  it("'Clear filters' resets Monitoring along with the other axes", async () => {
+    mockBuckets([LIVE, FROZEN], []);
+
+    const router = renderSitesPage(
+      `/sites?view=grid&monitoring=${arrayParam("Paused")}`,
+    );
+    await screen.findByRole(
+      "link",
+      { name: "Frozen" },
+      { timeout: FIND_TIMEOUT },
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear 1 active filter" }));
+
+    expect(
+      await screen.findByRole(
+        "link",
+        { name: "Live" },
+        { timeout: FIND_TIMEOUT },
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Frozen" })).toBeInTheDocument();
+    expect(router.state.location.search).not.toHaveProperty("monitoring");
+  });
+
+  it("says which filter left nothing to show when no site is paused", async () => {
+    // Nothing is paused, so Monitoring: Paused matches no row. The page must
+    // call that a filter result and name the filter, not render an empty grid.
+    mockBuckets([LIVE], []);
+
+    renderSitesPage(`/sites?view=grid&monitoring=${arrayParam("Paused")}`);
+
+    const empty = await screen.findByRole(
+      "status",
+      { name: "No sites match the current filters" },
+      { timeout: FIND_TIMEOUT },
+    );
+    expect(empty).toHaveTextContent("monitoring:Paused");
+  });
+});
+
+describe("Sites page: Status offers Archived to operators (GH #568)", () => {
+  beforeEach(() => {
+    window.localStorage.setItem("wpmgr.onboarding.completed", "true");
+  });
+
+  it("an operator with only active sites loaded can choose Archived", async () => {
+    mockBuckets([LIVE, FROZEN], []);
+
+    const router = renderSitesPage("/sites?view=grid");
+    await screen.findByRole(
+      "link",
+      { name: "Live" },
+      { timeout: FIND_TIMEOUT },
+    );
+
+    await chooseFromMenu("Filter by status", "Archived");
+
+    await waitFor(
+      () => {
+        expect(router.state.location.search).toMatchObject({ archived: true });
+      },
+      { timeout: FIND_TIMEOUT },
+    );
+    // The page now asks for the archived list: the mock answers it with none.
+    expect(
+      await screen.findByRole(
+        "status",
+        { name: "No archived sites" },
+        { timeout: FIND_TIMEOUT },
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("a viewer is not offered Archived", async () => {
+    mockBuckets([LIVE, FROZEN], []);
+
+    renderSitesPage("/sites?view=grid", VIEWER_ME);
+    openMenu(
+      await screen.findByRole(
+        "button",
+        { name: "Filter by status" },
+        { timeout: FIND_TIMEOUT },
+      ),
+    );
+
+    // Positive control: the menu is open and lists the real state.
+    expect(
+      await screen.findByRole(
+        "menuitemcheckbox",
+        { name: "Connected" },
+        { timeout: FIND_TIMEOUT },
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("menuitemcheckbox", { name: "Archived" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("choosing Archived drops a Status selection made against the active list", async () => {
+    mockBuckets([LIVE, FROZEN], []);
+
+    const router = renderSitesPage(
+      `/sites?view=grid&status=${arrayParam("Connected")}`,
+    );
+    await screen.findByRole(
+      "link",
+      { name: "Live" },
+      { timeout: FIND_TIMEOUT },
+    );
+
+    await chooseFromMenu("Filter by status", "Archived");
+
+    await waitFor(
+      () => {
+        expect(router.state.location.search).toMatchObject({ archived: true });
+      },
+      { timeout: FIND_TIMEOUT },
+    );
+    expect(router.state.location.search).not.toHaveProperty("status");
+  });
+
+  it("ticks Archived while the archived list is showing, and unticking it goes back with a history entry", async () => {
+    mockBuckets([LIVE, FROZEN], [RETIRED]);
+
+    const router = renderSitesPage("/sites?view=grid&archived=true");
+    await screen.findByRole(
+      "link",
+      { name: "Retired" },
+      { timeout: FIND_TIMEOUT },
+    );
+
+    openMenu(screen.getByRole("button", { name: "Filter by status" }));
+    const archivedOption = await screen.findByRole(
+      "menuitemcheckbox",
+      { name: "Archived" },
+      { timeout: FIND_TIMEOUT },
+    );
+    expect(archivedOption).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(archivedOption);
+    await closeMenu();
+
+    expect(
+      await screen.findByRole(
+        "link",
+        { name: "Live" },
+        { timeout: FIND_TIMEOUT },
+      ),
+    ).toBeInTheDocument();
+    expect(router.state.location.search).not.toHaveProperty("archived");
+
+    act(() => router.history.back());
+
+    expect(
+      await screen.findByRole(
+        "link",
+        { name: "Retired" },
+        { timeout: FIND_TIMEOUT },
+      ),
+    ).toBeInTheDocument();
+    expect(router.state.location.search).toMatchObject({ archived: true });
+  });
+
+  it("the Show archived chip and the Status entry are one control", async () => {
+    mockBuckets([LIVE, FROZEN], [RETIRED]);
+
+    renderSitesPage("/sites?view=grid");
+    fireEvent.click(
+      await screen.findByRole(
+        "button",
+        { name: "Show archived" },
+        { timeout: FIND_TIMEOUT },
+      ),
+    );
+    await screen.findByRole(
+      "link",
+      { name: "Retired" },
+      { timeout: FIND_TIMEOUT },
+    );
+
+    openMenu(screen.getByRole("button", { name: "Filter by status" }));
+    expect(
+      await screen.findByRole(
+        "menuitemcheckbox",
+        { name: "Archived" },
+        { timeout: FIND_TIMEOUT },
+      ),
+    ).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("'Show all' in the Status menu leaves the archived list", async () => {
+    mockBuckets([LIVE, FROZEN], [RETIRED]);
+
+    const router = renderSitesPage("/sites?view=grid&archived=true");
+    await screen.findByRole(
+      "link",
+      { name: "Retired" },
+      { timeout: FIND_TIMEOUT },
+    );
+
+    openMenu(screen.getByRole("button", { name: "Filter by status" }));
+    fireEvent.click(
+      await screen.findByRole(
+        "menuitem",
+        { name: "Show all" },
+        { timeout: FIND_TIMEOUT },
+      ),
+    );
+    await closeMenu();
+
+    expect(
+      await screen.findByRole(
+        "link",
+        { name: "Live" },
+        { timeout: FIND_TIMEOUT },
+      ),
+    ).toBeInTheDocument();
+    expect(router.state.location.search).not.toHaveProperty("archived");
   });
 });

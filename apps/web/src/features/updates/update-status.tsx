@@ -4,8 +4,8 @@ import { StatusChip } from "@/components/status/status-chip";
 import type { StatusTone } from "@/components/status/status-dot";
 import {
   isAgentNotEligible,
-  isSiteDownRecovery,
-  SITE_DOWN_RECOVERY_LABEL,
+  siteDownKind,
+  siteDownLabel,
 } from "./summarize";
 
 type TaskStatus = UpdateTask["status"];
@@ -64,9 +64,12 @@ export function TaskStatusBadge({
   // or rollback. The backend reports it through detail/error text on the
   // existing failed/rolled_back statuses, so surface it as its own chip
   // instead of the generic "Failed"/"Rolled back" label. This is a LABEL
-  // choice only; retryability is a server field, never this predicate.
-  if (isSiteDownRecovery(task.status, task.detail, task.error)) {
-    return <StatusChip tone="destructive" label={SITE_DOWN_RECOVERY_LABEL} />;
+  // choice only; retryability is a server field, never this predicate. The
+  // label depends on the target: recovery is attempted for a plugin or theme,
+  // while WordPress core needs a person (GH #415).
+  const siteDown = siteDownKind(task);
+  if (siteDown) {
+    return <StatusChip tone="destructive" label={siteDownLabel(siteDown)} />;
   }
   // GH #255 Phase 2: the agent self-update channel's own vocabulary. A
   // `running` agent task has already been armed (beat 1 acknowledged) and is
