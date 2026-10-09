@@ -891,12 +891,25 @@ func pageContentImagesMatch(content string, media []pageMediaFact) bool {
 // The card facts a page-create request stores
 // ---------------------------------------------------------------------------
 
-// pageCardFacts is card_facts for a page-create request with images: what
-// the approval card shows for each image. Every string is the site's,
-// cleaned and capped; the base fingerprint binds the raw facts.
+// pageCardFacts is card_facts for a page-create request with images or a
+// page builder: what the approval card shows for each image, and of the
+// page builder that builds the page. Every image string is the site's,
+// cleaned and capped; the base fingerprint binds the raw facts. A request
+// with images and no builder stores exactly {kind, media}.
 type pageCardFacts struct {
-	Kind  string          `json:"kind"`
-	Media []PageCardMedia `json:"media"`
+	Kind    string           `json:"kind"`
+	Media   []PageCardMedia  `json:"media,omitempty"`
+	Builder *PageCardBuilder `json:"builder,omitempty"`
+}
+
+// PageCardBuilder is the page builder of a page-create request's card, as
+// the site's precheck named it: the builder, the format and layout it
+// builds, and its version (site text, of a checked shape).
+type PageCardBuilder struct {
+	Builder string `json:"builder"`
+	Format  string `json:"format"`
+	Version string `json:"version"`
+	Layout  string `json:"layout"`
 }
 
 // PageCardMedia is one image of a page-create request's card: the
@@ -914,12 +927,12 @@ type PageCardMedia struct {
 const pageCardFactsKind = "page_create"
 
 // pageCardFactsJSON is the stored card_facts for a page-create request, or
-// nil when the outline has no image.
-func pageCardFactsJSON(media []pageMediaFact) ([]byte, error) {
-	if len(media) == 0 {
+// nil when the outline has no image and no page builder builds the page.
+func pageCardFactsJSON(media []pageMediaFact, builder *PageCardBuilder) ([]byte, error) {
+	if len(media) == 0 && builder == nil {
 		return nil, nil
 	}
-	card := pageCardFacts{Kind: pageCardFactsKind, Media: make([]PageCardMedia, 0, len(media))}
+	card := pageCardFacts{Kind: pageCardFactsKind, Builder: builder}
 	for _, m := range media {
 		card.Media = append(card.Media, PageCardMedia{
 			ID: m.ID, Filename: humantext.CapRunes(humantext.Clean(m.Filename), pageCreateMaxFilenameChars),
@@ -938,11 +951,8 @@ func pageCardFactsJSON(media []pageMediaFact) ([]byte, error) {
 // complete page-create card (a reader then shows no image facts, and a card
 // with an image node but no facts cannot be approved).
 func ReadPageCardFacts(stored []byte) ([]PageCardMedia, bool) {
-	top, ok := jsonObjectOf(stored)
-	if !ok || len(top) != 2 {
-		return nil, false
-	}
-	if kind, ok := jsonStringOf(top["kind"]); !ok || kind != pageCardFactsKind {
+	top, ok := readPageCardTop(stored)
+	if !ok {
 		return nil, false
 	}
 	list, ok := jsonArrayOf(top["media"])
@@ -974,4 +984,70 @@ func ReadPageCardFacts(stored []byte) ([]PageCardMedia, bool) {
 		out = append(out, c)
 	}
 	return out, true
+}
+
+// readPageCardTop reads a stored page-create card's members: kind is
+// page_create, media and builder are the only others, and a builder member,
+// when there is one, is a complete one. ok is false for anything else, so a
+// card with a damaged builder shows neither its images nor its builder.
+func readPageCardTop(stored []byte) (map[string]json.RawMessage, bool) {
+	top, ok := jsonObjectOf(stored)
+	if !ok {
+		return nil, false
+	}
+	for k := range top {
+		if k != "kind" && k != "media" && k != "builder" {
+			return nil, false
+		}
+	}
+	if kind, ok := jsonStringOf(top["kind"]); !ok || kind != pageCardFactsKind {
+		return nil, false
+	}
+	if raw, has := top["builder"]; has {
+		if _, ok := readPageCardBuilder(raw); !ok {
+			return nil, false
+		}
+	}
+	return top, true
+}
+
+// ReadPageCardBuilder reads the page builder of a page-create request's
+// stored card_facts, or ok=false when the card names none (the page is
+// built with a WordPress editor) or is not a complete page-create card.
+func ReadPageCardBuilder(stored []byte) (PageCardBuilder, bool) {
+	top, ok := readPageCardTop(stored)
+	if !ok {
+		return PageCardBuilder{}, false
+	}
+	raw, has := top["builder"]
+	if !has {
+		return PageCardBuilder{}, false
+	}
+	return readPageCardBuilder(raw)
+}
+
+// readPageCardBuilder: exactly the four members, each a value this control
+// plane stores (the builder and format it builds, a layout, a version of
+// the checked shape).
+func readPageCardBuilder(raw json.RawMessage) (PageCardBuilder, bool) {
+	m, ok := jsonObjectOf(raw)
+	if !ok || len(m) != 4 {
+		return PageCardBuilder{}, false
+	}
+	var b PageCardBuilder
+	var oks [4]bool
+	b.Builder, oks[0] = jsonStringOf(m["builder"])
+	b.Format, oks[1] = jsonStringOf(m["format"])
+	b.Version, oks[2] = jsonStringOf(m["version"])
+	b.Layout, oks[3] = jsonStringOf(m["layout"])
+	for _, ok := range oks {
+		if !ok {
+			return PageCardBuilder{}, false
+		}
+	}
+	if b.Builder != pageBuilderElementor || b.Format != elementorFormatClassic ||
+		(b.Layout != elementorLayoutBoxes && b.Layout != elementorLayoutRows) || !elementorVersionPattern.MatchString(b.Version) {
+		return PageCardBuilder{}, false
+	}
+	return b, true
 }

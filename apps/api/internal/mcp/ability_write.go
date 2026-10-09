@@ -299,6 +299,42 @@ type checkedPrecheck struct {
 	preview         pagePreview
 	// media are the verified image facts, in the outline's media order.
 	media []pageMediaFact
+	// builder is what the card shows of the page builder that builds the
+	// page (verifyBuilderPageCreatePrecheck); nil for a WordPress editor.
+	builder *PageCardBuilder
+}
+
+// precheckDigestsWellFormed: the answer says valid and its digests have
+// their shapes.
+func precheckDigestsWellFormed(resp agentcmd.AbilityRunResponse) bool {
+	return resp.Valid && hex64Pattern.MatchString(resp.PrecheckDigest) &&
+		hex64Pattern.MatchString(resp.PreviewDigest) && fingerprintPattern.MatchString(resp.BaseFingerprint)
+}
+
+// precheckDigestMatches: the precheck digest is the one the entry, the
+// input we hold, the base fingerprint and the preview digest give.
+func precheckDigestMatches(resp agentcmd.AbilityRunResponse, entrySum string, input []byte) bool {
+	pre, _ := phpJSONStringArray(entrySum, sha256Hex(input), resp.BaseFingerprint, resp.PreviewDigest)
+	return sha256Hex(pre) == resp.PrecheckDigest
+}
+
+// verifyPreviewMedia reads preview.media: absent when the outline has no
+// image, else the facts of the outline's attachment ids in order, each
+// usable.
+func verifyPreviewMedia(raw json.RawMessage, f pageCreateFacts) ([]pageMediaFact, bool) {
+	if len(f.mediaIDs) == 0 {
+		return nil, raw == nil
+	}
+	media, ok := parsePageMedia(raw)
+	if !ok || len(media) != len(f.mediaIDs) {
+		return nil, false
+	}
+	for i := range media {
+		if media[i].ID != f.mediaIDs[i] {
+			return nil, false
+		}
+	}
+	return media, true
 }
 
 // verifyPageCreatePrecheck checks the site's precheck answer against what
@@ -308,10 +344,10 @@ type checkedPrecheck struct {
 // outline's attachment ids in order, each fact must be usable, the base
 // fingerprint must be the one those facts give (so the facts the card shows
 // are the facts the write re-checks), and the content's image tags must carry
-// exactly the facts' addresses.
+// exactly the facts' addresses. A page built with a page builder is checked
+// by verifyBuilderPageCreatePrecheck, never here.
 func verifyPageCreatePrecheck(resp agentcmd.AbilityRunResponse, entrySum string, input []byte, f pageCreateFacts) (checkedPrecheck, bool) {
-	if !resp.Valid || !hex64Pattern.MatchString(resp.PrecheckDigest) ||
-		!hex64Pattern.MatchString(resp.PreviewDigest) || !fingerprintPattern.MatchString(resp.BaseFingerprint) {
+	if f.builder != "" || !precheckDigestsWellFormed(resp) {
 		return checkedPrecheck{}, false
 	}
 	var pv pagePreview
@@ -323,22 +359,9 @@ func verifyPageCreatePrecheck(resp agentcmd.AbilityRunResponse, entrySum string,
 	if pv.PostType != f.postType || pv.Editor != f.editor || pv.Status != "draft" || pv.Title != f.title {
 		return checkedPrecheck{}, false
 	}
-	var media []pageMediaFact
-	if len(f.mediaIDs) == 0 {
-		if pv.Media != nil {
-			return checkedPrecheck{}, false
-		}
-	} else {
-		var ok bool
-		media, ok = parsePageMedia(pv.Media)
-		if !ok || len(media) != len(f.mediaIDs) {
-			return checkedPrecheck{}, false
-		}
-		for i := range media {
-			if media[i].ID != f.mediaIDs[i] {
-				return checkedPrecheck{}, false
-			}
-		}
+	media, ok := verifyPreviewMedia(pv.Media, f)
+	if !ok {
+		return checkedPrecheck{}, false
 	}
 	if base, ok := pageCreateBaseFingerprint(f.postType, media); !ok || base != resp.BaseFingerprint {
 		return checkedPrecheck{}, false
@@ -350,8 +373,7 @@ func verifyPageCreatePrecheck(resp agentcmd.AbilityRunResponse, entrySum string,
 	if !ok || sha256Hex(prev) != resp.PreviewDigest {
 		return checkedPrecheck{}, false
 	}
-	pre, _ := phpJSONStringArray(entrySum, sha256Hex(input), resp.BaseFingerprint, resp.PreviewDigest)
-	if sha256Hex(pre) != resp.PrecheckDigest {
+	if !precheckDigestMatches(resp, entrySum, input) {
 		return checkedPrecheck{}, false
 	}
 	return checkedPrecheck{
@@ -481,10 +503,13 @@ func (s *Service) runSiteAbilityWrite(ctx context.Context, auth AuthorizedReques
 	if err != nil || e.EntrySha256 == nil || *e.EntrySha256 != entrySum {
 		return "", notRunnableRefusal(notRunnableNotAdmitted)
 	}
-	// Step 7: precheck, synchronously. Nothing is persisted on a refusal.
+	// Step 7: precheck, synchronously. Nothing is persisted on a refusal. A
+	// page builder's node ids derive from the request id, so the tree is
+	// checked against this call's id.
+	precheckID := uuid.New()
 	callCtx, cancel := context.WithTimeout(ctx, abilityRunTimeout)
 	resp, err := eng.agent.AbilityRun(callCtx, site.row.ID, site.row.Url, agentcmd.AbilityRunCall{
-		Mode: agentcmd.AbilityRunModePrecheck, RequestID: uuid.New(),
+		Mode: agentcmd.AbilityRunModePrecheck, RequestID: precheckID,
 		Entry: entryBytes, EntrySHA256: entrySum, Input: input,
 	})
 	cancel()
@@ -512,7 +537,12 @@ func (s *Service) runSiteAbilityWrite(ctx context.Context, auth AuthorizedReques
 		return "", refuse(reasonSiteUnreachable, domain.Unavailable(ErrCodeSiteUnreachable,
 			msgSiteUnreachable).WithDetails(map[string]any{"retryable": true}))
 	}
-	checked, ok := verifyPageCreatePrecheck(resp, entrySum, input, facts)
+	var checked checkedPrecheck
+	if facts.builder != "" {
+		checked, ok = verifyBuilderPageCreatePrecheck(resp, entrySum, input, facts, precheckID.String())
+	} else {
+		checked, ok = verifyPageCreatePrecheck(resp, entrySum, input, facts)
+	}
 	if !ok {
 		return "", &toolRefusal{
 			reason: reasonAbilityPrecheckRefused,
@@ -636,7 +666,7 @@ func buildAbilityRequestFacts(auth AuthorizedRequest, row sqlc.Site, host string
 	if facts.usesLayout {
 		f.copyVersion = AbilityCardCopyVersionLayout
 	}
-	card, err := pageCardFactsJSON(pc.media)
+	card, err := pageCardFactsJSON(pc.media, pc.builder)
 	if err != nil {
 		return abilityRequestFacts{}, err
 	}

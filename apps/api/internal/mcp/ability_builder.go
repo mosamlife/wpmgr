@@ -21,6 +21,7 @@ package mcp
 // agentcmd.MinAgentVersionForBuilderAdapters on the site (PageCreateAgentFloor).
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -306,4 +307,92 @@ func pageCreateBuilderRefusal(f pageCreateFacts, limits, input []byte) *toolRefu
 		err:    domain.Validation(ErrCodeInvalidToolArguments, msgAbilityBuilderInput).WithDetails(details),
 		meta:   map[string]any{"argument": "input", "code": p.code},
 	}
+}
+
+// ---------------------------------------------------------------------------
+// The precheck of a page built with Elementor
+// ---------------------------------------------------------------------------
+
+// builderPreview is the precheck preview of a page built with Elementor:
+// the page, the Elementor format, version and layout that build it, and
+// the tree it saves. Media is present exactly when the outline has an
+// image.
+type builderPreview struct {
+	PostType         string          `json:"post_type"`
+	Editor           string          `json:"editor"`
+	Format           string          `json:"format"`
+	ElementorVersion string          `json:"elementor_version"`
+	Layout           string          `json:"layout"`
+	Status           string          `json:"status"`
+	Title            string          `json:"title"`
+	Tree             json.RawMessage `json:"tree"`
+	Media            json.RawMessage `json:"media,omitempty"`
+}
+
+// verifyBuilderPageCreatePrecheck checks the site's precheck answer for a
+// page built with Elementor, sent with request id requestID, against what
+// this control plane sent (R2). The page and the image facts are checked as
+// for any page-create. The format must be classic, the version and the
+// layout well formed, and the tree exactly the one the control plane builds
+// for this input with requestID, that layout and those facts; the preview
+// digest is recomputed over that tree's bytes, so a precheck whose tree
+// differs in any node, setting, id or order is refused before anything is
+// stored.
+func verifyBuilderPageCreatePrecheck(resp agentcmd.AbilityRunResponse, entrySum string, input []byte, f pageCreateFacts, requestID string) (checkedPrecheck, bool) {
+	if f.builder != pageBuilderElementor || !precheckDigestsWellFormed(resp) {
+		return checkedPrecheck{}, false
+	}
+	var pv builderPreview
+	dec := json.NewDecoder(bytes.NewReader(resp.Preview))
+	dec.DisallowUnknownFields()
+	if len(resp.Preview) == 0 || dec.Decode(&pv) != nil || len(pv.Tree) == 0 {
+		return checkedPrecheck{}, false
+	}
+	if pv.PostType != f.postType || pv.Editor != f.editor || pv.Status != "draft" || pv.Title != f.title {
+		return checkedPrecheck{}, false
+	}
+	// Only the classic format is built; an input asking for atomic is
+	// refused by the site, never answered with a classic tree.
+	if pv.Format != elementorFormatClassic || f.elementorFormat == "atomic" {
+		return checkedPrecheck{}, false
+	}
+	if !elementorVersionPattern.MatchString(pv.ElementorVersion) {
+		return checkedPrecheck{}, false
+	}
+	if pv.Layout != elementorLayoutBoxes && pv.Layout != elementorLayoutRows {
+		return checkedPrecheck{}, false
+	}
+	media, ok := verifyPreviewMedia(pv.Media, f)
+	if !ok {
+		return checkedPrecheck{}, false
+	}
+	if base, ok := pageCreateBaseFingerprint(f.postType, media); !ok || base != resp.BaseFingerprint {
+		return checkedPrecheck{}, false
+	}
+	tree, ok := elementorClassicTree(input, requestID, pv.Layout == elementorLayoutBoxes, media)
+	if !ok {
+		return checkedPrecheck{}, false
+	}
+	want, ok := phpEncodeBytes(tree)
+	if !ok {
+		return checkedPrecheck{}, false
+	}
+	got, ok := phpCanonicalJSON(pv.Tree, elementorTreeMaxDepth)
+	if !ok || !bytes.Equal(got, want) {
+		return checkedPrecheck{}, false
+	}
+	prev, ok := phpJSONStringArray(pv.Editor, pv.Format, pv.ElementorVersion, pv.PostType, "draft", pv.Title, string(want))
+	if !ok || sha256Hex(prev) != resp.PreviewDigest {
+		return checkedPrecheck{}, false
+	}
+	if !precheckDigestMatches(resp, entrySum, input) {
+		return checkedPrecheck{}, false
+	}
+	return checkedPrecheck{
+		precheckDigest: resp.PrecheckDigest, previewDigest: resp.PreviewDigest,
+		baseFingerprint: resp.BaseFingerprint, media: media,
+		builder: &PageCardBuilder{
+			Builder: pageBuilderElementor, Format: pv.Format, Version: pv.ElementorVersion, Layout: pv.Layout,
+		},
+	}, true
 }
