@@ -484,10 +484,12 @@ final class RestoreRunner
                 // last persisted, so the FAILED row keeps every rollback
                 // pointer (ROLLBACK_POINTER_KEYS) the shutdown rollback
                 // reads from it.
+                // The run's params (DB credentials, destination config) are
+                // left off: nothing resumes from a FAILED row.
                 $failState               = $this->persistedSubState;
                 $failState['last_error'] = substr($e->getMessage(), 0, 240);
                 $failState['failed_in']  = $currentPhase;
-                unset($failState['rolled_back']);
+                unset($failState['params'], $failState['rolled_back']);
                 if ($rolledBack !== null) {
                     $failState['rolled_back'] = $rolledBack;
                 }
