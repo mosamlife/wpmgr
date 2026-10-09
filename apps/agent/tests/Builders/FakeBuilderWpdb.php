@@ -24,7 +24,7 @@ namespace WPMgr\Agent\Tests\Builders;
 final class FakeBuilderWpdb
 {
     /** The posts columns a read may name. */
-    private const POST_COLUMNS = ['post_type', 'post_status', 'post_title', 'post_content', 'post_modified_gmt', 'post_parent', 'menu_order'];
+    private const POST_COLUMNS = ['post_type', 'post_status', 'post_title', 'post_content', 'post_excerpt', 'post_name', 'post_password', 'post_modified_gmt', 'post_parent', 'menu_order'];
 
     /** The integer columns among them, which a driver may return as ints. */
     private const INT_COLUMNS = ['post_parent', 'menu_order'];
@@ -54,16 +54,17 @@ final class FakeBuilderWpdb
     private array $metaRows = [];
 
     /**
-     * Stores a posts row. A placement column the fields leave out is 0, as the
-     * table's default is. A value may be given as text or as an int; a read
-     * answers text unless $nativeInts is set.
+     * Stores a posts row. A column the fields leave out has the table's
+     * default: '' for the excerpt, the slug and the password, 0 for the
+     * placement. A value may be given as text or as an int; a read answers
+     * text unless $nativeInts is set.
      *
      * @param int                          $id     Post ID.
      * @param array<string,string|int|null> $fields Column => stored value.
      */
     public function addPost(int $id, array $fields): void
     {
-        $this->postRows[$id] = $fields + ['post_parent' => '0', 'menu_order' => '0'];
+        $this->postRows[$id] = $fields + ['post_excerpt' => '', 'post_name' => '', 'post_password' => '', 'post_parent' => '0', 'menu_order' => '0'];
     }
 
     /**

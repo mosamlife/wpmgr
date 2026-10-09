@@ -319,8 +319,9 @@ final class BuilderPageCreate
      * Why undo may not trash this builder draft, or null.
      *
      * Undo trashes the draft only when its builder_document_v1 fingerprint
-     * is still the one recorded when it was created (its content, its
-     * builder rows and where it sits, parent and order), it has no revision
+     * is still the one recorded when it was created (its content, summary,
+     * slug and password, its builder rows and where it sits, parent and
+     * order), it has no revision
      * but the ones its own save made, no autosave, and no one holds its edit
      * lock. Fails closed when any of that cannot be read.
      *

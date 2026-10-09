@@ -16,16 +16,22 @@ if (!defined('ABSPATH')) {
  *
  *   sha256(json_encode([
  *     "wpmgr.builder_document.v1",
- *     post_type, post_status, sha256(post_title), sha256(post_content), post_modified_gmt,
+ *     post_type, post_status, sha256(post_title), sha256(post_content),
+ *     post_excerpt, post_name, post_password, post_modified_gmt,
  *     post_parent, menu_order,
  *     [[key, row_count, [sha256(row), ...]], ...]
  *   ]))
  *
+ * The posts fields are the ones PageCreateBuilder::documentFingerprint()
+ * hashes for a block-editor draft, in the same order, with the title and the
+ * content hashed on their own; the descriptor rows follow. post_excerpt,
+ * post_name and post_password are the stored strings as they are, so
+ * json_encode escapes them (a slash, a quote, every non-ASCII character).
  * post_parent and menu_order are where the page sits, its parent and its
  * order among its siblings: the stored integers, encoded as JSON numbers
- * (menu_order may be negative). A page that was moved or reordered is a
- * different fingerprint even when nothing else about it changed, as for a
- * block-editor draft (PageCreateBuilder::documentFingerprint()).
+ * (menu_order may be negative). A page whose summary, slug, password or
+ * place changed is a different fingerprint even when nothing else about it
+ * changed.
  *
  * The keys are the adapter's descriptor keys in byte order (strcmp). Each
  * key's rows are its postmeta rows in meta_id order, each hashed on its own
@@ -44,7 +50,7 @@ final class BuilderDocumentFingerprint
     public const DOMAIN = 'wpmgr.builder_document.v1';
 
     /** The posts columns the fingerprint covers as text. */
-    public const POST_FIELDS = ['post_type', 'post_status', 'post_title', 'post_content', 'post_modified_gmt'];
+    public const POST_FIELDS = ['post_type', 'post_status', 'post_title', 'post_content', 'post_excerpt', 'post_name', 'post_password', 'post_modified_gmt'];
 
     /** The posts columns it covers as integers, in formula order: where the page sits. */
     public const PLACEMENT_FIELDS = ['post_parent', 'menu_order'];
@@ -57,7 +63,7 @@ final class BuilderDocumentFingerprint
      * @param array<mixed>        $keys      The descriptor keys, in any order.
      * @return string Lowercase hex.
      * @throws \InvalidArgumentException When a post field, key or row is not a string, a placement is not an int, or rows name a key outside $keys.
-     * @throws \JsonException            Never for valid strings.
+     * @throws \JsonException            Never for valid UTF-8 strings.
      */
     public static function compute(array $post, array $rowsByKey, array $keys): string
     {
@@ -103,6 +109,9 @@ final class BuilderDocumentFingerprint
             $fields['post_status'],
             hash('sha256', $fields['post_title']),
             hash('sha256', $fields['post_content']),
+            $fields['post_excerpt'],
+            $fields['post_name'],
+            $fields['post_password'],
             $fields['post_modified_gmt'],
             $placement['post_parent'],
             $placement['menu_order'],
@@ -131,7 +140,7 @@ final class BuilderDocumentFingerprint
             throw new \RuntimeException('database handle unavailable');
         }
         /** @var \wpdb $wpdb */
-        $post = $wpdb->get_row($wpdb->prepare('SELECT post_type, post_status, post_title, post_content, post_modified_gmt, post_parent, menu_order FROM %i WHERE ID = %d', $wpdb->posts, $postId), ARRAY_A); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- the fingerprint covers the stored row, so it is read uncached; table from core via the %i identifier placeholder (WP 6.2+)
+        $post = $wpdb->get_row($wpdb->prepare('SELECT post_type, post_status, post_title, post_content, post_excerpt, post_name, post_password, post_modified_gmt, post_parent, menu_order FROM %i WHERE ID = %d', $wpdb->posts, $postId), ARRAY_A); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- the fingerprint covers the stored row, so it is read uncached; table from core via the %i identifier placeholder (WP 6.2+)
         self::assertQueryOk($wpdb);
         if ($post === null) {
             return null;

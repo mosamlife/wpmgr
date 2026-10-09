@@ -585,6 +585,29 @@ final class BuilderPageCreateTest extends TestCase
         $this->assertNull(BuilderPageCreate::revertProblem(self::NEW_ID, $row), 'back where it was created');
     }
 
+    public function test_revert_guard_refuses_a_draft_whose_excerpt_slug_or_password_changed(): void
+    {
+        $row = $this->createdDraft();
+        $this->assertNull(BuilderPageCreate::revertProblem(self::NEW_ID, $row), 'the draft as created, with no summary, slug or password');
+        $modified = $this->rows[self::NEW_ID]['post_modified_gmt'];
+
+        // Someone wrote a summary, chose a slug or set a password, and the
+        // modified time did not move with it.
+        $changes = [
+            'a summary written' => ['post_excerpt' => 'A summary a person wrote'],
+            'a slug chosen'     => ['post_name' => 'a-slug-a-person-chose'],
+            'a password set'    => ['post_password' => 'let-me-in'],
+        ];
+        foreach ($changes as $what => $columns) {
+            $this->wpdb->addPost(self::NEW_ID, $columns + $this->rows[self::NEW_ID]);
+            $this->assertSame($modified, $this->rows[self::NEW_ID]['post_modified_gmt'], 'precondition: the modified time did not move');
+            $this->assertSame('someone edited this draft after it was created', BuilderPageCreate::revertProblem(self::NEW_ID, $row), $what);
+        }
+
+        $this->wpdb->addPost(self::NEW_ID, $this->rows[self::NEW_ID]);
+        $this->assertNull(BuilderPageCreate::revertProblem(self::NEW_ID, $row), 'back where it was created');
+    }
+
     /**
      * Precheck $spec as the service user's request, through a fresh adapter.
      *

@@ -183,6 +183,43 @@ final class BuilderDocumentFingerprintTest extends TestCase
     }
 
     // -------------------------------------------------------------------------
+    // Excerpt, slug, password
+    // -------------------------------------------------------------------------
+
+    public function test_excerpt_slug_and_password_are_part_of_the_fingerprint(): void
+    {
+        $at = static fn (array $columns): string => BuilderDocumentFingerprint::compute($columns + self::post(), [], self::ELEMENTOR_KEYS);
+
+        // The stored strings as they are, in the order PageCreateBuilder::documentFingerprint()
+        // hashes them: after the content, before the modified time.
+        $this->assertSame(self::formula(self::post(), self::noRows()), $at([]));
+        $set = ['post_excerpt' => 'Fresh bread, "every" morning / café', 'post_name' => 'spring-sale', 'post_password' => 'let-me-in'];
+        $this->assertSame(self::formula($set + self::post(), self::noRows()), $at($set));
+
+        // Each column on its own is a different page, and the same text in another column is another page.
+        $seen = [$at([])];
+        foreach (['post_excerpt', 'post_name', 'post_password'] as $column) {
+            $fp = $at([$column => 'x']);
+            $this->assertNotContains($fp, $seen, $column);
+            $seen[] = $fp;
+        }
+        $this->assertNotSame($at(['post_excerpt' => 'x']), $at(['post_excerpt' => 'x ']), 'the string is hashed as stored, not trimmed');
+    }
+
+    public function test_an_excerpt_slug_or_password_that_is_not_text_fails_the_read(): void
+    {
+        foreach (['post_excerpt', 'post_name', 'post_password'] as $column) {
+            $this->db->addPost(self::POST_ID, [$column => null] + self::post());
+            try {
+                BuilderDocumentFingerprint::read(self::POST_ID, self::ELEMENTOR_KEYS);
+                $this->fail($column . ' NULL must fail the read, never read as an empty string');
+            } catch (\RuntimeException $e) {
+                $this->assertSame('database read failed', $e->getMessage(), $column);
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // Placement
     // -------------------------------------------------------------------------
 
@@ -274,7 +311,7 @@ final class BuilderDocumentFingerprintTest extends TestCase
 
     public function test_reads_raw_rows_not_the_meta_cache(): void
     {
-        $post     = self::post();
+        $post     = array_merge(self::post(), ['post_excerpt' => ' A summary, as typed ', 'post_name' => 'caf%c3%a9', 'post_password' => 'p w']);
         $settings = 'a:2:{s:10:"hide_title";s:3:"yes";s:16:"background_color";s:7:"#F4EFE6";}';
         $data     = '[{"id":"5e6f7a8","settings":{"title":"Say \"bonjour\" at the café","image":{"url":"https:\/\/example.com\/wp-content\/uploads\/team.jpg"}}}]';
         $this->db->addPost(self::POST_ID, $post);
@@ -306,7 +343,7 @@ final class BuilderDocumentFingerprintTest extends TestCase
             BuilderDocumentFingerprint::compute($post, $stored['rows'], self::ELEMENTOR_KEYS),
             BuilderDocumentFingerprint::ofPost(self::POST_ID, self::ELEMENTOR_KEYS)
         );
-        $this->assertSame('SELECT post_type, post_status, post_title, post_content, post_modified_gmt, post_parent, menu_order FROM %i WHERE ID = %d', $this->db->queries[0]['sql'], 'every column the fingerprint covers, placement included');
+        $this->assertSame('SELECT post_type, post_status, post_title, post_content, post_excerpt, post_name, post_password, post_modified_gmt, post_parent, menu_order FROM %i WHERE ID = %d', $this->db->queries[0]['sql'], 'every column the fingerprint covers, in the order it hashes them');
         $this->assertSame(['wp_posts', self::POST_ID], $this->db->queries[0]['args']);
         $this->assertSame('SELECT meta_key, meta_value FROM %i WHERE post_id = %d AND meta_key IN (%s, %s, %s, %s) ORDER BY meta_id ASC', $this->db->queries[1]['sql']);
         $this->assertSame(array_merge(['wp_postmeta', self::POST_ID], self::ELEMENTOR_KEYS), $this->db->queries[1]['args']);
@@ -344,6 +381,9 @@ final class BuilderDocumentFingerprintTest extends TestCase
             'row not a string' => fn () => BuilderDocumentFingerprint::compute($post, ['_elementor_data' => [['id' => 1]]], self::ELEMENTOR_KEYS),
             'rows not a list'  => fn () => BuilderDocumentFingerprint::compute($post, ['_elementor_data' => ['a' => 'x']], self::ELEMENTOR_KEYS),
             'post field missing' => fn () => BuilderDocumentFingerprint::compute(['post_type' => 'page'], [], self::ELEMENTOR_KEYS),
+            'excerpt missing'  => fn () => BuilderDocumentFingerprint::compute(array_diff_key($post, ['post_excerpt' => 1]), [], self::ELEMENTOR_KEYS),
+            'slug not a string' => fn () => BuilderDocumentFingerprint::compute(['post_name' => 7] + $post, [], self::ELEMENTOR_KEYS),
+            'password null'    => fn () => BuilderDocumentFingerprint::compute(['post_password' => null] + $post, [], self::ELEMENTOR_KEYS),
             'post id zero'     => fn () => BuilderDocumentFingerprint::read(0, self::ELEMENTOR_KEYS),
         ];
         foreach ($bad as $what => $call) {
@@ -361,7 +401,7 @@ final class BuilderDocumentFingerprintTest extends TestCase
     // -------------------------------------------------------------------------
 
     /**
-     * A page at the top level, first among its siblings.
+     * A draft at the top level, first among its siblings, with no summary, slug or password.
      *
      * @return array<string,string|int>
      */
@@ -372,6 +412,9 @@ final class BuilderDocumentFingerprintTest extends TestCase
             'post_status'       => 'draft',
             'post_title'        => $title,
             'post_content'      => $content,
+            'post_excerpt'      => '',
+            'post_name'         => '',
+            'post_password'     => '',
             'post_modified_gmt' => '2026-10-09 05:20:00',
             'post_parent'       => 0,
             'menu_order'        => 0,
@@ -402,6 +445,9 @@ final class BuilderDocumentFingerprintTest extends TestCase
             $post['post_status'],
             hash('sha256', (string) $post['post_title']),
             hash('sha256', (string) $post['post_content']),
+            $post['post_excerpt'],
+            $post['post_name'],
+            $post['post_password'],
             $post['post_modified_gmt'],
             $post['post_parent'],
             $post['menu_order'],
@@ -480,6 +526,32 @@ final class BuilderDocumentFingerprintTest extends TestCase
             ['name' => 'reordered-among-siblings', 'keys' => self::ELEMENTOR_KEYS, 'post' => self::placed(0, 7, 'Spring sale', $content), 'rows' => $document],
             ['name' => 'negative-menu-order', 'keys' => self::ELEMENTOR_KEYS, 'post' => self::placed(0, -3, 'Spring sale', $content), 'rows' => $document],
             ['name' => 'moved-and-reordered', 'keys' => self::ELEMENTOR_KEYS, 'post' => self::placed(4180, 12, 'Spring sale', $content), 'rows' => $document],
+            // The text columns are hashed as stored, so json_encode escapes them: a quote, a slash, a
+            // non-ASCII character and one outside the BMP (a surrogate pair).
+            [
+                'name' => 'excerpt-set',
+                'keys' => self::ELEMENTOR_KEYS,
+                'post' => array_merge(self::post('Spring sale', $content), ['post_excerpt' => "Fresh bread / \"every\" morning \u{2014} caf\u{e9} \u{1F680}"]),
+                'rows' => $document,
+            ],
+            [
+                'name' => 'slug-set',
+                'keys' => self::ELEMENTOR_KEYS,
+                'post' => array_merge(self::post('Spring sale', $content), ['post_name' => 'caf%c3%a9-spring-sale']),
+                'rows' => $document,
+            ],
+            [
+                'name' => 'password-protected',
+                'keys' => self::ELEMENTOR_KEYS,
+                'post' => array_merge(self::post('Spring sale', $content), ['post_password' => "pa/ss\"w\\ord \u{e9}"]),
+                'rows' => $document,
+            ],
+            [
+                'name' => 'text-and-placement-all-set',
+                'keys' => self::ELEMENTOR_KEYS,
+                'post' => array_merge(self::placed(4180, -3, 'Spring sale', $content), ['post_excerpt' => 'A summary', 'post_name' => 'spring-sale', 'post_password' => 'let-me-in']),
+                'rows' => $document,
+            ],
         ];
     }
 
@@ -501,9 +573,11 @@ final class BuilderDocumentFingerprintTest extends TestCase
         }
         $doc = [
             'note'        => 'Generated by the agent (tests/Builders/BuilderDocumentFingerprintTest.php). Regenerate with WPMGR_WRITE_FIXTURES=1. '
-                . 'fingerprint = sha256(json_encode([domain, post_type, post_status, sha256(post_title), sha256(post_content), post_modified_gmt, '
-                . 'post_parent, menu_order, [[key, row_count, [sha256(row), ...]], ...]])) with one entry per key of "keys", taken in byte order (strcmp) whatever order "keys" '
-                . 'lists them in; post_parent and menu_order are the stored integers and encode as JSON numbers (menu_order may be negative); '
+                . 'fingerprint = sha256(json_encode([domain, post_type, post_status, sha256(post_title), sha256(post_content), post_excerpt, post_name, post_password, '
+                . 'post_modified_gmt, post_parent, menu_order, [[key, row_count, [sha256(row), ...]], ...]])) with one entry per key of "keys", taken in byte order (strcmp) whatever order "keys" '
+                . 'lists them in; post_excerpt, post_name and post_password are the stored strings as they are, so json_encode escapes them: "/" as "\\/", every non-ASCII character as \\uXXXX in lowercase hex '
+                . '(one outside the BMP as a surrogate pair), a quote and a backslash with a backslash; '
+                . 'post_parent and menu_order are the stored integers and encode as JSON numbers (menu_order may be negative); '
                 . 'a key\'s rows are its postmeta rows in meta_id order, and a key with no row is [key, 0, []]. '
                 . 'json_encode with default flags; every sha256 is lowercase hex over the bytes. '
                 . 'rows_b64 holds each stored meta_value, base64, in meta_id order; a key missing from rows_b64 has no row. '
