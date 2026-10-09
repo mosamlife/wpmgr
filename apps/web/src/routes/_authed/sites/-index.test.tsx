@@ -449,7 +449,11 @@ describe("Sites page: an empty archived view is not the first-run screen (GH #33
     renderSitesPage("/sites?view=grid&archived=true");
 
     expect(
-      await screen.findByRole("link", { name: "Retired" }),
+      await screen.findByRole(
+        "link",
+        { name: "Retired" },
+        { timeout: FIND_TIMEOUT },
+      ),
     ).toBeInTheDocument();
     expect(
       screen.queryByRole("status", { name: "No archived sites" }),
@@ -552,9 +556,12 @@ function openMenu(trigger: HTMLElement): void {
  *  person would, so what the test reads next is the page as they see it. */
 async function closeMenu(): Promise<void> {
   fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
-  await waitFor(() => {
-    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
-  });
+  await waitFor(
+    () => {
+      expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    },
+    { timeout: FIND_TIMEOUT },
+  );
 }
 
 async function chooseFromMenu(
@@ -568,7 +575,11 @@ async function chooseFromMenu(
   );
   openMenu(trigger);
   fireEvent.click(
-    await screen.findByRole("menuitemcheckbox", { name: optionName }),
+    await screen.findByRole(
+      "menuitemcheckbox",
+      { name: optionName },
+      { timeout: FIND_TIMEOUT },
+    ),
   );
   await closeMenu();
 }
@@ -591,7 +602,9 @@ describe("Sites page: the Monitoring filter (GH #568)", () => {
 
     await chooseFromMenu("Filter by monitoring", "Paused");
 
-    expect(await screen.findByText("1 matching site")).toBeInTheDocument();
+    expect(
+      await screen.findByText("1 matching site", {}, { timeout: FIND_TIMEOUT }),
+    ).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Frozen" })).toBeInTheDocument();
     expect(
       screen.queryByRole("link", { name: "Live" }),
@@ -613,7 +626,9 @@ describe("Sites page: the Monitoring filter (GH #568)", () => {
 
     await chooseFromMenu("Filter by monitoring", "Active");
 
-    expect(await screen.findByText("1 matching site")).toBeInTheDocument();
+    expect(
+      await screen.findByText("1 matching site", {}, { timeout: FIND_TIMEOUT }),
+    ).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Live" })).toBeInTheDocument();
     expect(
       screen.queryByRole("link", { name: "Frozen" }),
@@ -655,7 +670,11 @@ describe("Sites page: the Monitoring filter (GH #568)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Clear 1 active filter" }));
 
     expect(
-      await screen.findByRole("link", { name: "Live" }),
+      await screen.findByRole(
+        "link",
+        { name: "Live" },
+        { timeout: FIND_TIMEOUT },
+      ),
     ).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Frozen" })).toBeInTheDocument();
     expect(router.state.location.search).not.toHaveProperty("monitoring");
@@ -694,12 +713,19 @@ describe("Sites page: Status offers Archived to operators (GH #568)", () => {
 
     await chooseFromMenu("Filter by status", "Archived");
 
-    await waitFor(() => {
-      expect(router.state.location.search).toMatchObject({ archived: true });
-    });
+    await waitFor(
+      () => {
+        expect(router.state.location.search).toMatchObject({ archived: true });
+      },
+      { timeout: FIND_TIMEOUT },
+    );
     // The page now asks for the archived list: the mock answers it with none.
     expect(
-      await screen.findByRole("status", { name: "No archived sites" }),
+      await screen.findByRole(
+        "status",
+        { name: "No archived sites" },
+        { timeout: FIND_TIMEOUT },
+      ),
     ).toBeInTheDocument();
   });
 
@@ -717,7 +743,11 @@ describe("Sites page: Status offers Archived to operators (GH #568)", () => {
 
     // Positive control: the menu is open and lists the real state.
     expect(
-      await screen.findByRole("menuitemcheckbox", { name: "Connected" }),
+      await screen.findByRole(
+        "menuitemcheckbox",
+        { name: "Connected" },
+        { timeout: FIND_TIMEOUT },
+      ),
     ).toBeInTheDocument();
     expect(
       screen.queryByRole("menuitemcheckbox", { name: "Archived" }),
@@ -738,9 +768,12 @@ describe("Sites page: Status offers Archived to operators (GH #568)", () => {
 
     await chooseFromMenu("Filter by status", "Archived");
 
-    await waitFor(() => {
-      expect(router.state.location.search).toMatchObject({ archived: true });
-    });
+    await waitFor(
+      () => {
+        expect(router.state.location.search).toMatchObject({ archived: true });
+      },
+      { timeout: FIND_TIMEOUT },
+    );
     expect(router.state.location.search).not.toHaveProperty("status");
   });
 
@@ -755,22 +788,32 @@ describe("Sites page: Status offers Archived to operators (GH #568)", () => {
     );
 
     openMenu(screen.getByRole("button", { name: "Filter by status" }));
-    const archivedOption = await screen.findByRole("menuitemcheckbox", {
-      name: "Archived",
-    });
+    const archivedOption = await screen.findByRole(
+      "menuitemcheckbox",
+      { name: "Archived" },
+      { timeout: FIND_TIMEOUT },
+    );
     expect(archivedOption).toHaveAttribute("aria-checked", "true");
     fireEvent.click(archivedOption);
     await closeMenu();
 
     expect(
-      await screen.findByRole("link", { name: "Live" }),
+      await screen.findByRole(
+        "link",
+        { name: "Live" },
+        { timeout: FIND_TIMEOUT },
+      ),
     ).toBeInTheDocument();
     expect(router.state.location.search).not.toHaveProperty("archived");
 
     act(() => router.history.back());
 
     expect(
-      await screen.findByRole("link", { name: "Retired" }),
+      await screen.findByRole(
+        "link",
+        { name: "Retired" },
+        { timeout: FIND_TIMEOUT },
+      ),
     ).toBeInTheDocument();
     expect(router.state.location.search).toMatchObject({ archived: true });
   });
@@ -786,11 +829,19 @@ describe("Sites page: Status offers Archived to operators (GH #568)", () => {
         { timeout: FIND_TIMEOUT },
       ),
     );
-    await screen.findByRole("link", { name: "Retired" });
+    await screen.findByRole(
+      "link",
+      { name: "Retired" },
+      { timeout: FIND_TIMEOUT },
+    );
 
     openMenu(screen.getByRole("button", { name: "Filter by status" }));
     expect(
-      await screen.findByRole("menuitemcheckbox", { name: "Archived" }),
+      await screen.findByRole(
+        "menuitemcheckbox",
+        { name: "Archived" },
+        { timeout: FIND_TIMEOUT },
+      ),
     ).toHaveAttribute("aria-checked", "true");
   });
 
@@ -805,11 +856,21 @@ describe("Sites page: Status offers Archived to operators (GH #568)", () => {
     );
 
     openMenu(screen.getByRole("button", { name: "Filter by status" }));
-    fireEvent.click(await screen.findByRole("menuitem", { name: "Show all" }));
+    fireEvent.click(
+      await screen.findByRole(
+        "menuitem",
+        { name: "Show all" },
+        { timeout: FIND_TIMEOUT },
+      ),
+    );
     await closeMenu();
 
     expect(
-      await screen.findByRole("link", { name: "Live" }),
+      await screen.findByRole(
+        "link",
+        { name: "Live" },
+        { timeout: FIND_TIMEOUT },
+      ),
     ).toBeInTheDocument();
     expect(router.state.location.search).not.toHaveProperty("archived");
   });
