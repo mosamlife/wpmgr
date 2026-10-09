@@ -6,7 +6,7 @@
 //
 // It exercises the REAL pieces end-to-end on the CP side:
 //   - real Postgres (testcontainers, ALL migrations, non-superuser wpmgr_app role)
-//   - real MinIO (testcontainers) behind the real blobstore.Store
+//   - real SeaweedFS (testcontainers) behind the real blobstore.Store
 //   - the REAL lilliput CGO encoder (encoder.LilliputEncoder)
 //   - the REAL media repos (repo.Repo) for the agent-GUC writes
 //   - the REAL worker.EncodeWorker.Work entrypoint
@@ -16,7 +16,7 @@
 // enrolled), and the AgentApplyClient (captures the MediaApplyRequest the agent
 // would receive). The source bytes really transit object storage via presigned
 // PUT/GET, the encoder really produces an AVIF, and the output really lands in
-// MinIO.
+// SeaweedFS.
 //
 // This file lives behind //go:build cgo because it imports the lilliput encoder
 // (CGO + native codec libs). The main API (cmd/wpmgr) is CGO_ENABLED=0 and never
@@ -128,7 +128,7 @@ func makeFixtureJPEG(t *testing.T) []byte {
 // ---------------------------------------------------------------------------
 
 // TestMediaEncodeWorker_EndToEnd proves the full CP-side encode round-trip:
-// a real source JPEG put to media/<t>/<s>/<job>/src/<name> in MinIO is
+// a real source JPEG put to media/<t>/<s>/<job>/src/<name> in SeaweedFS is
 // presigned-GET'd, encoded to AVIF by lilliput, presigned-PUT to out/<name>,
 // recorded as a succeeded media_variant_results row, announced over SSE, and
 // dispatched to the agent as a media_apply command carrying the variant's
@@ -203,7 +203,7 @@ func TestMediaEncodeWorker_EndToEnd(t *testing.T) {
 		t.Errorf("source_mime = %q, want image/jpeg (magic-byte detection)", vr.SourceMime)
 	}
 
-	// === ASSERT 2: out/<name> exists in MinIO and is a VALID AVIF container ==
+	// === ASSERT 2: out/<name> exists in SeaweedFS and is a VALID AVIF container ==
 	outKey := media.OutKey(tenantID, siteID, jobID, variantName)
 	exists, size, err := store.Head(ctx, outKey)
 	if err != nil {

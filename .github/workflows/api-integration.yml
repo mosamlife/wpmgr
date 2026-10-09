@@ -34,9 +34,12 @@ name: api-integration
 #
 # COST AND RISK, stated so the next person can revisit this knowingly.
 # Cost: one ubuntu-latest runner for the wall time reported in the PR that added
-# this file, plus about 425MB of compressed image layers pulled (110 postgres,
-# 254 clickhouse, 47 minio, 15 redis), on PRs that touch
-# apps/api. Risk it buys down: a silent regression in privilege-escalation RLS
+# this file, plus the image pulls, on PRs that touch apps/api. The pull cost is
+# deliberately not written down here: the "Pre-pull test container images" step
+# prints every image's size on disk, and their total, on every run, so read it
+# off a run. The figure that stood here was never re-checked, and it still
+# counted an image that no registry serves.
+# Risk it buys down: a silent regression in privilege-escalation RLS
 # is a security incident, not a bug. That asymmetry is why this runs per PR and
 # not only nightly. If the wall time ever grows past the point where it is
 # tolerable, shard it by -run regex before you demote it to nightly, because a
@@ -196,9 +199,10 @@ jobs:
           cache-dependency-path: apps/api/go.sum
 
       # The tests build their containers with testcontainers-go talking to the
-      # local Docker daemon (tcpostgres.Run / minio.Run / testcontainers.Run in
-      # tests/rls_integration_test.go, blobstore_integration_test.go,
-      # autologin_integration_test.go, metrics_integration_test.go). No `services:`
+      # local Docker daemon (its postgres and clickhouse modules and its generic
+      # container API, in tests/rls_integration_test.go,
+      # blobstore_integration_test.go, autologin_integration_test.go,
+      # metrics_integration_test.go). No `services:`
       # block can substitute for that: the tests choose their own images, wait
       # strategies and per-test lifecycle. ubuntu-latest ships a running daemon.
       # This step asserts it rather than assuming it, because of the failure mode
@@ -208,24 +212,46 @@ jobs:
           docker version
           docker info --format 'server={{.ServerVersion}} driver={{.Driver}}'
 
-      # Pull the four images the package uses up front. Not required for
-      # correctness (testcontainers pulls on demand) but it moves that ~425MB
-      # of network into a named step, so a registry problem reads as a pull
+      # Pull the images the package uses up front. Not required for
+      # correctness (testcontainers pulls on demand) but it moves the network
+      # cost into a named step, so a registry problem reads as a pull
       # failure instead of surfacing later as an inscrutable container start
-      # timeout inside some unrelated test. If a test adds a fifth image this
+      # timeout inside some unrelated test. If a test adds another image this
       # list going stale costs nothing: that image just gets pulled inline.
+      #
+      # THE S3 STORE IMAGE IS NOT WRITTEN IN THIS LIST. It is the digest-pinned
+      # const s3TestImage in tests/blobstore_integration_test.go, which every test
+      # that needs object storage starts, and scripts/test-s3-image.sh reads it
+      # out. It used to be a literal here beside a second literal in the Go file,
+      # and nothing connected the two. The script exits non-zero when the const is
+      # missing or is not pinned by digest, which fails this step by name before
+      # any pull is tried. ci.yml runs the script's self-test and `--check`, which
+      # also fails if this step ever stops calling it.
+      #
+      # Each image's size on disk is printed as it lands, then the total. That is
+      # this step's cost figure: read it off a run, not off a number in a comment.
       - name: Pre-pull test container images
         run: |
           set -euo pipefail
+          s3_image=$(../../scripts/test-s3-image.sh)
+          if [ -z "$s3_image" ]; then
+            echo "::error::scripts/test-s3-image.sh printed no image"
+            exit 1
+          fi
+          total=0
           for img in \
             postgres:16-alpine \
             redis:7-alpine \
-            minio/minio:RELEASE.2024-01-16T16-07-38Z \
+            "$s3_image" \
             clickhouse/clickhouse-server:24.3-alpine
           do
             echo "pulling $img"
             docker pull --quiet "$img"
+            bytes=$(docker image inspect --format '{{.Size}}' "$img")
+            echo "  size on disk: $bytes bytes"
+            total=$(( total + bytes ))
           done
+          echo "pre-pulled images, size on disk in total: $total bytes"
 
       # The workflow comments used to hard-code this package's test count, and
       # that literal drifted twice (see the "TWO GENERATIONS" comment below)
@@ -340,8 +366,8 @@ jobs:
 
       # THE MOST IMPORTANT STEP IN THIS FILE.
       #
-      # Every container helper in the package (startPostgres, its 11 siblings,
-      # and one test that inlines the same setup: 13 call sites today) does
+      # Every container helper in the package (startPostgres and its siblings,
+      # and any test that inlines the same setup) does
       # t.Skipf("skipping: cannot start ... container (docker unavailable?)")
       # when it cannot reach a daemon. It SKIPS, it does not fail. So a runner
       # image that one day ships without Docker, or a daemon that dies mid-job,
@@ -354,9 +380,10 @@ jobs:
       #      that is the ONLY t.Skip reason anywhere in the package),
       #   2. a floor on the number of passes, which catches a mass-skip through
       #      some future route this check did not anticipate,
-      #   3. four m112 policy proofs named explicitly, because those are the
-      #      privilege-escalation guarantees this lane was built for and "they
-      #      ran and passed" is the claim worth asserting by name.
+      #   3. the m112 policy proofs named explicitly (the list in the loop
+      #      below), because those are the privilege-escalation guarantees this
+      #      lane was built for and "they ran and passed" is the claim worth
+      #      asserting by name.
       - name: Verify the lane really executed (a skipped lane is a false green)
         shell: bash
         run: |

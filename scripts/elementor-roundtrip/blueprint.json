@@ -1,0 +1,13 @@
+{
+  "preferredVersions": {
+    "php": "8.3",
+    "wp": "https://downloads.wordpress.org/release/wordpress-6.8.zip"
+  },
+  "steps": [
+    {
+      "step": "installPlugin",
+      "pluginData": { "resource": "vfs", "path": "/rt/zips/elementor.zip" },
+      "options": { "activate": true }
+    }
+  ]
+}

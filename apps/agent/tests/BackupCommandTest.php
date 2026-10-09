@@ -107,13 +107,13 @@ final class BackupCommandTest extends TestCase
                 return $uploads;
             }
 
-            public function putChunk(string $presignedUrl, string $ciphertext): bool
+            public function putChunkWithStatus(string $presignedUrl, string $ciphertext): array
             {
                 // Key by the hash embedded in the fake URL.
                 $hash = substr($presignedUrl, strlen('https://s3.example/put/'));
                 $this->puts[$hash] = $ciphertext;
 
-                return true;
+                return ['ok' => true, 'status' => 200, 'error' => '', 's3_code' => '', 'host' => 's3.example', 'retryable' => false, 'represign' => false];
             }
 
             public function submitManifest(string $endpoint, string $snapshotId, string $ageRecipient, array $entries): array

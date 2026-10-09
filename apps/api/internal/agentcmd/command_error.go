@@ -1,9 +1,11 @@
 package agentcmd
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"regexp"
 	"strings"
 
@@ -61,6 +63,12 @@ type CommandError struct {
 	// replays it verbatim so every existing string/regex matcher keeps working
 	// unchanged.
 	snippet string
+
+	// embeddedCode is the code of a WordPress REST error envelope found inside
+	// a 403 body that did not parse as JSON as a whole (see
+	// embeddedRefusalCode). Read only by ForbiddenMessage, through
+	// refusalCode; every other classifier sees the body exactly as before.
+	embeddedCode string
 }
 
 // commandErrorEnvelope is the shape of the agent's WP_Error-derived JSON body
@@ -99,9 +107,35 @@ func newCommandError(command string, status int, snippet string, fullBody []byte
 			ce.Exception = env.Data.Exception
 			ce.At = env.Data.At
 			ce.DataStatus = env.Data.Status
+		} else if status == http.StatusForbidden {
+			ce.embeddedCode = embeddedRefusalCode(fullBody)
 		}
 	}
 	return ce
+}
+
+// restErrorPrefix is how a WordPress REST error reply begins: wp_json_encode
+// writes the WP_Error code first and adds no whitespace.
+var restErrorPrefix = []byte(`{"code":`)
+
+// embeddedRefusalCode returns the code of the first WordPress REST error
+// envelope inside body, or "" when there is none. A site with display_errors
+// on prints PHP notices and warnings in front of the REST reply, so a 403 the
+// agent sent can arrive behind other output and fail to parse as a whole.
+// Only an envelope whose data.status is 403 counts.
+func embeddedRefusalCode(body []byte) string {
+	i := bytes.Index(body, restErrorPrefix)
+	if i < 0 {
+		return ""
+	}
+	var env commandErrorEnvelope
+	if err := json.NewDecoder(bytes.NewReader(body[i:])).Decode(&env); err != nil {
+		return ""
+	}
+	if env.Data.Status != http.StatusForbidden {
+		return ""
+	}
+	return env.Code
 }
 
 // Error implements error. The format is BYTE-IDENTICAL to the untyped error
@@ -417,6 +451,105 @@ func DescribeAttemptError(err error) string {
 		return "The site's HTTPS certificate was not accepted."
 	}
 	return "Could not connect to the site."
+}
+
+// ---------------------------------------------------------------------------
+// HTTP 403 refusals (GH #679)
+// ---------------------------------------------------------------------------
+
+// agentRefusalCodePattern is the allow-list for a refusal code shown to an
+// operator. Every code the agent's router refuses with is "wpmgr_" plus a
+// lowercase snake_case category; anything else is never echoed.
+var agentRefusalCodePattern = regexp.MustCompile(`^wpmgr_[a-z_]{1,40}$`)
+
+// reconnectRefusalCodes are the agent refusals that mean the site's
+// connection to WPMgr is missing or no longer valid.
+var reconnectRefusalCodes = map[string]bool{
+	"wpmgr_aud_mismatch":        true,
+	"wpmgr_site_not_enrolled":   true,
+	"wpmgr_sig_failed":          true,
+	"wpmgr_key_not_provisioned": true,
+}
+
+// Fixed copy for a 403 that did not come from the WPMgr agent.
+const (
+	// forbiddenFirewallAdvice: the reply carried no code at all (an HTML
+	// page, plain text, an empty body), which a WordPress REST reply always
+	// does.
+	forbiddenFirewallAdvice = "A firewall or security rule blocked the request (HTTP 403) before it reached the WPMgr agent. " +
+		"Ask the site's host to allow requests to /wp-json/wpmgr/v1/ from WPMgr, and allow them in any firewall service or security plugin the site uses."
+	// forbiddenOtherAdvice: the reply had a code, but not one of the
+	// agent's.
+	forbiddenOtherAdvice = "Something on the site other than the WPMgr agent refused the request (HTTP 403), " +
+		"such as a security plugin or a rule that restricts the WordPress REST API. Allow requests to /wp-json/wpmgr/v1/ from WPMgr there."
+)
+
+// refusalCode is the 403 reply's code: the parsed envelope's, or failing
+// that, one found inside a reply that did not parse as a whole.
+func (e *CommandError) refusalCode() string {
+	if e.Code != "" {
+		return e.Code
+	}
+	return e.embeddedCode
+}
+
+// ForbiddenMessage returns the operator-facing failure text for a signed
+// command the site answered with HTTP 403, and false when err is not such an
+// answer (a transport failure, a redirect, any other status). action names
+// what did not happen, capitalised ("Update", "Dry run"), the way
+// RedirectError.OperatorMessage takes it.
+//
+// Who refused decides the remedy. The WPMgr agent refuses a request it cannot
+// verify before the command runs, with a code that is "wpmgr_" plus a
+// category, and that category names the fix: the site's clock, its
+// connection, or a header the host strips. A reply with no code came from
+// something in front of the agent, such as a web server rule, a host or CDN
+// firewall, or a security plugin's block page.
+//
+// Every sentence is fixed copy. The only text from the reply that can appear
+// is an agent code that matches agentRefusalCodePattern. The raw reply stays
+// in err.Error(), which callers keep in the task's error log.
+func ForbiddenMessage(err error, action string) (string, bool) {
+	ce, ok := AsCommandError(err)
+	if !ok || ce.Status != http.StatusForbidden {
+		return "", false
+	}
+	lead := action + " not started. "
+	again := "then run the " + strings.ToLower(action) + " again."
+
+	raw := ce.refusalCode()
+	code := sanitizeAttemptCode(raw)
+	if !agentRefusalCodePattern.MatchString(code) {
+		code = ""
+	}
+
+	switch {
+	case raw == "":
+		return lead + forbiddenFirewallAdvice, true
+	case code == "":
+		return lead + forbiddenOtherAdvice, true
+	case code == "wpmgr_token_expired" || code == "wpmgr_token_skew":
+		return lead + fmt.Sprintf("The WPMgr agent refused the request (HTTP 403, %s) because the site's server clock differs from WPMgr's, "+
+			"and WPMgr's signed requests are valid for less than a minute. Ask the site's host to sync the server time (NTP), %s", code, again), true
+	case reconnectRefusalCodes[code]:
+		return lead + fmt.Sprintf("The WPMgr agent refused the request (HTTP 403, %s) because the site's connection to WPMgr is missing or no longer valid. "+
+			"Reconnect the site to WPMgr, %s", code, again), true
+	case code == "wpmgr_missing_token":
+		// WPMgr always sends the header, so its absence at the agent means a
+		// layer between the two dropped or replaced it. Reconnecting does not
+		// change that.
+		return lead + fmt.Sprintf("The request reached the WPMgr agent without its Authorization header (HTTP 403, %s): "+
+			"the site's web server, or a proxy in front of it, did not pass the header on. "+
+			"Ask the site's host to forward the Authorization header to PHP for requests to /wp-json/wpmgr/v1/, %s", code, again), true
+	case code == "wpmgr_invalid_token":
+		// This code covers several causes; the two a site owner can fix are
+		// the clock and the connection.
+		return lead + fmt.Sprintf("The WPMgr agent could not verify the request (HTTP 403, %s). "+
+			"Check the site's server clock first and ask the host to sync it (NTP) if it is off; "+
+			"if the clock is correct, reconnect the site to WPMgr. Then run the %s again.", code, strings.ToLower(action)), true
+	default:
+		return lead + fmt.Sprintf("The WPMgr agent refused the request (HTTP 403, %s).", code), true
+	}
 }
 
 // isDecodeErr reports whether err is a JSON decode failure on a 2xx reply:
