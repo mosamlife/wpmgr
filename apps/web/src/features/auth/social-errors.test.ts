@@ -338,14 +338,17 @@ describe("sameOriginPath", () => {
     });
 
     it("takes the URL parser's verdict as final", () => {
-      // A value the lexical rules accept, put on another origin by the parser.
+      // A parser that resolves a value the lexical rules accept to the same
+      // path on another origin: the path alone is not enough.
+      const RealURL = URL;
+      class OffSiteURL extends RealURL {
+        constructor(url: string | URL, base?: string | URL) {
+          super(url, base);
+          Object.defineProperty(this, "origin", { value: "https://evil.example" });
+        }
+      }
       let result: string | undefined = "unset";
-      vi.stubGlobal(
-        "URL",
-        class {
-          origin = "https://evil.example";
-        },
-      );
+      vi.stubGlobal("URL", OffSiteURL);
       try {
         result = sameOriginPath("/sites");
       } finally {
