@@ -201,3 +201,19 @@ type AbilityRequestRenderer interface {
 type CachePurgeRenderer interface {
 	RenderCachePurgeRequests(ctx context.Context, p domain.Principal, rows []sqlc.AssistantCachePurgeRequest) ([]any, error)
 }
+
+// LaunchNoticeSite is one site the launch notice lists.
+type LaunchNoticeSite struct {
+	ID   uuid.UUID
+	Name string
+	URL  string
+}
+
+// LaunchNoticeClaim is one organisation's sites claimed for the launch
+// notice, the stamp the claim wrote on them, and the addresses of the owners
+// and admins who are told. A claim with no sites claimed nothing.
+type LaunchNoticeClaim struct {
+	Sites      []LaunchNoticeSite
+	ClaimedAt  time.Time
+	Recipients []string
+}

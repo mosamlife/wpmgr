@@ -175,6 +175,13 @@ type SendOutcome struct {
 // configured". Logging to email_log is best-effort: a log-write failure never
 // blocks or fails the send.
 func (s *Service) SendMessage(ctx context.Context, recipients []string, subject, text string) (SendOutcome, error) {
+	return s.SendTenantMessage(ctx, uuid.Nil, "uptime_alert", recipients, subject, text)
+}
+
+// SendTenantMessage is SendMessage for one organisation's mail: the
+// email_log row records tenantID (uuid.Nil for instance mail) and kind, the
+// name the log shows for this message.
+func (s *Service) SendTenantMessage(ctx context.Context, tenantID uuid.UUID, kind string, recipients []string, subject, text string) (SendOutcome, error) {
 	if len(recipients) == 0 {
 		return SendOutcome{Status: SendSkipped, Reason: "no_recipients"}, nil
 	}
@@ -188,7 +195,7 @@ func (s *Service) SendMessage(ctx context.Context, recipients []string, subject,
 		return SendOutcome{Status: SendSkipped, Reason: "smtp_not_configured"}, nil
 	}
 
-	logID := s.insertLog(ctx, uuid.Nil, recipients, subject, "uptime_alert")
+	logID := s.insertLog(ctx, tenantID, recipients, subject, kind)
 	if err := sendMail(ctx, transport, recipients, Email{Subject: subject, Text: text}); err != nil {
 		reason := scrubSMTPError(err)
 		if logID != uuid.Nil {

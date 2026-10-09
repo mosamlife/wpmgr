@@ -2,7 +2,10 @@ package aitrust
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -10,6 +13,7 @@ import (
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/aipolicy"
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
+	"github.com/mosamlife/wpmgr/apps/api/internal/authz"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
@@ -254,4 +258,130 @@ func (r *Repo) ActivityPage(ctx context.Context, p domain.Principal, aq Activity
 		return nil
 	})
 	return out, err
+}
+
+// ---------------------------------------------------------------------------
+// The launch notice
+// ---------------------------------------------------------------------------
+
+// tenantsAwaitingLaunchNoticeSQL lists the organisations, not deleted, with a
+// site still on the launch default whose owners have not been told.
+const tenantsAwaitingLaunchNoticeSQL = `
+SELECT DISTINCT s.tenant_id
+FROM sites s
+JOIN tenants t ON t.id = s.tenant_id
+WHERE s.ai_mode_source = 'launch_default'
+  AND s.ai_mode_launch_emailed_at IS NULL
+  AND t.deleted_at IS NULL
+ORDER BY s.tenant_id`
+
+// TenantsAwaitingLaunchNotice lists the organisations the launch notice has
+// still to tell. It reads across organisations (db.InAgentTx); each claim
+// then runs in its own organisation's transaction.
+func (r *Repo) TenantsAwaitingLaunchNotice(ctx context.Context) ([]uuid.UUID, error) {
+	var out []uuid.UUID
+	err := r.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, tenantsAwaitingLaunchNoticeSQL)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id uuid.UUID
+			if err := rows.Scan(&id); err != nil {
+				return err
+			}
+			out = append(out, id)
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
+// ClaimLaunchNotice claims one organisation's launch-default sites whose
+// owners have not been told, and reads the addresses of its owners and admins
+// with active accounts, in one transaction of that organisation
+// (db.InTenantTx). A failed read of the addresses rolls the claim back.
+func (r *Repo) ClaimLaunchNotice(ctx context.Context, tenantID uuid.UUID) (LaunchNoticeClaim, error) {
+	var c LaunchNoticeClaim
+	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		q := sqlc.New(tx)
+		rows, err := q.ClaimSiteAILaunchNotices(ctx, tenantID)
+		if err != nil {
+			return err
+		}
+		if len(rows) == 0 {
+			return nil
+		}
+		for _, row := range rows {
+			c.Sites = append(c.Sites, LaunchNoticeSite{ID: row.ID, Name: row.Name, URL: row.Url})
+		}
+		c.ClaimedAt = rows[0].AiModeLaunchEmailedAt.Time
+		c.Recipients, err = ownerAndAdminAddresses(ctx, q, tenantID)
+		return err
+	})
+	if err != nil {
+		return LaunchNoticeClaim{}, err
+	}
+	return c, nil
+}
+
+// ReleaseLaunchNotice undoes one claim after its notice was not delivered,
+// so a later run claims the sites again. It clears only the stamp that claim
+// wrote, and returns how many sites it released.
+func (r *Repo) ReleaseLaunchNotice(ctx context.Context, tenantID uuid.UUID, c LaunchNoticeClaim) (int64, error) {
+	ids := make([]uuid.UUID, 0, len(c.Sites))
+	for _, s := range c.Sites {
+		ids = append(ids, s.ID)
+	}
+	var n int64
+	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		var err error
+		n, err = sqlc.New(tx).ReleaseSiteAILaunchNotices(ctx, sqlc.ReleaseSiteAILaunchNoticesParams{
+			TenantID: tenantID, SiteIds: ids, ClaimedAt: c.ClaimedAt,
+		})
+		return err
+	})
+	return n, err
+}
+
+// launchNoticeMembersPage is how many memberships one read returns.
+const launchNoticeMembersPage = 500
+
+// ownerAndAdminAddresses is every owner's and admin's address in the
+// organisation whose account is active, each once, sorted.
+func ownerAndAdminAddresses(ctx context.Context, q *sqlc.Queries, tenantID uuid.UUID) ([]string, error) {
+	seen := map[string]bool{}
+	var out []string
+	for offset := int32(0); ; offset += launchNoticeMembersPage {
+		ms, err := q.ListMembershipsForTenant(ctx, sqlc.ListMembershipsForTenantParams{
+			TenantID: tenantID, Limit: launchNoticeMembersPage, Offset: offset,
+		})
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range ms {
+			if m.Role != string(authz.RoleOwner) && m.Role != string(authz.RoleAdmin) {
+				continue
+			}
+			u, err := q.GetUserByID(ctx, m.UserID)
+			if errors.Is(err, pgx.ErrNoRows) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			addr := strings.TrimSpace(u.Email)
+			if u.Status != aipolicy.AccountActive || addr == "" || seen[strings.ToLower(addr)] {
+				continue
+			}
+			seen[strings.ToLower(addr)] = true
+			out = append(out, addr)
+		}
+		if len(ms) < launchNoticeMembersPage {
+			break
+		}
+	}
+	sort.Strings(out)
+	return out, nil
 }

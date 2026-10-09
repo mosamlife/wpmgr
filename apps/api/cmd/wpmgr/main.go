@@ -1872,9 +1872,14 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// usage, and the activity feed. Setter validity uses the session
 	// authenticator's own builder, as the decision engine does; the feed
 	// renders each request with its own queue's renderer.
-	aiTrustSvc := aitrust.NewService(aitrust.NewRepo(pool, auditRec), authn, logger)
+	aiTrustRepo := aitrust.NewRepo(pool, auditRec)
+	aiTrustSvc := aitrust.NewService(aiTrustRepo, authn, logger)
 	aiTrustSvc.SetRenderers(abilityReqH, assistantReqH)
 	aiTrustH := aitrust.NewHandler(aiTrustSvc)
+	// The one-time notice to organisations whose sites moved to Auto for AI
+	// drafts at launch: run at start-up and hourly until every one is told.
+	aiLaunchNoticeWorker := aitrust.NewLaunchNoticeWorker(aitrust.NewLaunchNotifier(
+		aiTrustRepo, aiLaunchNoticeMailer{svc: mailerSvc}, cfg.PublicBaseURL, logger))
 	abilityTenantH := abilities.NewTenantHandler(abilities.NewTenantRepo(pool, auditRec), admingate.NewPoolStore(pool))
 	// AI readiness: the advisory per-site checklist and its fleet rollup. The
 	// refresh enqueuers are set once River has started, below.
@@ -2119,6 +2124,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		siteSweepWorker:          siteSweepWorker,
 		siteEventPruneWorker:     siteEventPruneWorker,
 		siteAutoResumeWorker:     siteAutoResumeWorker,
+		aiLaunchNoticeWorker:     aiLaunchNoticeWorker,
 		siteAdoptURLWorker:       siteAdoptURLWorker,
 		updateWorker:             updateWorker,
 		updateReaperWorker:       updateReaperWorker,
@@ -3572,6 +3578,8 @@ type riverDeps struct {
 	siteSweepWorker      *site.SweepWorker
 	siteEventPruneWorker *site.EventPruneWorker
 	siteAutoResumeWorker *site.AutoResumeWorker
+	// ADR-065: the one-time AI launch notice (always wired).
+	aiLaunchNoticeWorker *aitrust.LaunchNoticeWorker
 	// GH #755: adopts an agent-reported address off the push (always wired).
 	siteAdoptURLWorker *site.AdoptReportedURLWorker
 	updateWorker       *update.Worker
@@ -3804,6 +3812,18 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 	// so an extra run at boot costs one index read.
 	if d.siteAdoptURLWorker != nil {
 		river.AddWorker(workers, d.siteAdoptURLWorker)
+	}
+	// ADR-065: the AI launch notice. RunOnStart, because the notice belongs
+	// to the deploy that moved the sites; then hourly, which retries a
+	// notice that was not delivered. Each site is claimed by one run at a
+	// time, so a second run never sends a second notice for it.
+	if d.aiLaunchNoticeWorker != nil {
+		river.AddWorker(workers, d.aiLaunchNoticeWorker)
+		periodics = append(periodics, river.NewPeriodicJob(
+			river.PeriodicInterval(aitrust.LaunchNoticeInterval),
+			func() (river.JobArgs, *river.InsertOpts) { return aitrust.LaunchNoticeArgs{}, nil },
+			&river.PeriodicJobOpts{RunOnStart: true},
+		))
 	}
 	if d.siteAutoResumeWorker != nil {
 		river.AddWorker(workers, d.siteAutoResumeWorker)
