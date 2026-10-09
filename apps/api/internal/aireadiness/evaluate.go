@@ -108,6 +108,9 @@ func Evaluate(f Facts) Result { return EvaluateWith(f, DefaultFloors()) }
 //   - A builder that is installed but not active is not a fix either: its
 //     version row is not applicable (reason inactive), and so are the rows
 //     that depend on it.
+//   - A row whose pass or fail is only inferred (see Check.unconfirmed) is
+//     listed with its state, and counts toward neither Status nor FixCount
+//     and is not in Failing.
 //   - Warnings are advisory and never change Status or FixCount.
 func EvaluateWith(f Facts, fl Floors) Result {
 	e := &evaluator{f: f, fl: fl}
@@ -135,6 +138,9 @@ func EvaluateWith(f Facts, fl Floors) Result {
 			continue // a builder that is not installed contributes nothing
 		}
 		for _, c := range g.Checks {
+			if c.unconfirmed() {
+				continue // shown, never counted
+			}
 			switch c.State {
 			case StateFail:
 				fixes++
@@ -217,6 +223,16 @@ func inactive(id CheckID, observed string) Check {
 // that depend on it from being checked.
 func (c Check) blocksDependents() bool {
 	return c.State == StateFail || c.State == StateNotApplicable
+}
+
+// unconfirmed reports whether a row's pass or fail is only inferred from the
+// site's tool list and has not been confirmed on a licensed install. Such a row
+// keeps its state in Groups so it can be shown, but it is not something to fix:
+// it moves neither Status nor FixCount, and Failing leaves it out. A row stops
+// being unconfirmed when the check that confirms it exists; bricks_abilities
+// waits on the Bricks licence check.
+func (c Check) unconfirmed() bool {
+	return c.ID == CheckBricksAbilities
 }
 
 // agentAtLeast compares two well-formed agent versions.

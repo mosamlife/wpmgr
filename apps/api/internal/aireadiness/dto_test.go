@@ -450,6 +450,38 @@ func TestFleetDTOLeavesAnInactiveBuilderOutOfFailing(t *testing.T) {
 	}
 }
 
+// An unconfirmed row is on the wire with its state, and in no count: the site
+// response says ready with nothing to fix, and the fleet row lists nothing.
+func TestDTOsLeaveAnUnconfirmedRowOutOfTheFixes(t *testing.T) {
+	f := withBricks(readyFacts())
+	f.BricksAbilities = 0
+	r := Evaluate(f)
+
+	site := jsonObject(t, toSiteDTO(r))
+	if site["status"] != "ready" || site["fix_count"] != float64(0) {
+		t.Fatalf("site status %v fix_count %v, want ready 0", site["status"], site["fix_count"])
+	}
+	bricks := asMap(t, asList(t, site["groups"], "groups")[2], "bricks group")
+	var row map[string]any
+	for _, c := range asList(t, bricks["checks"], "bricks checks") {
+		if m := asMap(t, c, "check"); m["id"] == "bricks_abilities" {
+			row = m
+		}
+	}
+	if row == nil || row["state"] != "fail" {
+		t.Fatalf("bricks_abilities = %v, want the row listed with state fail", row)
+	}
+
+	fleet := jsonObject(t, toFleetDTO([]Result{r}))
+	entry := asMap(t, asList(t, fleet["sites"], "sites")[0], "site")
+	if entry["status"] != "ready" || entry["fix_count"] != float64(0) {
+		t.Fatalf("fleet status %v fix_count %v, want ready 0", entry["status"], entry["fix_count"])
+	}
+	if fl := asList(t, entry["failing"], "failing"); len(fl) != 0 {
+		t.Fatalf("failing = %v, an unconfirmed row is not a fix", fl)
+	}
+}
+
 func TestRefreshResultDTOWireShape(t *testing.T) {
 	m := jsonObject(t, refreshResultDTO{Metadata: true, Abilities: false})
 	if got := keysOf(m); got != "abilities,metadata" {

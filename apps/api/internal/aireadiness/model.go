@@ -227,12 +227,15 @@ type Result struct {
 	Groups []Group
 }
 
-// Failing lists the ids of the checks whose state is fail, in group order.
+// Failing lists the ids of the checks that count toward FixCount, in group
+// order: those whose state is fail, less the unconfirmed rows, which stay in
+// Groups with their state but are not fixes. For a Result from EvaluateWith it
+// has FixCount entries.
 func (r Result) Failing() []CheckID {
 	out := make([]CheckID, 0, r.FixCount)
 	for _, g := range r.Groups {
 		for _, c := range g.Checks {
-			if c.State == StateFail {
+			if c.State == StateFail && !c.unconfirmed() {
 				out = append(out, c.ID)
 			}
 		}

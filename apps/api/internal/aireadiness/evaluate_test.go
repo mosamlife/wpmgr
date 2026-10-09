@@ -532,6 +532,64 @@ func TestBricksAbilitiesCheck(t *testing.T) {
 	}
 }
 
+// bricks_abilities is inferred from the site's tool list and has not been
+// confirmed on a licensed Bricks install, so the row keeps its state to be
+// shown and that state moves nothing: a site whose only non-pass row it is
+// reads ready with nothing to fix, whatever the row says.
+func TestBricksAbilitiesNeverCountsAsAFix(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*Facts)
+		state  State
+		reason Reason
+	}{
+		{"off on a complete list", func(f *Facts) { f.BricksAbilities = 0 }, StateFail, ReasonNone},
+		{"never read", func(f *Facts) { f.InventoryChecked = false; f.BricksAbilities = 0 }, StateUnknown, ReasonInventoryNeverRun},
+		{"list cut short", func(f *Facts) { f.BricksAbilities = 0; f.AbilitiesTruncated = true }, StateUnknown, ReasonInventoryTruncated},
+		{"on", func(f *Facts) {}, StatePass, ReasonNone},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := withBricks(readyFacts())
+			c.mutate(&f)
+			r := Evaluate(f)
+			expect(t, find(t, r, CheckBricksAbilities), c.state, c.reason, "")
+			for _, g := range r.Groups {
+				for _, ch := range g.Checks {
+					if ch.ID != CheckBricksAbilities && ch.State != StatePass {
+						t.Fatalf("the scenario must leave bricks_abilities as the only non-pass row, but %s is %q", ch.ID, ch.State)
+					}
+				}
+			}
+			if r.Status != StatusReady || r.FixCount != 0 || len(r.Failing()) != 0 {
+				t.Fatalf("status %q fix_count %d failing %v, want ready 0 []", r.Status, r.FixCount, r.Failing())
+			}
+		})
+	}
+	t.Run("a fix beside it is still counted and listed alone", func(t *testing.T) {
+		f := withBricks(readyFacts())
+		f.BricksAbilities = 0
+		f.ContentEditingEnabled = false
+		r := Evaluate(f)
+		expect(t, find(t, r, CheckBricksAbilities), StateFail, ReasonNone, "")
+		got := r.Failing()
+		if r.Status != StatusNeedsAttention || r.FixCount != 1 || len(got) != 1 || got[0] != CheckContentEditing {
+			t.Fatalf("status %q fix_count %d failing %v, want needs_attention 1 [content_editing]", r.Status, r.FixCount, got)
+		}
+	})
+	t.Run("the Bricks version row beside it is still a fix", func(t *testing.T) {
+		f := withBricks(readyFacts())
+		f.BricksVersion = "2.0"
+		f.BricksAbilities = 0
+		r := Evaluate(f)
+		expect(t, find(t, r, CheckBricksVersion), StateFail, ReasonTooOld, "2.0")
+		got := r.Failing()
+		if r.Status != StatusNeedsAttention || r.FixCount != 1 || len(got) != 1 || got[0] != CheckBricksVersion {
+			t.Fatalf("status %q fix_count %d failing %v, want needs_attention 1 [bricks_version]", r.Status, r.FixCount, got)
+		}
+	})
+}
+
 // A tool list read while the site lacked the Abilities API holds nothing a
 // switch can be read from, and WordPress shipping the API since does not make
 // that list a statement about the switch.
@@ -540,27 +598,33 @@ func TestSwitchRowsAreUnknownWhenTheToolListWasReadWithoutTheAbilitiesAPI(t *tes
 		name  string
 		facts func() Facts
 		id    CheckID
+		// counted is false for a row that is shown but moves no roll-up.
+		counted bool
 	}{
 		{"elementor", func() Facts {
 			f := withElementor(readyFacts())
 			f.ElementorAbilities = 0
 			return f
-		}, CheckElementorSwitch},
+		}, CheckElementorSwitch, true},
 		{"bricks", func() Facts {
 			f := withBricks(readyFacts())
 			f.BricksAbilities = 0
 			return f
-		}, CheckBricksAbilities},
+		}, CheckBricksAbilities, false},
 	}
 	for _, c := range cases {
+		wantStale, wantOff, wantFixes := StatusIncomplete, StatusNeedsAttention, 1
+		if !c.counted {
+			wantStale, wantOff, wantFixes = StatusReady, StatusReady, 0
+		}
 		t.Run(c.name+": read before WordPress shipped the API", func(t *testing.T) {
 			f := c.facts()
 			f.AbilitiesAPIPresent = false
 			r := Evaluate(f)
 			expect(t, find(t, r, CheckAbilitiesAPI), StatePass, ReasonNone, "")
 			expect(t, find(t, r, c.id), StateUnknown, ReasonInventoryNeverRun, "")
-			if r.Status != StatusIncomplete || r.FixCount != 0 {
-				t.Fatalf("a stale read must not be a fix: status %q fix_count %d failing %v", r.Status, r.FixCount, r.Failing())
+			if r.Status != wantStale || r.FixCount != 0 {
+				t.Fatalf("a stale read must not be a fix: status %q fix_count %d failing %v, want %q 0", r.Status, r.FixCount, r.Failing(), wantStale)
 			}
 			if len(r.Warnings) != 0 {
 				t.Fatalf("an unknown switch must not warn: %v", r.Warnings)
@@ -577,8 +641,8 @@ func TestSwitchRowsAreUnknownWhenTheToolListWasReadWithoutTheAbilitiesAPI(t *tes
 			f.AbilitiesAPIPresent = true
 			r := Evaluate(f)
 			expect(t, find(t, r, c.id), StateFail, ReasonNone, "")
-			if r.Status != StatusNeedsAttention || r.FixCount != 1 {
-				t.Fatalf("status %q fix_count %d, want needs_attention 1", r.Status, r.FixCount)
+			if r.Status != wantOff || r.FixCount != wantFixes {
+				t.Fatalf("status %q fix_count %d, want %q %d", r.Status, r.FixCount, wantOff, wantFixes)
 			}
 		})
 	}
@@ -797,9 +861,10 @@ func TestStatusRollup(t *testing.T) {
 		f.ContentEditingEnabled = false                                     // base fail
 		f.BuilderFacts.Elementor = &ElementorFacts{AtomicEditor: tp(false)} // elementor_atomic fail
 		f.ElementorAbilities = 0                                            // elementor_mcp_switch fail
-		f.BricksAbilities = 0                                               // bricks_abilities fail
+		f.BricksAbilities = 0                                               // bricks_abilities fail, shown and not counted
 		r := Evaluate(f)
-		want := []CheckID{CheckWPVersion, CheckContentEditing, CheckElementorSwitch, CheckElementorAtomic, CheckBricksAbilities}
+		expect(t, find(t, r, CheckBricksAbilities), StateFail, ReasonNone, "")
+		want := []CheckID{CheckWPVersion, CheckContentEditing, CheckElementorSwitch, CheckElementorAtomic}
 		got := r.Failing()
 		if r.FixCount != len(want) || len(got) != len(want) {
 			t.Fatalf("fix_count %d failing %v, want %v", r.FixCount, got, want)
