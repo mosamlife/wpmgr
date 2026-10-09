@@ -137,10 +137,10 @@ func sameIDSet(guc string, want []uuid.UUID) bool {
 // false too; callers treat both as inactive.
 //
 // THE AUTHORITY IS UNEXPORTED, AND THAT IS THE CONTRACT. What AuthorizeGrant
-// derives (the tenant, the site scope, the capabilities and scopes, and the
-// grant it names) comes only from the unexported stored field, which only the
-// row constructors below set: from the stored grant row, and the tenant that
-// row was read in.
+// derives (the tenant, the site scope, the capabilities and scopes, the grant
+// it names, and the client facts it carries) comes only from the unexported
+// stored field, which only the row constructors below set: from the stored
+// grant row, and the tenant that row was read in.
 //
 // The exported fields are views of the same row for the caller to read and
 // branch on. Go cannot stop a caller assigning to one, so they are read-only
@@ -179,8 +179,9 @@ type GrantVerdict struct {
 // authorizeGrant takes this type rather than a GrantVerdict, so it cannot read
 // a verdict's exported fields at all.
 type storedGrant struct {
-	// found is true only in a verdict a row constructor built. The zero value
-	// (a GrantVerdict literal, or the verdict for an absent grant) is false.
+	// found is true only in a verdict a row constructor built. A GrantVerdict
+	// literal built outside this package, and the verdict for an absent grant,
+	// carry the zero storedGrant, so found is false.
 	found bool
 	// tenantID is the tenant the row was read in, under InTenantTx.
 	tenantID   uuid.UUID
