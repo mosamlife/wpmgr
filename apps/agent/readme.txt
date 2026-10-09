@@ -4,7 +4,7 @@ Tags: backup, security, performance, updates, site management
 Requires at least: 6.2
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 0.61.161
+Stable tag: 0.61.162
 License: MIT
 License URI: https://opensource.org/licenses/MIT
 
@@ -287,6 +287,17 @@ This plugin ships two minified JavaScript files. Their human-readable source and
 
 The entries below summarize the notable changes since 0.34.0. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
 
+= 0.61.162 =
+* Changed: The agent now needs an explicit instruction from WPMgr before it downgrades WordPress core. A core rollback without it is refused and changes nothing. Plugin and theme rollbacks are unchanged.
+* Changed: A site that disallows file changes no longer gets core updates from WPMgr, the same as WordPress itself.
+* Fixed: On a site where Composer manages WordPress core, a core update is now skipped and reported as not changing core, with a note to update core in composer.json and redeploy. A core update that fails before any core file is replaced now says core was not changed. After a core update or rollback the agent reports the version installed on disk, where it used to report the old version as up to date.
+* Fixed: A backup makes up to three attempts at a chunk upload when the storage reports a temporary problem, and waits up to 120 seconds for each. When an upload still fails, the message names the storage host and the status or network error.
+* Fixed: A site that refuses a signed command now says which check refused it, such as a site clock out of step with WPMgr's, instead of one general invalid-token answer.
+* Fixed: Deleting the plugin now removes everything the agent saved under its wpmgr_agent_ option names on that site and, on multisite, in the network settings. A setting whose name differs only in letter case or accents is left alone.
+* Fixed: A restore that fails after swapping in files or the database keeps what the automatic rollback needs. A restore that has ended keeps none of its run settings.
+* Fixed: A plugin or theme update is reported as already up to date only when WordPress's update check covered it. A rejected rollback or update no longer clears maintenance mode another update put in place. A wp-config.php that mentions a framework only in a comment no longer stops the agent adding its constants. Image address rewriting leaves a value with no address to change exactly as it was.
+* Fixed: The listing, and the Re-enroll and Disconnect text in WordPress admin, no longer say backup archives are encrypted. This plugin does not encrypt them. The privacy section now lists the data AI requests carry.
+
 = 0.61.161 =
 * Added: An AI connected through WPMgr can now create a draft page or post in Elementor from an outline, with your approval for each request in WPMgr. The outline can use headings, paragraphs, lists, quotes, tables, separators, buttons, spacing, sections and columns, and images that are already in the site's media library. The draft is built from Elementor's own classic widgets, in containers or in sections and columns, whichever the site's Elementor is set up for. Nothing is published, and undo moves the draft to the trash while nobody has edited it.
 * Added: A page built in Elementor this way needs Elementor 3.20 to 4.3. A request for Elementor's Atomic editor is refused, and so are a button in the outline style and an image whose alt text differs from the one saved in the media library. After Elementor saves the page, WPMgr checks that it holds exactly the approved layout and that nothing outside the page changed, and moves the draft to the trash if not.
@@ -482,6 +493,9 @@ The entries below summarize the notable changes since 0.34.0. This project ships
 * Changed: site connection status is steadier. The connection indicator no longer briefly flips to "degraded" on healthy low-traffic sites, and a "Re-check connection" action forces an immediate refresh from the dashboard.
 
 == Upgrade Notice ==
+
+= 0.61.162 =
+Backup uploads retry temporary storage errors and name the cause when they fail. Core updates are skipped on Composer-managed sites and report the installed version afterwards, and a core rollback needs an explicit instruction from WPMgr. The listing no longer says backups are encrypted: this plugin does not encrypt them.
 
 = 0.61.161 =
 Lets a connected AI create a draft page or post in Elementor from an outline, with your approval for each request in WPMgr. Nothing is published, and undo moves the draft to the trash.
