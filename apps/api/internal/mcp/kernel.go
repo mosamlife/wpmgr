@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -135,23 +136,28 @@ func sameIDSet(guc string, want []uuid.UUID) bool {
 // Found is false when no such grant exists in the tenant. Authorized is then
 // false too; callers treat both as inactive.
 //
-// THE SITE SCOPE IS UNEXPORTED, AND THAT IS THE CONTRACT. A verdict's scope
-// always comes from the stored grant row: the only constructors are
-// grantVerdictFromGrantRow and grantVerdictFromRequestRow, and AuthorizeGrant
-// refuses any verdict they did not build. A caller outside this package can
-// read a verdict and hand it back, but cannot supply or change the scope it
-// resolves.
+// THE AUTHORITY IS UNEXPORTED, AND THAT IS THE CONTRACT. What AuthorizeGrant
+// derives (the tenant, the site scope, the capabilities and scopes, and the
+// grant it names) comes only from the unexported stored field, which only the
+// row constructors below set: from the stored grant row, and the tenant that
+// row was read in.
+//
+// The exported fields are views of the same row for the caller to read and
+// branch on. Go cannot stop a caller assigning to one, so they are read-only
+// in effect rather than in the type: an edit changes what the caller sees and
+// nothing AuthorizeGrant derives, which never reads them. The stored copy
+// shares no slice or pointer with them, so an edit through an element or a
+// pointer does not reach it either.
+//
+// A caller outside this package can therefore read a verdict and hand it back,
+// but cannot supply or change what it confers. AuthorizeGrant refuses a
+// verdict the row constructors did not build, and one read in another tenant.
 type GrantVerdict struct {
 	Found bool
 
-	GrantID       uuid.UUID
-	GrantName     string
-	GrantStatus   string
-	siteScopeMode string
-	scopeTagIDs   []uuid.UUID
-	scopeSiteIDs  []uuid.UUID
-	// fromStoredGrant is set only by the row constructors below.
-	fromStoredGrant bool
+	GrantID     uuid.UUID
+	GrantName   string
+	GrantStatus string
 	// ClientID is set when the grant came from the OAuth sign-in path.
 	ClientID     *string
 	Capabilities []string
@@ -162,18 +168,52 @@ type GrantVerdict struct {
 	IdleExpired           bool
 	TenantAssistantPaused bool
 	Authorized            bool
+
+	// stored is the authority. See storedGrant.
+	stored storedGrant
 }
 
-func grantVerdictFromGrantRow(r sqlc.ReCheckMCPGrantAuthorizationInTenantTxRow) GrantVerdict {
+// storedGrant is what AuthorizeGrant derives from: one stored grant row's
+// authority and the tenant the row was read in. Only grantVerdictFromGrantRow
+// and grantVerdictFromRequestRow build one, every field is unexported, and
+// authorizeGrant takes this type rather than a GrantVerdict, so it cannot read
+// a verdict's exported fields at all.
+type storedGrant struct {
+	// found is true only in a verdict a row constructor built. The zero value
+	// (a GrantVerdict literal, or the verdict for an absent grant) is false.
+	found bool
+	// tenantID is the tenant the row was read in, under InTenantTx.
+	tenantID   uuid.UUID
+	authorized bool
+
+	grantID       uuid.UUID
+	grantName     string
+	siteScopeMode string
+	scopeTagIDs   []uuid.UUID
+	scopeSiteIDs  []uuid.UUID
+	capabilities  []string
+	oauthScopes   []string
+	viaOAuth      bool
+	setupClient   *string
+}
+
+// cloneString copies a *string, so the copy shares nothing with the original.
+func cloneString(p *string) *string {
+	if p == nil {
+		return nil
+	}
+	s := *p
+	return &s
+}
+
+// grantVerdictFromGrantRow builds the verdict for a row read in tenantID by
+// Repo.ReCheckGrantAuthorization.
+func grantVerdictFromGrantRow(tenantID uuid.UUID, r sqlc.ReCheckMCPGrantAuthorizationInTenantTxRow) GrantVerdict {
 	return GrantVerdict{
 		Found:                 true,
-		fromStoredGrant:       true,
 		GrantID:               r.GrantID,
 		GrantName:             r.GrantName,
 		GrantStatus:           r.GrantStatus,
-		siteScopeMode:         r.SiteScopeMode,
-		scopeTagIDs:           r.ScopeTagIds,
-		scopeSiteIDs:          r.ScopeSiteIds,
 		ClientID:              r.ClientID,
 		Capabilities:          r.GrantCapabilities,
 		OauthScopes:           r.GrantOauthScopes,
@@ -182,19 +222,31 @@ func grantVerdictFromGrantRow(r sqlc.ReCheckMCPGrantAuthorizationInTenantTxRow) 
 		IdleExpired:           r.GrantIdleExpired,
 		TenantAssistantPaused: r.TenantAssistantPaused,
 		Authorized:            r.Authorized,
+		stored: storedGrant{
+			found:         true,
+			tenantID:      tenantID,
+			authorized:    r.Authorized,
+			grantID:       r.GrantID,
+			grantName:     r.GrantName,
+			siteScopeMode: r.SiteScopeMode,
+			scopeTagIDs:   slices.Clone(r.ScopeTagIds),
+			scopeSiteIDs:  slices.Clone(r.ScopeSiteIds),
+			capabilities:  slices.Clone(r.GrantCapabilities),
+			oauthScopes:   slices.Clone(r.GrantOauthScopes),
+			viaOAuth:      r.ClientID != nil,
+			setupClient:   cloneString(r.GrantSetupClient),
+		},
 	}
 }
 
-func grantVerdictFromRequestRow(r sqlc.ReCheckMCPRequestAuthorizationInTenantTxRow) GrantVerdict {
+// grantVerdictFromRequestRow builds the verdict for Authenticate's token
+// re-check row, read in tenantID: the token's own tenant.
+func grantVerdictFromRequestRow(tenantID uuid.UUID, r sqlc.ReCheckMCPRequestAuthorizationInTenantTxRow) GrantVerdict {
 	return GrantVerdict{
 		Found:           true,
-		fromStoredGrant: true,
 		GrantID:         r.GrantID,
 		GrantName:       r.GrantName,
 		GrantStatus:     r.GrantStatus,
-		siteScopeMode:   r.SiteScopeMode,
-		scopeTagIDs:     r.ScopeTagIds,
-		scopeSiteIDs:    r.ScopeSiteIds,
 		ClientID:        r.ClientID,
 		Capabilities:    r.GrantCapabilities,
 		OauthScopes:     r.GrantOauthScopes,
@@ -202,6 +254,20 @@ func grantVerdictFromRequestRow(r sqlc.ReCheckMCPRequestAuthorizationInTenantTxR
 		AbsoluteExpired: r.GrantAbsoluteExpired,
 		IdleExpired:     r.GrantIdleExpired,
 		Authorized:      r.Authorized,
+		stored: storedGrant{
+			found:         true,
+			tenantID:      tenantID,
+			authorized:    r.Authorized,
+			grantID:       r.GrantID,
+			grantName:     r.GrantName,
+			siteScopeMode: r.SiteScopeMode,
+			scopeTagIDs:   slices.Clone(r.ScopeTagIds),
+			scopeSiteIDs:  slices.Clone(r.ScopeSiteIds),
+			capabilities:  slices.Clone(r.GrantCapabilities),
+			oauthScopes:   slices.Clone(r.GrantOauthScopes),
+			viaOAuth:      r.ClientID != nil,
+			setupClient:   cloneString(r.GrantSetupClient),
+		},
 	}
 }
 
@@ -210,6 +276,9 @@ func grantVerdictFromRequestRow(r sqlc.ReCheckMCPRequestAuthorizationInTenantTxR
 // mcp_grants_site_scope_select refuses every grant row to a site-scoped
 // session, so under an approver's or a site principal this would read nothing
 // and every grant would look absent.
+//
+// The verdict records tenantID as the tenant it was read in, and
+// AuthorizeGrant honours it in that tenant only.
 //
 // No such grant is not an error: it returns a verdict with Found and
 // Authorized false. last_used_at is never touched.
@@ -221,7 +290,7 @@ func (r *Repo) ReCheckGrantAuthorization(ctx context.Context, tenantID, grantID 
 		if err != nil {
 			return err
 		}
-		out = grantVerdictFromGrantRow(row)
+		out = grantVerdictFromGrantRow(tenantID, row)
 		return nil
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -233,30 +302,40 @@ func (r *Repo) ReCheckGrantAuthorization(ctx context.Context, tenantID, grantID 
 	return out, nil
 }
 
-// ErrGrantNotAuthorized is AuthorizeGrant's refusal for a verdict that is not
-// authorized (absent, revoked, expired, idle-expired, or the organisation's
-// assistant is paused).
+// ErrGrantNotAuthorized is AuthorizeGrant's refusal for a verdict that confers
+// nothing: the grant is absent, revoked, expired or idle-expired, or the
+// organisation's assistant is paused; or the verdict was not read from a
+// stored grant row; or it was read in another tenant.
 var ErrGrantNotAuthorized = errors.New("mcp: the connection is not authorized")
 
 // AuthorizeGrant derives the AuthorizedRequest a verdict confers: the site
 // scope through the audited chokepoint, and the capability set as the grant's
 // stored column narrowed under the organisation's ceiling for the grant's own
-// scopes. Authenticate calls it for every token request; work done on a
-// connection's behalf without a token calls it with a verdict from
-// Repo.ReCheckGrantAuthorization.
+// scopes. Authenticate performs the same derivation for every token request;
+// work done on a connection's behalf without a token calls this with a
+// verdict from Repo.ReCheckGrantAuthorization.
 //
-// It refuses an unauthorized verdict itself, so no caller can derive scope
-// and capabilities for a grant that may not act. It refuses, with the same
-// error, a verdict that was not read from a stored grant row (a GrantVerdict
-// literal built outside this package): the scope it resolves is only ever the
-// stored grant's.
+// IT DERIVES FROM THE STORED GRANT ONLY, IN THE TENANT THE GRANT WAS READ IN.
+// Every input is the verdict's unexported stored copy of the row; the exported
+// fields are never read, so editing one changes nothing derived here. It
+// refuses, with ErrGrantNotAuthorized:
+//
+//   - a verdict the row constructors did not build: a GrantVerdict literal,
+//     or the verdict for a grant that does not exist;
+//   - a verdict whose stored row is not authorized, whatever its exported
+//     Authorized says, so no caller can derive scope and capabilities for a
+//     grant that may not act;
+//   - a verdict read in a tenant other than tenantID. tenantID is the tenant
+//     the caller is acting in; it is checked against the verdict's and never
+//     used in its place.
 //
 // TokenID is left zero: no token carried this derivation. Authenticate sets it.
 func (s *Service) AuthorizeGrant(ctx context.Context, tenantID uuid.UUID, v GrantVerdict) (AuthorizedRequest, error) {
-	if !v.fromStoredGrant || !v.Found || !v.Authorized {
+	g := v.stored
+	if !g.found || !g.authorized || g.tenantID == uuid.Nil || g.tenantID != tenantID {
 		return AuthorizedRequest{}, ErrGrantNotAuthorized
 	}
-	return s.authorizeGrant(ctx, tenantID, v)
+	return s.authorizeGrant(ctx, g)
 }
 
 // ToolPermitted reports whether auth may call the registered tool name: the
