@@ -859,10 +859,13 @@ func pageContentImagesMatch(content string, media []pageMediaFact) bool {
 // cleaned and capped; the base fingerprint binds the raw facts.
 type pageCardFacts struct {
 	Kind  string          `json:"kind"`
-	Media []pageCardMedia `json:"media"`
+	Media []PageCardMedia `json:"media"`
 }
 
-type pageCardMedia struct {
+// PageCardMedia is one image of a page-create request's card: the
+// attachment id and what the site said about it at precheck. Filename is
+// site text.
+type PageCardMedia struct {
 	ID       int64  `json:"id"`
 	Filename string `json:"filename"`
 	Mime     string `json:"mime"`
@@ -879,9 +882,9 @@ func pageCardFactsJSON(media []pageMediaFact) ([]byte, error) {
 	if len(media) == 0 {
 		return nil, nil
 	}
-	card := pageCardFacts{Kind: pageCardFactsKind, Media: make([]pageCardMedia, 0, len(media))}
+	card := pageCardFacts{Kind: pageCardFactsKind, Media: make([]PageCardMedia, 0, len(media))}
 	for _, m := range media {
-		card.Media = append(card.Media, pageCardMedia{
+		card.Media = append(card.Media, PageCardMedia{
 			ID: m.ID, Filename: humantext.CapRunes(humantext.Clean(m.Filename), pageCreateMaxFilenameChars),
 			Mime: m.Mime, Width: m.Width, Height: m.Height,
 		})
@@ -891,4 +894,46 @@ func pageCardFactsJSON(media []pageMediaFact) ([]byte, error) {
 		return nil, fmt.Errorf("encode page card facts: %w", err)
 	}
 	return b, nil
+}
+
+// ReadPageCardFacts reads a page-create request's stored card_facts back:
+// its images in outline order, or ok=false for anything that is not a
+// complete page-create card (a reader then shows no image facts, and a card
+// with an image node but no facts cannot be approved).
+func ReadPageCardFacts(stored []byte) ([]PageCardMedia, bool) {
+	top, ok := jsonObjectOf(stored)
+	if !ok || len(top) != 2 {
+		return nil, false
+	}
+	if kind, ok := jsonStringOf(top["kind"]); !ok || kind != pageCardFactsKind {
+		return nil, false
+	}
+	list, ok := jsonArrayOf(top["media"])
+	if !ok || len(list) == 0 || len(list) > pageCreateMaxImages {
+		return nil, false
+	}
+	out := make([]PageCardMedia, 0, len(list))
+	for _, raw := range list {
+		m, ok := jsonObjectOf(raw)
+		if !ok || len(m) != 5 {
+			return nil, false
+		}
+		var c PageCardMedia
+		var oks [5]bool
+		c.ID, oks[0] = jsonIntOf(m["id"])
+		c.Filename, oks[1] = jsonStringOf(m["filename"])
+		c.Mime, oks[2] = jsonStringOf(m["mime"])
+		c.Width, oks[3] = jsonIntOf(m["width"])
+		c.Height, oks[4] = jsonIntOf(m["height"])
+		for _, ok := range oks {
+			if !ok {
+				return nil, false
+			}
+		}
+		if c.ID < 1 || c.ID > pageCreateMaxAttachmentID || c.Width < 0 || c.Height < 0 {
+			return nil, false
+		}
+		out = append(out, c)
+	}
+	return out, true
 }

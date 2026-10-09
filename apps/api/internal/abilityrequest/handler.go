@@ -15,6 +15,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/authz"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
+	"github.com/mosamlife/wpmgr/apps/api/internal/mcp"
 	"github.com/mosamlife/wpmgr/apps/api/internal/server/httpx"
 )
 
@@ -128,6 +129,19 @@ type RequestDTO struct {
 	RouteID     *string         `json:"route_id"`
 	RouteSHA256 *string         `json:"route_sha256"`
 	CardFacts   json.RawMessage `json:"card_facts"`
+	// PageMedia is a wpmgr/page-create request's images, in outline order,
+	// as the site described them at precheck (null when the outline has no
+	// image, and for every other ability). Each filename came from the site.
+	PageMedia []PageMediaDTO `json:"page_media"`
+}
+
+// PageMediaDTO is one image a page-create request places.
+type PageMediaDTO struct {
+	ID       int64  `json:"id"`
+	Filename string `json:"filename"`
+	Mime     string `json:"mime"`
+	Width    int64  `json:"width"`
+	Height   int64  `json:"height"`
 }
 
 // cardFactsJSON is the stored card as a JSON object, or null when the row
@@ -138,6 +152,32 @@ func cardFactsJSON(b []byte) json.RawMessage {
 		return json.RawMessage("null")
 	}
 	return append(json.RawMessage(nil), trimmed...)
+}
+
+// cardFactsFor is card_facts on the wire: the rest-write card only. A
+// page-create request's stored facts reach the wire as page_media instead.
+func cardFactsFor(r sqlc.AssistantAbilityRequest) json.RawMessage {
+	if r.AbilityName != mcp.AbilityRestWrite {
+		return json.RawMessage("null")
+	}
+	return cardFactsJSON(r.CardFacts)
+}
+
+// pageMediaFor is page_media: a page-create request's images from its
+// stored card_facts, or nil.
+func pageMediaFor(r sqlc.AssistantAbilityRequest) []PageMediaDTO {
+	if r.AbilityName != mcp.AbilityPageCreate || len(r.CardFacts) == 0 {
+		return nil
+	}
+	media, ok := mcp.ReadPageCardFacts(r.CardFacts)
+	if !ok {
+		return nil
+	}
+	out := make([]PageMediaDTO, 0, len(media))
+	for _, m := range media {
+		out = append(out, PageMediaDTO{ID: m.ID, Filename: m.Filename, Mime: m.Mime, Width: m.Width, Height: m.Height})
+	}
+	return out
 }
 
 // ListResponse is a page of the queue.
@@ -183,7 +223,8 @@ func toDTO(r sqlc.AssistantAbilityRequest, withDigest bool, agentVersion string)
 		ResolveGaveUp:      resolveGaveUp(r),
 		RouteID:            r.RouteID,
 		RouteSHA256:        r.RouteSha256,
-		CardFacts:          cardFactsJSON(r.CardFacts),
+		CardFacts:          cardFactsFor(r),
+		PageMedia:          pageMediaFor(r),
 	}
 	if withDigest {
 		d := r.PresentedDigest

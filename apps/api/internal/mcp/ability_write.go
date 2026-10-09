@@ -625,10 +625,6 @@ func buildAbilityRequestFacts(auth AuthorizedRequest, row sqlc.Site, host string
 		return abilityRequestFacts{}, err
 	}
 	f.card = card
-	var cardText any // JSON null without a card
-	if card != nil {
-		cardText = string(card)
-	}
 	if strings.TrimSpace(f.grantLabel) == "" {
 		f.grantLabel = unnamedConnectionLabel
 	}
@@ -640,6 +636,18 @@ func buildAbilityRequestFacts(auth AuthorizedRequest, row sqlc.Site, host string
 		return abilityRequestFacts{}, fmt.Errorf("read digest nonce: %w", err)
 	}
 	f.nonce = hex.EncodeToString(nonce[:])
+	f.digest = pageCreateDigest(auth, row, e, entrySum, input, facts, pc, f)
+	return f, nil
+}
+
+// pageCreateDigest is the presented_digest over a page-create request's
+// facts: the card copy version and the exact card_facts bytes (JSON null
+// without a card) with everything else the card shows or the write binds.
+func pageCreateDigest(auth AuthorizedRequest, row sqlc.Site, e *sqlc.AbilityCatalogue, entrySum string, input []byte, facts pageCreateFacts, pc checkedPrecheck, f abilityRequestFacts) string {
+	var cardText any
+	if f.card != nil {
+		cardText = string(f.card)
+	}
 	canonical := map[string]any{
 		"copy_version":     f.copyVersion,
 		"mode":             "write",
@@ -669,12 +677,8 @@ func buildAbilityRequestFacts(auth AuthorizedRequest, row sqlc.Site, host string
 		"expires_at":       f.expiresAt.Format(time.RFC3339Nano),
 		"digest_nonce":     f.nonce,
 	}
-	b, err := json.Marshal(canonical)
-	if err != nil {
-		return abilityRequestFacts{}, fmt.Errorf("encode digest facts: %w", err)
-	}
-	f.digest = sha256Hex(b)
-	return f, nil
+	b, _ := json.Marshal(canonical) // strings, an int, a string pointer and nil only
+	return sha256Hex(b)
 }
 
 // createAbilityRequest is step 8, in one connection-scoped transaction.
