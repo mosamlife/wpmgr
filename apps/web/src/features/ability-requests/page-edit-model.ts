@@ -588,8 +588,11 @@ export const EDIT_UNDO_FAILED_COPY =
   "WPMgr could not undo this change. Open the page in Elementor and check it; its revisions are in WordPress.";
 export const EDIT_STALE_COPY =
   "The page changed after the AI looked at it. Nothing changed. Ask the AI to read the page again and retry.";
+/** A conflict refusal from an API that does not say which conflict it was. */
 export const EDIT_CONFLICT_COPY =
   "The page changed after the AI looked at it, or someone has it open in Elementor. Nothing changed. Ask the AI to read the page again and retry.";
+export const EDIT_EDITOR_OPEN_COPY = "Someone has this page open in Elementor. Nothing changed.";
+export const EDIT_AUTOSAVE_COPY = "Someone has unsaved Elementor changes on this draft. Nothing changed.";
 export const EDIT_PUT_BACK_COPY =
   "Elementor did not save the change exactly as approved, so WPMgr put the page back as it was.";
 export const EDIT_NOT_SAVED_COPY = "Elementor did not save the change, so nothing changed.";
@@ -621,7 +624,6 @@ export const EDIT_FAILED_COPY =
 /** The agent's refusal codes that mean the edit was refused on the site before it touched the page. */
 const FAILED_PLAIN: Record<string, string> = {
   preview_changed: EDIT_STALE_COPY,
-  conflict: EDIT_CONFLICT_COPY,
   snapshot_failed: EDIT_NO_SNAPSHOT_COPY,
   snapshot_too_large: EDIT_SNAPSHOT_TOO_LARGE_COPY,
   page_has_admin_only_content: EDIT_ADMIN_ONLY_COPY,
@@ -635,6 +637,17 @@ const FAILED_PLAIN: Record<string, string> = {
 /** Codes where the save ran and the page was checked afterwards. */
 const PUT_BACK_CODES = new Set(["verify_mismatch", "builder_save_refused", "builder_crashed"]);
 
+/**
+ * Which conflict refused a page edit (the API's outcome_detail, a closed set
+ * and never the site's words): the page moved on since the AI read it, or
+ * someone has it open, or has unsaved changes on it.
+ */
+const CONFLICT_COPY: Record<string, string> = {
+  changed_since_read: EDIT_STALE_COPY,
+  editor_open: EDIT_EDITOR_OPEN_COPY,
+  autosave_pending: EDIT_AUTOSAVE_COPY,
+};
+
 function has(map: Record<string, string>, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(map, key);
 }
@@ -642,16 +655,23 @@ function has(map: Record<string, string>, key: string): boolean {
 /**
  * The person's wording for a failed edit. restored is the site's put-back
  * report: it decides first, because a page that was not put back exactly is
- * the one thing the person must act on whatever the code was.
+ * the one thing the person must act on whatever the code was. detail names
+ * the conflict behind a `conflict` refusal; without it (a row from an API
+ * that does not say) the wording covers every conflict.
  */
 export function failedEditStatus(
   code: string | null | undefined,
   restored: boolean | null | undefined,
   outcome?: string | null,
+  detail?: string | null,
 ): PageEditStatus {
   const base = { kind: "failed" as AbilityStatusKind, links: true };
   if (code === "restore_mismatch" || restored === false) {
     return { ...base, text: EDIT_NOT_PUT_BACK_COPY, tone: "red" };
+  }
+  if (code === "conflict") {
+    const text = detail != null && has(CONFLICT_COPY, detail) ? CONFLICT_COPY[detail]! : EDIT_CONFLICT_COPY;
+    return { ...base, text, tone: "neutral", links: false };
   }
   if (code === "side_effect_detected") {
     return restored === true
@@ -718,7 +738,7 @@ export function pageEditStatus(r: AbilityRequest): PageEditStatus {
           return plain("done", EDIT_DONE_COPY, true);
       }
     case "failed":
-      return failedEditStatus(r.outcome_code, r.restored, r.outcome);
+      return failedEditStatus(r.outcome_code, r.restored, r.outcome, r.outcome_detail);
     case "not_sent":
       return plain("not_sent", `Nothing was sent: ${notSentText(r.not_sent_reason)}. Nothing was changed.`);
     case "declined":
@@ -799,7 +819,7 @@ const REQUEST_REFUSAL_REASONS: Record<string, string> = {
   node_not_editable: "it asked to change something WPMgr does not edit (a form, a slider, an add-on widget)",
   op_not_supported_by_builder: "Elementor's version of this request is not supported",
   page_too_large: "the change was too large",
-  ops_invalid: "it named the same part of the page more than once",
+  ops_invalid: "its changes did not fit together",
   bad_input: "the request did not follow the rules for changing a page",
 };
 
@@ -808,20 +828,94 @@ export function requestRefusalReason(code: string): string | null {
   return has(REQUEST_REFUSAL_REASONS, code) ? REQUEST_REFUSAL_REASONS[code]! : null;
 }
 
+// The words the site's draft check gives for a page the AI may not change or
+// read (the agent's DraftEligibility reasons, the read's own and the edit
+// target checks). They are tokens, never site text, and only a person sees the
+// reason: the AI is told one fixed thing for all of them. A token with no
+// entry here names no reason.
 const INELIGIBLE_REASONS: Record<string, string> = {
-  not_in_signed_list: "not a draft WPMgr created for it",
   no_marker: "a person's draft",
   marker_not_a_request: "a person's draft",
   ledger_missing: "a person's draft",
-  ledger_not_completed: "a draft WPMgr has not finished creating",
   ledger_other_post: "a person's draft",
+  ledger_not_completed: "a draft WPMgr has not finished creating",
   missing: "it no longer exists",
+  post_missing: "it no longer exists",
   trashed: "it is in the trash",
-  not_draft: "it is published, private, scheduled or password-protected",
+  not_draft: "it is no longer a draft, for example because it was published",
+  not_published: "it is private, scheduled or otherwise not published",
+  password: "it is password-protected",
+  not_builder_page: "it was not built with Elementor",
   unreadable: "WPMgr could not read it",
 };
 
-/** The person-only reason for a page the AI may not change; null for a word WPMgr has no reason for. */
+/** The person-only reason for a page the AI may not change or read; null for a word WPMgr has no reason for. */
 export function ineligibleReason(detail: string | null | undefined): string | null {
   return detail != null && has(INELIGIBLE_REASONS, detail) ? INELIGIBLE_REASONS[detail]! : null;
+}
+
+// --- The grey rows in the record of what a connection asked -------------------
+//
+// A request WPMgr refuses before it becomes a card leaves no card, only an
+// audit row (action mcp.tool.denied) that names the ability, the post, the
+// code and, for a page that may not be touched, the site's reason word
+// (apps/api/internal/mcp/page_structure.go withBuilderEditTarget). This is the
+// sentence for that row. Every word is WPMgr's own and the only variable is
+// the post's number, so nothing the AI or the site wrote reaches it.
+
+export const PAGE_STRUCTURE_ABILITY = "wpmgr/page-structure";
+/** The audit action of a refused tool call. */
+export const TOOL_DENIED_ACTION = "mcp.tool.denied";
+
+export type RefusalActivityKind = "refused" | "not_eligible";
+
+export interface RefusalActivity {
+  readonly kind: RefusalActivityKind;
+  readonly text: string;
+}
+
+function postNumber(v: unknown): number | null {
+  return typeof v === "number" && Number.isSafeInteger(v) && v >= 1 ? v : null;
+}
+
+function reasonSuffix(detail: unknown): string {
+  const reason = typeof detail === "string" ? ineligibleReason(detail) : null;
+  return reason === null ? "" : ` (${reason})`;
+}
+
+/**
+ * The sentence for a refused page request, from the metadata of its audit row,
+ * or null when the row is not one of these (another tool, another ability, a
+ * code with no wording here). A page edit is refused for its input or for the
+ * page it names; a page structure read, only for the page.
+ */
+export function refusalActivity(meta: Record<string, unknown> | null | undefined): RefusalActivity | null {
+  if (meta == null) return null;
+  const post = postNumber(meta.post_id);
+  const code = typeof meta.code === "string" ? meta.code : null;
+  if (meta.ability === PAGE_EDIT_ABILITY) {
+    if (code === "target_not_eligible") {
+      if (post === null) return null;
+      return {
+        kind: "not_eligible",
+        text: `The AI asked to change "#${post}", which is not a draft WPMgr created for it${reasonSuffix(meta.detail)}. WPMgr refused.`,
+      };
+    }
+    // A request that does not follow the input rules is refused before any
+    // code is chosen: the row names only the argument.
+    const reason = code !== null ? requestRefusalReason(code) : meta.argument === "input" ? requestRefusalReason("bad_input") : null;
+    if (reason === null) return null;
+    const subject = post === null ? "a page" : `"#${post}"`;
+    return {
+      kind: "refused",
+      text: `The AI asked to change ${subject} and WPMgr refused the request before showing it to you: ${reason}.`,
+    };
+  }
+  if (meta.ability === PAGE_STRUCTURE_ABILITY && code === "post_not_readable" && post !== null) {
+    return {
+      kind: "not_eligible",
+      text: `The AI asked to read "#${post}", which WPMgr does not let it read${reasonSuffix(meta.detail)}. WPMgr refused.`,
+    };
+  }
+  return null;
 }

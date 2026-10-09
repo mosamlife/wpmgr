@@ -127,6 +127,16 @@ export function assertDbShape(r: AbilityRequest): void {
   if (!outcomeOk) fail(`outcome ${String(r.outcome)} on a ${r.state} row`);
   if (r.outcome_code != null && r.outcome == null) fail("outcome_code needs an outcome");
   if (r.outcome_code != null && !/^[a-z][a-z0-9_]{0,63}$/.test(r.outcome_code)) fail("outcome_code shape");
+  // outcome_detail (abilityrequest/outcome_detail.go): only a page edit refused
+  // as a conflict carries one, and only from the closed set of three.
+  if (r.outcome_detail != null) {
+    if (r.ability_name !== "wpmgr/page-edit" || r.outcome_code !== "conflict") {
+      fail("outcome_detail belongs to a wpmgr/page-edit refused as a conflict");
+    }
+    if (!["changed_since_read", "editor_open", "autosave_pending"].includes(r.outcome_detail)) {
+      fail("outcome_detail value");
+    }
+  }
   if ((r.outcome === "not_sent") !== (r.not_sent_reason != null)) fail("not_sent_reason belongs to not_sent rows only");
   if (r.not_sent_reason != null && !NOT_SENT_REASONS.has(r.not_sent_reason)) fail("not_sent_reason value");
 

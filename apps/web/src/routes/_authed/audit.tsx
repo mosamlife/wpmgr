@@ -78,6 +78,9 @@ const ACTION_PRESETS: { label: string; value: string }[] = [
   { label: "2FA", value: "auth.2fa." },
   { label: "SMTP", value: "smtp.settings." },
   { label: "Cache", value: "site.cache." },
+  // What an AI connection asked for and was refused, including the page
+  // requests WPMgr turns away before they become a card.
+  { label: "Blocked AI calls", value: "mcp.tool.denied" },
 ];
 
 type OutcomeFilter = "all" | AuditSeverity;

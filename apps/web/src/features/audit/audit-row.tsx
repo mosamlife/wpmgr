@@ -3,6 +3,7 @@ import { Ban, ChevronDown, ShieldAlert } from "lucide-react";
 import type { AuditEntry } from "@wpmgr/api";
 
 import { cn, relativeTime } from "@/lib/utils";
+import { TOOL_DENIED_ACTION, refusalActivity } from "@/features/ability-requests/page-edit-model";
 
 import { ActorChip } from "./actor-chip";
 import { AuditEntryDetail, RunDetail } from "./audit-detail";
@@ -170,8 +171,13 @@ export function AuditEntryRow({
   isToday: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const severity = classifySeverity(entry.action);
+  // A page request WPMgr refused before it became a card has no card to show
+  // it on: this row is where a person reads that it happened. It is a quiet
+  // line in plain words, not the red "Denied" treatment of a blocked tool.
+  const refusal = entry.action === TOOL_DENIED_ACTION ? refusalActivity(entry.metadata) : null;
+  const severity = refusal ? "read" : classifySeverity(entry.action);
   const label = actionLabel(entry.action);
+  const connection = refusal ? metaString(entry.metadata, "grant_name") : null;
 
   return (
     <details
@@ -189,22 +195,39 @@ export function AuditEntryRow({
         title={entry.action}
       >
         <ActorChip entry={entry} />
-        <div className="flex min-w-0 items-center gap-1.5">
+        <div className={cn("flex min-w-0 gap-1.5", refusal ? "items-start" : "items-center")}>
           <ChevronDown
             aria-hidden="true"
-            className="size-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-180"
-          />
-          <span
             className={cn(
-              "truncate text-sm",
-              severity === "denied"
-                ? "font-medium text-destructive"
-                : "font-medium text-foreground",
+              "size-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-180",
+              refusal ? "mt-0.5" : null,
             )}
-          >
-            {label}
-          </span>
-          <SeverityPill severity={severity} />
+          />
+          {refusal ? (
+            <div data-testid="ai-refusal-row" data-kind={refusal.kind} className="min-w-0 space-y-0.5">
+              <p className="text-sm text-muted-foreground">{refusal.text}</p>
+              {connection ? (
+                <p className="text-xs text-muted-foreground">
+                  {"Connection: "}
+                  <bdi>{connection}</bdi>
+                </p>
+              ) : null}
+            </div>
+          ) : (
+            <>
+              <span
+                className={cn(
+                  "truncate text-sm",
+                  severity === "denied"
+                    ? "font-medium text-destructive"
+                    : "font-medium text-foreground",
+                )}
+              >
+                {label}
+              </span>
+              <SeverityPill severity={severity} />
+            </>
+          )}
         </div>
         <TargetSlot entry={entry} sites={sites} />
         <EntryTime iso={entry.created_at} isToday={isToday} />
