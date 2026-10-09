@@ -6,6 +6,8 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ## [Unreleased]
 
+## [0.61.183] - 2026-10-09
+
 ### Added
 
 - An AI connected through WPMgr can now create a draft page or post from an outline with real layout, with your approval for each request in WPMgr. The outline can use headings, paragraphs, lists, quotes, tables and separators, and images that are already in the site's media library. In the block editor it can also use buttons, spacing, sections and columns. Nothing is published, and undo moves the draft to the trash. Agent 0.61.160.
