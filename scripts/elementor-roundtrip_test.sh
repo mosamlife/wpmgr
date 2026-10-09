@@ -11,10 +11,17 @@
 # mounted zip that is not the pinned file, and on each planted defect: an
 # unregistered widget type (which Elementor drops without saying so), a mapper
 # whose tree no longer equals its golden tree, a rendered script element, a
-# rendered on* attribute and an escaped text that is shown wrongly. It also
+# rendered on* attribute and an escaped text that is shown wrongly. For the
+# agent's own create path it proves the check goes red on a verdict that ran no
+# agent case, no refusal scenario, or another layout than the one booted, on an
+# agent path handed no outline, and on each of five defects planted in a copy of
+# the agent's own source (its verify skipped, an undo that says reverted and
+# leaves the post, its digest re-check skipped, the container layout read as off,
+# its undo guard skipped), each on the check meant to see it. It also
 # proves what it must NOT block: an honest run, a cached download, a run of one
-# version out of several, and, in the planted run, every case that carries no
-# plant. Run it BEFORE the real check so a guard that fails open cannot pass.
+# version or one layout out of several, a blueprint that sets some other site
+# option, and, in the planted run, every case that carries no plant. Run it
+# BEFORE the real check so a guard that fails open cannot pass.
 #
 # The first group runs run.sh against a stand-in for npx and file:// pins, and
 # needs no network and no Playground. The second group boots a real WordPress

@@ -760,13 +760,18 @@ jobs:
   # The agent builds Elementor element trees with its own classic mapper. This
   # boots a real WordPress under the Playground CLI (PHP and SQLite compiled to
   # WebAssembly, no Docker) with each Elementor version pinned by sha256 in
-  # scripts/elementor-roundtrip/pins.txt, saves every golden-fixture and extra
-  # outline with Elementor's Document::save as the agent's service user (no
-  # unfiltered_html), and requires the stored tree to equal the built one and the
-  # rendered page to show the outline's text with no script element and no on*
-  # attribute. It fails on zero cases, a missing tool and a hash mismatch.
+  # scripts/elementor-roundtrip/pins.txt, once per layout (containers and
+  # sections, set through Elementor's container experiment before the site
+  # starts), saves every golden-fixture and extra outline with Elementor's
+  # Document::save as the agent's service user (no unfiltered_html), and requires
+  # the stored tree to equal the built one and the rendered page to show the
+  # outline's text with no script element and no on* attribute. It then drives
+  # the agent's own create path on the same site (precheck, write under the
+  # precheck's digests, undo) and requires the refusals the path must make. It
+  # fails on zero cases, zero agent cases, a missing tool and a hash mismatch.
   # The guard's self-test runs first so a guard that fails open cannot pass; it
-  # also fills the cache of downloads the real run then reuses.
+  # also plants defects in a copy of the agent's own source and requires each to
+  # turn the check red, and it fills the cache of downloads the real run reuses.
   elementor-roundtrip:
     name: Elementor round trip (pinned versions)
     runs-on: ubuntu-latest
